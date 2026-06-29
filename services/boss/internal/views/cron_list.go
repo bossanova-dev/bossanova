@@ -232,9 +232,11 @@ func (m CronListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateNormal(msg)
 	}
 
-	// Forward to table for j/k/up/down navigation.
+	// Forward non-key messages (mouse, resize, focus, …) to the table; keyboard
+	// navigation is handled in updateNormal and never reaches here.
 	updated, cmd := m.table.Update(msg)
 	m.table = updated
+	updateCursorColumn(&m.table) // keep the chevron in lock-step with the highlight
 	return m, cmd
 }
 
@@ -314,6 +316,7 @@ func (m CronListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Forward to table for navigation.
 	updated, cmd := m.table.Update(msg)
 	m.table = updated
+	updateCursorColumn(&m.table)
 	return m, cmd
 }
 

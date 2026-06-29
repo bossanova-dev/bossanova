@@ -24,11 +24,33 @@ import (
 type lifecycleSessionStoreFake struct {
 	db.SessionStore
 
-	updateErr   error
-	getErr      error
-	session     *models.Session
-	lastUpdate  db.UpdateSessionParams
-	updateCalls int
+	updateErr     error
+	getErr        error
+	session       *models.Session
+	lastUpdate    db.UpdateSessionParams
+	updateCalls   int
+	archiveErr    error
+	archiveCalled bool
+}
+
+// Archive records that the lifecycle archive reached the DB write. The embedded
+// db.SessionStore would otherwise nil-panic, so the success path of
+// session.Lifecycle.ArchiveSession needs this override.
+func (f *lifecycleSessionStoreFake) Archive(_ context.Context, _ string) error {
+	f.archiveCalled = true
+	return f.archiveErr
+}
+
+// archiveRepoStoreFake is a minimal db.RepoStore whose Get returns a fixed repo,
+// so the lifecycle archive's repo lookup (and sessionProtoWithRepo) succeed
+// without a real store. Any other method nil-panics loudly.
+type archiveRepoStoreFake struct {
+	db.RepoStore
+	repo *models.Repo
+}
+
+func (r *archiveRepoStoreFake) Get(_ context.Context, _ string) (*models.Repo, error) {
+	return r.repo, nil
 }
 
 func (f *lifecycleSessionStoreFake) Update(_ context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
@@ -270,6 +292,109 @@ func TestMergeSessionEmptyID(t *testing.T) {
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("code = %v, want InvalidArgument (err=%v)", connect.CodeOf(err), err)
 	}
+}
+
+// TestArchiveSessionAndNotify verifies the archiveSessionAndNotify helper
+// (BOS-101): a genuinely missing session is idempotent (fires onSessionDeleted,
+// nil error), an already-archived session that still exists fires
+// onSessionUpdated (and is NOT dropped from the read model), and a real
+// lifecycle error propagates.
+func TestArchiveSessionAndNotify(t *testing.T) {
+	const sessionID = "s1"
+
+	t.Run("ErrNoRows fires onSessionDeleted and returns nil", func(t *testing.T) {
+		store := &lifecycleSessionStoreFake{getErr: sql.ErrNoRows}
+		lc := session.NewLifecycle(store, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop())
+		var deletedID string
+		srv := &Server{
+			sessions:         store,
+			lifecycle:        lc,
+			onSessionDeleted: func(_ context.Context, id string) { deletedID = id },
+		}
+		if err := srv.ArchiveSessionAndNotify(context.Background(), sessionID); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if deletedID != sessionID {
+			t.Errorf("onSessionDeleted called with %q, want %q", deletedID, sessionID)
+		}
+	})
+
+	t.Run("non-ErrNoRows lifecycle error propagates", func(t *testing.T) {
+		store := &lifecycleSessionStoreFake{getErr: errors.New("boom")}
+		lc := session.NewLifecycle(store, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop())
+		srv := &Server{
+			sessions:  store,
+			lifecycle: lc,
+		}
+		if err := srv.ArchiveSessionAndNotify(context.Background(), sessionID); err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	// BOS-101 headline behavior: a successful archive must emit onSessionUpdated
+	// so the TUI/bosso read-model drop the session immediately (no poll wait).
+	t.Run("success archives and fires onSessionUpdated", func(t *testing.T) {
+		// WorktreePath == repo.LocalPath skips the worktree archive; nil tmux and
+		// nil AgentSessionID skip the process/tmux teardown, so the success path
+		// runs with minimal deps.
+		store := &lifecycleSessionStoreFake{
+			session: &models.Session{ID: sessionID, RepoID: "r1", WorktreePath: "/x"},
+		}
+		repos := &archiveRepoStoreFake{repo: &models.Repo{ID: "r1", LocalPath: "/x"}}
+		lc := session.NewLifecycle(store, repos, nil, nil, nil, nil, nil, nil, zerolog.Nop())
+
+		var updatedID string
+		srv := &Server{
+			sessions:         store,
+			repos:            repos,
+			lifecycle:        lc,
+			onSessionUpdated: func(_ context.Context, p *pb.Session) { updatedID = p.GetId() },
+		}
+
+		if err := srv.ArchiveSessionAndNotify(context.Background(), sessionID); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !store.archiveCalled {
+			t.Error("expected the lifecycle archive to reach sessions.Archive")
+		}
+		if updatedID != sessionID {
+			t.Errorf("onSessionUpdated fired with %q, want %q", updatedID, sessionID)
+		}
+	})
+
+	// BOS-101 regression: SQLiteSessionStore.Archive returns sql.ErrNoRows both
+	// for a missing row AND for one that is already archived (its
+	// archived_at IS NULL update matches nothing). An already-archived session
+	// whose row still exists must stay archived/in trash — fire onSessionUpdated,
+	// NOT onSessionDeleted, so bosso does not drop it from the read model.
+	t.Run("already-archived session fires onSessionUpdated, not onSessionDeleted", func(t *testing.T) {
+		store := &lifecycleSessionStoreFake{
+			session:    &models.Session{ID: sessionID, RepoID: "r1", WorktreePath: "/x"},
+			archiveErr: sql.ErrNoRows,
+		}
+		repos := &archiveRepoStoreFake{repo: &models.Repo{ID: "r1", LocalPath: "/x"}}
+		lc := session.NewLifecycle(store, repos, nil, nil, nil, nil, nil, nil, zerolog.Nop())
+
+		var updatedID string
+		var deletedCalled bool
+		srv := &Server{
+			sessions:         store,
+			repos:            repos,
+			lifecycle:        lc,
+			onSessionUpdated: func(_ context.Context, p *pb.Session) { updatedID = p.GetId() },
+			onSessionDeleted: func(_ context.Context, _ string) { deletedCalled = true },
+		}
+
+		if err := srv.ArchiveSessionAndNotify(context.Background(), sessionID); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if deletedCalled {
+			t.Error("onSessionDeleted must not fire for an already-archived session that still exists")
+		}
+		if updatedID != sessionID {
+			t.Errorf("onSessionUpdated fired with %q, want %q", updatedID, sessionID)
+		}
+	})
 }
 
 // TestArchiveSession_MissingSession tests BOS-76: archiving an orphaned session

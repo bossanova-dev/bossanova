@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strings"
 	"testing"
@@ -156,6 +157,85 @@ func TestContractFullToolSet(t *testing.T) {
 			t.Errorf("tool[%d]: got %q, want %q", i, got[i], want[i])
 		}
 	}
+}
+
+// TestContractParityFieldsAdvertised guards the public tool surface: it asserts
+// that the MCP/TUI-parity fields wired through the arg structs actually appear in
+// each tool's advertised input schema over the wire (tools/list). A field dropped
+// from an arg struct would silently stop being settable; this fails if that
+// happens.
+func TestContractParityFieldsAdvertised(t *testing.T) {
+	t.Parallel()
+
+	backend := &contractBackend{}
+	cs := newContractClient(t, backend)
+
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+
+	byName := make(map[string]*mcp.Tool, len(res.Tools))
+	for _, tool := range res.Tools {
+		byName[tool.Name] = tool
+	}
+
+	want := map[string][]string{
+		"update_repo":     {"linear_api_key", "sentry_api_key", "sentry_org"},
+		"create_cron_job": {"model", "gate_command", "run_setup_command"},
+		"update_cron_job": {"model", "gate_command", "run_setup_command"},
+		"create_session":  {"base_branch", "branch_name", "force_branch", "quick_chat", "pr_number", "tracker_id", "tracker_url", "tracker_source"},
+	}
+
+	for toolName, fields := range want {
+		tool, ok := byName[toolName]
+		if !ok {
+			t.Errorf("tool %q missing from tools/list", toolName)
+			continue
+		}
+		props := schemaProperties(t, tool)
+		for _, field := range fields {
+			if _, ok := props[field]; !ok {
+				t.Errorf("tool %q input schema is missing advertised field %q (have %v)", toolName, field, sortedKeys(props))
+			}
+		}
+	}
+
+	// tracker_issue is intentionally excluded from create_session (web-only).
+	if props := schemaProperties(t, byName["create_session"]); props != nil {
+		if _, ok := props["tracker_issue"]; ok {
+			t.Error("create_session must not advertise the web-only tracker_issue field")
+		}
+	}
+}
+
+// schemaProperties marshals a tool's InputSchema (typed `any` over the wire) and
+// returns its top-level JSON-Schema "properties" object.
+func schemaProperties(t *testing.T, tool *mcp.Tool) map[string]json.RawMessage {
+	t.Helper()
+	if tool == nil {
+		return nil
+	}
+	raw, err := json.Marshal(tool.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal input schema for %q: %v", tool.Name, err)
+	}
+	var parsed struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("unmarshal input schema for %q: %v", tool.Name, err)
+	}
+	return parsed.Properties
+}
+
+func sortedKeys(m map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // TestContractReadTool exercises the list_sessions tool end-to-end over the

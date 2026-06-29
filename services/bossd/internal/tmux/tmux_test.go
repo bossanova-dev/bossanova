@@ -715,6 +715,131 @@ func TestLineStillAtPromptIgnoresScrollback(t *testing.T) {
 	}
 }
 
+// TestLineStillAtPromptFindsInputBeneathChrome covers the real Claude Code
+// footer layout: the live input box renders a prompt marker, and BELOW it
+// Claude draws chrome (a separator rule, a "Model | cwd" line, a bypass-
+// permissions hint) that has no prompt marker. The verifier must skip that
+// chrome and read the bottom-most prompt-marker row as the live input, so a
+// payload still sitting there reports true and a cleared/submitted input
+// (empty "❯") reports false.
+func TestLineStillAtPromptFindsInputBeneathChrome(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	const line = "write a haiku about autumn"
+	const rule = "────────────────────────────────────────────────────────────────────────────────"
+
+	// Filled input row beneath chrome → still at prompt (true).
+	filled := strings.Join([]string{
+		"❯ " + line,
+		rule,
+		"  Opus 4.8 (1M context) | /Users/dave/.bossanova/worktrees/bossanova/x",
+		"  ⏵⏵ bypass permissions on",
+	}, "\n")
+	if !lineStillAtPrompt(filled, line) {
+		t.Fatalf("filled input row beneath chrome must report still-at-prompt (true)")
+	}
+
+	// Cleared input row (empty "❯") beneath chrome after the response → submitted (false).
+	submitted := strings.Join([]string{
+		"⏺ here is your haiku response, fully rendered above",
+		"❯",
+		rule,
+		"  Opus 4.8 (1M context) | /Users/dave/.bossanova/worktrees/bossanova/x",
+		"  ⏵⏵ bypass permissions on",
+	}, "\n")
+	if lineStillAtPrompt(submitted, line) {
+		t.Fatalf("cleared input row beneath chrome must report submitted (false)")
+	}
+}
+
+// TestLineStillAtPromptStopsAtPostSubmitOutput covers the window right after a
+// line is accepted: the agent echoes the submitted prompt row and starts
+// streaming output below it before redrawing an empty input box. The verifier
+// must treat that output as proof the payload left the prompt rather than
+// scanning past it to the echoed prompt row and reporting it as still pending
+// (which would time out waitForLineSubmission on an already-running command).
+func TestLineStillAtPromptStopsAtPostSubmitOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	const line = "do the thing"
+
+	// Assistant/tool bullet output below the echoed prompt → submitted (false).
+	bulletOutput := strings.Join([]string{
+		"❯ " + line,
+		"⏺ working on it",
+	}, "\n")
+	if lineStillAtPrompt(bulletOutput, line) {
+		t.Fatalf("prompt row above tool-bullet output must report submitted (false)")
+	}
+
+	// Tool-result branch output below the echoed prompt → submitted (false).
+	resultOutput := strings.Join([]string{
+		"❯ " + line,
+		"⏺ Read(main.go)",
+		"  ⎿  Read 42 lines",
+	}, "\n")
+	if lineStillAtPrompt(resultOutput, line) {
+		t.Fatalf("prompt row above tool-result output must report submitted (false)")
+	}
+
+	// Thinking/working spinner below the echoed prompt — the window after the
+	// line is accepted but before the first ⏺ renders — → submitted (false).
+	for _, spinner := range []string{"·", "✻", "✽"} {
+		spinnerOutput := strings.Join([]string{
+			"❯ " + line,
+			spinner + " Thinking… (esc to interrupt)",
+		}, "\n")
+		if lineStillAtPrompt(spinnerOutput, line) {
+			t.Fatalf("prompt row above %q spinner must report submitted (false)", spinner)
+		}
+	}
+
+	// Codex pane: "›" prompt marker with the Codex working bullet below it →
+	// submitted (false). Mirrors plugins/bossd-plugin-codex/question.go grammar.
+	codexOutput := strings.Join([]string{
+		"› " + line,
+		"• Working (3s • esc to interrupt)",
+	}, "\n")
+	if lineStillAtPrompt(codexOutput, line) {
+		t.Fatalf("Codex prompt row above the working bullet must report submitted (false)")
+	}
+}
+
+// TestLineStillAtPromptScansThroughCustomStatusline guards the inverse of the
+// post-submit-output case: a custom statusline renders arbitrary rows under the
+// live input box (here a truncated "model | cwd" line, a "PR #133" badge, and
+// an "◉ xhigh · /effort" tag, mirroring TestSendPlan_CustomStatuslineReady).
+// None are conversation output, so a payload still sitting in the input box
+// must report still-at-prompt (true) and a cleared box must report submitted
+// (false) — otherwise the verifier silently passes an unsubmitted cron prompt.
+func TestLineStillAtPromptScansThroughCustomStatusline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	const line = "implement the next ticket"
+	const rule = "────────────────────────────────────────────────────────────────────────────────"
+	statusline := []string{
+		rule,
+		"  Opus 4.7 (1M context) | /Users/dave/.bossanova/worktrees/bossanova/add-a-sc…",
+		"  PR #133",
+		"                                                             ◉ xhigh · /effort",
+	}
+
+	// Payload still in the input box beneath the statusline → still-at-prompt.
+	filled := strings.Join(append([]string{"❯ " + line}, statusline...), "\n")
+	if !lineStillAtPrompt(filled, line) {
+		t.Fatalf("filled input beneath a custom statusline must report still-at-prompt (true)")
+	}
+
+	// Cleared input box beneath the statusline → submitted.
+	cleared := strings.Join(append([]string{"❯"}, statusline...), "\n")
+	if lineStillAtPrompt(cleared, line) {
+		t.Fatalf("cleared input beneath a custom statusline must report submitted (false)")
+	}
+}
+
 func TestKillSession_NotExist(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
@@ -1016,7 +1141,10 @@ func TestSendPlan_HappyPath_Order(t *testing.T) {
 	}
 	c := NewClient(WithCommandFactory(fake.factory))
 
-	if err := c.sendPlan(context.Background(), "boss-test-sess", "do the thing", sendPlanOpts{
+	// Multi-line payload so the bracketed-paste path (load-buffer → paste-buffer
+	// → send-keys) is exercised; single-line payloads now deliver via send-keys
+	// -l (see TestSendPlan_SingleLineUsesLiteralKeysMultilineUsesPaste).
+	if err := c.sendPlan(context.Background(), "boss-test-sess", "do the thing\nand more", sendPlanOpts{
 		deadline:     2 * time.Second,
 		pollInterval: 5 * time.Millisecond,
 	}); err != nil {
@@ -1079,7 +1207,8 @@ func TestSendPlan_CustomReadyMarker(t *testing.T) {
 	}
 	c := NewClient(WithCommandFactory(fake.factory))
 
-	if err := c.SendPlanWithReadyMarker(context.Background(), "boss-test-sess", "fix it", "›"); err != nil {
+	// Multi-line payload exercises the bracketed-paste path under a custom marker.
+	if err := c.SendPlanWithReadyMarker(context.Background(), "boss-test-sess", "fix it\nplease", "›"); err != nil {
 		t.Fatalf("SendPlanWithReadyMarker: unexpected error: %v", err)
 	}
 
@@ -1135,13 +1264,70 @@ func TestSendLineWithReadyMarker_UsesLiteralKeysAndEnter(t *testing.T) {
 
 	textCall := calls[len(calls)-2]
 	if textCall.subcommand != "send-keys" ||
-		!equalSlices(textCall.args, []string{"-t", "boss-test-sess", "-l", "$boss-repair"}) {
+		!equalSlices(textCall.args, []string{"-t", "boss-test-sess", "-l", "--", "$boss-repair"}) {
 		t.Fatalf("literal send-keys call = %+v", textCall)
 	}
 	enterCall := calls[len(calls)-1]
 	if enterCall.subcommand != "send-keys" ||
 		!equalSlices(enterCall.args, []string{"-t", "boss-test-sess", "Enter"}) {
 		t.Fatalf("Enter send-keys call = %+v", enterCall)
+	}
+}
+
+// TestEscapeSendKeysLiteral verifies that only a trailing ";" is escaped for
+// the literal send-keys path. tmux drops a single trailing ";" as a command
+// terminator but preserves mid-string semicolons, backslashes, and other shell
+// metacharacters verbatim, so escaping anything else would corrupt the payload.
+func TestEscapeSendKeysLiteral(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no semicolon", "implement the next ticket", "implement the next ticket"},
+		{"trailing semicolon", "explain ls;", `explain ls\;`},
+		{"only a semicolon", ";", `\;`},
+		{"mid-string semicolons untouched", "a;b ; c", "a;b ; c"},
+		{"trailing of several escaped once", "a;b;", `a;b\;`},
+		{"leading dash preserved", "-foo bar;", `-foo bar\;`},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := escapeSendKeysLiteral(tc.in); got != tc.want {
+				t.Fatalf("escapeSendKeysLiteral(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSendLineWithReadyMarker_EscapesTrailingSemicolon confirms the escape is
+// actually applied on the literal send-keys argv so a single-line prompt ending
+// in ";" is delivered intact instead of being truncated by tmux's command lexer.
+func TestSendLineWithReadyMarker_EscapesTrailingSemicolon(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	fake := &sendPlanRecordingFactory{
+		capturePaneOutputs: []string{
+			"Welcome to Codex\n›\n",
+		},
+	}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	if err := c.sendLine(context.Background(), "boss-test-sess", "explain ls;", sendPlanOpts{
+		deadline:     time.Second,
+		pollInterval: 5 * time.Millisecond,
+		readyMarker:  "›",
+	}); err != nil {
+		t.Fatalf("SendLineWithReadyMarker: unexpected error: %v", err)
+	}
+
+	calls := fake.callsCopy()
+	textCall := calls[len(calls)-2]
+	if textCall.subcommand != "send-keys" ||
+		!equalSlices(textCall.args, []string{"-t", "boss-test-sess", "-l", "--", `explain ls\;`}) {
+		t.Fatalf("literal send-keys call = %+v", textCall)
 	}
 }
 
@@ -1231,7 +1417,7 @@ func assertTmuxLiteralEnterOrder(t *testing.T, calls []sendPlanCall, line string
 			continue
 		}
 		args := strings.Join(call.args, "\x00")
-		if strings.Contains(args, "-l\x00"+line) {
+		if strings.Contains(args, "-l\x00--\x00"+line) {
 			literalIndex = i
 		}
 		if strings.HasSuffix(args, "\x00Enter") {
@@ -1250,8 +1436,8 @@ func assertTmuxLiteralEnterOrder(t *testing.T, calls []sendPlanCall, line string
 	}
 }
 
-// A cron session is headless, so a paste that loads but never executes (the
-// failure mode SendLine warns about) must surface as an error rather than a
+// A cron session is headless, so a single-line payload that gets typed (via
+// send-keys -l) but never submitted must surface as an error rather than a
 // silent success. sendPlan verifies the payload left the prompt when
 // submitVerifyWait is set, as the public SendPlanWithReadyMarker wrapper does.
 func TestSendPlan_ReturnsErrorWhenPayloadRemainsAtPrompt(t *testing.T) {
@@ -1365,6 +1551,154 @@ func TestSendPlan_MultilinePayloadSkipsSubmissionVerification(t *testing.T) {
 	}
 }
 
+// TestSendPlan_SingleLineUsesLiteralKeysMultilineUsesPaste asserts the
+// delivery split: a non-empty single-line payload is typed via send-keys -l
+// (literal keystrokes, which Claude's TUI reliably submits on Enter) and never
+// through bracketed paste, while a multi-line payload still uses paste-buffer so
+// intermediate newlines aren't treated as premature submits.
+func TestSendPlan_SingleLineUsesLiteralKeysMultilineUsesPaste(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+
+	t.Run("single-line uses send-keys -l not paste-buffer", func(t *testing.T) {
+		fake := &sendPlanRecordingFactory{
+			capturePaneOutputs: []string{
+				"Welcome to Claude\n❯\n", // ready marker present
+				"working\nrunning now\n", // verification: payload left the prompt
+			},
+		}
+		c := NewClient(WithCommandFactory(fake.factory))
+		if err := c.sendPlan(context.Background(), "boss-test-sess", "do the thing", sendPlanOpts{
+			deadline:         time.Second,
+			pollInterval:     5 * time.Millisecond,
+			submitVerifyWait: 50 * time.Millisecond,
+			submitVerifyTick: time.Millisecond,
+		}); err != nil {
+			t.Fatalf("sendPlan single-line: unexpected error: %v", err)
+		}
+
+		calls := fake.callsCopy()
+		sawLiteral := false
+		for _, call := range calls {
+			if call.subcommand == "load-buffer" || call.subcommand == "paste-buffer" {
+				t.Fatalf("single-line payload must not use bracketed paste, saw %s", call.subcommand)
+			}
+			if call.subcommand == "send-keys" &&
+				equalSlices(call.args, []string{"-t", "boss-test-sess", "-l", "--", "do the thing"}) {
+				sawLiteral = true
+			}
+		}
+		if !sawLiteral {
+			t.Fatalf("expected send-keys -l literal delivery, calls = %+v", calls)
+		}
+	})
+
+	t.Run("multi-line uses paste-buffer not send-keys -l", func(t *testing.T) {
+		fake := &sendPlanRecordingFactory{
+			capturePaneOutputs: []string{"Welcome to Claude\n❯\n"},
+		}
+		c := NewClient(WithCommandFactory(fake.factory))
+		if err := c.sendPlan(context.Background(), "boss-test-sess", "line one\nline two", sendPlanOpts{
+			deadline:     time.Second,
+			pollInterval: 5 * time.Millisecond,
+		}); err != nil {
+			t.Fatalf("sendPlan multi-line: unexpected error: %v", err)
+		}
+
+		calls := fake.callsCopy()
+		sawPaste := false
+		for _, call := range calls {
+			if call.subcommand == "paste-buffer" {
+				sawPaste = true
+			}
+			if call.subcommand == "send-keys" {
+				for _, a := range call.args {
+					if a == "-l" {
+						t.Fatalf("multi-line payload must not use send-keys -l, calls = %+v", calls)
+					}
+				}
+			}
+		}
+		if !sawPaste {
+			t.Fatalf("multi-line payload must use paste-buffer, calls = %+v", calls)
+		}
+	})
+
+	t.Run("single-line with surrounding whitespace uses send-keys -l with trimmed text", func(t *testing.T) {
+		fake := &sendPlanRecordingFactory{
+			capturePaneOutputs: []string{
+				"Welcome to Claude\n❯\n", // ready marker present
+				"working\nrunning now\n", // verification: payload left the prompt
+			},
+		}
+		c := NewClient(WithCommandFactory(fake.factory))
+		// A single logical line carrying a trailing newline must still take the
+		// reliable literal path (typing the trimmed text), not slip into paste —
+		// the bracketed-paste failure mode this fix exists to avoid.
+		if err := c.sendPlan(context.Background(), "boss-test-sess", "do the thing\n", sendPlanOpts{
+			deadline:         time.Second,
+			pollInterval:     5 * time.Millisecond,
+			submitVerifyWait: 50 * time.Millisecond,
+			submitVerifyTick: time.Millisecond,
+		}); err != nil {
+			t.Fatalf("sendPlan single-line-with-newline: unexpected error: %v", err)
+		}
+
+		calls := fake.callsCopy()
+		sawLiteral := false
+		for _, call := range calls {
+			if call.subcommand == "load-buffer" || call.subcommand == "paste-buffer" {
+				t.Fatalf("trailing-newline single-line payload must not use bracketed paste, saw %s", call.subcommand)
+			}
+			if call.subcommand == "send-keys" &&
+				equalSlices(call.args, []string{"-t", "boss-test-sess", "-l", "--", "do the thing"}) {
+				sawLiteral = true
+			}
+		}
+		if !sawLiteral {
+			t.Fatalf("expected send-keys -l with trimmed text, calls = %+v", calls)
+		}
+	})
+
+	t.Run("leading-dash payload delivered after the -- terminator", func(t *testing.T) {
+		fake := &sendPlanRecordingFactory{
+			capturePaneOutputs: []string{
+				"Welcome to Claude\n❯\n", // ready marker present
+				"working\nrunning now\n", // verification: payload left the prompt
+			},
+		}
+		c := NewClient(WithCommandFactory(fake.factory))
+		// A payload beginning with "-" must be delivered as a key argument, not
+		// parsed by tmux as a send-keys flag. The "--" option terminator must
+		// precede it, and the literal text must follow as a single argument.
+		const dashPayload = "-n print this without a newline"
+		if err := c.sendPlan(context.Background(), "boss-test-sess", dashPayload, sendPlanOpts{
+			deadline:         time.Second,
+			pollInterval:     5 * time.Millisecond,
+			submitVerifyWait: 50 * time.Millisecond,
+			submitVerifyTick: time.Millisecond,
+		}); err != nil {
+			t.Fatalf("sendPlan leading-dash: unexpected error: %v", err)
+		}
+
+		calls := fake.callsCopy()
+		sawLiteral := false
+		for _, call := range calls {
+			if call.subcommand == "load-buffer" || call.subcommand == "paste-buffer" {
+				t.Fatalf("leading-dash single-line payload must not use bracketed paste, saw %s", call.subcommand)
+			}
+			if call.subcommand == "send-keys" &&
+				equalSlices(call.args, []string{"-t", "boss-test-sess", "-l", "--", dashPayload}) {
+				sawLiteral = true
+			}
+		}
+		if !sawLiteral {
+			t.Fatalf("expected send-keys -l -- <payload> for a leading-dash prompt, calls = %+v", calls)
+		}
+	})
+}
+
 // TestSendPlan_ReadyMarkerNeverAppears_Errors verifies the deadline path:
 // if capture-pane never returns the marker, SendPlan returns an error
 // without trying load-buffer / paste-buffer / send-keys.
@@ -1426,7 +1760,9 @@ func TestSendPlan_CustomStatuslineReady_Succeeds(t *testing.T) {
 	}
 	c := NewClient(WithCommandFactory(fake.factory))
 
-	if err := c.sendPlan(context.Background(), "boss-test-sess", "the plan", sendPlanOpts{
+	// Multi-line payload so the paste subcommands run; the assertion below
+	// confirms the marker poll resolved against the custom statusline.
+	if err := c.sendPlan(context.Background(), "boss-test-sess", "the plan\nstep two", sendPlanOpts{
 		deadline:     500 * time.Millisecond,
 		pollInterval: 5 * time.Millisecond,
 	}); err != nil {
@@ -1493,7 +1829,9 @@ func TestSendPlan_PasteBufferFails_Errors(t *testing.T) {
 	}
 	c := NewClient(WithCommandFactory(fake.factory))
 
-	err := c.sendPlan(context.Background(), "boss-test-sess", "plan body", sendPlanOpts{
+	// Multi-line payload so delivery goes through paste-buffer (single-line now
+	// uses send-keys -l), letting the paste-buffer failure injection fire.
+	err := c.sendPlan(context.Background(), "boss-test-sess", "plan body\nmore", sendPlanOpts{
 		deadline:     time.Second,
 		pollInterval: 5 * time.Millisecond,
 	})

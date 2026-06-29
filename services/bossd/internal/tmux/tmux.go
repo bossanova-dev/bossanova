@@ -547,12 +547,26 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 		return err
 	}
 
-	// Steps 2-4: load-buffer, paste-buffer, send-keys Enter.
-	if err := c.SendMessage(ctx, sessionName, plan); err != nil {
+	// Steps 2-4: deliver the payload. A non-empty single-line payload (e.g. a
+	// free-text cron prompt) is typed via literal keystrokes + Enter, which
+	// Claude Code's TUI reliably executes; bracketed paste can leave such a
+	// payload loaded but not submitted (the failure mode SendLine warns about).
+	// Multi-line plans and the empty string keep the bracketed-paste path so
+	// intermediate newlines aren't treated as premature submits. The dispatch
+	// keys off the trimmed payload — and types the trimmed text — so a single
+	// logical line carrying surrounding whitespace (e.g. a trailing newline)
+	// still takes the reliable literal path rather than slipping into paste,
+	// matching the trimmed payload the step-5 verifier checks for.
+	trimmedPlan := strings.TrimSpace(plan)
+	if trimmedPlan != "" && !strings.ContainsAny(trimmedPlan, "\r\n") {
+		if err := c.sendLiteralLineAndEnter(ctx, sessionName, trimmedPlan); err != nil {
+			return err
+		}
+	} else if err := c.SendMessage(ctx, sessionName, plan); err != nil {
 		return err
 	}
 
-	// Step 5: verify the payload actually left the prompt, so a paste that
+	// Step 5: verify the payload actually left the prompt, so a delivery that
 	// loaded but did not execute surfaces as an error instead of a silent
 	// no-op. The check is line-oriented (lineStillAtPrompt matches the payload
 	// against a single prompt row), so it only applies to a single-line,
@@ -560,7 +574,6 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	// the empty string matches any row — both are skipped explicitly so the
 	// verification neither runs a needless capture-pane nor reports a spurious
 	// error for content it cannot meaningfully check.
-	trimmedPlan := strings.TrimSpace(plan)
 	if opts.submitVerifyWait > 0 && trimmedPlan != "" && !strings.ContainsAny(trimmedPlan, "\r\n") {
 		if err := c.waitForLineSubmission(ctx, sessionName, trimmedPlan, opts.submitVerifyWait, opts.submitVerifyTick); err != nil {
 			return err
@@ -588,7 +601,30 @@ func (c *Client) sendLine(ctx context.Context, sessionName, line string, opts se
 		return err
 	}
 
-	textCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "-l", line)
+	if err := c.sendLiteralLineAndEnter(ctx, sessionName, line); err != nil {
+		return err
+	}
+	if opts.submitVerifyWait > 0 {
+		if err := c.waitForLineSubmission(ctx, sessionName, line, opts.submitVerifyWait, opts.submitVerifyTick); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sendLiteralLineAndEnter types line as literal keystrokes (send-keys -l) and
+// then submits it with a separate send-keys Enter. Used for "must execute"
+// content — single-line cron prompts and command invocations — where bracketed
+// paste can leave some TUIs (Claude Code) with the text loaded but not run.
+// stderr from either tmux invocation is wrapped into the returned error.
+func (c *Client) sendLiteralLineAndEnter(ctx context.Context, sessionName, line string) error {
+	// The "--" terminator stops tmux from parsing a payload that begins with
+	// "-" (e.g. a free-text cron prompt starting with a hyphen) as a send-keys
+	// flag, which would otherwise fail with "unknown flag" and strand the run.
+	// escapeSendKeysLiteral protects the one metacharacter "--" does not: a
+	// trailing ";", which tmux's command lexer would otherwise drop as a
+	// command terminator (so "explain ls;" would be typed as "explain ls").
+	textCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "-l", "--", escapeSendKeysLiteral(line))
 	var textStderr bytes.Buffer
 	textCmd.Stderr = &textStderr
 	if err := textCmd.Run(); err != nil {
@@ -607,12 +643,23 @@ func (c *Client) sendLine(ctx context.Context, sessionName, line string, opts se
 		}
 		return fmt.Errorf("tmux send-keys Enter for %q: %w", sessionName, err)
 	}
-	if opts.submitVerifyWait > 0 {
-		if err := c.waitForLineSubmission(ctx, sessionName, line, opts.submitVerifyWait, opts.submitVerifyTick); err != nil {
-			return err
-		}
-	}
 	return nil
+}
+
+// escapeSendKeysLiteral protects a payload from tmux's command lexer on the
+// literal "send-keys -l --" path, where the text becomes the final argument of
+// a tmux command. tmux treats a single trailing ";" on that argument as a
+// command terminator and drops it, so a prompt like "explain ls;" would be
+// typed (and then submitted) as "explain ls". Escaping the trailing ";" as
+// "\;" makes tmux deliver it literally. Only the trailing ";" is special on
+// this argv path — tmux preserves mid-string semicolons, backslashes, and
+// other shell metacharacters verbatim — and it consumes at most one terminator,
+// so escaping the final ";" is sufficient (e.g. "a;b;" -> "a;b\;" -> "a;b;").
+func escapeSendKeysLiteral(line string) string {
+	if strings.HasSuffix(line, ";") {
+		return line[:len(line)-1] + `\;`
+	}
+	return line
 }
 
 func (c *Client) waitForLineSubmission(ctx context.Context, sessionName, line string, waitFor, tickEvery time.Duration) error {
@@ -647,18 +694,80 @@ func (c *Client) waitForLineSubmission(ctx context.Context, sessionName, line st
 
 func lineStillAtPrompt(pane, line string) bool {
 	lines := strings.Split(pane, "\n")
+
+	// Locate the bottom-most prompt-marker row: the live input box. Everything
+	// below it is footer — a separator rule, the "model | cwd" line, and any
+	// custom statusline rows, which are arbitrary user text (e.g. "PR #133",
+	// "◉ xhigh · /effort") that no fixed predicate can enumerate — so the scan
+	// skips all of it while finding the marker. The empty prompt ("❯" with no
+	// text) is a marker too, so a cleared/submitted input reports false below.
+	markerIdx := -1
 	for i := len(lines) - 1; i >= 0; i-- {
-		raw := lines[i]
-		text := strings.TrimSpace(raw)
-		if text == "" {
-			continue
+		if hasPromptMarker(strings.TrimSpace(lines[i])) {
+			markerIdx = i
+			break
 		}
-		for _, prompt := range []string{"› ", "> ", "❯ "} {
-			if strings.HasPrefix(text, prompt) && strings.Contains(text, line) {
-				return true
-			}
-		}
+	}
+	if markerIdx == -1 {
 		return false
+	}
+
+	// If agent activity appears below that marker, the marker is a submitted
+	// prompt echoed into the transcript ("❯ do the thing" above the agent's
+	// response or working spinner) with no fresh input box drawn yet, so the
+	// payload has already left the prompt. Footer and statusline rows are not
+	// agent activity, so a still-pending payload beneath a custom statusline is
+	// never mistaken for a submitted one.
+	for _, l := range lines[markerIdx+1:] {
+		if isAgentActivity(strings.TrimSpace(l)) {
+			return false
+		}
+	}
+	return strings.Contains(strings.TrimSpace(lines[markerIdx]), line)
+}
+
+// hasPromptMarker reports whether a trimmed pane row begins with one of the
+// input-box prompt indicators.
+func hasPromptMarker(text string) bool {
+	for _, marker := range []string{"❯", "›", ">"} {
+		if strings.HasPrefix(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// agentActivityMarkers are the leading glyphs that mark a pane row as agent
+// activity below the input box — an assistant/tool response, tool output, or a
+// thinking/working spinner — rather than input-box footer or statusline chrome.
+// The verifier runs against both Claude Code and Codex panes, so it covers
+// both grammars: the Claude working/output markers statusdetect already trusts
+// (lib/bossalib/statusdetect/question.go optionStopMarkers: ⎿ ⏺ · ✻) plus the
+// "✽" spinner frame, and Codex's working bullet (plugins/bossd-plugin-codex/
+// question.go codexWorking: "• Working (…)"). This lets the predicate recognise
+// the activity row each agent renders immediately after accepting a line and
+// before any response body appears.
+var agentActivityMarkers = []string{
+	"⏺", // Claude response / tool-use bullet (U+23FA)
+	"⎿", // Claude tool-result branch (U+23BF)
+	"·", // Claude working spinner (U+00B7)
+	"✻", // Claude thinking spinner (U+273B)
+	"✽", // Claude thinking spinner (U+273D)
+	"•", // Codex working bullet (U+2022)
+}
+
+// isAgentActivity reports whether a trimmed pane row begins with an agent
+// activity marker. Matching only the leading glyph keeps custom statusline rows
+// safe (e.g. "◉ xhigh · /effort" has a mid-row "·" but does not start with
+// one). It is deliberately conservative on unknown rows: misclassifying footer
+// chrome as activity would let lineStillAtPrompt report a still-pending payload
+// as submitted — the silent cron no-op this guards against — so only these
+// distinctive glyphs qualify and arbitrary footer/statusline text never does.
+func isAgentActivity(text string) bool {
+	for _, marker := range agentActivityMarkers {
+		if strings.HasPrefix(text, marker) {
+			return true
+		}
 	}
 	return false
 }

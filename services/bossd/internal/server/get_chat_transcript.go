@@ -9,24 +9,47 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// GetChatTranscript reads a chat's conversation by routing to the owning
-// agent plugin's ReadTranscript RPC.
+// GetChatTranscript reads a chat's conversation by routing to the owning agent
+// plugin's ReadTranscript RPC. It resolves the owning agent + worktree from the
+// agent_chats row when one exists; when it does not (e.g. a freshly created
+// headless run whose row hasn't been created/propagated yet) it falls back to
+// the session, which carries the same agent_session_id and worktree. The
+// fallback requires a session_id (the ownership scope) and an exact
+// agent_session_id match, so it cannot read a chat the caller didn't scope.
 func (s *Server) GetChatTranscript(ctx context.Context, req *connect.Request[pb.GetChatTranscriptRequest]) (*connect.Response[pb.GetChatTranscriptResponse], error) {
-	chat, err := s.agentChats.GetByAgentSessionID(ctx, req.Msg.GetAgentSessionId())
-	if err != nil || chat == nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat not found: %s", req.Msg.GetAgentSessionId()))
+	agentSessionID := req.Msg.GetAgentSessionId()
+
+	var (
+		worktreePath string
+		agentName    string
+	)
+
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err == nil && chat != nil {
+		if reqID := req.Msg.GetSessionId(); reqID != "" && chat.SessionID != reqID {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat %s not found in session %s", agentSessionID, reqID))
+		}
+		sess, serr := s.sessions.Get(ctx, chat.SessionID)
+		if serr != nil || sess == nil {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found for chat %s", agentSessionID))
+		}
+		worktreePath = sess.WorktreePath
+		agentName = chat.AgentName
+	} else {
+		// No agent_chats row — fall back to the session. Requires session_id
+		// (ownership scope) and an exact agent_session_id match.
+		reqID := req.Msg.GetSessionId()
+		if reqID == "" {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat not found: %s", agentSessionID))
+		}
+		sess, serr := s.sessions.Get(ctx, reqID)
+		if serr != nil || sess == nil || sess.AgentSessionID == nil || *sess.AgentSessionID != agentSessionID {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat not found: %s", agentSessionID))
+		}
+		worktreePath = sess.WorktreePath
+		agentName = sess.AgentName
 	}
 
-	if id := req.Msg.GetSessionId(); id != "" && chat.SessionID != id {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat %s not found in session %s", req.Msg.GetAgentSessionId(), id))
-	}
-
-	sess, err := s.sessions.Get(ctx, chat.SessionID)
-	if err != nil || sess == nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found for chat %s", req.Msg.GetAgentSessionId()))
-	}
-
-	agentName := chat.AgentName
 	if agentName == "" {
 		agentName = defaultLegacyAgent
 	}
@@ -36,8 +59,8 @@ func (s *Server) GetChatTranscript(ctx context.Context, req *connect.Request[pb.
 	}
 
 	pluginResp, err := client.ReadTranscript(ctx, &pb.ReadTranscriptRequest{
-		WorkDir:        sess.WorktreePath,
-		AgentSessionId: chat.AgentSessionID,
+		WorkDir:        worktreePath,
+		AgentSessionId: agentSessionID,
 		MaxMessages:    req.Msg.GetMaxMessages(),
 	})
 	if err != nil {

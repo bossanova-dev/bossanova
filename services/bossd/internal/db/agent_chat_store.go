@@ -242,6 +242,39 @@ func (s *SQLiteAgentChatStore) ListWithTmuxSession(ctx context.Context) ([]*mode
 	return chats, rows.Err()
 }
 
+// ListRoutableChats returns every chat the daemon can still route to for the
+// upstream reconnect snapshot: tmux-hosted chats (tmux_session_name set) AND
+// headless runs (codex exec / claude --print), which never get a tmux session
+// name. Headless chats would otherwise be invisible to bosso's snapshot path
+// (it previously read ListWithTmuxSession), so if the create ChatDelta is
+// missed or the daemon reconnects after the row already exists, FindDaemonForChat
+// would keep 404ing remote send_chat_message / transcript reads that only carry
+// agent_session_id. Rows whose tmux start failed (start_error set, tmux name
+// cleared by MarkStartFailed) are excluded — they are not routable.
+func (s *SQLiteAgentChatStore) ListRoutableChats(ctx context.Context) ([]*models.AgentChat, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, created_at
+		 FROM agent_chats
+		 WHERE (tmux_session_name IS NOT NULL AND tmux_session_name != '')
+		    OR (start_error IS NULL OR start_error = '')
+		 ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list routable agent_chats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var chats []*models.AgentChat
+	for rows.Next() {
+		c, err := scanAgentChat(rows)
+		if err != nil {
+			return nil, err
+		}
+		chats = append(chats, c)
+	}
+	return chats, rows.Err()
+}
+
 func scanAgentChat(rows *sql.Rows) (*models.AgentChat, error) {
 	var c models.AgentChat
 	var createdAt string

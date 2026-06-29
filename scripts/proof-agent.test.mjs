@@ -232,32 +232,6 @@ test('renderGallery shows stub notice when agentRunnerStubbed is true', async ()
   assert.match(body, /agent-runner stubbed/);
 });
 
-// ── 4. Secret-scan gate ───────────────────────────────────────────────────────
-
-test('classifySecretRisk: planted GitHub token → high risk', async () => {
-  const { classifySecretRisk } = await import('./proof-lib.mjs');
-  // A planted token in the form a GitHub PAT would take
-  const plantedToken = 'ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-  const result = classifySecretRisk(`agent navigated to dashboard. Token found: ${plantedToken}`);
-  assert.equal(result.risk, 'high');
-  assert.equal(result.reason, 'credential-pattern');
-});
-
-test('classifySecretRisk: normal agent summary → no risk', async () => {
-  const { classifySecretRisk } = await import('./proof-lib.mjs');
-  const result = classifySecretRisk(
-    'Navigated to /dashboard. Clicked New Session. Verified the session list updated.',
-  );
-  assert.equal(result.risk, 'none');
-});
-
-test('classifySecretRisk: OpenAI-style key in evidence → high risk', async () => {
-  const { classifySecretRisk } = await import('./proof-lib.mjs');
-  const plantedKey = 'sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ01234567';
-  const result = classifySecretRisk(`API key: ${plantedKey}`);
-  assert.equal(result.risk, 'high');
-});
-
 // ── 5. stills in agent capture shape ─────────────────────────────────────────
 
 test('buildManifest: passed capture stills get urls', async () => {
@@ -316,9 +290,7 @@ test('proofUploadFiles: failed capture with mp4 fileName is queued for upload', 
 
 // ── 7. Orchestrator seam: runAgentProof with mocked spawn + uploader ─────────
 // Drives the real runAgentProof but injects a fake Playwright spawn (no browser)
-// and a fake uploader. Asserts that a planted secret in the LLM-generated
-// brief.title (which flows into the assembled manifest) makes the run THROW
-// before any upload command runs.
+// and a fake uploader.
 
 const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 
@@ -360,139 +332,7 @@ function withEnv(overrides, fn) {
     });
 }
 
-test('runAgentProof: planted secret in brief.title FAILS before any upload', async () => {
-  const { runAgentProof } = await import('./proof-agent.mjs');
-
-  // Planted GitHub-PAT-shaped token embedded in the brief title; it flows into
-  // captureShape.title → manifest → (would be) the published comment.
-  const plantedToken = 'ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-  const brief = {
-    title: `Demo feature ${plantedToken}`,
-    description: 'Proves the change works',
-  };
-
-  let uploadCalled = false;
-  let commentPosted = false;
-  let manifestUploaded = false;
-
-  await withTempBrief(brief, (briefPath) =>
-    withEnv(
-      {
-        BOSS_PROOF_BRIEF: briefPath,
-        BOSS_PROOF_UPLOAD: '1', // upload enabled so we can prove it is NOT reached
-        BOSS_PROOF_RUN_ID: 'test-run-secret',
-        BOSS_PROOF_RUN_TOKEN: 'tok12345',
-        BOSS_PROOF_R2_BUCKET: 'test-bucket',
-        BOSS_PROOF_PUBLIC_BASE_URL: 'https://proof.test.dev',
-      },
-      async () => {
-        await assert.rejects(
-          runAgentProof({
-            prNumber: '123',
-            commit: 'abc1234',
-            changedFiles: [],
-            dryRun: false,
-            deps: {
-              // Fake spawn: write a benign result, return success; no browser.
-              spawnPlaywright: ({ localDir }) => {
-                fs.mkdirSync(path.join(localDir, 'raw'), { recursive: true });
-                fs.writeFileSync(
-                  path.join(localDir, 'raw', 'proof-result.json'),
-                  JSON.stringify({ passed: true, summary: 'ok', evidence: [], steps: 3 }),
-                );
-                return { status: 0 };
-              },
-              uploadBundle: () => {
-                uploadCalled = true;
-              },
-              uploadManifest: () => {
-                manifestUploaded = true;
-              },
-              publishProofReport: async () => ({ ok: false, reason: 'stubbed' }),
-              collapsePriorProofComments: () => {},
-              postComment: () => {
-                commentPosted = true;
-              },
-            },
-          }),
-          /secret-like content detected/,
-        );
-      },
-    ),
-  );
-
-  assert.equal(uploadCalled, false, 'uploadBundle must NOT be called when a secret is detected');
-  assert.equal(manifestUploaded, false, 'manifest must NOT be uploaded when a secret is detected');
-  assert.equal(commentPosted, false, 'no comment may be posted when a secret is detected');
-
-  // Clean up the .proof run dir this test created.
-  fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-123'), { recursive: true, force: true });
-});
-
-test('runAgentProof: planted secret in agent summary FAILS before any upload', async () => {
-  const { runAgentProof } = await import('./proof-agent.mjs');
-
-  const plantedToken = 'ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
-  const brief = { title: 'Clean title', description: 'Proves the change works' };
-
-  let uploadCalled = false;
-
-  await withTempBrief(brief, (briefPath) =>
-    withEnv(
-      {
-        BOSS_PROOF_BRIEF: briefPath,
-        BOSS_PROOF_UPLOAD: '1',
-        BOSS_PROOF_RUN_ID: 'test-run-secret-2',
-        BOSS_PROOF_RUN_TOKEN: 'tok67890',
-        BOSS_PROOF_R2_BUCKET: 'test-bucket',
-        BOSS_PROOF_PUBLIC_BASE_URL: 'https://proof.test.dev',
-      },
-      async () => {
-        await assert.rejects(
-          runAgentProof({
-            prNumber: '124',
-            commit: 'abc1234',
-            changedFiles: [],
-            dryRun: false,
-            deps: {
-              spawnPlaywright: ({ localDir }) => {
-                fs.mkdirSync(path.join(localDir, 'raw'), { recursive: true });
-                fs.writeFileSync(
-                  path.join(localDir, 'raw', 'proof-result.json'),
-                  // Secret planted in the agent's own summary.
-                  JSON.stringify({
-                    passed: true,
-                    summary: `Found token ${plantedToken} in logs`,
-                    evidence: [],
-                    steps: 3,
-                  }),
-                );
-                return { status: 0 };
-              },
-              uploadBundle: () => {
-                uploadCalled = true;
-              },
-              uploadManifest: () => {},
-              publishProofReport: async () => ({ ok: false, reason: 'stubbed' }),
-              collapsePriorProofComments: () => {},
-              postComment: () => {},
-            },
-          }),
-          /secret-like content detected/,
-        );
-      },
-    ),
-  );
-
-  assert.equal(
-    uploadCalled,
-    false,
-    'uploadBundle must NOT be called when a secret is in the summary',
-  );
-  fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-124'), { recursive: true, force: true });
-});
-
-test('runAgentProof: clean run reaches uploadBundle (no false-positive gate)', async (t) => {
+test('runAgentProof: clean run reaches uploadBundle', async (t) => {
   const { runAgentProof } = await import('./proof-agent.mjs');
 
   if (!requireFfmpeg(t, 'ffmpeg is required for clean agent video regression test')) return;

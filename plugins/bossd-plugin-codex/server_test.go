@@ -80,6 +80,106 @@ func TestBuildInteractiveCommandIgnoresAppendSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveCommand_WiresMcpViaConfigOverride(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	worktree := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "s1.json")
+	cfg := `{"mcpServers":{"boss":{"command":"/trusted/mcp","args":["--socket","/run/bossd.sock"]}}}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write mcp config: %v", err)
+	}
+
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:     "s1",
+		McpConfigPath: cfgPath,
+		WorktreePath:  worktree,
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	// Codex has no --mcp-config; the plugin translates the config file into
+	// repeatable `-c mcp_servers.boss.*` overrides (keeps wiring out of the
+	// worktree). Assert both command and args overrides are present.
+	joined := strings.Join(resp.GetArgv(), "\x00")
+	if !strings.Contains(joined, "-c\x00mcp_servers.boss.command=\"/trusted/mcp\"") {
+		t.Fatalf("argv missing codex mcp command override: %v", resp.GetArgv())
+	}
+	if !strings.Contains(joined, "-c\x00mcp_servers.boss.args=[\"--socket\",\"/run/bossd.sock\"]") {
+		t.Fatalf("argv missing codex mcp args override: %v", resp.GetArgv())
+	}
+}
+
+func TestBuildInteractiveCommand_McpOverridePrecedesResumeSubcommand(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	worktree := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "s1.json")
+	cfg := `{"mcpServers":{"boss":{"command":"/trusted/mcp","args":["--socket","/run/bossd.sock"]}}}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write mcp config: %v", err)
+	}
+
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:     "agent-1",
+		Resume:        true,
+		McpConfigPath: cfgPath,
+		WorktreePath:  worktree,
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	// `-c` is a codex global option and MUST precede the `resume` subcommand;
+	// pin the ordering so a future reorder cannot silently push it after resume.
+	argv := resp.GetArgv()
+	cIdx, resumeIdx := -1, -1
+	for i, a := range argv {
+		if a == "-c" && cIdx == -1 {
+			cIdx = i
+		}
+		if a == "resume" {
+			resumeIdx = i
+		}
+	}
+	if cIdx == -1 || resumeIdx == -1 {
+		t.Fatalf("expected both a -c override and a resume subcommand: %v", argv)
+	}
+	if cIdx > resumeIdx {
+		t.Fatalf("-c override (idx %d) must precede resume subcommand (idx %d): %v", cIdx, resumeIdx, argv)
+	}
+}
+
+func TestBuildInteractiveCommand_NoMcpOverrideWhenEmpty(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:    "s1",
+		WorktreePath: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	if strings.Contains(strings.Join(resp.GetArgv(), " "), "mcp_servers.boss") {
+		t.Fatalf("codex argv must not carry mcp override when path empty: %v", resp.GetArgv())
+	}
+}
+
+func TestBuildInteractiveCommand_NoMcpOverrideWhenConfigUnreadable(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:     "s1",
+		McpConfigPath: filepath.Join(t.TempDir(), "does-not-exist.json"),
+		WorktreePath:  t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand must not fail on unreadable mcp config: %v", err)
+	}
+	if strings.Contains(strings.Join(resp.GetArgv(), " "), "mcp_servers.boss") {
+		t.Fatalf("codex argv must not carry mcp override when config unreadable: %v", resp.GetArgv())
+	}
+}
+
 func TestBuildInteractiveCommandTrustsWorktreeBeforeReturningArgv(t *testing.T) {
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)

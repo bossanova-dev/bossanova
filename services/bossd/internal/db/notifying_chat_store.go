@@ -126,6 +126,10 @@ func (s *NotifyingAgentChatStore) ListWithTmuxSession(ctx context.Context) ([]*m
 	return s.inner.ListWithTmuxSession(ctx)
 }
 
+func (s *NotifyingAgentChatStore) ListRoutableChats(ctx context.Context) ([]*models.AgentChat, error) {
+	return s.inner.ListRoutableChats(ctx)
+}
+
 func (s *NotifyingAgentChatStore) notify(kind ChatChangeKind, chat *models.AgentChat) {
 	if s.OnChange == nil || chat == nil {
 		return

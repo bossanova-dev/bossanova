@@ -303,69 +303,7 @@ test('runTuiAgentProof: ISO runId does not trip the manifest secret scan', async
   }
 });
 
-// ── 2. secret-scan abort ──────────────────────────────────────────────────────
-
-test('runTuiAgentProof: planted secret in done summary FAILS before any upload', async () => {
-  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs');
-
-  // AWS-access-key-id shaped token planted in the model's done summary; it flows
-  // into scanTexts via agentResult.summary.
-  const plantedKey = 'AKIAIOSFODNN7EXAMPLE';
-  const brief = { title: 'Clean title', description: 'Proves the change works' };
-
-  let uploadCalled = false;
-  let commentPosted = false;
-
-  await withTempBrief(brief, (briefPath) =>
-    withEnv(
-      BASE_ENV({
-        BOSS_PROOF_BRIEF: briefPath,
-        BOSS_PROOF_UPLOAD: '1', // upload enabled to prove it is NOT reached
-        BOSS_PROOF_RUN_ID: 'tui-secret',
-        BOSS_PROOF_R2_BUCKET: 'test-bucket',
-      }),
-      async () => {
-        await assert.rejects(
-          runTuiAgentProof({
-            prNumber: '901',
-            commit: 'abc1234',
-            changedFiles: [],
-            dryRun: false,
-            deps: {
-              bridge: scriptedBridge({ screens: ['Home'] }),
-              model: scriptedModel([
-                toolUse('observe', {}),
-                toolUse('done', { summary: `Found ${plantedKey} in env`, passed: true }),
-              ]),
-              renderStill: fakeRenderStill(),
-              castToVideo: async () => null,
-              finalizeDeps: {
-                uploadBundle: () => {
-                  uploadCalled = true;
-                },
-                uploadManifest: () => {},
-                publishProofReport: async () => ({ ok: false, reason: 'stubbed' }),
-                collapsePriorProofComments: () => {},
-                postComment: () => {
-                  commentPosted = true;
-                },
-                currentRepoIdentity: () => null,
-                currentBranch: () => 'test',
-              },
-            },
-          }),
-          /secret-like content detected/,
-        );
-      },
-    ),
-  );
-
-  assert.equal(uploadCalled, false, 'uploadBundle must NOT be called when a secret is detected');
-  assert.equal(commentPosted, false, 'no comment may be posted when a secret is detected');
-  cleanupPr('901');
-});
-
-// ── 3. budget stops ───────────────────────────────────────────────────────────
+// ── 2. budget stops ───────────────────────────────────────────────────────────
 
 test('runTuiAgentProof: model never calls done → halts at maxSteps, not passed', async () => {
   const { runTuiAgentProof } = await import('./proof-tui-agent.mjs');

@@ -53,7 +53,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
-		r, err := jsonResult(out)
+		r, err := jsonResult(redactRepo(out))
 		return r, nil, err
 	})
 
@@ -75,7 +75,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
-		r, err := jsonResult(out)
+		r, err := jsonResult(redactRepo(out))
 		return r, nil, err
 	})
 
@@ -92,24 +92,37 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			CanAutoMerge:           args.CanAutoMerge,
 			CanAutoMergeDependabot: args.CanAutoMergeDependabot,
 			CanAutoRepair:          args.CanAutoRepair,
+			// Optional *string args map straight through; nil stays unset.
+			LinearApiKey: args.LinearAPIKey,
+			SentryApiKey: args.SentryAPIKey,
+			SentryOrg:    args.SentryOrg,
 		}
 		out, err := backend.UpdateRepo(ctx, req)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
-		r, err := jsonResult(out)
+		r, err := jsonResult(redactRepo(out))
 		return r, nil, err
 	})
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "create_session",
-		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session.",
+		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session. Supports attaching to an existing PR (pr_number), quick chats (quick_chat), explicit base/branch names, and linking an external tracker issue (tracker_id/tracker_url/tracker_source). The composite tracker_issue field is web-only and not exposed here.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args CreateSessionArgs) (*mcp.CallToolResult, any, error) {
 		req := &pb.CreateSessionRequest{
-			RepoId: args.RepoID,
-			Plan:   args.Prompt,
-			Title:  deriveSessionTitle(args.Title, args.Prompt),
+			RepoId:      args.RepoID,
+			Plan:        args.Prompt,
+			Title:       deriveSessionTitle(args.Title, args.Prompt),
+			BaseBranch:  args.BaseBranch,
+			ForceBranch: args.ForceBranch,
+			QuickChat:   args.QuickChat,
+			// Optional pointer args map straight through; nil stays unset.
+			BranchName:    args.BranchName,
+			PrNumber:      args.PRNumber,
+			TrackerId:     args.TrackerID,
+			TrackerUrl:    args.TrackerURL,
+			TrackerSource: args.TrackerSource,
 		}
 		if args.Agent != "" {
 			req.AgentName = &args.Agent
@@ -214,13 +227,17 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args CreateCronJobArgs) (*mcp.CallToolResult, any, error) {
 		req := &pb.CreateCronJobRequest{
-			RepoId:    args.RepoID,
-			Name:      args.Name,
-			Prompt:    args.Prompt,
-			Schedule:  args.Schedule,
-			Timezone:  args.Timezone,
-			Enabled:   args.Enabled,
-			AgentName: args.AgentName,
+			RepoId:      args.RepoID,
+			Name:        args.Name,
+			Prompt:      args.Prompt,
+			Schedule:    args.Schedule,
+			Timezone:    args.Timezone,
+			Enabled:     args.Enabled,
+			AgentName:   args.AgentName,
+			Model:       args.Model,
+			GateCommand: args.GateCommand,
+			// *bool: nil stays unset so the server applies its own default.
+			RunSetupCommand: args.RunSetupCommand,
 		}
 		out, err := backend.CreateCronJob(ctx, req)
 		if err != nil {
@@ -243,6 +260,10 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			Timezone:  args.Timezone,
 			Enabled:   args.Enabled,
 			AgentName: args.AgentName,
+			// Optional fields map straight through; nil stays unset (present-only).
+			Model:           args.Model,
+			GateCommand:     args.GateCommand,
+			RunSetupCommand: args.RunSetupCommand,
 		}
 		out, err := backend.UpdateCronJob(ctx, req)
 		if err != nil {
@@ -331,14 +352,27 @@ type UpdateRepoArgs struct {
 	CanAutoMerge           *bool   `json:"can_auto_merge,omitempty" jsonschema:"mark a passing draft PR ready for review (does not merge)"`
 	CanAutoMergeDependabot *bool   `json:"can_auto_merge_dependabot,omitempty" jsonschema:"allow auto-merge for dependabot PRs"`
 	CanAutoRepair          *bool   `json:"can_auto_repair,omitempty" jsonschema:"allow the repair plugin to auto-repair PRs (failing checks, conflicts, review feedback)"`
+	LinearAPIKey           *string `json:"linear_api_key,omitempty" jsonschema:"Linear API key for this repo; write-only, never returned by any read tool"`
+	SentryAPIKey           *string `json:"sentry_api_key,omitempty" jsonschema:"Sentry auth token for this repo; write-only, never returned by any read tool"`
+	SentryOrg              *string `json:"sentry_org,omitempty" jsonschema:"Sentry organization slug (issues are listed org-wide)"`
 }
 
-// CreateSessionArgs is the typed argument struct for create_session.
+// CreateSessionArgs is the typed argument struct for create_session. The full
+// CreateSessionRequest surface is exposed except tracker_issue, the composite
+// message used only for web server-side plan formatting (intentionally omitted).
 type CreateSessionArgs struct {
-	RepoID string `json:"repo_id" jsonschema:"the repo id to create the session under"`
-	Prompt string `json:"prompt" jsonschema:"the plan/prompt for the session"`
-	Title  string `json:"title,omitempty" jsonschema:"session title; auto-derived from the first line of the prompt when omitted"`
-	Agent  string `json:"agent,omitempty" jsonschema:"agent runner plugin name (empty = server default)"`
+	RepoID        string  `json:"repo_id" jsonschema:"the repo id to create the session under"`
+	Prompt        string  `json:"prompt" jsonschema:"the plan/prompt for the session"`
+	Title         string  `json:"title,omitempty" jsonschema:"session title; auto-derived from the first line of the prompt when omitted"`
+	Agent         string  `json:"agent,omitempty" jsonschema:"agent runner plugin name (empty = server default)"`
+	BaseBranch    string  `json:"base_branch,omitempty" jsonschema:"base branch to create the session from (empty = repo default)"`
+	BranchName    *string `json:"branch_name,omitempty" jsonschema:"explicit branch name (e.g. a tracker's suggested branch)"`
+	ForceBranch   bool    `json:"force_branch,omitempty" jsonschema:"remove any existing branch with the same name before creating"`
+	QuickChat     bool    `json:"quick_chat,omitempty" jsonschema:"quick chat session: no worktree, branch, or PR"`
+	PRNumber      *int32  `json:"pr_number,omitempty" jsonschema:"attach to an existing PR instead of creating one"`
+	TrackerID     *string `json:"tracker_id,omitempty" jsonschema:"external issue id (e.g. FRE-1176)"`
+	TrackerURL    *string `json:"tracker_url,omitempty" jsonschema:"URL to the issue in the external tracker"`
+	TrackerSource *string `json:"tracker_source,omitempty" jsonschema:"tracker source: linear or sentry"`
 }
 
 // UpdateSessionArgs is the typed argument struct for update_session.
@@ -383,13 +417,16 @@ type ReportChatStatusArgs struct {
 
 // CreateCronJobArgs is the typed argument struct for create_cron_job.
 type CreateCronJobArgs struct {
-	RepoID    string `json:"repo_id" jsonschema:"the repo id"`
-	Name      string `json:"name" jsonschema:"cron job name"`
-	Prompt    string `json:"prompt" jsonschema:"the prompt to run each fire"`
-	Schedule  string `json:"schedule" jsonschema:"cron schedule expression"`
-	Timezone  string `json:"timezone,omitempty" jsonschema:"IANA timezone (empty = daemon-local)"`
-	Enabled   bool   `json:"enabled,omitempty" jsonschema:"whether the job is enabled"`
-	AgentName string `json:"agent_name,omitempty" jsonschema:"agent runner plugin name (empty = claude)"`
+	RepoID          string `json:"repo_id" jsonschema:"the repo id"`
+	Name            string `json:"name" jsonschema:"cron job name"`
+	Prompt          string `json:"prompt" jsonschema:"the prompt to run each fire"`
+	Schedule        string `json:"schedule" jsonschema:"cron schedule expression"`
+	Timezone        string `json:"timezone,omitempty" jsonschema:"IANA timezone (empty = daemon-local)"`
+	Enabled         bool   `json:"enabled,omitempty" jsonschema:"whether the job is enabled"`
+	AgentName       string `json:"agent_name,omitempty" jsonschema:"agent runner plugin name (empty = claude)"`
+	Model           string `json:"model,omitempty" jsonschema:"opaque agent model id (empty = plugin default)"`
+	GateCommand     string `json:"gate_command,omitempty" jsonschema:"command run before each fire; non-zero exit skips the run, empty = no gate"`
+	RunSetupCommand *bool  `json:"run_setup_command,omitempty" jsonschema:"run the repo setup script before the agent; omitted = server default"`
 }
 
 // SendChatMessageArgs is the typed argument struct for send_chat_message.
@@ -402,11 +439,14 @@ type SendChatMessageArgs struct {
 // UpdateCronJobArgs is the typed argument struct for update_cron_job. Optional
 // pointer fields are only applied when present.
 type UpdateCronJobArgs struct {
-	ID        string  `json:"id" jsonschema:"the cron job id"`
-	Name      *string `json:"name,omitempty" jsonschema:"new name"`
-	Prompt    *string `json:"prompt,omitempty" jsonschema:"new prompt"`
-	Schedule  *string `json:"schedule,omitempty" jsonschema:"new cron schedule expression"`
-	Timezone  *string `json:"timezone,omitempty" jsonschema:"new IANA timezone"`
-	Enabled   *bool   `json:"enabled,omitempty" jsonschema:"enable or disable the job"`
-	AgentName *string `json:"agent_name,omitempty" jsonschema:"new agent runner plugin name"`
+	ID              string  `json:"id" jsonschema:"the cron job id"`
+	Name            *string `json:"name,omitempty" jsonschema:"new name"`
+	Prompt          *string `json:"prompt,omitempty" jsonschema:"new prompt"`
+	Schedule        *string `json:"schedule,omitempty" jsonschema:"new cron schedule expression"`
+	Timezone        *string `json:"timezone,omitempty" jsonschema:"new IANA timezone"`
+	Enabled         *bool   `json:"enabled,omitempty" jsonschema:"enable or disable the job"`
+	AgentName       *string `json:"agent_name,omitempty" jsonschema:"new agent runner plugin name"`
+	Model           *string `json:"model,omitempty" jsonschema:"new opaque agent model id (empty = plugin default)"`
+	GateCommand     *string `json:"gate_command,omitempty" jsonschema:"new gate command; empty = no gate"`
+	RunSetupCommand *bool   `json:"run_setup_command,omitempty" jsonschema:"run the repo setup script before the agent"`
 }

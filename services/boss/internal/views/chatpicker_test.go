@@ -631,6 +631,96 @@ func TestChatPicker_LoadsGitHubPullRequestWebLinkWhenPRNumberKnown(t *testing.T)
 	}
 }
 
+func TestChatPicker_RefreshRefetchesWebLinkWhenPRNumberAppears(t *testing.T) {
+	stub := &chatPickerStub{
+		session: &pb.Session{Id: "session-1", RepoId: "repo-1"},
+		repos: []*pb.Repo{
+			{Id: "repo-1", OriginUrl: "git@github.com:owner/repo.git"},
+		},
+	}
+	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
+	m.session = stub.session
+
+	// Initial fetch happens before a PR exists: caches the plain repo URL.
+	updated, _ := m.Update(m.fetchRepoWebLink()())
+	m = updated.(ChatPickerModel)
+	if m.repoWebLink.url != "https://github.com/owner/repo" {
+		t.Fatalf("initial repoWebLink.url = %q, want plain repo URL", m.repoWebLink.url)
+	}
+
+	// Polling later discovers the PR number; the refresh must re-fetch the link.
+	prNumber := int32(42)
+	refreshed := &pb.Session{Id: "session-1", RepoId: "repo-1", PrNumber: &prNumber}
+	updated, cmd := m.Update(chatPickerRefreshMsg{session: refreshed})
+	m = updated.(ChatPickerModel)
+	if cmd == nil {
+		t.Fatal("expected refresh with a new PR number to re-fetch the repo web link")
+	}
+	// During the async refetch the stale link must be cleared so the [g]ithub
+	// action hides rather than opening the old repo URL.
+	if m.repoWebLink.url != "" {
+		t.Fatalf("repoWebLink.url = %q, want cleared during async refetch", m.repoWebLink.url)
+	}
+	if m.canOpenGitHub() {
+		t.Fatal("canOpenGitHub must be false while the PR web link is being refetched")
+	}
+
+	updated, _ = m.Update(cmd())
+	m = updated.(ChatPickerModel)
+	if m.repoWebLink.url != "https://github.com/owner/repo/pull/42" {
+		t.Fatalf("repoWebLink.url = %q, want PR URL after PR number appears", m.repoWebLink.url)
+	}
+	if !m.canOpenGitHub() {
+		t.Fatal("canOpenGitHub must be true once the PR web link is installed")
+	}
+}
+
+func TestChatPicker_RefreshDoesNotRefetchWebLinkWhenPRNumberUnchanged(t *testing.T) {
+	prNumber := int32(42)
+	stub := &chatPickerStub{
+		session: &pb.Session{Id: "session-1", RepoId: "repo-1", PrNumber: &prNumber},
+	}
+	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
+	m.session = stub.session
+
+	refreshed := &pb.Session{Id: "session-1", RepoId: "repo-1", PrNumber: &prNumber}
+	_, cmd := m.Update(chatPickerRefreshMsg{session: refreshed})
+	if cmd != nil {
+		t.Fatal("expected no web-link re-fetch when the PR number is unchanged")
+	}
+}
+
+func TestChatPicker_DiscardsStaleRepoWebLinkAfterPRChanges(t *testing.T) {
+	prNumber := int32(42)
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	m.session = &pb.Session{Id: "session-1", RepoId: "repo-1", PrNumber: &prNumber}
+
+	// The current PR-targeted fetch installs the PR URL.
+	updated, _ := m.Update(repoWebLinkMsg{
+		repoID:   "repo-1",
+		prNumber: 42,
+		link:     repoWebLink{provider: "github", url: "https://github.com/owner/repo/pull/42"},
+	})
+	m = updated.(ChatPickerModel)
+
+	// A slow fetch started before the PR existed (prNumber=0) resolves late with
+	// the plain repo URL. It must be discarded, not overwrite the PR link.
+	updated, _ = m.Update(repoWebLinkMsg{
+		repoID:   "repo-1",
+		prNumber: 0,
+		link:     repoWebLink{provider: "github", url: "https://github.com/owner/repo"},
+	})
+	m = updated.(ChatPickerModel)
+
+	if m.repoWebLink.url != "https://github.com/owner/repo/pull/42" {
+		t.Fatalf("repoWebLink.url = %q, want PR URL preserved against stale fetch", m.repoWebLink.url)
+	}
+	if !m.canOpenGitHub() {
+		t.Fatal("canOpenGitHub must remain true after discarding the stale fetch")
+	}
+}
+
 func TestChatPicker_HidesGitHubActionForNonGitHubRepo(t *testing.T) {
 	stub := &chatPickerStub{
 		session: &pb.Session{Id: "session-1", RepoId: "repo-1"},
@@ -654,6 +744,9 @@ func TestChatPicker_G_OpensGitHubRepo(t *testing.T) {
 	stub := &chatPickerStub{}
 	m := seedChatPicker(stub, statusWorking)
 	m.repoWebLink = repoWebLink{provider: "github", url: "https://github.com/owner/repo"}
+	// canOpenGitHub requires a known PR number.
+	prNum := int32(42)
+	m.session = &pb.Session{Id: "session-1", PrNumber: &prNum}
 
 	var opened string
 	oldOpenURL := openURLFunc
@@ -665,7 +758,7 @@ func TestChatPicker_G_OpensGitHubRepo(t *testing.T) {
 
 	_, cmd := m.Update(keyPress('g'))
 	if cmd == nil {
-		t.Fatal("expected a command from pressing g with a GitHub web link")
+		t.Fatal("expected a command from pressing g with a GitHub web link and known PR")
 	}
 	_ = cmd()
 	if opened != "https://github.com/owner/repo" {
@@ -673,9 +766,47 @@ func TestChatPicker_G_OpensGitHubRepo(t *testing.T) {
 	}
 }
 
-func TestChatPicker_G_FallsThroughToTableWithoutGitHubRepo(t *testing.T) {
+func TestChatPicker_G_IsNoOpWithGitHubLinkButNoPR(t *testing.T) {
 	stub := &chatPickerStub{}
 	m := seedChatPicker(stub, statusWorking)
+	m.repoWebLink = repoWebLink{provider: "github", url: "https://github.com/owner/repo"}
+	// session has no pr_number — canOpenGitHub must return false.
+	m.chats = append(m.chats, &pb.ClaudeChat{
+		SessionId:      "session-1",
+		AgentSessionId: "agent-2",
+		Title:          "Second chat",
+		CreatedAt:      timestamppb.Now(),
+	})
+	m.buildTableRows()
+	m.table.SetCursor(1)
+
+	var opened bool
+	oldOpenURL := openURLFunc
+	openURLFunc = func(string) error {
+		opened = true
+		return nil
+	}
+	defer func() { openURLFunc = oldOpenURL }()
+
+	updated, cmd := m.Update(keyPress('g'))
+	if cmd != nil {
+		_ = cmd()
+	}
+	m = updated.(ChatPickerModel)
+	if opened {
+		t.Fatal("openURLFunc called when session has no PR number; g should be a no-op")
+	}
+	// g is hidden here, so it must be swallowed — not fall through to the
+	// table's go-to-top binding and move the cursor.
+	if got := m.table.Cursor(); got != 1 {
+		t.Fatalf("table cursor after hidden g = %d, want 1 (g must be swallowed)", got)
+	}
+}
+
+func TestChatPicker_G_SwallowedWithoutGitHubAction(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	// No repo web link at all — canOpenGitHub is false.
 	m.chats = append(m.chats, &pb.ClaudeChat{
 		SessionId:      "session-1",
 		AgentSessionId: "agent-2",
@@ -701,8 +832,10 @@ func TestChatPicker_G_FallsThroughToTableWithoutGitHubRepo(t *testing.T) {
 	if opened {
 		t.Fatal("openURLFunc called without a GitHub web link")
 	}
-	if got := m.table.Cursor(); got != 0 {
-		t.Fatalf("table cursor after g = %d, want 0", got)
+	// The [g]ithub action is hidden, so g must be a no-op rather than moving
+	// the table cursor to the top.
+	if got := m.table.Cursor(); got != 1 {
+		t.Fatalf("table cursor after hidden g = %d, want 1 (g must be swallowed)", got)
 	}
 }
 
@@ -710,13 +843,31 @@ func TestChatPicker_RendersGitHubActionWhenRepoWebLinkAvailable(t *testing.T) {
 	stub := &chatPickerStub{}
 	m := seedChatPicker(stub, statusWorking)
 	m.repoWebLink = repoWebLink{provider: "github", url: "https://github.com/owner/repo"}
+	// canOpenGitHub requires a known PR number in addition to the web link.
+	prNum := int32(42)
+	m.session = &pb.Session{Id: "session-1", PrNumber: &prNum}
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = updated.(ChatPickerModel)
 
 	rendered := m.View().Content
 	if !strings.Contains(rendered, "[g]ithub") {
-		t.Fatalf("rendered chat picker missing [g]ithub action:\\n%s", rendered)
+		t.Fatalf("rendered chat picker missing [g]ithub action:\n%s", rendered)
+	}
+}
+
+func TestChatPicker_HidesGitHubActionWithGitHubLinkButNoPR(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	m.repoWebLink = repoWebLink{provider: "github", url: "https://github.com/owner/repo"}
+	// session has no pr_number — [g]ithub must not appear.
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	rendered := m.View().Content
+	if strings.Contains(rendered, "[g]ithub") {
+		t.Fatalf("rendered chat picker shows [g]ithub without a PR number:\n%s", rendered)
 	}
 }
 
@@ -787,5 +938,198 @@ func TestChatPickerViewAfterMergeShowsMergedStatusAndArchive(t *testing.T) {
 	// Merge action must be gone.
 	if strings.Contains(rendered, "[m]erge") {
 		t.Errorf("view after merge still shows [m]erge action (should be dropped):\n%s", rendered)
+	}
+}
+
+// seedChatPickerWithCheckingPR returns a ChatPickerModel whose session has an
+// open PR in CHECKING state with the given display_has_failures value.
+func seedChatPickerWithCheckingPR(hasFailures bool) ChatPickerModel {
+	prNum := int32(42)
+	m := seedChatPicker(&chatPickerStub{}, statusWorking)
+	m.session = &pb.Session{
+		Id:                 "session-1",
+		PrNumber:           &prNum,
+		DisplayStatus:      pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
+		DisplayHasFailures: hasFailures,
+	}
+	return m
+}
+
+// seedChatPickerWithFailingPR returns a ChatPickerModel whose session has an
+// open PR in FAILING state.
+func seedChatPickerWithFailingPR() ChatPickerModel {
+	prNum := int32(42)
+	m := seedChatPicker(&chatPickerStub{}, statusWorking)
+	m.session = &pb.Session{
+		Id:            "session-1",
+		PrNumber:      &prNum,
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_FAILING,
+	}
+	return m
+}
+
+// seedChatPickerNoPR returns a ChatPickerModel whose session has no PR number.
+func seedChatPickerNoPR() ChatPickerModel {
+	m := seedChatPicker(&chatPickerStub{}, statusWorking)
+	m.session = &pb.Session{
+		Id:            "session-1",
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+	}
+	return m
+}
+
+// TestChatPickerCanMerge_NonFailingChecking guards that canMerge() returns
+// false even for a non-failing CHECKING PR. The backend MergeSession RPC does
+// an immediate merge and rejects anything that is not passing ("PR is not
+// passing"), so offering [m]erge while checks are still running would only lead
+// the user into a confirm dialog that errors.
+func TestChatPickerCanMerge_NonFailingChecking(t *testing.T) {
+	m := seedChatPickerWithCheckingPR(false)
+	if m.canMerge() {
+		t.Fatal("canMerge() = true for non-failing CHECKING PR; expected false (backend rejects non-passing merges)")
+	}
+}
+
+// TestChatPickerCanMerge_CheckingWithFailures guards that canMerge() returns
+// false when display_status is CHECKING and display_has_failures is true.
+func TestChatPickerCanMerge_CheckingWithFailures(t *testing.T) {
+	m := seedChatPickerWithCheckingPR(true)
+	if m.canMerge() {
+		t.Fatal("canMerge() = true for CHECKING PR with failures; expected false")
+	}
+}
+
+// TestChatPickerCanMerge_CheckingWithChangesRequested guards that canMerge()
+// returns false when display_status is CHECKING but a reviewer has requested
+// changes. status.go renders CHECKING-with-changes-requested in the danger
+// style exactly like CHECKING-with-failures, so the merge affordance must be
+// hidden in this state too — it is not "non-failing checking".
+func TestChatPickerCanMerge_CheckingWithChangesRequested(t *testing.T) {
+	prNum := int32(42)
+	m := seedChatPicker(&chatPickerStub{}, statusWorking)
+	m.session = &pb.Session{
+		Id:                         "session-1",
+		PrNumber:                   &prNum,
+		DisplayStatus:              pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
+		DisplayHasChangesRequested: true,
+	}
+	if m.canMerge() {
+		t.Fatal("canMerge() = true for CHECKING PR with changes requested; expected false")
+	}
+}
+
+// TestChatPickerCanMerge_FailingPR guards that canMerge() returns false when
+// display_status is FAILING.
+func TestChatPickerCanMerge_FailingPR(t *testing.T) {
+	m := seedChatPickerWithFailingPR()
+	if m.canMerge() {
+		t.Fatal("canMerge() = true for FAILING PR; expected false")
+	}
+}
+
+// TestChatPickerCanMerge_NoPR guards that canMerge() returns false when the
+// session has no PR number.
+func TestChatPickerCanMerge_NoPR(t *testing.T) {
+	m := seedChatPickerNoPR()
+	if m.canMerge() {
+		t.Fatal("canMerge() = true with no PR number; expected false")
+	}
+}
+
+// TestChatPickerView_HidesMergeForNonFailingChecking guards that the rendered
+// action bar omits [m]erge when display_status is CHECKING even with no
+// failures — the backend rejects non-passing merges, so the affordance stays
+// hidden until the PR is passing.
+func TestChatPickerView_HidesMergeForNonFailingChecking(t *testing.T) {
+	m := seedChatPickerWithCheckingPR(false)
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	rendered := m.View().Content
+	if strings.Contains(rendered, "[m]erge") {
+		t.Fatalf("action bar shows [m]erge for non-failing CHECKING PR (should be hidden):\n%s", rendered)
+	}
+}
+
+// TestChatPickerView_HidesMergeForCheckingWithFailures guards that the rendered
+// action bar omits [m]erge when display_status is CHECKING with failures.
+func TestChatPickerView_HidesMergeForCheckingWithFailures(t *testing.T) {
+	m := seedChatPickerWithCheckingPR(true)
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	rendered := m.View().Content
+	if strings.Contains(rendered, "[m]erge") {
+		t.Fatalf("action bar shows [m]erge for CHECKING PR with failures (should be hidden):\n%s", rendered)
+	}
+}
+
+// TestChatPickerView_HidesMergeForCheckingWithChangesRequested guards that the
+// rendered action bar omits [m]erge when display_status is CHECKING but a
+// reviewer has requested changes — the View-layer mirror of the predicate test.
+func TestChatPickerView_HidesMergeForCheckingWithChangesRequested(t *testing.T) {
+	prNum := int32(42)
+	m := seedChatPicker(&chatPickerStub{}, statusWorking)
+	m.session = &pb.Session{
+		Id:                         "session-1",
+		PrNumber:                   &prNum,
+		DisplayStatus:              pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
+		DisplayHasChangesRequested: true,
+	}
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	rendered := m.View().Content
+	if strings.Contains(rendered, "[m]erge") {
+		t.Fatalf("action bar shows [m]erge for CHECKING PR with changes requested (should be hidden):\n%s", rendered)
+	}
+}
+
+// TestChatPickerView_HidesMergeForFailingPR guards that the rendered action bar
+// omits [m]erge when display_status is FAILING.
+func TestChatPickerView_HidesMergeForFailingPR(t *testing.T) {
+	m := seedChatPickerWithFailingPR()
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	rendered := m.View().Content
+	if strings.Contains(rendered, "[m]erge") {
+		t.Fatalf("action bar shows [m]erge for FAILING PR (should be hidden):\n%s", rendered)
+	}
+}
+
+// TestChatPickerView_HidesMergeForNoPR guards that the rendered action bar
+// omits [m]erge when the session has no PR.
+func TestChatPickerView_HidesMergeForNoPR(t *testing.T) {
+	m := seedChatPickerNoPR()
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	rendered := m.View().Content
+	if strings.Contains(rendered, "[m]erge") {
+		t.Fatalf("action bar shows [m]erge with no PR (should be hidden):\n%s", rendered)
+	}
+}
+
+// TestChatPicker_M_IsNoOpForFailingPR guards the Update()-level behaviour the
+// plan (§3) requires: pressing m when canMerge() is false (here, a FAILING PR)
+// must not open the merge confirmation. The g key has a symmetric no-op test;
+// this gives m the same direct coverage rather than relying only on the
+// canMerge() predicate tests.
+func TestChatPicker_M_IsNoOpForFailingPR(t *testing.T) {
+	m := seedChatPickerWithFailingPR()
+
+	updated, cmd := m.Update(keyPress('m'))
+	m = updated.(ChatPickerModel)
+	if cmd != nil {
+		t.Fatal("expected no command from pressing m with a FAILING PR")
+	}
+	if m.confirm != confirmNone {
+		t.Fatalf("m.confirm = %v after pressing m on FAILING PR; want confirmNone", m.confirm)
 	}
 }

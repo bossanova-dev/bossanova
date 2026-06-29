@@ -182,6 +182,60 @@ func TestGetChatTranscript_NotFound_SessionMissing(t *testing.T) {
 	}
 }
 
+func TestGetChatTranscript_FallsBackToSessionWhenNoChatRow(t *testing.T) {
+	workDir := t.TempDir()
+	sess := &models.Session{
+		ID:             "s1",
+		RepoID:         "r1",
+		WorktreePath:   workDir,
+		AgentName:      "codex",
+		AgentSessionID: strPtr("agent-1"),
+	}
+	fakeClient := &transcriptAgentClient{
+		resp: &pb.ReadTranscriptResponse{
+			Messages:           []*pb.ChatMessage{{Role: "assistant", Text: "GPT-5"}},
+			FinalAssistantText: "GPT-5",
+			Exists:             true,
+		},
+	}
+	s := &Server{
+		agentChats:   &chatStoreFake{chat: nil}, // GetByAgentSessionID -> sql.ErrNoRows
+		sessions:     &sessionStoreFake{sess: sess},
+		agentClients: map[string]agent.AgentRunnerClient{"codex": fakeClient},
+	}
+
+	resp, err := s.GetChatTranscript(context.Background(), connect.NewRequest(&pb.GetChatTranscriptRequest{
+		SessionId:      "s1",
+		AgentSessionId: "agent-1",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.Msg.GetExists() || resp.Msg.GetFinalAssistantText() != "GPT-5" {
+		t.Fatalf("unexpected response: %+v", resp.Msg)
+	}
+	if fakeClient.lastReq.GetWorkDir() != workDir {
+		t.Errorf("WorkDir = %q, want %q", fakeClient.lastReq.GetWorkDir(), workDir)
+	}
+	if fakeClient.lastReq.GetAgentSessionId() != "agent-1" {
+		t.Errorf("AgentSessionId = %q, want agent-1", fakeClient.lastReq.GetAgentSessionId())
+	}
+}
+
+func TestGetChatTranscript_NotFoundWithoutChatRowOrSessionID(t *testing.T) {
+	s := &Server{
+		agentChats:   &chatStoreFake{chat: nil},
+		sessions:     &sessionStoreFake{sess: nil},
+		agentClients: map[string]agent.AgentRunnerClient{},
+	}
+	_, err := s.GetChatTranscript(context.Background(), connect.NewRequest(&pb.GetChatTranscriptRequest{
+		AgentSessionId: "agent-1", // no session_id
+	}))
+	if connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("want CodeNotFound, got %v", err)
+	}
+}
+
 // sessionStoreFake.Get returns sql.ErrNoRows when sess is nil.
 // Verify it also handles this correctly for GetChatTranscript.
 func TestGetChatTranscript_SessionStoreFakeReturnsNoRows(t *testing.T) {

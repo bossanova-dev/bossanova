@@ -134,7 +134,7 @@
             "title": { "type": "string" },
             "description": { "type": "string" },
             "privacy": { "enum": ["fixture", "live"] },
-            "capture": { "enum": ["image", "video"], "default": "image" },
+            "capture": { "enum": ["image", "still", "video"], "default": "video" },
             "slowMo": { "type": "integer", "minimum": 0, "maximum": 60000 },
             "route": {
               "type": "string",
@@ -172,7 +172,8 @@
                   "value": { "type": "string", "minLength": 1 },
                   "timeoutMs": { "type": "integer", "minimum": 0, "maximum": 60000 },
                   "toSelector": { "type": "string", "minLength": 1 },
-                  "byPx": { "type": "integer", "minimum": -100000, "maximum": 100000 }
+                  "byPx": { "type": "integer", "minimum": -100000, "maximum": 100000 },
+                  "fullPage": { "type": "boolean" }
                 },
                 "allOf": [
                   {
@@ -189,7 +190,13 @@
                   },
                   {
                     "if": { "properties": { "action": { "const": "scroll" } }, "required": ["action"] },
-                    "then": { "anyOf": [{ "required": ["toSelector"] }, { "required": ["byPx"] }] }
+                    "then": {
+                      "anyOf": [
+                        { "required": ["toSelector"] },
+                        { "required": ["byPx"] },
+                        { "required": ["fullPage"] }
+                      ]
+                    }
                   }
                 ]
               }
@@ -212,8 +219,8 @@
                 "required": ["capture"]
               },
               "then": {
-                "description": "Video recipes drive a steps[] action sequence; routes live in the goto steps, not a single top-level route.",
-                "required": ["steps"]
+                "description": "Video recipes either carry a top-level route (default steps synthesized at runtime) or an explicit steps[] sequence.",
+                "anyOf": [{ "required": ["route"] }, { "required": ["steps"] }]
               },
               "else": {
                 "description": "Still recipes screenshot a single route.",

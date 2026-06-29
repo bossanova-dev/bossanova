@@ -218,6 +218,20 @@ setup-worktree:
 	else \
 		echo "No .compound-engineering/config.local.yaml in $$REPO_DIR — skipping"; \
 	fi
+	@# Install JS deps so dep-dependent steps (e.g. bs-implement proof's TUI PNG
+	@# render via `pnpm --dir services/web exec ...`) work in cron/agent worktrees.
+	@# Git hooks install normally; the commit-msg commitlint hook self-skips only
+	@# its custom PR-tag rule when BOSS_CRON=true (cron defers PR creation, so the
+	@# tagless commit gets `[#PR]` injected by bossd at finalize). Best-effort:
+	@# never abort worktree setup — proof is non-fatal, so a missing pnpm or
+	@# lockfile drift just skips it.
+	@if command -v pnpm >/dev/null 2>&1; then \
+		echo "==> Installing JS deps (pnpm)"; \
+		( cd "$$WORKTREE_DIR" && pnpm install --frozen-lockfile ) \
+			|| echo "pnpm install failed — web/proof tooling unavailable (non-fatal)"; \
+	else \
+		echo "pnpm not found — skipping JS dep install (web/proof tooling unavailable)"; \
+	fi
 	direnv allow
 
 ## web-deps: Install web dependencies (needed for protoc-gen-es plugin)
@@ -284,7 +298,12 @@ $(BIN_DIR)/mcp-gateway: $(GEN_STAMP)
 endif
 
 ## plugins: Build all plugin binaries
+# Regenerate plugins.sum from the freshly built binaries so release builds can
+# verify them before exec (lib/bossalib/config, docs/plans/BOS-27-*.md). The
+# generator excludes platform-suffixed cross-compiles, so this stays correct for
+# the native `plugins` build; `plugins-all` does not touch the manifest.
 plugins: $(addprefix $(BIN_DIR)/,$(PLUGIN_BINS))
+	@node scripts/gen-plugin-sums.mjs $(BIN_DIR)
 
 # Pattern rule for plugin binaries
 $(BIN_DIR)/bossd-plugin-%: $(GEN_STAMP)

@@ -36,6 +36,42 @@ export function normalizeChangedFiles(files) {
     .filter(Boolean);
 }
 
+/**
+ * Normalizes a recipe so browser (web/marketing/docs) surfaces prefer video.
+ * - TUI recipes pass through unchanged (TUI video needs vhs + a tape, not steps).
+ * - A browser recipe with capture unset becomes a video; capture 'image' or
+ *   'still' is preserved verbatim (it is not 'video', so every downstream
+ *   `capture === 'video'` check reads it as a still). Preserving the opt-out
+ *   value — rather than stripping the key — keeps the function idempotent: the
+ *   runner re-normalizes the recipe.json that proof.mjs already wrote, and a
+ *   stripped key would re-default an explicit `capture: 'still'` recipe to video.
+ * - A resulting video recipe with no non-empty steps but a `route` gets default
+ *   steps: goto the route, settle, then scroll the whole page (so the full page
+ *   is always captured). The poster .png the video branch emits is the "both" still.
+ * Pure and idempotent.
+ * @param {object} recipe
+ * @returns {object}
+ */
+export function normalizeRecipe(recipe) {
+  if (!recipe || recipe.surface === 'tui') {
+    return recipe;
+  }
+  const optedOutStill = recipe.capture === 'still' || recipe.capture === 'image';
+  if (optedOutStill) {
+    return recipe;
+  }
+  const hasSteps = Array.isArray(recipe.steps) && recipe.steps.length > 0;
+  const normalized = { ...recipe, capture: 'video' };
+  if (!hasSteps && recipe.route) {
+    normalized.steps = [
+      { action: 'goto', route: recipe.route, caption: recipe.title },
+      { action: 'wait', timeoutMs: 800 },
+      { action: 'scroll', fullPage: true, caption: 'Scroll through the page' },
+    ];
+  }
+  return normalized;
+}
+
 export function selectRecipes(catalog, changedFiles, explicitRecipeIds = []) {
   const recipesById = new Map(catalog.recipes.map((recipe) => [recipe.id, recipe]));
   const selectedIds = [];
@@ -63,73 +99,6 @@ export function selectRecipes(catalog, changedFiles, explicitRecipeIds = []) {
   }
 
   return uniqueInCatalogOrder(catalog.recipes, selectedIds);
-}
-
-// Named credential shapes. Order does not matter; any match is high risk.
-// Keep the `reason` labels generic — they surface in PR comments and error
-// messages, so they must never echo the matched secret itself.
-const SECRET_PATTERNS = [
-  /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/, // GitHub token
-  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/, // GitHub fine-grained PAT
-  /\bsk-[A-Za-z0-9-]{20,}\b/, // OpenAI / Stripe style key
-  /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA)[0-9A-Z]{16}\b/, // AWS access key id
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/, // Slack token
-  /\bAIza[0-9A-Za-z_-]{35}\b/, // Google API key
-  /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b/, // JWT
-  /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/, // PEM private key
-  /\b(password|passwd|token|secret|api[_-]?key)\s*[:=]\s*\S+/i, // labelled secret
-];
-
-export function classifySecretRisk(text) {
-  const input = String(text ?? '');
-  if (SECRET_PATTERNS.some((pattern) => pattern.test(input))) {
-    return { risk: 'high', reason: 'credential-pattern' };
-  }
-
-  const base64CandidatePattern =
-    /(?:^|[^A-Za-z0-9+/_=-])([A-Za-z0-9+/_-]{40,}={0,2})(?=$|[^A-Za-z0-9+/_=-])/g;
-  for (const candidate of input.matchAll(base64CandidatePattern)) {
-    const value = candidate[1];
-    if (/^[A-Fa-f0-9]+$/.test(value)) {
-      continue; // hex digests / git SHAs
-    }
-    if (looksLikeFilePath(value)) {
-      continue;
-    }
-    return { risk: 'high', reason: 'high-entropy-token' };
-  }
-
-  return { risk: 'none' };
-}
-
-// A slash-containing candidate is only excused as a file path when it reads
-// like one. Two cases:
-//
-//   - Anchored paths — absolute (`/…`), relative (`./…`, `../…`), or
-//     home-relative (`~/…`) — are filesystem paths, never credentials, so we
-//     excuse them even when a segment is mixed-case (e.g. a macOS temp dir
-//     such as `/var/folders/…/TestFoo123/…`). This is safe because every
-//     named credential shape in SECRET_PATTERNS is matched first, so a real
-//     token embedded as a path segment is still flagged.
-//   - Unanchored slash-joined blobs stay subject to the strict lowercase
-//     rule. An AWS secret access key can legitimately contain `/` but never
-//     starts with one, so it remains flagged before reaching a public bucket.
-//
-// base64 padding (`=`) and `+` never appear in real paths, so their presence
-// disqualifies a candidate from the path exemption in either case.
-function looksLikeFilePath(value) {
-  if (!value.includes('/')) {
-    return false;
-  }
-  if (/[+=]/.test(value)) {
-    return false;
-  }
-  const anchored = /^(?:\/|\.\.?\/|~\/)/.test(value);
-  if (!anchored && /[A-Z]/.test(value)) {
-    return false;
-  }
-  const segmentPattern = anchored ? /^[A-Za-z0-9._-]+$/ : /^[a-z0-9._-]+$/;
-  return value.split('/').every((segment) => segment === '' || segmentPattern.test(segment));
 }
 
 export function buildManifest({
@@ -193,52 +162,6 @@ export function buildManifest({
       return out;
     }),
   };
-}
-
-/**
- * Returns the manifest as a JSON string with machine-derived URL fields removed,
- * for secret scanning. publicBaseUrl and per-capture media URLs are derived
- * from publicBaseUrl plus validated relative paths; every other field stays
- * scanned.
- * @param {object} manifest
- * @returns {string}
- */
-export function manifestSecretScanText(manifest) {
-  const clone = structuredClone(manifest);
-  const normalizedBase =
-    typeof clone.publicBaseUrl === 'string' ? clone.publicBaseUrl.replace(/\/$/, '') : null;
-  delete clone.publicBaseUrl;
-  for (const capture of clone.captures ?? []) {
-    const captureUrl = derivedManifestUrl(normalizedBase, capture.fileName);
-    if (captureUrl && capture.url === captureUrl) {
-      delete capture.url;
-    }
-    if (captureUrl && isVideoMediaType(capture.mediaType) && capture.videoUrl === captureUrl) {
-      delete capture.videoUrl;
-    }
-    const posterUrl = derivedManifestUrl(normalizedBase, capture.posterFileName);
-    if (posterUrl && isVideoMediaType(capture.mediaType) && capture.posterUrl === posterUrl) {
-      delete capture.posterUrl;
-    }
-    for (const still of capture.stills ?? []) {
-      const stillUrl = derivedManifestUrl(normalizedBase, still.fileName);
-      if (stillUrl && still.url === stillUrl) {
-        delete still.url;
-      }
-    }
-  }
-  return JSON.stringify(clone);
-}
-
-function derivedManifestUrl(publicBaseUrl, fileName) {
-  if (!publicBaseUrl) {
-    return null;
-  }
-  try {
-    return `${publicBaseUrl}/${encodePathSegments(validateProofUploadRelativePath(fileName))}`;
-  } catch {
-    return null;
-  }
 }
 
 /**

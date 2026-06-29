@@ -115,6 +115,38 @@ func TestBuildInteractiveCommand_NoModelWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveCommand_AppendsMcpConfig(t *testing.T) {
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:     "sid",
+		LogPath:       t.TempDir() + "/claude.log",
+		McpConfigPath: "/data/bossanova/mcp-configs/sid.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(resp.GetArgv(), "\x00")
+	if !strings.Contains(joined, "--mcp-config\x00/data/bossanova/mcp-configs/sid.json") {
+		t.Fatalf("argv %v missing --mcp-config <path>", resp.GetArgv())
+	}
+}
+
+func TestBuildInteractiveCommand_NoMcpConfigWhenEmpty(t *testing.T) {
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "sid",
+		LogPath:   t.TempDir() + "/claude.log",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range resp.GetArgv() {
+		if a == "--mcp-config" {
+			t.Fatalf("argv should not contain --mcp-config when path empty: %v", resp.GetArgv())
+		}
+	}
+}
+
 func TestGetInfoIncludesDangerouslySkipPermissionsSetting(t *testing.T) {
 	s := newServer(nil, zerolog.Nop())
 	resp, err := s.GetInfo(context.Background(), &bossanovav1.AgentRunnerServiceGetInfoRequest{})

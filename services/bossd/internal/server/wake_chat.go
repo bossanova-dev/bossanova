@@ -30,6 +30,14 @@ type wakeHook struct {
 // "chat not found" string for the stream CommandResult).
 var ErrWakeChatNotFound = errors.New("chat not found")
 
+// ErrHeadlessRunActive is returned by WakeChatInternal when the chat's
+// headless run (codex exec / claude --print) is still in progress. Such a
+// run reports WORKING in the status tracker but has no tmux session, so
+// waking it would spawn a second, tmux-hosted agent on the same worktree
+// while the original process is still writing to it. Callers map this to a
+// FailedPrecondition so clients retry once the run stops.
+var ErrHeadlessRunActive = errors.New("headless run still active")
+
 // WakeChatInternal is the transport-agnostic body of the WakeChat RPC.
 // Both the connect handler (browser/CLI direct path) and the stream
 // dispatcher (browser → bosso → stream → daemon) call it. Returns the
@@ -85,6 +93,21 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			deps.Resolver = s.wakeHook.resolver
 		}
 
+		// Refuse to wake a chat whose headless run (codex exec / claude
+		// --print) is still active. A live headless run reports WORKING in
+		// the status tracker but owns no tmux session, so spawning here would
+		// put a second, tmux-hosted agent on the same worktree concurrently
+		// with the original process. Gate only when there is no live tmux
+		// session, so waking a genuinely asleep chat (stale/STOPPED status,
+		// or one that already has a tmux session) is unaffected.
+		if s.chatStatus != nil {
+			if e := s.chatStatus.Get(agentSessionID); e != nil && e.Status == pb.ChatStatus_CHAT_STATUS_WORKING {
+				if deps.Tmux == nil || !deps.Tmux.HasSession(ctx, tmuxName) {
+					return nil, fmt.Errorf("%w: %s", ErrHeadlessRunActive, agentSessionID)
+				}
+			}
+		}
+
 		var legacyAmbiguousReason string
 		if !forceFresh && chat.AgentName == "codex" && chat.ProviderSessionID == nil && !chat.CreatedAt.IsZero() && deps.Resolver != nil {
 			legacyLaunchedAfter := chat.CreatedAt.Add(-5 * time.Minute)
@@ -103,14 +126,16 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			}
 		}
 
+		mcpConfigPath := session.SessionMcpConfigPath(sess, chat.AgentSessionID, chat.AgentName)
 		result, err := spawnChatTmux(ctx, deps, spawnInput{
 			Chat:               chat,
 			WorktreePath:       sess.WorktreePath,
 			TmuxName:           tmuxName,
 			ForceFresh:         forceFresh,
-			AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName),
+			AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath),
 			SessionEnv:         session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
 			Model:              sess.Model,
+			McpConfigPath:      mcpConfigPath,
 		})
 		if err != nil {
 			return nil, err
@@ -198,6 +223,8 @@ func wakeChatErrorToConnect(err error) error {
 		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, ErrWorktreeMissing):
 		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, ErrHeadlessRunActive):
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	default:
 		// Special-case the empty agent_session_id check so the connect
 		// handler returns CodeInvalidArgument instead of CodeInternal.
@@ -250,6 +277,8 @@ func (s *Server) WakeChatStream(ctx context.Context, agentSessionID string, forc
 		case errors.Is(err, ErrWakeChatNotFound):
 			code = pb.CommandResult_ERROR_CODE_NOT_FOUND
 		case errors.Is(err, ErrWorktreeMissing):
+			code = pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION
+		case errors.Is(err, ErrHeadlessRunActive):
 			code = pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION
 		}
 		return pb.WakeChatResult_OUTCOME_UNSPECIFIED, "", "", code, err

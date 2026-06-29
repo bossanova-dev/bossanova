@@ -848,15 +848,18 @@ func TestE2E_ChatTrackingLifecycle(t *testing.T) {
 		t.Fatalf("record second chat: %v", err)
 	}
 
-	// List chats.
+	// List chats. The session itself runs on the headless start path, which
+	// now auto-creates an agent_chats row at StartSession (see the headless
+	// branch of Lifecycle.StartSession), so the two explicitly recorded chats
+	// are joined by that one session chat for three total.
 	listResp, err := h.Client.ListChats(ctx, connect.NewRequest(&pb.ListChatsRequest{
 		SessionId: sessionID,
 	}))
 	if err != nil {
 		t.Fatalf("list chats: %v", err)
 	}
-	if len(listResp.Msg.Chats) != 2 {
-		t.Fatalf("expected 2 chats, got %d", len(listResp.Msg.Chats))
+	if len(listResp.Msg.Chats) != 3 {
+		t.Fatalf("expected 3 chats, got %d", len(listResp.Msg.Chats))
 	}
 
 	// Update chat title by claude_id.

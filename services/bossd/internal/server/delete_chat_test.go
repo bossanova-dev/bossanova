@@ -77,6 +77,10 @@ func (f *deleteChatStoreFake) ListWithTmuxSession(context.Context) ([]*models.Ag
 	return nil, nil
 }
 
+func (f *deleteChatStoreFake) ListRoutableChats(context.Context) ([]*models.AgentChat, error) {
+	return nil, nil
+}
+
 func TestDeleteChat_KillsTmuxSessionBeforeDeletingRow(t *testing.T) {
 	ctx := context.Background()
 	tmuxName := "boss-repo1234-agent5678"

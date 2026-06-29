@@ -120,7 +120,7 @@ func rootCmd() *cobra.Command {
 	addGrouped("daemon", daemonCmd())
 	addGrouped("mcp", mcpCmd())
 	addGrouped("settings", settingsCmd(), configCmd(), loginCmd(), logoutCmd(), authStatusCmd())
-	addGrouped("diagnostics", repairCmd(), sessionCmd())
+	addGrouped("diagnostics", repairCmd(), sessionCmd(), envCmd())
 	addGrouped("plugins", pluginCmd())
 	addGrouped("other", versionCmd(), upgradeCmd())
 

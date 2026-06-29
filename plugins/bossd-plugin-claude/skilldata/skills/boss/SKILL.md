@@ -442,6 +442,14 @@ boss settings --skip-permissions
 
 ## Diagnostics
 
+### `boss env [flags]`
+
+Report this session's boss context and the full CLI + MCP capability inventory
+
+**Flags:**
+
+- `--json` — Emit a stable JSON schema instead of human-readable text
+
 ### `boss repair`
 
 Auto-repair plugin operations

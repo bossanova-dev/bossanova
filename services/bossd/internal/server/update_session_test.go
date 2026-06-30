@@ -59,6 +59,45 @@ func TestUpdateSession_EmitsOnSessionUpdated(t *testing.T) {
 	}
 }
 
+// TestUpdateSession_LinksTrackerWithoutTitle verifies a tracker-only update
+// (the cron bs-implement path linking its selected Linear ticket) persists
+// tracker_url/tracker_id and does NOT require or blank the title.
+func TestUpdateSession_LinksTrackerWithoutTitle(t *testing.T) {
+	url := "https://linear.app/bossanova-dev/issue/BOS-123"
+	id := "BOS-123"
+	fake := &lifecycleSessionStoreFake{session: &models.Session{ID: "s1", TrackerURL: &url, TrackerID: &id}}
+	var emitted *pb.Session
+	srv := &Server{
+		sessions:         fake,
+		repos:            updateSessionRepoStoreFake{},
+		onSessionUpdated: func(_ context.Context, s *pb.Session) { emitted = s },
+	}
+
+	resp, err := srv.UpdateSession(context.Background(), connect.NewRequest(&pb.UpdateSessionRequest{
+		Id:         "s1",
+		TrackerUrl: &url,
+		TrackerId:  &id,
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fake.lastUpdate.Title != nil {
+		t.Errorf("Title should be untouched (nil), got %v", *fake.lastUpdate.Title)
+	}
+	if fake.lastUpdate.TrackerURL == nil || *fake.lastUpdate.TrackerURL == nil || **fake.lastUpdate.TrackerURL != url {
+		t.Errorf("TrackerURL not persisted: %v", fake.lastUpdate.TrackerURL)
+	}
+	if fake.lastUpdate.TrackerID == nil || *fake.lastUpdate.TrackerID == nil || **fake.lastUpdate.TrackerID != id {
+		t.Errorf("TrackerID not persisted: %v", fake.lastUpdate.TrackerID)
+	}
+	if resp.Msg.GetSession().GetTrackerUrl() != url {
+		t.Errorf("response tracker url = %q, want %q", resp.Msg.GetSession().GetTrackerUrl(), url)
+	}
+	if emitted == nil || emitted.GetTrackerUrl() != url {
+		t.Errorf("onSessionUpdated did not carry tracker url: %v", emitted)
+	}
+}
+
 // TestUpdateSession_NilNotifierDoesNotPanic ensures the nil-guard around
 // onSessionUpdated holds (the callback is optional).
 func TestUpdateSession_NilNotifierDoesNotPanic(t *testing.T) {

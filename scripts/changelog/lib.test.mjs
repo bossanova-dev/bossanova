@@ -109,14 +109,7 @@ test('summaryFromBody caps length at 140 characters', () => {
 test('previousVersionTag finds the next-older stable tag by semver, ignoring list order', () => {
   // Deliberately unsorted, with prereleases interleaved — mirrors what the
   // GitHub list-tags API may return (order is not documented as semver-sorted).
-  const tags = [
-    'v1.55.0',
-    'v1.57.0',
-    'v1.56.0-staging.1',
-    'v1.9.0',
-    'v1.56.0',
-    'v1.10.0',
-  ]
+  const tags = ['v1.55.0', 'v1.57.0', 'v1.56.0-staging.1', 'v1.9.0', 'v1.56.0', 'v1.10.0']
   assert.equal(previousVersionTag(tags, 'v1.57.0'), 'v1.56.0')
   // numeric (not lexical) ordering: 1.10.0 > 1.9.0
   assert.equal(previousVersionTag(tags, 'v1.10.0'), 'v1.9.0')

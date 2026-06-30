@@ -120,6 +120,9 @@ const (
 	DaemonServiceDeleteChatProcedure = "/bossanova.v1.DaemonService/DeleteChat"
 	// DaemonServiceWakeChatProcedure is the fully-qualified name of the DaemonService's WakeChat RPC.
 	DaemonServiceWakeChatProcedure = "/bossanova.v1.DaemonService/WakeChat"
+	// DaemonServiceDescribeChatLaunchProcedure is the fully-qualified name of the DaemonService's
+	// DescribeChatLaunch RPC.
+	DaemonServiceDescribeChatLaunchProcedure = "/bossanova.v1.DaemonService/DescribeChatLaunch"
 	// DaemonServiceGetChatTranscriptProcedure is the fully-qualified name of the DaemonService's
 	// GetChatTranscript RPC.
 	DaemonServiceGetChatTranscriptProcedure = "/bossanova.v1.DaemonService/GetChatTranscript"
@@ -214,6 +217,13 @@ type DaemonServiceClient interface {
 	// concurrent calls via per-chat singleflight. Decides --resume vs
 	// --session-id by pre-flight stat of the Claude transcript file.
 	WakeChat(context.Context, *connect.Request[v1.WakeChatRequest]) (*connect.Response[v1.WakeChatResponse], error)
+	// DescribeChatLaunch returns the exact command bossd uses to launch a chat's
+	// agent in its worktree, plus the daemon host. The TUI calls it when a
+	// freshly-launched pane dies on startup so it can show a copy-pasteable
+	// reproduction command — the usual cause is a PATH / login-shell problem that
+	// only reproduces on the daemon host. Read-only: it re-derives argv via the
+	// same per-agent BuildInteractiveCommand the spawn path uses.
+	DescribeChatLaunch(context.Context, *connect.Request[v1.DescribeChatLaunchRequest]) (*connect.Response[v1.DescribeChatLaunchResponse], error)
 	// GetChatTranscript returns a chat's conversation and final result by routing
 	// to the owning agent plugin's ReadTranscript. Request-response (pollable).
 	GetChatTranscript(context.Context, *connect.Request[v1.GetChatTranscriptRequest]) (*connect.Response[v1.GetChatTranscriptResponse], error)
@@ -457,6 +467,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("WakeChat")),
 			connect.WithClientOptions(opts...),
 		),
+		describeChatLaunch: connect.NewClient[v1.DescribeChatLaunchRequest, v1.DescribeChatLaunchResponse](
+			httpClient,
+			baseURL+DaemonServiceDescribeChatLaunchProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DescribeChatLaunch")),
+			connect.WithClientOptions(opts...),
+		),
 		getChatTranscript: connect.NewClient[v1.GetChatTranscriptRequest, v1.GetChatTranscriptResponse](
 			httpClient,
 			baseURL+DaemonServiceGetChatTranscriptProcedure,
@@ -594,6 +610,7 @@ type daemonServiceClient struct {
 	updateChatTitle      *connect.Client[v1.UpdateChatTitleRequest, v1.UpdateChatTitleResponse]
 	deleteChat           *connect.Client[v1.DeleteChatRequest, v1.DeleteChatResponse]
 	wakeChat             *connect.Client[v1.WakeChatRequest, v1.WakeChatResponse]
+	describeChatLaunch   *connect.Client[v1.DescribeChatLaunchRequest, v1.DescribeChatLaunchResponse]
 	getChatTranscript    *connect.Client[v1.GetChatTranscriptRequest, v1.GetChatTranscriptResponse]
 	sendChatMessage      *connect.Client[v1.SendChatMessageRequest, v1.SendChatMessageResponse]
 	reportChatStatus     *connect.Client[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse]
@@ -763,6 +780,11 @@ func (c *daemonServiceClient) WakeChat(ctx context.Context, req *connect.Request
 	return c.wakeChat.CallUnary(ctx, req)
 }
 
+// DescribeChatLaunch calls bossanova.v1.DaemonService.DescribeChatLaunch.
+func (c *daemonServiceClient) DescribeChatLaunch(ctx context.Context, req *connect.Request[v1.DescribeChatLaunchRequest]) (*connect.Response[v1.DescribeChatLaunchResponse], error) {
+	return c.describeChatLaunch.CallUnary(ctx, req)
+}
+
 // GetChatTranscript calls bossanova.v1.DaemonService.GetChatTranscript.
 func (c *daemonServiceClient) GetChatTranscript(ctx context.Context, req *connect.Request[v1.GetChatTranscriptRequest]) (*connect.Response[v1.GetChatTranscriptResponse], error) {
 	return c.getChatTranscript.CallUnary(ctx, req)
@@ -889,6 +911,13 @@ type DaemonServiceHandler interface {
 	// concurrent calls via per-chat singleflight. Decides --resume vs
 	// --session-id by pre-flight stat of the Claude transcript file.
 	WakeChat(context.Context, *connect.Request[v1.WakeChatRequest]) (*connect.Response[v1.WakeChatResponse], error)
+	// DescribeChatLaunch returns the exact command bossd uses to launch a chat's
+	// agent in its worktree, plus the daemon host. The TUI calls it when a
+	// freshly-launched pane dies on startup so it can show a copy-pasteable
+	// reproduction command — the usual cause is a PATH / login-shell problem that
+	// only reproduces on the daemon host. Read-only: it re-derives argv via the
+	// same per-agent BuildInteractiveCommand the spawn path uses.
+	DescribeChatLaunch(context.Context, *connect.Request[v1.DescribeChatLaunchRequest]) (*connect.Response[v1.DescribeChatLaunchResponse], error)
 	// GetChatTranscript returns a chat's conversation and final result by routing
 	// to the owning agent plugin's ReadTranscript. Request-response (pollable).
 	GetChatTranscript(context.Context, *connect.Request[v1.GetChatTranscriptRequest]) (*connect.Response[v1.GetChatTranscriptResponse], error)
@@ -1128,6 +1157,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("WakeChat")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceDescribeChatLaunchHandler := connect.NewUnaryHandler(
+		DaemonServiceDescribeChatLaunchProcedure,
+		svc.DescribeChatLaunch,
+		connect.WithSchema(daemonServiceMethods.ByName("DescribeChatLaunch")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceGetChatTranscriptHandler := connect.NewUnaryHandler(
 		DaemonServiceGetChatTranscriptProcedure,
 		svc.GetChatTranscript,
@@ -1292,6 +1327,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceDeleteChatHandler.ServeHTTP(w, r)
 		case DaemonServiceWakeChatProcedure:
 			daemonServiceWakeChatHandler.ServeHTTP(w, r)
+		case DaemonServiceDescribeChatLaunchProcedure:
+			daemonServiceDescribeChatLaunchHandler.ServeHTTP(w, r)
 		case DaemonServiceGetChatTranscriptProcedure:
 			daemonServiceGetChatTranscriptHandler.ServeHTTP(w, r)
 		case DaemonServiceSendChatMessageProcedure:
@@ -1453,6 +1490,10 @@ func (UnimplementedDaemonServiceHandler) DeleteChat(context.Context, *connect.Re
 
 func (UnimplementedDaemonServiceHandler) WakeChat(context.Context, *connect.Request[v1.WakeChatRequest]) (*connect.Response[v1.WakeChatResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.WakeChat is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) DescribeChatLaunch(context.Context, *connect.Request[v1.DescribeChatLaunchRequest]) (*connect.Response[v1.DescribeChatLaunchResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DescribeChatLaunch is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) GetChatTranscript(context.Context, *connect.Request[v1.GetChatTranscriptRequest]) (*connect.Response[v1.GetChatTranscriptResponse], error) {

@@ -142,10 +142,15 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "update_session",
-		Description: "Rename a session (update its title). Also syncs the linked GitHub PR title when the session has one. PR creation is a separate prior step (e.g. `gh pr create`); to attach a PR use link_session_pr.",
+		Description: "Update a session: rename it (title, which also syncs the linked GitHub PR title) and/or link it to an external tracker issue (tracker_url and tracker_id, e.g. a Linear ticket). Each field is optional; supply only what you want to change. Linking a tracker_url makes the TUI [l]inear shortcut open the ticket. PR creation is a separate prior step (e.g. `gh pr create`); to attach a PR use link_session_pr.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args UpdateSessionArgs) (*mcp.CallToolResult, any, error) {
-		req := &pb.UpdateSessionRequest{Id: args.ID, Title: args.Title}
+		req := &pb.UpdateSessionRequest{
+			Id:         args.ID,
+			Title:      args.Title,
+			TrackerUrl: args.TrackerURL,
+			TrackerId:  args.TrackerID,
+		}
 		out, err := backend.UpdateSession(ctx, req)
 		if err != nil {
 			return errorResult(err), nil, nil
@@ -377,8 +382,10 @@ type CreateSessionArgs struct {
 
 // UpdateSessionArgs is the typed argument struct for update_session.
 type UpdateSessionArgs struct {
-	ID    string  `json:"id" jsonschema:"the id of the session to retitle"`
-	Title *string `json:"title,omitempty" jsonschema:"the new session title (also best-effort renames the linked GitHub PR)"`
+	ID         string  `json:"id" jsonschema:"the id of the session to update"`
+	Title      *string `json:"title,omitempty" jsonschema:"the new session title (also best-effort renames the linked GitHub PR)"`
+	TrackerURL *string `json:"tracker_url,omitempty" jsonschema:"URL to the issue in the external tracker (e.g. a Linear ticket); makes the TUI [l]inear shortcut open it"`
+	TrackerID  *string `json:"tracker_id,omitempty" jsonschema:"external tracker identifier (e.g. BOS-123)"`
 }
 
 // LinkSessionPRArgs is the typed argument struct for link_session_pr.

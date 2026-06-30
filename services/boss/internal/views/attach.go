@@ -3,6 +3,7 @@ package views
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -23,6 +24,15 @@ import (
 // Ctrl+X to detach" message stays on screen before we hand off to tmux.
 // Tuned so users actually see the detach shortcut even on a warm daemon.
 const minLaunchingDisplay = 1500 * time.Millisecond
+
+// errChatSessionGone is shown when a resume-attach targets a chat whose
+// tmux session no longer exists (e.g. the session was interrupted during
+// setup, or torn down by another bossd). Surfacing it through m.err routes
+// the user to the dismissable "[esc] back" view instead of handing the
+// terminal to a `tmux attach` that would print a raw "can't find session"
+// error and trap them. See BOS-108.
+var errChatSessionGone = errors.New(
+	"this chat's agent session is no longer available (it may have been interrupted during setup) — press esc to go back and start a new chat")
 
 // startExecMsg fires once the minLaunchingDisplay budget has elapsed.
 // It triggers the deferred tea.Exec that attaches to tmux.
@@ -45,6 +55,13 @@ type agentFinishedMsg struct {
 
 // chatTitleUpdatedMsg signals a best-effort title update completed (ignored).
 type chatTitleUpdatedMsg struct{}
+
+// launchDescribedMsg carries the daemon's description of a chat's launch
+// command, fetched after the agent pane dies so the error screen can show a
+// reproduction command. info is nil when the lookup failed (best-effort).
+type launchDescribedMsg struct {
+	info *pb.DescribeChatLaunchResponse
+}
 
 // attachReadyMsg carries the session plus its chat list, fetched via RPC
 // before launching Claude. The chat list is needed so first-attach prefill
@@ -74,10 +91,14 @@ type AttachModel struct {
 	launching bool  // true while fetching session
 	returned  bool  // true after claude exits
 	agentErr  error // error from claude process (if any)
-	detach    bool
-	err       error
-	width     int
-	height    int
+	// launchInfo is the daemon's description of the launch command, fetched on
+	// error so View can show a copy-pasteable reproduction command. nil until
+	// the lookup returns (or stays nil if it failed — best-effort).
+	launchInfo *pb.DescribeChatLaunchResponse
+	detach     bool
+	err        error
+	width      int
+	height     int
 
 	// overrideAgent populates RecordChat's agent_name override at chat
 	// creation time. Empty inherits the parent session's AgentName. Set
@@ -174,6 +195,18 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("daemon did not return a tmux session name; check that tmux is installed")
 			return m, nil
 		}
+		// Resume-attach guard: the chat record can outlive its tmux session
+		// (interrupted setup, daemon restart, external teardown). If we'd be
+		// resuming a session that no longer exists, don't hand the terminal
+		// to `tmux attach` — it would dump a raw "can't find session" error
+		// and leave the user stranded. Surface a dismissable error instead.
+		// New chats (resumeID == "") get a freshly created session from the
+		// daemon, so they are guaranteed alive and skip this check.
+		if resume && !tmuxSessionAlive(tmuxName) {
+			m.err = errChatSessionGone
+			m.launching = false
+			return m, nil
+		}
 		if !resume {
 			captureViewTelemetry(m.ctx, m.telemetry, telemetry.EventChatCreated, map[string]any{
 				"source": "tui",
@@ -264,11 +297,27 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			m.detach = true
 		}
+		if msg.err != nil {
+			// The pane died on launch — ask the daemon what command it ran so
+			// the error screen can show a copy-pasteable reproduction.
+			// Do this before title cleanup because unused chats have no JSONL
+			// title and updateChatTitle deletes that orphan chat row.
+			return m, tea.Batch(
+				m.reportStopped(),
+				tea.Sequence(m.describeLaunch(), m.updateChatTitle()),
+			)
+		}
 		// Best-effort: update chat title from JSONL and report stopped status.
 		return m, tea.Batch(m.updateChatTitle(), m.reportStopped())
 
 	case chatTitleUpdatedMsg:
 		// Ignored — fire-and-forget.
+		return m, nil
+
+	case launchDescribedMsg:
+		// Enriches the already-rendered error screen with the reproduction
+		// command once the daemon responds. nil info leaves the bare error.
+		m.launchInfo = msg.info
 		return m, nil
 
 	case attachErrMsg:
@@ -325,6 +374,26 @@ func (m AttachModel) reportStopped() tea.Cmd {
 			LastOutputAt:   timestamppb.Now(),
 		}})
 		return nil
+	}
+}
+
+// describeLaunch asks the daemon for the exact command it used to launch this
+// chat's agent so the error view can show a copy-pasteable reproduction. The
+// command runs on the daemon host, which may differ from where boss runs, so
+// the daemon also reports its hostname. Best-effort: any failure (including the
+// remote-orchestrator client, which is local-only) yields a nil info and the
+// view falls back to the bare exit error.
+func (m AttachModel) describeLaunch() tea.Cmd {
+	if m.agentSessionID == "" {
+		return nil
+	}
+	agentSessionID := m.agentSessionID
+	return func() tea.Msg {
+		info, err := m.client.DescribeChatLaunch(m.ctx, agentSessionID)
+		if err != nil {
+			return launchDescribedMsg{info: nil}
+		}
+		return launchDescribedMsg{info: info}
 	}
 }
 
@@ -440,6 +509,78 @@ func (m AttachModel) displayAgentName() string {
 	return ""
 }
 
+// renderLaunchDiagnostic formats a copy-pasteable reproduction command from the
+// daemon's launch description, shown under the bare exit error so the user can
+// run the agent themselves and see the underlying failure (usually a PATH or
+// login-shell problem on the daemon host). Returns "" when no description is
+// available so the caller renders just the bare error.
+func renderLaunchDiagnostic(info *pb.DescribeChatLaunchResponse, agentLabel string) string {
+	if info == nil || len(info.GetArgv()) == 0 {
+		return ""
+	}
+	prose := lipgloss.NewStyle().Padding(0, 2)
+	code := lipgloss.NewStyle().Padding(0, 4)
+
+	where := "the daemon host"
+	if host := info.GetHost(); host != "" {
+		where = "host '" + host + "'"
+	}
+
+	cmd := shellJoin(info.GetArgv())
+	if wt := info.GetWorktreePath(); wt != "" {
+		cmd = "cd " + shellQuote(wt) + " && \\\n" + cmd
+	}
+
+	var b strings.Builder
+	b.WriteString(prose.Render(fmt.Sprintf(
+		"This usually means the %s CLI could not be launched — often a PATH or\n"+
+			"login-shell problem that only reproduces where the agent runs.", agentLabel)))
+	b.WriteString("\n\n")
+	b.WriteString(prose.Render("bossd ran this on " + where + ":"))
+	b.WriteString("\n\n")
+	b.WriteString(code.Render(cmd))
+	b.WriteString("\n\n")
+	b.WriteString(prose.Render("Run it there to see the underlying error."))
+	return b.String()
+}
+
+// shellJoin renders argv as a single copy-pasteable shell command, quoting any
+// argument that contains whitespace or shell-significant characters.
+func shellJoin(argv []string) string {
+	quoted := make([]string, len(argv))
+	for i, a := range argv {
+		quoted[i] = shellQuote(a)
+	}
+	return strings.Join(quoted, " ")
+}
+
+// shellQuote wraps s in single quotes when it contains characters the shell
+// would otherwise interpret, escaping embedded single quotes the POSIX way
+// ('\”). A safe-looking token is returned unquoted for readability.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	if safeShellToken(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// safeShellToken reports whether s consists solely of characters that need no
+// shell quoting.
+func safeShellToken(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("-_./:=@", r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func (m AttachModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
@@ -464,6 +605,10 @@ func (m AttachModel) View() tea.View {
 		agentLabel := agentDisplayName(m.displayAgentName())
 		if m.agentErr != nil {
 			b.WriteString(renderError(fmt.Sprintf("%s exited with error: %v", agentLabel, m.agentErr), m.width))
+			if diag := renderLaunchDiagnostic(m.launchInfo, agentLabel); diag != "" {
+				b.WriteString("\n")
+				b.WriteString(diag)
+			}
 		} else {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("%s session ended.", agentLabel)))
 		}
@@ -472,5 +617,9 @@ func (m AttachModel) View() tea.View {
 		return tea.NewView(b.String())
 	}
 
-	return tea.NewView("")
+	// Never render a completely empty frame: a blank view lets stray
+	// terminal output (e.g. a child process's leftover stderr) masquerade as
+	// the boss screen with no affordance. A minimal line guarantees the user
+	// always sees boss is in control.
+	return tea.NewView(lipgloss.NewStyle().Padding(0, 2).Render("Attaching…"))
 }

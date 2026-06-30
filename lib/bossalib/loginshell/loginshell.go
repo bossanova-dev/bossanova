@@ -15,11 +15,22 @@ func DefaultFlags() []string {
 
 // Flags returns shell-specific flags for running a command body. The agent
 // plugins and preflight both use this so the probe matches the real launch path.
+//
+// zsh and fish run as interactive login shells (-l -i -c). Both commonly load
+// per-project version managers (nodenv/rbenv/pyenv/asdf/mise) only in their
+// interactive config: fish's default config.fish template wraps user setup in
+// `if status is-interactive` (and the canonical nodenv line is
+// `status --is-interactive; and source (nodenv init -|psub)`), so a plain
+// `-l -c` login shell never puts the agent's shims on PATH and the launch dies
+// with exit 127. Adding -i runs that interactive setup. bash instead sources
+// ~/.bashrc explicitly via CommandLine, so it does not need -i.
 func Flags(shell string) []string {
-	if filepath.Base(shell) == "zsh" {
+	switch filepath.Base(shell) {
+	case "zsh", "fish":
 		return []string{"-l", "-i", "-c"}
+	default:
+		return DefaultFlags()
 	}
-	return DefaultFlags()
 }
 
 // CommandLine returns line wrapped with any shell-specific rc loading needed

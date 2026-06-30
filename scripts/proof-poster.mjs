@@ -7,7 +7,7 @@
 // unit-tests without ffmpeg. Returns args only — the caller prepends
 // `-y -loglevel error` and runs ffmpeg.
 
-const ENCODE_ARGS = ['-frames:v', '1'];
+const ENCODE_ARGS = ['-frames:v', '1']
 
 /**
  * Build the ffmpeg arg vector that composites `playButton` over a scrimmed
@@ -33,7 +33,7 @@ export function buildPosterArgs({
   const crop =
     cropHeight != null && Number.isInteger(cropHeight) && cropHeight > 0
       ? `crop=in_w:${cropHeight}:0:0,`
-      : '';
+      : ''
   // Center the play button over the content region when given (clamped to the
   // crop), so short, padded pages don't put the button in the empty band.
   const centerH =
@@ -41,13 +41,13 @@ export function buildPosterArgs({
       ? cropHeight
         ? Math.min(overlayCenterHeight, cropHeight)
         : overlayCenterHeight
-      : null;
-  const yExpr = centerH != null ? `(${centerH}-overlay_h)/2` : '(main_h-overlay_h)/2';
+      : null
+  const yExpr = centerH != null ? `(${centerH}-overlay_h)/2` : '(main_h-overlay_h)/2'
   const filter = [
     `[1:v]scale=${scaleW}:-1[pb]`,
     `[0:v]${crop}drawbox=x=0:y=0:w=iw:h=ih:color=black@${scrim}:t=fill[bg]`,
     `[bg][pb]overlay=(main_w-overlay_w)/2:${yExpr}[v]`,
-  ].join(';');
+  ].join(';')
   return [
     '-i',
     base,
@@ -59,5 +59,5 @@ export function buildPosterArgs({
     '[v]',
     ...ENCODE_ARGS,
     outPath,
-  ];
+  ]
 }

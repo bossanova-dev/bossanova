@@ -1,4 +1,4 @@
-.PHONY: all build build-all build-docs clean codex-skills codex-skills-check construct-skills construct-skills-check copy-skills deps format generate gen-skill kill lint \
+.PHONY: all build build-all build-docs clean codex-skills codex-skills-check construct-skills construct-skills-check copy-skills deps format generate gen-skill kill kill-all lint \
 	lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
@@ -218,21 +218,25 @@ setup-worktree:
 	else \
 		echo "No .compound-engineering/config.local.yaml in $$REPO_DIR — skipping"; \
 	fi
-	@# Install JS deps so dep-dependent steps (e.g. bs-implement proof's TUI PNG
-	@# render via `pnpm --dir services/web exec ...`) work in cron/agent worktrees.
-	@# Git hooks install normally; the commit-msg commitlint hook self-skips only
-	@# its custom PR-tag rule when BOSS_CRON=true (cron defers PR creation, so the
-	@# tagless commit gets `[#PR]` injected by bossd at finalize). Best-effort:
-	@# never abort worktree setup — proof is non-fatal, so a missing pnpm or
-	@# lockfile drift just skips it.
+	@# Install JS deps so EVERY worktree (cron included) has node_modules and the
+	@# husky git hooks (`pnpm install` runs the `prepare: husky` script). This is
+	@# what keeps the commit-msg / pre-commit guardrails active in agent worktrees
+	@# instead of being bypassed. bossd runs this target through the user's login
+	@# shell, so nodenv/asdf shims are on PATH and `pnpm` resolves; the
+	@# command-v guard below is a belt-and-braces fallback for stripped envs.
+	@# Best-effort: a lockfile drift must not abort worktree setup.
 	@if command -v pnpm >/dev/null 2>&1; then \
-		echo "==> Installing JS deps (pnpm)"; \
+		echo "==> Installing JS deps + git hooks (pnpm)"; \
 		( cd "$$WORKTREE_DIR" && pnpm install --frozen-lockfile ) \
-			|| echo "pnpm install failed — web/proof tooling unavailable (non-fatal)"; \
+			|| echo "pnpm install failed — deps/hooks unavailable (non-fatal)"; \
 	else \
-		echo "pnpm not found — skipping JS dep install (web/proof tooling unavailable)"; \
+		echo "pnpm not found on PATH — skipping JS dep + hook install (non-fatal)"; \
 	fi
-	direnv allow
+	@# Allow direnv only when this repo actually uses it; a missing .envrc would
+	@# otherwise make `direnv allow` exit non-zero and flag setup as failed.
+	@if command -v direnv >/dev/null 2>&1 && [ -f "$$WORKTREE_DIR/.envrc" ]; then \
+		( cd "$$WORKTREE_DIR" && direnv allow ) || echo "direnv allow failed (non-fatal)"; \
+	fi
 
 ## web-deps: Install web dependencies (needed for protoc-gen-es plugin)
 $(WEB_DEPS_STAMP): services/web/package.json pnpm-lock.yaml
@@ -448,6 +452,10 @@ lint: lint-check-version $(GEN_STAMP)
 		echo "==> Linting services/docs"; \
 		$(MAKE) -C services/docs lint; \
 	fi
+	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
+		echo "==> Checking docs markdown formatting"; \
+		pnpm run lint:docs; \
+	fi
 
 ## Per-module lint targets
 lint-proto:
@@ -523,7 +531,7 @@ proof-plan:
 	node scripts/proof.mjs plan
 
 proof-test:
-	node --test scripts/proof-lib.test.mjs scripts/proof-playwright-runner.test.mjs scripts/proof-vhs.test.mjs scripts/proof-video.test.mjs scripts/proof-video-intro.test.mjs scripts/proof-poster.test.mjs
+	node --test scripts/proof-lib.test.mjs scripts/proof-playwright-runner.test.mjs scripts/proof-video.test.mjs scripts/proof-video-intro.test.mjs scripts/proof-poster.test.mjs
 
 test-scripts:
 	$(MAKE) -C scripts test
@@ -726,6 +734,30 @@ kill:
 	self=$$$$; pids="$$(printf '%s\n' $$pids | sort -un | grep -vx $$self || true)"; \
 	if [ -z "$$pids" ]; then echo "  nothing running"; exit 0; fi; \
 	for p in $$pids; do ps -o pid=,command= -p $$p 2>/dev/null | sed 's/^/  kill /'; done; \
+	kill $$pids 2>/dev/null || true; \
+	sleep 1; \
+	still=""; for p in $$pids; do kill -0 $$p 2>/dev/null && still="$$still $$p"; done; \
+	[ -n "$$still" ] && { echo "  force -9:$$still"; kill -9 $$still 2>/dev/null || true; } || true; \
+	echo "==> Done."
+
+## kill-all: Stop EVERY local boss process on this machine — across ALL worktrees
+## AND the main checkout. Unlike `kill` (scoped to $(CURDIR)), this matches by
+## EXECUTABLE basename + socket ownership, never by argv text, so it (a) catches
+## daemons started from another repo dir and (b) will NOT false-kill an unrelated
+## process whose arguments merely mention a boss path (e.g. an agent carrying a
+## prompt). WARNING: this also stops boss daemons/plugins owned by OTHER running
+## worktrees (e.g. concurrent cron sessions). Use `make kill` for just this repo.
+kill-all:
+	@echo "==> Killing ALL boss processes on this machine (every worktree + main checkout)"
+	@pids=""; \
+	add() { for p in $$1; do case " $$pids " in *" $$p "*) ;; *) pids="$$pids $$p" ;; esac; done; }; \
+	add "$$(ps -axo pid=,comm= | awk '$$2 ~ /\/(boss|bossd|bosso|bossd?-plugin-[a-z0-9-]+)$$/ {print $$1}')"; \
+	for p in $$(pgrep -x cmd 2>/dev/null); do \
+		lsof -p $$p 2>/dev/null | grep -qiE 'boss[od]\.(sock|db)' && add "$$p"; \
+	done; \
+	self=$$$$; pids="$$(printf '%s\n' $$pids | sort -un | grep -vx $$self || true)"; \
+	if [ -z "$$pids" ]; then echo "  nothing running"; exit 0; fi; \
+	for p in $$pids; do ps -o pid=,command= -p $$p 2>/dev/null | cut -c1-100 | sed 's/^/  kill /'; done; \
 	kill $$pids 2>/dev/null || true; \
 	sleep 1; \
 	still=""; for p in $$pids; do kill -0 $$p 2>/dev/null && still="$$still $$p"; done; \

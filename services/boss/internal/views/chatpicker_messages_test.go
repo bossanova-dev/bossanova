@@ -18,7 +18,7 @@ func TestChatPicker_MergeResultMsg(t *testing.T) {
 		m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 		m.merging = true
 
-		updated, _ := m.Update(mergeResultMsg{err: errors.New("boom")})
+		updated, _ := m.Update(mergeResultMsg{sessionID: "session-1", err: errors.New("boom")})
 		m = updated.(ChatPickerModel)
 
 		if m.merging {
@@ -36,7 +36,7 @@ func TestChatPicker_MergeResultMsg(t *testing.T) {
 		m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 		m.merging = true
 
-		updated, _ := m.Update(mergeResultMsg{err: nil})
+		updated, _ := m.Update(mergeResultMsg{sessionID: "session-1", err: nil})
 		m = updated.(ChatPickerModel)
 
 		if !m.merged {
@@ -44,6 +44,37 @@ func TestChatPicker_MergeResultMsg(t *testing.T) {
 		}
 		if m.statusMsg != "" {
 			t.Errorf("successful merge should not set a status message, got %q", m.statusMsg)
+		}
+	})
+}
+
+// TestChatPicker_MergeResultMsg_DiscardsForOtherSession verifies that a
+// mergeResultMsg tagged with a different sessionID is ignored (orphan
+// completion from a session the user navigated away from).
+func TestChatPicker_MergeResultMsg_DiscardsForOtherSession(t *testing.T) {
+	t.Run("orphan completion for different session is discarded", func(t *testing.T) {
+		m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-B", "")
+
+		updated, _ := m.Update(mergeResultMsg{sessionID: "session-A", err: nil})
+		m = updated.(ChatPickerModel)
+
+		if m.merged {
+			t.Error("merged must stay false when the completion was for a different session")
+		}
+		if m.statusMsg != "" {
+			t.Errorf("orphan completion should not set a status message, got %q", m.statusMsg)
+		}
+	})
+
+	t.Run("matching session completion is applied", func(t *testing.T) {
+		m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-B", "")
+		m.merging = true
+
+		updated, _ := m.Update(mergeResultMsg{sessionID: "session-B", err: nil})
+		m = updated.(ChatPickerModel)
+
+		if !m.merged {
+			t.Error("merged must be true after a successful merge for the matching session")
 		}
 	})
 }
@@ -56,7 +87,7 @@ func TestChatPicker_ArchiveResultMsg(t *testing.T) {
 		m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 		m.archiving = true
 
-		updated, _ := m.Update(archiveResultMsg{err: errors.New("boom")})
+		updated, _ := m.Update(archiveResultMsg{sessionID: "session-1", err: errors.New("boom")})
 		m = updated.(ChatPickerModel)
 
 		if m.archiving {
@@ -74,7 +105,7 @@ func TestChatPicker_ArchiveResultMsg(t *testing.T) {
 		m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 		m.archiving = true
 
-		updated, _ := m.Update(archiveResultMsg{err: nil})
+		updated, _ := m.Update(archiveResultMsg{sessionID: "session-1", err: nil})
 		m = updated.(ChatPickerModel)
 
 		if !m.archived {
@@ -82,6 +113,37 @@ func TestChatPicker_ArchiveResultMsg(t *testing.T) {
 		}
 		if m.statusMsg != "" {
 			t.Errorf("successful archive should not set a status message, got %q", m.statusMsg)
+		}
+	})
+}
+
+// TestChatPicker_ArchiveResultMsg_DiscardsForOtherSession verifies that an
+// archiveResultMsg tagged with a different sessionID is ignored (orphan
+// completion from a session the user navigated away from).
+func TestChatPicker_ArchiveResultMsg_DiscardsForOtherSession(t *testing.T) {
+	t.Run("orphan completion for different session is discarded", func(t *testing.T) {
+		m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-B", "")
+
+		updated, _ := m.Update(archiveResultMsg{sessionID: "session-A", err: nil})
+		m = updated.(ChatPickerModel)
+
+		if m.archived {
+			t.Error("archived must stay false when the completion was for a different session")
+		}
+		if m.statusMsg != "" {
+			t.Errorf("orphan completion should not set a status message, got %q", m.statusMsg)
+		}
+	})
+
+	t.Run("matching session completion is applied", func(t *testing.T) {
+		m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-B", "")
+		m.archiving = true
+
+		updated, _ := m.Update(archiveResultMsg{sessionID: "session-B", err: nil})
+		m = updated.(ChatPickerModel)
+
+		if !m.archived {
+			t.Error("archived must be true after a successful archive for the matching session")
 		}
 	})
 }

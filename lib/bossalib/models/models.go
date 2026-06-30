@@ -92,6 +92,12 @@ type Session struct {
 	LastRepairHeadSHA           string
 	LastRepairDisplayStatus     int32
 	LastRepairReviewFingerprint string
+
+	// SetupError records why the repo's configured setup script failed during
+	// worktree creation. A setup-script failure is non-fatal — the session
+	// still starts — so this flags the degraded state for the TUI and
+	// `boss show`. Empty for clean runs or repos with no setup script.
+	SetupError string
 }
 
 // Attempt represents a fix attempt within a session.

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -163,6 +164,46 @@ func TestCreate(t *testing.T) {
 	}
 	if !strings.Contains(out, "test-session") {
 		t.Errorf("branch not found in: %q", out)
+	}
+}
+
+// TestCreate_FailingSetupScriptIsNonFatal pins the degraded-but-created
+// behaviour: a setup script that exits non-zero must not abort worktree
+// creation. The worktree is valid, so Create returns a result with SetupErr
+// populated and the directory present on disk.
+func TestCreate_FailingSetupScriptIsNonFatal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell assumed")
+	}
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+
+	failing := "exit 3"
+	result, err := mgr.Create(context.Background(), CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Test session",
+		SetupScript:     &failing,
+	})
+	if err != nil {
+		t.Fatalf("Create should not fail on a failing setup script: %v", err)
+	}
+	if result.SetupErr == nil {
+		t.Fatal("expected result.SetupErr to be set when the setup script fails")
+	}
+	if !strings.Contains(result.SetupErr.Error(), "setup script") {
+		t.Fatalf("SetupErr should identify the setup script: %v", result.SetupErr)
+	}
+	// The worktree itself must still exist and be on the created branch.
+	if _, err := os.Stat(result.WorktreePath); err != nil {
+		t.Fatalf("worktree dir should exist despite setup failure: %v", err)
+	}
+	current := gitOutput(t, result.WorktreePath, "branch", "--show-current")
+	if current != result.BranchName {
+		t.Fatalf("current branch = %q, want %q", current, result.BranchName)
 	}
 }
 
@@ -1573,7 +1614,7 @@ func TestRunSetupScript_RejectsPathTraversal(t *testing.T) {
 	}
 
 	spec := `{"type":"script","path":"` + relToBait + `"}`
-	err = runSetupScript(context.Background(), worktree, worktree, spec, nil)
+	err = runSetupScript(context.Background(), worktree, worktree, spec, "", nil)
 	if err == nil {
 		t.Fatal("expected an error, got nil — traversal was not rejected")
 	}
@@ -2143,7 +2184,7 @@ func TestRunSetupScript_CommandArgvStaysLiteral(t *testing.T) {
 	sentinel := filepath.Join(t.TempDir(), "sentinel")
 	spec := `{"type":"command","argv":["echo","; touch ` + sentinel + `"]}`
 
-	if err := runSetupScript(context.Background(), worktree, worktree, spec, nil); err != nil {
+	if err := runSetupScript(context.Background(), worktree, worktree, spec, "", nil); err != nil {
 		t.Fatalf("runSetupScript: %v", err)
 	}
 	if _, err := os.Stat(sentinel); err == nil {

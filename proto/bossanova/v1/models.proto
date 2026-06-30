@@ -251,6 +251,12 @@ message Session {
   // Denormalized repo.can_auto_repair, populated server-side so the repair
   // plugin can honor the per-repo auto-repair toggle without a separate lookup.
   bool repo_can_auto_repair = 49;
+
+  // Why the repo's configured setup script failed during worktree creation.
+  // A setup-script failure is non-fatal — the session still starts — so this
+  // flags the degraded state for `boss show <id>` and the TUI. Empty for clean
+  // runs or repos with no setup script.
+  string setup_error = 50;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display

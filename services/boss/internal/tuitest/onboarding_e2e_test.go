@@ -80,10 +80,11 @@ func completeProviderOnboarding(t *testing.T, h *tuitest.Harness) {
 func loginFromHome(t *testing.T, h *tuitest.Harness) {
 	t.Helper()
 
-	if !strings.Contains(h.Driver.Screen(), "[l]ogin") {
-		if err := h.Driver.WaitForText(waitTimeout, "[l]ogin"); err != nil {
-			t.Fatalf("expected logged-out action bar; screen:\n%s", h.Driver.Screen())
-		}
+	// With no repos, onboarding completion lands on the Home empty state (which
+	// guides the user to add a repository and offers [l]ogin while logged out).
+	// The user is no longer auto-routed into the Add Repository wizard.
+	if err := h.Driver.WaitForText(waitTimeout, "[l]ogin"); err != nil {
+		t.Fatalf("expected logged-out home action bar; screen:\n%s", h.Driver.Screen())
 	}
 	if err := h.Driver.SendKey('l'); err != nil {
 		t.Fatalf("press login: %v", err)

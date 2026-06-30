@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/recurser/boss/internal/auth"
+	"github.com/recurser/bossalib/apiversion"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 )
 
@@ -29,7 +30,11 @@ func NewReportClient(ctx context.Context, mgr *auth.Manager) (bossanovav1connect
 		baseURL = defaultReportURL
 	}
 
-	var opts []connect.ClientOption
+	// Always stamp the API version this client was built against, even for
+	// anonymous ReportBug submissions, so the server negotiates compatibly.
+	opts := []connect.ClientOption{
+		connect.WithInterceptors(apiversion.ClientInterceptor(apiversion.DefaultRegistry().Current())),
+	}
 	if mgr != nil {
 		if token, err := mgr.AccessToken(ctx); err == nil && token != "" {
 			opts = append(opts, connect.WithInterceptors(newAuthInterceptor(token)))

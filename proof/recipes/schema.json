@@ -38,88 +38,18 @@
       }
     },
     "recipe": {
-      "oneOf": [
-        { "$ref": "#/$defs/tuiRecipe" },
-        { "$ref": "#/$defs/browserRecipe" }
-      ]
+      "$ref": "#/$defs/browserRecipe"
     },
     "baseRecipe": {
       "type": "object",
       "required": ["id", "surface", "title", "description", "privacy"],
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
-        "surface": { "enum": ["tui", "web", "marketing"] },
+        "surface": { "enum": ["web", "marketing"] },
         "title": { "type": "string", "minLength": 1 },
         "description": { "type": "string", "minLength": 1 },
         "privacy": { "enum": ["fixture", "live"] }
       }
-    },
-    "tuiRecipe": {
-      "allOf": [
-        { "$ref": "#/$defs/baseRecipe" },
-        {
-          "type": "object",
-          "unevaluatedProperties": false,
-          "required": ["id", "surface", "title", "description", "privacy", "terminal"],
-          "properties": {
-            "id": { "type": "string" },
-            "surface": { "const": "tui" },
-            "title": { "type": "string" },
-            "description": { "type": "string" },
-            "privacy": { "enum": ["fixture", "live"] },
-            "capture": { "enum": ["image", "video"], "default": "image" },
-            "frameDelayMs": { "type": "integer", "minimum": 0, "maximum": 60000 },
-            "playbackSpeed": { "type": "number", "exclusiveMinimum": 0, "maximum": 4, "default": 0.65 },
-            "terminal": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["width", "height"],
-              "properties": {
-                "width": { "type": "integer", "minimum": 80, "maximum": 240 },
-                "height": { "type": "integer", "minimum": 20, "maximum": 80 }
-              }
-            },
-            "args": {
-              "type": "array",
-              "items": { "type": "string" }
-            },
-            "keys": {
-              "type": "array",
-              "items": { "type": "string" }
-            },
-            "waitForReadyText": { "type": "string", "minLength": 1 },
-            "waitForText": { "type": "string", "minLength": 1 },
-            "fixture": { "enum": ["demo", "login", "onboarding"], "default": "demo" },
-            "steps": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["keys"],
-                "properties": {
-                  "keys": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
-                  "waitForReadyText": { "type": "string", "minLength": 1 },
-                  "waitForText": { "type": "string", "minLength": 1 }
-                }
-              }
-            }
-          },
-          "allOf": [
-            {
-              "if": { "properties": { "capture": { "const": "video" } }, "required": ["capture"] },
-              "then": {
-                "description": "TUI video recipes drive a steps[] sequence; no single waitForText.",
-                "required": ["steps"]
-              },
-              "else": {
-                "description": "TUI still recipes screenshot after a single waitForText anchor.",
-                "required": ["waitForText"]
-              }
-            }
-          ]
-        }
-      ]
     },
     "browserRecipe": {
       "allOf": [

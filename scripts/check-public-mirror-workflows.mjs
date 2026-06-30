@@ -1,23 +1,23 @@
 #!/usr/bin/env node
 
-import fs from 'node:fs';
+import fs from 'node:fs'
 
-const mirrorWorkflow = '.github/workflows/mirror-public.yml';
+const mirrorWorkflow = '.github/workflows/mirror-public.yml'
 
 if (!fs.existsSync(mirrorWorkflow)) {
-  console.log('Public mirror workflow check skipped; mirror workflow not present.');
-  process.exit(0);
+  console.log('Public mirror workflow check skipped; mirror workflow not present.')
+  process.exit(0)
 }
 
-const mirror = fs.readFileSync(mirrorWorkflow, 'utf8');
+const mirror = fs.readFileSync(mirrorWorkflow, 'utf8')
 
 function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function includesFilenameToken(content, filename) {
-  const pattern = new RegExp(`(^|[^A-Za-z0-9_.-])${escapeRegExp(filename)}($|[^A-Za-z0-9_.-])`);
-  return pattern.test(content);
+  const pattern = new RegExp(`(^|[^A-Za-z0-9_.-])${escapeRegExp(filename)}($|[^A-Za-z0-9_.-])`)
+  return pattern.test(content)
 }
 
 const requiredPublicWorkflows = [
@@ -34,16 +34,16 @@ const requiredPublicWorkflows = [
   '.github/workflows/test-plugin-repair.yml',
   '.github/workflows/test-plugin-sentry.yml',
   '.github/workflows/test-plugin-stub-runner.yml',
-];
+]
 
-const missing = requiredPublicWorkflows.filter((workflow) => !mirror.includes(workflow));
+const missing = requiredPublicWorkflows.filter((workflow) => !mirror.includes(workflow))
 
 if (missing.length > 0) {
-  console.error('Public mirror is missing test workflows for public repo code:');
+  console.error('Public mirror is missing test workflows for public repo code:')
   for (const workflow of missing) {
-    console.error(`  - ${workflow}`);
+    console.error(`  - ${workflow}`)
   }
-  process.exit(1);
+  process.exit(1)
 }
 
 // Guard the mirror's own safety mechanisms against regression: the denylist
@@ -59,23 +59,23 @@ const requiredMirrorClauses = [
   { clause: '.env.example.public', match: includesFilenameToken },
   { clause: 'scripts/check-mirror-leaks.sh' },
   { clause: '--force-with-lease' },
-];
+]
 
 const missingClauses = requiredMirrorClauses
   .filter(
     ({ clause, match = (content, value) => content.includes(value) }) => !match(mirror, clause),
   )
-  .map(({ clause }) => clause);
+  .map(({ clause }) => clause)
 
 if (missingClauses.length > 0) {
-  console.error('Public mirror is missing required leak-prevention clauses:');
+  console.error('Public mirror is missing required leak-prevention clauses:')
   for (const clause of missingClauses) {
-    console.error(`  - ${clause}`);
+    console.error(`  - ${clause}`)
   }
-  process.exit(1);
+  process.exit(1)
 }
 
 console.log(
   `Public mirror workflows OK (${requiredPublicWorkflows.length} workflows, ` +
     `${requiredMirrorClauses.length} leak-prevention clauses checked)`,
-);
+)

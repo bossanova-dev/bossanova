@@ -1,57 +1,67 @@
 #!/usr/bin/env node
 
-import fs from 'node:fs';
-import { createRequire } from 'node:module';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import fs from 'node:fs'
+import { createRequire } from 'node:module'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-import { trimTerminalBlankLines } from './proof-lib.mjs';
+import { formatCaption, trimTerminalBlankLines } from './proof-lib.mjs'
 
-const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const require = createRequire(path.join(repoRoot, 'services/web/package.json'));
-const { chromium } = require('@playwright/test');
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+  const require = createRequire(path.join(repoRoot, 'services/web/package.json'))
+  const { chromium } = require('@playwright/test')
 
-const args = parseArgs(process.argv.slice(2));
-const text = trimTerminalBlankLines(fs.readFileSync(args.input, 'utf8'));
+  const args = parseArgs(process.argv.slice(2))
+  const text = trimTerminalBlankLines(fs.readFileSync(args.input, 'utf8'))
 
-const browser = await chromium.launch();
-try {
-  const page = await browser.newPage({
-    viewport: { width: 1400, height: 900 },
-    deviceScaleFactor: 1,
-  });
-  await page.setContent(renderHtml({ title: args.title, text }));
-  await page.locator('[data-proof-terminal]').screenshot({ path: args.output });
-} finally {
-  await browser.close();
+  const browser = await chromium.launch()
+  try {
+    const page = await browser.newPage({
+      viewport: { width: 1400, height: 900 },
+      deviceScaleFactor: 1,
+    })
+    await page.setContent(renderHtml({ title: args.title, text, caption: args.caption }))
+    await page.locator('[data-proof-terminal]').screenshot({ path: args.output })
+  } finally {
+    await browser.close()
+  }
 }
 
 function parseArgs(argv) {
-  const parsed = {};
+  const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+  const parsed = {}
   for (let i = 0; i < argv.length; i += 2) {
-    const key = argv[i];
-    const value = argv[i + 1];
+    const key = argv[i]
+    const value = argv[i + 1]
     if (!key?.startsWith('--') || !value) {
-      throw new Error(`invalid argument near ${key ?? '<end>'}`);
+      throw new Error(`invalid argument near ${key ?? '<end>'}`)
     }
-    parsed[key.slice(2)] = value;
+    parsed[key.slice(2)] = value
   }
   for (const required of ['input', 'output', 'title']) {
     if (!parsed[required]) {
-      throw new Error(`missing --${required}`);
+      throw new Error(`missing --${required}`)
     }
   }
-  parsed.input = resolveRepoPath(parsed.input);
-  parsed.output = resolveRepoPath(parsed.output);
-  fs.mkdirSync(path.dirname(parsed.output), { recursive: true });
-  return parsed;
+  parsed.input = resolveRepoPath(parsed.input, repoRoot)
+  parsed.output = resolveRepoPath(parsed.output, repoRoot)
+  fs.mkdirSync(path.dirname(parsed.output), { recursive: true })
+  parsed.caption = parsed.caption ?? ''
+  return parsed
 }
 
-function resolveRepoPath(value) {
-  return path.isAbsolute(value) ? value : path.join(repoRoot, value);
+function resolveRepoPath(value, repoRoot) {
+  return path.isAbsolute(value) ? value : path.join(repoRoot, value)
 }
 
-function renderHtml({ title, text }) {
+export function renderHtml({ title, text, caption = '' }) {
+  // Bound the caption to a single line <=140 chars (AC#4). formatCaption('' or
+  // whitespace-only) === '', so the truthiness check still omits the bar.
+  const formattedCaption = formatCaption(caption)
+  const captionBar = formattedCaption
+    ? `<div class="__proof-tui-caption" style="background:#1d4ed8;color:#fff;font:600 14px/1.5 sans-serif;padding:6px 14px;">${escapeHtml(formattedCaption)}</div>`
+    : ''
   return `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
@@ -109,11 +119,11 @@ function renderHtml({ title, text }) {
     <div class="titlebar">
       <span class="dot"></span><span class="dot"></span><span class="dot"></span>
       <span class="label">${escapeHtml(title)}</span>
-    </div>
+    </div>${captionBar}
     <pre>${escapeHtml(text)}</pre>
   </section>
 </body>
-</html>`;
+</html>`
 }
 
 function escapeHtml(value) {
@@ -121,5 +131,5 @@ function escapeHtml(value) {
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
+    .replaceAll('"', '&quot;')
 }

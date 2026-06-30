@@ -31,7 +31,7 @@ func TestBuildInteractiveCommandReturnsDollarCommandPrefix(t *testing.T) {
 	srv := &Server{}
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:      "agent-1",
-		LogPath:        t.TempDir() + "/codex.log",
+		LogPath:        filepath.Join(t.TempDir(), "codex.log"),
 		InitialCommand: "boss-finalize",
 	})
 	if err != nil {
@@ -389,7 +389,7 @@ func equalStrings(a, b []string) bool {
 // before the ready marker appears.
 func TestBuildInteractiveCommandKeepsTTY(t *testing.T) {
 	s := newTestServer(t)
-	logPath := "/tmp/codex.log"
+	logPath := filepath.Join(t.TempDir(), "codex.log")
 
 	// Fresh.
 	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
@@ -519,7 +519,7 @@ func TestBuildInteractiveCommandIncludesRunnerOptions(t *testing.T) {
 		WithModel("gpt-5"),
 	)
 	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId: "abc", Resume: false, LogPath: "/tmp/x.log",
+		SessionId: "abc", Resume: false, LogPath: filepath.Join(t.TempDir(), "x.log"),
 	})
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
@@ -590,7 +590,7 @@ func TestBuildInteractiveCommandIncludesDangerouslyBypass(t *testing.T) {
 		WithDangerouslyBypassApprovalsAndSandbox(true),
 	)
 	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId: "abc", Resume: false, LogPath: "/tmp/x.log",
+		SessionId: "abc", Resume: false, LogPath: filepath.Join(t.TempDir(), "x.log"),
 	})
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
@@ -618,6 +618,7 @@ func TestBuildInteractiveCommandWrapsInLoginShellWhenConfigured(t *testing.T) {
 	wantArgv := []string{
 		"/opt/homebrew/bin/fish",
 		"-l",
+		"-i",
 		"-c",
 		"exec $argv",
 		"codex",

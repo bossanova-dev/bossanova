@@ -315,6 +315,58 @@ func TestCloudGuestOfferSettingsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestEnsureBossCloudValueDeliveredAtBackfillsMissingTimestamp(t *testing.T) {
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	settings := DefaultSettings()
+
+	got, changed := settings.EnsureBossCloudValueDeliveredAt(now)
+	if !changed {
+		t.Fatal("EnsureBossCloudValueDeliveredAt changed = false, want true")
+	}
+	if !got.BossCloudValueDeliveredAt.Equal(now) {
+		t.Fatalf("BossCloudValueDeliveredAt = %s, want %s", got.BossCloudValueDeliveredAt, now)
+	}
+}
+
+func TestEnsureBossCloudValueDeliveredAtPreservesExistingTimestamp(t *testing.T) {
+	deliveredAt := time.Date(2026, 6, 1, 9, 30, 0, 0, time.UTC)
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	settings := DefaultSettings()
+	settings.BossCloudValueDeliveredAt = deliveredAt
+
+	got, changed := settings.EnsureBossCloudValueDeliveredAt(now)
+	if changed {
+		t.Fatal("EnsureBossCloudValueDeliveredAt changed = true, want false")
+	}
+	if !got.BossCloudValueDeliveredAt.Equal(deliveredAt) {
+		t.Fatalf("BossCloudValueDeliveredAt = %s, want %s", got.BossCloudValueDeliveredAt, deliveredAt)
+	}
+}
+
+func TestBossCloudValueDeliveredAtRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	deliveredAt := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	settings := DefaultSettings()
+
+	// fresh Settings has a zero BossCloudValueDeliveredAt
+	if !settings.BossCloudValueDeliveredAt.IsZero() {
+		t.Fatalf("new Settings should have zero BossCloudValueDeliveredAt, got %v", settings.BossCloudValueDeliveredAt)
+	}
+
+	settings.BossCloudValueDeliveredAt = deliveredAt
+
+	if err := SaveTo(path, settings); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	loaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if !loaded.BossCloudValueDeliveredAt.Equal(deliveredAt) {
+		t.Fatalf("BossCloudValueDeliveredAt = %s, want %s", loaded.BossCloudValueDeliveredAt, deliveredAt)
+	}
+}
+
 func TestLoadFrom_BackfillsDefaultAgent(t *testing.T) {
 	// LoadFrom must guarantee a non-empty DefaultAgent on two file shapes:
 	//   1. Legacy file: omits default_agent entirely (older binary).

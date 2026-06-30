@@ -1,31 +1,31 @@
 // biome-ignore-all lint/security/noSecrets: scrub tests intentionally contain fake token-shaped samples.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const sentryMock = vi.hoisted(() => ({
   init: vi.fn(),
   setTag: vi.fn(),
-}));
+}))
 
-vi.mock('@sentry/react', () => sentryMock);
+vi.mock('@sentry/react', () => sentryMock)
 
-import { initSentry, scrub } from './sentry-init';
+import { initSentry, scrub } from './sentry-init'
 
-type BeforeSend = (event: Record<string, unknown>) => Record<string, unknown>;
+type BeforeSend = (event: Record<string, unknown>) => Record<string, unknown>
 
 function beforeSend(): BeforeSend {
-  initSentry();
-  const options = sentryMock.init.mock.calls.at(-1)?.[0] as { beforeSend?: BeforeSend } | undefined;
+  initSentry()
+  const options = sentryMock.init.mock.calls.at(-1)?.[0] as { beforeSend?: BeforeSend } | undefined
   if (!options?.beforeSend) {
-    throw new Error('Sentry beforeSend was not registered');
+    throw new Error('Sentry beforeSend was not registered')
   }
-  return options.beforeSend;
+  return options.beforeSend
 }
 
 beforeEach(() => {
-  sentryMock.init.mockReset();
-  sentryMock.setTag.mockReset();
-});
+  sentryMock.init.mockReset()
+  sentryMock.setTag.mockReset()
+})
 
 describe('scrub', () => {
   it.each([
@@ -114,14 +114,14 @@ describe('scrub', () => {
       want: '',
     },
   ])('$name', ({ input, want }) => {
-    expect(scrub(input)).toBe(want);
-  });
-});
+    expect(scrub(input)).toBe(want)
+  })
+})
 
 describe('beforeSend', () => {
   it('scrubs stacktrace frame fields and clears frame vars', () => {
-    const gitHubToken = 'ghp_AbCdEf0123456789AbCdEf0123456789AbCd';
-    const bearerToken = 'abcdefghijklmnopqrstuvwxyz123456';
+    const gitHubToken = 'ghp_AbCdEf0123456789AbCdEf0123456789AbCd'
+    const bearerToken = 'abcdefghijklmnopqrstuvwxyz123456'
     const event = {
       exception: {
         values: [
@@ -156,20 +156,20 @@ describe('beforeSend', () => {
           },
         },
       ],
-    };
+    }
 
-    beforeSend()(event);
+    beforeSend()(event)
 
-    const serialized = JSON.stringify(event);
-    expect(serialized).not.toContain(gitHubToken);
-    expect(serialized).not.toContain(bearerToken);
-    expect(serialized).not.toContain('person@example.invalid');
-    expect(serialized).not.toContain('hunter2');
-    expect(serialized).toContain('[REDACTED]');
+    const serialized = JSON.stringify(event)
+    expect(serialized).not.toContain(gitHubToken)
+    expect(serialized).not.toContain(bearerToken)
+    expect(serialized).not.toContain('person@example.invalid')
+    expect(serialized).not.toContain('hunter2')
+    expect(serialized).toContain('[REDACTED]')
 
-    const exceptionFrame = event.exception.values[0].stacktrace.frames[0];
-    const threadFrame = event.threads[0].stacktrace.frames[0];
-    expect(exceptionFrame.vars).toBeUndefined();
-    expect(threadFrame.vars).toBeUndefined();
-  });
-});
+    const exceptionFrame = event.exception.values[0].stacktrace.frames[0]
+    const threadFrame = event.threads[0].stacktrace.frames[0]
+    expect(exceptionFrame.vars).toBeUndefined()
+    expect(threadFrame.vars).toBeUndefined()
+  })
+})

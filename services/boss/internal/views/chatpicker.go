@@ -80,12 +80,21 @@ type webOpenResultMsg struct {
 }
 
 // mergeResultMsg carries the result of an async MergeSession RPC call.
+// sessionID tags the session this merge was issued for so a completion that
+// resolves after the user navigated to a different session is discarded rather
+// than acted on.
 type mergeResultMsg struct {
-	err error
+	sessionID string
+	err       error
 }
 
+// archiveResultMsg carries the result of an async ArchiveSession RPC call.
+// sessionID tags the session this archive was issued for so a completion that
+// resolves after the user navigated to a different session is discarded rather
+// than acted on.
 type archiveResultMsg struct {
-	err error
+	sessionID string
+	err       error
 }
 
 // confirmKind identifies which destructive action a y/n confirmation prompt
@@ -398,6 +407,12 @@ func (m ChatPickerModel) canOpenGitHub() bool {
 	return m.repoWebLink.provider == "github" && m.repoWebLink.url != "" && m.hasPR()
 }
 
+// canOpenTracker reports whether the [l]inear button and the l shortcut should
+// be available — only when the session has a non-empty tracker URL.
+func (m ChatPickerModel) canOpenTracker() bool {
+	return m.session != nil && m.session.GetTrackerUrl() != ""
+}
+
 // canMerge reports whether the [m]erge action should be available for the
 // current session — when the session has an open PR whose display status is
 // "passing" and the merge has not already completed (merged sessions no longer
@@ -536,11 +551,16 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case webOpenResultMsg:
 		if msg.err != nil {
-			m.statusMsg = fmt.Sprintf("Couldn't open GitHub: %v", msg.err)
+			// Shared by the [g]ithub and [l]inear shortcuts, so the message
+			// stays generic rather than naming a specific destination.
+			m.statusMsg = fmt.Sprintf("Couldn't open browser: %v", msg.err)
 		}
 		return m, nil
 
 	case mergeResultMsg:
+		if msg.sessionID != m.sessionID {
+			return m, nil // orphan completion from a session the user navigated away from
+		}
 		m.merging = false
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Couldn't merge: %v", msg.err)
@@ -555,6 +575,9 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case archiveResultMsg:
+		if msg.sessionID != m.sessionID {
+			return m, nil // orphan completion from a session the user navigated away from
+		}
 		m.archiving = false
 		if msg.err != nil {
 			m.statusMsg = "Couldn't archive session: " + msg.err.Error()
@@ -633,6 +656,11 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// TUI archive path. Keep the archive flow reachable here; swallow
 			// everything else.
 			if m.archiving {
+				// Allow esc to navigate away even while archiving — the RPC
+				// continues in the background.
+				if msg.String() == "esc" {
+					m.cancel = true
+				}
 				return m, nil
 			}
 			if m.confirm == confirmArchive {
@@ -649,9 +677,13 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// While a merge/archive is in flight, swallow key input so the user
-		// can't navigate away or invisibly enter another confirm state before
-		// the async result routes the picker.
+		// can't invisibly enter another confirm state before the async result
+		// routes the picker. Esc is the exception: it navigates away while
+		// allowing the RPC to finish in the background.
 		if m.merging || m.archiving {
+			if msg.String() == "esc" {
+				m.cancel = true
+			}
 			return m, nil
 		}
 		if m.pickingAgent {
@@ -708,6 +740,17 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			repoURL := m.repoWebLink.url
 			return m, func() tea.Msg {
 				return webOpenResultMsg{err: openURLFunc(repoURL)}
+			}
+		case "l":
+			// l is the [l]inear action key. When the action is hidden, swallow
+			// it to avoid unintended side-effects — a hidden shortcut must do
+			// nothing.
+			if !m.canOpenTracker() {
+				return m, nil
+			}
+			trackerURL := m.session.GetTrackerUrl()
+			return m, func() tea.Msg {
+				return webOpenResultMsg{err: openURLFunc(trackerURL)}
 			}
 		case "m":
 			if !m.canMerge() {
@@ -807,7 +850,7 @@ func (m ChatPickerModel) mergeCmd() tea.Cmd {
 	id := m.sessionID
 	return func() tea.Msg {
 		_, err := client.MergeSession(ctx, id)
-		return mergeResultMsg{err: err}
+		return mergeResultMsg{sessionID: id, err: err}
 	}
 }
 
@@ -817,7 +860,7 @@ func (m ChatPickerModel) archiveCmd() tea.Cmd {
 	id := m.sessionID
 	return func() tea.Msg {
 		_, err := client.ArchiveSession(ctx, id)
-		return archiveResultMsg{err: err}
+		return archiveResultMsg{sessionID: id, err: err}
 	}
 }
 
@@ -1001,9 +1044,9 @@ func (m ChatPickerModel) View() tea.View {
 	b.WriteString("\n")
 
 	if m.merging {
-		label := "Merging PR..."
+		label := "Merging PR... (esc to return to list)"
 		if n := m.session.GetPrNumber(); n != 0 {
-			label = fmt.Sprintf("Merging PR #%d...", n)
+			label = fmt.Sprintf("Merging PR #%d... (esc to return to list)", n)
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + label))
@@ -1056,6 +1099,9 @@ func (m ChatPickerModel) View() tea.View {
 		}
 		if m.canOpenGitHub() {
 			middle = append(middle, "[g]ithub")
+		}
+		if m.canOpenTracker() {
+			middle = append(middle, "[l]inear")
 		}
 		if m.canMerge() {
 			middle = append(middle, "[m]erge")

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -69,5 +70,7 @@ func TestLoadPluginSumsErrors(t *testing.T) {
 	}
 	if _, err := loadPluginSums(dir); err == nil {
 		t.Error("malformed manifest must error")
+	} else if !strings.Contains(err.Error(), "malformed manifest line 1") {
+		t.Fatalf("malformed manifest error = %q, want line 1", err.Error())
 	}
 }

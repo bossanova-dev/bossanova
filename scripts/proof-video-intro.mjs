@@ -7,7 +7,7 @@
 // intro card rendered by a headless browser (Playwright). Ported from:
 //   wondercanvas-mono/apps/e2e/scripts/render-intro-card.ts
 
-export const INTRO_SEC = 2;
+export const INTRO_SEC = 2
 const ENCODE_ARGS = [
   '-c:v',
   'libx264',
@@ -20,7 +20,7 @@ const ENCODE_ARGS = [
   '-movflags',
   '+faststart',
   '-an',
-];
+]
 
 /** A still PNG → an INTRO_SEC clip at the exact video geometry + fps. */
 export function buildIntroClipArgs({ pngPath, width, height, fps, outPath }) {
@@ -38,7 +38,7 @@ export function buildIntroClipArgs({ pngPath, width, height, fps, outPath }) {
     `scale=${width}:${height}:flags=lanczos,setsar=1,format=yuv420p,fps=${fps}`,
     ...ENCODE_ARGS,
     outPath,
-  ];
+  ]
 }
 
 /**
@@ -60,7 +60,7 @@ export function buildIntroConcatArgs({ introPath, mainPath, outPath }) {
     '[v]',
     ...ENCODE_ARGS,
     outPath,
-  ];
+  ]
 }
 
 function escapeHtml(s) {
@@ -68,7 +68,7 @@ function escapeHtml(s) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
 }
 
 /**
@@ -91,5 +91,5 @@ export function buildIntroCardHtml({ label, title }) {
   </style></head><body><div class="wrap">
     <div class="label">${escapeHtml(label)}</div>
     <div class="title">${escapeHtml(title)}</div>
-  </div></body></html>`;
+  </div></body></html>`
 }

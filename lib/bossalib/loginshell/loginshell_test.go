@@ -64,6 +64,26 @@ func TestFlags_ZshUsesInteractiveLoginShell(t *testing.T) {
 	}
 }
 
+func TestFlags_FishUsesInteractiveLoginShell(t *testing.T) {
+	// fish loads version managers (nodenv/asdf/mise) only under
+	// `status --is-interactive`, so the launch wrap must pass -i or the agent
+	// shims never land on PATH and the pane dies with exit 127.
+	got := Flags("/opt/homebrew/bin/fish")
+	want := []string{"-l", "-i", "-c"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fish flags:\n got=%#v\nwant=%#v", got, want)
+	}
+}
+
+func TestFlags_BashUsesNonInteractiveLoginShell(t *testing.T) {
+	// bash sources ~/.bashrc explicitly via CommandLine, so it does not need -i.
+	got := Flags("/bin/bash")
+	want := []string{"-l", "-c"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("bash flags:\n got=%#v\nwant=%#v", got, want)
+	}
+}
+
 func TestCommandLine_BashSourcesBashrc(t *testing.T) {
 	got := CommandLine("/bin/bash", "command -v codex")
 	want := `if [ -r "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi; command -v codex`

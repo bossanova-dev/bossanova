@@ -1,12 +1,12 @@
-import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import test from 'node:test';
+import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import test from 'node:test'
 
-const scriptPath = fileURLToPath(new URL('./check-public-mirror-workflows.mjs', import.meta.url));
+const scriptPath = fileURLToPath(new URL('./check-public-mirror-workflows.mjs', import.meta.url))
 
 const requiredPublicWorkflows = [
   '.github/workflows/ci.yml',
@@ -22,17 +22,17 @@ const requiredPublicWorkflows = [
   '.github/workflows/test-plugin-repair.yml',
   '.github/workflows/test-plugin-sentry.yml',
   '.github/workflows/test-plugin-stub-runner.yml',
-];
+]
 
 function withMirrorWorkflow(content, callback) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-workflow-'));
-  fs.mkdirSync(path.join(dir, '.github/workflows'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.github/workflows/mirror-public.yml'), content);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-workflow-'))
+  fs.mkdirSync(path.join(dir, '.github/workflows'), { recursive: true })
+  fs.writeFileSync(path.join(dir, '.github/workflows/mirror-public.yml'), content)
 
   try {
-    callback(dir);
+    callback(dir)
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 }
 
@@ -46,7 +46,7 @@ function mirrorWorkflowWith(extraLines) {
     'scripts/check-mirror-leaks.sh',
     '--force-with-lease',
     ...extraLines,
-  ].join('\n');
+  ].join('\n')
 }
 
 test('requires .env.example as a distinct filename token', () => {
@@ -54,18 +54,18 @@ test('requires .env.example as a distinct filename token', () => {
     assert.throws(
       () => execFileSync('node', [scriptPath], { cwd: dir, encoding: 'utf8' }),
       (error) => {
-        assert.equal(error.status, 1);
-        assert.match(error.stderr, /\.env\.example/);
-        return true;
+        assert.equal(error.status, 1)
+        assert.match(error.stderr, /\.env\.example/)
+        return true
       },
-    );
-  });
-});
+    )
+  })
+})
 
 test('accepts mirror workflow when private and public env example filenames are both wired', () => {
   withMirrorWorkflow(mirrorWorkflowWith(['.env.example']), (dir) => {
-    const output = execFileSync('node', [scriptPath], { cwd: dir, encoding: 'utf8' });
+    const output = execFileSync('node', [scriptPath], { cwd: dir, encoding: 'utf8' })
 
-    assert.match(output, /Public mirror workflows OK/);
-  });
-});
+    assert.match(output, /Public mirror workflows OK/)
+  })
+})

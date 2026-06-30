@@ -1805,6 +1805,13 @@ func runShow(cmd *cobra.Command, sessionID string) error {
 			views.RelativeTime(sess.GetLastRepairStartedAt().AsTime()))
 	}
 
+	// Non-fatal setup-script failure flag: the session was created in a
+	// degraded state because its repo setup script failed during worktree
+	// creation. Empty for clean runs.
+	if sess.GetSetupError() != "" {
+		fmt.Printf("  Setup:    ⚠ setup script failed: %s\n", sess.GetSetupError())
+	}
+
 	// List chats as a table.
 	chats, err := c.ListChats(ctx, sessionID)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1863,7 +1864,7 @@ func TestSendPlan_LoadBufferReceivesPlanStdin(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
-	tmpFile := t.TempDir() + "/load-buffer-stdin"
+	tmpFile := filepath.Join(t.TempDir(), "load-buffer-stdin")
 
 	captureCalls := atomic.Int32{}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -1873,7 +1874,7 @@ func TestSendPlan_LoadBufferReceivesPlanStdin(t *testing.T) {
 		}
 		if len(args) > 0 && args[0] == "load-buffer" {
 			// Drain stdin into tmpFile so the test can assert on it.
-			return exec.CommandContext(ctx, "sh", "-c", "cat > "+tmpFile)
+			return exec.CommandContext(ctx, "sh", "-c", "cat > \"$1\"", "sh", tmpFile)
 		}
 		return exec.CommandContext(ctx, "true")
 	}))

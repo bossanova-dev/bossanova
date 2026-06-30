@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/apiversion"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 )
@@ -25,7 +26,12 @@ func NewRemote(baseURL, token string) *RemoteClient {
 	rpc := bossanovav1connect.NewOrchestratorServiceClient(
 		http.DefaultClient,
 		baseURL,
-		connect.WithInterceptors(newAuthInterceptor(token)),
+		connect.WithInterceptors(
+			newAuthInterceptor(token),
+			// Stamp the API version this client was built against so the
+			// server can keep us on compatible behavior after it advances.
+			apiversion.ClientInterceptor(apiversion.DefaultRegistry().Current()),
+		),
 	)
 	return &RemoteClient{rpc: rpc}
 }
@@ -217,6 +223,10 @@ func (c *RemoteClient) RecordChat(_ context.Context, _, _, _, _ string, _ bool) 
 
 func (c *RemoteClient) ListChats(_ context.Context, _ string) ([]*pb.ClaudeChat, error) {
 	return nil, errLocalOnly("ListChats")
+}
+
+func (c *RemoteClient) DescribeChatLaunch(_ context.Context, _ string) (*pb.DescribeChatLaunchResponse, error) {
+	return nil, errLocalOnly("DescribeChatLaunch")
 }
 
 func (c *RemoteClient) UpdateChatTitle(_ context.Context, _, _ string) error {

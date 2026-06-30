@@ -348,3 +348,70 @@ func renderMutedTrackerLink(sess *pb.Session, title string) string {
 	}
 	return wrap(title[:idx]) + linked + wrap(title[idx+len(target):])
 }
+
+// SGR envelopes for selected-row text. Raw ANSI (not lipgloss) so they can
+// bracket an OSC 8 hyperlink without lipgloss's Render path mangling the
+// hyperlink envelope. 1 = bold, 38;2;76;167;248 = selection blue fg (#4CA7F8).
+// The selected row is bold (see bossTableStyles().Selected); the table applies
+// blue at the row level, but a styled leading cell (the attention "!") emits a
+// full reset that cancels it for later cells — so we re-assert blue here.
+const (
+	selectedTextOpen  = "\x1b[1;38;2;76;167;248m"
+	selectedTextClose = "\x1b[22;39m"
+	// Same as above plus 58;2;76;167;248 = blue underline color, 4 = underline.
+	// Pinning the underline color stops it inheriting whatever SGR 58 was last
+	// set (e.g. a previous row's highlight) and mismatching the text.
+	selectedUnderlineOpen  = "\x1b[1;38;2;76;167;248;58;2;76;167;248;4m"
+	selectedUnderlineClose = "\x1b[22;39;59;24m"
+)
+
+// renderSelectedText wraps plain (non-hyperlinked) cell text in the selected
+// row's bold blue styling. Returns "" unchanged.
+func renderSelectedText(s string) string {
+	if s == "" {
+		return ""
+	}
+	return selectedTextOpen + s + selectedTextClose
+}
+
+// renderSelectedTrackerLink returns the full title in the selected row's bold
+// blue. If the title contains the session's [tracker_id], that token is also
+// underlined and wrapped in an OSC 8 hyperlink to the tracker URL. Raw ANSI
+// (not lipgloss) so the OSC 8 envelope survives — see renderMutedTrackerLink.
+func renderSelectedTrackerLink(sess *pb.Session, title string) string {
+	wrap := func(s string) string {
+		if s == "" {
+			return ""
+		}
+		return selectedTextOpen + s + selectedTextClose
+	}
+	if sess == nil || sess.TrackerId == nil || *sess.TrackerId == "" {
+		return wrap(title)
+	}
+	target := "[" + *sess.TrackerId + "]"
+	idx := strings.Index(title, target)
+	if idx < 0 {
+		return wrap(title)
+	}
+	styledTarget := selectedUnderlineOpen + target + selectedUnderlineClose
+	linked := styledTarget
+	if sess.TrackerUrl != nil && *sess.TrackerUrl != "" {
+		linked = fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.TrackerUrl, styledTarget)
+	}
+	return wrap(title[:idx]) + linked + wrap(title[idx+len(target):])
+}
+
+// renderSelectedPRLink returns the PR label (#N) in the selected row's bold
+// blue + underline, wrapped in an OSC 8 hyperlink to the PR URL when present.
+// Returns "" when the session has no PR. Raw ANSI mirrors renderMutedPRLink.
+func renderSelectedPRLink(sess *pb.Session) string {
+	if sess == nil || sess.PrNumber == nil {
+		return ""
+	}
+	label := fmt.Sprintf("#%d", *sess.PrNumber)
+	styled := selectedUnderlineOpen + label + selectedUnderlineClose
+	if sess.PrUrl != nil && *sess.PrUrl != "" {
+		return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.PrUrl, styled)
+	}
+	return styled
+}

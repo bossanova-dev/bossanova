@@ -78,6 +78,12 @@ type BossClient interface {
 	// FRESH_FALLBACK so it can render the right confirmation.
 	WakeChat(ctx context.Context, sessionID, agentSessionID string, forceFresh bool) (*pb.WakeChatResponse, error)
 
+	// DescribeChatLaunch returns the exact command bossd launches a chat's agent
+	// with (already login-shell wrapped), its worktree, and the daemon host, so
+	// the attach UI can show a reproduction command when a pane dies on startup.
+	// Local-only: the remote orchestrator does not host tmux panes.
+	DescribeChatLaunch(ctx context.Context, agentSessionID string) (*pb.DescribeChatLaunchResponse, error)
+
 	// Chat transcript and messaging
 	GetChatTranscript(ctx context.Context, req *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error)
 	SendChatMessage(ctx context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error)

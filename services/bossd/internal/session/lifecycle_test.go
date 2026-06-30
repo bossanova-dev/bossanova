@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rs/zerolog"
 
@@ -4367,10 +4368,12 @@ func TestSetAgents_UnknownAgentErrors(t *testing.T) {
 	}
 }
 
-// TestStartSessionDoesNotArmPollFallbackWhenHookUnsupportedWithoutCronJobID
-// verifies that hookless non-cron sessions do not arm daemon-side poll
-// fallback.
-func TestStartSessionDoesNotArmPollFallbackWhenHookUnsupportedWithoutCronJobID(t *testing.T) {
+// TestStartSessionArmsPollFallbackForHooklessNonCronRun verifies that a
+// hookless (codex) non-cron headless run arms daemon-side poll fallback so the
+// session is driven out of ImplementingPlan on completion. Even when a
+// HookToken is supplied, a hookless agent installs no Stop hook (IsSupported
+// false), so PollFallback — not a hook — must drive completion.
+func TestStartSessionArmsPollFallbackForHooklessNonCronRun(t *testing.T) {
 	ctx := context.Background()
 	worktreeDir := t.TempDir()
 
@@ -4415,8 +4418,256 @@ func TestStartSessionDoesNotArmPollFallbackWhenHookUnsupportedWithoutCronJobID(t
 		t.Fatalf("StartSession: %v", err)
 	}
 
+	if !armer.armCalled {
+		t.Fatal("poll fallback not armed for hookless non-cron headless run")
+	}
+	if armer.armedSessionID != "sess-1" {
+		t.Errorf("armed session id = %q, want sess-1", armer.armedSessionID)
+	}
+	agentSessionID := sessions.sessions["sess-1"].AgentSessionID
+	if agentSessionID == nil || armer.armedID != *agentSessionID {
+		t.Errorf("armed agent session id = %q, want %v", armer.armedID, agentSessionID)
+	}
+}
+
+// TestStartSessionArmsPollFallbackForHooklessNonCronRunWithoutHookToken pins
+// the production boss new --detach path: no HookToken is passed, so NO Stop
+// hook is installed (hookResp == nil) for ANY agent on the headless branch.
+// Without arming, the run is stranded in ImplementingPlan forever.
+func TestStartSessionArmsPollFallbackForHooklessNonCronRunWithoutHookToken(t *testing.T) {
+	ctx := context.Background()
+	worktreeDir := t.TempDir()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := &mockWorktreeManager{worktreePath: worktreeDir}
+	cr := newMockAgentRunner()
+	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Detached codex run",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		AgentName:  "codex",
+	}
+
+	fa := newFakeAgent()
+	fa.IsSupported = false
+	armer := &fakePollArmer{}
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fa})
+	lc.SetAgentLogsDir(t.TempDir())
+	lc.SetPollArmer(armer)
+	lc.SetDaemonCtx(ctx)
+
+	// No HookToken: the ConfigureFinalizeHook probe never runs, so hookResp is
+	// nil. The gate must treat nil as "no competing hook" and arm.
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{DeferPR: true}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if !armer.armCalled {
+		t.Fatal("poll fallback not armed for hookless non-cron headless run without HookToken")
+	}
+	if fa.LastConfigureHookReq != nil {
+		t.Error("ConfigureFinalizeHook must not be probed when no HookToken is set")
+	}
+}
+
+// TestSignalSessionRunCompleteCleanExitFinalizesHeadlessRun verifies that a
+// clean (exitError=="") completion of a non-cron ImplementingPlan session
+// drives FinalizeSession, advancing the session out of ImplementingPlan.
+func TestSignalSessionRunCompleteCleanExitFinalizesHeadlessRun(t *testing.T) {
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: ""} // empty = no changes → deleted_no_changes
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main", // different from worktree so Archive runs
+	}
+	runID := "run-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-sess1",
+		State:          machine.ImplementingPlan,
+		AgentName:      "codex",
+		AgentSessionID: &runID,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, zerolog.Nop())
+
+	lc.SignalSessionRunComplete("sess-1", "run-1", "")
+
+	if sess, ok := sessions.sessions["sess-1"]; ok && sess.State == machine.ImplementingPlan {
+		t.Fatalf("clean headless exit must advance session out of ImplementingPlan, still %s", sess.State)
+	}
+}
+
+// TestSignalSessionRunCompleteFailedExitBlocksHeadlessRun verifies a failed
+// completion blocks the session with a non-empty, non-secret reason and never
+// advances it to Finalizing.
+func TestSignalSessionRunCompleteFailedExitBlocksHeadlessRun(t *testing.T) {
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+
+	runID := "run-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-sess1",
+		State:          machine.ImplementingPlan,
+		AgentName:      "codex",
+		AgentSessionID: &runID,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, zerolog.Nop())
+
+	lc.SignalSessionRunComplete("sess-1", "run-1", "boom: command exited 1")
+
+	sess := sessions.sessions["sess-1"]
+	if sess == nil {
+		t.Fatal("failed headless exit must not delete the session")
+	}
+	if sess.State != machine.Blocked {
+		t.Fatalf("failed headless exit state = %s, want Blocked", sess.State)
+	}
+	if sess.BlockedReason == nil || strings.TrimSpace(*sess.BlockedReason) == "" {
+		t.Fatal("failed headless exit must set a non-empty BlockedReason")
+	}
+}
+
+// TestHeadlessRunBlockedReason_RedactsMultilineAndCaps locks the security
+// contract of the failed-exit reason summary: only the first line survives (so
+// stack traces / multi-line agent output that may carry secrets never reach the
+// session row) and the result is rune-truncated to a bounded length.
+func TestHeadlessRunBlockedReason_RedactsMultilineAndCaps(t *testing.T) {
+	t.Run("keeps only the first line", func(t *testing.T) {
+		got := headlessRunBlockedReason("auth failed: bad token\nAPI_KEY=sk-secret-value\nstack trace line")
+		if strings.Contains(got, "API_KEY") || strings.Contains(got, "\n") {
+			t.Fatalf("reason leaked subsequent lines: %q", got)
+		}
+		if !strings.Contains(got, "auth failed: bad token") {
+			t.Fatalf("reason dropped the first line: %q", got)
+		}
+	})
+	t.Run("empty exit error yields a generic reason", func(t *testing.T) {
+		if got := headlessRunBlockedReason("   "); strings.TrimSpace(got) == "" {
+			t.Fatalf("empty exit error must still produce a non-empty reason, got %q", got)
+		}
+	})
+	t.Run("rune-truncates an over-long single line", func(t *testing.T) {
+		got := headlessRunBlockedReason(strings.Repeat("é", 500))
+		if n := utf8.RuneCountInString(got); n > headlessRunBlockedReasonMaxLen+len("headless agent run failed: ")+1 {
+			t.Fatalf("reason not bounded: %d runes", n)
+		}
+		if !utf8.ValidString(got) {
+			t.Fatalf("reason truncated mid-rune (invalid UTF-8): %q", got)
+		}
+	})
+}
+
+// TestSignalSessionRunCompleteCronAndAdvancedAreNoOps verifies the headless
+// finalize path never touches a cron session (the cron gate owns it) and is a
+// no-op on a session already advanced past ImplementingPlan (duplicate signal).
+func TestSignalSessionRunCompleteCronAndAdvancedAreNoOps(t *testing.T) {
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: ""}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+
+	cronID := "cron-1"
+	runCron := "run-cron"
+	sessions.sessions["sess-cron"] = &models.Session{
+		ID:             "sess-cron",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-cron",
+		State:          machine.ImplementingPlan,
+		AgentName:      "codex",
+		AgentSessionID: &runCron,
+		CronJobID:      &cronID,
+	}
+	runAdv := "run-adv"
+	sessions.sessions["sess-adv"] = &models.Session{
+		ID:             "sess-adv",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-adv",
+		State:          machine.AwaitingChecks, // already advanced
+		AgentName:      "codex",
+		AgentSessionID: &runAdv,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, zerolog.Nop())
+
+	lc.SignalSessionRunComplete("sess-cron", "run-cron", "")
+	lc.SignalSessionRunComplete("sess-adv", "run-adv", "")
+
+	if got := sessions.sessions["sess-cron"].State; got != machine.ImplementingPlan {
+		t.Fatalf("cron session must be untouched by headless finalize, state=%s", got)
+	}
+	if got := sessions.sessions["sess-adv"].State; got != machine.AwaitingChecks {
+		t.Fatalf("already-advanced session must be a no-op, state=%s", got)
+	}
+}
+
+// TestBootstrapDoesNotReArmHeadlessImplementingRuns pins the deliberate choice
+// NOT to re-arm paneless headless ImplementingPlan runs on daemon restart. The
+// agent plugin's run-state map is in-memory, so after a restart ExitStatus
+// reports a phantom clean exit (IsComplete=true, ExitError="") for every
+// historical run; re-arming PollFallback would then clean-finalize runs that
+// were actually interrupted by the restart (premature ready / lost failures /
+// hard-delete). Bootstrap must leave such rows stranded-but-visible instead.
+func TestBootstrapDoesNotReArmHeadlessImplementingRuns(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	runH := "run-h"
+	sessions.sessions["sess-headless"] = &models.Session{
+		ID:             "sess-headless",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-h",
+		BaseBranch:     "main",
+		State:          machine.ImplementingPlan,
+		AgentName:      "codex",
+		AgentSessionID: &runH,
+	}
+
+	chats := &mockAgentChatStore{} // no live tmux chats
+	fa := newFakeAgent()
+	fa.IsSupported = false
+	armer := &fakePollArmer{}
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fa})
+	lc.SetPollArmer(armer)
+	lc.SetDaemonCtx(ctx)
+
+	lc.Bootstrap(ctx)
+
 	if armer.armCalled {
-		t.Errorf("poll fallback armed for non-cron session id %q", armer.armedID)
+		t.Fatalf("Bootstrap must NOT re-arm a paneless headless ImplementingPlan run (phantom-clean-exit risk); armed %v", armer.armedSessions)
+	}
+	if got := sessions.sessions["sess-headless"].State; got != machine.ImplementingPlan {
+		t.Fatalf("headless run must be left in ImplementingPlan on restart, got %s", got)
 	}
 }
 

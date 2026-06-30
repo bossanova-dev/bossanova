@@ -157,9 +157,9 @@ func TestTUI_RepoAddView_FirstRepoReturnsSettings(t *testing.T) {
 		DefaultBranch: "main",
 	})
 
-	if err := h.Driver.WaitForText(waitTimeout, "Welcome to Bossanova"); err != nil {
-		t.Fatalf("expected empty home before repo add; screen:\n%s", h.Driver.Screen())
-	}
+	// With no repos, the app lands on the Home empty state (no auto-route).
+	// Navigate to Settings → Repos to test the first-repo-from-settings flow.
+	waitForZeroRepoHome(t, h)
 	openSettingsHub(t, h)
 	if err := h.Driver.SendKey('r'); err != nil {
 		t.Fatal(err)

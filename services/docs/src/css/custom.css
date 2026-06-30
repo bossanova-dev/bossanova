@@ -81,6 +81,7 @@
 
 .navbar__logo img {
   display: block;
+  border-radius: 2px;
 }
 
 .navbar__title {

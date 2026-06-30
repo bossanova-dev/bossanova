@@ -350,9 +350,9 @@ func TestTUI_Settings_RepoAddFirstRepoReturnsToSettings(t *testing.T) {
 		DefaultBranch: "main",
 	})
 
-	if err := h.Driver.WaitForText(waitTimeout, "[s]ettings"); err != nil {
-		t.Fatal(err)
-	}
+	// With no repos, the app lands on the Home empty state (no auto-route). Open
+	// Settings via the 's' key (the hint is hidden on the zero-repo screen).
+	waitForZeroRepoHome(t, h)
 	if err := h.Driver.SendKey('s'); err != nil {
 		t.Fatal(err)
 	}

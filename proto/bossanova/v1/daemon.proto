@@ -54,6 +54,14 @@ service DaemonService {
   // --session-id by pre-flight stat of the Claude transcript file.
   rpc WakeChat(WakeChatRequest) returns (WakeChatResponse);
 
+  // DescribeChatLaunch returns the exact command bossd uses to launch a chat's
+  // agent in its worktree, plus the daemon host. The TUI calls it when a
+  // freshly-launched pane dies on startup so it can show a copy-pasteable
+  // reproduction command — the usual cause is a PATH / login-shell problem that
+  // only reproduces on the daemon host. Read-only: it re-derives argv via the
+  // same per-agent BuildInteractiveCommand the spawn path uses.
+  rpc DescribeChatLaunch(DescribeChatLaunchRequest) returns (DescribeChatLaunchResponse);
+
   // GetChatTranscript returns a chat's conversation and final result by routing
   // to the owning agent plugin's ReadTranscript. Request-response (pollable).
   rpc GetChatTranscript(GetChatTranscriptRequest) returns (GetChatTranscriptResponse);
@@ -384,6 +392,8 @@ message RemoveSessionResponse {}
 message UpdateSessionRequest {
   string id = 1;
   optional string title = 2;
+  optional string tracker_url = 3;  // URL to issue in external tracker
+  optional string tracker_id = 4;  // external tracker identifier (e.g. BOS-123)
 }
 
 message UpdateSessionResponse {
@@ -493,6 +503,23 @@ message WakeChatResponse {
   string tmux_session_name = 2;
   // Stable machine-readable reason when outcome is OUTCOME_FRESH_FALLBACK.
   string reason = 3;
+}
+
+message DescribeChatLaunchRequest {
+  string agent_session_id = 1;  // chat to describe
+}
+
+message DescribeChatLaunchResponse {
+  // argv is the launch command bossd runs in the worktree, already wrapped in
+  // the user's login shell (e.g. fish -l -i -c 'exec $argv' claude …). Empty
+  // when the agent or session could not be resolved. The boss session-context
+  // system prompt and MCP config flags are intentionally omitted so the command
+  // stays readable; they do not affect whether the agent binary resolves, which
+  // is the failure this command helps diagnose.
+  repeated string argv = 1;
+  string worktree_path = 2;  // working directory bossd launches it in
+  string host = 3;           // daemon hostname — where to run argv
+  string agent_name = 4;     // resolved agent (claude, codex, …)
 }
 
 message GetChatTranscriptRequest {

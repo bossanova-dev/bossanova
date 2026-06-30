@@ -490,3 +490,78 @@ func TestSelectedSessionWarningBlock_NilSession(t *testing.T) {
 		t.Errorf("selectedSessionWarningBlock = %q, want empty for nil session", got)
 	}
 }
+
+func TestRenderSelectedText(t *testing.T) {
+	got := renderSelectedText("my-repo")
+	if !strings.Contains(got, "\x1b[1;38;2;76;167;248m") {
+		t.Errorf("expected bold blue open SGR, got %q", got)
+	}
+	if !strings.Contains(got, "my-repo") {
+		t.Errorf("expected visible text preserved, got %q", got)
+	}
+	if !strings.Contains(got, "\x1b[22;39m") {
+		t.Errorf("expected close SGR resetting only bold+fg, got %q", got)
+	}
+	if renderSelectedText("") != "" {
+		t.Errorf("expected empty input to yield empty output")
+	}
+}
+
+func TestRenderSelectedTrackerLink_WithTrackerAndURL(t *testing.T) {
+	url := "https://linear.app/x/issue/BOS-1"
+	id := "BOS-1"
+	sess := &pb.Session{TrackerId: &id, TrackerUrl: &url}
+	got := renderSelectedTrackerLink(sess, "Fix the thing [BOS-1]")
+
+	if !strings.Contains(got, "\x1b[1;38;2;76;167;248m") {
+		t.Errorf("expected bold blue text SGR, got %q", got)
+	}
+	// tracker token underlined with pinned blue underline color
+	if !strings.Contains(got, "\x1b[1;38;2;76;167;248;58;2;76;167;248;4m") {
+		t.Errorf("expected blue underline SGR on tracker token, got %q", got)
+	}
+	// OSC 8 hyperlink to the tracker URL is preserved
+	if !strings.Contains(got, "\x1b]8;;"+url+"\x1b\\") {
+		t.Errorf("expected OSC 8 hyperlink open, got %q", got)
+	}
+	if !strings.Contains(got, "\x1b]8;;\x1b\\") {
+		t.Errorf("expected OSC 8 hyperlink close, got %q", got)
+	}
+	// no strikethrough (SGR 9) anywhere
+	if strings.Contains(got, ";9m") || strings.Contains(got, "[9m") {
+		t.Errorf("did not expect strikethrough SGR, got %q", got)
+	}
+}
+
+func TestRenderSelectedTrackerLink_NoTracker(t *testing.T) {
+	sess := &pb.Session{}
+	got := renderSelectedTrackerLink(sess, "Plain title")
+	if !strings.Contains(got, "\x1b[1;38;2;76;167;248m") {
+		t.Errorf("expected bold blue text SGR for plain title, got %q", got)
+	}
+	if !strings.Contains(got, "Plain title") {
+		t.Errorf("expected visible text preserved, got %q", got)
+	}
+	if strings.Contains(got, "\x1b]8;;") {
+		t.Errorf("did not expect an OSC 8 hyperlink for a title with no tracker id, got %q", got)
+	}
+}
+
+func TestRenderSelectedPRLink(t *testing.T) {
+	pr := int32(42)
+	url := "https://github.com/x/y/pull/42"
+	sess := &pb.Session{PrNumber: &pr, PrUrl: &url}
+	got := renderSelectedPRLink(sess)
+	if !strings.Contains(got, "#42") {
+		t.Errorf("expected PR label, got %q", got)
+	}
+	if !strings.Contains(got, "\x1b[1;38;2;76;167;248;58;2;76;167;248;4m") {
+		t.Errorf("expected bold blue underline SGR, got %q", got)
+	}
+	if !strings.Contains(got, "\x1b]8;;"+url+"\x1b\\") {
+		t.Errorf("expected OSC 8 hyperlink, got %q", got)
+	}
+	if renderSelectedPRLink(&pb.Session{}) != "" {
+		t.Errorf("expected empty output when PrNumber is nil")
+	}
+}

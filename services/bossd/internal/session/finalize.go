@@ -97,8 +97,9 @@ func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*Fin
 	result := l.classifyFinalizeOutcome(ctx, session)
 
 	// Step 4: record the outcome on the cron job row. Non-cron sessions
-	// (hypothetical — the hook is only wired into cron-spawned worktrees)
-	// are skipped rather than treated as errors.
+	// (the headless-completion path in finalizeHeadlessRunIfApplicable now
+	// finalizes these too) carry no CronJobID and are skipped here rather than
+	// treated as errors.
 	if session.CronJobID != nil && *session.CronJobID != "" && l.cronJobs != nil {
 		ranAt := time.Now()
 

@@ -30,6 +30,14 @@ type MockAgentClient struct {
 	// simulate an agent suggestion (or a not-supported fallback). Nil defaults
 	// to supported=false (agent has no opinion → daemon falls back).
 	SuggestPRTitleFunc func(*bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
+
+	// ExitComplete controls what ExitStatus reports. The zero value (false)
+	// models a still-running agent run — the realistic default now that the
+	// non-cron headless start path arms PollFallback, which polls ExitStatus and
+	// would otherwise finalize every just-created session ~one poll tick later,
+	// racing tests that create-and-park sessions. A test that needs the run to
+	// complete (e.g. to exercise headless finalization) sets this true.
+	ExitComplete bool
 }
 
 func (m *MockAgentClient) name() string {
@@ -55,8 +63,8 @@ func (*MockAgentClient) IsRunning(_ context.Context, _ *bossanovav1.IsAgentRunni
 	return &bossanovav1.IsAgentRunningResponse{}, nil
 }
 
-func (*MockAgentClient) ExitStatus(_ context.Context, _ *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) {
-	return &bossanovav1.AgentExitStatusResponse{IsComplete: true}, nil
+func (m *MockAgentClient) ExitStatus(_ context.Context, _ *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) {
+	return &bossanovav1.AgentExitStatusResponse{IsComplete: m.ExitComplete}, nil
 }
 
 func (*MockAgentClient) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {

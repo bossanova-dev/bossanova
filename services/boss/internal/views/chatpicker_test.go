@@ -34,6 +34,10 @@ type wakeChatCall struct {
 	forceFresh     bool
 }
 
+func (s *chatPickerStub) DescribeChatLaunch(context.Context, string) (*pb.DescribeChatLaunchResponse, error) {
+	return nil, nil
+}
+
 func (s *chatPickerStub) WakeChat(_ context.Context, sessionID, agentSessionID string, forceFresh bool) (*pb.WakeChatResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1131,5 +1135,166 @@ func TestChatPicker_M_IsNoOpForFailingPR(t *testing.T) {
 	}
 	if m.confirm != confirmNone {
 		t.Fatalf("m.confirm = %v after pressing m on FAILING PR; want confirmNone", m.confirm)
+	}
+}
+
+// --- [l]inear shortcut tests ---
+
+func TestChatPicker_L_OpensTrackerURL(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	trackerURL := "https://linear.app/myteam/issue/BOS-90"
+	m.session = &pb.Session{Id: "session-1", TrackerUrl: &trackerURL}
+
+	var opened string
+	oldOpenURL := openURLFunc
+	openURLFunc = func(rawURL string) error {
+		opened = rawURL
+		return nil
+	}
+	defer func() { openURLFunc = oldOpenURL }()
+
+	_, cmd := m.Update(keyPress('l'))
+	if cmd == nil {
+		t.Fatal("expected a command from pressing l with a tracker URL set")
+	}
+	_ = cmd()
+	if opened != trackerURL {
+		t.Fatalf("opened URL = %q, want %q", opened, trackerURL)
+	}
+}
+
+func TestChatPicker_RendersLinearActionWhenTrackerURLSet(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	trackerURL := "https://linear.app/myteam/issue/BOS-90"
+	m.session = &pb.Session{Id: "session-1", TrackerUrl: &trackerURL}
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	rendered := m.View().Content
+	if !strings.Contains(rendered, "[l]inear") {
+		t.Fatalf("rendered chat picker missing [l]inear action:\n%s", rendered)
+	}
+}
+
+func TestChatPicker_L_IsNoOpWithNoTrackerURL(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	// session has no TrackerUrl — l must be a no-op.
+	m.session = &pb.Session{Id: "session-1"}
+	m.chats = append(m.chats, &pb.ClaudeChat{
+		SessionId:      "session-1",
+		AgentSessionId: "agent-2",
+		Title:          "Second chat",
+		CreatedAt:      timestamppb.Now(),
+	})
+	m.buildTableRows()
+	m.table.SetCursor(1)
+
+	var opened bool
+	oldOpenURL := openURLFunc
+	openURLFunc = func(string) error {
+		opened = true
+		return nil
+	}
+	defer func() { openURLFunc = oldOpenURL }()
+
+	updated, cmd := m.Update(keyPress('l'))
+	if cmd != nil {
+		_ = cmd()
+	}
+	m = updated.(ChatPickerModel)
+	if opened {
+		t.Fatal("openURLFunc called when session has no TrackerUrl; l should be a no-op")
+	}
+	// l is hidden here, so it must be swallowed — not fall through to a table
+	// keybinding and move the cursor.
+	if got := m.table.Cursor(); got != 1 {
+		t.Fatalf("table cursor after hidden l = %d, want 1 (l must be swallowed)", got)
+	}
+}
+
+func TestChatPicker_HidesLinearActionWithNoTrackerURL(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	// session has no TrackerUrl.
+	m.session = &pb.Session{Id: "session-1"}
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	rendered := m.View().Content
+	if strings.Contains(rendered, "[l]inear") {
+		t.Fatalf("rendered chat picker shows [l]inear without a tracker URL:\n%s", rendered)
+	}
+}
+
+func TestChatPicker_L_IsNoOpWithNoSession(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	m.session = nil
+	m.chats = append(m.chats, &pb.ClaudeChat{
+		SessionId:      "session-1",
+		AgentSessionId: "agent-2",
+		Title:          "Second chat",
+		CreatedAt:      timestamppb.Now(),
+	})
+	m.buildTableRows()
+	m.table.SetCursor(1)
+
+	var opened bool
+	oldOpenURL := openURLFunc
+	openURLFunc = func(string) error {
+		opened = true
+		return nil
+	}
+	defer func() { openURLFunc = oldOpenURL }()
+
+	updated, cmd := m.Update(keyPress('l'))
+	if cmd != nil {
+		_ = cmd()
+	}
+	m = updated.(ChatPickerModel)
+	if opened {
+		t.Fatal("openURLFunc called when session is nil; l should be a no-op")
+	}
+	// l is hidden here, so it must be swallowed — not fall through to a table
+	// keybinding and move the cursor.
+	if got := m.table.Cursor(); got != 1 {
+		t.Fatalf("table cursor after hidden l = %d, want 1 (l must be swallowed)", got)
+	}
+}
+
+func TestChatPicker_HidesLinearActionWithNoSession(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	m.session = nil
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	rendered := m.View().Content
+	if strings.Contains(rendered, "[l]inear") {
+		t.Fatalf("rendered chat picker shows [l]inear with nil session:\n%s", rendered)
+	}
+}
+
+func TestChatPicker_WebOpenErrorMessageIsGeneric(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+
+	// webOpenResultMsg is shared by the [g]ithub and [l]inear shortcuts, so a
+	// failed open must not name a specific destination (e.g. "GitHub") that
+	// would be wrong for the other shortcut.
+	updated, _ := m.Update(webOpenResultMsg{err: errors.New("no browser found")})
+	m = updated.(ChatPickerModel)
+
+	if !strings.Contains(m.statusMsg, "Couldn't open browser") {
+		t.Fatalf("web-open error statusMsg = %q, want a generic \"Couldn't open browser\" message", m.statusMsg)
+	}
+	if strings.Contains(m.statusMsg, "GitHub") {
+		t.Fatalf("web-open error statusMsg = %q, must not be GitHub-specific (shared with [l]inear)", m.statusMsg)
 	}
 }

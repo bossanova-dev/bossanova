@@ -119,6 +119,10 @@ func (s *stubSessionSettingsClient) DeleteChat(context.Context, string) error { 
 func (s *stubSessionSettingsClient) WakeChat(context.Context, string, string, bool) (*pb.WakeChatResponse, error) {
 	panic("unused")
 }
+
+func (s *stubSessionSettingsClient) DescribeChatLaunch(context.Context, string) (*pb.DescribeChatLaunchResponse, error) {
+	panic("unused")
+}
 func (s *stubSessionSettingsClient) ReportChatStatus(context.Context, []*pb.ChatStatusReport) error {
 	panic("unused")
 }

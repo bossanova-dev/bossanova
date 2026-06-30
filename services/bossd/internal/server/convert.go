@@ -126,6 +126,9 @@ func SessionToProto(s *models.Session) *pb.Session {
 	p.LastRepairHeadSha = protoString(s.LastRepairHeadSHA)
 	p.LastRepairDisplayStatus = pb.DisplayStatus(s.LastRepairDisplayStatus)
 	p.LastRepairReviewFingerprint = s.LastRepairReviewFingerprint
+	// Non-fatal setup-script failure, surfaced so `boss show <id>` and the TUI
+	// can flag a degraded session. Empty for clean runs.
+	p.SetupError = protoString(s.SetupError)
 	if s.LastRepairStartedAt != nil {
 		p.LastRepairStartedAt = timestamppb.New(*s.LastRepairStartedAt)
 	}

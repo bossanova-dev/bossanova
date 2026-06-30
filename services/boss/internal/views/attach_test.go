@@ -2,14 +2,72 @@ package views
 
 import (
 	"context"
+	"errors"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	bosspty "github.com/recurser/boss/internal/pty"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
 )
+
+func TestShellQuote(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"claude", "claude"},
+		{"--session-id", "--session-id"},
+		{"/opt/homebrew/bin/fish", "/opt/homebrew/bin/fish"},
+		{"exec $argv", "'exec $argv'"},
+		{"", "''"},
+		{"a'b", `'a'\''b'`},
+	}
+	for _, c := range cases {
+		if got := shellQuote(c.in); got != c.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestShellJoin_QuotesOnlyWhereNeeded(t *testing.T) {
+	got := shellJoin([]string{"/opt/homebrew/bin/fish", "-l", "-i", "-c", "exec $argv", "claude", "--session-id", "abc"})
+	want := "/opt/homebrew/bin/fish -l -i -c 'exec $argv' claude --session-id abc"
+	if got != want {
+		t.Fatalf("shellJoin:\n got=%q\nwant=%q", got, want)
+	}
+}
+
+func TestRenderLaunchDiagnostic_NilOrEmptyIsBlank(t *testing.T) {
+	if got := renderLaunchDiagnostic(nil, "Claude Code"); got != "" {
+		t.Fatalf("nil info should render blank, got %q", got)
+	}
+	if got := renderLaunchDiagnostic(&pb.DescribeChatLaunchResponse{}, "Claude Code"); got != "" {
+		t.Fatalf("empty argv should render blank, got %q", got)
+	}
+}
+
+func TestRenderLaunchDiagnostic_ShowsCommandHostAndWorktree(t *testing.T) {
+	info := &pb.DescribeChatLaunchResponse{
+		Argv:         []string{"/opt/homebrew/bin/fish", "-l", "-i", "-c", "exec $argv", "claude", "--session-id", "abc"},
+		WorktreePath: "/work/tree",
+		Host:         "tomo",
+		AgentName:    "claude",
+	}
+	out := renderLaunchDiagnostic(info, "Claude Code")
+	for _, want := range []string{
+		"host 'tomo'",
+		"cd /work/tree",
+		"'exec $argv' claude --session-id abc",
+		"Run it there",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("diagnostic missing %q in:\n%s", want, out)
+		}
+	}
+}
 
 // TestTmuxSessionAlive_EmptyName verifies the empty-name fast path so the
 // helper never spawns a `tmux has-session` for a never-set chat row.
@@ -216,6 +274,100 @@ func TestAttach_AgentFinishedErrorHoldsScreen(t *testing.T) {
 	}
 }
 
+type attachLaunchOrderStub struct {
+	stubClient
+	calls   []string
+	deleted bool
+}
+
+func (s *attachLaunchOrderStub) DeleteChat(context.Context, string) error {
+	s.calls = append(s.calls, "delete")
+	s.deleted = true
+	return nil
+}
+
+func (s *attachLaunchOrderStub) DescribeChatLaunch(context.Context, string) (*pb.DescribeChatLaunchResponse, error) {
+	s.calls = append(s.calls, "describe")
+	if s.deleted {
+		return nil, errors.New("chat deleted")
+	}
+	return &pb.DescribeChatLaunchResponse{Argv: []string{"claude"}}, nil
+}
+
+func (s *attachLaunchOrderStub) ReportChatStatus(context.Context, []*pb.ChatStatusReport) error {
+	s.calls = append(s.calls, "report")
+	return nil
+}
+
+func TestAttach_AgentFinishedErrorDescribesLaunchBeforeDeletingOrphan(t *testing.T) {
+	client := &attachLaunchOrderStub{}
+	m := NewAttachModel(client, context.Background(), bosspty.NewManager(), "session-1", "agent-1")
+	m.session = &pb.Session{Id: "session-1", WorktreePath: t.TempDir()}
+	m.agentSessionID = "agent-1"
+
+	updated, cmd := m.Update(agentFinishedMsg{err: &exec.ExitError{}, detached: false})
+	current := updated.(AttachModel)
+	runAttachCmdGraph(t, cmd, func(msg tea.Msg) {
+		next, _ := current.Update(msg)
+		current = next.(AttachModel)
+	})
+
+	if current.launchInfo == nil {
+		t.Fatalf("launchInfo = nil after error exit; calls=%v", client.calls)
+	}
+
+	describeAt := indexString(client.calls, "describe")
+	deleteAt := indexString(client.calls, "delete")
+	if describeAt == -1 || deleteAt == -1 {
+		t.Fatalf("calls=%v, want both describe and delete", client.calls)
+	}
+	if describeAt > deleteAt {
+		t.Fatalf("calls=%v, want describe before delete so orphan cleanup cannot remove launch diagnostics first", client.calls)
+	}
+}
+
+func runAttachCmdGraph(t *testing.T, cmd tea.Cmd, handle func(tea.Msg)) {
+	t.Helper()
+	if cmd == nil {
+		return
+	}
+	runAttachMsgGraph(t, cmd(), handle)
+}
+
+func runAttachMsgGraph(t *testing.T, msg tea.Msg, handle func(tea.Msg)) {
+	t.Helper()
+	switch msg := msg.(type) {
+	case nil:
+		return
+	case tea.BatchMsg:
+		for _, cmd := range msg {
+			runAttachCmdGraph(t, cmd, handle)
+		}
+	default:
+		v := reflect.ValueOf(msg)
+		if v.IsValid() && v.Kind() == reflect.Slice && strings.Contains(v.Type().String(), "sequenceMsg") {
+			for i := 0; i < v.Len(); i++ {
+				cmd, ok := v.Index(i).Interface().(tea.Cmd)
+				if !ok {
+					t.Fatalf("sequence element %d is %T, want tea.Cmd", i, v.Index(i).Interface())
+				}
+				runAttachCmdGraph(t, cmd, handle)
+			}
+			return
+		}
+		handle(msg)
+	}
+}
+
+func indexString(values []string, want string) int {
+	for i, v := range values {
+		if v == want {
+			return i
+		}
+	}
+	return -1
+}
+
 // TestAttach_StartExecAfterDetachIsNoop verifies that if the user has
 // already pressed esc (m.detach = true) while we were waiting on the
 // launching-display tick, the eventual startExecMsg does not relaunch
@@ -240,4 +392,68 @@ func TestAttach_StartExecAfterDetachIsNoop(t *testing.T) {
 	if got.pendingExec != nil {
 		t.Error("pendingExec still set after detach + startExecMsg, want cleared")
 	}
+}
+
+// TestAttach_ResumeMissingTmuxSessionShowsDismissableError verifies that
+// resuming a chat whose tmux session no longer exists does NOT hand the
+// terminal to a doomed `tmux attach` (which would dump a raw
+// "can't find session" error and trap the user). Instead the model sets a
+// dismissable error and schedules no exec, so View() renders "[esc] back".
+func TestAttach_ResumeMissingTmuxSessionShowsDismissableError(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed: cannot exercise has-session pre-check")
+	}
+	// resumeID non-empty => resume-attach => pre-check is active.
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "agent-uuid-1")
+
+	updated, cmd := m.Update(attachReadyMsg{
+		session: &pb.Session{Id: "session-1"},
+		chats:   []*pb.ClaudeChat{{}}, // non-empty so no prefill path is taken
+	})
+	got := updated.(AttachModel)
+
+	if cmd != nil {
+		t.Fatal("cmd != nil: a missing tmux session must NOT schedule a tick/exec; want nil")
+	}
+	if got.launching {
+		t.Error("launching = true after missing-session detection, want false")
+	}
+	if got.pendingExec != nil {
+		t.Error("pendingExec set after missing-session detection, want nil (no exec must fire)")
+	}
+	if got.err == nil {
+		t.Fatal("err = nil after missing-session detection, want a dismissable error")
+	}
+	view := got.View().Content
+	if !strings.Contains(view, "[esc] back") {
+		t.Errorf("view = %q, want a dismissable [esc] back affordance", view)
+	}
+	if !strings.Contains(strings.ToLower(view), "no longer available") {
+		t.Errorf("view = %q, want a clear 'no longer available' explanation", view)
+	}
+}
+
+// TestAttach_EscDismissesMissingSessionError verifies the user can always
+// escape the missing-session error screen (the BOS-108 trap). Pressing esc
+// must set detach so app.go routes back to the chat picker.
+func TestAttach_EscDismissesMissingSessionError(t *testing.T) {
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "agent-uuid-1")
+	m.err = errChatSessionGone // model is on the dismissable error screen
+
+	if m.Detached() {
+		t.Fatal("precondition: model should not be detached before esc")
+	}
+
+	escMsg := tea.KeyPressMsg{Code: tea.KeyEscape}
+	if escMsg.String() != "esc" {
+		t.Fatalf("constructed esc msg .String()=%q, want \"esc\"", escMsg.String())
+	}
+
+	updated, cmd := m.Update(escMsg)
+	got := updated.(AttachModel)
+
+	if !got.Detached() {
+		t.Fatal("Detached() = false after esc on error screen, want true (user must be able to get out)")
+	}
+	_ = cmd
 }

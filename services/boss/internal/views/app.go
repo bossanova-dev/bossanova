@@ -210,6 +210,7 @@ type switchViewMsg struct {
 	resumeID   string // Claude Code session UUID to resume (ViewAttach only)
 	agentName  string // optional per-chat agent override (ViewAttach only); empty = inherit session
 	returnView View   // optional view to return to when the target view is cancelled
+	firstRepo  bool   // true when add-repo was opened from the zero-repo home empty state (return home on cancel)
 }
 
 type repoAddCompletedMsg struct {
@@ -313,6 +314,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ViewRepoAdd:
 			a.repoAdd = a.newRepoAddModel()
 			a.repoAdd.width = a.width
+			if msg.firstRepo {
+				// Adding the first repo from the home empty state: return to the
+				// home empty state on cancel rather than the repo list.
+				a.repoAdd.returnHomeOnCancel = true
+			}
 			return a, a.repoAdd.Init()
 		case ViewRepoList:
 			a.repoList = NewRepoListModel(a.client, a.ctx)
@@ -399,6 +405,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ViewHome:
 		updated, cmd := a.home.Update(msg)
 		a.home = updated.(HomeModel)
+		// Propagate any settings the home model persisted (e.g. the
+		// BossCloudValueDeliveredAt latch) back to the App, so later
+		// newHomeModel() recreations re-seed from the latched value instead of
+		// the stale startup snapshot. Without this, the latch would re-stamp on
+		// every return-to-home (moving the "never moves" timestamp) and the
+		// promo would revert once has_active_chat went false.
+		a.userSettings = a.home.settings
 		return a, cmd
 	case ViewNewSession:
 		updated, cmd := a.newSession.Update(msg)
@@ -463,6 +476,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Batch(cmd, fetchReposAfterRepoAdd(a.client, a.ctx, highlightID))
 		}
 		if a.repoAdd.Cancelled() {
+			if a.repoAdd.returnHomeOnCancel {
+				return a, a.switchToHome()
+			}
 			returnView := a.repoList.returnView
 			var highlightID string
 			if cursor := a.repoList.table.Cursor(); cursor >= 0 && cursor < len(a.repoList.repos) {
@@ -773,7 +789,7 @@ func (a App) View() tea.View {
 		case ViewNewSession:
 			opts.line1 = "New Session"
 		case ViewRepoAdd:
-			opts.line1 = "Add Repository"
+			opts.line1 = "Add a repository"
 		case ViewLogin:
 			opts.line1 = "Login"
 		case ViewBugReport:

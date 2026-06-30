@@ -188,6 +188,53 @@ func TestAppHomeKeepsCloudOfferHiddenAcrossNavigationAfterSessionLimit(t *testin
 	}
 }
 
+// TestAppLatchValueDeliveredPersistsAcrossHomeRecreation guards the headline
+// acceptance criterion that BossCloudValueDeliveredAt, once set, is persisted
+// and never moves. The home model latches into its own settings copy, so the
+// App must propagate that back to userSettings — otherwise every return-to-home
+// recreates the home from the stale startup snapshot, re-stamping the latch
+// (moving the timestamp) and reverting the promo once has_active_chat drops.
+func TestAppLatchValueDeliveredPersistsAcrossHomeRecreation(t *testing.T) {
+	epoch := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+
+	// Stub the persister so the latch never touches real config on disk.
+	prevSave := saveSettings
+	saveSettings = func(config.Settings) error { return nil }
+	defer func() { saveSettings = prevSave }()
+
+	a := NewApp(nil, &auth.Manager{})
+	a.WithSettings(config.DefaultSettings())
+	a.startedAt = epoch
+	a.activeView = ViewHome
+	a.home.now = func() time.Time { return epoch }
+	a.home.repoCount = 1
+	a.home.loading = false
+
+	// A session with an active chat delivers value (repo + session + chat).
+	model, _ := a.Update(sessionListMsg{sessions: []*pb.Session{{Id: "s1", HasActiveChat: true}}})
+	a = model.(App)
+
+	if a.userSettings.BossCloudValueDeliveredAt.IsZero() {
+		t.Fatal("latch must propagate to App.userSettings so home recreations keep it")
+	}
+	latched := a.userSettings.BossCloudValueDeliveredAt
+
+	// A return-to-home recreates the home model; it must re-seed the latch.
+	home := a.newHomeModel()
+	if !home.settings.BossCloudValueDeliveredAt.Equal(latched) {
+		t.Fatalf("recreated home lost the latch: got %v want %v", home.settings.BossCloudValueDeliveredAt, latched)
+	}
+
+	// A later poll with no active chat must NOT move or clear the timestamp.
+	home.now = func() time.Time { return epoch.Add(time.Hour) }
+	home.repoCount = 1
+	m2, _ := home.Update(sessionListMsg{sessions: []*pb.Session{{Id: "s1", HasActiveChat: false}}})
+	home = m2.(HomeModel)
+	if !home.settings.BossCloudValueDeliveredAt.Equal(latched) {
+		t.Fatalf("latch moved or reverted after recreation: got %v want %v", home.settings.BossCloudValueDeliveredAt, latched)
+	}
+}
+
 func TestAppChatPickerReturnPreservesCloudAccessClient(t *testing.T) {
 	cloud := &fakeHomeCloudAccessClient{}
 	a := NewApp(nil, nil)

@@ -107,6 +107,7 @@ func TestBuildArgv_WrapsInLoginShellWhenConfigured(t *testing.T) {
 	want := []string{
 		"/opt/homebrew/bin/fish",
 		"-l",
+		"-i",
 		"-c",
 		"exec $argv",
 		"codex",

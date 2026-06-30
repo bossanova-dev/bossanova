@@ -1280,8 +1280,13 @@ type Session struct {
 	// Denormalized repo.can_auto_repair, populated server-side so the repair
 	// plugin can honor the per-repo auto-repair toggle without a separate lookup.
 	RepoCanAutoRepair bool `protobuf:"varint,49,opt,name=repo_can_auto_repair,json=repoCanAutoRepair,proto3" json:"repo_can_auto_repair,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Why the repo's configured setup script failed during worktree creation.
+	// A setup-script failure is non-fatal — the session still starts — so this
+	// flags the degraded state for `boss show <id>` and the TUI. Empty for clean
+	// runs or repos with no setup script.
+	SetupError    string `protobuf:"bytes,50,opt,name=setup_error,json=setupError,proto3" json:"setup_error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -1655,6 +1660,13 @@ func (x *Session) GetRepoCanAutoRepair() bool {
 		return x.RepoCanAutoRepair
 	}
 	return false
+}
+
+func (x *Session) GetSetupError() string {
+	if x != nil {
+		return x.SetupError
+	}
+	return ""
 }
 
 // Attempt represents a fix attempt within a session.
@@ -3200,7 +3212,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0esentry_api_key\x18\x11 \x01(\tR\fsentryApiKey\x12\x1d\n" +
 	"\n" +
 	"sentry_org\x18\x12 \x01(\tR\tsentryOrgB\x0f\n" +
-	"\r_setup_scriptJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eJ\x04\b\x14\x10\x15J\x04\b\x10\x10\x11J\x04\b\x13\x10\x14\"\xdd\x14\n" +
+	"\r_setup_scriptJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eJ\x04\b\x14\x10\x15J\x04\b\x10\x10\x11J\x04\b\x13\x10\x14\"\xfe\x14\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -3260,7 +3272,9 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0frepo_origin_url\x18. \x01(\tR\rrepoOriginUrl\x12C\n" +
 	"\x1elast_repair_review_fingerprint\x18/ \x01(\tR\x1blastRepairReviewFingerprint\x12,\n" +
 	"\x12display_setting_up\x180 \x01(\bR\x10displaySettingUp\x12/\n" +
-	"\x14repo_can_auto_repair\x181 \x01(\bR\x11repoCanAutoRepairB\x13\n" +
+	"\x14repo_can_auto_repair\x181 \x01(\bR\x11repoCanAutoRepair\x12\x1f\n" +
+	"\vsetup_error\x182 \x01(\tR\n" +
+	"setupErrorB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +

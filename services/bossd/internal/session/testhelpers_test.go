@@ -133,17 +133,23 @@ func (f *fakeAgentForLifecycle) ReadTranscript(_ context.Context, _ *bossanovav1
 }
 
 // fakePollArmer records calls to Arm so tests can assert that the poll
-// fallback was (or was not) wired for a given agent_session_id.
+// fallback was (or was not) wired for a given agent_session_id. armCount and
+// armedSessions let a test verify the EXACT set of sessions armed (e.g. that a
+// cron or hook-supported sibling was not also armed) rather than just the last.
 type fakePollArmer struct {
 	armCalled      bool
+	armCount       int
 	armedSessionID string
 	armedID        string
+	armedSessions  []string
 }
 
 func (f *fakePollArmer) Arm(_ context.Context, sessionID, agentSessionID string, _ agent.AgentRunnerClient) {
 	f.armCalled = true
+	f.armCount++
 	f.armedSessionID = sessionID
 	f.armedID = agentSessionID
+	f.armedSessions = append(f.armedSessions, sessionID)
 }
 
 type recordingCronCompletionNotifier struct {

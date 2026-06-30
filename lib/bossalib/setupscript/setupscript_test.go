@@ -190,6 +190,58 @@ func TestExecute_Command_PassesArgvLiterally(t *testing.T) {
 	}
 }
 
+func TestExecute_LoginShell_WrapsButPreservesEnvAndCwd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX login shell assumed")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	wt := t.TempDir()
+	// The command runs through the login shell (bash -l -c 'exec "$@"' …). It
+	// writes the injected WORKTREE_DIR to a RELATIVE path, so a correct run
+	// proves three things survive the wrap: execution itself, cmd.Dir (the file
+	// lands in wt), and the REPO_DIR/WORKTREE_DIR env. Output goes to a file, not
+	// stdout, so login-shell rc chatter can't corrupt the assertion.
+	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", `printf %s "$WORKTREE_DIR" > marker`}}
+	if err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		LoginShell:   bash,
+		Timeout:      30 * time.Second,
+	}); err != nil {
+		t.Fatalf("Execute via login shell: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(wt, "marker"))
+	if err != nil {
+		t.Fatalf("marker not written — command did not run through the login shell: %v", err)
+	}
+	if string(got) != wt {
+		t.Fatalf("WORKTREE_DIR through login-shell wrap = %q, want %q", got, wt)
+	}
+}
+
+func TestExecute_LoginShell_UnsupportedFallsBackToDirectExec(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX command assumed")
+	}
+	wt := t.TempDir()
+	// An unsupported shell name must not be exec'd as a wrapper — Execute falls
+	// through to running the argv directly, so setup still works.
+	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", `printf ok > marker`}}
+	if err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		LoginShell:   "/usr/bin/definitely-not-a-shell",
+		Timeout:      10 * time.Second,
+	}); err != nil {
+		t.Fatalf("Execute with unsupported login shell: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(wt, "marker"))
+	if err != nil || string(got) != "ok" {
+		t.Fatalf("direct-exec fallback failed: got %q err %v", got, err)
+	}
+}
+
 func TestExecute_Script_RunsFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shebang assumed")
@@ -239,6 +291,47 @@ func TestExecute_Command_NonZeroExit_WrapsError(t *testing.T) {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
 		t.Fatalf("want wrapped *exec.ExitError, got %v", err)
+	}
+}
+
+// TestExecute_NonZeroExit_ErrorIncludesOutputTail confirms a failing setup
+// script's actual output is folded into the returned error, so callers (and
+// users) see *why* it failed instead of a bare "exit status N". The full
+// stream must still reach opts.Output.
+func TestExecute_NonZeroExit_ErrorIncludesOutputTail(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell assumed")
+	}
+	wt := t.TempDir()
+
+	var buf bytes.Buffer
+	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", "echo boom-marker >&2; exit 2"}}
+	err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Output:       &buf,
+		Timeout:      5 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected error from non-zero exit, got nil")
+	}
+	if !strings.Contains(err.Error(), "boom-marker") {
+		t.Fatalf("error should include the script's output tail, got: %v", err)
+	}
+	// The live stream must still receive the output unchanged.
+	if !strings.Contains(buf.String(), "boom-marker") {
+		t.Fatalf("opts.Output should still receive the full stream, got: %q", buf.String())
+	}
+}
+
+// TestTailWriter_RetainsOnlyLastBytes pins the ring-buffer behaviour so the
+// error tail stays bounded even for chatty scripts.
+func TestTailWriter_RetainsOnlyLastBytes(t *testing.T) {
+	w := &tailWriter{max: 8}
+	if _, err := w.Write([]byte("0123456789ABCDEF")); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.String(); got != "89ABCDEF" {
+		t.Fatalf("tail = %q, want %q", got, "89ABCDEF")
 	}
 }
 

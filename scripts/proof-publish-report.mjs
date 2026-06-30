@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 
-import { renderGallery } from './proof-lib.mjs';
+import { renderGallery } from './proof-lib.mjs'
 
 /**
  * Converts an ISO 8601 timestamp string to `YYYYMMDD-HHMMSS`.
@@ -14,12 +14,12 @@ import { renderGallery } from './proof-lib.mjs';
  * @returns {string} e.g. '20260623-084448'
  */
 export function formatReportTimestamp(iso) {
-  const match = String(iso ?? '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+  const match = String(iso ?? '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/)
   if (!match) {
-    throw new Error(`malformed ISO timestamp: ${iso}`);
+    throw new Error(`malformed ISO timestamp: ${iso}`)
   }
-  const [, yyyy, mm, dd, hh, min, ss] = match;
-  return `${yyyy}${mm}${dd}-${hh}${min}${ss}`;
+  const [, yyyy, mm, dd, hh, min, ss] = match
+  return `${yyyy}${mm}${dd}-${hh}${min}${ss}`
 }
 
 /**
@@ -28,11 +28,11 @@ export function formatReportTimestamp(iso) {
  * @returns {{ enabled: boolean, repo: string|null, reason?: string }}
  */
 export function reportTarget(env) {
-  const repo = env.BOSS_PROOF_REPORT_REPO ?? 'recurser/bs-proof';
+  const repo = env.BOSS_PROOF_REPORT_REPO ?? 'recurser/bs-proof'
   if (env.BOSS_PROOF_REPORT === '0' || repo === '') {
-    return { enabled: false, repo: null, reason: 'disabled' };
+    return { enabled: false, repo: null, reason: 'disabled' }
   }
-  return { enabled: true, repo };
+  return { enabled: true, repo }
 }
 
 /**
@@ -45,8 +45,8 @@ function slug(value) {
   const s = String(value ?? '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return s || 'unknown';
+    .replace(/^-+|-+$/g, '')
+  return s || 'unknown'
 }
 
 /**
@@ -55,12 +55,11 @@ function slug(value) {
  * @returns {string} e.g. 'recurser-bossanova/pr-788/20260623-084448-abc123'
  */
 export function proofReportDestPath({ owner, sourceRepo, prNumber, branch, timestamp, runId }) {
-  const seg1 = `${owner}-${sourceRepo}`;
-  const isNumericPr =
-    typeof prNumber === 'string' && /^\d+$/.test(prNumber) && Number(prNumber) > 0;
-  const seg2 = isNumericPr ? `pr-${prNumber}` : `branch-${slug(branch)}`;
-  const seg3 = `${timestamp}-${runId}`;
-  return `${seg1}/${seg2}/${seg3}`;
+  const seg1 = `${owner}-${sourceRepo}`
+  const isNumericPr = typeof prNumber === 'string' && /^\d+$/.test(prNumber) && Number(prNumber) > 0
+  const seg2 = isNumericPr ? `pr-${prNumber}` : `branch-${slug(branch)}`
+  const seg3 = `${timestamp}-${runId}`
+  return `${seg1}/${seg2}/${seg3}`
 }
 
 /**
@@ -69,7 +68,7 @@ export function proofReportDestPath({ owner, sourceRepo, prNumber, branch, times
  * @returns {string}
  */
 export function buildReportUrl({ repo, destPath }) {
-  return `https://github.com/${repo}/blob/main/${destPath}/README.md`;
+  return `https://github.com/${repo}/blob/main/${destPath}/README.md`
 }
 
 /**
@@ -78,14 +77,14 @@ export function buildReportUrl({ repo, destPath }) {
  * @returns {Promise<{ ok: boolean, attempts: number }>}
  */
 export async function pushWithRebaseRetry({ runGit, maxRetries = 3 }) {
-  let attempts = 0;
+  let attempts = 0
   while (attempts < maxRetries) {
-    if (attempts > 0) runGit(['pull', '--rebase', 'origin', 'main']);
-    const result = runGit(['push', 'origin', 'HEAD:main']);
-    attempts += 1;
-    if (result.status === 0) return { ok: true, attempts };
+    if (attempts > 0) runGit(['pull', '--rebase', 'origin', 'main'])
+    const result = runGit(['push', 'origin', 'HEAD:main'])
+    attempts += 1
+    if (result.status === 0) return { ok: true, attempts }
   }
-  return { ok: false, attempts };
+  return { ok: false, attempts }
 }
 
 /**
@@ -97,7 +96,7 @@ export async function pushWithRebaseRetry({ runGit, maxRetries = 3 }) {
  * @returns {Promise<{ ok: boolean, skipped: boolean, reason?: string, reportUrl?: string }>}
  */
 export async function publishProofReport({ manifest, identity, env = process.env, deps = {} }) {
-  let tmp;
+  let tmp
   try {
     const {
       mkdtemp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix)),
@@ -110,47 +109,47 @@ export async function publishProofReport({ manifest, identity, env = process.env
         }),
       runGit = (args, { cwd } = {}) => spawnSync('git', args, { cwd, encoding: 'utf8' }),
       log = console,
-    } = deps;
+    } = deps
 
     // Step 1: check if publishing is enabled.
-    const target = reportTarget(env);
+    const target = reportTarget(env)
     if (!target.enabled) {
-      return { ok: false, skipped: true, reason: target.reason };
+      return { ok: false, skipped: true, reason: target.reason }
     }
-    const { repo } = target;
+    const { repo } = target
 
     // Step 2: derive timestamp, destPath, and the (deterministic) report URL.
-    const timestamp = formatReportTimestamp(manifest.generatedAt);
-    const destPath = proofReportDestPath({ ...identity, timestamp });
-    const reportUrl = buildReportUrl({ repo, destPath });
+    const timestamp = formatReportTimestamp(manifest.generatedAt)
+    const destPath = proofReportDestPath({ ...identity, timestamp })
+    const reportUrl = buildReportUrl({ repo, destPath })
 
     // Step 3: clone the report repo.
-    tmp = mkdtemp('bs-proof-');
-    const cloneResult = cloneRepo(repo, tmp);
+    tmp = mkdtemp('bs-proof-')
+    const cloneResult = cloneRepo(repo, tmp)
     if (cloneResult.status !== 0) {
       log.warn(
         `[proof] report repo clone failed — skipping report publish (${cloneResult.stderr ?? ''})`,
-      );
-      rmrf(tmp);
-      return { ok: false, skipped: true, reason: 'clone-failed' };
+      )
+      rmrf(tmp)
+      return { ok: false, skipped: true, reason: 'clone-failed' }
     }
 
     // Step 4: write manifest.json and README.md. The committed manifest carries
     // its own reportUrl (self-referential, deterministic from destPath) so the
     // git-native artifact is self-describing.
-    const manifestWithUrl = { ...manifest, reportUrl };
-    const destDir = path.join(tmp, destPath);
-    mkdirp(destDir);
-    writeFile(path.join(destDir, 'manifest.json'), `${JSON.stringify(manifestWithUrl, null, 2)}\n`);
-    writeFile(path.join(destDir, 'README.md'), renderGallery({ manifest: manifestWithUrl }));
+    const manifestWithUrl = { ...manifest, reportUrl }
+    const destDir = path.join(tmp, destPath)
+    mkdirp(destDir)
+    writeFile(path.join(destDir, 'manifest.json'), `${JSON.stringify(manifestWithUrl, null, 2)}\n`)
+    writeFile(path.join(destDir, 'README.md'), renderGallery({ manifest: manifestWithUrl }))
 
     // Step 5: git add + commit. Pass an author identity inline via `-c` so the
     // commit succeeds in fresh CI/agent environments that have no global
     // user.name/user.email configured (otherwise git aborts with "Author
     // identity unknown" and the report never publishes).
-    const boundRunGit = (args) => runGit(args, { cwd: tmp });
-    boundRunGit(['add', '-A']);
-    const commitMsg = `proof: ${identity.owner}/${identity.sourceRepo}#${identity.prNumber} ${identity.runId}`;
+    const boundRunGit = (args) => runGit(args, { cwd: tmp })
+    boundRunGit(['add', '-A'])
+    const commitMsg = `proof: ${identity.owner}/${identity.sourceRepo}#${identity.prNumber} ${identity.runId}`
     const commitResult = boundRunGit([
       '-c',
       'user.name=bossanova-proof',
@@ -159,35 +158,35 @@ export async function publishProofReport({ manifest, identity, env = process.env
       'commit',
       '-m',
       commitMsg,
-    ]);
+    ])
     if (commitResult.status !== 0) {
-      log.warn('[proof] report commit failed — skipping report publish (nothing to commit?)');
-      rmrf(tmp);
-      return { ok: false, skipped: true, reason: 'commit-failed' };
+      log.warn('[proof] report commit failed — skipping report publish (nothing to commit?)')
+      rmrf(tmp)
+      return { ok: false, skipped: true, reason: 'commit-failed' }
     }
 
     // Step 6: push with rebase-retry.
-    const pushResult = await pushWithRebaseRetry({ runGit: boundRunGit });
+    const pushResult = await pushWithRebaseRetry({ runGit: boundRunGit })
     if (!pushResult.ok) {
       log.warn(
         `[proof] report push failed after ${pushResult.attempts} attempts — skipping report publish`,
-      );
-      rmrf(tmp);
-      return { ok: false, skipped: true, reason: 'push-failed' };
+      )
+      rmrf(tmp)
+      return { ok: false, skipped: true, reason: 'push-failed' }
     }
 
     // Step 7: clean up and return.
-    rmrf(tmp);
-    return { ok: true, skipped: false, reportUrl };
+    rmrf(tmp)
+    return { ok: true, skipped: false, reportUrl }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    (deps.log ?? console).warn(`[proof] unexpected error in publishProofReport: ${msg}`);
+    const msg = err instanceof Error ? err.message : String(err)
+    ;(deps.log ?? console).warn(`[proof] unexpected error in publishProofReport: ${msg}`)
     if (tmp) {
-      const rmrf = deps.rmrf ?? ((dir) => fs.rmSync(dir, { recursive: true, force: true }));
+      const rmrf = deps.rmrf ?? ((dir) => fs.rmSync(dir, { recursive: true, force: true }))
       try {
-        rmrf(tmp);
+        rmrf(tmp)
       } catch {}
     }
-    return { ok: false, skipped: true, reason: `error: ${msg}` };
+    return { ok: false, skipped: true, reason: `error: ${msg}` }
   }
 }

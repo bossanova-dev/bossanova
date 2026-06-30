@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 
-const { execFileSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process')
 
-const PROTECTED_BRANCHES = new Set(['main', 'staging', 'production']);
-const NON_PROTECTED_HEADER_PATTERN = /^[a-z]+(\([^)]+\))?!?: \[#(\d+)\] .+$/;
+const PROTECTED_BRANCHES = new Set(['main', 'staging', 'production'])
+const NON_PROTECTED_HEADER_PATTERN = /^[a-z]+(\([^)]+\))?!?: \[#(\d+)\] .+$/
 
 function getCommitHeader(message) {
-  return String(message || '').split(/\r?\n/, 1)[0] || '';
+  return String(message || '').split(/\r?\n/, 1)[0] || ''
 }
 
 function isProtectedBranch(branch) {
-  return PROTECTED_BRANCHES.has(String(branch || '').trim());
+  return PROTECTED_BRANCHES.has(String(branch || '').trim())
 }
 
 function getCurrentBranch(execFile = execFileSync) {
@@ -18,9 +18,9 @@ function getCurrentBranch(execFile = execFileSync) {
     return execFile('git', ['branch', '--show-current'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+    }).trim()
   } catch (_error) {
-    return '';
+    return ''
   }
 }
 
@@ -29,52 +29,57 @@ function resolvePullRequestNumber(execFile = execFileSync) {
     const output = execFile('gh', ['pr', 'view', '--json', 'number', '--jq', '.number'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    const number = Number.parseInt(output, 10);
+    }).trim()
+    const number = Number.parseInt(output, 10)
 
-    return Number.isInteger(number) && number > 0 ? number : null;
+    return Number.isInteger(number) && number > 0 ? number : null
   } catch (_error) {
-    return null;
+    return null
   }
-}
-
-function getRequiredPrTag(prNumber) {
-  return Number.isInteger(prNumber) && prNumber > 0 ? `[#${prNumber}]` : '[#123]';
 }
 
 function validateCommitMessage(message, options = {}) {
-  const branch = options.branch || '';
+  const branch = options.branch || ''
 
+  // Protected branches (main/staging/production) never carry a PR tag.
   if (isProtectedBranch(branch)) {
-    return { valid: true };
+    return { valid: true }
   }
 
-  const header = getCommitHeader(message);
-  const match = header.match(NON_PROTECTED_HEADER_PATTERN);
-  const prNumber = options.prNumber ?? null;
+  const prNumber = options.prNumber ?? null
+
+  // No PR maps to this branch yet. The [#PR] tag literally cannot exist before
+  // the PR is opened — cron/agent commits precede PR creation, and bossd injects
+  // the tag at finalize. Requiring it here is what forced cron worktrees to skip
+  // the hook (and humans to guess a number). Allow the commit; commitlint's base
+  // rules still validate the conventional type/scope/subject. Once the branch
+  // maps to a PR (resolved via `gh` in .commitlintrc), the tag becomes mandatory.
+  if (!(Number.isInteger(prNumber) && prNumber > 0)) {
+    return { valid: true }
+  }
+
+  const header = getCommitHeader(message)
+  const match = header.match(NON_PROTECTED_HEADER_PATTERN)
 
   if (!match) {
     return {
       valid: false,
-      reason: `Expected commit header format on non-protected branches: type(scope): ${getRequiredPrTag(
-        prNumber,
-      )} subject.`,
-    };
+      reason: `Branch maps to PR #${prNumber}; commit header must be: type(scope): [#${prNumber}] subject.`,
+    }
   }
 
-  if (Number.isInteger(prNumber) && prNumber > 0 && Number.parseInt(match[2], 10) !== prNumber) {
+  if (Number.parseInt(match[2], 10) !== prNumber) {
     return {
       valid: false,
       reason: `Current branch resolves to PR #${prNumber}; commit header must use [#${prNumber}].`,
-    };
+    }
   }
 
-  return { valid: true };
+  return { valid: true }
 }
 
-exports.getCommitHeader = getCommitHeader;
-exports.getCurrentBranch = getCurrentBranch;
-exports.getRequiredPrTag = getRequiredPrTag;
-exports.isProtectedBranch = isProtectedBranch;
-exports.resolvePullRequestNumber = resolvePullRequestNumber;
-exports.validateCommitMessage = validateCommitMessage;
+exports.getCommitHeader = getCommitHeader
+exports.getCurrentBranch = getCurrentBranch
+exports.isProtectedBranch = isProtectedBranch
+exports.resolvePullRequestNumber = resolvePullRequestNumber
+exports.validateCommitMessage = validateCommitMessage

@@ -301,7 +301,7 @@ func TestE2E_RecordChat_SurvivesDaemonRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux e2e test in -short; run make test-bossd for coverage")
 	}
-	dbPath := t.TempDir() + "/bossd.db"
+	dbPath := filepath.Join(t.TempDir(), "bossd.db")
 
 	// --- First daemon "lifetime" ---
 	fake1 := &fakeTmux{}

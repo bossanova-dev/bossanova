@@ -6,6 +6,7 @@ package taskorchestrator
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/rs/zerolog"
 
@@ -13,6 +14,24 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
 )
+
+// setupLogWriter routes setup-script output to the session logger for the
+// non-interactive (task-orchestrator) session-creation path, which has no
+// client stream to receive it. Each non-blank line is logged individually.
+type setupLogWriter struct {
+	logger    zerolog.Logger
+	sessionID string
+}
+
+func (w setupLogWriter) Write(p []byte) (int, error) {
+	for line := range strings.SplitSeq(strings.TrimRight(string(p), "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		w.logger.Info().Str("session", w.sessionID).Str("source", "setup_script").Msg(line)
+	}
+	return len(p), nil
+}
 
 // CreateSessionOpts holds the parameters for creating a new session
 // from a plugin-discovered task.
@@ -189,6 +208,11 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 		DeferPR:         opts.DeferPR,
 		HookToken:       opts.HookToken,
 		BranchName:      branchName,
+		// The interactive RPC path streams setup output to the client; this
+		// non-interactive path has no client, so route it to the session log
+		// rather than discarding it (a failing setup script would otherwise
+		// leave only an opaque exit code).
+		SetupOutput: setupLogWriter{logger: c.logger, sessionID: sess.ID},
 	}); err != nil {
 		// StartSession failed mid-flight (e.g. worktree create, hook config
 		// write, or claude.Start). Drop the half-started session row so it

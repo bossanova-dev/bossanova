@@ -363,6 +363,19 @@ func (l *Lifecycle) Bootstrap(ctx context.Context) {
 		}
 		l.armTmuxCompletionForHooklessTmux(chat.SessionID, chat.AgentSessionID, tmuxName)
 	}
+
+	// NOTE: headless (boss new, non-cron, paneless) runs in ImplementingPlan are
+	// deliberately NOT re-armed here. A headless run's exit status lives only in
+	// the agent plugin's in-memory process map, which is empty after a daemon
+	// restart (the plugin subprocess restarts too). PollFallback.ExitStatus would
+	// then report a phantom clean exit (IsComplete=true, ExitError="") for every
+	// such row, so re-arming would clean-finalize runs that were actually
+	// interrupted by the restart — prematurely marking partial PRs ready, losing
+	// real failures, and in the no-PR/no-commits case hard-deleting the session.
+	// Correct restart recovery needs a durable run-exit record (like the cron
+	// path's cronRunIsOver liveness gate), which headless runs don't have yet;
+	// that is tracked as a follow-up. Leaving the session stranded-but-visible is
+	// strictly safer than wrongly finalizing or deleting in-flight work.
 }
 
 // SetPollArmer retains compatibility with older daemon wiring. Tmux-hosted
@@ -387,6 +400,89 @@ func (l *Lifecycle) SignalSessionRunComplete(sessionID, agentSessionID, exitErro
 		l.pollCompleter.SignalRunComplete(sessionID, agentSessionID, exitError)
 	}
 	l.notifyCronCompletionIfCronSession(context.Background(), sessionID)
+	l.finalizeHeadlessRunIfApplicable(context.Background(), sessionID, agentSessionID, exitError)
+}
+
+// headlessRunBlockedReasonMaxLen caps the length of the blocked reason derived
+// from a failed run's exit error so a multi-kilobyte agent dump can't bloat the
+// session row or the UI.
+const headlessRunBlockedReasonMaxLen = 200
+
+// headlessRunBlockedReason builds a short, non-secret summary of a failed
+// headless run's exit error. It keeps only the first line (so stack traces /
+// multi-line agent output don't leak) and truncates on a rune boundary.
+func headlessRunBlockedReason(exitError string) string {
+	summary := strings.TrimSpace(exitError)
+	if summary == "" {
+		summary = "agent run failed"
+	}
+	if idx := strings.IndexByte(summary, '\n'); idx >= 0 {
+		summary = strings.TrimSpace(summary[:idx])
+	}
+	if utf8.RuneCountInString(summary) > headlessRunBlockedReasonMaxLen {
+		summary = string([]rune(summary)[:headlessRunBlockedReasonMaxLen]) + "…"
+	}
+	return "headless agent run failed: " + summary
+}
+
+// finalizeHeadlessRunIfApplicable advances a non-cron headless session out of
+// ImplementingPlan when its hookless run completes: a clean exit runs the same
+// idempotent FinalizeSession the cron gate uses; a failed exit blocks the
+// session with a short reason. It is a no-op for a missing session, a cron
+// session (the cron completion gate owns those), or a session no longer in
+// ImplementingPlan (a duplicate signal or an already-advanced run).
+//
+// The state == ImplementingPlan gate is also what keeps this off other run
+// flavors that call SignalSessionRunComplete: StartChatRun / repair runs and
+// tmux-hosted runs only ever carry a HookToken alongside a CronJobID (the cron
+// scheduler is the sole production setter of both), so they are excluded by
+// isCronSession; and once any such run has advanced past ImplementingPlan a
+// late completion signal here is a no-op.
+func (l *Lifecycle) finalizeHeadlessRunIfApplicable(ctx context.Context, sessionID, agentSessionID, exitError string) {
+	if sessionID == "" || l.sessions == nil {
+		return
+	}
+	session, err := l.sessions.Get(ctx, sessionID)
+	if err != nil || session == nil {
+		return
+	}
+	if isCronSession(session) || session.State != machine.ImplementingPlan {
+		return
+	}
+
+	if exitError == "" {
+		res, err := l.FinalizeSession(ctx, sessionID)
+		if err != nil {
+			l.logger.Error().Err(err).Str("session", sessionID).Msg("headless finalize: FinalizeSession failed")
+			return
+		}
+		l.logger.Info().
+			Str("session", sessionID).
+			Str("agent_session", agentSessionID).
+			Str("outcome", string(res.Outcome)).
+			Bool("noop", res.NoOp).
+			Msg("headless finalize: completed clean run")
+		return
+	}
+
+	// Failed run: transition to Blocked first (the atomic CAS is the
+	// idempotency gate), then stamp the non-secret reason ONLY if this signal
+	// actually won the transition. Writing the reason unconditionally first
+	// would stamp a stale "run failed" reason onto a session a concurrent signal
+	// had already advanced out of ImplementingPlan.
+	advanced, err := l.sessions.UpdateStateConditional(ctx, sessionID, int(machine.Blocked), int(machine.ImplementingPlan))
+	if err != nil {
+		l.logger.Error().Err(err).Str("session", sessionID).Msg("headless finalize: transition to blocked failed")
+		return
+	}
+	if !advanced {
+		return
+	}
+	reason := headlessRunBlockedReason(exitError)
+	reasonPtr := &reason
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{BlockedReason: &reasonPtr}); err != nil {
+		l.logger.Error().Err(err).Str("session", sessionID).Msg("headless finalize: persist blocked reason failed")
+	}
 }
 
 func (l *Lifecycle) notifyCronCompletionIfCronSession(ctx context.Context, sessionID string) {
@@ -454,6 +550,43 @@ func (l *Lifecycle) armTmuxCompletionForHooklessTmux(sessionID, agentSessionID, 
 
 func (l *Lifecycle) armTmuxCompletionForHooklessCron(sessionID, agentSessionID, repoID string) {
 	l.armTmuxCompletionForHooklessRun(sessionID, agentSessionID, repoID)
+}
+
+// shouldArmHeadlessPollFallback reports whether a non-cron headless run needs
+// the ExitStatus poll fallback armed. It is armed exactly when the run took the
+// headless StartByAgent branch, is not cron-spawned (the cron gate owns those),
+// produced an agent session id, and the agent is NOT driven by a live Stop hook.
+// A nil hookResp means the ConfigureFinalizeHook probe never ran (no HookToken),
+// so no Stop hook was installed — treat that as "no competing hook" and arm.
+// A non-nil hookResp reporting IsSupported means a hook will drive completion,
+// so the poll fallback must NOT arm (it would double-finalize).
+func (l *Lifecycle) shouldArmHeadlessPollFallback(headlessRun bool, cronJobID, agentSessionID string, hookResp *bossanovav1.ConfigureFinalizeHookResponse) bool {
+	if !headlessRun || cronJobID != "" || agentSessionID == "" {
+		return false
+	}
+	return hookResp == nil || !hookResp.GetIsSupported()
+}
+
+// armHeadlessPollFallback wires PollFallback for a non-cron headless run so its
+// completion drives the session out of ImplementingPlan. The poller outlives
+// the StartSession request, so it uses a non-cancelable base context (the
+// daemon ctx when set). nil-guards mirror the tmux arm guards: a missing
+// pollArmer or agent client is logged at debug and skipped.
+func (l *Lifecycle) armHeadlessPollFallback(sessionID, agentSessionID string, session *models.Session) {
+	if l.pollArmer == nil {
+		l.logger.Debug().Str("session", sessionID).Msg("headless poll fallback: no pollArmer configured; skipping")
+		return
+	}
+	client, err := l.agentClientFor(session)
+	if err != nil || client == nil {
+		l.logger.Debug().Err(err).Str("session", sessionID).Msg("headless poll fallback: no agent client; skipping")
+		return
+	}
+	ctx := l.daemonCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	l.pollArmer.Arm(ctx, sessionID, agentSessionID, client)
 }
 
 // SetAgentLogsDir records the bossd-owned directory where agent plugins
@@ -666,10 +799,28 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		return fmt.Errorf("create worktree: %w", err)
 	}
 
-	// Update session with worktree info.
+	// A setup-script failure is non-fatal: the worktree is valid, so the
+	// session still starts. Flag the degraded state — log it, stream the
+	// reason to any connected client, and persist it for the TUI / `boss show`
+	// — rather than aborting and tearing the worktree down.
+	var setupErrStr string
+	if result.SetupErr != nil {
+		setupErrStr = result.SetupErr.Error()
+		l.logger.Warn().
+			Str("session", sessionID).
+			Str("worktree", result.WorktreePath).
+			Err(result.SetupErr).
+			Msg("setup script failed; starting session in a degraded state")
+		if setupOutput != nil {
+			_, _ = fmt.Fprintf(setupOutput, "\n⚠ setup script failed; the session was created anyway:\n%s\n", setupErrStr)
+		}
+	}
+
+	// Update session with worktree info (and any setup-script failure flag).
 	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
 		WorktreePath: &result.WorktreePath,
 		BranchName:   &result.BranchName,
+		SetupError:   &setupErrStr,
 	}); err != nil {
 		return fmt.Errorf("update worktree path: %w", err)
 	}
@@ -799,6 +950,19 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	}
 	if hooklessCronTmux {
 		l.armTmuxCompletionForHooklessCron(sessionID, claudeSessionID, session.RepoID)
+	} else if l.shouldArmHeadlessPollFallback(headlessRun, opts.CronJobID, claudeSessionID, hookResp) {
+		// Every non-cron, non-tracker session takes the headless StartByAgent
+		// branch (the daemon can't distinguish `boss new --detach` from a plain
+		// interactive `boss new` — there is no detach flag on this path), running
+		// codex exec / claude --print. The only production caller of StartSession
+		// passes no HookToken, so the ConfigureFinalizeHook probe never runs and
+		// hookResp is nil — meaning NO Stop hook is installed for ANY agent here.
+		// Without arming, the run is stranded in ImplementingPlan forever. Arm
+		// PollFallback (which captures the run's exit status) to drive
+		// finalize/block on completion. A hook-supporting agent that DID receive a
+		// HookToken (hookResp != nil && IsSupported) is excluded: its Stop hook
+		// drives completion, so arming would double-finalize.
+		l.armHeadlessPollFallback(sessionID, claudeSessionID, session)
 	}
 
 	// Fire AgentStarted → ImplementingPlan.

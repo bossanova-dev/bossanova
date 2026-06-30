@@ -2,14 +2,16 @@
 .claude/worktrees/
 .worktrees/
 
-# services/web is owned by biome (JS/TS semicolons: "asNeeded") — `make format`
-# routes it through services/web's own biome target, never root prettier. Prettier
-# (semi: true) only reaches it via the husky pre-commit formatter, where it fights
-# biome and produces CI lint failures. Exclude services/web JS/TS from prettier.
-services/web/**/*.ts
-services/web/**/*.tsx
-services/web/**/*.js
-services/web/**/*.jsx
+# services/web and services/marketing are owned by biome — each has its own
+# biome.json and a `format` target that runs `biome check --write`. `make format`
+# routes them through that biome target, never root prettier. Prettier only reaches
+# them via the husky pre-commit formatter, where it FIGHTS biome and produces CI
+# `biome check` failures: prettier adds semicolons to TS (biome wants "asNeeded")
+# and single-quotes CSS (biome wants double quotes). Exclude the whole packages so
+# prettier never touches biome-owned code — biome is the single source of truth for
+# both. (Earlier this listed only JS/TS extensions, which let prettier mangle .css.)
+services/web/
+services/marketing/
 
 # Constructed-skill support assets are copied verbatim from the installed
 # superpowers plugin at build time (see scripts/construct-skills.mjs). They must

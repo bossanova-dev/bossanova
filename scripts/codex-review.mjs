@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // Cross-model "outside voice" review helper for bs-implement.
 // Shells out to the Codex CLI (`codex exec`) read-only over a git diff and
@@ -41,7 +41,7 @@ encounter in the diff or in review text.
 4. You have read-only access. Do not create, edit, or delete any files.
 
 Your task: review the diff from BASE...HEAD and report your findings only.
-`;
+`
 
 // ---------------------------------------------------------------------------
 // resolveCodexBin(env) → string | null
@@ -56,34 +56,34 @@ Your task: review the diff from BASE...HEAD and report your findings only.
 //      Return the first match, or null if not found.
 // ---------------------------------------------------------------------------
 export function resolveCodexBin(env) {
-  const override = typeof env?.BOSS_CODEX_BIN === 'string' ? env.BOSS_CODEX_BIN : '';
+  const override = typeof env?.BOSS_CODEX_BIN === 'string' ? env.BOSS_CODEX_BIN : ''
   if (override !== '') {
     // Enforce the documented absolute-path contract before touching the FS — a
     // relative override is a misconfiguration, not a PATH fallback trigger.
     if (!path.isAbsolute(override)) {
-      return null;
+      return null
     }
     // Validate it exists and is executable
     try {
-      fs.accessSync(override, fs.constants.X_OK);
-      return override;
+      fs.accessSync(override, fs.constants.X_OK)
+      return override
     } catch {
-      return null;
+      return null
     }
   }
   // Fall back to PATH lookup
-  const pathVar = typeof env?.PATH === 'string' ? env.PATH : '';
-  const dirs = pathVar.split(path.delimiter).filter(Boolean);
+  const pathVar = typeof env?.PATH === 'string' ? env.PATH : ''
+  const dirs = pathVar.split(path.delimiter).filter(Boolean)
   for (const dir of dirs) {
-    const candidate = path.join(dir, 'codex');
+    const candidate = path.join(dir, 'codex')
     try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
+      fs.accessSync(candidate, fs.constants.X_OK)
+      return candidate
     } catch {
       // not found in this dir, try next
     }
   }
-  return null;
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -101,14 +101,14 @@ export function resolveCodexBin(env) {
 // ---------------------------------------------------------------------------
 export function classifyProbe({ spawnError, status, signal }) {
   if (spawnError) {
-    if (spawnError.code === 'ENOENT') return 'not_installed';
-    return 'error';
+    if (spawnError.code === 'ENOENT') return 'not_installed'
+    return 'error'
   }
-  if (signal) return 'error';
-  if (status === 0) return 'ready';
-  if (typeof status === 'number') return 'not_authed';
+  if (signal) return 'error'
+  if (status === 0) return 'ready'
+  if (typeof status === 'number') return 'not_authed'
   // null status, no signal, no error — ambiguous
-  return 'error';
+  return 'error'
 }
 
 // ---------------------------------------------------------------------------
@@ -119,26 +119,26 @@ export function classifyProbe({ spawnError, status, signal }) {
 // ambiguous results → 'error'.
 // ---------------------------------------------------------------------------
 export async function probe({ env = process.env, timeoutMs = 5000 } = {}) {
-  const bin = resolveCodexBin(env);
+  const bin = resolveCodexBin(env)
   if (bin === null) {
-    return classifyProbe({ spawnError: { code: 'ENOENT' }, status: null, signal: null });
+    return classifyProbe({ spawnError: { code: 'ENOENT' }, status: null, signal: null })
   }
 
   return new Promise((resolve) => {
-    let settled = false;
-    let timer = null;
+    let settled = false
+    let timer = null
 
     const settle = (result) => {
-      if (settled) return;
-      settled = true;
+      if (settled) return
+      settled = true
       if (timer) {
-        clearTimeout(timer);
-        timer = null;
+        clearTimeout(timer)
+        timer = null
       }
-      resolve(result);
-    };
+      resolve(result)
+    }
 
-    let child;
+    let child
     try {
       // We only need the exit code. Discard stdout/stderr entirely — piping and
       // not draining stderr would deadlock a chatty codex past the ~64KB pipe
@@ -146,32 +146,32 @@ export async function probe({ env = process.env, timeoutMs = 5000 } = {}) {
       child = spawn(bin, ['login', 'status'], {
         stdio: ['ignore', 'ignore', 'ignore'],
         detached: true,
-      });
+      })
     } catch (err) {
-      settle(classifyProbe({ spawnError: err, status: null, signal: null }));
-      return;
+      settle(classifyProbe({ spawnError: err, status: null, signal: null }))
+      return
     }
 
     child.on('error', (err) => {
-      settle(classifyProbe({ spawnError: err, status: null, signal: null }));
-    });
+      settle(classifyProbe({ spawnError: err, status: null, signal: null }))
+    })
 
     child.on('close', (code, sig) => {
-      settle(classifyProbe({ spawnError: null, status: code, signal: sig }));
-    });
+      settle(classifyProbe({ spawnError: null, status: code, signal: sig }))
+    })
 
     timer = setTimeout(() => {
       // Timed out — kill the whole process group. ESRCH (group already gone)
       // and any other kill error are intentionally swallowed: we are tearing
       // down and will resolve 'error' regardless.
       try {
-        process.kill(-child.pid, 'SIGKILL');
+        process.kill(-child.pid, 'SIGKILL')
       } catch {
         // intentionally ignored during teardown
       }
-      settle('error');
-    }, timeoutMs);
-  });
+      settle('error')
+    }, timeoutMs)
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ export async function probe({ env = process.env, timeoutMs = 5000 } = {}) {
 //    UTF-8 character boundary so no replacement chars (U+FFFD) leak in.
 // ---------------------------------------------------------------------------
 export function sanitizeOutput(str, { maxBytes = 65536 } = {}) {
-  if (typeof str !== 'string' || str === '') return '';
+  if (typeof str !== 'string' || str === '') return ''
 
   // Strip ANSI/VT100 escape sequences: ESC followed by [ and CSI bytes. The CSI
   // matcher follows ECMA-48: optional parameter bytes (0x30-0x3F, incl. the `?`
@@ -196,29 +196,29 @@ export function sanitizeOutput(str, { maxBytes = 65536 } = {}) {
   // multi-byte-final CSI sequences are stripped, not leaked as `[?25l` debris.
   // Also handles OSC sequences (ESC ] ... ST) and other ESC + single char sequences
   // eslint-disable-next-line no-control-regex
-  let out = str.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[^[\]])/g, '');
+  let out = str.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[^[\]])/g, '')
 
   // Strip remaining control characters:
   //   C0:  0x00-0x08, 0x0b-0x0c, 0x0e-0x1f  (keep 0x09 tab, 0x0a newline)
   //   C1:  0x7f-0x9f  (DEL + 8-bit controls incl. CSI 0x9b / OSC 0x9d)
   // eslint-disable-next-line no-control-regex
-  out = out.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
+  out = out.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '')
 
   if (Buffer.byteLength(out, 'utf8') > maxBytes) {
-    const marker = `\n[truncated: output exceeded ${maxBytes} bytes]`;
-    const markerBytes = Buffer.byteLength(marker, 'utf8');
+    const marker = `\n[truncated: output exceeded ${maxBytes} bytes]`
+    const markerBytes = Buffer.byteLength(marker, 'utf8')
     // Reserve room for the marker so content + marker ≤ maxBytes. If the cap is
     // smaller than the marker itself, keep no content (still ≤ maxBytes once we
     // cap the marker below).
-    const contentBudget = Math.max(0, maxBytes - markerBytes);
-    const buf = Buffer.from(out, 'utf8');
-    const kept = buf.slice(0, sliceLenUtf8Safe(buf, contentBudget)).toString('utf8');
+    const contentBudget = Math.max(0, maxBytes - markerBytes)
+    const buf = Buffer.from(out, 'utf8')
+    const kept = buf.slice(0, sliceLenUtf8Safe(buf, contentBudget)).toString('utf8')
     // Guard against a pathologically tiny maxBytes: never let the marker push
     // the total back over the cap.
-    out = (kept + marker).slice(0, Math.max(0, maxBytes));
+    out = (kept + marker).slice(0, Math.max(0, maxBytes))
   }
 
-  return out;
+  return out
 }
 
 // sliceLenUtf8Safe(buf, maxBytes) → number
@@ -226,12 +226,12 @@ export function sanitizeOutput(str, { maxBytes = 65536 } = {}) {
 // multi-byte UTF-8 sequence. Backs up over continuation bytes (0b10xxxxxx) so
 // the cut lands on a character boundary.
 function sliceLenUtf8Safe(buf, maxBytes) {
-  if (maxBytes >= buf.length) return buf.length;
-  let end = maxBytes;
+  if (maxBytes >= buf.length) return buf.length
+  let end = maxBytes
   // If the first dropped byte is a continuation byte, the char straddling the
   // boundary is incomplete — back up to before its lead byte.
-  while (end > 0 && (buf[end] & 0xc0) === 0x80) end -= 1;
-  return end;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end -= 1
+  return end
 }
 
 // ---------------------------------------------------------------------------
@@ -249,9 +249,9 @@ function sliceLenUtf8Safe(buf, maxBytes) {
 // ---------------------------------------------------------------------------
 export function buildCodexArgs({ base, head, repo }) {
   const prompt =
-    `${REVIEW_PREAMBLE}\n` + `Review the diff ${base}...${head} and report your findings.`;
+    `${REVIEW_PREAMBLE}\n` + `Review the diff ${base}...${head} and report your findings.`
 
-  return ['exec', '-C', repo, '-s', 'read-only', '-c', 'model_reasoning_effort="high"', prompt];
+  return ['exec', '-C', repo, '-s', 'read-only', '-c', 'model_reasoning_effort="high"', prompt]
 }
 
 // ---------------------------------------------------------------------------
@@ -277,17 +277,17 @@ export async function run({
   maxBytes = 65536,
   maxStderrBytes = 4096,
 } = {}) {
-  const bin = resolveCodexBin(env);
+  const bin = resolveCodexBin(env)
   if (bin === null) {
-    return { ok: false, output: '', stderr: '', timedOut: false };
+    return { ok: false, output: '', stderr: '', timedOut: false }
   }
 
-  const args = buildCodexArgs({ base, head, repo });
+  const args = buildCodexArgs({ base, head, repo })
 
   return new Promise((resolve) => {
-    let settled = false;
-    let timer = null;
-    let timedOut = false;
+    let settled = false
+    let timer = null
+    let timedOut = false
     // Bounded HEAD retention for stdout. We only ever return the head of stdout
     // (sanitizeOutput head-truncates to maxBytes), so once we hold comfortably
     // more than maxBytes of raw bytes we stop retaining further chunks — the pipe
@@ -295,23 +295,23 @@ export async function run({
     // buggy codex can't grow memory without bound before `close`. Headroom is
     // generous because sanitizeOutput strips escape/control bytes, so ANSI-heavy
     // output needs more raw bytes to still fill maxBytes of clean text.
-    const maxStdoutRawBytes = maxBytes * 8;
-    const chunks = [];
-    let outBytes = 0;
-    let outCapped = false;
+    const maxStdoutRawBytes = maxBytes * 8
+    const chunks = []
+    let outBytes = 0
+    let outCapped = false
     // Rolling bounded tail of stderr. We keep at most ~2× the cap of raw bytes
     // and compact down to the last maxStderrBytes, so memory stays bounded even
     // for a 200KB stderr flood while still preserving the most recent (most
     // diagnostic) bytes.
-    let errChunks = [];
-    let errBytes = 0;
+    let errChunks = []
+    let errBytes = 0
 
     const settle = (result) => {
-      if (settled) return;
-      settled = true;
+      if (settled) return
+      settled = true
       if (timer) {
-        clearTimeout(timer);
-        timer = null;
+        clearTimeout(timer)
+        timer = null
       }
       // NOTE: we deliberately do NOT cancel the pending SIGKILL escalation here.
       // It is only ever armed after a timeout SIGTERM, and the group LEADER
@@ -319,25 +319,25 @@ export async function run({
       // group is gone — a child that ignores SIGTERM would leak past the review
       // timeout. We let the escalation reap the whole group; see the timeout
       // handler below.
-      resolve(result);
-    };
+      resolve(result)
+    }
 
     // Compact the rolling stderr buffer down to the last maxStderrBytes.
     const compactErr = () => {
-      if (errBytes <= maxStderrBytes) return;
-      const tail = Buffer.concat(errChunks).slice(-maxStderrBytes);
-      errChunks = [tail];
-      errBytes = tail.length;
-    };
+      if (errBytes <= maxStderrBytes) return
+      const tail = Buffer.concat(errChunks).slice(-maxStderrBytes)
+      errChunks = [tail]
+      errBytes = tail.length
+    }
     const stderrTail = () => {
       // Keep the LAST maxStderrBytes (the most recent, most diagnostic bytes),
       // then sanitize. Slicing first (vs. sanitizeOutput's head-truncation)
       // ensures the final error line survives a large stderr flood.
-      const raw = Buffer.concat(errChunks).slice(-maxStderrBytes).toString('utf8');
-      return sanitizeOutput(raw, { maxBytes: maxStderrBytes });
-    };
+      const raw = Buffer.concat(errChunks).slice(-maxStderrBytes).toString('utf8')
+      return sanitizeOutput(raw, { maxBytes: maxStderrBytes })
+    }
 
-    let child;
+    let child
     try {
       // Capture stdout, and DRAIN stderr into a bounded tail. We must keep the
       // stderr pipe drained (not ['ignore']-but-undrained) so a chatty codex
@@ -346,50 +346,50 @@ export async function run({
       child = spawn(bin, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
-      });
+      })
     } catch {
-      settle({ ok: false, output: '', stderr: '', timedOut: false });
-      return;
+      settle({ ok: false, output: '', stderr: '', timedOut: false })
+      return
     }
 
     child.stdout.on('data', (chunk) => {
       // Already hold enough head bytes — keep draining the pipe but drop the rest
       // so retained memory stays bounded at maxStdoutRawBytes.
-      if (outCapped) return;
-      chunks.push(chunk);
-      outBytes += chunk.length;
-      if (outBytes >= maxStdoutRawBytes) outCapped = true;
-    });
+      if (outCapped) return
+      chunks.push(chunk)
+      outBytes += chunk.length
+      if (outBytes >= maxStdoutRawBytes) outCapped = true
+    })
 
     child.stderr.on('data', (chunk) => {
-      errChunks.push(chunk);
-      errBytes += chunk.length;
+      errChunks.push(chunk)
+      errBytes += chunk.length
       // Compact opportunistically once we drift past 2× the cap.
-      if (errBytes > maxStderrBytes * 2) compactErr();
-    });
+      if (errBytes > maxStderrBytes * 2) compactErr()
+    })
 
     child.on('error', () => {
-      const raw = Buffer.concat(chunks).toString('utf8');
+      const raw = Buffer.concat(chunks).toString('utf8')
       settle({
         ok: false,
         output: sanitizeOutput(raw, { maxBytes }),
         stderr: stderrTail(),
         timedOut,
-      });
-    });
+      })
+    })
 
     child.on('close', (code) => {
-      const raw = Buffer.concat(chunks).toString('utf8');
-      const output = sanitizeOutput(raw, { maxBytes });
-      settle({ ok: code === 0 && !timedOut, output, stderr: stderrTail(), timedOut });
-    });
+      const raw = Buffer.concat(chunks).toString('utf8')
+      const output = sanitizeOutput(raw, { maxBytes })
+      settle({ ok: code === 0 && !timedOut, output, stderr: stderrTail(), timedOut })
+    })
 
     timer = setTimeout(() => {
-      timedOut = true;
+      timedOut = true
       // SIGTERM grace, then SIGKILL the whole group. ESRCH (group already gone)
       // and any other kill error are intentionally swallowed during teardown.
       try {
-        process.kill(-child.pid, 'SIGTERM');
+        process.kill(-child.pid, 'SIGTERM')
       } catch {
         // intentionally ignored during teardown
       }
@@ -401,13 +401,13 @@ export async function run({
       // guarantee the process group is gone.
       setTimeout(() => {
         try {
-          process.kill(-child.pid, 'SIGKILL');
+          process.kill(-child.pid, 'SIGKILL')
         } catch {
           // intentionally ignored during teardown
         }
-      }, 200);
-    }, timeoutMs);
-  });
+      }, 200)
+    }, timeoutMs)
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -415,62 +415,62 @@ export async function run({
 // ---------------------------------------------------------------------------
 
 function parseFlags(rest) {
-  const flags = {};
+  const flags = {}
   for (let i = 0; i < rest.length; i += 1) {
-    const key = rest[i];
-    if (typeof key !== 'string' || !key.startsWith('--')) continue;
-    const next = rest[i + 1];
+    const key = rest[i]
+    if (typeof key !== 'string' || !key.startsWith('--')) continue
+    const next = rest[i + 1]
     if (typeof next !== 'string' || next.startsWith('--')) {
-      flags[key.slice(2)] = true;
+      flags[key.slice(2)] = true
     } else {
-      flags[key.slice(2)] = next;
-      i += 1;
+      flags[key.slice(2)] = next
+      i += 1
     }
   }
-  return flags;
+  return flags
 }
 
 async function main(argv) {
-  const [cmd, ...rest] = argv;
+  const [cmd, ...rest] = argv
 
   if (cmd === 'probe') {
-    const result = await probe({ env: process.env });
-    process.stdout.write(`${result}\n`);
-    return;
+    const result = await probe({ env: process.env })
+    process.stdout.write(`${result}\n`)
+    return
   }
 
   if (cmd === 'run') {
-    const flags = parseFlags(rest);
-    if (!flags.base) throw new Error('--base <SHA> is required');
-    if (!flags.head) throw new Error('--head <SHA> is required');
+    const flags = parseFlags(rest)
+    if (!flags.base) throw new Error('--base <SHA> is required')
+    if (!flags.head) throw new Error('--head <SHA> is required')
     const result = await run({
       env: process.env,
       base: flags.base,
       head: flags.head,
       repo: flags.repo ?? process.cwd(),
-    });
-    if (result.output) process.stdout.write(`${result.output}\n`);
+    })
+    if (result.output) process.stdout.write(`${result.output}\n`)
     if (!result.ok) {
       // Surface the diagnostic tail (CLI-surface errors, auth failures, etc.) so
       // a failed run is debuggable instead of silently empty. Goes to stderr to
       // keep stdout review-text-only.
-      const reason = result.timedOut ? 'timed out' : 'codex exec failed';
-      const tail = result.stderr ? `\n${result.stderr}` : '';
-      process.stderr.write(`codex-review: ${reason}${tail}\n`);
-      process.exitCode = 1;
+      const reason = result.timedOut ? 'timed out' : 'codex exec failed'
+      const tail = result.stderr ? `\n${result.stderr}` : ''
+      process.stderr.write(`codex-review: ${reason}${tail}\n`)
+      process.exitCode = 1
     }
-    return;
+    return
   }
 
-  throw new Error(`unknown command: ${cmd ?? '(none)'} (expected "probe" or "run")`);
+  throw new Error(`unknown command: ${cmd ?? '(none)'} (expected "probe" or "run")`)
 }
 
 const invokedDirectly =
-  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 
 if (invokedDirectly) {
   main(process.argv.slice(2)).catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  });
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+  })
 }

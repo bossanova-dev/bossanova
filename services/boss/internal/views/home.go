@@ -41,6 +41,10 @@ const (
 // override it to pin a fixed instant.
 var upgradeNow = time.Now
 
+// saveSettings persists config.Settings to disk. Tests stub this to avoid
+// writing real config files.
+var saveSettings = config.Save
+
 // upgradeCachePath returns the on-disk path for the upgrade banner cache.
 // Returns "" if the user's cache directory is unavailable; callers treat an
 // empty path as "cache disabled" and skip both reads and writes.
@@ -197,6 +201,42 @@ func (h HomeModel) currentTime() time.Time {
 		return h.now()
 	}
 	return time.Now()
+}
+
+// valueDelivered reports whether the user has received real value: a repo,
+// a session, and a chat.
+func valueDelivered(repoCount, sessionCount int, hasChat bool) bool {
+	return repoCount > 0 && sessionCount > 0 && hasChat
+}
+
+// sessionsHaveChat reports whether any session has an active chat. has_active_chat
+// (heartbeat-tracked) is the cleanest available "has started a chat" signal on the
+// session list — no extra RPC.
+func sessionsHaveChat(sessions []*pb.Session) bool {
+	for _, s := range sessions {
+		if s.GetHasActiveChat() {
+			return true
+		}
+	}
+	return false
+}
+
+// latchValueDeliveredIfNeeded sets the one-time BossCloudValueDeliveredAt milestone
+// the first time the user has a repo + session + chat, and persists it. Set-once:
+// the timestamp never moves, so the promo stays eligible even if the repo is later
+// deleted. Persist failures are non-fatal — the latch retries on the next poll.
+func (h *HomeModel) latchValueDeliveredIfNeeded() {
+	if !valueDelivered(h.repoCount, len(h.sessions), sessionsHaveChat(h.sessions)) {
+		return
+	}
+	updated, dirty := h.settings.EnsureBossCloudValueDeliveredAt(h.currentTime())
+	if !dirty {
+		return
+	}
+	if err := saveSettings(updated); err == nil {
+		h.settings = updated
+	}
+	// On save error, leave h.settings unchanged so the latch retries next poll.
 }
 
 func (h *HomeModel) SetCloudAccessClient(c CloudAccessClient) {
@@ -528,14 +568,29 @@ func (h *HomeModel) buildTableRows() {
 
 		attn := renderAttentionIndicator(sess)
 		repo, name, pr := repos[i], linkedNames[i], prs[i]
-		if sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED ||
-			sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CLOSED {
+		selected := rowIndex == cursor
+		switch {
+		case sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED ||
+			sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CLOSED:
 			repo = mutedStrike.Render(repos[i])
 			// renderMutedTrackerLink styles the full title with raw ANSI and
 			// wraps the tracker ID in OSC 8; do NOT wrap its output with
 			// lipgloss — that strips the hyperlink envelope.
 			name = renderMutedTrackerLink(sess, names[i])
 			pr = renderMutedPRLink(sess)
+		case selected:
+			// The table applies the selected (blue) foreground to the whole
+			// row, but a styled leading cell (the attention "!") emits a full
+			// SGR reset that cancels it for the cells after it (repo/name/pr).
+			// Re-assert the selection color on those cells with raw ANSI so it
+			// survives regardless of the reset. See BOS-103.
+			repo = renderSelectedText(repos[i])
+			name = renderSelectedTrackerLink(sess, names[i])
+			if sess.PrNumber != nil {
+				pr = renderSelectedPRLink(sess)
+			} else {
+				pr = renderSelectedText(prs[i]) // the "-" placeholder, kept blue
+			}
 		}
 
 		indicator := ""
@@ -571,6 +626,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case repoCountMsg:
 		if msg.err == nil {
 			h.repoCount = msg.count
+			h.latchValueDeliveredIfNeeded()
 		}
 		return h, nil
 
@@ -682,6 +738,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.pollFailures = 0
 		h.err = nil
 		h.sessions = msg.sessions
+		h.latchValueDeliveredIfNeeded()
 		h.daemonStatuses = msg.daemonStatuses
 		h.applyMergedOptimisticOverride()
 		h.buildTableRows()
@@ -804,6 +861,12 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return h, func() tea.Msg { return switchViewMsg{view: ViewLogin} }
 		case "enter":
+			if h.repoCount == 0 {
+				// New user with no repos: guide them into adding their first
+				// repository. firstRepo=true makes the add wizard return to the
+				// home empty state on cancel rather than the repo list.
+				return h, func() tea.Msg { return switchViewMsg{view: ViewRepoAdd, firstRepo: true} }
+			}
 			if sess := h.selectedSession(); sess != nil {
 				return h, func() tea.Msg {
 					return switchViewMsg{view: ViewChatPicker, sessionID: sess.Id}
@@ -819,7 +882,11 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		previousCursor := h.table.Cursor()
 		h.table, cmd = h.table.Update(msg)
 		h.normalizeTableCursor(previousCursor)
-		updateCursorColumn(&h.table)
+		// Rebuild so the selection (blue) styling follows the new cursor; this
+		// also re-runs updateCursorColumn internally to keep the chevron in
+		// sync. updateCursorColumn alone would only move the chevron, leaving
+		// repo/name/pr stale on error/attention rows (BOS-103).
+		h.buildTableRows()
 		return h, cmd
 	}
 
@@ -1064,8 +1131,10 @@ func (h HomeModel) View() tea.View {
 			discovery = cloudDiscoveryLine(h.loggedIn, h.authMgr != nil)
 		}
 		if h.repoCount == 0 {
-			// No repos configured - show welcome message with setup instructions
-			nav := []string{"[s]ettings"}
+			// No repos configured - guide the new user straight to adding their
+			// first repository (the primary action), rather than sending them to
+			// Settings. The [s]ettings key still works as a hidden escape hatch.
+			nav := []string{"[enter] add repository"}
 			// Suppress the [l]ogout action while the logout confirmation is
 			// showing so the empty state doesn't display the control and its
 			// confirmation prompt at once (mirrors the session-list view).
@@ -1078,7 +1147,7 @@ func (h HomeModel) View() tea.View {
 			content = lipgloss.NewStyle().Padding(0, 2).Render(
 				"Welcome to Bossanova!\n\n"+
 					"To get started, you need to add a repository for us to work on together.\n\n"+
-					lipgloss.NewStyle().Bold(true).Render("Open Settings to add a repository."),
+					lipgloss.NewStyle().Bold(true).Render("Press Enter to add your first repository"),
 			) + "\n" +
 				actionBar(nav, []string{"[q]uit"})
 		} else {

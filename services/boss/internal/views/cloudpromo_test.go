@@ -60,6 +60,7 @@ func TestCloudGuestOfferVisiblePolicy(t *testing.T) {
 	now := sessionStartedAt.Add(30 * time.Second)
 	settings := config.DefaultSettings()
 	settings.InstalledAt = installedAt
+	settings.BossCloudValueDeliveredAt = installedAt
 
 	if !cloudGuestOfferVisible(settings, now, sessionStartedAt, false, true) {
 		t.Fatal("cloudGuestOfferVisible = false, want true for eligible guest")
@@ -70,6 +71,7 @@ func TestCloudGuestOfferHiddenByManualSetting(t *testing.T) {
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
 	settings := config.DefaultSettings()
 	settings.InstalledAt = now
+	settings.BossCloudValueDeliveredAt = now
 	settings.BossCloudGuestOfferHidden = true
 
 	if cloudGuestOfferVisible(settings, now, now, false, true) {
@@ -83,19 +85,21 @@ func TestCloudGuestOfferHiddenAfterSessionLimit(t *testing.T) {
 	now := sessionStartedAt.Add(cloudGuestOfferSessionLimit + time.Second)
 	settings := config.DefaultSettings()
 	settings.InstalledAt = installedAt
+	settings.BossCloudValueDeliveredAt = installedAt
 
 	if cloudGuestOfferVisible(settings, now, sessionStartedAt, false, true) {
 		t.Fatal("cloudGuestOfferVisible = true, want false after session limit")
 	}
 }
 
-func TestCloudGuestOfferHiddenAfterInstallLimit(t *testing.T) {
+func TestCloudGuestOfferHiddenAfterValueWindow(t *testing.T) {
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
 	settings := config.DefaultSettings()
-	settings.InstalledAt = now.Add(-cloudGuestOfferInstallLimit)
+	// Anchor the window to value-delivered, not install time.
+	settings.BossCloudValueDeliveredAt = now.Add(-cloudGuestOfferValueWindow)
 
 	if cloudGuestOfferVisible(settings, now, now, false, true) {
-		t.Fatal("cloudGuestOfferVisible = true, want false after install limit")
+		t.Fatal("cloudGuestOfferVisible = true, want false after value window")
 	}
 }
 
@@ -103,6 +107,7 @@ func TestCloudGuestOfferHiddenWhenLoggedInOrAuthUnavailable(t *testing.T) {
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
 	settings := config.DefaultSettings()
 	settings.InstalledAt = now
+	settings.BossCloudValueDeliveredAt = now
 
 	if cloudGuestOfferVisible(settings, now, now, true, true) {
 		t.Fatal("cloudGuestOfferVisible = true, want false for logged-in user")
@@ -119,6 +124,7 @@ func TestCloudGuestOfferSuppressedByProofFlag(t *testing.T) {
 	now := sessionStartedAt.Add(30 * time.Second)
 	settings := config.DefaultSettings()
 	settings.InstalledAt = installedAt
+	settings.BossCloudValueDeliveredAt = installedAt
 
 	// Verify baseline: eligible guest returns true without the flag.
 	if !cloudGuestOfferVisible(settings, now, sessionStartedAt, false, true) {
@@ -130,5 +136,93 @@ func TestCloudGuestOfferSuppressedByProofFlag(t *testing.T) {
 	proofHideGuestOffer = true
 	if cloudGuestOfferVisible(settings, now, sessionStartedAt, false, true) {
 		t.Fatal("cloudGuestOfferVisible = true, want false when proofHideGuestOffer is set")
+	}
+}
+
+// TestCloudGuestOfferVisible is the canonical table-driven test for
+// cloudGuestOfferVisible. It covers the value-delivered gate and the 72h
+// window anchored to BossCloudValueDeliveredAt.
+func TestCloudGuestOfferVisible(t *testing.T) {
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name             string
+		loggedIn         bool
+		authConfigured   bool
+		offerHidden      bool
+		proofHide        bool
+		valueDeliveredAt time.Time
+		now              time.Time
+		want             bool
+	}{
+		{
+			name:           "no value delivered -> hidden",
+			authConfigured: true,
+			now:            base,
+			want:           false,
+		},
+		{
+			name:             "value delivered, within 72h -> shown",
+			authConfigured:   true,
+			valueDeliveredAt: base,
+			now:              base.Add(time.Hour),
+			want:             true,
+		},
+		{
+			name:             "value delivered, past 72h window -> hidden",
+			authConfigured:   true,
+			valueDeliveredAt: base,
+			now:              base.Add(73 * time.Hour),
+			want:             false,
+		},
+		{
+			name:             "logged in -> hidden",
+			loggedIn:         true,
+			authConfigured:   true,
+			valueDeliveredAt: base,
+			now:              base.Add(time.Hour),
+			want:             false,
+		},
+		{
+			name:             "auth not configured -> hidden",
+			authConfigured:   false,
+			valueDeliveredAt: base,
+			now:              base.Add(time.Hour),
+			want:             false,
+		},
+		{
+			name:             "offer hidden setting -> hidden",
+			authConfigured:   true,
+			offerHidden:      true,
+			valueDeliveredAt: base,
+			now:              base.Add(time.Hour),
+			want:             false,
+		},
+		{
+			name:             "proof hide env -> hidden",
+			authConfigured:   true,
+			proofHide:        true,
+			valueDeliveredAt: base,
+			now:              base.Add(time.Hour),
+			want:             false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := config.DefaultSettings()
+			settings.BossCloudValueDeliveredAt = tc.valueDeliveredAt
+			settings.BossCloudGuestOfferHidden = tc.offerHidden
+
+			if tc.proofHide {
+				prev := proofHideGuestOffer
+				proofHideGuestOffer = true
+				defer func() { proofHideGuestOffer = prev }()
+			}
+
+			// Pass zero sessionStartedAt so the session-limit gate never fires.
+			got := cloudGuestOfferVisible(settings, tc.now, time.Time{}, tc.loggedIn, tc.authConfigured)
+			if got != tc.want {
+				t.Fatalf("want %v, got %v", tc.want, got)
+			}
+		})
 	}
 }

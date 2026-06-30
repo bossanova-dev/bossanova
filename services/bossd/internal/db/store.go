@@ -129,6 +129,10 @@ type UpdateSessionParams struct {
 	DisplayLabel   *string
 	DisplayIntent  *int32
 	DisplaySpinner *bool
+
+	// SetupError flags a non-fatal setup-script failure on the session. nil
+	// means "don't touch"; a value (including "") sets/clears the column.
+	SetupError *string
 }
 
 // SessionWithRepo pairs a Session with its owning repo metadata, so

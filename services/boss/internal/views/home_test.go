@@ -691,13 +691,15 @@ func TestHomeBuildTableRows_PreservesSessionOrderWhenSessionNeedsAttention(t *te
 	if len(rows) != 4 {
 		t.Fatalf("table rows = %d, want 4: three sessions plus attention warning row", len(rows))
 	}
-	if got := rows[0][3]; got != "Normal newer" {
+	// The cursor row (row 0) now carries selection-blue SGR; strip ANSI so this
+	// order assertion compares visible text regardless of selection styling.
+	if got := stripANSI(rows[0][3]); got != "Normal newer" {
 		t.Fatalf("first session row NAME = %q, want Normal newer", got)
 	}
-	if got := rows[1][3]; got != "Attention older" {
+	if got := stripANSI(rows[1][3]); got != "Attention older" {
 		t.Fatalf("second session row NAME = %q, want Attention older", got)
 	}
-	if got := rows[3][3]; got != "Normal oldest" {
+	if got := stripANSI(rows[3][3]); got != "Normal oldest" {
 		t.Fatalf("third session row NAME = %q, want Normal oldest", got)
 	}
 }
@@ -729,10 +731,12 @@ func TestHomeBuildTableRows_HidesAgentColumnWhenMultipleAgentsPresent(t *testing
 		}
 	}
 	rows := h.table.Rows()
-	if got := rows[0][4]; got != "-" {
+	// Row 0 is the cursor row and now carries selection-blue SGR around the "-"
+	// PR placeholder; strip ANSI to assert the placeholder regardless of styling.
+	if got := stripANSI(rows[0][4]); got != "-" {
 		t.Fatalf("session row PR column = %q, want -", got)
 	}
-	if got := rows[1][4]; got != "-" {
+	if got := stripANSI(rows[1][4]); got != "-" {
 		t.Fatalf("session row PR column = %q, want -", got)
 	}
 }
@@ -758,7 +762,9 @@ func TestHomeBuildTableRows_HidesAgentColumnWhenMultipleAgentsAvailable(t *testi
 		}
 	}
 	rows := h.table.Rows()
-	if got := rows[0][4]; got != "-" {
+	// Row 0 is the cursor row and now carries selection-blue SGR around the "-"
+	// PR placeholder; strip ANSI to assert the placeholder regardless of styling.
+	if got := stripANSI(rows[0][4]); got != "-" {
 		t.Fatalf("session row PR column = %q, want -", got)
 	}
 }
@@ -1061,6 +1067,9 @@ func TestHomeKeyDispatch_Regression(t *testing.T) {
 }
 
 func TestHomeViewShowsCloudDiscoveryWithActiveSessions(t *testing.T) {
+	now := time.Now()
+	settings := config.DefaultSettings()
+	settings.BossCloudValueDeliveredAt = now // within the 72 h offer window
 	h := HomeModel{
 		ctx:       context.Background(),
 		authMgr:   &auth.Manager{},
@@ -1068,6 +1077,7 @@ func TestHomeViewShowsCloudDiscoveryWithActiveSessions(t *testing.T) {
 		loading:   false,
 		loggedIn:  false,
 		sessions:  []*pb.Session{{Id: "sess-1", Title: "Active work"}},
+		settings:  settings,
 	}
 	h.buildTableRows()
 
@@ -1089,6 +1099,9 @@ func TestHomeViewShowsCloudDiscoveryWithActiveSessions(t *testing.T) {
 }
 
 func TestHomeViewShowsCloudDiscoveryWithoutExtraBlankLinesWhenNoSessions(t *testing.T) {
+	now := time.Now()
+	settings := config.DefaultSettings()
+	settings.BossCloudValueDeliveredAt = now // within the 72 h offer window
 	h := HomeModel{
 		ctx:       context.Background(),
 		authMgr:   &auth.Manager{},
@@ -1096,6 +1109,7 @@ func TestHomeViewShowsCloudDiscoveryWithoutExtraBlankLinesWhenNoSessions(t *test
 		loading:   false,
 		loggedIn:  false,
 		sessions:  []*pb.Session{},
+		settings:  settings,
 	}
 
 	content := h.View().Content
@@ -1179,16 +1193,21 @@ func TestViewEmptyStateNoRepos(t *testing.T) {
 		t.Errorf("expected welcome message in empty state with no repos, got: %s", content)
 	}
 
-	// Check for setup instructions
-	if !strings.Contains(content, "Open Settings to add a repository") {
-		t.Errorf("expected setup instructions in empty state with no repos, got: %s", content)
+	// Check for setup instructions guiding the user to add their first repo.
+	if !strings.Contains(content, "Press Enter to add your first repository") {
+		t.Errorf("expected add-repository prompt in empty state with no repos, got: %s", content)
 	}
 
 	if strings.Contains(content, "[n]ew session") {
 		t.Errorf("should not offer [n]ew session when no repos exist, got: %s", content)
 	}
-	if !strings.Contains(content, "[s]ettings") {
-		t.Errorf("expected [s]ettings in empty state action bar, got: %s", content)
+	// The zero-repo empty state's primary action is adding a repository, not
+	// opening Settings.
+	if !strings.Contains(content, "[enter] add repository") {
+		t.Errorf("expected [enter] add repository in empty state action bar, got: %s", content)
+	}
+	if strings.Contains(content, "[s]ettings") {
+		t.Errorf("should not advertise [s]ettings in the zero-repo empty state, got: %s", content)
 	}
 	if !strings.Contains(content, "[q]uit") {
 		t.Errorf("expected [q]uit in empty state action bar, got: %s", content)
@@ -1732,6 +1751,124 @@ func TestHomeNeighborSessionID(t *testing.T) {
 // TestHomeArchiveKeepsCursorPosition verifies the end-to-end behaviour: after a
 // session is archived the cursor should land on the session that takes its
 // place rather than jumping back to the top of the list.
+func TestValueDelivered(t *testing.T) {
+	tests := []struct {
+		name       string
+		repoCount  int
+		sessCount  int
+		hasChat    bool
+		wantResult bool
+	}{
+		{"nothing", 0, 0, false, false},
+		{"repo only", 1, 0, false, false},
+		{"repo and session no chat", 1, 1, false, false},
+		{"repo and session and chat", 1, 1, true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := valueDelivered(tt.repoCount, tt.sessCount, tt.hasChat)
+			if got != tt.wantResult {
+				t.Errorf("valueDelivered(%d,%d,%v) = %v, want %v",
+					tt.repoCount, tt.sessCount, tt.hasChat, got, tt.wantResult)
+			}
+		})
+	}
+}
+
+func TestSessionsHaveChat(t *testing.T) {
+	if sessionsHaveChat(nil) {
+		t.Error("nil sessions: want false, got true")
+	}
+	if sessionsHaveChat([]*pb.Session{{HasActiveChat: false}}) {
+		t.Error("all inactive: want false, got true")
+	}
+	if !sessionsHaveChat([]*pb.Session{{HasActiveChat: false}, {HasActiveChat: true}}) {
+		t.Error("one active: want true, got false")
+	}
+}
+
+func TestLatchValueDeliveredSetsOnce(t *testing.T) {
+	now1 := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	now2 := now1.Add(time.Hour)
+
+	oldSave := saveSettings
+	saveSettings = func(config.Settings) error { return nil }
+	defer func() { saveSettings = oldSave }()
+
+	h := HomeModel{
+		ctx:       context.Background(),
+		repoCount: 1,
+		sessions:  []*pb.Session{{HasActiveChat: true}},
+		settings:  config.DefaultSettings(),
+		now:       func() time.Time { return now1 },
+	}
+
+	h.latchValueDeliveredIfNeeded()
+	if h.settings.BossCloudValueDeliveredAt.IsZero() {
+		t.Fatal("BossCloudValueDeliveredAt not set after latch")
+	}
+	if !h.settings.BossCloudValueDeliveredAt.Equal(now1.UTC()) {
+		t.Fatalf("BossCloudValueDeliveredAt = %v, want %v", h.settings.BossCloudValueDeliveredAt, now1.UTC())
+	}
+
+	first := h.settings.BossCloudValueDeliveredAt
+	h.now = func() time.Time { return now2 }
+	h.latchValueDeliveredIfNeeded()
+	if !h.settings.BossCloudValueDeliveredAt.Equal(first) {
+		t.Fatalf("BossCloudValueDeliveredAt moved from %v to %v, want set-once", first, h.settings.BossCloudValueDeliveredAt)
+	}
+}
+
+// runCmd executes a tea.Cmd and returns the resulting message, or nil if cmd is nil.
+func runCmd(cmd tea.Cmd) tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	return cmd()
+}
+
+// isRepoAddSwitch returns true if msg is a switchViewMsg routing to ViewRepoAdd
+// with firstRepo=true.
+func isRepoAddSwitch(msg tea.Msg) bool {
+	svm, ok := msg.(switchViewMsg)
+	return ok && svm.view == ViewRepoAdd && svm.firstRepo
+}
+
+// repoCountMsg must never auto-route the user anywhere. The zero-repo user is
+// guided to add-repo via an explicit [enter] press from the home empty state,
+// not by a silent redirect that covers the welcome screen with the form.
+func TestRepoCountZeroDoesNotAutoRoute(t *testing.T) {
+	oldSave := saveSettings
+	saveSettings = func(config.Settings) error { return nil }
+	defer func() { saveSettings = oldSave }()
+
+	h := NewHomeModel(nil, context.Background(), nil)
+	for _, count := range []int{0, 1, 2} {
+		_, cmd := h.Update(repoCountMsg{count: count})
+		if cmd != nil {
+			t.Fatalf("repoCountMsg{%d}: got non-nil cmd %T, want no auto-route", count, runCmd(cmd))
+		}
+	}
+}
+
+// Pressing Enter on the zero-repo home empty state opens the add-repo wizard
+// with firstRepo=true (so cancel returns to the home empty state).
+func TestEnterOnZeroRepoEmptyStateOpensAddRepo(t *testing.T) {
+	h := HomeModel{
+		ctx:       context.Background(),
+		loading:   false,
+		sessions:  []*pb.Session{},
+		repoCount: 0,
+	}
+	_, cmd := h.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on zero-repo empty state: got nil cmd, want a switch to ViewRepoAdd")
+	}
+	if !isRepoAddSwitch(runCmd(cmd)) {
+		t.Fatalf("enter on zero-repo empty state: routing msg = %T, want switchViewMsg{view:ViewRepoAdd, firstRepo:true}", runCmd(cmd))
+	}
+}
+
 func TestHomeArchiveKeepsCursorPosition(t *testing.T) {
 	sessions := []*pb.Session{
 		{Id: "s1", Title: "first"},
@@ -1777,4 +1914,99 @@ func TestHomeArchiveKeepsCursorPosition(t *testing.T) {
 			t.Fatalf("after archiving last session s3, selected = %q, want s2", got)
 		}
 	})
+}
+
+// blueSelectedSGR is the bold + selection-blue (#4CA7F8) open SGR that
+// pre-styled selected-row cells carry (see renderSelectedText in status.go).
+const blueSelectedSGR = "\x1b[1;38;2;76;167;248m"
+
+func TestBuildTableRows_SelectedAttentionRowIsBlue(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.sessions = []*pb.Session{
+		{
+			Id:              "s-attn",
+			RepoDisplayName: "repo-attn",
+			Title:           "Attention session",
+			AttentionStatus: &pb.AttentionStatus{NeedsAttention: true},
+		},
+		{
+			Id:              "s-plain",
+			RepoDisplayName: "repo-plain",
+			Title:           "Plain session",
+		},
+	}
+	h.buildTableRows()
+	// Put the cursor on the attention session (row 0) and restyle.
+	h.table.SetCursor(h.tableCursorForSessionIndex(0))
+	h.buildTableRows()
+
+	rows := h.table.Rows()
+	// Locate the attention session row by its repo display name (col 2 carries
+	// the selection-blue open code; visible text is still present).
+	var selAttn, selRepo, selName string
+	for _, r := range rows {
+		if strings.Contains(r[2], "repo-attn") {
+			selAttn, selRepo, selName = r[1], r[2], r[3]
+		}
+	}
+	if selRepo == "" {
+		t.Fatalf("attention session row not found in %#v", rows)
+	}
+	if !strings.Contains(selRepo, blueSelectedSGR) {
+		t.Errorf("selected attention repo cell not blue: %q", selRepo)
+	}
+	if !strings.Contains(selName, blueSelectedSGR) {
+		t.Errorf("selected attention name cell not blue: %q", selName)
+	}
+	// The attention "!" indicator (col 1) keeps its own semantic warning/danger
+	// color even when its row is selected — it must not be re-styled blue.
+	if !strings.Contains(selAttn, "!") {
+		t.Errorf("selected attention row should keep its ! indicator, got %q", selAttn)
+	}
+	if strings.Contains(selAttn, blueSelectedSGR) {
+		t.Errorf("attention ! indicator should not be re-styled selection blue: %q", selAttn)
+	}
+
+	// The non-selected plain row must NOT be pre-styled blue.
+	for _, r := range rows {
+		if strings.Contains(r[2], "repo-plain") && strings.Contains(r[2], blueSelectedSGR) {
+			t.Errorf("non-selected plain repo cell should not be pre-styled blue: %q", r[2])
+		}
+	}
+}
+
+func TestNavigation_RestylesSelectedRow(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.sessions = []*pb.Session{
+		{Id: "s0", RepoDisplayName: "repo0", Title: "Zero"},
+		{
+			Id:              "s1",
+			RepoDisplayName: "repo1",
+			Title:           "One",
+			AttentionStatus: &pb.AttentionStatus{NeedsAttention: true},
+		},
+	}
+	h.buildTableRows()
+	h.table.SetCursor(h.tableCursorForSessionIndex(0))
+	h.buildTableRows()
+
+	// Press down-arrow to move selection from session 0 to session 1.
+	updated, _ := h.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	hm := updated.(HomeModel)
+
+	var repo0, repo1 string
+	for _, r := range hm.table.Rows() {
+		if strings.Contains(r[2], "repo0") {
+			repo0 = r[2]
+		}
+		if strings.Contains(r[2], "repo1") {
+			repo1 = r[2]
+		}
+	}
+	if !strings.Contains(repo1, blueSelectedSGR) {
+		t.Errorf("after moving down, selected attention row repo not blue: %q", repo1)
+	}
+	if strings.Contains(repo0, blueSelectedSGR) {
+		t.Errorf("after moving down, previously selected row repo should not be blue: %q", repo0)
+	}
 }

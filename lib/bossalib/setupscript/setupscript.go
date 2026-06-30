@@ -25,6 +25,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/recurser/bossalib/loginshell"
 )
 
 // Type discriminates the Spec shape.
@@ -56,6 +58,30 @@ type Spec struct {
 
 // ErrInvalidSpec is returned for specs that fail validation.
 var ErrInvalidSpec = errors.New("invalid setup_script spec")
+
+// setupOutputTailBytes bounds how much of a failed setup script's combined
+// stdout/stderr is folded into the returned error. Enough to show the actual
+// failure (a stack trace, a "command not found", a make error) without
+// ballooning the error string.
+const setupOutputTailBytes = 4096
+
+// tailWriter is an io.Writer that retains only the last max bytes written to
+// it, so a failed setup script's final output can be surfaced in the error
+// without buffering the entire (potentially large) stream.
+type tailWriter struct {
+	max int
+	buf []byte
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	if len(w.buf) > w.max {
+		w.buf = w.buf[len(w.buf)-w.max:]
+	}
+	return len(p), nil
+}
+
+func (w *tailWriter) String() string { return string(w.buf) }
 
 // Parse decodes a stored setup_script column value into a Spec.
 //
@@ -134,6 +160,15 @@ type ExecuteOpts struct {
 	WorktreePath string        // worktree path; exposed as WORKTREE_DIR
 	Output       io.Writer     // stdout + stderr sink; nil → os.Stderr
 	Timeout      time.Duration // overall timeout; zero → no additional deadline
+	// LoginShell, when set to a supported shell (the user's $SHELL captured in
+	// settings), runs the setup command THROUGH that login shell — exactly how
+	// agent plugins are launched. The daemon's own PATH is the restricted
+	// launchd/login environment and omits per-project version-manager shims
+	// (nodenv/asdf/mise/…), so a bare `make setup-worktree` can't find `pnpm`
+	// and silently skips dependency + git-hook installation. The login shell
+	// loads those shims, so tools resolve identically to an interactive run.
+	// Empty or unsupported → the command runs directly (legacy behaviour).
+	LoginShell string
 	// Warn is called exactly once on legacy-script execution with a
 	// reconfiguration hint. Optional — nil is fine.
 	Warn func(msg string)
@@ -161,17 +196,28 @@ func (s Spec) Execute(ctx context.Context, opts ExecuteOpts) error {
 		output = os.Stderr
 	}
 
-	cmd, err := s.buildCommand(ctx, opts)
+	argv, err := s.buildArgv(opts)
 	if err != nil {
 		return err
 	}
+	// Run through the user's login shell when configured so version-manager
+	// shims land on PATH (see ExecuteOpts.LoginShell). Unsupported/empty shells
+	// fall through to direct execution.
+	if opts.LoginShell != "" && loginshell.IsSupported(opts.LoginShell) {
+		argv = loginshell.Wrap(opts.LoginShell, loginshell.Flags(opts.LoginShell), argv)
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = opts.WorktreePath
 	cmd.Env = append(os.Environ(),
 		"REPO_DIR="+opts.RepoPath,
 		"WORKTREE_DIR="+opts.WorktreePath,
 	)
-	cmd.Stdout = output
-	cmd.Stderr = output
+	// Tee the combined stream to a bounded tail buffer so a failure can report
+	// the script's actual output (the full stream still reaches opts.Output).
+	tail := &tailWriter{max: setupOutputTailBytes}
+	sink := io.MultiWriter(output, tail)
+	cmd.Stdout = sink
+	cmd.Stderr = sink
 
 	if s.Type == TypeLegacy && opts.Warn != nil {
 		opts.Warn("legacy shell-string setup_script detected — rewritten to .boss/setup.sh; re-run 'boss repo settings' to migrate to the structured form")
@@ -181,22 +227,26 @@ func (s Spec) Execute(ctx context.Context, opts ExecuteOpts) error {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return fmt.Errorf("timed out after %v", opts.Timeout)
 		}
+		if t := strings.TrimSpace(tail.String()); t != "" {
+			return fmt.Errorf("run setup script (%s): %w\n--- last setup output ---\n%s", s.Type, err, t)
+		}
 		return fmt.Errorf("run setup script (%s): %w", s.Type, err)
 	}
 	return nil
 }
 
-// buildCommand constructs the *exec.Cmd for this spec, performing any
+// buildArgv resolves the command argv for this spec, performing any
 // filesystem-scoped validation (path traversal under the worktree, Makefile
-// existence) along the way.
-func (s Spec) buildCommand(ctx context.Context, opts ExecuteOpts) (*exec.Cmd, error) {
+// existence) along the way. The caller may wrap the argv through a login shell
+// before building the *exec.Cmd.
+func (s Spec) buildArgv(opts ExecuteOpts) ([]string, error) {
 	switch s.Type {
 	case TypeMake:
 		mfPath := filepath.Join(opts.WorktreePath, "Makefile")
 		if _, err := os.Stat(mfPath); err != nil {
 			return nil, fmt.Errorf("%w: no Makefile in worktree: %w", ErrInvalidSpec, err)
 		}
-		return exec.CommandContext(ctx, "make", s.Target), nil
+		return []string{"make", s.Target}, nil
 
 	case TypeScript:
 		full, err := resolveInsideWorktree(opts.WorktreePath, s.Path)
@@ -206,17 +256,17 @@ func (s Spec) buildCommand(ctx context.Context, opts ExecuteOpts) (*exec.Cmd, er
 		if _, err := os.Stat(full); err != nil {
 			return nil, fmt.Errorf("%w: script not found: %w", ErrInvalidSpec, err)
 		}
-		return exec.CommandContext(ctx, full), nil
+		return []string{full}, nil
 
 	case TypeCommand:
-		return exec.CommandContext(ctx, s.Argv[0], s.Argv[1:]...), nil
+		return append([]string{s.Argv[0]}, s.Argv[1:]...), nil
 
 	case TypeLegacy:
 		scriptPath, err := writeLegacyScript(opts.WorktreePath, s.LegacyScript)
 		if err != nil {
 			return nil, err
 		}
-		return exec.CommandContext(ctx, scriptPath), nil
+		return []string{scriptPath}, nil
 	}
 	return nil, fmt.Errorf("%w: unknown type %q", ErrInvalidSpec, s.Type)
 }

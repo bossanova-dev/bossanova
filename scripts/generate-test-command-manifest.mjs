@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
-import { execFileSync } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(scriptDirectory, '..');
-const moduleRoots = ['lib', 'services', 'plugins'];
+const scriptDirectory = path.dirname(fileURLToPath(import.meta.url))
+const repoRoot = path.resolve(scriptDirectory, '..')
+const moduleRoots = ['lib', 'services', 'plugins']
 
 const defaultRootTargets = [
   'test-smoke',
@@ -19,7 +19,7 @@ const defaultRootTargets = [
   'test-no-inline-stop-hooks',
   'test-readme',
   'test-public-mirror',
-];
+]
 
 // Hand-curated: the web suite is npm-script driven and cannot be derived from go.mod layout.
 const defaultWebTargets = [
@@ -43,92 +43,92 @@ const defaultWebTargets = [
       'Playwright Tier-2 real-stack smoke (local only; requires Go toolchain + `BOSS_E2E_TEST_AUTH`; tests are `test.fixme` pending repo-seeding — see docs/plans/BOS-33)',
     ci: 'no',
   },
-];
+]
 
 function listGoModPaths(root = repoRoot) {
   return moduleRoots.flatMap((moduleRoot) => {
-    const absoluteModuleRoot = path.join(root, moduleRoot);
+    const absoluteModuleRoot = path.join(root, moduleRoot)
     if (!fs.existsSync(absoluteModuleRoot)) {
-      return [];
+      return []
     }
 
     return fs
       .readdirSync(absoluteModuleRoot, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => path.posix.join(moduleRoot, entry.name, 'go.mod'))
-      .filter((goModPath) => fs.existsSync(path.join(root, goModPath)));
-  });
+      .filter((goModPath) => fs.existsSync(path.join(root, goModPath)))
+  })
 }
 
 function targetForModule(modulePath) {
-  const moduleName = path.posix.basename(modulePath);
+  const moduleName = path.posix.basename(modulePath)
   const targetName = modulePath.startsWith('plugins/')
     ? moduleName.replace(/^bossd-plugin-/, '')
-    : moduleName;
+    : moduleName
 
-  return `test-${targetName}`;
+  return `test-${targetName}`
 }
 
 export function deriveModuleTargets(goModPaths) {
-  const orderByRoot = new Map(moduleRoots.map((moduleRoot, index) => [moduleRoot, index]));
+  const orderByRoot = new Map(moduleRoots.map((moduleRoot, index) => [moduleRoot, index]))
 
   return goModPaths
     .map((goModPath) => path.posix.dirname(goModPath))
     .sort((left, right) => {
-      const [leftRoot] = left.split('/');
-      const [rightRoot] = right.split('/');
-      const rootOrder = (orderByRoot.get(leftRoot) ?? 99) - (orderByRoot.get(rightRoot) ?? 99);
+      const [leftRoot] = left.split('/')
+      const [rightRoot] = right.split('/')
+      const rootOrder = (orderByRoot.get(leftRoot) ?? 99) - (orderByRoot.get(rightRoot) ?? 99)
 
-      return rootOrder || left.localeCompare(right);
+      return rootOrder || left.localeCompare(right)
     })
     .map((modulePath) => ({
       path: modulePath,
       target: targetForModule(modulePath),
-    }));
+    }))
 }
 
 export function discoverModuleTargets(root = repoRoot) {
-  return deriveModuleTargets(listGoModPaths(root));
+  return deriveModuleTargets(listGoModPaths(root))
 }
 
 function countTestFiles(modulePath) {
-  const absoluteModulePath = path.join(repoRoot, modulePath);
+  const absoluteModulePath = path.join(repoRoot, modulePath)
   if (!fs.existsSync(absoluteModulePath)) {
-    return 0;
+    return 0
   }
 
   const output = execFileSync('find', [modulePath, '-name', '*_test.go'], {
     cwd: repoRoot,
     encoding: 'utf8',
-  }).trim();
+  }).trim()
 
   if (output === '') {
-    return 0;
+    return 0
   }
 
-  return output.split('\n').length;
+  return output.split('\n').length
 }
 
 function renderCommand(target) {
-  return `make ${target}`;
+  return `make ${target}`
 }
 
 function padCell(value, width, align = 'left') {
-  return align === 'right' ? value.padStart(width) : value.padEnd(width);
+  return align === 'right' ? value.padStart(width) : value.padEnd(width)
 }
 
 function renderTable(headers, rows, alignments = []) {
   const widths = headers.map((header, index) =>
     Math.max(header.length, ...rows.map((row) => row[index].length)),
-  );
+  )
   const separator = widths.map((width, index) => {
-    const alignment = alignments[index] ?? 'left';
-    return alignment === 'right' ? `${'-'.repeat(width - 1)}:` : '-'.repeat(width);
-  });
+    const alignment = alignments[index] ?? 'left'
+    return alignment === 'right' ? `${'-'.repeat(width - 1)}:` : '-'.repeat(width)
+  })
   const renderRow = (row) =>
-    `| ${row.map((cell, index) => padCell(cell, widths[index], alignments[index])).join(' | ')} |`;
+    `| ${row.map((cell, index) => padCell(cell, widths[index], alignments[index])).join(' | ')} |`
 
-  return [renderRow(headers), renderRow(separator), ...rows.map(renderRow)];
+  return [renderRow(headers), renderRow(separator), ...rows.map(renderRow)]
 }
 
 export function renderManifest({ rootTargets, modules, webTargets = defaultWebTargets }) {
@@ -138,17 +138,17 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     ['Full test suite', '`make test-full`'],
     ['Race detector pass', '`make test-race`'],
     ['Slow-test profiling', '`make test-profile`'],
-  ];
+  ]
   const moduleRows = modules.map((module) => [
     `\`${module.path}\``,
     `\`${renderCommand(module.target)}\``,
     String(module.testFiles),
-  ]);
+  ])
   const webRows = webTargets.map((target) => [
     `\`${target.command}\``,
     target.description,
     target.ci,
-  ]);
+  ])
   const lines = [
     '# Test Command Manifest',
     '',
@@ -172,9 +172,9 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     '',
     ...renderTable(['Module', 'Target', 'Test files'], moduleRows, ['left', 'left', 'right']),
     '',
-  ];
+  ]
 
-  return lines.join('\n');
+  return lines.join('\n')
 }
 
 function buildManifest() {
@@ -184,9 +184,9 @@ function buildManifest() {
       ...module,
       testFiles: countTestFiles(module.path),
     })),
-  });
+  })
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  process.stdout.write(buildManifest());
+  process.stdout.write(buildManifest())
 }

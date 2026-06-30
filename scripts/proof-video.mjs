@@ -17,28 +17,28 @@
 // Pure planning/rendering functions are exported for unit tests; only
 // `postprocessProofVideo` touches ffmpeg and the filesystem.
 
-import { spawnSync } from 'node:child_process';
-import { copyFileSync, rmSync, writeFileSync } from 'node:fs';
-import path from 'node:path';
+import { spawnSync } from 'node:child_process'
+import { copyFileSync, rmSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
 
 // Intro-card ffmpeg arg builders live in proof-video-intro.mjs.
-import { buildIntroClipArgs, buildIntroConcatArgs } from './proof-video-intro.mjs';
+import { buildIntroClipArgs, buildIntroConcatArgs } from './proof-video-intro.mjs'
 
 // ── Analysis constants (tuned on a real 11-min gen-AI proof recording) ──────
-export const ANALYZE_FPS = 4; // diff sampling rate — 250ms resolution
-export const ANALYZE_W = 96;
-export const ANALYZE_H = 54;
+export const ANALYZE_FPS = 4 // diff sampling rate — 250ms resolution
+export const ANALYZE_W = 96
+export const ANALYZE_H = 54
 /** Mean-abs-diff (0-255 scale) below which two sampled frames count as "the
  * same". Loose enough to absorb spinners/cursor blinks, far below the diff
  * any real action (typing, spawn, pan) produces. */
-export const STATIC_DIFF_THRESHOLD = 1.5;
+export const STATIC_DIFF_THRESHOLD = 1.5
 /** Only stretches at least this long are compressed. */
-export const MIN_STATIC_RUN_MS = 8_000;
+export const MIN_STATIC_RUN_MS = 8_000
 /** Real-time breathing room kept at each end of a compressed stretch. */
-export const RETIME_PAD_MS = 1_000;
+export const RETIME_PAD_MS = 1_000
 /** Playback duration each compressed stretch is squeezed into. */
-export const RETIME_TARGET_MS = 4_000;
-export const OUTPUT_FPS = 30;
+export const RETIME_TARGET_MS = 4_000
+export const OUTPUT_FPS = 30
 
 // ── Leading white-flash trim ────────────────────────────────────────────────
 // Chrome/Playwright paint a blank white page for a few hundred ms before the
@@ -47,11 +47,11 @@ export const OUTPUT_FPS = 30;
 // ~200-point gap — so a leading run of bright frames is unambiguous for THIS
 // app and cannot false-trigger on dark gen-AI content.
 /** Mean-luma (0-255) above which a sampled frame counts as the browser's white pre-roll. */
-export const LEADING_BLANK_LUMA = 200;
+export const LEADING_BLANK_LUMA = 200
 /** Safety buffer trimmed past the last detected white frame. */
-export const LEADING_BLANK_BUFFER_MS = 150;
+export const LEADING_BLANK_BUFFER_MS = 150
 /** Hard cap so a pathological all-bright start can never gut real content. */
-export const LEADING_BLANK_CAP_MS = 2_000;
+export const LEADING_BLANK_CAP_MS = 2_000
 
 // ── Leading static-frames trim ───────────────────────────────────────────────
 // VHS-recorded TUI sessions begin with a dark, completely static terminal
@@ -67,7 +67,7 @@ export const LEADING_BLANK_CAP_MS = 2_000;
  * dedicated constant lets leading-trim and idle-speedup thresholds evolve
  * independently.
  */
-export const LEADING_STATIC_DIFF = 1.5;
+export const LEADING_STATIC_DIFF = 1.5
 
 // ── Pure: frame differencing ─────────────────────────────────────────────────
 
@@ -78,16 +78,16 @@ export const LEADING_STATIC_DIFF = 1.5;
  * @returns {number[]} length = frameCount - 1
  */
 export function computeFrameDiffs(raw, frameBytes) {
-  const frames = Math.floor(raw.length / frameBytes);
-  const diffs = [];
+  const frames = Math.floor(raw.length / frameBytes)
+  const diffs = []
   for (let f = 1; f < frames; f++) {
-    const a = (f - 1) * frameBytes;
-    const b = f * frameBytes;
-    let sum = 0;
-    for (let i = 0; i < frameBytes; i++) sum += Math.abs(raw[b + i] - raw[a + i]);
-    diffs.push(sum / frameBytes);
+    const a = (f - 1) * frameBytes
+    const b = f * frameBytes
+    let sum = 0
+    for (let i = 0; i < frameBytes; i++) sum += Math.abs(raw[b + i] - raw[a + i])
+    diffs.push(sum / frameBytes)
   }
-  return diffs;
+  return diffs
 }
 
 /**
@@ -99,28 +99,28 @@ export function computeFrameDiffs(raw, frameBytes) {
  * @returns {Array<{startMs: number, endMs: number}>}
  */
 export function findStaticRuns(diffs, opts = {}) {
-  const fps = opts.fps ?? ANALYZE_FPS;
-  const threshold = opts.threshold ?? STATIC_DIFF_THRESHOLD;
-  const minRunMs = opts.minRunMs ?? MIN_STATIC_RUN_MS;
-  const runs = [];
-  let runStart = -1;
+  const fps = opts.fps ?? ANALYZE_FPS
+  const threshold = opts.threshold ?? STATIC_DIFF_THRESHOLD
+  const minRunMs = opts.minRunMs ?? MIN_STATIC_RUN_MS
+  const runs = []
+  let runStart = -1
   const flush = (endIdx) => {
-    if (runStart < 0) return;
-    const startMs = (runStart / fps) * 1000;
-    const endMs = ((endIdx + 1) / fps) * 1000;
+    if (runStart < 0) return
+    const startMs = (runStart / fps) * 1000
+    const endMs = ((endIdx + 1) / fps) * 1000
     if (endMs - startMs >= minRunMs)
-      runs.push({ startMs: Math.round(startMs), endMs: Math.round(endMs) });
-    runStart = -1;
-  };
+      runs.push({ startMs: Math.round(startMs), endMs: Math.round(endMs) })
+    runStart = -1
+  }
   for (let k = 0; k < diffs.length; k++) {
     if (diffs[k] < threshold) {
-      if (runStart < 0) runStart = k;
+      if (runStart < 0) runStart = k
     } else {
-      flush(k - 1);
+      flush(k - 1)
     }
   }
-  flush(diffs.length - 1);
-  return runs;
+  flush(diffs.length - 1)
+  return runs
 }
 
 /**
@@ -130,15 +130,15 @@ export function findStaticRuns(diffs, opts = {}) {
  * @returns {number[]} length = frameCount
  */
 export function computeFrameLuma(raw, frameBytes) {
-  const frames = Math.floor(raw.length / frameBytes);
-  const luma = [];
+  const frames = Math.floor(raw.length / frameBytes)
+  const luma = []
   for (let f = 0; f < frames; f++) {
-    const start = f * frameBytes;
-    let sum = 0;
-    for (let i = 0; i < frameBytes; i++) sum += raw[start + i];
-    luma.push(sum / frameBytes);
+    const start = f * frameBytes
+    let sum = 0
+    for (let i = 0; i < frameBytes; i++) sum += raw[start + i]
+    luma.push(sum / frameBytes)
   }
-  return luma;
+  return luma
 }
 
 /**
@@ -158,16 +158,16 @@ export function computeFrameLuma(raw, frameBytes) {
  * @returns {number}
  */
 export function detectLeadingBlankMs(luma, opts = {}) {
-  const fps = opts.fps ?? ANALYZE_FPS;
-  const threshold = opts.threshold ?? LEADING_BLANK_LUMA;
-  const bufferMs = opts.bufferMs ?? LEADING_BLANK_BUFFER_MS;
-  const capMs = opts.capMs ?? LEADING_BLANK_CAP_MS;
-  let n = 0;
-  while (n < luma.length && luma[n] > threshold) n++;
-  if (n === 0) return 0;
-  if (n === luma.length) return 0; // all-bright → light app, not a flash
-  const trimMs = Math.round((n / fps) * 1000 + bufferMs);
-  return Math.min(trimMs, capMs);
+  const fps = opts.fps ?? ANALYZE_FPS
+  const threshold = opts.threshold ?? LEADING_BLANK_LUMA
+  const bufferMs = opts.bufferMs ?? LEADING_BLANK_BUFFER_MS
+  const capMs = opts.capMs ?? LEADING_BLANK_CAP_MS
+  let n = 0
+  while (n < luma.length && luma[n] > threshold) n++
+  if (n === 0) return 0
+  if (n === luma.length) return 0 // all-bright → light app, not a flash
+  const trimMs = Math.round((n / fps) * 1000 + bufferMs)
+  return Math.min(trimMs, capMs)
 }
 
 /**
@@ -199,16 +199,16 @@ export function detectLeadingBlankMs(luma, opts = {}) {
  * @returns {number}
  */
 export function detectLeadingStaticMs(diffs, opts = {}) {
-  const fps = opts.fps ?? ANALYZE_FPS;
-  const eps = opts.eps ?? LEADING_STATIC_DIFF;
-  const bufferMs = opts.bufferMs ?? LEADING_BLANK_BUFFER_MS;
-  const capMs = opts.capMs ?? LEADING_BLANK_CAP_MS;
-  let n = 0;
-  while (n < diffs.length && diffs[n] < eps) n++;
-  if (n === 0) return 0;
-  if (n === diffs.length) return 0; // all-static → not a lead-in
-  const trimMs = Math.round((n / fps) * 1000 + bufferMs);
-  return Math.min(trimMs, capMs);
+  const fps = opts.fps ?? ANALYZE_FPS
+  const eps = opts.eps ?? LEADING_STATIC_DIFF
+  const bufferMs = opts.bufferMs ?? LEADING_BLANK_BUFFER_MS
+  const capMs = opts.capMs ?? LEADING_BLANK_CAP_MS
+  let n = 0
+  while (n < diffs.length && diffs[n] < eps) n++
+  if (n === 0) return 0
+  if (n === diffs.length) return 0 // all-static → not a lead-in
+  const trimMs = Math.round((n / fps) * 1000 + bufferMs)
+  return Math.min(trimMs, capMs)
 }
 
 // ── Pure: retime planning ────────────────────────────────────────────────────
@@ -224,30 +224,30 @@ export function detectLeadingStaticMs(diffs, opts = {}) {
  * @returns {Array<{startMs: number, endMs: number, speed: number}>}
  */
 export function planRetime(staticRuns, durationMs, opts = {}) {
-  const padMs = opts.padMs ?? RETIME_PAD_MS;
-  const targetMs = opts.targetMs ?? RETIME_TARGET_MS;
-  const segments = [];
-  let cursor = 0;
+  const padMs = opts.padMs ?? RETIME_PAD_MS
+  const targetMs = opts.targetMs ?? RETIME_TARGET_MS
+  const segments = []
+  let cursor = 0
   for (const run of staticRuns) {
-    const fastStart = Math.max(run.startMs + padMs, cursor);
-    const fastEnd = Math.min(run.endMs - padMs, durationMs);
-    const fastLen = fastEnd - fastStart;
-    if (fastLen <= targetMs) continue;
-    if (fastStart > cursor) segments.push({ startMs: cursor, endMs: fastStart, speed: 1 });
+    const fastStart = Math.max(run.startMs + padMs, cursor)
+    const fastEnd = Math.min(run.endMs - padMs, durationMs)
+    const fastLen = fastEnd - fastStart
+    if (fastLen <= targetMs) continue
+    if (fastStart > cursor) segments.push({ startMs: cursor, endMs: fastStart, speed: 1 })
     segments.push({
       startMs: fastStart,
       endMs: fastEnd,
       speed: Math.round((fastLen / targetMs) * 100) / 100,
-    });
-    cursor = fastEnd;
+    })
+    cursor = fastEnd
   }
-  if (cursor < durationMs) segments.push({ startMs: cursor, endMs: durationMs, speed: 1 });
-  return segments;
+  if (cursor < durationMs) segments.push({ startMs: cursor, endMs: durationMs, speed: 1 })
+  return segments
 }
 
 /** Output duration (ms) of a retime plan. */
 export function retimedDurationMs(segments) {
-  return Math.round(segments.reduce((t, s) => t + (s.endMs - s.startMs) / s.speed, 0));
+  return Math.round(segments.reduce((t, s) => t + (s.endMs - s.startMs) / s.speed, 0))
 }
 
 /**
@@ -257,12 +257,12 @@ export function retimedDurationMs(segments) {
  * @returns {Set<number>}
  */
 export function fastForwardSeconds(segments) {
-  const out = new Set();
+  const out = new Set()
   for (const s of segments) {
-    if (s.speed <= 1) continue;
-    for (let sec = Math.floor(s.startMs / 1000); sec * 1000 < s.endMs; sec++) out.add(sec);
+    if (s.speed <= 1) continue
+    for (let sec = Math.floor(s.startMs / 1000); sec * 1000 < s.endMs; sec++) out.add(sec)
   }
-  return out;
+  return out
 }
 
 /**
@@ -272,16 +272,16 @@ export function fastForwardSeconds(segments) {
  * @returns {string}
  */
 export function buildRetimeFilter(segments) {
-  const parts = [];
-  const labels = [];
+  const parts = []
+  const labels = []
   segments.forEach((s, i) => {
-    const a = (s.startMs / 1000).toFixed(3);
-    const b = (s.endMs / 1000).toFixed(3);
-    parts.push(`[0:v]trim=start=${a}:end=${b},setpts=(PTS-STARTPTS)/${s.speed}[s${i}]`);
-    labels.push(`[s${i}]`);
-  });
-  parts.push(`${labels.join('')}concat=n=${segments.length}:v=1:a=0,fps=${OUTPUT_FPS}[v]`);
-  return parts.join(';');
+    const a = (s.startMs / 1000).toFixed(3)
+    const b = (s.endMs / 1000).toFixed(3)
+    parts.push(`[0:v]trim=start=${a}:end=${b},setpts=(PTS-STARTPTS)/${s.speed}[s${i}]`)
+    labels.push(`[s${i}]`)
+  })
+  parts.push(`${labels.join('')}concat=n=${segments.length}:v=1:a=0,fps=${OUTPUT_FPS}[v]`)
+  return parts.join(';')
 }
 
 // ── Pure: timer strip rendering (bitmap font → RGBA frames) ─────────────────
@@ -470,64 +470,64 @@ const GLYPHS = {
     '        ',
     '        ',
   ],
-};
-const GLYPH_W = 8;
-const GLYPH_H = 12;
-const GLYPH_GAP = 1;
-const SCALE = 2;
-const PAD = 8;
+}
+const GLYPH_W = 8
+const GLYPH_H = 12
+const GLYPH_GAP = 1
+const SCALE = 2
+const PAD = 8
 // Canvas must be constant across frames; size it for the widest text.
-const MAX_TEXT = '>> 88:88';
+const MAX_TEXT = '>> 88:88'
 export const TIMER_W =
-  (MAX_TEXT.length * GLYPH_W + (MAX_TEXT.length - 1) * GLYPH_GAP) * SCALE + PAD * 2; // 158
-export const TIMER_H = GLYPH_H * SCALE + PAD * 2; // 40
+  (MAX_TEXT.length * GLYPH_W + (MAX_TEXT.length - 1) * GLYPH_GAP) * SCALE + PAD * 2 // 158
+export const TIMER_H = GLYPH_H * SCALE + PAD * 2 // 40
 
 /** mm:ss for a non-negative second count (hours wrap into minutes). */
 export function formatElapsed(totalSeconds) {
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  const m = Math.floor(totalSeconds / 60)
+  const s = totalSeconds % 60
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
 function textPixelWidth(text) {
-  return (text.length * GLYPH_W + (text.length - 1) * GLYPH_GAP) * SCALE;
+  return (text.length * GLYPH_W + (text.length - 1) * GLYPH_GAP) * SCALE
 }
 
 /** Render one RGBA timer frame: right-aligned text on a translucent pill. */
 export function renderTimerFrame(text) {
-  const buf = Buffer.alloc(TIMER_W * TIMER_H * 4); // transparent
-  const textW = textPixelWidth(text);
-  const textX = TIMER_W - PAD - textW;
+  const buf = Buffer.alloc(TIMER_W * TIMER_H * 4) // transparent
+  const textW = textPixelWidth(text)
+  const textX = TIMER_W - PAD - textW
   // Pill hugs the text, not the canvas, so the box doesn't show dead space.
   for (let y = 0; y < TIMER_H; y++) {
     for (let x = textX - PAD; x < TIMER_W; x++) {
-      const o = (y * TIMER_W + x) * 4;
-      buf[o] = 0;
-      buf[o + 1] = 0;
-      buf[o + 2] = 0;
-      buf[o + 3] = 150;
+      const o = (y * TIMER_W + x) * 4
+      buf[o] = 0
+      buf[o + 1] = 0
+      buf[o + 2] = 0
+      buf[o + 3] = 150
     }
   }
   for (let c = 0; c < text.length; c++) {
-    const glyph = GLYPHS[text[c]] ?? GLYPHS[' '];
-    const gx = textX + c * (GLYPH_W + GLYPH_GAP) * SCALE;
-    const gy = PAD;
+    const glyph = GLYPHS[text[c]] ?? GLYPHS[' ']
+    const gx = textX + c * (GLYPH_W + GLYPH_GAP) * SCALE
+    const gy = PAD
     for (let row = 0; row < GLYPH_H; row++) {
       for (let col = 0; col < GLYPH_W; col++) {
-        if (glyph[row][col] !== '#') continue;
+        if (glyph[row][col] !== '#') continue
         for (let sy = 0; sy < SCALE; sy++) {
           for (let sx = 0; sx < SCALE; sx++) {
-            const o = ((gy + row * SCALE + sy) * TIMER_W + gx + col * SCALE + sx) * 4;
-            buf[o] = 255;
-            buf[o + 1] = 255;
-            buf[o + 2] = 255;
-            buf[o + 3] = 255;
+            const o = ((gy + row * SCALE + sy) * TIMER_W + gx + col * SCALE + sx) * 4
+            buf[o] = 255
+            buf[o + 1] = 255
+            buf[o + 2] = 255
+            buf[o + 3] = 255
           }
         }
       }
     }
   }
-  return buf;
+  return buf
 }
 
 /**
@@ -537,12 +537,12 @@ export function renderTimerFrame(text) {
  * @returns {Buffer}
  */
 export function renderTimerStrip(totalSeconds, fastSecs) {
-  const frames = [];
+  const frames = []
   for (let sec = 0; sec <= totalSeconds; sec++) {
-    const prefix = fastSecs.has(sec) ? '>> ' : '';
-    frames.push(renderTimerFrame(`${prefix}${formatElapsed(sec)}`));
+    const prefix = fastSecs.has(sec) ? '>> ' : ''
+    frames.push(renderTimerFrame(`${prefix}${formatElapsed(sec)}`))
   }
-  return Buffer.concat(frames);
+  return Buffer.concat(frames)
 }
 
 // ── Pure: video crop helpers ─────────────────────────────────────────────────
@@ -555,11 +555,11 @@ export function renderTimerStrip(totalSeconds, fastSecs) {
  * @returns {number|null}
  */
 export function evenCropHeight(cropHeight, recordedHeight) {
-  if (cropHeight == null || !Number.isFinite(cropHeight) || cropHeight <= 0) return null;
-  const even = cropHeight - (cropHeight % 2);
-  if (even <= 0) return null;
-  if (even >= recordedHeight) return null;
-  return even;
+  if (cropHeight == null || !Number.isFinite(cropHeight) || cropHeight <= 0) return null
+  const even = cropHeight - (cropHeight % 2)
+  if (even <= 0) return null
+  if (even >= recordedHeight) return null
+  return even
 }
 
 /**
@@ -574,11 +574,11 @@ export function evenCropHeight(cropHeight, recordedHeight) {
  * @returns {number|null}
  */
 export function applyMinHeightRatio(cropHeight, recordedWidth, recordedHeight) {
-  if (cropHeight == null || !Number.isFinite(cropHeight) || cropHeight <= 0) return null;
-  const floor = Math.ceil(0.5 * recordedWidth);
-  const raised = Math.max(cropHeight, floor);
+  if (cropHeight == null || !Number.isFinite(cropHeight) || cropHeight <= 0) return null
+  const floor = Math.ceil(0.5 * recordedWidth)
+  const raised = Math.max(cropHeight, floor)
   // even-round (H264) and reuse evenCropHeight's >= recordedHeight → null guard
-  return evenCropHeight(raised, recordedHeight);
+  return evenCropHeight(raised, recordedHeight)
 }
 
 /**
@@ -589,11 +589,11 @@ export function applyMinHeightRatio(cropHeight, recordedWidth, recordedHeight) {
  * @returns {number|null}
  */
 export function encoderCropHeight(cropHeight, recordedHeight) {
-  const explicit = evenCropHeight(cropHeight, recordedHeight);
-  if (explicit !== null) return explicit;
-  if (!Number.isFinite(recordedHeight) || recordedHeight <= 0) return null;
-  if (recordedHeight % 2 === 0) return null;
-  return recordedHeight - 1;
+  const explicit = evenCropHeight(cropHeight, recordedHeight)
+  if (explicit !== null) return explicit
+  if (!Number.isFinite(recordedHeight) || recordedHeight <= 0) return null
+  if (recordedHeight % 2 === 0) return null
+  return recordedHeight - 1
 }
 
 /**
@@ -605,12 +605,12 @@ export function encoderCropHeight(cropHeight, recordedHeight) {
  * @returns {string}
  */
 export function buildBaseChain({ trimSec, cropHeight, fps }) {
-  const parts = [];
-  if (trimSec > 0) parts.push(`trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS`);
+  const parts = []
+  if (trimSec > 0) parts.push(`trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS`)
   if (cropHeight != null && Number.isInteger(cropHeight) && cropHeight > 0)
-    parts.push(`crop=in_w:${cropHeight}:0:0`);
-  parts.push(`fps=${fps}`);
-  return `[0:v]${parts.join(',')}[base]`;
+    parts.push(`crop=in_w:${cropHeight}:0:0`)
+  parts.push(`fps=${fps}`)
+  return `[0:v]${parts.join(',')}[base]`
 }
 
 /**
@@ -621,8 +621,8 @@ export function buildBaseChain({ trimSec, cropHeight, fps }) {
  * @returns {string}
  */
 export function buildTimerOverlayFilter(baseChain, { timer }) {
-  if (!timer) return `${baseChain}`;
-  return `${baseChain};[base][1:v]overlay=x=main_w-overlay_w-14:y=44:eof_action=repeat[v]`;
+  if (!timer) return `${baseChain}`
+  return `${baseChain};[base][1:v]overlay=x=main_w-overlay_w-14:y=44:eof_action=repeat[v]`
 }
 
 // ── Impure: ffmpeg orchestration ─────────────────────────────────────────────
@@ -639,12 +639,12 @@ const ENCODE_ARGS = [
   '-movflags',
   '+faststart',
   '-an',
-];
+]
 
 function ffmpeg(args) {
   return spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...args], {
     stdio: ['ignore', 'inherit', 'inherit'],
-  });
+  })
 }
 
 function ffprobeDurationMs(videoPath) {
@@ -660,10 +660,10 @@ function ffprobeDurationMs(videoPath) {
       videoPath,
     ],
     { encoding: 'utf-8' },
-  );
-  const seconds = parseFloat(String(res.stdout).trim());
-  if (res.status !== 0 || !Number.isFinite(seconds) || seconds <= 0) return null;
-  return Math.round(seconds * 1000);
+  )
+  const seconds = parseFloat(String(res.stdout).trim())
+  if (res.status !== 0 || !Number.isFinite(seconds) || seconds <= 0) return null
+  return Math.round(seconds * 1000)
 }
 
 /** [width, height] of a video via ffprobe, or null. */
@@ -682,12 +682,12 @@ export function probeDimensions(videoPath) {
       videoPath,
     ],
     { encoding: 'utf-8' },
-  );
+  )
   const m = String(res.stdout)
     .trim()
-    .match(/^(\d+)x(\d+)$/);
-  if (res.status !== 0 || !m) return null;
-  return { width: parseInt(m[1], 10), height: parseInt(m[2], 10) };
+    .match(/^(\d+)x(\d+)$/)
+  if (res.status !== 0 || !m) return null
+  return { width: parseInt(m[1], 10), height: parseInt(m[2], 10) }
 }
 
 /**
@@ -699,7 +699,7 @@ export function probeDimensions(videoPath) {
  * @returns {boolean}
  */
 export function isDecodableVideo(videoPath) {
-  return probeDimensions(videoPath) !== null && ffprobeDurationMs(videoPath) !== null;
+  return probeDimensions(videoPath) !== null && ffprobeDurationMs(videoPath) !== null
 }
 
 /**
@@ -723,13 +723,13 @@ function analyzeDiffs(videoPath) {
       '-',
     ],
     { maxBuffer: 256 * 1024 * 1024 },
-  );
-  if (res.status !== 0 || !res.stdout || res.stdout.length === 0) return null;
-  const frameBytes = ANALYZE_W * ANALYZE_H;
+  )
+  if (res.status !== 0 || !res.stdout || res.stdout.length === 0) return null
+  const frameBytes = ANALYZE_W * ANALYZE_H
   return {
     diffs: computeFrameDiffs(res.stdout, frameBytes),
     luma: computeFrameLuma(res.stdout, frameBytes),
-  };
+  }
 }
 
 /**
@@ -755,24 +755,24 @@ export function postprocessProofVideo({
   idleSpeedup = true,
   trimLeadingBlank = true,
 }) {
-  const fullDurationMs = ffprobeDurationMs(webmPath);
+  const fullDurationMs = ffprobeDurationMs(webmPath)
   if (fullDurationMs === null)
     return {
       ok: false,
       condensed: false,
       warning: 'ffprobe could not read the screencast duration',
-    };
+    }
 
-  const recorded = probeDimensions(webmPath);
-  const effectiveCrop = recorded ? encoderCropHeight(cropHeight, recorded.height) : null;
+  const recorded = probeDimensions(webmPath)
+  const effectiveCrop = recorded ? encoderCropHeight(cropHeight, recorded.height) : null
 
-  const analysis = analyzeDiffs(webmPath);
+  const analysis = analyzeDiffs(webmPath)
   if (analysis === null)
     return {
       ok: false,
       condensed: false,
       warning: 'frame analysis failed (ffmpeg rawvideo extraction)',
-    };
+    }
 
   // Detect + trim the leading pre-roll. Everything downstream (diffs, retime
   // plan, timer clock) runs on the SAME trimmed timeline so 0:00 = the first
@@ -789,26 +789,26 @@ export function postprocessProofVideo({
   // static stretch).
   const trimMs = trimLeadingBlank
     ? detectLeadingBlankMs(analysis.luma) || detectLeadingStaticMs(analysis.diffs)
-    : 0;
-  const trimSec = trimMs / 1000;
-  const dropFrames = Math.round((trimMs / 1000) * ANALYZE_FPS);
-  const diffs = trimMs > 0 ? analysis.diffs.slice(dropFrames) : analysis.diffs;
-  const durationMs = Math.max(0, fullDurationMs - trimMs);
+    : 0
+  const trimSec = trimMs / 1000
+  const dropFrames = Math.round((trimMs / 1000) * ANALYZE_FPS)
+  const diffs = trimMs > 0 ? analysis.diffs.slice(dropFrames) : analysis.diffs
+  const durationMs = Math.max(0, fullDurationMs - trimMs)
 
-  const staticRuns = findStaticRuns(diffs);
-  const segments = planRetime(staticRuns, durationMs);
-  const fastSegments = segments.filter((s) => s.speed > 1);
+  const staticRuns = findStaticRuns(diffs)
+  const segments = planRetime(staticRuns, durationMs)
+  const fastSegments = segments.filter((s) => s.speed > 1)
 
   // Pass 1: optionally burn the elapsed timer on the (trimmed) original timeline
   // (so it shows real elapsed time and visibly fast-forwards once stretches are
   // retimed). The leading trim is applied in-filtergraph — NOT via -ss — so the
   // diff analysis, overlay timer, and retime plan all share one clock.
-  const baseChain = buildBaseChain({ trimSec, cropHeight: effectiveCrop, fps: OUTPUT_FPS });
-  const pass1Filter = buildTimerOverlayFilter(baseChain, { timer });
-  const pass1Inputs = ['-i', webmPath];
+  const baseChain = buildBaseChain({ trimSec, cropHeight: effectiveCrop, fps: OUTPUT_FPS })
+  const pass1Filter = buildTimerOverlayFilter(baseChain, { timer })
+  const pass1Inputs = ['-i', webmPath]
   if (timer) {
-    const strip = renderTimerStrip(Math.ceil(durationMs / 1000), fastForwardSeconds(segments));
-    writeFileSync(scratchPath, strip);
+    const strip = renderTimerStrip(Math.ceil(durationMs / 1000), fastForwardSeconds(segments))
+    writeFileSync(scratchPath, strip)
     pass1Inputs.push(
       '-f',
       'rawvideo',
@@ -820,10 +820,10 @@ export function postprocessProofVideo({
       '1',
       '-i',
       scratchPath,
-    );
+    )
   }
   // When timer is off the base chain ends in [base], not [v]; map whichever exists.
-  const mapLabel = timer ? '[v]' : '[base]';
+  const mapLabel = timer ? '[v]' : '[base]'
   const pass1 = ffmpeg([
     ...pass1Inputs,
     '-filter_complex',
@@ -832,16 +832,16 @@ export function postprocessProofVideo({
     mapLabel,
     ...ENCODE_ARGS,
     timedPath,
-  ]);
-  if (timer) rmSync(scratchPath, { force: true });
+  ])
+  if (timer) rmSync(scratchPath, { force: true })
   if (pass1.status !== 0)
-    return { ok: false, condensed: false, warning: 'timer overlay pass failed' };
+    return { ok: false, condensed: false, warning: 'timer overlay pass failed' }
 
   // Pass 2: compress the static stretches. Nothing to compress (or idleSpeedup
   // disabled) → the timed video IS the final video.
-  let result;
+  let result
   if (!idleSpeedup || fastSegments.length === 0) {
-    copyFileSync(timedPath, outPath);
+    copyFileSync(timedPath, outPath)
     result = {
       ok: true,
       condensed: false,
@@ -850,7 +850,7 @@ export function postprocessProofVideo({
       fastSegments: 0,
       leadingBlankMs: trimMs,
       cropHeight: effectiveCrop,
-    };
+    }
   } else {
     const pass2 = ffmpeg([
       '-i',
@@ -861,9 +861,9 @@ export function postprocessProofVideo({
       '[v]',
       ...ENCODE_ARGS,
       outPath,
-    ]);
+    ])
     if (pass2.status !== 0)
-      return { ok: false, condensed: false, warning: 'idle-speedup pass failed' };
+      return { ok: false, condensed: false, warning: 'idle-speedup pass failed' }
 
     result = {
       ok: true,
@@ -873,15 +873,15 @@ export function postprocessProofVideo({
       fastSegments: fastSegments.length,
       leadingBlankMs: trimMs,
       cropHeight: effectiveCrop,
-    };
+    }
   }
 
   // Optional branded intro card prepended to the finished video.
   if (introPngPath) {
-    const dims = probeDimensions(outPath);
+    const dims = probeDimensions(outPath)
     if (dims) {
-      const introClip = path.join(path.dirname(scratchPath), 'intro-clip.mp4');
-      const withIntro = path.join(path.dirname(outPath), 'with-intro.mp4');
+      const introClip = path.join(path.dirname(scratchPath), 'intro-clip.mp4')
+      const withIntro = path.join(path.dirname(outPath), 'with-intro.mp4')
       const clip = ffmpeg(
         buildIntroClipArgs({
           pngPath: introPngPath,
@@ -890,19 +890,19 @@ export function postprocessProofVideo({
           fps: OUTPUT_FPS,
           outPath: introClip,
         }),
-      );
+      )
       if (clip.status === 0) {
         const cat = ffmpeg(
           buildIntroConcatArgs({ introPath: introClip, mainPath: outPath, outPath: withIntro }),
-        );
+        )
         // Only adopt the concatenated file if it is actually decodable. The
         // concat filter can exit 0 yet write a zero-frame container when its
         // inputs disagree (e.g. SAR mismatch); clobbering outPath with that
         // would ship an empty video.
-        if (cat.status === 0 && isDecodableVideo(withIntro)) copyFileSync(withIntro, outPath);
-        rmSync(withIntro, { force: true });
+        if (cat.status === 0 && isDecodableVideo(withIntro)) copyFileSync(withIntro, outPath)
+        rmSync(withIntro, { force: true })
       }
-      rmSync(introClip, { force: true });
+      rmSync(introClip, { force: true })
       // Intro is additive: any ffmpeg failure leaves the card-less outPath intact.
     }
   }
@@ -915,8 +915,8 @@ export function postprocessProofVideo({
       ok: false,
       condensed: false,
       warning: 'post-processed video has no decodable video stream',
-    };
+    }
   }
 
-  return result;
+  return result
 }

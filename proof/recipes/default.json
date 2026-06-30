@@ -3,267 +3,6 @@
   "version": 1,
   "recipes": [
     {
-      "id": "tui-home",
-      "surface": "tui",
-      "title": "Boss TUI Home",
-      "description": "Home screen showing active sessions and action bar.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "waitForText": "Add dark mode"
-    },
-    {
-      "id": "tui-settings",
-      "surface": "tui",
-      "title": "Boss TUI Settings",
-      "description": "Settings screen reached from the home view.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "keys": ["s"],
-      "waitForText": "Settings"
-    },
-    {
-      "id": "tui-new-session",
-      "surface": "tui",
-      "title": "Boss TUI New Session",
-      "description": "New session wizard reached from the home view.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "keys": ["n"],
-      "waitForReadyText": "Add dark mode",
-      "waitForText": "New Session"
-    },
-    {
-      "id": "tui-new-session-sentry",
-      "surface": "tui",
-      "title": "Boss TUI New Session — Sentry",
-      "description": "Session-type picker showing the 'Fix a Sentry issue' option for a repo with Sentry configured.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "fixture": "demo",
-      "steps": [
-        {
-          "keys": ["n"],
-          "waitForReadyText": "Add dark mode",
-          "waitForText": "Select a repository"
-        },
-        { "keys": ["enter"], "waitForText": "Fix a Sentry issue" }
-      ],
-      "waitForText": "Fix a Sentry issue"
-    },
-    {
-      "id": "tui-repo-list",
-      "surface": "tui",
-      "title": "Boss TUI Repositories",
-      "description": "Registered repositories list.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "steps": [
-        { "keys": ["s"], "waitForText": "Settings" },
-        { "keys": ["r"], "waitForText": "PATH" }
-      ],
-      "waitForText": "PATH"
-    },
-    {
-      "id": "tui-repo-add",
-      "surface": "tui",
-      "title": "Boss TUI Add Repository",
-      "description": "Add-repository wizard reached from the repo list.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "fixture": "demo",
-      "steps": [
-        { "keys": ["s"], "waitForText": "Settings" },
-        { "keys": ["r"], "waitForText": "Repositories" },
-        { "keys": ["a"], "waitForText": "Add Repository" }
-      ],
-      "waitForText": "Add Repository"
-    },
-    {
-      "id": "tui-repo-settings",
-      "surface": "tui",
-      "title": "Boss TUI Repository Settings",
-      "description": "Repository settings reached by selecting a repo.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "fixture": "demo",
-      "steps": [
-        { "keys": ["s"], "waitForText": "Settings" },
-        { "keys": ["r"], "waitForText": "Repositories" },
-        { "keys": ["enter"], "waitForReadyText": "my-app", "waitForText": "Setup command" }
-      ],
-      "waitForText": "Setup command"
-    },
-    {
-      "id": "tui-trash",
-      "surface": "tui",
-      "title": "Boss TUI Trash",
-      "description": "Archived sessions (trash) with a restorable session.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "steps": [
-        { "keys": ["s"], "waitForText": "Settings" },
-        { "keys": ["t"], "waitForText": "Old caching spike" }
-      ],
-      "waitForText": "Old caching spike"
-    },
-    {
-      "id": "tui-chat-picker",
-      "surface": "tui",
-      "title": "Boss TUI Chat Picker",
-      "description": "Chat list for a session reached with Enter.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "keys": ["enter"],
-      "waitForReadyText": "Add dark mode",
-      "waitForText": "Initial implementation"
-    },
-    {
-      "id": "tui-session-settings",
-      "surface": "tui",
-      "title": "Boss TUI Session Settings",
-      "description": "Session settings reached from the chat picker.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "fixture": "demo",
-      "steps": [
-        {
-          "keys": ["enter"],
-          "waitForReadyText": "Add dark mode",
-          "waitForText": "Initial implementation"
-        },
-        { "keys": ["s"], "waitForText": "Name:" }
-      ],
-      "waitForText": "Name:"
-    },
-    {
-      "id": "tui-login",
-      "surface": "tui",
-      "title": "Boss TUI Login",
-      "description": "Device-code login screen (logged-out fixture).",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "fixture": "login",
-      "keys": ["l"],
-      "waitForText": "Login"
-    },
-    {
-      "id": "tui-bug-report",
-      "surface": "tui",
-      "title": "Boss TUI Bug Report",
-      "description": "Bug-report modal opened with Ctrl+B.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "keys": ["ctrl+b"],
-      "waitForText": "Report a bug"
-    },
-    {
-      "id": "tui-cron",
-      "surface": "tui",
-      "title": "Boss TUI Scheduled Jobs",
-      "description": "Cron job list with a scheduled job.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "steps": [
-        { "keys": ["s"], "waitForText": "Settings" },
-        { "keys": ["c"], "waitForText": "Daily dependency update" }
-      ],
-      "waitForText": "Daily dependency update"
-    },
-    {
-      "id": "tui-cron-form",
-      "surface": "tui",
-      "title": "Boss TUI Cron Form",
-      "description": "Create-cron-job form reached from the cron list, including the cadence/window/schedule fields.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 60 },
-      "fixture": "demo",
-      "steps": [
-        { "keys": ["s"], "waitForText": "Settings" },
-        { "keys": ["c"], "waitForText": "Scheduled Jobs" },
-        { "keys": ["n"], "waitForText": "Run setup command" }
-      ],
-      "waitForText": "Run setup command"
-    },
-    {
-      "id": "tui-onboarding",
-      "surface": "tui",
-      "title": "Boss TUI Onboarding",
-      "description": "First-run provider onboarding screen.",
-      "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
-      "fixture": "onboarding",
-      "waitForText": "Welcome to Bossanova"
-    },
-    {
-      "id": "tui-new-session-flow",
-      "surface": "tui",
-      "title": "Boss TUI — New Session Flow",
-      "description": "Animated walkthrough: home → new session wizard.",
-      "privacy": "fixture",
-      "capture": "video",
-      "fixture": "demo",
-      "terminal": { "width": 140, "height": 36 },
-      "frameDelayMs": 500,
-      "steps": [
-        { "keys": ["n"], "waitForReadyText": "Add dark mode", "waitForText": "New Session" },
-        { "keys": ["enter"], "waitForText": "Create a new PR" }
-      ]
-    },
-    {
-      "id": "tui-repo-settings-flow",
-      "surface": "tui",
-      "title": "Boss TUI — Repository Settings: Automations & Integrations",
-      "description": "Walkthrough: home → settings → repositories → repo settings, showing the new Automations heading grouping the automation toggles (Mark ready / Auto-merge Dependabot / Automatic repair) above the Integrations heading (Linear / Sentry). The cursor traverses the toggles to show the grouping.",
-      "privacy": "fixture",
-      "capture": "video",
-      "fixture": "demo",
-      "terminal": { "width": 140, "height": 36 },
-      "frameDelayMs": 750,
-      "steps": [
-        { "keys": ["s"], "waitForText": "Settings" },
-        { "keys": ["r"], "waitForText": "Repositories" },
-        { "keys": ["enter"], "waitForReadyText": "my-app", "waitForText": "Automations" },
-        { "keys": ["j"], "waitForText": "Mark ready for review when checks pass" },
-        { "keys": ["j"], "waitForText": "Auto-merge Dependabot PRs" },
-        { "keys": ["j"], "waitForText": "Automatic repair (failing checks, conflicts, review feedback)" },
-        { "keys": ["j"], "waitForText": "Integrations" },
-        { "keys": ["j"], "waitForText": "Linear" }
-      ]
-    },
-    {
-      "id": "tui-grand-tour",
-      "surface": "tui",
-      "title": "Boss TUI — Grand Tour",
-      "description": "Multi-screen walkthrough: settings, repos, add-repo, trash, cron, chat picker, session settings, and the new-session wizard, returning home between branches.",
-      "privacy": "fixture",
-      "capture": "video",
-      "fixture": "demo",
-      "terminal": { "width": 140, "height": 36 },
-      "frameDelayMs": 950,
-      "steps": [
-        { "keys": ["s"], "waitForReadyText": "Add dark mode", "waitForText": "Settings" },
-        { "keys": ["r"], "waitForText": "PATH" },
-        { "keys": ["a"], "waitForText": "Add Repository" },
-        { "keys": ["esc"], "waitForText": "PATH" },
-        { "keys": ["esc"], "waitForText": "Settings" },
-        { "keys": ["t"], "waitForText": "Old caching spike" },
-        { "keys": ["esc"], "waitForText": "Settings" },
-        { "keys": ["c"], "waitForText": "Daily dependency update" },
-        { "keys": ["esc"], "waitForText": "Settings" },
-        { "keys": ["esc"], "waitForText": "Add dark mode" },
-        {
-          "keys": ["enter"],
-          "waitForReadyText": "Add dark mode",
-          "waitForText": "Initial implementation"
-        },
-        { "keys": ["s"], "waitForText": "Name:" },
-        { "keys": ["esc"], "waitForText": "Initial implementation" },
-        { "keys": ["esc"], "waitForText": "Fix login bug" },
-        { "keys": ["n"], "waitForReadyText": "Add dark mode", "waitForText": "New Session" },
-        { "keys": ["enter"], "waitForText": "Create a new PR" }
-      ]
-    },
-    {
       "id": "web-sessions",
       "surface": "web",
       "title": "Web Sessions",
@@ -398,6 +137,73 @@
       ]
     },
     {
+      "id": "web-shortcut-launcher",
+      "surface": "web",
+      "title": "Web Shortcut Launcher",
+      "description": "Keyboard-shortcut launcher opened with the ? hotkey on the Sessions screen (fixture data). Captured as a flow because the launcher is opened by a keypress (? / Cmd-K), not reachable as a static route.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        { "action": "goto", "route": "/", "label": "Open home", "caption": "Open the dashboard" },
+        {
+          "action": "wait",
+          "selector": ".data-table-wrap",
+          "label": "Sessions list",
+          "caption": "Sessions list loads"
+        },
+        {
+          "action": "press",
+          "key": "?",
+          "label": "Open launcher",
+          "caption": "Press ? to open the keyboard-shortcut launcher"
+        },
+        {
+          "action": "wait",
+          "selector": "[role=\"dialog\"]",
+          "label": "Launcher open",
+          "caption": "Global + Sessions shortcuts"
+        }
+      ]
+    },
+    {
+      "id": "web-shortcut-launcher-detail",
+      "surface": "web",
+      "title": "Web Shortcut Launcher (session detail)",
+      "description": "Keyboard-shortcut launcher on a session-detail screen, showing the context-specific Session actions (Open PR / Merge / Archive) absent on the Sessions list (fixture data).",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/sessions/sess-e2e-1",
+          "label": "Open session detail",
+          "caption": "Open a session"
+        },
+        {
+          "action": "wait",
+          "selector": "main",
+          "label": "Session view",
+          "caption": "Session view loads"
+        },
+        {
+          "action": "press",
+          "key": "?",
+          "label": "Open launcher",
+          "caption": "Press ? to open the keyboard-shortcut launcher"
+        },
+        {
+          "action": "wait",
+          "selector": "[role=\"dialog\"]",
+          "label": "Launcher open",
+          "caption": "Session-detail shortcuts"
+        }
+      ]
+    },
+    {
       "id": "marketing-home-scroll",
       "surface": "marketing",
       "title": "Marketing Home Scroll",
@@ -435,34 +241,6 @@
   ],
   "pathRules": [
     {
-      "name": "TUI views",
-      "patterns": [
-        "services/boss/internal/views/",
-        "services/boss/internal/tuitest/",
-        "services/boss/internal/tuidriver/",
-        "services/boss/internal/fixtures/"
-      ],
-      "recipeIds": [
-        "tui-home",
-        "tui-settings",
-        "tui-new-session",
-        "tui-new-session-sentry",
-        "tui-repo-list",
-        "tui-repo-add",
-        "tui-repo-settings",
-        "tui-trash",
-        "tui-chat-picker",
-        "tui-session-settings",
-        "tui-login",
-        "tui-bug-report",
-        "tui-cron",
-        "tui-cron-form",
-        "tui-onboarding",
-        "tui-new-session-flow",
-        "tui-repo-settings-flow"
-      ]
-    },
-    {
       "name": "Product web",
       "patterns": ["services/web/"],
       "recipeIds": [
@@ -474,7 +252,9 @@
         "web-repositories",
         "web-account",
         "web-chat-terminal",
-        "web-new-session-flow"
+        "web-new-session-flow",
+        "web-shortcut-launcher",
+        "web-shortcut-launcher-detail"
       ]
     },
     {
@@ -486,11 +266,6 @@
         "marketing-changelog",
         "marketing-home-scroll"
       ]
-    },
-    {
-      "name": "TUI client/cmd/proto",
-      "patterns": ["services/boss/internal/client/", "services/boss/cmd/", "proto/"],
-      "recipeIds": ["tui-home", "tui-cron", "tui-settings"]
     },
     {
       "name": "Docs site",

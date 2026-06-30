@@ -22,6 +22,7 @@ import (
 	"connectrpc.com/connect"
 	"golang.org/x/net/http2"
 
+	"github.com/recurser/bossalib/apiversion"
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
@@ -459,6 +460,11 @@ func run(opts runOpts) error {
 	// --- Lifecycle ---
 
 	worktrees := gitpkg.NewManager(log.Logger)
+	// Run repo setup scripts through the user's login shell so per-project
+	// version-manager shims (nodenv/asdf/…) are on PATH — otherwise the daemon's
+	// restricted PATH can't find pnpm and worktree dependency/hook install
+	// silently skips, leaving cron worktrees dependency-free.
+	worktrees.LoginShell = settings.LoginShell
 	tmuxClient := tmux.NewClient()
 	ghProvider := github.New(log.Logger)
 	prAssociationResolver := session.NewPRAssociationResolver(sessions, repos, ghProvider, log.Logger).
@@ -1000,7 +1006,13 @@ func run(opts runOpts) error {
 				},
 			}
 		}
-		client := bossanovav1connect.NewOrchestratorServiceClient(httpClient, cfg.OrchestratorURL)
+		client := bossanovav1connect.NewOrchestratorServiceClient(
+			httpClient,
+			cfg.OrchestratorURL,
+			// Stamp the API version this daemon was built against so bosso
+			// keeps us on compatible behavior after the API advances.
+			connect.WithInterceptors(apiversion.ClientInterceptor(apiversion.DefaultRegistry().Current())),
+		)
 
 		// Gather repo IDs for registration.
 		allRepos, err := repos.List(context.Background())

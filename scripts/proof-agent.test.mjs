@@ -12,126 +12,126 @@
  *   5. buildManifest with agentRunnerStubbed: true
  */
 
-import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { test } from 'node:test';
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { test } from 'node:test'
 
-import { finalizeAgentProof } from './proof-agent-finalize.mjs';
+import { finalizeAgentProof } from './proof-agent-finalize.mjs'
 
 function requireFfmpeg(t, reason) {
-  const ffmpegCheck = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' });
+  const ffmpegCheck = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' })
   if (ffmpegCheck.status !== 0) {
-    t.skip(reason);
-    return false;
+    t.skip(reason)
+    return false
   }
-  return true;
+  return true
 }
 
 // ── 1. Dispatcher: agentModeAvailable() ─────────────────────────────────────
 
 test('agentModeAvailable: BOSS_PROOF_MODE=recipe → false regardless of key', async () => {
-  const original = process.env.BOSS_PROOF_MODE;
-  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY;
-  process.env.BOSS_PROOF_MODE = 'recipe';
-  process.env.PROOF_ANTHROPIC_API_KEY = 'sk-some-key';
+  const original = process.env.BOSS_PROOF_MODE
+  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY
+  process.env.BOSS_PROOF_MODE = 'recipe'
+  process.env.PROOF_ANTHROPIC_API_KEY = 'sk-some-key'
   try {
-    const { agentModeAvailable } = await import('./proof.mjs');
-    assert.equal(agentModeAvailable(), false);
+    const { agentModeAvailable } = await import('./proof.mjs')
+    assert.equal(agentModeAvailable(), false)
   } finally {
-    process.env.BOSS_PROOF_MODE = original ?? '';
-    if (originalKey === undefined) delete process.env.PROOF_ANTHROPIC_API_KEY;
-    else process.env.PROOF_ANTHROPIC_API_KEY = originalKey;
+    process.env.BOSS_PROOF_MODE = original ?? ''
+    if (originalKey === undefined) delete process.env.PROOF_ANTHROPIC_API_KEY
+    else process.env.PROOF_ANTHROPIC_API_KEY = originalKey
   }
-});
+})
 
 test('agentModeAvailable: BOSS_PROOF_MODE=agent → true regardless of key', async () => {
-  const original = process.env.BOSS_PROOF_MODE;
-  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY;
-  process.env.BOSS_PROOF_MODE = 'agent';
-  delete process.env.PROOF_ANTHROPIC_API_KEY;
+  const original = process.env.BOSS_PROOF_MODE
+  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY
+  process.env.BOSS_PROOF_MODE = 'agent'
+  delete process.env.PROOF_ANTHROPIC_API_KEY
   try {
-    const { agentModeAvailable } = await import('./proof.mjs');
-    assert.equal(agentModeAvailable(), true);
+    const { agentModeAvailable } = await import('./proof.mjs')
+    assert.equal(agentModeAvailable(), true)
   } finally {
-    if (original === undefined) delete process.env.BOSS_PROOF_MODE;
-    else process.env.BOSS_PROOF_MODE = original;
-    if (originalKey !== undefined) process.env.PROOF_ANTHROPIC_API_KEY = originalKey;
+    if (original === undefined) delete process.env.BOSS_PROOF_MODE
+    else process.env.BOSS_PROOF_MODE = original
+    if (originalKey !== undefined) process.env.PROOF_ANTHROPIC_API_KEY = originalKey
   }
-});
+})
 
 test('agentModeAvailable: unset mode + key set → true', async () => {
-  const original = process.env.BOSS_PROOF_MODE;
-  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY;
-  delete process.env.BOSS_PROOF_MODE;
-  process.env.PROOF_ANTHROPIC_API_KEY = 'sk-test-key-123';
+  const original = process.env.BOSS_PROOF_MODE
+  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY
+  delete process.env.BOSS_PROOF_MODE
+  process.env.PROOF_ANTHROPIC_API_KEY = 'sk-test-key-123'
   try {
-    const { agentModeAvailable } = await import('./proof.mjs');
-    assert.equal(agentModeAvailable(), true);
+    const { agentModeAvailable } = await import('./proof.mjs')
+    assert.equal(agentModeAvailable(), true)
   } finally {
-    if (original !== undefined) process.env.BOSS_PROOF_MODE = original;
-    if (originalKey === undefined) delete process.env.PROOF_ANTHROPIC_API_KEY;
-    else process.env.PROOF_ANTHROPIC_API_KEY = originalKey;
+    if (original !== undefined) process.env.BOSS_PROOF_MODE = original
+    if (originalKey === undefined) delete process.env.PROOF_ANTHROPIC_API_KEY
+    else process.env.PROOF_ANTHROPIC_API_KEY = originalKey
   }
-});
+})
 
 test('agentModeAvailable: explicit recipe selection prefers recipe path unless agent forced', async () => {
-  const original = process.env.BOSS_PROOF_MODE;
-  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY;
-  delete process.env.BOSS_PROOF_MODE;
-  process.env.PROOF_ANTHROPIC_API_KEY = 'sk-test-key-123';
+  const original = process.env.BOSS_PROOF_MODE
+  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY
+  delete process.env.BOSS_PROOF_MODE
+  process.env.PROOF_ANTHROPIC_API_KEY = 'sk-test-key-123'
   try {
-    const { agentModeAvailable } = await import('./proof.mjs');
-    assert.equal(agentModeAvailable({ explicitRecipeSelection: true }), false);
-    process.env.BOSS_PROOF_MODE = 'agent';
-    assert.equal(agentModeAvailable({ explicitRecipeSelection: true }), true);
+    const { agentModeAvailable } = await import('./proof.mjs')
+    assert.equal(agentModeAvailable({ explicitRecipeSelection: true }), false)
+    process.env.BOSS_PROOF_MODE = 'agent'
+    assert.equal(agentModeAvailable({ explicitRecipeSelection: true }), true)
   } finally {
-    if (original === undefined) delete process.env.BOSS_PROOF_MODE;
-    else process.env.BOSS_PROOF_MODE = original;
-    if (originalKey === undefined) delete process.env.PROOF_ANTHROPIC_API_KEY;
-    else process.env.PROOF_ANTHROPIC_API_KEY = originalKey;
+    if (original === undefined) delete process.env.BOSS_PROOF_MODE
+    else process.env.BOSS_PROOF_MODE = original
+    if (originalKey === undefined) delete process.env.PROOF_ANTHROPIC_API_KEY
+    else process.env.PROOF_ANTHROPIC_API_KEY = originalKey
   }
-});
+})
 
 test('agentModeAvailable: unset mode + no key → false (recipe fallback)', async () => {
-  const original = process.env.BOSS_PROOF_MODE;
-  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY;
-  delete process.env.BOSS_PROOF_MODE;
-  delete process.env.PROOF_ANTHROPIC_API_KEY;
+  const original = process.env.BOSS_PROOF_MODE
+  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY
+  delete process.env.BOSS_PROOF_MODE
+  delete process.env.PROOF_ANTHROPIC_API_KEY
   try {
-    const { agentModeAvailable } = await import('./proof.mjs');
-    assert.equal(agentModeAvailable(), false);
+    const { agentModeAvailable } = await import('./proof.mjs')
+    assert.equal(agentModeAvailable(), false)
   } finally {
-    if (original !== undefined) process.env.BOSS_PROOF_MODE = original;
-    if (originalKey !== undefined) process.env.PROOF_ANTHROPIC_API_KEY = originalKey;
+    if (original !== undefined) process.env.BOSS_PROOF_MODE = original
+    if (originalKey !== undefined) process.env.PROOF_ANTHROPIC_API_KEY = originalKey
   }
-});
+})
 
 // ── 2. validateBrief (belt-and-suspenders) ───────────────────────────────────
 
 test('validateBrief: minimal valid brief passes with all defaults', async () => {
-  const { validateBrief } = await import('./proof-brief.mjs');
-  const { brief, errors } = validateBrief({ title: 'Test feature', description: 'Shows it works' });
-  assert.deepEqual(errors, []);
-  assert.equal(brief.title, 'Test feature');
-  assert.deepEqual(brief.targetRoutes, []);
-  assert.equal(brief.budgets.maxSteps, 60);
-  assert.equal(brief.budgets.maxWallClockMs, 720000);
-});
+  const { validateBrief } = await import('./proof-brief.mjs')
+  const { brief, errors } = validateBrief({ title: 'Test feature', description: 'Shows it works' })
+  assert.deepEqual(errors, [])
+  assert.equal(brief.title, 'Test feature')
+  assert.deepEqual(brief.targetRoutes, [])
+  assert.equal(brief.budgets.maxSteps, 60)
+  assert.equal(brief.budgets.maxWallClockMs, 720000)
+})
 
 test('validateBrief: missing title returns null brief and error', async () => {
-  const { validateBrief } = await import('./proof-brief.mjs');
-  const { brief, errors } = validateBrief({ description: 'desc' });
-  assert.equal(brief, null);
-  assert.ok(errors.some((e) => /title/.test(e)));
-});
+  const { validateBrief } = await import('./proof-brief.mjs')
+  const { brief, errors } = validateBrief({ description: 'desc' })
+  assert.equal(brief, null)
+  assert.ok(errors.some((e) => /title/.test(e)))
+})
 
 // ── 3. Capture-shape assembly and agentRunnerStubbed flag ────────────────────
 
 test('buildManifest sets agentRunnerStubbed in output when passed', async () => {
-  const { buildManifest } = await import('./proof-lib.mjs');
+  const { buildManifest } = await import('./proof-lib.mjs')
   const manifest = buildManifest({
     commit: 'abc1234',
     prNumber: '42',
@@ -150,37 +150,37 @@ test('buildManifest sets agentRunnerStubbed in output when passed', async () => 
         posterFileName: 'agent-proof/agent-proof.png',
       },
     ],
-  });
-  assert.equal(manifest.agentRunnerStubbed, true);
-  assert.equal(manifest.captures[0].mediaType, 'mp4');
-  assert.equal(manifest.captures[0].url, 'https://proof.example.dev/p/agent-proof/agent-proof.mp4');
+  })
+  assert.equal(manifest.agentRunnerStubbed, true)
+  assert.equal(manifest.captures[0].mediaType, 'mp4')
+  assert.equal(manifest.captures[0].url, 'https://proof.example.dev/p/agent-proof/agent-proof.mp4')
   assert.equal(
     manifest.captures[0].videoUrl,
     'https://proof.example.dev/p/agent-proof/agent-proof.mp4',
-  );
+  )
   assert.equal(
     manifest.captures[0].posterUrl,
     'https://proof.example.dev/p/agent-proof/agent-proof.png',
-  );
-});
+  )
+})
 
 test('buildManifest: agentRunnerStubbed absent → property not set', async () => {
-  const { buildManifest } = await import('./proof-lib.mjs');
+  const { buildManifest } = await import('./proof-lib.mjs')
   const manifest = buildManifest({
     commit: 'abc1234',
     prNumber: '7',
     runId: 'run-1',
     publicBaseUrl: 'https://proof.example.dev/p',
     captures: [],
-  });
+  })
   assert.ok(
     !('agentRunnerStubbed' in manifest),
     'agentRunnerStubbed must not appear when not passed',
-  );
-});
+  )
+})
 
 test('buildManifest: failed capture with mp4 gets url (reviewable failure)', async () => {
-  const { buildManifest } = await import('./proof-lib.mjs');
+  const { buildManifest } = await import('./proof-lib.mjs')
   const manifest = buildManifest({
     commit: 'abc1234',
     prNumber: '99',
@@ -200,15 +200,15 @@ test('buildManifest: failed capture with mp4 gets url (reviewable failure)', asy
         error: 'agent timed out after 720s',
       },
     ],
-  });
-  const c = manifest.captures[0];
-  assert.equal(c.status, 'failed');
-  assert.ok(c.url, 'failed capture with fileName must have url for reviewability');
-  assert.equal(c.videoUrl, 'https://proof.example.dev/p/agent-proof/agent-proof.mp4');
-});
+  })
+  const c = manifest.captures[0]
+  assert.equal(c.status, 'failed')
+  assert.ok(c.url, 'failed capture with fileName must have url for reviewability')
+  assert.equal(c.videoUrl, 'https://proof.example.dev/p/agent-proof/agent-proof.mp4')
+})
 
 test('renderGallery shows stub notice when agentRunnerStubbed is true', async () => {
-  const { buildManifest, renderGallery } = await import('./proof-lib.mjs');
+  const { buildManifest, renderGallery } = await import('./proof-lib.mjs')
   const manifest = buildManifest({
     commit: 'abc1234',
     prNumber: '7',
@@ -227,15 +227,15 @@ test('renderGallery shows stub notice when agentRunnerStubbed is true', async ()
         posterFileName: 'agent-proof/agent-proof.png',
       },
     ],
-  });
-  const body = renderGallery({ manifest });
-  assert.match(body, /agent-runner stubbed/);
-});
+  })
+  const body = renderGallery({ manifest })
+  assert.match(body, /agent-runner stubbed/)
+})
 
 // ── 5. stills in agent capture shape ─────────────────────────────────────────
 
 test('buildManifest: passed capture stills get urls', async () => {
-  const { buildManifest } = await import('./proof-lib.mjs');
+  const { buildManifest } = await import('./proof-lib.mjs')
   const manifest = buildManifest({
     commit: 'abc1234',
     prNumber: '7',
@@ -258,18 +258,18 @@ test('buildManifest: passed capture stills get urls', async () => {
         ],
       },
     ],
-  });
-  const c = manifest.captures[0];
-  assert.ok(Array.isArray(c.stills), 'stills must be an array');
-  assert.equal(c.stills.length, 2);
-  assert.equal(c.stills[0].url, 'https://proof.example.dev/p/agent-proof/01-dashboard.png');
-  assert.equal(c.stills[1].url, 'https://proof.example.dev/p/agent-proof/02-session.png');
-});
+  })
+  const c = manifest.captures[0]
+  assert.ok(Array.isArray(c.stills), 'stills must be an array')
+  assert.equal(c.stills.length, 2)
+  assert.equal(c.stills[0].url, 'https://proof.example.dev/p/agent-proof/01-dashboard.png')
+  assert.equal(c.stills[1].url, 'https://proof.example.dev/p/agent-proof/02-session.png')
+})
 
 // ── 6. proofUploadFiles: agent-mode failed capture gets media queued ──────────
 
 test('proofUploadFiles: failed capture with mp4 fileName is queued for upload', async () => {
-  const { proofUploadFiles } = await import('./proof-lib.mjs');
+  const { proofUploadFiles } = await import('./proof-lib.mjs')
   const files = proofUploadFiles({
     manifest: {
       captures: [
@@ -282,26 +282,26 @@ test('proofUploadFiles: failed capture with mp4 fileName is queued for upload', 
       ],
     },
     localDir: '/tmp/proof-agent-test',
-  });
-  const rels = files.map((f) => f.relative);
-  assert.ok(rels.includes('agent-proof/agent-proof.mp4'), 'mp4 must be queued for upload');
-  assert.ok(rels.includes('agent-proof/agent-proof.png'), 'poster must be queued for upload');
-});
+  })
+  const rels = files.map((f) => f.relative)
+  assert.ok(rels.includes('agent-proof/agent-proof.mp4'), 'mp4 must be queued for upload')
+  assert.ok(rels.includes('agent-proof/agent-proof.png'), 'poster must be queued for upload')
+})
 
 // ── 7. Orchestrator seam: runAgentProof with mocked spawn + uploader ─────────
 // Drives the real runAgentProof but injects a fake Playwright spawn (no browser)
 // and a fake uploader.
 
-const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 
 async function withTempBrief(brief, fn) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-agent-brief-'));
-  const briefPath = path.join(dir, 'brief.json');
-  fs.writeFileSync(briefPath, JSON.stringify(brief, null, 2));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-agent-brief-'))
+  const briefPath = path.join(dir, 'brief.json')
+  fs.writeFileSync(briefPath, JSON.stringify(brief, null, 2))
   try {
-    return await fn(briefPath);
+    return await fn(briefPath)
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 }
 
@@ -315,31 +315,31 @@ function withEnv(overrides, fn) {
     'BOSS_PROOF_R2_BUCKET',
     'BOSS_PROOF_PUBLIC_BASE_URL',
     'BOSS_PROOF_AGENT_TIMEOUT_MS',
-  ];
-  const saved = {};
-  for (const k of keys) saved[k] = process.env[k];
+  ]
+  const saved = {}
+  for (const k of keys) saved[k] = process.env[k]
   for (const [k, v] of Object.entries(overrides)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
   }
   return Promise.resolve()
     .then(fn)
     .finally(() => {
       for (const k of keys) {
-        if (saved[k] === undefined) delete process.env[k];
-        else process.env[k] = saved[k];
+        if (saved[k] === undefined) delete process.env[k]
+        else process.env[k] = saved[k]
       }
-    });
+    })
 }
 
 test('runAgentProof: clean run reaches uploadBundle', async (t) => {
-  const { runAgentProof } = await import('./proof-agent.mjs');
+  const { runAgentProof } = await import('./proof-agent.mjs')
 
-  if (!requireFfmpeg(t, 'ffmpeg is required for clean agent video regression test')) return;
+  if (!requireFfmpeg(t, 'ffmpeg is required for clean agent video regression test')) return
 
-  const brief = { title: 'Clean feature', description: 'Proves the change works' };
+  const brief = { title: 'Clean feature', description: 'Proves the change works' }
 
-  let uploadCalled = false;
+  let uploadCalled = false
 
   await withTempBrief(brief, (briefPath) =>
     withEnv(
@@ -359,12 +359,12 @@ test('runAgentProof: clean run reaches uploadBundle', async (t) => {
           dryRun: false,
           deps: {
             spawnPlaywright: ({ localDir }) => {
-              const rawDir = path.join(localDir, 'raw');
-              fs.mkdirSync(rawDir, { recursive: true });
+              const rawDir = path.join(localDir, 'raw')
+              fs.mkdirSync(rawDir, { recursive: true })
               fs.writeFileSync(
                 path.join(rawDir, 'proof-result.json'),
                 JSON.stringify({ passed: true, summary: 'all good', evidence: [], steps: 2 }),
-              );
+              )
               const result = spawnSync(
                 'ffmpeg',
                 [
@@ -382,38 +382,38 @@ test('runAgentProof: clean run reaches uploadBundle', async (t) => {
                   path.join(rawDir, 'session.webm'),
                 ],
                 { stdio: 'ignore' },
-              );
-              assert.equal(result.status, 0, 'test video fixture must be created');
-              return { status: 0 };
+              )
+              assert.equal(result.status, 0, 'test video fixture must be created')
+              return { status: 0 }
             },
             uploadBundle: () => {
-              uploadCalled = true;
+              uploadCalled = true
             },
             uploadManifest: () => {},
             publishProofReport: async () => ({ ok: false, reason: 'stubbed' }),
             collapsePriorProofComments: () => {},
             postComment: () => {},
           },
-        });
-        assert.equal(manifest.agentRunnerStubbed, true);
-        assert.equal(manifest.captures[0].title, 'Clean feature');
+        })
+        assert.equal(manifest.agentRunnerStubbed, true)
+        assert.equal(manifest.captures[0].title, 'Clean feature')
       },
     ),
-  );
+  )
 
-  assert.equal(uploadCalled, true, 'a clean run must reach uploadBundle');
-  fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true });
-});
+  assert.equal(uploadCalled, true, 'a clean run must reach uploadBundle')
+  fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true })
+})
 
 test('runAgentProof: passed agent result without captured video marks proof failed', async () => {
-  const { runAgentProof } = await import('./proof-agent.mjs');
+  const { runAgentProof } = await import('./proof-agent.mjs')
 
   const brief = {
     title: 'Missing video feature',
     description: 'Agent reported done but video was absent',
-  };
-  const originalExitCode = process.exitCode;
-  process.exitCode = undefined;
+  }
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
 
   try {
     await withTempBrief(brief, (briefPath) =>
@@ -433,8 +433,8 @@ test('runAgentProof: passed agent result without captured video marks proof fail
             dryRun: true,
             deps: {
               spawnPlaywright: ({ localDir }) => {
-                const rawDir = path.join(localDir, 'raw');
-                fs.mkdirSync(rawDir, { recursive: true });
+                const rawDir = path.join(localDir, 'raw')
+                fs.mkdirSync(rawDir, { recursive: true })
                 fs.writeFileSync(
                   path.join(rawDir, 'proof-result.json'),
                   JSON.stringify({
@@ -443,8 +443,8 @@ test('runAgentProof: passed agent result without captured video marks proof fail
                     evidence: [],
                     steps: 2,
                   }),
-                );
-                return { status: 0 };
+                )
+                return { status: 0 }
               },
               uploadBundle: () => {},
               uploadManifest: () => {},
@@ -452,27 +452,27 @@ test('runAgentProof: passed agent result without captured video marks proof fail
               collapsePriorProofComments: () => {},
               postComment: () => {},
             },
-          });
+          })
 
-          assert.equal(manifest.verdict, 'failed');
-          assert.equal(manifest.captures[0].status, 'failed');
-          assert.match(manifest.captures[0].error, /no video artifact captured/);
-          assert.equal(process.exitCode, 1);
+          assert.equal(manifest.verdict, 'failed')
+          assert.equal(manifest.captures[0].status, 'failed')
+          assert.match(manifest.captures[0].error, /no video artifact captured/)
+          assert.equal(process.exitCode, 1)
         },
       ),
-    );
+    )
   } finally {
-    process.exitCode = originalExitCode;
-    fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true });
+    process.exitCode = originalExitCode
+    fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true })
   }
-});
+})
 
 test('runAgentProof: successful posted agent run removes local run directory', async (t) => {
-  const { runAgentProof } = await import('./proof-agent.mjs');
+  const { runAgentProof } = await import('./proof-agent.mjs')
 
-  if (!requireFfmpeg(t, 'ffmpeg is required for cleanup wiring regression test')) return;
+  if (!requireFfmpeg(t, 'ffmpeg is required for cleanup wiring regression test')) return
 
-  const brief = { title: 'Cleanup feature', description: 'Successful posted agent proof' };
+  const brief = { title: 'Cleanup feature', description: 'Successful posted agent proof' }
   const runDir = path.join(
     REPO_ROOT,
     '.proof',
@@ -480,7 +480,7 @@ test('runAgentProof: successful posted agent run removes local run directory', a
     'abc1234',
     'test-run-cleanup',
     'tokcleanup1',
-  );
+  )
 
   await withTempBrief(brief, (briefPath) =>
     withEnv(
@@ -500,12 +500,12 @@ test('runAgentProof: successful posted agent run removes local run directory', a
           dryRun: false,
           deps: {
             spawnPlaywright: ({ localDir }) => {
-              const rawDir = path.join(localDir, 'raw');
-              fs.mkdirSync(rawDir, { recursive: true });
+              const rawDir = path.join(localDir, 'raw')
+              fs.mkdirSync(rawDir, { recursive: true })
               fs.writeFileSync(
                 path.join(rawDir, 'proof-result.json'),
                 JSON.stringify({ passed: true, summary: 'all good', evidence: [], steps: 2 }),
-              );
+              )
               const result = spawnSync(
                 'ffmpeg',
                 [
@@ -523,9 +523,9 @@ test('runAgentProof: successful posted agent run removes local run directory', a
                   path.join(rawDir, 'session.webm'),
                 ],
                 { stdio: 'ignore' },
-              );
-              assert.equal(result.status, 0, 'test video fixture must be created');
-              return { status: 0 };
+              )
+              assert.equal(result.status, 0, 'test video fixture must be created')
+              return { status: 0 }
             },
             uploadBundle: () => {},
             uploadManifest: () => {},
@@ -533,16 +533,16 @@ test('runAgentProof: successful posted agent run removes local run directory', a
             collapsePriorProofComments: () => {},
             postComment: () => {},
           },
-        });
+        })
 
-        assert.equal(manifest.verdict, 'passed');
+        assert.equal(manifest.verdict, 'passed')
       },
     ),
-  );
+  )
 
-  assert.equal(fs.existsSync(runDir), false, 'successful posted agent run dir must be removed');
-  fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-789'), { recursive: true, force: true });
-});
+  assert.equal(fs.existsSync(runDir), false, 'successful posted agent run dir must be removed')
+  fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-789'), { recursive: true, force: true })
+})
 
 // ── 8. Fallback frame extraction (agent path) ─────────────────────────────────
 // When the agent takes ZERO raw stills but a video exists, extractFallbackFrame
@@ -550,13 +550,13 @@ test('runAgentProof: successful posted agent run removes local run directory', a
 // When stills ARE present, the fallback extractor must NOT be called.
 
 test('runAgentProof: no raw stills + video → fallback extractor invoked, capture has 1 still', async () => {
-  const { runAgentProof } = await import('./proof-agent.mjs');
+  const { runAgentProof } = await import('./proof-agent.mjs')
 
-  const brief = { title: 'No stills feature', description: 'Agent took no screenshots' };
-  let extractorCalled = false;
-  let extractorArgs = null;
-  const originalExitCode = process.exitCode;
-  process.exitCode = undefined;
+  const brief = { title: 'No stills feature', description: 'Agent took no screenshots' }
+  let extractorCalled = false
+  let extractorArgs = null
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
 
   try {
     await withTempBrief(brief, (briefPath) =>
@@ -576,24 +576,24 @@ test('runAgentProof: no raw stills + video → fallback extractor invoked, captu
             dryRun: true,
             deps: {
               spawnPlaywright: ({ localDir }) => {
-                const rawDir = path.join(localDir, 'raw');
-                fs.mkdirSync(rawDir, { recursive: true });
+                const rawDir = path.join(localDir, 'raw')
+                fs.mkdirSync(rawDir, { recursive: true })
                 // Write proof-result.json (passed) but NO \d\d-*.png stills
                 fs.writeFileSync(
                   path.join(rawDir, 'proof-result.json'),
                   JSON.stringify({ passed: true, summary: 'all good', evidence: [], steps: 2 }),
-                );
+                )
                 // Write a fake .webm so the video branch is taken
-                fs.writeFileSync(path.join(rawDir, 'session.webm'), 'fake-webm-data');
-                return { status: 0 };
+                fs.writeFileSync(path.join(rawDir, 'session.webm'), 'fake-webm-data')
+                return { status: 0 }
               },
               // Injected fallback extractor: writes the fallback PNG and records call
               extractFallbackFrame: ({ mp4Path, fallbackPath }) => {
-                extractorCalled = true;
-                extractorArgs = { mp4Path, fallbackPath };
+                extractorCalled = true
+                extractorArgs = { mp4Path, fallbackPath }
                 // Write the fallback PNG so the stills assembly picks it up
-                fs.writeFileSync(fallbackPath, 'fake-png-data');
-                return { status: 0 };
+                fs.writeFileSync(fallbackPath, 'fake-png-data')
+                return { status: 0 }
               },
               uploadBundle: () => {},
               uploadManifest: () => {},
@@ -601,44 +601,44 @@ test('runAgentProof: no raw stills + video → fallback extractor invoked, captu
               collapsePriorProofComments: () => {},
               postComment: () => {},
             },
-          });
+          })
 
           assert.equal(
             extractorCalled,
             true,
             'extractFallbackFrame must be called when no stills exist',
-          );
+          )
           assert.ok(
             extractorArgs.fallbackPath.endsWith('01-final-frame.png'),
             'fallback file must be named 01-final-frame.png',
-          );
+          )
 
-          const capture = manifest.captures[0];
-          assert.ok(Array.isArray(capture.stills), 'capture must have stills array');
+          const capture = manifest.captures[0]
+          assert.ok(Array.isArray(capture.stills), 'capture must have stills array')
           assert.equal(
             capture.stills.length,
             1,
             'capture must have exactly 1 still (the fallback frame)',
-          );
+          )
           assert.ok(
             capture.stills[0].fileName.includes('01-final-frame.png'),
             'the still must be the fallback frame',
-          );
+          )
         },
       ),
-    );
+    )
   } finally {
-    process.exitCode = originalExitCode;
-    fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true });
+    process.exitCode = originalExitCode
+    fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true })
   }
-});
+})
 
 // ── Task 2: Degradation ladder in finalizeAgentProof ────────────────────────
 
 test('finalizeAgentProof defers (no red verdict) when the run produced no media', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-finalize-test-'));
-  const originalExitCode = process.exitCode;
-  process.exitCode = undefined;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-finalize-test-'))
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
   try {
     const { manifest, commentBody } = await finalizeAgentProof({
       captureShape: {
@@ -670,25 +670,25 @@ test('finalizeAgentProof defers (no red verdict) when the run produced no media'
         currentRepoIdentity: () => null,
         currentBranch: () => 'test-branch',
       },
-    });
-    assert.equal(manifest.deferred, true, 'manifest.deferred must be true on degraded path');
-    assert.ok(!commentBody.includes('❌'), 'deferred comment must not contain red verdict');
+    })
+    assert.equal(manifest.deferred, true, 'manifest.deferred must be true on degraded path')
+    assert.ok(!commentBody.includes('❌'), 'deferred comment must not contain red verdict')
     assert.ok(
       !commentBody.includes('Unsatisfactory'),
       'deferred comment must not contain Unsatisfactory',
-    );
+    )
     // The PERSISTED manifest (the artifact uploaded to R2) must also carry the
     // flag — it is set before the manifest is written, not only on the return value.
-    const persisted = JSON.parse(fs.readFileSync(path.join(tmpDir, 'manifest.json'), 'utf8'));
-    assert.equal(persisted.deferred, true, 'written manifest.json must carry deferred:true');
+    const persisted = JSON.parse(fs.readFileSync(path.join(tmpDir, 'manifest.json'), 'utf8'))
+    assert.equal(persisted.deferred, true, 'written manifest.json must carry deferred:true')
   } finally {
-    process.exitCode = originalExitCode;
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    process.exitCode = originalExitCode
+    fs.rmSync(tmpDir, { recursive: true, force: true })
   }
-});
+})
 
 test('finalizeAgentProof treats stills-only captures as media', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-finalize-stills-test-'));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-finalize-stills-test-'))
   try {
     const { manifest, commentBody } = await finalizeAgentProof({
       captureShape: {
@@ -720,21 +720,21 @@ test('finalizeAgentProof treats stills-only captures as media', async () => {
         currentRepoIdentity: () => null,
         currentBranch: () => 'test-branch',
       },
-    });
-    assert.equal(manifest.deferred, undefined, 'stills-only media must not be deferred');
-    assert.ok(commentBody.includes('✅'), 'stills-only passed proof keeps normal verdict');
+    })
+    assert.equal(manifest.deferred, undefined, 'stills-only media must not be deferred')
+    assert.ok(commentBody.includes('✅'), 'stills-only passed proof keeps normal verdict')
   } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true })
   }
-});
+})
 
 test('runAgentProof: has raw stills → fallback extractor NOT invoked', async () => {
-  const { runAgentProof } = await import('./proof-agent.mjs');
+  const { runAgentProof } = await import('./proof-agent.mjs')
 
-  const brief = { title: 'Has stills feature', description: 'Agent took screenshots' };
-  let extractorCalled = false;
-  const originalExitCode = process.exitCode;
-  process.exitCode = undefined;
+  const brief = { title: 'Has stills feature', description: 'Agent took screenshots' }
+  let extractorCalled = false
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
 
   try {
     await withTempBrief(brief, (briefPath) =>
@@ -754,21 +754,21 @@ test('runAgentProof: has raw stills → fallback extractor NOT invoked', async (
             dryRun: true,
             deps: {
               spawnPlaywright: ({ localDir }) => {
-                const rawDir = path.join(localDir, 'raw');
-                fs.mkdirSync(rawDir, { recursive: true });
+                const rawDir = path.join(localDir, 'raw')
+                fs.mkdirSync(rawDir, { recursive: true })
                 fs.writeFileSync(
                   path.join(rawDir, 'proof-result.json'),
                   JSON.stringify({ passed: true, summary: 'ok', evidence: [], steps: 3 }),
-                );
+                )
                 // Write a fake .webm and TWO real stills
-                fs.writeFileSync(path.join(rawDir, 'session.webm'), 'fake-webm-data');
-                fs.writeFileSync(path.join(rawDir, '01-home.png'), 'fake-png-1');
-                fs.writeFileSync(path.join(rawDir, '02-detail.png'), 'fake-png-2');
-                return { status: 0 };
+                fs.writeFileSync(path.join(rawDir, 'session.webm'), 'fake-webm-data')
+                fs.writeFileSync(path.join(rawDir, '01-home.png'), 'fake-png-1')
+                fs.writeFileSync(path.join(rawDir, '02-detail.png'), 'fake-png-2')
+                return { status: 0 }
               },
               extractFallbackFrame: () => {
-                extractorCalled = true;
-                return { status: 0 };
+                extractorCalled = true
+                return { status: 0 }
               },
               uploadBundle: () => {},
               uploadManifest: () => {},
@@ -776,47 +776,47 @@ test('runAgentProof: has raw stills → fallback extractor NOT invoked', async (
               collapsePriorProofComments: () => {},
               postComment: () => {},
             },
-          });
+          })
 
           assert.equal(
             extractorCalled,
             false,
             'extractFallbackFrame must NOT be called when stills exist',
-          );
+          )
 
-          const capture = manifest.captures[0];
-          assert.ok(Array.isArray(capture.stills), 'capture must have stills array');
+          const capture = manifest.captures[0]
+          assert.ok(Array.isArray(capture.stills), 'capture must have stills array')
           assert.equal(
             capture.stills.length,
             2,
             'capture must have exactly 2 stills (the real ones)',
-          );
+          )
         },
       ),
-    );
+    )
   } finally {
-    process.exitCode = originalExitCode;
-    fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true });
+    process.exitCode = originalExitCode
+    fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true })
   }
-});
+})
 
 // ── Task 3: Time-boxed agent path ────────────────────────────────────────────
 
 test('runInterruptible: kills child at timeout and resolves with timedOut=true (not a throw)', async () => {
-  const { runInterruptible } = await import('./proof-agent.mjs');
+  const { runInterruptible } = await import('./proof-agent.mjs')
   // A Node.js child that sleeps for 10 seconds — must be killed within 100ms.
   const res = await runInterruptible('node', ['-e', 'setInterval(()=>{},1000)'], {
     timeoutMs: 100,
-  });
-  assert.equal(res.timedOut, true, 'timed-out child must resolve with timedOut=true');
-  assert.equal(res.code, null, 'killed child has null exit code');
-});
+  })
+  assert.equal(res.timedOut, true, 'timed-out child must resolve with timedOut=true')
+  assert.equal(res.code, null, 'killed child has null exit code')
+})
 
 test('runAgentProof: timed-out Playwright drive defers the run without a red verdict', async () => {
-  const { runAgentProof } = await import('./proof-agent.mjs');
-  const brief = { title: 'Timeout feature', description: 'Playwright times out' };
-  const originalExitCode = process.exitCode;
-  process.exitCode = undefined;
+  const { runAgentProof } = await import('./proof-agent.mjs')
+  const brief = { title: 'Timeout feature', description: 'Playwright times out' }
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
 
   try {
     await withTempBrief(brief, (briefPath) =>
@@ -854,29 +854,29 @@ test('runAgentProof: timed-out Playwright drive defers the run without a red ver
               collapsePriorProofComments: () => {},
               postComment: () => {},
             },
-          });
+          })
 
-          assert.equal(manifest.deferred, true, 'timed-out run must be deferred');
+          assert.equal(manifest.deferred, true, 'timed-out run must be deferred')
           assert.equal(
             manifest.captures.some((c) => c.recipeId === 'web-sessions' && c.status === 'passed'),
             true,
             'timed-out agent run must include recipe-floor capture evidence',
-          );
-          assert.ok(!commentBody.includes('❌'), 'deferred comment must not contain red verdict');
+          )
+          assert.ok(!commentBody.includes('❌'), 'deferred comment must not contain red verdict')
           assert.ok(
             commentBody.includes('/manifest.json'),
             'deferred comment must link to uploaded/local manifest evidence',
-          );
+          )
           assert.match(
             manifest.captures[0].error ?? '',
             /timed out/,
             'capture error must mention timeout',
-          );
+          )
         },
       ),
-    );
+    )
   } finally {
-    process.exitCode = originalExitCode;
-    fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true });
+    process.exitCode = originalExitCode
+    fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true })
   }
-});
+})

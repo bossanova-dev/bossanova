@@ -42,7 +42,7 @@ func TestBuildInteractiveCommandReturnsSlashCommandPrefix(t *testing.T) {
 	srv := &Server{}
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:      "agent-1",
-		LogPath:        t.TempDir() + "/claude.log",
+		LogPath:        filepath.Join(t.TempDir(), "claude.log"),
 		InitialCommand: "boss-finalize",
 	})
 	if err != nil {
@@ -59,7 +59,7 @@ func TestBuildInteractiveCommandAppendsSystemPrompt(t *testing.T) {
 	// With the field set, the claude argv must carry --append-system-prompt.
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:          "agent-1",
-		LogPath:            t.TempDir() + "/claude.log",
+		LogPath:            filepath.Join(t.TempDir(), "claude.log"),
 		AppendSystemPrompt: "autonomous cron run",
 	})
 	if err != nil {
@@ -73,7 +73,7 @@ func TestBuildInteractiveCommandAppendsSystemPrompt(t *testing.T) {
 	// Without it, the flag must be absent (non-cron chats are unaffected).
 	respNone, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId: "agent-2",
-		LogPath:   t.TempDir() + "/claude.log",
+		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
 	})
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
@@ -87,7 +87,7 @@ func TestBuildInteractiveCommand_AppendsModel(t *testing.T) {
 	srv := &Server{}
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId: "sid",
-		LogPath:   t.TempDir() + "/claude.log",
+		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
 		Model:     "sonnet",
 	})
 	if err != nil {
@@ -103,7 +103,7 @@ func TestBuildInteractiveCommand_NoModelWhenEmpty(t *testing.T) {
 	srv := &Server{}
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId: "sid",
-		LogPath:   t.TempDir() + "/claude.log",
+		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestBuildInteractiveCommand_AppendsMcpConfig(t *testing.T) {
 	srv := &Server{}
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:     "sid",
-		LogPath:       t.TempDir() + "/claude.log",
+		LogPath:       filepath.Join(t.TempDir(), "claude.log"),
 		McpConfigPath: "/data/bossanova/mcp-configs/sid.json",
 	})
 	if err != nil {
@@ -135,7 +135,7 @@ func TestBuildInteractiveCommand_NoMcpConfigWhenEmpty(t *testing.T) {
 	srv := &Server{}
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId: "sid",
-		LogPath:   t.TempDir() + "/claude.log",
+		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -427,7 +427,7 @@ func TestServer_BuildInteractiveCommand_Resume(t *testing.T) {
 	srv := &Server{logger: zerolog.Nop(), runner: NewRunner(zerolog.Nop())}
 
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId: "rid", Resume: true, LogPath: "/tmp/x.log",
+		SessionId: "rid", Resume: true, LogPath: filepath.Join(t.TempDir(), "x.log"),
 	})
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)

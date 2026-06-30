@@ -38,17 +38,18 @@ func TestTUI_HomeView_EmptyState(t *testing.T) {
 func TestTUI_HomeView_NoRepoActionBarHidesNewSession(t *testing.T) {
 	h := tuitest.New(t)
 
+	// With no repos, the app lands on the Home empty state (no auto-route). The
+	// primary action is adding the first repository, not creating a session.
 	if err := h.Driver.WaitForText(waitTimeout, "Welcome to Bossanova"); err != nil {
 		t.Fatal(err)
 	}
-
 	screen := h.Driver.Screen()
 	if strings.Contains(screen, "[n]ew session") {
-		t.Fatalf("should not offer [n]ew session when no repos exist; screen:\n%s", screen)
+		t.Fatalf("home: should not offer [n]ew session when no repos exist; screen:\n%s", screen)
 	}
-	for _, kept := range []string{"[s]ettings", "[q]uit"} {
+	for _, kept := range []string{"[enter] add repository", "[q]uit"} {
 		if !strings.Contains(screen, kept) {
-			t.Fatalf("expected action bar to contain %q; screen:\n%s", kept, screen)
+			t.Fatalf("home: expected action bar to contain %q; screen:\n%s", kept, screen)
 		}
 	}
 }

@@ -36,6 +36,19 @@ func TestRun_PlainCommand_ExitNonZero(t *testing.T) {
 	}
 }
 
+func TestRun_ZeroTimeoutUsesDefault(t *testing.T) {
+	passed, err := Run(context.Background(), Options{
+		Command: "true",
+		Timeout: 0,
+	})
+	if !passed {
+		t.Fatalf("expected passed=true, got false (err=%v)", err)
+	}
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
 func TestRun_RelativePathScript_ExitZero(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "script.sh")

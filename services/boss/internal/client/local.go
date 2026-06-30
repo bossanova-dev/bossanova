@@ -334,6 +334,16 @@ func (c *LocalClient) RecordChat(ctx context.Context, sessionID, agentSessionID,
 	return resp.Msg.Chat, nil
 }
 
+func (c *LocalClient) DescribeChatLaunch(ctx context.Context, agentSessionID string) (*pb.DescribeChatLaunchResponse, error) {
+	resp, err := c.rpc.DescribeChatLaunch(ctx, connect.NewRequest(&pb.DescribeChatLaunchRequest{
+		AgentSessionId: agentSessionID,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (c *LocalClient) ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error) {
 	resp, err := c.rpc.ListChats(ctx, connect.NewRequest(&pb.ListChatsRequest{
 		SessionId: sessionID,

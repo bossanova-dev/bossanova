@@ -1,62 +1,62 @@
 #!/usr/bin/env node
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // The inline Stop-hook filter must live ONLY in
 // scripts/remove-bossd-stop-hooks.mjs, never copied into a SKILL.md. This
 // signature matches the executable filter line, not prose that merely mentions
 // the hooks or names the shared script.
-const INLINE_SIGNATURE = /startsWith\s*\(\s*(['"])bossd-agent-run-\1\s*\)/;
+const INLINE_SIGNATURE = /startsWith\s*\(\s*(['"])bossd-agent-run-\1\s*\)/
 
 export function fileHasInlineStopHook(contents) {
-  return INLINE_SIGNATURE.test(contents);
+  return INLINE_SIGNATURE.test(contents)
 }
 
 export function findSkillFiles(root, deps = {}) {
-  const fsImpl = deps.fs || fs;
-  const results = [];
+  const fsImpl = deps.fs || fs
+  const results = []
   const walk = (dir) => {
     for (const entry of fsImpl.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.name === 'SKILL.md') results.push(full);
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(full)
+      else if (entry.name === 'SKILL.md') results.push(full)
     }
-  };
-  walk(root);
-  return results;
+  }
+  walk(root)
+  return results
 }
 
 export function findInlineStopHookCopies(skillRoot, deps = {}) {
-  const fsImpl = deps.fs || fs;
+  const fsImpl = deps.fs || fs
   return findSkillFiles(skillRoot, deps).filter((file) =>
     fileHasInlineStopHook(fsImpl.readFileSync(file, 'utf8')),
-  );
+  )
 }
 
 function main() {
-  const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
   const roots = ['.claude/skills', '.codex/skills']
     .map((d) => path.join(repoRoot, d))
-    .filter((d) => fs.existsSync(d));
-  const offenders = roots.flatMap((root) => findInlineStopHookCopies(root));
+    .filter((d) => fs.existsSync(d))
+  const offenders = roots.flatMap((root) => findInlineStopHookCopies(root))
   if (offenders.length > 0) {
     console.error(
       'Inline bossd Stop-hook filter found — call scripts/remove-bossd-stop-hooks.mjs instead:',
-    );
-    for (const file of offenders) console.error(`  - ${path.relative(repoRoot, file)}`);
-    process.exit(1);
+    )
+    for (const file of offenders) console.error(`  - ${path.relative(repoRoot, file)}`)
+    process.exit(1)
   }
-  console.log('No inline bossd Stop-hook copies (single source of truth OK).');
+  console.log('No inline bossd Stop-hook copies (single source of truth OK).')
 }
 
 export function isInvokedDirectly(argvPath, moduleUrl, deps = {}) {
-  const fsImpl = deps.fs || fs;
-  if (!argvPath || !fsImpl.existsSync(argvPath)) return false;
-  return fsImpl.realpathSync(argvPath) === fsImpl.realpathSync(fileURLToPath(moduleUrl));
+  const fsImpl = deps.fs || fs
+  if (!argvPath || !fsImpl.existsSync(argvPath)) return false
+  return fsImpl.realpathSync(argvPath) === fsImpl.realpathSync(fileURLToPath(moduleUrl))
 }
 
-const invokedDirectly = isInvokedDirectly(process.argv[1], import.meta.url);
+const invokedDirectly = isInvokedDirectly(process.argv[1], import.meta.url)
 
-if (invokedDirectly) main();
+if (invokedDirectly) main()

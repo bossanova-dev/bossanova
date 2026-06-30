@@ -203,6 +203,11 @@ type CreateOpts struct {
 type CreateResult struct {
 	WorktreePath string
 	BranchName   string
+	// SetupErr is non-nil when the worktree was created successfully but its
+	// configured setup script failed. The worktree is still usable, so callers
+	// may proceed (in a degraded/flagged state) rather than abort. nil means
+	// the setup script ran cleanly or none was configured.
+	SetupErr error
 }
 
 // CreateFromExistingBranchOpts holds the parameters for creating a worktree
@@ -230,6 +235,12 @@ var _ WorktreeManager = (*Manager)(nil)
 // Manager is the default WorktreeManager implementation backed by real git commands.
 type Manager struct {
 	logger zerolog.Logger
+	// LoginShell is the user's login shell ($SHELL, captured in settings). When
+	// set, the repo setup script runs through it so per-project version-manager
+	// shims (nodenv/asdf/…) land on PATH — otherwise the daemon's restricted
+	// PATH can't find `pnpm` and setup silently skips dep/hook installation.
+	// Set once after construction (main.go); zero value preserves direct exec.
+	LoginShell string
 }
 
 // NewManager creates a new git WorktreeManager.
@@ -517,10 +528,14 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 		return nil, fmt.Errorf("ensure info/exclude: %w", err)
 	}
 
-	// Run setup script if provided.
+	// Run setup script if provided. A setup-script failure is non-fatal: the
+	// worktree itself is valid (the git add above succeeded), so we surface the
+	// failure on the result and let the caller decide rather than tearing the
+	// worktree down and blocking the whole session.
+	var setupErr error
 	if opts.SetupScript != nil && *opts.SetupScript != "" {
-		if err := runSetupScript(ctx, opts.RepoPath, wtPath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
-			return nil, fmt.Errorf("setup script: %w", err)
+		if err := runSetupScript(ctx, opts.RepoPath, wtPath, *opts.SetupScript, m.LoginShell, opts.SetupScriptOutput); err != nil {
+			setupErr = fmt.Errorf("setup script: %w", err)
 		}
 	}
 
@@ -531,6 +546,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	return &CreateResult{
 		WorktreePath: wtPath,
 		BranchName:   branch,
+		SetupErr:     setupErr,
 	}, nil
 }
 
@@ -619,10 +635,15 @@ func (m *Manager) Resurrect(ctx context.Context, opts ResurrectOpts) error {
 		return fmt.Errorf("ensure info/exclude: %w", err)
 	}
 
-	// Run setup script if provided.
+	// Run setup script if provided. Non-fatal: this is the reattach path for an
+	// existing worktree, where a failed setup step must not block resurrection.
+	// Log it and carry on.
 	if opts.SetupScript != nil && *opts.SetupScript != "" {
-		if err := runSetupScript(ctx, opts.RepoPath, opts.WorktreePath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
-			return fmt.Errorf("setup script: %w", err)
+		if err := runSetupScript(ctx, opts.RepoPath, opts.WorktreePath, *opts.SetupScript, m.LoginShell, opts.SetupScriptOutput); err != nil {
+			m.logger.Warn().Err(err).
+				Str("worktree", opts.WorktreePath).
+				Str("branch", opts.BranchName).
+				Msg("setup script failed during resurrect; continuing")
 		}
 	}
 
@@ -1408,10 +1429,11 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 		return nil, fmt.Errorf("ensure git info exclude: %w", err)
 	}
 
-	// Run setup script if provided.
+	// Run setup script if provided. Non-fatal — see Create for rationale.
+	var setupErr error
 	if opts.SetupScript != nil && strings.TrimSpace(*opts.SetupScript) != "" {
-		if err := runSetupScript(ctx, opts.RepoPath, wtPath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
-			return nil, fmt.Errorf("setup script: %w", err)
+		if err := runSetupScript(ctx, opts.RepoPath, wtPath, *opts.SetupScript, m.LoginShell, opts.SetupScriptOutput); err != nil {
+			setupErr = fmt.Errorf("setup script: %w", err)
 		}
 	}
 
@@ -1422,6 +1444,7 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 	return &CreateResult{
 		WorktreePath: wtPath,
 		BranchName:   opts.BranchName,
+		SetupErr:     setupErr,
 	}, nil
 }
 
@@ -1436,7 +1459,7 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 // go to os.Stderr (daemon logs). Legacy bare-string values are rewritten to
 // <worktree>/.boss/setup.sh on first use — the user is nudged via `warn` to
 // migrate to a structured {"type":...} value.
-func runSetupScript(ctx context.Context, repoPath, dir, script string, output io.Writer) error {
+func runSetupScript(ctx context.Context, repoPath, dir, script, loginShell string, output io.Writer) error {
 	spec, err := setupscript.Parse(script)
 	if err != nil {
 		return err
@@ -1444,6 +1467,7 @@ func runSetupScript(ctx context.Context, repoPath, dir, script string, output io
 	return spec.Execute(ctx, setupscript.ExecuteOpts{
 		RepoPath:     repoPath,
 		WorktreePath: dir,
+		LoginShell:   loginShell,
 		Output:       output,
 		Timeout:      SetupScriptTimeout,
 		Warn: func(msg string) {

@@ -1,31 +1,30 @@
-import type { ReactNode } from 'react';
-import { useEffect, useRef } from 'react';
-import { useLocation } from '@docusaurus/router';
-import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
-import posthog from 'posthog-js';
+import type { ReactNode } from 'react'
+import { useEffect, useRef } from 'react'
+import { useLocation } from '@docusaurus/router'
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext'
+import posthog from 'posthog-js'
 
-const defaultHost = 'https://k.bossanova.dev';
+const defaultHost = 'https://k.bossanova.dev'
 
 type PostHogCustomFields = {
-  posthogHost?: unknown;
-  posthogProjectToken?: unknown;
-};
+  posthogHost?: unknown
+  posthogProjectToken?: unknown
+}
 
 export default function Root({ children }: { children: ReactNode }) {
-  const location = useLocation();
-  const hasTrackedInitialPageview = useRef(false);
-  const { siteConfig } = useDocusaurusContext();
-  const customFields = siteConfig.customFields as PostHogCustomFields;
+  const location = useLocation()
+  const hasTrackedInitialPageview = useRef(false)
+  const { siteConfig } = useDocusaurusContext()
+  const customFields = siteConfig.customFields as PostHogCustomFields
   const token =
     typeof customFields.posthogProjectToken === 'string'
       ? customFields.posthogProjectToken
-      : undefined;
-  const host =
-    typeof customFields.posthogHost === 'string' ? customFields.posthogHost : defaultHost;
+      : undefined
+  const host = typeof customFields.posthogHost === 'string' ? customFields.posthogHost : defaultHost
 
   useEffect(() => {
     if (!token) {
-      return;
+      return
     }
 
     posthog.init(token, {
@@ -35,23 +34,23 @@ export default function Root({ children }: { children: ReactNode }) {
       capture_pageview: false,
       disable_session_recording: true,
       loaded: (client) => {
-        client.capture('$pageview');
+        client.capture('$pageview')
       },
-    });
-  }, [host, token]);
+    })
+  }, [host, token])
 
   useEffect(() => {
     if (!token) {
-      return;
+      return
     }
 
     if (!hasTrackedInitialPageview.current) {
-      hasTrackedInitialPageview.current = true;
-      return;
+      hasTrackedInitialPageview.current = true
+      return
     }
 
-    posthog.capture('$pageview');
-  }, [location.pathname, location.search, token]);
+    posthog.capture('$pageview')
+  }, [location.pathname, location.search, token])
 
-  return <>{children}</>;
+  return <>{children}</>
 }

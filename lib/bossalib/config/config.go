@@ -536,6 +536,7 @@ type Settings struct {
 	DefaultAgent                   string            `json:"default_agent,omitempty"`
 	InstalledAt                    time.Time         `json:"installed_at,omitzero"`
 	BossCloudGuestOfferHidden      bool              `json:"boss_cloud_guest_offer_hidden,omitempty"`
+	BossCloudValueDeliveredAt      time.Time         `json:"boss_cloud_value_delivered_at,omitzero"`
 	SkillsDeclined                 bool              `json:"skills_declined,omitempty"`
 	SkillsDeclinedByAgent          map[string]bool   `json:"skills_declined_by_agent,omitempty"`
 	SkillsDeclinedManifestByAgent  map[string]string `json:"skills_declined_manifest_by_agent,omitempty"`
@@ -687,6 +688,18 @@ func (s Settings) EnsureInstalledAt(now time.Time) (Settings, bool) {
 		return s, false
 	}
 	s.InstalledAt = now.UTC()
+	return s, true
+}
+
+// EnsureBossCloudValueDeliveredAt returns settings with BossCloudValueDeliveredAt
+// initialized to now (UTC). It reports whether the caller should persist the
+// returned settings. If BossCloudValueDeliveredAt is already set, it is left
+// unchanged and the method returns false.
+func (s Settings) EnsureBossCloudValueDeliveredAt(now time.Time) (Settings, bool) {
+	if !s.BossCloudValueDeliveredAt.IsZero() {
+		return s, false
+	}
+	s.BossCloudValueDeliveredAt = now.UTC()
 	return s, true
 }
 

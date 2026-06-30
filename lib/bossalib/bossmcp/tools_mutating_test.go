@@ -119,6 +119,20 @@ func TestMutatingTools(t *testing.T) {
 			sentinel: "sess-us",
 		},
 		{
+			tool: "update_session",
+			args: map[string]any{"id": "s1", "tracker_url": "https://linear.app/x/issue/BOS-9", "tracker_id": "BOS-9"},
+			backend: &fakeBackend{updateSession: func(_ context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error) {
+				if req.GetId() != "s1" || req.GetTrackerUrl() != "https://linear.app/x/issue/BOS-9" || req.GetTrackerId() != "BOS-9" {
+					t.Errorf("update_session tracker args not forwarded: %+v", req)
+				}
+				if req.Title != nil {
+					t.Errorf("update_session title should be nil when omitted, got %q", req.GetTitle())
+				}
+				return &pb.Session{Id: "sess-us-tracker"}, nil
+			}},
+			sentinel: "sess-us-tracker",
+		},
+		{
 			tool: "link_session_pr",
 			args: map[string]any{"session_id": "s1", "pr": "42"},
 			backend: &fakeBackend{linkSessionPR: func(_ context.Context, id, pr string) (*pb.Session, error) {

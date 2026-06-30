@@ -242,6 +242,11 @@ type RepoAddModel struct {
 
 	// Layout
 	width int
+
+	// returnHomeOnCancel routes back to ViewHome (instead of ViewRepoList) when
+	// the user cancels. Set by the App when the add-repo wizard was opened via
+	// the zero-repo auto-redirect.
+	returnHomeOnCancel bool
 }
 
 // NewRepoAddModel creates a RepoAddModel with sensible defaults.

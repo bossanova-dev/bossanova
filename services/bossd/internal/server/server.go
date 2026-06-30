@@ -1704,6 +1704,17 @@ func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.Upda
 		}
 		params.Title = &title
 	}
+	// tracker_url/tracker_id let a running session (e.g. a cron bs-implement run)
+	// link itself to the Linear ticket it selected after creation, so the TUI
+	// [l]inear shortcut — gated on a non-empty tracker URL — becomes available.
+	// UpdateSessionParams uses **string so nil means "leave unchanged"; take the
+	// address of the request's *string only when the field was supplied.
+	if msg.TrackerUrl != nil {
+		params.TrackerURL = &msg.TrackerUrl
+	}
+	if msg.TrackerId != nil {
+		params.TrackerID = &msg.TrackerId
+	}
 
 	sess, err := s.sessions.Update(ctx, msg.Id, params)
 	if err != nil {

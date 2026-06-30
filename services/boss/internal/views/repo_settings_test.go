@@ -629,6 +629,10 @@ func (s *stubRepoClient) DeleteChat(context.Context, string) error              
 func (s *stubRepoClient) WakeChat(context.Context, string, string, bool) (*pb.WakeChatResponse, error) {
 	panic("unused")
 }
+
+func (s *stubRepoClient) DescribeChatLaunch(context.Context, string) (*pb.DescribeChatLaunchResponse, error) {
+	panic("unused")
+}
 func (s *stubRepoClient) ReportChatStatus(context.Context, []*pb.ChatStatusReport) error {
 	panic("unused")
 }

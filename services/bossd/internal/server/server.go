@@ -1012,6 +1012,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 				ExistingBranch: headBranch,
 				ForceBranch:    msg.ForceBranch,
 				SetupOutput:    pw,
+				Detach:         msg.GetDetach(),
 			})
 			done <- lifecycleResult{err: err}
 		}()

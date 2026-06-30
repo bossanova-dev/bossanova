@@ -80,10 +80,13 @@ func TestE2E_FullSessionLifecycle(t *testing.T) {
 	}
 
 	// --- Step 2: Create a session ---
+	// Detach=true: this E2E test drives the full headless run lifecycle and
+	// asserts an AgentSessionId is set; interactive sessions stay idle.
 	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
 		RepoId: repoID,
 		Title:  "Add user avatars",
 		Plan:   "Add avatar upload to the user profile page",
+		Detach: true,
 	})
 	sessionID := sess.Id
 
@@ -815,10 +818,14 @@ func TestE2E_ChatTrackingLifecycle(t *testing.T) {
 		t.Fatalf("register repo: %v", err)
 	}
 
+	// Detach=true: the session runs on the headless start path, which
+	// auto-creates an agent_chats row; this test asserts that row joins the
+	// two explicitly recorded chats for three total.
 	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Chat tracking test",
 		Plan:   "Test chat tracking",
+		Detach: true,
 	})
 	sessionID := sess.Id
 

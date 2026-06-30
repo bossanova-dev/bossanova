@@ -99,11 +99,13 @@ func TestHarness_CreateSession(t *testing.T) {
 	}
 	repoID := repoResp.Msg.Repo.Id
 
-	// Create a session (streaming RPC).
+	// Create a session (streaming RPC). Detach=true so the headless run fires
+	// and sets an AgentSessionId, which this test asserts below.
 	stream, err := h.Client.CreateSession(context.Background(), connect.NewRequest(&pb.CreateSessionRequest{
 		RepoId: repoID,
 		Title:  "Fix login bug",
 		Plan:   "Fix the login bug in auth.go",
+		Detach: true,
 	}))
 	if err != nil {
 		t.Fatalf("create session: %v", err)

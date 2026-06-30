@@ -685,6 +685,14 @@ type StartSessionOpts struct {
 	// branch can't trip ErrBranchExists on the next fire. Ignored when
 	// ExistingBranch is set.
 	BranchName string
+
+	// Detach runs the session's initial agent pass headlessly (codex exec /
+	// claude --print). Set by `boss new --detach`. The zero value (false)
+	// leaves an interactive session idle: no headless run fires and the
+	// agent starts on first attach, exactly like a tracker-sourced session.
+	// This is what distinguishes a `--detach` run (which carries a prompt
+	// and wants an autonomous pass) from a plain interactive `boss new`.
+	Detach bool
 }
 
 // StartSession creates a worktree, starts a Claude process, and fires
@@ -876,11 +884,16 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		Str("worktree", result.WorktreePath).
 		Msg("starting claude")
 
-	// Start Claude. Cron-spawned sessions run in a tmux-hosted Claude UI so
-	// the user can attach to the live session. Tracker-sourced interactive
-	// sessions (Linear/Sentry) are created idle so the user can review the
-	// plan before it runs. All other interactive sessions stay on the
-	// headless `claude --print` path used historically.
+	// Start the agent. Cron-spawned sessions run in a tmux-hosted Claude UI so
+	// the user can attach to the live session. Interactive sessions (the TUI's
+	// new-PR / existing-PR flows, and tracker-sourced Linear/Sentry sessions)
+	// are created idle: no agent runs yet, and it starts interactively on first
+	// attach (RecordChat → tmux). Only an explicit `boss new --detach` run
+	// (opts.Detach) takes the headless `claude --print` / `codex exec` path,
+	// because that is the one caller that wants an autonomous pass with a
+	// prompt. Firing a headless run for an interactive, plan-less session just
+	// launches `claude --print` with an empty prompt, which exits non-zero
+	// immediately and (via finalizeHeadlessRunIfApplicable) blocks the session.
 	var claudeSessionID string
 	headlessRun := false
 	switch {
@@ -889,16 +902,19 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		if err != nil {
 			return fmt.Errorf("start cron tmux chat: %w", err)
 		}
-	case session.TrackerID != nil && *session.TrackerID != "":
-		// Tracker sessions are left unstarted: the plan is pre-filled into the
-		// agent's input on first attach (see the boss attach prefill path), and
-		// that interactive run arms its own finalize hook — so nothing here
-		// depends on a headless run firing. claudeSessionID stays empty (no
-		// agent yet), mirroring the idle quick-chat path. The user reviews/edits
-		// the prompt and starts the run by pressing enter on attach.
+	case !opts.Detach || (session.TrackerID != nil && *session.TrackerID != ""):
+		// Interactive (non-detach) session, or any tracker-sourced session:
+		// left unstarted. For tracker sessions the plan is pre-filled into the
+		// agent's input on first attach (see the boss attach prefill path);
+		// for plain/existing-PR sessions there is no plan to prefill. Either
+		// way the interactive run started on attach arms its own finalize hook,
+		// so nothing here depends on a headless run firing. claudeSessionID
+		// stays empty (no agent yet), mirroring the idle quick-chat path. The
+		// tracker OR-clause is a safety net so a hypothetical detached tracker
+		// session never regresses onto the headless branch.
 		l.logger.Info().
 			Str("session", sessionID).
-			Msg("tracker session created idle; awaiting manual start on first attach")
+			Msg("interactive session created idle; awaiting manual start on first attach")
 	default:
 		headlessRun = true
 		claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model)
@@ -951,17 +967,15 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	if hooklessCronTmux {
 		l.armTmuxCompletionForHooklessCron(sessionID, claudeSessionID, session.RepoID)
 	} else if l.shouldArmHeadlessPollFallback(headlessRun, opts.CronJobID, claudeSessionID, hookResp) {
-		// Every non-cron, non-tracker session takes the headless StartByAgent
-		// branch (the daemon can't distinguish `boss new --detach` from a plain
-		// interactive `boss new` — there is no detach flag on this path), running
-		// codex exec / claude --print. The only production caller of StartSession
-		// passes no HookToken, so the ConfigureFinalizeHook probe never runs and
-		// hookResp is nil — meaning NO Stop hook is installed for ANY agent here.
-		// Without arming, the run is stranded in ImplementingPlan forever. Arm
-		// PollFallback (which captures the run's exit status) to drive
-		// finalize/block on completion. A hook-supporting agent that DID receive a
-		// HookToken (hookResp != nil && IsSupported) is excluded: its Stop hook
-		// drives completion, so arming would double-finalize.
+		// A detached (`boss new --detach`) session took the headless StartByAgent
+		// branch, running codex exec / claude --print. The only production caller
+		// of StartSession passes no HookToken, so the ConfigureFinalizeHook probe
+		// never runs and hookResp is nil — meaning NO Stop hook is installed for
+		// ANY agent here. Without arming, the run is stranded in ImplementingPlan
+		// forever. Arm PollFallback (which captures the run's exit status) to
+		// drive finalize/block on completion. A hook-supporting agent that DID
+		// receive a HookToken (hookResp != nil && IsSupported) is excluded: its
+		// Stop hook drives completion, so arming would double-finalize.
 		l.armHeadlessPollFallback(sessionID, claudeSessionID, session)
 	}
 

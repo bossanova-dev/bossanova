@@ -568,8 +568,12 @@ func (h *Harness) SetArchivedAt(t *testing.T, sessionID string, at time.Time) {
 func (h *Harness) SeedSessionInState(t *testing.T, ctx context.Context, repoID string, state pb.SessionState, title, plan string) (sessionID string, prNumber int) {
 	t.Helper()
 
+	// Detach=true so the headless agent run fires and gets an AgentSessionID:
+	// the harness drives sessions through their lifecycle via the MockAgentClient
+	// + PollFallback machinery, which only engages on the headless path. An
+	// interactive (Detach=false) session would stay idle with no agent session.
 	stream, err := h.Client.CreateSession(ctx, connect.NewRequest(&pb.CreateSessionRequest{
-		RepoId: repoID, Title: title, Plan: plan,
+		RepoId: repoID, Title: title, Plan: plan, Detach: true,
 	}))
 	if err != nil {
 		t.Fatalf("SeedSessionInState: create session: %v", err)

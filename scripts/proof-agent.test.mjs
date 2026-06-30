@@ -467,6 +467,69 @@ test('runAgentProof: passed agent result without captured video marks proof fail
   }
 })
 
+test('runAgentProof: agent done({noSurface}) posts the honest no-ui-surface note and keeps exit 0', async () => {
+  const { runAgentProof } = await import('./proof-agent.mjs')
+
+  const brief = { title: 'Backend-only change', description: 'No demonstrable web surface' }
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        {
+          BOSS_PROOF_BRIEF: briefPath,
+          BOSS_PROOF_UPLOAD: '0',
+          BOSS_PROOF_RUN_ID: 'test-run-no-surface',
+          BOSS_PROOF_RUN_TOKEN: 'toknosurface',
+          BOSS_PROOF_PUBLIC_BASE_URL: 'https://proof.test.dev',
+        },
+        async () => {
+          const { manifest, commentBody } = await runAgentProof({
+            prNumber: 'local',
+            commit: 'feed456',
+            changedFiles: [],
+            dryRun: true,
+            deps: {
+              spawnPlaywright: ({ localDir }) => {
+                const rawDir = path.join(localDir, 'raw')
+                fs.mkdirSync(rawDir, { recursive: true })
+                fs.writeFileSync(
+                  path.join(rawDir, 'proof-result.json'),
+                  JSON.stringify({
+                    passed: false,
+                    noSurface: true,
+                    summary: 'agent navigated; no user-visible change to demonstrate',
+                    evidence: [],
+                    steps: 3,
+                  }),
+                )
+                return { status: 0 }
+              },
+              uploadBundle: () => {},
+              uploadManifest: () => {},
+              publishProofReport: async () => ({ ok: false, reason: 'stubbed' }),
+              collapsePriorProofComments: () => {},
+              postComment: () => {},
+            },
+          })
+
+          assert.equal(manifest.deferred, true, 'no-surface run defers')
+          assert.equal(manifest.captures.length, 1, 'agent capture only, no recipe floor')
+          assert.match(commentBody, /No web UI surface to demonstrate/)
+          assert.ok(!commentBody.includes('❌'), 'no-surface note carries no red verdict')
+          // The crucial difference from a genuine failure: a no-surface skip is
+          // neutral and must NOT redden the PR.
+          assert.notEqual(process.exitCode, 1, 'no-surface skip keeps a non-failing exit code')
+        },
+      ),
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true })
+  }
+})
+
 test('runAgentProof: successful posted agent run removes local run directory', async (t) => {
   const { runAgentProof } = await import('./proof-agent.mjs')
 
@@ -802,6 +865,36 @@ test('runAgentProof: has raw stills → fallback extractor NOT invoked', async (
 
 // ── Task 3: Time-boxed agent path ────────────────────────────────────────────
 
+test('resolveAgentBackstopMs: default backstop exceeds the inner agent budget so the SIGKILL never preempts the graceful save', async () => {
+  const { resolveAgentBackstopMs, VIDEO_SAVE_HEADROOM_MS } = await import('./proof-agent.mjs')
+  const innerBudgetMs = 720000 // proof-brief DEFAULT_BUDGETS.maxWallClockMs (12 min)
+  const backstop = resolveAgentBackstopMs({ envValue: undefined, innerBudgetMs })
+  assert.equal(backstop, innerBudgetMs + VIDEO_SAVE_HEADROOM_MS)
+  assert.ok(backstop > innerBudgetMs, 'backstop must strictly exceed the inner budget')
+})
+
+test('resolveAgentBackstopMs: an env value below the floor is clamped up (cannot invert the timeouts)', async () => {
+  const { resolveAgentBackstopMs, VIDEO_SAVE_HEADROOM_MS } = await import('./proof-agent.mjs')
+  const innerBudgetMs = 720000
+  // 420000 is the misconfiguration that hard-killed the agent 5 min early.
+  const backstop = resolveAgentBackstopMs({ envValue: '420000', innerBudgetMs })
+  assert.equal(backstop, innerBudgetMs + VIDEO_SAVE_HEADROOM_MS)
+})
+
+test('resolveAgentBackstopMs: an env value above the floor is honored', async () => {
+  const { resolveAgentBackstopMs } = await import('./proof-agent.mjs')
+  const backstop = resolveAgentBackstopMs({ envValue: '1500000', innerBudgetMs: 720000 })
+  assert.equal(backstop, 1500000)
+})
+
+test('resolveAgentBackstopMs: a missing/invalid inner budget falls back to the default budget', async () => {
+  const { resolveAgentBackstopMs, VIDEO_SAVE_HEADROOM_MS, DEFAULT_INNER_BUDGET_MS } = await import(
+    './proof-agent.mjs'
+  )
+  const backstop = resolveAgentBackstopMs({ envValue: undefined, innerBudgetMs: undefined })
+  assert.equal(backstop, DEFAULT_INNER_BUDGET_MS + VIDEO_SAVE_HEADROOM_MS)
+})
+
 test('runInterruptible: kills child at timeout and resolves with timedOut=true (not a throw)', async () => {
   const { runInterruptible } = await import('./proof-agent.mjs')
   // A Node.js child that sleeps for 10 seconds — must be killed within 100ms.
@@ -812,7 +905,7 @@ test('runInterruptible: kills child at timeout and resolves with timedOut=true (
   assert.equal(res.code, null, 'killed child has null exit code')
 })
 
-test('runAgentProof: timed-out Playwright drive defers the run without a red verdict', async () => {
+test('runAgentProof: timed-out Playwright drive defers with the agent capture only — NO recipe floor', async () => {
   const { runAgentProof } = await import('./proof-agent.mjs')
   const brief = { title: 'Timeout feature', description: 'Playwright times out' }
   const originalExitCode = process.exitCode
@@ -834,17 +927,6 @@ test('runAgentProof: timed-out Playwright drive defers the run without a red ver
             commit: 'deadbeef',
             changedFiles: [],
             dryRun: true,
-            fallbackRecipeCaptures: () => [
-              {
-                recipeId: 'web-sessions',
-                title: 'Web Sessions',
-                surface: 'web',
-                privacy: 'fixture',
-                status: 'passed',
-                mediaType: 'png',
-                fileName: 'web-sessions/web-sessions.png',
-              },
-            ],
             deps: {
               // Simulate a timed-out Playwright run — returns without throwing.
               spawnPlaywright: () => ({ status: -1, timedOut: true }),
@@ -857,11 +939,13 @@ test('runAgentProof: timed-out Playwright drive defers the run without a red ver
           })
 
           assert.equal(manifest.deferred, true, 'timed-out run must be deferred')
-          assert.equal(
-            manifest.captures.some((c) => c.recipeId === 'web-sessions' && c.status === 'passed'),
-            true,
-            'timed-out agent run must include recipe-floor capture evidence',
+          // Web is agent-only (BOS-118): the deferred run must carry ONLY the
+          // agent's own capture, never a recipe-floor gallery.
+          assert.ok(
+            !manifest.captures.some((c) => c.surface !== 'web' || c.recipeId !== 'agent-proof'),
+            'deferred web run must contain only the agent-proof capture (no recipe floor)',
           )
+          assert.equal(manifest.captures.length, 1, 'exactly one capture (the agent proof)')
           assert.ok(!commentBody.includes('❌'), 'deferred comment must not contain red verdict')
           assert.ok(
             commentBody.includes('/manifest.json'),

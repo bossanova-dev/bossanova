@@ -29,6 +29,35 @@ const playButtonAsset = fileURLToPath(new URL('./assets/youtube-play-button.png'
 
 const DEFAULT_MODEL = 'claude-sonnet-4-6'
 
+// Headroom the outer SIGKILL backstop must leave above the inner agent budget so
+// the graceful shutdown (loop break → page.close → video.saveAs → stills write)
+// completes before the process is killed. The spec itself reserves +60s
+// (test.setTimeout = maxWallClockMs + 60s); this doubles that for video
+// finalization + post-processing slack.
+export const VIDEO_SAVE_HEADROOM_MS = 120_000
+// Mirrors proof-brief DEFAULT_BUDGETS.maxWallClockMs (12 min). Used only when a
+// brief carries no usable wall-clock budget.
+export const DEFAULT_INNER_BUDGET_MS = 12 * 60 * 1000
+
+/**
+ * Resolve the outer process-kill backstop (the runInterruptible SIGKILL timeout).
+ * It MUST strictly exceed the inner agent wall-clock budget, or the SIGKILL
+ * preempts the graceful shutdown and discards the captured video + stills. An
+ * operator-supplied BOSS_PROOF_AGENT_TIMEOUT_MS is honored only when it is
+ * already above the floor; otherwise it is clamped up so the two timeouts can
+ * never be inverted.
+ *
+ * @param {{ envValue: string|number|undefined, innerBudgetMs: number|undefined }} args
+ * @returns {number}
+ */
+export function resolveAgentBackstopMs({ envValue, innerBudgetMs }) {
+  const inner =
+    Number.isFinite(innerBudgetMs) && innerBudgetMs > 0 ? innerBudgetMs : DEFAULT_INNER_BUDGET_MS
+  const floor = inner + VIDEO_SAVE_HEADROOM_MS
+  const env = Number(envValue) || 0
+  return Math.max(env, floor)
+}
+
 /**
  * Run a command with a kill-on-timeout.  Resolves (never rejects) with
  * `{ code, timedOut }`.  `timedOut` is true when the child was sent SIGKILL
@@ -108,19 +137,10 @@ function defaultDeps(timeoutMs) {
 
 /**
  * Main agent proof orchestrator.
- * @param {{ prNumber: string, commit: string, changedFiles: string[], dryRun: boolean, fallbackRecipeCaptures?: Function, deps?: object }} opts
+ * @param {{ prNumber: string, commit: string, changedFiles: string[], dryRun: boolean, deps?: object }} opts
  * @returns {Promise<{ manifest: object, commentBody: string }>}
  */
-export async function runAgentProof({
-  prNumber,
-  commit,
-  changedFiles,
-  dryRun,
-  fallbackRecipeCaptures,
-  deps,
-}) {
-  const agentTimeoutMs = Number(process.env.BOSS_PROOF_AGENT_TIMEOUT_MS) || 600000
-  const d = { ...defaultDeps(agentTimeoutMs), ...(deps ?? {}) }
+export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, deps }) {
   const model = process.env.BOSS_PROOF_MODEL ?? DEFAULT_MODEL
   const shouldUpload = !dryRun && process.env.BOSS_PROOF_UPLOAD !== '0'
   const bucket = shouldUpload ? requiredProofBucket() : null
@@ -158,6 +178,16 @@ export async function runAgentProof({
   const briefPath = path.join(localDir, 'brief.json')
   fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`)
 
+  // Outer SIGKILL backstop, derived from the brief's inner wall-clock budget so
+  // it can never preempt the spec's graceful shutdown (which saves the video and
+  // stills). Computed here — after the brief is resolved — rather than from a
+  // bare default that could sit below the inner budget.
+  const agentTimeoutMs = resolveAgentBackstopMs({
+    envValue: process.env.BOSS_PROOF_AGENT_TIMEOUT_MS,
+    innerBudgetMs: brief.budgets?.maxWallClockMs,
+  })
+  const d = { ...defaultDeps(agentTimeoutMs), ...(deps ?? {}) }
+
   // ── Step 2: Spawn Playwright agent-proof project ──────────────────────────
   const rawDir = path.join(localDir, 'raw')
   fs.mkdirSync(rawDir, { recursive: true })
@@ -172,7 +202,7 @@ export async function runAgentProof({
     agentTimedOut = Boolean(pwResult.timedOut)
     if (agentTimedOut) {
       console.warn(
-        `[proof-agent] Playwright agent timed out after ${agentTimeoutMs}ms — deferring to recipe floor`,
+        `[proof-agent] Playwright agent timed out after ${agentTimeoutMs}ms — deferring honestly (no recipe floor)`,
       )
       agentResult = {
         passed: false,
@@ -358,17 +388,20 @@ export async function runAgentProof({
   }
 
   const hasFailure = !agentPassed || !agentResult.passed || captureShape.status !== 'passed'
-  const recipeFloorCaptures = hasFailure
-    ? captureFallbackRecipeFloor({ fallbackRecipeCaptures, localDir, keepWebm: !shouldUpload })
-    : []
+  // Web is agent-only (BOS-118): a failed or declined run defers honestly with
+  // the agent's own capture, never a recipe floor. The agent can also declare,
+  // via done({noSurface:true}), that this change has no demonstrable surface —
+  // a neutral outcome the finalizer maps to the honest "no UI surface" note.
+  const noSurface = agentResult.noSurface === true
 
   // ── Steps 4–7: Build manifest, secret scan, upload, render + post comment ─
   const publicBaseUrl = `${publicProofBaseUrl()}/${paths.publicPrefix}`
   return finalizeAgentProof({
-    captureShapes: [captureShape, ...recipeFloorCaptures],
+    captureShapes: [captureShape],
     brief,
     agentResult,
     hasFailure,
+    noSurface,
     prNumber,
     commit,
     runId,
@@ -393,16 +426,6 @@ export async function runAgentProof({
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
-
-function captureFallbackRecipeFloor({ fallbackRecipeCaptures, localDir, keepWebm }) {
-  if (typeof fallbackRecipeCaptures !== 'function') return []
-  try {
-    return fallbackRecipeCaptures({ localDir, keepWebm }) ?? []
-  } catch (err) {
-    console.warn(`[proof-agent] recipe floor capture failed: ${err.message}`)
-    return []
-  }
-}
 
 function gatherDiff() {
   const baseRef = process.env.BASE_REF || 'origin/main'

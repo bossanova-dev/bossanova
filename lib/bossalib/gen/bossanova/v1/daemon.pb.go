@@ -1129,6 +1129,11 @@ type CreateSessionRequest struct {
 	// server-side when plan is empty (web new-session tracker flows).
 	TrackerIssue  *TrackerIssue `protobuf:"bytes,12,opt,name=tracker_issue,json=trackerIssue,proto3,oneof" json:"tracker_issue,omitempty"`
 	TrackerSource *string       `protobuf:"bytes,13,opt,name=tracker_source,json=trackerSource,proto3,oneof" json:"tracker_source,omitempty"` // "linear" | "sentry"
+	// If true, run the session's initial agent pass headlessly (codex exec /
+	// claude --print) instead of leaving it idle to start interactively on
+	// first attach. Set by `boss new --detach`. Default false = interactive:
+	// no headless run fires, the agent starts when the user attaches.
+	Detach        bool `protobuf:"varint,14,opt,name=detach,proto3" json:"detach,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1252,6 +1257,13 @@ func (x *CreateSessionRequest) GetTrackerSource() string {
 		return *x.TrackerSource
 	}
 	return ""
+}
+
+func (x *CreateSessionRequest) GetDetach() bool {
+	if x != nil {
+		return x.Detach
+	}
+	return false
 }
 
 type CreateSessionResponse struct {
@@ -5948,7 +5960,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x06source\x18\x03 \x01(\tH\x00R\x06source\x88\x01\x01B\t\n" +
 	"\a_source\"O\n" +
 	"\x19ListTrackerIssuesResponse\x122\n" +
-	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"\xd5\x04\n" +
+	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"\xed\x04\n" +
 	"\x14CreateSessionRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
@@ -5969,7 +5981,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\n" +
 	"agent_name\x18\v \x01(\tH\x04R\tagentName\x88\x01\x01\x12D\n" +
 	"\rtracker_issue\x18\f \x01(\v2\x1a.bossanova.v1.TrackerIssueH\x05R\ftrackerIssue\x88\x01\x01\x12*\n" +
-	"\x0etracker_source\x18\r \x01(\tH\x06R\rtrackerSource\x88\x01\x01B\f\n" +
+	"\x0etracker_source\x18\r \x01(\tH\x06R\rtrackerSource\x88\x01\x01\x12\x16\n" +
+	"\x06detach\x18\x0e \x01(\bR\x06detachB\f\n" +
 	"\n" +
 	"_pr_numberB\x0e\n" +
 	"\f_branch_nameB\r\n" +

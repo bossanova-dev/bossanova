@@ -130,6 +130,7 @@ export async function finalizeAgentProof({
   brief,
   agentResult,
   hasFailure,
+  noSurface = false,
   prNumber,
   commit,
   runId,
@@ -222,8 +223,13 @@ export async function finalizeAgentProof({
     commentBody = renderDeferredComment({
       marker,
       manifest,
-      reasonCode: manifest.verdict !== 'passed' ? 'agent-incomplete' : 'no-media',
-      recaptureHint: recaptureHintFor(manifest),
+      reasonCode: noSurface
+        ? 'no-ui-surface'
+        : manifest.verdict !== 'passed'
+          ? 'agent-incomplete'
+          : 'no-media',
+      // No recapture hint for a no-surface skip: there is nothing to re-run.
+      recaptureHint: noSurface ? undefined : recaptureHintFor(manifest),
     })
   } else {
     commentBody = renderComment({ marker, manifest })
@@ -231,7 +237,10 @@ export async function finalizeAgentProof({
   const commentPath = path.join(localDir, 'comment.md')
   fs.writeFileSync(commentPath, commentBody)
 
-  if (hasFailure) {
+  // A no-surface outcome is a neutral skip ("nothing to prove here"), not a
+  // failure — keep exit 0 so it does not redden the PR. Genuine agent failures
+  // still signal so the proof check reflects that the change was not captured.
+  if (hasFailure && !noSurface) {
     process.exitCode = 1
   }
 

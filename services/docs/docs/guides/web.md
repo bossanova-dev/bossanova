@@ -83,3 +83,20 @@ To point at a non-production endpoint (e.g. a staging environment),
 set the `BOSSD_ORCHESTRATOR_URL` and `BOSS_WORKOS_CLIENT_ID`
 environment variables; see [Settings](../reference/settings.md) for
 the full list of environment overrides.
+
+## Keyboard shortcuts
+
+Press `?` or `⌘K` on any screen to open the keyboard-shortcut launcher.
+The launcher is a searchable command palette: type to filter, navigate with
+`↑`/`↓`/`Home`/`End`, and press `Enter` to run the highlighted action.
+Mouse users can hover to highlight a row and click to run it.
+
+| Screen         | Key | Action            |
+| -------------- | --- | ----------------- |
+| Sessions list  | `N` | New session       |
+| Session detail | `G` | Open pull request |
+| Session detail | `M` | Merge session     |
+| Session detail | `A` | Archive session   |
+
+The launcher is excluded on the chat-terminal route so that keystrokes
+pass through to the agent session uninterrupted.

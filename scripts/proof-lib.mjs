@@ -68,7 +68,11 @@ export function normalizeRecipe(recipe) {
     normalized.steps = [
       { action: 'goto', route: recipe.route, caption: recipe.title },
       { action: 'wait', timeoutMs: 800 },
-      { action: 'scroll', fullPage: true, caption: 'Scroll through the page' },
+      {
+        action: 'scroll',
+        fullPage: true,
+        caption: 'Automated demonstration unavailable — page overview only',
+      },
     ]
   }
   return normalized
@@ -107,6 +111,40 @@ export const TUI_SURFACE_PREFIXES = [
 export function classifyTuiSurface(changedFiles) {
   const normalized = normalizeChangedFiles(changedFiles ?? [])
   return normalized.some((file) => TUI_SURFACE_PREFIXES.some((prefix) => file.startsWith(prefix)))
+}
+
+/**
+ * Path prefixes that hold the Vite web app's user-visible surface — the pages,
+ * components, and assets the proof agent can actually drive in the running app.
+ * Deliberately excludes `services/web/tests/` (the agent + specs themselves) and
+ * everything under `scripts/`, the Go services, docs, and proto: a change there
+ * has no surface to demonstrate. Single exported source of truth so the
+ * classifier and its test cannot drift. Mirrors TUI_SURFACE_PREFIXES.
+ * @type {readonly string[]}
+ */
+export const WEB_UI_SURFACE_PREFIXES = [
+  'services/web/src/',
+  'services/web/index.html',
+  'services/web/public/',
+]
+
+/**
+ * Pure path pre-gate: true when ANY changed file lives under a web UI surface
+ * prefix. Used to skip the (expensive, ~12-minute) web agent run entirely for a
+ * change with no demonstrable web surface (e.g. a scripts-only or backend-only
+ * PR), so it posts an honest "no UI surface" note instead of running the agent,
+ * having it decline, and posting useless filler. Biased slightly broad: a
+ * non-visual change under `services/web/src/` still passes the gate and lets the
+ * agent decide (and honestly defer), which is cheaper than a wrongful skip that
+ * hides a real change.
+ * @param {string[]|null|undefined} changedFiles
+ * @returns {boolean}
+ */
+export function webUiSurfacePresent(changedFiles) {
+  const normalized = normalizeChangedFiles(changedFiles ?? [])
+  return normalized.some((file) =>
+    WEB_UI_SURFACE_PREFIXES.some((prefix) => file.startsWith(prefix)),
+  )
 }
 
 export function selectRecipes(catalog, changedFiles, explicitRecipeIds = []) {
@@ -291,6 +329,14 @@ function deferredReasonMessage(reasonCode) {
       '(set PROOF_ANTHROPIC_API_KEY, or unset BOSS_PROOF_MODE=recipe). ' +
       'The TUI surface is proved by an agent driving the real TUI, so there is no recipe ' +
       'fallback. This is an environment limitation, not a problem with the change.'
+    )
+  }
+  if (reasonCode === 'no-ui-surface') {
+    return (
+      'No web UI surface to demonstrate for this change. The web proof agent drives the ' +
+      'running app to show a user-visible change (a page, component, or interaction); this ' +
+      'PR changes code with no such surface, so there is nothing to capture in a video. ' +
+      "See the PR's diff and tests for the change. This is expected, not a problem with the change."
     )
   }
   return `bs-proof could not complete the agent proof this run (${reasonCode}). This is an environment limitation, not a problem with the change.`

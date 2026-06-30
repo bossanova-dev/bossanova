@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import {
   PROOF_MEDIA_TYPES,
   TUI_SURFACE_PREFIXES,
+  WEB_UI_SURFACE_PREFIXES,
   buildManifest,
   bossE2eBuildCommand,
   browserCaptureCommand,
@@ -41,6 +42,7 @@ import {
   validateBrowserRoute,
   validateProofUploadRelativePath,
   validateRecipeId,
+  webUiSurfacePresent,
 } from './proof-lib.mjs'
 
 const catalog = {
@@ -410,6 +412,56 @@ test('classifyTuiSurface is true when ANY changed file is a TUI path (mixed diff
     classifyTuiSurface(['services/web/src/App.tsx', 'services/boss/internal/views/home.go']),
     true,
   )
+})
+
+// ── webUiSurfacePresent: no-UI-surface pre-gate (BOS-118) ────────────────────
+
+test('webUiSurfacePresent is true for any changed file under a web UI prefix', () => {
+  for (const prefix of WEB_UI_SURFACE_PREFIXES) {
+    assert.equal(
+      webUiSurfacePresent([`${prefix}some/file.tsx`]),
+      true,
+      `expected ${prefix}* to count as a web UI surface`,
+    )
+  }
+})
+
+test('webUiSurfacePresent covers the documented web UI prefixes', () => {
+  assert.deepEqual(WEB_UI_SURFACE_PREFIXES, [
+    'services/web/src/',
+    'services/web/index.html',
+    'services/web/public/',
+  ])
+})
+
+test('webUiSurfacePresent is false for changes with no demonstrable web surface', () => {
+  // The proof scripts themselves (this very PR's shape).
+  assert.equal(webUiSurfacePresent(['scripts/proof-agent.mjs', 'scripts/proof.mjs']), false)
+  // The web agent/specs are tests, not app UI.
+  assert.equal(webUiSurfacePresent(['services/web/tests/e2e/agent/runner.ts']), false)
+  // Backend, docs, proto.
+  assert.equal(webUiSurfacePresent(['services/bossd/internal/server/server.go']), false)
+  assert.equal(webUiSurfacePresent(['docs/plans/BOS-118.md']), false)
+  assert.equal(webUiSurfacePresent([]), false)
+  assert.equal(webUiSurfacePresent(null), false)
+})
+
+test('webUiSurfacePresent is true when ANY changed file is a web UI path (mixed diff)', () => {
+  assert.equal(
+    webUiSurfacePresent(['scripts/proof.mjs', 'services/web/src/pages/SessionDetail.tsx']),
+    true,
+  )
+})
+
+test('renderDeferredComment carries the honest no-ui-surface reason and no red verdict', () => {
+  const body = renderDeferredComment({
+    marker: '<!-- m -->',
+    manifest: { commit: 'abc1234', prNumber: '964', deferred: true },
+    reasonCode: 'no-ui-surface',
+  })
+  assert.match(body, /No web UI surface to demonstrate/)
+  assert.ok(!body.includes('❌'), 'no-surface note must not carry a red verdict')
+  assert.ok(!body.includes('Scroll through the page'), 'no recipe-floor filler')
 })
 
 test('classifyTuiSurface normalizes leading ./ and backslashes', () => {
@@ -1601,7 +1653,10 @@ test('normalizeRecipe defaults a browser still recipe to video with synthesized 
   assert.equal(out.capture, 'video')
   assert.equal(out.steps[0].action, 'goto')
   assert.equal(out.steps[0].route, '/')
-  assert.ok(out.steps.some((s) => s.action === 'scroll' && s.fullPage === true))
+  const scrollStep = out.steps.find((s) => s.action === 'scroll' && s.fullPage === true)
+  assert.ok(scrollStep, 'fallback still scrolls the full page')
+  assert.match(scrollStep.caption, /unavailable|overview|fallback|could not/i)
+  assert.notStrictEqual(scrollStep.caption, 'Scroll through the page')
 })
 
 test('normalizeRecipe keeps an explicit still recipe a still', () => {

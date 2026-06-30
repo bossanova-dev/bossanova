@@ -391,12 +391,16 @@ func (h *createSessionStreamHarness) createSession(t *testing.T, title string) (
 
 	prNumber := int32(123)
 	agentName := "claude"
+	// Detach=true exercises the headless StartByAgent path these tests probe
+	// (agent-start success/failure and startup cleanup). Interactive sessions
+	// (Detach=false) are idle until attach and never call the runner here.
 	stream, err := h.client.CreateSession(context.Background(), connect.NewRequest(&pb.CreateSessionRequest{
 		RepoId:    h.repo.ID,
 		Title:     title,
 		Plan:      "do work",
 		PrNumber:  &prNumber,
 		AgentName: &agentName,
+		Detach:    true,
 	}))
 	if err != nil {
 		return nil, err

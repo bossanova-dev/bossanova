@@ -939,6 +939,13 @@ func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName string, 
 		RepoId: repoID,
 		Plan:   prompt,
 		Title:  title,
+		// This is the non-interactive scripting path: the prompt runs as a
+		// headless agent pass (codex exec / claude --print) on the daemon.
+		// Detach is always true here regardless of the local --detach flag,
+		// which only governs whether this CLI waits/attaches after creating
+		// the session. Interactive TUI sessions leave Detach false and start
+		// the agent on attach instead.
+		Detach: true,
 	}
 	if agentName != "" {
 		req.AgentName = &agentName

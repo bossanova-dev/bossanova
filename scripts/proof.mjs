@@ -30,6 +30,7 @@ import {
   tuiAgentBridgeBuildCommand,
   validateBrowserRoute,
   validateRecipeId,
+  webUiSurfacePresent,
 } from './proof-lib.mjs'
 import { finishVideo } from './proof-finish-video.mjs'
 import { publishProofReport } from './proof-publish-report.mjs'
@@ -234,13 +235,24 @@ async function main() {
         cwd: repoRoot,
         encoding: 'utf8',
       }).trim()
+      // Pre-gate (BOS-118): a change with no user-visible web surface
+      // (scripts-only, backend-only, tests-only) has nothing for the agent to
+      // demonstrate. Skip the ~12-minute agent run and post an honest "no UI
+      // surface" note instead of running the agent, having it decline, and
+      // posting useless filler. The agent's own done({noSurface:true}) is the
+      // backstop for src/ changes that turn out to be non-visual.
+      if (!webUiSurfacePresent(changedFiles)) {
+        postNoWebUiSurfaceComment({ prNumber, commit, dryRun: args.dryRun })
+        return
+      }
+      // Web is agent-only: NO recipe-floor fallback. A failed or declined run
+      // posts an honest deferred comment (never generic recipe media).
       const { runAgentProof } = await import('./proof-agent.mjs')
       return runAgentProof({
         prNumber,
         commit,
         changedFiles,
         dryRun: args.dryRun,
-        fallbackRecipeCaptures: recipeFloorCapture({ selected }),
       })
     }
     // surface === 'recipe': deterministic marketing/docs capture — fall through
@@ -534,9 +546,34 @@ function captureRecipe({ recipe: rawRecipe, localDir, keepWebm = false }) {
   }
 }
 
-function recipeFloorCapture({ selected }) {
-  return ({ localDir, keepWebm }) =>
-    selected.map((recipe) => captureRecipe({ recipe, localDir, keepWebm }))
+/**
+ * Posts the honest "no web UI surface" deferred comment for a web-surface change
+ * that touches no user-visible app code (BOS-118): no agent run, no media, no
+ * recipe floor, exit 0. When uploads are off or there is no real PR, the comment
+ * is printed instead of posted. Mirrors postTuiAgentUnavailableComment.
+ * @param {{ prNumber: string, commit: string, dryRun: boolean }} opts
+ */
+function postNoWebUiSurfaceComment({ prNumber, commit, dryRun }) {
+  const marker = proofCommentMarker(prNumber)
+  const commentBody = renderDeferredComment({
+    marker,
+    manifest: { commit, prNumber, deferred: true },
+    reasonCode: 'no-ui-surface',
+  })
+  const shouldUpload = !dryRun && process.env.BOSS_PROOF_UPLOAD !== '0'
+  if (shouldUpload && prNumber !== 'local') {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-web-no-surface-'))
+    const commentPath = path.join(tmpDir, 'comment.md')
+    try {
+      fs.writeFileSync(commentPath, commentBody)
+      collapsePriorProofComments({ prNumber })
+      runCommand(githubCommentCommand({ prNumber, bodyFile: path.relative(repoRoot, commentPath) }))
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  } else {
+    console.log(commentBody)
+  }
 }
 
 export function uploadBundle({ localDir, publicPrefix, manifest, bucket }) {

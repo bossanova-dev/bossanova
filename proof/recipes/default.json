@@ -164,6 +164,12 @@
           "selector": "[role=\"dialog\"]",
           "label": "Launcher open",
           "caption": "Global + Sessions shortcuts"
+        },
+        {
+          "action": "press",
+          "key": "ArrowDown",
+          "label": "Move selection",
+          "caption": "Arrow-key selection highlight moves down"
         }
       ]
     },
@@ -200,6 +206,12 @@
           "selector": "[role=\"dialog\"]",
           "label": "Launcher open",
           "caption": "Session-detail shortcuts"
+        },
+        {
+          "action": "press",
+          "key": "ArrowDown",
+          "label": "Move selection",
+          "caption": "Arrow-key selection highlight moves down through session actions"
         }
       ]
     },

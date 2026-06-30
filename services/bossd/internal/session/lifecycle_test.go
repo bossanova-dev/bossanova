@@ -930,7 +930,10 @@ func TestStartSession(t *testing.T) {
 
 	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
-	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+	// Detach=true is the `boss new --detach` headless path that auto-runs the
+	// agent. Interactive sessions (Detach=false) are covered by the
+	// AwaitsManualStart tests below.
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -993,7 +996,9 @@ func TestStartSession_TrackerSession_AwaitsManualStart(t *testing.T) {
 	// created idle: the worktree is set up but the agent is NOT auto-started,
 	// so the user can review/edit the plan (pre-filled into the agent input on
 	// first attach) and start the run manually. Cron sessions still auto-run
-	// via the CronJobID branch; plain New/Existing PR sessions still auto-run.
+	// via the CronJobID branch; only `boss new --detach` (Detach=true) auto-runs
+	// headlessly — plain interactive New/Existing PR sessions are now idle too
+	// (see the AwaitsManualStart tests below).
 	sessions.sessions["sess-1"] = &models.Session{
 		ID:         "sess-1",
 		RepoID:     "repo-1",
@@ -1031,6 +1036,95 @@ func TestStartSession_TrackerSession_AwaitsManualStart(t *testing.T) {
 	// The plan is preserved for the prefill-on-attach path.
 	if sess.Plan != "Implement the ticket" {
 		t.Errorf("plan = %q, want preserved", sess.Plan)
+	}
+}
+
+// TestStartSession_NewPR_AwaitsManualStart pins the fix for the "headless agent
+// run failed" bug: a plain interactive new-PR session (no TrackerID, no
+// CronJobID, Detach=false) must NOT auto-fire a headless `claude --print` run.
+// It lands idle in ImplementingPlan and starts the agent on first attach.
+func TestStartSession_NewPR_AwaitsManualStart(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if len(cr.started) != 0 {
+		t.Fatalf("expected 0 agent starts for interactive new-PR session, got %d", len(cr.started))
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.ImplementingPlan {
+		t.Errorf("session state = %v, want ImplementingPlan", sess.State)
+	}
+	if sess.AgentSessionID != nil {
+		t.Errorf("agent session id = %v, want nil (idle)", sess.AgentSessionID)
+	}
+}
+
+// TestStartSession_ExistingPR_AwaitsManualStart is the same as the new-PR case
+// but for the "Work on an existing PR" flow (PRNumber set). It must also stay
+// idle rather than firing the doomed empty-prompt headless run.
+func TestStartSession_ExistingPR_AwaitsManualStart(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	prNumber := 42
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Work on existing PR",
+		BaseBranch: "main",
+		PRNumber:   &prNumber,
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{ExistingBranch: "feature/pr-42"}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if len(cr.started) != 0 {
+		t.Fatalf("expected 0 agent starts for interactive existing-PR session, got %d", len(cr.started))
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.ImplementingPlan {
+		t.Errorf("session state = %v, want ImplementingPlan", sess.State)
+	}
+	if sess.AgentSessionID != nil {
+		t.Errorf("agent session id = %v, want nil (idle)", sess.AgentSessionID)
 	}
 }
 
@@ -4412,6 +4506,7 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRun(t *testing.T) {
 	lc.SetDaemonCtx(ctx)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		Detach:    true,
 		DeferPR:   true,
 		HookToken: "tok-1",
 	}); err != nil {
@@ -4472,7 +4567,7 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRunWithoutHookToken(t *te
 
 	// No HookToken: the ConfigureFinalizeHook probe never runs, so hookResp is
 	// nil. The gate must treat nil as "no competing hook" and arm.
-	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{DeferPR: true}); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true, DeferPR: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -5110,7 +5205,7 @@ func TestStartSession_RoutesToCodexWhenSessionAgentNameIsCodex(t *testing.T) {
 
 	lc := NewLifecycle(sessions, repos, nil, nil, wt, dispatcher, nil, newMockVCSProvider(), logger)
 
-	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -5165,7 +5260,7 @@ func TestStartSession_CreatesAgentChatRowForHeadlessRun(t *testing.T) {
 
 	lc := NewLifecycle(sessions, repos, chats, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
-	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 

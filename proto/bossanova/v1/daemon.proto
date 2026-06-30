@@ -265,6 +265,11 @@ message CreateSessionRequest {
   // server-side when plan is empty (web new-session tracker flows).
   optional TrackerIssue tracker_issue = 12;
   optional string tracker_source = 13;  // "linear" | "sentry"
+  // If true, run the session's initial agent pass headlessly (codex exec /
+  // claude --print) instead of leaving it idle to start interactively on
+  // first attach. Set by `boss new --detach`. Default false = interactive:
+  // no headless run fires, the agent starts when the user attaches.
+  bool detach = 14;
 }
 
 message CreateSessionResponse {

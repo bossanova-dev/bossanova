@@ -147,6 +147,24 @@ type HomeModel struct {
 	// Cleared once the daemon reports a terminal state (MERGED/CLOSED).
 	mergedOptimisticID string
 
+	// archivingOptimisticID is set when the user presses ESC while an archive
+	// is in flight. While set, the matching session's status is rendered as
+	// "archiving" + spinner instead of the PR status, so the home list
+	// reflects the in-progress archive across the chatpicker→home navigation.
+	// Cleared once the session leaves the list (success) or archiveResultMsg
+	// signals a failure.
+	archivingOptimisticID string
+
+	// archiveInFlight reports whether the archive behind archivingOptimisticID
+	// is still actually outstanding (no archiveResultMsg seen yet). It gates
+	// re-seeding a re-entered ChatPickerModel with archiving=true: on success
+	// the override is deliberately retained for rendering until the row leaves
+	// the list, but the archive is done, so pressing Enter on that stale row
+	// must NOT open a picker stuck on "Archiving session..." waiting for a
+	// result that will never arrive. Cleared whenever the archive resolves or
+	// the override is dropped.
+	archiveInFlight bool
+
 	// Auth
 	authMgr              *auth.Manager // nil means auth not configured
 	loggedIn             bool
@@ -276,6 +294,16 @@ func (h *HomeModel) applyMergedOptimisticOverride() {
 	}
 }
 
+// sessionsContainID reports whether any session in the slice has the given id.
+func sessionsContainID(sessions []*pb.Session, id string) bool {
+	for _, s := range sessions {
+		if s.Id == id {
+			return true
+		}
+	}
+	return false
+}
+
 // selectedSessionID returns the ID of the currently highlighted session,
 // or "" if no session is selected.
 func (h HomeModel) selectedSessionID() string {
@@ -376,6 +404,9 @@ func (h HomeModel) tableCursorForSessionIndex(sessionIndex int) int {
 }
 
 func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
+	if h.archivingOptimisticID != "" && sess != nil && sess.Id == h.archivingOptimisticID {
+		return renderArchivingStatus(h.spinner)
+	}
 	return renderDisplayStatus(sess, h.spinner)
 }
 
@@ -741,6 +772,10 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.latchValueDeliveredIfNeeded()
 		h.daemonStatuses = msg.daemonStatuses
 		h.applyMergedOptimisticOverride()
+		if h.archivingOptimisticID != "" && !sessionsContainID(h.sessions, h.archivingOptimisticID) {
+			h.archivingOptimisticID = ""
+			h.archiveInFlight = false
+		}
 		h.buildTableRows()
 		if h.highlightSessionID != "" {
 			for i, sess := range h.sessions {

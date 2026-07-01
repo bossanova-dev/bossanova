@@ -135,23 +135,27 @@ func ResolveBossdPath() (string, error) {
 	return "", fmt.Errorf("bossd not found (install it next to boss or add it to PATH)")
 }
 
-// ResolveMcpPath finds the mcp binary. It checks next to the current
+// ResolveMcpPath finds the MCP binary, preferring the distributed name
+// "boss-mcp" over the local-dev name "mcp". It checks next to the current
 // executable first, then $PATH.
 func ResolveMcpPath() (string, error) {
 	exe, err := os.Executable()
 	if err == nil {
-		candidate := filepath.Join(filepath.Dir(exe), "mcp")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
+		for _, name := range []string{"boss-mcp", "mcp"} {
+			candidate := filepath.Join(filepath.Dir(exe), name)
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
 		}
 	}
 
-	path, err := exec.LookPath("mcp")
-	if err == nil {
-		return filepath.Abs(path)
+	for _, name := range []string{"boss-mcp", "mcp"} {
+		if path, err := exec.LookPath(name); err == nil {
+			return filepath.Abs(path)
+		}
 	}
 
-	return "", fmt.Errorf("mcp not found (install it next to boss or add it to PATH)")
+	return "", fmt.Errorf("mcp not found (install boss-mcp or mcp next to boss or add it to PATH)")
 }
 
 // isSocketReachable checks if a Unix socket is connectable.

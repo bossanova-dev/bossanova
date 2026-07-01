@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url'
 import {
   assemblePrompt,
   boundedStderrTail,
-  buildExecArgv,
   classifyProbe,
   interpretResult,
   REVIEW_PREAMBLE,
@@ -15,38 +14,32 @@ import {
   sanitizeOutput,
 } from './cross-review-lib.mjs'
 
-// Cross-model "outside voice" review helper for bs-implement.
-// Shells out to the Codex CLI (`codex exec`) read-only over a git diff and
-// returns sanitized review text.  The agent-agnostic machinery lives in
-// scripts/cross-review-lib.mjs; this file is the thin codex adapter + the CLI
-// entrypoint.  The skill integration is a separate task.
+// Cross-model "outside voice" review helper for bs-implement — the
+// claude-direction sibling of scripts/codex-review.mjs. Shells out to the
+// Claude Code CLI (`claude -p`) over a git diff and returns sanitized review
+// text. The agent-agnostic machinery lives in scripts/cross-review-lib.mjs;
+// this file is the thin claude adapter + the CLI entrypoint.
 //
-// Pinned surface: codex-cli 0.142.0
-// `codex login status` exits 0 when authenticated, non-zero when not.
+// Pinned surface: claude-cli 2.x (`claude -p "<prompt>"`).
+// `claude --version` exits 0 when the CLI is runnable — a cheap readiness
+// signal. Claude has no separate `login status` subcommand, so auth failures
+// surface later as a run skip (the non-fatal contract), which is fine.
+//
+// Unlike codex, claude has NO `-C <dir>` flag: the working directory is set via
+// the spawn `cwd` option, not an argv element. So buildExecArgv (which hard-codes
+// codex's `-C <repo>` shape) is NOT a fit here — this file builds claude's argv
+// directly. `--permission-mode plan` keeps the reviewer read-only (it cannot
+// create/edit/delete files), the analog of codex's `-s read-only` sandbox; and
+// because the diff is EMBEDDED in the prompt the reviewer needs no file-system
+// tools at all (no recursion into bs-review, no tree exploration).
 
 // Re-export the pure primitives the test-suite (and downstream callers) consume
 // from this module's public surface.
 export { classifyProbe, sanitizeOutput }
 
-// ---------------------------------------------------------------------------
-// Codex adapter spec — feeds buildExecArgv. `codex exec` invocation shape
-// (codex-cli 0.142.0):
-//   codex exec -C <repo> -s read-only -c model_reasoning_effort="high" <prompt>
-//
-// NOTE: `codex exec` is already non-interactive and never prompts for approval,
-// so it has NO `-a`/`--ask-for-approval` flag (that lives only on the top-level
-// `codex` command). Passing `-a never` makes codex exit with
-// "unexpected argument '-a' found" and produce no review — read-only sandbox
-// (`-s read-only`) is what actually prevents any writes here.
-// ---------------------------------------------------------------------------
-const CODEX_ADAPTER = {
-  subcommand: 'exec',
-  flags: ['-s', 'read-only', '-c', 'model_reasoning_effort="high"'],
-}
-
 // Default review timeout, env-overridable via BOSS_CROSS_REVIEW_TIMEOUT_MS.
-// Raised from the original 120_000 to 300_000 (cross-model review over a large
-// diff with high reasoning effort routinely needs more than two minutes).
+// Shared env var + default with codex-review.mjs so a single knob tunes both
+// cross-model reviewers.
 const DEFAULT_TIMEOUT_MS = 300_000
 
 // Cap on an embedded diff. Above this we fall back to instruct-mode (ask the
@@ -57,112 +50,91 @@ const EMBED_DIFF_LIMIT_BYTES = 200 * 1024
 // Parses BOSS_CROSS_REVIEW_TIMEOUT_MS; falls back to the default when unset or
 // not a positive integer. Uses strict Number() parsing (not the lenient
 // parseInt) so trailing garbage like "100abc" is rejected to the default
-// rather than silently truncated to 100.
+// rather than silently truncated to 100. Identical contract to codex-review.mjs.
 export function resolveTimeoutMs(env = process.env) {
   const n = Number(env?.BOSS_CROSS_REVIEW_TIMEOUT_MS)
   return Number.isInteger(n) && n > 0 ? n : DEFAULT_TIMEOUT_MS
 }
 
 // ---------------------------------------------------------------------------
-// resolveCodexBin(env) → string | null
+// resolveClaudeBin(env) → string | null
 //
-// Thin codex wrapper over the generic resolver. See resolveAgentBin for the
+// Thin claude wrapper over the generic resolver. See resolveAgentBin for the
 // absolute-override / PATH-fallback contract.
 // ---------------------------------------------------------------------------
-export function resolveCodexBin(env) {
-  return resolveAgentBin(env, { overrideVar: 'BOSS_CODEX_BIN', binName: 'codex' })
+export function resolveClaudeBin(env) {
+  return resolveAgentBin(env, { overrideVar: 'BOSS_CLAUDE_BIN', binName: 'claude' })
 }
 
 // ---------------------------------------------------------------------------
-// probe({ env, timeoutMs }) → Promise<string>
+// bareModeArgs(env) → ['--bare'] | []
 //
-// Resolves the codex binary, then runs `codex login status` with a short
-// timeout and captured stdio.  Returns a classification string.  Never throws;
-// ambiguous results → 'error'.
+// `--bare` runs claude in minimal mode: it skips auto-discovery of hooks, LSP,
+// plugin/MCP sync, auto-memory, and CLAUDE.md. Without it, running the second
+// voice in a developer/CI env that has user/project Claude Code customizations
+// would auto-load those hooks/plugins — which can mutate the tree or hang even
+// though this helper is advertised as a read-only, diff-scoped reviewer
+// (`--permission-mode plan` blocks the *agent* from writing files, but not a
+// hook's side effects). So enable `--bare` to make the reviewer hermetic.
+//
+// Caveat: `--bare` forces Anthropic auth to strictly ANTHROPIC_API_KEY (OAuth
+// and keychain are never read). Enabling it unconditionally would break the
+// reviewer — silently producing no review — on any box that authenticates via
+// OAuth/keychain. So only add it when ANTHROPIC_API_KEY is present, which is
+// exactly the CI/cron context where untrusted auto-discovered config is the
+// real risk; OAuth/keychain sessions keep the existing (non-bare) invocation.
 // ---------------------------------------------------------------------------
-export async function probe({ env = process.env, timeoutMs = 5000 } = {}) {
-  const bin = resolveCodexBin(env)
-  if (bin === null) {
-    return classifyProbe({ spawnError: { code: 'ENOENT' }, status: null, signal: null })
-  }
-
-  return new Promise((resolve) => {
-    let settled = false
-    let timer = null
-
-    const settle = (result) => {
-      if (settled) return
-      settled = true
-      if (timer) {
-        clearTimeout(timer)
-        timer = null
-      }
-      resolve(result)
-    }
-
-    let child
-    try {
-      // We only need the exit code. Discard stdout/stderr entirely — piping and
-      // not draining stderr would deadlock a chatty codex past the ~64KB pipe
-      // buffer until the timeout fires.
-      child = spawn(bin, ['login', 'status'], {
-        stdio: ['ignore', 'ignore', 'ignore'],
-        detached: true,
-      })
-    } catch (err) {
-      settle(classifyProbe({ spawnError: err, status: null, signal: null }))
-      return
-    }
-
-    child.on('error', (err) => {
-      settle(classifyProbe({ spawnError: err, status: null, signal: null }))
-    })
-
-    child.on('close', (code, sig) => {
-      settle(classifyProbe({ spawnError: null, status: code, signal: sig }))
-    })
-
-    timer = setTimeout(() => {
-      // Timed out — kill the whole process group. ESRCH (group already gone)
-      // and any other kill error are intentionally swallowed: we are tearing
-      // down and will resolve 'error' regardless.
-      try {
-        process.kill(-child.pid, 'SIGKILL')
-      } catch {
-        // intentionally ignored during teardown
-      }
-      settle('error')
-    }, timeoutMs)
-  })
+function bareModeArgs(env) {
+  const key = env?.ANTHROPIC_API_KEY
+  return typeof key === 'string' && key.trim() !== '' ? ['--bare'] : []
 }
 
 // ---------------------------------------------------------------------------
-// buildCodexArgs({ base, head, repo }) → string[]
+// claudeArgv(prompt, env) → string[]
 //
-// Pure argv builder for `codex exec` — no diff embedding (it cannot shell out).
-// Uses instruct-mode prompt (review the range with a no-explore scope guard).
-// `run()` builds an embed-mode variant when it can fetch the diff; this pure
-// helper keeps the structural test-surface stable.
+// Pure argv shape for claude's headless print mode:
+//   claude [--bare] -p --permission-mode plan "<prompt>"
+//
+//   • --bare                → hermetic mode when viable (see bareModeArgs).
+//   • -p / --print          → non-interactive: print the response and exit.
+//   • --permission-mode plan → read-only session; claude cannot create/edit/
+//                              delete files (the codex `-s read-only` analog).
+//
+// No -C/working-dir arg: claude has none — the caller sets cwd on the spawn.
+// The base/head SHAs are carried inside `prompt` (range string / embedded diff),
+// never as argv, so this builder only needs the prompt (+ env for bare mode).
 // ---------------------------------------------------------------------------
-export function buildCodexArgs({ base, head, repo }) {
+function claudeArgv(prompt, env = process.env) {
+  return [...bareModeArgs(env), '-p', '--permission-mode', 'plan', prompt]
+}
+
+// ---------------------------------------------------------------------------
+// buildClaudeArgs({ base, head }) → string[]
+//
+// Pure argv builder for `claude -p` — instruct-mode prompt (review the range
+// with a no-explore scope guard), no diff embedding. `run()` builds an
+// embed-mode variant when it can fetch the diff; this pure helper keeps the
+// structural test-surface stable.
+// ---------------------------------------------------------------------------
+export function buildClaudeArgs({ base, head, env = process.env }) {
   const prompt = assemblePrompt({ preamble: REVIEW_PREAMBLE, range: `${base}...${head}` })
-  return buildExecArgv(CODEX_ADAPTER, { base, head, repo, prompt })
+  return claudeArgv(prompt, env)
 }
 
-// buildCodexArgsWithDiff — adaptive argv builder used by run().
+// buildClaudeArgsWithDiff — adaptive argv builder used by run().
 // When a diff is available and under the embed cap, embed it directly into the
 // prompt (so the reviewer never has to explore the tree); otherwise fall back
-// to the pure instruct-mode argv.
-function buildCodexArgsWithDiff({ base, head, repo, diffText }) {
+// to the pure instruct-mode argv. `env` gates bare mode (see bareModeArgs).
+function buildClaudeArgsWithDiff({ base, head, diffText, env = process.env }) {
   if (typeof diffText === 'string' && diffText !== '') {
     const prompt = assemblePrompt({
       preamble: REVIEW_PREAMBLE,
       range: `${base}...${head}`,
       diffText,
     })
-    return buildExecArgv(CODEX_ADAPTER, { base, head, repo, prompt })
+    return claudeArgv(prompt, env)
   }
-  return buildCodexArgs({ base, head, repo })
+  return buildClaudeArgs({ base, head, env })
 }
 
 // bestEffortDiff(repo, base, head, timeoutMs) → string
@@ -196,20 +168,83 @@ function bestEffortDiff(repo, base, head, timeoutMs) {
 }
 
 // ---------------------------------------------------------------------------
+// probe({ env, timeoutMs }) → Promise<string>
+//
+// Resolves the claude binary, then runs `claude --version` with a short timeout
+// and discarded stdio. Returns a classification string via classifyProbe.
+// Never throws; ambiguous results → 'error'. (claude has no `login status`
+// equivalent, so version-exit-0 ⇒ ready is the right cheap readiness signal.)
+// ---------------------------------------------------------------------------
+export async function probe({ env = process.env, timeoutMs = 5000 } = {}) {
+  const bin = resolveClaudeBin(env)
+  if (bin === null) {
+    return classifyProbe({ spawnError: { code: 'ENOENT' }, status: null, signal: null })
+  }
+
+  return new Promise((resolve) => {
+    let settled = false
+    let timer = null
+
+    const settle = (result) => {
+      if (settled) return
+      settled = true
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      resolve(result)
+    }
+
+    let child
+    try {
+      // We only need the exit code. Discard stdout/stderr entirely — piping and
+      // not draining stderr would deadlock a chatty claude past the ~64KB pipe
+      // buffer until the timeout fires.
+      child = spawn(bin, ['--version'], {
+        stdio: ['ignore', 'ignore', 'ignore'],
+        detached: true,
+      })
+    } catch (err) {
+      settle(classifyProbe({ spawnError: err, status: null, signal: null }))
+      return
+    }
+
+    child.on('error', (err) => {
+      settle(classifyProbe({ spawnError: err, status: null, signal: null }))
+    })
+
+    child.on('close', (code, sig) => {
+      settle(classifyProbe({ spawnError: null, status: code, signal: sig }))
+    })
+
+    timer = setTimeout(() => {
+      // Timed out — kill the whole process group. ESRCH (group already gone)
+      // and any other kill error are intentionally swallowed: we are tearing
+      // down and will resolve 'error' regardless.
+      try {
+        process.kill(-child.pid, 'SIGKILL')
+      } catch {
+        // intentionally ignored during teardown
+      }
+      settle('error')
+    }, timeoutMs)
+  })
+}
+
+// ---------------------------------------------------------------------------
 // run({ env, base, head, repo, timeoutMs, maxBytes, maxStderrBytes }) →
 //   Promise<{ ok: boolean, output: string, stderr: string, timedOut: boolean }>
 //
-// Resolves the codex binary, best-effort embeds the diff, spawns `codex exec`
-// with stdin=/dev/null and a process-group timeout kill.  Captures stdout,
-// sanitizes it, and returns the result.  Never throws; non-zero exit is
-// captured, not thrown.  When `timeoutMs` is omitted the env-overridable
-// default (BOSS_CROSS_REVIEW_TIMEOUT_MS) applies.
+// Resolves the claude binary, best-effort embeds the diff, spawns `claude -p`
+// with cwd=repo, stdin=/dev/null and a process-group timeout kill. Captures
+// stdout, sanitizes it, and returns the result. Never throws; non-zero exit is
+// captured, not thrown. When `timeoutMs` is omitted the env-overridable default
+// (BOSS_CROSS_REVIEW_TIMEOUT_MS) applies.
 //
 // stderr IS captured but only as a bounded, sanitized *tail* (last
-// `maxStderrBytes`): the pipe is continuously drained so a chatty codex can
+// `maxStderrBytes`): the pipe is continuously drained so a chatty claude can
 // never deadlock past the ~64KB buffer, yet on `ok=false` the caller still gets
-// the actionable diagnostic (e.g. an "unexpected argument" CLI-surface error)
-// instead of a silent empty result.
+// the actionable diagnostic instead of a silent empty result.
 // ---------------------------------------------------------------------------
 export async function run({
   env = process.env,
@@ -220,7 +255,7 @@ export async function run({
   maxBytes = 65536,
   maxStderrBytes = 4096,
 } = {}) {
-  const bin = resolveCodexBin(env)
+  const bin = resolveClaudeBin(env)
   if (bin === null) {
     return { ok: false, output: '', stderr: '', timedOut: false }
   }
@@ -230,7 +265,7 @@ export async function run({
   // Feed the diff, don't make the agent fetch it. Best-effort and failure-safe:
   // a non-git `repo` (as in the unit tests) just yields '' → instruct-mode.
   const diffText = bestEffortDiff(repo, base, head, effectiveTimeoutMs)
-  const args = buildCodexArgsWithDiff({ base, head, repo, diffText })
+  const args = buildClaudeArgsWithDiff({ base, head, diffText, env })
 
   return new Promise((resolve) => {
     let settled = false
@@ -240,7 +275,7 @@ export async function run({
     // (sanitizeOutput head-truncates to maxBytes), so once we hold comfortably
     // more than maxBytes of raw bytes we stop retaining further chunks — the pipe
     // keeps draining (the 'data' event already consumed each chunk) so a chatty or
-    // buggy codex can't grow memory without bound before `close`. Headroom is
+    // buggy claude can't grow memory without bound before `close`. Headroom is
     // generous because sanitizeOutput strips escape/control bytes, so ANSI-heavy
     // output needs more raw bytes to still fill maxBytes of clean text.
     const maxStdoutRawBytes = maxBytes * 8
@@ -270,10 +305,11 @@ export async function run({
     let child
     try {
       // Capture stdout, and DRAIN stderr into a bounded tail. We must keep the
-      // stderr pipe drained (not ['ignore']-but-undrained) so a chatty codex
+      // stderr pipe drained (not ['ignore']-but-undrained) so a chatty claude
       // can't deadlock past the ~64KB buffer; the rolling compaction keeps the
-      // retained bytes bounded.
+      // retained bytes bounded. cwd=repo replaces codex's `-C <repo>` arg.
       child = spawn(bin, args, {
+        cwd: repo,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
       })
@@ -383,9 +419,9 @@ async function main(argv) {
       // Surface the diagnostic tail (CLI-surface errors, auth failures, etc.) so
       // a failed run is debuggable instead of silently empty. Goes to stderr to
       // keep stdout review-text-only.
-      const reason = result.timedOut ? 'timed out' : 'codex exec failed'
+      const reason = result.timedOut ? 'timed out' : 'claude -p failed'
       const tail = result.stderr ? `\n${result.stderr}` : ''
-      process.stderr.write(`codex-review: ${reason}${tail}\n`)
+      process.stderr.write(`claude-review: ${reason}${tail}\n`)
       process.exitCode = 1
     }
     return

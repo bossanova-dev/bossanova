@@ -1366,6 +1366,45 @@ func TestApplyMergedOptimisticOverride(t *testing.T) {
 	}
 }
 
+func TestArchivingOverrideClearedWhenSessionGone(t *testing.T) {
+	// Build a HomeModel with archivingOptimisticID "s1" and feed it a
+	// sessionListMsg that only contains "s2" — s1 has been archived (gone).
+	h := HomeModel{
+		archivingOptimisticID: "s1",
+		spinner:               newStatusSpinner(),
+	}
+
+	model, _ := h.Update(sessionListMsg{
+		sessions: []*pb.Session{{Id: "s2"}},
+	})
+	got := model.(HomeModel)
+
+	if got.archivingOptimisticID != "" {
+		t.Fatalf("expected archivingOptimisticID cleared when s1 absent, got %q", got.archivingOptimisticID)
+	}
+}
+
+func TestRenderSessionStatusArchivingOverride(t *testing.T) {
+	h := HomeModel{archivingOptimisticID: "s1", spinner: newStatusSpinner()}
+
+	// Session matching archivingOptimisticID should render as archiving.
+	got := h.renderSessionStatus(&pb.Session{Id: "s1", DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING})
+	if !strings.Contains(got, "archiving") {
+		t.Fatalf("renderSessionStatus for archiving session = %q, want to contain %q", got, "archiving")
+	}
+
+	// Other sessions should pass through to renderDisplayStatus.
+	other := &pb.Session{
+		Id:            "s2",
+		DisplayLabel:  "✓ passing",
+		DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+	}
+	want := renderDisplayStatus(other, h.spinner)
+	if got2 := h.renderSessionStatus(other); got2 != want {
+		t.Fatalf("renderSessionStatus for non-archiving session = %q, want passthrough %q", got2, want)
+	}
+}
+
 func TestViewEmptyStateWithRepos(t *testing.T) {
 	// Create a HomeModel with no sessions but repos exist
 	h := HomeModel{

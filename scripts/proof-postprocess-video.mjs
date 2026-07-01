@@ -15,13 +15,61 @@
 //   <recipeDir>/<id>.png    — screenshot / poster (overwritten with play-button composite on success)
 //   <recipeDir>/<id>.mp4    — condensed output (written/overwritten by this script)
 
-import { copyFileSync, existsSync, readdirSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { postprocessProofVideo } from './proof-video.mjs'
 import { buildPosterArgs } from './proof-poster.mjs'
+import { captionStripRenderCommand } from './proof-lib.mjs'
+
+const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+
+/**
+ * Locate and parse the per-step `caption-timings.json` for a proof dir so a bare
+ * re-process reproduces the SAME burned-in captions the live run produced. The
+ * file is written next to the cast in a `raw/` dir; for the TUI agent the webm
+ * lives in `<dir>/` while timings sit in the sibling `<dir>/../raw/`, so we probe
+ * the recipe dir, its `raw/` child, and its `../raw/` sibling. Returns [] when no
+ * readable timings exist (browser recipes have none) → degrades to a no-caption
+ * re-burn, exactly as before. Exported for unit testing.
+ *
+ * @param {string} proofDir
+ * @returns {Array<{seq?: number, caption: string, startMs: number}>}
+ */
+export function readCaptionTimings(proofDir) {
+  const candidates = [
+    path.join(proofDir, 'raw', 'caption-timings.json'),
+    path.join(proofDir, '..', 'raw', 'caption-timings.json'),
+    path.join(proofDir, 'caption-timings.json'),
+  ]
+  for (const file of candidates) {
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8'))
+      if (Array.isArray(parsed)) return parsed
+    } catch {
+      // missing / unreadable / malformed → try the next candidate
+    }
+  }
+  return []
+}
+
+/**
+ * Render one caption-bar strip PNG via proof-render-terminal.mjs `--strip`, the
+ * same renderer the live pipeline uses. Mirrors proof-tui-agent's
+ * defaultRenderCaptionStrip; returns true on success so a failed strip is simply
+ * dropped (captions are additive and never fail the re-burn).
+ */
+function renderCaptionStrip({ text, width, output }) {
+  const [cmd, args] = captionStripRenderCommand({
+    caption: text,
+    width,
+    output: path.relative(repoRoot, output),
+  })
+  const result = spawnSync(cmd, args, { cwd: repoRoot, stdio: 'inherit' })
+  return result.status === 0 && existsSync(output)
+}
 
 // Only drive the CLI when invoked directly; importing this module (e.g. from
 // tests) must not start a run.
@@ -77,8 +125,23 @@ function run(argv) {
   const scratchPath = path.join(proofDir, `${id}-timer.raw`)
 
   // No introPngPath — a bare re-process has no PR context (the wc-proof
-  // reference omits the intro card here too).
-  const result = postprocessProofVideo({ webmPath, timedPath, outPath, scratchPath })
+  // reference omits the intro card here too). Caption timings (when present)
+  // reproduce the same burned-in per-step captions the live run produced; absent
+  // them this degrades to a no-caption re-burn.
+  const captionTimings = readCaptionTimings(proofDir)
+  if (captionTimings.length > 0) {
+    process.stdout.write(
+      `[bs-proof] re-burning ${captionTimings.length} caption window(s) from caption-timings.json\n`,
+    )
+  }
+  const result = postprocessProofVideo({
+    webmPath,
+    timedPath,
+    outPath,
+    scratchPath,
+    captionTimings,
+    renderCaptionStrip,
+  })
 
   // Clean up the timed intermediate on every path (scratchPath is already
   // removed by postprocessProofVideo). postprocessProofVideo leaves timedPath

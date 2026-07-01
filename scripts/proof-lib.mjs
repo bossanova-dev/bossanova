@@ -550,6 +550,51 @@ export function terminalRenderCommand({ input, output, title, caption }) {
   return ['pnpm', args]
 }
 
+/**
+ * pnpm argv to render a single caption-bar strip PNG (BOS-121) at `width` px via
+ * proof-render-terminal.mjs `--strip` mode. Mirrors terminalRenderCommand so the
+ * strip renderer runs in the same services/web Playwright context.
+ */
+export function captionStripRenderCommand({ caption, width, output }) {
+  const args = [
+    '--dir',
+    'services/web',
+    'exec',
+    'node',
+    '../../scripts/proof-render-terminal.mjs',
+    '--strip',
+    '--width',
+    String(width),
+    '--output',
+    output,
+  ]
+  if (typeof caption === 'string' && caption.length > 0) {
+    args.push('--caption', caption)
+  }
+  return ['pnpm', args]
+}
+
+/**
+ * pnpm argv to render a BATCH of terminal stills / caption strips in ONE browser
+ * via proof-render-terminal.mjs `--manifest` mode. `manifest` is the path to a
+ * JSON file holding the job array. Batching collapses the per-frame cold Chromium
+ * launches (one per still + one per strip) into a single browser start.
+ */
+export function terminalRenderManifestCommand({ manifest }) {
+  return [
+    'pnpm',
+    [
+      '--dir',
+      'services/web',
+      'exec',
+      'node',
+      '../../scripts/proof-render-terminal.mjs',
+      '--manifest',
+      manifest,
+    ],
+  ]
+}
+
 export function tuiAgentBridgeBuildCommand({ outBin }) {
   return [
     'go',

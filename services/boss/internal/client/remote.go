@@ -398,7 +398,11 @@ func (c *RemoteClient) CreateCronJob(_ context.Context, _ *pb.CreateCronJobReque
 	return nil, errLocalOnly("CreateCronJob")
 }
 
-func (c *RemoteClient) ListCronJobs(_ context.Context) ([]*pb.CronJob, error) {
+func (c *RemoteClient) GetCronJob(_ context.Context, _ string) (*pb.CronJob, error) {
+	return nil, errLocalOnly("GetCronJob")
+}
+
+func (c *RemoteClient) ListCronJobs(_ context.Context, _ string) ([]*pb.CronJob, error) {
 	return nil, errLocalOnly("ListCronJobs")
 }
 

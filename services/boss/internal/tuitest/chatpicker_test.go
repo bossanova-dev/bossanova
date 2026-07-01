@@ -572,6 +572,88 @@ func TestTUI_ChatPicker_Archive_ErrorStateCancelKeepsError(t *testing.T) {
 	}
 }
 
+func TestTUI_ChatPicker_ArchivingStatusPersistsAcrossNavigation(t *testing.T) {
+	// Regression test for BOS-125: ESC-while-archiving used to drop the
+	// archivingOptimisticID override, so the home row reverted to the session's
+	// PR status and re-entering the session opened the chat picker without the
+	// in-flight archiving state. WithArchiveDelay keeps the RPC in-flight long
+	// enough for the full ESC→home→re-enter round-trip to complete.
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(testSessions()...),
+		tuitest.WithChats(testChats()...),
+		tuitest.WithArchiveDelay(3*time.Second),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Enter the session chat picker.
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the chat picker with archive action available.
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Initial implementation") &&
+			strings.Contains(screen, "[a]rchive")
+	}); err != nil {
+		t.Fatalf("expected chat picker with archive action; screen:\n%s", h.Driver.Screen())
+	}
+
+	// Initiate archive and confirm.
+	if err := h.Driver.SendKey('a'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Archive this session?"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('y'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the in-flight archiving state.
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Archiving session...")
+	}); err != nil {
+		t.Fatalf("expected in-flight archive state; screen:\n%s", h.Driver.Screen())
+	}
+
+	// Press ESC to navigate back to the home list while archive is still in-flight.
+	// Before the BOS-125 fix, ESC dropped archivingOptimisticID, causing the home
+	// row to revert to the session's real PR status.
+	if err := h.Driver.SendEscape(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The home list must show "archiving" for the session row. renderArchivingStatus
+	// emits "archiving" (with a spinner prefix) while archivingOptimisticID is set.
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "[n]ew") &&
+			strings.Contains(screen, "Add dark mode") &&
+			strings.Contains(screen, "archiving")
+	}); err != nil {
+		t.Fatalf("expected home view with archiving status after ESC; screen:\n%s", h.Driver.Screen())
+	}
+
+	// Re-enter the session. The archivingOptimisticID must propagate so the
+	// chat picker re-opens in the in-flight archiving state.
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The chat picker should show "Archiving session..." after re-entry.
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Archiving session...")
+	}); err != nil {
+		t.Fatalf("expected archiving state in chat picker after re-entry; screen:\n%s", h.Driver.Screen())
+	}
+}
+
 func TestTUI_ChatPickerView_Back(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),

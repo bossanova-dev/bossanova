@@ -39,6 +39,7 @@ type harnessConfig struct {
 	repos    []*pb.Repo
 	sessions []*pb.Session
 	chats    []*pb.ClaudeChat
+	cronJobs []*pb.CronJob
 	extraEnv []string
 }
 
@@ -55,6 +56,11 @@ func WithSessions(sessions ...*pb.Session) Option {
 // WithChats seeds the mock daemon with claude chats.
 func WithChats(chats ...*pb.ClaudeChat) Option {
 	return func(c *harnessConfig) { c.chats = append(c.chats, chats...) }
+}
+
+// WithCronJobs seeds the mock daemon with cron jobs.
+func WithCronJobs(jobs ...*pb.CronJob) Option {
+	return func(c *harnessConfig) { c.cronJobs = append(c.cronJobs, jobs...) }
 }
 
 // WithEnv adds extra env vars to every subprocess invocation (e.g. HOME=/tmp/xxx
@@ -87,6 +93,9 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 	for _, c := range cfg.chats {
 		daemon.AddChat(c)
+	}
+	for _, j := range cfg.cronJobs {
+		daemon.AddCronJob(j)
 	}
 
 	// Default every harness to an isolated, per-test HOME and settings file so a

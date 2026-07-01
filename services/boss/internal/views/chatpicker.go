@@ -944,6 +944,15 @@ func (m ChatPickerModel) startDelete() (tea.Model, tea.Cmd) {
 	}
 }
 
+// ArchivingSessionID returns the session id being archived if an archive is in
+// flight, else "". Lets app.go carry archiving state across the home rebuild.
+func (m ChatPickerModel) ArchivingSessionID() string {
+	if m.archiving {
+		return m.sessionID
+	}
+	return ""
+}
+
 // Cancelled returns true if the user cancelled the chat picker.
 func (m ChatPickerModel) Cancelled() bool { return m.cancel }
 
@@ -973,14 +982,15 @@ func (m ChatPickerModel) tableHeight() int {
 
 // warningBlockHeight returns the number of vertical lines the session warning
 // block occupies above the chat list (0 when the session has no
-// finalize/repair hints), including the blank line above and below it that
-// View renders.
+// finalize/repair hints), including the single blank line below it that View
+// renders. There is no blank line above: the header banner already renders
+// one below the worktree-path line.
 func (m ChatPickerModel) warningBlockHeight() int {
 	block := selectedSessionWarningBlock(m.session, m.table.Width())
 	if block == "" {
 		return 0
 	}
-	return lipgloss.Height(block) + 2
+	return lipgloss.Height(block) + 1
 }
 
 func (m ChatPickerModel) View() tea.View {
@@ -1033,9 +1043,10 @@ func (m ChatPickerModel) View() tea.View {
 	var b strings.Builder
 
 	// Surface the session's full finalize/repair error below the header and
-	// above the chat list, padded with a blank line above and below.
+	// above the chat list. The header banner already renders one blank line
+	// below the worktree-path line, so we add none above here; the trailing
+	// "\n\n" yields the single blank line below, before the chat list.
 	if block := selectedSessionWarningBlock(m.session, m.table.Width()); block != "" {
-		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(block))
 		b.WriteString("\n\n")
 	}

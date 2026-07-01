@@ -468,8 +468,20 @@ func (c *LocalClient) CreateCronJob(ctx context.Context, req *pb.CreateCronJobRe
 	return resp.Msg.CronJob, nil
 }
 
-func (c *LocalClient) ListCronJobs(ctx context.Context) ([]*pb.CronJob, error) {
-	resp, err := c.rpc.ListCronJobs(ctx, connect.NewRequest(&pb.ListCronJobsRequest{}))
+func (c *LocalClient) GetCronJob(ctx context.Context, id string) (*pb.CronJob, error) {
+	resp, err := c.rpc.GetCronJob(ctx, connect.NewRequest(&pb.GetCronJobRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.CronJob, nil
+}
+
+func (c *LocalClient) ListCronJobs(ctx context.Context, repoID string) ([]*pb.CronJob, error) {
+	req := &pb.ListCronJobsRequest{}
+	if repoID != "" {
+		req.RepoId = &repoID
+	}
+	resp, err := c.rpc.ListCronJobs(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}

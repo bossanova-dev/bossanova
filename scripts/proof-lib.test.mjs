@@ -38,6 +38,8 @@ import {
   selectRecipes,
   trimTerminalBlankLines,
   terminalRenderCommand,
+  terminalRenderManifestCommand,
+  captionStripRenderCommand,
   tuiAgentBridgeBuildCommand,
   validateBrowserRoute,
   validateProofUploadRelativePath,
@@ -277,6 +279,58 @@ test('terminalRenderCommand runs through services/web playwright dependency', ()
       ],
     ],
   )
+})
+
+test('terminalRenderManifestCommand renders a batch via --manifest through services/web', () => {
+  assert.deepEqual(
+    terminalRenderManifestCommand({ manifest: '.proof/tui/.render-manifest.json' }),
+    [
+      'pnpm',
+      [
+        '--dir',
+        'services/web',
+        'exec',
+        'node',
+        '../../scripts/proof-render-terminal.mjs',
+        '--manifest',
+        '.proof/tui/.render-manifest.json',
+      ],
+    ],
+  )
+})
+
+test('captionStripRenderCommand renders a width-sized strip in --strip mode through services/web', () => {
+  assert.deepEqual(
+    captionStripRenderCommand({
+      caption: 'Opening cron list',
+      width: 1120,
+      output: '.proof/tui/caption-strip-0.png',
+    }),
+    [
+      'pnpm',
+      [
+        '--dir',
+        'services/web',
+        'exec',
+        'node',
+        '../../scripts/proof-render-terminal.mjs',
+        '--strip',
+        '--width',
+        '1120',
+        '--output',
+        '.proof/tui/caption-strip-0.png',
+        '--caption',
+        'Opening cron list',
+      ],
+    ],
+  )
+})
+
+test('captionStripRenderCommand omits --caption for an empty caption (byte-compatible no-text strip)', () => {
+  const [, args] = captionStripRenderCommand({ caption: '', width: 800, output: 'out.png' })
+  assert.ok(!args.includes('--caption'), 'no --caption flag when caption is empty')
+  assert.ok(args.includes('--strip'))
+  assert.deepEqual(args.slice(-4), ['--width', '800', '--output', 'out.png'])
 })
 
 test('tuiAgentBridgeBuildCommand builds proof-tui-agent bridge with e2e tags', () => {

@@ -98,7 +98,8 @@ type BossClient interface {
 
 	// Cron jobs
 	CreateCronJob(ctx context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error)
-	ListCronJobs(ctx context.Context) ([]*pb.CronJob, error)
+	GetCronJob(ctx context.Context, id string) (*pb.CronJob, error)
+	ListCronJobs(ctx context.Context, repoID string) ([]*pb.CronJob, error)
 	UpdateCronJob(ctx context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error)
 	DeleteCronJob(ctx context.Context, id string) error
 	RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)

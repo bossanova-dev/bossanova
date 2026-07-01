@@ -42,6 +42,8 @@ export function finishVideo({
   idleSpeedup,
   trimLeadingBlank,
   keepWebm,
+  captionTimings,
+  renderCaptionStrip,
 }) {
   const mp4Path = path.join(recipeDir, `${recipeId}.mp4`)
   const timedPath = path.join(recipeDir, `${recipeId}-timed.mp4`)
@@ -80,6 +82,8 @@ export function finishVideo({
     timer,
     idleSpeedup,
     trimLeadingBlank,
+    captionTimings,
+    renderCaptionStrip,
   })
   if (!post.ok) {
     console.warn(`[proof] video post-processing failed (${post.warning}) — plain mp4 fallback`)

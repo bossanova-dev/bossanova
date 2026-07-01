@@ -878,7 +878,7 @@ func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string)
 		}
 	}
 	f.BossBin = config.ResolveTrustedExecutable("boss")
-	f.McpBin = config.ResolveTrustedExecutable("mcp")
+	f.McpBin = config.ResolveMcpBinary()
 	return f
 }
 

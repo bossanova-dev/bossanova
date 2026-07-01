@@ -45,3 +45,39 @@ func TestResolveTrustedExecutableMissingIsEmpty(t *testing.T) {
 		t.Fatalf("missing binary returned %q, want \"\"", got)
 	}
 }
+
+func TestResolveMcpBinaryPrefersBossMcp(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"boss-mcp", "mcp"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+	got := ResolveMcpBinary()
+	if filepath.Base(got) != "boss-mcp" {
+		t.Fatalf("ResolveMcpBinary() = %q, want path with base \"boss-mcp\"", got)
+	}
+}
+
+func TestResolveMcpBinaryFallsBackToMcp(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mcp"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	got := ResolveMcpBinary()
+	if got == "" {
+		t.Fatal("ResolveMcpBinary() = \"\", want non-empty path to mcp")
+	}
+	if !filepath.IsAbs(got) {
+		t.Fatalf("ResolveMcpBinary() = %q, want absolute path", got)
+	}
+}
+
+func TestResolveMcpBinaryMissingIsEmpty(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if got := ResolveMcpBinary(); got != "" {
+		t.Fatalf("ResolveMcpBinary() = %q, want \"\" when neither binary found", got)
+	}
+}

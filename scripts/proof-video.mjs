@@ -18,11 +18,12 @@
 // `postprocessProofVideo` touches ffmpeg and the filesystem.
 
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 // Intro-card ffmpeg arg builders live in proof-video-intro.mjs.
 import { buildIntroClipArgs, buildIntroConcatArgs } from './proof-video-intro.mjs'
+import { formatCaption } from './proof-lib.mjs'
 
 // ── Analysis constants (tuned on a real 11-min gen-AI proof recording) ──────
 export const ANALYZE_FPS = 4 // diff sampling rate — 250ms resolution
@@ -613,16 +614,96 @@ export function buildBaseChain({ trimSec, cropHeight, fps }) {
   return `[0:v]${parts.join(',')}[base]`
 }
 
+// ── Pure: caption-window planning ────────────────────────────────────────────
+
 /**
- * Pass-1 filtergraph: with a timer, overlay the strip on the top-right; without
- * one, the base chain (trim/crop/fps) is the whole graph. Pure string builder.
+ * Turn per-step caption timings (captured from the asciinema `.cast` clock) into
+ * a sequence of non-overlapping display windows on the SAME (untrimmed) cast
+ * timeline. Each window runs from its caption's `startMs` to the next NON-BLANK
+ * caption's `startMs`; the last window extends to `totalMs`. Blank/whitespace-only
+ * captions are dropped (the preceding caption stays on screen across them), and a
+ * zero/negative-width window (e.g. a caption that starts at the very end) is
+ * skipped. Caption text is normalised with `formatCaption` (the same single-line
+ * bound the stills use), so video captions can never drift from the stills.
+ *
+ * Pure: the trim offset and seconds conversion for the ffmpeg `enable` expression
+ * are applied later (in postprocessProofVideo), on the same clock as the timer.
+ *
+ * @param {Array<{seq?: number, caption: string, startMs: number}>} timings
+ * @param {number} totalMs full (untrimmed) cast/video duration in ms
+ * @returns {Array<{text: string, startMs: number, endMs: number}>}
+ */
+export function planCaptionWindows(timings, totalMs) {
+  if (!Array.isArray(timings) || timings.length === 0) return []
+  const cleaned = timings
+    .map((t) => ({ text: formatCaption(t?.caption), startMs: Number(t?.startMs) }))
+    .filter((t) => t.text && Number.isFinite(t.startMs))
+    .sort((a, b) => a.startMs - b.startMs)
+  const windows = []
+  for (let i = 0; i < cleaned.length; i++) {
+    const startMs = Math.max(0, cleaned[i].startMs)
+    const endMs = i + 1 < cleaned.length ? cleaned[i + 1].startMs : totalMs
+    if (endMs > startMs) windows.push({ text: cleaned[i].text, startMs, endMs })
+  }
+  return windows
+}
+
+/** ffmpeg `enable` expression for a caption's [startSec, endSec) display window. */
+function captionEnableExpr(startSec, endSec) {
+  return `enable='between(t,${startSec.toFixed(3)},${endSec.toFixed(3)})'`
+}
+
+/**
+ * Pass-1 filtergraph: overlay zero or more per-step caption strips at the very
+ * top (`y=0`, gated by an `enable` time window) and, when enabled, the elapsed
+ * timer pill at the top-right (`y=44`, clear of the caption strip). With no
+ * overlays at all the base chain (trim/crop/fps) is the whole graph. Pure string
+ * builder.
+ *
+ * Captions are overlaid first (so they sit UNDER the timer where the regions
+ * meet) and the timer last; the final overlay's output is `[v]`. Each caption's
+ * `inputIndex` is the ffmpeg `-i` index of its rendered strip; the caller assigns
+ * those indices and feeds the matching inputs in the same order.
+ *
  * @param {string} baseChain e.g. '[0:v]crop=…,fps=30[base]'
- * @param {{timer:boolean}} opts
+ * @param {{timer:boolean, captions?: Array<{inputIndex:number, startSec:number, endSec:number}>, timerInputIndex?: number}} opts
  * @returns {string}
  */
-export function buildTimerOverlayFilter(baseChain, { timer }) {
-  if (!timer) return `${baseChain}`
-  return `${baseChain};[base][1:v]overlay=x=main_w-overlay_w-14:y=44:eof_action=repeat[v]`
+export function buildTimerOverlayFilter(baseChain, { timer, captions = [], timerInputIndex = 1 }) {
+  const ops = captions.map(
+    (c) =>
+      `[${c.inputIndex}:v]overlay=x=0:y=0:${captionEnableExpr(c.startSec, c.endSec)}:eof_action=repeat`,
+  )
+  if (timer) ops.push(`[${timerInputIndex}:v]overlay=x=main_w-overlay_w-14:y=44:eof_action=repeat`)
+  if (ops.length === 0) return `${baseChain}`
+  const parts = [baseChain]
+  let cur = '[base]'
+  ops.forEach((op, i) => {
+    const out = i === ops.length - 1 ? '[v]' : `[ov${i}]`
+    parts.push(`${cur}${op}${out}`)
+    cur = out
+  })
+  return parts.join(';')
+}
+
+/**
+ * ffmpeg `-i` input args for the per-step caption strips: each strip is fed as a
+ * SINGLE-frame image, NEVER `-loop 1`.
+ *
+ * A `-loop 1` image is an INFINITE input. With `overlay …:eof_action=repeat` an
+ * infinite secondary input drives the overlay output far past the (finite) base
+ * clip — one looped strip stretched an 80s clip to ~1338s, and seven stacked
+ * strips ran ffmpeg for 30+ minutes producing an ever-growing file before this
+ * was found. As a single frame, `eof_action=repeat` already holds the caption on
+ * screen for the whole clip while the per-window `enable` expression gates when it
+ * is drawn, so the output stays bounded to the base duration. Pure + exported so
+ * the "no -loop" invariant is unit-tested without spawning ffmpeg.
+ *
+ * @param {string[]} pngPaths
+ * @returns {string[]}
+ */
+export function captionInputArgs(pngPaths) {
+  return pngPaths.flatMap((png) => ['-i', png])
 }
 
 // ── Impure: ffmpeg orchestration ─────────────────────────────────────────────
@@ -640,6 +721,52 @@ const ENCODE_ARGS = [
   '+faststart',
   '-an',
 ]
+
+// Apple-Silicon hardware H.264 encode. VideoToolbox ignores -crf, so quality is
+// set via -q:v (1..100, higher = better; ~60 ≈ libx264 crf 23). Output is plain
+// H.264 in mp4, byte-different from libx264 but equally playable.
+const HW_ENCODE_ARGS = [
+  '-c:v',
+  'h264_videotoolbox',
+  '-q:v',
+  '60',
+  '-pix_fmt',
+  'yuv420p',
+  '-movflags',
+  '+faststart',
+  '-an',
+]
+
+/**
+ * Pure encoder-arg selector. Hardware (VideoToolbox) encode is OPT-IN
+ * (`BOSS_PROOF_HW_ENCODE`) AND only used when actually available, so the default
+ * — and every non-macOS environment such as Linux CI, which has no VideoToolbox
+ * — stays on portable libx264. Exported for unit testing.
+ *
+ * @param {{ hwRequested: boolean, hwAvailable: boolean }} opts
+ * @returns {string[]}
+ */
+export function selectEncoderArgs({ hwRequested, hwAvailable }) {
+  return hwRequested && hwAvailable ? HW_ENCODE_ARGS : ENCODE_ARGS
+}
+
+let cachedHwAvailable
+/** True when ffmpeg advertises the h264_videotoolbox encoder (cached per run). */
+function videotoolboxAvailable() {
+  if (cachedHwAvailable === undefined) {
+    const res = spawnSync('ffmpeg', ['-hide_banner', '-encoders'], { encoding: 'utf8' })
+    cachedHwAvailable = res.status === 0 && /h264_videotoolbox/.test(res.stdout ?? '')
+  }
+  return cachedHwAvailable
+}
+
+/** Resolve the encode args for this run: libx264 by default; VideoToolbox only
+ * when explicitly opted in via BOSS_PROOF_HW_ENCODE=1 AND available. */
+function encoderArgs() {
+  const flag = process.env.BOSS_PROOF_HW_ENCODE
+  const hwRequested = flag === '1' || flag === 'true'
+  return selectEncoderArgs({ hwRequested, hwAvailable: hwRequested && videotoolboxAvailable() })
+}
 
 function ffmpeg(args) {
   return spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...args], {
@@ -733,6 +860,63 @@ function analyzeDiffs(videoPath) {
 }
 
 /**
+ * Plan + render the per-step caption overlays for pass 1 (impure: renders strips
+ * and writes PNGs). Returns the overlay descriptors for buildTimerOverlayFilter
+ * and pushes each rendered strip's path onto `pngPaths` (so the caller can both
+ * feed them as single-frame `-i` inputs — NOT `-loop 1`, which is infinite and
+ * unbounds the overlay output — and clean them up). Returns [] — degrading to
+ * a no-caption video — on any missing prerequisite or per-strip render failure;
+ * captions never fail the proof.
+ *
+ * Window times are planned on the untrimmed cast clock (`fullDurationMs`) then
+ * offset by `trimMs` so they line up with the in-filtergraph leading trim that
+ * the timer/retime share, and clamped to the trimmed `durationMs`.
+ *
+ * Exported for unit tests (with a stub `renderCaptionStrip`); the real call
+ * happens inside postprocessProofVideo.
+ */
+export function renderCaptionOverlays({
+  captionTimings,
+  renderCaptionStrip,
+  width,
+  fullDurationMs,
+  trimMs,
+  durationMs,
+  inputBase,
+  dir,
+  pngPaths,
+}) {
+  if (
+    typeof renderCaptionStrip !== 'function' ||
+    !Array.isArray(captionTimings) ||
+    captionTimings.length === 0 ||
+    !Number.isInteger(width) ||
+    width <= 0
+  ) {
+    return []
+  }
+  try {
+    const windows = planCaptionWindows(captionTimings, fullDurationMs)
+    const overlays = []
+    for (const w of windows) {
+      const startSec = Math.max(0, (w.startMs - trimMs) / 1000)
+      const endSec = Math.min(durationMs, Math.max(0, w.endMs - trimMs)) / 1000
+      if (endSec <= startSec) continue // entirely inside the trimmed-away head
+      const output = path.join(dir, `caption-strip-${overlays.length}.png`)
+      const ok = renderCaptionStrip({ text: w.text, width, output })
+      if (ok === false || !existsSync(output)) continue
+      pngPaths.push(output)
+      overlays.push({ inputIndex: inputBase + overlays.length, startSec, endSec })
+    }
+    return overlays
+  } catch {
+    // Strip render / planning failure → no captions, full video still ships.
+    for (const png of pngPaths.splice(0)) rmSync(png, { force: true })
+    return []
+  }
+}
+
+/**
  * Full pipeline: source webm → `timedPath` (original speed, timer burned)
  * → `outPath` (idle stretches compressed). Never throws; on any tool
  * failure returns { ok: false, warning } so callers can fall back to a
@@ -741,7 +925,15 @@ function analyzeDiffs(videoPath) {
  * is rendered from it and prepended to the finished video (best-effort: any
  * ffmpeg failure leaves the card-less output intact).
  *
- * @param {{ webmPath: string, timedPath: string, outPath: string, scratchPath: string, introPngPath?: string, cropHeight?: number|null, timer?: boolean, idleSpeedup?: boolean, trimLeadingBlank?: boolean }} io
+ * Per-step caption strips are additive and best-effort: when `captionTimings`
+ * and a `renderCaptionStrip` callback are supplied, each step's narration is
+ * burned into the top of the video for its time window (the same clock as the
+ * timer, before the idle-retime, so it rides through trim + speed-up). Any
+ * failure — no timings, a strip-render error, or an unreadable recording size —
+ * silently degrades to the existing no-caption video. Captions never fail the
+ * proof.
+ *
+ * @param {{ webmPath: string, timedPath: string, outPath: string, scratchPath: string, introPngPath?: string, cropHeight?: number|null, timer?: boolean, idleSpeedup?: boolean, trimLeadingBlank?: boolean, captionTimings?: Array<{caption:string,startMs:number}>, renderCaptionStrip?: (arg:{text:string,width:number,output:string})=>boolean|void }} io
  * @returns {{ ok: boolean, warning?: string, condensed: boolean, originalMs?: number, outputMs?: number, fastSegments?: number, cropHeight?: number|null }}
  */
 export function postprocessProofVideo({
@@ -754,6 +946,8 @@ export function postprocessProofVideo({
   timer = true,
   idleSpeedup = true,
   trimLeadingBlank = true,
+  captionTimings,
+  renderCaptionStrip,
 }) {
   const fullDurationMs = ffprobeDurationMs(webmPath)
   if (fullDurationMs === null)
@@ -804,7 +998,6 @@ export function postprocessProofVideo({
   // retimed). The leading trim is applied in-filtergraph — NOT via -ss — so the
   // diff analysis, overlay timer, and retime plan all share one clock.
   const baseChain = buildBaseChain({ trimSec, cropHeight: effectiveCrop, fps: OUTPUT_FPS })
-  const pass1Filter = buildTimerOverlayFilter(baseChain, { timer })
   const pass1Inputs = ['-i', webmPath]
   if (timer) {
     const strip = renderTimerStrip(Math.ceil(durationMs / 1000), fastForwardSeconds(segments))
@@ -822,18 +1015,42 @@ export function postprocessProofVideo({
       scratchPath,
     )
   }
-  // When timer is off the base chain ends in [base], not [v]; map whichever exists.
-  const mapLabel = timer ? '[v]' : '[base]'
+
+  // Per-step captions (best-effort, additive). Plan the display windows on the
+  // cast clock, render one strip per window, then offset each by the SAME
+  // in-filtergraph leading trim the timer/retime use so the burned caption rides
+  // the trimmed timeline. The strips overlay BEFORE the idle-retime (pass 2), so
+  // a caption spanning a compressed idle stretch simply plays faster. Caption
+  // inputs follow the timer input, so the timer keeps input index 1.
+  const captionPngPaths = []
+  const captionOverlays = renderCaptionOverlays({
+    captionTimings,
+    renderCaptionStrip,
+    width: recorded?.width,
+    fullDurationMs,
+    trimMs,
+    durationMs,
+    inputBase: timer ? 2 : 1,
+    dir: path.dirname(scratchPath),
+    pngPaths: captionPngPaths,
+  })
+  pass1Inputs.push(...captionInputArgs(captionPngPaths))
+
+  const pass1Filter = buildTimerOverlayFilter(baseChain, { timer, captions: captionOverlays })
+  // When timer is off and there are no captions the base chain ends in [base],
+  // not [v]; map whichever the filtergraph produced.
+  const mapLabel = timer || captionOverlays.length > 0 ? '[v]' : '[base]'
   const pass1 = ffmpeg([
     ...pass1Inputs,
     '-filter_complex',
     pass1Filter,
     '-map',
     mapLabel,
-    ...ENCODE_ARGS,
+    ...encoderArgs(),
     timedPath,
   ])
   if (timer) rmSync(scratchPath, { force: true })
+  for (const png of captionPngPaths) rmSync(png, { force: true })
   if (pass1.status !== 0)
     return { ok: false, condensed: false, warning: 'timer overlay pass failed' }
 
@@ -859,7 +1076,7 @@ export function postprocessProofVideo({
       buildRetimeFilter(segments),
       '-map',
       '[v]',
-      ...ENCODE_ARGS,
+      ...encoderArgs(),
       outPath,
     ])
     if (pass2.status !== 0)

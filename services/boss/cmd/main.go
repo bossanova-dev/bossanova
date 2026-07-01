@@ -116,6 +116,7 @@ func rootCmd() *cobra.Command {
 	addGrouped("session", lsCmd(), showCmd(), chatsCmd(), newCmd(), attachCmd(), archiveCmd(), renameCmd())
 	addGrouped("chat", chatCmd())
 	addGrouped("repo", repoCmd())
+	addGrouped("cron", cronCmd())
 	addGrouped("trash", trashCmd())
 	addGrouped("daemon", daemonCmd())
 	addGrouped("mcp", mcpCmd())
@@ -318,6 +319,112 @@ func repoCmd() *cobra.Command {
 	)
 
 	return repo
+}
+
+func cronCmd() *cobra.Command {
+	cron := &cobra.Command{
+		Use:   "cron",
+		Short: "Manage scheduled cron jobs",
+	}
+
+	ls := &cobra.Command{
+		Use:   "ls",
+		Short: "List cron jobs",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runCronLS(cmd)
+		},
+	}
+	ls.Flags().String("repo", "", "Filter by repo ID")
+	ls.Flags().Bool("json", false, "Emit a stable JSON schema instead of a table")
+
+	show := &cobra.Command{
+		Use:   "show <cron-id>",
+		Short: "Show cron job details",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runCronShow(cmd, args[0])
+		},
+	}
+	show.Flags().Bool("json", false, "Emit a stable JSON schema instead of text")
+
+	add := &cobra.Command{
+		Use:   "add",
+		Short: "Create a cron job",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runCronAdd(cmd)
+		},
+	}
+	add.Flags().String("repo", "", "Repository ID (required)")
+	add.Flags().String("name", "", "Job name (required)")
+	add.Flags().String("schedule", "", "5-field cron expression or @daily/@hourly/etc (required)")
+	add.Flags().String("prompt", "", "Prompt / plan for each run")
+	add.Flags().String("prompt-file", "", "Read the prompt from a file (or '-' for stdin)")
+	add.Flags().String("agent", "", "Agent runner plugin name (empty = claude)")
+	add.Flags().String("gate", "", "Gate command run before each fire (empty = no gate)")
+	add.Flags().String("model", "", "Agent model id (empty = plugin default)")
+	add.Flags().String("tz", "", "IANA timezone name (empty = daemon-local)")
+	add.Flags().Bool("enabled", true, "Whether the job is enabled")
+	add.Flags().Bool("run-setup", true, "Run the repo setup script before the agent")
+
+	update := &cobra.Command{
+		Use:   "update <cron-id>",
+		Short: "Update cron job settings",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runCronUpdate(cmd, args[0])
+		},
+	}
+	update.Flags().String("name", "", "Set job name")
+	update.Flags().String("schedule", "", "Set the cron schedule")
+	update.Flags().String("prompt", "", "Set the prompt / plan")
+	update.Flags().String("prompt-file", "", "Read a new prompt from a file (or '-' for stdin)")
+	update.Flags().String("agent", "", "Set the agent runner plugin name")
+	update.Flags().String("gate", "", "Set the gate command (empty string clears it)")
+	update.Flags().String("model", "", "Set the agent model id (empty string clears it)")
+	update.Flags().String("tz", "", "Set the IANA timezone (empty string clears it)")
+	update.Flags().Bool("enabled", true, "Enable or disable the job")
+	update.Flags().Bool("run-setup", true, "Run the repo setup script before the agent")
+
+	cron.AddCommand(
+		ls,
+		show,
+		add,
+		update,
+		&cobra.Command{
+			Use:   "remove <cron-id>",
+			Short: "Remove a cron job",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runCronRemove(cmd, args[0])
+			},
+		},
+		&cobra.Command{
+			Use:   "run-now <cron-id>",
+			Short: "Fire a cron job immediately",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runCronRunNow(cmd, args[0])
+			},
+		},
+		&cobra.Command{
+			Use:   "enable <cron-id>",
+			Short: "Enable a cron job",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runCronEnable(cmd, args[0])
+			},
+		},
+		&cobra.Command{
+			Use:   "disable <cron-id>",
+			Short: "Disable a cron job",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runCronDisable(cmd, args[0])
+			},
+		},
+	)
+
+	return cron
 }
 
 func archiveCmd() *cobra.Command {

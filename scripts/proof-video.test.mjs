@@ -3,8 +3,14 @@
 // real recording manually — these tests pin down the analysis math.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import {
   buildTimerOverlayFilter,
+  captionInputArgs,
+  selectEncoderArgs,
+  renderCaptionOverlays,
   computeFrameDiffs,
   computeFrameLuma,
   detectLeadingBlankMs,
@@ -21,6 +27,7 @@ import {
   encoderCropHeight,
   buildBaseChain,
   applyMinHeightRatio,
+  planCaptionWindows,
   LEADING_STATIC_DIFF,
   TIMER_W,
   TIMER_H,
@@ -415,6 +422,254 @@ test('applyMinHeightRatio: null/zero crop returns null', () => {
   assert.equal(applyMinHeightRatio(0, 600, 1000), null)
 })
 
+// ── planCaptionWindows ───────────────────────────────────────────────────────
+
+test('planCaptionWindows: sequential captions; each window ends at the next start', () => {
+  const windows = planCaptionWindows(
+    [
+      { seq: 1, caption: 'Open settings', startMs: 0 },
+      { seq: 2, caption: 'Toggle the flag', startMs: 2000 },
+    ],
+    5000,
+  )
+  assert.deepEqual(windows, [
+    { text: 'Open settings', startMs: 0, endMs: 2000 },
+    { text: 'Toggle the flag', startMs: 2000, endMs: 5000 },
+  ])
+})
+
+test('planCaptionWindows: the last caption extends to the total duration', () => {
+  const windows = planCaptionWindows([{ seq: 1, caption: 'Only step', startMs: 500 }], 9000)
+  assert.deepEqual(windows, [{ text: 'Only step', startMs: 500, endMs: 9000 }])
+})
+
+test('planCaptionWindows: blank captions are dropped; the prior window extends through them', () => {
+  const windows = planCaptionWindows(
+    [
+      { seq: 1, caption: 'First', startMs: 0 },
+      { seq: 2, caption: '   ', startMs: 2000 }, // whitespace-only → skipped
+      { seq: 3, caption: 'Second', startMs: 3000 },
+    ],
+    5000,
+  )
+  assert.deepEqual(windows, [
+    { text: 'First', startMs: 0, endMs: 3000 }, // extends across the skipped blank
+    { text: 'Second', startMs: 3000, endMs: 5000 },
+  ])
+})
+
+test('planCaptionWindows: a trailing blank is dropped; the prior extends to the end', () => {
+  const windows = planCaptionWindows(
+    [
+      { seq: 1, caption: 'First', startMs: 0 },
+      { seq: 2, caption: '', startMs: 2000 },
+    ],
+    5000,
+  )
+  assert.deepEqual(windows, [{ text: 'First', startMs: 0, endMs: 5000 }])
+})
+
+test('planCaptionWindows: collapses whitespace via formatCaption', () => {
+  const windows = planCaptionWindows([{ seq: 1, caption: 'a\n\n  b\tc ', startMs: 0 }], 1000)
+  assert.deepEqual(windows, [{ text: 'a b c', startMs: 0, endMs: 1000 }])
+})
+
+test('planCaptionWindows: empty input and all-blank input → []', () => {
+  assert.deepEqual(planCaptionWindows([], 5000), [])
+  assert.deepEqual(planCaptionWindows([{ seq: 1, caption: '  ', startMs: 0 }], 5000), [])
+})
+
+test('planCaptionWindows: unsorted timings are sorted by startMs', () => {
+  const windows = planCaptionWindows(
+    [
+      { seq: 2, caption: 'B', startMs: 2000 },
+      { seq: 1, caption: 'A', startMs: 0 },
+    ],
+    4000,
+  )
+  assert.deepEqual(windows, [
+    { text: 'A', startMs: 0, endMs: 2000 },
+    { text: 'B', startMs: 2000, endMs: 4000 },
+  ])
+})
+
+test('planCaptionWindows: a zero-width final window (start == total) is dropped', () => {
+  const windows = planCaptionWindows(
+    [
+      { seq: 1, caption: 'A', startMs: 0 },
+      { seq: 2, caption: 'B', startMs: 5000 },
+    ],
+    5000,
+  )
+  // B starts exactly at the end → no time to show → dropped; A still spans to B's start.
+  assert.deepEqual(windows, [{ text: 'A', startMs: 0, endMs: 5000 }])
+})
+
+// ── renderCaptionOverlays (clock offset + degradation, BOS-121) ───────────────
+
+function withTmpDir(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'caption-overlays-'))
+  try {
+    return fn(dir)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// A stub strip renderer that actually writes the PNG (postprocess checks existsSync).
+function fakeStripWriter() {
+  const calls = []
+  const fn = ({ text, width, output }) => {
+    calls.push({ text, width, output })
+    fs.writeFileSync(output, 'fake-strip-png')
+    return true
+  }
+  fn.calls = calls
+  return fn
+}
+
+test('renderCaptionOverlays: degrades to [] without a renderer / timings / width', () => {
+  const base = {
+    captionTimings: [{ caption: 'A', startMs: 0 }],
+    width: 1120,
+    fullDurationMs: 5000,
+    trimMs: 0,
+    durationMs: 5000,
+    inputBase: 2,
+    dir: '/tmp',
+    pngPaths: [],
+  }
+  assert.deepEqual(renderCaptionOverlays({ ...base, renderCaptionStrip: undefined }), [])
+  assert.deepEqual(
+    renderCaptionOverlays({ ...base, renderCaptionStrip: fakeStripWriter(), captionTimings: [] }),
+    [],
+  )
+  assert.deepEqual(
+    renderCaptionOverlays({ ...base, renderCaptionStrip: fakeStripWriter(), width: 0 }),
+    [],
+  )
+})
+
+test('renderCaptionOverlays: assigns input indices from inputBase and offsets windows by the trim', () => {
+  withTmpDir((dir) => {
+    const renderCaptionStrip = fakeStripWriter()
+    const pngPaths = []
+    const overlays = renderCaptionOverlays({
+      captionTimings: [
+        { seq: 1, caption: 'First', startMs: 1000 },
+        { seq: 2, caption: 'Second', startMs: 3000 },
+      ],
+      renderCaptionStrip,
+      width: 1120,
+      fullDurationMs: 6000,
+      trimMs: 1000, // leading trim — every window shifts earlier by 1s
+      durationMs: 5000,
+      inputBase: 2,
+      dir,
+      pngPaths,
+    })
+    assert.deepEqual(overlays, [
+      { inputIndex: 2, startSec: 0, endSec: 2 }, // 1000→0, 3000→2000 (minus 1000 trim)
+      { inputIndex: 3, startSec: 2, endSec: 5 }, // 3000→2000, end 6000→5000
+    ])
+    assert.equal(pngPaths.length, 2)
+    assert.equal(renderCaptionStrip.calls[0].width, 1120)
+    for (const p of pngPaths) assert.ok(fs.existsSync(p), 'strip png written')
+  })
+})
+
+test('renderCaptionOverlays: drops a window fully inside the trimmed-away head', () => {
+  withTmpDir((dir) => {
+    const pngPaths = []
+    const overlays = renderCaptionOverlays({
+      captionTimings: [
+        { seq: 1, caption: 'Boot noise', startMs: 0 }, // window [0,800) — entirely before the 1000ms trim
+        { seq: 2, caption: 'Real step', startMs: 800 },
+      ],
+      renderCaptionStrip: fakeStripWriter(),
+      width: 800,
+      fullDurationMs: 5000,
+      trimMs: 1000,
+      durationMs: 4000,
+      inputBase: 2,
+      dir,
+      pngPaths,
+    })
+    // First window [0,800) → after −1000 trim, endSec ≤ 0 → dropped. The second
+    // window is kept and gets the FIRST input index (contiguous from inputBase).
+    assert.deepEqual(overlays, [{ inputIndex: 2, startSec: 0, endSec: 4 }])
+    assert.equal(pngPaths.length, 1)
+  })
+})
+
+test('renderCaptionOverlays: a thrown render error degrades to [] and cleans up partial PNGs', () => {
+  withTmpDir((dir) => {
+    const pngPaths = []
+    // First strip writes a PNG then a later one throws → catch path must clean up
+    // the already-written PNG and return [] (no captions, full video still ships).
+    let n = 0
+    const renderCaptionStrip = ({ output }) => {
+      n += 1
+      if (n === 1) {
+        fs.writeFileSync(output, 'partial')
+        return true
+      }
+      throw new Error('boom')
+    }
+    const overlays = renderCaptionOverlays({
+      captionTimings: [
+        { seq: 1, caption: 'First', startMs: 0 },
+        { seq: 2, caption: 'Second', startMs: 2000 },
+      ],
+      renderCaptionStrip,
+      width: 640,
+      fullDurationMs: 4000,
+      trimMs: 0,
+      durationMs: 4000,
+      inputBase: 2,
+      dir,
+      pngPaths,
+    })
+    assert.deepEqual(overlays, [])
+    assert.deepEqual(pngPaths, [], 'caller-visible pngPaths emptied on the catch path')
+    // No leaked strip files remain in the dir.
+    assert.deepEqual(
+      fs.readdirSync(dir).filter((f) => f.startsWith('caption-strip-')),
+      [],
+    )
+  })
+})
+
+test('renderCaptionOverlays: a failed strip render is skipped, indices stay contiguous', () => {
+  withTmpDir((dir) => {
+    const pngPaths = []
+    // Renderer fails (returns false) for the first caption, succeeds for the second.
+    let n = 0
+    const renderCaptionStrip = ({ output }) => {
+      n += 1
+      if (n === 1) return false
+      fs.writeFileSync(output, 'ok')
+      return true
+    }
+    const overlays = renderCaptionOverlays({
+      captionTimings: [
+        { seq: 1, caption: 'Fails to render', startMs: 0 },
+        { seq: 2, caption: 'Renders fine', startMs: 2000 },
+      ],
+      renderCaptionStrip,
+      width: 640,
+      fullDurationMs: 4000,
+      trimMs: 0,
+      durationMs: 4000,
+      inputBase: 1,
+      dir,
+      pngPaths,
+    })
+    assert.deepEqual(overlays, [{ inputIndex: 1, startSec: 2, endSec: 4 }])
+    assert.equal(pngPaths.length, 1)
+  })
+})
+
 // ── buildTimerOverlayFilter ──────────────────────────────────────────────────
 
 test('buildTimerOverlayFilter: timer on appends the overlay', () => {
@@ -426,4 +681,89 @@ test('buildTimerOverlayFilter: timer off maps the base chain only', () => {
   const f = buildTimerOverlayFilter('[0:v]crop=in_w:300:0:0,fps=30[base]', { timer: false })
   assert.doesNotMatch(f, /overlay=/)
   assert.match(f, /\[base\]/)
+})
+
+test('buildTimerOverlayFilter: a caption overlays at y=0 with an enable window before the timer', () => {
+  const f = buildTimerOverlayFilter('[0:v]fps=30[base]', {
+    timer: true,
+    captions: [{ inputIndex: 2, startSec: 0, endSec: 2 }],
+  })
+  // caption overlaid onto [base] at top-left, gated by enable, output to an intermediate label
+  assert.match(f, /\[base\]\[2:v\]overlay=x=0:y=0:enable='between\(t,0\.000,2\.000\)'[^;]*\[ov0\]/)
+  // timer overlaid last onto the caption result, output [v], at the timer corner (y=44, clears y=0 strip)
+  assert.match(f, /\[ov0\]\[1:v\]overlay=x=main_w-overlay_w-14:y=44:eof_action=repeat\[v\]/)
+})
+
+test('buildTimerOverlayFilter: captions without a timer still terminate in [v]', () => {
+  const f = buildTimerOverlayFilter('[0:v]fps=30[base]', {
+    timer: false,
+    captions: [
+      { inputIndex: 1, startSec: 0, endSec: 1.5 },
+      { inputIndex: 2, startSec: 1.5, endSec: 4 },
+    ],
+  })
+  assert.match(f, /\[base\]\[1:v\]overlay=x=0:y=0:enable='between\(t,0\.000,1\.500\)'[^;]*\[ov0\]/)
+  assert.match(f, /\[ov0\]\[2:v\]overlay=x=0:y=0:enable='between\(t,1\.500,4\.000\)'[^;]*\[v\]/)
+})
+
+test('buildTimerOverlayFilter: no captions + timer is byte-identical to the timer-only graph', () => {
+  const base = '[0:v]crop=in_w:300:0:0,fps=30[base]'
+  assert.equal(
+    buildTimerOverlayFilter(base, { timer: true, captions: [] }),
+    buildTimerOverlayFilter(base, { timer: true }),
+  )
+})
+
+test('buildTimerOverlayFilter: multiple caption inputs use the passed-in input indices', () => {
+  const f = buildTimerOverlayFilter('[0:v]fps=30[base]', {
+    timer: true,
+    captions: [
+      { inputIndex: 2, startSec: 0, endSec: 1 },
+      { inputIndex: 3, startSec: 1, endSec: 2 },
+    ],
+  })
+  assert.match(f, /\[2:v\]overlay=/)
+  assert.match(f, /\[3:v\]overlay=/)
+  assert.match(f, /\[1:v\]overlay=x=main_w-overlay_w-14/) // timer still input 1
+})
+
+// ── captionInputArgs ─────────────────────────────────────────────────────────
+
+test('captionInputArgs: each strip is a single-frame -i input, NEVER -loop 1', () => {
+  // Regression: a `-loop 1` image is an INFINITE input; with overlay
+  // eof_action=repeat it unbounds the output past the base clip (one looped strip
+  // stretched an 80s clip to ~1338s; seven ran ffmpeg 30+ min producing an
+  // ever-growing file). Strips must be fed as single frames so the output stays
+  // bounded — eof_action=repeat still holds the caption, enable gates its window.
+  const args = captionInputArgs(['/tmp/cap-0.png', '/tmp/cap-1.png'])
+  assert.deepEqual(args, ['-i', '/tmp/cap-0.png', '-i', '/tmp/cap-1.png'])
+  assert.ok(
+    !args.includes('-loop'),
+    'caption strips must not use -loop (infinite input unbounds the overlay)',
+  )
+})
+
+test('captionInputArgs: no strips → no inputs', () => {
+  assert.deepEqual(captionInputArgs([]), [])
+})
+
+// ── selectEncoderArgs (opt-in hardware encode) ───────────────────────────────
+
+test('selectEncoderArgs: VideoToolbox only when requested AND available', () => {
+  const hw = selectEncoderArgs({ hwRequested: true, hwAvailable: true })
+  assert.deepEqual(hw.slice(0, 2), ['-c:v', 'h264_videotoolbox'])
+  // VideoToolbox ignores -crf; quality is via -q:v.
+  assert.ok(hw.includes('-q:v') && !hw.includes('-crf'))
+})
+
+test('selectEncoderArgs: defaults to libx264 when not requested or unavailable', () => {
+  for (const opts of [
+    { hwRequested: false, hwAvailable: true },
+    { hwRequested: true, hwAvailable: false },
+    { hwRequested: false, hwAvailable: false },
+  ]) {
+    const args = selectEncoderArgs(opts)
+    assert.deepEqual(args.slice(0, 2), ['-c:v', 'libx264'], JSON.stringify(opts))
+    assert.ok(args.includes('-crf'))
+  }
 })

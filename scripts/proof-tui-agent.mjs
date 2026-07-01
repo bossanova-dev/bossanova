@@ -38,7 +38,12 @@ import { fileURLToPath } from 'node:url'
 
 import { finalizeAgentProof } from './proof-agent-finalize.mjs'
 import { finishVideo } from './proof-finish-video.mjs'
-import { proofRunPaths, terminalRenderCommand } from './proof-lib.mjs'
+import {
+  captionStripRenderCommand,
+  proofRunPaths,
+  terminalRenderCommand,
+  terminalRenderManifestCommand,
+} from './proof-lib.mjs'
 import {
   generateBriefFromDiff as defaultGenerateBriefFromDiff,
   validateBrief,
@@ -46,7 +51,10 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-const DEFAULT_MODEL = 'claude-sonnet-4-6'
+// Haiku is the default: the proof agent drive is text-only (no image input), so
+// haiku 4.5 fits comfortably, runs faster, and dodges the proof key's sonnet
+// ITPM cap. Override per-run with BOSS_PROOF_MODEL.
+const DEFAULT_MODEL = 'claude-haiku-4-5'
 const CAPTURE_ID = 'tui-agent'
 
 // P1 — TUI runs are short, keystroke-driven, and fixture-backed, so they get
@@ -263,6 +271,90 @@ function defaultRenderStill({ input, output, title, caption }) {
 }
 
 /**
+ * Batch-render every terminal still in ONE browser via the renderer's
+ * `--manifest` mode, instead of a cold Chromium launch per frame. Writes the job
+ * manifest beside the first frame, spawns the renderer once, then removes it.
+ * Best-effort: a non-zero exit is logged (per-job failures are already isolated
+ * inside the renderer), and renderFrames keeps whichever frame PNGs were
+ * produced — so a partial batch degrades exactly like the per-frame loop did.
+ */
+function defaultRenderStillsBatch(jobs) {
+  if (jobs.length === 0) return
+  const manifest = jobs.map((j) => ({
+    type: 'terminal',
+    input: path.relative(repoRoot, j.input),
+    output: path.relative(repoRoot, j.output),
+    title: j.title,
+    caption: j.caption ?? '',
+  }))
+  const manifestPath = path.join(path.dirname(jobs[0].output), '.render-manifest.json')
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest))
+  try {
+    const [cmd, args] = terminalRenderManifestCommand({
+      manifest: path.relative(repoRoot, manifestPath),
+    })
+    const result = spawnSync(cmd, args, { cwd: repoRoot, stdio: 'inherit' })
+    if (result.status !== 0) {
+      console.warn(
+        `[proof-tui-agent] batch frame render exited ${result.status}; missing frames fall back individually`,
+      )
+    }
+  } finally {
+    fs.rmSync(manifestPath, { force: true })
+  }
+}
+
+/**
+ * Render one caption-bar strip PNG (BOS-121) via the shared terminal renderer's
+ * `--strip` mode. Returns true on success; on any failure returns false so the
+ * caller drops that caption and ships the video without it (captions are
+ * additive and never fail the proof). Passed into postprocessProofVideo as the
+ * `renderCaptionStrip` seam; unit tests inject a stub instead.
+ */
+function defaultRenderCaptionStrip({ text, width, output }) {
+  const [cmd, args] = captionStripRenderCommand({
+    caption: text,
+    width,
+    output: path.relative(repoRoot, output),
+  })
+  const result = spawnSync(cmd, args, { cwd: repoRoot, stdio: 'inherit' })
+  return result.status === 0 && fs.existsSync(output)
+}
+
+/**
+ * The cast-relative time (ms) of the LAST event in an asciinema v2 `.cast`
+ * recording — the live "now" on the clock that becomes the video. Each event
+ * line is `[seconds, type, data]`; the header (line 0) is a JSON object, not an
+ * array, so it is skipped. Returns 0 for an empty/unreadable/header-only cast so
+ * a missing recording degrades to startMs:0 rather than throwing. Pure + exported
+ * for unit tests; the file read is in readCastTailMs.
+ */
+export function parseCastTailMs(castText) {
+  if (typeof castText !== 'string' || castText.length === 0) return 0
+  const lines = castText.split('\n')
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i].trim()
+    if (!line || line[0] !== '[') continue
+    try {
+      const ev = JSON.parse(line)
+      if (Array.isArray(ev) && Number.isFinite(ev[0])) return Math.max(0, Math.round(ev[0] * 1000))
+    } catch {
+      // not a well-formed event line — keep scanning upward
+    }
+  }
+  return 0
+}
+
+/** Read the cast tail time (ms) from a live `.cast` file; 0 if absent/unreadable. */
+function readCastTailMs(castPath) {
+  try {
+    return parseCastTailMs(fs.readFileSync(castPath, 'utf8'))
+  } catch {
+    return 0
+  }
+}
+
+/**
  * Turn the recorded asciinema `.cast` into an mp4 + poster via agg. Degrades
  * gracefully: a missing cast or missing agg returns null (stills-only proof)
  * with an install hint — the same skip-don't-fail semantics the agent applies
@@ -277,6 +369,7 @@ export function defaultCastToVideo({
   label,
   cardTitle,
   keepWebm,
+  captionTimings,
 }) {
   if (!castPath || !fs.existsSync(castPath)) {
     console.warn('[proof-tui-agent] cast file missing — stills-only proof')
@@ -341,6 +434,8 @@ export function defaultCastToVideo({
       idleSpeedup: true,
       trimLeadingBlank: true,
       keepWebm: Boolean(keepWebm),
+      captionTimings,
+      renderCaptionStrip: defaultRenderCaptionStrip,
     })
   } catch (err) {
     console.warn(`[proof-tui-agent] finishVideo failed — stills-only proof: ${err.message}`)
@@ -398,11 +493,19 @@ export async function runTuiAgentProof({
   let agentResult = { passed: false, summary: 'agent did not run', evidence: [], steps: 0 }
   let finalScreen = ''
   let stills = []
+  let captionTimings = []
 
   try {
     const loop = await runAgentLoop({ brief, model, modelDep: d.model, bridge, rawDir })
     agentResult = loop.agentResult
     finalScreen = loop.finalScreen
+    captionTimings = loop.captionTimings ?? []
+    // Persist the per-step caption timings (raw/caption-timings.json) — the
+    // single source the video step reads to burn captions onto the mp4 (BOS-121).
+    fs.writeFileSync(
+      path.join(rawDir, 'caption-timings.json'),
+      `${JSON.stringify(captionTimings, null, 2)}\n`,
+    )
 
     // Render each captured settled screen → frame-NN.png for the gallery.
     stills = await renderFrames({
@@ -453,6 +556,7 @@ export async function runTuiAgentProof({
       label,
       cardTitle,
       keepWebm: !shouldUpload,
+      captionTimings,
     })
   } catch (err) {
     console.warn(`[proof-tui-agent] cast→video failed — stills-only proof: ${err.message}`)
@@ -551,10 +655,20 @@ function captureFallbackRecipeFloor({ fallbackRecipeCaptures, localDir, keepWebm
  * step, execute the returned tool_use blocks, feed settled screens back as tool
  * results, enforce ALL THREE budgets (steps / wall-clock / tokens), stop on
  * done / budget exhaustion / bridge error. Each bridge-touching tool call writes
- * its settled screen to raw/screen-NN.txt.
- * @returns {Promise<{ agentResult: object, finalScreen: string }>}
+ * its settled screen to raw/screen-NN.txt, its narration to raw/caption-NN.txt,
+ * and records the cast-relative time of that settled screen (read from the live
+ * session.cast tail via `readCastMs`) so captions can be burned into the video at
+ * the right moment (BOS-121). `readCastMs` is injectable for tests.
+ * @returns {Promise<{ agentResult: object, finalScreen: string, captionTimings: Array<{seq:number,caption:string,startMs:number}> }>}
  */
-export async function runAgentLoop({ brief, model, modelDep, bridge, rawDir }) {
+export async function runAgentLoop({
+  brief,
+  model,
+  modelDep,
+  bridge,
+  rawDir,
+  readCastMs = () => readCastTailMs(path.join(rawDir, 'session.cast')),
+}) {
   const goal = [
     `Goal: ${brief.description}`,
     brief.stepsHints?.length ? `Hints:\n- ${brief.stepsHints.join('\n- ')}` : '',
@@ -580,6 +694,7 @@ export async function runAgentLoop({ brief, model, modelDep, bridge, rawDir }) {
   let finalScreen = ''
   let finalText = ''
   let bridgeError = null
+  const captionTimings = []
 
   for (let step = 0; step < brief.budgets.maxSteps; step++) {
     if (Date.now() - started > brief.budgets.maxWallClockMs) break
@@ -652,6 +767,9 @@ export async function runAgentLoop({ brief, model, modelDep, bridge, rawDir }) {
           // renderFrames. Empty narration writes an empty file (renderFrames
           // defaults missing/empty to '').
           fs.writeFileSync(path.join(rawDir, `caption-${seq}.txt`), pendingCaption)
+          // Record the cast-relative time of THIS settled screen so the caption
+          // can be burned into the video for the window that starts here (BOS-121).
+          captionTimings.push({ seq: screenN, caption: pendingCaption, startMs: readCastMs() })
           pendingCaption = ''
           toolResult = { screen }
         } catch (err) {
@@ -681,42 +799,77 @@ export async function runAgentLoop({ brief, model, modelDep, bridge, rawDir }) {
     evidence: done.evidence,
     steps,
   }
-  return { agentResult, finalScreen }
+  return { agentResult, finalScreen, captionTimings }
 }
 
 // ── Capture helpers ────────────────────────────────────────────────────────────
 
-/** Render every raw/screen-NN.txt to captureDir/frame-NN.png. renderStill may be
- * sync (default spawnSync) or async (test stub); both are awaited. */
-export async function renderFrames({ rawDir, captureDir, title, renderStill }) {
+/** Render every raw/screen-NN.txt to captureDir/frame-NN.png.
+ *
+ * By default all frames render in ONE browser via `renderStills` (the
+ * `--manifest` batch), avoiding a cold Chromium launch per frame. When `renderStill`
+ * is overridden (unit-test stubs) the original per-item path runs instead, so the
+ * batch only engages with the production default renderer — `renderStill` may be
+ * sync (default spawnSync) or async (test stub) and both are awaited. */
+export async function renderFrames({
+  rawDir,
+  captureDir,
+  title,
+  renderStill = defaultRenderStill,
+  renderStills,
+}) {
   const screenFiles = fs
     .readdirSync(rawDir)
     .filter((f) => /^screen-\d+\.txt$/.test(f))
     .sort()
-  const stills = []
-  for (const sf of screenFiles) {
+  // Build the per-frame jobs (input + output + the sibling caption-NN.txt
+  // narration, defaulting to '' when absent for older raw dirs / fixtures).
+  const jobs = screenFiles.map((sf) => {
     const n = sf.match(/screen-(\d+)\.txt/)[1]
-    const output = path.join(captureDir, `frame-${n}.png`)
-    // Read the sibling caption-NN.txt narration written during the agent loop;
-    // default to '' when absent (e.g. older raw dirs or fixtures without it).
     let caption = ''
     try {
       caption = fs.readFileSync(path.join(rawDir, `caption-${n}.txt`), 'utf8')
     } catch {
       caption = ''
     }
+    return {
+      n,
+      input: path.join(rawDir, sf),
+      output: path.join(captureDir, `frame-${n}.png`),
+      caption,
+    }
+  })
+  const collect = () =>
+    jobs
+      .filter((j) => fs.existsSync(j.output))
+      .map((j) => ({ fileName: `${CAPTURE_ID}/frame-${j.n}.png`, label: `frame ${j.n}` }))
+
+  // Batch only when the renderer is the production default (tests override
+  // renderStill with a stub and expect the per-item path). renderStills may be
+  // injected explicitly to test the batch path.
+  const batch =
+    renderStills ?? (renderStill === defaultRenderStill ? defaultRenderStillsBatch : null)
+  if (batch) {
+    try {
+      await batch(
+        jobs.map((j) => ({ input: j.input, output: j.output, title, caption: j.caption })),
+      )
+    } catch (err) {
+      console.warn(`[proof-tui-agent] batch frame render failed: ${err.message}`)
+    }
+    return collect()
+  }
+
+  // Per-item fallback (test stubs / non-default renderer).
+  for (const j of jobs) {
     try {
       // eslint-disable-next-line no-await-in-loop -- frames render sequentially
-      await renderStill({ input: path.join(rawDir, sf), output, title, caption })
+      await renderStill({ input: j.input, output: j.output, title, caption: j.caption })
     } catch (err) {
-      console.warn(`[proof-tui-agent] frame render failed for ${sf}: ${err.message}`)
-      continue
-    }
-    if (fs.existsSync(output)) {
-      stills.push({ fileName: `${CAPTURE_ID}/frame-${n}.png`, label: `frame ${n}` })
+      console.warn(`[proof-tui-agent] frame render failed for screen-${j.n}.txt: ${err.message}`)
     }
   }
-  return stills
+  return collect()
 }
 
 // ── Brief resolution ───────────────────────────────────────────────────────────

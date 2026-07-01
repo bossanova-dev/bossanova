@@ -2,6 +2,8 @@ package views
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -331,5 +333,201 @@ func TestAppChatPickerArchiveAfterMergeReturnsHome(t *testing.T) {
 	}
 	if got.home.mergedOptimisticID != "s1" {
 		t.Fatalf("mergedOptimisticID = %q, want %q (optimistic merge must carry through)", got.home.mergedOptimisticID, "s1")
+	}
+}
+
+// TestEscWhileArchivingCarriesOptimisticID guards that pressing ESC while an
+// archive is in flight sets archivingOptimisticID on the rebuilt HomeModel.
+func TestEscWhileArchivingCarriesOptimisticID(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewChatPicker
+	// Archive in flight (no pre-set cancel) so the real ESC key path through
+	// chatpicker.Update sets cancel=true, exercising the actual keyboard route
+	// rather than a synthetic flag.
+	a.chatPicker = ChatPickerModel{archiving: true, sessionID: "s1"}
+
+	model, _ := a.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	got := model.(App)
+
+	if got.activeView != ViewHome {
+		t.Fatalf("activeView = %v after esc-while-archiving, want ViewHome", got.activeView)
+	}
+	if got.home.archivingOptimisticID != "s1" {
+		t.Fatalf("archivingOptimisticID = %q, want %q", got.home.archivingOptimisticID, "s1")
+	}
+	if !got.home.archiveInFlight {
+		t.Fatalf("expected archiveInFlight true after esc-while-archiving carry, got false")
+	}
+}
+
+// TestArchiveFailureClearsOverride guards that a failed archiveResultMsg
+// delivered to the App clears the home archivingOptimisticID, even when
+// the user has already navigated away from the chatpicker (ViewHome).
+func TestArchiveFailureClearsOverride(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.archivingOptimisticID = "s1"
+
+	model, _ := a.Update(archiveResultMsg{sessionID: "s1", err: errors.New("boom")})
+	got := model.(App)
+
+	if got.home.archivingOptimisticID != "" {
+		t.Fatalf("expected archivingOptimisticID cleared on archive failure, got %q", got.home.archivingOptimisticID)
+	}
+}
+
+// TestArchiveSuccessKeepsOverrideAtAppLevel guards the design intent that a
+// successful archiveResultMsg does NOT clear the override at the app level: the
+// override persists until the session actually leaves the session list (cleared
+// in the sessionListMsg path), so the row keeps showing "archiving" rather than
+// flickering back to the real status before it disappears.
+func TestArchiveSuccessKeepsOverrideAtAppLevel(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.archivingOptimisticID = "s1"
+	a.home.archiveInFlight = true
+
+	model, _ := a.Update(archiveResultMsg{sessionID: "s1", err: nil})
+	got := model.(App)
+
+	if got.home.archivingOptimisticID != "s1" {
+		t.Fatalf("expected override retained on archive success at app level, got %q", got.home.archivingOptimisticID)
+	}
+	// The archive resolved, so it is no longer in flight even though the
+	// override lingers for rendering until the row leaves the list.
+	if got.home.archiveInFlight {
+		t.Fatalf("expected archiveInFlight cleared on archive success, got true")
+	}
+}
+
+// TestReEnterArchivingSessionSeedsArchiving guards that re-entering the
+// view-session screen while an archive is still in flight seeds the new
+// ChatPickerModel with archiving=true so the banner shows the override.
+func TestReEnterArchivingSessionSeedsArchiving(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.archivingOptimisticID = "s1"
+	a.home.archiveInFlight = true
+
+	model, _ := a.Update(switchViewMsg{view: ViewChatPicker, sessionID: "s1"})
+	got := model.(App)
+
+	if got.activeView != ViewChatPicker {
+		t.Fatalf("activeView = %v, want ViewChatPicker", got.activeView)
+	}
+	if !got.chatPicker.archiving {
+		t.Fatalf("chatPicker.archiving = false, want true when re-entering archiving session")
+	}
+}
+
+// TestReEnterAfterArchiveSuccessDoesNotSeedArchiving guards the stale-override
+// case: after a successful archive the override lingers on the still-present
+// row for rendering (archiveInFlight=false), but pressing Enter on that row
+// must NOT seed archiving=true, which would leave the picker stuck on
+// "Archiving session..." swallowing every key but Esc with no archiveResultMsg
+// ever arriving for the freshly created model.
+func TestReEnterAfterArchiveSuccessDoesNotSeedArchiving(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.archivingOptimisticID = "s1"
+	a.home.archiveInFlight = false
+
+	model, _ := a.Update(switchViewMsg{view: ViewChatPicker, sessionID: "s1"})
+	got := model.(App)
+
+	if got.chatPicker.archiving {
+		t.Fatalf("chatPicker.archiving = true after archive success, want false (stale override must not re-enter as in-flight)")
+	}
+}
+
+// TestReEnterNonArchivingSessionNoSeed guards that other sessions are NOT
+// seeded with archiving=true when archivingOptimisticID refers to a different session.
+func TestReEnterNonArchivingSessionNoSeed(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.archivingOptimisticID = "s1"
+
+	model, _ := a.Update(switchViewMsg{view: ViewChatPicker, sessionID: "s2"})
+	got := model.(App)
+
+	if got.chatPicker.archiving {
+		t.Fatalf("chatPicker.archiving = true for non-archiving session s2, want false")
+	}
+}
+
+// TestNewHomeModelPreservesInFlightArchiveOverride guards that rebuilding Home
+// (navigating away to a different session or subview and back) preserves an
+// archive override whose RPC is still outstanding, so the row keeps rendering
+// "archiving" and re-entry stays in-flight instead of reverting to the real
+// status.
+func TestNewHomeModelPreservesInFlightArchiveOverride(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.archivingOptimisticID = "s1"
+	a.home.archiveInFlight = true
+
+	rebuilt := a.newHomeModel()
+
+	if rebuilt.archivingOptimisticID != "s1" {
+		t.Fatalf("archivingOptimisticID = %q after rebuild, want %q", rebuilt.archivingOptimisticID, "s1")
+	}
+	if !rebuilt.archiveInFlight {
+		t.Fatalf("archiveInFlight = false after rebuild, want true (in-flight override must survive Home rebuild)")
+	}
+}
+
+// TestNewHomeModelDropsResolvedArchiveOverride guards that a resolved archive's
+// lingering render override (archiveInFlight=false) is NOT carried across a
+// deliberate Home rebuild; the fresh poll reconciles the row instead.
+func TestNewHomeModelDropsResolvedArchiveOverride(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.archivingOptimisticID = "s1"
+	a.home.archiveInFlight = false
+
+	rebuilt := a.newHomeModel()
+
+	if rebuilt.archivingOptimisticID != "" {
+		t.Fatalf("archivingOptimisticID = %q after rebuild, want empty (resolved override should not carry)", rebuilt.archivingOptimisticID)
+	}
+	if rebuilt.archiveInFlight {
+		t.Fatalf("archiveInFlight = true after rebuild, want false")
+	}
+}
+
+// TestReturnToHomeFromOtherSessionKeepsArchiveOverride guards the reviewer's
+// scenario end-to-end: session s1's archive is in flight (override carried on
+// Home), the user opens and exits a different, non-archiving session s2, and
+// s1's in-flight override must survive the Home rebuild.
+func TestReturnToHomeFromOtherSessionKeepsArchiveOverride(t *testing.T) {
+	a := NewApp(nil, nil)
+	// s1's archive is in flight; its override rides on Home.
+	a.home.archivingOptimisticID = "s1"
+	a.home.archiveInFlight = true
+	// The user is viewing a different, non-archiving session s2. Real ESC drives
+	// the cancel path so the App rebuilds Home through newHomeModel.
+	a.activeView = ViewChatPicker
+	a.chatPicker = ChatPickerModel{sessionID: "s2"}
+
+	model, _ := a.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	got := model.(App)
+
+	if got.activeView != ViewHome {
+		t.Fatalf("activeView = %v, want ViewHome", got.activeView)
+	}
+	if got.home.archivingOptimisticID != "s1" {
+		t.Fatalf("archivingOptimisticID = %q after returning from s2, want %q", got.home.archivingOptimisticID, "s1")
+	}
+	if !got.home.archiveInFlight {
+		t.Fatalf("archiveInFlight = false after returning from s2, want true")
+	}
+}
+
+// TestBannerWithArchivingShowsArchivingLabel guards that renderBanner
+// renders the archiving status string when bannerOpts.archiving is true.
+func TestBannerWithArchivingShowsArchivingLabel(t *testing.T) {
+	sess := &pb.Session{
+		Id:            "s1",
+		Title:         "My session",
+		DisplayLabel:  "✓ passing",
+		DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+	}
+	sp := newStatusSpinner()
+	got := renderBanner(ViewChatPicker, bannerOpts{session: sess, spinner: sp, archiving: true})
+	if !strings.Contains(got, "archiving") {
+		t.Fatalf("banner with archiving=true should contain 'archiving', got %q", got)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
@@ -253,6 +254,9 @@ type NewSessionModel struct {
 	// Form
 	form *huh.Form
 
+	// Spinner for the creating phase.
+	spinner spinner.Model
+
 	// Layout
 	width  int
 	height int
@@ -271,6 +275,7 @@ func NewNewSessionModel(c client.BossClient, ctx context.Context) NewSessionMode
 		phase:       newSessionPhaseLoading,
 		prFilter:    newListFilter(),
 		issueFilter: newListFilter(),
+		spinner:     newStatusSpinner(),
 	}
 }
 
@@ -317,7 +322,7 @@ func (m *NewSessionModel) SetAgentSelectionHandler(fn func(string) error) {
 }
 
 func (m NewSessionModel) Init() tea.Cmd {
-	return tea.Batch(fetchRepos(m.client, m.ctx), fetchAgents(m.client, m.ctx))
+	return tea.Batch(fetchRepos(m.client, m.ctx), fetchAgents(m.client, m.ctx), m.spinner.Tick)
 }
 
 func fetchRepos(c client.BossClient, ctx context.Context) tea.Cmd {
@@ -801,6 +806,11 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updateCursorColumn(&m.issueTable)
 		m.issueTableReady = true
 		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 
 	case searchIssuesTickMsg:
 		// Ignore stale ticks — a newer keystroke has superseded this one.
@@ -1369,9 +1379,9 @@ func (m NewSessionModel) View() tea.View {
 
 	if m.phase == newSessionPhaseCreating {
 		var b strings.Builder
-		// Render "initializing" indicator using INFO/blue style with a static
-		// spinner glyph (first frame of the Dot spinner, same as session-list).
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusInfo.Render("⣾ initializing")))
+		// Render "initializing" indicator using INFO/blue style with an animated
+		// Dot spinner (same style as the session-list spinner).
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusInfo.Render(m.spinner.View() + "initializing")))
 		b.WriteString("\n")
 		if len(m.setupLines) > 0 {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Running setup script..."))

@@ -142,6 +142,37 @@ func TestSkipLaunchctl(t *testing.T) {
 	})
 }
 
+// TestResolveMcpPath_NotFound verifies that ResolveMcpPath returns a non-nil
+// error when neither "boss-mcp" nor "mcp" is present next to the test binary
+// or on PATH.
+func TestResolveMcpPath_NotFound(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	_, err := ResolveMcpPath()
+	if err == nil {
+		t.Fatal("ResolveMcpPath() returned nil error when no binary is found")
+	}
+}
+
+// TestResolveMcpPath_FindsBossMcpOnPath verifies that ResolveMcpPath returns
+// the "boss-mcp" binary when it is present on PATH.
+func TestResolveMcpPath_FindsBossMcpOnPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "boss-mcp"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("create boss-mcp: %v", err)
+	}
+	t.Setenv("PATH", dir)
+	got, err := ResolveMcpPath()
+	if err != nil {
+		t.Fatalf("ResolveMcpPath: %v", err)
+	}
+	if filepath.Base(got) != "boss-mcp" {
+		t.Fatalf("ResolveMcpPath() = %q, want path with base \"boss-mcp\"", got)
+	}
+	if !filepath.IsAbs(got) {
+		t.Fatalf("ResolveMcpPath() = %q, want absolute path", got)
+	}
+}
+
 // TestResolveBossdPath_PrefersExecutableDir verifies that ResolveBossdPath
 // returns the bossd binary that lives next to the running executable,
 // even when a different bossd is also on PATH.

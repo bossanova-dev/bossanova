@@ -51,6 +51,36 @@ async function waitForPidFile(pidFile, timeoutMs = 2000) {
   throw new Error(`timed out waiting for pid file: ${pidFile}`)
 }
 
+// A fake codex that prints every argv element on its own line then exits 0.
+// run() returns the sanitized stdout, so the embedded prompt (with any diff) is
+// fully observable for assertions.
+function writeEchoArgvBin(dir) {
+  return writeFakeBin(dir, 'codex', 'for a in "$@"; do printf "%s\\n" "$a"; done\nexit 0')
+}
+
+// Run a git command in `cwd`, asserting success. Isolated config (no GPG sign,
+// committer/author pinned) so it works in any CI environment.
+function git(cwd, args) {
+  const res = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'Test',
+      GIT_AUTHOR_EMAIL: 'test@example.com',
+      GIT_COMMITTER_NAME: 'Test',
+      GIT_COMMITTER_EMAIL: 'test@example.com',
+    },
+  })
+  assert.equal(res.status, 0, `git ${args.join(' ')} failed: ${res.stderr}`)
+  return res.stdout.trim()
+}
+
+function initRepo(dir) {
+  git(dir, ['init', '-q'])
+  git(dir, ['config', 'commit.gpgsign', 'false'])
+}
+
 // ---------------------------------------------------------------------------
 // 1. classifyProbe — pure classifier, all four outcomes
 // ---------------------------------------------------------------------------
@@ -397,6 +427,47 @@ test('run: built args are accepted by a flag-validating fake codex (CLI-surface 
     assert.equal(result.ok, true, `args rejected by fake codex; stderr: ${result.stderr}`)
     assert.equal(result.timedOut, false)
     assert.ok(result.output.includes('review: cross-model ok'))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('run: a slow diff.external driver cannot hang the bounded run', async () => {
+  const dir = makeTmpDir()
+  try {
+    initRepo(dir)
+    fs.writeFileSync(path.join(dir, 'file.txt'), 'first line\n')
+    git(dir, ['add', '.'])
+    git(dir, ['commit', '-q', '-m', 'base'])
+    const base = git(dir, ['rev-parse', 'HEAD'])
+    fs.writeFileSync(path.join(dir, 'file.txt'), 'first line\nSENTINEL-ADDED-LINE\n')
+    git(dir, ['add', '.'])
+    git(dir, ['commit', '-q', '-m', 'head'])
+    const head = git(dir, ['rev-parse', 'HEAD'])
+
+    // A pathologically slow external diff driver. Without --no-ext-diff the
+    // pre-arm bestEffortDiff would block on this for 30s before the agent runs.
+    const slowDiff = writeFakeBin(dir, 'slow-diff', 'sleep 30')
+    git(dir, ['config', 'diff.external', slowDiff])
+
+    const bin = writeEchoArgvBin(dir)
+    const t0 = Date.now()
+    const result = await run({
+      env: { BOSS_CODEX_BIN: bin },
+      base,
+      head,
+      repo: dir,
+      timeoutMs: 4000,
+    })
+    const elapsed = Date.now() - t0
+    // --no-ext-diff ignores the slow driver entirely, so the real diff embeds
+    // fast and the whole run completes well under its deadline (no hang).
+    assert.ok(elapsed < 4000, `slow external diff hung the run: ${elapsed}ms`)
+    assert.equal(result.timedOut, false)
+    assert.ok(
+      result.output.includes('+SENTINEL-ADDED-LINE'),
+      'plain internal diff should still be embedded despite the slow driver',
+    )
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

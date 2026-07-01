@@ -1215,6 +1215,60 @@ test('renderFrames reads the sidecar caption-NN.txt and forwards it to renderSti
   }
 })
 
+test('renderFrames batches all frames through renderStills in one call (single browser)', async () => {
+  const { renderFrames } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-cap-'))
+  try {
+    fs.writeFileSync(path.join(rawDir, 'screen-01.txt'), 'screen one')
+    fs.writeFileSync(path.join(rawDir, 'caption-01.txt'), 'Home')
+    fs.writeFileSync(path.join(rawDir, 'screen-02.txt'), 'screen two')
+    let batchCalls = 0
+    let jobsSeen = null
+    // One batch call for ALL frames — not one call per frame.
+    const renderStills = async (jobs) => {
+      batchCalls += 1
+      jobsSeen = jobs
+      for (const j of jobs) fs.writeFileSync(j.output, 'fake-png')
+    }
+    const stills = await renderFrames({ rawDir, captureDir, title: 'boss', renderStills })
+    assert.equal(batchCalls, 1, 'all frames render in a single batch invocation')
+    assert.equal(jobsSeen.length, 2)
+    assert.equal(jobsSeen[0].caption, 'Home')
+    assert.equal(jobsSeen[1].caption, '') // no sidecar → empty
+    assert.deepEqual(
+      stills.map((s) => s.label),
+      ['frame 01', 'frame 02'],
+    )
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+    fs.rmSync(captureDir, { recursive: true, force: true })
+  }
+})
+
+test('renderFrames batch: only frames whose PNG was written are returned', async () => {
+  const { renderFrames } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-cap-'))
+  try {
+    fs.writeFileSync(path.join(rawDir, 'screen-01.txt'), 'one')
+    fs.writeFileSync(path.join(rawDir, 'screen-02.txt'), 'two')
+    // Simulate a partial batch: only frame 02 gets written.
+    const renderStills = async (jobs) => {
+      const j = jobs.find((x) => x.output.endsWith('frame-02.png'))
+      fs.writeFileSync(j.output, 'fake-png')
+    }
+    const stills = await renderFrames({ rawDir, captureDir, title: 'boss', renderStills })
+    assert.deepEqual(
+      stills.map((s) => s.label),
+      ['frame 02'],
+    )
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+    fs.rmSync(captureDir, { recursive: true, force: true })
+  }
+})
+
 test('renderFrames defaults caption to empty string when no sidecar exists', async () => {
   const { renderFrames } = await import('./proof-tui-agent.mjs')
   const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
@@ -1277,5 +1331,171 @@ test('runAgentLoop binds each frame caption to the narration preceding its tool 
     )
   } finally {
     fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+// ── parseCastTailMs (caption clock, BOS-121) ─────────────────────────────────
+
+test('parseCastTailMs: returns the last event time in ms (header skipped)', async () => {
+  const { parseCastTailMs } = await import('./proof-tui-agent.mjs')
+  const cast = [
+    '{"version":2,"width":80,"height":24}',
+    '[0.5, "o", "boot"]',
+    '[2.25, "o", "settings"]',
+    '[3.0, "o", "done"]',
+  ].join('\n')
+  assert.equal(parseCastTailMs(cast), 3000)
+})
+
+test('parseCastTailMs: ignores trailing blank lines and partial last lines', async () => {
+  const { parseCastTailMs } = await import('./proof-tui-agent.mjs')
+  const cast = '{"version":2}\n[1.0, "o", "a"]\n[2.5, "o", "b"]\n\n  \n'
+  assert.equal(parseCastTailMs(cast), 2500)
+})
+
+test('parseCastTailMs: empty / header-only / non-string → 0 (graceful degrade)', async () => {
+  const { parseCastTailMs } = await import('./proof-tui-agent.mjs')
+  assert.equal(parseCastTailMs(''), 0)
+  assert.equal(parseCastTailMs('{"version":2,"width":80}'), 0)
+  assert.equal(parseCastTailMs(undefined), 0)
+  assert.equal(parseCastTailMs(null), 0)
+})
+
+test('parseCastTailMs: rounds to the nearest ms and never goes negative', async () => {
+  const { parseCastTailMs } = await import('./proof-tui-agent.mjs')
+  assert.equal(parseCastTailMs('{"v":2}\n[1.2345, "o", "x"]'), 1235)
+  assert.equal(parseCastTailMs('{"v":2}\n[-0.4, "o", "x"]'), 0)
+})
+
+test('runAgentLoop: records per-step caption timings from the injected cast clock', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    const firstTurn = {
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 10, output_tokens: 5 },
+      content: [
+        { type: 'text', text: 'Opening the cron list' },
+        { type: 'tool_use', id: 'a', name: 'observe', input: {} },
+        { type: 'text', text: 'Selecting the first row' },
+        { type: 'tool_use', id: 'b', name: 'send_keys', input: { keys: ['down'] } },
+      ],
+    }
+    const model = scriptedModel([
+      firstTurn,
+      toolUse('done', { passed: true, summary: 'done', evidence: [] }),
+    ])
+    const bridge = scriptedBridge({ screens: ['SCREEN ONE', 'SCREEN TWO'] })
+    // Injected cast clock advances per settled screen — no real bridge/cast.
+    const stamps = [1000, 3500]
+    let i = 0
+    const { captionTimings } = await runAgentLoop({
+      brief: {
+        description: 'prove it',
+        budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+      },
+      model: 'test-model',
+      modelDep: model,
+      bridge,
+      rawDir,
+      readCastMs: () => stamps[Math.min(i++, stamps.length - 1)],
+    })
+    assert.deepEqual(captionTimings, [
+      { seq: 1, caption: 'Opening the cron list', startMs: 1000 },
+      { seq: 2, caption: 'Selecting the first row', startMs: 3500 },
+    ])
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('runAgentLoop: default cast clock degrades to startMs 0 when no .cast exists', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    const model = scriptedModel([
+      toolUse('observe', {}, { text: 'Looking at the home screen' }),
+      toolUse('done', { passed: true, summary: 'done', evidence: [] }),
+    ])
+    const bridge = scriptedBridge({ screens: ['HOME'] })
+    // No readCastMs injected and no session.cast on disk → reader returns 0.
+    const { captionTimings } = await runAgentLoop({
+      brief: {
+        description: 'prove it',
+        budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+      },
+      model: 'test-model',
+      modelDep: model,
+      bridge,
+      rawDir,
+    })
+    assert.deepEqual(captionTimings, [
+      { seq: 1, caption: 'Looking at the home screen', startMs: 0 },
+    ])
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('runTuiAgentProof: persists raw/caption-timings.json and forwards timings to castToVideo', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  const brief = {
+    title: 'Captioned video',
+    description: 'Produces a captioned video',
+    expectedEvidence: ['Ready'],
+  }
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        BASE_ENV({ BOSS_PROOF_BRIEF: briefPath, BOSS_PROOF_RUN_ID: 'tui-captions' }),
+        async () => {
+          let castArgs = null
+          const castToVideo = async (args) => {
+            castArgs = args
+            return null // stills-only; we only assert the timings were threaded
+          }
+          const { manifest } = await runTuiAgentProof({
+            prNumber: '0',
+            commit: 'abc1234',
+            changedFiles: [],
+            dryRun: true,
+            deps: {
+              bridge: scriptedBridge({ screens: ['Ready to go'] }),
+              model: scriptedModel([
+                toolUse('observe', {}, { text: 'Observing the ready screen' }),
+                toolUse('done', { summary: 'done', passed: true }),
+              ]),
+              renderStill: fakeRenderStill(),
+              castToVideo,
+            },
+          })
+          assert.ok(manifest, 'run completes')
+          assert.ok(
+            Array.isArray(castArgs.captionTimings),
+            'captionTimings forwarded to castToVideo',
+          )
+          assert.equal(castArgs.captionTimings[0].caption, 'Observing the ready screen')
+          // raw/caption-timings.json persisted next to the run's screens. The
+          // path is deterministic from the env (commit/run-id/run-token in BASE_ENV).
+          const rawTimingsPath = path.join(
+            REPO_ROOT,
+            '.proof',
+            'pr-0',
+            'abc1234',
+            'tui-captions',
+            'tok-tui-test',
+            'raw',
+            'caption-timings.json',
+          )
+          const persisted = JSON.parse(fs.readFileSync(rawTimingsPath, 'utf8'))
+          assert.equal(persisted[0].caption, 'Observing the ready screen')
+        },
+      ),
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('0')
   }
 })

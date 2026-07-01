@@ -142,7 +142,10 @@ func (s *stubSessionSettingsClient) NotifyAuthChange(context.Context, string) er
 func (s *stubSessionSettingsClient) CreateCronJob(context.Context, *pb.CreateCronJobRequest) (*pb.CronJob, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) ListCronJobs(context.Context) ([]*pb.CronJob, error) {
+func (s *stubSessionSettingsClient) GetCronJob(context.Context, string) (*pb.CronJob, error) {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) ListCronJobs(context.Context, string) ([]*pb.CronJob, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) UpdateCronJob(context.Context, *pb.UpdateCronJobRequest) (*pb.CronJob, error) {

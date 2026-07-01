@@ -38,6 +38,14 @@ func chatStatusString(s pb.ChatStatus) string {
 	}
 }
 
+// renderArchivingStatus renders the optimistic "archiving" status with an
+// animated spinner, used while a session archive is in flight and across the
+// navigation that follows it. Mirrors the in-progress "checking" styling in
+// renderDisplayStatus so the home list and the chatpicker banner match.
+func renderArchivingStatus(sp spinner.Model) string {
+	return styleStatusWarning.Render(sp.View() + "archiving")
+}
+
 // styledPRStatus returns a styled label for a PR display status.
 // Returns "" for unspecified/unknown statuses.
 func styledPRStatus(sess *pb.Session, sp spinner.Model) string {

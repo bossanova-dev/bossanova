@@ -127,7 +127,7 @@ func (m CronListModel) tickCmd() tea.Cmd {
 
 func (m CronListModel) fetchJobs() tea.Cmd {
 	return func() tea.Msg {
-		jobs, err := m.client.ListCronJobs(m.ctx)
+		jobs, err := m.client.ListCronJobs(m.ctx, "")
 		return cronJobsLoadedMsg{jobs: jobs, err: err}
 	}
 }

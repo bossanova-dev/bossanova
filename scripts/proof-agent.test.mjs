@@ -888,9 +888,8 @@ test('resolveAgentBackstopMs: an env value above the floor is honored', async ()
 })
 
 test('resolveAgentBackstopMs: a missing/invalid inner budget falls back to the default budget', async () => {
-  const { resolveAgentBackstopMs, VIDEO_SAVE_HEADROOM_MS, DEFAULT_INNER_BUDGET_MS } = await import(
-    './proof-agent.mjs'
-  )
+  const { resolveAgentBackstopMs, VIDEO_SAVE_HEADROOM_MS, DEFAULT_INNER_BUDGET_MS } =
+    await import('./proof-agent.mjs')
   const backstop = resolveAgentBackstopMs({ envValue: undefined, innerBudgetMs: undefined })
   assert.equal(backstop, DEFAULT_INNER_BUDGET_MS + VIDEO_SAVE_HEADROOM_MS)
 })

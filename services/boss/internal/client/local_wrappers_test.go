@@ -89,6 +89,12 @@ func (f *fakeDaemonRPC) CreateCronJob(_ context.Context, _ *connect.Request[pb.C
 	})
 }
 
+func (f *fakeDaemonRPC) GetCronJob(_ context.Context, _ *connect.Request[pb.GetCronJobRequest]) (*connect.Response[pb.GetCronJobResponse], error) {
+	return sessionResp(f, func() *pb.GetCronJobResponse {
+		return &pb.GetCronJobResponse{CronJob: &pb.CronJob{Id: "cron-1"}}
+	})
+}
+
 func (f *fakeDaemonRPC) ListCronJobs(_ context.Context, _ *connect.Request[pb.ListCronJobsRequest]) (*connect.Response[pb.ListCronJobsResponse], error) {
 	return sessionResp(f, func() *pb.ListCronJobsResponse {
 		return &pb.ListCronJobsResponse{CronJobs: []*pb.CronJob{{Id: "cron-1"}}}
@@ -222,8 +228,12 @@ func TestLocalClientValueWrappers(t *testing.T) {
 			got, err := c.CreateCronJob(ctx, &pb.CreateCronJobRequest{})
 			return err == nil && got.GetId() == "cron-1", got == nil, err
 		}},
+		{"GetCronJob", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
+			got, err := c.GetCronJob(ctx, "cron-1")
+			return err == nil && got.GetId() == "cron-1", got == nil, err
+		}},
 		{"ListCronJobs", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
-			got, err := c.ListCronJobs(ctx)
+			got, err := c.ListCronJobs(ctx, "")
 			return err == nil && len(got) == 1 && got[0].GetId() == "cron-1", got == nil, err
 		}},
 		{"UpdateCronJob", func(_ *testing.T, c *LocalClient) (bool, bool, error) {

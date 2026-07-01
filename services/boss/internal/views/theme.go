@@ -211,6 +211,11 @@ type bannerOpts struct {
 	repo    *pb.Repo
 	spinner spinner.Model
 
+	// archiving, when true, overrides the session's PR display status with the
+	// animated "archiving" label. Set when the user re-enters a session whose
+	// archive is still in flight (archivingOptimisticID matches).
+	archiving bool
+
 	// Screen-specific overrides (used when session/repo are nil).
 	line1 string
 	line2 string
@@ -249,7 +254,11 @@ func renderBanner(active View, opts bannerOpts) string {
 				title = prLink + " " + title
 			}
 		}
-		if displayStatus := renderDisplayStatus(opts.session, opts.spinner); displayStatus != "" {
+		displayStatus := renderDisplayStatus(opts.session, opts.spinner)
+		if opts.archiving {
+			displayStatus = renderArchivingStatus(opts.spinner)
+		}
+		if displayStatus != "" {
 			title += " (" + displayStatus + ")"
 		}
 		line1 = title

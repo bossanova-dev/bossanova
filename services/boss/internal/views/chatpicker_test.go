@@ -158,7 +158,10 @@ func (s *chatPickerStub) ListTrackerIssues(context.Context, string, string, stri
 func (s *chatPickerStub) CreateCronJob(context.Context, *pb.CreateCronJobRequest) (*pb.CronJob, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) ListCronJobs(context.Context) ([]*pb.CronJob, error) { panic("unused") }
+func (s *chatPickerStub) GetCronJob(context.Context, string) (*pb.CronJob, error) { panic("unused") }
+func (s *chatPickerStub) ListCronJobs(context.Context, string) ([]*pb.CronJob, error) {
+	panic("unused")
+}
 func (s *chatPickerStub) UpdateCronJob(context.Context, *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
 	panic("unused")
 }
@@ -415,6 +418,103 @@ func TestChatPicker_NoWarningBlockForCleanSession(t *testing.T) {
 	rendered := renderChatPickerWith(t, &pb.Session{Id: "session-1", Title: "clean"})
 	if strings.Contains(rendered, "finalize failed") || strings.Contains(rendered, "repair failed") {
 		t.Errorf("view-session screen rendered a warning block for a clean session:\n%s", rendered)
+	}
+}
+
+// TestChatPicker_SingleBlankLineAroundSessionWarning pins the spacing around
+// the finalize/repair warning block (BOS-122). The header banner already
+// renders a single blank line below the worktree-path line, so the chat
+// picker must NOT add a second one above the warning: its content must not
+// begin with a blank line. Below the warning there must remain exactly one
+// blank line before the chat table (must not regress).
+func TestChatPicker_SingleBlankLineAroundSessionWarning(t *testing.T) {
+	const warn = "finalize failed (pr_failed): worktree has uncommitted changes"
+	rendered := renderChatPickerWith(t, &pb.Session{
+		Id: "session-1",
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Summary:        warn,
+		},
+	})
+
+	// No blank line above the warning block: the banner owns the single blank
+	// line above, so the chat picker's own content must not lead with one.
+	if strings.HasPrefix(rendered, "\n") {
+		t.Errorf("chat picker rendered a leading blank line above the warning block:\n%q", rendered)
+	}
+
+	// Exactly one blank line below the warning block before the chat table.
+	// Locate the warning block, then advance past all of its (possibly
+	// wrapped) lines so the gap assertion holds regardless of how many lines
+	// the warning renders to.
+	lines := strings.Split(trimLineRightSpace(stripANSI(rendered)), "\n")
+	warnIdx := -1
+	for i, ln := range lines {
+		if strings.Contains(ln, "finalize failed") {
+			warnIdx = i
+			break
+		}
+	}
+	if warnIdx == -1 {
+		t.Fatalf("warning text %q not found in:\n%s", warn, rendered)
+	}
+	blockEnd := warnIdx
+	for blockEnd+1 < len(lines) && lines[blockEnd+1] != "" {
+		blockEnd++
+	}
+	if blockEnd+2 >= len(lines) {
+		t.Fatalf("not enough lines after the warning block (block ends at %d of %d):\n%s", blockEnd, len(lines), rendered)
+	}
+	if lines[blockEnd+1] != "" {
+		t.Errorf("expected exactly one blank line directly below the warning block, got %q", lines[blockEnd+1])
+	}
+	if lines[blockEnd+2] == "" {
+		t.Errorf("expected the chat table directly after the single blank line, got a second blank line:\n%s", rendered)
+	}
+}
+
+// TestChatPicker_WarningBlockHeightMatchesRenderedRows guards the coupling
+// between tableHeight's reservation (warningBlockHeight) and what View
+// actually renders. Removing the blank line above the warning (BOS-122)
+// without shrinking the reservation would over-reserve a row and drop a chat
+// from the table in constrained terminals.
+func TestChatPicker_WarningBlockHeightMatchesRenderedRows(t *testing.T) {
+	const warn = "finalize failed (pr_failed): worktree has uncommitted changes"
+	stub := &chatPickerStub{}
+	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
+	updated, _ := m.Update(chatsListedMsg{
+		chats: []*pb.ClaudeChat{{
+			SessionId:      "session-1",
+			AgentSessionId: "agent-1",
+			Title:          "A chat",
+			CreatedAt:      timestamppb.Now(),
+		}},
+		daemonStatuses: map[string]string{"agent-1": statusWorking},
+	})
+	m = updated.(ChatPickerModel)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+	m.session = &pb.Session{
+		Id:              "session-1",
+		AttentionStatus: &pb.AttentionStatus{NeedsAttention: true, Summary: warn},
+	}
+
+	rendered := m.View().Content
+	lines := strings.Split(trimLineRightSpace(stripANSI(rendered)), "\n")
+	tableIdx := -1
+	for i, ln := range lines {
+		if strings.Contains(ln, "CHAT") {
+			tableIdx = i
+			break
+		}
+	}
+	if tableIdx == -1 {
+		t.Fatalf("chat table header not found in:\n%s", rendered)
+	}
+	// The warning block plus its single trailing blank line occupy exactly
+	// tableIdx lines before the table; the reservation must match.
+	if got := m.warningBlockHeight(); got != tableIdx {
+		t.Errorf("warningBlockHeight()=%d but the warning block + blank line occupy %d rendered lines before the table; table-height reservation is out of sync:\n%s", got, tableIdx, rendered)
 	}
 }
 

@@ -27,7 +27,9 @@ import {
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const playButtonAsset = fileURLToPath(new URL('./assets/youtube-play-button.png', import.meta.url))
 
-const DEFAULT_MODEL = 'claude-sonnet-4-6'
+// Haiku is the default: it runs faster and dodges the proof key's sonnet ITPM
+// cap (image-heavy web agent runs 429 on sonnet). Override with BOSS_PROOF_MODEL.
+const DEFAULT_MODEL = 'claude-haiku-4-5'
 
 // Headroom the outer SIGKILL backstop must leave above the inner agent budget so
 // the graceful shutdown (loop break → page.close → video.saveAs → stills write)

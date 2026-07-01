@@ -145,7 +145,10 @@ func resolveEnvReport(getenv func(string) string) EnvReport {
 		rep.Binaries.Boss = config.ResolveTrustedExecutable("boss")
 	}
 	if rep.Binaries.MCP == "" {
-		rep.Binaries.MCP = config.ResolveTrustedExecutable("mcp")
+		// Prefer the distributed name "boss-mcp" (falls back to "mcp"); a
+		// packaged install ships "boss-mcp", so the bare name would falsely
+		// report MCP unresolved here.
+		rep.Binaries.MCP = config.ResolveMcpBinary()
 	}
 	if rep.Daemon.Socket == "" {
 		rep.Daemon.Socket = resolveSocketFallback()

@@ -56,6 +56,7 @@ var GroupOrder = []GroupSpec{
 	{ID: "session", Title: "Session Management"},
 	{ID: "chat", Title: "Chat Control"},
 	{ID: "repo", Title: "Repository Management"},
+	{ID: "cron", Title: "Cron Jobs"},
 	{ID: "trash", Title: "Trash Management"},
 	{ID: "daemon", Title: "Daemon Management"},
 	{ID: "mcp", Title: "MCP Server"},

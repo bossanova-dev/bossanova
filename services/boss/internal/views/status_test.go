@@ -145,6 +145,17 @@ func TestStyledPRStatus_ConflictUsesFailureCross(t *testing.T) {
 	}
 }
 
+func TestRenderArchivingStatus_ShowsSpinnerAndLabel(t *testing.T) {
+	sp := newStatusSpinner()
+	got := renderArchivingStatus(sp)
+	if !strings.Contains(got, "archiving") {
+		t.Fatalf("expected archiving label, got %q", got)
+	}
+	if !strings.Contains(got, sp.View()) {
+		t.Fatalf("expected spinner frame %q in %q", sp.View(), got)
+	}
+}
+
 // TestRepairFailureHint covers the "repair failed (N×)" warning text
 // that flags sessions where Phase 1c's RecordRepairOutcome captured a
 // non-empty runner_error or exit_error.

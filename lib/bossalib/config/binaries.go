@@ -32,3 +32,15 @@ func ResolveTrustedExecutable(name string) string {
 	}
 	return ""
 }
+
+// ResolveMcpBinary returns the absolute path to a trusted MCP binary, preferring
+// the distributed name "boss-mcp" over the local-dev name "mcp", or "" if neither
+// is found at a trusted path. The distributed/global binary is "boss-mcp" (a bare
+// "mcp" in a shared bin is a collision footgun); `make build-mcp` still emits
+// bin/mcp, so the "mcp" fallback keeps local dev flows working.
+func ResolveMcpBinary() string {
+	if p := ResolveTrustedExecutable("boss-mcp"); p != "" {
+		return p
+	}
+	return ResolveTrustedExecutable("mcp")
+}

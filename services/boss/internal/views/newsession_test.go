@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/config"
@@ -213,7 +214,8 @@ func (s *stubClient) CreateCronJob(_ context.Context, req *pb.CreateCronJobReque
 	s.createdCronReq = req
 	return &pb.CronJob{Id: "cron-1"}, nil
 }
-func (s *stubClient) ListCronJobs(context.Context) ([]*pb.CronJob, error) { panic("unused") }
+func (s *stubClient) GetCronJob(context.Context, string) (*pb.CronJob, error)     { panic("unused") }
+func (s *stubClient) ListCronJobs(context.Context, string) ([]*pb.CronJob, error) { panic("unused") }
 func (s *stubClient) UpdateCronJob(_ context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
 	s.updatedCronReq = req
 	return &pb.CronJob{Id: req.Id}, nil
@@ -1940,7 +1942,7 @@ func TestNewSession_IssueFilterActiveEnterEmptyIsNoop(t *testing.T) {
 
 // TestNewSession_CreatingPhase_RendersInitializingIndicator asserts that the
 // creating-step view includes an "initializing" label styled with the info
-// (blue) color. The indicator is static — the view does not animate.
+// (blue) color.
 func TestNewSession_CreatingPhase_RendersInitializingIndicator(t *testing.T) {
 	sc := &stubClient{repos: oneRepo()}
 	m := NewNewSessionModel(sc, context.Background())
@@ -1951,10 +1953,105 @@ func TestNewSession_CreatingPhase_RendersInitializingIndicator(t *testing.T) {
 	if !strings.Contains(view, "initializing") {
 		t.Errorf("creating-step view missing %q in:\n%s", "initializing", view)
 	}
+	// Regression (BOS-128): the spinner.Dot frame already ends with a trailing
+	// space, so the label must not also carry a leading space — otherwise the
+	// indicator renders with a doubled gap ("⣾  initializing").
+	if strings.Contains(view, "  initializing") {
+		t.Errorf("creating-step view has a double space before %q (regression BOS-128) in:\n%s", "initializing", view)
+	}
 	// styleStatusInfo uses colorInfo = #4CA7F8 (76, 167, 248 in decimal).
 	// lipgloss renders this as the SGR sequence 38;2;76;167;248.
 	wantColor := "76;167;248"
 	if !strings.Contains(view, wantColor) {
 		t.Errorf("creating-step view missing info-color SGR sequence %q in:\n%s", wantColor, view)
+	}
+}
+
+// --- Spinner animation tests ---
+
+// newTestNewSessionModel returns a minimal NewSessionModel for spinner tests.
+func newTestNewSessionModel(t *testing.T) NewSessionModel {
+	t.Helper()
+	sc := &stubClient{repos: oneRepo()}
+	return NewNewSessionModel(sc, context.Background())
+}
+
+// viewString renders a model's view to a plain string.
+func viewString(m tea.Model) string {
+	return m.View().Content
+}
+
+// cmdEmitsSpinnerTick runs cmd (and shallowly unwraps a tea.BatchMsg) and
+// reports whether any produced message is a spinner.TickMsg.
+func cmdEmitsSpinnerTick(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if c == nil {
+				continue
+			}
+			if _, ok := c().(spinner.TickMsg); ok {
+				return true
+			}
+		}
+		return false
+	}
+	_, ok := msg.(spinner.TickMsg)
+	return ok
+}
+
+// TestNewSession_InitStartsSpinnerTick verifies that Init() includes the
+// spinner tick in its command batch, which is required to kick off animation.
+func TestNewSession_InitStartsSpinnerTick(t *testing.T) {
+	m := newTestNewSessionModel(t)
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init() returned nil; expected a batch including the spinner tick")
+	}
+	if !cmdEmitsSpinnerTick(cmd) {
+		t.Fatal("Init() command batch does not emit a spinner.TickMsg")
+	}
+}
+
+// TestNewSession_TickMsgAdvancesAndReissues verifies that the TickMsg case in
+// Update advances the spinner and re-issues a tick command to keep animating.
+func TestNewSession_TickMsgAdvancesAndReissues(t *testing.T) {
+	m := newTestNewSessionModel(t)
+	m.phase = newSessionPhaseCreating
+
+	_, cmd := m.Update(spinner.TickMsg{})
+	if cmd == nil {
+		t.Fatal("TickMsg handler returned nil cmd; the tick must be re-issued to keep animating")
+	}
+	// The re-issued cmd is tea.Tick (a ~100ms timer); invoking it here to assert
+	// the message type would block the test for that interval. A non-nil cmd is
+	// sufficient: TestNewSession_InitStartsSpinnerTick proves the tick message
+	// type is wired, and TestNewSession_CreatingViewAnimates proves real frames
+	// advance across consecutive ticks.
+}
+
+// TestNewSession_CreatingViewAnimates verifies that the creating-phase view
+// renders an animated spinner glyph that changes across consecutive ticks.
+func TestNewSession_CreatingViewAnimates(t *testing.T) {
+	m := newTestNewSessionModel(t)
+	m.phase = newSessionPhaseCreating
+
+	frame0 := stripANSI(viewString(m))
+
+	// Advance the spinner enough ticks to guarantee the Dot frame changes.
+	var model tea.Model = m
+	for i := 0; i < 6; i++ {
+		model, _ = model.Update(spinner.TickMsg{})
+	}
+	frameN := stripANSI(viewString(model))
+
+	if !strings.Contains(frame0, "initializing") {
+		t.Fatalf("creating view missing 'initializing' label: %q", frame0)
+	}
+	if frame0 == frameN {
+		t.Fatalf("spinner did not animate: frame unchanged across 6 ticks:\n%q", frame0)
 	}
 }

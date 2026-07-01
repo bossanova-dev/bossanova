@@ -298,6 +298,27 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.activeView = ViewRepoList
 		return a, a.repoList.Init()
 
+	case archiveResultMsg:
+		// Reconcile the home archiving override when the archive RPC resolves.
+		// Runs at the app level (not per-view) so an ESC-then-result still
+		// reconciles the optimistic state even when the chatpicker is no longer
+		// the active view. This case does NOT return
+		// early: after updating app state, execution continues past this type
+		// switch to the per-view dispatch below (not a Go `fallthrough`), so
+		// the chatpicker (if still active) also processes the message and flips
+		// its own archiving=false / statusMsg field.
+		if msg.sessionID == a.home.archivingOptimisticID {
+			// The archive RPC resolved. On failure, drop the override entirely so
+			// the real status is shown again. On success the override is retained
+			// for rendering until the row leaves the list, but the archive is no
+			// longer in flight, so re-entering the session must not seed a stuck
+			// archiving picker.
+			if msg.err != nil {
+				a.home.archivingOptimisticID = ""
+			}
+			a.home.archiveInFlight = false
+		}
+
 	case switchViewMsg:
 		a.activeView = msg.view
 		switch msg.view { //nolint:exhaustive // ViewBugReport is pushed via ctrl+b, not switchViewMsg
@@ -310,6 +331,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.chatPicker.SetTelemetry(a.telemetry)
 			a.chatPicker.width = a.width
 			a.chatPicker.height = a.height
+			// Only seed the picker's key-swallowing archiving flag when the
+			// archive is still actually in flight. After a successful archive the
+			// override lingers on the still-present row for rendering, but no
+			// archiveResultMsg is outstanding for a freshly created picker, so
+			// seeding archiving=true here would leave it stuck on "Archiving
+			// session..." swallowing every key but Esc.
+			if a.home.archiveInFlight && msg.sessionID == a.home.archivingOptimisticID {
+				a.chatPicker.archiving = true
+			}
 			return a, a.chatPicker.Init()
 		case ViewRepoAdd:
 			a.repoAdd = a.newRepoAddModel()
@@ -457,6 +487,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.home.highlightSessionID = highlightID
 			if merged {
 				a.home.mergedOptimisticID = sessionID
+			}
+			if archivingID := a.chatPicker.ArchivingSessionID(); archivingID != "" {
+				a.home.archivingOptimisticID = archivingID
+				a.home.archiveInFlight = true
 			}
 			return a, a.home.Init()
 		}
@@ -710,6 +744,18 @@ func (a *App) newHomeModel() HomeModel {
 	home.SetCloudSubscription(a.cloudAccess, a.checkoutReturnURL, a.checkoutCancelURL)
 	home.width = a.width
 	home.height = a.height
+	// Preserve an in-flight archive override across the rebuild. If a session's
+	// archive RPC is still outstanding, its optimistic "archiving" status must
+	// survive navigating away from and back to Home — opening a different
+	// session or another Home subview rebuilds the model, and without this carry
+	// the row would revert to its real PR status (and re-entry would lose the
+	// in-flight state) even though the archive is still running. The override is
+	// only carried while genuinely in flight; a resolved archive's lingering
+	// render override is intentionally left to the fresh poll.
+	if a.home.archiveInFlight && a.home.archivingOptimisticID != "" {
+		home.archivingOptimisticID = a.home.archivingOptimisticID
+		home.archiveInFlight = true
+	}
 	return home
 }
 
@@ -776,6 +822,7 @@ func (a App) View() tea.View {
 		case ViewChatPicker:
 			opts.session = a.chatPicker.session
 			opts.spinner = a.chatPicker.spinner
+			opts.archiving = a.chatPicker.archiving
 		case ViewRepoSettings:
 			opts.repo = a.repoSettings.repo
 		case ViewSessionSettings:

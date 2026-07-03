@@ -229,6 +229,154 @@ func TestUpdateRepairDiagnosticsPersistsReviewFingerprint(t *testing.T) {
 	}
 }
 
+// TestRepairBlocked_WriteSetsReasonNotCount verifies that the blocked-refusal
+// lane records the reason + timestamp WITHOUT bumping the consecutive-failure
+// counter — a start-refusal must never count as a repair failure (BOS-153).
+func TestRepairBlocked_WriteSetsReasonNotCount(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Repair blocked reason test",
+		WorktreePath: "/tmp/wt/repair-blocked-reason",
+		BranchName:   "feat/repair-blocked-reason",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Seed a real consecutive-failure count of 3.
+	for i := 0; i < 3; i++ {
+		if err := sessionStore.UpdateRepairDiagnostics(ctx, UpdateRepairDiagnosticsParams{
+			SessionID:   sess.ID,
+			StartedAt:   time.Now(),
+			RunnerError: "claude not on PATH",
+		}); err != nil {
+			t.Fatalf("seed failure %d: %v", i, err)
+		}
+	}
+
+	blockedAt := time.Unix(1779238800, 0)
+	if err := sessionStore.UpdateRepairBlocked(ctx, sess.ID, blockedAt, "displace blocked: chat working"); err != nil {
+		t.Fatalf("UpdateRepairBlocked: %v", err)
+	}
+
+	got, err := sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.LastRepairBlockedReason != "displace blocked: chat working" {
+		t.Fatalf("LastRepairBlockedReason=%q, want %q", got.LastRepairBlockedReason, "displace blocked: chat working")
+	}
+	if got.LastRepairBlockedAt == nil || !got.LastRepairBlockedAt.Equal(blockedAt) {
+		t.Fatalf("LastRepairBlockedAt=%v, want %v", got.LastRepairBlockedAt, blockedAt)
+	}
+	if got.LastRepairAttemptCount != 3 {
+		t.Fatalf("LastRepairAttemptCount=%d, want 3 (blocked write must not bump count)", got.LastRepairAttemptCount)
+	}
+}
+
+// TestRepairBlocked_RealOutcomeClearsBlocked verifies that a real repair
+// outcome (a failed run here) supersedes and clears the blocked pair while
+// bumping the failure count (BOS-153).
+func TestRepairBlocked_RealOutcomeClearsBlocked(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Repair blocked cleared test",
+		WorktreePath: "/tmp/wt/repair-blocked-cleared",
+		BranchName:   "feat/repair-blocked-cleared",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	if err := sessionStore.UpdateRepairBlocked(ctx, sess.ID, time.Unix(1779238800, 0), "displace blocked: tracker warming"); err != nil {
+		t.Fatalf("UpdateRepairBlocked: %v", err)
+	}
+	if err := sessionStore.UpdateRepairDiagnostics(ctx, UpdateRepairDiagnosticsParams{
+		SessionID: sess.ID,
+		StartedAt: time.Now(),
+		ExitError: "exit status 1",
+	}); err != nil {
+		t.Fatalf("UpdateRepairDiagnostics: %v", err)
+	}
+
+	got, err := sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.LastRepairBlockedReason != "" {
+		t.Fatalf("LastRepairBlockedReason=%q, want empty after real outcome", got.LastRepairBlockedReason)
+	}
+	if got.LastRepairBlockedAt != nil {
+		t.Fatalf("LastRepairBlockedAt=%v, want nil after real outcome", got.LastRepairBlockedAt)
+	}
+	if got.LastRepairAttemptCount != 1 {
+		t.Fatalf("LastRepairAttemptCount=%d, want 1", got.LastRepairAttemptCount)
+	}
+}
+
+// TestRepairBlocked_CleanOutcomeClearsBlockedAndCount verifies that a clean
+// repair outcome clears both the blocked pair and the failure count (BOS-153).
+func TestRepairBlocked_CleanOutcomeClearsBlockedAndCount(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Repair blocked clean test",
+		WorktreePath: "/tmp/wt/repair-blocked-clean",
+		BranchName:   "feat/repair-blocked-clean",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Seed a failure and a blocked state.
+	if err := sessionStore.UpdateRepairDiagnostics(ctx, UpdateRepairDiagnosticsParams{
+		SessionID: sess.ID, StartedAt: time.Now(), ExitError: "exit status 1",
+	}); err != nil {
+		t.Fatalf("seed failure: %v", err)
+	}
+	if err := sessionStore.UpdateRepairBlocked(ctx, sess.ID, time.Unix(1779238800, 0), "displace blocked: chat working"); err != nil {
+		t.Fatalf("UpdateRepairBlocked: %v", err)
+	}
+
+	// A clean run resets both.
+	if err := sessionStore.UpdateRepairDiagnostics(ctx, UpdateRepairDiagnosticsParams{
+		SessionID: sess.ID, StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpdateRepairDiagnostics clean: %v", err)
+	}
+
+	got, err := sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.LastRepairAttemptCount != 0 {
+		t.Fatalf("LastRepairAttemptCount=%d, want 0 after clean run", got.LastRepairAttemptCount)
+	}
+	if got.LastRepairBlockedReason != "" || got.LastRepairBlockedAt != nil {
+		t.Fatalf("blocked pair not cleared: reason=%q at=%v", got.LastRepairBlockedReason, got.LastRepairBlockedAt)
+	}
+}
+
 // TestArchiveContract locks the contract that the handler relies on (BOS-76):
 // Archive returns sql.ErrNoRows for a missing id, and nil (with archived_at set)
 // for an existing un-archived row.

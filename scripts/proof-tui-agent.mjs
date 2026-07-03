@@ -850,12 +850,33 @@ export async function renderFrames({
   const batch =
     renderStills ?? (renderStill === defaultRenderStill ? defaultRenderStillsBatch : null)
   if (batch) {
+    let batchFailed = false
     try {
       await batch(
         jobs.map((j) => ({ input: j.input, output: j.output, title, caption: j.caption })),
       )
     } catch (err) {
+      batchFailed = true
       console.warn(`[proof-tui-agent] batch frame render failed: ${err.message}`)
+    }
+    // A total batch failure (manifest write / browser launch died) leaves every
+    // PNG unwritten, so collect() would be empty and force the zero-frame
+    // fallback. Recover by rendering any still-missing frame individually, so a
+    // single batch failure doesn't drop all stills. Only on failure: a batch that
+    // *returns* having written a subset is an intentional partial (see the
+    // "only frames whose PNG was written are returned" contract), not retried.
+    if (batchFailed) {
+      const missing = jobs.filter((j) => !fs.existsSync(j.output))
+      for (const j of missing) {
+        try {
+          // eslint-disable-next-line no-await-in-loop -- frames render sequentially
+          await renderStill({ input: j.input, output: j.output, title, caption: j.caption })
+        } catch (err) {
+          console.warn(
+            `[proof-tui-agent] per-frame retry failed for screen-${j.n}.txt: ${err.message}`,
+          )
+        }
+      }
     }
     return collect()
   }

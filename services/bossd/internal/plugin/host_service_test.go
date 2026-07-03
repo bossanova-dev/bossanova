@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -194,6 +192,15 @@ type fakeSessionStore struct {
 	db.SessionStore
 	sessions                map[string]*models.Session
 	updateRepairDiagnostics *db.UpdateRepairDiagnosticsParams
+	updateRepairBlocked     *updateRepairBlockedCall
+}
+
+// updateRepairBlockedCall records the arguments to a UpdateRepairBlocked call
+// so tests can assert the blocked lane was taken.
+type updateRepairBlockedCall struct {
+	sessionID string
+	at        time.Time
+	reason    string
 }
 
 func (f *fakeSessionStore) Get(_ context.Context, id string) (*models.Session, error) {
@@ -209,6 +216,16 @@ func (f *fakeSessionStore) UpdateRepairDiagnostics(_ context.Context, params db.
 		if params.ReviewFingerprint != nil {
 			s.LastRepairReviewFingerprint = *params.ReviewFingerprint
 		}
+	}
+	return nil
+}
+
+func (f *fakeSessionStore) UpdateRepairBlocked(_ context.Context, sessionID string, at time.Time, reason string) error {
+	f.updateRepairBlocked = &updateRepairBlockedCall{sessionID: sessionID, at: at, reason: reason}
+	if s, ok := f.sessions[sessionID]; ok {
+		s.LastRepairBlockedReason = reason
+		t := at
+		s.LastRepairBlockedAt = &t
 	}
 	return nil
 }
@@ -784,6 +801,40 @@ func TestRecordRepairOutcomePersistsReviewFingerprint(t *testing.T) {
 	}
 }
 
+// TestRecordRepairOutcomeBlockedReasonRoutesToBlockedLane verifies that a
+// non-empty blocked_reason routes the outcome into the blocked lane —
+// UpdateRepairBlocked is called and UpdateRepairDiagnostics is NOT, so the
+// consecutive-failure counter is left untouched (BOS-153).
+func TestRecordRepairOutcomeBlockedReasonRoutesToBlockedLane(t *testing.T) {
+	store := &fakeSessionStore{sessions: map[string]*models.Session{
+		"sess-1": {ID: "sess-1", RepoID: "repo-1"},
+	}}
+
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.sessionStore = store
+
+	_, err := srv.RecordRepairOutcome(t.Context(), &bossanovav1.RecordRepairOutcomeRequest{
+		SessionId:     "sess-1",
+		StartedAtUnix: 1779238800,
+		BlockedReason: "  displace blocked: chat working  ",
+	})
+	if err != nil {
+		t.Fatalf("RecordRepairOutcome: %v", err)
+	}
+	if store.updateRepairBlocked == nil {
+		t.Fatal("UpdateRepairBlocked was not called")
+	}
+	if got := store.updateRepairBlocked.reason; got != "displace blocked: chat working" {
+		t.Fatalf("blocked reason=%q, want trimmed %q", got, "displace blocked: chat working")
+	}
+	if !store.updateRepairBlocked.at.Equal(time.Unix(1779238800, 0)) {
+		t.Fatalf("blocked at=%v, want %v", store.updateRepairBlocked.at, time.Unix(1779238800, 0))
+	}
+	if store.updateRepairDiagnostics != nil {
+		t.Fatal("UpdateRepairDiagnostics must NOT be called for a blocked outcome")
+	}
+}
+
 // TestListSessions_LeavesLastChatActivityNilWhenNoLiveChat verifies that when a
 // session has no chats registered against it, ListSessions leaves
 // LastChatActivityAt nil and HasActiveChat false.
@@ -885,10 +936,14 @@ func TestListSessions_IgnoresFailedStartChatsForActiveCheck(t *testing.T) {
 }
 
 // TestListSessions_IgnoresStaleRepairChatsForActiveCheck verifies that a
-// repair-owned tmux chat with durable stale evidence does not make the parent
-// session look user-active. StartChatRun and ReclaimRepairChat own repair-chat
-// concurrency; ListSessions' HasActiveChat field is the user-idle gate that
-// decides whether repair may start.
+// repair-owned tmux chat the tracker deems displaceable (idle past the repair
+// window) does not make the parent session look user-active. StartChatRun and
+// ReclaimRepairChat own repair-chat concurrency; ListSessions' HasActiveChat
+// field is the user-idle gate that decides whether repair may start.
+//
+// BOS-153: displaceability comes solely from the sampled chat tracker; no
+// pipe-pane log file is created here at all, proving the deleted log-mtime
+// staleness has no bearing on this computation.
 func TestListSessions_IgnoresStaleRepairChatsForActiveCheck(t *testing.T) {
 	repoID := "repo-1"
 	sessID := "sess-1"
@@ -896,20 +951,12 @@ func TestListSessions_IgnoresStaleRepairChatsForActiveCheck(t *testing.T) {
 	tmuxName := "boss-repair-stale"
 
 	tracker := status.NewTracker()
-	tracker.Update(repairAgentSessionID, bossanovav1.ChatStatus_CHAT_STATUS_IDLE, time.Now())
-
-	agentLogsDir := t.TempDir()
-	logPath := filepath.Join(agentLogsDir, repairAgentSessionID+".log")
-	if err := os.WriteFile(logPath, []byte("old repair output\n"), 0o600); err != nil {
-		t.Fatalf("write repair log: %v", err)
-	}
-	old := time.Now().Add(-31 * time.Minute)
-	if err := os.Chtimes(logPath, old, old); err != nil {
-		t.Fatalf("age repair log: %v", err)
-	}
+	// Tracker says the repair chat has produced no visible output for 31m —
+	// well past repairDisplaceMinIdle — so it is displaceable and must not
+	// count as an active chat.
+	tracker.Update(repairAgentSessionID, bossanovav1.ChatStatus_CHAT_STATUS_IDLE, time.Now().Add(-31*time.Minute))
 
 	srv := NewHostServiceServer(&mockVCSProvider{})
-	srv.agentLogsDir = agentLogsDir
 	srv.repoStore = &fakeRepoStore{
 		repos: []*models.Repo{{ID: repoID, DisplayName: "Test Repo"}},
 	}
@@ -1396,6 +1443,10 @@ type fakeChatLifecycle struct {
 		agentSessionID string
 		reason         string
 	}
+	// getAgentChatTitleFunc, when non-nil, provides the title the host reads
+	// to pick a displacement policy. Defaults to ("", nil) — a non-repair
+	// title — so IDLE-path tests need not set it.
+	getAgentChatTitleFunc func(ctx context.Context, agentSessionID string) (string, error)
 	// startFunc, when non-nil, takes precedence over startResp/startErr.
 	// Used by the AlreadyExists test to have the lifecycle return the
 	// existing agent_session_id alongside a typed gRPC error.
@@ -1459,6 +1510,16 @@ func (f *fakeChatLifecycle) ReplaceBlockingChatForRepair(ctx context.Context, se
 	return session.ReclaimRepairChatResult{}, nil
 }
 
+func (f *fakeChatLifecycle) GetAgentChatTitle(ctx context.Context, agentSessionID string) (string, error) {
+	f.mu.Lock()
+	fn := f.getAgentChatTitleFunc
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, agentSessionID)
+	}
+	return "", nil
+}
+
 func (*dbWritingChatLifecycle) ReplaceBlockingChatForRepair(context.Context, string, string, string) (session.ReclaimRepairChatResult, error) {
 	return session.ReclaimRepairChatResult{}, nil
 }
@@ -1479,6 +1540,10 @@ func TestHostServiceReclaimRepairChat_DelegatesToLifecycle(t *testing.T) {
 		return session.ReclaimRepairChatResult{Reclaimed: true, TmuxSessionName: "boss-repair-1"}, nil
 	}
 	srv.SetLifecycle(lc)
+	// The reclaim handler now gates on tracker evidence before delegating;
+	// a STOPPED (dead-pane) entry is displaceable, so the lifecycle runs.
+	srv.chatTracker = status.NewTracker()
+	srv.chatTracker.Update("agent-1", bossanovav1.ChatStatus_CHAT_STATUS_STOPPED, time.Now())
 
 	resp, err := srv.ReclaimRepairChat(t.Context(), &bossanovav1.ReclaimRepairChatHostRequest{
 		SessionId:      "s1",
@@ -1563,6 +1628,10 @@ func TestHostServiceReclaimRepairChat_RefusesNonRepairChat(t *testing.T) {
 		return session.ReclaimRepairChatResult{}, session.ErrRepairChatNotReclaimable
 	}
 	srv.SetLifecycle(lc)
+	// Pass the tracker gate (STOPPED = displaceable) so the refusal under
+	// test comes from the lifecycle's title guard, not the displaceable check.
+	srv.chatTracker = status.NewTracker()
+	srv.chatTracker.Update("agent-1", bossanovav1.ChatStatus_CHAT_STATUS_STOPPED, time.Now())
 
 	_, err := srv.ReclaimRepairChat(t.Context(), &bossanovav1.ReclaimRepairChatHostRequest{
 		SessionId:      "s1",
@@ -1574,6 +1643,130 @@ func TestHostServiceReclaimRepairChat_RefusesNonRepairChat(t *testing.T) {
 	}
 	if got := grpcstatus.Code(err); got != codes.FailedPrecondition {
 		t.Fatalf("code = %s, want FailedPrecondition", got)
+	}
+}
+
+// TestReplaceBlockingChatForRepair_TrackerGated pins the BOS-153 rewiring:
+// replaceBlockingChatForRepair decides displaceability purely from the chat
+// tracker (never a pipe-pane log mtime) and only then calls the lifecycle.
+func TestReplaceBlockingChatForRepair_TrackerGated(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name         string
+		title        string // GetAgentChatTitle result
+		status       bossanovav1.ChatStatus
+		hasEntry     bool
+		lastOutputAt time.Time
+		observed     time.Time
+		wantRefused  bool
+		wantCalls    int
+	}{
+		{
+			// No tracker evidence → fail closed; lifecycle never runs.
+			name:        "replace_refuses_when_tracker_cold",
+			hasEntry:    false,
+			observed:    now.Add(-30 * time.Minute),
+			wantRefused: true,
+			wantCalls:   0,
+		},
+		{
+			// CRITICAL REGRESSION (the BOS-153 wedge): the tracker says IDLE
+			// aged 30m and NO pane-log file is created at all, yet the chat is
+			// displaced. Proves the deleted log-mtime staleness has zero
+			// influence — the sole authority is the sampled tracker.
+			name:         "replace_allows_idle_chat_with_fresh_pane_log",
+			status:       bossanovav1.ChatStatus_CHAT_STATUS_IDLE,
+			hasEntry:     true,
+			lastOutputAt: now.Add(-30 * time.Minute),
+			observed:     now.Add(-30 * time.Minute),
+			wantRefused:  false,
+			wantCalls:    1,
+		},
+		{
+			// CRITICAL REGRESSION: a WORKING agent is never displaced,
+			// regardless of any other evidence.
+			name:         "replace_refuses_working_chat",
+			status:       bossanovav1.ChatStatus_CHAT_STATUS_WORKING,
+			hasEntry:     true,
+			lastOutputAt: now.Add(-30 * time.Minute),
+			observed:     now.Add(-30 * time.Minute),
+			wantRefused:  true,
+			wantCalls:    0,
+		},
+		{
+			// Repair-owned chat stuck at a QUESTION past 15m → displaceable
+			// (no human will ever answer an unattended repair's question).
+			name:         "replace_repair_title_question_timeout",
+			title:        "Repair: fix",
+			status:       bossanovav1.ChatStatus_CHAT_STATUS_QUESTION,
+			hasEntry:     true,
+			lastOutputAt: now.Add(-20 * time.Minute),
+			observed:     now.Add(-20 * time.Minute),
+			wantRefused:  false,
+			wantCalls:    1,
+		},
+		{
+			// Non-repair chat at a QUESTION is never displaced, at any age.
+			name:         "replace_nonrepair_title_question_never",
+			title:        "New chat",
+			status:       bossanovav1.ChatStatus_CHAT_STATUS_QUESTION,
+			hasEntry:     true,
+			lastOutputAt: now.Add(-20 * time.Hour),
+			observed:     now.Add(-20 * time.Hour),
+			wantRefused:  true,
+			wantCalls:    0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			title := tc.title
+			lc := &fakeChatLifecycle{}
+			lc.getAgentChatTitleFunc = func(context.Context, string) (string, error) {
+				return title, nil
+			}
+			srv := NewHostServiceServer(&mockVCSProvider{})
+			srv.SetLifecycle(lc)
+			srv.chatTracker = status.NewTracker()
+			if tc.hasEntry {
+				srv.chatTracker.Update("agent-blocking", tc.status, tc.lastOutputAt)
+			}
+
+			err := srv.replaceBlockingChatForRepair(t.Context(), "sess-1", "agent-blocking",
+				"auto-repair replacing idle chat", timestamppb.New(tc.observed))
+
+			if tc.wantRefused {
+				if grpcstatus.Code(err) != codes.FailedPrecondition {
+					t.Fatalf("code = %v, want FailedPrecondition (err=%v)", grpcstatus.Code(err), err)
+				}
+			} else if err != nil {
+				t.Fatalf("replaceBlockingChatForRepair: unexpected error %v", err)
+			}
+			if got := len(lc.replaceBlockingChatForRepairReqs); got != tc.wantCalls {
+				t.Fatalf("lifecycle ReplaceBlockingChatForRepair calls = %d, want %d", got, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// TestReclaimRepairChat_TrackerGated_AllowsStopped pins the reclaim RPC's
+// BOS-153 gate: a STOPPED (dead-pane) tracker entry is displaceable, so the
+// handler delegates to the lifecycle reclaim.
+func TestReclaimRepairChat_TrackerGated_AllowsStopped(t *testing.T) {
+	lc := &fakeChatLifecycle{}
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.SetLifecycle(lc)
+	srv.chatTracker = status.NewTracker()
+	srv.chatTracker.Update("agent-stopped", bossanovav1.ChatStatus_CHAT_STATUS_STOPPED, time.Now())
+
+	if _, err := srv.ReclaimRepairChat(t.Context(), &bossanovav1.ReclaimRepairChatHostRequest{
+		SessionId:      "sess-1",
+		AgentSessionId: "agent-stopped",
+		Reason:         "reclaim stopped chat",
+	}); err != nil {
+		t.Fatalf("ReclaimRepairChat: %v", err)
+	}
+	if len(lc.reclaimRepairChatReqs) != 1 {
+		t.Fatalf("lifecycle reclaim calls = %d, want 1", len(lc.reclaimRepairChatReqs))
 	}
 }
 

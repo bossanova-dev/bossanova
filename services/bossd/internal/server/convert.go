@@ -126,11 +126,18 @@ func SessionToProto(s *models.Session) *pb.Session {
 	p.LastRepairHeadSha = protoString(s.LastRepairHeadSHA)
 	p.LastRepairDisplayStatus = pb.DisplayStatus(s.LastRepairDisplayStatus)
 	p.LastRepairReviewFingerprint = s.LastRepairReviewFingerprint
+	// Blocked-refusal lane: a start-refusal reason recorded without bumping the
+	// failure count. Cleared on the next real outcome, so a non-empty reason is
+	// the latest repair-related state.
+	p.LastRepairBlockedReason = s.LastRepairBlockedReason
 	// Non-fatal setup-script failure, surfaced so `boss show <id>` and the TUI
 	// can flag a degraded session. Empty for clean runs.
 	p.SetupError = protoString(s.SetupError)
 	if s.LastRepairStartedAt != nil {
 		p.LastRepairStartedAt = timestamppb.New(*s.LastRepairStartedAt)
+	}
+	if s.LastRepairBlockedAt != nil {
+		p.LastRepairBlockedAt = timestamppb.New(*s.LastRepairBlockedAt)
 	}
 	return p
 }

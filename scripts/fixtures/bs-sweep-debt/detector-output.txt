@@ -1,0 +1,38 @@
+$ make debt-deadcode-bossd
+services/bossd/internal/foo/foo.go:42:6: unreachable func: helperUnused
+services/bossd/internal/foo/foo.go:51:6: unreachable func: legacyAdapter
+
+$ make debt-deadcode-boss
+services/boss/internal/views/bar.go:88:2: unreachable func: oldRender
+
+$ make debt-cyclo-bossd
+18 session (*Manager).transition services/bossd/internal/session/state.go:120:1
+21 stream copyLoop services/bosso/internal/stream/pump.go:64:1
+
+$ make debt-dupl-bosso
+services/bosso/internal/stream/a.go:10,25 services/bosso/internal/stream/b.go:40,55
+
+$ make debt-vuln-bosso
+=== Symbol Results ===
+
+Vulnerability #1: GO-2023-1571
+    Denial of service in golang.org/x/net
+  More info: https://pkg.go.dev/vuln/GO-2023-1571
+  Module: golang.org/x/net
+    Found in: golang.org/x/net@v0.4.0
+    Fixed in: golang.org/x/net@v0.7.0
+    Example traces found:
+      #1: services/bosso/internal/stream/pump.go:64:15: stream.copyLoop calls http2.Server.ServeConn
+
+$ pnpm -C services/web knip
+Unused files (1)
+services/web/src/lib/legacy-helpers.ts
+Unused dependencies (1)
+left-pad  services/web/package.json
+Unused exports (1)
+humanizeBytes  services/web/src/lib/format.ts:12:3
+
+$ npx jscpd services/web/src
+Clone found (javascript):
+ - services/web/src/components/A.tsx [10:1 - 28:1] (18 lines, 120 tokens)
+ - services/web/src/components/B.tsx [14:1 - 32:1]

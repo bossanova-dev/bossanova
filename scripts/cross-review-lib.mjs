@@ -84,26 +84,31 @@ export function resolveAgentBin(env, { overrideVar, binName } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// classifyProbe({ spawnError, status, signal }) → 'ready' | 'not_installed' |
-//                                                  'not_authed' | 'error'
+// classifyProbe({ spawnError, status, signal, nonZeroStatus }) →
+//   'ready' | 'not_installed' | 'not_authed' | 'error'
 //
 // Pure classifier based on spawn-result shape. Does NOT inspect stderr prose.
-// Rules (e.g. codex-cli login-status surface):
+// Rules:
 //   • spawnError.code === 'ENOENT'              → not_installed
 //   • status === 0                              → ready
-//   • status non-zero, no signal, no spawnError → not_authed
-//     (the login-status command exits non-zero iff unauthenticated)
+//   • status non-zero, no signal, no spawnError → nonZeroStatus
 //   • signal, timeout, or any other spawnError  → error
 //   • ambiguous (null status, no signal, no err)→ error
+//
+// `nonZeroStatus` is adapter-specific because a non-zero exit means different
+// things per probe command. Codex probes `codex login status`, which exits
+// non-zero iff unauthenticated → 'not_authed' (the default). Claude probes
+// `claude --version`, which has no auth semantics, so a non-zero exit is a
+// broken CLI → callers pass 'error'.
 // ---------------------------------------------------------------------------
-export function classifyProbe({ spawnError, status, signal }) {
+export function classifyProbe({ spawnError, status, signal, nonZeroStatus = 'not_authed' }) {
   if (spawnError) {
     if (spawnError.code === 'ENOENT') return 'not_installed'
     return 'error'
   }
   if (signal) return 'error'
   if (status === 0) return 'ready'
-  if (typeof status === 'number') return 'not_authed'
+  if (typeof status === 'number') return nonZeroStatus
   // null status, no signal, no error — ambiguous
   return 'error'
 }
@@ -244,7 +249,8 @@ export function interpretResult({
 } = {}) {
   const output = typeof stdout === 'string' ? stdout : ''
   if (timedOut) return { ok: false, output, timedOut: true, skipReason: 'timed out' }
-  if (signal) return { ok: false, output, timedOut: false, skipReason: `killed by signal ${signal}` }
+  if (signal)
+    return { ok: false, output, timedOut: false, skipReason: `killed by signal ${signal}` }
   if (typeof code !== 'number') {
     return { ok: false, output, timedOut: false, skipReason: 'no exit code' }
   }

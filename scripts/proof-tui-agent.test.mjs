@@ -1269,6 +1269,42 @@ test('renderFrames batch: only frames whose PNG was written are returned', async
   }
 })
 
+test('renderFrames batch failure falls back to per-frame renderStill', async () => {
+  const { renderFrames } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-cap-'))
+  try {
+    fs.writeFileSync(path.join(rawDir, 'screen-01.txt'), 'one')
+    fs.writeFileSync(path.join(rawDir, 'screen-02.txt'), 'two')
+    // Batch dies before writing any PNG (manifest/browser failure). Without a
+    // fallback this would drop ALL stills and force the zero-frame path.
+    const renderStills = async () => {
+      throw new Error('manifest render exploded')
+    }
+    // Per-frame renderer still works — the fallback must recover every frame.
+    const perFrame = []
+    const renderStill = async ({ output, caption }) => {
+      perFrame.push({ output, caption })
+      fs.writeFileSync(output, 'fake-png')
+    }
+    const stills = await renderFrames({
+      rawDir,
+      captureDir,
+      title: 'boss',
+      renderStill,
+      renderStills,
+    })
+    assert.equal(perFrame.length, 2, 'both missing frames retried individually')
+    assert.deepEqual(
+      stills.map((s) => s.label),
+      ['frame 01', 'frame 02'],
+    )
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+    fs.rmSync(captureDir, { recursive: true, force: true })
+  }
+})
+
 test('renderFrames defaults caption to empty string when no sidecar exists', async () => {
   const { renderFrames } = await import('./proof-tui-agent.mjs')
   const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))

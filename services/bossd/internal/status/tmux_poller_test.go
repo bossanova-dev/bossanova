@@ -362,6 +362,10 @@ func (m *mockSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.Updat
 	return nil
 }
 
+func (m *mockSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ time.Time, _ string) error {
+	return nil
+}
+
 // --- mock tmux command factory ---
 // Uses scripts that write to temp files to simulate tmux has-session and capture-pane.
 

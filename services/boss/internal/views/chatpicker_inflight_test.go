@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // TestChatPicker_EscDuringArchive_ReturnsToList verifies that pressing esc
@@ -106,10 +108,11 @@ func TestChatPicker_EscDuringArchiveInErrorState(t *testing.T) {
 	}
 }
 
-// TestChatPicker_InFlightSpinnerCopy_ContainsEscHint verifies that the
-// rendered View() output for the in-flight merging spinner includes the
-// discoverability hint "esc to return to list".
-func TestChatPicker_InFlightSpinnerCopy_ContainsEscHint(t *testing.T) {
+// TestChatPicker_InFlightSpinnerCopy_OmitsEscHint verifies that the rendered
+// View() output for the in-flight merging spinner renders the "Merging PR"
+// copy without the esc-discoverability hint (esc is the app's standard
+// back-navigation, so the hint adds no value).
+func TestChatPicker_InFlightSpinnerCopy_OmitsEscHint(t *testing.T) {
 	t.Run("merging", func(t *testing.T) {
 		m := seedChatPicker(&chatPickerStub{}, "")
 		updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
@@ -117,8 +120,28 @@ func TestChatPicker_InFlightSpinnerCopy_ContainsEscHint(t *testing.T) {
 		m.merging = true
 
 		rendered := m.View().Content
-		if !strings.Contains(rendered, "esc to return to list") {
-			t.Errorf("merging spinner missing esc hint; got:\n%s", rendered)
+		if !strings.Contains(rendered, "Merging PR") {
+			t.Errorf("merging spinner missing 'Merging PR' copy; got:\n%s", rendered)
+		}
+		if strings.Contains(rendered, "esc to return to list") {
+			t.Errorf("merging spinner should not include esc hint; got:\n%s", rendered)
+		}
+	})
+
+	t.Run("merging with PR number", func(t *testing.T) {
+		m := seedChatPicker(&chatPickerStub{}, "")
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+		m = updated.(ChatPickerModel)
+		prNumber := int32(42)
+		m.session = &pb.Session{Id: "session-1", PrNumber: &prNumber}
+		m.merging = true
+
+		rendered := m.View().Content
+		if !strings.Contains(rendered, "Merging PR #42") {
+			t.Errorf("merging spinner missing 'Merging PR #42' copy; got:\n%s", rendered)
+		}
+		if strings.Contains(rendered, "esc to return to list") {
+			t.Errorf("merging spinner with PR number should not include esc hint; got:\n%s", rendered)
 		}
 	})
 }

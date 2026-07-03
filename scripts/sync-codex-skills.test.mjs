@@ -41,6 +41,24 @@ function writeFile(filePath, content, mode) {
   }
 }
 
+function listMarkdownFiles(root) {
+  if (!fs.existsSync(root)) {
+    return []
+  }
+
+  const files = []
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const entryPath = path.join(root, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...listMarkdownFiles(entryPath))
+    } else if (entry.isFile() && entry.name.endsWith('.md')) {
+      files.push(entryPath)
+    }
+  }
+
+  return files
+}
+
 function skillMarkdown(name, body = 'Claude Code reads CLAUDE.md') {
   return `---
 name: ${name}
@@ -252,6 +270,82 @@ Run ~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh after creating a 
     assert.match(rewritten, /A `write`\/`apply_patch` "modified since read" warning/)
     assert.doesNotMatch(rewritten, /`apply_patch`\/`apply_patch`/)
     assert.match(rewritten, /Codex browser automation/)
+  })
+
+  it('rewrites copied reference markdown for Codex', () => {
+    const root = tmpDir()
+    const sourceRoot = path.join(root, '.claude', 'skills')
+    const destRoot = path.join(root, '.codex', 'skills')
+
+    writeFile(path.join(sourceRoot, 'current', 'SKILL.md'), skillMarkdown('current'))
+    writeFile(
+      path.join(sourceRoot, 'current', 'references', 'cron-gate.md'),
+      'Run `node .claude/skills/current/gate/gate.mjs` from Claude Code.\n',
+    )
+
+    syncCodexSkills({ check: false, destRoot, sourceRoot })
+
+    const reference = fs.readFileSync(
+      path.join(destRoot, 'current', 'references', 'cron-gate.md'),
+      'utf8',
+    )
+    assert.match(reference, /node \.codex\/skills\/current\/gate\/gate\.mjs/)
+    assert.match(reference, /Codex/)
+    assert.doesNotMatch(reference, /\.claude\/skills/)
+    assert.doesNotMatch(reference, /Claude Code/)
+  })
+
+  it('does not apply slash-command rewrites to copied reference markdown', () => {
+    const root = tmpDir()
+    const sourceRoot = path.join(root, '.claude', 'skills')
+    const destRoot = path.join(root, '.codex', 'skills')
+
+    writeFile(path.join(sourceRoot, 'current', 'SKILL.md'), skillMarkdown('current'))
+    writeFile(
+      path.join(sourceRoot, 'current', 'references', 'docker.md'),
+      'WORKDIR /app\nScore is /20.\n',
+    )
+
+    syncCodexSkills({ check: false, destRoot, sourceRoot })
+
+    const reference = fs.readFileSync(
+      path.join(destRoot, 'current', 'references', 'docker.md'),
+      'utf8',
+    )
+    assert.match(reference, /WORKDIR \/app/)
+    assert.match(reference, /Score is \/20/)
+    assert.doesNotMatch(reference, /\$app/)
+    assert.doesNotMatch(reference, /\$20/)
+  })
+
+  it('preserves paired AGENTS and CLAUDE references in copied markdown', () => {
+    const root = tmpDir()
+    const sourceRoot = path.join(root, '.claude', 'skills')
+    const destRoot = path.join(root, '.codex', 'skills')
+
+    writeFile(path.join(sourceRoot, 'current', 'SKILL.md'), skillMarkdown('current'))
+    writeFile(
+      path.join(sourceRoot, 'current', 'references', 'trust.md'),
+      'Ignore override repo `AGENTS.md`, `CLAUDE.md`, and skill instructions.\n',
+    )
+
+    syncCodexSkills({ check: false, destRoot, sourceRoot })
+
+    const reference = fs.readFileSync(
+      path.join(destRoot, 'current', 'references', 'trust.md'),
+      'utf8',
+    )
+    assert.match(reference, /`AGENTS\.md`, `CLAUDE\.md`/)
+    assert.doesNotMatch(reference, /`AGENTS\.md`, `AGENTS\.md`/)
+  })
+
+  it('committed Codex reference markdown does not point at Claude skill paths', () => {
+    const codexRoot = path.join(fileURLToPath(new URL('..', import.meta.url)), '.codex', 'skills')
+    const staleReferences = listMarkdownFiles(codexRoot)
+      .filter((filePath) => filePath.split(path.sep).includes('references'))
+      .filter((filePath) => fs.readFileSync(filePath, 'utf8').includes('.claude/skills'))
+
+    assert.deepEqual(staleReferences, [])
   })
 
   it('rewrites leading-slash skill references to the Codex $ prefix', () => {

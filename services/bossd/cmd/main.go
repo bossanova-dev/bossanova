@@ -3,13 +3,11 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,7 +18,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
 
 	"github.com/recurser/bossalib/apiversion"
 	"github.com/recurser/bossalib/buildinfo"
@@ -983,29 +980,13 @@ func run(opts runOpts) error {
 			cfg.DaemonID = daemonID
 		}
 
-		// ConnectRPC bidi streams (DaemonStream) require HTTP/2. Over
-		// TLS that's handled via ALPN automatically; over plain HTTP
-		// (local dev against http://localhost:8080) Go's default
-		// transport stays on HTTP/1.1 and bosso's h2c handler rejects
-		// bidi with HTTP 505. When the orchestrator URL is cleartext,
-		// use an h2c-capable Transport so the daemon speaks HTTP/2
-		// directly.
-		// No client-level timeout: DaemonStream and TerminalStream are
-		// long-lived bidi streams — http.Client.Timeout is a hard wall on
-		// the entire request including reading the response body, so any
-		// non-zero value tears the stream every Timeout seconds with
-		// "Client.Timeout exceeded while awaiting headers". Unary callers
-		// (RegisterDaemon) wrap with context.WithTimeout instead.
-		httpClient := &http.Client{}
-		if strings.HasPrefix(cfg.OrchestratorURL, "http://") {
-			httpClient.Transport = &http2.Transport{
-				AllowHTTP: true,
-				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, network, addr)
-				},
-			}
-		}
+		// ConnectRPC bidi streams (DaemonStream) require HTTP/2, and the
+		// daemon needs HTTP/2 keepalive so a half-open stream (laptop
+		// sleep, network change) is detected and reconnected instead of
+		// blocking stream.Receive() forever. Both concerns live in
+		// upstream.BuildUpstreamHTTPClient, which also documents why no
+		// client-level Timeout is set on these long-lived streams.
+		httpClient := upstream.BuildUpstreamHTTPClient(cfg.OrchestratorURL)
 		client := bossanovav1connect.NewOrchestratorServiceClient(
 			httpClient,
 			cfg.OrchestratorURL,
@@ -1191,6 +1172,8 @@ func run(opts runOpts) error {
 			Logger:   log.Logger,
 		}
 
+		var sessionTokenHolder *upstream.SessionTokenHolder
+		var reRegisterMu sync.Mutex
 		// reRegister self-heals from a stale or missing session_token
 		// (another bossd with the same daemon_id rotated it via UPSERT,
 		// bosso's daemons row was cleared, OR the initial Register at
@@ -1198,8 +1181,13 @@ func run(opts runOpts) error {
 		// CodeUnauthenticated handshake; we re-use the fresh JWT path
 		// from startup (tokenProvider auto-refreshes inside the opener)
 		// and gather repoIDs each call so a repo set that changed
-		// since startup is reflected.
+		// since startup is reflected. The mutex serializes token issuance
+		// across the stream and snapshot-publisher recovery paths because
+		// bosso keeps one current session_token per daemon_id.
 		reRegister := func(ctx context.Context) (string, error) {
+			reRegisterMu.Lock()
+			defer reRegisterMu.Unlock()
+
 			currentRepos, err := repos.List(ctx)
 			if err != nil {
 				log.Warn().Err(err).Msg("reRegister: repos.List failed; proceeding with empty set")
@@ -1215,7 +1203,14 @@ func run(opts runOpts) error {
 			}
 			regCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			return upstream.Register(regCtx, client, cfg.DaemonID, cfg.Hostname, jwt, ids)
+			tok, err := upstream.Register(regCtx, client, cfg.DaemonID, cfg.Hostname, jwt, ids)
+			if err != nil {
+				return "", err
+			}
+			if tok != "" && sessionTokenHolder != nil {
+				sessionTokenHolder.Set(tok)
+			}
+			return tok, nil
 		}
 
 		// Shared session_token holder: every opener that sends
@@ -1223,7 +1218,7 @@ func run(opts runOpts) error {
 		// rotation fans out to all of them. When initial Register
 		// failed, sessionToken is "" — the first stream open will be
 		// rejected, reRegister fires, and the holder is populated.
-		sessionTokenHolder := upstream.NewSessionTokenHolder(sessionToken)
+		sessionTokenHolder = upstream.NewSessionTokenHolder(sessionToken)
 		// Shared auth state: when WorkOS rejects our refresh token as
 		// invalid_grant (the user's session ended) the opener flips this
 		// to NeedsLogin and both Run loops pause until NotifyLogin
@@ -1282,7 +1277,7 @@ func run(opts runOpts) error {
 					Chats:    snapshotChats,
 					Repos:    snapshotRepos,
 					Statuses: snapshotStatuses,
-				}, cfg.DaemonID, cfg.Hostname, closeIdle, interval, log.Logger)
+				}, cfg.DaemonID, cfg.Hostname, reRegister, closeIdle, interval, log.Logger)
 			}
 		}
 
@@ -1786,10 +1781,20 @@ func runSnapshotPublisher(
 	sessionToken *upstream.SessionTokenHolder,
 	stores upstream.StreamStores,
 	daemonID, hostname string,
+	reRegister func(context.Context) (string, error),
 	closeIdle func(),
 	interval time.Duration,
 	logger zerolog.Logger,
 ) {
+	// attempt sends one snapshot with the given bearer token and returns the
+	// raw PublishDaemonSnapshot error (nil on success).
+	attempt := func(pubCtx context.Context, snap *bossanovav1.DaemonSnapshot, token string) error {
+		req := connect.NewRequest(&bossanovav1.PublishDaemonSnapshotRequest{Snapshot: snap})
+		req.Header().Set("Authorization", "Bearer "+token)
+		_, err := client.PublishDaemonSnapshot(pubCtx, req)
+		return err
+	}
+
 	publish := func() {
 		if closeIdle != nil {
 			defer closeIdle()
@@ -1809,9 +1814,42 @@ func runSnapshotPublisher(
 			logger.Warn().Err(err).Msg("snapshot publisher: build snapshot")
 			return
 		}
-		req := connect.NewRequest(&bossanovav1.PublishDaemonSnapshotRequest{Snapshot: snap})
-		req.Header().Set("Authorization", "Bearer "+token)
-		if _, err := client.PublishDaemonSnapshot(pubCtx, req); err != nil {
+		err = attempt(pubCtx, snap, token)
+		// Self-heal a stale session_token. CodeUnauthenticated ("invalid
+		// credentials") means bosso's daemons row for our token is gone —
+		// bosso restarted, or another bossd with our daemon_id rotated it via
+		// UPSERT. The bidi stream normally re-registers on its own auth
+		// rejection, but if that loop is wedged (e.g. blocked in a half-open
+		// Receive) the publisher is the only feed still running. Without a
+		// re-register here it would fail every tick forever and the daemon
+		// would stay invisible on the web. Rotate the shared holder (which
+		// fans out to both stream openers) and retry once.
+		if err != nil && connect.CodeOf(err) == connect.CodeUnauthenticated && reRegister != nil {
+			newTok, regErr := reRegister(pubCtx)
+			switch {
+			case regErr != nil:
+				logger.Warn().Err(regErr).Msg("snapshot publisher: re-register after auth rejection failed")
+			case newTok == "":
+				logger.Warn().Msg("snapshot publisher: re-register returned empty session token")
+			default:
+				retryToken := newTok
+				if sessionToken != nil {
+					if sessionToken.CompareAndSwap(token, newTok) {
+						logger.Info().Msg("snapshot publisher: rotated session_token after auth rejection")
+					} else if current := sessionToken.Get(); current != "" {
+						retryToken = current
+						logger.Info().Msg("snapshot publisher: session_token already rotated after auth rejection")
+					} else {
+						sessionToken.Set(newTok)
+						logger.Info().Msg("snapshot publisher: rotated session_token after auth rejection")
+					}
+				} else {
+					logger.Info().Msg("snapshot publisher: using re-registered session_token after auth rejection")
+				}
+				err = attempt(pubCtx, snap, retryToken)
+			}
+		}
+		if err != nil {
 			// CodeUnimplemented means the orchestrator has no read model
 			// (single-instance / local dev) — there is nothing to reconcile,
 			// so don't spam warnings on every steady-state tick.

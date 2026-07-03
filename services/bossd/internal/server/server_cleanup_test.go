@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
@@ -173,6 +174,10 @@ func (s *cleanupSessionStore) AdvanceOrphanedSessions(context.Context) (int64, e
 	panic("not used")
 }
 func (s *cleanupSessionStore) UpdateRepairDiagnostics(context.Context, db.UpdateRepairDiagnosticsParams) error {
+	panic("not used")
+}
+
+func (s *cleanupSessionStore) UpdateRepairBlocked(context.Context, string, time.Time, string) error {
 	panic("not used")
 }
 

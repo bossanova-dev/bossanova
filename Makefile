@@ -337,6 +337,7 @@ test-full:
 
 ## test-smoke: Fast agent loop. No coverage, no race, no forced cache bypass.
 test-smoke: $(GEN_STAMP) copy-skills codex-skills-check construct-skills-check
+	node --test scripts/bs-*-skill.test.mjs
 	$(MAKE) -C lib/bossalib test-fast GO_TEST_PACKAGES="./config ./cronutil ./displaystatus ./sessionreason ./statusdetect"
 	$(MAKE) -C services/boss test-fast GO_TEST_PACKAGES="./internal/agent ./internal/auth ./internal/client ./internal/preflight"
 	$(MAKE) -C services/bossd test-fast GO_TEST_PACKAGES="./internal/agent ./internal/cron ./internal/mergepolicy ./internal/status ./internal/tmux"

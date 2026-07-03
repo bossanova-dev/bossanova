@@ -93,6 +93,15 @@ type Session struct {
 	LastRepairDisplayStatus     int32
 	LastRepairReviewFingerprint string
 
+	// Blocked-refusal lane: set when the daemon refused to START a repair
+	// chat (a FailedPrecondition displace/reclaim refusal) rather than
+	// running one. Recorded for operator visibility without bumping
+	// LastRepairAttemptCount or the runner/exit error fields; cleared on
+	// every real repair outcome, so a non-empty reason IS the latest
+	// repair-related state.
+	LastRepairBlockedReason string
+	LastRepairBlockedAt     *time.Time
+
 	// SetupError records why the repo's configured setup script failed during
 	// worktree creation. A setup-script failure is non-fatal — the session
 	// still starts — so this flags the degraded state for the TUI and

@@ -1121,8 +1121,14 @@ type WaitChatRunHostRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Agent session ID returned from StartChatRun.
 	AgentSessionId string `protobuf:"bytes,1,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// When > 0, arm an idle watchdog: if the chat tracker reports the run
+	// continuously idle (or a repair-owned QUESTION stuck past its window, or
+	// STOPPED) for this many seconds, WaitChatRun fast-fails the run and tears
+	// the dead pane down instead of burning the full 30m deadline.
+	// 0 = no watchdog (legacy 30m-deadline behavior).
+	IdleFailAfterSeconds int32 `protobuf:"varint,2,opt,name=idle_fail_after_seconds,json=idleFailAfterSeconds,proto3" json:"idle_fail_after_seconds,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *WaitChatRunHostRequest) Reset() {
@@ -1160,6 +1166,13 @@ func (x *WaitChatRunHostRequest) GetAgentSessionId() string {
 		return x.AgentSessionId
 	}
 	return ""
+}
+
+func (x *WaitChatRunHostRequest) GetIdleFailAfterSeconds() int32 {
+	if x != nil {
+		return x.IdleFailAfterSeconds
+	}
+	return 0
 }
 
 type WaitChatRunHostResponse struct {
@@ -1356,8 +1369,15 @@ type RecordRepairOutcomeRequest struct {
 	// Fingerprint of review feedback this repair attempt targeted.
 	// Empty for non-review-triggered repairs.
 	ReviewFingerprint *string `protobuf:"bytes,8,opt,name=review_fingerprint,json=reviewFingerprint,proto3,oneof" json:"review_fingerprint,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Non-empty when the daemon refused to start the repair chat (a
+	// FailedPrecondition displace/reclaim refusal). Routes the outcome into
+	// the blocked lane: the reason + timestamp are recorded for operator
+	// visibility, but last_repair_attempt_count and the runner/exit error
+	// fields are left untouched, so a start-refusal never counts as a repair
+	// failure or feeds the exponential backoff.
+	BlockedReason string `protobuf:"bytes,9,opt,name=blocked_reason,json=blockedReason,proto3" json:"blocked_reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RecordRepairOutcomeRequest) Reset() {
@@ -1442,6 +1462,13 @@ func (x *RecordRepairOutcomeRequest) GetDisplayStatus() DisplayStatus {
 func (x *RecordRepairOutcomeRequest) GetReviewFingerprint() string {
 	if x != nil && x.ReviewFingerprint != nil {
 		return *x.ReviewFingerprint
+	}
+	return ""
+}
+
+func (x *RecordRepairOutcomeRequest) GetBlockedReason() string {
+	if x != nil {
+		return x.BlockedReason
 	}
 	return ""
 }
@@ -1546,9 +1573,10 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"/replace_existing_observed_last_chat_activity_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR)replaceExistingObservedLastChatActivityAt\x125\n" +
 	"\x17resume_agent_session_id\x18\b \x01(\tR\x14resumeAgentSessionId\"D\n" +
 	"\x18StartChatRunHostResponse\x12(\n" +
-	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"B\n" +
+	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"y\n" +
 	"\x16WaitChatRunHostRequest\x12(\n" +
-	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"h\n" +
+	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x125\n" +
+	"\x17idle_fail_after_seconds\x18\x02 \x01(\x05R\x14idleFailAfterSeconds\"h\n" +
 	"\x17WaitChatRunHostResponse\x12\x1d\n" +
 	"\n" +
 	"exit_error\x18\x01 \x01(\tR\texitError\x12.\n" +
@@ -1560,7 +1588,7 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x06reason\x18\x03 \x01(\tR\x06reason\"i\n" +
 	"\x1dReclaimRepairChatHostResponse\x12\x1c\n" +
 	"\treclaimed\x18\x01 \x01(\bR\treclaimed\x12*\n" +
-	"\x11tmux_session_name\x18\x02 \x01(\tR\x0ftmuxSessionName\"\xf9\x02\n" +
+	"\x11tmux_session_name\x18\x02 \x01(\tR\x0ftmuxSessionName\"\xa0\x03\n" +
 	"\x1aRecordRepairOutcomeRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12&\n" +
@@ -1571,7 +1599,8 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x10agent_session_id\x18\x05 \x01(\tR\x0eagentSessionId\x12\x19\n" +
 	"\bhead_sha\x18\x06 \x01(\tR\aheadSha\x12B\n" +
 	"\x0edisplay_status\x18\a \x01(\x0e2\x1b.bossanova.v1.DisplayStatusR\rdisplayStatus\x122\n" +
-	"\x12review_fingerprint\x18\b \x01(\tH\x00R\x11reviewFingerprint\x88\x01\x01B\x15\n" +
+	"\x12review_fingerprint\x18\b \x01(\tH\x00R\x11reviewFingerprint\x88\x01\x01\x12%\n" +
+	"\x0eblocked_reason\x18\t \x01(\tR\rblockedReasonB\x15\n" +
 	"\x13_review_fingerprint\"\x1d\n" +
 	"\x1bRecordRepairOutcomeResponse2\xdb\n" +
 	"\n" +

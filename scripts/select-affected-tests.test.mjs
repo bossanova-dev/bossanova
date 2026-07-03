@@ -69,17 +69,19 @@ test('selectTargets maps manifest and agent instruction changes to manifest chec
   )
 })
 
-test('selectTargets maps skill docs to manifest and Stop-hook guard checks', () => {
+test('selectTargets maps skill docs to manifest, Stop-hook guard, and skill content tests', () => {
   assert.deepEqual(selectTargets(['.claude/skills/agent-fast-testing/SKILL.md']), [
     { kind: 'make', target: 'test-manifest', env: {} },
     { kind: 'make', target: 'test-no-inline-stop-hooks', env: {} },
+    { kind: 'make', target: 'test-scripts', env: {} },
   ])
 })
 
-test('selectTargets maps Codex skills to manifest and Stop-hook guard checks', () => {
+test('selectTargets maps Codex skills to manifest, Stop-hook guard, and skill content tests', () => {
   assert.deepEqual(selectTargets(['.codex/skills/golang-pro/SKILL.md']), [
     { kind: 'make', target: 'test-manifest', env: {} },
     { kind: 'make', target: 'test-no-inline-stop-hooks', env: {} },
+    { kind: 'make', target: 'test-scripts', env: {} },
   ])
 })
 

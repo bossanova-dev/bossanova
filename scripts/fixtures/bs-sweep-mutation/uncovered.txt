@@ -1,0 +1,4 @@
+[bossd--internal-server] internal/server/session.go:204 CONDITIONALS_BOUNDARY
+[bossd--internal-server] internal/server/session.go:211 INVERT_NEGATIVES
+==> Uncovered mutants: make mutate-uncovered
+[bosso--internal-auth] internal/auth/token.go:88 CONDITIONALS_NEGATION

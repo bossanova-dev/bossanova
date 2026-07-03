@@ -87,36 +87,39 @@ func TestRelTimeWrappers(t *testing.T) {
 // check (CONDITIONALS_NEGATION on `== RUNNING`): a lone running job must report
 // true, and a lone non-running job must report false.
 func TestHasRunningStatus(t *testing.T) {
-	running := &pb.CronJob{Id: "r", LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_RUNNING}
-	idle := &pb.CronJob{Id: "i"} // zero status == UNSPECIFIED, not RUNNING
-
-	cases := []struct {
-		name string
-		jobs []*pb.CronJob
-		want bool
-	}{
-		{"nil slice", nil, false},
-		{"empty slice", []*pb.CronJob{}, false},
-		{"single idle", []*pb.CronJob{idle}, false},
-		{"single running", []*pb.CronJob{running}, true},
-		{"running among idle", []*pb.CronJob{idle, running, idle}, true},
-		{"all idle", []*pb.CronJob{idle, idle}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := hasRunningStatus(tc.jobs); got != tc.want {
-				t.Errorf("hasRunningStatus(%v) = %v, want %v", tc.jobs, got, tc.want)
-			}
-		})
-	}
+	assertCronStatusPredicate(
+		t,
+		"hasRunningStatus",
+		"running",
+		pb.CronJobStatus_CRON_JOB_STATUS_RUNNING,
+		hasRunningStatus,
+	)
 }
 
 // TestHasGatingStatus covers both directions of the LastRunStatus equality
 // check for GATING: a lone gating job must report true, and a non-gating job
 // must report false.
 func TestHasGatingStatus(t *testing.T) {
-	gating := &pb.CronJob{Id: "g", LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATING}
-	idle := &pb.CronJob{Id: "i"} // zero status == UNSPECIFIED
+	assertCronStatusPredicate(
+		t,
+		"hasGatingStatus",
+		"gating",
+		pb.CronJobStatus_CRON_JOB_STATUS_GATING,
+		hasGatingStatus,
+	)
+}
+
+func assertCronStatusPredicate(
+	t *testing.T,
+	predicateName string,
+	activeName string,
+	activeStatus pb.CronJobStatus,
+	predicate func([]*pb.CronJob) bool,
+) {
+	t.Helper()
+
+	active := &pb.CronJob{Id: "active", LastRunStatus: activeStatus}
+	idle := &pb.CronJob{Id: "idle"} // zero status == UNSPECIFIED
 
 	cases := []struct {
 		name string
@@ -126,14 +129,14 @@ func TestHasGatingStatus(t *testing.T) {
 		{"nil slice", nil, false},
 		{"empty slice", []*pb.CronJob{}, false},
 		{"single idle", []*pb.CronJob{idle}, false},
-		{"single gating", []*pb.CronJob{gating}, true},
-		{"gating among idle", []*pb.CronJob{idle, gating, idle}, true},
+		{"single " + activeName, []*pb.CronJob{active}, true},
+		{activeName + " among idle", []*pb.CronJob{idle, active, idle}, true},
 		{"all idle", []*pb.CronJob{idle, idle}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := hasGatingStatus(tc.jobs); got != tc.want {
-				t.Errorf("hasGatingStatus(%v) = %v, want %v", tc.jobs, got, tc.want)
+			if got := predicate(tc.jobs); got != tc.want {
+				t.Errorf("%s(%v) = %v, want %v", predicateName, tc.jobs, got, tc.want)
 			}
 		})
 	}

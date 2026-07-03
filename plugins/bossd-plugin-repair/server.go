@@ -27,7 +27,12 @@ const repairCommand = "boss-repair"
 var alreadyExistsAgentSessionRE = regexp.MustCompile(`agent_session_id=([^)]+)`)
 
 func isInteractiveChatIncomplete(exitErr string) bool {
-	return strings.Contains(exitErr, "interactive chat did not report completion")
+	return strings.Contains(exitErr, "interactive chat did not report completion") ||
+		// The daemon's WaitChatRun idle watchdog (BOS-153) fails a run whose
+		// agent went idle without ever reporting completion. Like the
+		// wait-deadline case, the agent never actually attempted the repair,
+		// so a same-head/status retry must stay allowed.
+		strings.Contains(exitErr, "agent went idle without completing")
 }
 
 func agentSessionIDFromAlreadyExists(err error) string {
@@ -83,6 +88,14 @@ const (
 	defaultPostRepairPollInterval = 2 * time.Second
 	defaultPostRepairWaitTimeout  = 30 * time.Minute
 	maxRepairLoopAttempts         = 5
+
+	// defaultRunIdleFailAfter arms the daemon's WaitChatRun idle watchdog
+	// (BOS-153): if the repair agent's chat is continuously idle for this
+	// long the daemon fails the run fast and reclaims the dead pane instead
+	// of burning the full 30m wait deadline. It mirrors the daemon's
+	// repairDisplaceMinIdle (5m) so the "idle enough to displace" and "idle
+	// enough to fail the run" thresholds stay aligned.
+	defaultRunIdleFailAfter = 5 * time.Minute
 )
 
 // repairConfig holds parsed config for a repair workflow. Fields mirror
@@ -149,6 +162,11 @@ func (c *repairConfig) cooldownDuration() time.Duration {
 // minimum get a proportionally longer schedule until the next doubled
 // value reaches maxCooldownDuration. Larger bases therefore hit the cap
 // sooner; for example, base=15 m yields 15 m, 30 m, then 30 m thereafter.
+//
+// Blocked start-refusals (BOS-153) never advance attemptCount: they are
+// recorded in the separate repair-blocked lane and floored at the base
+// cooldown only, so a deterministic daemon refusal cannot escalate this
+// schedule toward the cap.
 func cooldownFor(attemptCount int32, base time.Duration) time.Duration {
 	if base <= 0 || base >= maxCooldownDuration {
 		return maxCooldownDuration
@@ -1481,6 +1499,7 @@ func (m *repairMonitor) runRepairAttempt(
 		outcomeAgentSessionID string
 		outcomeRunnerError    string
 		outcomeExitError      string
+		outcomeBlockedReason  string
 		outcomeShouldRecord   bool
 	)
 
@@ -1512,9 +1531,19 @@ func (m *repairMonitor) runRepairAttempt(
 					StartedAtUnix:  startedAt.Unix(),
 					RunnerError:    outcomeRunnerError,
 					ExitError:      outcomeExitError,
+					BlockedReason:  outcomeBlockedReason,
 					AgentSessionId: outcomeAgentSessionID,
 					HeadSha:        headSHA,
 					DisplayStatus:  displayStatus,
+				}
+				// The blocked lane is mutually exclusive with a real
+				// runner/exit outcome: a start-refusal never ran an agent, so
+				// it must not carry a runner or exit error (the daemon keys off
+				// BlockedReason to record the blocked state without bumping the
+				// failure count — BOS-153 Task 4).
+				if outcomeBlockedReason != "" {
+					req.RunnerError = ""
+					req.ExitError = ""
 				}
 				if reviewFingerprintAvailable {
 					req.ReviewFingerprint = &reviewFingerprint
@@ -1537,6 +1566,23 @@ func (m *repairMonitor) runRepairAttempt(
 			log.Warn().Err(err).Msg("failed to clear repair status")
 		}
 	}()
+
+	// markStartRefused records daemon refusals (gRPC FailedPrecondition — eg.
+	// the target chat is still working, the agent is not configured, or reclaim
+	// refused to displace a live repair chat) into the separate "blocked" lane
+	// rather than the failure lane (BOS-153). It stamps ONLY the base in-memory
+	// cooldown so refusal retries are floored at the base cadence without
+	// triggering the exponential backoff that real failures do (the blocked
+	// record never bumps last_repair_attempt_count, so cooldownFor sees only
+	// real failures). No agent ran, so the caller returns ("", false).
+	markStartRefused := func(err error) {
+		outcomeBlockedReason = grpcstatus.Convert(err).Message()
+		outcomeShouldRecord = true
+		m.mu.Lock()
+		m.cooldowns[sessionID] = time.Now()
+		m.mu.Unlock()
+		log.Info().Err(err).Msg("repair start refused; recorded as blocked")
+	}
 
 	log.Info().
 		Int32("display_status", int32(displayStatus)).
@@ -1562,6 +1608,9 @@ func (m *repairMonitor) runRepairAttempt(
 				log.Info().Err(reclaimErr).
 					Str("stale_agent_session_id", staleAgentSessionID).
 					Msg("repair chat reclaim failed, skipping repair")
+				if grpcstatus.Code(reclaimErr) == codes.FailedPrecondition {
+					markStartRefused(reclaimErr)
+				}
 				return "", false
 			}
 			log.Info().
@@ -1576,15 +1625,26 @@ func (m *repairMonitor) runRepairAttempt(
 					log.Info().Err(err).Msg("another repair run is active after reclaim, skipping repair")
 					return "", false
 				}
+				if grpcstatus.Code(err) == codes.FailedPrecondition {
+					markStartRefused(err)
+					return "", false
+				}
 				outcomeRunnerError = err.Error()
 				outcomeShouldRecord = true
 				log.Error().Err(err).Msg("failed to start repair chat run after reclaim")
 				return "", false
 			}
+		} else if grpcstatus.Code(err) == codes.FailedPrecondition {
+			// Daemon-side StartChatRun refusal (eg. the chat is still working,
+			// or the agent is not configured). This is a "blocked" outcome, not
+			// a failed repair attempt: record the reason for operator
+			// visibility but do NOT bump the failure count or escalate backoff.
+			markStartRefused(err)
+			return "", false
 		} else {
-			// Daemon-side StartChatRun refusal (eg. "claude not on PATH",
-			// "agent client not configured"). Record so the TUI surfaces the
-			// reason instead of the operator having to grep daemon stderr.
+			// Any other error (eg. codes.Internal "start agent: ...") is a real
+			// runner failure. Record so the TUI surfaces the reason instead of
+			// the operator having to grep daemon stderr.
 			outcomeRunnerError = err.Error()
 			outcomeShouldRecord = true
 			log.Error().Err(err).Msg("failed to start repair chat run")
@@ -1609,7 +1669,8 @@ func (m *repairMonitor) runRepairAttempt(
 	}
 
 	waitResp, waitErr := m.host.WaitChatRun(ctx, &bossanovav1.WaitChatRunHostRequest{
-		AgentSessionId: agentSessionID,
+		AgentSessionId:       agentSessionID,
+		IdleFailAfterSeconds: int32(defaultRunIdleFailAfter.Seconds()),
 	})
 
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), repairCleanupTimeout)

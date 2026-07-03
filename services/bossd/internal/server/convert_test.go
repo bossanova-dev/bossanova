@@ -492,6 +492,10 @@ func (f *fakeSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.Updat
 	panic("not used")
 }
 
+func (f *fakeSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ time.Time, _ string) error {
+	panic("not used")
+}
+
 func TestCronJobStatus(t *testing.T) {
 	now := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 	sessID := "sess-active"

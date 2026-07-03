@@ -225,6 +225,19 @@ func (m *mockSessionStore) UpdateRepairDiagnostics(_ context.Context, params db.
 	return nil
 }
 
+func (m *mockSessionStore) UpdateRepairBlocked(_ context.Context, sessionID string, at time.Time, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[sessionID]
+	if !ok {
+		return nil
+	}
+	s.LastRepairBlockedReason = reason
+	blockedAt := at
+	s.LastRepairBlockedAt = &blockedAt
+	return nil
+}
+
 func (m *mockSessionStore) ListByState(_ context.Context, state int) ([]*models.Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -98,6 +98,14 @@ func (lc *dbWritingChatLifecycle) ReclaimRepairChat(context.Context, string, str
 	return session.ReclaimRepairChatResult{}, nil
 }
 
+func (lc *dbWritingChatLifecycle) GetAgentChatTitle(ctx context.Context, agentSessionID string) (string, error) {
+	chat, err := lc.chats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil || chat == nil {
+		return "", err
+	}
+	return chat.Title, nil
+}
+
 // TestStartChatRun_RepairChatVisibleInListChats is the regression test
 // for the original bug. It pins the user-facing contract: after
 // StartChatRun returns successfully, the repair chat must be present in

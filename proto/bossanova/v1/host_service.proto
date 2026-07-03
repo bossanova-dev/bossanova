@@ -246,6 +246,13 @@ message StartChatRunHostResponse {
 message WaitChatRunHostRequest {
   // Agent session ID returned from StartChatRun.
   string agent_session_id = 1;
+
+  // When > 0, arm an idle watchdog: if the chat tracker reports the run
+  // continuously idle (or a repair-owned QUESTION stuck past its window, or
+  // STOPPED) for this many seconds, WaitChatRun fast-fails the run and tears
+  // the dead pane down instead of burning the full 30m deadline.
+  // 0 = no watchdog (legacy 30m-deadline behavior).
+  int32 idle_fail_after_seconds = 2;
 }
 
 message WaitChatRunHostResponse {
@@ -297,6 +304,13 @@ message RecordRepairOutcomeRequest {
   // Fingerprint of review feedback this repair attempt targeted.
   // Empty for non-review-triggered repairs.
   optional string review_fingerprint = 8;
+  // Non-empty when the daemon refused to start the repair chat (a
+  // FailedPrecondition displace/reclaim refusal). Routes the outcome into
+  // the blocked lane: the reason + timestamp are recorded for operator
+  // visibility, but last_repair_attempt_count and the runner/exit error
+  // fields are left untouched, so a start-refusal never counts as a repair
+  // failure or feeds the exponential backoff.
+  string blocked_reason = 9;
 }
 
 message RecordRepairOutcomeResponse {}

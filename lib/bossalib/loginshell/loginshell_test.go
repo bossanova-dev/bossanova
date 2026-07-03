@@ -13,6 +13,7 @@ func TestWrap_FishUsesArgvNoLabel(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("fish wrap:\n got=%#v\nwant=%#v", got, want)
 	}
+	assertExactCapacity(t, got)
 }
 
 func TestWrap_PosixUsesAtAt(t *testing.T) {
@@ -31,6 +32,7 @@ func TestWrap_PosixUsesAtAt(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("bash wrap:\n got=%#v\nwant=%#v", got, want)
 	}
+	assertExactCapacity(t, got)
 }
 
 func TestWrap_FishManyArgsPreservesEveryArg(t *testing.T) {
@@ -43,6 +45,7 @@ func TestWrap_FishManyArgsPreservesEveryArg(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("fish wrap (many args):\n got=%#v\nwant=%#v", got, want)
 	}
+	assertExactCapacity(t, got)
 }
 
 func TestWrap_PosixManyArgsPreservesEveryArg(t *testing.T) {
@@ -54,6 +57,7 @@ func TestWrap_PosixManyArgsPreservesEveryArg(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sh wrap (many args):\n got=%#v\nwant=%#v", got, want)
 	}
+	assertExactCapacity(t, got)
 }
 
 func TestFlags_ZshUsesInteractiveLoginShell(t *testing.T) {
@@ -115,5 +119,12 @@ func TestWrap_UnsupportedShellReturnsArgvUnchanged(t *testing.T) {
 func TestWrap_EmptyArgvReturnsNil(t *testing.T) {
 	if got := Wrap("/bin/bash", []string{"-l", "-c"}, nil); got != nil {
 		t.Fatalf("empty argv must return nil, got=%#v", got)
+	}
+}
+
+func assertExactCapacity(t *testing.T, got []string) {
+	t.Helper()
+	if cap(got) != len(got) {
+		t.Fatalf("wrapped argv capacity = %d, want exact length %d", cap(got), len(got))
 	}
 }

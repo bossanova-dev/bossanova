@@ -261,90 +261,8 @@ func (h *startTmuxChatHarness) findCall(subcommand string) *recordedTmuxCall {
 	return nil
 }
 
-func writeRepairChatLogAt(t *testing.T, h *startTmuxChatHarness, agentSessionID string, modTime time.Time) {
-	t.Helper()
-	logPath := h.lc.agentLogPathFor(agentSessionID)
-	if err := os.WriteFile(logPath, []byte("repair output\n"), 0o600); err != nil {
-		t.Fatalf("write repair chat log: %v", err)
-	}
-	if err := os.Chtimes(logPath, modTime, modTime); err != nil {
-		t.Fatalf("set repair chat log time: %v", err)
-	}
-}
-
 func ptr[T any](v T) *T {
 	return &v
-}
-
-func TestRepairChatStaleForReclaim_DefaultThresholdAndFailClosedCases(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
-	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-
-	tests := []struct {
-		name          string
-		withTmuxName  bool
-		withLogAt     *time.Time
-		wantStale     bool
-		wantReasonHas string
-	}{
-		{
-			name:          "idle for nineteen minutes fifty nine seconds is not reclaimable",
-			withTmuxName:  true,
-			withLogAt:     ptr(now.Add(-(19*time.Minute + 59*time.Second))),
-			wantStale:     false,
-			wantReasonHas: "threshold is 20m0s",
-		},
-		{
-			name:          "idle for twenty minutes is reclaimable",
-			withTmuxName:  true,
-			withLogAt:     ptr(now.Add(-20 * time.Minute)),
-			wantStale:     true,
-			wantReasonHas: "threshold is 20m0s",
-		},
-		{
-			name:          "missing log is not reclaimable",
-			withTmuxName:  true,
-			wantStale:     false,
-			wantReasonHas: "agent log for repair-agent-boundary is missing",
-		},
-		{
-			name:          "chat without live tmux pointer is reclaimable immediately",
-			wantStale:     true,
-			wantReasonHas: "repair chat has no live tmux pointer",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := newStartTmuxChatHarness(t)
-			agentSessionID := "repair-agent-boundary"
-			var tmuxName *string
-			if tt.withTmuxName {
-				tmuxName = ptr("boss-repair-boundary")
-			}
-			chat := &models.AgentChat{
-				AgentSessionID:  agentSessionID,
-				Title:           "Repair: boundary",
-				TmuxSessionName: tmuxName,
-			}
-			if tt.withLogAt != nil {
-				writeRepairChatLogAt(t, h, agentSessionID, *tt.withLogAt)
-			}
-
-			stale, reason, err := RepairChatStaleForReclaim(h.logsDir, chat, now)
-			if err != nil {
-				t.Fatalf("RepairChatStaleForReclaim error = %v", err)
-			}
-			if stale != tt.wantStale {
-				t.Fatalf("stale = %v, want %v; reason=%q", stale, tt.wantStale, reason)
-			}
-			if !strings.Contains(reason, tt.wantReasonHas) {
-				t.Fatalf("reason = %q, want substring %q", reason, tt.wantReasonHas)
-			}
-		})
-	}
 }
 
 func TestKillChatTmuxSession_KillsLiveTmuxThenClearsChatPointer(t *testing.T) {
@@ -978,7 +896,6 @@ func TestReclaimRepairChat_KillsTmuxAndMarksRow(t *testing.T) {
 			TmuxSessionName: &tmuxName,
 		}},
 	}
-	writeRepairChatLogAt(t, h, agentSessionID, time.Now().Add(-(repairChatReclaimIdleThreshold + time.Minute)))
 
 	res, err := h.lc.ReclaimRepairChat(ctx, "sess-1", agentSessionID, reason)
 	if err != nil {
@@ -1066,47 +983,6 @@ func TestReplaceBlockingChatForRepair_KillsTmuxAndMarksRow(t *testing.T) {
 	}
 }
 
-func TestReplaceBlockingChatForRepair_RefusesLiveRecentRepairChat(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
-	ctx := context.Background()
-	h := newStartTmuxChatHarness(t)
-	agentSessionID := "repair-replace-recent-agent"
-	tmuxName := "boss-repair-replace-recent"
-
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
-		"sess-1": {{
-			ID:              "chat-repair-replace-recent",
-			SessionID:       "sess-1",
-			AgentSessionID:  agentSessionID,
-			AgentName:       "codex",
-			Title:           "Repair: recent repair",
-			TmuxSessionName: &tmuxName,
-		}},
-	}
-	writeRepairChatLogAt(t, h, agentSessionID, time.Now())
-
-	_, err := h.lc.ReplaceBlockingChatForRepair(ctx, "sess-1", agentSessionID, "auto-repair replacing idle chat")
-	if !errors.Is(err, ErrRepairChatActive) {
-		t.Fatalf("ReplaceBlockingChatForRepair error = %v, want ErrRepairChatActive", err)
-	}
-	if h.findCall("kill-session") != nil {
-		t.Fatalf("tmux session %q was killed without durable stale evidence", tmuxName)
-	}
-
-	chat, err := h.chats.GetByAgentSessionID(ctx, agentSessionID)
-	if err != nil {
-		t.Fatalf("GetByAgentSessionID: %v", err)
-	}
-	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != tmuxName {
-		t.Fatalf("TmuxSessionName = %v, want %q", chat.TmuxSessionName, tmuxName)
-	}
-	if chat.StartError != nil {
-		t.Fatalf("StartError = %q, want nil", *chat.StartError)
-	}
-}
-
 func TestReplaceBlockingChatForRepair_RejectsDifferentSession(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
@@ -1147,87 +1023,6 @@ func TestReplaceBlockingChatForRepair_RejectsDifferentSession(t *testing.T) {
 	}
 	if chat.StartError != nil {
 		t.Fatalf("StartError = %q, want nil", *chat.StartError)
-	}
-}
-
-func TestReclaimRepairChat_RefusesLiveRecentRepairChat(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
-	ctx := context.Background()
-	h := newStartTmuxChatHarness(t)
-	agentSessionID := "repair-recent-agent"
-	tmuxName := "boss-repair-recent"
-
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
-		"sess-1": {{
-			ID:              "chat-repair-recent",
-			SessionID:       "sess-1",
-			AgentSessionID:  agentSessionID,
-			AgentName:       "codex",
-			Title:           "Repair: recent repair",
-			TmuxSessionName: &tmuxName,
-		}},
-	}
-	writeRepairChatLogAt(t, h, agentSessionID, time.Now())
-
-	_, err := h.lc.ReclaimRepairChat(ctx, "sess-1", agentSessionID, "must not kill active repair")
-	if !errors.Is(err, ErrRepairChatActive) {
-		t.Fatalf("error = %v, want ErrRepairChatActive", err)
-	}
-	if h.findCall("kill-session") != nil {
-		t.Fatalf("tmux session %q was killed for a recent repair", tmuxName)
-	}
-
-	chat, err := h.chats.GetByAgentSessionID(ctx, agentSessionID)
-	if err != nil {
-		t.Fatalf("GetByAgentSessionID: %v", err)
-	}
-	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != tmuxName {
-		t.Fatalf("TmuxSessionName = %v, want %q", chat.TmuxSessionName, tmuxName)
-	}
-	if chat.StartError != nil {
-		t.Fatalf("StartError = %q, want nil for non-reclaimed active repair", *chat.StartError)
-	}
-}
-
-func TestReclaimRepairChat_RefusesLiveRepairWhenLogMissing(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
-	ctx := context.Background()
-	h := newStartTmuxChatHarness(t)
-	agentSessionID := "repair-missing-log-agent"
-	tmuxName := "boss-repair-missing-log"
-
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
-		"sess-1": {{
-			ID:              "chat-repair-missing-log",
-			SessionID:       "sess-1",
-			AgentSessionID:  agentSessionID,
-			AgentName:       "codex",
-			Title:           "Repair: missing log",
-			TmuxSessionName: &tmuxName,
-		}},
-	}
-
-	_, err := h.lc.ReclaimRepairChat(ctx, "sess-1", agentSessionID, "missing log must fail closed")
-	if !errors.Is(err, ErrRepairChatActive) {
-		t.Fatalf("error = %v, want ErrRepairChatActive", err)
-	}
-	if h.findCall("kill-session") != nil {
-		t.Fatalf("tmux session %q was killed without durable stale evidence", tmuxName)
-	}
-
-	chat, err := h.chats.GetByAgentSessionID(ctx, agentSessionID)
-	if err != nil {
-		t.Fatalf("GetByAgentSessionID: %v", err)
-	}
-	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != tmuxName {
-		t.Fatalf("TmuxSessionName = %v, want %q", chat.TmuxSessionName, tmuxName)
-	}
-	if chat.StartError != nil {
-		t.Fatalf("StartError = %q, want nil for non-reclaimed active repair", *chat.StartError)
 	}
 }
 

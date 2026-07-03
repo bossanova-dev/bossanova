@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -21,10 +19,7 @@ import (
 	"github.com/recurser/bossd/internal/tmux"
 )
 
-const (
-	defaultAgentCommandPrefix      = "/"
-	repairChatReclaimIdleThreshold = 20 * time.Minute
-)
+const defaultAgentCommandPrefix = "/"
 
 var (
 	ErrRepairChatNotReclaimable  = errors.New("repair chat not reclaimable")
@@ -40,36 +35,27 @@ type ReclaimRepairChatResult struct {
 const repairChatTitlePrefix = "Repair:"
 
 // IsRepairChatTitle reports whether a chat row belongs to the unattended
-// repair workflow. Repair chats have their own stale-reclaim path and should
+// repair workflow. Repair chats have their own displacement policy and should
 // not be counted as user activity for repair idle gating.
 func IsRepairChatTitle(title string) bool {
 	return strings.HasPrefix(title, repairChatTitlePrefix)
 }
 
-// RepairChatStaleForReclaim reports whether a repair chat has durable idle
-// evidence old enough for the repair plugin to reclaim it.
-func RepairChatStaleForReclaim(agentLogsDir string, chat *models.AgentChat, now time.Time) (bool, string, error) {
-	if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
-		return true, "repair chat has no live tmux pointer", nil
+// GetAgentChatTitle returns the chat-list title for agentSessionID. The host
+// layer reads it to decide whether a blocking chat is repair-owned when
+// selecting a displacement policy. A missing row is an error.
+func (l *Lifecycle) GetAgentChatTitle(ctx context.Context, agentSessionID string) (string, error) {
+	if l.agentChats == nil {
+		return "", fmt.Errorf("agent chat store not configured")
 	}
-	if agentLogsDir == "" {
-		return false, "agent logs dir not configured; refusing to kill live repair tmux without durable idle evidence", nil
-	}
-
-	logPath := agentLogPathFor(agentLogsDir, chat.AgentSessionID)
-	st, err := os.Stat(logPath)
+	chat, err := l.agentChats.GetByAgentSessionID(ctx, agentSessionID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, fmt.Sprintf("agent log for %s is missing; refusing to kill live repair tmux without durable idle evidence", chat.AgentSessionID), nil
-		}
-		return false, "", fmt.Errorf("stat repair agent log for %s: %w", chat.AgentSessionID, err)
+		return "", err
 	}
-
-	idleFor := now.Sub(st.ModTime())
-	if idleFor < repairChatReclaimIdleThreshold {
-		return false, fmt.Sprintf("repair chat last produced output %s ago; threshold is %s", idleFor.Round(time.Second), repairChatReclaimIdleThreshold), nil
+	if chat == nil {
+		return "", fmt.Errorf("agent chat not found for agent_session_id %q", agentSessionID)
 	}
-	return true, fmt.Sprintf("repair chat log idle for %s; threshold is %s", idleFor.Round(time.Second), repairChatReclaimIdleThreshold), nil
+	return chat.Title, nil
 }
 
 // ChatInput is the pane input for a tmux-hosted agent chat. Prompt is raw text;
@@ -571,6 +557,13 @@ func (l *Lifecycle) findLiveTmuxChat(ctx context.Context, sessionID string) (*mo
 	return nil, false, nil
 }
 
+// ReclaimRepairChat kills the tmux pane backing a repair chat and marks its
+// row start-failed so the next repair sweep can respawn. It enforces the
+// arg/session/title guards and verifies tmux liveness before killing, but no
+// longer decides displaceability itself: whether the chat is idle enough to
+// reclaim is evaluated by the host layer from the chat tracker (BOS-153); the
+// old pipe-pane log-mtime staleness gate is gone. When tmux reports the pane
+// alive the caller has already judged it displaceable, so we kill.
 func (l *Lifecycle) ReclaimRepairChat(ctx context.Context, sessionID, agentSessionID, reason string) (ReclaimRepairChatResult, error) {
 	if sessionID == "" {
 		return ReclaimRepairChatResult{}, fmt.Errorf("session_id is required")
@@ -610,19 +603,12 @@ func (l *Lifecycle) ReclaimRepairChat(ctx context.Context, sessionID, agentSessi
 			return ReclaimRepairChatResult{}, fmt.Errorf("%w: cannot verify tmux session %s liveness: %w", ErrRepairChatActive, result.TmuxSessionName, tmuxErr)
 		}
 		if tmuxAlive {
-			stale, staleReason, staleErr := l.repairChatStaleForReclaim(chat)
-			if staleErr != nil {
-				return ReclaimRepairChatResult{}, staleErr
-			}
-			if !stale {
-				return ReclaimRepairChatResult{}, fmt.Errorf("%w: %s", ErrRepairChatActive, staleReason)
-			}
 			l.logger.Info().
 				Str("session", sessionID).
 				Str("agentSessionID", agentSessionID).
 				Str("tmuxSession", result.TmuxSessionName).
-				Str("reason", staleReason).
-				Msg("repair chat is stale enough to reclaim")
+				Str("reason", reason).
+				Msg("reclaiming repair chat: killing live tmux pane")
 			if err := l.tmux.KillSession(ctx, result.TmuxSessionName); err != nil {
 				return ReclaimRepairChatResult{}, fmt.Errorf("kill repair tmux session %s: %w", result.TmuxSessionName, err)
 			}
@@ -634,6 +620,14 @@ func (l *Lifecycle) ReclaimRepairChat(ctx context.Context, sessionID, agentSessi
 	return result, nil
 }
 
+// ReplaceBlockingChatForRepair kills whatever chat pane is blocking a repair
+// launch (repair-titled or any other, e.g. a finalize chat) and marks its row
+// start-failed. It enforces the arg/session guards and verifies tmux liveness
+// before killing, but no longer decides displaceability itself: whether the
+// blocking chat is idle enough to displace is evaluated by the host layer from
+// the chat tracker (BOS-153); the old pipe-pane log-mtime staleness gate is
+// gone. When tmux reports the pane alive the caller has already judged it
+// displaceable, so we kill.
 func (l *Lifecycle) ReplaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string) (ReclaimRepairChatResult, error) {
 	if sessionID == "" {
 		return ReclaimRepairChatResult{}, fmt.Errorf("session_id is required")
@@ -667,22 +661,11 @@ func (l *Lifecycle) ReplaceBlockingChatForRepair(ctx context.Context, sessionID,
 			return ReclaimRepairChatResult{}, fmt.Errorf("%w: cannot verify tmux session %s liveness: %w", ErrRepairChatActive, result.TmuxSessionName, tmuxErr)
 		}
 		if tmuxAlive {
-			killReason := reason
-			if IsRepairChatTitle(chat.Title) {
-				stale, staleReason, staleErr := l.repairChatStaleForReclaim(chat)
-				if staleErr != nil {
-					return ReclaimRepairChatResult{}, staleErr
-				}
-				if !stale {
-					return ReclaimRepairChatResult{}, fmt.Errorf("%w: %s", ErrRepairChatActive, staleReason)
-				}
-				killReason = staleReason
-			}
 			l.logger.Info().
 				Str("session", sessionID).
 				Str("agentSessionID", agentSessionID).
 				Str("tmuxSession", result.TmuxSessionName).
-				Str("reason", killReason).
+				Str("reason", reason).
 				Msg("replacing idle blocking chat for repair")
 			if err := l.tmux.KillSession(ctx, result.TmuxSessionName); err != nil {
 				return ReclaimRepairChatResult{}, fmt.Errorf("kill blocking tmux session %s: %w", result.TmuxSessionName, err)
@@ -693,10 +676,6 @@ func (l *Lifecycle) ReplaceBlockingChatForRepair(ctx context.Context, sessionID,
 		return ReclaimRepairChatResult{}, err
 	}
 	return result, nil
-}
-
-func (l *Lifecycle) repairChatStaleForReclaim(chat *models.AgentChat) (bool, string, error) {
-	return RepairChatStaleForReclaim(l.agentLogsDir, chat, time.Now())
 }
 
 // KillChatTmuxSession tears down the tmux-backed chat identified by

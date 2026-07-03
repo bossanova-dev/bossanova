@@ -173,6 +173,15 @@ type SessionStore interface {
 	// one. The TUI uses that count to render the "(N×)" suffix, which
 	// would otherwise overcount a fail → succeed → fail sequence.
 	UpdateRepairDiagnostics(ctx context.Context, params UpdateRepairDiagnosticsParams) error
+
+	// UpdateRepairBlocked records the blocked-refusal lane: the daemon
+	// refused to START a repair chat (a FailedPrecondition displace/reclaim
+	// refusal). It sets last_repair_blocked_reason + last_repair_blocked_at
+	// WITHOUT touching last_repair_attempt_count or the runner/exit error
+	// fields, so a start-refusal never counts as a repair failure or feeds
+	// the exponential backoff. UpdateRepairDiagnostics clears the pair on
+	// the next real outcome.
+	UpdateRepairBlocked(ctx context.Context, sessionID string, at time.Time, reason string) error
 }
 
 // UpdateRepairDiagnosticsParams carries the per-attempt outcome that the

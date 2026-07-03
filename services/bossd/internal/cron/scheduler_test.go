@@ -245,6 +245,10 @@ func (f *fakeSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.Updat
 	panic("not used")
 }
 
+func (f *fakeSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ time.Time, _ string) error {
+	panic("not used")
+}
+
 // fakeCreator is a SessionCreator mock. Each call optionally blocks on a
 // gate (for concurrency-cap tests) and can be configured to error.
 type fakeCreator struct {

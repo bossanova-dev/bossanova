@@ -67,9 +67,13 @@ func SessionToProto(s *Session) *pb.Session {
 		DisplayLabel:                s.DisplayLabel,
 		DisplayIntent:               pb.DisplayIntent(s.DisplayIntent),
 		DisplaySpinner:              s.DisplaySpinner,
+		LastRepairBlockedReason:     s.LastRepairBlockedReason,
 	}
 	if s.ArchivedAt != nil {
 		p.ArchivedAt = timestamppb.New(*s.ArchivedAt)
+	}
+	if s.LastRepairBlockedAt != nil {
+		p.LastRepairBlockedAt = timestamppb.New(*s.LastRepairBlockedAt)
 	}
 	return p
 }
@@ -99,10 +103,15 @@ func SessionFromProto(p *pb.Session) *Session {
 		DisplayLabel:                p.DisplayLabel,
 		DisplayIntent:               int32(p.DisplayIntent),
 		DisplaySpinner:              p.DisplaySpinner,
+		LastRepairBlockedReason:     p.LastRepairBlockedReason,
 	}
 	if p.ArchivedAt != nil {
 		t := p.ArchivedAt.AsTime()
 		s.ArchivedAt = &t
+	}
+	if p.LastRepairBlockedAt != nil {
+		t := p.LastRepairBlockedAt.AsTime()
+		s.LastRepairBlockedAt = &t
 	}
 	return s
 }

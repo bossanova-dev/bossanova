@@ -49,6 +49,12 @@ Before running local checks, discover this repo's commands from project instruct
 
 ### Phase 2: Execute Repair Strategy
 
+For each triggered strategy below, the orchestrator dispatches a fresh **awaited** subagent (`subagent_type: general-purpose`; **never** `run_in_background`) to run that strategy's investigate-and-fix steps and return a short summary — files changed, what was fixed, and residual risk.
+
+<!-- tier: opus (no override) because this dispatch runs whichever strategy triggered — A (merge-conflict resolution), B (fixing failing tests/build), or C (implementing review feedback) — all of which author or evaluate code, i.e. judgment. Not tiered down. -->
+
+This dispatch stays on the orchestrator's model (Opus): conflict resolution, failing-check code fixes, and review-feedback reasoning are all judgment, so no cheaper `model:` override is applied. The subagent keeps the bulk material (diffs, CI logs, `gh run view` output, review threads) inside its own context; only the summary returns to the orchestrator, which stays thin. This is orchestration framing only: Strategy A/B/C below are unchanged and are exactly what the dispatched subagent runs. If the subagent dispatch itself fails (a tool error, not a repair failure), fall back to running that strategy inline; the dispatch is awaited and its failure is non-fatal, so it must never turn a would-be clean exit into a nonzero one.
+
 #### Strategy A: Merge Conflicts
 
 **Symptoms**: Git reports conflicts, PR status shows conflict
@@ -346,6 +352,8 @@ After applying the repair:
 
 4. If `repair_status=needs_repair` or `repair_status=unknown`, handle or retry the review feedback before exiting; do not treat unknown review status as clean. If checks are still pending, failed, or timed out after known review feedback is handled, note that in output. In default mode, still **exit cleanly (zero)** after the push even when checks are pending or failed — report the status but do not exit nonzero. The repair plugin only enters its in-session resume/retry loop after a clean exit; a nonzero exit makes it abandon that loop and fall back to a slower fresh sweep. (Watch Mode is the exception: it owns the loop and re-runs the matching repair strategy on failures itself, per the [Watch Mode](#watch-mode) section.)
 
+   Dispatching Strategy A/B/C investigation into an awaited subagent (see the Phase 2 lead-in and the [Watch Mode](#watch-mode) section) is internal orchestration bookkeeping for a single repair pass only. It MUST NOT change this default-mode contract — one pass, push, a single poll, and a clean zero exit even when checks are pending, so the repair plugin keeps owning retries — nor the default-vs-watch distinction described above.
+
    ```
    ✓ Repair applied and pushed
    Checks finished: [passing | failing | pending | timed out]
@@ -419,19 +427,26 @@ If the repair requires information not available (e.g., design decisions, extern
 4. **Clear Commits**: Write descriptive commit messages that explain the fix
 5. **Atomic Repairs**: Each repair attempt should be self-contained
 6. **Fail Fast**: If unable to fix, exit quickly to avoid wasting time
+7. **No raw bulk output in the main thread**: Never paste full diffs, CI logs, `gh run view` output, or
+   review threads into the orchestrator's context — that bulk is re-charged on every later turn. The
+   Phase 2 strategy subagent reads them in its own context and returns only a summary; when working
+   inline, filter to the few relevant lines (`gh pr checks --json name,state,bucket`,
+   `gh run view <run-id> --log-failed | tail`, `node scripts/review-feedback-probe.js`'s compact
+   summary) instead of dumping.
 
 ---
 
 ## Anti-Patterns
 
-| Anti-Pattern                             | Problem                             | Fix                               |
-| ---------------------------------------- | ----------------------------------- | --------------------------------- |
-| Accepting all "ours" or "theirs" blindly | Loses important changes             | Review each conflict individually |
-| Skipping tests after conflict resolution | Introduces bugs                     | Always run full test suite        |
-| Commenting out failing tests             | Hides problems                      | Fix the root cause                |
-| Plain force pushing                      | Loses history, breaks collaboration | Use `--force-with-lease` after rebase |
-| Making unrelated "improvements"          | Scope creep                         | Fix only the reported issue       |
-| Retrying immediately after failure       | Triggers cooldown loops             | Fix the root cause first          |
+| Anti-Pattern                                                      | Problem                             | Fix                                                               |
+| ----------------------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------- |
+| Accepting all "ours" or "theirs" blindly                          | Loses important changes             | Review each conflict individually                                 |
+| Skipping tests after conflict resolution                          | Introduces bugs                     | Always run full test suite                                        |
+| Commenting out failing tests                                      | Hides problems                      | Fix the root cause                                                |
+| Plain force pushing                                               | Loses history, breaks collaboration | Use `--force-with-lease` after rebase                             |
+| Making unrelated "improvements"                                   | Scope creep                         | Fix only the reported issue                                       |
+| Retrying immediately after failure                                | Triggers cooldown loops             | Fix the root cause first                                          |
+| Pasting raw diffs / CI logs / review threads into the main thread | Re-charged on every later turn      | Summarize in the strategy subagent; filter with `--json` / `grep` |
 
 ---
 
@@ -531,6 +546,8 @@ This skill should:
 In default mode (no `watch` argument) you MUST behave exactly as Phases 1–3 describe: apply one repair pass, push, poll the resulting PR state once, report the result, and exit so the repair plugin can decide whether to retry. **Do not** start an additional repair loop in default mode. Default mode may exit while checks are pending, but it must not exit while known unresolved review feedback still needs repair.
 
 In watch mode, after completing one normal repair pass (Phases 1–2) and pushing, do **not** exit. Instead poll the PR state directly, bounded to **5 repair passes total** (matching the plugin's own limit):
+
+Each of these repair passes dispatches its own fresh awaited subagent (per the Phase 2 lead-in) to run the matching strategy's investigate-and-fix steps; the thin orchestrator running this loop only tracks the pass counter, the `$BEFORE` baseline commit, and poll state between passes — it does not carry a prior pass's diffs/logs/threads forward. This is internal bookkeeping only: it does not alter the default-mode contract described in Phase 3 §4, and the 5-pass bound plus the final reason line below stay byte-identical.
 
 1. Record the current commit before each repair pass, and refresh this baseline after every pushed repair before returning to the poll loop:
 

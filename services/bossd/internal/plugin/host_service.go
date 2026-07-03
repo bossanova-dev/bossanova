@@ -48,6 +48,16 @@ const defaultWaitChatRunDeadline = 30 * time.Minute
 
 const waitChatRunProviderIDDiscoveryTimeout = 2 * time.Second
 
+// watchdogPollInterval is how often the WaitChatRun idle watchdog samples the
+// chat tracker while a run is armed (idle_fail_after_seconds > 0). Package-level
+// var (not const) so tests can shrink it to milliseconds.
+var watchdogPollInterval = 15 * time.Second
+
+// watchdogReclaimTimeout bounds the best-effort pane teardown when the idle
+// watchdog fires. Independent of the caller's context so a fire late in the
+// wait still gets a chance to kill the dead pane.
+const watchdogReclaimTimeout = 10 * time.Second
+
 // ChatLifecycle is the narrow surface HostServiceServer needs from
 // *session.Lifecycle for StartChatRun. Defining it as an interface
 // (rather than holding a *session.Lifecycle directly) keeps tests
@@ -66,6 +76,11 @@ type ChatLifecycle interface {
 	StartTmuxChat(ctx context.Context, sessionID string, input session.ChatInput, title string, hookOpts session.HookOpts) (string, error)
 	ReclaimRepairChat(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error)
 	ReplaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error)
+	// GetAgentChatTitle returns the chat-list title of the chat identified
+	// by agentSessionID (empty string + error when the row is missing). The
+	// host reads it to decide whether a blocking chat is repair-owned, which
+	// selects the QUESTION displacement policy in chatDisplaceable.
+	GetAgentChatTitle(ctx context.Context, agentSessionID string) (string, error)
 }
 
 // HostServiceServer implements the HostService gRPC server on the daemon
@@ -646,28 +661,17 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 				} else {
 					for _, chat := range chats {
 						if session.IsRepairChatTitle(chat.Title) {
-							stale, staleReason, staleErr := session.RepairChatStaleForReclaim(s.agentLogsDir, chat, time.Now())
-							if staleErr != nil {
-								log.Warn().Err(staleErr).
-									Str("session_id", sess.ID).
-									Str("agent_session_id", chat.AgentSessionID).
-									Msg("failed to check repair chat stale state for active chat computation")
-							} else if stale {
-								// A repair chat with no live tmux pointer is the
-								// permanent end state of every completed/reclaimed
-								// repair run; those rows are preserved as history
-								// and re-evaluated on every ListSessions poll, so
-								// logging them floods the log with zero diagnostic
-								// value. Only log the case worth noticing: a chat
-								// whose tmux pane is still live but has gone idle
-								// past the reclaim threshold.
-								if chat.TmuxSessionName != nil && *chat.TmuxSessionName != "" {
-									log.Debug().
-										Str("session_id", sess.ID).
-										Str("agent_session_id", chat.AgentSessionID).
-										Str("reason", staleReason).
-										Msg("ignoring stale repair chat for active chat computation")
-								}
+							// BOS-153: a repair-titled chat the tracker deems
+							// displaceable (idle past the repair window, at a
+							// long-stuck question, or stopped) is a dead/dying
+							// run — do not count it as an active chat, which
+							// would defer auto-repair forever. Evaluated from
+							// the sampled chat tracker, never the pipe-pane log
+							// mtime (which an idle TUI refreshes forever). A
+							// cold/absent tracker entry is NOT displaceable
+							// here; the later Get(...) nil check below already
+							// drops such chats from the active tally.
+							if s.chatDisplaceable(chat.AgentSessionID, time.Time{}, displacePolicy{MinIdle: repairDisplaceMinIdle, QuestionIdle: repairDisplaceQuestionIdle}, time.Now()) == nil {
 								continue
 							}
 						}
@@ -714,6 +718,7 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 				LastRepairHeadSha:           sess.LastRepairHeadSHA,
 				LastRepairDisplayStatus:     bossanovav1.DisplayStatus(sess.LastRepairDisplayStatus),
 				LastRepairReviewFingerprint: sess.LastRepairReviewFingerprint,
+				LastRepairBlockedReason:     sess.LastRepairBlockedReason,
 			}
 			if sess.PRNumber != nil {
 				prNumber := int32(*sess.PRNumber)
@@ -724,6 +729,9 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 			}
 			if sess.LastRepairStartedAt != nil {
 				pbSess.LastRepairStartedAt = timestamppb.New(*sess.LastRepairStartedAt)
+			}
+			if sess.LastRepairBlockedAt != nil {
+				pbSess.LastRepairBlockedAt = timestamppb.New(*sess.LastRepairBlockedAt)
 			}
 			if !latestChatActivity.IsZero() {
 				pbSess.LastChatActivityAt = timestamppb.New(latestChatActivity)
@@ -1131,6 +1139,18 @@ func (s *HostServiceServer) RecordRepairOutcome(ctx context.Context, req *bossan
 	if req.GetStartedAtUnix() == 0 {
 		startedAt = time.Now()
 	}
+	// Blocked-refusal lane: a non-empty blocked_reason means the daemon
+	// refused to START the repair chat (a FailedPrecondition displace/reclaim
+	// refusal) rather than running one. Record ONLY the blocked state — never
+	// fall through to UpdateRepairDiagnostics, so last_repair_attempt_count and
+	// the runner/exit error fields stay untouched and a start-refusal never
+	// counts as a repair failure or feeds the exponential backoff.
+	if reason := strings.TrimSpace(req.GetBlockedReason()); reason != "" {
+		if err := s.sessionStore.UpdateRepairBlocked(ctx, sessionID, startedAt, reason); err != nil {
+			return nil, grpcstatus.Errorf(codes.Internal, "update repair blocked: %v", err)
+		}
+		return &bossanovav1.RecordRepairOutcomeResponse{}, nil
+	}
 	if err := s.sessionStore.UpdateRepairDiagnostics(ctx, db.UpdateRepairDiagnosticsParams{
 		SessionID:         sessionID,
 		StartedAt:         startedAt,
@@ -1472,11 +1492,27 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	return &bossanovav1.StartChatRunHostResponse{AgentSessionId: agentSessionID}, nil
 }
 
+// replaceBlockingChatForRepair gates a repair replacement on the chat
+// tracker (via chatDisplaceable) before asking the lifecycle to kill the
+// blocking pane. The old pipe-pane log-mtime staleness check is gone
+// (BOS-153): displaceability is now evaluated solely from sampled tracker
+// evidence. The observed snapshot the repair plugin captured before the
+// call is still required — a zero/nil snapshot on the replace path is an
+// error — and is passed to chatDisplaceable so a chat that spoke after the
+// snapshot is refused. A repair-owned blocking chat (repair-titled) also
+// becomes displaceable after a long-stuck QUESTION; other titles never are.
 func (s *HostServiceServer) replaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string, observedLastActivityAt *timestamppb.Timestamp) error {
 	if reason == "" {
 		reason = "repair replacing existing chat"
 	}
-	if err := s.revalidateReplacementChatActivity(agentSessionID, observedLastActivityAt); err != nil {
+	if observedLastActivityAt == nil || observedLastActivityAt.AsTime().IsZero() {
+		return grpcstatus.Error(codes.FailedPrecondition, "replace blocking repair chat: observed last chat activity is required")
+	}
+	pol := displacePolicy{MinIdle: repairDisplaceMinIdle}
+	if title, err := s.lifecycle.GetAgentChatTitle(ctx, agentSessionID); err == nil && session.IsRepairChatTitle(title) {
+		pol.QuestionIdle = repairDisplaceQuestionIdle
+	}
+	if err := s.chatDisplaceable(agentSessionID, observedLastActivityAt.AsTime(), pol, time.Now()); err != nil {
 		return err
 	}
 	if _, err := s.lifecycle.ReplaceBlockingChatForRepair(ctx, sessionID, agentSessionID, reason); err != nil {
@@ -1497,30 +1533,6 @@ func isAuthorizedRepairReplacement(req *bossanovav1.StartChatRunHostRequest) boo
 		strings.HasPrefix(req.GetTitle(), "Repair: ") &&
 		strings.TrimSpace(req.GetReplaceExistingReason()) != "" &&
 		req.GetReplaceExistingObservedLastChatActivityAt() != nil
-}
-
-func (s *HostServiceServer) revalidateReplacementChatActivity(agentSessionID string, observedLastActivityAt *timestamppb.Timestamp) error {
-	if observedLastActivityAt == nil {
-		return grpcstatus.Error(codes.FailedPrecondition, "replace blocking repair chat: observed last chat activity is required")
-	}
-	if s.chatTracker == nil {
-		return grpcstatus.Error(codes.FailedPrecondition, "replace blocking repair chat: chat tracker not configured")
-	}
-	observed := observedLastActivityAt.AsTime()
-	if observed.IsZero() {
-		return grpcstatus.Error(codes.FailedPrecondition, "replace blocking repair chat: observed last chat activity is required")
-	}
-	current := s.chatTracker.Get(agentSessionID)
-	if current == nil {
-		return grpcstatus.Errorf(codes.FailedPrecondition, "replace blocking repair chat: cannot verify current activity for agent_session_id %s", agentSessionID)
-	}
-	if current.LastOutputAt.After(observed) {
-		return grpcstatus.Errorf(codes.FailedPrecondition, "replace blocking repair chat: chat %s produced output after idle snapshot", agentSessionID)
-	}
-	if current.Status != bossanovav1.ChatStatus_CHAT_STATUS_IDLE {
-		return grpcstatus.Errorf(codes.FailedPrecondition, "replace blocking repair chat: chat %s is no longer idle", agentSessionID)
-	}
-	return nil
 }
 
 func parseAlreadyExistsAgentSessionID(msg string) string {
@@ -1562,39 +1574,110 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 	deadline := time.NewTimer(s.waitChatRunDeadline)
 	defer deadline.Stop()
 
-	select {
-	case res := <-run.done:
-		providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
-		s.removeRunHookBestEffort(agentSessionID)
-		s.cleanupRun(agentSessionID)
-		return &bossanovav1.WaitChatRunHostResponse{ExitError: res.exitError, ProviderSessionId: providerSessionID}, nil
-	case <-deadline.C:
-		// Surface the deadline expiry so operators can correlate a
-		// synthesised exit_error with later events (eg. a Stop POST
-		// arriving after cleanup that gets a 404). Without this log the
-		// 404 reads as an unexplained anomaly.
-		log.Warn().
-			Str("agent_session", agentSessionID).
-			Dur("deadline", s.waitChatRunDeadline).
-			Msg("WaitChatRun: agent run did not signal completion within deadline; synthesising exit_error")
-		providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
-		s.removeRunHookBestEffort(agentSessionID)
-		s.cleanupRun(agentSessionID)
-		return &bossanovav1.WaitChatRunHostResponse{
-			ExitError:         waitChatRunNoSignalMessage(run.completionMode, fmt.Sprintf("deadline %s elapsed", s.waitChatRunDeadline)),
-			ProviderSessionId: providerSessionID,
-		}, nil
-	case <-ctx.Done():
-		providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
-		s.removeRunHookBestEffort(agentSessionID)
-		s.cleanupRun(agentSessionID)
-		if run.completionMode == chatRunCompletionExplicit {
+	// Opt-in idle watchdog (BOS-153). When idle_fail_after_seconds > 0, sample
+	// the chat tracker every watchdogPollInterval; if the run stays displaceable
+	// (continuously IDLE past idleWindow, a repair-owned QUESTION stuck past its
+	// window, or STOPPED) the watchdog fast-fails the run and tears the dead
+	// pane down instead of burning the full 30m deadline. A nil channel (the
+	// disabled default) simply never fires, leaving the legacy behaviour intact.
+	var watchdogTick <-chan time.Time
+	var idleWindow time.Duration
+	var watchdogPol displacePolicy
+	if secs := req.GetIdleFailAfterSeconds(); secs > 0 {
+		idleWindow = time.Duration(secs) * time.Second
+		watchdogPol = displacePolicy{MinIdle: idleWindow, QuestionIdle: repairDisplaceQuestionIdle}
+		ticker := time.NewTicker(watchdogPollInterval)
+		defer ticker.Stop()
+		watchdogTick = ticker.C
+	}
+
+	for {
+		select {
+		case res := <-run.done:
+			providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+			s.removeRunHookBestEffort(agentSessionID)
+			s.cleanupRun(agentSessionID)
+			return &bossanovav1.WaitChatRunHostResponse{ExitError: res.exitError, ProviderSessionId: providerSessionID}, nil
+		case <-watchdogTick:
+			// Not displaceable yet (WORKING, young, tracker cold): keep
+			// waiting. WORKING resets naturally as LastOutputAt advances.
+			if s.chatDisplaceable(agentSessionID, time.Time{}, watchdogPol, time.Now()) != nil {
+				continue
+			}
+			// Re-evaluate once more immediately to close the snapshot race
+			// between this tick and now; a fresh err means DO NOT fire.
+			if s.chatDisplaceable(agentSessionID, time.Time{}, watchdogPol, time.Now()) != nil {
+				continue
+			}
+			if res, ok := watchdogCompletionAvailable(run); ok {
+				providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+				s.removeRunHookBestEffort(agentSessionID)
+				s.cleanupRun(agentSessionID)
+				return &bossanovav1.WaitChatRunHostResponse{ExitError: res.exitError, ProviderSessionId: providerSessionID}, nil
+			}
+			log.Warn().
+				Str("agent_session", agentSessionID).
+				Dur("idle_window", idleWindow).
+				Msg("WaitChatRun: idle watchdog fired; agent went idle without completing; reclaiming pane")
+			s.runMu.Lock()
+			sessionID := s.runSessionByID[agentSessionID]
+			s.runMu.Unlock()
+			if s.lifecycle != nil {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), watchdogReclaimTimeout)
+				if _, err := s.lifecycle.ReclaimRepairChat(cleanupCtx, sessionID, agentSessionID, "watchdog: agent went idle without completing"); err != nil {
+					// Best-effort: a reclaim error (e.g. non-repair title) is
+					// logged and does NOT change the outcome; the run still
+					// fails and the pane is left for the replace path.
+					log.Warn().Err(err).
+						Str("agent_session", agentSessionID).
+						Msg("WaitChatRun: watchdog pane reclaim failed; failing run anyway")
+				}
+				cancel()
+			}
+			providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+			s.removeRunHookBestEffort(agentSessionID)
+			s.cleanupRun(agentSessionID)
 			return &bossanovav1.WaitChatRunHostResponse{
-				ExitError:         waitChatRunNoSignalMessage(run.completionMode, ctx.Err().Error()),
+				ExitError:         fmt.Sprintf("agent went idle without completing (no output for %s; watchdog)", idleWindow),
 				ProviderSessionId: providerSessionID,
 			}, nil
+		case <-deadline.C:
+			// Surface the deadline expiry so operators can correlate a
+			// synthesised exit_error with later events (eg. a Stop POST
+			// arriving after cleanup that gets a 404). Without this log the
+			// 404 reads as an unexplained anomaly.
+			log.Warn().
+				Str("agent_session", agentSessionID).
+				Dur("deadline", s.waitChatRunDeadline).
+				Msg("WaitChatRun: agent run did not signal completion within deadline; synthesising exit_error")
+			providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+			s.removeRunHookBestEffort(agentSessionID)
+			s.cleanupRun(agentSessionID)
+			return &bossanovav1.WaitChatRunHostResponse{
+				ExitError:         waitChatRunNoSignalMessage(run.completionMode, fmt.Sprintf("deadline %s elapsed", s.waitChatRunDeadline)),
+				ProviderSessionId: providerSessionID,
+			}, nil
+		case <-ctx.Done():
+			providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+			s.removeRunHookBestEffort(agentSessionID)
+			s.cleanupRun(agentSessionID)
+			if run.completionMode == chatRunCompletionExplicit {
+				return &bossanovav1.WaitChatRunHostResponse{
+					ExitError:         waitChatRunNoSignalMessage(run.completionMode, ctx.Err().Error()),
+					ProviderSessionId: providerSessionID,
+				}, nil
+			}
+			return nil, grpcstatus.FromContextError(ctx.Err()).Err()
 		}
-		return nil, grpcstatus.FromContextError(ctx.Err()).Err()
+	}
+}
+
+func watchdogCompletionAvailable(run activeChatRun) (completionResult, bool) {
+	select {
+	case res := <-run.done:
+		return res, true
+	default:
+		return completionResult{}, false
 	}
 }
 
@@ -1681,6 +1764,15 @@ func (s *HostServiceServer) ReclaimRepairChat(ctx context.Context, req *bossanov
 	if s.repairChatRunStillActive(sessionID, agentSessionID) {
 		return nil, grpcstatus.Errorf(codes.FailedPrecondition,
 			"reclaim repair chat: agent_session_id %s is still active for session %s", agentSessionID, sessionID)
+	}
+	// BOS-153: gate the reclaim on sampled tracker evidence, not the
+	// pipe-pane log mtime. The reclaim path has no earlier idle snapshot
+	// (the repair plugin only has the chat id here), so pass the zero time
+	// to skip the snapshot check; the tracker's own LastOutputAt age is the
+	// evidence. Repair chats are unattended, so a long-stuck QUESTION is
+	// also displaceable.
+	if err := s.chatDisplaceable(agentSessionID, time.Time{}, displacePolicy{MinIdle: repairDisplaceMinIdle, QuestionIdle: repairDisplaceQuestionIdle}, time.Now()); err != nil {
+		return nil, err
 	}
 	reason := req.GetReason()
 	if reason == "" {

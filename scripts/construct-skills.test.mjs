@@ -6,10 +6,12 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import {
   GENERATED_HEADER,
+  REFERENCE_HEADER,
   spliceInjection,
   exciseSections,
   applyRewrites,
   constructSkill,
+  constructReference,
   skillsRootAvailable,
 } from './construct-skills.mjs'
 
@@ -58,6 +60,29 @@ test('applyRewrites rewrites all occurrences', () => {
 test('GENERATED_HEADER warns against editing', () => {
   assert.match(GENERATED_HEADER, /Do not edit/i)
 })
+
+test('REFERENCE_HEADER warns against editing', () => {
+  assert.match(REFERENCE_HEADER, /Do not edit/i)
+})
+
+test(
+  'committed generated references match a fresh construction (no drift)',
+  { skip: sourceSkip },
+  () => {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(rootDir, '.claude/skills/bs-implement/construct.json'), 'utf8'),
+    )
+    for (const reference of manifest.references ?? []) {
+      const fresh = constructReference(manifest, reference, { rootDir })
+      const committed = fs.readFileSync(path.join(rootDir, reference.dest), 'utf8')
+      assert.equal(
+        committed,
+        fresh,
+        `${reference.dest} is out of date — run "make construct-skills"`,
+      )
+    }
+  },
+)
 
 test('committed SKILL.md matches a fresh construction (no drift)', { skip: sourceSkip }, () => {
   const manifest = JSON.parse(

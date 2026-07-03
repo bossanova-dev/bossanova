@@ -13,21 +13,86 @@ description: End-of-session workflow ensuring all work is committed and pushed. 
 
 **You MUST satisfy ALL of these before completing. No exceptions.**
 
-| #   | Requirement                     | How to Verify                                                                                                                                                                                           |
-| --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #   | Requirement                     | How to Verify                                                                                                                                                                                                                                                                                     |
+| --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | **All quality gates pass**      | Discover and run the repo's quality gates. Prefer a single project-declared aggregate command when it covers build/lint/test; otherwise run the minimal non-duplicative command set. ALL must pass. Fix failures — do NOT dismiss them as "pre-existing" without verifying on the PR base branch. |
-| 2   | **PR base is current**          | Fetch the PR base and verify `git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD` before rewriting commits, squashing, or pushing. If it fails, rebase onto `origin/$BASE_BRANCH` first.          |
-| 3   | **PR number in ALL commits**    | Every commit on this branch (compared to the PR base branch) MUST have `[#PR-NUM]` in the message. Check with `git log origin/$BASE_BRANCH..HEAD --oneline`. If ANY commit is missing it, you MUST run the fix script. |
-| 4   | **Commits squashed and tidied** | You MUST squash commits into logical groups and force-push. Do NOT ask for permission — just do it.                                                                                                     |
-| 5   | **GitHub checks not failing**   | After pushing, run `gh pr checks` to verify. Checks may be idle, queued, in_progress, or passing. Any **failing/red** check MUST be investigated and fixed before the session is complete.              |
-| 6   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready "$PR_URL"` and verify `gh pr view "$PR_URL" --json isDraft -q .isDraft` returns `false`. Do NOT leave the PR as a draft.                                                                        |
-| 7   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto the PR base branch and resolve conflicts before completing.                             |
+| 2   | **PR base is current**          | Fetch the PR base and verify `git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD` before rewriting commits, squashing, or pushing. If it fails, rebase onto `origin/$BASE_BRANCH` first.                                                                                                     |
+| 3   | **PR number in ALL commits**    | Every commit on this branch (compared to the PR base branch) MUST have `[#PR-NUM]` in the message. Check with `git log origin/$BASE_BRANCH..HEAD --oneline`. If ANY commit is missing it, you MUST run the fix script.                                                                            |
+| 4   | **Commits squashed and tidied** | You MUST squash commits into logical groups and force-push. Do NOT ask for permission — just do it.                                                                                                                                                                                               |
+| 5   | **GitHub checks not failing**   | After pushing, run `gh pr checks --json name,state,bucket` or `gh pr view --json statusCheckRollup` to verify without dumping raw logs. Checks may be idle, queued, in_progress, or passing. Any **failing/red** check MUST be investigated and fixed before the session is complete.             |
+| 6   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready "$PR_URL"` and verify `gh pr view "$PR_URL" --json isDraft -q .isDraft` returns `false`. Do NOT leave the PR as a draft.                                                                                                              |
+| 7   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto the PR base branch and resolve conflicts before completing.                                                                                                                      |
 
-**If you complete without satisfying ALL SIX requirements, you have failed this workflow.**
+**If you complete without satisfying ALL SEVEN requirements, you have failed this workflow.**
 
 ---
 
 ## Workflow Steps
+
+### Step 0: Dispatch the finalize workflow to an isolated subagent
+
+The orchestrator does not run Steps 1–8 inline on its own context. Instead it dispatches the
+**entire finalize workflow** (Steps 1–8 below) to **one fresh subagent** (`Agent`/`Task` tool,
+`subagent_type: general-purpose`, `model: "sonnet"`) and **awaits** it — **never** `run_in_background`.
+
+<!-- tier: sonnet because the finalize workflow is mechanical on its happy path — base-freshness/
+     branch-inference bash, `[#PR-NUM]` stamping (script-produced by add-pr-numbers.sh), conflict-free
+     squash, `gh pr checks` polling, `gh pr ready`. The `[#PR-NUM]` tags and the PR ready-state come
+     from deterministic scripts/`gh`, not model authoring, so a cheaper tier cannot change them; the
+     only model-authored text on the happy path is the squashed commit message, which is low-stakes.
+     Sonnet, not Haiku, because the two judgment escape hatches below still want real capability, and
+     they are handled by the stop-and-report rule (never resolved on Sonnet). Quality gate: diff the
+     finalize artifacts (commits, PR state, messages) vs an Opus-only baseline run on the same branch —
+     expected empty; any behavioral delta reverts this dispatch to Opus by dropping the `model:`
+     override. -->
+
+Pass the `model: "sonnet"` alias (not a pinned date-suffixed id) so it follows the current Sonnet target
+selected by the agent runtime. This intentionally accepts alias drift; when the alias target changes,
+rerun the BOS-133 tiered-vs-Opus artifact diff before relying on prior proof.
+
+**Keep judgment off Sonnet (stop-and-report).** The tiered subagent runs only the mechanical happy
+path. If it hits a genuine **merge conflict requiring 3-way resolution** (BLOCKING REQUIREMENT 7) or a
+**failing quality gate that needs a code edit to fix** (BLOCKING REQUIREMENT 1), it must **not** resolve
+it on Sonnet — it stops immediately and returns `NEEDS_OPUS: <one-line reason>` instead of a terminal
+result. Detecting _when_ to stop is itself mechanical, not judgment: a conflict announces itself with a
+non-zero rebase exit and `<<<<<<<` markers, and a failing gate with a non-zero exit — Sonnet only has
+to notice the signal, never to resolve it. Plain mechanical remediation stays on Sonnet: a clean
+fast-forward/rebase with no conflict, or re-running a gate that flaked. Conflict resolution and code
+edits are judgment and belong on Opus.
+
+The dispatch brief passes:
+
+- The branch, the PR URL and number, the base branch.
+- The discovered quality-gate command(s).
+- The full text of the **⛔ BLOCKING REQUIREMENTS - READ FIRST ⛔** table above, verbatim — these
+  are the contract the subagent must satisfy in full. They stay in the subagent's brief unchanged.
+
+The subagent runs Steps 1–8 in full, satisfying all 7 BLOCKING REQUIREMENTS above. It keeps ALL bulk
+output inside its own context — `git log`, `git diff`, `gh pr checks`, squash/rebase output — and
+returns only a **short structured result** to the orchestrator: the final PR state
+(isDraft/mergeable), checks status, and what was squashed/pushed. Do not paste raw diffs or logs back
+to the orchestrator.
+
+**Bulk-output discipline (no raw dumps).** Never paste full diffs, CI logs, `gh run view` output, or
+review threads into the main thread — that bulk is re-charged on every later turn. Read them **inside a
+subagent and return a summary**, or filter to the few relevant lines: scan checks with
+`gh pr checks --json name,state,bucket` (or `gh pr view --json statusCheckRollup`) and pull failure
+logs with `gh run view <run-id> --log-failed | tail`, not the full log. This rule holds whether the
+finalize workflow runs in the Step 0 subagent or falls back inline.
+
+After the subagent returns, the orchestrator re-verifies the terminal invariant **cheaply**, with ONE
+call — `gh pr view --json isDraft,mergeable,statusCheckRollup` — instead of re-reading the workflow.
+The completion contract is unchanged: work is NOT complete until `git push` succeeds and the PR is
+Ready for Review (`isDraft=false`).
+
+If the subagent dispatch itself fails (a tool error, not a workflow failure), **or returns
+`NEEDS_OPUS`** (it hit a conflict/gate escape hatch per the stop-and-report rule above), the
+orchestrator falls back to running Steps 1–8 inline on its own model (Opus). The dispatch is awaited
+and its failure is non-fatal — fall back inline rather than abandoning the session. This keeps the
+mechanical happy path on Sonnet while any genuine judgment (conflict resolution, code edits) finalizes
+at full capability.
+
+**The steps below (1–8) are what the dispatched subagent runs.**
 
 ### Step 1: Assess Current State
 
@@ -243,10 +308,11 @@ If push fails, resolve and retry until success.
 
 **This step is NON-NEGOTIABLE. You MUST verify checks are not failing.**
 
-After pushing, wait a moment for checks to register, then run:
+After pushing, wait a moment for checks to register, then scan the rollup with a `--json` filter
+(keeps the raw check table out of the main thread — see the bulk-output discipline in Step 0):
 
 ```bash
-gh pr checks
+gh pr checks --json name,state,bucket
 ```
 
 **Acceptable statuses (session can complete):**
@@ -262,8 +328,9 @@ gh pr checks
 
 **If any check is failing:**
 
-1. Run `gh pr checks` to identify which check(s) failed
-2. Run `gh run view <run-id> --log-failed` to see the failure logs
+1. Run `gh pr checks --json name,state,bucket` to identify which check(s) failed
+2. Read the failure logs **inside a subagent** (or `gh run view <run-id> --log-failed | tail`) and
+   return only the relevant lines — do not paste the full log into the main thread
 3. Investigate the root cause and fix it locally
 4. Commit the fix, push again, and re-check
 5. Repeat until no checks are red/failing
@@ -371,27 +438,27 @@ Before saying "done", verify ALL items:
 
 ## Common Failures
 
-| Failure                              | Why It's Wrong         | What You Should Have Done                                                                            |
-| ------------------------------------ | ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| Skipped project gate discovery       | Wrong commands run     | Inspect project instructions, CI, and command files before choosing gates                            |
-| Ran duplicate gate commands          | Slow and noisy         | Prefer one aggregate command when it covers build/lint/test; otherwise run only missing targets      |
-| Skipped quality gates                | CI will fail           | Run the repo's required build/lint/test gates                                                        |
-| Dismissed failure as "pre-existing"  | Failure was fixable    | Verify on the PR base branch before dismissing. Missing generated code or dependencies are NOT pre-existing |
-| Missing dependencies in worktree     | Generate/format fails  | Install the repo's documented dependencies, then re-run the same gate commands                       |
-| Stopped to ask permission to push    | Blocked automation     | Just push — do NOT ask for permission. Force-push is expected and authorized.                        |
-| Squashed stale branch onto new base   | PR reverts base changes | Rebase onto `origin/$BASE_BRANCH` first; never soft-reset stale history onto the new base             |
-| Commit missing `[#PR-NUM]`           | PR not linked          | Run `~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh` to fix ALL commits                  |
-| Reported issue but didn't fix        | Commits still broken   | You MUST run the script, not just report that commits need fixing                                    |
-| Compared against feature branch      | Wrong comparison       | Always compare to `origin/$BASE_BRANCH` to find all branch commits                                   |
-| Branch "up to date" so skipped       | Commits still need PR# | Even pushed commits need PR numbers - compare to the PR base branch, not feature branch              |
-| Didn't squash commits                | Messy history          | ALWAYS squash into logical groups — this is mandatory, not optional                                  |
-| Said "ready when you are"            | Work stranded          | YOU push immediately — do not wait for user to do it or ask permission                               |
-| Left session with failing checks     | CI is red              | Run `gh pr checks`, investigate failures with `gh run view --log-failed`, fix and re-push            |
-| Ignored failing check as "unrelated" | CI still red           | Even if unrelated, inform user and get explicit acknowledgment                                       |
-| Left empty "create PR" commit        | Messy history          | Use `drop` in rebase to remove empty scaffolding commits like `chore: [skip ci] create pull request` |
-| Left PR as draft                     | Not reviewable         | Run `gh pr ready` to mark the PR as ready for review before completing                               |
-| Ran `gh pr ready` but did not verify | Silent no-op possible  | Verify `isDraft == false` for the exact PR URL and fail finalize if GitHub still reports draft       |
-| Left PR with merge conflicts         | PR can't be merged     | Run `gh pr view --json mergeable -q .mergeable`, rebase onto the PR base branch if `CONFLICTING`     |
+| Failure                              | Why It's Wrong          | What You Should Have Done                                                                                   |
+| ------------------------------------ | ----------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Skipped project gate discovery       | Wrong commands run      | Inspect project instructions, CI, and command files before choosing gates                                   |
+| Ran duplicate gate commands          | Slow and noisy          | Prefer one aggregate command when it covers build/lint/test; otherwise run only missing targets             |
+| Skipped quality gates                | CI will fail            | Run the repo's required build/lint/test gates                                                               |
+| Dismissed failure as "pre-existing"  | Failure was fixable     | Verify on the PR base branch before dismissing. Missing generated code or dependencies are NOT pre-existing |
+| Missing dependencies in worktree     | Generate/format fails   | Install the repo's documented dependencies, then re-run the same gate commands                              |
+| Stopped to ask permission to push    | Blocked automation      | Just push — do NOT ask for permission. Force-push is expected and authorized.                               |
+| Squashed stale branch onto new base  | PR reverts base changes | Rebase onto `origin/$BASE_BRANCH` first; never soft-reset stale history onto the new base                   |
+| Commit missing `[#PR-NUM]`           | PR not linked           | Run `~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh` to fix ALL commits                         |
+| Reported issue but didn't fix        | Commits still broken    | You MUST run the script, not just report that commits need fixing                                           |
+| Compared against feature branch      | Wrong comparison        | Always compare to `origin/$BASE_BRANCH` to find all branch commits                                          |
+| Branch "up to date" so skipped       | Commits still need PR#  | Even pushed commits need PR numbers - compare to the PR base branch, not feature branch                     |
+| Didn't squash commits                | Messy history           | ALWAYS squash into logical groups — this is mandatory, not optional                                         |
+| Said "ready when you are"            | Work stranded           | YOU push immediately — do not wait for user to do it or ask permission                                      |
+| Left session with failing checks     | CI is red               | Run `gh pr checks`, investigate failures with `gh run view --log-failed`, fix and re-push                   |
+| Ignored failing check as "unrelated" | CI still red            | Even if unrelated, inform user and get explicit acknowledgment                                              |
+| Left empty "create PR" commit        | Messy history           | Use `drop` in rebase to remove empty scaffolding commits like `chore: [skip ci] create pull request`        |
+| Left PR as draft                     | Not reviewable          | Run `gh pr ready` to mark the PR as ready for review before completing                                      |
+| Ran `gh pr ready` but did not verify | Silent no-op possible   | Verify `isDraft == false` for the exact PR URL and fail finalize if GitHub still reports draft              |
+| Left PR with merge conflicts         | PR can't be merged      | Run `gh pr view --json mergeable -q .mergeable`, rebase onto the PR base branch if `CONFLICTING`            |
 
 ---
 

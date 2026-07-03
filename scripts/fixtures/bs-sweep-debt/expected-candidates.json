@@ -1,0 +1,68 @@
+[
+  {
+    "category": "dead-code",
+    "area": "services/bossd",
+    "file": "services/bossd/internal/foo/foo.go",
+    "evidence": "helperUnused"
+  },
+  {
+    "category": "dead-code",
+    "area": "services/bossd",
+    "file": "services/bossd/internal/foo/foo.go",
+    "evidence": "legacyAdapter"
+  },
+  {
+    "category": "dead-code",
+    "area": "services/boss",
+    "file": "services/boss/internal/views/bar.go",
+    "evidence": "oldRender"
+  },
+  {
+    "category": "complexity-hotspot",
+    "area": "services/bossd",
+    "file": "services/bossd/internal/session/state.go",
+    "evidence": "(*Manager).transition"
+  },
+  {
+    "category": "complexity-hotspot",
+    "area": "services/bosso",
+    "file": "services/bosso/internal/stream/pump.go",
+    "evidence": "copyLoop"
+  },
+  {
+    "category": "duplication",
+    "area": "services/bosso",
+    "file": "services/bosso/internal/stream/a.go",
+    "evidence": "services/bosso/internal/stream/b.go"
+  },
+  {
+    "category": "security",
+    "area": "services/bosso",
+    "file": "services/bosso/internal/stream/pump.go",
+    "evidence": "GO-2023-1571"
+  },
+  {
+    "category": "dead-code",
+    "area": "services/web",
+    "file": "services/web/src/lib/legacy-helpers.ts",
+    "evidence": "unused file"
+  },
+  {
+    "category": "dead-code",
+    "area": "services/web",
+    "file": "services/web/package.json",
+    "evidence": "left-pad"
+  },
+  {
+    "category": "dead-code",
+    "area": "services/web",
+    "file": "services/web/src/lib/format.ts",
+    "evidence": "humanizeBytes"
+  },
+  {
+    "category": "duplication",
+    "area": "services/web",
+    "file": "services/web/src/components/A.tsx",
+    "evidence": "services/web/src/components/B.tsx"
+  }
+]

@@ -1,0 +1,58 @@
+[
+  {
+    "number": 101,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "npm", "name": "lodash" },
+      "manifest_path": "pnpm-lock.yaml",
+      "scope": "runtime"
+    },
+    "security_advisory": { "ghsa_id": "GHSA-lodash-0001", "severity": "high" },
+    "security_vulnerability": {
+      "vulnerable_version_range": ">= 4.0.0, < 4.17.21",
+      "first_patched_version": { "identifier": "4.17.21" }
+    }
+  },
+  {
+    "number": 102,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "npm", "name": "axios" },
+      "manifest_path": "pnpm-lock.yaml",
+      "scope": "runtime"
+    },
+    "security_advisory": { "ghsa_id": "GHSA-axios-0002", "severity": "critical" },
+    "security_vulnerability": {
+      "vulnerable_version_range": ">= 1.0.0, < 1.6.0",
+      "first_patched_version": { "identifier": "1.6.0" }
+    }
+  },
+  {
+    "number": 103,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "npm", "name": "next" },
+      "manifest_path": "pnpm-lock.yaml",
+      "scope": "runtime"
+    },
+    "security_advisory": { "ghsa_id": "GHSA-next-0003", "severity": "high" },
+    "security_vulnerability": {
+      "vulnerable_version_range": ">= 12.0.0, < 12.5.0",
+      "first_patched_version": { "identifier": "13.0.0" }
+    }
+  },
+  {
+    "number": 104,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "npm", "name": "request" },
+      "manifest_path": "pnpm-lock.yaml",
+      "scope": "development"
+    },
+    "security_advisory": { "ghsa_id": "GHSA-request-0004", "severity": "low" },
+    "security_vulnerability": {
+      "vulnerable_version_range": ">= 0.0.0",
+      "first_patched_version": null
+    }
+  }
+]

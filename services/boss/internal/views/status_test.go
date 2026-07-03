@@ -238,6 +238,71 @@ func TestRepairFailureHint(t *testing.T) {
 	}
 }
 
+// TestRepairHint covers the blocked-vs-failure precedence in the
+// combined repairHint helper (BOS-153 Task 6). A non-empty
+// LastRepairBlockedReason always wins because the daemon clears the
+// blocked pair on every real repair outcome, so it is the freshest
+// repair-related state.
+func TestRepairHint(t *testing.T) {
+	cases := []struct {
+		name string
+		sess *pb.Session
+		want string
+	}{
+		{
+			name: "blocked_reason_renders_blocked_hint",
+			sess: &pb.Session{
+				LastRepairBlockedReason: "chat at prompt",
+			},
+			want: "repair blocked: chat at prompt",
+		},
+		{
+			name: "blocked_takes_precedence_over_failure",
+			sess: &pb.Session{
+				LastRepairBlockedReason: "chat at prompt",
+				LastRepairAttemptCount:  3,
+				LastRepairRunnerError:   "exit status 1",
+			},
+			want: "repair blocked: chat at prompt",
+		},
+		{
+			name: "no_blocked_reason_keeps_failure_hint",
+			sess: &pb.Session{
+				LastRepairAttemptCount: 2,
+				LastRepairExitError:    "exit status 1",
+			},
+			want: "repair failed (2×)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := repairHint(tc.sess); got != tc.want {
+				t.Errorf("repairHint = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRepairBlockedHint_LongReasonTruncated verifies the blocked reason
+// is truncated to 48 runes plus a trailing ellipsis so a verbose daemon
+// message can't blow out the warning block.
+func TestRepairBlockedHint_LongReasonTruncated(t *testing.T) {
+	reason := strings.Repeat("x", 200)
+	sess := &pb.Session{LastRepairBlockedReason: reason}
+	got := repairBlockedHint(sess)
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("expected trailing ellipsis, got %q", got)
+	}
+	body := strings.TrimPrefix(got, "repair blocked: ")
+	if body == got {
+		t.Fatalf("expected %q prefix, got %q", "repair blocked: ", got)
+	}
+	// 48 truncated runes + the ellipsis rune = 49.
+	if n := len([]rune(body)); n != 49 {
+		t.Errorf("truncated reason = %d runes, want 49", n)
+	}
+}
+
 // TestRepairFailureHint_NoEmoji verifies that repairFailureHint never
 // returns a string containing the U+26A0 WARNING SIGN (⚠).
 func TestRepairFailureHint_NoEmoji(t *testing.T) {

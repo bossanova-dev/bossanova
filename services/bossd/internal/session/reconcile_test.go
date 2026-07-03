@@ -277,6 +277,10 @@ func (m *reconcileMockSessionStore) UpdateRepairDiagnostics(_ context.Context, _
 	return nil
 }
 
+func (m *reconcileMockSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ time.Time, _ string) error {
+	return nil
+}
+
 // --- Tests ---
 
 func TestReconcilePRAssociations_NoRepos(t *testing.T) {

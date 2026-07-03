@@ -718,13 +718,18 @@ func TestRepairSession_AlreadyExistsAgentIDReclaimRefusedSoftSkips(t *testing.T)
 	require.Empty(t, setRepair, "losing/refused reclaim path must not set repair status")
 	require.Len(t, mock.reclaimReqs, 1)
 	require.Equal(t, "active-agent-1", mock.reclaimReqs[0].GetAgentSessionId())
-	require.Empty(t, mock.recordOutcomeReqs, "refused reclaim is a soft skip, not a failed repair attempt")
+	require.Len(t, mock.recordOutcomeReqs, 1, "refused reclaim must be recorded as repair-blocked")
+	got := mock.recordOutcomeReqs[0]
+	assert.Equal(t, "s1", got.GetSessionId())
+	assert.Contains(t, got.GetBlockedReason(), "reclaim repair chat")
+	assert.Empty(t, got.GetRunnerError(), "blocked lane must not carry a runner error")
+	assert.Empty(t, got.GetExitError(), "blocked lane must not carry an exit error")
 
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	assert.False(t, rm.repairing["s1"])
-	assert.True(t, rm.cooldowns["s1"].IsZero(), "soft skip must not start cooldown")
-	assert.Equal(t, "", rm.lastAttemptCommit["s1"], "soft skip did not run an agent attempt")
+	assert.False(t, rm.cooldowns["s1"].IsZero(), "base cooldown stamped so reclaim-refusal retries are floored")
+	assert.Equal(t, "", rm.lastAttemptCommit["s1"], "blocked reclaim did not run an agent attempt")
 }
 
 func TestRepairSession_AlreadyExistsAgentIDReclaimSuccessRetriesOnce(t *testing.T) {
@@ -760,12 +765,14 @@ func TestRepairSession_AlreadyExistsAgentIDReclaimSuccessRetriesOnce(t *testing.
 }
 
 // TestRepairSession_RecordsOutcomeOnRunnerFailure asserts that a
-// non-AlreadyExists StartChatRun failure (eg. "claude not on PATH")
-// is captured into RecordRepairOutcome with a non-empty runner_error.
-// This is the field the TUI's "⚠ repair failed" hint reads from.
+// non-AlreadyExists, non-FailedPrecondition StartChatRun failure (eg. an
+// internal "start agent: ..." error) is captured into RecordRepairOutcome
+// with a non-empty runner_error. This is the field the TUI's "⚠ repair
+// failed" hint reads from. (FailedPrecondition refusals take the separate
+// blocked lane — see TestRepairSession_RefusalRecordsBlockedNotFailure.)
 func TestRepairSession_RecordsOutcomeOnRunnerFailure(t *testing.T) {
 	mock := newTestMock()
-	mock.startErr = grpcstatus.Error(codes.FailedPrecondition, "claude not on PATH")
+	mock.startErr = grpcstatus.Error(codes.Internal, "start agent: exec: claude not found")
 	rm := newTestMonitor(mock)
 	rm.repairing["s1"] = true
 
@@ -775,8 +782,9 @@ func TestRepairSession_RecordsOutcomeOnRunnerFailure(t *testing.T) {
 	require.Len(t, mock.recordOutcomeReqs, 1, "runner failure must be recorded once")
 	got := mock.recordOutcomeReqs[0]
 	assert.Equal(t, "s1", got.GetSessionId())
-	assert.Contains(t, got.GetRunnerError(), "claude not on PATH")
+	assert.Contains(t, got.GetRunnerError(), "start agent")
 	assert.Empty(t, got.GetExitError(), "ExitError stays empty when the runner refused to spawn")
+	assert.Empty(t, got.GetBlockedReason(), "a real runner error is not a blocked refusal")
 	assert.NotZero(t, got.GetStartedAtUnix(), "StartedAtUnix recorded")
 
 	// A runner failure means the agent never started — there is no signal
@@ -907,6 +915,86 @@ func TestRepairSession_DoesNotPersistUnavailableReviewFingerprint(t *testing.T) 
 
 	require.Len(t, mock.recordOutcomeReqs, 1)
 	assert.Nil(t, mock.recordOutcomeReqs[0].ReviewFingerprint, "unavailable fingerprint must not be persisted as an empty fingerprint")
+}
+
+// TestRepairSession_RefusalRecordsBlockedNotFailure locks in the BOS-153
+// blocked lane: a FailedPrecondition StartChatRun refusal (eg. the target
+// chat is still working) is recorded with a BlockedReason but no runner/exit
+// error, and stamps only the base in-memory cooldown so refusal retries are
+// floored without escalating the exponential backoff.
+func TestRepairSession_RefusalRecordsBlockedNotFailure(t *testing.T) {
+	mock := newTestMock()
+	mock.startErr = grpcstatus.Error(codes.FailedPrecondition, "displace blocked: chat is working")
+	rm := newTestMonitor(mock)
+	rm.repairing["s1"] = true
+
+	rm.repairSession(t.Context(), "s1", "repo", "title",
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+
+	require.Len(t, mock.recordOutcomeReqs, 1, "a start-refusal must be recorded exactly once")
+	got := mock.recordOutcomeReqs[0]
+	assert.Equal(t, "displace blocked: chat is working", got.GetBlockedReason(), "blocked reason carries the refusal message")
+	assert.Empty(t, got.GetRunnerError(), "blocked lane must not carry a runner error")
+	assert.Empty(t, got.GetExitError(), "blocked lane must not carry an exit error")
+
+	// No agent ran, so FIX_COMPLETE never fires.
+	_, waitCalls, fireCalls, _ := mock.snapshot()
+	assert.Equal(t, 0, waitCalls, "a refused start never reaches WaitChatRun")
+	assert.Equal(t, 0, fireCalls, "no FIX_COMPLETE on a start-refusal")
+
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	assert.False(t, rm.cooldowns["s1"].IsZero(), "base cooldown stamped so refusal retries are floored at the base cadence")
+	assert.Equal(t, "", rm.lastAttemptCommit["s1"], "a refusal did not run an agent attempt against this head")
+}
+
+// TestRepairSession_WatchdogExitErrorAllowsSameHeadRetry locks in that a
+// watchdog-failed run (BOS-153: the agent went idle without ever reporting
+// completion) is NOT counted as an attempt against the head, so a same-head
+// retry stays allowed — the agent never actually attempted the repair.
+func TestRepairSession_WatchdogExitErrorAllowsSameHeadRetry(t *testing.T) {
+	mock := newTestMock()
+	mock.waitResp = &bossanovav1.WaitChatRunHostResponse{
+		ExitError: "agent went idle without completing (no output for 5m0s; watchdog)",
+	}
+	rm := newTestMonitor(mock)
+	rm.repairing["s1"] = true
+
+	require.True(t, isInteractiveChatIncomplete(mock.waitResp.GetExitError()),
+		"the watchdog marker must classify as an incomplete interactive chat")
+
+	rm.repairSession(t.Context(), "s1", "repo", "title",
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+
+	require.Len(t, mock.recordOutcomeReqs, 1)
+	assert.Contains(t, mock.recordOutcomeReqs[0].GetExitError(), "agent went idle without completing")
+
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	assert.Equal(t, "", rm.lastAttemptCommit["s1"], "a watchdog-killed run must not mark the head as attempted")
+	assert.Equal(t, bossanovav1.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED, rm.lastAttemptDisplayStatus["s1"],
+		"a watchdog-killed run must not mark the status as attempted")
+}
+
+// TestRepairSession_WaitRequestCarriesIdleFailField asserts the plugin arms
+// the daemon's WaitChatRun idle watchdog with a 5-minute (300s) window.
+func TestRepairSession_WaitRequestCarriesIdleFailField(t *testing.T) {
+	mock := newTestMock()
+	mock.waitResp = &bossanovav1.WaitChatRunHostResponse{ExitError: "exit status 1"}
+	mock.sessions = []*bossanovav1.Session{
+		{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS},
+	}
+	rm := newTestMonitor(mock)
+	rm.repairing["s1"] = true
+
+	rm.repairSession(t.Context(), "s1", "repo", "title",
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	require.NotEmpty(t, mock.waitReqs, "WaitChatRun must be called")
+	assert.Equal(t, int32(300), mock.waitReqs[0].GetIdleFailAfterSeconds(),
+		"the repair plugin arms the idle watchdog at 5m (300s)")
 }
 
 func TestAssessPostRepairStatus_ClassifiesDisplayStatus(t *testing.T) {

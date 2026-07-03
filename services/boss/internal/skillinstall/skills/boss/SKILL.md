@@ -264,13 +264,13 @@ Update cron job settings
 **Flags:**
 
 - `--agent` — Set the agent runner plugin name
-- `--enabled` — Enable or disable the job (default: true)
+- `--enabled` — Enable or disable the job (unset preserves current)
 - `--gate` — Set the gate command (empty string clears it)
 - `--model` — Set the agent model id (empty string clears it)
 - `--name` — Set job name
 - `--prompt` — Set the prompt / plan
 - `--prompt-file` — Read a new prompt from a file (or '-' for stdin)
-- `--run-setup` — Run the repo setup script before the agent (default: true)
+- `--run-setup` — Run the repo setup script before the agent (unset preserves current)
 - `--schedule` — Set the cron schedule
 - `--tz` — Set the IANA timezone (empty string clears it)
 

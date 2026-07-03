@@ -97,6 +97,10 @@ func (m *mockSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.Updat
 	return nil
 }
 
+func (m *mockSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ time.Time, _ string) error {
+	return nil
+}
+
 func (m *mockSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
 	return nil, nil
 }

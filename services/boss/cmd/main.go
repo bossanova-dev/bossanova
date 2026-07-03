@@ -382,8 +382,12 @@ func cronCmd() *cobra.Command {
 	update.Flags().String("gate", "", "Set the gate command (empty string clears it)")
 	update.Flags().String("model", "", "Set the agent model id (empty string clears it)")
 	update.Flags().String("tz", "", "Set the IANA timezone (empty string clears it)")
-	update.Flags().Bool("enabled", true, "Enable or disable the job")
-	update.Flags().Bool("run-setup", true, "Run the repo setup script before the agent")
+	// Defaults are false (not true as on `add`) because runCronUpdate only reads
+	// these via Flags().Changed() — an omitted flag preserves the current value,
+	// so a "true" default would never apply and would render a misleading
+	// "(default: true)" in the generated skill reference. false is elided there.
+	update.Flags().Bool("enabled", false, "Enable or disable the job (unset preserves current)")
+	update.Flags().Bool("run-setup", false, "Run the repo setup script before the agent (unset preserves current)")
 
 	cron.AddCommand(
 		ls,

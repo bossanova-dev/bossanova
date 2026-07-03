@@ -88,6 +88,10 @@ func (m *hookMockSessionStore) UpdateRepairDiagnostics(context.Context, db.Updat
 	panic("not used")
 }
 
+func (m *hookMockSessionStore) UpdateRepairBlocked(context.Context, string, time.Time, string) error {
+	panic("not used")
+}
+
 // fakeFinalizer records FinalizeSession invocations so tests can assert
 // the dispatch happened (and only for the expected session).
 type fakeFinalizer struct {

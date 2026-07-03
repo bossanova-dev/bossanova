@@ -1055,9 +1055,9 @@ func (m ChatPickerModel) View() tea.View {
 	b.WriteString("\n")
 
 	if m.merging {
-		label := "Merging PR... (esc to return to list)"
+		label := "Merging PR..."
 		if n := m.session.GetPrNumber(); n != 0 {
-			label = fmt.Sprintf("Merging PR #%d... (esc to return to list)", n)
+			label = fmt.Sprintf("Merging PR #%d...", n)
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + label))

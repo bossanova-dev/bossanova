@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -62,6 +63,10 @@ func (m *mockSessionStoreLiveness) ListByState(_ context.Context, _ int) ([]*mod
 	return nil, nil
 }
 func (m *mockSessionStoreLiveness) UpdateRepairDiagnostics(_ context.Context, _ db.UpdateRepairDiagnosticsParams) error {
+	return nil
+}
+
+func (m *mockSessionStoreLiveness) UpdateRepairBlocked(_ context.Context, _ string, _ time.Time, _ string) error {
 	return nil
 }
 

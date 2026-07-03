@@ -133,10 +133,7 @@ test('run: over-cap diff (>=200KB) falls back to instruct-mode, no embedded diff
 
     // Sanity-check the diff really exceeds the cap so the test asserts the
     // intended branch (not an accidentally-small diff).
-    const diffBytes = Buffer.byteLength(
-      git(dir, ['diff', `${base}...${head}`]) + '\n',
-      'utf8',
-    )
+    const diffBytes = Buffer.byteLength(git(dir, ['diff', `${base}...${head}`]) + '\n', 'utf8')
     assert.ok(diffBytes >= 200 * 1024, `diff should exceed 200KB cap, got ${diffBytes}`)
 
     const bin = writeEchoArgvBin(dir)

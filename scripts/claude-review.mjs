@@ -46,6 +46,13 @@ const DEFAULT_TIMEOUT_MS = 300_000
 // reviewer to read the range itself) rather than ballooning the prompt.
 const EMBED_DIFF_LIMIT_BYTES = 200 * 1024
 
+// Cap on the synchronous diff-collection step. bestEffortDiff runs *before* the
+// agent watchdog is armed, so without its own small bound a hung `git diff`
+// could burn the entire review timeout before the agent even starts — making
+// run()'s wall time up to 2× timeoutMs. We give diff collection a small slice
+// of the budget and subtract whatever it actually spends from the agent timeout.
+const DIFF_COLLECTION_BUDGET_MS = 30_000
+
 // resolveTimeoutMs(env) → positive integer ms.
 // Parses BOSS_CROSS_REVIEW_TIMEOUT_MS; falls back to the default when unset or
 // not a positive integer. Uses strict Number() parsing (not the lenient
@@ -148,16 +155,20 @@ function buildClaudeArgsWithDiff({ base, head, diffText, env = process.env }) {
 // still running so the "bounded" run can never hang before it even starts.
 function bestEffortDiff(repo, base, head, timeoutMs) {
   try {
-    const result = spawnSync('git', ['diff', '--no-ext-diff', '--no-textconv', `${base}...${head}`], {
-      cwd: repo,
-      encoding: 'utf8',
-      // Generous buffer: we still gate on EMBED_DIFF_LIMIT_BYTES below. An
-      // over-limit diff that trips maxBuffer surfaces as status!==0 → ''.
-      maxBuffer: 4 * 1024 * 1024,
-      // Hard backstop. A timeout leaves status=null (!== 0) → '' → instruct-mode.
-      timeout: typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : undefined,
-      killSignal: 'SIGKILL',
-    })
+    const result = spawnSync(
+      'git',
+      ['diff', '--no-ext-diff', '--no-textconv', `${base}...${head}`],
+      {
+        cwd: repo,
+        encoding: 'utf8',
+        // Generous buffer: we still gate on EMBED_DIFF_LIMIT_BYTES below. An
+        // over-limit diff that trips maxBuffer surfaces as status!==0 → ''.
+        maxBuffer: 4 * 1024 * 1024,
+        // Hard backstop. A timeout leaves status=null (!== 0) → '' → instruct-mode.
+        timeout: typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : undefined,
+        killSignal: 'SIGKILL',
+      },
+    )
     if (result.status !== 0 || typeof result.stdout !== 'string') return ''
     if (Buffer.byteLength(result.stdout, 'utf8') >= EMBED_DIFF_LIMIT_BYTES) return ''
     return result.stdout
@@ -214,7 +225,9 @@ export async function probe({ env = process.env, timeoutMs = 5000 } = {}) {
     })
 
     child.on('close', (code, sig) => {
-      settle(classifyProbe({ spawnError: null, status: code, signal: sig }))
+      // `claude --version` has no auth semantics: a non-zero exit is a broken
+      // CLI, not "not authenticated" (codex's meaning), so classify it 'error'.
+      settle(classifyProbe({ spawnError: null, status: code, signal: sig, nonZeroStatus: 'error' }))
     })
 
     timer = setTimeout(() => {
@@ -264,7 +277,13 @@ export async function run({
 
   // Feed the diff, don't make the agent fetch it. Best-effort and failure-safe:
   // a non-git `repo` (as in the unit tests) just yields '' → instruct-mode.
-  const diffText = bestEffortDiff(repo, base, head, effectiveTimeoutMs)
+  // Diff collection is synchronous and runs before the agent watchdog, so bound
+  // it to a small slice of the budget and subtract the elapsed time — keeping
+  // run()'s total wall time under effectiveTimeoutMs rather than diff-time + it.
+  const diffBudgetMs = Math.min(effectiveTimeoutMs, DIFF_COLLECTION_BUDGET_MS)
+  const diffStart = Date.now()
+  const diffText = bestEffortDiff(repo, base, head, diffBudgetMs)
+  const agentTimeoutMs = Math.max(0, effectiveTimeoutMs - (Date.now() - diffStart))
   const args = buildClaudeArgsWithDiff({ base, head, diffText, env })
 
   return new Promise((resolve) => {
@@ -371,7 +390,7 @@ export async function run({
           // intentionally ignored during teardown
         }
       }, 200)
-    }, effectiveTimeoutMs)
+    }, agentTimeoutMs)
   })
 }
 

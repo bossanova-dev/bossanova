@@ -346,12 +346,40 @@ func (s *SQLiteSessionStore) UpdateRepairDiagnostics(ctx context.Context, params
 		     last_repair_attempt_count = `+countExpr+`,
 		     last_repair_head_sha       = ?,
 		     last_repair_display_status = ?,
-		     last_repair_review_fingerprint = COALESCE(?, last_repair_review_fingerprint)
+		     last_repair_review_fingerprint = COALESCE(?, last_repair_review_fingerprint),
+		     last_repair_blocked_reason = '',
+		     last_repair_blocked_at     = NULL
 		 WHERE id = ?`,
 		startedAt, params.RunnerError, params.ExitError, params.HeadSHA,
 		params.DisplayStatus, params.ReviewFingerprint, params.SessionID)
 	if err != nil {
 		return fmt.Errorf("update repair diagnostics: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// UpdateRepairBlocked records a blocked-refusal outcome: the daemon refused
+// to START a repair chat (a FailedPrecondition displace/reclaim refusal)
+// rather than running one. It writes last_repair_blocked_reason +
+// last_repair_blocked_at ONLY, deliberately leaving last_repair_attempt_count
+// and the runner/exit error fields untouched, so a start-refusal never counts
+// as a repair failure or feeds the exponential backoff. The next real repair
+// outcome (via UpdateRepairDiagnostics) clears the blocked pair.
+func (s *SQLiteSessionStore) UpdateRepairBlocked(ctx context.Context, sessionID string, at time.Time, reason string) error {
+	if sessionID == "" {
+		return fmt.Errorf("update repair blocked: session ID required")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions
+		 SET last_repair_blocked_reason = ?,
+		     last_repair_blocked_at     = ?
+		 WHERE id = ?`,
+		reason, at.Unix(), sessionID)
+	if err != nil {
+		return fmt.Errorf("update repair blocked: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return sql.ErrNoRows
@@ -426,7 +454,8 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 	s.last_check_state, s.last_observed_review_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
 	s.display_label, s.display_intent, s.display_spinner, s.agent_name, s.model,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
-	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error
+	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
+	s.last_repair_blocked_reason, s.last_repair_blocked_at
 	FROM sessions s`
 
 // sessionSelectWithRepoSQL joins sessions with repos so ListActiveWithRepo
@@ -439,6 +468,7 @@ const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.wor
 	s.display_label, s.display_intent, s.display_spinner, s.agent_name, s.model,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
+	s.last_repair_blocked_reason, s.last_repair_blocked_at,
 	COALESCE(r.display_name, ''), COALESCE(r.origin_url, '')
 	FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id`
 
@@ -464,6 +494,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 	var displayIntent int
 	var displaySpinner int
 	var lastRepairStartedAt *int64
+	var lastRepairBlockedAt *int64
 	var repoDisplayName, repoOriginURL string
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
@@ -473,7 +504,8 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
-		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError, &repoDisplayName, &repoOriginURL)
+		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
+		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &repoDisplayName, &repoOriginURL)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -497,6 +529,10 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 		t := time.Unix(*lastRepairStartedAt, 0)
 		sess.LastRepairStartedAt = &t
 	}
+	if lastRepairBlockedAt != nil {
+		t := time.Unix(*lastRepairBlockedAt, 0)
+		sess.LastRepairBlockedAt = &t
+	}
 	return &sess, repoDisplayName, repoOriginURL, nil
 }
 
@@ -507,6 +543,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var displayIntent int
 	var displaySpinner int
 	var lastRepairStartedAt *int64
+	var lastRepairBlockedAt *int64
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
@@ -515,7 +552,8 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
-		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError)
+		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
+		&sess.LastRepairBlockedReason, &lastRepairBlockedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -538,6 +576,10 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	if lastRepairStartedAt != nil {
 		t := time.Unix(*lastRepairStartedAt, 0)
 		sess.LastRepairStartedAt = &t
+	}
+	if lastRepairBlockedAt != nil {
+		t := time.Unix(*lastRepairBlockedAt, 0)
+		sess.LastRepairBlockedAt = &t
 	}
 	return &sess, nil
 }

@@ -47,9 +47,9 @@ type streamOpener interface {
 
 // SessionTokenHolder is a tiny mutex-protected token cache shared by every
 // opener that needs to send X-Daemon-Token on the wire. The daemon's
-// re-register flow (StreamClient.tryReRegister) calls Set on the holder
-// after RegisterDaemon issues a fresh token; every opener that reads from
-// the same holder picks up the new value transparently on its next dial.
+// re-register flow (StreamClient.tryReRegister) conditionally swaps the holder
+// after RegisterDaemon issues a fresh token; every opener that reads from the
+// same holder picks up the new value transparently on its next dial.
 //
 // The holder exists because there are now TWO openers (DaemonStream and
 // TerminalStream) that present the same daemon session_token and that must
@@ -79,6 +79,18 @@ func (h *SessionTokenHolder) Set(tok string) {
 	h.mu.Lock()
 	h.tok = tok
 	h.mu.Unlock()
+}
+
+// CompareAndSwap replaces the token only if it still matches old. It returns
+// true when the replacement happened. Safe for concurrent callers.
+func (h *SessionTokenHolder) CompareAndSwap(old, tok string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.tok != old {
+		return false
+	}
+	h.tok = tok
+	return true
 }
 
 // connectOpener adapts a real bossanovav1connect.OrchestratorServiceClient
@@ -133,12 +145,28 @@ func (o *connectOpener) SetSessionToken(tok string) {
 	o.sessionToken.Set(tok)
 }
 
+func (o *connectOpener) SessionToken() string {
+	if o.sessionToken == nil {
+		return ""
+	}
+	return o.sessionToken.Get()
+}
+
+func (o *connectOpener) CompareAndSwapSessionToken(old, tok string) bool {
+	if o.sessionToken == nil {
+		return false
+	}
+	return o.sessionToken.CompareAndSwap(old, tok)
+}
+
 // sessionTokenHolder is the capability StreamClient looks for on its
 // opener to rotate the daemon session_token after a re-register. Real
 // openers (connectOpener) satisfy this; bare test fakes that don't care
 // about re-register simply don't implement it.
 type sessionTokenHolder interface {
+	SessionToken() string
 	SetSessionToken(tok string)
+	CompareAndSwapSessionToken(old, tok string) bool
 }
 
 // DaemonStream opens a new bidi stream attaching the WorkOS JWT as a
@@ -898,6 +926,7 @@ func (c *StreamClient) tryReRegister(ctx context.Context, suppressFailureWarn bo
 		c.logger.Warn().Msg("stream: opener does not support session token rotation; skipping re-register")
 		return false
 	}
+	failedToken := holder.SessionToken()
 	tok, err := c.reRegister(ctx)
 	if err != nil {
 		if suppressFailureWarn {
@@ -910,6 +939,14 @@ func (c *StreamClient) tryReRegister(ctx context.Context, suppressFailureWarn bo
 	if tok == "" {
 		c.logger.Warn().Msg("stream: re-register returned empty session token; skipping rotation")
 		return false
+	}
+	if holder.CompareAndSwapSessionToken(failedToken, tok) {
+		c.logger.Info().Msg("stream: rotated session_token after auth rejection")
+		return true
+	}
+	if holder.SessionToken() != "" {
+		c.logger.Info().Msg("stream: session_token already rotated after auth rejection")
+		return true
 	}
 	holder.SetSessionToken(tok)
 	c.logger.Info().Msg("stream: rotated session_token after auth rejection")

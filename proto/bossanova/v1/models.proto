@@ -257,6 +257,14 @@ message Session {
   // flags the degraded state for `boss show <id>` and the TUI. Empty for clean
   // runs or repos with no setup script.
   string setup_error = 50;
+
+  // Blocked-refusal lane: set when the daemon refused to START a repair chat
+  // (a FailedPrecondition displace/reclaim refusal) rather than running one.
+  // Recorded for operator visibility without bumping last_repair_attempt_count
+  // or the runner/exit error fields. Cleared on every real repair outcome, so
+  // a non-empty reason IS the latest repair-related state.
+  string last_repair_blocked_reason = 51;
+  optional google.protobuf.Timestamp last_repair_blocked_at = 52;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display

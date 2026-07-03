@@ -167,6 +167,19 @@ test('probe: non-existent BOSS_CLAUDE_BIN → not_installed', async () => {
   assert.equal(result, 'not_installed')
 })
 
+test('probe: fake that exits non-zero → error (not not_authed)', async () => {
+  // `claude --version` has no auth semantics, so a non-zero exit is a broken
+  // CLI, not "not authenticated" (codex's meaning of a non-zero login-status).
+  const dir = makeTmpDir()
+  try {
+    const bin = writeFakeBin(dir, 'claude', 'exit 1')
+    const result = await probe({ env: { BOSS_CLAUDE_BIN: bin }, timeoutMs: 3000 })
+    assert.equal(result, 'error')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('probe: fake that sleeps past timeoutMs → error', async () => {
   const dir = makeTmpDir()
   try {
@@ -265,12 +278,19 @@ test('buildClaudeArgs: includes --bare (hermetic) when ANTHROPIC_API_KEY is set'
 
 test('buildClaudeArgs: omits --bare when ANTHROPIC_API_KEY is absent (preserves OAuth/keychain auth)', () => {
   const args = buildClaudeArgs({ base: 'abc', head: 'def', env: {} })
-  assert.ok(!args.includes('--bare'), 'bare mode must be off without an API key, or auth would break')
+  assert.ok(
+    !args.includes('--bare'),
+    'bare mode must be off without an API key, or auth would break',
+  )
 })
 
 test('buildClaudeArgs: omits --bare when ANTHROPIC_API_KEY is empty/whitespace', () => {
-  assert.ok(!buildClaudeArgs({ base: 'a', head: 'b', env: { ANTHROPIC_API_KEY: '' } }).includes('--bare'))
-  assert.ok(!buildClaudeArgs({ base: 'a', head: 'b', env: { ANTHROPIC_API_KEY: '  ' } }).includes('--bare'))
+  assert.ok(
+    !buildClaudeArgs({ base: 'a', head: 'b', env: { ANTHROPIC_API_KEY: '' } }).includes('--bare'),
+  )
+  assert.ok(
+    !buildClaudeArgs({ base: 'a', head: 'b', env: { ANTHROPIC_API_KEY: '  ' } }).includes('--bare'),
+  )
 })
 
 test('buildClaudeArgs: does NOT include -C (claude has no working-dir flag)', () => {
@@ -527,7 +547,10 @@ test('run: stdout is bounded under a flood, output stays capped and completes pr
       Buffer.byteLength(result.output, 'utf8') <= maxBytes,
       'output must be capped to maxBytes',
     )
-    assert.ok(result.output.includes('[truncated'), 'flood beyond maxBytes must be marked truncated')
+    assert.ok(
+      result.output.includes('[truncated'),
+      'flood beyond maxBytes must be marked truncated',
+    )
     assert.ok(elapsed < timeoutMs / 2, `run blocked on stdout flood: ${elapsed}ms`)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
@@ -565,8 +588,14 @@ test('run: small diff in a real git repo is embedded under the cap', async () =>
     assert.equal(result.timedOut, false)
     // -p and --permission-mode plan must be present in the spawned argv.
     assert.ok(result.output.includes('-p'), 'spawned argv should include -p')
-    assert.ok(result.output.includes('--permission-mode'), 'spawned argv should include --permission-mode')
-    assert.ok(result.output.includes('plan'), 'spawned argv should include the plan permission mode')
+    assert.ok(
+      result.output.includes('--permission-mode'),
+      'spawned argv should include --permission-mode',
+    )
+    assert.ok(
+      result.output.includes('plan'),
+      'spawned argv should include the plan permission mode',
+    )
     // Embed-mode delimiter from assemblePrompt's embed branch, with the range.
     assert.ok(
       result.output.includes(`===== BEGIN DIFF (${base}...${head}) =====`),

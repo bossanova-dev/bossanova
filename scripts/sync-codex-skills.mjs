@@ -6,7 +6,9 @@ import { pathToFileURL } from 'node:url'
 export const GENERATED_HEADER =
   '<!-- Generated from .claude/skills by make codex-skills. Do not edit directly. -->'
 
-const BODY_REWRITES = [
+const COMMON_REWRITES = [
+  [/~\/\.claude\/skills\//g, '~/.codex/skills/'],
+  [/\bnode \.claude\/skills\//g, 'node .codex/skills/'],
   [/~\/\.claude\/skills\/bossanova\//g, '~/.codex/skills/bossanova/'],
   [/\bCLAUDE\.md\b/g, 'AGENTS.md'],
   [/\bClaude Code\b/g, 'Codex'],
@@ -27,6 +29,9 @@ const BODY_REWRITES = [
   [/\bWebFetch\b/g, 'web fetch'],
   [/\bPlaywright MCP server\b/g, 'Codex browser automation'],
   [/\bPlaywright MCP\b/g, 'Codex browser automation'],
+]
+
+const SKILL_BODY_REWRITES = [
   // Skill/command references: Claude `/name` -> Codex `$name` (same ref, different prefix).
   // The name must start with a letter (so numeric score denominators like /20 are ignored)
   // and forbids slashes, so multi-segment paths (e.g. /Users/dave/x, docs/plans/x) never
@@ -38,6 +43,8 @@ const BODY_REWRITES = [
   // redirects (2>/dev/null), URLs (https://...), and key combos ([y/enter]) are left intact.
   [/(^|[\s(\[*_])\/((?:[a-z][a-z0-9-]*:)?[a-z][a-z0-9-]*)(?=[\s)\]*_.,;:!?]|$)/gm, '$1$$$2'],
 ]
+
+const BODY_REWRITES = [...COMMON_REWRITES, ...SKILL_BODY_REWRITES]
 
 function normalizePath(filePath) {
   return filePath.split(path.sep).join('/')
@@ -87,12 +94,24 @@ function rewriteBody(body) {
     return current.replace(pattern, replacement)
   }, body)
 
-  return rewritten
+  return cleanRewrittenBody(rewritten)
+}
+
+function cleanRewrittenBody(body) {
+  return body
     .replace(/\bAGENTS\.md`, `AGENTS\.md\b/g, 'AGENTS.md`, `CLAUDE.md')
     .replace(
       /`apply_patch`\/`apply_patch` "modified since read"/g,
       '`write`/`apply_patch` "modified since read"',
     )
+}
+
+function rewriteCopiedMarkdown(body) {
+  const rewritten = COMMON_REWRITES.reduce((current, [pattern, replacement]) => {
+    return current.replace(pattern, replacement)
+  }, body)
+
+  return cleanRewrittenBody(rewritten)
 }
 
 export function rewriteClaudeSkillMarkdown(markdown, filePath = 'SKILL.md') {
@@ -183,7 +202,11 @@ function copyRecursive(sourcePath, destPath, skippedPath) {
   }
 
   fs.mkdirSync(path.dirname(destPath), { recursive: true })
-  fs.copyFileSync(sourcePath, destPath)
+  if (path.extname(sourcePath).toLowerCase() === '.md') {
+    fs.writeFileSync(destPath, rewriteCopiedMarkdown(fs.readFileSync(sourcePath, 'utf8')))
+  } else {
+    fs.copyFileSync(sourcePath, destPath)
+  }
   fs.chmodSync(destPath, stat.mode & 0o777)
 }
 

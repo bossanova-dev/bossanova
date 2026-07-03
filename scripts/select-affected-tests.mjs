@@ -46,6 +46,9 @@ export function selectTargets(files) {
     if (isSkillPath(file)) {
       selectWholeTarget(selections, 'test-manifest')
       selectWholeTarget(selections, 'test-no-inline-stop-hooks')
+      // A SKILL.md-only edit must also run the skill content tests (BOS-144), which pin
+      // the byte-stable dispatch/sentinel contracts documented in the skill bodies.
+      selectWholeTarget(selections, 'test-scripts')
       continue
     }
 

@@ -98,7 +98,7 @@ func sessionWarningHints(sess *pb.Session) []string {
 		return nil
 	}
 	hints := make([]string, 0, 2)
-	if hint := repairFailureHint(sess); hint != "" {
+	if hint := repairHint(sess); hint != "" {
 		hints = append(hints, hint)
 	}
 	if hint := attentionWarningHint(sess); hint != "" {
@@ -128,6 +128,37 @@ func attentionWarningHint(sess *pb.Session) string {
 // based on the default 1-minute base cooldown; operators who tune
 // CooldownMinutes will see a slightly inaccurate ETA but still in the
 // right ballpark.
+// repairHint returns the single repair-related warning suffix to show
+// for a session, blocked-reason first, else the failure counter. The
+// blocked hint takes precedence because the daemon clears the blocked
+// pair on every real repair outcome (BOS-153 Task 4) — so a non-empty
+// blocked reason IS the latest repair-related state and needs no
+// timestamp comparison against the failure fields.
+func repairHint(sess *pb.Session) string {
+	if hint := repairBlockedHint(sess); hint != "" {
+		return hint
+	}
+	return repairFailureHint(sess)
+}
+
+// repairBlockedHint returns a short suffix like
+// "repair blocked: <reason>" when the daemon most recently refused to
+// start or displace a repair chat (e.g. the live pane is at a prompt
+// and can't be safely reclaimed). Empty when there is no blocked
+// reason. The reason is truncated to ~48 runes with a trailing ellipsis
+// so a long daemon message can't blow out the warning block. Rune-based
+// truncation avoids splitting a multibyte character mid-sequence.
+func repairBlockedHint(sess *pb.Session) string {
+	reason := sess.GetLastRepairBlockedReason()
+	if reason == "" {
+		return ""
+	}
+	if runes := []rune(reason); len(runes) > 48 {
+		reason = string(runes[:48]) + "…"
+	}
+	return "repair blocked: " + reason
+}
+
 func repairFailureHint(sess *pb.Session) string {
 	count := sess.GetLastRepairAttemptCount()
 	if count == 0 {

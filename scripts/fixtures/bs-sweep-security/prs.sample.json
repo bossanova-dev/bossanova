@@ -1,0 +1,7 @@
+[
+  {
+    "number": 900,
+    "headRefName": "feature/unrelated-work",
+    "body": "An unrelated open PR that dedupes nothing (no bs-sweep-security:ghsa sentinels, not a dependabot/* branch)."
+  }
+]

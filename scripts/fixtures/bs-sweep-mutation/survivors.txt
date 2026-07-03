@@ -1,0 +1,9 @@
+[bosso--internal-auth] internal/auth/token.go:42 CONDITIONALS_BOUNDARY
+[bosso--internal-auth] internal/auth/token.go:58 INVERT_NEGATIVES
+
+[bosso--internal-auth] internal/auth/jwt.go:113 ARITHMETIC_BASE
+==> Surviving mutants: make mutate-survivors
+[boss--internal-client] internal/client/socket.go:77 CONDITIONALS_NEGATION
+[bossd--internal-server] internal/server/session.go:204 INCREMENT_DECREMENT
+[bossd--internal-server] internal/server/session.go:204 INCREMENT_DECREMENT
+[bossd--internal-server] internal/server/lifecycle.go:319 REMOVE_SELF_ASSIGNMENTS

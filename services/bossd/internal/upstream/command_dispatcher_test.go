@@ -54,6 +54,7 @@ type fakeCommandHandler struct {
 	sendResult        *pb.SendChatMessageResponse
 	sendAgentID       string // last agentSessionID passed to SendChatMessage
 	sendMessage       string // last message passed to SendChatMessage
+	sendSubmit        bool   // last submit flag passed to SendChatMessage
 }
 
 func (f *fakeCommandHandler) Stop(_ context.Context, _ string) (*pb.Session, error) {
@@ -115,9 +116,10 @@ func (f *fakeCommandHandler) GetChatTranscript(_ context.Context, sessionID, _ s
 	f.transcriptSession = sessionID
 	return f.transcript, f.returnErr
 }
-func (f *fakeCommandHandler) SendChatMessage(_ context.Context, agentSessionID, message string, _ bool) (*pb.SendChatMessageResponse, error) {
+func (f *fakeCommandHandler) SendChatMessage(_ context.Context, agentSessionID, message string, _, submit bool) (*pb.SendChatMessageResponse, error) {
 	f.sendAgentID = agentSessionID
 	f.sendMessage = message
+	f.sendSubmit = submit
 	return f.sendResult, f.returnErr
 }
 
@@ -321,7 +323,7 @@ func TestDispatch_SendChatMessage(t *testing.T) {
 	if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
 		CommandId: "sm1",
 		Cmd: &pb.OrchestratorCommand_SendChatMessage{SendChatMessage: &pb.SendChatMessageCommand{
-			AgentSessionId: "agent-1", Message: "hello", WakeIfAsleep: true,
+			AgentSessionId: "agent-1", Message: "hello", WakeIfAsleep: true, Submit: true,
 		}},
 	}, out); ev != nil {
 		t.Fatalf("expected nil synchronous result for async command, got %+v", ev)
@@ -336,8 +338,8 @@ func TestDispatch_SendChatMessage(t *testing.T) {
 	if sm == nil || !sm.GetDelivered() || sm.GetTmuxSessionName() != "boss-x" {
 		t.Fatalf("unexpected send payload: %+v", sm)
 	}
-	if fake.sendAgentID != "agent-1" || fake.sendMessage != "hello" {
-		t.Fatalf("send fields not forwarded: agent=%q msg=%q", fake.sendAgentID, fake.sendMessage)
+	if fake.sendAgentID != "agent-1" || fake.sendMessage != "hello" || !fake.sendSubmit {
+		t.Fatalf("send fields not forwarded: agent=%q msg=%q submit=%v", fake.sendAgentID, fake.sendMessage, fake.sendSubmit)
 	}
 }
 

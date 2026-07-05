@@ -14,6 +14,8 @@ package testharness_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -127,5 +129,50 @@ func TestE2ESessionEnvReachesTmux(t *testing.T) {
 		if strings.Contains(k, "mcp__boss__") {
 			t.Errorf("unexpected mcp surface in env key %q", k)
 		}
+	}
+}
+
+// TestE2ESessionEnvIncludesWorktreeDotenv verifies that a worktree's
+// repo-local .env is overlaid beneath the managed environment on a real
+// spawn: keys only the .env defines reach tmux (so ${VAR} expansions in the
+// worktree's .mcp.json resolve), while managed BOSS_* keys always win over
+// same-named .env entries.
+func TestE2ESessionEnvIncludesWorktreeDotenv(t *testing.T) {
+	h, fake := cronTestHarness(t)
+	ctx := context.Background()
+
+	repoID := registerTestRepo(t, h, ctx, withWorktreeBaseDir(t.TempDir()))
+	useTempWorktrees(t, h, func(dir string) {
+		content := "# repo-local env\nLINEAR_API_KEY=lin_api_e2e_probe\nBOSS_SESSION_ID=shadow-attempt\n"
+		if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(content), 0o600); err != nil {
+			t.Fatalf("seed worktree .env: %v", err)
+		}
+	})
+
+	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
+		RepoID:   repoID,
+		Name:     "dotenv-probe",
+		Prompt:   "do the thing",
+		Schedule: "* * * * *",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create cron job: %v", err)
+	}
+
+	sched := newCronScheduler(h)
+	if err := sched.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	sched.Tick(tickTime)
+
+	sess := sessionFromCronJob(t, h, job.ID)
+	env := tmuxEnvFromNewSession(t, fake)
+
+	if got := env["LINEAR_API_KEY"]; got != "lin_api_e2e_probe" {
+		t.Errorf("tmux env LINEAR_API_KEY = %q, want %q (worktree .env not delivered)", got, "lin_api_e2e_probe")
+	}
+	if got := env["BOSS_SESSION_ID"]; got != sess.ID {
+		t.Errorf("tmux env BOSS_SESSION_ID = %q, want managed %q (.env must not shadow managed keys)", got, sess.ID)
 	}
 }

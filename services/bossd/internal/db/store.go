@@ -119,9 +119,14 @@ type UpdateSessionParams struct {
 	AutomationEnabled       *bool
 	AttemptCount            *int
 	BlockedReason           **string
-	ArchivedAt              **string // ISO 8601 string or nil
-	CronJobID               **string
-	HookToken               **string // double pointer: nil = don't update, *nil = clear (cleared on finalize success)
+	// LastAttemptHeadSHA follows the nullable-string double-pointer convention:
+	// nil = don't touch, *nil = clear to NULL (reset on green / auto-unblock),
+	// *val = set the SHA at which an attempt was just counted (BOS-235).
+	LastAttemptHeadSHA **string
+	ArchivedAt         **string // ISO 8601 string or nil
+	CronJobID          **string
+	HookToken          **string // double pointer: nil = don't update, *nil = clear (cleared on finalize success)
+	TmuxUnattended     *bool
 
 	// Composite display fields, updated by the DisplayStatusComputer (Step 2).
 	// Pointer-typed so a nil value means "don't touch" and a zero value means
@@ -327,6 +332,46 @@ type UpdateCronJobLastRunParams struct {
 	RanAt                         time.Time
 	Outcome                       models.CronJobOutcome
 	NextRunAt                     *time.Time // nil = clear (job disabled or schedule invalid)
+}
+
+// CreateAccountParams holds the fields required to create an account.
+// Status defaults to active and Health to ok on create.
+type CreateAccountParams struct {
+	Provider      models.AccountProvider
+	Label         string
+	AccountEmail  string
+	Priority      int
+	Tier          string
+	AllowedModels []string
+}
+
+// UpdateAccountParams holds updatable account fields. Nil fields are not
+// updated. Double-pointer fields clear to NULL when *field == nil.
+type UpdateAccountParams struct {
+	Label         *string
+	AccountEmail  *string
+	Status        *models.AccountStatus
+	Priority      *int
+	Health        *models.AccountHealth
+	CooldownUntil **time.Time // nil = don't update; *nil = set NULL
+	LastUsedAt    **time.Time // nil = don't update; *nil = set NULL
+	Tier          *string
+	AllowedModels *[]string
+}
+
+// AccountStore persists account-registry metadata (no secrets — see accountcred).
+type AccountStore interface {
+	Create(ctx context.Context, params CreateAccountParams) (*models.Account, error)
+	Get(ctx context.Context, id string) (*models.Account, error)
+	List(ctx context.Context) ([]*models.Account, error) // ORDER BY provider, priority, created_at
+	ListByProvider(ctx context.Context, p models.AccountProvider) ([]*models.Account, error)
+	Update(ctx context.Context, id string, params UpdateAccountParams) (*models.Account, error)
+	Delete(ctx context.Context, id string) error
+	// RecordTestResult updates only the last-test bookkeeping columns
+	// (last_test_ok_at, last_test_error) for a row. okAt nil clears
+	// last_test_ok_at to NULL; testErr is written verbatim ("" = no error).
+	// Returns sql.ErrNoRows when the account does not exist.
+	RecordTestResult(ctx context.Context, id string, okAt *time.Time, testErr string) error
 }
 
 // CronJobStore defines the interface for cron job persistence.

@@ -6,14 +6,28 @@ package socketbackend
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"syscall"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/bossmcp"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+)
+
+// Dial retry bounds. During a bossd restart the Unix socket file is briefly
+// absent (ENOENT) or refusing connections (ECONNREFUSED). Retrying only the
+// connection establishment (never a request body) bridges that window while
+// keeping mutating RPCs safe.
+const (
+	maxDialAttempts = 4
+	dialRetryDelay  = 250 * time.Millisecond
 )
 
 // Backend implements bossmcp.Backend over a Unix-socket Connect client.
@@ -25,14 +39,57 @@ type Backend struct {
 // Verify Backend satisfies the bossmcp interface at compile time.
 var _ bossmcp.Backend = (*Backend)(nil)
 
+// dialWithRetry dials the bossd Unix socket, retrying a bounded number of times
+// when the socket is transiently absent or refusing during a daemon restart. It
+// retries ONLY connection-establishment errors (ENOENT / ECONNREFUSED); any
+// other dial error, or a cancelled/expired context, returns immediately. Only
+// the connection is retried — no request is ever re-sent, so mutating RPCs stay
+// safe.
+func dialWithRetry(ctx context.Context, socketPath string) (net.Conn, error) {
+	var lastErr error
+	for attempt := range maxDialAttempts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		var d net.Dialer
+		conn, err := d.DialContext(ctx, "unix", socketPath)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+
+		// Retry only transient connection-establishment errors. errors.Is
+		// unwraps through *net.OpError (it implements Unwrap).
+		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ECONNREFUSED) {
+			return nil, err
+		}
+
+		// Back off before the next attempt, but abort promptly if the request
+		// context is cancelled or times out during the delay. As of Go 1.23 a
+		// receive from timer.C after Stop must not be drained — it is guaranteed
+		// to block — so Stop() alone releases the timer here.
+		if attempt < maxDialAttempts-1 {
+			timer := time.NewTimer(dialRetryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("bossd socket %q unavailable after %d dial attempts (daemon may be restarting): %w", socketPath, maxDialAttempts, lastErr)
+}
+
 // New connects to the bossd daemon at socketPath. The base URL host is ignored
 // because the Unix-socket dialer overrides it.
 func New(socketPath string) (*Backend, error) {
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", socketPath)
+				return dialWithRetry(ctx, socketPath)
 			},
 		},
 	}
@@ -155,24 +212,26 @@ func (b *Backend) ListTrackerIssues(ctx context.Context, repoID, query, source s
 // --- Sessions ---
 
 // CreateSession opens the daemon's setup stream and drains it to the terminal
-// SessionCreated event, returning the final Session.
-func (b *Backend) CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (*pb.Session, error) {
+// SessionCreated event, returning the final Session together with whether the
+// daemon attached to an existing session (captured from the same frame).
+func (b *Backend) CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (*bossmcp.CreateSessionResult, error) {
 	stream, err := b.rpc.CreateSession(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = stream.Close() }()
 
-	var session *pb.Session
+	var result bossmcp.CreateSessionResult
 	for stream.Receive() {
 		if created := stream.Msg().GetSessionCreated(); created != nil {
-			session = created.GetSession()
+			result.Session = created.GetSession()
+			result.AttachedExisting = created.GetAttachedExisting()
 		}
 	}
 	if err := stream.Err(); err != nil {
 		return nil, err
 	}
-	return session, nil
+	return &result, nil
 }
 
 func (b *Backend) GetSession(ctx context.Context, id string) (*pb.Session, error) {
@@ -415,6 +474,49 @@ func (b *Backend) DeleteCronJob(ctx context.Context, id string) error {
 
 func (b *Backend) RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error) {
 	resp, err := b.rpc.RunCronJobNow(ctx, connect.NewRequest(&pb.RunCronJobNowRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// --- Accounts ---
+
+func (b *Backend) ListAccounts(ctx context.Context, provider string) ([]*pb.Account, error) {
+	req := &pb.ListAccountsRequest{}
+	if provider != "" {
+		req.Provider = &provider
+	}
+	resp, err := b.rpc.ListAccounts(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetAccounts(), nil
+}
+
+func (b *Backend) AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error) {
+	resp, err := b.rpc.AddAccount(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetAccount(), nil
+}
+
+func (b *Backend) UpdateAccount(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error) {
+	resp, err := b.rpc.UpdateAccount(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetAccount(), nil
+}
+
+func (b *Backend) RemoveAccount(ctx context.Context, id string) error {
+	_, err := b.rpc.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: id}))
+	return err
+}
+
+func (b *Backend) TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error) {
+	resp, err := b.rpc.TestAccount(ctx, connect.NewRequest(&pb.TestAccountRequest{Id: id}))
 	if err != nil {
 		return nil, err
 	}

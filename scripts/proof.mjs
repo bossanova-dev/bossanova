@@ -8,15 +8,20 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  DEFAULT_TOTAL_PROOF_BUDGET_MS,
+  LIVE_AGENT_EXTRA_MS,
   bossE2eBuildCommand,
   browserCaptureCommand,
   buildManifest,
+  capturesAgentRunnerStubbed,
+  classifySurfaces,
   classifyTuiSurface,
   githubCommentCommand,
   listProofCommentsCommand,
   minimizeCommentCommand,
   normalizeRecipe,
   parseProofArgs,
+  planSurfaceBudget,
   proofAncestorDirs,
   proofCommentMarker,
   proofRunPaths,
@@ -32,15 +37,27 @@ import {
   validateRecipeId,
   webUiSurfacePresent,
 } from './proof-lib.mjs'
+import {
+  loadPlanEvidence,
+  orderSurfaces,
+  requiresLiveAgent,
+  scopeRequiredProof,
+} from './proof-brief.mjs'
 import { finishVideo } from './proof-finish-video.mjs'
 import { publishProofReport } from './proof-publish-report.mjs'
 import { applyMinHeightRatio, evenCropHeight, probeDimensions } from './proof-video.mjs'
+import { defaultDoctorLookups, doctorReport, formatDoctorReport } from './proof-doctor.mjs'
+import { toStageErrorRecord } from './proof-stage.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 // BOSS_PROOF_CATALOG lets an ad-hoc/experimental recipe set be trialled without
 // editing the committed proof/recipes/default.json.
 const catalogPath = resolveCatalogPath(repoRoot, process.env.BOSS_PROOF_CATALOG)
 
+// Set once a run has committed to a surface pipeline (prNumber+commit known).
+// The outer catch uses it to post an honest pipeline-error note when a stage
+// crashes, instead of dying with a bare message and no PR feedback.
+let activeRunContext = null
 let cachedTuiAgentBridge = null
 function buildTuiAgentBridge({ bossBinOverride } = {}) {
   if (cachedTuiAgentBridge) {
@@ -125,12 +142,45 @@ async function main() {
   }
   const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'))
   const changedFiles = args.changedFiles.length > 0 ? args.changedFiles : changedFilesFromGit()
+
+  if (args.command === 'doctor') {
+    const surface = agentSurface({ catalog, changedFiles })
+    const report = doctorReport({ surface, lookups: defaultDoctorLookups({ repoRoot }) })
+    if (args.json) console.log(JSON.stringify(report, null, 2))
+    else console.log(formatDoctorReport(report))
+    if (!report.ok) process.exitCode = 1
+    return
+  }
+
   const selected = selectRecipes(catalog, changedFiles, args.recipes)
   selected.forEach((recipe) => validateRecipeId(recipe.id))
 
   if (args.command === 'plan') {
+    // `surface` (single-select) is kept for one release; `surfaces` + `order`
+    // are the BOS-139 multi-surface view of the same diff.
     const surface = agentSurface({ catalog, changedFiles })
-    console.log(JSON.stringify({ changedFiles, recipes: selected, surface }, null, 2))
+    const requiredProofBullets = await loadPlanEvidence(changedFiles, (p) =>
+      fs.promises.readFile(path.join(repoRoot, p), 'utf8'),
+    )
+    const surfacePlan = resolveSurfacePlan({
+      catalog,
+      changedFiles,
+      requiredProofBullets,
+      briefSurface: briefSurfaceOverride(),
+    })
+    console.log(
+      JSON.stringify(
+        {
+          changedFiles,
+          recipes: selected,
+          surface,
+          surfaces: surfacePlan.surfaces,
+          order: surfacePlan.order,
+        },
+        null,
+        2,
+      ),
+    )
     return
   }
 
@@ -177,86 +227,47 @@ async function main() {
     return
   }
 
-  // ── Surface dispatcher (BOS-115) ───────────────────────────────────────────
-  // Surface is classified by changed-file PATH, independent of the recipe
-  // catalog. The TUI surface is agent-only: it is entered by surface (not gated
-  // by agentModeAvailable) and NEVER falls back to recipe media. Web keeps its
-  // existing agentModeAvailable() gate; marketing/docs ('recipe') and no-match
-  // continue to the deterministic recipe path below — all unchanged.
-  const surface = agentSurface({ catalog, changedFiles })
+  // ── Surface dispatcher (BOS-139 multi-surface) ────────────────────────────
+  // Classify the diff into a SET of agent surfaces (TUI + web), ordered by
+  // required-proof bullets (cheap-first tiebreak). A mixed TUI+web diff runs
+  // BOTH agent paths sequentially under one shared budget (runAgentSurfaces).
+  // Explicit --recipe runs and marketing/docs-only diffs fall through to the
+  // deterministic recipe path below (unchanged).
+  const requiredProofBullets = await loadPlanEvidence(changedFiles, (p) =>
+    fs.promises.readFile(path.join(repoRoot, p), 'utf8'),
+  )
+  const plan = resolveSurfacePlan({
+    catalog,
+    changedFiles,
+    requiredProofBullets,
+    briefSurface: briefSurfaceOverride(),
+  })
+  const explicitRecipe = args.recipes.length > 0
 
-  // Explicit --recipe runs are a deliberate recipe-path choice (and can no
-  // longer name a TUI recipe — those are gone), so they bypass the agent-only
-  // TUI branch and fall through to the recipe path.
-  if (surface === 'tui' && args.recipes.length === 0) {
+  if (!explicitRecipe && plan.order.length > 0) {
+    return runAgentSurfaces({ plan, changedFiles, args })
+  }
+  if (!explicitRecipe && plan.recipes.length === 0) {
+    // No agent surface AND no recipe to capture → honest "no UI surface" note
+    // (exit 0). (A docs-only no-recipe change was already handled above.)
     const prNumber = currentPrNumber()
-    const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-    }).trim()
-
-    if (!tuiAgentUsable()) {
-      // No usable agent (no PROOF_ANTHROPIC_API_KEY and no BOSS_PROOF_MODE=agent):
-      // post an honest deferred note and exit 0 — never generic recipe media.
-      // Do NOT build the bridge.
-      postTuiAgentUnavailableComment({ prNumber, commit, dryRun: args.dryRun })
-      return
-    }
-
-    if (!process.env.BOSS_PROOF_TUI_BRIDGE_BIN) {
-      const existingBossBin = process.env.BOSS_PROOF_BOSS_BIN
-      const { bridgeBin, bossBin } = buildTuiAgentBridge({ bossBinOverride: existingBossBin })
-      const bridgeEnv = tuiAgentBridgeEnv({ bridgeBin, bossBin, existingBossBin })
-      process.env.BOSS_PROOF_TUI_BRIDGE_BIN = bridgeEnv.BOSS_PROOF_TUI_BRIDGE_BIN
-      process.env.BOSS_PROOF_BOSS_BIN = bridgeEnv.BOSS_PROOF_BOSS_BIN
-    }
-    const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
-    // No fallbackRecipeCaptures: an agent failure yields zero media → an honest
-    // deferred comment (proof-agent-finalize), never a recipe floor (Q1).
-    const result = await runTuiAgentProof({
-      prNumber,
-      commit,
-      changedFiles,
-      dryRun: args.dryRun,
-    })
-    // Q6: TUI proof is non-fatal — a ran-and-failed agent posts a neutral deferred
-    // comment but must not signal failure via exit code (consistent with the
-    // no-key short-circuit above and today's graceful skips). proof-agent-finalize
-    // sets process.exitCode = 1 on a degraded agent; reset it here for the TUI
-    // surface only. A genuine thrown error still propagates to main()'s catch.
-    process.exitCode = 0
-    return result
+    const commit = shortHeadCommit()
+    postNoWebUiSurfaceComment({ prNumber, commit, dryRun: args.dryRun })
+    return
   }
 
-  if (agentModeAvailable({ explicitRecipeSelection: args.recipes.length > 0 })) {
-    if (surface === 'web') {
+  // ── Recipe path (explicit --recipe, or marketing/docs recipes) ────────────
+  // Hard preflight (BOS-138) against the recipe path's requirements (chromium,
+  // ffmpeg, creds) — never a (possibly mismatched) tui/web surface's deps.
+  {
+    const shouldUpload = !args.dryRun && process.env.BOSS_PROOF_UPLOAD !== '0'
+    const preflight = evaluateRunPreflight({ surface: 'recipe', shouldUpload, repoRoot })
+    if (preflight) {
       const prNumber = currentPrNumber()
-      const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-      }).trim()
-      // Pre-gate (BOS-118): a change with no user-visible web surface
-      // (scripts-only, backend-only, tests-only) has nothing for the agent to
-      // demonstrate. Skip the ~12-minute agent run and post an honest "no UI
-      // surface" note instead of running the agent, having it decline, and
-      // posting useless filler. The agent's own done({noSurface:true}) is the
-      // backstop for src/ changes that turn out to be non-visual.
-      if (!webUiSurfacePresent(changedFiles)) {
-        postNoWebUiSurfaceComment({ prNumber, commit, dryRun: args.dryRun })
-        return
-      }
-      // Web is agent-only: NO recipe-floor fallback. A failed or declined run
-      // posts an honest deferred comment (never generic recipe media).
-      const { runAgentProof } = await import('./proof-agent.mjs')
-      return runAgentProof({
-        prNumber,
-        commit,
-        changedFiles,
-        dryRun: args.dryRun,
-      })
+      const commit = shortHeadCommit()
+      postEnvUnavailableComment({ prNumber, commit, dryRun: args.dryRun, preflight })
+      return
     }
-    // surface === 'recipe': deterministic marketing/docs capture — fall through
-    // to the recipe path below instead of running the LLM web agent.
   }
 
   // Preflight ffmpeg/ffprobe only when a browser-video recipe is selected for a
@@ -281,6 +292,7 @@ async function main() {
     cwd: repoRoot,
     encoding: 'utf8',
   }).trim()
+  activeRunContext = { prNumber, commit, dryRun: args.dryRun }
   const runId = process.env.BOSS_PROOF_RUN_ID || new Date().toISOString().replaceAll(/[:.]/g, '-')
   // Random per-run segment so the public URL isn't guessable from PR + commit.
   const token = process.env.BOSS_PROOF_RUN_TOKEN || randomUUID()
@@ -550,7 +562,7 @@ function captureRecipe({ recipe: rawRecipe, localDir, keepWebm = false }) {
  * Posts the honest "no web UI surface" deferred comment for a web-surface change
  * that touches no user-visible app code (BOS-118): no agent run, no media, no
  * recipe floor, exit 0. When uploads are off or there is no real PR, the comment
- * is printed instead of posted. Mirrors postTuiAgentUnavailableComment.
+ * is printed instead of posted. Mirrors the other post*Comment deferral helpers.
  * @param {{ prNumber: string, commit: string, dryRun: boolean }} opts
  */
 function postNoWebUiSurfaceComment({ prNumber, commit, dryRun }) {
@@ -568,6 +580,115 @@ function postNoWebUiSurfaceComment({ prNumber, commit, dryRun }) {
       fs.writeFileSync(commentPath, commentBody)
       collapsePriorProofComments({ prNumber })
       runCommand(githubCommentCommand({ prNumber, bodyFile: path.relative(repoRoot, commentPath) }))
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  } else {
+    console.log(commentBody)
+  }
+}
+
+/** Short HEAD commit sha (deduplicated helper for the dispatch branches). */
+function shortHeadCommit() {
+  return execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  }).trim()
+}
+
+/**
+ * Runs the doctor preflight for a classified surface. Returns null when every
+ * surface-required prerequisite is present (proceed with the run), or a
+ * `{ reasonCode:'env-unavailable', missing, report }` decision otherwise.
+ *
+ * The agent-key requirement mirrors the existing agent gates: it is treated as
+ * satisfied when BOSS_PROOF_MODE=agent forces agent mode (the key itself is
+ * daemon-injected in cron). Pure enough to unit-test with injected lookups.
+ *
+ * @param {{
+ *   surface: 'tui'|'web'|'recipe'|'docs',
+ *   shouldUpload: boolean,
+ *   repoRoot?: string,
+ *   lookups?: object,
+ *   env?: NodeJS.ProcessEnv,
+ * }} opts
+ * @returns {{ reasonCode: 'env-unavailable', missing: string[], report: object } | null}
+ */
+export function evaluateRunPreflight({
+  surface,
+  shouldUpload,
+  repoRoot: root = repoRoot,
+  lookups = defaultDoctorLookups({ repoRoot: root }),
+  env = process.env,
+}) {
+  const report = doctorReport({ surface, shouldUpload, lookups })
+  let missing = report.missing
+  if (env.BOSS_PROOF_MODE === 'agent') {
+    missing = missing.filter((id) => id !== 'PROOF_ANTHROPIC_API_KEY')
+  }
+  if (missing.length === 0) return null
+  return { reasonCode: 'env-unavailable', missing, report }
+}
+
+/**
+ * Posts the honest env-unavailable deferred note (embedding the doctor report so
+ * a human can fix the gap), then exits 0 without starting any pipeline stage.
+ * When uploads are off or there is no real PR, the comment is printed instead.
+ * @param {{ prNumber: string, commit: string, dryRun: boolean, preflight: object }} opts
+ */
+function postEnvUnavailableComment({ prNumber, commit, dryRun, preflight }) {
+  const marker = proofCommentMarker(prNumber)
+  const commentBody = renderDeferredComment({
+    marker,
+    manifest: { commit, prNumber, deferred: true },
+    reasonCode: 'env-unavailable',
+    missing: preflight.missing,
+    details: '```\n' + formatDoctorReport(preflight.report) + '\n```',
+    recaptureHint: 'node scripts/proof.mjs doctor',
+  })
+  postDeferredComment({ prNumber, dryRun, commentBody, tmpPrefix: 'proof-env-unavailable-' })
+}
+
+/**
+ * Posts a pipeline-error note (BOS-138 P1c): OUR bug crashed a stage. Names the
+ * stage + a stderr tail and exits 1. NEVER claims an environment limitation.
+ * @param {{ prNumber: string, commit: string, dryRun: boolean, error: unknown }} opts
+ */
+function postPipelineErrorComment({ prNumber, commit, dryRun, error }) {
+  const record = toStageErrorRecord(error)
+  const marker = proofCommentMarker(prNumber)
+  const commentBody = renderDeferredComment({
+    marker,
+    manifest: { commit, prNumber, deferred: true },
+    reasonCode: 'pipeline-error',
+    stage: record.stage,
+    stderrTail: record.stderrTail,
+    recaptureHint: 'node scripts/proof.mjs run',
+  })
+  process.exitCode = 1
+  postDeferredComment({ prNumber, dryRun, commentBody, tmpPrefix: 'proof-pipeline-error-' })
+}
+
+/** Shared post-or-print for the deferred (env-unavailable / pipeline-error) notes. */
+function postDeferredComment({ prNumber, dryRun, commentBody, tmpPrefix }) {
+  const shouldUpload = !dryRun && process.env.BOSS_PROOF_UPLOAD !== '0'
+  if (shouldUpload && prNumber !== 'local') {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), tmpPrefix))
+    const commentPath = path.join(tmpDir, 'comment.md')
+    try {
+      fs.writeFileSync(commentPath, commentBody)
+      collapsePriorProofComments({ prNumber })
+      runCommand(githubCommentCommand({ prNumber, bodyFile: path.relative(repoRoot, commentPath) }))
+    } catch (err) {
+      // Posting is best-effort: the env-unavailable defer often fires precisely
+      // because gh/git creds are the missing prerequisite, so `gh pr comment`
+      // itself throws. That must NOT turn the honest defer into a hard failure —
+      // fall back to printing the note locally and let the caller keep its exit
+      // code (env-unavailable stays 0; pipeline-error already set 1 before us).
+      console.error(
+        `[proof] could not post deferred note to PR (${err.message}); printing locally:`,
+      )
+      console.log(commentBody)
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }
@@ -645,37 +766,6 @@ export function tuiAgentUsable() {
 }
 
 /**
- * Posts the honest "agentic TUI proof unavailable" deferred comment for a TUI
- * surface with no usable agent (Q1/Q4): no media, no recipe floor, exit 0. Does
- * not build the bridge. When uploads are off or there is no real PR, the comment
- * is printed instead of posted.
- * @param {{ prNumber: string, commit: string, dryRun: boolean }} opts
- */
-function postTuiAgentUnavailableComment({ prNumber, commit, dryRun }) {
-  const marker = proofCommentMarker(prNumber)
-  const commentBody = renderDeferredComment({
-    marker,
-    manifest: { commit, prNumber, deferred: true },
-    reasonCode: 'agent-unavailable',
-    recaptureHint: 'PROOF_ANTHROPIC_API_KEY=… BOSS_PROOF_MODE=agent node scripts/proof.mjs run',
-  })
-  const shouldUpload = !dryRun && process.env.BOSS_PROOF_UPLOAD !== '0'
-  if (shouldUpload && prNumber !== 'local') {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-deferred-'))
-    const commentPath = path.join(tmpDir, 'comment.md')
-    try {
-      fs.writeFileSync(commentPath, commentBody)
-      collapsePriorProofComments({ prNumber })
-      runCommand(githubCommentCommand({ prNumber, bodyFile: path.relative(repoRoot, commentPath) }))
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  } else {
-    console.log(commentBody)
-  }
-}
-
-/**
  * Determines which proof surface to use for a run.
  * Returns 'tui' when any changed file lives under a TUI path prefix
  * (catalog-independent, via classifyTuiSurface — BOS-115); 'recipe' when every
@@ -710,6 +800,239 @@ export function agentSurface({ catalog, changedFiles }) {
     return 'recipe'
   }
   return 'web'
+}
+
+/**
+ * Resolves the multi-surface plan for an agent proof run (BOS-139 D5/D13).
+ * Replaces the single-select `agentSurface` for dispatch. Pure given `env` +
+ * `briefSurface`.
+ *
+ * Override precedence (preserved from agentSurface): `BOSS_PROOF_AGENT_SURFACE=
+ * tui|web` narrows the order to that single surface; else a valid
+ * `BOSS_PROOF_BRIEF` surface (passed in as `briefSurface`) narrows likewise;
+ * else `classifySurfaces` + `scopeRequiredProof` (forcedSurfaces = surfaces with
+ * ≥1 scoped required-proof bullet, the D16 mitigation) + `orderSurfaces`.
+ *
+ * @param {{ catalog: object, changedFiles: string[], requiredProofBullets?: string[], env?: NodeJS.ProcessEnv, briefSurface?: 'tui'|'web'|null }} opts
+ * @returns {{ order: ('tui'|'web')[], surfaces: {tui: boolean, web: boolean}, scoped: {tui:string[], web:string[], unscoped:string[]}, recipes: object[] }}
+ */
+export function resolveSurfacePlan({
+  catalog,
+  changedFiles,
+  requiredProofBullets = [],
+  env = process.env,
+  briefSurface = null,
+}) {
+  const scoped = scopeRequiredProof(requiredProofBullets)
+  // Required-proof bullets that name a surface FORCE it into the set (D16): a
+  // backend-only diff with a "the /settings page shows…" bullet still proves web.
+  const forcedSurfaces = [
+    ...(scoped.tui.length ? ['tui'] : []),
+    ...(scoped.web.length ? ['web'] : []),
+  ]
+  const classified = classifySurfaces({ changedFiles, catalog, forcedSurfaces })
+
+  const override = env.BOSS_PROOF_AGENT_SURFACE
+  const forced = override === 'tui' || override === 'web' ? override : briefSurface
+  const surfaces = forced
+    ? { tui: forced === 'tui', web: forced === 'web' }
+    : { tui: classified.tui, web: classified.web }
+
+  return {
+    order: orderSurfaces({ surfaces, scoped }),
+    surfaces,
+    scoped,
+    recipes: classified.recipes,
+  }
+}
+
+/** A never-ran surface: carries only its deferral reason for the consolidated comment. */
+function syntheticDeferredRun(surface, reasonCode, { missing } = {}) {
+  return {
+    surface,
+    captureShapes: [],
+    brief: {},
+    agentResult: { passed: false, summary: '', evidence: [], steps: 0 },
+    hasFailure: false,
+    noSurface: false,
+    reasonCode,
+    ...(missing ? { missing } : {}),
+    elapsedMs: 0,
+  }
+}
+
+/**
+ * Runs the agent surfaces in `plan.order` SEQUENTIALLY under ONE shared budget
+ * (BOS-139 D5) and posts ONE consolidated comment. Each surface gets its own
+ * per-surface preflight + gate; a miss (env-unavailable / agent-unavailable /
+ * no-ui-surface / budget-exceeded) defers THAT surface with a synthetic run and
+ * never blocks the others. A surface's runner crash becomes a per-surface
+ * pipeline-error so the other surface still finalizes. Exit code is the
+ * aggregate of the per-surface outcomes (set inside finalizeAgentProof).
+ *
+ * @param {{ plan: object, changedFiles: string[], args: object }} opts
+ */
+async function runAgentSurfaces({ plan, changedFiles, args }) {
+  const shouldUpload = !args.dryRun && process.env.BOSS_PROOF_UPLOAD !== '0'
+  // Resolve the R2 bucket WITHOUT throwing: a missing BOSS_PROOF_R2_BUCKET is a
+  // shared upload prerequisite that the per-surface preflight below classifies as
+  // `env-unavailable` (an honest exit-0 deferral). Throwing here (the old
+  // requiredProofBucket()) would pre-empt that graceful path before any surface
+  // is evaluated — crashing to a pipeline-error with no comment. A null bucket
+  // reaches finalize only when every surface deferred (nothing to upload), and
+  // finalize skips the upload when the bucket is absent.
+  const bucket = shouldUpload ? (process.env.BOSS_PROOF_R2_BUCKET ?? null) : null
+  const prNumber = currentPrNumber()
+  const commit = shortHeadCommit()
+  activeRunContext = { prNumber, commit, dryRun: args.dryRun }
+
+  // ONE shared run identity + dir for every surface in this invocation.
+  const runId = process.env.BOSS_PROOF_RUN_ID || new Date().toISOString().replaceAll(/[:.]/g, '-')
+  const token = process.env.BOSS_PROOF_RUN_TOKEN || randomUUID()
+  const paths = proofRunPaths({ prNumber, commit, runId, token })
+  const localDir = path.join(repoRoot, paths.localDir)
+  fs.mkdirSync(localDir, { recursive: true })
+  const publicBaseUrl = `${publicProofBaseUrl()}/${paths.publicPrefix}`
+
+  // BOS-142: a required-proof bullet carrying the `live-agent` marker (D13
+  // scoped bullets + unscoped bullets, mirroring the per-surface
+  // `planRequiredProof` assembly below) means the web run in THIS invocation
+  // will drive a genuine (unstubbed) agent session, which is slower than the
+  // stub. When that's the case, grant the shared pool `LIVE_AGENT_EXTRA_MS`
+  // more so the live web scene doesn't squeeze a sibling TUI floor (D5). An
+  // operator-supplied BOSS_PROOF_TOTAL_BUDGET_MS override remains a HARD
+  // ceiling — it is used verbatim, never widened, same as before this ticket.
+  const explicitTotalBudgetMs = Number(process.env.BOSS_PROOF_TOTAL_BUDGET_MS) || 0
+  const liveAgentInRun =
+    plan.order.includes('web') && requiresLiveAgent([...plan.scoped.web, ...plan.scoped.unscoped])
+  const totalBudgetMs =
+    explicitTotalBudgetMs ||
+    DEFAULT_TOTAL_PROOF_BUDGET_MS + (liveAgentInRun ? LIVE_AGENT_EXTRA_MS : 0)
+  // A required-proof bullet that named web FORCES it into the set even on a
+  // path-miss diff (D16) — so the web pre-gate must not then skip it.
+  const webForced = plan.scoped.web.length > 0
+  let elapsedMs = 0
+  const surfaceRuns = []
+
+  for (const surface of plan.order) {
+    // Scoped bullets are this surface's PRIMARY brief content; unscoped bullets
+    // feed every surface (D13).
+    const planRequiredProof = [...(plan.scoped[surface] ?? []), ...plan.scoped.unscoped]
+
+    // Per-surface hard preflight (BOS-138): a missing prereq defers THIS surface.
+    const preflight = evaluateRunPreflight({ surface, shouldUpload, repoRoot })
+    if (preflight) {
+      surfaceRuns.push(
+        syntheticDeferredRun(surface, 'env-unavailable', { missing: preflight.missing }),
+      )
+      continue
+    }
+
+    // Per-surface agent gate.
+    if (surface === 'tui') {
+      if (!tuiAgentUsable()) {
+        surfaceRuns.push(syntheticDeferredRun(surface, 'agent-unavailable'))
+        continue
+      }
+      if (!process.env.BOSS_PROOF_TUI_BRIDGE_BIN) {
+        const existingBossBin = process.env.BOSS_PROOF_BOSS_BIN
+        const { bridgeBin, bossBin } = buildTuiAgentBridge({ bossBinOverride: existingBossBin })
+        const bridgeEnv = tuiAgentBridgeEnv({ bridgeBin, bossBin, existingBossBin })
+        process.env.BOSS_PROOF_TUI_BRIDGE_BIN = bridgeEnv.BOSS_PROOF_TUI_BRIDGE_BIN
+        process.env.BOSS_PROOF_BOSS_BIN = bridgeEnv.BOSS_PROOF_BOSS_BIN
+      }
+    } else if (surface === 'web') {
+      if (!agentModeAvailable({ explicitRecipeSelection: false })) {
+        surfaceRuns.push(syntheticDeferredRun(surface, 'agent-unavailable'))
+        continue
+      }
+      // BOS-118 pre-gate: skip the ~12-min web run for a change with no visible
+      // web surface — UNLESS a required-proof bullet forced web (D16).
+      if (!webForced && !webUiSurfacePresent(changedFiles)) {
+        surfaceRuns.push(syntheticDeferredRun(surface, 'no-ui-surface'))
+        continue
+      }
+    }
+
+    // Shared-budget grant for THIS surface; a run that cannot fit defers.
+    const budget = planSurfaceBudget({
+      surface,
+      elapsedMs,
+      totalBudgetMs,
+      liveAgent: surface === 'web' && liveAgentInRun,
+    })
+    if (!budget.run) {
+      surfaceRuns.push(syntheticDeferredRun(surface, 'budget-exceeded'))
+      continue
+    }
+
+    const runContext = {
+      runId,
+      token,
+      paths,
+      localDir,
+      briefFileName: `brief-${surface}.json`,
+      maxWallClockMs: budget.maxWallClockMs,
+      collect: true,
+    }
+    try {
+      const runner =
+        surface === 'tui'
+          ? (await import('./proof-tui-agent.mjs')).runTuiAgentProof
+          : (await import('./proof-agent.mjs')).runAgentProof
+      const surfaceRun = await runner({
+        prNumber,
+        commit,
+        changedFiles,
+        dryRun: args.dryRun,
+        planRequiredProof,
+        runContext,
+      })
+      elapsedMs += surfaceRun.elapsedMs ?? 0
+      surfaceRuns.push(surfaceRun)
+    } catch (err) {
+      // A crashed surface is OUR bug (pipeline-error): record it as a deferred
+      // surface run so the OTHER surface still finalizes.
+      const record = toStageErrorRecord(err)
+      surfaceRuns.push({
+        surface,
+        captureShapes: [],
+        brief: {},
+        agentResult: { passed: false, summary: '', evidence: [], steps: 0 },
+        hasFailure: true,
+        noSurface: false,
+        reasonCode: null,
+        pipelineError: {
+          stage: record.stage,
+          message: err instanceof Error ? err.message : String(err),
+          stderrTail: record.stderrTail,
+        },
+        elapsedMs: 0,
+      })
+    }
+  }
+
+  // Dynamic import breaks the proof.mjs ⇄ proof-agent-finalize.mjs cycle
+  // (finalize imports uploadBundle/collapse/… from here).
+  const { finalizeAgentProof } = await import('./proof-agent-finalize.mjs')
+  return finalizeAgentProof({
+    surfaceRuns,
+    prNumber,
+    commit,
+    runId,
+    token,
+    paths,
+    localDir,
+    publicBaseUrl,
+    shouldUpload,
+    bucket,
+    // BOS-142: computed across ALL surfaceRuns. false only when every proven
+    // scene ran live (all-live web run); any TUI surface, stub scene, deferred
+    // scene, or errored surface with no scenes keeps it true (honest).
+    agentRunnerStubbed: capturesAgentRunnerStubbed(
+      surfaceRuns.flatMap((r) => r.captureShapes ?? []),
+    ),
+  })
 }
 
 /**
@@ -881,6 +1204,18 @@ if (invokedDirectly) {
       await main()
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error))
+      // A crash after a surface pipeline committed (bridge/render/encode/upload)
+      // is OUR bug: post an honest pipeline-error note naming the stage + stderr
+      // tail, rather than dying silently. toStageErrorRecord tags a non-Stage
+      // error at stage `pipeline` so the note still names a stage.
+      const ctx = activeRunContext
+      if (ctx) {
+        try {
+          postPipelineErrorComment({ ...ctx, error })
+        } catch (postErr) {
+          console.error(`[proof] failed to post pipeline-error note: ${postErr.message}`)
+        }
+      }
       process.exitCode = 1
     } finally {
       cleanupTuiAgentBridge()

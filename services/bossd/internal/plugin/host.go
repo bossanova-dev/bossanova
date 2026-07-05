@@ -493,6 +493,14 @@ func (h *Host) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, chat
 	}
 }
 
+// SetRepairLease injects the per-session single-repairer lease manager, shared
+// with the API server so repair_active reads and lease enforcement agree.
+func (h *Host) SetRepairLease(m *status.RepairLeaseManager) {
+	if h.hostService != nil {
+		h.hostService.SetRepairLease(m)
+	}
+}
+
 // SetAgentClients injects the per-name registry of AgentRunnerClient gRPC
 // clients (keyed by plugin Name, matching session.AgentName) so the
 // host's StartAgentRun / WaitAgentRun RPCs can route to the right plugin
@@ -509,6 +517,17 @@ func (h *Host) SetAgentClients(m map[string]agent.AgentRunnerClient) {
 func (h *Host) SetAgentLogsDir(dir string) {
 	if h.hostService != nil {
 		h.hostService.SetAgentLogsDir(dir)
+	}
+}
+
+// SetProofEnvResolver injects the proof env overlay resolver used on the
+// plugin-side agent spawn path. The HostServiceServer constructor defaults to
+// a hermetic no-op resolver so tests never open the real OS keyring (its Linux
+// dbus backend leaks a connection goroutine per open); the daemon calls this
+// from main.go with the real keyring-backed resolver.
+func (h *Host) SetProofEnvResolver(r proofEnvResolver) {
+	if h.hostService != nil {
+		h.hostService.SetProofEnvResolver(r)
 	}
 }
 

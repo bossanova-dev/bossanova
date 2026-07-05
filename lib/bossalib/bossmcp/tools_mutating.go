@@ -107,7 +107,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "create_session",
-		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session. Supports attaching to an existing PR (pr_number), quick chats (quick_chat), explicit base/branch names, and linking an external tracker issue (tracker_id/tracker_url/tracker_source). The composite tracker_issue field is web-only and not exposed here.",
+		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session (its agent_session_id is the primary chat id — no sqlite read needed). DEDUP: if an active session already owns the target branch or PR (via pr_number/branch_name), the daemon ATTACHES to that existing session instead of creating one — the result then has attached_existing=true and the supplied prompt is NOT run; deliver it yourself via send_chat_message with the returned agent_session_id (force does NOT bypass this branch/PR attach — two active sessions cannot share one branch). If instead an active session already owns the same tracker_id with no branch collision, the create fails with AlreadyExists; pass force:true to create a second session for that tracker. Supports running the initial agent pass headlessly (detach) or in a durable tmux-hosted pane that survives a daemon restart (tmux_unattended, used by /bs-epic) under a chosen model (model), attaching to an existing PR (pr_number), quick chats (quick_chat), explicit base/branch names, and linking an external tracker issue (tracker_id/tracker_url/tracker_source). The composite tracker_issue field is web-only and not exposed here.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args CreateSessionArgs) (*mcp.CallToolResult, any, error) {
 		req := &pb.CreateSessionRequest{
@@ -117,6 +117,18 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			BaseBranch:  args.BaseBranch,
 			ForceBranch: args.ForceBranch,
 			QuickChat:   args.QuickChat,
+			// Force bypasses the BOS-236 tracker-issue dedup guard so a caller
+			// can intentionally create a second session for a tracker/PR/branch
+			// that already has an active one.
+			Force: args.Force,
+			// Detach runs the initial agent pass headlessly (claude --print /
+			// codex exec) instead of leaving the session idle until attach —
+			// what an unattended /bs-epic fan-out needs.
+			Detach: args.Detach,
+			// TmuxUnattended runs the session in a durable tmux-hosted pane that
+			// survives a daemon restart and is attach-safe — the /bs-epic fan-out
+			// path, distinct from Detach's headless runs.
+			TmuxUnattended: args.TmuxUnattended,
 			// Optional pointer args map straight through; nil stays unset.
 			BranchName:    args.BranchName,
 			PrNumber:      args.PRNumber,
@@ -127,11 +139,30 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		if args.Agent != "" {
 			req.AgentName = &args.Agent
 		}
+		if args.Model != "" {
+			req.Model = &args.Model
+		}
 		out, err := backend.CreateSession(ctx, req)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
-		r, err := jsonResult(out)
+		payload := createSessionOutput{Session: out.Session, AttachedExisting: out.AttachedExisting}
+		if out.AttachedExisting {
+			// The daemon deduped: an active session already owned the target
+			// branch/PR/tracker, so it attached instead of creating a new one and
+			// the supplied prompt was NOT run. Tell the caller to deliver the
+			// prompt to that session itself.
+			if out.Session.GetAgentSessionId() != "" {
+				payload.Note = "This branch/PR already had an active session, so create_session ATTACHED to it and did NOT run the supplied prompt. To run your prompt, send it to the existing session with send_chat_message using the returned agent_session_id. (force does not help here: whenever an active session already owns the target branch the daemon attaches — two active sessions cannot share one branch.)"
+			} else {
+				// An interactive session that has not been attached yet has no
+				// agent chat (agent_session_id is empty), so send_chat_message
+				// cannot reach it. The caller must open/attach the session first
+				// to start its chat, then deliver the prompt.
+				payload.Note = "This branch/PR already had an active session, so create_session ATTACHED to it and did NOT run the supplied prompt. That session has not started its agent chat yet (agent_session_id is empty), so send_chat_message cannot reach it — open/attach the session (e.g. in the boss TUI, or via wake_chat once it has an agent_session_id) to start its chat, then deliver your prompt with send_chat_message. (force does not help here: whenever an active session already owns the target branch the daemon attaches — two active sessions cannot share one branch.)"
+			}
+		}
+		r, err := jsonResult(payload)
 		return r, nil, err
 	})
 
@@ -292,6 +323,61 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 	})
 
 	addTool(server, opts, &mcp.Tool{
+		Name:        "add_account",
+		Description: "Register an agent account. The credential blob is stored in the keyring and never echoed back; the response returns metadata only.",
+		Annotations: &mcp.ToolAnnotations{},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args AddAccountArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.AddAccountRequest{
+			Provider:   args.Provider,
+			Label:      args.Label,
+			Email:      args.Email,
+			Priority:   args.Priority,
+			Credential: []byte(args.Credential),
+		}
+		out, err := backend.AddAccount(ctx, req)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "update_account",
+		Description: "Update account metadata. Optional fields are applied only when present; allowed_models replaces the set when non-empty.",
+		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args UpdateAccountArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.UpdateAccountRequest{
+			Id: args.ID,
+			// Optional fields map straight through; nil stays unset (present-only).
+			Label:         args.Label,
+			Email:         args.Email,
+			Priority:      args.Priority,
+			Status:        args.Status,
+			AllowedModels: args.AllowedModels,
+		}
+		out, err := backend.UpdateAccount(ctx, req)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "test_account",
+		Description: "Validate an account's credential and, when a live smoke runner is wired, run a trivial CLI invocation; records the outcome.",
+		Annotations: &mcp.ToolAnnotations{},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args IDArgs) (*mcp.CallToolResult, any, error) {
+		out, err := backend.TestAccount(ctx, args.ID)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
 		Name:        "send_chat_message",
 		Description: "Deliver a user message into a chat's live agent, optionally waking it if asleep.",
 		Annotations: &mcp.ToolAnnotations{},
@@ -300,10 +386,18 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		if args.WakeIfAsleep != nil {
 			wakeIfAsleep = *args.WakeIfAsleep
 		}
+		// Default (omitted) => false: a driver prefills the composer without
+		// submitting. Set submit=true to reliably submit a single-line message
+		// (Enter + verifier); a multi-line message is paste-only regardless.
+		submit := false
+		if args.Submit != nil {
+			submit = *args.Submit
+		}
 		req := &pb.SendChatMessageRequest{
 			AgentSessionId: args.AgentSessionID,
 			Message:        args.Message,
 			WakeIfAsleep:   wakeIfAsleep,
+			Submit:         submit,
 		}
 		out, err := backend.SendChatMessage(ctx, req)
 		if err != nil {
@@ -362,22 +456,37 @@ type UpdateRepoArgs struct {
 	SentryOrg              *string `json:"sentry_org,omitempty" jsonschema:"Sentry organization slug (issues are listed org-wide)"`
 }
 
+// createSessionOutput is the create_session tool's structured result. The
+// created (or attached) session's fields are flattened at the top level (so the
+// primary agent_session_id stays directly reachable) alongside attached_existing
+// and, when the daemon attached to a pre-existing session, a Note explaining the
+// supplied prompt was not run.
+type createSessionOutput struct {
+	*pb.Session
+	AttachedExisting bool   `json:"attached_existing"`
+	Note             string `json:"note,omitempty"`
+}
+
 // CreateSessionArgs is the typed argument struct for create_session. The full
 // CreateSessionRequest surface is exposed except tracker_issue, the composite
 // message used only for web server-side plan formatting (intentionally omitted).
 type CreateSessionArgs struct {
-	RepoID        string  `json:"repo_id" jsonschema:"the repo id to create the session under"`
-	Prompt        string  `json:"prompt" jsonschema:"the plan/prompt for the session"`
-	Title         string  `json:"title,omitempty" jsonschema:"session title; auto-derived from the first line of the prompt when omitted"`
-	Agent         string  `json:"agent,omitempty" jsonschema:"agent runner plugin name (empty = server default)"`
-	BaseBranch    string  `json:"base_branch,omitempty" jsonschema:"base branch to create the session from (empty = repo default)"`
-	BranchName    *string `json:"branch_name,omitempty" jsonschema:"explicit branch name (e.g. a tracker's suggested branch)"`
-	ForceBranch   bool    `json:"force_branch,omitempty" jsonschema:"remove any existing branch with the same name before creating"`
-	QuickChat     bool    `json:"quick_chat,omitempty" jsonschema:"quick chat session: no worktree, branch, or PR"`
-	PRNumber      *int32  `json:"pr_number,omitempty" jsonschema:"attach to an existing PR instead of creating one"`
-	TrackerID     *string `json:"tracker_id,omitempty" jsonschema:"external issue id (e.g. FRE-1176)"`
-	TrackerURL    *string `json:"tracker_url,omitempty" jsonschema:"URL to the issue in the external tracker"`
-	TrackerSource *string `json:"tracker_source,omitempty" jsonschema:"tracker source: linear or sentry"`
+	RepoID         string  `json:"repo_id" jsonschema:"the repo id to create the session under"`
+	Prompt         string  `json:"prompt" jsonschema:"the plan/prompt for the session"`
+	Title          string  `json:"title,omitempty" jsonschema:"session title; auto-derived from the first line of the prompt when omitted"`
+	Agent          string  `json:"agent,omitempty" jsonschema:"agent runner plugin name (empty = server default)"`
+	BaseBranch     string  `json:"base_branch,omitempty" jsonschema:"base branch to create the session from (empty = repo default)"`
+	BranchName     *string `json:"branch_name,omitempty" jsonschema:"explicit branch name (e.g. a tracker's suggested branch)"`
+	ForceBranch    bool    `json:"force_branch,omitempty" jsonschema:"remove any existing branch with the same name before creating"`
+	Force          bool    `json:"force,omitempty" jsonschema:"bypass tracker-issue dedup and create a second session for a tracker/PR/branch that already has an active one"`
+	QuickChat      bool    `json:"quick_chat,omitempty" jsonschema:"quick chat session: no worktree, branch, or PR"`
+	Detach         bool    `json:"detach,omitempty" jsonschema:"run the initial agent pass headlessly (claude --print / codex exec) instead of leaving the session idle until attach; set true for unattended orchestration"`
+	TmuxUnattended bool    `json:"tmux_unattended,omitempty" jsonschema:"run the session in a durable tmux-hosted pane that survives a daemon restart and is attach-safe (used by /bs-epic); a distinct autonomous-unattended path from detach's headless runs"`
+	Model          string  `json:"model,omitempty" jsonschema:"opaque agent model id to run this session under (e.g. an Opus id); empty = the agent plugin's default"`
+	PRNumber       *int32  `json:"pr_number,omitempty" jsonschema:"target an existing PR. If an active session already owns that PR's branch, create_session ATTACHES to it and returns attached_existing=true WITHOUT running prompt — run the prompt in that session (send_chat_message with the returned agent_session_id). force does NOT bypass this branch attach"`
+	TrackerID      *string `json:"tracker_id,omitempty" jsonschema:"external issue id (e.g. FRE-1176). If an active session already owns this tracker id (with no branch collision), create_session fails with AlreadyExists — pass force:true to create a second session for the same tracker"`
+	TrackerURL     *string `json:"tracker_url,omitempty" jsonschema:"URL to the issue in the external tracker"`
+	TrackerSource  *string `json:"tracker_source,omitempty" jsonschema:"tracker source: linear or sentry"`
 }
 
 // UpdateSessionArgs is the typed argument struct for update_session.
@@ -441,6 +550,7 @@ type SendChatMessageArgs struct {
 	AgentSessionID string `json:"agent_session_id" jsonschema:"the agent session UUID"`
 	Message        string `json:"message" jsonschema:"the user message to deliver"`
 	WakeIfAsleep   *bool  `json:"wake_if_asleep,omitempty" jsonschema:"wake the agent if it is currently asleep; defaults to true when omitted"`
+	Submit         *bool  `json:"submit,omitempty" jsonschema:"submit a single-line message (press Enter and verify) instead of only prefilling the composer; a multi-line message is never auto-submitted; defaults to false (prefill) when omitted"`
 }
 
 // UpdateCronJobArgs is the typed argument struct for update_cron_job. Optional
@@ -456,4 +566,27 @@ type UpdateCronJobArgs struct {
 	Model           *string `json:"model,omitempty" jsonschema:"new opaque agent model id (empty = plugin default)"`
 	GateCommand     *string `json:"gate_command,omitempty" jsonschema:"new gate command; empty = no gate"`
 	RunSetupCommand *bool   `json:"run_setup_command,omitempty" jsonschema:"run the repo setup script before the agent"`
+}
+
+// AddAccountArgs is the typed argument struct for add_account. It maps 1:1 onto
+// pb.AddAccountRequest. The credential is inbound only — no response ever
+// returns it.
+type AddAccountArgs struct {
+	Provider   string `json:"provider" jsonschema:"account provider (claude|codex)"`
+	Label      string `json:"label" jsonschema:"human label, unique per provider"`
+	Email      string `json:"email,omitempty" jsonschema:"optional informational account email"`
+	Priority   int32  `json:"priority,omitempty" jsonschema:"sort order; lower = preferred"`
+	Credential string `json:"credential,omitempty" jsonschema:"credential blob (Claude setup-token string or Codex auth.json contents); stored in the keyring, never returned"`
+}
+
+// UpdateAccountArgs is the typed argument struct for update_account. Optional
+// pointer fields are only applied when present; allowed_models replaces the set
+// when non-empty. It maps 1:1 onto pb.UpdateAccountRequest.
+type UpdateAccountArgs struct {
+	ID            string   `json:"id" jsonschema:"the account id"`
+	Label         *string  `json:"label,omitempty" jsonschema:"new label"`
+	Email         *string  `json:"email,omitempty" jsonschema:"new account email"`
+	Priority      *int32   `json:"priority,omitempty" jsonschema:"new priority (lower = preferred)"`
+	Status        *string  `json:"status,omitempty" jsonschema:"new status (active|disabled)"`
+	AllowedModels []string `json:"allowed_models,omitempty" jsonschema:"replace the allowed-models set when non-empty"`
 }

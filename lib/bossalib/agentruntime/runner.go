@@ -19,10 +19,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/safego"
@@ -205,13 +207,43 @@ func defaultBinName(s string) string {
 // reason. These exist because the log file used to remain at 0 bytes
 // when the subprocess died before producing output, leaving no on-disk
 // record of why a run failed.
-func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string) (string, error) {
+// extraEnv, when non-empty, is an allowlisted KEY=VALUE overlay (proof
+// credentials + non-secret proof constants, resolved daemon-side) applied
+// on top of the inherited os.Environ() for the spawned process. Its VALUES
+// are never logged — the spawn preamble records argv/cwd/PATH only.
+func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string, extraEnv map[string]string) (string, error) {
 	// Determine whether the caller provided a session ID.
 	providedSessionID := sessionID != ""
 
-	// If no session ID provided, generate one from timestamp.
+	// If no session ID was provided, mint one.
 	if sessionID == "" {
-		sessionID = fmt.Sprintf("%s-%d", r.binName, time.Now().UnixNano())
+		if resume != nil && *resume != "" {
+			// Resuming with no explicit tracking ID (the resurrect path). The
+			// agent is launched with --resume <target>, not --session-id, so the
+			// generated key is internal process-tracking only and its format
+			// never reaches the agent — keep the legacy timestamp key so resume
+			// behaviour is unchanged.
+			sessionID = fmt.Sprintf("%s-%d", r.binName, time.Now().UnixNano())
+		} else {
+			// Fresh start: mint a real UUID and treat it as authoritative
+			// (providedSessionID = true) so the argv builder injects it via the
+			// agent's session-ID flag.
+			//
+			// It MUST be a UUID — not "<bin>-<nanos>". Agents that accept an
+			// injected session ID (claude, via `--session-id <uuid>`) require a
+			// valid UUID: a timestamp ID is rejected outright (claude exits 1,
+			// surfacing as a misleading "CLI could not be launched" PATH error)
+			// and, because the agent then generates its own UUID instead, never
+			// matches the ID this Start returns and bossd persists. That mismatch
+			// strands the session — interactive resume/attach and on-disk
+			// transcript lookup key off the persisted ID and can never resolve
+			// the real rollout, and the empty-transcript reap deletes the chat.
+			// Agents that generate their own ID (codex) ignore the injected hint
+			// and override the return value via SessionIDFromOutput, so the
+			// minted UUID is a harmless throwaway for them.
+			sessionID = uuid.NewString()
+			providedSessionID = true
+		}
 	}
 
 	// Hold the runner mutex from the existence check through the
@@ -260,6 +292,22 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 
 	cmd := r.cmdFunc(procCtx, argv[0], argv[1:]...)
 	cmd.Dir = workDir
+	// Apply the allowlisted env overlay on top of the inherited environment,
+	// only when there is something to add. Leaving cmd.Env nil (the common
+	// case) means the child inherits os.Environ() unchanged. Keys are sorted
+	// for a deterministic argv; values are never logged.
+	if len(extraEnv) > 0 {
+		env := os.Environ()
+		keys := make([]string, 0, len(extraEnv))
+		for k := range extraEnv {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			env = append(env, k+"="+extraEnv[k])
+		}
+		cmd.Env = env
+	}
 	// On context cancellation, send SIGTERM for graceful shutdown. If the
 	// process doesn't exit within WaitDelay, Go's os/exec sends SIGKILL
 	// automatically. This matches Stop()'s documented 10s-then-force-kill

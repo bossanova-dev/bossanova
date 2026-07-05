@@ -122,8 +122,9 @@ func (d *Dispatcher) dispatch(ctx context.Context, ev SessionEvent) error {
 	}
 
 	sm := machine.NewWithContext(sess.State, &machine.SessionContext{
-		AttemptCount: sess.AttemptCount,
-		MaxAttempts:  machine.MaxAttempts,
+		AttemptCount:     sess.AttemptCount,
+		MaxAttempts:      machine.MaxAttempts,
+		SkipAttemptCount: shouldSkipAttempt(sess, ev.Event),
 	})
 
 	switch event := ev.Event.(type) {
@@ -132,7 +133,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, ev SessionEvent) error {
 	case vcs.ChecksFailed:
 		return d.handleChecksFailed(ctx, sm, sess, event)
 	case vcs.ConflictDetected:
-		return d.handleConflictDetected(ctx, sm, sess)
+		return d.handleConflictDetected(ctx, sm, sess, event)
 	case vcs.ReviewSubmitted:
 		return d.handleReviewSubmitted(ctx, sm, sess, event)
 	case vcs.PRMerged:
@@ -147,6 +148,56 @@ func (d *Dispatcher) dispatch(ctx context.Context, ev SessionEvent) error {
 	}
 }
 
+// shouldSkipAttempt reports whether the fix-loop lap driven by this event
+// should be free (not consume an attempt). A lap is free only when the PR head
+// SHA carried by the event matches the SHA at which the last attempt was
+// counted: CI is merely re-settling on an unchanged commit and no fix was
+// pushed. Laps with an unknown head SHA, or the first lap on a PR (no recorded
+// last-counted SHA), or a SHA that differs from the last counted one (a real
+// fix pushed a new commit) always count — preserving genuine fix-loop
+// exhaustion (BOS-235). Only ChecksFailed / ConflictDetected are head-SHA
+// gated; review feedback (ReviewSubmitted) is a real actionable finding, is
+// deduped by LastObservedReviewState, and always counts.
+//
+// Note the head-SHA premise is a clean fit for check failures (a real fix
+// pushes a new commit) but only a partial fit for conflicts, whose appearance
+// can be driven by the base branch advancing rather than the head moving: a
+// persistent conflict at a stable head SHA is counted once and then gated free,
+// so the machine alone may not reach FixLoopExhausted for it. That is
+// deliberate and safe here — the live merge gate (liveMergeBlocked) still
+// refuses to merge a truly-conflicted PR, and the repair plugin has its own
+// independent escalation lane (maxRepairLoopAttempts + backoff + blocked
+// reason) for a genuinely stuck conflict.
+func shouldSkipAttempt(sess *models.Session, ev vcs.Event) bool {
+	var headSHA string
+	switch e := ev.(type) {
+	case vcs.ChecksFailed:
+		headSHA = e.HeadSHA
+	case vcs.ConflictDetected:
+		headSHA = e.HeadSHA
+	default:
+		return false
+	}
+	if headSHA == "" || sess.LastAttemptHeadSHA == nil {
+		return false
+	}
+	return *sess.LastAttemptHeadSHA == headSHA
+}
+
+// attemptHeadSHAUpdate returns an UpdateSessionParams field value that records
+// headSHA as the last-counted attempt SHA, but only when the lap actually
+// counted (skip is false) and the head SHA is known. Returns nil (don't touch
+// the column) otherwise. The double pointer follows the nullable-string
+// convention in UpdateSessionParams.
+func attemptHeadSHAUpdate(sm *machine.Machine, headSHA string) **string {
+	if sm.Context().SkipAttemptCount || headSHA == "" {
+		return nil
+	}
+	head := headSHA
+	headPtr := &head
+	return &headPtr
+}
+
 func (d *Dispatcher) handleChecksPassed(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
 	if err := sm.FireCtx(ctx, machine.ChecksPassed); err != nil {
 		return fmt.Errorf("fire checks_passed: %w", err)
@@ -154,9 +205,17 @@ func (d *Dispatcher) handleChecksPassed(ctx context.Context, sm *machine.Machine
 
 	newState := int(sm.State())
 	checkState := int(machine.CheckStatePassed)
+	// Reaching green resets the fix-loop budget: the current commit passed CI,
+	// so any prior failed-attempt tally is stale and a genuinely new failure
+	// should start from a clean slate. Clear the last-counted attempt SHA too
+	// so the next failure's first lap always counts (BOS-235).
+	zeroAttempts := 0
+	var clearHeadSHA *string // *nil → set column NULL
 	if _, err := d.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
-		State:          &newState,
-		LastCheckState: &checkState,
+		State:              &newState,
+		LastCheckState:     &checkState,
+		AttemptCount:       &zeroAttempts,
+		LastAttemptHeadSHA: &clearHeadSHA,
 	}); err != nil {
 		return fmt.Errorf("update session: %w", err)
 	}
@@ -205,9 +264,10 @@ func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine
 	checkState := int(machine.CheckStateFailed)
 	attemptCount := sm.Context().AttemptCount
 	update := db.UpdateSessionParams{
-		State:          &newState,
-		LastCheckState: &checkState,
-		AttemptCount:   &attemptCount,
+		State:              &newState,
+		LastCheckState:     &checkState,
+		AttemptCount:       &attemptCount,
+		LastAttemptHeadSHA: attemptHeadSHAUpdate(sm, event.HeadSHA),
 	}
 
 	// Reaching Blocked from these handlers means the fix loop exhausted its
@@ -240,7 +300,7 @@ func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine
 	return nil
 }
 
-func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
+func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Machine, sess *models.Session, event vcs.ConflictDetected) error {
 	if err := sm.FireCtx(ctx, machine.ConflictDetected); err != nil {
 		return fmt.Errorf("fire conflict_detected: %w", err)
 	}
@@ -248,8 +308,9 @@ func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Mac
 	newState := int(sm.State())
 	attemptCount := sm.Context().AttemptCount
 	update := db.UpdateSessionParams{
-		State:        &newState,
-		AttemptCount: &attemptCount,
+		State:              &newState,
+		AttemptCount:       &attemptCount,
+		LastAttemptHeadSHA: attemptHeadSHAUpdate(sm, event.HeadSHA),
 	}
 
 	// Reaching Blocked from these handlers means the fix loop exhausted its
@@ -337,6 +398,7 @@ func (d *Dispatcher) handleReviewSubmitted(ctx context.Context, sm *machine.Mach
 }
 
 func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
+	wasBlocked := sess.State == machine.Blocked
 	if err := sm.FireCtx(ctx, machine.PRMerged); err != nil {
 		return fmt.Errorf("fire pr_merged: %w", err)
 	}
@@ -350,9 +412,17 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 	}
 
 	mergedState := int(machine.Merged)
-	if _, err := d.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
-		State: &mergedState,
-	}); err != nil {
+	params := db.UpdateSessionParams{State: &mergedState}
+	// A Blocked session advancing to a terminal state runs OnExit(actionClearBlocked)
+	// in the machine, clearing BlockedReason + AttemptCount there. Persist the same
+	// cleared fields (mirroring reconcileTerminalPRForBlockedSession) so a stale,
+	// non-gating "finalize failed" hint does not linger on the merged row: this
+	// handler seeds the tracker with a terminal status, so the display poller skips
+	// the session and nothing else would clear it (BOS-246).
+	if wasBlocked {
+		clearBlockMetadata(&params)
+	}
+	if _, err := d.sessions.Update(ctx, sess.ID, params); err != nil {
 		return fmt.Errorf("update session: %w", err)
 	}
 
@@ -362,7 +432,21 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 	return nil
 }
 
+// clearBlockMetadata sets the UpdateSessionParams fields that OnExit(actionClearBlocked)
+// resets in the machine when a Blocked session leaves that state — the persisted block
+// reason, attempt count, and last-attempt SHA — so the DB row matches the machine and
+// no stale non-gating block hint survives on a terminal (merged/closed) session.
+func clearBlockMetadata(params *db.UpdateSessionParams) {
+	zeroAttempts := 0
+	var clearReason *string  // *nil → set blocked_reason NULL
+	var clearHeadSHA *string // *nil → set last_attempt_head_sha NULL
+	params.AttemptCount = &zeroAttempts
+	params.BlockedReason = &clearReason
+	params.LastAttemptHeadSHA = &clearHeadSHA
+}
+
 func (d *Dispatcher) handlePRClosed(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
+	wasBlocked := sess.State == machine.Blocked
 	if err := sm.FireCtx(ctx, machine.PRClosed); err != nil {
 		return fmt.Errorf("fire pr_closed: %w", err)
 	}
@@ -374,9 +458,14 @@ func (d *Dispatcher) handlePRClosed(ctx context.Context, sm *machine.Machine, se
 	}
 
 	closedState := int(machine.Closed)
-	if _, err := d.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
-		State: &closedState,
-	}); err != nil {
+	params := db.UpdateSessionParams{State: &closedState}
+	// See handlePRMerged: a Blocked session going terminal must persist the block
+	// metadata that OnExit(actionClearBlocked) cleared in the machine, or the stale
+	// hint lingers on the closed row.
+	if wasBlocked {
+		clearBlockMetadata(&params)
+	}
+	if _, err := d.sessions.Update(ctx, sess.ID, params); err != nil {
 		return fmt.Errorf("update session: %w", err)
 	}
 

@@ -318,6 +318,36 @@ func TestCompute(t *testing.T) {
 			},
 			want: Output{Label: "initializing", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
 		},
+
+		// --- Orphaned (honest green: terminal dead run never surfaces as green) ---
+		{
+			name: "orphaned wins over a draft PR display status",
+			in: Input{
+				Session: &pb.Session{
+					State:         pb.SessionState_SESSION_STATE_ORPHANED,
+					DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_DRAFT,
+				},
+			},
+			want: Output{Label: "orphaned", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			name: "orphaned wins over a passing (green) PR display status",
+			in: Input{
+				Session: &pb.Session{
+					State:         pb.SessionState_SESSION_STATE_ORPHANED,
+					DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+				},
+			},
+			want: Output{Label: "orphaned", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			name: "orphaned wins over a stale WORKING chat status",
+			in: Input{
+				Session:    &pb.Session{State: pb.SessionState_SESSION_STATE_ORPHANED},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING,
+			},
+			want: Output{Label: "orphaned", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
 	}
 
 	for _, tt := range tests {

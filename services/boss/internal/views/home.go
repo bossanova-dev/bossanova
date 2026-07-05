@@ -600,9 +600,10 @@ func (h *HomeModel) buildTableRows() {
 		attn := renderAttentionIndicator(sess)
 		repo, name, pr := repos[i], linkedNames[i], prs[i]
 		selected := rowIndex == cursor
+		merged := sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED ||
+			sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CLOSED
 		switch {
-		case sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED ||
-			sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CLOSED:
+		case merged:
 			repo = mutedStrike.Render(repos[i])
 			// renderMutedTrackerLink styles the full title with raw ANSI and
 			// wraps the tracker ID in OSC 8; do NOT wrap its output with
@@ -630,8 +631,15 @@ func (h *HomeModel) buildTableRows() {
 		}
 		row := table.Row{indicator, attn, repo, name, pr, statusStyled}
 		rows = append(rows, row)
+		// A merged/closed row's warnings no longer need to alarm — dim them
+		// (BOS-246). Part A clears the reason at the source, so this only paints
+		// the brief window before the next poll reconciles the session.
+		hintStyle := styleStatusDanger
+		if merged {
+			hintStyle = styleStatusDangerFaded
+		}
 		for _, hint := range sessionWarningHints(sess) {
-			hintRow := table.Row{"", "", "", styleStatusDanger.Render(hint), "", ""}
+			hintRow := table.Row{"", "", "", hintStyle.Render(hint), "", ""}
 			rows = append(rows, hintRow)
 		}
 	}
@@ -1005,6 +1013,8 @@ func StateLabel(state pb.SessionState) string {
 		return "✓ merged"
 	case pb.SessionState_SESSION_STATE_CLOSED:
 		return "closed"
+	case pb.SessionState_SESSION_STATE_ORPHANED:
+		return "orphaned"
 	default:
 		return "unknown"
 	}

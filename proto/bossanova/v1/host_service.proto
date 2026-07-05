@@ -170,6 +170,13 @@ message SetRepairStatusRequest {
   string session_id = 1;
   // Whether the session is currently being repaired.
   bool is_repairing = 2;
+  // Stable identity of the repair dispatcher (e.g. the repair plugin instance).
+  // Used to take/release the per-session single-repairer lease: setting
+  // is_repairing=true acquires the lease for this dispatcher (re-entrant for the
+  // same id, refused with FailedPrecondition for a different one while held);
+  // is_repairing=false releases it. Empty for legacy callers, which then only
+  // toggle the advisory display flag without lease enforcement.
+  string dispatcher_id = 3;
 }
 
 message SetRepairStatusResponse {}

@@ -54,7 +54,7 @@ func TestRunnerEndToEndWithFakeCodex(t *testing.T) {
 	}))
 
 	plan := "say hi"
-	sid, err := r.Start(context.Background(), dir, plan, nil, "sess-1", logPath, "")
+	sid, err := r.Start(context.Background(), dir, plan, nil, "sess-1", logPath, "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestRunnerResumePropagatesArgvAndStdin(t *testing.T) {
 
 	resumeID := "uuid-resume-target"
 	followUp := "now do step two"
-	sid, err := r.Start(context.Background(), dir, followUp, &resumeID, "ignored-hint", logPath, "")
+	sid, err := r.Start(context.Background(), dir, followUp, &resumeID, "ignored-hint", logPath, "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

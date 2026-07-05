@@ -41,11 +41,16 @@ type Output struct {
 	Spinner bool
 }
 
-// Compute runs the 9-branch precedence cascade that determines a session's
-// display status. The algorithm is intentionally identical to the legacy
-// renderPRDisplayStatus — every label, intent, and spinner flag matches.
+// Compute runs the precedence cascade that determines a session's display
+// status. The algorithm is intentionally identical to the legacy
+// renderPRDisplayStatus — every label, intent, and spinner flag matches —
+// except for the terminal Orphaned override, which must win over the PR-derived
+// labels so a restart-killed headless run's bootstrap-only PR is never surfaced
+// as green.
 //
 // Precedence (highest first):
+//  0. State ORPHANED      → "orphaned" / DANGER / no spinner (terminal dead run;
+//     wins over a stale chat status or a green/draft PR label — honest green)
 //  1. ChatStatus QUESTION → "? question" / WARNING / no spinner
 //  2. Draft PR failure    → "? PR failed" / WARNING / no spinner
 //  3. DisplaySettingUp    → "initializing" / INFO / spinner
@@ -58,6 +63,13 @@ type Output struct {
 //  8. ChatStatus IDLE     → "idle" / WARNING
 //  9. default             → "stopped" / MUTED
 func Compute(in Input) Output {
+	// A daemon restart killed this headless run; it is dead and needs a human.
+	// This must win over the PR-derived labels below (branch 7), which would
+	// otherwise render a bootstrap-only draft/passing PR as green-ish despite the
+	// run being orphaned. Terminal, so no live chat/workflow signal can precede it.
+	if in.Session != nil && in.Session.State == pb.SessionState_SESSION_STATE_ORPHANED {
+		return Output{Label: "orphaned", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER}
+	}
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_QUESTION {
 		return Output{Label: "? question", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
 	}

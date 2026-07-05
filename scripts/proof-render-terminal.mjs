@@ -5,6 +5,7 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { CAPTION_BAR_STYLE as SPEC_CAPTION_BAR_STYLE } from './proof-caption-spec.mjs'
 import { formatCaption, trimTerminalBlankLines } from './proof-lib.mjs'
 
 function parseArgs(argv) {
@@ -75,12 +76,11 @@ export function parseManifestArg(argv, repoRoot) {
   })
 }
 
-// Shared caption-bar styling: a single source of truth for the blue narration
-// bar (introduced in BOS-73 for the stills) so the stills (renderHtml) and the
-// burned-in video strip (renderCaptionStripHtml, added in BOS-121) are
-// pixel-identical and can never drift.
-export const CAPTION_BAR_STYLE =
-  'background:#1d4ed8;color:#fff;font:600 14px/1.5 sans-serif;padding:6px 14px;'
+// Shared caption-bar styling: sourced from proof-caption-spec.mjs (BOS-140
+// D8), the single source of truth for proof caption styling, so the stills
+// (renderHtml) and the burned-in video strip (renderCaptionStripHtml, added in
+// BOS-121) are pixel-identical and can never drift.
+export const CAPTION_BAR_STYLE = SPEC_CAPTION_BAR_STYLE
 
 /**
  * The blue caption bar markup for a (possibly empty) caption. Returns '' when

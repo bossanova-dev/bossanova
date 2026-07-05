@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +33,7 @@ import (
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/dotenv"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/mergepolicy"
 	"github.com/recurser/bossd/internal/plugin"
@@ -82,10 +85,14 @@ type Server struct {
 	workflows          db.WorkflowStore
 	taskMappings       db.TaskMappingStore
 	cronJobs           db.CronJobStore
+	accounts           db.AccountStore
+	accountCreds       AccountCredentialStore
+	accountSmoke       AccountSmokeRunner
 	checkSnapshots     db.CheckSnapshotStore
 	cronScheduler      *cron.Scheduler
 	chatStatus         *status.Tracker
 	displayTracker     *status.DisplayTracker
+	repairLease        *status.RepairLeaseManager
 	tmuxPoller         *status.TmuxStatusPoller
 	lifecycle          *session.Lifecycle
 	agent              agent.AgentRunner
@@ -128,17 +135,28 @@ var (
 
 // Config holds all dependencies for creating a new Server.
 type Config struct {
-	Repos              db.RepoStore
-	Sessions           db.SessionStore
-	Attempts           db.AttemptStore
-	AgentChats         db.AgentChatStore
-	Workflows          db.WorkflowStore
-	TaskMappings       db.TaskMappingStore
-	CronJobs           db.CronJobStore
+	Repos        db.RepoStore
+	Sessions     db.SessionStore
+	Attempts     db.AttemptStore
+	AgentChats   db.AgentChatStore
+	Workflows    db.WorkflowStore
+	TaskMappings db.TaskMappingStore
+	CronJobs     db.CronJobStore
+	Accounts     db.AccountStore
+	// AccountCredentials is the keyring-backed credential-blob plane for
+	// accounts (satisfied by accountcred.Store on the daemon). Metadata lives
+	// in Accounts; secrets never touch SQLite. Optional, may be nil (account
+	// RPCs then fail closed with a clear error).
+	AccountCredentials AccountCredentialStore
+	// AccountSmokeRunner runs the live TestAccount smoke. Optional, may be nil
+	// until credential materialization (1.5) wires a real runner; when nil,
+	// TestAccount validates the credential and reports live_smoke_ran=false.
+	AccountSmokeRunner AccountSmokeRunner
 	CheckSnapshots     db.CheckSnapshotStore
 	CronScheduler      *cron.Scheduler
 	ChatStatus         *status.Tracker
 	DisplayTracker     *status.DisplayTracker
+	RepairLease        *status.RepairLeaseManager
 	TmuxPoller         *status.TmuxStatusPoller
 	Lifecycle          *session.Lifecycle
 	Agent              agent.AgentRunner
@@ -183,6 +201,26 @@ type PRAssociationResolver interface {
 	ReconcileSessions(context.Context, []*models.Session) (int64, error)
 }
 
+// AccountCredentialStore is the credential-blob plane for accounts. The daemon
+// wires a keyring-backed accountcred.Store; tests inject a fake. It is defined
+// here (rather than importing accountcred) so the account RPCs depend only on
+// this narrow surface and secrets stay out of SQLite. Save overwrites; Load and
+// Delete return accountcred.ErrCredentialNotFound when no entry exists.
+type AccountCredentialStore interface {
+	Save(accountID string, blob []byte) error
+	Load(accountID string) ([]byte, error)
+	Delete(accountID string) error
+}
+
+// AccountSmokeRunner runs a trivial live provider invocation to prove a
+// credential works (claude -p "ok" / codex equivalent). It is injected and
+// nil-safe: until credential materialization (1.5) wires a real runner,
+// TestAccount degrades to credential-plane validation only. Guarded exactly
+// like PRAssociationResolver.
+type AccountSmokeRunner interface {
+	Smoke(ctx context.Context, provider string, blob []byte) error
+}
+
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
 func New(cfg Config) *Server {
 	return &Server{
@@ -193,10 +231,14 @@ func New(cfg Config) *Server {
 		workflows:      cfg.Workflows,
 		taskMappings:   cfg.TaskMappings,
 		cronJobs:       cfg.CronJobs,
+		accounts:       cfg.Accounts,
+		accountCreds:   cfg.AccountCredentials,
+		accountSmoke:   cfg.AccountSmokeRunner,
 		checkSnapshots: cfg.CheckSnapshots,
 		cronScheduler:  cfg.CronScheduler,
 		chatStatus:     cfg.ChatStatus,
 		displayTracker: cfg.DisplayTracker,
+		repairLease:    cfg.RepairLease,
 		tmuxPoller:     cfg.TmuxPoller,
 		lifecycle:      cfg.Lifecycle,
 		agent:          cfg.Agent,
@@ -825,7 +867,8 @@ func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branc
 		return true, emit.Send(&pb.CreateSessionResponse{
 			Event: &pb.CreateSessionResponse_SessionCreated{
 				SessionCreated: &pb.SessionCreated{
-					Session: SessionToProto(sess),
+					Session:          SessionToProto(sess),
+					AttachedExisting: true,
 				},
 			},
 		})
@@ -842,6 +885,18 @@ func createSessionConnectError(err error) error {
 
 func isDependabotBranch(branch string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(branch)), "dependabot/")
+}
+
+// newHookToken returns a 32-byte hex string (64 hex chars) used by the finalize
+// Stop hook to authenticate back to the daemon. It mirrors the cron scheduler's
+// generateHookToken (cron/scheduler.go); duplicated here because that helper is
+// unexported in another package and this package must not import cron internals.
+func newHookToken() (string, error) {
+	var buf [32]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("read random bytes: %w", err)
+	}
+	return hex.EncodeToString(buf[:]), nil
 }
 
 func (s *Server) cleanupFailedCreateSession(ctx context.Context, sessionID string) {
@@ -956,6 +1011,36 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		}
 	}
 
+	// BOS-236: dedup against an existing active session for the same tracker issue
+	// (or its PR / branch) so N dispatches for one ticket can't spawn N sessions.
+	// This runs under the process-global LockStartPath mutex acquired above, so the
+	// check-then-Create below is atomic w.r.t. concurrent daemon-local creates — the
+	// race that triplicated BOS-229. A DB unique index was deliberately NOT used: it
+	// cannot coexist with `force`, which must be able to create a second session for
+	// the same tracker. `force` skips the guard entirely.
+	//
+	// This behavioral change is intentionally NOT expressed as an apiversion
+	// (lib/bossalib/apiversion) dated bump: that framework is a response-side,
+	// unary-only down-convert (VersionChange.TransformResponse, applied only in
+	// the interceptor's WrapUnary path) and cannot gate a request-side side
+	// effect on a streaming, daemon-resident RPC. This guard lives in the bossd
+	// DaemonService, which never passes through the bosso OrchestratorService
+	// interceptor, and ProxyCreateSession is a stream that the transform layer
+	// skips by design. A refused create also can't be "down-converted" back into
+	// the duplicate session an old client wanted. `force` is a wire-additive
+	// field, so no deployed client breaks at the protocol level; the only
+	// behavior removed — dispatch-N-get-N-sessions — was the BOS-229 defect.
+	if !msg.Force && !msg.QuickChat {
+		keys, err := s.activeSessionKeysForRepo(ctx, msg.RepoId)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("dedup active sessions: %w", err))
+		}
+		if existingID, kind, ok := keys.duplicateSessionID(msg.TrackerId, prNumber, headBranch); ok {
+			return connect.NewError(connect.CodeAlreadyExists,
+				fmt.Errorf("active session %s already exists for this %s in repo %s; pass force to create another", existingID, kind, msg.RepoId))
+		}
+	}
+
 	// When the client supplies a selected tracker issue but no explicit plan
 	// (web new-session Linear/Sentry flow), format the plan server-side from the
 	// shared formatter — single source of truth with the TUI (trackerprompt).
@@ -976,6 +1061,11 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		BranchName: headBranch,
 		BaseBranch: baseBranch,
 		AgentName:  agentName,
+		// Opaque agent model id (e.g. an Opus id); "" → plugin default. The
+		// headless run path passes session.Model straight to StartByAgent, so
+		// this is what makes `create_session {model:…}` / `boss new --model`
+		// run `claude … --model <id>`.
+		Model:      msg.GetModel(),
 		PRNumber:   prNumber,
 		TrackerID:  msg.TrackerId,
 		TrackerURL: msg.TrackerUrl,
@@ -1001,6 +1091,28 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		pr, pw := io.Pipe()
 		defer pr.Close() //nolint:errcheck // best-effort cleanup
 
+		// Build the start options. A tmux_unattended session (e.g. /bs-epic) runs
+		// through the durable tmux-hosted path and carries a freshly-minted
+		// HookToken so its finalize Stop hook installs (and re-arms across a
+		// daemon restart). Mint it up front so a crypto/rand failure surfaces as a
+		// clean connect error rather than being swallowed inside the goroutine.
+		startOpts := session.StartSessionOpts{
+			ExistingBranch: headBranch,
+			ForceBranch:    msg.ForceBranch,
+			SetupOutput:    pw,
+			Detach:         msg.GetDetach(),
+			TmuxUnattended: msg.GetTmuxUnattended(),
+		}
+		if msg.GetTmuxUnattended() {
+			token, tokenErr := newHookToken()
+			if tokenErr != nil {
+				_ = pr.Close()
+				s.cleanupFailedCreateSession(context.WithoutCancel(ctx), sess.ID)
+				return createSessionConnectError(fmt.Errorf("mint hook token: %w", tokenErr))
+			}
+			startOpts.HookToken = token
+		}
+
 		type lifecycleResult struct {
 			err error
 		}
@@ -1008,12 +1120,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 
 		go func() {
 			defer pw.Close() //nolint:errcheck // best-effort cleanup
-			err := s.lifecycle.StartSession(ctx, sess.ID, session.StartSessionOpts{
-				ExistingBranch: headBranch,
-				ForceBranch:    msg.ForceBranch,
-				SetupOutput:    pw,
-				Detach:         msg.GetDetach(),
-			})
+			err := s.lifecycle.StartSession(ctx, sess.ID, startOpts)
 			done <- lifecycleResult{err: err}
 		}()
 
@@ -1136,6 +1243,20 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 			p.DisplayHasChangesRequested = e.HasChangesRequested
 			p.DisplayIsRepairing = e.IsRepairing
 			p.DisplaySettingUp = e.SettingUp
+			p.PrMergeable = e.Mergeable
+			p.MergeBlock = displayEntryToMergeBlock(e)
+		}
+	}
+	// repair_active is the authoritative, lease-backed single-repairer signal
+	// (nil-safe when the lease manager is not wired).
+	p.RepairActive = s.repairLease.Active(session.ID)
+
+	// Hydrate the liveness heartbeat + auth-failed attention overlay from the
+	// session's chats (needs the status tracker, which convert.SessionToProto
+	// has no access to).
+	if s.agentChats != nil {
+		if chats, err := s.agentChats.ListBySession(ctx, session.ID); err == nil {
+			s.hydrateAgentObservability(p, chats)
 		}
 	}
 
@@ -1220,7 +1341,10 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 				pbSessions[i].DisplayHasChangesRequested = e.HasChangesRequested
 				pbSessions[i].DisplayIsRepairing = e.IsRepairing
 				pbSessions[i].DisplaySettingUp = e.SettingUp
+				pbSessions[i].PrMergeable = e.Mergeable
+				pbSessions[i].MergeBlock = displayEntryToMergeBlock(e)
 			}
+			pbSessions[i].RepairActive = s.repairLease.Active(sess.Id)
 		}
 	}
 	for _, p := range pbSessions {
@@ -1233,6 +1357,14 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	// the autopilot removal will reintroduce a repair-driven derivation.
 
 	chatsBySession, chatsLoaded := s.chatsBySessionForStatuses(ctx, sessionIDs)
+
+	// Hydrate the liveness heartbeat + auth-failed attention overlay per session.
+	// Runs after suppressStaleConflictAttention so the auth overlay sees the
+	// final attention state (and only fills in where none exists).
+	for _, p := range pbSessions {
+		s.hydrateAgentObservability(p, chatsBySession[p.Id])
+	}
+
 	for _, p := range pbSessions {
 		_, hasDisplayEntry := entries[p.Id]
 		chatStatus, ok := s.chatStatusFromSessionChats(ctx, chatsBySession[p.Id], chatsLoaded)
@@ -1562,18 +1694,23 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %w", err))
 	}
 
-	// Guard against merging while CI is still red or reviews are outstanding.
-	// The webhook-driven tracker is authoritative; fall back to allowing the
-	// merge if the tracker has no entry (gh will itself reject an unmergeable PR).
-	if sess.PRNumber != nil && s.displayTracker != nil {
-		if e := s.displayTracker.Get(sess.ID); e != nil && e.Status != vcs.DisplayStatusPassing {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("PR is not passing"))
-		}
-	}
-
 	repo, err := s.repos.Get(ctx, sess.RepoID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get repo: %w", err))
+	}
+
+	// Guard against merging a truly red/conflicted/rejected PR, but gate on a
+	// LIVE read of the PR rather than the possibly-stale display tracker. A
+	// stale Blocked (e.g. a false "fix loop exhausted") must never veto a
+	// genuinely green+mergeable PR (BOS-235 Bug 2). Only a live read that shows
+	// failing checks, an unresolved conflict, or outstanding changes-requested
+	// rejects here; on any provider error or missing status the merge proceeds
+	// and the MergePR call below rejects a truly unmergeable PR itself.
+	if sess.PRNumber != nil {
+		if mb := s.liveMergeBlock(ctx, repo.OriginURL, *sess.PRNumber); mb != nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("merge blocked: gate=%s; %s", mb.Gate.Slug(), mb.Detail))
+		}
 	}
 
 	// Sync the branch the PR actually targets, which may differ from the
@@ -1592,23 +1729,21 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 				fmt.Errorf("session has no PR and no branch name to merge"))
 		}
 		if err := s.worktrees.MergeLocalBranch(ctx, repo.LocalPath, baseBranch, sess.BranchName, string(repo.MergeStrategy)); err != nil {
-			if errors.Is(err, gitpkg.ErrBaseBranchNotReady) || errors.Is(err, gitpkg.ErrMergeConflict) {
-				return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+			if errors.Is(err, gitpkg.ErrBaseBranchNotReady) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition,
+					fmt.Errorf("merge blocked: gate=base_sync; %w", err))
+			}
+			if errors.Is(err, gitpkg.ErrMergeConflict) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition,
+					fmt.Errorf("merge blocked: gate=conflict; %w", err))
 			}
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("local merge: %w", err))
 		}
 	} else {
-		// Verify the main repo can be safely fast-forwarded after the merge.
-		// Doing this BEFORE `gh pr merge` means we never end up with a
-		// successful server-side merge paired with a local repo the user would
-		// need to untangle by hand. The error message is safe to surface.
-		if err := s.worktrees.EnsureBaseBranchReadyForSync(ctx, repo.LocalPath, baseBranch); err != nil {
-			if errors.Is(err, gitpkg.ErrBaseBranchNotReady) {
-				return nil, connect.NewError(connect.CodeFailedPrecondition, err)
-			}
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("pre-merge sync check: %w", err))
-		}
-
+		// The GitHub merge always completes regardless of the operator's local
+		// checkout state; the local fast-forward of refs/heads/<base> is a
+		// best-effort, deferrable step handled after the merge (see the
+		// SyncBaseBranch call below), never a pre-merge gate.
 		strategy, err := mergepolicy.ResolveStrategy(ctx, s.provider, repo.OriginURL, string(repo.MergeStrategy))
 		if err != nil {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
@@ -1635,10 +1770,20 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 		// post-merge tip. Sync failures are logged — the server-side merge
 		// is already verified to be on origin/<base>.
 		if err := s.worktrees.SyncBaseBranch(ctx, repo.LocalPath, baseBranch); err != nil {
-			s.logger.Warn().Err(err).
-				Str("repo", repo.LocalPath).
-				Str("base", baseBranch).
-				Msg("post-merge sync of local base branch failed; run `git fetch` + fast-forward manually")
+			if errors.Is(err, gitpkg.ErrLocalSyncDeferred) {
+				// Non-fatal: origin/<base> is already freshened; the local
+				// fast-forward is recorded and retried once the base checkout
+				// is clean. The merge itself is done and verified on base.
+				s.logger.Info().Err(err).
+					Str("repo", repo.LocalPath).
+					Str("base", baseBranch).
+					Msg("local base sync deferred: base checked out with uncommitted changes; will fast-forward once clean")
+			} else {
+				s.logger.Warn().Err(err).
+					Str("repo", repo.LocalPath).
+					Str("base", baseBranch).
+					Msg("post-merge sync of local base branch failed; run `git fetch` + fast-forward manually")
+			}
 		}
 	}
 
@@ -1651,6 +1796,47 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 	}
 
 	return connect.NewResponse(&pb.MergeSessionResponse{Session: SessionToProto(sess)}), nil
+}
+
+// liveMergeBlock returns a structured merge-block reason when a fresh read of
+// the PR shows a state that must block a merge (failing checks, an unresolved
+// conflict, or outstanding changes-requested), or nil when the merge may
+// proceed. It reads LIVE provider state (GetPRStatus + GetCheckResults +
+// GetReviewComments) rather than the possibly-stale display tracker, so a stale
+// Blocked (e.g. a false fix-loop-exhaustion) never wedges a genuinely
+// green+mergeable PR (BOS-235 Bug 2). It intentionally fails open: on a nil
+// provider, an empty origin, a provider error, or a missing PR status it returns
+// nil so the merge proceeds — the subsequent MergePR (or gh pr merge) will itself
+// reject a truly unmergeable PR. Only definitively-bad live states (Failing /
+// Conflict / Rejected as computed by vcs.ComputeDisplayStatus) block; still-
+// settling CI or a not-yet-approved PR does not veto an explicit merge request.
+// When it does block, it derives the same structured reason as the get/list
+// surface (vcs.DeriveMergeBlock) so the refusal carries a gate + human detail
+// (BOS-239) computed from the live state, not the stale tracker.
+func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber int) *vcs.MergeBlockReason {
+	if s.provider == nil || originURL == "" {
+		return nil
+	}
+	prStatus, err := s.provider.GetPRStatus(ctx, originURL, prNumber)
+	if err != nil || prStatus == nil {
+		return nil
+	}
+	checks, err := s.provider.GetCheckResults(ctx, originURL, prNumber)
+	if err != nil {
+		return nil
+	}
+	reviews, err := s.provider.GetReviewComments(ctx, originURL, prNumber)
+	if err != nil {
+		return nil
+	}
+	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
+	switch info.Status {
+	case vcs.DisplayStatusFailing, vcs.DisplayStatusConflict, vcs.DisplayStatusRejected:
+		mb := vcs.DeriveMergeBlock(info.Status, info.HasFailures, info.ChangesRequestedBy)
+		return &mb
+	default:
+		return nil
+	}
 }
 
 func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.RemoveSessionRequest]) (*connect.Response[pb.RemoveSessionResponse], error) {
@@ -1998,7 +2184,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		TmuxName:           tmuxName,
 		ForceFresh:         !resume,
 		AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath),
-		SessionEnv:         session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
+		SessionEnv:         dotenv.Overlay(session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName), sess.WorktreePath),
 		Model:              sess.Model,
 		McpConfigPath:      mcpConfigPath,
 	})
@@ -2405,6 +2591,107 @@ func (s *Server) chatStatusFromSessionChats(ctx context.Context, chats []*models
 		}
 	}
 	return best, true
+}
+
+// agentAuthFailedBlockedReason is the stable, machine-matchable blocked_reason
+// stamped on a session whose agent pane shows the login-required terminal shape.
+const agentAuthFailedBlockedReason = "agent-auth-failed"
+
+// agentAuthFailedSummary is the human-readable attention summary for a
+// login-required (auth-failed) session.
+const agentAuthFailedSummary = "agent not logged in — run /login to re-authenticate"
+
+// latestAgentActivity returns the newest captured-pane activity time across the
+// session's chats, read from the status tracker's LastOutputAt. LastOutputAt
+// advances ONLY on captured-pane CONTENT changes (see tmux_poller's
+// captureChanged guard), NOT pipe-pane mtime, so a zombie pane with a fresh
+// mtime but static content does not advance it; STOPPED chats are skipped
+// below. ok is false when no chat has an observed activity time (leave
+// last_agent_activity_at absent).
+//
+// Caveat: LastOutputAt reflects any pane-content change, which includes a
+// submit=false composer prefill (typed/pasted input the agent has not yet
+// consumed), not only agent-produced output. The primary recovery consumer
+// (bs-epic) only ever submits (never prefills the chats it monitors), so this
+// does not affect its stale-vs-live signal. Excluding composer-only edits needs
+// composer-region-aware diffing in the shared status poller (which also feeds
+// get_chat_statuses) and is tracked as a follow-up, not scoped to BOS-242.
+func (s *Server) latestAgentActivity(chats []*models.AgentChat) (time.Time, bool) {
+	if s.chatStatus == nil {
+		return time.Time{}, false
+	}
+	var latest time.Time
+	for _, chat := range chats {
+		e := s.chatStatus.Get(chat.AgentSessionID)
+		if e == nil {
+			continue
+		}
+		// A STOPPED chat's LastOutputAt is stamped to now by the poller when its
+		// tmux session disappears (tmux_poller: Update(..., STOPPED, now)) — that
+		// is a liveness heartbeat for the display label, NOT genuine agent output.
+		// Counting it would make a dead/crashed chat advance last_agent_activity_at
+		// on every poll and read as freshly active, defeating the stale-vs-live
+		// signal this field exists to provide. Skip stopped entries.
+		if e.Status == pb.ChatStatus_CHAT_STATUS_STOPPED {
+			continue
+		}
+		if e.LastOutputAt.After(latest) {
+			latest = e.LastOutputAt
+		}
+	}
+	if latest.IsZero() {
+		return time.Time{}, false
+	}
+	return latest, true
+}
+
+// sessionAuthFailed reports whether any of the session's chats currently shows
+// the login-required terminal shape (a fresh auth-failed marker in the tracker).
+func (s *Server) sessionAuthFailed(chats []*models.AgentChat) bool {
+	if s.chatStatus == nil {
+		return false
+	}
+	for _, chat := range chats {
+		if s.chatStatus.AuthFailed(chat.AgentSessionID) {
+			return true
+		}
+	}
+	return false
+}
+
+// hydrateAgentObservability sets the liveness heartbeat (last_agent_activity_at)
+// from real agent output and, when the agent pane shows the login-required shape
+// AND the session has no other attention reason, overlays the AGENT_AUTH_FAILED
+// attention reason plus a stable blocked_reason.
+//
+// Priority: auth is the LOWEST-priority reason — it is overlaid only where
+// ComputeAttentionStatus returned no attention. A session already Blocked or
+// Orphaned keeps its own reason untouched. This is also what makes the
+// down-convert faithful: AGENT_AUTH_FAILED fires exactly where there was
+// previously no attention, so neutralizing it for older clients restores the
+// prior "just went quiet" behavior. Fails toward NOT flagging: no marker → no
+// change.
+func (s *Server) hydrateAgentObservability(p *pb.Session, chats []*models.AgentChat) {
+	if p == nil || len(chats) == 0 {
+		return
+	}
+	if latest, ok := s.latestAgentActivity(chats); ok {
+		p.LastAgentActivityAt = timestamppb.New(latest)
+	}
+	if p.GetAttentionStatus() != nil {
+		return // keep an existing, unrelated attention reason
+	}
+	if !s.sessionAuthFailed(chats) {
+		return
+	}
+	br := agentAuthFailedBlockedReason
+	p.BlockedReason = &br
+	p.AttentionStatus = &pb.AttentionStatus{
+		NeedsAttention: true,
+		Reason:         pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED,
+		Summary:        agentAuthFailedSummary,
+		Since:          p.GetUpdatedAt(),
+	}
 }
 
 // --- Context Resolution ---

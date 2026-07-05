@@ -140,9 +140,13 @@ func duplicateSessionIsActive(ctx context.Context, row *db.SessionWithRepo, isAl
 }
 
 // StateBlocksDuplicateTarget reports whether a session state should reserve a
-// PR or branch target from another session.
+// PR or branch target from another session. Dead states release their target so
+// a fresh session can reuse it — Orphaned belongs with Blocked/Merged/Closed
+// here: a headless run killed by a daemon restart is over, and the plan lets a
+// human re-dispatch the same ticket, which must not be refused as a duplicate.
 func StateBlocksDuplicateTarget(state machine.State) bool {
-	return state != machine.Blocked && state != machine.Merged && state != machine.Closed
+	return state != machine.Blocked && state != machine.Merged &&
+		state != machine.Closed && state != machine.Orphaned
 }
 
 func duplicateSessionStateNeedsLiveness(state machine.State) bool {

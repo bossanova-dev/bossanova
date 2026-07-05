@@ -20,6 +20,13 @@ const (
 	// CronJobOutcomeGated records a fire that was skipped because the job's
 	// gate_command exited non-zero, indicating the gate condition was not met.
 	CronJobOutcomeGated CronJobOutcome = "gated"
+	// CronJobOutcomePRNoChanges records a headless (detach) run that finished
+	// clean but produced no real work — the branch carries only the empty
+	// draft-PR bootstrap commit, so any attached PR is a no-op. It is an
+	// attention outcome (see needsAttention): the session is Blocked rather than
+	// surfaced as a green ready-for-review PR, so a headless /bs-epic driver
+	// fail-isolates the dead session instead of merging an empty PR.
+	CronJobOutcomePRNoChanges CronJobOutcome = "pr_no_changes"
 )
 
 // CronJob represents a scheduled prompt that fires on a cron expression.

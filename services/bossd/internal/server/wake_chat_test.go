@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -214,12 +215,46 @@ func TestWakeChatStream_HeadlessRunActive_FailedPrecondition(t *testing.T) {
 	if code != pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION {
 		t.Fatalf("expected ERROR_CODE_FAILED_PRECONDITION, got %v", code)
 	}
+	// The refusal must be actionable across every attach surface (they render the
+	// error string verbatim): explain the duplicate-agent risk and point at the
+	// live agent log to tail instead.
+	if msg := err.Error(); !strings.Contains(msg, "duplicate") ||
+		!strings.Contains(msg, "agent-logs/agent-1.log") {
+		t.Fatalf("expected actionable headless-active message with log path, got %q", msg)
+	}
 
 	tmuxer.mu.Lock()
 	spawnCount := tmuxer.createdN
 	tmuxer.mu.Unlock()
 	if spawnCount != 0 {
 		t.Errorf("expected 0 spawns while headless run active, got %d", spawnCount)
+	}
+}
+
+// TestWakeChatInternal_TmuxUnattended_LivePane_NotHeadlessActive proves a
+// tmux_unattended session with a LIVE tmux pane is NOT misclassified as an
+// active headless run: the ErrHeadlessRunActive gate keys on the absence of a
+// tmux session, and a durable tmux-hosted unattended run always has one, so
+// waking it returns AlreadyLive rather than the headless-active error.
+func TestWakeChatInternal_TmuxUnattended_LivePane_NotHeadlessActive(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), TmuxUnattended: true}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+	s := newWakeTestServer(t, chat, sess, tmuxer)
+	s.chatStatus = status.NewTracker()
+	s.chatStatus.Update("agent-1", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+
+	outcome, _, _, err := s.WakeChatInternal(context.Background(), "agent-1", false)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// The meaningful assertion: a live-pane tmux_unattended session wakes
+	// into AlreadyLive, not the headless-active refuse path. A nil err here
+	// already rules out ErrHeadlessRunActive (which WakeChatInternal always
+	// returns alongside a non-nil error), so the outcome check below is the
+	// real proof this session wasn't misclassified as an active headless run.
+	if outcome != OutcomeAlreadyLive {
+		t.Fatalf("got %v, want OutcomeAlreadyLive", outcome)
 	}
 }
 

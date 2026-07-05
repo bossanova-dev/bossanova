@@ -96,7 +96,7 @@ func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunReque
 	// codex process within milliseconds. The runner owns subprocess
 	// lifecycle via its own Stop()/cancel paths. (Mirrors the claude plugin
 	// fix in services/bossd's host_service.)
-	sid, err := s.runner.Start(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel())
+	sid, err := s.runner.Start(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetExtraEnv())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start run: %v", err)
 	}

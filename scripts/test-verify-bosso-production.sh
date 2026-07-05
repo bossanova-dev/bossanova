@@ -160,6 +160,21 @@ if [ "$#" -eq 4 ] && [ "$1" = "run" ] && [ "$2" = "./cmd/streamprobe" ] && [ "$3
   esac
 fi
 
+if [ "$#" -eq 4 ] && [ "$1" = "run" ] && [ "$2" = "./cmd/apiversioncheck" ] && [ "$3" = "-url" ]; then
+  case "$4" in
+    https://orchestrator-k8s.bossanova.dev|https://orchestrator-k8s-staging.bossanova.dev)
+      if [ -n "${APIVERSION_TRAILING:-}" ]; then
+        # Simulate a live server whose supported-max trails the built client
+        # version (the BOS-241 skew): the probe must fail the verification.
+        echo "apiversioncheck: server supported-max \"2026-06-29\" trails the built client version \"2026-07-04\": production is behind its own clients" >&2
+        exit 1
+      fi
+      echo "PASS: server at $4 supports built client API version 2026-07-04"
+      exit 0
+      ;;
+  esac
+fi
+
 echo "unexpected go invocation: $*" >&2
 exit 99
 FAKE_GO
@@ -202,6 +217,8 @@ grep -Fq "https://orchestrator-k8s.bossanova.dev/healthz" "${CURL_LOG}" \
   || fail "curl log missing production canary health URL"
 grep -Fq "go run ./cmd/streamprobe -url https://orchestrator-k8s.bossanova.dev" "${GO_LOG}" \
   || fail "go log missing production streamprobe URL"
+grep -Fq "go run ./cmd/apiversioncheck -url https://orchestrator-k8s.bossanova.dev" "${GO_LOG}" \
+  || fail "go log missing production apiversioncheck URL (deploy-ordering gate must run)"
 grep -Fq "gcloud compute network-endpoint-groups describe bs-bosso-neg-production" "${GCLOUD_LOG}" \
   || fail "gcloud log missing production NEG describe"
 
@@ -283,5 +300,18 @@ fi
 grep -Fq "placeholder value in bs-bosso-secret: BOSSO_DATABASE_URL contains REPLACE_ME" <<<"${OUTPUT}" \
   || fail "placeholder-secret-key failure did not name the key and sentinel: ${OUTPUT}"
 unset PLACEHOLDER_SECRET_KEY
+
+# Deploy-ordering gate (BOS-241): a live server whose supported API-version max
+# trails the built client Current must fail the verification, naming the skew.
+export DEPLOYED_IMAGE_REF="us-central1-docker.pkg.dev/example/bs/bosso:expected"
+export EXPECTED_IMAGE_REF="${DEPLOYED_IMAGE_REF}"
+export MANUAL_CHECKS_CONFIRMED=true
+export APIVERSION_TRAILING=1
+if OUTPUT="$("${ROOT_DIR}/scripts/verify-bosso-production.sh" 2>&1)"; then
+  fail "verify-bosso-production passed while the server API version trails the built client"
+fi
+grep -Fq "trails the built client version" <<<"${OUTPUT}" \
+  || fail "trailing-API-version failure did not explain the skew: ${OUTPUT}"
+unset APIVERSION_TRAILING
 
 echo "PASS: verify-bosso-production fake integration"

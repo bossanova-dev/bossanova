@@ -76,7 +76,27 @@ type tmuxSpawner interface {
 	Available(ctx context.Context) bool
 	HasSession(ctx context.Context, name string) bool
 	NewSessionWithCmd(ctx context.Context, name, workDir string, cmd []string, env map[string]string) error
-	SendMessage(ctx context.Context, sessionName, text string) error
+	// SendMessage delivers text into a live chat composer. submit routes the
+	// single-line verified-submit vs. paste-only-prefill behavior (BOS-242 Gap
+	// 1); readyMarker is the agent's input-box prompt glyph the submit path waits
+	// for before delivering.
+	SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string) error
+}
+
+// chatReadyMarker returns the input-box prompt glyph the given agent's TUI
+// renders when it is ready to accept input. It gates the submit-verified send
+// path (SendChatMessage) so it waits for the right agent's composer rather than
+// timing out on the wrong glyph. Mirrors each agent plugin's
+// BuildInteractiveCommandResponse ReadyMarker (claude "❯", codex "›"); an
+// unknown or empty agent name falls back to the claude marker — the same "" →
+// "claude" legacy default used elsewhere in this package.
+func chatReadyMarker(agentName string) string {
+	switch agentName {
+	case "codex":
+		return "›"
+	default:
+		return "❯"
+	}
 }
 
 // argvBuilder resolves the tmux command argv for a given agent. The live
@@ -269,9 +289,10 @@ func (l liveTmuxSpawner) NewSessionWithCmd(ctx context.Context, name, workDir st
 	return l.c.NewSession(ctx, tmux.NewSessionOpts{Name: name, WorkDir: workDir, Command: cmd, Env: env})
 }
 
-// SendMessage delivers text to an existing tmux session via bracketed paste.
-func (l liveTmuxSpawner) SendMessage(ctx context.Context, sessionName, text string) error {
-	return l.c.SendMessage(ctx, sessionName, text)
+// SendMessage delivers text into a live chat composer, routing on submit intent
+// (verified single-line submit vs. paste-only prefill) and payload shape.
+func (l liveTmuxSpawner) SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string) error {
+	return l.c.SendMessage(ctx, sessionName, text, submit, readyMarker)
 }
 
 type liveInteractiveSessionResolver struct {

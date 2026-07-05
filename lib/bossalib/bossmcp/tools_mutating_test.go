@@ -54,24 +54,24 @@ func TestMutatingTools(t *testing.T) {
 		{
 			tool: "create_session",
 			args: map[string]any{"repo_id": "r1", "prompt": "do it", "title": "Do the thing", "agent": "claude"},
-			backend: &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*pb.Session, error) {
+			backend: &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error) {
 				if req.GetRepoId() != "r1" || req.GetPlan() != "do it" || req.GetTitle() != "Do the thing" || req.GetAgentName() != "claude" {
 					t.Errorf("create_session args not forwarded: %+v", req)
 				}
-				return &pb.Session{Id: "sess-cs"}, nil
+				return &CreateSessionResult{Session: &pb.Session{Id: "sess-cs"}}, nil
 			}},
 			sentinel: "sess-cs",
 		},
 		{
 			tool: "create_session",
 			args: map[string]any{"repo_id": "r1", "prompt": "Add avatar upload\nto the profile page"},
-			backend: &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*pb.Session, error) {
+			backend: &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error) {
 				// Title omitted -> derived from the first line of the prompt so
 				// bossd's "title is required" guard is satisfied.
 				if req.GetTitle() != "Add avatar upload" {
 					t.Errorf("create_session did not derive title from prompt: %q", req.GetTitle())
 				}
-				return &pb.Session{Id: "sess-cs-derived"}, nil
+				return &CreateSessionResult{Session: &pb.Session{Id: "sess-cs-derived"}}, nil
 			}},
 			sentinel: "sess-cs-derived",
 		},
@@ -291,16 +291,17 @@ func TestMutatingTools(t *testing.T) {
 			args: map[string]any{
 				"repo_id": "r1", "prompt": "do it", "title": "T",
 				"base_branch": "develop", "branch_name": "feat/x", "force_branch": true,
-				"quick_chat": true, "pr_number": 42,
+				"quick_chat": true, "pr_number": 42, "detach": true, "model": "claude-opus-4-8",
 				"tracker_id": "BOS-1", "tracker_url": "https://linear.app/x", "tracker_source": "linear",
 			},
-			backend: &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*pb.Session, error) {
+			backend: &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error) {
 				if req.GetBaseBranch() != "develop" || req.GetBranchName() != "feat/x" || !req.GetForceBranch() ||
 					!req.GetQuickChat() || req.GetPrNumber() != 42 || req.GetTrackerId() != "BOS-1" ||
-					req.GetTrackerUrl() != "https://linear.app/x" || req.GetTrackerSource() != "linear" {
+					req.GetTrackerUrl() != "https://linear.app/x" || req.GetTrackerSource() != "linear" ||
+					!req.GetDetach() || req.GetModel() != "claude-opus-4-8" {
 					t.Errorf("create_session full field set not forwarded: %+v", req)
 				}
-				return &pb.Session{Id: "sess-cs-full"}, nil
+				return &CreateSessionResult{Session: &pb.Session{Id: "sess-cs-full"}}, nil
 			}},
 			sentinel: "sess-cs-full",
 		},
@@ -444,6 +445,106 @@ func TestRedactRepoDoesNotMutateSource(t *testing.T) {
 	if redactRepo(nil) != nil {
 		t.Error("redactRepo(nil) should return nil")
 	}
+}
+
+// TestCreateSessionToolAttachedExisting proves the create_session tool surfaces
+// the attached_existing flag in its structured result and, when true, appends a
+// note telling the caller the supplied prompt was NOT run and to send it to the
+// existing session via send_chat_message. The genuine-create case reports false
+// and carries no note.
+func TestCreateSessionToolAttachedExisting(t *testing.T) {
+	agentID := "agent-uuid-1"
+
+	t.Run("attached", func(t *testing.T) {
+		backend := &fakeBackend{createSession: func(_ context.Context, _ *pb.CreateSessionRequest) (*CreateSessionResult, error) {
+			return &CreateSessionResult{
+				Session:          &pb.Session{Id: "sess-att", AgentSessionId: &agentID},
+				AttachedExisting: true,
+			}, nil
+		}}
+		cs := newConnectedClient(t, backend, Options{})
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      "create_session",
+			Arguments: map[string]any{"repo_id": "r1", "prompt": "do it", "pr_number": 42},
+		})
+		if err != nil {
+			t.Fatalf("call create_session: %v", err)
+		}
+		if res.IsError {
+			t.Fatalf("create_session returned error result: %s", textOf(t, res))
+		}
+		out := textOf(t, res)
+		if !strings.Contains(out, `"attached_existing": true`) {
+			t.Errorf("attached create_session result missing attached_existing=true: %s", out)
+		}
+		if !strings.Contains(out, "send_chat_message") {
+			t.Errorf("attached create_session result missing the prompt-not-run note: %s", out)
+		}
+		// The session (and its agent_session_id) must still be reachable so the
+		// caller can address the existing session.
+		if !strings.Contains(out, "sess-att") || !strings.Contains(out, agentID) {
+			t.Errorf("attached create_session result must still expose the session: %s", out)
+		}
+	})
+
+	t.Run("created", func(t *testing.T) {
+		backend := &fakeBackend{createSession: func(_ context.Context, _ *pb.CreateSessionRequest) (*CreateSessionResult, error) {
+			return &CreateSessionResult{
+				Session:          &pb.Session{Id: "sess-new", AgentSessionId: &agentID},
+				AttachedExisting: false,
+			}, nil
+		}}
+		cs := newConnectedClient(t, backend, Options{})
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      "create_session",
+			Arguments: map[string]any{"repo_id": "r1", "prompt": "do it"},
+		})
+		if err != nil {
+			t.Fatalf("call create_session: %v", err)
+		}
+		if res.IsError {
+			t.Fatalf("create_session returned error result: %s", textOf(t, res))
+		}
+		out := textOf(t, res)
+		if !strings.Contains(out, `"attached_existing": false`) {
+			t.Errorf("created create_session result missing attached_existing=false: %s", out)
+		}
+		if strings.Contains(out, "send_chat_message") {
+			t.Errorf("genuine create_session result must not carry the prompt-not-run note: %s", out)
+		}
+	})
+
+	t.Run("attached without agent chat", func(t *testing.T) {
+		// An interactive session deduped before its first attach has no
+		// agent_session_id; the note must not tell the caller to use a
+		// send_chat_message id that does not exist.
+		backend := &fakeBackend{createSession: func(_ context.Context, _ *pb.CreateSessionRequest) (*CreateSessionResult, error) {
+			return &CreateSessionResult{
+				Session:          &pb.Session{Id: "sess-idle"},
+				AttachedExisting: true,
+			}, nil
+		}}
+		cs := newConnectedClient(t, backend, Options{})
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      "create_session",
+			Arguments: map[string]any{"repo_id": "r1", "prompt": "do it", "pr_number": 42},
+		})
+		if err != nil {
+			t.Fatalf("call create_session: %v", err)
+		}
+		if res.IsError {
+			t.Fatalf("create_session returned error result: %s", textOf(t, res))
+		}
+		out := textOf(t, res)
+		if !strings.Contains(out, `"attached_existing": true`) {
+			t.Errorf("attached create_session result missing attached_existing=true: %s", out)
+		}
+		// The fallback note must warn the chat is not yet reachable rather than
+		// pointing at an absent agent_session_id.
+		if !strings.Contains(out, "has not started its agent chat yet") {
+			t.Errorf("idle-attach result missing the no-agent-chat fallback note: %s", out)
+		}
+	})
 }
 
 func TestDeriveSessionTitle(t *testing.T) {

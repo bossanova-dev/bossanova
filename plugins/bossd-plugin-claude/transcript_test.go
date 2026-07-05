@@ -269,6 +269,19 @@ func TestPathToProjectKeyReplacesPathSeparators(t *testing.T) {
 			path: `C:\Users\dave\Code\.worktrees\foo`,
 			want: "C--Users-dave-Code--worktrees-foo",
 		},
+		{
+			// Regression: a repo registered with a trailing slash must encode
+			// to the same key as its clean form, or --resume silently breaks
+			// (Claude keys off the normalized getcwd, which has no trailing /).
+			name: "posix path with trailing slash",
+			path: "/Users/dave/Documents/Code/bossanova/",
+			want: "-Users-dave-Documents-Code-bossanova",
+		},
+		{
+			name: "posix path with redundant slashes",
+			path: "/Users/dave//Code/foo",
+			want: "-Users-dave-Code-foo",
+		},
 	}
 
 	for _, tt := range tests {

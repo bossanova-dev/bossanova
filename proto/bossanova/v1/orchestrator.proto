@@ -232,6 +232,11 @@ message ProxyCreateSessionRequest {
   optional string tracker_url = 11;
   optional TrackerIssue tracker_issue = 12;
   optional string tracker_source = 13;
+  // Bypass the BOS-236 tracker-issue dedup guard so a caller can intentionally
+  // create a second session for a tracker/PR/branch that already has an active
+  // one. Mirrors CreateSessionRequest.force so the hosted MCP gateway path has
+  // the same escape hatch as the local socket backend.
+  bool force = 14;
 }
 
 // ProxyCreateSessionResponse is streamed from orchestrator to the client as
@@ -243,6 +248,11 @@ message ProxyCreateSessionResponse {
     Session created = 2;
     string error = 3;
   }
+  // True when the terminal `created` frame reports an EXISTING active session
+  // the daemon attached to (dedup) rather than a freshly created one. Carries
+  // SessionCreateChunk.attached_existing through the hosted create path so the
+  // MCP gateway can surface it; only meaningful alongside `created`.
+  bool attached_existing = 4;
 }
 
 message ProxyStopSessionRequest {
@@ -333,6 +343,10 @@ message ProxySendChatMessageRequest {
   string agent_session_id = 1;
   string message = 2;
   bool wake_if_asleep = 3;
+  // when true, submit the message (BOS-242); when false, prefill only.
+  // optional so an omitting (pre-BOS-242) client is treated as submit=true
+  // server-side, preserving the prior always-submit proxy behavior.
+  optional bool submit = 4;
 }
 // ProxySendChatMessageResponse mirrors daemon.proto's SendChatMessageResponse.
 message ProxySendChatMessageResponse {

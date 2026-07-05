@@ -38,6 +38,8 @@ type fakeTmuxClient struct {
 type sentMessage struct {
 	sessionName string
 	text        string
+	submit      bool
+	readyMarker string
 }
 
 func (f *fakeTmuxClient) Available(_ context.Context) bool { return f.available }
@@ -62,13 +64,13 @@ func (f *fakeTmuxClient) NewSessionWithCmd(_ context.Context, name, _ string, cm
 	f.hasSession = true
 	return nil
 }
-func (f *fakeTmuxClient) SendMessage(_ context.Context, sessionName, text string) error {
+func (f *fakeTmuxClient) SendMessage(_ context.Context, sessionName, text string, submit bool, readyMarker string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sendMessageErr != nil {
 		return f.sendMessageErr
 	}
-	f.sentMessages = append(f.sentMessages, sentMessage{sessionName: sessionName, text: text})
+	f.sentMessages = append(f.sentMessages, sentMessage{sessionName: sessionName, text: text, submit: submit, readyMarker: readyMarker})
 	return nil
 }
 

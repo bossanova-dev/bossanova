@@ -94,10 +94,7 @@ export function parseDetectorFindings(text) {
       // not just unused exports: unused exports (`<symbol>  <file>:line:col`), unused files (a
       // bare source path), and unused dependencies (`<name>  <manifest>`). Section titles
       // ("Unused exports (N)", …) and hint lines match none of these shapes.
-      if (
-        (m =
-          /^(\S+)(?:\s+\S+)*\s+(\S+\.(?:ts|tsx|js|jsx|mts|cts|mjs|cjs)):\d+:\d+/.exec(line))
-      ) {
+      if ((m = /^(\S+)(?:\s+\S+)*\s+(\S+\.(?:ts|tsx|js|jsx|mts|cts|mjs|cjs)):\d+:\d+/.exec(line))) {
         push(m[2], m[1])
       } else if ((m = /^(\S+)\s+(\S*package\.json)\b/.exec(line))) {
         push(m[2], m[1])

@@ -49,6 +49,19 @@ func TestPathToProjectKey(t *testing.T) {
 			path: `C:\Users\dave\Code\.worktrees\foo`,
 			want: "C--Users-dave-Code--worktrees-foo",
 		},
+		{
+			// Regression: a repo registered with a trailing slash must encode
+			// to the same key as its clean form, or --resume silently breaks
+			// (Claude keys off the normalized getcwd, which has no trailing /).
+			name: "trailing slash",
+			path: "/Users/dave/Documents/Code/bossanova/",
+			want: "-Users-dave-Documents-Code-bossanova",
+		},
+		{
+			name: "redundant slashes",
+			path: "/Users/dave//Code/foo",
+			want: "-Users-dave-Code-foo",
+		},
 	}
 
 	for _, tt := range tests {
@@ -553,6 +566,58 @@ func TestParseSessionMeta_LoopIncrement(t *testing.T) {
 	// Should find the user message because we increment forward through lines
 	if got != "Message at line 11" {
 		t.Errorf("got %q, want %q (loop should increment forward)", got, "Message at line 11")
+	}
+}
+
+func TestTranscriptAbsentOrEmptyInDir(t *testing.T) {
+	dir := t.TempDir()
+	id := "11111111-2222-3333-4444-555555555555"
+	path := filepath.Join(dir, id+".jsonl")
+
+	// Absent transcript → genuine orphan, safe to reap.
+	if !transcriptAbsentOrEmptyInDir(dir, id) {
+		t.Errorf("absent transcript: got false, want true")
+	}
+
+	// Zero-length transcript → orphan, safe to reap.
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !transcriptAbsentOrEmptyInDir(dir, id) {
+		t.Errorf("empty transcript: got false, want true")
+	}
+
+	// Non-empty transcript → MUST NOT be reaped. This is the data-loss
+	// regression: a chat with real history must never be auto-deleted.
+	if err := os.WriteFile(path, []byte(`{"type":"user"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if transcriptAbsentOrEmptyInDir(dir, id) {
+		t.Errorf("non-empty transcript: got true, want false — history must never be reaped")
+	}
+
+	// A directory at the transcript path (ambiguous, not a plain empty file)
+	// → MUST NOT be reaped.
+	id2 := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	if err := os.Mkdir(filepath.Join(dir, id2+".jsonl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if transcriptAbsentOrEmptyInDir(dir, id2) {
+		t.Errorf("directory at path: got true, want false — ambiguity must never delete")
+	}
+
+	// An unreadable parent dir yields a stat error that is NOT not-exist →
+	// MUST NOT be reaped (a read failure must never delete). Root bypasses
+	// permission bits, so skip there.
+	if os.Geteuid() != 0 {
+		locked := filepath.Join(dir, "locked")
+		if err := os.Mkdir(locked, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Chmod(locked, 0o755) }()
+		if transcriptAbsentOrEmptyInDir(locked, id) {
+			t.Errorf("unreadable parent dir: got true, want false — a read failure must never delete")
+		}
 	}
 }
 

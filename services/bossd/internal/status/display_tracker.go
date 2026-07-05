@@ -13,10 +13,17 @@ type DisplayEntry struct {
 	Status              vcs.DisplayStatus
 	HasFailures         bool
 	HasChangesRequested bool
+	ChangesRequestedBy  []string
 	IsRepairing         bool
 	SettingUp           bool
 	HeadSHA             string
-	UpdatedAt           time.Time
+	// Mergeable is the PR's last-polled mergeability (nil unknown / true
+	// mergeable / false conflicting), surfaced on Session.pr_mergeable so a
+	// conflict-after-green is readable without a merge attempt. Refreshed by
+	// every poll via Set — unlike IsRepairing, it is not preserved across a
+	// Set that omits it, because each poll carries the authoritative value.
+	Mergeable *bool
+	UpdatedAt time.Time
 }
 
 // DisplayTracker is a thread-safe in-memory cache of session display statuses.
@@ -60,9 +67,11 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 		Status:              info.Status,
 		HasFailures:         info.HasFailures,
 		HasChangesRequested: info.HasChangesRequested,
+		ChangesRequestedBy:  info.ChangesRequestedBy,
 		IsRepairing:         isRepairing,
 		SettingUp:           settingUp,
 		HeadSHA:             info.HeadSHA,
+		Mergeable:           info.Mergeable,
 		UpdatedAt:           time.Now(),
 	}
 	t.entries[sessionID] = newEntry
@@ -93,9 +102,11 @@ func (t *DisplayTracker) Get(sessionID string) *DisplayEntry {
 		Status:              e.Status,
 		HasFailures:         e.HasFailures,
 		HasChangesRequested: e.HasChangesRequested,
+		ChangesRequestedBy:  e.ChangesRequestedBy,
 		IsRepairing:         e.IsRepairing,
 		SettingUp:           e.SettingUp,
 		HeadSHA:             e.HeadSHA,
+		Mergeable:           e.Mergeable,
 		UpdatedAt:           e.UpdatedAt,
 	}
 }
@@ -114,9 +125,11 @@ func (t *DisplayTracker) GetBatch(sessionIDs []string) map[string]*DisplayEntry 
 			Status:              e.Status,
 			HasFailures:         e.HasFailures,
 			HasChangesRequested: e.HasChangesRequested,
+			ChangesRequestedBy:  e.ChangesRequestedBy,
 			IsRepairing:         e.IsRepairing,
 			SettingUp:           e.SettingUp,
 			HeadSHA:             e.HeadSHA,
+			Mergeable:           e.Mergeable,
 			UpdatedAt:           e.UpdatedAt,
 		}
 	}

@@ -759,7 +759,7 @@ func TestLineStillAtPromptFindsInputBeneathChrome(t *testing.T) {
 // streaming output below it before redrawing an empty input box. The verifier
 // must treat that output as proof the payload left the prompt rather than
 // scanning past it to the echoed prompt row and reporting it as still pending
-// (which would time out waitForLineSubmission on an already-running command).
+// (which would time out waitForSubmission on an already-running command).
 func TestLineStillAtPromptStopsAtPostSubmitOutput(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
@@ -1511,26 +1511,26 @@ func TestSendPlan_SucceedsWhenPayloadLeavesPrompt(t *testing.T) {
 	}
 }
 
-// A multi-line plan cannot sit as one matchable prompt row, so submission
-// verification is skipped structurally: only the ready-marker poll captures the
-// pane, never a post-Enter verification capture. The fake keeps showing input at
-// the prompt, so if verification ran it would issue a second capture-pane (and,
-// against this still-at-prompt pane, eventually error) — neither happens.
-func TestSendPlan_MultilinePayloadSkipsSubmissionVerification(t *testing.T) {
+// A multi-line plan that loads into the composer but never executes (the paste
+// swallowed the Enter) must surface as an error in a headless cron session — the
+// BOS-228 fix. A multi-line payload cannot be matched as one prompt row, so the
+// verifier reads the shape-aware multiLineSubmitted signal instead; a pane that
+// keeps showing the payload at the composer (no agent activity, non-empty input
+// box) means "still pending", so after an Enter retry against the same pane the
+// verifier errors loudly rather than reporting a silent success.
+func TestSendPlan_MultilinePayloadNeverSubmittedErrors(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
 	t.Parallel()
 
-	captureCount := 0
 	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		subcommand := ""
 		if len(args) > 0 {
 			subcommand = args[0]
 		}
 		if subcommand == "capture-pane" {
-			captureCount++
-			return exec.CommandContext(ctx, "printf", "%s", "ready\n❯ still showing input\n")
+			return exec.CommandContext(ctx, "printf", "%s", "ready\n❯ /cmd\nwith extra notes\n")
 		}
 		return exec.CommandContext(ctx, "true")
 	}
@@ -1542,13 +1542,332 @@ func TestSendPlan_MultilinePayloadSkipsSubmissionVerification(t *testing.T) {
 		submitVerifyTick: time.Millisecond,
 	})
 
-	if err != nil {
-		t.Fatalf("multi-line plan must skip verification, got error: %v", err)
+	if err == nil {
+		t.Fatal("expected multi-line submission verification error, got nil")
 	}
-	// Exactly one capture-pane: the ready-marker poll. A second would mean
-	// verification ran on a multi-line payload.
-	if captureCount != 1 {
-		t.Fatalf("capture-pane count = %d, want 1 (verification must be skipped for multi-line)", captureCount)
+	if !strings.Contains(err.Error(), "not submitted") {
+		t.Fatalf("expected not-submitted error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "retry") {
+		t.Fatalf("expected error to mention the Enter retry, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "boss-test-sess") {
+		t.Fatalf("expected error to name the session, got %v", err)
+	}
+}
+
+// TestMultiLineSubmittedIgnoresPastedGlyphLines guards the false-positive the
+// BOS-228 verifier must avoid: a swallowed multi-line paste whose own lines lead
+// with an agent-activity glyph (a "•" or "·" bullet, common in plans) must NOT
+// be read as the agent's activity. Reading it as activity would report the paste
+// as submitted while it sits idle in the composer — the exact silent no-op this
+// change eliminates. A genuine agent row (not part of the payload) still counts.
+func TestMultiLineSubmittedIgnoresPastedGlyphLines(t *testing.T) {
+	// Swallowed paste: both payload lines still in the composer, the 2nd leading
+	// with a "•" bullet. No non-payload agent row → still pending.
+	payload := "line one\n• bullet two"
+	pending := "ready\n❯ line one\n• bullet two\n"
+	if multiLineSubmitted(pending, payload) {
+		t.Fatalf("pasted glyph-leading continuation line must report still pending, pane=%q", pending)
+	}
+
+	// "·" (U+00B7) middle-dot bullet — same class, same expectation.
+	payloadDot := "do the audit\n· step two"
+	pendingDot := "ready\n❯ do the audit\n· step two\n"
+	if multiLineSubmitted(pendingDot, payloadDot) {
+		t.Fatalf("pasted middle-dot continuation line must report still pending, pane=%q", pendingDot)
+	}
+
+	// Genuine agent activity (a ⏺ row the agent rendered, not in the payload)
+	// below the echoed prompt → submitted, even though a payload bullet is
+	// present.
+	submitted := "ready\n❯ line one\n• bullet two\n⏺ working\n"
+	if !multiLineSubmitted(submitted, payload) {
+		t.Fatalf("genuine agent activity below the marker must report submitted, pane=%q", submitted)
+	}
+
+	// Cleared composer is submitted regardless of payload content.
+	if !multiLineSubmitted("ready\n❯\n", payload) {
+		t.Fatal("cleared composer must report submitted")
+	}
+}
+
+// TestMultiLineSubmittedRejectsGlyphAbovePastedLines guards the cleared-composer
+// false-positive: a composer that renders the prompt glyph on its OWN row above
+// the pasted continuation lines ("❯\nline one\nline two", or a payload with a
+// blank leading line) is an UNSUBMITTED composer. Trusting the empty glyph there
+// would report a swallowed paste as submitted and resurrect the silent no-op.
+func TestMultiLineSubmittedRejectsGlyphAbovePastedLines(t *testing.T) {
+	// Prompt glyph on its own row, payload still visible below it → still pending.
+	payload := "line one\nline two"
+	pending := "ready\n❯\nline one\nline two\n"
+	if multiLineSubmitted(pending, payload) {
+		t.Fatalf("empty glyph above still-visible payload must report still pending, pane=%q", pending)
+	}
+
+	// Payload with a blank leading line renders an empty marker row with content
+	// below it → still pending, not a cleared composer.
+	blankLead := "\nreal work here\nand more"
+	pendingBlank := "ready\n❯\n\nreal work here\nand more\n"
+	if multiLineSubmitted(pendingBlank, blankLead) {
+		t.Fatalf("blank-leading payload below an empty glyph must report still pending, pane=%q", pendingBlank)
+	}
+
+	// Genuinely cleared composer: empty glyph at the bottom with only footer
+	// chrome below it (no payload lines) → submitted.
+	cleared := "ready\n❯ line one\nline two\n───────\n❯\n  model | cwd\n"
+	if !multiLineSubmitted(cleared, payload) {
+		t.Fatalf("empty glyph with only footer below (echoed prompt above) must report submitted, pane=%q", cleared)
+	}
+}
+
+// TestSendPlan_MultiLineSubmitVerifiedFirstTry covers the happy path for the
+// BOS-228 multi-line verification: after the paste + Enter the pane shows a
+// positive submission signal (agent activity below the marker, or a cleared
+// composer), so the verifier passes without a retry. It also asserts a
+// verification capture-pane poll ran AFTER the send-keys Enter.
+func TestSendPlan_MultiLineSubmitVerifiedFirstTry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+
+	cases := []struct {
+		name      string
+		submitted string
+	}{
+		{"agent activity below marker", "ready\n❯\n⏺ working\n"},
+		{"cleared composer", "ready\n❯\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &sendPlanRecordingFactory{
+				capturePaneOutputs: []string{
+					"ready\n❯\n", // ready-marker poll
+					tc.submitted, // post-Enter verification poll
+				},
+			}
+			c := NewClient(WithCommandFactory(fake.factory))
+			if err := c.sendPlan(context.Background(), "boss-test-sess", "line one\nline two", sendPlanOpts{
+				readyMarker:      "ready",
+				deadline:         time.Second,
+				pollInterval:     5 * time.Millisecond,
+				submitVerifyWait: 50 * time.Millisecond,
+				submitVerifyTick: time.Millisecond,
+			}); err != nil {
+				t.Fatalf("sendPlan multi-line: unexpected error: %v", err)
+			}
+
+			calls := fake.callsCopy()
+			lastEnterIdx := -1
+			captureAfterEnter := false
+			for i, call := range calls {
+				switch call.subcommand {
+				case "send-keys":
+					if len(call.args) > 0 && call.args[len(call.args)-1] == "Enter" {
+						lastEnterIdx = i
+					}
+				case "capture-pane":
+					if lastEnterIdx != -1 && i > lastEnterIdx {
+						captureAfterEnter = true
+					}
+				}
+			}
+			if lastEnterIdx == -1 {
+				t.Fatalf("expected a send-keys Enter, calls = %+v", calls)
+			}
+			if !captureAfterEnter {
+				t.Fatalf("expected a verification capture-pane after the send-keys Enter, calls = %+v", calls)
+			}
+		})
+	}
+}
+
+// TestSendPlan_MultiLineRetrySucceedsAfterSwallowedEnter proves the retry-once
+// behaviour: the composer keeps showing the pasted payload through the first
+// verify window (the TUI swallowed the first Enter), then after exactly one
+// additional Enter the pane shows agent activity and the verifier passes.
+func TestSendPlan_MultiLineRetrySucceedsAfterSwallowedEnter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	var mu sync.Mutex
+	enterCount := 0
+	var calls []sendPlanCall
+	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		mu.Lock()
+		defer mu.Unlock()
+		subcommand := ""
+		if len(args) > 0 {
+			subcommand = args[0]
+		}
+		calls = append(calls, sendPlanCall{subcommand: subcommand, args: append([]string(nil), args[1:]...)})
+		switch subcommand {
+		case "capture-pane":
+			// Still pending until the retry Enter (2nd Enter) lands, then the
+			// agent starts working below the marker.
+			if enterCount < 2 {
+				return exec.CommandContext(ctx, "printf", "%s", "ready\n❯ line one\nline two\n")
+			}
+			return exec.CommandContext(ctx, "printf", "%s", "ready\n❯\n⏺ working\n")
+		case "send-keys":
+			if len(args) > 1 && args[len(args)-1] == "Enter" {
+				enterCount++
+			}
+			return exec.CommandContext(ctx, "true")
+		default:
+			return exec.CommandContext(ctx, "true")
+		}
+	}
+
+	c := NewClient(WithCommandFactory(factory))
+	if err := c.sendPlan(context.Background(), "boss-test-sess", "line one\nline two", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 20 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	}); err != nil {
+		t.Fatalf("sendPlan multi-line retry: unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	enters := 0
+	for _, call := range calls {
+		if call.subcommand == "send-keys" && len(call.args) > 0 && call.args[len(call.args)-1] == "Enter" {
+			enters++
+		}
+	}
+	if enters != 2 {
+		t.Fatalf("expected exactly two send-keys Enter (initial + one retry), got %d", enters)
+	}
+}
+
+// TestSendLine_RetrySucceedsAfterSwallowedEnter is the single-line analogue:
+// the sendLine submit path must also retry the Enter once before succeeding.
+func TestSendLine_RetrySucceedsAfterSwallowedEnter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	var mu sync.Mutex
+	enterCount := 0
+	var calls []sendPlanCall
+	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		mu.Lock()
+		defer mu.Unlock()
+		subcommand := ""
+		if len(args) > 0 {
+			subcommand = args[0]
+		}
+		calls = append(calls, sendPlanCall{subcommand: subcommand, args: append([]string(nil), args[1:]...)})
+		switch subcommand {
+		case "capture-pane":
+			if enterCount < 2 {
+				return exec.CommandContext(ctx, "printf", "%s", "ready\n› $boss-repair\n")
+			}
+			return exec.CommandContext(ctx, "printf", "%s", "ready\n› \n")
+		case "send-keys":
+			if len(args) > 1 && args[len(args)-1] == "Enter" {
+				enterCount++
+			}
+			return exec.CommandContext(ctx, "true")
+		default:
+			return exec.CommandContext(ctx, "true")
+		}
+	}
+
+	c := NewClient(WithCommandFactory(factory))
+	if err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 20 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	}); err != nil {
+		t.Fatalf("sendLine retry: unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	enters := 0
+	for _, call := range calls {
+		if call.subcommand == "send-keys" && len(call.args) > 0 && call.args[len(call.args)-1] == "Enter" {
+			enters++
+		}
+	}
+	if enters != 2 {
+		t.Fatalf("expected exactly two send-keys Enter (initial + one retry), got %d", enters)
+	}
+}
+
+// TestPrefillPlanWithReadyMarker_MultiLineNoEnterNoVerify asserts prefill-only
+// multi-line delivery: the payload is pasted into the composer, but NO Enter is
+// ever sent and NO post-delivery verification capture-pane runs.
+func TestPrefillPlanWithReadyMarker_MultiLineNoEnterNoVerify(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	fake := &sendPlanRecordingFactory{
+		capturePaneOutputs: []string{"Welcome to Claude\n❯\n"},
+	}
+	c := NewClient(WithCommandFactory(fake.factory))
+	if err := c.PrefillPlanWithReadyMarker(context.Background(), "boss-test-sess", "line one\nline two", "❯"); err != nil {
+		t.Fatalf("PrefillPlanWithReadyMarker: unexpected error: %v", err)
+	}
+	assertPrefilledNoEnterNoVerify(t, fake.callsCopy())
+}
+
+// TestPrefillLineWithReadyMarker_SingleLineNoEnterNoVerify asserts prefill-only
+// single-line delivery: the line is typed via send-keys -l, but NO Enter is
+// sent and NO verification capture-pane runs after it.
+func TestPrefillLineWithReadyMarker_SingleLineNoEnterNoVerify(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	fake := &sendPlanRecordingFactory{
+		capturePaneOutputs: []string{"Welcome to Codex\n›\n"},
+	}
+	c := NewClient(WithCommandFactory(fake.factory))
+	if err := c.PrefillLineWithReadyMarker(context.Background(), "boss-test-sess", "$boss-repair", "›"); err != nil {
+		t.Fatalf("PrefillLineWithReadyMarker: unexpected error: %v", err)
+	}
+
+	calls := fake.callsCopy()
+	sawLiteral := false
+	for _, call := range calls {
+		if call.subcommand == "send-keys" &&
+			equalSlices(call.args, []string{"-t", "boss-test-sess", "-l", "--", "$boss-repair"}) {
+			sawLiteral = true
+		}
+	}
+	if !sawLiteral {
+		t.Fatalf("expected literal send-keys delivery, calls = %+v", calls)
+	}
+	assertPrefilledNoEnterNoVerify(t, calls)
+}
+
+// assertPrefilledNoEnterNoVerify checks the prefill contract: no send-keys Enter
+// was ever issued, and no capture-pane poll ran after the last delivery
+// subcommand (i.e. no post-delivery verification).
+func assertPrefilledNoEnterNoVerify(t *testing.T, calls []sendPlanCall) {
+	t.Helper()
+
+	lastDeliveryIdx := -1
+	for i, call := range calls {
+		switch call.subcommand {
+		case "send-keys":
+			if len(call.args) > 0 && call.args[len(call.args)-1] == "Enter" {
+				t.Fatalf("prefill must not send Enter, calls = %+v", calls)
+			}
+			lastDeliveryIdx = i
+		case "load-buffer", "paste-buffer":
+			lastDeliveryIdx = i
+		}
+	}
+	for i, call := range calls {
+		if call.subcommand == "capture-pane" && i > lastDeliveryIdx {
+			t.Fatalf("prefill must not run a verification capture-pane after delivery, calls = %+v", calls)
+		}
 	}
 }
 
@@ -1906,16 +2225,35 @@ func readFile(path string) (string, error) {
 	return string(f), nil
 }
 
-// TestSendMessage_IssuesBracketedPasteSequence verifies SendMessage issues
-// load-buffer, paste-buffer, send-keys in order with no capture-pane poll.
-func TestSendMessage_IssuesBracketedPasteSequence(t *testing.T) {
+// countEnterSendKeys returns how many recorded send-keys calls submit Enter
+// (i.e. the last arg is "Enter"). Used to assert the submit-vs-prefill split:
+// a prefill path must issue zero Enter send-keys.
+func countEnterSendKeys(calls []sendPlanCall) int {
+	n := 0
+	for _, c := range calls {
+		if c.subcommand == "send-keys" && len(c.args) > 0 && c.args[len(c.args)-1] == "Enter" {
+			n++
+		}
+	}
+	return n
+}
+
+// TestSendMessage_SubmitSingleLine_DeliversEntersAndVerifies verifies that a
+// single-line submit waits for the ready marker, delivers the text via literal
+// keystrokes, presses Enter, then runs the verifier (a capture-pane poll after
+// the Enter). This is the BOS-242 Gap 1 reliable-submit path.
+func TestSendMessage_SubmitSingleLine_DeliversEntersAndVerifies(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
-	fake := &sendPlanRecordingFactory{}
+	fake := &sendPlanRecordingFactory{
+		// Ready marker present on the first poll; a cleared (submitted) prompt on
+		// the verify poll so verification passes without waiting the full budget.
+		capturePaneOutputs: []string{"❯\n", "❯\n"},
+	}
 	c := NewClient(WithCommandFactory(fake.factory))
 
-	if err := c.SendMessage(context.Background(), "boss-test-sess", "hello world"); err != nil {
+	if err := c.SendMessage(context.Background(), "boss-test-sess", "/boss-repair watch", true, "❯"); err != nil {
 		t.Fatalf("SendMessage: unexpected error: %v", err)
 	}
 
@@ -1925,22 +2263,88 @@ func TestSendMessage_IssuesBracketedPasteSequence(t *testing.T) {
 		subcommands[i] = call.subcommand
 	}
 
-	want := []string{"load-buffer", "paste-buffer", "send-keys"}
-	if len(calls) != len(want) {
-		t.Fatalf("expected exactly %d calls, got %d: %v", len(want), len(calls), subcommands)
+	// A literal send-keys delivery (send-keys -l -- <text>) followed by an Enter.
+	var sawLiteral, sawEnter, sawCaptureAfterEnter bool
+	enterIdx := -1
+	for i, call := range calls {
+		if call.subcommand == "send-keys" && len(call.args) >= 3 && call.args[2] == "-l" {
+			sawLiteral = true
+			// The delivered payload must be the literal message, no command prefix.
+			if got := call.args[len(call.args)-1]; got != "/boss-repair watch" {
+				t.Errorf("literal send-keys payload = %q, want %q", got, "/boss-repair watch")
+			}
+		}
+		if call.subcommand == "send-keys" && len(call.args) > 0 && call.args[len(call.args)-1] == "Enter" {
+			sawEnter = true
+			enterIdx = i
+		}
 	}
-	if !equalSlices(subcommands, want) {
-		t.Errorf("subcommands = %v, want %v", subcommands, want)
+	for i := enterIdx + 1; i >= 0 && i < len(calls); i++ {
+		if calls[i].subcommand == "capture-pane" {
+			sawCaptureAfterEnter = true
+			break
+		}
+	}
+	if !sawLiteral {
+		t.Errorf("expected a literal send-keys delivery, got %v", subcommands)
+	}
+	if !sawEnter {
+		t.Errorf("expected an Enter send-keys, got %v", subcommands)
+	}
+	if !sawCaptureAfterEnter {
+		t.Errorf("expected a verifier capture-pane after Enter, got %v", subcommands)
+	}
+}
+
+// TestSendMessage_SubmitMultiLine_PastesNoEnter verifies that a multi-line
+// payload is pasted into the composer with NO Enter even when submit=true — the
+// swallowed-Enter failure mode makes auto-submitting multi-line unsafe.
+func TestSendMessage_SubmitMultiLine_PastesNoEnter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{"❯\n"}}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	if err := c.SendMessage(context.Background(), "boss-test-sess", "line one\nline two", true, "❯"); err != nil {
+		t.Fatalf("SendMessage: unexpected error: %v", err)
 	}
 
-	if !equalSlices(calls[0].args, []string{"-"}) {
-		t.Errorf("load-buffer args = %v, want [-]", calls[0].args)
+	calls := fake.callsCopy()
+	if n := countEnterSendKeys(calls); n != 0 {
+		t.Errorf("multi-line submit pressed Enter %d times, want 0", n)
 	}
-	if !equalSlices(calls[1].args, []string{"-d", "-p", "-t", "boss-test-sess"}) {
-		t.Errorf("paste-buffer args = %v, want [-d -p -t boss-test-sess]", calls[1].args)
+	// Must paste (load-buffer + paste-buffer), not type.
+	var sawLoad, sawPaste bool
+	for _, call := range calls {
+		switch call.subcommand {
+		case "load-buffer":
+			sawLoad = true
+		case "paste-buffer":
+			sawPaste = true
+		}
 	}
-	if !equalSlices(calls[2].args, []string{"-t", "boss-test-sess", "Enter"}) {
-		t.Errorf("send-keys args = %v, want [-t boss-test-sess Enter]", calls[2].args)
+	if !sawLoad || !sawPaste {
+		t.Errorf("expected load-buffer+paste-buffer for multi-line, got load=%v paste=%v", sawLoad, sawPaste)
+	}
+}
+
+// TestSendMessage_PrefillSingleLine_TypesNoEnter verifies the default
+// (submit=false) path prefills a single line into the composer with NO Enter.
+func TestSendMessage_PrefillSingleLine_TypesNoEnter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{"❯\n"}}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	if err := c.SendMessage(context.Background(), "boss-test-sess", "just prefill me", false, "❯"); err != nil {
+		t.Fatalf("SendMessage: unexpected error: %v", err)
+	}
+
+	calls := fake.callsCopy()
+	if n := countEnterSendKeys(calls); n != 0 {
+		t.Errorf("prefill pressed Enter %d times, want 0", n)
 	}
 }
 
@@ -1949,7 +2353,7 @@ func TestSendMessage_EmptySessionName_Error(t *testing.T) {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
 	c := NewClient(WithCommandFactory((&mockCommandFactory{}).factory))
-	err := c.SendMessage(context.Background(), "", "hello")
+	err := c.SendMessage(context.Background(), "", "hello", true, "❯")
 	if err == nil {
 		t.Fatal("expected error for empty session name")
 	}

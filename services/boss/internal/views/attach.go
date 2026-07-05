@@ -352,8 +352,13 @@ func (m AttachModel) updateChatTitle() tea.Cmd {
 		title := agent.ChatTitle(worktreePath, agentSessionID)
 		if title != "" {
 			_ = m.client.UpdateChatTitle(m.ctx, agentSessionID, title)
-		} else {
-			// No real user message — session was never used. Remove the orphan.
+		} else if agent.TranscriptAbsentOrEmpty(worktreePath, agentSessionID) {
+			// Reap a genuinely-unused orphan ONLY when its transcript is
+			// confirmed absent or zero-length. A non-empty transcript whose
+			// title won't parse — or any read failure — must never delete the
+			// row: a mis-encoded project key once made rich chats look
+			// title-less here and this branch destroyed them. See
+			// agent.TranscriptAbsentOrEmpty.
 			_ = m.client.DeleteChat(m.ctx, agentSessionID)
 		}
 		return chatTitleUpdatedMsg{}

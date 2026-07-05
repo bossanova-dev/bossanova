@@ -2,9 +2,12 @@
 /**
  * proof-tui-agent.eval.mjs — Navigation-quality eval for the TUI agent proof orchestrator.
  *
- * Exercises runTuiAgentProof against two scenarios:
+ * Exercises runTuiAgentProof against three scenarios:
  *   - positive (#812): add-repo → repo-settings flow; expects verdict='passed'.
  *   - negative: unreachable evidence sentinel; expects verdict='failed' (anti false-positive).
+ *   - multi-scene ordering (D9, BOS-140): a two-scene positive brief; expects verdict='passed'
+ *     AND scene-marker ordering evidence (raw/scene-timings.json strictly increasing, both
+ *     entries in manifest.captures[0].scenes passed).
  *
  * Key-gated (T2): skips cleanly with exit 0 when ANTHROPIC_API_KEY is unset.
  * Always dry-run: never uploads or posts (BOSS_PROOF_UPLOAD=0 enforced for own run).
@@ -65,11 +68,93 @@ const NEGATIVE_BRIEF = {
   expectedEvidence: ['__UNREACHABLE_EVIDENCE_BOS71__'],
 }
 
+/**
+ * Multi-scene positive scenario (D9, BOS-140): extends the add-repo →
+ * repo-settings flow into two explicitly marked scenes so the eval can assert
+ * scene-marker ordering end-to-end, not just a single final verdict.
+ *
+ *   - scene-01 "open repos list": evidence token 'PATH' is the repo-list
+ *     table's column header (services/boss/internal/views/repo_list.go
+ *     buildTable(): `{Title: "PATH", ...}`). DemoWorld always seeds 5 repos
+ *     (services/boss/internal/fixtures/fixtures.go Repos()), so the repo
+ *     table — and its PATH header — always renders once the list loads; it is
+ *     also the exact token services/boss/internal/tuitest/repolist_test.go
+ *     already waits on to confirm the repo-list view opened.
+ *   - scene-02 "open repo settings": reuses 'Settings', the same token the
+ *     positive (#812) scenario above already relies on for the settings
+ *     screen.
+ */
+const MULTISCENE_BRIEF = {
+  title: 'TUI navigation eval — scene-marker ordering (D9)',
+  description:
+    'Navigate the boss TUI in two explicit scenes: first open the repos list, ' +
+    "then open a repo's settings screen. Call begin_scene({id}) before starting " +
+    'each scene, in order, as instructed.',
+  targetRoutes: ['repos', 'settings'],
+  scenes: [
+    {
+      id: 'scene-01',
+      title: 'open repos list',
+      stepsHints: [
+        'Press s to open the Settings hub',
+        'Press r to open the Repos list and confirm the repo table is visible',
+      ],
+      // 'PATH' is the repo-list table's column header; always rendered once
+      // DemoWorld's repos are loaded (5 seeded repos, never empty).
+      expectedEvidence: ['PATH'],
+    },
+    {
+      id: 'scene-02',
+      title: 'open repo settings',
+      stepsHints: [
+        "Call begin_scene({id: 'scene-02'}) to mark the start of this scene",
+        'Press enter on a repo row to open its settings screen',
+        'Confirm the settings screen text appears',
+      ],
+      // 'Settings' appears on the DemoWorld TUI settings screen; reachable in any run.
+      expectedEvidence: ['Settings'],
+    },
+  ],
+}
+
 const SCENARIOS = [
-  // Call order: first = positive, second = negative. Documented here and in test file.
+  // Call order: first = positive, second = negative, third = multi-scene (D9).
+  // Documented here and in test file.
   { name: 'positive (#812)', brief: POSITIVE_BRIEF, expectedVerdict: 'passed' },
   { name: 'negative', brief: NEGATIVE_BRIEF, expectedVerdict: 'failed' },
+  { name: 'multi-scene ordering (D9)', brief: MULTISCENE_BRIEF, expectedVerdict: 'passed' },
 ]
+
+// ── Scene-ordering assertion helpers (D9, pure) ────────────────────────────
+
+/**
+ * True when every entry's `startMs` is strictly greater than the previous
+ * entry's — i.e. scenes began in order with no ties or regressions. Fewer
+ * than 2 entries vacuously pass (nothing to compare). Non-array input fails
+ * closed. Pure.
+ * @param {Array<{startMs: number}>} sceneTimings
+ * @returns {boolean}
+ */
+export function sceneTimingsStrictlyIncreasing(sceneTimings) {
+  if (!Array.isArray(sceneTimings)) return false
+  for (let i = 1; i < sceneTimings.length; i++) {
+    if (!(sceneTimings[i].startMs > sceneTimings[i - 1].startMs)) return false
+  }
+  return true
+}
+
+/**
+ * True when `scenes` is a non-empty array and every entry passed its
+ * per-scene evidence gate (the shape `evaluateSceneEvidence` /
+ * `captureShape.scenes` produce: `{ id, title, passed, missing }`). An empty
+ * or non-array input fails closed (no scenes is not "all scenes passed").
+ * Pure.
+ * @param {Array<{passed: boolean}>} scenes
+ * @returns {boolean}
+ */
+export function allScenesPassed(scenes) {
+  return Array.isArray(scenes) && scenes.length > 0 && scenes.every((s) => s?.passed === true)
+}
 
 // ── Default bridge builder ─────────────────────────────────────────────────────
 
@@ -149,19 +234,53 @@ export async function runEval({
       const savedBrief = process.env.BOSS_PROOF_BRIEF
       process.env.BOSS_PROOF_BRIEF = briefPath
 
+      // D9: a multi-scene brief additionally asserts scene-marker ordering.
+      // Give the run its own known localDir (via runContext) so
+      // raw/scene-timings.json can be read back afterwards — runTuiAgentProof
+      // never returns its localDir, so this is the only seam that lets the
+      // eval find the artifact without guessing at a random run id/token.
+      const isMultiScene = (scenario.brief.scenes?.length ?? 0) > 1
+      const sceneRunDir = isMultiScene
+        ? fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-eval-scenes-'))
+        : null
+
       let verdict = 'error'
       let ok = false
       let errorMsg = null
+      let sceneNote = null
 
       try {
-        const { manifest } = await runner({
+        const runnerOpts = {
           prNumber: 'eval',
           commit: 'eval',
           changedFiles: [],
           dryRun: true,
-        })
+        }
+        if (sceneRunDir) runnerOpts.runContext = { localDir: sceneRunDir }
+
+        const { manifest } = await runner(runnerOpts)
         verdict = manifest.verdict
         ok = verdict === scenario.expectedVerdict
+
+        // Only enforced when the returned manifest actually carries a
+        // `captures` array — real runTuiAgentProof runs always do, but the
+        // generic verdict-only stubs the other scenarios/tests use do not, so
+        // this stays a no-op for them (verdict match alone still governs ok).
+        if (ok && isMultiScene && manifest.captures) {
+          const scenesOk = allScenesPassed(manifest.captures[0]?.scenes)
+          const timingsPath = path.join(sceneRunDir, 'raw', 'scene-timings.json')
+          const timings = fs.existsSync(timingsPath)
+            ? JSON.parse(fs.readFileSync(timingsPath, 'utf8'))
+            : null
+          const timingsOk =
+            Array.isArray(timings) &&
+            timings.length === scenario.brief.scenes.length &&
+            sceneTimingsStrictlyIncreasing(timings)
+          ok = scenesOk && timingsOk
+          if (!ok) {
+            sceneNote = `scene-order gate failed (scenesOk=${scenesOk} timingsOk=${timingsOk})`
+          }
+        }
       } catch (err) {
         errorMsg = err.message
         ok = false
@@ -177,12 +296,21 @@ export async function runEval({
         } catch {
           // ignore cleanup errors
         }
+        if (sceneRunDir) {
+          try {
+            fs.rmSync(sceneRunDir, { recursive: true, force: true })
+          } catch {
+            // ignore cleanup errors
+          }
+        }
       }
 
       const statusLabel = ok ? 'PASS' : 'FAIL'
       const verdictInfo = errorMsg
         ? `error: ${errorMsg}`
-        : `expected=${scenario.expectedVerdict} actual=${verdict}`
+        : sceneNote
+          ? `expected=${scenario.expectedVerdict} actual=${verdict}; ${sceneNote}`
+          : `expected=${scenario.expectedVerdict} actual=${verdict}`
       log(`[${statusLabel}] ${scenario.name}: ${verdictInfo}`)
       results.push({ name: scenario.name, expectedVerdict: scenario.expectedVerdict, verdict, ok })
     }

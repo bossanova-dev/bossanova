@@ -373,7 +373,7 @@ func (a *CommandHandlerAdapter) GetChatTranscript(ctx context.Context, sessionID
 
 // SendChatMessage implements SessionCommandHandler.SendChatMessage by delegating
 // to the daemon's SendChatMessage connect handler.
-func (a *CommandHandlerAdapter) SendChatMessage(ctx context.Context, agentSessionID, message string, wakeIfAsleep bool) (*pb.SendChatMessageResponse, error) {
+func (a *CommandHandlerAdapter) SendChatMessage(ctx context.Context, agentSessionID, message string, wakeIfAsleep, submit bool) (*pb.SendChatMessageResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("send_chat_message: command server not wired")
 	}
@@ -381,6 +381,7 @@ func (a *CommandHandlerAdapter) SendChatMessage(ctx context.Context, agentSessio
 		AgentSessionId: agentSessionID,
 		Message:        message,
 		WakeIfAsleep:   wakeIfAsleep,
+		Submit:         submit,
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("send chat message: %w", err)
@@ -615,6 +616,7 @@ func (a *SessionCreatorAdapter) Create(ctx context.Context, cmd *pb.CreateSessio
 		TrackerUrl:    cmd.TrackerUrl,
 		TrackerIssue:  cmd.TrackerIssue,
 		TrackerSource: cmd.TrackerSource,
+		Force:         cmd.GetForce(),
 	}
 	if name := cmd.GetAgentName(); name != "" {
 		req.AgentName = &name
@@ -635,6 +637,10 @@ func (a *SessionCreatorAdapter) Create(ctx context.Context, cmd *pb.CreateSessio
 				chunk.Body = &pb.SessionCreateChunk_SetupOutput{SetupOutput: resp.GetSetupOutput().GetText()}
 			case resp.GetSessionCreated() != nil:
 				chunk.Body = &pb.SessionCreateChunk_Created{Created: resp.GetSessionCreated().GetSession()}
+				// Carry the dedup/attach signal upstream so the hosted create
+				// path (bosso → mcp-gateway) can surface attached_existing
+				// instead of hard-coding false.
+				chunk.AttachedExisting = resp.GetSessionCreated().GetAttachedExisting()
 			default:
 				// Unknown response variant — skip rather than push an empty
 				// chunk.

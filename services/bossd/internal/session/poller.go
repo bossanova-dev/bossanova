@@ -261,9 +261,11 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 	default:
 	}
 
-	// Check for merge conflicts.
+	// Check for merge conflicts. Carry the head SHA so the dispatcher can
+	// head-SHA-gate attempt counting (BOS-235): a conflict re-observed on an
+	// unchanged commit is a free settle lap, not a fresh attempt.
 	if repairableConflictBlock(ctx, p.provider, repo, prStatus, p.logger, "poller") {
-		emitIf(machine.ConflictDetected, vcs.ConflictDetected{PRID: prID})
+		emitIf(machine.ConflictDetected, vcs.ConflictDetected{PRID: prID, HeadSHA: prStatus.HeadSHA})
 		return
 	}
 
@@ -288,7 +290,7 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 					failed = append(failed, c)
 				}
 			}
-			if emitIf(machine.ChecksFailed, vcs.ChecksFailed{PRID: prID, FailedChecks: failed}) {
+			if emitIf(machine.ChecksFailed, vcs.ChecksFailed{PRID: prID, FailedChecks: failed, HeadSHA: prStatus.HeadSHA}) {
 				return
 			}
 		default:

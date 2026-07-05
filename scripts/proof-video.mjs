@@ -22,7 +22,7 @@ import { copyFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 // Intro-card ffmpeg arg builders live in proof-video-intro.mjs.
-import { buildIntroClipArgs, buildIntroConcatArgs } from './proof-video-intro.mjs'
+import { INTRO_SEC, buildIntroClipArgs, buildIntroConcatArgs } from './proof-video-intro.mjs'
 import { formatCaption } from './proof-lib.mjs'
 
 // ── Analysis constants (tuned on a real 11-min gen-AI proof recording) ──────
@@ -249,6 +249,35 @@ export function planRetime(staticRuns, durationMs, opts = {}) {
 /** Output duration (ms) of a retime plan. */
 export function retimedDurationMs(segments) {
   return Math.round(segments.reduce((t, s) => t + (s.endMs - s.startMs) / s.speed, 0))
+}
+
+/**
+ * Map a SOURCE-clock timestamp (cast clock for TUI, wall-offset for web) to the
+ * OUTPUT mp4 clock, through: leading trim (trimMs), the idle-speedup retime
+ * (segments from planRetime — they tile [0, durationMs], proof-video.mjs:227-247),
+ * and the prepended intro card (introMs). This is the numeric twin of what the
+ * burned captions get for free by being overlaid BEFORE pass 2 — chapter links
+ * need the number. Pure. Returns null for a null/absent timeline (degrade:
+ * chapter rendered without a timestamp link).
+ * @param {{trimMs:number, segments:Array<{startMs:number,endMs:number,speed:number}>, introMs:number}|null} timeline
+ * @param {number} sourceMs
+ * @returns {number|null}
+ */
+export function mapSourceToOutputMs(timeline, sourceMs) {
+  if (!timeline || !Number.isFinite(sourceMs)) return null
+  const { trimMs = 0, segments = [], introMs = 0 } = timeline
+  const t = Math.max(0, sourceMs - trimMs)
+  let out = 0
+  for (const s of segments) {
+    if (t >= s.endMs) {
+      out += (s.endMs - s.startMs) / s.speed
+      continue
+    }
+    out += Math.max(0, t - s.startMs) / s.speed
+    break
+  }
+  if (segments.length === 0) out = t
+  return Math.round(introMs + out)
 }
 
 /**
@@ -768,9 +797,17 @@ function encoderArgs() {
   return selectEncoderArgs({ hwRequested, hwAvailable: hwRequested && videotoolboxAvailable() })
 }
 
+// Hard ceiling for a single ffmpeg encode (BOS-138 P1c). The ffmpeg `-loop 1`
+// hang produced an ever-growing file for 30+ minutes before it was noticed;
+// a bounded timeout kills the encode so callers see a non-zero result (status
+// null + signal SIGKILL) and fail fast instead of hanging the whole run.
+const FFMPEG_TIMEOUT_MS = Number(process.env.BOSS_PROOF_FFMPEG_TIMEOUT_MS) || 5 * 60_000
+
 function ffmpeg(args) {
   return spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...args], {
     stdio: ['ignore', 'inherit', 'inherit'],
+    timeout: FFMPEG_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
   })
 }
 
@@ -933,8 +970,14 @@ export function renderCaptionOverlays({
  * silently degrades to the existing no-caption video. Captions never fail the
  * proof.
  *
+ * On success (BOS-140/P3b), the result carries `timeline` — the inputs
+ * `mapSourceToOutputMs` needs to map a source-clock scene marker to the final
+ * mp4's clock: the computed leading trim, the retime plan (identity when
+ * idleSpeedup is off or nothing qualified), and the intro card's duration
+ * (0 unless the concatenated intro was actually adopted). Absent on failure.
+ *
  * @param {{ webmPath: string, timedPath: string, outPath: string, scratchPath: string, introPngPath?: string, cropHeight?: number|null, timer?: boolean, idleSpeedup?: boolean, trimLeadingBlank?: boolean, captionTimings?: Array<{caption:string,startMs:number}>, renderCaptionStrip?: (arg:{text:string,width:number,output:string})=>boolean|void }} io
- * @returns {{ ok: boolean, warning?: string, condensed: boolean, originalMs?: number, outputMs?: number, fastSegments?: number, cropHeight?: number|null }}
+ * @returns {{ ok: boolean, warning?: string, condensed: boolean, originalMs?: number, outputMs?: number, fastSegments?: number, cropHeight?: number|null, timeline?: {trimMs:number, segments:Array<{startMs:number,endMs:number,speed:number}>, introMs:number} }}
  */
 export function postprocessProofVideo({
   webmPath,
@@ -1067,6 +1110,9 @@ export function postprocessProofVideo({
       fastSegments: 0,
       leadingBlankMs: trimMs,
       cropHeight: effectiveCrop,
+      // Chapter-timestamp mapping input (BOS-140/P3b) — introMs starts 0 and is
+      // set below only if the intro card is actually adopted.
+      timeline: { trimMs, segments, introMs: 0 },
     }
   } else {
     const pass2 = ffmpeg([
@@ -1090,6 +1136,7 @@ export function postprocessProofVideo({
       fastSegments: fastSegments.length,
       leadingBlankMs: trimMs,
       cropHeight: effectiveCrop,
+      timeline: { trimMs, segments, introMs: 0 },
     }
   }
 
@@ -1116,7 +1163,10 @@ export function postprocessProofVideo({
         // concat filter can exit 0 yet write a zero-frame container when its
         // inputs disagree (e.g. SAR mismatch); clobbering outPath with that
         // would ship an empty video.
-        if (cat.status === 0 && isDecodableVideo(withIntro)) copyFileSync(withIntro, outPath)
+        if (cat.status === 0 && isDecodableVideo(withIntro)) {
+          copyFileSync(withIntro, outPath)
+          result.timeline.introMs = INTRO_SEC * 1000
+        }
         rmSync(withIntro, { force: true })
       }
       rmSync(introClip, { force: true })

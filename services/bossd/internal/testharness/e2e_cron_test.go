@@ -78,7 +78,9 @@ func waitForSessionDeleted(t *testing.T, store db.SessionStore, id string, timeo
 // directories so WriteHookConfig (which calls os.MkdirAll inside the path)
 // succeeds. Without this, the fake /tmp/worktrees/... path from the default
 // mock doesn't exist on disk, and WriteHookConfig fails with ENOENT.
-func useTempWorktrees(t *testing.T, h *testharness.Harness) {
+// Optional seed callbacks run against each created worktree dir before it is
+// returned, letting tests pre-populate repo-local files (e.g. a .env).
+func useTempWorktrees(t *testing.T, h *testharness.Harness, seed ...func(dir string)) {
 	t.Helper()
 	h.Git.CreateFunc = func(_ context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
 		// Mirror MockWorktreeManager.Create's BaseBranch invariant — real
@@ -87,6 +89,9 @@ func useTempWorktrees(t *testing.T, h *testharness.Harness) {
 			t.Errorf("CreateFunc: BaseBranch is empty (would fail with 'invalid reference: origin/' in production)")
 		}
 		dir := t.TempDir()
+		for _, fn := range seed {
+			fn(dir)
+		}
 		branch := opts.Title
 		if branch == "" {
 			branch = "cron-branch"
@@ -140,7 +145,7 @@ func sessionFromCronJob(t *testing.T, h *testharness.Harness, jobID string) *mod
 var tickTime = time.Date(1971, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // cronTestHarness builds a Harness wired with a CronReadyTmuxFake so the
-// cron lifecycle's startCronTmuxChat path (which requires tmux Available()
+// cron lifecycle's startTmuxChat path (which requires tmux Available()
 // and a successful SendPlan) can run end-to-end without a real tmux. The
 // fake is returned alongside the harness so tests that want to assert on
 // tmux call history (e.g. did kill-session fire during finalize) can do so.
@@ -221,7 +226,7 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 	hookToken := *sess.HookToken
 
 	// Assert: a claude_chats row was created for the cron-spawned session
-	// during startCronTmuxChat, with TmuxSessionName populated and a
+	// during startTmuxChat, with TmuxSessionName populated and a
 	// `Run "<cron name>"` title. This is the chat the user attaches to in
 	// boss to watch the cron-fired Claude work autonomously.
 	cronChats, err := h.AgentChats.ListBySession(ctx, sess.ID)
@@ -233,7 +238,7 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 	}
 	cronChat := cronChats[0]
 	if cronChat.TmuxSessionName == nil || *cronChat.TmuxSessionName == "" {
-		t.Fatal("expected cron chat to have a non-nil TmuxSessionName populated by startCronTmuxChat")
+		t.Fatal("expected cron chat to have a non-nil TmuxSessionName populated by startTmuxChat")
 	}
 	if !strings.HasPrefix(*cronChat.TmuxSessionName, "boss-") {
 		t.Errorf("expected TmuxSessionName to start with %q, got %q", "boss-", *cronChat.TmuxSessionName)
@@ -245,7 +250,7 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 	// observation. The harness's tmuxClient driving HasSession reads from
 	// the same fake, so both views stay consistent.
 	if !h.Tmux.HasSession(ctx, *cronChat.TmuxSessionName) {
-		t.Errorf("expected tmux to report session %q as alive after startCronTmuxChat", *cronChat.TmuxSessionName)
+		t.Errorf("expected tmux to report session %q as alive after startTmuxChat", *cronChat.TmuxSessionName)
 	}
 	if !fake.HasLiveSession(*cronChat.TmuxSessionName) {
 		t.Errorf("expected fake to report session %q as live after new-session", *cronChat.TmuxSessionName)

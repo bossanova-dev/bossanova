@@ -9,6 +9,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/statusdetect"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/tmux"
@@ -111,10 +112,12 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 	for _, chat := range chats {
 		if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
 			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
+			p.tracker.SetAuthFailed(chat.AgentSessionID, false)
 			continue
 		}
 		if !p.tmux.HasSession(ctx, *chat.TmuxSessionName) {
 			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
+			p.tracker.SetAuthFailed(chat.AgentSessionID, false)
 			continue
 		}
 		activeChats = append(activeChats, chat)
@@ -144,6 +147,13 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		}
 
 		p.refreshChatTitle(ctx, chat)
+
+		// Detect the login-required terminal shape from the SAME captured pane
+		// content (genuine agent output, not pipe-pane mtime) and record/clear
+		// the auth marker. Narrow, whole-line detection that fails toward NOT
+		// flagging (see statusdetect.IsLoginRequired); the server reads this
+		// marker to surface the AGENT_AUTH_FAILED attention reason.
+		p.tracker.SetAuthFailed(agentSessionID, statusdetect.IsLoginRequired([]byte(content)))
 
 		// Resolve question state before taking p.mu — questionState
 		// may issue plugin RPCs / DB queries and we hold the mutex only
@@ -276,7 +286,13 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 
 	now := time.Now()
 	// Use a timestamp in the past so the next pollOnce sees unchanged content
-	// as having exceeded IdleThreshold, and reports idle.
+	// as having exceeded IdleThreshold, and reports idle. It is also the
+	// LastOutputAt we seed into the tracker (below): on restart we have not
+	// observed any genuine output, so exporting `now` would make a stalled
+	// pane that survived the restart read as freshly active via
+	// last_agent_activity_at until the threshold elapses. Seeding pastTime
+	// keeps the heartbeat honest — Tracker.Update stamps ReceivedAt=now
+	// internally, so status/display freshness is unaffected.
 	pastTime := now.Add(-IdleThreshold - time.Second)
 
 	for _, chat := range chats {
@@ -293,6 +309,8 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 				Msg("bootstrap: failed to capture tmux pane")
 			continue
 		}
+
+		p.tracker.SetAuthFailed(chat.AgentSessionID, statusdetect.IsLoginRequired([]byte(content)))
 
 		paneShowsQuestion, questionSuppressed := p.questionState(ctx, chat, content)
 
@@ -313,7 +331,7 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 		p.prevCaptures[chat.AgentSessionID] = captureEntry{content: content, at: pastTime}
 		p.mu.Unlock()
 
-		p.tracker.Update(chat.AgentSessionID, status, now)
+		p.tracker.Update(chat.AgentSessionID, status, pastTime)
 		p.logger.Debug().
 			Str("agentSessionID", chat.AgentSessionID).
 			Str("tmuxSession", tmuxName).

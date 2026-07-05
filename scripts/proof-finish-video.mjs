@@ -120,5 +120,8 @@ export function finishVideo({
   const tmpFiles = [timedPath, scratchPath, tmpPosterPath, introPngPath]
   if (!keepWebm) tmpFiles.unshift(webmPath)
   for (const f of tmpFiles) fs.rmSync(f, { force: true })
-  return { mp4Path }
+  // BOS-140/P3b: thread the post-process timeline through so callers can map
+  // scene markers to the final mp4 clock (mapSourceToOutputMs). The
+  // plain-mp4 fallback path (post.ok === false) has no known timeline.
+  return { mp4Path, timeline: post.ok ? post.timeline : null }
 }

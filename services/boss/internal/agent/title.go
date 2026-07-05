@@ -4,6 +4,8 @@ package agent
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -34,11 +36,48 @@ func chatTitleInDir(projectDir, agentSessionID string) string {
 	return summary
 }
 
+// TranscriptAbsentOrEmpty reports whether a chat's Claude transcript is safe to
+// treat as a never-used orphan — i.e. whether auto-deleting the chat row would
+// destroy no history. It returns true ONLY when the transcript path resolves
+// and the file is affirmatively absent or a zero-length regular file.
+//
+// Any ambiguity returns false so a transient failure can never trigger a
+// destructive delete: an unresolvable home dir, a stat error other than
+// not-exist (permissions, an unreadable parent dir), a directory at the path,
+// or a non-empty file all mean "keep the chat". This is deliberately stricter
+// than "ChatTitle returned empty": a mis-encoded project key (e.g. a stored
+// path with a trailing slash) makes a rich transcript look title-less, and
+// keying deletion off that lost real chats.
+func TranscriptAbsentOrEmpty(worktreePath, agentSessionID string) bool {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	projectDir := filepath.Join(homeDir, ".claude", "projects", PathToProjectKey(worktreePath))
+	return transcriptAbsentOrEmptyInDir(projectDir, agentSessionID)
+}
+
+// transcriptAbsentOrEmptyInDir is the testable core of TranscriptAbsentOrEmpty.
+func transcriptAbsentOrEmptyInDir(projectDir, agentSessionID string) bool {
+	path := filepath.Join(projectDir, agentSessionID+".jsonl")
+	info, err := os.Stat(path)
+	if err != nil {
+		// The only safe-to-delete failure is a confirmed absent file.
+		return errors.Is(err, fs.ErrNotExist)
+	}
+	return !info.IsDir() && info.Size() == 0
+}
+
 // PathToProjectKey converts a filesystem path to a Claude Code project key.
 // Claude Code replaces path separators and "." with "-".
 // e.g. "/Users/dave/Code/.worktrees/foo" → "-Users-dave-Code--worktrees-foo"
 func PathToProjectKey(path string) string {
-	return strings.NewReplacer("/", "-", "\\", "-", ".", "-", ":", "-").Replace(path)
+	// Claude Code derives the key from the process working directory (getcwd),
+	// which is always normalized, so Clean first. Without this a stored path
+	// with a trailing slash (e.g. a repo registered as ".../bossanova/")
+	// encodes to "...-bossanova-" and never matches Claude's "...-bossanova"
+	// key, silently defeating --resume and forcing a --session-id fresh start.
+	return strings.NewReplacer("/", "-", "\\", "-", ".", "-", ":", "-").Replace(filepath.Clean(path))
 }
 
 // jsonlLine is a minimal representation of a JSONL line for parsing.

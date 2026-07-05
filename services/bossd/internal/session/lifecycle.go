@@ -27,7 +27,9 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/dotenv"
 	gitpkg "github.com/recurser/bossd/internal/git"
+	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/tmux"
 )
 
@@ -179,6 +181,50 @@ type Lifecycle struct {
 	// headlessStatusPollInterval controls how often watchHeadlessRunStatus
 	// polls the agent plugin for run liveness. Defaults to 2s in NewLifecycle.
 	headlessStatusPollInterval time.Duration
+
+	// proofEnv resolves the allowlisted proof env overlay (proof credentials
+	// + non-secret proof constants) injected into every managed agent spawn
+	// so the agentic proof pipeline can run — including in unattended cron
+	// worktrees where nothing else provides these values. Defaulted in
+	// NewLifecycle to a real keyring-backed resolver; SetProofEnvResolver
+	// overrides it for tests. Resolved fresh per spawn; never logged.
+	proofEnv proofEnvResolver
+}
+
+// proofEnvResolver resolves the allowlisted proof environment overlay. The
+// concrete implementation is proofenv.Resolver; the interface keeps the
+// lifecycle testable without a real keyring.
+type proofEnvResolver interface {
+	Resolve() map[string]string
+}
+
+// SetProofEnvResolver overrides the proof env resolver (tests inject a fake
+// so no real keyring is touched). Safe to leave unset in production —
+// NewLifecycle installs a real resolver.
+func (l *Lifecycle) SetProofEnvResolver(r proofEnvResolver) { l.proofEnv = r }
+
+// resolveProofEnv returns the proof env overlay, or nil when no resolver is
+// wired (older/test wiring). Never logs values.
+func (l *Lifecycle) resolveProofEnv() map[string]string {
+	if l.proofEnv == nil {
+		return nil
+	}
+	return l.proofEnv.Resolve()
+}
+
+// mergeEnv overlays extra onto base, returning a new map. base wins on key
+// conflict: the managed BOSS_* environment is authoritative and must never
+// be shadowed by the proof overlay. A nil/empty extra returns base
+// unchanged (a fresh copy is still cheap and avoids aliasing surprises).
+func mergeEnv(base, extra map[string]string) map[string]string {
+	merged := make(map[string]string, len(base)+len(extra))
+	for k, v := range extra {
+		merged[k] = v
+	}
+	for k, v := range base {
+		merged[k] = v // base wins on conflict
+	}
+	return merged
 }
 
 // SetHookPort records the hook server's bound loopback port so
@@ -265,23 +311,35 @@ func (l *Lifecycle) SetBranchResolver(branches LiveBranchResolver) {
 	l.branchResolver = branches
 }
 
-// Bootstrap restores supported session-keyed finalize hooks for tmux chats
-// that were alive when the daemon last shut down. Call once during daemon
-// startup, after SetAgents and before serving begins.
+// Bootstrap performs one-time restart recovery for session-keyed runs. It first
+// re-arms finalize hooks / completion polls for tmux-hosted chats that survived
+// the daemon restart, then sweeps headless (boss new --detach) runs that the
+// restart killed mid-flight into the terminal Orphaned state. Call once during
+// daemon startup, after SetAgents and SetSessionLiveness and before serving.
+func (l *Lifecycle) Bootstrap(ctx context.Context) {
+	l.reArmSurvivingTmuxChats(ctx)
+	l.sweepOrphanedHeadlessRuns(ctx)
+	// Best-effort: retry any local base fast-forwards that a prior merge had to
+	// defer because the operator's base checkout was dirty at merge time.
+	l.worktrees.RetryDeferredBaseSyncs(ctx)
+}
+
+// reArmSurvivingTmuxChats restores supported session-keyed finalize hooks for
+// tmux chats that were alive when the daemon last shut down.
 //
-// For each agent_chats row whose tmux session is still alive, Bootstrap
-// looks up the parent session's HookToken and calls the agent plugin's
-// ConfigureFinalizeHook so that session's worktree gets its hook config
-// rewritten with this (post-restart) daemon's port. The call runs per
-// surviving chat because the config is per-worktree; the per-agent-name
-// support result is cached only to skip the RPC for known-hookless agents,
-// which are re-armed onto the completion poll instead. Hookless tmux-hosted
-// runs are intentionally not wired to PollFallback: plugin ExitStatus only
-// observes StartAgentRun processes, not tmux-spawned processes.
+// For each agent_chats row whose tmux session is still alive, it looks up the
+// parent session's HookToken and calls the agent plugin's ConfigureFinalizeHook
+// so that session's worktree gets its hook config rewritten with this
+// (post-restart) daemon's port. The call runs per surviving chat because the
+// config is per-worktree; the per-agent-name support result is cached only to
+// skip the RPC for known-hookless agents, which are re-armed onto the completion
+// poll instead. Hookless tmux-hosted runs are intentionally not wired to
+// PollFallback: plugin ExitStatus only observes StartAgentRun processes, not
+// tmux-spawned processes.
 //
 // Failures (DB error, missing session, RPC error) are logged and skipped;
 // a single bad row mustn't block the rest from re-arming.
-func (l *Lifecycle) Bootstrap(ctx context.Context) {
+func (l *Lifecycle) reArmSurvivingTmuxChats(ctx context.Context) {
 	if l.agentChats == nil {
 		return
 	}
@@ -364,18 +422,94 @@ func (l *Lifecycle) Bootstrap(ctx context.Context) {
 		l.armTmuxCompletionForHooklessTmux(chat.SessionID, chat.AgentSessionID, tmuxName)
 	}
 
-	// NOTE: headless (boss new, non-cron, paneless) runs in ImplementingPlan are
-	// deliberately NOT re-armed here. A headless run's exit status lives only in
-	// the agent plugin's in-memory process map, which is empty after a daemon
-	// restart (the plugin subprocess restarts too). PollFallback.ExitStatus would
-	// then report a phantom clean exit (IsComplete=true, ExitError="") for every
-	// such row, so re-arming would clean-finalize runs that were actually
-	// interrupted by the restart — prematurely marking partial PRs ready, losing
-	// real failures, and in the no-PR/no-commits case hard-deleting the session.
-	// Correct restart recovery needs a durable run-exit record (like the cron
-	// path's cronRunIsOver liveness gate), which headless runs don't have yet;
-	// that is tracked as a follow-up. Leaving the session stranded-but-visible is
-	// strictly safer than wrongly finalizing or deleting in-flight work.
+	// NOTE: headless (boss new, non-cron, non-tmux_unattended, paneless) runs in
+	// ImplementingPlan are deliberately NOT re-armed here. A headless run's exit
+	// status lives only in the agent plugin's in-memory process map, which is
+	// empty after a daemon restart (the plugin subprocess restarts too).
+	// PollFallback.ExitStatus would then report a phantom clean exit
+	// (IsComplete=true, ExitError="") for every such row, so re-arming would
+	// clean-finalize runs that were actually interrupted by the restart —
+	// prematurely marking partial PRs ready, losing real failures, and in the
+	// no-PR/no-commits case hard-deleting the session. Cron and tmux_unattended
+	// runs don't have this problem: both are tmux-hosted with a HookToken, so
+	// they're re-armed in the loop above via ConfigureFinalizeHook / the
+	// completion poll, keyed on liveness of the tmux pane rather than the
+	// plugin's in-memory map. Instead of re-arming, sweepOrphanedHeadlessRuns
+	// (called next in Bootstrap) marks these restart-killed headless runs
+	// ORPHANED — loud and never green — keyed on liveness, not the lost exit map.
+}
+
+// sweepOrphanedHeadlessRuns marks headless (boss new --detach) runs that a
+// daemon restart killed mid-flight. On restart the agent plugin's in-memory
+// process map is empty, so a headless run's exit is unrecoverable — which is
+// exactly why reArmSurvivingTmuxChats does NOT re-arm completion for them.
+// Rather than leave such a run stranded-but-silent in ImplementingPlan, where
+// its bootstrap-only draft PR can read as green, move it to the distinct
+// terminal Orphaned state with a short reason so it is loudly visible and never
+// masquerades as done. Deliberately no auto-re-dispatch: a one-shot's prompt may
+// have side effects; the human decides.
+//
+// Conservative by construction — every ambiguous case fails toward NOT orphaning
+// (a false Orphaned on a live run misleads more than a delayed one):
+//   - unattended sessions (cron / tmux_unattended) are tmux-hosted and owned by
+//     the re-arm loop + completion gate, so they are skipped here.
+//   - a session with no agent run id has no headless run to orphan — skipped.
+//   - only a session whose liveness DEFINITIVELY reports dead is swept. Unwired
+//     liveness, or a session still alive (an interactive run whose tmux pane
+//     survived the restart, or — defensively — a live process), is left untouched.
+//
+// The ImplementingPlan→Orphaned move uses the atomic CAS as its idempotency
+// gate, mirroring the failed-headless-run block path, so a late completion
+// signal racing the sweep is a safe no-op.
+func (l *Lifecycle) sweepOrphanedHeadlessRuns(ctx context.Context) {
+	if l.sessions == nil {
+		return
+	}
+	stranded, err := l.sessions.ListByState(ctx, int(machine.ImplementingPlan))
+	if err != nil {
+		l.logger.Warn().Err(err).Msg("orphan sweep: failed to list implementing_plan sessions")
+		return
+	}
+	for _, sess := range stranded {
+		if sess == nil {
+			continue
+		}
+		// Unattended runs are tmux-hosted and recovered by the re-arm loop and the
+		// stranded-cron sweep; never treat them as headless orphans.
+		if isUnattendedSession(sess) {
+			continue
+		}
+		// No run id means no headless run to orphan (e.g. an idle interactive
+		// session that never started an agent).
+		if sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
+			continue
+		}
+		// Fail toward NOT orphaning: only sweep when liveness definitively reports
+		// the session dead. Unwired liveness, or a session still alive (an
+		// interactive tmux pane that survived the restart), leaves the row alone.
+		if l.liveness == nil || l.liveness.IsSessionAlive(ctx, sess.ID) {
+			continue
+		}
+		advanced, err := l.sessions.UpdateStateConditional(ctx, sess.ID, int(machine.Orphaned), int(machine.ImplementingPlan))
+		if err != nil {
+			l.logger.Error().Err(err).Str("session", sess.ID).Msg("orphan sweep: transition to orphaned failed")
+			continue
+		}
+		if !advanced {
+			// A concurrent signal already advanced the session out of
+			// ImplementingPlan; nothing to orphan.
+			continue
+		}
+		reason := "headless run orphaned: killed by daemon restart (no recorded exit, no live agent process)"
+		reasonPtr := &reason
+		if _, err := l.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{BlockedReason: &reasonPtr}); err != nil {
+			l.logger.Error().Err(err).Str("session", sess.ID).Msg("orphan sweep: persist orphaned reason failed")
+		}
+		l.logger.Warn().
+			Str("session", sess.ID).
+			Str("agent_session", *sess.AgentSessionID).
+			Msg("orphaned headless run: killed by daemon restart, marked ORPHANED (not re-dispatched)")
+	}
 }
 
 // SetPollArmer retains compatibility with older daemon wiring. Tmux-hosted
@@ -394,12 +528,12 @@ func (l *Lifecycle) SetCronCompletionNotifier(n cronCompletionNotifier) {
 
 // SignalSessionRunComplete is called by PollFallback when a hookless agent
 // run completes. It preserves host-service waiter completion for StartChatRun
-// and independently routes lifecycle-owned cron sessions to the cron gate.
+// and independently routes lifecycle-owned unattended sessions to the cron gate.
 func (l *Lifecycle) SignalSessionRunComplete(sessionID, agentSessionID, exitError string) {
 	if l.pollCompleter != nil {
 		l.pollCompleter.SignalRunComplete(sessionID, agentSessionID, exitError)
 	}
-	l.notifyCronCompletionIfCronSession(context.Background(), sessionID)
+	l.notifyCronCompletionIfUnattended(context.Background(), sessionID)
 	l.finalizeHeadlessRunIfApplicable(context.Background(), sessionID, agentSessionID, exitError)
 }
 
@@ -425,19 +559,19 @@ func headlessRunBlockedReason(exitError string) string {
 	return "headless agent run failed: " + summary
 }
 
-// finalizeHeadlessRunIfApplicable advances a non-cron headless session out of
-// ImplementingPlan when its hookless run completes: a clean exit runs the same
-// idempotent FinalizeSession the cron gate uses; a failed exit blocks the
-// session with a short reason. It is a no-op for a missing session, a cron
-// session (the cron completion gate owns those), or a session no longer in
-// ImplementingPlan (a duplicate signal or an already-advanced run).
+// finalizeHeadlessRunIfApplicable advances a non-unattended headless session
+// out of ImplementingPlan when its hookless run completes: a clean exit runs the
+// same idempotent FinalizeSession the completion gate uses; a failed exit blocks
+// the session with a short reason. It is a no-op for a missing session, an
+// unattended session — cron OR tmux_unattended, which are tmux-hosted and owned
+// by the completion gate — or a session no longer in ImplementingPlan (a
+// duplicate signal or an already-advanced run).
 //
 // The state == ImplementingPlan gate is also what keeps this off other run
 // flavors that call SignalSessionRunComplete: StartChatRun / repair runs and
-// tmux-hosted runs only ever carry a HookToken alongside a CronJobID (the cron
-// scheduler is the sole production setter of both), so they are excluded by
-// isCronSession; and once any such run has advanced past ImplementingPlan a
-// late completion signal here is a no-op.
+// tmux-hosted runs are excluded by isUnattendedSession (cron and tmux_unattended
+// runs are tmux-hosted, not headless-paneless); and once any such run has
+// advanced past ImplementingPlan a late completion signal here is a no-op.
 func (l *Lifecycle) finalizeHeadlessRunIfApplicable(ctx context.Context, sessionID, agentSessionID, exitError string) {
 	if sessionID == "" || l.sessions == nil {
 		return
@@ -446,7 +580,7 @@ func (l *Lifecycle) finalizeHeadlessRunIfApplicable(ctx context.Context, session
 	if err != nil || session == nil {
 		return
 	}
-	if isCronSession(session) || session.State != machine.ImplementingPlan {
+	if isUnattendedSession(session) || session.State != machine.ImplementingPlan {
 		return
 	}
 
@@ -485,7 +619,12 @@ func (l *Lifecycle) finalizeHeadlessRunIfApplicable(ctx context.Context, session
 	}
 }
 
-func (l *Lifecycle) notifyCronCompletionIfCronSession(ctx context.Context, sessionID string) {
+// notifyCronCompletionIfUnattended routes an unattended session — cron-scheduled
+// or tmux_unattended (e.g. /bs-epic) — to the cron completion gate. The gate
+// re-checks isUnattendedSession and runIsOver, so this pre-filter only avoids a
+// pointless dispatch for interactive sessions; it must admit the same set the
+// gate does or tmux_unattended sessions never finalize.
+func (l *Lifecycle) notifyCronCompletionIfUnattended(ctx context.Context, sessionID string) {
 	if sessionID == "" || l.cronCompletionNotifier == nil || l.sessions == nil {
 		return
 	}
@@ -495,7 +634,7 @@ func (l *Lifecycle) notifyCronCompletionIfCronSession(ctx context.Context, sessi
 		l.logger.Warn().Err(err).Str("session", sessionID).Msg("poll fallback completion: failed to load session")
 		return
 	}
-	if session == nil || session.CronJobID == nil || *session.CronJobID == "" {
+	if !isUnattendedSession(session) {
 		return
 	}
 
@@ -533,7 +672,7 @@ func (l *Lifecycle) armTmuxCompletionForHooklessTmux(sessionID, agentSessionID, 
 					Str("session", sessionID).
 					Str("agent_session", agentSessionID).
 					Str("tmux_session", tmuxName).
-					Msg("hookless cron tmux completion poll failed")
+					Msg("hookless unattended tmux completion poll failed")
 			} else if !alive {
 				l.SignalSessionRunComplete(sessionID, agentSessionID, "")
 				return
@@ -546,10 +685,6 @@ func (l *Lifecycle) armTmuxCompletionForHooklessTmux(sessionID, agentSessionID, 
 			}
 		}
 	})
-}
-
-func (l *Lifecycle) armTmuxCompletionForHooklessCron(sessionID, agentSessionID, repoID string) {
-	l.armTmuxCompletionForHooklessRun(sessionID, agentSessionID, repoID)
 }
 
 // shouldArmHeadlessPollFallback reports whether a non-cron headless run needs
@@ -643,6 +778,11 @@ func NewLifecycle(
 		newTmuxChatAgentSessionID:  uuid.NewString,
 		tmuxCompletionPollInterval: 2 * time.Second,
 		headlessStatusPollInterval: 2 * time.Second,
+		// Default to a hermetic no-op resolver so unit tests never open the real
+		// OS keyring (the Linux SecretService/dbus backend leaks a connection
+		// goroutine per open). Production wires the real keyring resolver via
+		// SetProofEnvResolver in cmd/bossd's daemon startup.
+		proofEnv: proofenv.NewNoop(),
 	}
 }
 
@@ -693,6 +833,11 @@ type StartSessionOpts struct {
 	// This is what distinguishes a `--detach` run (which carries a prompt
 	// and wants an autonomous pass) from a plain interactive `boss new`.
 	Detach bool
+
+	// TmuxUnattended routes this session through the durable tmux-hosted path
+	// (like a cron session) instead of the headless detach path, and is
+	// persisted so the completion gate and restart re-adoption recognise it.
+	TmuxUnattended bool
 }
 
 // StartSession creates a worktree, starts a Claude process, and fires
@@ -735,6 +880,10 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	if opts.HookToken != "" {
 		hookToken := &opts.HookToken
 		updateParams.HookToken = &hookToken
+	}
+	if opts.TmuxUnattended {
+		tmuxUnattended := true
+		updateParams.TmuxUnattended = &tmuxUnattended
 	}
 	if _, err := l.sessions.Update(ctx, sessionID, updateParams); err != nil {
 		return fmt.Errorf("set creating_worktree state: %w", err)
@@ -884,40 +1033,48 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		Str("worktree", result.WorktreePath).
 		Msg("starting claude")
 
-	// Start the agent. Cron-spawned sessions run in a tmux-hosted Claude UI so
+	// Start the agent. Cron-spawned sessions and tmux_unattended sessions (e.g.
+	// /bs-epic's durable tmux-hosted runs) run in a tmux-hosted Claude UI so
 	// the user can attach to the live session. Interactive sessions (the TUI's
-	// new-PR / existing-PR flows, and tracker-sourced Linear/Sentry sessions)
-	// are created idle: no agent runs yet, and it starts interactively on first
-	// attach (RecordChat → tmux). Only an explicit `boss new --detach` run
-	// (opts.Detach) takes the headless `claude --print` / `codex exec` path,
-	// because that is the one caller that wants an autonomous pass with a
-	// prompt. Firing a headless run for an interactive, plan-less session just
-	// launches `claude --print` with an empty prompt, which exits non-zero
-	// immediately and (via finalizeHeadlessRunIfApplicable) blocks the session.
+	// new-PR / existing-PR flows, and tracker-sourced Linear/Sentry sessions
+	// created WITHOUT detach) are created idle: no agent runs yet, and it starts
+	// interactively on first attach (RecordChat → tmux). A detached run
+	// (opts.Detach) — `boss new --detach`, or `/bs-epic`'s headless
+	// create_session fan-out — takes the headless `claude --print` / `codex
+	// exec` path, because that caller wants an autonomous pass with a prompt.
+	//
+	// Detach — NOT tracker-sourcing — is the sole signal that governs
+	// headless-vs-idle here. A tracker id only links the Linear/Sentry issue; it
+	// must not force the idle branch, or an unattended orchestrator that sets
+	// {detach:true, tracker_id} (which /bs-epic always does) would sit idle
+	// forever waiting for a client attach that never comes (the BOS-179
+	// blocker). Interactive TUI creation still leaves Detach=false → idle, so
+	// that path is unchanged. Firing a headless run for an interactive,
+	// plan-less session would launch `claude --print` with an empty prompt,
+	// which exits non-zero and (via finalizeHeadlessRunIfApplicable) blocks the
+	// session — Detach=false keeps such sessions off this branch.
 	var claudeSessionID string
 	headlessRun := false
 	switch {
-	case opts.CronJobID != "":
-		claudeSessionID, err = l.startCronTmuxChat(ctx, sessionID, opts, session, result)
+	case opts.CronJobID != "" || opts.TmuxUnattended:
+		claudeSessionID, err = l.startTmuxChat(ctx, sessionID, opts, session, result)
 		if err != nil {
-			return fmt.Errorf("start cron tmux chat: %w", err)
+			return fmt.Errorf("start tmux chat: %w", err)
 		}
-	case !opts.Detach || (session.TrackerID != nil && *session.TrackerID != ""):
-		// Interactive (non-detach) session, or any tracker-sourced session:
-		// left unstarted. For tracker sessions the plan is pre-filled into the
-		// agent's input on first attach (see the boss attach prefill path);
-		// for plain/existing-PR sessions there is no plan to prefill. Either
-		// way the interactive run started on attach arms its own finalize hook,
-		// so nothing here depends on a headless run firing. claudeSessionID
-		// stays empty (no agent yet), mirroring the idle quick-chat path. The
-		// tracker OR-clause is a safety net so a hypothetical detached tracker
-		// session never regresses onto the headless branch.
+	case !opts.Detach:
+		// Interactive (non-detach) session: left unstarted. For tracker sessions
+		// the plan is pre-filled into the agent's input on first attach (see the
+		// boss attach prefill path); for plain/existing-PR sessions there is no
+		// plan to prefill. Either way the interactive run started on attach arms
+		// its own finalize hook, so nothing here depends on a headless run
+		// firing. claudeSessionID stays empty (no agent yet), mirroring the idle
+		// quick-chat path.
 		l.logger.Info().
 			Str("session", sessionID).
 			Msg("interactive session created idle; awaiting manual start on first attach")
 	default:
 		headlessRun = true
-		claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model)
+		claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, dotenv.Overlay(l.resolveProofEnv(), result.WorktreePath))
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
 		}
@@ -925,7 +1082,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	if hookResp != nil && !hookResp.GetIsSupported() {
 		l.logger.Info().Str("session", sessionID).Msg("agent does not support finalize hook")
 	}
-	hooklessCronTmux := opts.CronJobID != "" && hookResp != nil && !hookResp.GetIsSupported()
+	hooklessTmux := (opts.CronJobID != "" || opts.TmuxUnattended) && hookResp != nil && !hookResp.GetIsSupported()
 
 	// Update session with Claude session ID. Idle tracker sessions have no
 	// agent session yet, so leave AgentSessionID nil (matching quick chat)
@@ -964,8 +1121,8 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			})
 		}
 	}
-	if hooklessCronTmux {
-		l.armTmuxCompletionForHooklessCron(sessionID, claudeSessionID, session.RepoID)
+	if hooklessTmux {
+		l.armTmuxCompletionForHooklessRun(sessionID, claudeSessionID, session.RepoID)
 	} else if l.shouldArmHeadlessPollFallback(headlessRun, opts.CronJobID, claudeSessionID, hookResp) {
 		// A detached (`boss new --detach`) session took the headless StartByAgent
 		// branch, running codex exec / claude --print. The only production caller
@@ -1958,7 +2115,7 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 		resume = session.AgentSessionID
 	}
 
-	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, session.AgentName, session.WorktreePath, session.Plan, resume, "", session.Model)
+	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, session.AgentName, session.WorktreePath, session.Plan, resume, "", session.Model, dotenv.Overlay(l.resolveProofEnv(), session.WorktreePath))
 	if err != nil {
 		return fmt.Errorf("start claude: %w", err)
 	}

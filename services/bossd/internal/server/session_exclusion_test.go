@@ -116,6 +116,80 @@ func TestExcludeTargets_KeepsItemsForTerminalSessions(t *testing.T) {
 	}
 }
 
+func TestDuplicateSessionID_TrackerHitReturnsID(t *testing.T) {
+	keys := newActiveSessionKeys([]*models.Session{
+		{ID: "sess-1", TrackerID: strPtr("BOS-236")},
+	})
+	id, kind, ok := keys.duplicateSessionID(strPtr("BOS-236"), nil, "")
+	if !ok || id != "sess-1" || kind != "tracker issue" {
+		t.Fatalf("duplicateSessionID = (%q, %q, %v), want (sess-1, tracker issue, true)", id, kind, ok)
+	}
+}
+
+func TestDuplicateSessionID_PRHitReturnsID(t *testing.T) {
+	keys := newActiveSessionKeys([]*models.Session{
+		{ID: "sess-pr", PRNumber: intPtr(42)},
+	})
+	id, kind, ok := keys.duplicateSessionID(nil, intPtr(42), "")
+	if !ok || id != "sess-pr" || kind != "PR" {
+		t.Fatalf("duplicateSessionID = (%q, %q, %v), want (sess-pr, PR, true)", id, kind, ok)
+	}
+}
+
+func TestDuplicateSessionID_BranchHitReturnsID(t *testing.T) {
+	keys := newActiveSessionKeys([]*models.Session{
+		{ID: "sess-br", BranchName: "feature-x"},
+	})
+	id, kind, ok := keys.duplicateSessionID(nil, nil, "feature-x")
+	if !ok || id != "sess-br" || kind != "branch" {
+		t.Fatalf("duplicateSessionID = (%q, %q, %v), want (sess-br, branch, true)", id, kind, ok)
+	}
+}
+
+func TestDuplicateSessionID_TrackerWinsOverPRAndBranch(t *testing.T) {
+	keys := newActiveSessionKeys([]*models.Session{
+		{ID: "tracker-owner", TrackerID: strPtr("BOS-9")},
+		{ID: "pr-owner", PRNumber: intPtr(7)},
+		{ID: "branch-owner", BranchName: "shared-branch"},
+	})
+	id, kind, ok := keys.duplicateSessionID(strPtr("BOS-9"), intPtr(7), "shared-branch")
+	if !ok || id != "tracker-owner" || kind != "tracker issue" {
+		t.Fatalf("duplicateSessionID = (%q, %q, %v), want (tracker-owner, tracker issue, true)", id, kind, ok)
+	}
+}
+
+func TestDuplicateSessionID_MissReturnsFalse(t *testing.T) {
+	keys := newActiveSessionKeys([]*models.Session{
+		{ID: "sess-1", TrackerID: strPtr("BOS-1"), PRNumber: intPtr(1), BranchName: "b1"},
+	})
+	if id, kind, ok := keys.duplicateSessionID(strPtr("BOS-2"), intPtr(2), "b2"); ok {
+		t.Fatalf("duplicateSessionID = (%q, %q, true), want miss", id, kind)
+	}
+}
+
+func TestDuplicateSessionID_EmptySignalsNeverHit(t *testing.T) {
+	keys := newActiveSessionKeys([]*models.Session{
+		{ID: "sess-1", TrackerID: strPtr("BOS-1"), PRNumber: intPtr(1), BranchName: "b1"},
+	})
+	// An all-empty create request (no tracker/pr/branch) must never false-hit.
+	if id, kind, ok := keys.duplicateSessionID(nil, nil, ""); ok {
+		t.Fatalf("duplicateSessionID(nil,nil,\"\") = (%q, %q, true), want miss", id, kind)
+	}
+	// An empty-string tracker id is treated as absent.
+	if id, kind, ok := keys.duplicateSessionID(strPtr(""), nil, ""); ok {
+		t.Fatalf("duplicateSessionID(empty tracker) = (%q, %q, true), want miss", id, kind)
+	}
+}
+
+func TestDuplicateSessionID_TerminalStateDoesNotContribute(t *testing.T) {
+	keys := newActiveSessionKeys([]*models.Session{
+		{ID: "blocked", State: machine.Blocked, TrackerID: strPtr("BOS-99"), PRNumber: intPtr(99), BranchName: "blocked-branch"},
+	})
+	if id, kind, ok := keys.duplicateSessionID(strPtr("BOS-99"), intPtr(99), "blocked-branch"); ok {
+		t.Fatalf("duplicateSessionID matched terminal session = (%q, %q, true), want miss", id, kind)
+	}
+}
+
 func TestExcludeIssues_DropsByIssueBranchName(t *testing.T) {
 	keys := newActiveSessionKeys([]*models.Session{
 		{ID: "a", BranchName: "bos-5-branch"},

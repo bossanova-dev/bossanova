@@ -85,23 +85,26 @@ func (c *CronActivityChecker) RunActive(sess *models.Session) bool {
 	return idle < cronAgentIdleThreshold
 }
 
-// RecoverStrandedCronSessions finalizes cron sessions whose agent run has ended
-// but whose Stop-hook finalize signal never reached the daemon — e.g. the
-// daemon restarted as the run finished, so the loopback hook server's ephemeral
-// port (baked into the worktree's settings.local.json at session start) was
-// stale and the Stop-hook curl got connection-refused. The session is then
-// stranded in ImplementingPlan with no completion trigger:
-// RecoverFinalizingSessions only rescues sessions already in Finalizing, and
-// the hookless tmux-completion poll is both Claude-disabled and lost on restart.
+// RecoverStrandedCronSessions finalizes unattended sessions — cron-scheduled or
+// tmux_unattended (e.g. /bs-epic) — whose agent run has ended but whose Stop-hook
+// finalize signal never reached the daemon — e.g. the daemon restarted as the run
+// finished, so the loopback hook server's ephemeral port (baked into the
+// worktree's settings.local.json at session start) was stale and the Stop-hook
+// curl got connection-refused. The session is then stranded in ImplementingPlan
+// with no completion trigger: RecoverFinalizingSessions only rescues sessions
+// already in Finalizing, and the hookless tmux-completion poll is both
+// Claude-disabled and lost on restart.
 //
-// For each cron session in ImplementingPlan whose agent log has gone quiet and
-// whose headless runner is not running, this routes the session
-// through the same cron completion gate the Stop hook and hookless poll use
-// (notifyCronCompletionIfCronSession → NotifyCronAgentStopped → FinalizeSession).
+// For each unattended session in ImplementingPlan whose agent log has gone quiet
+// and whose headless runner is not running, this routes the session
+// through the same completion gate the Stop hook and hookless poll use
+// (notifyCronCompletionIfUnattended → NotifyCronAgentStopped → FinalizeSession).
 // FinalizeSession is idempotent via its conditional ImplementingPlan→Finalizing
-// transition, so a late Stop hook racing the sweep is a safe no-op.
+// transition, so a late Stop hook racing the sweep is a safe no-op. The
+// isUnattendedSession eligibility here mirrors the completion gate exactly, so
+// the gate and sweep can never diverge on which sessions get recovered.
 //
-// Conservative by construction: only cron-linked sessions with durable idle
+// Conservative by construction: only unattended sessions with durable idle
 // evidence are touched; any ambiguity (missing log/id, running agent) leaves the
 // session for the next sweep rather than risking premature finalize of a live
 // run.
@@ -124,18 +127,25 @@ func (l *Lifecycle) RecoverStrandedCronSessions(ctx context.Context) (int, error
 
 	routed := 0
 	for _, sess := range stranded {
-		if sess.CronJobID == nil || *sess.CronJobID == "" {
+		// Match the completion gate's eligibility exactly: recover both
+		// cron-scheduled and tmux_unattended (e.g. /bs-epic) sessions. A
+		// tmux_unattended session has no CronJobID, so filtering on it here would
+		// leave those sessions stranded forever.
+		if !isUnattendedSession(sess) {
 			continue
 		}
 		if !l.cronRunIsOver(sess) {
 			continue
 		}
 
-		l.logger.Warn().
+		evt := l.logger.Warn().
 			Str("session", sess.ID).
-			Str("cronJob", *sess.CronJobID).
-			Msg("recovering stranded cron session: agent idle but finalize signal lost")
-		l.notifyCronCompletionIfCronSession(ctx, sess.ID)
+			Bool("tmuxUnattended", sess.TmuxUnattended)
+		if sess.CronJobID != nil && *sess.CronJobID != "" {
+			evt = evt.Str("cronJob", *sess.CronJobID)
+		}
+		evt.Msg("recovering stranded unattended session: agent idle but finalize signal lost")
+		l.notifyCronCompletionIfUnattended(ctx, sess.ID)
 		routed++
 	}
 

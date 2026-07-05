@@ -62,11 +62,21 @@ type Session struct {
 	AutomationEnabled       bool
 	AttemptCount            int
 	BlockedReason           *string
-	ArchivedAt              *time.Time
-	CronJobID               *string
-	HookToken               *string
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
+
+	// LastAttemptHeadSHA is the PR head commit SHA at which the last fix-loop
+	// attempt was counted. The dispatcher only consumes a new attempt when the
+	// current head SHA differs from this value (a real fix pushed a new commit);
+	// a settle lap at an unchanged SHA is free. Reset to nil when the PR goes
+	// green (ChecksPassed) or the session is auto-unblocked, so a genuinely new
+	// failure starts from a clean slate (BOS-235). Distinct from
+	// LastRepairHeadSHA (the repair plugin's cooldown lane).
+	LastAttemptHeadSHA *string
+	ArchivedAt         *time.Time
+	CronJobID          *string
+	HookToken          *string
+	TmuxUnattended     bool
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 
 	// Composite display fields, persisted so every client renders the same
 	// label/intent/spinner verbatim. Populated by the DisplayStatusComputer in

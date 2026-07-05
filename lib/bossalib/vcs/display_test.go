@@ -1,6 +1,10 @@
 package vcs
 
-import "testing"
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
 
 func boolPtr(b bool) *bool { return &b }
 
@@ -15,6 +19,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 		wantStatus              DisplayStatus
 		wantHasFailure          bool
 		wantHasChangesRequested bool
+		wantChangesRequestedBy  []string
 	}{
 		{
 			name:       "nil PR returns Idle",
@@ -153,7 +158,8 @@ func TestComputeDisplayStatus(t *testing.T) {
 			reviews: []ReviewComment{
 				{Author: "alice", State: ReviewStateChangesRequested},
 			},
-			wantStatus: DisplayStatusRejected,
+			wantStatus:             DisplayStatusRejected,
+			wantChangesRequestedBy: []string{"alice"},
 		},
 		{
 			name: "review required decision blocks passing",
@@ -161,7 +167,24 @@ func TestComputeDisplayStatus(t *testing.T) {
 			checks: []CheckResult{
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
 			},
-			wantStatus: DisplayStatusRejected,
+			// changes-requested is signalled via pr.LatestReviewState, which
+			// carries no author login — the list stays empty.
+			wantStatus:             DisplayStatusRejected,
+			wantChangesRequestedBy: nil,
+		},
+		{
+			name: "multiple distinct authors requesting changes are sorted and deduped",
+			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+			},
+			reviews: []ReviewComment{
+				{Author: "charlie", State: ReviewStateChangesRequested},
+				{Author: "alice", State: ReviewStateChangesRequested},
+				{Author: "alice", State: ReviewStateChangesRequested},
+			},
+			wantStatus:             DisplayStatusRejected,
+			wantChangesRequestedBy: []string{"alice", "charlie"},
 		},
 		{
 			name: "changes requested then approved by same author = passing",
@@ -185,7 +208,8 @@ func TestComputeDisplayStatus(t *testing.T) {
 				{Author: "alice", State: ReviewStateChangesRequested},
 				{Author: "bob", State: ReviewStateApproved},
 			},
-			wantStatus: DisplayStatusRejected,
+			wantStatus:             DisplayStatusRejected,
+			wantChangesRequestedBy: []string{"alice"},
 		},
 		{
 			name: "changes requested then dismissed by same author = passing",
@@ -285,6 +309,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			},
 			wantStatus:              DisplayStatusChecking,
 			wantHasChangesRequested: true,
+			wantChangesRequestedBy:  []string{"alice"},
 		},
 		{
 			name: "changes requested with some failures while checking",
@@ -299,6 +324,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			wantStatus:              DisplayStatusChecking,
 			wantHasFailure:          true,
 			wantHasChangesRequested: true,
+			wantChangesRequestedBy:  []string{"alice"},
 		},
 		{
 			name: "failing checks override review required",
@@ -343,7 +369,8 @@ func TestComputeDisplayStatus(t *testing.T) {
 			reviews: []ReviewComment{
 				{Author: "alice", State: ReviewStateChangesRequested},
 			},
-			wantStatus: DisplayStatusRejected,
+			wantStatus:             DisplayStatusRejected,
+			wantChangesRequestedBy: []string{"alice"},
 		},
 		{
 			name: "unknown mergeability does not show review",
@@ -409,7 +436,8 @@ func TestComputeDisplayStatus(t *testing.T) {
 			reviews: []ReviewComment{
 				{Author: "alice", State: ReviewStateChangesRequested},
 			},
-			wantStatus: DisplayStatusRejected,
+			wantStatus:             DisplayStatusRejected,
+			wantChangesRequestedBy: []string{"alice"},
 		},
 		{
 			name: "neutral conclusion is not a failure",
@@ -443,6 +471,145 @@ func TestComputeDisplayStatus(t *testing.T) {
 			if got.HasChangesRequested != tt.wantHasChangesRequested {
 				t.Errorf("HasChangesRequested = %v, want %v", got.HasChangesRequested, tt.wantHasChangesRequested)
 			}
+			if len(got.ChangesRequestedBy) != 0 || len(tt.wantChangesRequestedBy) != 0 {
+				if !reflect.DeepEqual(got.ChangesRequestedBy, tt.wantChangesRequestedBy) {
+					t.Errorf("ChangesRequestedBy = %v, want %v", got.ChangesRequestedBy, tt.wantChangesRequestedBy)
+				}
+			}
 		})
+	}
+}
+
+func TestMergeGateSlug(t *testing.T) {
+	tests := []struct {
+		gate MergeGate
+		want string
+	}{
+		{MergeGateUnspecified, "unspecified"},
+		{MergeGateNone, "none"},
+		{MergeGateReview, "review"},
+		{MergeGateCI, "ci"},
+		{MergeGatePending, "pending"},
+		{MergeGateConflict, "conflict"},
+		{MergeGateBaseSync, "base_sync"},
+		{MergeGateDraft, "draft"},
+	}
+	for _, tt := range tests {
+		if got := tt.gate.Slug(); got != tt.want {
+			t.Errorf("MergeGate(%d).Slug() = %q, want %q", tt.gate, got, tt.want)
+		}
+	}
+}
+
+func TestDeriveMergeBlock(t *testing.T) {
+	tests := []struct {
+		name               string
+		status             DisplayStatus
+		hasFailures        bool
+		changesRequestedBy []string
+		wantGate           MergeGate
+		wantDetailEmpty    bool
+		wantReviewers      []string
+	}{
+		{
+			name:               "rejected with known reviewer",
+			status:             DisplayStatusRejected,
+			changesRequestedBy: []string{"alice"},
+			wantGate:           MergeGateReview,
+			wantReviewers:      []string{"alice"},
+		},
+		{
+			name:          "rejected with unknown reviewer",
+			status:        DisplayStatusRejected,
+			wantGate:      MergeGateReview,
+			wantReviewers: nil,
+		},
+		{
+			name:        "failing maps to ci",
+			status:      DisplayStatusFailing,
+			hasFailures: true,
+			wantGate:    MergeGateCI,
+		},
+		{
+			name:     "checking maps to pending",
+			status:   DisplayStatusChecking,
+			wantGate: MergeGatePending,
+		},
+		{
+			name:     "conflict maps to conflict",
+			status:   DisplayStatusConflict,
+			wantGate: MergeGateConflict,
+		},
+		{
+			name:     "draft maps to draft",
+			status:   DisplayStatusDraft,
+			wantGate: MergeGateDraft,
+		},
+		{
+			name:            "passing is not blocked",
+			status:          DisplayStatusPassing,
+			wantGate:        MergeGateNone,
+			wantDetailEmpty: true,
+		},
+		{
+			name:            "approved is not blocked",
+			status:          DisplayStatusApproved,
+			wantGate:        MergeGateNone,
+			wantDetailEmpty: true,
+		},
+		{
+			name:            "review is not blocked",
+			status:          DisplayStatusReview,
+			wantGate:        MergeGateNone,
+			wantDetailEmpty: true,
+		},
+		{
+			name:            "idle is not blocked",
+			status:          DisplayStatusIdle,
+			wantGate:        MergeGateNone,
+			wantDetailEmpty: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DeriveMergeBlock(tt.status, tt.hasFailures, tt.changesRequestedBy)
+			if got.Gate != tt.wantGate {
+				t.Errorf("Gate = %d, want %d", got.Gate, tt.wantGate)
+			}
+			if got.Status != tt.status {
+				t.Errorf("Status = %d, want %d", got.Status, tt.status)
+			}
+			if tt.wantDetailEmpty && got.Detail != "" {
+				t.Errorf("Detail = %q, want empty", got.Detail)
+			}
+			if !tt.wantDetailEmpty && got.Detail == "" {
+				t.Errorf("Detail is empty, want non-empty")
+			}
+			if !reflect.DeepEqual(got.BlockingReviewers, tt.wantReviewers) {
+				t.Errorf("BlockingReviewers = %v, want %v", got.BlockingReviewers, tt.wantReviewers)
+			}
+		})
+	}
+}
+
+func TestDeriveMergeBlockReviewDetail(t *testing.T) {
+	// With a known reviewer the detail names the login and count and warns
+	// that the daemon's own tracker may diverge from GitHub's mergeability.
+	withLogin := DeriveMergeBlock(DisplayStatusRejected, false, []string{"alice"})
+	if !strings.Contains(withLogin.Detail, "alice") {
+		t.Errorf("detail %q should name the reviewer", withLogin.Detail)
+	}
+	if !strings.Contains(withLogin.Detail, "trusts its own") || !strings.Contains(withLogin.Detail, "GitHub may") {
+		t.Errorf("detail %q should carry the divergence note", withLogin.Detail)
+	}
+
+	// Without a login the detail degrades gracefully but keeps the note.
+	noLogin := DeriveMergeBlock(DisplayStatusRejected, false, nil)
+	if strings.Contains(noLogin.Detail, "from ") {
+		t.Errorf("detail %q should omit the 'from ...' clause when no login is known", noLogin.Detail)
+	}
+	if !strings.Contains(noLogin.Detail, "trusts its own") || !strings.Contains(noLogin.Detail, "GitHub may") {
+		t.Errorf("detail %q should carry the divergence note", noLogin.Detail)
 	}
 }

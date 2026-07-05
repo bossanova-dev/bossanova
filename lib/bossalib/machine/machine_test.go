@@ -366,6 +366,52 @@ func TestBlockFromImplementingPlan(t *testing.T) {
 	assertState(t, m, Blocked)
 }
 
+// TestOrphanFromImplementingPlan pins the Bootstrap orphan-sweep transition: a
+// headless run stranded in ImplementingPlan by a daemon restart moves to the
+// distinct terminal Orphaned state (never GreenDraft).
+func TestOrphanFromImplementingPlan(t *testing.T) {
+	m := New(CreatingWorktree)
+	for _, e := range []Event{WorktreeCreated, AgentStarted} {
+		if err := m.Fire(e); err != nil {
+			t.Fatalf("Fire(%s): %v", e, err)
+		}
+	}
+	assertState(t, m, ImplementingPlan)
+
+	if err := m.Fire(Orphan); err != nil {
+		t.Fatalf("Fire(Orphan): %v", err)
+	}
+	assertState(t, m, Orphaned)
+}
+
+// TestOrphanIsOnlyFromImplementingPlan guards against Orphan leaking into other
+// states: the sweep only ever runs against stranded ImplementingPlan runs.
+func TestOrphanIsOnlyFromImplementingPlan(t *testing.T) {
+	m := New(CreatingWorktree)
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed} {
+		if err := m.Fire(e); err != nil {
+			t.Fatalf("Fire(%s): %v", e, err)
+		}
+	}
+	assertState(t, m, GreenDraft)
+
+	if m.CanFire(Orphan) {
+		t.Fatal("Orphan must not be permitted from GreenDraft")
+	}
+}
+
+// TestOrphanedPRClosedGoesToClosed confirms Orphaned is terminal but still
+// closes out when its PR is closed, mirroring the other terminal states.
+func TestOrphanedPRClosedGoesToClosed(t *testing.T) {
+	m := New(Orphaned)
+	assertState(t, m, Orphaned)
+
+	if err := m.Fire(PRClosed); err != nil {
+		t.Fatalf("Fire(PRClosed): %v", err)
+	}
+	assertState(t, m, Closed)
+}
+
 func TestFixFailedUnderMaxReturnsToAwaiting(t *testing.T) {
 	m := New(CreatingWorktree)
 
@@ -546,6 +592,34 @@ func TestPRMergedFromAwaitingChecks(t *testing.T) {
 		t.Fatalf("Fire(PRMerged): %v", err)
 	}
 	assertState(t, m, Merged)
+}
+
+// TestPRMergedFromBlockedClearsReason confirms the BOS-246 fix: a session
+// Blocked by a finalize failure whose PR is later merged can fire
+// PRMerged → Merged, and OnExit(actionClearBlocked) resets the persisted
+// blocked reason + attempt count. Before the fix the Blocked state had no
+// Permit(PRMerged, Merged), so this Fire errored and the session (and its
+// stale "finalize failed" hint) was wedged in Blocked forever.
+func TestPRMergedFromBlockedClearsReason(t *testing.T) {
+	m := NewWithContext(Blocked, &SessionContext{
+		AttemptCount:  3,
+		MaxAttempts:   3,
+		BlockedReason: "finalize failed: worktree has uncommitted changes",
+	})
+
+	if !m.CanFire(PRMerged) {
+		t.Fatal("PRMerged should be permitted from Blocked")
+	}
+	if err := m.Fire(PRMerged); err != nil {
+		t.Fatalf("Fire(PRMerged) from Blocked: %v", err)
+	}
+	assertState(t, m, Merged)
+	if m.Context().BlockedReason != "" {
+		t.Fatalf("blocked reason after merge: got %q, want empty (cleared)", m.Context().BlockedReason)
+	}
+	if m.Context().AttemptCount != 0 {
+		t.Fatalf("attempt count after merge: got %d, want 0 (cleared)", m.Context().AttemptCount)
+	}
 }
 
 func TestInvalidTransitionReturnsError(t *testing.T) {
@@ -812,6 +886,74 @@ func TestFinalizingStateString(t *testing.T) {
 	if FinalizeRequested.String() != "finalize_requested" {
 		t.Fatalf("got %q, want %q", FinalizeRequested.String(), "finalize_requested")
 	}
+}
+
+// TestSkipAttemptCountNoOpLoopNeverBlocks pins the head-SHA-gated counting
+// contract (BOS-235 Bug 1). When SkipAttemptCount is set — the dispatcher's
+// signal that this fix-loop lap is driven by an unchanged PR head SHA (CI
+// merely re-settling, no fix pushed) — a full AwaitingChecks↔FixingChecks lap
+// must be free: AttemptCount must not climb and the session must never tip
+// into Blocked, no matter how many settle laps run.
+func TestSkipAttemptCountNoOpLoopNeverBlocks(t *testing.T) {
+	sctx := &SessionContext{MaxAttempts: 2, SkipAttemptCount: true}
+	m := NewWithContext(AwaitingChecks, sctx)
+
+	// Run far more laps than MaxAttempts. None must count or block.
+	for i := 0; i < 10; i++ {
+		if err := m.Fire(ChecksFailed); err != nil {
+			t.Fatalf("lap %d Fire(ChecksFailed): %v", i, err)
+		}
+		assertState(t, m, FixingChecks)
+		if got := m.Context().AttemptCount; got != 0 {
+			t.Fatalf("lap %d: AttemptCount = %d, want 0 (uncounted)", i, got)
+		}
+		if err := m.Fire(FixComplete); err != nil {
+			t.Fatalf("lap %d Fire(FixComplete): %v", i, err)
+		}
+		assertState(t, m, AwaitingChecks)
+	}
+}
+
+// TestSkipAttemptCountRetryNeverBlocks mirrors the above for the FixFailed
+// (retryOrBlock) path: an uncounted lap that fails to fix must return to
+// AwaitingChecks, never Blocked.
+func TestSkipAttemptCountRetryNeverBlocks(t *testing.T) {
+	sctx := &SessionContext{MaxAttempts: 1, SkipAttemptCount: true}
+	m := NewWithContext(FixingChecks, sctx)
+
+	if err := m.Fire(FixFailed); err != nil {
+		t.Fatalf("Fire(FixFailed): %v", err)
+	}
+	// MaxAttempts=1 would normally block immediately; skip keeps it free.
+	assertState(t, m, AwaitingChecks)
+	if got := m.Context().AttemptCount; got != 0 {
+		t.Fatalf("AttemptCount = %d, want 0", got)
+	}
+}
+
+// TestCountedLoopStillBlocks is the regression guard: with SkipAttemptCount
+// false (the default — a real fix pushed a new head SHA each lap), the genuine
+// fix-loop-exhaustion path is preserved and the session Blocks at MaxAttempts.
+func TestCountedLoopStillBlocks(t *testing.T) {
+	sctx := &SessionContext{MaxAttempts: 2, SkipAttemptCount: false}
+	m := NewWithContext(AwaitingChecks, sctx)
+
+	// Lap 1: counts → FixingChecks (attempt 1, under max).
+	if err := m.Fire(ChecksFailed); err != nil {
+		t.Fatalf("Fire(ChecksFailed): %v", err)
+	}
+	assertState(t, m, FixingChecks)
+	if got := m.Context().AttemptCount; got != 1 {
+		t.Fatalf("AttemptCount = %d, want 1", got)
+	}
+	if err := m.Fire(FixComplete); err != nil {
+		t.Fatalf("Fire(FixComplete): %v", err)
+	}
+	// Lap 2: counts → 1+1 >= 2 → Blocked.
+	if err := m.Fire(ChecksFailed); err != nil {
+		t.Fatalf("Fire(ChecksFailed): %v", err)
+	}
+	assertState(t, m, Blocked)
 }
 
 func assertState(t *testing.T, m *Machine, want State) {

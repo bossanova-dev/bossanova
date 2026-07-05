@@ -1299,6 +1299,19 @@ func TestSessionStore_AdvanceOrphanedSessions(t *testing.T) {
 		t.Fatalf("update awaiting to awaiting_checks: %v", err)
 	}
 
+	// Create a session already marked Orphaned by the headless orphan sweep
+	// (BOS-229). AdvanceOrphanedSessions must leave it alone — the sweep runs
+	// first at boot precisely so a restart-killed detach run is never advanced
+	// past ORPHANED into a normal green checks session.
+	sessOrphaned, _ := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "Orphaned headless run",
+		WorktreePath: "/tmp/wt/orphaned", BranchName: "feat/orphaned", BaseBranch: "main",
+	})
+	orphanedState := int(machine.Orphaned)
+	if _, err := sessionStore.Update(ctx, sessOrphaned.ID, UpdateSessionParams{State: &orphanedState}); err != nil {
+		t.Fatalf("update to orphaned: %v", err)
+	}
+
 	// Advance orphaned sessions.
 	n, err := sessionStore.AdvanceOrphanedSessions(ctx)
 	if err != nil {
@@ -1324,5 +1337,11 @@ func TestSessionStore_AdvanceOrphanedSessions(t *testing.T) {
 	got, _ = sessionStore.Get(ctx, sessAwaiting.ID)
 	if got.State != machine.AwaitingChecks {
 		t.Errorf("awaiting session state = %v, want AwaitingChecks", got.State)
+	}
+
+	// Orphaned session must stay Orphaned — never advanced into the checks path.
+	got, _ = sessionStore.Get(ctx, sessOrphaned.ID)
+	if got.State != machine.Orphaned {
+		t.Errorf("orphaned headless session state = %v, want Orphaned", got.State)
 	}
 }

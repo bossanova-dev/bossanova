@@ -14,6 +14,7 @@ import {
   slugify,
   OVERLAY_CAPTION_CSS,
 } from './proof-playwright-runner.mjs'
+import { OVERLAY_CAPTION_CSS as SPEC_OVERLAY_CAPTION_CSS } from './proof-caption-spec.mjs'
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const runnerPath = path.join(repoRoot, 'scripts/proof-playwright-runner.mjs')
@@ -627,6 +628,16 @@ test('buildSpec emits a whole-page scroll loop for a fullPage scroll step', () =
   })
   assert.match(spec, /scrollHeight/)
   assert.match(spec, /window\.scrollTo/)
+})
+
+test('OVERLAY_CAPTION_CSS re-export is import-equal to the shared caption-spec module (BOS-140)', () => {
+  assert.equal(OVERLAY_CAPTION_CSS, SPEC_OVERLAY_CAPTION_CSS)
+  const spec = buildSpec({
+    recipe: videoRecipe([{ action: 'goto', route: '/' }]),
+    outputDir: '/tmp/out',
+    surface: 'web',
+  })
+  assert.ok(spec.includes(SPEC_OVERLAY_CAPTION_CSS))
 })
 
 test('overlay caption is anchored to the top of the viewport', () => {

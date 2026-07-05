@@ -78,6 +78,12 @@ type MockWorktreeManager struct {
 	// network failures during post-merge verification.
 	FetchBaseErr error
 
+	// SyncBaseBranchErr is returned by SyncBaseBranch when non-nil. Used to
+	// assert the merge paths tolerate a deferred (or failed) local sync.
+	SyncBaseBranchErr error
+	// RetryDeferredBaseSyncsCalls counts RetryDeferredBaseSyncs invocations.
+	RetryDeferredBaseSyncsCalls int
+
 	// createErrorOnCall maps 1-indexed Create call numbers to errors.
 	// When the call counter matches, the next Create returns this error
 	// and the entry is consumed.
@@ -374,12 +380,12 @@ func (m *MockWorktreeManager) DetectDefaultBranch(ctx context.Context, repoPath 
 	return "main", nil
 }
 
-func (m *MockWorktreeManager) EnsureBaseBranchReadyForSync(_ context.Context, _, _ string) error {
-	return nil
+func (m *MockWorktreeManager) SyncBaseBranch(_ context.Context, _, _ string) error {
+	return m.SyncBaseBranchErr
 }
 
-func (m *MockWorktreeManager) SyncBaseBranch(_ context.Context, _, _ string) error {
-	return nil
+func (m *MockWorktreeManager) RetryDeferredBaseSyncs(_ context.Context) {
+	m.RetryDeferredBaseSyncsCalls++
 }
 
 func (m *MockWorktreeManager) IsAncestor(ctx context.Context, localPath, ref, target string) (bool, error) {

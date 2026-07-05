@@ -29,6 +29,7 @@ import (
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
@@ -174,6 +175,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	attempts := db.NewAttemptStore(database)
 	agentChats := db.NewAgentChatStore(database)
 	cronJobs := db.NewCronJobStore(database)
+	accounts := db.NewAccountStore(database)
 
 	// Mocks.
 	logger := zerolog.Nop()
@@ -182,7 +184,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	vcsMock := NewMockVCSProvider()
 
 	// Tmux client. Built BEFORE the Lifecycle so we can pass it in as a
-	// dependency for cron-spawned sessions (startCronTmuxChat needs
+	// dependency for cron-spawned sessions (startTmuxChat needs
 	// Available()) as well as RecordChat. Tests that need these paths to
 	// drive tmux pass a custom command factory; everyone else gets a client
 	// whose Available() returns false, which short-circuits both paths and
@@ -195,7 +197,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	}
 
 	// Lifecycle. Wired with tmuxClient so cron-spawned sessions route
-	// through startCronTmuxChat instead of the headless claude.Start path.
+	// through startTmuxChat instead of the headless claude.Start path.
 	lifecycle := session.NewLifecycle(sessions, repos, agentChats, cronJobs, gitMock, agentMock, tmuxClient, vcsMock, logger)
 
 	// PR display tracker. Wired through to the server so MergeSession's
@@ -203,6 +205,9 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	// to empty, so merges fall through unless a test explicitly calls
 	// DisplayTracker.Set with a non-passing status.
 	display := status.NewDisplayTracker()
+	// Shared single-repairer lease (BOS-234): the same instance backs the plugin
+	// host's SetRepairStatus enforcement and the server's repair_active reads.
+	repairLease := status.NewRepairLeaseManager()
 	if len(opts.WorkflowServices) > 0 {
 		workflowServices := append([]pluginpkg.WorkflowService(nil), opts.WorkflowServices...)
 		display.SetOnChange(func(sessionID string, _ *status.DisplayEntry, newEntry *status.DisplayEntry) {
@@ -240,13 +245,18 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	mockAgentClient := &MockAgentClient{Name: "claude"}
 	mockCodexClient := &MockAgentClient{Name: "codex"}
 	srv := server.New(server.Config{
-		Repos:          repos,
-		Sessions:       sessions,
-		Attempts:       attempts,
-		AgentChats:     agentChats,
-		DisplayTracker: display,
-		Lifecycle:      lifecycle,
-		Agent:          agentMock,
+		Repos:      repos,
+		Sessions:   sessions,
+		Attempts:   attempts,
+		AgentChats: agentChats,
+		Accounts:   accounts,
+		// In-memory credential store so account RPCs are exercisable without
+		// touching the real OS keyring. AccountSmokeRunner stays nil.
+		AccountCredentials: newMemAccountCreds(),
+		DisplayTracker:     display,
+		RepairLease:        repairLease,
+		Lifecycle:          lifecycle,
+		Agent:              agentMock,
 		// Register both agents so per-agent routing tests (chat.AgentName
 		// = "codex") can be exercised end-to-end via RecordChat. The
 		// default for legacy chats with empty AgentName routes to claude
@@ -311,6 +321,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	// rest of the harness sees.
 	hostService := pluginpkg.NewHostServiceServer(vcsMock)
 	hostService.SetSessionDeps(repos, sessions, agentChats, display, status.NewTracker())
+	hostService.SetRepairLease(repairLease)
 	// Wire the lifecycle so tests that exercise StartChatRun directly
 	// (Task 4) hit the same plumbing the daemon installs in cmd/main.go.
 	hostService.SetLifecycle(lifecycle)
@@ -336,7 +347,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		"claude": mockAgentClient,
 		"codex":  mockCodexClient,
 	})
-	// StartTmuxChat (extracted from startCronTmuxChat) requires a non-empty
+	// StartTmuxChat (extracted from startTmuxChat) requires a non-empty
 	// agentLogsDir so it can resolve a per-agent-session log path to feed
 	// into BuildInteractiveCommand. Use t.TempDir so each harness run has
 	// an isolated directory and the file system is cleaned up automatically.
@@ -796,4 +807,44 @@ func mergeSessionEvents(ctx context.Context, a, b <-chan session.SessionEvent) <
 		}
 	})
 	return out
+}
+
+// memAccountCreds is an in-memory server.AccountCredentialStore for the
+// harness. It mirrors accountcred.Store's not-found semantics (Load and Delete
+// return accountcred.ErrCredentialNotFound for a missing entry) without linking
+// the real OS keyring, so harness-based tests never write real keychain items.
+type memAccountCreds struct {
+	mu    sync.Mutex
+	blobs map[string][]byte
+}
+
+func newMemAccountCreds() *memAccountCreds {
+	return &memAccountCreds{blobs: map[string][]byte{}}
+}
+
+func (m *memAccountCreds) Save(accountID string, blob []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.blobs[accountID] = append([]byte(nil), blob...)
+	return nil
+}
+
+func (m *memAccountCreds) Load(accountID string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	blob, ok := m.blobs[accountID]
+	if !ok {
+		return nil, accountcred.ErrCredentialNotFound
+	}
+	return append([]byte(nil), blob...), nil
+}
+
+func (m *memAccountCreds) Delete(accountID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.blobs[accountID]; !ok {
+		return accountcred.ErrCredentialNotFound
+	}
+	delete(m.blobs, accountID)
+	return nil
 }

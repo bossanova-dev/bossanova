@@ -241,7 +241,14 @@ func selectedSessionWarningBlock(sess *pb.Session, width int) string {
 	if len(hints) == 0 {
 		return ""
 	}
-	return styleStatusDanger.Width(width).Render(strings.Join(hints, "\n"))
+	// Dim a resolved session's residual warning so it no longer alarms; mirrors
+	// the merged/closed hint fade in the home table (BOS-246).
+	style := styleStatusDanger
+	if sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED ||
+		sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CLOSED {
+		style = styleStatusDangerFaded
+	}
+	return style.Width(width).Render(strings.Join(hints, "\n"))
 }
 
 // styleForIntent maps a DisplayIntent to its lipgloss style for the TUI.

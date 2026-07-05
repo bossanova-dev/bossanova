@@ -183,20 +183,28 @@ func TestDefaultRegistry(t *testing.T) {
 	if reg == nil {
 		t.Fatal("DefaultRegistry() = nil")
 	}
-	// Production registry is a single version: Current == Default == Baseline.
+	// Production registry has three versions ordered oldest→newest:
+	// Baseline, V20260704 and V20260705. Current is V20260705 (newest behavior)
+	// while Default stays Baseline (header-less callers pin to the oldest version).
 	// V20260701 is NOT a member (example/test use only).
-	if reg.Current() != apiversion.Baseline {
-		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.Baseline)
+	if reg.Current() != apiversion.V20260705 {
+		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260705)
 	}
 	if reg.Default() != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().Default() = %q, want %q", reg.Default(), apiversion.Baseline)
 	}
 	all := reg.All()
-	if len(all) != 1 {
-		t.Errorf("DefaultRegistry().All() len = %d, want 1", len(all))
+	if len(all) != 3 {
+		t.Errorf("DefaultRegistry().All() len = %d, want 3", len(all))
 	}
 	if len(all) > 0 && all[0] != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().All()[0] = %q, want %q", all[0], apiversion.Baseline)
+	}
+	if !reg.IsSupported(apiversion.V20260704) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260704) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260705) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260705) = false, want true")
 	}
 	// V20260701 is an exported example const but must not be in the production registry.
 	if reg.IsSupported(apiversion.V20260701) {
@@ -233,5 +241,11 @@ func TestConstants(t *testing.T) {
 	}
 	if apiversion.V20260701.String() != "2026-07-01" {
 		t.Errorf("V20260701 = %q, want 2026-07-01", apiversion.V20260701)
+	}
+	if apiversion.V20260704.String() != "2026-07-04" {
+		t.Errorf("V20260704 = %q, want 2026-07-04", apiversion.V20260704)
+	}
+	if apiversion.V20260705.String() != "2026-07-05" {
+		t.Errorf("V20260705 = %q, want 2026-07-05", apiversion.V20260705)
 	}
 }

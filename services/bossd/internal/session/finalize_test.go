@@ -50,7 +50,7 @@ func TestFinalizeSession_NoOpWhenNotImplementing(t *testing.T) {
 				State:  tc.state,
 			}
 
-			lc := NewLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, logger)
+			lc := newTestLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, logger)
 			res, err := lc.FinalizeSession(ctx, "sess-1")
 			if err != nil {
 				t.Fatalf("FinalizeSession: %v", err)
@@ -99,7 +99,7 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 		CronJobID:    &cronJobID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -147,7 +147,7 @@ func TestFinalizeSession_DeletedNoChangesNotifiesSessionDeleted(t *testing.T) {
 	}
 
 	var deleted []string
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	lc.SetSessionDeletedNotifier(func(_ context.Context, sessionID string) {
 		deleted = append(deleted, sessionID)
 	})
@@ -251,6 +251,126 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) 
 	}
 }
 
+// TestFinalizeSession_HeadlessNonCronEmptyRun_BlocksNoChanges pins the BOS-179
+// empty-vs-real-work signal: a non-cron (headless detach) session whose branch
+// carries only the empty draft-PR bootstrap commit — even though a PR exists —
+// must NOT be surfaced as a green ready-for-review PR. It records pr_no_changes
+// and Blocks the session so a headless /bs-epic driver fail-isolates it instead
+// of merging an empty PR.
+func TestFinalizeSession_HeadlessNonCronEmptyRun_BlocksNoChanges(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	// Clean worktree, and the only commit vs base is the empty bootstrap commit.
+	wt := &mockWorktreeManager{
+		statusOut:      "",
+		commitSubjects: []string{draftPRPlaceholderCommitSubject},
+	}
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 88, HeadBranch: "bos-179-br", State: vcs.PRStateOpen},
+	}
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	// No CronJobID → non-cron: the real-work gate is active.
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "bos-179-br",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRNoChanges)
+	}
+	// A no-op run is never surfaced as green: no PR is marked ready, no tags injected.
+	if len(vp.markReadyCalls) != 0 {
+		t.Fatalf("empty run must not mark any PR ready, got %v", vp.markReadyCalls)
+	}
+	if len(wt.injectPRNumbersCalls) != 0 {
+		t.Fatalf("empty run must not inject PR tags, got %d", len(wt.injectPRNumbersCalls))
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess == nil {
+		t.Fatal("session row should be preserved for inspection")
+	}
+	if sess.State != machine.Blocked {
+		t.Fatalf("state = %s, want blocked", sess.State)
+	}
+	if sess.BlockedReason == nil || *sess.BlockedReason == "" {
+		t.Fatalf("blocked reason = %v, want a descriptive no-changes reason", sess.BlockedReason)
+	}
+}
+
+// TestFinalizeSession_HeadlessNonCronRealWork_CreatesPR is the companion: a
+// non-cron session that committed real work (a non-placeholder commit) still
+// finalizes to a green ready-for-review PR — the gate must not block legitimate
+// (even tiny/docs) work.
+func TestFinalizeSession_HeadlessNonCronRealWork_CreatesPR(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:      "",
+		commitSubjects: []string{"docs: tiny but real change"},
+	}
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 89, HeadBranch: "bos-179-br", State: vcs.PRStateOpen},
+	}
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "bos-179-br",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
+	}
+	if len(vp.markReadyCalls) != 1 || vp.markReadyCalls[0] != 89 {
+		t.Fatalf("MarkReadyForReview calls = %v, want [89]", vp.markReadyCalls)
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.ReadyForReview {
+		t.Fatalf("state = %s, want ready_for_review", sess.State)
+	}
+}
+
 func TestFinalizeSession_CleanWorktreeExistingBranchPR_TagInjectionFailureBlocksSession(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
@@ -342,7 +462,7 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPRTitleUpdateFailure_BlocksS
 		HookToken:    &hookToken,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -417,7 +537,7 @@ func TestFinalizeSession_CleanWorktreeNoBranchPR_DeletesSession(t *testing.T) {
 		CronJobID:    &cronJobID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -626,7 +746,7 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginNoBranchWorkDeletesSession(
 		CronJobID:    &cronJobID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -688,7 +808,7 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginDeletesCronSessionWithoutFe
 		CronJobID:    &cronJobID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -760,7 +880,7 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginInteractivePreserved(t *tes
 		State:        machine.ImplementingPlan,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -810,7 +930,7 @@ func TestFinalizeSession_CleanWorktreePRLookupFailure_DeletesNoChanges(t *testin
 		HookToken:    &hookToken,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -891,7 +1011,7 @@ func TestFinalizeSession_HookConfigOnly_DeletedNoChanges(t *testing.T) {
 				CronJobID:    &cronJobID,
 			}
 
-			lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+			lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 			res, err := lc.FinalizeSession(ctx, "sess-1")
 			if err != nil {
 				t.Fatalf("FinalizeSession: %v", err)
@@ -937,7 +1057,7 @@ func TestFinalizeSession_LoadedAgentKeepsBossdManagedFiles_DeletedNoChanges(t *t
 		AgentName:    "codex",
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
 
 	res, err := lc.FinalizeSession(ctx, "sess-1")
@@ -986,7 +1106,7 @@ func TestFinalizeSession_PRSkippedNoGitHub(t *testing.T) {
 		CronJobID:    &cronJobID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -1046,7 +1166,7 @@ func TestFinalizeSession_PRSkippedNoGitHub_Interactive(t *testing.T) {
 		CronJobID:    nil,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-interactive")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -1545,7 +1665,7 @@ func TestFinalizeSession_PRFailed(t *testing.T) {
 		HookToken:    &hookToken,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -1594,7 +1714,7 @@ func TestRecoverFinalizingSessions_SetsBlockedReason(t *testing.T) {
 		CronJobID:    &cronJobID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	n, err := lc.RecoverFinalizingSessions(ctx)
 	if err != nil {
 		t.Fatalf("RecoverFinalizingSessions: %v", err)
@@ -1639,7 +1759,7 @@ func TestRecoverFinalizingSessions_GuardsLastRunWrite(t *testing.T) {
 		CronJobID:    &cronJobID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	if _, err := lc.RecoverFinalizingSessions(ctx); err != nil {
 		t.Fatalf("RecoverFinalizingSessions: %v", err)
 	}
@@ -1692,7 +1812,7 @@ func TestFinalizeSession_CleanupFailed(t *testing.T) {
 		CronJobID:    &cronJobID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -1743,7 +1863,7 @@ func TestFinalizeSession_Idempotency(t *testing.T) {
 		CronJobID:    &cronJobID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 
 	const n = 10
 	var wg sync.WaitGroup
@@ -1836,7 +1956,7 @@ func TestRecoverFinalizingSessions(t *testing.T) {
 		State: machine.ImplementingPlan,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	n, err := lc.RecoverFinalizingSessions(ctx)
 	if err != nil {
 		t.Fatalf("RecoverFinalizingSessions: %v", err)
@@ -1895,7 +2015,7 @@ func TestRecoverFinalizingSessions_NoneStuck(t *testing.T) {
 		State: machine.ImplementingPlan,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	n, err := lc.RecoverFinalizingSessions(ctx)
 	if err != nil {
 		t.Fatalf("RecoverFinalizingSessions: %v", err)
@@ -1961,7 +2081,7 @@ func TestFinalizeSession_DirtyOutput_PRNumberSetAfterEnsurePRRace(t *testing.T) 
 	runner := newRecordingFinalizeAgentRunner()
 	tmuxFake := newFakeTmux()
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
-	lc := NewLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
+	lc := newTestLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
 	lc.SetAgentLogsDir(t.TempDir())
 
@@ -2056,7 +2176,7 @@ func TestFinalizeSession_CleanCommittedBranch_PRNumberSetAfterEnsurePRRace(t *te
 	runner := newRecordingFinalizeAgentRunner()
 	tmuxFake := newFakeTmux()
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
-	lc := NewLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
+	lc := newTestLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
 	lc.SetAgentLogsDir(t.TempDir())
 
@@ -2144,7 +2264,7 @@ func TestFinalizeSession_CleanCommittedBranch_AttachesPRAfterPRInfoUpdateError(t
 	runner := newRecordingFinalizeAgentRunner()
 	tmuxFake := newFakeTmux()
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
-	lc := NewLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
+	lc := newTestLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
 	lc.SetAgentLogsDir(t.TempDir())
 
@@ -2256,7 +2376,7 @@ func newFinalizeChatLifecycle(
 	runner := newRecordingFinalizeAgentRunner()
 	tmuxFake := newFakeTmux()
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
-	lc := NewLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
+	lc := newTestLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
 	lc.SetAgentLogsDir(t.TempDir())
 	return lc

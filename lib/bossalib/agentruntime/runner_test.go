@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/agentruntime"
@@ -71,7 +72,7 @@ func TestRunnerStartCapturesOutputToLog(t *testing.T) {
 		BinaryName: "fake",
 	})
 
-	sid, err := r.Start(context.Background(), t.TempDir(), "the plan", nil, "sess-1", logPath, "")
+	sid, err := r.Start(context.Background(), t.TempDir(), "the plan", nil, "sess-1", logPath, "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -97,6 +98,109 @@ func TestRunnerStartCapturesOutputToLog(t *testing.T) {
 	}
 }
 
+// runnerLogTexts runs a fake command that echoes environment markers, waits
+// for exit, and returns the parsed NDJSON "text" lines from the run log.
+func runnerLogTexts(t *testing.T, r *agentruntime.Runner, dir, logPath, sid string, extraEnv map[string]string) []string {
+	t.Helper()
+	if _, err := r.Start(context.Background(), dir, "", nil, sid, logPath, "", extraEnv); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	deadline := time.Now().Add(runnerExitTimeout)
+	for time.Now().Before(deadline) && r.IsRunning(sid) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if r.IsRunning(sid) {
+		t.Fatalf("runner still alive after %s", runnerExitTimeout)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	var texts []string
+	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		var entry struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal([]byte(line), &entry)
+		texts = append(texts, entry.Text)
+	}
+	return texts
+}
+
+func TestRunnerStart_AppliesExtraEnvAndInherits(t *testing.T) {
+	t.Setenv("PROOF_TEST_INHERITED", "inherited-value")
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "agent.log")
+
+	const secret = "SECRET-proof-token-value"
+	r := agentruntime.NewRunner(zerolog.Nop(),
+		agentruntime.Options{BuildArgv: argvNoop(), BinaryName: "fake"},
+		agentruntime.WithCommandFactory(fakeCmd(t,
+			`printf 'EXTRA=%s INHERITED=%s\n' "$PROOF_TEST_KEY" "$PROOF_TEST_INHERITED"`)),
+	)
+
+	texts := runnerLogTexts(t, r, dir, logPath, "env-on", map[string]string{"PROOF_TEST_KEY": secret})
+	joined := strings.Join(texts, "\n")
+	if !strings.Contains(joined, "EXTRA="+secret) {
+		t.Errorf("extraEnv value not applied to child; log=%s", joined)
+	}
+	if !strings.Contains(joined, "INHERITED=inherited-value") {
+		t.Errorf("child did not inherit os.Environ(); log=%s", joined)
+	}
+	// The spawn preamble logs argv/cwd/PATH only — the secret value must not
+	// appear on any [runner] diagnostic line.
+	for _, txt := range texts {
+		if strings.HasPrefix(txt, "[runner] ") && strings.Contains(txt, secret) {
+			t.Errorf("secret value leaked into runner preamble/diagnostic: %q", txt)
+		}
+	}
+}
+
+// TestRunnerStart_ExtraEnvOverridesInheritedKey pins the security-relevant
+// precedence: when the overlay and the inherited environment share a key, the
+// overlay must win. This is exactly the threat-model requirement — a
+// proof-scoped CLOUDFLARE_API_TOKEN in extraEnv must override an account-wide
+// one already exported into the daemon environment. The guarantee rests on
+// Go's os/exec dedupEnv keeping the last duplicate (extraEnv is appended after
+// os.Environ()); this test locks it against a future refactor/runtime change.
+func TestRunnerStart_ExtraEnvOverridesInheritedKey(t *testing.T) {
+	t.Setenv("PROOF_TEST_KEY", "inherited-loses")
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "agent.log")
+
+	r := agentruntime.NewRunner(zerolog.Nop(),
+		agentruntime.Options{BuildArgv: argvNoop(), BinaryName: "fake"},
+		agentruntime.WithCommandFactory(fakeCmd(t, `printf 'KEY=%s\n' "$PROOF_TEST_KEY"`)),
+	)
+
+	texts := runnerLogTexts(t, r, dir, logPath, "env-collision",
+		map[string]string{"PROOF_TEST_KEY": "overlay-wins"})
+	joined := strings.Join(texts, "\n")
+	if !strings.Contains(joined, "KEY=overlay-wins") {
+		t.Errorf("overlay must override the conflicting inherited key; log=%s", joined)
+	}
+	if strings.Contains(joined, "KEY=inherited-loses") {
+		t.Errorf("inherited value must not win over the overlay; log=%s", joined)
+	}
+}
+
+func TestRunnerStart_NoExtraEnvStillInherits(t *testing.T) {
+	t.Setenv("PROOF_TEST_INHERITED", "still-here")
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "agent.log")
+
+	r := agentruntime.NewRunner(zerolog.Nop(),
+		agentruntime.Options{BuildArgv: argvNoop(), BinaryName: "fake"},
+		agentruntime.WithCommandFactory(fakeCmd(t, `printf 'INHERITED=%s\n' "$PROOF_TEST_INHERITED"`)),
+	)
+
+	// nil extraEnv leaves cmd.Env nil → child inherits the full environment.
+	texts := runnerLogTexts(t, r, dir, logPath, "env-off", nil)
+	if !strings.Contains(strings.Join(texts, "\n"), "INHERITED=still-here") {
+		t.Errorf("child did not inherit environment with nil extraEnv; log=%v", texts)
+	}
+}
+
 func TestRunnerStart_WritesNDJSON(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "agent.log")
@@ -108,7 +212,7 @@ func TestRunnerStart_WritesNDJSON(t *testing.T) {
 		},
 		agentruntime.WithCommandFactory(fakeCmd(t, "echo line-one; echo line-two")),
 	)
-	sid, err := r.Start(context.Background(), dir, "ignored-plan", nil, "test-session", logPath, "")
+	sid, err := r.Start(context.Background(), dir, "ignored-plan", nil, "test-session", logPath, "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -207,7 +311,7 @@ func TestRunnerStart_LogsCmdStartFailure(t *testing.T) {
 			return exec.CommandContext(ctx, "/no/such/binary")
 		}),
 	)
-	_, err := r.Start(context.Background(), dir, "", nil, "fail-session", logPath, "")
+	_, err := r.Start(context.Background(), dir, "", nil, "fail-session", logPath, "", nil)
 	if err == nil {
 		t.Fatal("expected error from Start when cmd.Start fails")
 	}
@@ -245,7 +349,7 @@ func TestRunnerStart_LogsStdinWriteFailure(t *testing.T) {
 		},
 		agentruntime.WithCommandFactory(fakeCmd(t, "exit 0")),
 	)
-	sid, err := r.Start(context.Background(), dir, plan, nil, "stdin-session", logPath, "")
+	sid, err := r.Start(context.Background(), dir, plan, nil, "stdin-session", logPath, "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -281,7 +385,7 @@ func TestRunnerStart_LogsNonZeroExit(t *testing.T) {
 		},
 		agentruntime.WithCommandFactory(fakeCmd(t, "exit 7")),
 	)
-	sid, err := r.Start(context.Background(), dir, "", nil, "exit-session", logPath, "")
+	sid, err := r.Start(context.Background(), dir, "", nil, "exit-session", logPath, "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -323,7 +427,7 @@ func TestRunnerStart_RefusesSymlinkLogPath(t *testing.T) {
 		},
 		agentruntime.WithCommandFactory(fakeCmd(t, "true")),
 	)
-	_, err := r.Start(context.Background(), dir, "", nil, "sid", link, "")
+	_, err := r.Start(context.Background(), dir, "", nil, "sid", link, "", nil)
 	if !errors.Is(err, agentruntime.ErrLogPathSymlink) {
 		t.Errorf("Start with symlink: err = %v, want ErrLogPathSymlink", err)
 	}
@@ -336,7 +440,7 @@ func TestRunnerStart_RejectsEmptyArgv(t *testing.T) {
 	r := agentruntime.NewRunner(zerolog.Nop(), agentruntime.Options{
 		BuildArgv: func(agentruntime.BuildArgvInput) []string { return nil },
 	})
-	_, err := r.Start(context.Background(), dir, "", nil, "sid", logPath, "")
+	_, err := r.Start(context.Background(), dir, "", nil, "sid", logPath, "", nil)
 	if err == nil || !strings.Contains(err.Error(), "empty argv") {
 		t.Errorf("Start with empty argv: err = %v, want empty argv error", err)
 	}
@@ -382,7 +486,7 @@ func TestRunnerPostExitReplacesError(t *testing.T) {
 		},
 	})
 
-	sid, err := r.Start(context.Background(), dir, "", nil, "sess-auth", logPath, "")
+	sid, err := r.Start(context.Background(), dir, "", nil, "sess-auth", logPath, "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -454,7 +558,7 @@ func TestRunnerSessionIDFromOutput(t *testing.T) {
 		SessionIDFromOutput: threadIDFromOutput,
 	})
 
-	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath, "")
+	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath, "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -496,7 +600,7 @@ func TestRunnerSessionIDFromOutputReturnsWhenIDArrives(t *testing.T) {
 	})
 
 	started := time.Now()
-	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath, "")
+	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath, "", nil)
 	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -533,7 +637,7 @@ func TestRunnerSessionIDFromOutputToleratesSlowStartup(t *testing.T) {
 	})
 
 	started := time.Now()
-	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath, "")
+	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath, "", nil)
 	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -545,6 +649,79 @@ func TestRunnerSessionIDFromOutputToleratesSlowStartup(t *testing.T) {
 
 	if err := r.Stop(sid); err != nil {
 		t.Fatalf("Stop: %v", err)
+	}
+}
+
+// TestRunnerGeneratesUUIDWhenNoSessionIDProvided is a regression guard for a
+// headless-dispatch bug (bs-epic / cron sessions). When the caller passed no
+// session ID, the runner minted "<bin>-<nanos>" (e.g.
+// "claude-1783144936819808000") and marked it NOT provided, so the argv builder
+// never injected it. claude then generated its own rollout UUID, the runner
+// returned the non-UUID timestamp ID, and bossd persisted an ID that
+// resume/attach and on-disk transcript lookup could never resolve — stranding
+// the session behind a misleading "CLI could not be launched" error and reaping
+// the chat as transcript-less. A runner-generated ID must be a real UUID, marked
+// provided so id-injecting agents (claude) adopt it as their rollout ID.
+func TestRunnerGeneratesUUIDWhenNoSessionIDProvided(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "run.log")
+
+	var captured agentruntime.BuildArgvInput
+	r := agentruntime.NewRunner(zerolog.Nop(), agentruntime.Options{
+		BinaryName: "claude",
+		BuildArgv: func(in agentruntime.BuildArgvInput) []string {
+			captured = in
+			return []string{"agent"}
+		},
+	}, agentruntime.WithCommandFactory(fakeCmd(t, "exit 0")))
+
+	sid, err := r.Start(context.Background(), t.TempDir(), "", nil, "", logPath, "", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if _, perr := uuid.Parse(sid); perr != nil {
+		t.Errorf("Start returned non-UUID session id %q (want a valid UUID, not \"<bin>-<nanos>\"): %v", sid, perr)
+	}
+	if strings.HasPrefix(sid, "claude-") {
+		t.Errorf("Start returned timestamp-style session id %q; want a UUID", sid)
+	}
+	if captured.SessionID != sid {
+		t.Errorf("BuildArgv saw SessionID=%q, want the returned id %q", captured.SessionID, sid)
+	}
+	if !captured.ProvidedSessionID {
+		t.Error("BuildArgv saw ProvidedSessionID=false for a runner-generated id; " +
+			"id-injecting agents (claude) then never receive --session-id and diverge from their rollout")
+	}
+}
+
+// TestRunnerResumeWithEmptySessionIDDoesNotInjectID guards the boundary of the
+// UUID-minting fix: on the resurrect path bossd calls Start with a resume
+// target but an empty tracking ID. The runner must NOT mark that generated key
+// as provided — otherwise the argv builder would emit both --resume and
+// --session-id, which claude cannot accept together. Only --resume applies.
+func TestRunnerResumeWithEmptySessionIDDoesNotInjectID(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "run.log")
+
+	var captured agentruntime.BuildArgvInput
+	r := agentruntime.NewRunner(zerolog.Nop(), agentruntime.Options{
+		BinaryName: "claude",
+		BuildArgv: func(in agentruntime.BuildArgvInput) []string {
+			captured = in
+			return []string{"agent"}
+		},
+	}, agentruntime.WithCommandFactory(fakeCmd(t, "exit 0")))
+
+	resumeTarget := "7a0cca71-590a-46c0-957f-095461d7ec76"
+	if _, err := r.Start(context.Background(), t.TempDir(), "", &resumeTarget, "", logPath, "", nil); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if captured.ProvidedSessionID {
+		t.Error("BuildArgv saw ProvidedSessionID=true while resuming; claude would then get both " +
+			"--resume and --session-id, which it cannot accept together")
+	}
+	if captured.Resume == nil || *captured.Resume != resumeTarget {
+		t.Errorf("BuildArgv saw Resume=%v, want the resume target %q", captured.Resume, resumeTarget)
 	}
 }
 
@@ -595,7 +772,7 @@ func TestRunnerStart_ConcurrentSameSessionIDIsSerialized(t *testing.T) {
 			// Per-goroutine log path so the runner can't fail the second
 			// caller for a non-race reason (file-already-open, etc).
 			_, err := r.Start(context.Background(), dir, "plan", nil, sessionID,
-				logPath+formatInt(i)+".log", "")
+				logPath+formatInt(i)+".log", "", nil)
 			switch {
 			case err == nil:
 				successes.Add(1)

@@ -195,6 +195,59 @@ test('Step 6c bs-review sentinel is advisory and cannot drive the run-file verdi
   }
 })
 
+test('Step 11 names proof.mjs run as the single proof channel (BOS-138)', () => {
+  // P1d skill-path enforcement: the structured note posted by `proof.mjs run` is the
+  // ONLY proof channel. Sessions never hand-write "proof skipped" prose, and the env is
+  // daemon-injected (doctor reports gaps) rather than sourced from .env. Pin the clause in
+  // BOTH generated mirrors and in the proof-capture reference so it can never regress to
+  // the old hand-written-skip-note guidance.
+  for (const skillPath of RESIDENT_BODY_SKILLS) {
+    const skill = fs.readFileSync(path.join(rootDir, skillPath), 'utf8')
+    assert.match(
+      skill,
+      /is the only proof channel/i,
+      `${skillPath} Step 11 must name proof.mjs run's note as the only proof channel`,
+    )
+    assert.match(
+      skill,
+      /proof\.mjs doctor/,
+      `${skillPath} Step 11 must point at proof.mjs doctor for a missing env, not sourcing .env`,
+    )
+    assert.doesNotMatch(
+      skill,
+      /set -a; \. \.\/\.env/,
+      `${skillPath} Step 11 must not tell sessions to source .env`,
+    )
+  }
+
+  for (const skillDir of ['.claude/skills/bs-implement', '.codex/skills/bs-implement']) {
+    const proofCapture = fs.readFileSync(
+      path.join(rootDir, skillDir, 'references/proof-capture.md'),
+      'utf8',
+    )
+    assert.match(
+      proofCapture,
+      /\*\*only\*\*/,
+      `${skillDir}/references/proof-capture.md must emphasize proof.mjs run's note as the only channel`,
+    )
+    assert.match(
+      proofCapture,
+      /proof\s+channel/i,
+      `${skillDir}/references/proof-capture.md must name proof.mjs run's note as the only proof channel`,
+    )
+    assert.match(
+      proofCapture,
+      /daemon-injected/,
+      `${skillDir}/references/proof-capture.md must state the proof env is daemon-injected`,
+    )
+    assert.doesNotMatch(
+      proofCapture,
+      /set -a; \. \.\/\.env/,
+      `${skillDir}/references/proof-capture.md must not tell sessions to source .env`,
+    )
+  }
+})
+
 test('runtime helper references are local to generated Claude and Codex skills', () => {
   // The support helper scripts are now referenced from the moved SDD/TDD references,
   // not the resident SKILL.md. They must still be reachable (and present) in both mirrors.
@@ -238,5 +291,167 @@ test('runtime helper references are local to generated Claude and Codex skills',
         `${helper} must exist under ${skillDir}`,
       )
     }
+  }
+})
+
+// BOS-181: finalize is reordered so the [#PR] tag-injection + force-push runs BEFORE the
+// boss-repair green gate (CI runs once on the tagged head), Step 9 becomes an idempotent guard
+// that re-injects only when repair added untagged commits, and the Step 7 bs-review comment is
+// unconditional. Pin all three in the committed .claude body (the shipped artifact) so the
+// reorder can never silently regress to the double-CI-wait / conditional-comment shape.
+const claudeBody = () =>
+  fs.readFileSync(path.join(rootDir, '.claude/skills/bs-implement/SKILL.md'), 'utf8')
+
+test('Step 8 injects the [#PR] tag before the boss-repair green gate (BOS-181)', () => {
+  const skill = claudeBody()
+  const step8 = skill.slice(skill.indexOf('## Step 8:'), skill.indexOf('## Step 9:'))
+  const tagIdx = step8.indexOf('add-pr-numbers.sh')
+  const gateIdx = step8.search(/Then run \*\*boss-repair\*\*/)
+  assert.ok(tagIdx !== -1, 'Step 8 must inject the tag via add-pr-numbers.sh')
+  assert.ok(gateIdx !== -1, 'Step 8 must run the boss-repair green gate after tagging')
+  assert.ok(tagIdx < gateIdx, 'tag injection must run BEFORE the boss-repair green gate')
+  // The daemon-race guard is preserved on the (now-earlier) push.
+  assert.match(step8, /--force-with-lease/)
+  assert.match(step8, /HEAD == @\{u\}/)
+})
+
+test('Step 9 re-injects the tag only via an idempotent guard (BOS-181)', () => {
+  const skill = claudeBody()
+  const step9 = skill.slice(skill.indexOf('## Step 9:'), skill.indexOf('## Step 10:'))
+  assert.match(step9, /idempotent/i, 'Step 9 must document the idempotent guard')
+  // Guarded re-inject: conditional on commits still lacking the tag, not an unconditional rewrite.
+  assert.match(step9, /if git log[^\n]*grep -qv/, 'Step 9 re-inject must be conditional')
+  assert.match(step9, /add-pr-numbers\.sh/, 'Step 9 must keep the re-inject helper')
+  assert.match(step9, /gh pr ready/, 'Step 9 must ready the PR')
+})
+
+test('Step 7 always posts the bs-review comment, unconditionally (BOS-181)', () => {
+  const skill = claudeBody()
+  const step7 = skill.slice(skill.indexOf('## Step 7:'), skill.indexOf('## Step 8:'))
+  // The old conditional-skip clause is gone.
+  assert.doesNotMatch(step7, /Skip this when Step 6c was skipped/i)
+  // Always upsert one marker comment, with an honest fallback when there is no report.
+  assert.match(step7, /Post the bs-review comment \(always\)/)
+  assert.match(step7, /fallback note/i)
+})
+
+// BOS-240: bs-implement must finalize BLOCKED (not REVIEW_READY) when it defers a *required*
+// item at the wall-clock cap. These assertions pin the honest-finalize invariant into the
+// shipped Claude and Codex artifacts so the terminal-state logic can't silently regress. They
+// read the committed generated files (no source skip) so CI enforces them without superpowers.
+const RESIDENT_BODIES = {
+  claude: '.claude/skills/bs-implement/SKILL.md',
+  codex: '.codex/skills/bs-implement/SKILL.md',
+}
+const readSkill = (rel) => fs.readFileSync(path.join(rootDir, rel), 'utf8')
+const readRef = (mirror, ref) =>
+  fs.readFileSync(
+    path.join(rootDir, path.dirname(RESIDENT_BODIES[mirror]), 'references', ref),
+    'utf8',
+  )
+
+test('BOS-240: resident body pins the required-deferred → BLOCKED finalize invariant (both mirrors)', () => {
+  for (const [mirror, rel] of Object.entries(RESIDENT_BODIES)) {
+    const body = readSkill(rel)
+    // The distinction + invariant is stated in the always-resident body.
+    assert.match(
+      body,
+      /Required-deferred/,
+      `${mirror}: body must define the required-deferred distinction`,
+    )
+    assert.match(
+      body,
+      /BLOCKED, never REVIEW_READY/,
+      `${mirror}: body must state required-deferred ⇒ BLOCKED, never REVIEW_READY`,
+    )
+    // Required = API-version bump for an observable bossanova.v1 change + open must-fix findings.
+    assert.match(body, /API-version bump/, `${mirror}: required must name the API-version bump`)
+    assert.match(body, /must-fix findings/, `${mirror}: required must name open must-fix findings`)
+    assert.match(
+      body,
+      /bossanova\.v1/,
+      `${mirror}: required item is an observable bossanova.v1 change`,
+    )
+    // Optional stays non-fatal (Minor findings + best-effort proof).
+    assert.match(
+      body,
+      /_?optional_?[^\n]*Minor findings[^\n]*best-effort proof[^\n]*non-fatal/i,
+      `${mirror}: optional (Minor findings + best-effort proof) must stay non-fatal`,
+    )
+    // The wall-clock breaker no longer grants "usually BLOCKED" latitude.
+    assert.doesNotMatch(
+      body,
+      /usually BLOCKED/,
+      `${mirror}: wall-clock breaker must not permit REVIEW_READY with an unaddressed required item`,
+    )
+    // Enforced at the finalize gate (Step 9) and terminal-state selection (Step 12).
+    const step9 = body.slice(body.indexOf('## Step 9:'), body.indexOf('## Step 10:'))
+    assert.match(
+      step9,
+      /no required item was deferred/,
+      `${mirror}: Step 9 must assert no required item was deferred before readying`,
+    )
+    const step12 = body.slice(body.indexOf('## Step 12:'))
+    assert.match(
+      step12,
+      /REVIEW_READY only with no deferred required item/,
+      `${mirror}: Step 12 must pick REVIEW_READY only with no deferred required item`,
+    )
+  }
+})
+
+test('BOS-240: review-stack adds a conditional API-surface required check (both mirrors)', () => {
+  for (const mirror of Object.keys(RESIDENT_BODIES)) {
+    const reviewStack = readRef(mirror, 'review-stack.md')
+    assert.match(
+      reviewStack,
+      /API-surface check/,
+      `${mirror}: review-stack must add the conditional API-surface check`,
+    )
+    assert.match(
+      reviewStack,
+      /proto\/bossanova\/v1/,
+      `${mirror}: API-surface check must trigger on proto/bossanova/v1 paths`,
+    )
+    assert.match(
+      reviewStack,
+      /lib\/bossalib\/apiversion/,
+      `${mirror}: API-surface check must reference the apiversion registry`,
+    )
+    // A missing version bump is a required must-fix, and a deferred one routes to BLOCKED.
+    assert.match(
+      reviewStack,
+      /required-deferred/,
+      `${mirror}: a missing required version bump must be a required-deferred item`,
+    )
+    assert.match(
+      reviewStack,
+      /BLOCKED[^\n]*never REVIEW_READY/,
+      `${mirror}: a deferred required version bump routes to BLOCKED, never REVIEW_READY`,
+    )
+  }
+})
+
+test('BOS-240: troubleshooting adds the required-deferred rows without weakening optional proof (both mirrors)', () => {
+  for (const mirror of Object.keys(RESIDENT_BODIES)) {
+    const troubleshooting = readRef(mirror, 'troubleshooting.md')
+    // New status-rollback row: required item deferred at cap → In Progress / draft / names the item.
+    assert.match(
+      troubleshooting,
+      /Required item deferred at cap/,
+      `${mirror}: status-rollback table must cover the required-deferred-at-cap case`,
+    )
+    // New red-flag row: skipping the API version as optional past the cap is wrong.
+    assert.match(
+      troubleshooting,
+      /skip the API version as optional/,
+      `${mirror}: red-flags must catch "skip the API version as optional past the cap"`,
+    )
+    // The existing optional-proof red-flag must NOT be weakened: proof stays non-fatal.
+    assert.match(
+      troubleshooting,
+      /Proof is optional and non-fatal/,
+      `${mirror}: the optional-proof red-flag must remain (proof stays non-fatal)`,
+    )
   }
 })

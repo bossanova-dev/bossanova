@@ -183,7 +183,12 @@ func (g *CronCompletionGate) checkAndFinalize(ctx context.Context, sessionID str
 		g.logger.Warn().Err(err).Str("session", sessionID).Msg("cron completion gate could not load session")
 		return cronCompletionGateCheckDone
 	}
-	if session.CronJobID == nil || *session.CronJobID == "" {
+	// Finalize sessions that run autonomously — a scheduled cron job OR a
+	// tmux_unattended session (e.g. /bs-epic). Interactive/wake/repair sessions
+	// also carry a HookToken (so their Stop hook fires here too), but they must
+	// never auto-finalize; the persisted TmuxUnattended flag, not HookToken
+	// presence, is the autonomy signal.
+	if !isUnattendedSession(session) {
 		return cronCompletionGateCheckDone
 	}
 
@@ -192,7 +197,7 @@ func (g *CronCompletionGate) checkAndFinalize(ctx context.Context, sessionID str
 	// run is actually over; otherwise defer to the periodic
 	// RecoverStrandedCronSessions sweep, which re-evaluates the same criterion and
 	// finalizes once the run genuinely completes. A nil runIsOver keeps the legacy
-	// finalize-on-any-cron-Stop behavior for partial wiring.
+	// finalize-on-any-unattended-Stop behavior for partial wiring.
 	if g.runIsOver != nil && !g.runIsOver(session) {
 		g.logger.Debug().
 			Str("session", sessionID).

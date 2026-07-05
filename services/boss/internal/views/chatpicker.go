@@ -420,7 +420,7 @@ func (m ChatPickerModel) canOpenTracker() bool {
 //
 // This intentionally mirrors what the backend MergeSession RPC accepts: it
 // performs an immediate merge and rejects any PR whose tracked display status
-// is not passing with "PR is not passing" (services/bossd .../server.go). A
+// is not passing with "merge blocked: gate=..." (services/bossd .../server.go). A
 // PR still CHECKING — even with no failures yet — would be rejected, so
 // offering [m]erge in that state only leads the user into a confirm dialog
 // that errors. There is no auto-merge/merge-when-ready queue today, so the

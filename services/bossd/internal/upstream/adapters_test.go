@@ -301,6 +301,7 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 		TrackerUrl:    &trackerURL,
 		TrackerIssue:  &pb.TrackerIssue{Title: issueTitle},
 		TrackerSource: &source,
+		Force:         true,
 	}, "cmd-rt")
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -328,6 +329,9 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 	}
 	if req.TrackerSource == nil || *req.TrackerSource != source {
 		t.Errorf("TrackerSource: got %v, want %q", req.TrackerSource, source)
+	}
+	if !req.GetForce() {
+		t.Errorf("Force: got false, want true")
 	}
 }
 
@@ -833,7 +837,7 @@ func TestCommandHandlerAdapter_SendChatMessage(t *testing.T) {
 	t.Run("missing command server is rejected", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{}
-		if _, err := adapter.SendChatMessage(context.Background(), "a1", "m", false); err == nil || !strings.Contains(err.Error(), "send_chat_message: command server not wired") {
+		if _, err := adapter.SendChatMessage(context.Background(), "a1", "m", false, false); err == nil || !strings.Contains(err.Error(), "send_chat_message: command server not wired") {
 			t.Fatalf("SendChatMessage error = %v, want command server not wired", err)
 		}
 	})
@@ -841,7 +845,7 @@ func TestCommandHandlerAdapter_SendChatMessage(t *testing.T) {
 	t.Run("command error is wrapped", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
-		if _, err := adapter.SendChatMessage(context.Background(), "a1", "m", false); err == nil || !strings.Contains(err.Error(), "send chat message: boom") {
+		if _, err := adapter.SendChatMessage(context.Background(), "a1", "m", false, false); err == nil || !strings.Contains(err.Error(), "send chat message: boom") {
 			t.Fatalf("SendChatMessage error = %v, want send chat message: boom", err)
 		}
 	})
@@ -850,7 +854,7 @@ func TestCommandHandlerAdapter_SendChatMessage(t *testing.T) {
 		t.Parallel()
 		fake := &fakeSessionCommandServer{}
 		adapter := &CommandHandlerAdapter{Commands: fake}
-		resp, err := adapter.SendChatMessage(context.Background(), "agent-9", "hello", true)
+		resp, err := adapter.SendChatMessage(context.Background(), "agent-9", "hello", true, true)
 		if err != nil {
 			t.Fatalf("SendChatMessage returned error: %v", err)
 		}
@@ -858,7 +862,7 @@ func TestCommandHandlerAdapter_SendChatMessage(t *testing.T) {
 			t.Fatalf("unexpected response: %+v", resp)
 		}
 		got := fake.lastSendReq
-		if got.GetAgentSessionId() != "agent-9" || got.GetMessage() != "hello" || !got.GetWakeIfAsleep() {
+		if got.GetAgentSessionId() != "agent-9" || got.GetMessage() != "hello" || !got.GetWakeIfAsleep() || !got.GetSubmit() {
 			t.Fatalf("send fields not forwarded: %+v", got)
 		}
 	})

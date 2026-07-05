@@ -130,6 +130,7 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 			pbSess.DisplayHasChangesRequested = e.HasChangesRequested
 			pbSess.DisplayIsRepairing = e.IsRepairing
 			pbSess.DisplaySettingUp = e.SettingUp
+			pbSess.PrMergeable = e.Mergeable
 		}
 	}
 

@@ -23,7 +23,7 @@ type fakeBackend struct {
 	updateRepo           func(ctx context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error)
 	listRepoPRs          func(ctx context.Context, repoID string) ([]*pb.PRSummary, error)
 	listTrackerIssues    func(ctx context.Context, repoID, query, source string) ([]*pb.TrackerIssue, error)
-	createSession        func(ctx context.Context, req *pb.CreateSessionRequest) (*pb.Session, error)
+	createSession        func(ctx context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error)
 	getSession           func(ctx context.Context, id string) (*pb.Session, error)
 	listSessions         func(ctx context.Context, req *pb.ListSessionsRequest) ([]*pb.Session, error)
 	stopSession          func(ctx context.Context, id string) (*pb.Session, error)
@@ -54,6 +54,11 @@ type fakeBackend struct {
 	updateCronJob        func(ctx context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error)
 	deleteCronJob        func(ctx context.Context, id string) error
 	runCronJobNow        func(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
+	listAccounts         func(ctx context.Context, provider string) ([]*pb.Account, error)
+	addAccount           func(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error)
+	updateAccount        func(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error)
+	removeAccount        func(ctx context.Context, id string) error
+	testAccount          func(ctx context.Context, id string) (*pb.TestAccountResponse, error)
 	listCheckSnapshots   func(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error)
 	repairDoctor         func(ctx context.Context) (*pb.RepairDoctorResponse, error)
 	listAgents           func(ctx context.Context) ([]*pb.AgentInfo, error)
@@ -130,7 +135,7 @@ func (f *fakeBackend) ListTrackerIssues(ctx context.Context, repoID, query, sour
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (*pb.Session, error) {
+func (f *fakeBackend) CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error) {
 	if f.createSession != nil {
 		return f.createSession(ctx, req)
 	}
@@ -343,6 +348,41 @@ func (f *fakeBackend) DeleteCronJob(ctx context.Context, id string) error {
 func (f *fakeBackend) RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error) {
 	if f.runCronJobNow != nil {
 		return f.runCronJobNow(ctx, id)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) ListAccounts(ctx context.Context, provider string) ([]*pb.Account, error) {
+	if f.listAccounts != nil {
+		return f.listAccounts(ctx, provider)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error) {
+	if f.addAccount != nil {
+		return f.addAccount(ctx, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) UpdateAccount(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error) {
+	if f.updateAccount != nil {
+		return f.updateAccount(ctx, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) RemoveAccount(ctx context.Context, id string) error {
+	if f.removeAccount != nil {
+		return f.removeAccount(ctx, id)
+	}
+	return errNotImpl
+}
+
+func (f *fakeBackend) TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error) {
+	if f.testAccount != nil {
+		return f.testAccount(ctx, id)
 	}
 	return nil, errNotImpl
 }

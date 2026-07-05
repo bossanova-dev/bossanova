@@ -118,6 +118,21 @@ func registerDestructiveTools(server *mcp.Server, backend Backend, opts Options)
 		r, err := jsonResult(map[string]string{"deleted_cron_job": args.ID})
 		return r, nil, err
 	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "remove_account",
+		Description: "Permanently remove an account and its stored credential. Destructive — requires confirm:true.",
+		Annotations: destructiveAnnotations(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ConfirmIDArgs) (*mcp.CallToolResult, any, error) {
+		if r := requireConfirm(args.Confirm, "remove_account"); r != nil {
+			return r, nil, nil
+		}
+		if err := backend.RemoveAccount(ctx, args.ID); err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(map[string]string{"removed_account": args.ID})
+		return r, nil, err
+	})
 }
 
 // registerDestructiveSessionTool installs a confirm-gated id-keyed session tool

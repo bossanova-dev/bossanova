@@ -317,8 +317,9 @@ type SessionCommandHandler interface {
 	// does not belong to that session). Network/tmux-bound — dispatched async.
 	GetChatTranscript(ctx context.Context, sessionID, agentSessionID string, maxMessages int32) (*pb.GetChatTranscriptResponse, error)
 	// SendChatMessage delivers a user message into a chat's live agent, optionally
-	// waking it first. Network/tmux-bound — dispatched async.
-	SendChatMessage(ctx context.Context, agentSessionID, message string, wakeIfAsleep bool) (*pb.SendChatMessageResponse, error)
+	// waking it first. submit routes verified-submit vs. prefill delivery (BOS-242
+	// Gap 1). Network/tmux-bound — dispatched async.
+	SendChatMessage(ctx context.Context, agentSessionID, message string, wakeIfAsleep, submit bool) (*pb.SendChatMessageResponse, error)
 }
 
 // WebhookCommandDispatcher forwards a webhook payload to whatever in-daemon

@@ -5,21 +5,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { OVERLAY_CAPTION_CSS } from './proof-caption-spec.mjs'
 import { normalizeRecipe, validateBrowserRoute } from './proof-lib.mjs'
 
-// max-width is max(60%, calc(100% - 380px)): on wide viewports calc wins,
-// reserving 190px on each side (>= TIMER_W 158 + 14px right margin) so the
-// centered caption clears the top-right elapsed-timer pill burned in by
-// scripts/proof-video.mjs (buildTimerOverlayFilter). On narrow viewports — the
-// 390px-wide web-*-mobile recipes — calc(100% - 380px) collapses to ~10px, so
-// the 60% floor keeps the caption readable (a minor timer overlap is preferable
-// to a single-character-per-line subtitle). Keep BYTE-IDENTICAL with the
-// captionEl cssText in services/web/tests/e2e/agent/overlay.ts.
-export const OVERLAY_CAPTION_CSS =
-  'position:absolute;top:24px;left:50%;transform:translateX(-50%);' +
-  'background:rgba(0,0,0,0.72);color:#fff;font:600 15px/1.4 sans-serif;' +
-  'padding:6px 18px;border-radius:6px;white-space:pre-wrap;max-width:max(60%, calc(100% - 380px));' +
-  'text-align:center;pointer-events:none;display:none;'
+// OVERLAY_CAPTION_CSS is imported from proof-caption-spec.mjs (BOS-140 D8),
+// the single source of truth also consumed by the web agent overlay
+// (services/web/tests/e2e/agent/overlay.ts) — replaces the previous
+// comment-enforced "keep BYTE-IDENTICAL" duplication with import-equality.
+export { OVERLAY_CAPTION_CSS }
 
 const validSurfaces = new Set(['web', 'marketing', 'docs'])
 const validRecipeIdPattern = /^[a-z0-9][a-z0-9-]*$/

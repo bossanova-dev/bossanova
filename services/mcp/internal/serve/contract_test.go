@@ -12,10 +12,10 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// expectedTools is the complete set of 44 bossanova MCP tool names:
-// 17 read-only + 18 mutating + 9 destructive.
+// expectedTools is the complete set of 49 bossanova MCP tool names:
+// 18 read-only + 21 mutating + 10 destructive.
 var expectedTools = []string{
-	// read-only (17)
+	// read-only (18)
 	"list_sessions",
 	"resolve_context",
 	"validate_repo_path",
@@ -32,8 +32,9 @@ var expectedTools = []string{
 	"list_plugins",
 	"list_cron_jobs",
 	"get_cron_job",
+	"list_accounts",
 	"get_chat_transcript",
-	// mutating (18)
+	// mutating (21)
 	"register_repo",
 	"clone_and_register_repo",
 	"update_repo",
@@ -51,8 +52,11 @@ var expectedTools = []string{
 	"create_cron_job",
 	"update_cron_job",
 	"run_cron_job_now",
+	"add_account",
+	"update_account",
+	"test_account",
 	"send_chat_message",
-	// destructive (9)
+	// destructive (10)
 	"remove_repo",
 	"close_session",
 	"merge_session",
@@ -62,6 +66,7 @@ var expectedTools = []string{
 	"delete_chat",
 	"empty_trash",
 	"delete_cron_job",
+	"remove_account",
 }
 
 // contractBackend is a minimal bossmcp.Backend sufficient for the contract test:
@@ -79,6 +84,7 @@ type contractBackend struct {
 	transcriptResponse *pb.GetChatTranscriptResponse
 	sentAgentSessionID string
 	sentMessage        string
+	sentSubmit         bool
 }
 
 func (b *contractBackend) ListSessions(_ context.Context, _ *pb.ListSessionsRequest) ([]*pb.Session, error) {
@@ -90,13 +96,14 @@ func (b *contractBackend) RemoveRepo(_ context.Context, id string) error {
 	return nil
 }
 
-func (b *contractBackend) CreateSession(_ context.Context, _ *pb.CreateSessionRequest) (*pb.Session, error) {
-	return b.createdSession, nil
+func (b *contractBackend) CreateSession(_ context.Context, _ *pb.CreateSessionRequest) (*bossmcp.CreateSessionResult, error) {
+	return &bossmcp.CreateSessionResult{Session: b.createdSession}, nil
 }
 
 func (b *contractBackend) SendChatMessage(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
 	b.sentAgentSessionID = req.AgentSessionId
 	b.sentMessage = req.Message
+	b.sentSubmit = req.GetSubmit()
 	return b.sendResponse, nil
 }
 
@@ -108,7 +115,7 @@ func (b *contractBackend) GetChatTranscript(_ context.Context, _ *pb.GetChatTran
 // the Stdio path) and returns a connected MCP client session.
 func newContractClient(t *testing.T, backend bossmcp.Backend) *mcp.ClientSession {
 	t.Helper()
-	server := newServer(backend, bossmcp.Options{})
+	server := newServer(backend, bossmcp.Options{}, nil)
 	client := mcp.NewClient(&mcp.Implementation{Name: "contract-test", Version: "0.0.0"}, nil)
 
 	st, ct := mcp.NewInMemoryTransports()
@@ -181,10 +188,11 @@ func TestContractParityFieldsAdvertised(t *testing.T) {
 	}
 
 	want := map[string][]string{
-		"update_repo":     {"linear_api_key", "sentry_api_key", "sentry_org"},
-		"create_cron_job": {"model", "gate_command", "run_setup_command"},
-		"update_cron_job": {"model", "gate_command", "run_setup_command"},
-		"create_session":  {"base_branch", "branch_name", "force_branch", "quick_chat", "pr_number", "tracker_id", "tracker_url", "tracker_source"},
+		"update_repo":       {"linear_api_key", "sentry_api_key", "sentry_org"},
+		"create_cron_job":   {"model", "gate_command", "run_setup_command"},
+		"update_cron_job":   {"model", "gate_command", "run_setup_command"},
+		"create_session":    {"base_branch", "branch_name", "force_branch", "force", "quick_chat", "detach", "tmux_unattended", "model", "pr_number", "tracker_id", "tracker_url", "tracker_source"},
+		"send_chat_message": {"submit"},
 	}
 
 	for toolName, fields := range want {
@@ -366,6 +374,7 @@ func TestContractChatControl(t *testing.T) {
 			"agent_session_id": agentSessionID,
 			"message":          "What do you think about the edge-case handling?",
 			"wake_if_asleep":   true,
+			"submit":           true,
 		},
 	})
 	if err != nil {
@@ -388,6 +397,9 @@ func TestContractChatControl(t *testing.T) {
 	}
 	if !strings.Contains(backend.sentMessage, "edge-case handling") {
 		t.Fatalf("backend.SendChatMessage got message=%q, want it to contain 'edge-case handling'", backend.sentMessage)
+	}
+	if !backend.sentSubmit {
+		t.Fatalf("backend.SendChatMessage got submit=false, want true (submit arg must thread through)")
 	}
 
 	// Step 3: get_chat_transcript — read the final assistant result.

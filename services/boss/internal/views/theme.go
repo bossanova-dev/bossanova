@@ -52,8 +52,13 @@ var (
 	styleStatusSuccess = lipgloss.NewStyle().Foreground(colorSuccess)
 	styleStatusWarning = lipgloss.NewStyle().Foreground(colorWarning)
 	styleStatusDanger  = lipgloss.NewStyle().Foreground(colorDanger)
-	styleStatusInfo    = lipgloss.NewStyle().Foreground(colorInfo)
-	styleStatusMuted   = lipgloss.NewStyle().Foreground(colorMuted)
+	// styleStatusDangerFaded is a dimmed danger style for warnings that no
+	// longer need to alarm — e.g. a residual "finalize failed" hint on a row
+	// whose PR has already merged/closed (BOS-246). Still readable as a
+	// warning, but visually recessive.
+	styleStatusDangerFaded = styleStatusDanger.Faint(true)
+	styleStatusInfo        = lipgloss.NewStyle().Foreground(colorInfo)
+	styleStatusMuted       = lipgloss.NewStyle().Foreground(colorMuted)
 )
 
 // --- TUI Table ---

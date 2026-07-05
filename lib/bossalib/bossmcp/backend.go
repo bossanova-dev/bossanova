@@ -13,9 +13,12 @@ import (
 // daemon client (services/boss/internal/client.BossClient) so the socket
 // adapter is a thin pass-through, EXCEPT:
 //
-//   - CreateSession is reduced to a bounded call returning the terminal
-//     *pb.Session: the adapter drains the daemon's setup stream and returns the
-//     final session.
+//   - CreateSession is reduced to a bounded call returning a
+//     *CreateSessionResult: the adapter drains the daemon's setup stream and
+//     returns the final session together with AttachedExisting, captured from
+//     the terminal SessionCreated frame (true when the daemon attached to an
+//     active session that already owned the target branch/PR/tracker rather than
+//     creating a new one — in which case the supplied prompt was NOT run).
 //   - ListAgents returns []*pb.AgentInfo (the shared proto type) rather than the
 //     boss client's package-local AgentInfo, since this package may only import
 //     the shared proto types; the adapter converts.
@@ -35,8 +38,9 @@ type Backend interface {
 	ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRSummary, error)
 	ListTrackerIssues(ctx context.Context, repoID, query, source string) ([]*pb.TrackerIssue, error)
 
-	// Sessions (CreateSession drains the setup stream and returns the final Session)
-	CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (*pb.Session, error)
+	// Sessions (CreateSession drains the setup stream and returns the final
+	// Session plus whether the daemon attached to an existing session)
+	CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error)
 	GetSession(ctx context.Context, id string) (*pb.Session, error)
 	ListSessions(ctx context.Context, req *pb.ListSessionsRequest) ([]*pb.Session, error)
 	StopSession(ctx context.Context, id string) (*pb.Session, error)
@@ -73,11 +77,29 @@ type Backend interface {
 	DeleteCronJob(ctx context.Context, id string) error
 	RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
 
+	// Accounts (agent credential registry). AddAccount consumes an inbound
+	// credential blob straight into the keyring; no method ever returns it.
+	ListAccounts(ctx context.Context, provider string) ([]*pb.Account, error)
+	AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error)
+	UpdateAccount(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error)
+	RemoveAccount(ctx context.Context, id string) error
+	TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error)
+
 	// Diagnostics
 	ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error)
 	RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, error)
 	ListAgents(ctx context.Context) ([]*pb.AgentInfo, error)
 	ListPlugins(ctx context.Context) ([]*pb.InstalledPlugin, error)
+}
+
+// CreateSessionResult is the bounded outcome of Backend.CreateSession. Session
+// is the terminal session drained from the setup stream. AttachedExisting is
+// captured from the final SessionCreated frame: it is true when the daemon
+// attached to an active session that already owned the target branch/PR/tracker
+// instead of creating a new one — in that case the caller's prompt was NOT run.
+type CreateSessionResult struct {
+	Session          *pb.Session
+	AttachedExisting bool
 }
 
 // Options tunes tool registration per deployment.

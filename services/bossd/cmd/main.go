@@ -36,12 +36,14 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/agent"
 	cronpkg "github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
+	"github.com/recurser/bossd/internal/proofenvkeyring"
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
@@ -310,6 +312,10 @@ func run(opts runOpts) error {
 	taskMappings := db.NewTaskMappingStore(database)
 	rawWorkflows := db.NewWorkflowStore(database)
 	cronJobs := db.NewCronJobStore(database)
+	accounts := db.NewAccountStore(database)
+	// Credential blobs for account rotation live in the OS keyring, never in
+	// SQLite (decision D3). accountcred links keyring/dbus and is daemon-only.
+	accountCreds := accountcred.New()
 
 	// The display-status computer needs to read the bare stores; wrap them
 	// after construction so the computer's own writes don't recurse through
@@ -317,6 +323,10 @@ func run(opts runOpts) error {
 	// but reading via the unwrapped store is also free of side effects).
 	chatStatusTracker := status.NewTracker()
 	displayTracker := status.NewDisplayTracker()
+	// Single-repairer lease, shared between the plugin host (which takes/releases
+	// it via SetRepairStatus) and the API server (which reads it for
+	// Session.repair_active). See BOS-234.
+	repairLease := status.NewRepairLeaseManager()
 	displayComputer := status.NewDisplayStatusComputer(
 		rawSessions, displayTracker, chatStatusTracker, agentChats, rawWorkflows, log.Logger,
 	)
@@ -409,15 +419,6 @@ func run(opts runOpts) error {
 		log.Info().Int64("count", n).Msg("failed orphaned workflows from previous run")
 	}
 
-	// Advance sessions stuck in ImplementingPlan whose driving workflows are
-	// no longer running. Must run after FailOrphaned so the subquery sees
-	// the updated workflow statuses.
-	if n, err := sessions.AdvanceOrphanedSessions(context.Background()); err != nil {
-		log.Warn().Err(err).Msg("failed to advance orphaned sessions")
-	} else if n > 0 {
-		log.Info().Int64("count", n).Msg("advanced orphaned sessions to awaiting_checks")
-	}
-
 	// Fail any task mappings left in Pending/InProgress from a previous
 	// daemon instance. Their driving goroutines no longer exist.
 	if n, err := taskMappings.FailOrphanedMappings(context.Background()); err != nil {
@@ -426,33 +427,13 @@ func run(opts runOpts) error {
 		log.Info().Int64("count", n).Msg("failed orphaned task mappings from previous run")
 	}
 
-	// Backfill the display-status composite for every active session. After
-	// a daemon restart the in-memory inputs (chat, display tracker) are
-	// empty, so the persisted display_label may not match the stored state.
-	// Recomputing once at boot ensures the row matches what Compute would
-	// produce given current inputs (typically "stopped" or PR-axis label),
-	// so clients reading via the bosso DB-fallback path don't see stale
-	// "running 2/4" labels from the previous daemon's last write.
-	{
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		all, err := rawSessions.ListActive(ctx, "")
-		if err != nil {
-			log.Warn().Err(err).Msg("display backfill: list active sessions failed")
-		} else {
-			var updated int
-			for _, s := range all {
-				if err := displayComputer.Recompute(ctx, s.ID); err != nil {
-					log.Debug().Err(err).Str("session_id", s.ID).Msg("display backfill: recompute failed")
-					continue
-				}
-				updated++
-			}
-			if updated > 0 {
-				log.Info().Int("count", updated).Msg("display backfill: recomputed active sessions")
-			}
-		}
-		cancel()
-	}
+	// NOTE: AdvanceOrphanedSessions and the display-status backfill were moved to
+	// run *after* lifecycle.Bootstrap (see below). Bootstrap's headless orphan
+	// sweep must mark restart-killed `boss new --detach` runs ORPHANED before the
+	// AdvanceOrphanedSessions bulk-advance runs — otherwise those workflow-less
+	// ImplementingPlan rows would be moved to AwaitingChecks first and their
+	// bootstrap-only PR would read as a normal green checks session (BOS-229). The
+	// backfill follows both so it recomputes labels from the final states.
 
 	// --- Lifecycle ---
 
@@ -555,6 +536,11 @@ func run(opts runOpts) error {
 	pluginBus := eventbus.New(log.Logger)
 	pluginHost := plugin.New(pluginBus, ghProvider, log.Logger)
 	pluginHost.SetSessionDeps(repos, sessions, agentChats, displayTracker, chatStatusTracker)
+	pluginHost.SetRepairLease(repairLease)
+	// The plugin host's HostServiceServer defaults to a hermetic no-op proof env
+	// resolver (keeps unit tests off the OS keyring); the daemon injects the real
+	// keyring-backed resolver so proof credentials reach plugin-side repair spawns.
+	pluginHost.SetProofEnvResolver(proofenvkeyring.New(log.Logger))
 
 	// Register DisplayTracker onChange callback to notify plugins of status changes
 	displayTracker.SetOnChange(func(sessionID string, oldEntry, newEntry *status.DisplayEntry) {
@@ -685,6 +671,10 @@ func run(opts runOpts) error {
 	}
 
 	lifecycle := session.NewLifecycle(sessions, repos, agentChats, cronJobs, worktrees, agentRunner, tmuxClient, ghProvider, log.Logger)
+	// The lifecycle constructor defaults to a hermetic no-op proof env resolver
+	// (keeps unit tests off the OS keyring); the daemon must inject the real
+	// keyring-backed resolver so proof credentials reach managed session spawns.
+	lifecycle.SetProofEnvResolver(proofenvkeyring.New(log.Logger))
 	lifecycle.SetSessionDeletedNotifier(func(_ context.Context, sessionID string) {
 		streamBus.Publish(upstream.StreamEvent{
 			Session: &upstream.SessionEvent{
@@ -1308,23 +1298,29 @@ func run(opts runOpts) error {
 	}
 
 	srv := server.New(server.Config{
-		Repos:          repos,
-		Sessions:       sessions,
-		Attempts:       attempts,
-		AgentChats:     agentChats,
-		Workflows:      workflows,
-		TaskMappings:   taskMappings,
-		CronJobs:       cronJobs,
-		CheckSnapshots: checkSnapshots,
-		CronScheduler:  cronScheduler,
-		ChatStatus:     chatStatusTracker,
-		DisplayTracker: displayTracker,
-		TmuxPoller:     tmuxStatusPoller,
-		Lifecycle:      lifecycle,
-		Agent:          agentRunner,
-		AgentClients:   agentClients,
-		Worktrees:      worktrees,
-		Provider:       ghProvider,
+		Repos:        repos,
+		Sessions:     sessions,
+		Attempts:     attempts,
+		AgentChats:   agentChats,
+		Workflows:    workflows,
+		TaskMappings: taskMappings,
+		CronJobs:     cronJobs,
+		Accounts:     accounts,
+		// AccountCredentials wires the keyring-backed blob store; AccountSmokeRunner
+		// stays nil until credential materialization (1.5), so TestAccount validates
+		// credentials and reports live_smoke_ran=false in the interim.
+		AccountCredentials: accountCreds,
+		CheckSnapshots:     checkSnapshots,
+		CronScheduler:      cronScheduler,
+		ChatStatus:         chatStatusTracker,
+		DisplayTracker:     displayTracker,
+		RepairLease:        repairLease,
+		TmuxPoller:         tmuxStatusPoller,
+		Lifecycle:          lifecycle,
+		Agent:              agentRunner,
+		AgentClients:       agentClients,
+		Worktrees:          worktrees,
+		Provider:           ghProvider,
 
 		PRResolver:         prAssociationResolver,
 		PluginHost:         pluginHost,
@@ -1453,6 +1449,48 @@ func run(opts runOpts) error {
 		opts.onBootstrapStart()
 	}
 	lifecycle.Bootstrap(pollerCtx)
+
+	// Advance sessions stuck in ImplementingPlan whose driving workflows are no
+	// longer running. Must run after FailOrphaned (above) so the subquery sees
+	// the updated workflow statuses, AND after lifecycle.Bootstrap's headless
+	// orphan sweep so a restart-killed `boss new --detach` run has already been
+	// marked ORPHANED and is no longer in ImplementingPlan — otherwise this bulk
+	// advance (which matches any workflow-less ImplementingPlan row) would move it
+	// to AwaitingChecks and its bootstrap-only PR would read as green (BOS-229).
+	if n, err := sessions.AdvanceOrphanedSessions(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("failed to advance orphaned sessions")
+	} else if n > 0 {
+		log.Info().Int64("count", n).Msg("advanced orphaned sessions to awaiting_checks")
+	}
+
+	// Backfill the display-status composite for every active session. After
+	// a daemon restart the in-memory inputs (chat, display tracker) are
+	// empty, so the persisted display_label may not match the stored state.
+	// Recomputing once at boot ensures the row matches what Compute would
+	// produce given current inputs (typically "stopped" or PR-axis label),
+	// so clients reading via the bosso DB-fallback path don't see stale
+	// "running 2/4" labels from the previous daemon's last write. Runs after the
+	// orphan sweep + AdvanceOrphanedSessions so it reflects the final states.
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		all, err := rawSessions.ListActive(ctx, "")
+		if err != nil {
+			log.Warn().Err(err).Msg("display backfill: list active sessions failed")
+		} else {
+			var updated int
+			for _, s := range all {
+				if err := displayComputer.Recompute(ctx, s.ID); err != nil {
+					log.Debug().Err(err).Str("session_id", s.ID).Msg("display backfill: recompute failed")
+					continue
+				}
+				updated++
+			}
+			if updated > 0 {
+				log.Info().Int("count", updated).Msg("display backfill: recomputed active sessions")
+			}
+		}
+		cancel()
+	}
 
 	// Bootstrap tmux status poller with pre-existing sessions before starting
 	// the polling loop, so sessions from before a daemon restart show correct

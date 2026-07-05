@@ -53,7 +53,7 @@ func NewPluginRunner(client AgentRunnerClient, tailer *Tailer, logDir string, lo
 
 // Start forwards the request to the agent plugin via gRPC and then opens the
 // tailer on the resolved session ID so that Subscribe / History work immediately.
-func (r *PluginRunner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model string) (string, error) {
+func (r *PluginRunner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string) (string, error) {
 	req := &bossanovav1.StartAgentRunRequest{
 		WorkDir:   workDir,
 		Plan:      plan,
@@ -61,6 +61,7 @@ func (r *PluginRunner) Start(ctx context.Context, workDir, plan string, resume *
 		SessionId: sessionID,
 		LogPath:   r.logPathFor(sessionID),
 		Model:     model,
+		ExtraEnv:  extraEnv,
 	}
 	resp, err := r.client.StartRun(ctx, req)
 	if err != nil {

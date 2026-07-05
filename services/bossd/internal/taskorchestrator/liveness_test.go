@@ -76,7 +76,7 @@ type mockAgentRunnerLiveness struct {
 	running map[string]bool
 }
 
-func (m *mockAgentRunnerLiveness) Start(_ context.Context, _, _ string, _ *string, _, _ string) (string, error) {
+func (m *mockAgentRunnerLiveness) Start(_ context.Context, _, _ string, _ *string, _, _ string, _ map[string]string) (string, error) {
 	return "", nil
 }
 func (m *mockAgentRunnerLiveness) Stop(_ string) error { return nil }

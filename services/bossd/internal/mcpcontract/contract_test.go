@@ -19,11 +19,13 @@ import (
 // does not exercise panics if called, keeping the test scope honest.
 type captureBackend struct {
 	bossmcp.Backend
-	registerRepo *pb.RegisterRepoRequest
-	cloneRepo    *pb.CloneAndRegisterRepoRequest
-	createSess   *pb.CreateSessionRequest
-	createCron   *pb.CreateCronJobRequest
-	sendChat     *pb.SendChatMessageRequest
+	registerRepo  *pb.RegisterRepoRequest
+	cloneRepo     *pb.CloneAndRegisterRepoRequest
+	createSess    *pb.CreateSessionRequest
+	createCron    *pb.CreateCronJobRequest
+	sendChat      *pb.SendChatMessageRequest
+	addAccount    *pb.AddAccountRequest
+	updateAccount *pb.UpdateAccountRequest
 }
 
 func (b *captureBackend) RegisterRepo(_ context.Context, req *pb.RegisterRepoRequest) (*pb.Repo, error) {
@@ -36,9 +38,9 @@ func (b *captureBackend) CloneAndRegisterRepo(_ context.Context, req *pb.CloneAn
 	return &pb.Repo{Id: "captured"}, nil
 }
 
-func (b *captureBackend) CreateSession(_ context.Context, req *pb.CreateSessionRequest) (*pb.Session, error) {
+func (b *captureBackend) CreateSession(_ context.Context, req *pb.CreateSessionRequest) (*bossmcp.CreateSessionResult, error) {
 	b.createSess = req
-	return &pb.Session{Id: "captured"}, nil
+	return &bossmcp.CreateSessionResult{Session: &pb.Session{Id: "captured"}}, nil
 }
 
 func (b *captureBackend) CreateCronJob(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
@@ -49,6 +51,16 @@ func (b *captureBackend) CreateCronJob(_ context.Context, req *pb.CreateCronJobR
 func (b *captureBackend) SendChatMessage(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
 	b.sendChat = req
 	return &pb.SendChatMessageResponse{}, nil
+}
+
+func (b *captureBackend) AddAccount(_ context.Context, req *pb.AddAccountRequest) (*pb.Account, error) {
+	b.addAccount = req
+	return &pb.Account{Id: "captured"}, nil
+}
+
+func (b *captureBackend) UpdateAccount(_ context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error) {
+	b.updateAccount = req
+	return &pb.Account{Id: "captured"}, nil
 }
 
 // callTool drives a single MCP tool over an in-memory transport against the
@@ -176,5 +188,26 @@ func TestMCPCreateToolsSatisfyDaemonValidation(t *testing.T) {
 		})
 		_, err := h.Client.SendChatMessage(ctx, connect.NewRequest(backend.sendChat))
 		assertNotMissingRequired(t, "send_chat_message", err)
+	})
+
+	t.Run("add_account", func(t *testing.T) {
+		backend := &captureBackend{}
+		callTool(t, backend, "add_account", map[string]any{
+			"provider":   "claude",
+			"label":      "contract-primary",
+			"credential": "contract-token",
+		})
+		_, err := h.Client.AddAccount(ctx, connect.NewRequest(backend.addAccount))
+		assertNotMissingRequired(t, "add_account", err)
+	})
+
+	t.Run("update_account", func(t *testing.T) {
+		backend := &captureBackend{}
+		callTool(t, backend, "update_account", map[string]any{
+			"id":    "nonexistent-account",
+			"label": "renamed",
+		})
+		_, err := h.Client.UpdateAccount(ctx, connect.NewRequest(backend.updateAccount))
+		assertNotMissingRequired(t, "update_account", err)
 	})
 }

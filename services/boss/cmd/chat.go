@@ -27,6 +27,10 @@ func chatCmd() *cobra.Command {
 			return runChatSend(cmd, args[0], args[1])
 		},
 	}
+	// Default true: `boss chat send` is a human/script sending a message and
+	// expecting the agent to act on it, so a single-line message is submitted
+	// (Enter + verified). --submit=false prefills the composer without submitting.
+	send.Flags().Bool("submit", true, "Submit the message (press Enter and verify); false prefills the composer without submitting")
 
 	// show subcommand
 	show := &cobra.Command{
@@ -67,10 +71,12 @@ func runChatSend(cmd *cobra.Command, chatID, message string) error {
 		return err
 	}
 
+	submit, _ := cmd.Flags().GetBool("submit")
 	resp, err := c.SendChatMessage(ctx, &pb.SendChatMessageRequest{
 		AgentSessionId: target.AgentSessionID,
 		Message:        message,
 		WakeIfAsleep:   true,
+		Submit:         submit,
 	})
 	if err != nil {
 		return fmt.Errorf("send message: %w", err)

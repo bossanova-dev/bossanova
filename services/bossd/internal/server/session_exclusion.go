@@ -22,9 +22,9 @@ import (
 // "taken" if its tracker id, its plugin-matched PR number, or that PR's branch
 // is present.
 type activeSessionKeys struct {
-	prNumbers  map[int]struct{}
-	branches   map[string]struct{}
-	trackerIDs map[string]struct{}
+	prNumbers  map[int]string    // pr number  → session id
+	branches   map[string]string // branch     → session id
+	trackerIDs map[string]string // tracker id → session id
 }
 
 // newActiveSessionKeys indexes a session list by the three keys we can match a
@@ -32,9 +32,9 @@ type activeSessionKeys struct {
 // nil sessions and empty/nil fields are skipped.
 func newActiveSessionKeys(sessions []*models.Session) activeSessionKeys {
 	keys := activeSessionKeys{
-		prNumbers:  make(map[int]struct{}),
-		branches:   make(map[string]struct{}),
-		trackerIDs: make(map[string]struct{}),
+		prNumbers:  make(map[int]string),
+		branches:   make(map[string]string),
+		trackerIDs: make(map[string]string),
 	}
 	for _, sess := range sessions {
 		if sess == nil {
@@ -44,13 +44,13 @@ func newActiveSessionKeys(sessions []*models.Session) activeSessionKeys {
 			continue
 		}
 		if sess.PRNumber != nil {
-			keys.prNumbers[*sess.PRNumber] = struct{}{}
+			keys.prNumbers[*sess.PRNumber] = sess.ID
 		}
 		if sess.BranchName != "" {
-			keys.branches[sess.BranchName] = struct{}{}
+			keys.branches[sess.BranchName] = sess.ID
 		}
 		if sess.TrackerID != nil && *sess.TrackerID != "" {
-			keys.trackerIDs[*sess.TrackerID] = struct{}{}
+			keys.trackerIDs[*sess.TrackerID] = sess.ID
 		}
 	}
 	return keys
@@ -103,6 +103,32 @@ func (k activeSessionKeys) excludeIssues(issues []*pb.TrackerIssue) []*pb.Tracke
 		out = append(out, iss)
 	}
 	return out
+}
+
+// duplicateSessionID reports the id of an active (StateBlocksDuplicateTarget,
+// non-archived) session that already owns this create request's target,
+// matched in priority order: tracker id, then PR number, then branch (the
+// legacy tracker-id-absent cases). Empty/nil signals are skipped so a create
+// with no tracker/PR/branch never false-hits. The returned kind names the
+// dimension that matched ("tracker issue", "PR", or "branch") so callers can
+// report an honest error rather than always blaming the tracker issue.
+func (k activeSessionKeys) duplicateSessionID(trackerID *string, prNumber *int, branch string) (id, kind string, ok bool) {
+	if trackerID != nil && *trackerID != "" {
+		if id, ok := k.trackerIDs[*trackerID]; ok {
+			return id, "tracker issue", true
+		}
+	}
+	if prNumber != nil {
+		if id, ok := k.prNumbers[*prNumber]; ok {
+			return id, "PR", true
+		}
+	}
+	if branch != "" {
+		if id, ok := k.branches[branch]; ok {
+			return id, "branch", true
+		}
+	}
+	return "", "", false
 }
 
 // activeSessionKeysForRepo loads the active sessions for a repo and indexes

@@ -15,6 +15,7 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"google.golang.org/grpc"
@@ -356,6 +357,10 @@ func (f *fakeAgentClient) finish(sessionID, exitErr string) {
 
 func newRepairTestServer(client agent.AgentRunnerClient, sessions ...*models.Session) *HostServiceServer {
 	srv := NewHostServiceServer(&mockVCSProvider{})
+	// Keep the StartAgentRun spawn path (resolveProofEnv) hermetic: the default
+	// resolver opens the real OS keyring, which on Linux leaks a dbus
+	// connection goroutine that TestStopNoGoroutineLeak's goleak check flags.
+	srv.SetProofEnvResolver(proofenv.NewNoop())
 	store := &fakeSessionStore{sessions: make(map[string]*models.Session)}
 	for _, s := range sessions {
 		// Default to the "claude" agent for sessions that don't set one
@@ -553,6 +558,7 @@ func TestStartAgentRun_RoutesByAgentName(t *testing.T) {
 	openCodeClient.startResp = "opencode-1"
 
 	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.SetProofEnvResolver(proofenv.NewNoop()) // hermetic: no real keyring on the spawn path
 	store := &fakeSessionStore{sessions: map[string]*models.Session{
 		"sess-opencode": {ID: "sess-opencode", WorktreePath: "/tmp/wt", AgentName: "opencode"},
 	}}
@@ -688,6 +694,81 @@ func TestListSessions_PopulatesPRMetadata(t *testing.T) {
 	}
 	if got := s.GetPrNumber(); got != int32(prNumber) {
 		t.Fatalf("PrNumber=%d, want %d", got, prNumber)
+	}
+}
+
+// TestSetRepairStatus_LeaseEnforcement verifies the single-repairer invariant
+// (BOS-234): the first dispatcher takes the lease and its session reads
+// repair_active=true; a second, different dispatcher is refused with a clean
+// FailedPrecondition while the lease is held; the holder can re-acquire
+// (re-entrant); and clearing IsRepairing releases the lease so another
+// dispatcher can take over.
+func TestSetRepairStatus_LeaseEnforcement(t *testing.T) {
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.displayTracker = status.NewDisplayTracker()
+	srv.repairLease = status.NewRepairLeaseManager()
+
+	const sessID = "sess-1"
+	ctx := t.Context()
+
+	// First dispatcher acquires the lease.
+	if _, err := srv.SetRepairStatus(ctx, &bossanovav1.SetRepairStatusRequest{
+		SessionId: sessID, IsRepairing: true, DispatcherId: "plugin-A",
+	}); err != nil {
+		t.Fatalf("first SetRepairStatus: %v", err)
+	}
+	if !srv.repairLease.Active(sessID) {
+		t.Fatal("lease should be active after first acquire")
+	}
+
+	// A second, different dispatcher is refused cleanly.
+	_, err := srv.SetRepairStatus(ctx, &bossanovav1.SetRepairStatusRequest{
+		SessionId: sessID, IsRepairing: true, DispatcherId: "driver-B",
+	})
+	if grpcstatus.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("second dispatcher: got code %v (err %v), want FailedPrecondition", grpcstatus.Code(err), err)
+	}
+	if got := srv.repairLease.HolderOf(sessID); got != "plugin-A" {
+		t.Fatalf("holder after refusal = %q, want plugin-A", got)
+	}
+
+	// The holder may re-acquire across passes (re-entrant).
+	if _, err := srv.SetRepairStatus(ctx, &bossanovav1.SetRepairStatusRequest{
+		SessionId: sessID, IsRepairing: true, DispatcherId: "plugin-A",
+	}); err != nil {
+		t.Fatalf("re-acquire by holder: %v", err)
+	}
+
+	// Releasing (IsRepairing=false) frees the lease for the next dispatcher.
+	if _, err := srv.SetRepairStatus(ctx, &bossanovav1.SetRepairStatusRequest{
+		SessionId: sessID, IsRepairing: false, DispatcherId: "plugin-A",
+	}); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if srv.repairLease.Active(sessID) {
+		t.Fatal("lease should be inactive after release")
+	}
+	if _, err := srv.SetRepairStatus(ctx, &bossanovav1.SetRepairStatusRequest{
+		SessionId: sessID, IsRepairing: true, DispatcherId: "driver-B",
+	}); err != nil {
+		t.Fatalf("takeover after release: %v", err)
+	}
+}
+
+// TestSetRepairStatus_NoLeaseManager verifies SetRepairStatus still toggles the
+// advisory display flag when no lease manager is wired (nil-safe legacy path).
+func TestSetRepairStatus_NoLeaseManager(t *testing.T) {
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.displayTracker = status.NewDisplayTracker()
+	// repairLease intentionally left nil.
+
+	if _, err := srv.SetRepairStatus(t.Context(), &bossanovav1.SetRepairStatusRequest{
+		SessionId: "sess-1", IsRepairing: true, DispatcherId: "plugin-A",
+	}); err != nil {
+		t.Fatalf("SetRepairStatus without lease manager: %v", err)
+	}
+	if e := srv.displayTracker.Get("sess-1"); e == nil || !e.IsRepairing {
+		t.Fatal("display flag should be set even without a lease manager")
 	}
 }
 
@@ -1859,6 +1940,26 @@ func TestStartChatRun_CommandPath(t *testing.T) {
 
 	if lc.lastReq.input.Command != "boss-repair" || lc.lastReq.input.Prompt != "" {
 		t.Fatalf("StartTmuxChat input = %+v, want command boss-repair", lc.lastReq.input)
+	}
+}
+
+// TestStartChatRun_SetsSubmitDeliveryIntent proves StartChatRun stamps an
+// explicit DeliverySubmit intent on the ChatInput. This RPC serves autonomous
+// automation (the repair plugin's boss-repair command MUST execute), so the
+// payload must be submitted-and-verified rather than merely prefilled.
+func TestStartChatRun_SetsSubmitDeliveryIntent(t *testing.T) {
+	lc := &fakeChatLifecycle{startResp: "agent-abc"}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+
+	if _, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1",
+		Command:   "boss-repair",
+		Title:     "Repair: sess-1",
+	}); err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+	if lc.lastReq.input.Delivery != session.DeliverySubmit {
+		t.Fatalf("Delivery = %v, want DeliverySubmit", lc.lastReq.input.Delivery)
 	}
 }
 

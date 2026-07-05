@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/recurser/boss/internal/skillinstall"
 	"github.com/recurser/bossalib/buildinfo"
@@ -117,11 +118,12 @@ func rootCmd() *cobra.Command {
 	addGrouped("chat", chatCmd())
 	addGrouped("repo", repoCmd())
 	addGrouped("cron", cronCmd())
+	addGrouped("account", accountCmd())
 	addGrouped("trash", trashCmd())
 	addGrouped("daemon", daemonCmd())
 	addGrouped("mcp", mcpCmd())
 	addGrouped("settings", settingsCmd(), configCmd(), loginCmd(), logoutCmd(), authStatusCmd())
-	addGrouped("diagnostics", repairCmd(), sessionCmd(), envCmd())
+	addGrouped("diagnostics", repairCmd(), sessionCmd(), envCmd(), proofCmd())
 	addGrouped("plugins", pluginCmd())
 	addGrouped("other", versionCmd(), upgradeCmd())
 
@@ -252,6 +254,7 @@ func newCmd() *cobra.Command {
 	cmd.Flags().String("repo", "", "Repository id, name, or local path (enables non-interactive mode when combined with --prompt)")
 	cmd.Flags().String("prompt", "", "Initial prompt / plan for the session (enables non-interactive mode when combined with --repo)")
 	cmd.Flags().String("title", "", "Session title (optional, auto-derived from prompt when absent)")
+	cmd.Flags().String("model", "", "Agent model id to run this session under (e.g. an Opus id); empty = agent default")
 	cmd.Flags().Bool("detach", false, "Exit immediately after creating the session; print session-id and chat-id")
 	cmd.Flags().Bool("no-attach", false, "Alias for --detach")
 	return cmd
@@ -429,6 +432,82 @@ func cronCmd() *cobra.Command {
 	)
 
 	return cron
+}
+
+func accountCmd() *cobra.Command {
+	account := &cobra.Command{
+		Use:   "account",
+		Short: "Manage agent accounts (credential registry)",
+	}
+
+	ls := &cobra.Command{
+		Use:   "ls",
+		Short: "List accounts",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAccountLS(cmd)
+		},
+	}
+	ls.Flags().String("provider", "", "Filter by provider (claude|codex)")
+	ls.Flags().Bool("json", false, "Emit a stable JSON schema instead of a table")
+
+	add := &cobra.Command{
+		Use:   "add [provider]",
+		Short: "Register an agent account",
+		Args:  cobra.MaximumNArgs(1),
+		RunE:  runAccountAddDispatch,
+	}
+	add.Flags().String("provider", "", "Account provider ("+trimmedProviderList()+") (or pass as a positional arg)")
+	add.Flags().String("label", "", "Human label, unique per provider (required for the non-interactive flag path)")
+	add.Flags().String("email", "", "Informational account email")
+	add.Flags().Int32("priority", 0, "Sort order; lower = preferred")
+	// Credential hygiene: prefer stdin/env over --token so the secret does not
+	// land in shell history.
+	add.Flags().String("token", "", "Credential token (prefer --credential-file - or stdin to keep it out of shell history)")
+	add.Flags().String("credential-file", "", "Read the credential from a file (or '-' for stdin); preferred over --token")
+	// Interactive registration (claude setup-token walkthrough / codex device flow).
+	add.Flags().Bool("token-stdin", false, "claude only: read the setup token from stdin instead of running the walkthrough")
+	add.Flags().Duration("timeout", 10*time.Minute, "Deadline for an interactive registration walkthrough")
+
+	update := &cobra.Command{
+		Use:   "update <account-id>",
+		Short: "Update account metadata",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAccountUpdate(cmd, args[0])
+		},
+	}
+	update.Flags().String("label", "", "Set the label")
+	update.Flags().String("email", "", "Set the account email")
+	update.Flags().Int32("priority", 0, "Set the priority (lower = preferred)")
+	update.Flags().String("status", "", "Set the status (active|disabled)")
+	update.Flags().StringSlice("allowed-models", nil, "Replace the allowed-models set (comma-separated)")
+
+	account.AddCommand(
+		ls,
+		add,
+		update,
+		&cobra.Command{
+			Use:   "remove <account-id>",
+			Short: "Remove an account and its stored credential",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runAccountRemove(cmd, args[0])
+			},
+		},
+	)
+
+	test := &cobra.Command{
+		Use:   "test <account-id>",
+		Short: "Validate an account's credential and record the outcome",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAccountTest(cmd, args[0])
+		},
+	}
+	test.Flags().Bool("json", false, "Emit a stable JSON schema instead of text")
+	account.AddCommand(test)
+
+	return account
 }
 
 func archiveCmd() *cobra.Command {

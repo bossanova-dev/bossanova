@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/dotenv"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/tmux"
 )
@@ -58,11 +60,31 @@ func (l *Lifecycle) GetAgentChatTitle(ctx context.Context, agentSessionID string
 	return chat.Title, nil
 }
 
+// DeliveryIntent is how a ChatInput's payload is delivered to the tmux composer.
+type DeliveryIntent int
+
+const (
+	// DeliveryPrefillOnly prefills the composer without submitting — the safe
+	// zero value: a caller that forgets to set intent never triggers an
+	// unwanted auto-run.
+	DeliveryPrefillOnly DeliveryIntent = iota
+	// DeliverySubmit types/pastes the payload, presses Enter, and verifies it
+	// left the composer (retry once, then loud error). Set by unattended
+	// provenance.
+	DeliverySubmit
+)
+
 // ChatInput is the pane input for a tmux-hosted agent chat. Prompt is raw text;
 // Command is a boss command name without an agent-specific prefix.
 type ChatInput struct {
 	Prompt  string
 	Command string
+	// Delivery is the explicit delivery intent for this input: whether the
+	// payload is submitted-and-verified (DeliverySubmit) or merely prefilled
+	// into the composer for someone else to submit (DeliveryPrefillOnly, the
+	// zero value). Intent is derived from session provenance at the call site,
+	// never guessed from the payload's content.
+	Delivery DeliveryIntent
 	// ResumeAgentSessionID, when set, resumes this prior agent session instead
 	// of minting a fresh one (claude `--resume <id>`), preserving the agent's
 	// memory of earlier attempts. The id is reused as the bossd correlation key
@@ -81,27 +103,23 @@ func (i ChatInput) render(commandPrefix string) string {
 	return commandPrefix + strings.TrimLeft(i.Command, "/$")
 }
 
-// cronChatInputFromPrompt decides whether a cron session's stored plan should
-// be dispatched as a boss command (literal send-keys + Enter, so Claude Code
-// actually runs it) or as raw prompt text (bracketed paste).
+// chatInputMechanicsFromPrompt selects the delivery MECHANICS for a stored plan:
+// whether the payload is carried as a boss command (the Command field, which the
+// tmux layer delivers via literal send-keys with the agent's command prefix) or
+// as raw prompt text (the Prompt field, delivered via bracketed paste). It makes
+// no decision about whether the payload is submitted — that delivery intent is
+// set by the caller from session provenance (ChatInput.Delivery).
 //
-// A cron session is headless — there is no human to press Enter — so a slash/$
-// command must auto-run. A plan is treated as a command when, after trimming
-// surrounding whitespace, its leading token begins with "/" or "$", with or
-// without arguments — e.g. "/bs-sweep-mutation" or "/wc-merge-review headless".
-// The whole single line (command + args) is dispatched, so the arguments are
-// preserved. Multi-line plans, and free-text instructions whose leading token
-// is not "/" or "$" (including text that merely contains an embedded
-// slash/dollar such as a path, URL, or price), stay prompts. Detection is
-// deliberately leading-token-only: matching an embedded "/" or "$" would
-// silently truncate legitimate free-text prompts.
-//
-// A single-line free-text plan that genuinely leads with "/" or "$" (e.g. a
-// bare filesystem path) is therefore treated as a command — an accepted
-// trade-off: cron plans that lead with a slash/dollar are commands in
-// practice, and auto-running the line beats the previous failure mode of
-// silently leaving it unsubmitted in the headless pane.
-func cronChatInputFromPrompt(prompt string) ChatInput {
+// The payload is carried as a Command when, after trimming surrounding
+// whitespace, its leading token begins with "/" or "$", with or without
+// arguments — e.g. "/bs-sweep-mutation" or "/wc-merge-review headless". The whole
+// single line (command + args) is preserved. Multi-line payloads, and free-text
+// whose leading token is not "/" or "$" (including text that merely contains an
+// embedded slash/dollar such as a path, URL, or price), are carried as a Prompt.
+// Detection is deliberately leading-token-only: matching an embedded "/" or "$"
+// would truncate legitimate free-text into the command field and change how it is
+// keyed for delivery.
+func chatInputMechanicsFromPrompt(prompt string) ChatInput {
 	trimmed := strings.TrimSpace(prompt)
 	if strings.ContainsAny(trimmed, "\r\n") {
 		return ChatInput{Prompt: prompt}
@@ -115,7 +133,7 @@ func cronChatInputFromPrompt(prompt string) ChatInput {
 // StartTmuxChat boots a Claude (or other agent) run inside a detached tmux
 // session and registers it as an agent_chats row so the chat list view can
 // surface it. It is the generalized form of the cron-only helper that
-// formerly lived under startCronTmuxChat: any caller that needs a tmux-
+// formerly lived under startTmuxChat: any caller that needs a tmux-
 // hosted chat (cron fire, repair sweep, future interactive UI button)
 // should funnel through here so the lifecycle and DB invariants stay in
 // one place.
@@ -294,11 +312,20 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// Step 6: spawn the tmux session. Cron-spawned sessions get BOSS_CRON=true
 	// (and job id/name) in the session environment so the agent — and any skill
 	// it runs — can detect that it is an unattended, autonomous run.
+	// Overlay the allowlisted proof env (proof credentials + non-secret
+	// proof constants) onto the managed BOSS_* env so the agentic proof
+	// pipeline can run in this chat — including unattended cron worktrees,
+	// which reach here and nowhere else. Managed BOSS_* keys win on
+	// conflict; secrets are never placed on SessionFacts (which feeds the
+	// system prompt) and never logged. The worktree's repo-local .env is
+	// overlaid beneath everything (dotenv.Overlay: absent .env is a no-op)
+	// so ${VAR} expansions in the worktree's .mcp.json resolve like they
+	// would in a developer's direnv shell.
 	if err := l.tmux.NewSession(ctx, tmux.NewSessionOpts{
 		Name:    tmuxName,
 		WorkDir: sess.WorktreePath,
 		Command: cmdResp.Argv,
-		Env:     ManagedSessionEnv(sess, agentSessionID, sess.AgentName),
+		Env:     dotenv.Overlay(mergeEnv(ManagedSessionEnv(sess, agentSessionID, sess.AgentName), l.resolveProofEnv()), sess.WorktreePath),
 	}); err != nil {
 		return "", fmt.Errorf("create tmux session %q: %w", tmuxName, err)
 	}
@@ -460,16 +487,35 @@ func liveChatMatchesResumeTarget(chat *models.AgentChat, resumeSessionID string)
 	return chat.ProviderSessionID != nil && *chat.ProviderSessionID == resumeSessionID
 }
 
+// injectTmuxChatInput delivers input into the live tmux composer. The Command vs
+// Prompt field selects the delivery mechanics (literal send-keys for a boss
+// command, bracketed paste for raw text); input.Delivery selects the intent —
+// DeliverySubmit types/pastes then presses Enter and verifies the payload left
+// the composer, while DeliveryPrefillOnly (the zero value) delivers into the
+// composer and stops there so the composer owner submits.
 func (l *Lifecycle) injectTmuxChatInput(ctx context.Context, tmuxName string, input ChatInput, cmdResp *bossanovav1.BuildInteractiveCommandResponse) error {
 	prompt := input.render(cmdResp.GetCommandPrefix())
-	if input.Command != "" {
-		if err := l.tmux.SendLineWithReadyMarker(ctx, tmuxName, prompt, cmdResp.GetReadyMarker()); err != nil {
-			return fmt.Errorf("send command to tmux session %q: %w", tmuxName, err)
+	marker := cmdResp.GetReadyMarker()
+	if input.Delivery == DeliverySubmit {
+		if input.Command != "" {
+			if err := l.tmux.SendLineWithReadyMarker(ctx, tmuxName, prompt, marker); err != nil {
+				return fmt.Errorf("send command to tmux session %q: %w", tmuxName, err)
+			}
+			return nil
+		}
+		if err := l.tmux.SendPlanWithReadyMarker(ctx, tmuxName, prompt, marker); err != nil {
+			return fmt.Errorf("send plan to tmux session %q: %w", tmuxName, err)
 		}
 		return nil
 	}
-	if err := l.tmux.SendPlanWithReadyMarker(ctx, tmuxName, prompt, cmdResp.GetReadyMarker()); err != nil {
-		return fmt.Errorf("send plan to tmux session %q: %w", tmuxName, err)
+	if input.Command != "" {
+		if err := l.tmux.PrefillLineWithReadyMarker(ctx, tmuxName, prompt, marker); err != nil {
+			return fmt.Errorf("prefill command to tmux session %q: %w", tmuxName, err)
+		}
+		return nil
+	}
+	if err := l.tmux.PrefillPlanWithReadyMarker(ctx, tmuxName, prompt, marker); err != nil {
+		return fmt.Errorf("prefill plan to tmux session %q: %w", tmuxName, err)
 	}
 	return nil
 }
@@ -723,23 +769,42 @@ func agentLogPathFor(agentLogsDir, agentSessionID string) string {
 	return filepath.Join(agentLogsDir, agentSessionID+".log")
 }
 
-// startCronTmuxChat is a thin wrapper around StartTmuxChat that supplies
-// the cron-specific prompt (the session plan) and title (`Run "<cron name>"`).
-// All actual lifecycle work — tmux spawn, agent_chats row, idempotency,
-// cleanup — lives in StartTmuxChat. The cron caller in StartSession can
-// keep using this signature without caring about the generalization.
-func (l *Lifecycle) startCronTmuxChat(
+// startTmuxChat is a thin wrapper around StartTmuxChat that supplies the
+// tmux-hosted prompt (the session plan) and a title. A cron session keeps its
+// `Run "<cron name>"` title; a tmux_unattended session (e.g. /bs-epic) uses the
+// plain session title. All actual lifecycle work — tmux spawn, agent_chats row,
+// idempotency, cleanup — lives in StartTmuxChat.
+func (l *Lifecycle) startTmuxChat(
 	ctx context.Context,
 	sessionID string,
-	_ StartSessionOpts,
+	opts StartSessionOpts,
 	session *models.Session,
 	_ *gitpkg.CreateResult,
 ) (string, error) {
-	cronName := session.Title
-	// Cron sessions wire their session-keyed Stop hook earlier in
-	// StartSession; pass an empty HookOpts so StartTmuxChat doesn't
-	// install a duplicate run-keyed entry.
-	return l.StartTmuxChat(ctx, sessionID, cronChatInputFromPrompt(session.Plan), `Run "`+cronName+`"`, HookOpts{})
+	title := session.Title
+	if opts.CronJobID != "" {
+		title = `Run "` + session.Title + `"`
+	}
+	// Select delivery mechanics (command vs paste) from the plan, then set the
+	// delivery intent from provenance: an unattended session has no human to
+	// press Enter, so its payload must be submitted and verified. The intent is
+	// derived from provenance, never guessed from the plan's content.
+	//
+	// opts is the authoritative provenance signal here: this is the same
+	// cron/tmux_unattended routing that steered StartSession into startTmuxChat,
+	// and it is reliable even though the caller's `session` snapshot is read
+	// before StartSession stamps CronJobID/TmuxUnattended onto the row (so
+	// isUnattendedSession(session) can still be false on this path). The session
+	// predicate is kept as a fallback for any future caller that funnels a
+	// fully-populated session through with empty opts.
+	input := chatInputMechanicsFromPrompt(session.Plan)
+	if opts.CronJobID != "" || opts.TmuxUnattended || isUnattendedSession(session) {
+		input.Delivery = DeliverySubmit
+	}
+	// Unattended/cron sessions wire their session-keyed Stop hook earlier in
+	// StartSession (opts.HookToken); pass an empty HookOpts so StartTmuxChat
+	// doesn't install a duplicate run-keyed entry.
+	return l.StartTmuxChat(ctx, sessionID, input, title, HookOpts{})
 }
 
 // cronAutonomyDirective is appended to the agent's system prompt for every
@@ -761,12 +826,23 @@ func isCronSession(sess *models.Session) bool {
 	return sess != nil && sess.CronJobID != nil && *sess.CronJobID != ""
 }
 
+// isUnattendedSession reports whether a session runs autonomously with no human
+// in the loop — a scheduled cron job OR a tmux_unattended session (e.g. /bs-epic).
+// Cron-job scheduler bookkeeping stays keyed on CronJobID; this predicate governs
+// autonomy: env (BOSS_CRON), the autonomy directive, headless-finalize exclusion,
+// and completion-gate eligibility.
+func isUnattendedSession(sess *models.Session) bool {
+	return isCronSession(sess) || (sess != nil && sess.TmuxUnattended)
+}
+
 // ManagedSessionEnv returns the canonical BOSS_* environment set on every
 // managed chat's tmux session. The values let the agent (and any skill or
 // future agent runner — including Codex, which never sees the system prompt)
-// discover its boss context. Cron sessions additionally get BOSS_CRON* so
-// shell-mode detection stays consistent with the cron autonomy directive that
-// AppendSystemPromptFor appends. Binary paths are omitted when not resolved.
+// discover its boss context. Unattended sessions (cron OR tmux_unattended)
+// additionally get BOSS_CRON=true so shell-mode detection stays consistent with
+// the autonomy directive that AppendSystemPromptFor appends; only real cron jobs
+// also get BOSS_CRON_JOB_ID/BOSS_CRON_NAME. Binary paths are omitted when not
+// resolved.
 //
 // agentName is the running agent for this chat. It takes precedence over
 // sess.AgentName, so a codex chat spawned from a claude session correctly
@@ -791,8 +867,10 @@ func managedSessionEnv(f SessionFacts) map[string]string {
 	if f.McpBin != "" {
 		env["BOSS_MCP_BIN"] = f.McpBin
 	}
-	if f.IsCron {
+	if f.IsUnattended {
 		env["BOSS_CRON"] = "true"
+	}
+	if f.IsCron {
 		env["BOSS_CRON_JOB_ID"] = f.CronJobID
 		env["BOSS_CRON_NAME"] = f.CronName
 	}
@@ -811,17 +889,20 @@ type SessionFacts struct {
 	Worktree       string
 	SettingsPath   string
 	Socket         string
-	BossBin        string // "" when no trusted boss binary was resolved
+	BossBin        string // "" when neither a trusted boss binary nor a repo-local <worktree>/bin/boss resolved
 	McpBin         string // "" when no trusted mcp binary was resolved
 	IsCron         bool
+	IsUnattended   bool
 	CronJobID      string
 	CronName       string
 }
 
-// ResolveSessionFacts gathers identifiers, config paths, and trusted binary
-// paths for a managed chat exactly once per spawn. Binary paths are resolved
-// trusted-only (never from the worktree). Missing/unresolvable values are left
-// as the zero string; callers degrade gracefully rather than emitting blanks.
+// ResolveSessionFacts gathers identifiers, config paths, and binary paths for a
+// managed chat exactly once per spawn. McpBin is resolved trusted-only; BossBin
+// prefers a trusted binary and, only when none resolves, falls back to the
+// session's own repo-local <worktree>/bin/boss (BOS-230 — see resolveRepoLocalBoss
+// for why that fallback is safe). Missing/unresolvable values are left as the
+// zero string; callers degrade gracefully rather than emitting blanks.
 //
 // agentName is the running agent for this specific chat. It wins over
 // sess.AgentName when non-empty, so a codex chat inside a claude session
@@ -833,6 +914,7 @@ func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string)
 		f.SessionID = sess.ID
 		f.RepoID = sess.RepoID
 		f.Worktree = sess.WorktreePath
+		f.IsUnattended = isUnattendedSession(sess)
 		if isCronSession(sess) {
 			f.IsCron = true
 			f.CronJobID = *sess.CronJobID
@@ -857,8 +939,39 @@ func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string)
 		}
 	}
 	f.BossBin = config.ResolveTrustedExecutable("boss")
+	if f.BossBin == "" {
+		// BOS-230: last-resort fallback to the session's own repo build. When no
+		// trusted `boss` resolves (not in bossd's dir, not on PATH), the session
+		// still has a usable CLI if its worktree carries a built bin/boss.
+		f.BossBin = resolveRepoLocalBoss(f.Worktree)
+	}
 	f.McpBin = config.ResolveMcpBinary()
 	return f
+}
+
+// resolveRepoLocalBoss returns the session's own build of the boss CLI at
+// <worktree>/bin/boss when it exists and is an executable regular file, else "".
+// It is the last-resort fallback after config.ResolveTrustedExecutable("boss")
+// fails (BOS-230): a binary built from the very tree the session works in is at
+// least as trustworthy as a PATH lookup, and it talks to the daemon over the
+// already-authenticated socket with the session's own permissions.
+//
+// A session worktree is agent-writable, so this deliberately does NOT apply the
+// trusted-path check ResolveTrustedExecutable uses — that check is designed to
+// reject worktree binaries, which is exactly what we want to allow here. The
+// daemon socket enforces the session's own permissions regardless of which
+// binary invokes it. The path comes from the session's worktree record, never
+// the current working directory.
+func resolveRepoLocalBoss(worktree string) string {
+	if worktree == "" {
+		return ""
+	}
+	candidate := filepath.Join(worktree, "bin", "boss")
+	info, err := os.Stat(candidate)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+		return ""
+	}
+	return candidate
 }
 
 // bossSessionContext describes the chat's own bossanova identifiers and how to
@@ -869,20 +982,40 @@ func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string)
 // and hard-forbids working around a missing capability by editing boss state
 // directly.
 func bossSessionContext(f SessionFacts) string {
-	bossRef := "the boss CLI (`boss`, if on PATH)"
-	helpRef := "`boss env` (or `boss --help`)"
-	renameRef := "`boss rename <session-id> <new title>`"
+	var bossRef, helpRef, renameRef string
 	if f.BossBin != "" {
 		bossRef = "the boss CLI at " + f.BossBin
 		helpRef = "`" + f.BossBin + " env` (or `" + f.BossBin + " --help`)"
 		renameRef = "`" + f.BossBin + " rename " + f.SessionID + " <new title>`"
+	} else {
+		// BOS-230: no boss CLI resolved (not trusted, no repo build). Tell the
+		// truth and point at the build recipe instead of advertising `boss` as
+		// if it were on PATH — the honest half of the fix.
+		bossRef = "the boss CLI (not available in this environment — build it with `make build`, then use `./bin/boss`)"
+		helpRef = "`./bin/boss env` (or `./bin/boss --help`)"
+		renameRef = "`./bin/boss rename " + f.SessionID + " <new title>`"
+	}
+	// Advertise exactly the identifier vars managedSessionEnv exports, so the
+	// prompt never names an unset var (BOS-230). BOSS_BIN and BOSS_MCP_BIN are
+	// listed only when their binary resolved — the same condition managedSessionEnv
+	// gates their export on. This list is a parallel copy of that gating, kept
+	// honest by TestBossSessionContext_AdvertisesExactlyExportedIdentifiers, which
+	// fails if a future export drifts from the advertised set.
+	idVars := []string{
+		"BOSS_SESSION_ID", "BOSS_AGENT_SESSION_ID", "BOSS_REPO_ID", "BOSS_AGENT",
+		"BOSS_WORKTREE", "BOSS_SETTINGS_PATH", "BOSS_SOCKET",
+	}
+	if f.BossBin != "" {
+		idVars = append(idVars, "BOSS_BIN")
+	}
+	if f.McpBin != "" {
+		idVars = append(idVars, "BOSS_MCP_BIN")
 	}
 	prompt := "You are running inside a bossanova-managed chat. Your boss identifiers are: " +
 		"session ID " + f.SessionID + ", agent-session (chat) ID " + f.AgentSessionID + ", " +
 		"repository ID " + f.RepoID + ", agent " + f.Agent + ", worktree " + f.Worktree + ". " +
 		"These, plus the daemon socket and binary paths, are also in your environment as " +
-		"BOSS_SESSION_ID, BOSS_AGENT_SESSION_ID, BOSS_REPO_ID, BOSS_AGENT, BOSS_WORKTREE, " +
-		"BOSS_SETTINGS_PATH, BOSS_SOCKET, BOSS_BIN, BOSS_MCP_BIN (context for you, not an " +
+		strings.Join(idVars, ", ") + " (context for you, not an " +
 		"action surface). To act on this session or chat, use " + bossRef + " — run " + helpRef +
 		" for your live session context plus the full, current CLI command and MCP tool inventory " +
 		"(for example, " + renameRef + " retitles a session). " +
@@ -906,8 +1039,8 @@ func bossSessionContext(f SessionFacts) string {
 
 // AppendSystemPromptFor builds the per-chat system-prompt suffix bossd injects
 // into every agent launch: the boss session context for every chat, plus the
-// cron autonomy directive for scheduler-spawned sessions. Resolution of facts
-// is shared with ManagedSessionEnv via ResolveSessionFacts.
+// autonomy directive for unattended sessions (cron OR tmux_unattended).
+// Resolution of facts is shared with ManagedSessionEnv via ResolveSessionFacts.
 //
 // agentName is the running agent for this chat (see ResolveSessionFacts).
 //
@@ -926,7 +1059,7 @@ func AppendSystemPromptFor(sess *models.Session, agentSessionID, agentName, mcpC
 		f.McpBin = ""
 	}
 	prompt := bossSessionContext(f)
-	if f.IsCron {
+	if f.IsUnattended {
 		prompt += "\n\n" + cronAutonomyDirective
 	}
 	return prompt

@@ -20,6 +20,7 @@ var readOnlyToolNames = []string{
 	"list_plugins",
 	"list_cron_jobs",
 	"get_cron_job",
+	"list_accounts",
 	"get_chat_transcript",
 }
 
@@ -31,11 +32,12 @@ var writeToolNames = []string{
 	"stop_session", "pause_session", "resume_session", "retry_session",
 	"update_session", "link_session_pr", "record_chat", "update_chat_title",
 	"wake_chat", "report_chat_status", "create_cron_job", "update_cron_job",
-	"run_cron_job_now", "send_chat_message",
+	"run_cron_job_now", "add_account", "update_account", "test_account",
+	"send_chat_message",
 	// destructive
 	"remove_repo", "close_session", "merge_session", "remove_session",
 	"archive_session", "resurrect_session", "delete_chat", "empty_trash",
-	"delete_cron_job",
+	"delete_cron_job", "remove_account",
 }
 
 // ToolNames returns every MCP tool name this package registers in full

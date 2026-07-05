@@ -5,18 +5,22 @@ Shared domain vocabulary for this project — entities, named processes, and sta
 ## Reverse streaming
 
 ### Reverse stream
-A long-lived bidirectional connection a daemon opens *outbound* to the orchestrator, inverting the usual client/server direction so the orchestrator can push commands to a daemon it cannot dial directly (the daemon may sit behind NAT). A daemon holds its reverse streams open for its whole lifetime, reconnecting with backoff whenever one drops.
+
+A long-lived bidirectional connection a daemon opens _outbound_ to the orchestrator, inverting the usual client/server direction so the orchestrator can push commands to a daemon it cannot dial directly (the daemon may sit behind NAT). A daemon holds its reverse streams open for its whole lifetime, reconnecting with backoff whenever one drops.
 
 ### DaemonStream
+
 The control-plane reverse stream: the daemon sends an initial state snapshot followed by session, chat, and status deltas, and receives orchestrator commands (stop, pause, resume, transfer, webhook dispatch) back on the same connection. One per daemon.
 
 ### TerminalStream
+
 The web-terminal reverse stream that carries interactive PTY traffic for the browser terminal feature, kept separate from the DaemonStream so keystroke and output volume can never starve control-plane commands. It multiplexes many concurrent Attaches over one connection, keyed by attach id.
 
 ### Attach
+
 A single live binding between one browser terminal and one daemon-side PTY, carried over the TerminalStream.
 
-An Attach owns its PTY: tearing one down must close the PTY *before* the stream's context is cancelled, or the PTY leaks on the daemon. Attaches do not survive a stream reconnect — the browser must re-attach to recover its terminal.
+An Attach owns its PTY: tearing one down must close the PTY _before_ the stream's context is cancelled, or the PTY leaks on the daemon. Attaches do not survive a stream reconnect — the browser must re-attach to recover its terminal.
 
 ## Repo automation flags
 
@@ -26,6 +30,7 @@ automatically for that repo's sessions. All are consumed in
 auto-merge, which runs in the task orchestrator's poll loop.
 
 ### Mark ready for review when checks pass (`CanAutoMerge`)
+
 Despite the legacy field name, this does **not** merge. When a draft PR's checks
 pass, it promotes the PR from draft to ready-for-review (`MarkReadyForReview`)
 and advances the session state. Regular PRs are never auto-merged: a merge
@@ -33,11 +38,13 @@ happens only via the manual `MergeSession` RPC, or for Dependabot PRs. The UI
 label was corrected to match; the proto/DB field stays `can_auto_merge`.
 
 ### Dependabot auto-merge (`CanAutoMergeDependabot`)
+
 The only flag that triggers a real `MergePR`. The task orchestrator polls repos
 with this enabled and auto-merges eligible Dependabot PRs using the repo's merge
 strategy. Independent of the dispatcher's session flow.
 
 ### Automatic repair (`CanAutoRepair`)
+
 A single per-repo toggle (default on) gating the repair plugin
 (`bossd-plugin-repair`), which repairs a PR's failing CI checks, merge
 conflicts, and review feedback as one flow. It triggers on the PR's display
@@ -52,6 +59,44 @@ dead code and were collapsed into `CanAutoRepair`.
 ## Authentication state
 
 ### AuthState
+
 The shared signal telling every reverse stream whether the daemon's credential is currently usable ("auth OK") or has been revoked and awaits re-login ("needs login"). A single AuthState instance is shared by all of a daemon's streams so that one logout pauses them together rather than each holding its own drifting view.
 
 AuthState is edge-triggered in both directions: a logout cancels any in-flight stream immediately rather than at the next reconnect, and a later login wakes the paused streams. The two transitions are distinct observable signals — seeing "needs login" is what lets a clean logout be told apart from a stream failure, so an intentional pause is not logged or backed off as if it were an error.
+
+## Epic runs (bs-epic)
+
+### Epic run
+
+One unattended execution of the `bs-epic` skill over an epic's Linear
+sub-issues (or an explicit ticket list): build the dependency graph from
+blocker relations, implement up to N tickets in parallel in separate bossd
+sessions, merge serially in dependency order, and report progress on the
+parent issue. All scheduling decisions come from the pure library
+`scripts/bs-epic-lib.mjs`; the skill prose is I/O glue only.
+
+### Driver
+
+The long-running chat that runs the bs-epic scheduling loop. It holds no
+authoritative state: on (re)start it reconstructs everything from Linear
+ticket states plus the daemon's session list, so a killed driver can be
+re-launched with the identical command and resume.
+
+### Child session
+
+A bossd session the driver creates for one epic ticket (prompt
+`/bs-implement BOS-NN`, tracker fields set, `claude` agent by default —
+codex-exec sessions have no chat row for mid-run delivery).
+
+### Isolate
+
+The permanent-failure disposition for a child: leave the session and its
+work open for a human, mark the ticket failed inside the run, and skip its
+transitive dependents. Isolation never stops or deletes the session —
+evidence is preserved.
+
+### Serialized merge
+
+The epic-run rule that at most one merge is in flight at any time, in the
+order computed by `nextToMerge` (dependency-clean greens first, then
+priority, then age), even while implementation runs in parallel.

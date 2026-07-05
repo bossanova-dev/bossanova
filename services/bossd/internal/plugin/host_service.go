@@ -17,6 +17,8 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/dotenv"
+	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/rs/zerolog/log"
@@ -93,6 +95,10 @@ type HostServiceServer struct {
 	repoStore      db.RepoStore
 	displayTracker *status.DisplayTracker
 	chatTracker    *status.Tracker
+	// repairLease enforces the per-session single-repairer invariant. Nil in
+	// setups that never wire it (some tests), in which case SetRepairStatus
+	// falls back to toggling only the advisory display flag.
+	repairLease *status.RepairLeaseManager
 
 	// agentClients is the per-name registry of AgentRunnerClient gRPC
 	// clients (one per loaded AgentRunner plugin, keyed by the plugin's
@@ -106,6 +112,13 @@ type HostServiceServer struct {
 	// agentLogsDir is the bossd-owned directory where the agent plugin
 	// writes per-session NDJSON log files. Forwarded into StartRun.LogPath.
 	agentLogsDir string
+
+	// proofEnv resolves the allowlisted proof env overlay applied to repair
+	// agent runs started here (parity with the lifecycle spawn paths).
+	// Defaulted in NewHostServiceServer to a real keyring-backed resolver;
+	// SetProofEnvResolver overrides it for tests. Resolved fresh per spawn;
+	// values are never logged.
+	proofEnv proofEnvResolver
 
 	// activeRuns maps session_id → activeRun for the currently-active
 	// repair run on each session. Guarded by runMu. The repair plugin's
@@ -215,9 +228,36 @@ type activeRun struct {
 // given VCS provider. Session-related functionality requires SetSessionDeps
 // to be called before use; agent execution (StartAgentRun/WaitAgentRun)
 // requires SetAgentClients + SetAgentLogsDir.
+// proofEnvResolver resolves the allowlisted proof environment overlay. The
+// concrete implementation is proofenv.Resolver; the interface keeps the
+// host service testable without a real keyring.
+type proofEnvResolver interface {
+	Resolve() map[string]string
+}
+
+// SetProofEnvResolver overrides the proof env resolver (tests inject a fake
+// so no real keyring is touched). Safe to leave unset in production —
+// NewHostServiceServer installs a real resolver.
+func (s *HostServiceServer) SetProofEnvResolver(r proofEnvResolver) { s.proofEnv = r }
+
+// resolveProofEnv returns the proof env overlay, or nil when no resolver is
+// wired. Never logs values.
+func (s *HostServiceServer) resolveProofEnv() map[string]string {
+	if s.proofEnv == nil {
+		return nil
+	}
+	return s.proofEnv.Resolve()
+}
+
 func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
 	return &HostServiceServer{
-		provider:             provider,
+		provider: provider,
+		// Default to a hermetic no-op resolver so unit tests never open the
+		// real OS keyring (the Linux SecretService/dbus backend leaks a
+		// connection goroutine per open, which TestStopNoGoroutineLeak flags).
+		// Production wires the real keyring resolver via SetProofEnvResolver in
+		// plugin.New; the daemon path is the only one that must resolve secrets.
+		proofEnv:             proofenv.NewNoop(),
 		activeRuns:           make(map[string]activeRun),
 		agentSessionByID:     make(map[string]string),
 		runCompletion:        make(map[string]activeChatRun),
@@ -303,6 +343,12 @@ func (s *HostServiceServer) SetSessionDeps(repos db.RepoStore, sessions db.Sessi
 	s.agentChats = chats
 	s.displayTracker = tracker
 	s.chatTracker = chatTracker
+}
+
+// SetRepairLease injects the per-session single-repairer lease manager, shared
+// with the API server so repair_active reads and lease enforcement agree.
+func (s *HostServiceServer) SetRepairLease(m *status.RepairLeaseManager) {
+	s.repairLease = m
 }
 
 // SetAgentClients injects the per-name registry of AgentRunnerClient gRPC
@@ -710,6 +756,7 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 				DisplayStatus:               vcsDisplayStatusToProto(displayStatus),
 				DisplayHasFailures:          hasFailures,
 				DisplayIsRepairing:          isRepairing,
+				RepairActive:                s.repairLease.Active(sess.ID),
 				HasActiveChat:               hasActiveChat,
 				PrDisplayHeadSha:            headSHA,
 				LastRepairRunnerError:       sess.LastRepairRunnerError,
@@ -931,7 +978,27 @@ func (s *HostServiceServer) SetRepairStatus(_ context.Context, req *bossanovav1.
 	if s.displayTracker == nil {
 		return nil, grpcstatus.Error(codes.Internal, "PR tracker not set")
 	}
-	s.displayTracker.SetRepairing(req.GetSessionId(), req.GetIsRepairing())
+	sessionID := req.GetSessionId()
+	if req.GetIsRepairing() {
+		// Take the single-repairer lease before flipping the display flag, so a
+		// refusal never leaves a phantom "repairing" flag set. A second, live
+		// dispatcher is refused cleanly (FailedPrecondition) rather than racing
+		// onto the same worktree; the same dispatcher re-acquiring across passes
+		// is re-entrant. An empty dispatcher id (legacy callers) is a no-op in
+		// the lease manager, so those callers keep only the advisory flag.
+		if s.repairLease != nil {
+			if err := s.repairLease.Acquire(sessionID, req.GetDispatcherId()); err != nil {
+				return nil, grpcstatus.Errorf(codes.FailedPrecondition,
+					"repair already active on session %s (held by %q)", sessionID, s.repairLease.HolderOf(sessionID))
+			}
+		}
+		s.displayTracker.SetRepairing(sessionID, true)
+	} else {
+		s.displayTracker.SetRepairing(sessionID, false)
+		if s.repairLease != nil {
+			s.repairLease.Release(sessionID, req.GetDispatcherId())
+		}
+	}
 	return &bossanovav1.SetRepairStatusResponse{}, nil
 }
 
@@ -1017,10 +1084,11 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 	// tie the spawned process's lifetime to this RPC call, which returns
 	// immediately. The agent plugin has its own Stop / shutdown path.
 	startReq := &bossanovav1.StartAgentRunRequest{
-		WorkDir: sess.WorktreePath,
-		Plan:    req.GetPrompt(),
-		LogPath: filepath.Join(s.agentLogsDir, "repair-"+sessionID+".log"),
-		Model:   sess.Model,
+		WorkDir:  sess.WorktreePath,
+		Plan:     req.GetPrompt(),
+		LogPath:  filepath.Join(s.agentLogsDir, "repair-"+sessionID+".log"),
+		Model:    sess.Model,
+		ExtraEnv: dotenv.Overlay(s.resolveProofEnv(), sess.WorktreePath),
 	}
 	startResp, err := client.StartRun(context.Background(), startReq)
 	if err != nil {
@@ -1433,7 +1501,16 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	// outlive this call on any error/early-return path.
 	s.markPendingChatRun(sessionID)
 	defer s.clearPendingChatRun(sessionID)
-	input := session.ChatInput{Prompt: req.GetPrompt(), Command: req.GetCommand(), ResumeAgentSessionID: req.GetResumeAgentSessionId()}
+	// This RPC serves autonomous automation (the repair plugin, which always
+	// sends the boss-repair command that MUST execute), so the payload is
+	// submitted and verified. A future interactive/MCP surface (the deferred
+	// auto_submit arg) would instead pass session.DeliveryPrefillOnly here.
+	input := session.ChatInput{
+		Prompt:               req.GetPrompt(),
+		Command:              req.GetCommand(),
+		Delivery:             session.DeliverySubmit,
+		ResumeAgentSessionID: req.GetResumeAgentSessionId(),
+	}
 	agentSessionID, err := s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), session.HookOpts{Token: token})
 	if err != nil && grpcstatus.Code(err) == codes.AlreadyExists && req.GetReplaceExistingChat() && !replacedActiveRun {
 		blockingAgentSessionID := agentSessionID

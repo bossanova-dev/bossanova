@@ -169,6 +169,19 @@ func (s *chatPickerStub) DeleteCronJob(context.Context, string) error { panic("u
 func (s *chatPickerStub) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
+func (s *chatPickerStub) ListAccounts(context.Context, string) ([]*pb.Account, error) {
+	panic("unused")
+}
+func (s *chatPickerStub) AddAccount(context.Context, *pb.AddAccountRequest) (*pb.Account, error) {
+	panic("unused")
+}
+func (s *chatPickerStub) UpdateAccount(context.Context, *pb.UpdateAccountRequest) (*pb.Account, error) {
+	panic("unused")
+}
+func (s *chatPickerStub) RemoveAccount(context.Context, string) error { panic("unused") }
+func (s *chatPickerStub) TestAccount(context.Context, string) (*pb.TestAccountResponse, error) {
+	panic("unused")
+}
 func (s *chatPickerStub) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
 	panic("unused")
 }

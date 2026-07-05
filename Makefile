@@ -232,6 +232,19 @@ setup-worktree:
 	else \
 		echo "pnpm not found on PATH — skipping JS dep + hook install (non-fatal)"; \
 	fi
+	@# Install the Playwright Chromium the bs-proof pipeline drives (BOS-138). Best
+	@# effort: guarded on pnpm + web node_modules and NEVER fatal — a worktree that
+	@# can't fetch Chromium still provisions; `node scripts/proof.mjs doctor` reports
+	@# the gap at run time (env-unavailable, not a crash). Host-level tools the proof
+	@# video path needs are NOT installable here: run `brew install agg ffmpeg`
+	@# (macOS) / your distro equivalent on the host once; doctor reports their absence.
+	@if command -v pnpm >/dev/null 2>&1 && [ -d "$$WORKTREE_DIR/services/web/node_modules" ]; then \
+		echo "==> Installing Playwright Chromium (bs-proof, best-effort)"; \
+		( cd "$$WORKTREE_DIR" && pnpm exec playwright install chromium ) \
+			|| echo "playwright install chromium failed — proof web/recipe capture unavailable (non-fatal)"; \
+	else \
+		echo "pnpm or services/web/node_modules missing — skipping Playwright Chromium install (non-fatal)"; \
+	fi
 	@# Allow direnv only when this repo actually uses it; a missing .envrc would
 	@# otherwise make `direnv allow` exit non-zero and flag setup as failed.
 	@if command -v direnv >/dev/null 2>&1 && [ -f "$$WORKTREE_DIR/.envrc" ]; then \

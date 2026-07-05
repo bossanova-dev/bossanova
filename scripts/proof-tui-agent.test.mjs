@@ -26,6 +26,18 @@ import { test } from 'node:test'
 
 const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 
+// Hermeticity guard (BOS-141): finalizeAgentProof's default `judge` dep
+// (judgeProof) makes a REAL Anthropic API call whenever PROOF_ANTHROPIC_API_KEY
+// is set — and it IS set in every provisioned worktree (repo .env is copied
+// in). runTuiAgentProof forwards deps.finalizeDeps verbatim into finalize and
+// no test here stubs it, so drop the key for this file's test process:
+// judgeProof then short-circuits to { unjudged: true, reason: 'missing-key' }
+// BEFORE constructing the SDK (unit-proven in proof-judge.test.mjs), keeping
+// this file's documented no-network contract true. The createSdkModel tests
+// that need the key set and restore it around themselves, unaffected.
+// node --test runs each file in its own process, so this cannot leak.
+delete process.env.PROOF_ANTHROPIC_API_KEY
+
 // ── Test doubles ──────────────────────────────────────────────────────────────
 
 /** Build an Anthropic-shaped tool_use response. */
@@ -263,6 +275,11 @@ test('runTuiAgentProof: brief → loop → frames → manifest (happy path)', as
           assert.equal(cap.status, 'passed')
           assert.ok(Array.isArray(cap.stills) && cap.stills.length >= 1, 'frames must be present')
           assert.ok(bridge.quitCalled, 'bridge.quit() must always be sent')
+          // Hermeticity tripwire: this media-carrying run reaches finalize's
+          // judge dep, which must have short-circuited on the deleted
+          // PROOF_ANTHROPIC_API_KEY — any other value means a real (or
+          // attempted) Anthropic call leaked into a unit test.
+          assert.deepEqual(manifest.judge, { unjudged: true, reason: 'missing-key' })
         },
       ),
     )
@@ -634,7 +651,10 @@ test('runTuiAgentProof: castToVideo returns mp4 → capture mediaType mp4', asyn
             assert.equal(cap.mediaType, 'mp4')
             assert.equal(cap.status, 'passed')
             assert.ok(cap.videoUrl, 'video capture must expose a videoUrl')
-            assert.equal(castArgs.posterBasePng, path.join(castArgs.captureDir, 'frame-01.png'))
+            assert.equal(
+              castArgs.posterBasePng,
+              path.join(castArgs.captureDir, 'scene-01-frame-01.png'),
+            )
             assert.equal(castArgs.keepWebm, true)
             assert.equal(castArgs.label, 'bossanova#123')
             assert.equal(castArgs.cardTitle, 'Targeted PR title')
@@ -759,6 +779,298 @@ test('runTuiAgentProof: T1 gate — evidence present + done(passed) → verdict 
   } finally {
     process.exitCode = originalExitCode
     cleanupPr('tuigatepass')
+  }
+})
+
+// ── 6b. evaluateSceneEvidence + journey-wide gate (P3c, BOS-140) ─────────────
+
+test('evaluateSceneEvidence: evidence on an EARLY screen of its scene passes', async () => {
+  const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
+  const scenes = [{ id: 'scene-01', title: 'Home', expectedEvidence: ['Ready'] }]
+  const screens = [
+    { seq: 1, text: 'Ready to go' },
+    { seq: 2, text: 'Something else entirely' },
+  ]
+  const sceneForScreen = { 1: 'scene-01', 2: 'scene-01' }
+  const result = evaluateSceneEvidence({ scenes, screens, sceneForScreen })
+  assert.deepEqual(result, [{ id: 'scene-01', title: 'Home', passed: true, missing: [] }])
+})
+
+test("evaluateSceneEvidence: evidence present only on a DIFFERENT scene's screen is missing (window isolation)", async () => {
+  const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
+  const scenes = [
+    { id: 'scene-01', title: 'Home', expectedEvidence: ['Home ready'] },
+    // scene-02's expected substring literally appears on screen 1 (scene-01's
+    // window), never on a screen attributed to scene-02 itself.
+    { id: 'scene-02', title: 'Settings', expectedEvidence: ['Settings saved'] },
+  ]
+  const screens = [
+    { seq: 1, text: 'Home ready — Settings saved (leaked from a future screen)' },
+    { seq: 2, text: 'Settings open, not yet confirmed' },
+  ]
+  const sceneForScreen = { 1: 'scene-01', 2: 'scene-02' }
+  const result = evaluateSceneEvidence({ scenes, screens, sceneForScreen })
+  // scene-01's own evidence appears in its own window → passed.
+  assert.deepEqual(result[0], { id: 'scene-01', title: 'Home', passed: true, missing: [] })
+  // scene-02's evidence never appears in any screen attributed to scene-02 —
+  // its presence on scene-01's screen does not count (window isolation).
+  assert.equal(result[1].passed, false)
+  assert.deepEqual(result[1].missing, ['Settings saved'])
+})
+
+test('evaluateSceneEvidence: one failed + one passed scene are evaluated independently', async () => {
+  const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
+  const scenes = [
+    { id: 'scene-01', title: 'Home', expectedEvidence: ['Home ready'] },
+    { id: 'scene-02', title: 'Settings', expectedEvidence: ['Settings saved'] },
+  ]
+  const screens = [
+    { seq: 1, text: 'Home ready' },
+    { seq: 2, text: 'Settings open' },
+  ]
+  const sceneForScreen = { 1: 'scene-01', 2: 'scene-02' }
+  const result = evaluateSceneEvidence({ scenes, screens, sceneForScreen })
+  assert.equal(result[0].passed, true)
+  assert.equal(result[1].passed, false)
+  assert.deepEqual(result[1].missing, ['Settings saved'])
+})
+
+test('evaluateSceneEvidence: a scene with zero captured screens fails with all evidence missing', async () => {
+  const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
+  const scenes = [{ id: 'scene-02', title: 'Settings', expectedEvidence: ['Saved', 'Settings'] }]
+  const screens = [{ seq: 1, text: 'Home ready' }]
+  const sceneForScreen = { 1: 'scene-01' }
+  const result = evaluateSceneEvidence({ scenes, screens, sceneForScreen })
+  assert.deepEqual(result, [
+    { id: 'scene-02', title: 'Settings', passed: false, missing: ['Saved', 'Settings'] },
+  ])
+})
+
+test('evaluateSceneEvidence: empty expectedEvidence passes trivially', async () => {
+  const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
+  const scenes = [{ id: 'scene-01', title: 'Home', expectedEvidence: [] }]
+  const result = evaluateSceneEvidence({ scenes, screens: [], sceneForScreen: {} })
+  assert.deepEqual(result, [{ id: 'scene-01', title: 'Home', passed: true, missing: [] }])
+})
+
+// This is the regression pin for the epic's limitation #5: under the OLD
+// final-screen-only T1 gate (`finalScreen.includes(sub)`), evidence that
+// appeared mid-run and then scrolled off screen before the run ended would
+// fail the gate even though the run genuinely demonstrated it. The new
+// journey-wide gate checks evidence against ANY settled screen captured while
+// the (single, default) scene was active, so this run must now pass.
+test('runTuiAgentProof: early evidence regression — evidence on an early screen leaves the final screen but still passes (any settled screen, not final-screen-only)', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+
+  const brief = {
+    title: 'Early evidence',
+    description: 'Evidence appears then disappears before the run ends',
+    expectedEvidence: ['Session created'],
+  }
+
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        BASE_ENV({ BOSS_PROOF_BRIEF: briefPath, BOSS_PROOF_RUN_ID: 'tui-early-evidence' }),
+        async () => {
+          // Screen 1 shows the evidence; screen 2 (the FINAL settled screen) does
+          // not. Under the old gate this would fail; under P3c it must pass.
+          const bridge = scriptedBridge({
+            screens: ['Session created OK', 'Home screen, nothing about sessions here'],
+          })
+          const model = scriptedModel([
+            toolUse('observe', {}),
+            toolUse('observe', {}),
+            toolUse('done', { summary: 'created then navigated home', passed: true }),
+          ])
+
+          const { manifest } = await runTuiAgentProof({
+            prNumber: 'tuiearlyevidence',
+            commit: 'abc1234',
+            changedFiles: [],
+            dryRun: true,
+            deps: { bridge, model, renderStill: fakeRenderStill(), castToVideo: async () => null },
+          })
+
+          assert.equal(
+            manifest.verdict,
+            'passed',
+            'evidence on an earlier settled screen must pass',
+          )
+          const cap = manifest.captures[0]
+          assert.equal(cap.status, 'passed')
+          assert.equal(cap.scenes[0].passed, true)
+          assert.deepEqual(cap.scenes[0].missing, [])
+        },
+      ),
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuiearlyevidence')
+  }
+})
+
+test('runTuiAgentProof: scene-02 evidence never appears → captureShape.scenes[1].passed is false and status is failed with the per-scene error string', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+
+  const brief = {
+    title: 'Two-scene journey',
+    description: 'Home then Settings',
+    scenes: [
+      { id: 'scene-01', title: 'Home', expectedEvidence: ['Home ready'] },
+      { id: 'scene-02', title: 'Settings', expectedEvidence: ['Settings saved'] },
+    ],
+  }
+
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        BASE_ENV({ BOSS_PROOF_BRIEF: briefPath, BOSS_PROOF_RUN_ID: 'tui-scene2-missing' }),
+        async () => {
+          // scene-01's screen shows its evidence; the begin_scene marker advances
+          // to scene-02, whose screen never shows "Settings saved".
+          const bridge = scriptedBridge({ screens: ['Home ready', 'Settings open, unsaved'] })
+          const model = scriptedModel([
+            toolUse('observe', {}),
+            toolUse('begin_scene', { id: 'scene-02' }),
+            toolUse('observe', {}),
+            toolUse('done', { summary: 'toured both scenes', passed: true }),
+          ])
+
+          const { manifest } = await runTuiAgentProof({
+            prNumber: 'tuiscene2missing',
+            commit: 'abc1234',
+            changedFiles: [],
+            dryRun: true,
+            deps: { bridge, model, renderStill: fakeRenderStill(), castToVideo: async () => null },
+          })
+
+          assert.equal(manifest.verdict, 'failed')
+          const cap = manifest.captures[0]
+          assert.equal(cap.status, 'failed')
+          assert.equal(cap.scenes[0].passed, true, 'scene-01 evidence was shown in its own window')
+          assert.equal(cap.scenes[1].passed, false, 'scene-02 evidence never appeared')
+          assert.deepEqual(cap.scenes[1].missing, ['Settings saved'])
+          assert.match(cap.error, /evidence gate failed/)
+          assert.match(cap.error, /scene-02 missing Settings saved/)
+        },
+      ),
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuiscene2missing')
+  }
+})
+
+// ── 6c. Chapter-timestamp mapping (P3b, BOS-140) ─────────────────────────────
+
+test('runTuiAgentProof: castToVideo timeline → captureShape.scenes[].outputMs is populated', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+
+  const brief = {
+    title: 'Chapter mapping',
+    description: 'castToVideo returns a timeline to map the scene marker through',
+    expectedEvidence: ['Ready'],
+  }
+
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        BASE_ENV({ BOSS_PROOF_BRIEF: briefPath, BOSS_PROOF_RUN_ID: 'tui-chapter-map' }),
+        async () => {
+          const castToVideo = async ({ captureDir, captureId }) => {
+            const mp4Path = path.join(captureDir, `${captureId}.mp4`)
+            const posterPath = path.join(captureDir, `${captureId}.png`)
+            fs.writeFileSync(mp4Path, 'fake-mp4')
+            fs.writeFileSync(posterPath, 'fake-poster')
+            return {
+              mp4Path,
+              posterPath,
+              // trimMs 500 + a single identity segment + a 2s intro card. Scene 1
+              // always starts at cast-clock 0 in this harness (no real .cast file
+              // is written), so the mapped value is deterministic:
+              // max(0, 0-500)=0 through the identity segment → introMs + 0 = 2000.
+              timeline: {
+                trimMs: 500,
+                segments: [{ startMs: 0, endMs: 5000, speed: 1 }],
+                introMs: 2000,
+              },
+            }
+          }
+
+          const { manifest } = await runTuiAgentProof({
+            prNumber: 'tuichaptermap',
+            commit: 'abc1234',
+            changedFiles: [],
+            dryRun: true,
+            deps: {
+              bridge: scriptedBridge({ screens: ['Ready to go'] }),
+              model: scriptedModel([
+                toolUse('observe', {}),
+                toolUse('done', { summary: 'done', passed: true }),
+              ]),
+              renderStill: fakeRenderStill(),
+              castToVideo,
+            },
+          })
+
+          const cap = manifest.captures[0]
+          assert.equal(cap.scenes[0].outputMs, 2000)
+        },
+      ),
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuichaptermap')
+  }
+})
+
+test('runTuiAgentProof: castToVideo returns null (stills-only) → captureShape.scenes[].outputMs is null', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+
+  const brief = {
+    title: 'No video, no chapter link',
+    description: 'A stills-only proof must not throw mapping a null timeline',
+    expectedEvidence: ['Ready'],
+  }
+
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        BASE_ENV({ BOSS_PROOF_BRIEF: briefPath, BOSS_PROOF_RUN_ID: 'tui-chapter-null' }),
+        async () => {
+          const { manifest } = await runTuiAgentProof({
+            prNumber: 'tuichapternull',
+            commit: 'abc1234',
+            changedFiles: [],
+            dryRun: true,
+            deps: {
+              bridge: scriptedBridge({ screens: ['Ready to go'] }),
+              model: scriptedModel([
+                toolUse('observe', {}),
+                toolUse('done', { summary: 'done', passed: true }),
+              ]),
+              renderStill: fakeRenderStill(),
+              castToVideo: async () => null, // agg missing — stills-only
+            },
+          })
+
+          const cap = manifest.captures[0]
+          assert.equal(cap.scenes[0].outputMs, null)
+        },
+      ),
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuichapternull')
   }
 })
 
@@ -1236,9 +1548,11 @@ test('renderFrames batches all frames through renderStills in one call (single b
     assert.equal(jobsSeen.length, 2)
     assert.equal(jobsSeen[0].caption, 'Home')
     assert.equal(jobsSeen[1].caption, '') // no sidecar → empty
+    // P3b (BOS-140): the still-filename prefix is now scene-scoped; no
+    // sceneForScreen map defaults every screen to scene 01.
     assert.deepEqual(
       stills.map((s) => s.label),
-      ['frame 01', 'frame 02'],
+      ['scene 01 frame 01', 'scene 01 frame 02'],
     )
   } finally {
     fs.rmSync(rawDir, { recursive: true, force: true })
@@ -1261,7 +1575,7 @@ test('renderFrames batch: only frames whose PNG was written are returned', async
     const stills = await renderFrames({ rawDir, captureDir, title: 'boss', renderStills })
     assert.deepEqual(
       stills.map((s) => s.label),
-      ['frame 02'],
+      ['scene 01 frame 02'],
     )
   } finally {
     fs.rmSync(rawDir, { recursive: true, force: true })
@@ -1297,7 +1611,7 @@ test('renderFrames batch failure falls back to per-frame renderStill', async () 
     assert.equal(perFrame.length, 2, 'both missing frames retried individually')
     assert.deepEqual(
       stills.map((s) => s.label),
-      ['frame 01', 'frame 02'],
+      ['scene 01 frame 01', 'scene 01 frame 02'],
     )
   } finally {
     fs.rmSync(rawDir, { recursive: true, force: true })
@@ -1533,5 +1847,435 @@ test('runTuiAgentProof: persists raw/caption-timings.json and forwards timings t
   } finally {
     process.exitCode = originalExitCode
     cleanupPr('0')
+  }
+})
+
+// ── BOS-139: collect mode (orchestrator owns identity + budget) ──────────────
+
+test('runTuiAgentProof: collect mode returns a SurfaceRun (no finalize), per-surface brief, clamped budget', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  const brief = {
+    title: 'Open settings',
+    description: 'Demonstrates the settings screen opens',
+    expectedEvidence: ['Settings'],
+  }
+  const localDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-collect-'))
+  let finalizeReached = false
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(BASE_ENV({ BOSS_PROOF_BRIEF: briefPath }), async () => {
+        const surfaceRun = await runTuiAgentProof({
+          prNumber: 'tuicollect',
+          commit: 'abc1234',
+          changedFiles: [],
+          dryRun: true,
+          runContext: {
+            runId: 'RUN',
+            token: 'tok',
+            paths: { publicPrefix: 'proof/bossanova/pr-tuicollect/abc1234/RUN/tok' },
+            localDir,
+            briefFileName: 'brief-tui.json',
+            maxWallClockMs: 60_000,
+            collect: true,
+          },
+          deps: {
+            bridge: scriptedBridge({ screens: ['Settings panel open', 'Settings saved'] }),
+            model: scriptedModel([
+              toolUse('observe', {}),
+              toolUse('send_keys', { keys: ['s'] }),
+              toolUse('done', { summary: 'Opened settings', passed: true }),
+            ]),
+            renderStill: fakeRenderStill(),
+            castToVideo: async () => null,
+            // finalizeDeps is forwarded to finalizeAgentProof; a post here would
+            // prove finalize ran. Collect mode must never reach it.
+            finalizeDeps: {
+              postComment: () => {
+                finalizeReached = true
+              },
+              uploadBundle: () => {
+                finalizeReached = true
+              },
+            },
+          },
+        })
+        assert.equal(surfaceRun.surface, 'tui')
+        assert.ok(Array.isArray(surfaceRun.captureShapes) && surfaceRun.captureShapes.length >= 1)
+        assert.equal(surfaceRun.brief.budgets.maxWallClockMs, 60_000, 'budget clamped to grant')
+        assert.equal(surfaceRun.noSurface, false)
+        assert.equal(surfaceRun.reasonCode, null)
+        assert.equal(typeof surfaceRun.elapsedMs, 'number')
+        assert.ok(fs.existsSync(path.join(localDir, 'brief-tui.json')), 'per-surface brief written')
+        assert.equal(finalizeReached, false, 'collect mode must not finalize')
+      }),
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    fs.rmSync(localDir, { recursive: true, force: true })
+  }
+})
+
+// ── Task 3 (P3b, BOS-140): begin_scene markers, scene-attributed screens ─────
+
+test('runAgentLoop: begin_scene(scene-02) records sceneTimings + sceneForScreen and burns a scene caption', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    const brief = {
+      description: 'prove it',
+      scenes: [
+        { id: 'scene-01', title: 'Home', expectedEvidence: ['Home'] },
+        { id: 'scene-02', title: 'Settings', expectedEvidence: ['Settings'] },
+      ],
+      budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    }
+    // Turn 2 marks scene 2 THEN acts within it, in the same message — mirrors
+    // the multi-tool-call-per-turn shape the caption-binding tests already use.
+    const secondTurn = {
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 10, output_tokens: 5 },
+      content: [
+        { type: 'tool_use', id: 'bs', name: 'begin_scene', input: { id: 'scene-02' } },
+        { type: 'tool_use', id: 'sk', name: 'send_keys', input: { keys: ['s'] } },
+      ],
+    }
+    const model = scriptedModel([
+      toolUse('observe', {}),
+      secondTurn,
+      toolUse('done', { passed: true, summary: 'done', evidence: [] }),
+    ])
+    const bridge = scriptedBridge({ screens: ['Home screen', 'Settings screen'] })
+    // 3 readCastMs() calls occur: screen-1 capture, the begin_scene marker,
+    // then the screen-2 capture — the marker's stamp becomes scene-02's startMs.
+    const stamps = [500, 1200, 1400]
+    let i = 0
+    const result = await runAgentLoop({
+      brief,
+      model: 'test-model',
+      modelDep: model,
+      bridge,
+      rawDir,
+      readCastMs: () => stamps[Math.min(i++, stamps.length - 1)],
+    })
+    assert.deepEqual(result.sceneTimings, [
+      { id: 'scene-01', title: 'Home', startMs: 0 },
+      { id: 'scene-02', title: 'Settings', startMs: 1200 },
+    ])
+    assert.deepEqual(result.sceneForScreen, { 1: 'scene-01', 2: 'scene-02' })
+    assert.equal(result.captionTimings[0].caption, '')
+    assert.equal(
+      result.captionTimings[1].caption,
+      'Scene 2 — Settings',
+      'the marker burns a default scene-change caption into the video timeline',
+    )
+    assert.equal(
+      result.captionTimings[1].startMs,
+      1200,
+      'scene-change caption starts at the begin_scene marker timestamp, not the later frame timestamp',
+    )
+    assert.deepEqual(
+      result.screens.map((s) => s.seq),
+      [1, 2],
+    )
+    assert.deepEqual(
+      result.screens.map((s) => s.text),
+      ['Home screen', 'Settings screen'],
+    )
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('runAgentLoop: out-of-order begin_scene marker errors and leaves the active scene unchanged', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    const brief = {
+      description: 'prove it',
+      scenes: [
+        { id: 'scene-01', title: 'One' },
+        { id: 'scene-02', title: 'Two' },
+        { id: 'scene-03', title: 'Three' },
+      ],
+      budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    }
+    const badMarkerTurn = {
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 10, output_tokens: 5 },
+      content: [{ type: 'tool_use', id: 'bs', name: 'begin_scene', input: { id: 'scene-03' } }],
+    }
+    let step = 0
+    let markerToolResult = null
+    const model = {
+      async createMessage({ messages }) {
+        step += 1
+        if (step === 1) return badMarkerTurn
+        // The prior assistant turn's tool_result is the last user message —
+        // inspect it to assert the error shape the loop fed back to the model.
+        const lastUser = messages[messages.length - 1]
+        markerToolResult = JSON.parse(lastUser.content[0].content)
+        return toolUse('done', { passed: true, summary: 'done', evidence: [] })
+      },
+    }
+    const bridge = scriptedBridge({ screens: ['Screen'] })
+    const result = await runAgentLoop({
+      brief,
+      model: 'test-model',
+      modelDep: model,
+      bridge,
+      rawDir,
+    })
+    assert.ok(markerToolResult.error, 'out-of-order marker must return an error tool_result')
+    assert.match(markerToolResult.error, /expected scene-02/)
+    assert.deepEqual(
+      result.sceneTimings,
+      [{ id: 'scene-01', title: 'One', startMs: 0 }],
+      'no state change on an out-of-order marker',
+    )
+    assert.deepEqual(result.sceneForScreen, {}, 'no screens were captured in this run')
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('runAgentLoop: duplicate begin_scene for the already-active scene is a no-op', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    const brief = {
+      description: 'prove it',
+      scenes: [{ id: 'scene-01', title: 'One' }],
+      budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    }
+    const dupeTurn = {
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 10, output_tokens: 5 },
+      content: [{ type: 'tool_use', id: 'bs', name: 'begin_scene', input: { id: 'scene-01' } }],
+    }
+    let step = 0
+    let markerToolResult = null
+    const model = {
+      async createMessage({ messages }) {
+        step += 1
+        if (step === 1) return dupeTurn
+        const lastUser = messages[messages.length - 1]
+        markerToolResult = JSON.parse(lastUser.content[0].content)
+        return toolUse('done', { passed: true, summary: 'done', evidence: [] })
+      },
+    }
+    const bridge = scriptedBridge({ screens: ['Screen'] })
+    const result = await runAgentLoop({
+      brief,
+      model: 'test-model',
+      modelDep: model,
+      bridge,
+      rawDir,
+    })
+    assert.deepEqual(markerToolResult, { ok: true }, 'duplicate active-scene marker is a no-op')
+    assert.deepEqual(result.sceneTimings, [{ id: 'scene-01', title: 'One', startMs: 0 }])
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('runAgentLoop: marker-less multi-scene run attributes every screen to scene 1 (back-compat)', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    const brief = {
+      description: 'prove it',
+      scenes: [
+        { id: 'scene-01', title: 'One' },
+        { id: 'scene-02', title: 'Two' },
+      ],
+      budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    }
+    const model = scriptedModel([
+      toolUse('observe', {}),
+      toolUse('send_keys', { keys: ['s'] }),
+      toolUse('done', { passed: true, summary: 'done', evidence: [] }),
+    ])
+    const bridge = scriptedBridge({ screens: ['Screen one', 'Screen two'] })
+    const result = await runAgentLoop({
+      brief,
+      model: 'test-model',
+      modelDep: model,
+      bridge,
+      rawDir,
+    })
+    assert.deepEqual(
+      result.sceneTimings,
+      [{ id: 'scene-01', title: 'One', startMs: 0 }],
+      'no marker was called, so scene 1 is the only sceneTimings entry',
+    )
+    assert.deepEqual(result.sceneForScreen, { 1: 'scene-01', 2: 'scene-01' })
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('runAgentLoop: scenes default from normalizeScenes(brief) when omitted (single-scene back-compat)', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    const brief = {
+      title: 'Legacy scene-less brief',
+      description: 'prove it',
+      expectedEvidence: ['Home'],
+      budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    }
+    const model = scriptedModel([
+      toolUse('observe', {}),
+      toolUse('done', { passed: true, summary: 'done', evidence: [] }),
+    ])
+    const bridge = scriptedBridge({ screens: ['Home screen'] })
+    const result = await runAgentLoop({
+      brief,
+      model: 'test-model',
+      modelDep: model,
+      bridge,
+      rawDir,
+    })
+    assert.deepEqual(result.sceneTimings, [
+      { id: 'scene-01', title: 'Legacy scene-less brief', startMs: 0 },
+    ])
+    assert.deepEqual(result.sceneForScreen, { 1: 'scene-01' })
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('runAgentLoop: multi-scene goal renders a numbered scene block instead of flat hints/evidence', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    const brief = {
+      description: 'prove it',
+      scenes: [
+        { id: 'scene-01', title: 'Home', stepsHints: ['press s'], expectedEvidence: ['Home'] },
+        { id: 'scene-02', title: 'Settings', expectedEvidence: ['Settings'] },
+      ],
+      budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    }
+    let capturedGoal = null
+    const model = {
+      async createMessage({ messages }) {
+        if (capturedGoal === null) capturedGoal = messages[0].content
+        return toolUse('done', { passed: true, summary: 'done', evidence: [] })
+      },
+    }
+    const bridge = scriptedBridge({ screens: ['Home screen'] })
+    await runAgentLoop({ brief, model: 'test-model', modelDep: model, bridge, rawDir })
+    assert.match(capturedGoal, /Scene 1 \(scene-01\) — Home/)
+    assert.match(capturedGoal, /Scene 2 \(scene-02\) — Settings/)
+    assert.match(capturedGoal, /must show: Settings/)
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('renderFrames: names outputs scene-SS-frame-NN.png and stamps sceneId from sceneForScreen', async () => {
+  const { renderFrames } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-cap-'))
+  try {
+    fs.writeFileSync(path.join(rawDir, 'screen-01.txt'), 'one')
+    fs.writeFileSync(path.join(rawDir, 'screen-02.txt'), 'two')
+    const renderStill = async ({ output }) => fs.writeFileSync(output, 'fake-png')
+    const stills = await renderFrames({
+      rawDir,
+      captureDir,
+      title: 'boss',
+      renderStill,
+      sceneForScreen: { 1: 'scene-01', 2: 'scene-02' },
+    })
+    assert.ok(
+      stills.some((s) => s.fileName.endsWith('scene-01-frame-01.png')),
+      'scene 1 frame keeps the scene-01 prefix',
+    )
+    assert.ok(
+      stills.some((s) => s.fileName.endsWith('scene-02-frame-02.png')),
+      'scene 2 frame gets the scene-02 prefix',
+    )
+    assert.deepEqual(
+      stills.map((s) => s.sceneId),
+      ['scene-01', 'scene-02'],
+    )
+    assert.ok(fs.existsSync(path.join(captureDir, 'scene-01-frame-01.png')))
+    assert.ok(fs.existsSync(path.join(captureDir, 'scene-02-frame-02.png')))
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+    fs.rmSync(captureDir, { recursive: true, force: true })
+  }
+})
+
+test('renderFrames: no sceneForScreen entry defaults a screen to scene 01 (zero-frame-fallback shape)', async () => {
+  const { renderFrames } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-cap-'))
+  try {
+    fs.writeFileSync(path.join(rawDir, 'screen-01.txt'), 'one')
+    const renderStill = async ({ output }) => fs.writeFileSync(output, 'fake-png')
+    const stills = await renderFrames({ rawDir, captureDir, title: 'boss', renderStill })
+    assert.equal(stills[0].fileName.endsWith('scene-01-frame-01.png'), true)
+    assert.equal(stills[0].sceneId, 'scene-01')
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+    fs.rmSync(captureDir, { recursive: true, force: true })
+  }
+})
+
+test('runTuiAgentProof: persists raw/scene-timings.json alongside caption-timings.json', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  const brief = {
+    title: 'Scene timings persisted',
+    description: 'Demonstrates a single-scene run persists scene-timings.json',
+    expectedEvidence: ['Ready'],
+  }
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        BASE_ENV({ BOSS_PROOF_BRIEF: briefPath, BOSS_PROOF_RUN_ID: 'tui-scene-timings' }),
+        async () => {
+          const { manifest } = await runTuiAgentProof({
+            prNumber: 'tuiscenetimings',
+            commit: 'abc1234',
+            changedFiles: [],
+            dryRun: true,
+            deps: {
+              bridge: scriptedBridge({ screens: ['Ready to go'] }),
+              model: scriptedModel([
+                toolUse('observe', {}),
+                toolUse('done', { summary: 'done', passed: true }),
+              ]),
+              renderStill: fakeRenderStill(),
+              castToVideo: async () => null,
+            },
+          })
+          assert.ok(manifest, 'run completes')
+          const rawTimingsPath = path.join(
+            REPO_ROOT,
+            '.proof',
+            'pr-tuiscenetimings',
+            'abc1234',
+            'tui-scene-timings',
+            'tok-tui-test',
+            'raw',
+            'scene-timings.json',
+          )
+          const persisted = JSON.parse(fs.readFileSync(rawTimingsPath, 'utf8'))
+          assert.deepEqual(persisted, [
+            { id: 'scene-01', title: 'Scene timings persisted', startMs: 0 },
+          ])
+        },
+      ),
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuiscenetimings')
   }
 })

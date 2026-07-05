@@ -2,6 +2,7 @@ package testharness_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -21,6 +22,17 @@ import (
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// errMessage returns the connect error's message without the leading code
+// prefix that (*connect.Error).Error() prepends, so tests can assert on the
+// raw FailedPrecondition message (e.g. the "merge blocked: gate=..." prefix).
+func errMessage(err error) string {
+	var ce *connect.Error
+	if errors.As(err, &ce) {
+		return ce.Message()
+	}
+	return err.Error()
+}
 
 // createSessionFromStream is a test helper that opens a CreateSession stream,
 // drains it, and returns the final Session.
@@ -1180,6 +1192,55 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		})
 	}
 
+	// MergeSession deferred-local-sync path (BOS-233, AC1): when the
+	// post-merge fast-forward of the local base branch is deferred because
+	// the operator's base checkout is dirty (SyncBaseBranch returns
+	// ErrLocalSyncDeferred), the merge itself must still succeed — the
+	// server-side merge is already verified on origin/<base>, and the local
+	// fast-forward is a best-effort, retried-later step. A clean local
+	// checkout must NOT be a merge precondition.
+	t.Run("MergeSession succeeds when local base sync is deferred", func(t *testing.T) {
+		h := testharness.New(t)
+		ctx := context.Background()
+		repoID := registerTestRepo(t, h, ctx)
+
+		autoMerge := true
+		if _, err := h.Client.UpdateRepo(ctx, connect.NewRequest(&pb.UpdateRepoRequest{
+			Id:           repoID,
+			CanAutoMerge: &autoMerge,
+		})); err != nil {
+			t.Fatalf("update repo (auto-merge): %v", err)
+		}
+
+		sessionID, prNum := h.SeedSessionInState(t, ctx, repoID,
+			pb.SessionState_SESSION_STATE_READY_FOR_REVIEW,
+			"Merge with deferred sync", "merge plan")
+
+		h.DisplayTracker.Set(sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
+
+		// Simulate the dirty-base-checkout case: the local fast-forward is
+		// deferred rather than applied. VerifyOnBase still passes because
+		// IsAncestor defaults to true.
+		h.Git.SyncBaseBranchErr = gitpkg.ErrLocalSyncDeferred
+
+		resp, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID}))
+		if err != nil {
+			t.Fatalf("merge must succeed despite deferred local sync, got: %v", err)
+		}
+		if resp == nil || resp.Msg == nil || resp.Msg.Session == nil {
+			t.Fatalf("expected a non-nil merge response with a session, got %+v", resp)
+		}
+
+		// The remote merge must have gone through — the deferred local sync
+		// is not a gate.
+		if got := len(h.VCS.MergePRCalls); got != 1 {
+			t.Fatalf("expected 1 MergePR call, got %d", got)
+		}
+		if call := h.VCS.MergePRCalls[0]; call.PRID != prNum {
+			t.Fatalf("expected PRID=%d, got %d", prNum, call.PRID)
+		}
+	})
+
 	t.Run("MergeSession rejects when PR is not passing", func(t *testing.T) {
 		h := testharness.New(t)
 		ctx := context.Background()
@@ -1193,12 +1254,25 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 			t.Fatalf("update repo: %v", err)
 		}
 
-		sessionID, _ := h.SeedSessionInState(t, ctx, repoID,
+		sessionID, prNum := h.SeedSessionInState(t, ctx, repoID,
 			pb.SessionState_SESSION_STATE_READY_FOR_REVIEW, "Merge rejected", "merge plan")
 
-		// Signal the display tracker that the PR is failing, which
-		// trips the guard in MergeSession.
-		h.DisplayTracker.Set(sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusFailing, HasFailures: true})
+		// The merge gate reads LIVE PR state (BOS-235 Bug 2): make the live
+		// PR genuinely failing (a completed check with a failure conclusion),
+		// so ComputeDisplayStatus yields Failing and the guard rejects.
+		failure := vcs.CheckConclusionFailure
+		mergeable := true
+		h.VCS.SetPRStatus(prNum, &vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			Mergeable:        &mergeable,
+			MergeStateStatus: vcs.MergeStateStatusUnstable,
+		})
+		h.VCS.CheckResults = []vcs.CheckResult{{
+			Status:     vcs.CheckStatusCompleted,
+			Conclusion: &failure,
+		}}
+		// A stale Passing tracker entry must NOT let a live-failing PR merge.
+		h.DisplayTracker.Set(sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
 
 		stateBefore := getSessionState(t, h, ctx, sessionID)
 
@@ -1209,6 +1283,9 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		if code := connect.CodeOf(err); code != connect.CodeFailedPrecondition {
 			t.Fatalf("expected FailedPrecondition, got %v (%v)", code, err)
 		}
+		if !strings.HasPrefix(errMessage(err), "merge blocked: gate=ci;") {
+			t.Fatalf("expected error to begin with 'merge blocked: gate=ci;', got %q", errMessage(err))
+		}
 
 		if len(h.VCS.MergePRCalls) != 0 {
 			t.Fatalf("expected no MergePR calls on failure, got %v", h.VCS.MergePRCalls)
@@ -1217,6 +1294,100 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 			t.Fatalf("merge failure changed state: %v -> %v", stateBefore, got)
 		}
 	})
+
+	t.Run("MergeSession review gate surfaces structured block", func(t *testing.T) {
+		h := testharness.New(t)
+		ctx := context.Background()
+		repoID := registerTestRepo(t, h, ctx)
+
+		autoMerge := true
+		if _, err := h.Client.UpdateRepo(ctx, connect.NewRequest(&pb.UpdateRepoRequest{
+			Id:           repoID,
+			CanAutoMerge: &autoMerge,
+		})); err != nil {
+			t.Fatalf("update repo: %v", err)
+		}
+
+		sessionID, prNum := h.SeedSessionInState(t, ctx, repoID,
+			pb.SessionState_SESSION_STATE_READY_FOR_REVIEW, "Merge review-blocked", "merge plan")
+
+		// MergeSession gates on LIVE PR state (BOS-235 Bug 2): drive a live
+		// changes-requested review so ComputeDisplayStatus yields Rejected and
+		// the guard refuses with the review gate. The tracker entry below
+		// independently feeds the get/list MergeBlock surface (BOS-239).
+		mergeable := true
+		h.VCS.SetPRStatus(prNum, &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: &mergeable})
+		h.VCS.ReviewComments = []vcs.ReviewComment{{Author: "octocat", State: vcs.ReviewStateChangesRequested}}
+
+		h.DisplayTracker.Set(sessionID, vcs.DisplayInfo{
+			Status:              vcs.DisplayStatusRejected,
+			HasChangesRequested: true,
+			ChangesRequestedBy:  []string{"octocat"},
+		})
+
+		// GetSession must surface the structured MergeBlock.
+		getResp, err := h.Client.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: sessionID}))
+		if err != nil {
+			t.Fatalf("GetSession: %v", err)
+		}
+		mb := getResp.Msg.GetSession().GetMergeBlock()
+		if mb == nil {
+			t.Fatal("expected a non-nil MergeBlock")
+		}
+		if mb.GetGate() != pb.MergeBlock_GATE_REVIEW {
+			t.Fatalf("expected GATE_REVIEW, got %v", mb.GetGate())
+		}
+		if mb.GetDetail() == "" {
+			t.Fatal("expected a non-empty MergeBlock detail")
+		}
+		if got := mb.GetBlockingReviewers(); len(got) != 1 || got[0] != "octocat" {
+			t.Fatalf("expected BlockingReviewers=[octocat], got %v", got)
+		}
+
+		// MergeSession must refuse with the parseable review-gate prefix.
+		_, err = h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID}))
+		if err == nil {
+			t.Fatal("expected MergeSession to fail on a review gate")
+		}
+		if code := connect.CodeOf(err); code != connect.CodeFailedPrecondition {
+			t.Fatalf("expected FailedPrecondition, got %v (%v)", code, err)
+		}
+		if !strings.HasPrefix(errMessage(err), "merge blocked: gate=review;") {
+			t.Fatalf("expected error to begin with 'merge blocked: gate=review;', got %q", errMessage(err))
+		}
+		if len(h.VCS.MergePRCalls) != 0 {
+			t.Fatalf("expected no MergePR calls on failure, got %v", h.VCS.MergePRCalls)
+		}
+	})
+
+	t.Run("MergeSession passing session reports GATE_NONE", func(t *testing.T) {
+		h := testharness.New(t)
+		ctx := context.Background()
+		repoID := registerTestRepo(t, h, ctx)
+
+		sessionID, _ := h.SeedSessionInState(t, ctx, repoID,
+			pb.SessionState_SESSION_STATE_READY_FOR_REVIEW, "Merge passing", "merge plan")
+
+		h.DisplayTracker.Set(sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
+
+		getResp, err := h.Client.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: sessionID}))
+		if err != nil {
+			t.Fatalf("GetSession: %v", err)
+		}
+		mb := getResp.Msg.GetSession().GetMergeBlock()
+		if mb == nil || mb.GetGate() != pb.MergeBlock_GATE_NONE {
+			t.Fatalf("expected GATE_NONE for a passing session, got %v", mb.GetGate())
+		}
+	})
+
+	// NOTE (BOS-235 Bug 2): the former subtest asserting that MergeSession
+	// refuses a non-passing-but-none-deriving tracker status (e.g. Approved)
+	// and degrades gate=none→pending was removed. MergeSession no longer gates
+	// on the display tracker: it reads LIVE PR state and refuses only Failing /
+	// Conflict / Rejected — all of which map to concrete gates, so the
+	// "none-deriving refusal" path can no longer arise. A stale Approved tracker
+	// on a live-green PR now MERGES; that allow-path is covered at the server
+	// unit level by TestMergeSessionAllowsLiveApproved.
 
 	// MergeSession local-only path: session has no PR number because the
 	// draft-PR creation failed (e.g. local-only repo with no GitHub remote).

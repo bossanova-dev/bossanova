@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
+	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/rs/zerolog"
 )
@@ -112,6 +114,119 @@ func TestCreateSessionStreamsSetupOutputBeforeSessionCreated(t *testing.T) {
 	}
 	if events[2].GetSessionCreated() == nil {
 		t.Fatalf("event[2] = %T, want SessionCreated", events[2].GetEvent())
+	}
+	if events[2].GetSessionCreated().GetAttachedExisting() {
+		t.Fatal("genuine create AttachedExisting = true, want false")
+	}
+}
+
+// TestCreateSessionAttachExistingSignalsAttachedExisting pins BOS-243: when a
+// create request resolves to a head branch already owned by an active session,
+// the daemon dedups/attaches to that session and MUST flag the emitted
+// SessionCreated with attached_existing=true (same session id, no new session,
+// the request's plan is NOT run) so callers can tell attach from a fresh create.
+func TestCreateSessionAttachExistingSignalsAttachedExisting(t *testing.T) {
+	t.Parallel()
+
+	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, &setupStreamAgent{})
+
+	// Seed one active session that already owns branch "feat-x" with a present
+	// worktree directory, so the create request attaches to it.
+	worktree := t.TempDir()
+	branch := "feat-x"
+	existing, err := h.sessions.Create(context.Background(), db.CreateSessionParams{
+		RepoID:       h.repo.ID,
+		Title:        "existing",
+		Plan:         "original plan",
+		BaseBranch:   "main",
+		BranchName:   branch,
+		WorktreePath: worktree,
+		AgentName:    "claude",
+	})
+	if err != nil {
+		t.Fatalf("seed existing session: %v", err)
+	}
+
+	var got []*pb.CreateSessionResponse
+	emit := func(r *pb.CreateSessionResponse) error {
+		got = append(got, r)
+		return nil
+	}
+	if err := h.server.StreamCreateSession(context.Background(), &pb.CreateSessionRequest{
+		RepoId:     h.repo.ID,
+		Title:      "repair",
+		BranchName: &branch,
+		Plan:       "/boss-repair watch 1035",
+	}, emit); err != nil {
+		t.Fatalf("StreamCreateSession: %v", err)
+	}
+
+	var created []*pb.SessionCreated
+	for _, r := range got {
+		if sc := r.GetSessionCreated(); sc != nil {
+			created = append(created, sc)
+		}
+	}
+	if len(created) != 1 {
+		t.Fatalf("SessionCreated frames = %d, want exactly 1", len(created))
+	}
+	if !created[0].GetAttachedExisting() {
+		t.Fatal("AttachedExisting = false, want true on the attach path")
+	}
+	if gotID := created[0].GetSession().GetId(); gotID != existing.ID {
+		t.Fatalf("attached session id = %q, want existing %q", gotID, existing.ID)
+	}
+
+	// The prompt is NOT run on attach: no new session is created.
+	sessions, listErr := h.sessions.List(context.Background(), h.repo.ID)
+	if listErr != nil {
+		t.Fatalf("list sessions: %v", listErr)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions len = %d, want 1 (attach must not create a new session)", len(sessions))
+	}
+}
+
+// TestCreateSessionPersistsModelFromRequest pins the BOS-179 model wiring: the
+// CreateSession handler copies CreateSessionRequest.model into the persisted
+// session, so a session created with model=<opus id> runs the headless agent
+// with that model.
+func TestCreateSessionPersistsModelFromRequest(t *testing.T) {
+	t.Parallel()
+
+	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, &setupStreamAgent{})
+
+	prNumber := int32(321)
+	agentName := "claude"
+	model := "claude-opus-4-8"
+	stream, err := h.client.CreateSession(context.Background(), connect.NewRequest(&pb.CreateSessionRequest{
+		RepoId:    h.repo.ID,
+		Title:     "model wiring",
+		Plan:      "do work",
+		PrNumber:  &prNumber,
+		AgentName: &agentName,
+		Detach:    true,
+		Model:     &model,
+	}))
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for stream.Receive() {
+		_ = stream.Msg()
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("CreateSession stream error: %v", err)
+	}
+
+	sessions, listErr := h.sessions.List(context.Background(), h.repo.ID)
+	if listErr != nil {
+		t.Fatalf("list sessions: %v", listErr)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions len = %d, want 1", len(sessions))
+	}
+	if sessions[0].Model != model {
+		t.Fatalf("persisted session model = %q, want %q", sessions[0].Model, model)
 	}
 }
 
@@ -335,8 +450,33 @@ func TestCreateSessionQuickChatAllowsEmptyDefaultBaseBranch(t *testing.T) {
 	}
 }
 
+// TestNewHookToken verifies the server's finalize-hook token minter (used for
+// tmux_unattended sessions): a 64-char hex string, unique per call.
+func TestNewHookToken(t *testing.T) {
+	t.Parallel()
+
+	a, err := newHookToken()
+	if err != nil {
+		t.Fatalf("newHookToken: %v", err)
+	}
+	if len(a) != 64 {
+		t.Fatalf("token len = %d, want 64 hex chars", len(a))
+	}
+	if _, err := hex.DecodeString(a); err != nil {
+		t.Fatalf("token %q is not valid hex: %v", a, err)
+	}
+	b, err := newHookToken()
+	if err != nil {
+		t.Fatalf("newHookToken: %v", err)
+	}
+	if a == b {
+		t.Fatal("two minted tokens are identical; expected crypto/rand uniqueness")
+	}
+}
+
 type createSessionStreamHarness struct {
 	client   bossanovav1connect.DaemonServiceClient
+	server   *Server
 	repo     *models.Repo
 	repos    db.RepoStore
 	sessions db.SessionStore
@@ -363,6 +503,10 @@ func newCreateSessionStreamHarness(t *testing.T, worktrees *setupStreamWorktree,
 
 	provider := setupStreamProvider{}
 	lifecycle := session.NewLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, provider, zerolog.Nop())
+	// createSession uses Detach=true (headless StartByAgent), which resolves the
+	// proof env overlay. Inject a keyring-free resolver so the test never opens
+	// the real OS keyring (non-deterministic; leaks a dbus goroutine on Linux).
+	lifecycle.SetProofEnvResolver(proofenv.NewNoop())
 	s := New(Config{
 		Repos:     repos,
 		Sessions:  sessions,
@@ -380,6 +524,7 @@ func newCreateSessionStreamHarness(t *testing.T, worktrees *setupStreamWorktree,
 
 	return &createSessionStreamHarness{
 		client:   bossanovav1connect.NewDaemonServiceClient(httpServer.Client(), httpServer.URL),
+		server:   s,
 		repo:     repo,
 		repos:    repos,
 		sessions: sessions,
@@ -537,10 +682,8 @@ func (w *setupStreamWorktree) IsGitRepo(context.Context, string) bool { return t
 func (w *setupStreamWorktree) DetectDefaultBranch(context.Context, string) (string, error) {
 	return "main", nil
 }
-func (w *setupStreamWorktree) EnsureBaseBranchReadyForSync(context.Context, string, string) error {
-	return nil
-}
 func (w *setupStreamWorktree) SyncBaseBranch(context.Context, string, string) error { return nil }
+func (w *setupStreamWorktree) RetryDeferredBaseSyncs(context.Context)               {}
 func (w *setupStreamWorktree) IsAncestor(context.Context, string, string, string) (bool, error) {
 	return true, nil
 }
@@ -554,7 +697,7 @@ type setupStreamAgent struct {
 	startFn  func(context.Context, string, string, *string, string) (string, error)
 }
 
-func (a *setupStreamAgent) Start(ctx context.Context, workDir, plan string, resume *string, agentSessionID, _ string) (string, error) {
+func (a *setupStreamAgent) Start(ctx context.Context, workDir, plan string, resume *string, agentSessionID, _ string, _ map[string]string) (string, error) {
 	if a.startFn != nil {
 		return a.startFn(ctx, workDir, plan, resume, agentSessionID)
 	}
@@ -569,7 +712,7 @@ func (a *setupStreamAgent) Subscribe(context.Context, string) (<-chan agent.Outp
 	close(ch)
 	return ch, nil
 }
-func (a *setupStreamAgent) StartByAgent(ctx context.Context, _ string, workDir, plan string, resume *string, agentSessionID, _ string) (string, error) {
+func (a *setupStreamAgent) StartByAgent(ctx context.Context, _ string, workDir, plan string, resume *string, agentSessionID, _ string, _ map[string]string) (string, error) {
 	if a.startFn != nil {
 		return a.startFn(ctx, workDir, plan, resume, agentSessionID)
 	}

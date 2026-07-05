@@ -162,6 +162,21 @@ const (
 	// DaemonServiceRunCronJobNowProcedure is the fully-qualified name of the DaemonService's
 	// RunCronJobNow RPC.
 	DaemonServiceRunCronJobNowProcedure = "/bossanova.v1.DaemonService/RunCronJobNow"
+	// DaemonServiceListAccountsProcedure is the fully-qualified name of the DaemonService's
+	// ListAccounts RPC.
+	DaemonServiceListAccountsProcedure = "/bossanova.v1.DaemonService/ListAccounts"
+	// DaemonServiceAddAccountProcedure is the fully-qualified name of the DaemonService's AddAccount
+	// RPC.
+	DaemonServiceAddAccountProcedure = "/bossanova.v1.DaemonService/AddAccount"
+	// DaemonServiceUpdateAccountProcedure is the fully-qualified name of the DaemonService's
+	// UpdateAccount RPC.
+	DaemonServiceUpdateAccountProcedure = "/bossanova.v1.DaemonService/UpdateAccount"
+	// DaemonServiceRemoveAccountProcedure is the fully-qualified name of the DaemonService's
+	// RemoveAccount RPC.
+	DaemonServiceRemoveAccountProcedure = "/bossanova.v1.DaemonService/RemoveAccount"
+	// DaemonServiceTestAccountProcedure is the fully-qualified name of the DaemonService's TestAccount
+	// RPC.
+	DaemonServiceTestAccountProcedure = "/bossanova.v1.DaemonService/TestAccount"
 	// DaemonServiceRepairDoctorProcedure is the fully-qualified name of the DaemonService's
 	// RepairDoctor RPC.
 	DaemonServiceRepairDoctorProcedure = "/bossanova.v1.DaemonService/RepairDoctor"
@@ -253,6 +268,21 @@ type DaemonServiceClient interface {
 	// RunCronJobNow fires a cron job immediately, ignoring its schedule.
 	// Subject to the same overlap and concurrency-cap rules as scheduled fires.
 	RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error)
+	// ListAccounts returns registry accounts, optionally filtered by provider.
+	// Metadata only — credential blobs never cross the wire.
+	ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error)
+	// AddAccount registers a new provider login. The credential blob travels
+	// inbound only and is stored in the keyring; it is never echoed back.
+	AddAccount(context.Context, *connect.Request[v1.AddAccountRequest]) (*connect.Response[v1.AddAccountResponse], error)
+	// UpdateAccount mutates account metadata. Mutable fields are optional
+	// (present-only update semantics).
+	UpdateAccount(context.Context, *connect.Request[v1.UpdateAccountRequest]) (*connect.Response[v1.UpdateAccountResponse], error)
+	// RemoveAccount deletes the account row and purges its keyring credential.
+	RemoveAccount(context.Context, *connect.Request[v1.RemoveAccountRequest]) (*connect.Response[v1.RemoveAccountResponse], error)
+	// TestAccount validates the account's stored credential and, when a live
+	// smoke runner is wired, runs a trivial CLI invocation. It records the
+	// outcome (last_test_ok_at / last_test_error) and never tears down a session.
+	TestAccount(context.Context, *connect.Request[v1.TestAccountRequest]) (*connect.Response[v1.TestAccountResponse], error)
 	// RepairDoctor returns a structured health report for the auto-repair
 	// pipeline: which plugins are loaded, whether the workflow is running,
 	// whether `claude` is on the daemon's PATH, and a summary of recent
@@ -551,6 +581,36 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("RunCronJobNow")),
 			connect.WithClientOptions(opts...),
 		),
+		listAccounts: connect.NewClient[v1.ListAccountsRequest, v1.ListAccountsResponse](
+			httpClient,
+			baseURL+DaemonServiceListAccountsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListAccounts")),
+			connect.WithClientOptions(opts...),
+		),
+		addAccount: connect.NewClient[v1.AddAccountRequest, v1.AddAccountResponse](
+			httpClient,
+			baseURL+DaemonServiceAddAccountProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("AddAccount")),
+			connect.WithClientOptions(opts...),
+		),
+		updateAccount: connect.NewClient[v1.UpdateAccountRequest, v1.UpdateAccountResponse](
+			httpClient,
+			baseURL+DaemonServiceUpdateAccountProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("UpdateAccount")),
+			connect.WithClientOptions(opts...),
+		),
+		removeAccount: connect.NewClient[v1.RemoveAccountRequest, v1.RemoveAccountResponse](
+			httpClient,
+			baseURL+DaemonServiceRemoveAccountProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("RemoveAccount")),
+			connect.WithClientOptions(opts...),
+		),
+		testAccount: connect.NewClient[v1.TestAccountRequest, v1.TestAccountResponse](
+			httpClient,
+			baseURL+DaemonServiceTestAccountProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("TestAccount")),
+			connect.WithClientOptions(opts...),
+		),
 		repairDoctor: connect.NewClient[v1.RepairDoctorRequest, v1.RepairDoctorResponse](
 			httpClient,
 			baseURL+DaemonServiceRepairDoctorProcedure,
@@ -624,6 +684,11 @@ type daemonServiceClient struct {
 	updateCronJob        *connect.Client[v1.UpdateCronJobRequest, v1.UpdateCronJobResponse]
 	deleteCronJob        *connect.Client[v1.DeleteCronJobRequest, v1.DeleteCronJobResponse]
 	runCronJobNow        *connect.Client[v1.RunCronJobNowRequest, v1.RunCronJobNowResponse]
+	listAccounts         *connect.Client[v1.ListAccountsRequest, v1.ListAccountsResponse]
+	addAccount           *connect.Client[v1.AddAccountRequest, v1.AddAccountResponse]
+	updateAccount        *connect.Client[v1.UpdateAccountRequest, v1.UpdateAccountResponse]
+	removeAccount        *connect.Client[v1.RemoveAccountRequest, v1.RemoveAccountResponse]
+	testAccount          *connect.Client[v1.TestAccountRequest, v1.TestAccountResponse]
 	repairDoctor         *connect.Client[v1.RepairDoctorRequest, v1.RepairDoctorResponse]
 	listCheckSnapshots   *connect.Client[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse]
 	listAgents           *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
@@ -850,6 +915,31 @@ func (c *daemonServiceClient) RunCronJobNow(ctx context.Context, req *connect.Re
 	return c.runCronJobNow.CallUnary(ctx, req)
 }
 
+// ListAccounts calls bossanova.v1.DaemonService.ListAccounts.
+func (c *daemonServiceClient) ListAccounts(ctx context.Context, req *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error) {
+	return c.listAccounts.CallUnary(ctx, req)
+}
+
+// AddAccount calls bossanova.v1.DaemonService.AddAccount.
+func (c *daemonServiceClient) AddAccount(ctx context.Context, req *connect.Request[v1.AddAccountRequest]) (*connect.Response[v1.AddAccountResponse], error) {
+	return c.addAccount.CallUnary(ctx, req)
+}
+
+// UpdateAccount calls bossanova.v1.DaemonService.UpdateAccount.
+func (c *daemonServiceClient) UpdateAccount(ctx context.Context, req *connect.Request[v1.UpdateAccountRequest]) (*connect.Response[v1.UpdateAccountResponse], error) {
+	return c.updateAccount.CallUnary(ctx, req)
+}
+
+// RemoveAccount calls bossanova.v1.DaemonService.RemoveAccount.
+func (c *daemonServiceClient) RemoveAccount(ctx context.Context, req *connect.Request[v1.RemoveAccountRequest]) (*connect.Response[v1.RemoveAccountResponse], error) {
+	return c.removeAccount.CallUnary(ctx, req)
+}
+
+// TestAccount calls bossanova.v1.DaemonService.TestAccount.
+func (c *daemonServiceClient) TestAccount(ctx context.Context, req *connect.Request[v1.TestAccountRequest]) (*connect.Response[v1.TestAccountResponse], error) {
+	return c.testAccount.CallUnary(ctx, req)
+}
+
 // RepairDoctor calls bossanova.v1.DaemonService.RepairDoctor.
 func (c *daemonServiceClient) RepairDoctor(ctx context.Context, req *connect.Request[v1.RepairDoctorRequest]) (*connect.Response[v1.RepairDoctorResponse], error) {
 	return c.repairDoctor.CallUnary(ctx, req)
@@ -947,6 +1037,21 @@ type DaemonServiceHandler interface {
 	// RunCronJobNow fires a cron job immediately, ignoring its schedule.
 	// Subject to the same overlap and concurrency-cap rules as scheduled fires.
 	RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error)
+	// ListAccounts returns registry accounts, optionally filtered by provider.
+	// Metadata only — credential blobs never cross the wire.
+	ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error)
+	// AddAccount registers a new provider login. The credential blob travels
+	// inbound only and is stored in the keyring; it is never echoed back.
+	AddAccount(context.Context, *connect.Request[v1.AddAccountRequest]) (*connect.Response[v1.AddAccountResponse], error)
+	// UpdateAccount mutates account metadata. Mutable fields are optional
+	// (present-only update semantics).
+	UpdateAccount(context.Context, *connect.Request[v1.UpdateAccountRequest]) (*connect.Response[v1.UpdateAccountResponse], error)
+	// RemoveAccount deletes the account row and purges its keyring credential.
+	RemoveAccount(context.Context, *connect.Request[v1.RemoveAccountRequest]) (*connect.Response[v1.RemoveAccountResponse], error)
+	// TestAccount validates the account's stored credential and, when a live
+	// smoke runner is wired, runs a trivial CLI invocation. It records the
+	// outcome (last_test_ok_at / last_test_error) and never tears down a session.
+	TestAccount(context.Context, *connect.Request[v1.TestAccountRequest]) (*connect.Response[v1.TestAccountResponse], error)
 	// RepairDoctor returns a structured health report for the auto-repair
 	// pipeline: which plugins are loaded, whether the workflow is running,
 	// whether `claude` is on the daemon's PATH, and a summary of recent
@@ -1241,6 +1346,36 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("RunCronJobNow")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceListAccountsHandler := connect.NewUnaryHandler(
+		DaemonServiceListAccountsProcedure,
+		svc.ListAccounts,
+		connect.WithSchema(daemonServiceMethods.ByName("ListAccounts")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceAddAccountHandler := connect.NewUnaryHandler(
+		DaemonServiceAddAccountProcedure,
+		svc.AddAccount,
+		connect.WithSchema(daemonServiceMethods.ByName("AddAccount")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceUpdateAccountHandler := connect.NewUnaryHandler(
+		DaemonServiceUpdateAccountProcedure,
+		svc.UpdateAccount,
+		connect.WithSchema(daemonServiceMethods.ByName("UpdateAccount")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceRemoveAccountHandler := connect.NewUnaryHandler(
+		DaemonServiceRemoveAccountProcedure,
+		svc.RemoveAccount,
+		connect.WithSchema(daemonServiceMethods.ByName("RemoveAccount")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceTestAccountHandler := connect.NewUnaryHandler(
+		DaemonServiceTestAccountProcedure,
+		svc.TestAccount,
+		connect.WithSchema(daemonServiceMethods.ByName("TestAccount")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceRepairDoctorHandler := connect.NewUnaryHandler(
 		DaemonServiceRepairDoctorProcedure,
 		svc.RepairDoctor,
@@ -1355,6 +1490,16 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceDeleteCronJobHandler.ServeHTTP(w, r)
 		case DaemonServiceRunCronJobNowProcedure:
 			daemonServiceRunCronJobNowHandler.ServeHTTP(w, r)
+		case DaemonServiceListAccountsProcedure:
+			daemonServiceListAccountsHandler.ServeHTTP(w, r)
+		case DaemonServiceAddAccountProcedure:
+			daemonServiceAddAccountHandler.ServeHTTP(w, r)
+		case DaemonServiceUpdateAccountProcedure:
+			daemonServiceUpdateAccountHandler.ServeHTTP(w, r)
+		case DaemonServiceRemoveAccountProcedure:
+			daemonServiceRemoveAccountHandler.ServeHTTP(w, r)
+		case DaemonServiceTestAccountProcedure:
+			daemonServiceTestAccountHandler.ServeHTTP(w, r)
 		case DaemonServiceRepairDoctorProcedure:
 			daemonServiceRepairDoctorHandler.ServeHTTP(w, r)
 		case DaemonServiceListCheckSnapshotsProcedure:
@@ -1546,6 +1691,26 @@ func (UnimplementedDaemonServiceHandler) DeleteCronJob(context.Context, *connect
 
 func (UnimplementedDaemonServiceHandler) RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RunCronJobNow is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListAccounts is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) AddAccount(context.Context, *connect.Request[v1.AddAccountRequest]) (*connect.Response[v1.AddAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.AddAccount is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) UpdateAccount(context.Context, *connect.Request[v1.UpdateAccountRequest]) (*connect.Response[v1.UpdateAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateAccount is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) RemoveAccount(context.Context, *connect.Request[v1.RemoveAccountRequest]) (*connect.Response[v1.RemoveAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RemoveAccount is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) TestAccount(context.Context, *connect.Request[v1.TestAccountRequest]) (*connect.Response[v1.TestAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.TestAccount is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) RepairDoctor(context.Context, *connect.Request[v1.RepairDoctorRequest]) (*connect.Response[v1.RepairDoctorResponse], error) {

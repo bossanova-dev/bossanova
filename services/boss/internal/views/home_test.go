@@ -589,6 +589,15 @@ func TestStateLabel_MergedUsesLightCheck(t *testing.T) {
 	}
 }
 
+// TestStateLabel_Orphaned pins the distinct non-green label so a restart-killed
+// headless run never renders as "green" or leaks the raw enum as "unknown".
+func TestStateLabel_Orphaned(t *testing.T) {
+	got := StateLabel(pb.SessionState_SESSION_STATE_ORPHANED)
+	if got != "orphaned" {
+		t.Fatalf("StateLabel(ORPHANED) = %q, want %q", got, "orphaned")
+	}
+}
+
 func TestHomeBuildTableRows_RendersRepairWarningUnderName(t *testing.T) {
 	h := HomeModel{
 		sessions: []*pb.Session{

@@ -173,7 +173,12 @@ func chatTitleInDir(projectDir, claudeID string) string {
 // Claude Code replaces path separators and "." with "-".
 // e.g. "/Users/dave/Code/.worktrees/foo" → "-Users-dave-Code--worktrees-foo"
 func pathToProjectKey(path string) string {
-	return strings.NewReplacer("/", "-", "\\", "-", ".", "-", ":", "-").Replace(path)
+	// Claude Code derives the key from the process working directory (getcwd),
+	// which is always normalized, so Clean first. Without this a stored path
+	// with a trailing slash (e.g. a repo registered as ".../bossanova/")
+	// encodes to "...-bossanova-" and never matches Claude's "...-bossanova"
+	// key, silently defeating --resume and forcing a --session-id fresh start.
+	return strings.NewReplacer("/", "-", "\\", "-", ".", "-", ":", "-").Replace(filepath.Clean(path))
 }
 
 // jsonlLine is a minimal representation of a JSONL line for parsing.

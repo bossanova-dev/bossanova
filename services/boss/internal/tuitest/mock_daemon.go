@@ -90,6 +90,22 @@ type MockDaemon struct {
 	runCronJobNowMode       string
 	runCronJobNowSkipReason string
 
+	// accounts is the in-memory account registry, keyed by account ID.
+	accounts map[string]*pb.Account
+	// accountCredentials mirrors the daemon's keyring: credential blobs keyed by
+	// account ID. Tests assert a removed account's credential is purged too.
+	accountCredentials map[string][]byte
+	// accountCounter generates deterministic account IDs.
+	accountCounter int
+	// addAccountCalls records every AddAccount request.
+	addAccountCalls []*pb.AddAccountRequest
+	// updateAccountCalls records every UpdateAccount request.
+	updateAccountCalls []*pb.UpdateAccountRequest
+	// removeAccountCalls records every RemoveAccount id.
+	removeAccountCalls []string
+	// testAccountCalls records every TestAccount id.
+	testAccountCalls []string
+
 	// agents controls what ListAgents returns. Tests can override via
 	// SetAgents to drive multi-agent UI (provider picker, settings render).
 	agents []*pb.AgentInfo
@@ -113,12 +129,14 @@ func StartMockDaemon(socketPath string) (*MockDaemon, func() error, error) {
 		return nil, nil, fmt.Errorf("listen unix: %w", err)
 	}
 	m := &MockDaemon{
-		socketPath:    socketPath,
-		listener:      ln,
-		cronJobs:      make(map[string]*pb.CronJob),
-		prs:           make(map[string][]*pb.PRSummary),
-		trackerIssues: make(map[string][]*pb.TrackerIssue),
-		attachEvents:  make(map[string]chan *pb.AttachSessionResponse),
+		socketPath:         socketPath,
+		listener:           ln,
+		cronJobs:           make(map[string]*pb.CronJob),
+		accounts:           make(map[string]*pb.Account),
+		accountCredentials: make(map[string][]byte),
+		prs:                make(map[string][]*pb.PRSummary),
+		trackerIssues:      make(map[string][]*pb.TrackerIssue),
+		attachEvents:       make(map[string]chan *pb.AttachSessionResponse),
 	}
 	mux := http.NewServeMux()
 	path, handler := bossanovav1connect.NewDaemonServiceHandler(m)
@@ -287,6 +305,70 @@ func (m *MockDaemon) RunCronJobNowCallCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.runCronJobNowCalls)
+}
+
+// SeedAccount seeds the mock daemon with an account (and optional credential).
+func (m *MockDaemon) SeedAccount(acct *pb.Account, credential []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.accounts[acct.Id] = acct
+	if credential != nil {
+		m.accountCredentials[acct.Id] = credential
+	}
+}
+
+// Accounts returns a snapshot of all accounts in the mock.
+func (m *MockDaemon) Accounts() map[string]*pb.Account {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]*pb.Account, len(m.accounts))
+	for k, v := range m.accounts {
+		out[k] = v
+	}
+	return out
+}
+
+// AccountCredential returns the stored credential blob for an account, or nil.
+func (m *MockDaemon) AccountCredential(id string) []byte {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.accountCredentials[id]
+}
+
+// AddAccountCalls returns a copy of every AddAccount request recorded.
+func (m *MockDaemon) AddAccountCalls() []*pb.AddAccountRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.AddAccountRequest, len(m.addAccountCalls))
+	for i, req := range m.addAccountCalls {
+		out[i] = proto.Clone(req).(*pb.AddAccountRequest)
+	}
+	return out
+}
+
+// UpdateAccountCalls returns a copy of every UpdateAccount request recorded.
+func (m *MockDaemon) UpdateAccountCalls() []*pb.UpdateAccountRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.UpdateAccountRequest, len(m.updateAccountCalls))
+	for i, req := range m.updateAccountCalls {
+		out[i] = proto.Clone(req).(*pb.UpdateAccountRequest)
+	}
+	return out
+}
+
+// RemoveAccountCallCount returns how many RemoveAccount calls were received.
+func (m *MockDaemon) RemoveAccountCallCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.removeAccountCalls)
+}
+
+// TestAccountCallCount returns how many TestAccount calls were received.
+func (m *MockDaemon) TestAccountCallCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.testAccountCalls)
 }
 
 // SetRunCronJobNowMode configures RunCronJobNow behaviour.
@@ -931,6 +1013,109 @@ func (m *MockDaemon) RunCronJobNow(_ context.Context, req *connect.Request[pb.Ru
 		State: pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
 	}
 	return connect.NewResponse(&pb.RunCronJobNowResponse{Session: sess}), nil
+}
+
+func (m *MockDaemon) ListAccounts(_ context.Context, req *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.accounts))
+	for id := range m.accounts {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]*pb.Account, 0, len(ids))
+	for _, id := range ids {
+		acct := m.accounts[id]
+		if req.Msg.Provider != nil && *req.Msg.Provider != "" && acct.Provider != *req.Msg.Provider {
+			continue
+		}
+		out = append(out, proto.Clone(acct).(*pb.Account))
+	}
+	return connect.NewResponse(&pb.ListAccountsResponse{Accounts: out}), nil
+}
+
+func (m *MockDaemon) AddAccount(_ context.Context, req *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.addAccountCalls = append(m.addAccountCalls, proto.Clone(req.Msg).(*pb.AddAccountRequest))
+	m.accountCounter++
+	acct := &pb.Account{
+		Id:        fmt.Sprintf("acct-%d", m.accountCounter),
+		Provider:  req.Msg.Provider,
+		Label:     req.Msg.Label,
+		Email:     req.Msg.Email,
+		Priority:  req.Msg.Priority,
+		Status:    "active",
+		Health:    "ok",
+		CreatedAt: timestamppb.Now(),
+		UpdatedAt: timestamppb.Now(),
+	}
+	m.accounts[acct.Id] = acct
+	// Store the credential in the keyring mirror; never surface it in a response.
+	if len(req.Msg.Credential) > 0 {
+		m.accountCredentials[acct.Id] = append([]byte(nil), req.Msg.Credential...)
+	}
+	return connect.NewResponse(&pb.AddAccountResponse{Account: proto.Clone(acct).(*pb.Account)}), nil
+}
+
+func (m *MockDaemon) UpdateAccount(_ context.Context, req *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.updateAccountCalls = append(m.updateAccountCalls, proto.Clone(req.Msg).(*pb.UpdateAccountRequest))
+	acct, ok := m.accounts[req.Msg.Id]
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account %q not found", req.Msg.Id))
+	}
+	if req.Msg.Label != nil {
+		acct.Label = *req.Msg.Label
+	}
+	if req.Msg.Email != nil {
+		acct.Email = *req.Msg.Email
+	}
+	if req.Msg.Priority != nil {
+		acct.Priority = *req.Msg.Priority
+	}
+	if req.Msg.Status != nil {
+		acct.Status = *req.Msg.Status
+	}
+	if len(req.Msg.AllowedModels) > 0 {
+		acct.AllowedModels = req.Msg.AllowedModels
+	}
+	acct.UpdatedAt = timestamppb.Now()
+	return connect.NewResponse(&pb.UpdateAccountResponse{Account: proto.Clone(acct).(*pb.Account)}), nil
+}
+
+func (m *MockDaemon) RemoveAccount(_ context.Context, req *connect.Request[pb.RemoveAccountRequest]) (*connect.Response[pb.RemoveAccountResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.removeAccountCalls = append(m.removeAccountCalls, req.Msg.Id)
+	if _, ok := m.accounts[req.Msg.Id]; !ok {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account %q not found", req.Msg.Id))
+	}
+	delete(m.accounts, req.Msg.Id)
+	// RemoveAccount purges the keyring credential too.
+	delete(m.accountCredentials, req.Msg.Id)
+	return connect.NewResponse(&pb.RemoveAccountResponse{}), nil
+}
+
+func (m *MockDaemon) TestAccount(_ context.Context, req *connect.Request[pb.TestAccountRequest]) (*connect.Response[pb.TestAccountResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.testAccountCalls = append(m.testAccountCalls, req.Msg.Id)
+	acct, ok := m.accounts[req.Msg.Id]
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account %q not found", req.Msg.Id))
+	}
+	// No live smoke runner in the mock: validate presence of a credential and
+	// report live_smoke_ran=false, mirroring the daemon's nil-runner degrade.
+	acct.LastTestOkAt = timestamppb.Now()
+	acct.LastTestError = ""
+	acct.UpdatedAt = timestamppb.Now()
+	return connect.NewResponse(&pb.TestAccountResponse{
+		Account:      proto.Clone(acct).(*pb.Account),
+		LiveSmokeRan: false,
+		Detail:       "credential validated (live smoke unavailable in mock)",
+	}), nil
 }
 
 func (m *MockDaemon) ListAgents(_ context.Context, _ *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error) {

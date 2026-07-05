@@ -10,14 +10,24 @@ import {
   PROOF_MEDIA_TYPES,
   TUI_SURFACE_PREFIXES,
   WEB_UI_SURFACE_PREFIXES,
+  DEFAULT_TOTAL_PROOF_BUDGET_MS,
+  LIVE_AGENT_EXTRA_MS,
+  SURFACE_BUDGET_SPEC,
   buildManifest,
   bossE2eBuildCommand,
   browserCaptureCommand,
+  capturesAgentRunnerStubbed,
+  classifySurfaces,
   classifyTuiSurface,
+  deferredReasonMessage,
   deriveVerdictBlock,
+  planSurfaceBudget,
   formatCaption,
+  formatChapterOffset,
   githubCommentCommand,
   introCardCommand,
+  judgeHeadline,
+  judgeVerdictLines,
   listProofCommentsCommand,
   mediaTypeForPath,
   minimizeCommentCommand,
@@ -31,8 +41,10 @@ import {
   proofUploadFiles,
   r2UploadCommand,
   renderComment,
+  renderConsolidatedComment,
   renderDeferredComment,
   renderGallery,
+  renderSceneChapters,
   resolveCatalogPath,
   selectOutdatedProofCommentIds,
   selectRecipes,
@@ -44,6 +56,7 @@ import {
   validateBrowserRoute,
   validateProofUploadRelativePath,
   validateRecipeId,
+  verdictBlockLines,
   webUiSurfacePresent,
 } from './proof-lib.mjs'
 
@@ -121,6 +134,331 @@ test('formatCaption mirrors the TS overlay: collapse, 140-truncation, passthroug
   assert.equal(formatCaption('   '), '')
   assert.equal(formatCaption(null), '')
   assert.equal(formatCaption(undefined), '')
+})
+
+// ── BOS-140 P3d: chaptered comment + gallery ─────────────────────────────────
+
+test('formatChapterOffset: m:ss for an output-clock ms value; null-safe', () => {
+  assert.equal(formatChapterOffset(0), '0:00')
+  assert.equal(formatChapterOffset(12000), '0:12')
+  assert.equal(formatChapterOffset(725000), '12:05')
+  assert.equal(formatChapterOffset(null), null)
+  assert.equal(formatChapterOffset(undefined), null)
+  assert.equal(formatChapterOffset(Number.NaN), null)
+})
+
+test('renderSceneChapters: single passed scene short-circuits to [] (byte-identity guarantee)', () => {
+  assert.deepEqual(
+    renderSceneChapters({
+      videoUrl: 'https://x/v.mp4',
+      scenes: [{ id: 'scene-01', title: 'only scene', passed: true, missing: [], outputMs: 0 }],
+    }),
+    [],
+  )
+})
+
+test('renderSceneChapters: no scenes short-circuits to []', () => {
+  assert.deepEqual(renderSceneChapters({ videoUrl: 'https://x/v.mp4' }), [])
+  assert.deepEqual(renderSceneChapters({ videoUrl: 'https://x/v.mp4', scenes: [] }), [])
+})
+
+test('renderSceneChapters: 2 scenes one failed → two lines, ✗ carries missing tokens', () => {
+  const lines = renderSceneChapters({
+    videoUrl: 'https://x/v.mp4',
+    scenes: [
+      { id: 'scene-01', title: 'open repos', passed: true, missing: [], outputMs: 12000 },
+      {
+        id: 'scene-02',
+        title: 'rename session',
+        passed: false,
+        missing: ['Renamed'],
+        outputMs: 45000,
+      },
+    ],
+  })
+  assert.deepEqual(lines, [
+    '',
+    '**Scenes:**',
+    '- [0:12] ✅ [Scene 1 — open repos](https://x/v.mp4#t=12)',
+    '- [0:45] ✗ [Scene 2 — rename session](https://x/v.mp4#t=45) (missing: Renamed)',
+  ])
+})
+
+test('renderSceneChapters: no videoUrl renders unlinked mark + title', () => {
+  const lines = renderSceneChapters({
+    scenes: [
+      { id: 'scene-01', title: 'open repos', passed: true, missing: [], outputMs: 12000 },
+      {
+        id: 'scene-02',
+        title: 'rename session',
+        passed: false,
+        missing: ['Renamed'],
+        outputMs: null,
+      },
+    ],
+  })
+  assert.deepEqual(lines, [
+    '',
+    '**Scenes:**',
+    '- ✅ Scene 1 — open repos',
+    '- ✗ Scene 2 — rename session (missing: Renamed)',
+  ])
+})
+
+// ── BOS-142: live-agent (unstubbed) scene disclosure ─────────────────────────
+
+test('renderSceneChapters: single passed LIVE scene renders (not short-circuited) with the unstubbed suffix', () => {
+  const lines = renderSceneChapters({
+    videoUrl: 'https://x/v.mp4',
+    scenes: [
+      {
+        id: 'scene-01',
+        title: 'live claude',
+        passed: true,
+        missing: [],
+        outputMs: 12000,
+        agentRunnerStubbed: false,
+      },
+    ],
+  })
+  assert.deepEqual(lines, [
+    '',
+    '**Scenes:**',
+    '- [0:12] ✅ [Scene 1 — live claude](https://x/v.mp4#t=12) — _live agent (unstubbed)_',
+  ])
+})
+
+test('renderSceneChapters: mixed run → only the live scene carries the unstubbed suffix', () => {
+  const lines = renderSceneChapters({
+    videoUrl: 'https://x/v.mp4',
+    scenes: [
+      {
+        id: 'scene-01',
+        title: 'live one',
+        passed: true,
+        missing: [],
+        outputMs: 12000,
+        agentRunnerStubbed: false,
+      },
+      { id: 'scene-02', title: 'stub two', passed: true, missing: [], outputMs: 45000 },
+    ],
+  })
+  assert.deepEqual(lines, [
+    '',
+    '**Scenes:**',
+    '- [0:12] ✅ [Scene 1 — live one](https://x/v.mp4#t=12) — _live agent (unstubbed)_',
+    '- [0:45] ✅ [Scene 2 — stub two](https://x/v.mp4#t=45)',
+  ])
+})
+
+test('renderSceneChapters: single passed STUB scene still short-circuits (byte-identity preserved)', () => {
+  assert.deepEqual(
+    renderSceneChapters({
+      videoUrl: 'https://x/v.mp4',
+      scenes: [
+        {
+          id: 'scene-01',
+          title: 'only scene',
+          passed: true,
+          missing: [],
+          outputMs: 0,
+          agentRunnerStubbed: true,
+        },
+      ],
+    }),
+    [],
+  )
+})
+
+test('capturesAgentRunnerStubbed: all-stub (no field) → true', () => {
+  assert.equal(
+    capturesAgentRunnerStubbed([
+      {
+        scenes: [
+          { id: 'a', passed: true },
+          { id: 'b', passed: true },
+        ],
+      },
+    ]),
+    true,
+  )
+})
+
+test('capturesAgentRunnerStubbed: all-live (every scene false) → false', () => {
+  assert.equal(
+    capturesAgentRunnerStubbed([
+      {
+        scenes: [
+          { id: 'a', agentRunnerStubbed: false },
+          { id: 'b', agentRunnerStubbed: false },
+        ],
+      },
+    ]),
+    false,
+  )
+})
+
+test('capturesAgentRunnerStubbed: mixed (one live, one stub) → true', () => {
+  assert.equal(
+    capturesAgentRunnerStubbed([{ scenes: [{ id: 'a', agentRunnerStubbed: false }, { id: 'b' }] }]),
+    true,
+  )
+})
+
+test('capturesAgentRunnerStubbed: no scenes at all → true (conservative)', () => {
+  assert.equal(capturesAgentRunnerStubbed([]), true)
+  assert.equal(capturesAgentRunnerStubbed([{ scenes: [] }, {}]), true)
+  assert.equal(capturesAgentRunnerStubbed(undefined), true)
+})
+
+test('capturesAgentRunnerStubbed: live scenes across separate captures, no stub → false', () => {
+  assert.equal(
+    capturesAgentRunnerStubbed([
+      { scenes: [{ id: 'a', agentRunnerStubbed: false }] },
+      { scenes: [{ id: 'b', agentRunnerStubbed: false }] },
+    ]),
+    false,
+  )
+})
+
+test('renderSceneChapters: single FAILED scene still renders (short-circuit only skips passed)', () => {
+  const lines = renderSceneChapters({
+    videoUrl: 'https://x/v.mp4',
+    scenes: [
+      { id: 'scene-01', title: 'only scene', passed: false, missing: ['Foo'], outputMs: 5000 },
+    ],
+  })
+  assert.deepEqual(lines, [
+    '',
+    '**Scenes:**',
+    '- [0:05] ✗ [Scene 1 — only scene](https://x/v.mp4#t=5) (missing: Foo)',
+  ])
+})
+
+test('renderSceneChapters: failed scene with zero interactions renders "(no interaction recorded)" instead of empty missing parens', () => {
+  const lines = renderSceneChapters({
+    videoUrl: 'https://x/v.mp4',
+    scenes: [{ id: 'scene-01', title: 'only scene', passed: false, missing: [], outputMs: 5000 }],
+  })
+  assert.deepEqual(lines, [
+    '',
+    '**Scenes:**',
+    '- [0:05] ✗ [Scene 1 — only scene](https://x/v.mp4#t=5) (no interaction recorded)',
+  ])
+})
+
+test('renderSceneChapters: escapes scene titles via escapeMarkdown', () => {
+  const lines = renderSceneChapters({
+    scenes: [
+      { id: 'scene-01', title: 'a | pipe', passed: true, missing: [], outputMs: 0 },
+      { id: 'scene-02', title: 'line\nbreak', passed: false, missing: ['x'], outputMs: null },
+    ],
+  })
+  assert.deepEqual(lines, [
+    '',
+    '**Scenes:**',
+    '- ✅ Scene 1 — a \\| pipe',
+    '- ✗ Scene 2 — line break (missing: x)',
+  ])
+})
+
+test('renderSceneChapters: escapes missing evidence tokens via escapeMarkdown', () => {
+  const lines = renderSceneChapters({
+    scenes: [
+      {
+        id: 'scene-01',
+        title: 'settings',
+        passed: false,
+        missing: ['a | pipe', 'line\nbreak'],
+        outputMs: null,
+      },
+    ],
+  })
+  assert.deepEqual(lines, [
+    '',
+    '**Scenes:**',
+    '- ✗ Scene 1 — settings (missing: a \\| pipe, line break)',
+  ])
+})
+
+test('renderConsolidatedComment: passed section with a multi-scene primary capture appends chapter lines', () => {
+  const marker = '<!-- bossanova-proof:pr-9 -->'
+  const manifest = {
+    commit: 'abc',
+    runId: 'R',
+    publicBaseUrl: 'https://x/pr',
+    genAiLive: false,
+    title: 'T',
+  }
+  const sections = [
+    {
+      label: 'TUI',
+      outcome: 'passed',
+      summary: 'tui ok',
+      captures: [
+        {
+          fileName: 't.mp4',
+          videoUrl: 'https://x/t.mp4',
+          scenes: [
+            { id: 'scene-01', title: 'open repos', passed: true, missing: [], outputMs: 12000 },
+            {
+              id: 'scene-02',
+              title: 'rename session',
+              passed: false,
+              missing: ['Renamed'],
+              outputMs: 45000,
+            },
+          ],
+        },
+      ],
+      genAi: false,
+    },
+  ]
+  const body = renderConsolidatedComment({ marker, manifest, sections })
+  assert.ok(body.includes('**Scenes:**'))
+  assert.ok(body.includes('[Scene 1 — open repos](https://x/t.mp4#t=12)'))
+  assert.ok(body.includes('✗ [Scene 2 — rename session](https://x/t.mp4#t=45) (missing: Renamed)'))
+})
+
+test('renderConsolidatedComment: no-ui-surface section suppresses synthetic scene chapters', () => {
+  const body = renderConsolidatedComment({
+    marker: '<!-- bossanova-proof:pr-1 -->',
+    manifest: {
+      commit: 'abc1234',
+      prNumber: '1',
+      publicBaseUrl: 'https://x/pr',
+      genAiLive: false,
+      title: 'T',
+    },
+    sections: [
+      {
+        label: 'Web',
+        outcome: 'deferred',
+        reasonCode: 'no-ui-surface',
+        captures: [
+          {
+            surface: 'web',
+            status: 'failed',
+            scenes: [
+              {
+                id: 'scene-01',
+                title: 'only scene',
+                passed: false,
+                missing: [],
+                outputMs: null,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  })
+  assert.match(body, /No web UI surface to demonstrate/)
+  assert.ok(!body.includes('**Scenes:**'), 'no-surface section must stay neutral')
+  assert.ok(
+    !body.includes('no interaction recorded'),
+    'synthetic no-surface scene is not a failure',
+  )
 })
 
 test('buildManifest records commit, recipe status, and public base url', () => {
@@ -222,6 +560,7 @@ test('parseProofArgs parses run command with explicit recipes', () => {
     recipes: ['web-sessions', 'tui-home'],
     changedFiles: [],
     dryRun: false,
+    json: false,
   })
 })
 
@@ -233,6 +572,7 @@ test('parseProofArgs parses changed files and dry run', () => {
       recipes: [],
       changedFiles: ['services/web/src/App.tsx'],
       dryRun: true,
+      json: false,
     },
   )
 })
@@ -243,6 +583,7 @@ test('parseProofArgs defaults flags-only invocation to run command', () => {
     recipes: [],
     changedFiles: ['services/web/src/App.tsx'],
     dryRun: true,
+    json: false,
   })
 })
 
@@ -516,6 +857,39 @@ test('renderDeferredComment carries the honest no-ui-surface reason and no red v
   assert.match(body, /No web UI surface to demonstrate/)
   assert.ok(!body.includes('❌'), 'no-surface note must not carry a red verdict')
   assert.ok(!body.includes('Scroll through the page'), 'no recipe-floor filler')
+})
+
+test('renderDeferredComment suppresses synthetic no-ui-surface scene chapters', () => {
+  const body = renderDeferredComment({
+    marker: '<!-- m -->',
+    manifest: {
+      commit: 'abc1234',
+      prNumber: '964',
+      deferred: true,
+      captures: [
+        {
+          surface: 'web',
+          status: 'failed',
+          scenes: [
+            {
+              id: 'scene-01',
+              title: 'only scene',
+              passed: false,
+              missing: [],
+              outputMs: null,
+            },
+          ],
+        },
+      ],
+    },
+    reasonCode: 'no-ui-surface',
+  })
+  assert.match(body, /No web UI surface to demonstrate/)
+  assert.ok(!body.includes('**Scenes:**'), 'no-surface comment must stay neutral')
+  assert.ok(
+    !body.includes('no interaction recorded'),
+    'synthetic no-surface scene is not a failure',
+  )
 })
 
 test('classifyTuiSurface normalizes leading ./ and backslashes', () => {
@@ -1309,6 +1683,235 @@ test('renderGallery video capture with zero stills has no Step screenshots subse
   assert.ok(!md.includes('### Step screenshots'), 'no subsection when no stills')
 })
 
+// ── BOS-140 P3d: gallery chapter list + per-scene still grouping ─────────────
+
+test('renderGallery: single-scene capture keeps the flat Step screenshots block', () => {
+  const md = renderGallery({
+    manifest: {
+      prNumber: '7',
+      commit: 'abc1234',
+      runId: 'run-1',
+      generatedAt: '2026-06-23T00:00:00.000Z',
+      publicBaseUrl: 'https://x',
+      captures: [
+        {
+          title: 'Flow',
+          surface: 'web',
+          status: 'passed',
+          mediaType: 'mp4',
+          url: 'https://x/v.mp4',
+          videoUrl: 'https://x/v.mp4',
+          posterUrl: 'https://x/v.png',
+          scenes: [{ id: 'scene-01', title: 'only scene', passed: true, missing: [], outputMs: 0 }],
+          stills: [{ fileName: 'web-v/01-a.png', label: 'Step A', url: 'https://x/01-a.png' }],
+        },
+      ],
+    },
+  })
+  assert.match(md, /### Step screenshots/)
+  assert.ok(!md.includes('### Scene'), 'single scene must not use scene sub-headings')
+  assert.ok(!md.includes('**Scenes:**'), 'single passed scene renders no chapter list')
+})
+
+test('renderGallery: multi-scene capture groups stills into per-scene sub-headings + chapter list', () => {
+  const md = renderGallery({
+    manifest: {
+      prNumber: '7',
+      commit: 'abc1234',
+      runId: 'run-1',
+      generatedAt: '2026-06-23T00:00:00.000Z',
+      publicBaseUrl: 'https://x',
+      captures: [
+        {
+          title: 'Flow',
+          surface: 'web',
+          status: 'failed',
+          mediaType: 'mp4',
+          url: 'https://x/v.mp4',
+          videoUrl: 'https://x/v.mp4',
+          posterUrl: 'https://x/v.png',
+          scenes: [
+            { id: 'scene-01', title: 'open repos', passed: true, missing: [], outputMs: 12000 },
+            {
+              id: 'scene-02',
+              title: 'rename session',
+              passed: false,
+              missing: ['Renamed'],
+              outputMs: 45000,
+            },
+          ],
+          stills: [
+            {
+              fileName: 'scene-01-01-a.png',
+              label: 'Step A',
+              url: 'https://x/scene-01-01-a.png',
+              sceneId: 'scene-01',
+            },
+            {
+              fileName: 'scene-02-01-b.png',
+              label: 'Step B',
+              url: 'https://x/scene-02-01-b.png',
+              sceneId: 'scene-02',
+            },
+          ],
+        },
+      ],
+    },
+  })
+  // Chapter list.
+  assert.match(md, /\*\*Scenes:\*\*/)
+  assert.match(md, /\[Scene 1 — open repos\]\(https:\/\/x\/v\.mp4#t=12\)/)
+  assert.match(
+    md,
+    /✗ \[Scene 2 — rename session\]\(https:\/\/x\/v\.mp4#t=45\) \(missing: Renamed\)/,
+  )
+  // Per-scene sub-headings replace the flat block.
+  assert.ok(!md.includes('### Step screenshots'), 'no flat block for a multi-scene capture')
+  assert.match(md, /### Scene 1 — open repos ✅/)
+  assert.match(md, /### Scene 2 — rename session ✗/)
+  assert.match(md, /!\[Step A\]\(https:\/\/x\/scene-01-01-a\.png\)/)
+  assert.match(md, /!\[Step B\]\(https:\/\/x\/scene-02-01-b\.png\)/)
+  // Scene 1's heading precedes scene 2's, and both precede nothing unlabeled.
+  assert.ok(md.indexOf('### Scene 1') < md.indexOf('### Scene 2'))
+})
+
+test('renderGallery: all-live capture → live scene heading carries the unstubbed suffix and NO run-level stub notice', () => {
+  const md = renderGallery({
+    manifest: {
+      // agentRunnerStubbed intentionally absent (unstubbed all-live run).
+      prNumber: '7',
+      commit: 'abc1234',
+      runId: 'run-1',
+      generatedAt: '2026-06-23T00:00:00.000Z',
+      publicBaseUrl: 'https://x',
+      captures: [
+        {
+          title: 'Live flow',
+          surface: 'web',
+          status: 'passed',
+          mediaType: 'mp4',
+          url: 'https://x/v.mp4',
+          videoUrl: 'https://x/v.mp4',
+          scenes: [
+            {
+              id: 'scene-01',
+              title: 'live claude',
+              passed: true,
+              missing: [],
+              outputMs: 12000,
+              agentRunnerStubbed: false,
+            },
+            {
+              id: 'scene-02',
+              title: 'live rename',
+              passed: true,
+              missing: [],
+              outputMs: 24000,
+              agentRunnerStubbed: false,
+            },
+          ],
+          stills: [
+            {
+              fileName: 'scene-01-01-a.png',
+              label: 'Step A',
+              url: 'https://x/scene-01-01-a.png',
+              sceneId: 'scene-01',
+            },
+            {
+              fileName: 'scene-02-01-b.png',
+              label: 'Step B',
+              url: 'https://x/scene-02-01-b.png',
+              sceneId: 'scene-02',
+            },
+          ],
+        },
+      ],
+    },
+  })
+  assert.match(md, /### Scene 1 — live claude ✅ _\(live agent — unstubbed\)_/)
+  assert.ok(
+    !md.includes('agent-runner stubbed; UI + orchestration'),
+    'an all-live run must not print the run-level stub notice',
+  )
+})
+
+test('renderGallery: mixed legacy (sceneId-less) stills fall into a trailing group', () => {
+  const md = renderGallery({
+    manifest: {
+      prNumber: '7',
+      commit: 'abc1234',
+      runId: 'run-1',
+      generatedAt: '2026-06-23T00:00:00.000Z',
+      publicBaseUrl: 'https://x',
+      captures: [
+        {
+          title: 'Flow',
+          surface: 'web',
+          status: 'passed',
+          mediaType: 'mp4',
+          url: 'https://x/v.mp4',
+          videoUrl: 'https://x/v.mp4',
+          posterUrl: 'https://x/v.png',
+          scenes: [
+            { id: 'scene-01', title: 'open repos', passed: true, missing: [], outputMs: 12000 },
+            { id: 'scene-02', title: 'rename session', passed: true, missing: [], outputMs: 45000 },
+          ],
+          stills: [
+            {
+              fileName: 'scene-01-01-a.png',
+              label: 'Step A',
+              url: 'https://x/scene-01-01-a.png',
+              sceneId: 'scene-01',
+            },
+            // No sceneId — a still from before scenes existed (or unmapped).
+            { fileName: '02-legacy.png', label: 'Legacy step', url: 'https://x/02-legacy.png' },
+          ],
+        },
+      ],
+    },
+  })
+  assert.match(md, /### Scene 1 — open repos ✅/)
+  assert.ok(!md.includes('### Scene 2'), 'scene-02 has no matching stills, so no heading')
+  assert.match(md, /### Step screenshots/, 'unlabeled stills fall into the trailing flat group')
+  assert.match(md, /!\[Legacy step\]\(https:\/\/x\/02-legacy\.png\)/)
+  // The scene sub-heading must precede the trailing unlabeled group.
+  assert.ok(md.indexOf('### Scene 1') < md.indexOf('### Step screenshots'))
+})
+
+test('renderGallery groups multi-surface captures and includes deferred empty surfaces', () => {
+  const md = renderGallery({
+    manifest: {
+      prNumber: '7',
+      commit: 'abc1234',
+      runId: 'run-1',
+      generatedAt: '2026-06-23T00:00:00.000Z',
+      publicBaseUrl: 'https://x',
+      surfaces: [
+        { surface: 'tui', outcome: 'passed', reasonCode: null },
+        { surface: 'web', outcome: 'deferred', reasonCode: 'budget-exceeded' },
+      ],
+      captures: [
+        {
+          title: 'TUI flow',
+          surface: 'tui',
+          status: 'passed',
+          mediaType: 'mp4',
+          url: 'https://x/tui.mp4',
+          videoUrl: 'https://x/tui.mp4',
+          posterUrl: 'https://x/tui.png',
+        },
+      ],
+    },
+  })
+
+  assert.match(md, /## TUI/)
+  assert.match(md, /#### TUI — ✅ proven/)
+  assert.match(md, /### TUI flow/)
+  assert.match(md, /## Web/)
+  assert.match(md, /#### Web — ⏸ deferred \(budget-exceeded\)/)
+  assert.match(md, /shared proof budget/)
+})
+
 // ── Task 5: failed-capture media upload ──────────────────────────────────────
 
 test('proofUploadFiles: includes media for failed captures that have a fileName', () => {
@@ -1458,6 +2061,229 @@ test('buildManifest: carries title/verdict/genAiLive/agentSummary/brief', () => 
   assert.deepEqual(m.brief, { genAi: false })
 })
 
+// ── Task 4: judge-led headline + judge verdict block (P4b/D12) ───────────────
+
+test('judgeHeadline: missing/null judge → unjudged', () => {
+  assert.deepEqual(judgeHeadline(undefined), { emoji: '📸', title: 'Proof (unjudged)' })
+  assert.deepEqual(judgeHeadline(null), { emoji: '📸', title: 'Proof (unjudged)' })
+})
+
+test('judgeHeadline: {unjudged} → unjudged, regardless of reason', () => {
+  assert.deepEqual(judgeHeadline({ unjudged: true, reason: 'missing-key' }), {
+    emoji: '📸',
+    title: 'Proof (unjudged)',
+  })
+})
+
+test('judgeHeadline: evidence satisfactory → judged convincing', () => {
+  assert.deepEqual(judgeHeadline({ evidence: 'satisfactory', confidence: 'high' }), {
+    emoji: '✅',
+    title: 'Proof — judged convincing',
+  })
+})
+
+test('judgeHeadline: evidence partial → partially convincing', () => {
+  assert.deepEqual(judgeHeadline({ evidence: 'partial', confidence: 'medium' }), {
+    emoji: '⚠️',
+    title: 'Proof produced — partially convincing',
+  })
+})
+
+test('judgeHeadline: evidence unsatisfactory → not convincing', () => {
+  assert.deepEqual(judgeHeadline({ evidence: 'unsatisfactory', confidence: 'low' }), {
+    emoji: '⚠️',
+    title: 'Proof produced but not convincing',
+  })
+})
+
+const judgeManifest = {
+  verdict: 'passed',
+  captures: [{ fileName: 'web-sessions/web-sessions.png' }],
+  genAiLive: false,
+  brief: { genAi: false },
+}
+
+test('judgeVerdictLines: unjudged falls back to the legacy self-graded block + label', () => {
+  const lines = judgeVerdictLines({
+    judge: { unjudged: true, reason: 'missing-key' },
+    manifest: judgeManifest,
+  })
+  assert.deepEqual(lines, [
+    ...verdictBlockLines(judgeManifest),
+    '',
+    '_Self-graded (unjudged): judge unavailable — missing-key._',
+  ])
+})
+
+test('judgeVerdictLines: missing judge (undefined) also falls back honestly', () => {
+  const lines = judgeVerdictLines({ judge: undefined, manifest: judgeManifest })
+  assert.ok(lines.some((l) => l.includes('✅ **Evidence:** Satisfactory')))
+  assert.ok(
+    lines.at(-1).includes('_Self-graded (unjudged): judge unavailable — no judge available._'),
+  )
+})
+
+test('judgeVerdictLines: satisfactory judge with caveats renders header + caveat lines, no scene lines', () => {
+  const lines = judgeVerdictLines({
+    judge: {
+      evidence: 'satisfactory',
+      confidence: 'high',
+      perScene: [{ id: 'scene-01', verdict: 'passed', reason: 'looks good' }],
+      caveats: ['agent-runner stubbed: UI + orchestration exercised against a stubbed daemon'],
+      model: 'claude-haiku-4-5',
+      clamped: [],
+    },
+    manifest: judgeManifest,
+  })
+  assert.deepEqual(lines, [
+    '**Fresh-context judge (claude-haiku-4-5):** Evidence: Satisfactory · Confidence: High',
+    '- Caveat: agent-runner stubbed: UI + orchestration exercised against a stubbed daemon',
+  ])
+})
+
+test('judgeVerdictLines: unsatisfactory judge renders per-scene ✗ reason lines (title resolved from manifest captures)', () => {
+  const manifest = {
+    ...judgeManifest,
+    captures: [
+      {
+        fileName: 'tui-agent/tui-agent.mp4',
+        scenes: [
+          { id: 'scene-01', title: 'open repos', passed: true, missing: [], outputMs: 1000 },
+          { id: 'scene-02', title: 'rename session', passed: false, missing: [], outputMs: 2000 },
+        ],
+      },
+    ],
+  }
+  const lines = judgeVerdictLines({
+    judge: {
+      evidence: 'unsatisfactory',
+      confidence: 'low',
+      perScene: [
+        { id: 'scene-01', verdict: 'passed', reason: 'evidence clear' },
+        { id: 'scene-02', verdict: 'failed', reason: 'evidence not visible in stills' },
+      ],
+      caveats: [],
+      model: 'claude-haiku-4-5',
+      clamped: ['evidence-downgraded-scene-failure'],
+    },
+    manifest,
+  })
+  assert.deepEqual(lines, [
+    '**Fresh-context judge (claude-haiku-4-5):** Evidence: Unsatisfactory · Confidence: Low',
+    '- Scene scene-02 — rename session: ✗ evidence not visible in stills',
+  ])
+})
+
+test('judgeVerdictLines: per-scene reason and title are escaped via escapeMarkdown', () => {
+  const manifest = {
+    ...judgeManifest,
+    captures: [
+      {
+        fileName: 'web/web.mp4',
+        scenes: [{ id: 'scene-01', title: 'a | b', passed: false, missing: [], outputMs: null }],
+      },
+    ],
+  }
+  const lines = judgeVerdictLines({
+    judge: {
+      evidence: 'partial',
+      confidence: 'medium',
+      perScene: [{ id: 'scene-01', verdict: 'unclear', reason: 'pipe | and\nnewline' }],
+      caveats: [],
+      model: 'claude-haiku-4-5',
+      clamped: [],
+    },
+    manifest,
+  })
+  assert.deepEqual(lines, [
+    '**Fresh-context judge (claude-haiku-4-5):** Evidence: Partial · Confidence: Medium',
+    '- Scene scene-01 — a \\| b: ✗ pipe \\| and newline',
+  ])
+})
+
+test('judgeVerdictLines: unresolved scene id (no matching capture scene) omits the title', () => {
+  const lines = judgeVerdictLines({
+    judge: {
+      evidence: 'partial',
+      confidence: 'medium',
+      perScene: [{ id: 'scene-99', verdict: 'failed', reason: 'no matching scene' }],
+      caveats: [],
+      model: 'claude-haiku-4-5',
+      clamped: [],
+    },
+    manifest: judgeManifest,
+  })
+  assert.deepEqual(lines, [
+    '**Fresh-context judge (claude-haiku-4-5):** Evidence: Partial · Confidence: Medium',
+    '- Scene scene-99: ✗ no matching scene',
+  ])
+})
+
+test('judgeVerdictLines: sceneIds scope filters per-scene ✗ lines to the surface (caveats/header unscoped)', () => {
+  const manifest = {
+    ...judgeManifest,
+    captures: [
+      {
+        fileName: 'web/web.mp4',
+        scenes: [
+          { id: 'scene-web', title: 'rename session', passed: true, missing: [], outputMs: 1 },
+        ],
+      },
+    ],
+  }
+  const judge = {
+    evidence: 'partial',
+    confidence: 'medium',
+    perScene: [
+      { id: 'scene-tui', verdict: 'failed', reason: 'belongs to the OTHER surface' },
+      { id: 'scene-web', verdict: 'failed', reason: 'rename not visible' },
+    ],
+    caveats: ['run-level caveat'],
+    model: 'claude-haiku-4-5',
+    clamped: [],
+  }
+  // Scoped to this surface's own scene id → only scene-web renders; scene-tui dropped.
+  const scoped = judgeVerdictLines({ judge, manifest, sceneIds: new Set(['scene-web']) })
+  assert.deepEqual(scoped, [
+    '**Fresh-context judge (claude-haiku-4-5):** Evidence: Partial · Confidence: Medium',
+    '- Scene scene-web — rename session: ✗ rename not visible',
+    '- Caveat: run-level caveat',
+  ])
+  // No sceneIds → byte-identical to the pre-scope behavior (both ✗ lines render).
+  const unscoped = judgeVerdictLines({ judge, manifest })
+  assert.ok(unscoped.some((l) => l.includes('scene-tui')))
+  assert.ok(unscoped.some((l) => l.includes('scene-web')))
+})
+
+test('renderComment: headline derives from manifest.judge (satisfactory)', () => {
+  const body = renderComment({
+    marker: proofCommentMarker('788'),
+    manifest: {
+      ...baseManifest,
+      judge: {
+        evidence: 'satisfactory',
+        confidence: 'high',
+        perScene: [],
+        caveats: [],
+        model: 'claude-haiku-4-5',
+        clamped: [],
+      },
+    },
+  })
+  assert.match(body, /^<!-- bossanova-proof:pr-788 -->\n### ✅ Proof — judged convincing\n/)
+  assert.match(
+    body,
+    /\*\*Fresh-context judge \(claude-haiku-4-5\):\*\* Evidence: Satisfactory · Confidence: High/,
+  )
+  assert.doesNotMatch(body, /Self-graded \(unjudged\)/)
+})
+
+test('renderComment: unjudged headline + labeled self-graded fallback', () => {
+  const body = renderComment({ marker: proofCommentMarker('788'), manifest: baseManifest })
+  assert.match(body, /^<!-- bossanova-proof:pr-788 -->\n### 📸 Proof \(unjudged\)\n/)
+  assert.match(body, /_Self-graded \(unjudged\): judge unavailable — no judge available\._/)
+})
+
 // TUI mp4 gallery rendering — mediaType 'mp4' drives the poster-link + ▶ Video
 // path in renderGallery regardless of surface. Pin the TUI surface contract here.
 test('renderGallery: TUI mp4 capture renders play-button poster link and ▶ Video', () => {
@@ -1573,6 +2399,7 @@ test('parseProofArgs defaults empty invocation to help (not run)', () => {
     recipes: [],
     changedFiles: [],
     dryRun: false,
+    json: false,
   })
 })
 
@@ -1646,6 +2473,26 @@ test('renderDeferredComment agent-unavailable names the agent-mode remedies', ()
     body.includes('BOSS_PROOF_MODE=agent node scripts/proof.mjs run'),
     'includes the re-capture hint',
   )
+})
+
+// BOS-138: a degraded proof run (a ran-but-incomplete agent, or a
+// timeout-killed ffmpeg encode that soft-fails to no media) routes through the
+// 'agent-incomplete' / 'no-media' reason codes — and MUST NOT be mislabelled an
+// "environment limitation". That phrase is the exact regression (the ffmpeg
+// hang was historically posted as "environment limitation") this ticket kills;
+// only the genuinely env-bound 'agent-unavailable' class may still use it.
+test('degraded reason codes never claim an environment limitation (BOS-138)', () => {
+  for (const reasonCode of ['agent-incomplete', 'no-media', 'some-future-unhandled-code']) {
+    const body = renderDeferredComment({
+      marker: '<!-- bossanova-proof:pr-9 -->',
+      manifest: { prNumber: 9, commit: 'abc1234', deferred: true },
+      reasonCode,
+    })
+    assert.ok(
+      !body.includes('environment limitation'),
+      `reasonCode ${reasonCode} must not claim an environment limitation`,
+    )
+  }
 })
 
 test('renderComment still emits the ✅ verdict on a passing run', () => {
@@ -1759,4 +2606,291 @@ test('normalizeRecipe leaves an authored video recipe untouched (idempotent)', (
 test('normalizeRecipe passes TUI recipes through unchanged', () => {
   const tui = { id: 'tui-home', surface: 'tui', title: 'Home', privacy: 'fixture' }
   assert.deepEqual(normalizeRecipe(tui), tui)
+})
+
+// ── classifySurfaces: surface SET classifier (BOS-139 / D5) ──────────────────
+
+test('classifySurfaces: tui-only diff → tui true, web false, no recipes', () => {
+  const s = classifySurfaces({ changedFiles: ['services/boss/internal/views/home.go'], catalog })
+  assert.equal(s.tui, true)
+  assert.equal(s.web, false)
+  assert.deepEqual(s.recipes, [])
+})
+
+test('classifySurfaces: web-only diff → web true, tui false', () => {
+  const s = classifySurfaces({ changedFiles: ['services/web/src/App.tsx'], catalog })
+  assert.equal(s.tui, false)
+  assert.equal(s.web, true)
+  assert.deepEqual(s.recipes, [])
+})
+
+test('classifySurfaces: mixed diff → BOTH true (any-match-wins single-select gone)', () => {
+  const s = classifySurfaces({
+    changedFiles: ['services/boss/internal/views/home.go', 'services/web/src/App.tsx'],
+    catalog,
+  })
+  assert.equal(s.tui, true)
+  assert.equal(s.web, true)
+})
+
+test('classifySurfaces: neither (backend-only) → both false, no recipes', () => {
+  const s = classifySurfaces({
+    changedFiles: ['services/bossd/internal/server/server.go'],
+    catalog,
+  })
+  assert.equal(s.tui, false)
+  assert.equal(s.web, false)
+  assert.deepEqual(s.recipes, [])
+})
+
+test('classifySurfaces: marketing + web → web true and marketing recipe surfaced', () => {
+  const s = classifySurfaces({
+    changedFiles: ['services/web/src/App.tsx', 'services/marketing/src/pages/index.astro'],
+    catalog,
+  })
+  assert.equal(s.web, true)
+  assert.ok(s.recipes.some((r) => r.surface === 'marketing'))
+})
+
+test('classifySurfaces: forcedSurfaces forces tui onto a backend-only diff (D16 mitigation)', () => {
+  const s = classifySurfaces({
+    changedFiles: ['services/bossd/internal/server/server.go'],
+    catalog,
+    forcedSurfaces: ['tui'],
+  })
+  assert.equal(s.tui, true)
+  assert.equal(s.web, false)
+})
+
+// ── planSurfaceBudget: sequential shared budget (BOS-139 / D5) ────────────────
+
+test('planSurfaceBudget: first-run TUI gets the 4min default', () => {
+  assert.deepEqual(planSurfaceBudget({ surface: 'tui', elapsedMs: 0 }), {
+    run: true,
+    maxWallClockMs: 4 * 60 * 1000,
+  })
+})
+
+test('planSurfaceBudget: first-run web gets the 12min default', () => {
+  assert.deepEqual(planSurfaceBudget({ surface: 'web', elapsedMs: 0 }), {
+    run: true,
+    maxWallClockMs: 12 * 60 * 1000,
+  })
+})
+
+test('planSurfaceBudget: web after TUI consumed 4min → clamped to remaining 11min', () => {
+  assert.deepEqual(planSurfaceBudget({ surface: 'web', elapsedMs: 4 * 60 * 1000 }), {
+    run: true,
+    maxWallClockMs: 11 * 60 * 1000,
+  })
+})
+
+test('planSurfaceBudget: web with 5min remaining (< 6min floor) → budget-exceeded', () => {
+  assert.deepEqual(planSurfaceBudget({ surface: 'web', elapsedMs: 10 * 60 * 1000 }), {
+    run: false,
+    reasonCode: 'budget-exceeded',
+  })
+})
+
+test('planSurfaceBudget: TUI with 1min remaining (< 2min floor) → budget-exceeded', () => {
+  assert.deepEqual(planSurfaceBudget({ surface: 'tui', elapsedMs: 14 * 60 * 1000 }), {
+    run: false,
+    reasonCode: 'budget-exceeded',
+  })
+})
+
+test('planSurfaceBudget: honors a custom totalBudgetMs', () => {
+  assert.deepEqual(
+    planSurfaceBudget({ surface: 'tui', elapsedMs: 0, totalBudgetMs: 3 * 60 * 1000 }),
+    { run: true, maxWallClockMs: 3 * 60 * 1000 },
+  )
+})
+
+test('planSurfaceBudget: unknown surface → budget-exceeded (never crashes dispatch)', () => {
+  assert.deepEqual(planSurfaceBudget({ surface: 'nope', elapsedMs: 0 }), {
+    run: false,
+    reasonCode: 'budget-exceeded',
+  })
+})
+
+test('SURFACE_BUDGET_SPEC + DEFAULT_TOTAL_PROOF_BUDGET_MS constants are exported', () => {
+  assert.equal(DEFAULT_TOTAL_PROOF_BUDGET_MS, 15 * 60 * 1000)
+  assert.equal(SURFACE_BUDGET_SPEC.tui.floorMs, 2 * 60 * 1000)
+  assert.equal(SURFACE_BUDGET_SPEC.web.floorMs, 6 * 60 * 1000)
+})
+
+// ── planSurfaceBudget: liveAgent extension (BOS-142) ───────────────────────
+
+test('LIVE_AGENT_EXTRA_MS constant is exported and equals 4 minutes', () => {
+  assert.equal(LIVE_AGENT_EXTRA_MS, 4 * 60 * 1000)
+})
+
+test('planSurfaceBudget: liveAgent:false is byte-identical to omitting liveAgent (web, first run)', () => {
+  const omitted = planSurfaceBudget({ surface: 'web', elapsedMs: 0 })
+  const explicitFalse = planSurfaceBudget({ surface: 'web', elapsedMs: 0, liveAgent: false })
+  assert.deepEqual(explicitFalse, omitted)
+  assert.deepEqual(explicitFalse, { run: true, maxWallClockMs: 12 * 60 * 1000 })
+})
+
+test('planSurfaceBudget: liveAgent:false is byte-identical to omitting liveAgent (tui, floor deferral)', () => {
+  const omitted = planSurfaceBudget({ surface: 'tui', elapsedMs: 14 * 60 * 1000 })
+  const explicitFalse = planSurfaceBudget({
+    surface: 'tui',
+    elapsedMs: 14 * 60 * 1000,
+    liveAgent: false,
+  })
+  assert.deepEqual(explicitFalse, omitted)
+  assert.deepEqual(explicitFalse, { run: false, reasonCode: 'budget-exceeded' })
+})
+
+test('planSurfaceBudget: liveAgent:true on web extends maxWallClockMs by exactly LIVE_AGENT_EXTRA_MS (ample total)', () => {
+  const ampleTotal = 30 * 60 * 1000
+  const withoutLive = planSurfaceBudget({ surface: 'web', elapsedMs: 0, totalBudgetMs: ampleTotal })
+  const withLive = planSurfaceBudget({
+    surface: 'web',
+    elapsedMs: 0,
+    totalBudgetMs: ampleTotal,
+    liveAgent: true,
+  })
+  assert.equal(withoutLive.run, true)
+  assert.equal(withLive.run, true)
+  assert.equal(withLive.maxWallClockMs - withoutLive.maxWallClockMs, LIVE_AGENT_EXTRA_MS)
+  assert.equal(withLive.maxWallClockMs, 12 * 60 * 1000 + LIVE_AGENT_EXTRA_MS)
+})
+
+test('planSurfaceBudget: liveAgent:true on tui is a no-op — extension is web-only', () => {
+  const withoutLive = planSurfaceBudget({ surface: 'tui', elapsedMs: 0 })
+  const withLive = planSurfaceBudget({ surface: 'tui', elapsedMs: 0, liveAgent: true })
+  assert.deepEqual(withLive, withoutLive)
+  assert.deepEqual(withLive, { run: true, maxWallClockMs: 4 * 60 * 1000 })
+})
+
+test('planSurfaceBudget: liveAgent:true web that cannot fit still defers budget-exceeded (floor unchanged)', () => {
+  // Mirrors the existing "web with 5min remaining (< 6min floor)" case — the
+  // live extension widens the GRANT ceiling, never the viability floor.
+  const result = planSurfaceBudget({
+    surface: 'web',
+    elapsedMs: 10 * 60 * 1000,
+    totalBudgetMs: DEFAULT_TOTAL_PROOF_BUDGET_MS,
+    liveAgent: true,
+  })
+  assert.deepEqual(result, { run: false, reasonCode: 'budget-exceeded' })
+})
+
+test('planSurfaceBudget: an explicit totalBudgetMs override remains a hard ceiling even with liveAgent:true (below floor)', () => {
+  // An operator-supplied override that leaves less than the web floor once
+  // extension is requested must still defer — liveAgent never inflates past
+  // whatever total the caller supplied.
+  const explicitOverride = 5 * 60 * 1000
+  const result = planSurfaceBudget({
+    surface: 'web',
+    elapsedMs: 0,
+    totalBudgetMs: explicitOverride,
+    liveAgent: true,
+  })
+  assert.deepEqual(result, { run: false, reasonCode: 'budget-exceeded' })
+})
+
+test('planSurfaceBudget: an explicit totalBudgetMs override caps maxWallClockMs even with liveAgent:true (above floor)', () => {
+  // Above the floor but below defaultMs+LIVE_AGENT_EXTRA_MS (16min): the grant
+  // is still clamped to the caller-supplied total, never widened beyond it.
+  const explicitOverride = 7 * 60 * 1000
+  const result = planSurfaceBudget({
+    surface: 'web',
+    elapsedMs: 0,
+    totalBudgetMs: explicitOverride,
+    liveAgent: true,
+  })
+  assert.deepEqual(result, { run: true, maxWallClockMs: explicitOverride })
+})
+
+test('planSurfaceBudget: extending the shared TOTAL (call-site responsibility) keeps a sibling TUI floor intact where a non-extended run would have squeezed it', () => {
+  // Simulates the scripts/proof.mjs call site: when a live web scene is in
+  // the run, it bumps the DEFAULT total by LIVE_AGENT_EXTRA_MS before calling
+  // planSurfaceBudget for every surface in the run (never for an explicit
+  // override — that path is covered above). Web runs first (cheap-first
+  // ordering does not apply once web has more scoped bullets — D13 — but the
+  // sequencing mechanics are identical either way) and consumes its full
+  // live-extended grant; TUI runs second off whatever remains.
+  const nonExtendedTotal = DEFAULT_TOTAL_PROOF_BUDGET_MS // 15min
+  const extendedTotal = DEFAULT_TOTAL_PROOF_BUDGET_MS + LIVE_AGENT_EXTRA_MS // 19min
+
+  // Without the total extension: web's own grant is clamped to the
+  // unextended total's remaining (15min, not the full 16min it wants), which
+  // then leaves nothing for TUI's 2min floor → squeezed into deferral.
+  const webWithoutExtension = planSurfaceBudget({
+    surface: 'web',
+    elapsedMs: 0,
+    totalBudgetMs: nonExtendedTotal,
+    liveAgent: true,
+  })
+  assert.equal(webWithoutExtension.run, true)
+  assert.equal(webWithoutExtension.maxWallClockMs, 15 * 60 * 1000) // clamped, not 16min
+  const tuiAfterSqueeze = planSurfaceBudget({
+    surface: 'tui',
+    elapsedMs: webWithoutExtension.maxWallClockMs,
+    totalBudgetMs: nonExtendedTotal,
+  })
+  assert.deepEqual(tuiAfterSqueeze, { run: false, reasonCode: 'budget-exceeded' })
+
+  // With the total extension: web gets its full live-extended 16min grant
+  // AND the sibling TUI floor is intact (3min remains ≥ the 2min floor).
+  const webWithExtension = planSurfaceBudget({
+    surface: 'web',
+    elapsedMs: 0,
+    totalBudgetMs: extendedTotal,
+    liveAgent: true,
+  })
+  assert.equal(webWithExtension.run, true)
+  assert.equal(webWithExtension.maxWallClockMs, 16 * 60 * 1000) // full, unclamped
+  const tuiAfterExtension = planSurfaceBudget({
+    surface: 'tui',
+    elapsedMs: webWithExtension.maxWallClockMs,
+    totalBudgetMs: extendedTotal,
+  })
+  assert.deepEqual(tuiAfterExtension, { run: true, maxWallClockMs: 3 * 60 * 1000 })
+})
+
+test('deferredReasonMessage(budget-exceeded): honest, never "environment limitation"', () => {
+  const msg = deferredReasonMessage('budget-exceeded')
+  assert.ok(!msg.includes('environment limitation'))
+  assert.ok(/shared proof budget/.test(msg))
+  assert.ok(/change itself is fine/.test(msg))
+})
+
+// ── renderConsolidatedComment: single marker, per-surface sections (BOS-139) ──
+
+test('renderConsolidatedComment: one marker, section per surface, no global ❌', () => {
+  const marker = '<!-- bossanova-proof:pr-9 -->'
+  const manifest = {
+    commit: 'abc',
+    runId: 'R',
+    publicBaseUrl: 'https://x/pr',
+    genAiLive: false,
+    title: 'T',
+  }
+  const sections = [
+    {
+      label: 'TUI',
+      outcome: 'passed',
+      summary: 'tui ok',
+      captures: [{ fileName: 't.mp4' }],
+      genAi: false,
+    },
+    {
+      label: 'Web',
+      outcome: 'deferred',
+      reasonCode: 'budget-exceeded',
+      recaptureHint: 'BOSS_PROOF_AGENT_SURFACE=web node scripts/proof.mjs run',
+    },
+  ]
+  const body = renderConsolidatedComment({ marker, manifest, sections })
+  // Idempotent: same inputs → byte-identical output.
+  assert.equal(body, renderConsolidatedComment({ marker, manifest, sections }))
+  // Exactly one marker → collapsePriorProofComments still leaves one live comment.
+  assert.equal(body.split(marker).length - 1, 1)
+  assert.ok(body.includes('#### TUI — ✅ proven'))
+  assert.ok(body.includes('#### Web — ⏸ deferred (budget-exceeded)'))
+  assert.ok(!body.includes('❌'), 'partial success carries no global red verdict')
+  assert.ok(body.endsWith('\n'))
 })

@@ -1,5 +1,5 @@
 // Package machine provides the session state machine for the Bossanova
-// session lifecycle. It defines 13 states, 16 event triggers, guards, and
+// session lifecycle. It defines 14 states, 17 event triggers, guards, and
 // actions using qmuntal/stateless.
 package machine
 
@@ -27,6 +27,14 @@ const (
 	Merged
 	Closed
 	Finalizing
+	// Orphaned is a distinct terminal state for a headless (boss new --detach)
+	// run that was killed mid-flight by a daemon restart: the run never
+	// recorded an exit and no live agent process survives, so its bootstrap-only
+	// PR must never masquerade as green. Entered only from ImplementingPlan by
+	// the Bootstrap orphan sweep; deliberately no auto-re-dispatch (a one-shot's
+	// prompt may have side effects — the human decides). Appended last to keep
+	// the persisted integer values of the existing states stable.
+	Orphaned
 )
 
 // Event represents a session event trigger.
@@ -49,6 +57,9 @@ const (
 	PRMerged
 	PRClosed
 	FinalizeRequested
+	// Orphan transitions a stranded headless ImplementingPlan run to Orphaned
+	// (see the Orphaned state). Appended last to keep existing event values stable.
+	Orphan
 )
 
 // MaxAttempts is the default maximum number of fix attempts before blocking.
@@ -62,6 +73,17 @@ type SessionContext struct {
 	CheckState    CheckState
 	BlockedReason string
 	HasPR         bool // PR already created (e.g. no-plan PR sessions)
+
+	// SkipAttemptCount, when true, makes the next fix-loop lap free: the
+	// FixingChecks OnEntry action does not bump AttemptCount and the
+	// fixOrBlock/retryOrBlock guards never tip into Blocked. The dispatcher
+	// sets it when a ChecksFailed/ConflictDetected lap is driven by an
+	// unchanged PR head SHA — CI merely re-settling on the same commit, no
+	// fix pushed — so no-op settle laps don't burn the fix-loop budget and
+	// falsely Block a clean PR (BOS-235). The machine stays pure: it owns the
+	// gate, the dispatcher owns the head-SHA comparison. Zero value (false)
+	// preserves the historical always-count behaviour.
+	SkipAttemptCount bool
 }
 
 // CheckState represents the aggregate check status.
@@ -142,7 +164,7 @@ func (m *Machine) PermittedTriggers() []Event {
 
 // fixOrBlock returns FixingChecks if under max attempts, Blocked otherwise.
 func (m *Machine) fixOrBlock(_ context.Context, _ ...any) (stateless.State, error) {
-	if m.ctx.AttemptCount+1 >= m.ctx.MaxAttempts {
+	if !m.ctx.SkipAttemptCount && m.ctx.AttemptCount+1 >= m.ctx.MaxAttempts {
 		return Blocked, nil
 	}
 	return FixingChecks, nil
@@ -160,7 +182,7 @@ func (m *Machine) planCompleteDestination(_ context.Context, _ ...any) (stateles
 // fixOrBlockAfterFix is the same as fixOrBlock but used for FixFailed events
 // where we go back to AwaitingChecks if under max, Blocked if at max.
 func (m *Machine) retryOrBlock(_ context.Context, _ ...any) (stateless.State, error) {
-	if m.ctx.AttemptCount+1 >= m.ctx.MaxAttempts {
+	if !m.ctx.SkipAttemptCount && m.ctx.AttemptCount+1 >= m.ctx.MaxAttempts {
 		return Blocked, nil
 	}
 	return AwaitingChecks, nil
@@ -183,6 +205,7 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 		PermitDynamic(PlanComplete, m.planCompleteDestination).
 		Permit(FinalizeRequested, Finalizing).
 		Permit(Block, Blocked).
+		Permit(Orphan, Orphaned).
 		Permit(PRClosed, Closed)
 
 	sm.Configure(PushingBranch).
@@ -245,11 +268,24 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 		OnEntry(m.actionSetBlocked).
 		OnExit(m.actionClearBlocked).
 		Permit(Unblock, ImplementingPlan).
+		// A Blocked session whose PR later resolves must be able to reach its
+		// terminal state so OnExit(actionClearBlocked) clears the stale block
+		// reason (e.g. a non-gating "finalize failed" hint). PRClosed already
+		// existed; PRMerged was missing, which wedged merged sessions in
+		// Blocked forever (BOS-246).
+		Permit(PRMerged, Merged).
 		Permit(PRClosed, Closed)
 
 	sm.Configure(Merged)
 
 	sm.Configure(Closed)
+
+	// Orphaned is terminal: a daemon restart killed the headless run, so there is
+	// nothing to advance. The only outbound transition mirrors the other terminal
+	// states — a closed PR moves it to Closed. Recovery is a deliberate human
+	// action (a fresh run), never an automatic Unblock/re-dispatch.
+	sm.Configure(Orphaned).
+		Permit(PRClosed, Closed)
 
 	// Finalizing is entered from ImplementingPlan when the Stop hook fires.
 	// The detailed outcome is tracked out-of-band via cron_job.last_run_outcome.
@@ -266,7 +302,9 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 // --- Actions ---
 
 func (m *Machine) actionOnEnterFixing(_ context.Context, _ ...any) error {
-	m.ctx.AttemptCount++
+	if !m.ctx.SkipAttemptCount {
+		m.ctx.AttemptCount++
+	}
 	m.ctx.CheckState = CheckStateFailed
 	return nil
 }
@@ -324,6 +362,8 @@ func (s State) String() string {
 		return "closed"
 	case Finalizing:
 		return "finalizing"
+	case Orphaned:
+		return "orphaned"
 	default:
 		return "unknown"
 	}
@@ -363,6 +403,8 @@ func (e Event) String() string {
 		return "pr_closed"
 	case FinalizeRequested:
 		return "finalize_requested"
+	case Orphan:
+		return "orphan"
 	default:
 		return "unknown"
 	}

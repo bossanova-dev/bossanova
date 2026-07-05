@@ -465,6 +465,68 @@ func TestTranslateWebhook_CheckRunCompletedTimedOut(t *testing.T) {
 	}
 }
 
+// TestTranslateWebhook_HeadSHAThreaded pins BOS-235: the real-time webhook path
+// must carry the PR head SHA on ChecksFailed/ConflictDetected so the dispatcher
+// can head-SHA-gate attempt counting. A missing SHA silently makes every
+// webhook-delivered settle lap count, defeating the fix on the low-latency path.
+func TestTranslateWebhook_HeadSHAThreaded(t *testing.T) {
+	t.Run("check_run", func(t *testing.T) {
+		payload := mutateJSONFixture(t, loadFixture(t, "check_run_completed_failure.json"), func(body map[string]any) {
+			body["check_run"].(map[string]any)["head_sha"] = "abc123"
+		})
+		events, _, err := TranslateWebhook("check_run", payload)
+		if err != nil {
+			t.Fatalf("TranslateWebhook() error = %v", err)
+		}
+		failed, ok := events[0].(vcs.ChecksFailed)
+		if !ok {
+			t.Fatalf("event type = %T, want vcs.ChecksFailed", events[0])
+		}
+		if failed.HeadSHA != "abc123" {
+			t.Fatalf("ChecksFailed.HeadSHA = %q, want abc123", failed.HeadSHA)
+		}
+	})
+
+	t.Run("check_suite", func(t *testing.T) {
+		payload := mutateJSONFixture(t, loadFixture(t, "check_suite_completed_success.json"), func(body map[string]any) {
+			cs := body["check_suite"].(map[string]any)
+			cs["status"] = "completed"
+			cs["conclusion"] = "failure"
+			cs["head_sha"] = "def456"
+			cs["app"] = map[string]any{"name": "ci"}
+		})
+		events, _, err := TranslateWebhook("check_suite", payload)
+		if err != nil {
+			t.Fatalf("TranslateWebhook() error = %v", err)
+		}
+		failed, ok := events[0].(vcs.ChecksFailed)
+		if !ok {
+			t.Fatalf("event type = %T, want vcs.ChecksFailed", events[0])
+		}
+		if failed.HeadSHA != "def456" {
+			t.Fatalf("ChecksFailed.HeadSHA = %q, want def456", failed.HeadSHA)
+		}
+	})
+
+	t.Run("pull_request_synchronize_conflict", func(t *testing.T) {
+		payload := mutateJSONFixture(t, loadFixture(t, "pull_request_synchronize_conflict.json"), func(body map[string]any) {
+			pr := body["pull_request"].(map[string]any)
+			pr["head"] = map[string]any{"sha": "cafe99"}
+		})
+		events, _, err := TranslateWebhook("pull_request", payload)
+		if err != nil {
+			t.Fatalf("TranslateWebhook() error = %v", err)
+		}
+		conflict, ok := events[0].(vcs.ConflictDetected)
+		if !ok {
+			t.Fatalf("event type = %T, want vcs.ConflictDetected", events[0])
+		}
+		if conflict.HeadSHA != "cafe99" {
+			t.Fatalf("ConflictDetected.HeadSHA = %q, want cafe99", conflict.HeadSHA)
+		}
+	})
+}
+
 func TestTranslateWebhook_MalformedPayload(t *testing.T) {
 	_, _, err := TranslateWebhook("pull_request", []byte("{not json"))
 	if err == nil {

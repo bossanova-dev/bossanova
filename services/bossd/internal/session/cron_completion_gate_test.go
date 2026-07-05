@@ -283,6 +283,59 @@ func TestCronCompletionGateFinalizesWhenRunIsOverUnwired(t *testing.T) {
 	waitForCount(t, "FinalizeSession", finalizer.count)
 }
 
+// TestCronCompletionGateFinalizesUnattendedTmuxSession proves the gate finalizes
+// a tmux_unattended session (TmuxUnattended=true, CronJobID nil) once its run is
+// over — the durable-tmux completion path for /bs-epic — mirroring the cron path.
+func TestCronCompletionGateFinalizesUnattendedTmuxSession(t *testing.T) {
+	sessions := newGateSessionStore()
+	finalizer := &recordingCronFinalizer{}
+
+	agentID := "agent-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		TmuxUnattended: true,
+		AgentSessionID: &agentID,
+	}
+
+	gate := NewCronCompletionGate(CronCompletionGateDeps{
+		Sessions:   sessions,
+		Finalizer:  finalizer,
+		QuietDelay: time.Millisecond,
+		RunIsOver:  func(*models.Session) bool { return true },
+	})
+
+	gate.NotifyCronAgentStopped("sess-1")
+	waitForCount(t, "FinalizeSession", finalizer.count)
+}
+
+// TestCronCompletionGateIgnoresInteractiveSession proves the gate never
+// auto-finalizes a plain interactive session — one with a HookToken but neither
+// CronJobID nor TmuxUnattended. HookToken presence alone is NOT the autonomy
+// signal; the persisted TmuxUnattended flag is.
+func TestCronCompletionGateIgnoresInteractiveSession(t *testing.T) {
+	sessions := newGateSessionStore()
+	finalizer := &recordingCronFinalizer{}
+
+	agentID := "agent-1"
+	hookToken := "deadbeef"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		AgentSessionID: &agentID,
+		HookToken:      &hookToken,
+		// CronJobID nil, TmuxUnattended false.
+	}
+
+	gate := NewCronCompletionGate(CronCompletionGateDeps{
+		Sessions:   sessions,
+		Finalizer:  finalizer,
+		QuietDelay: time.Millisecond,
+		RunIsOver:  func(*models.Session) bool { return true },
+	})
+
+	gate.NotifyCronAgentStopped("sess-1")
+	assertNoFinalize(t, "FinalizeSession", finalizer.count, 50*time.Millisecond)
+}
+
 func TestCronCompletionGateIgnoresStaleQuietPeriod(t *testing.T) {
 	sessions := newGateSessionStore()
 	finalizer := &recordingCronFinalizer{}

@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/recurser/bossalib/setupscript"
@@ -32,11 +33,49 @@ func isBranchAlreadyExistsGitOutput(err error) bool {
 		strings.Contains(msg, " already exists")
 }
 
-// ErrBaseBranchNotReady is returned by EnsureBaseBranchReadyForSync when the
-// main repo cannot be safely fast-forwarded to match origin/<base>. The error
+// ErrBaseBranchNotReady is returned by MergeLocalBranch when the local base
+// branch cannot be safely fast-forwarded to match origin/<base>. The error
 // message always explains the condition (dirty tree, divergence, etc.) so
-// callers can surface it to the user verbatim.
+// callers can surface it to the user verbatim. (The local-only merge path
+// genuinely mutates the checkout, so it still enforces this precondition.)
 var ErrBaseBranchNotReady = errors.New("base branch not ready for sync")
+
+// ErrLocalSyncDeferred is returned by SyncBaseBranch when the local base
+// branch cannot be fast-forwarded right now because the base branch is
+// checked out with a dirty working tree. It is NON-FATAL: the GitHub merge
+// (or auto-merge) has already completed; the local fast-forward is recorded
+// and retried later by RetryDeferredBaseSyncs. refs/remotes/origin/<base> is
+// always freshened regardless, so new worktrees still branch from the merged tip.
+var ErrLocalSyncDeferred = errors.New("local base sync deferred")
+
+// isNonFastForwardGitOutput reports whether a git error is a refusal to
+// move a ref because the update would not be a fast-forward (a diverged
+// local base). It matches the fast-forward-specific phrasing git uses across
+// `fetch <base>:<base>` ("[rejected] … (non-fast-forward)") and
+// `merge --ff-only` ("Not possible to fast-forward, aborting."),
+// case-insensitively. It deliberately does NOT match the bare word
+// "rejected": both git paths that matter here emit an explicit
+// fast-forward phrase, and "rejected" appears in unrelated ref-update
+// failures (tag clobbers, shallow-update refusals, hook rejections). A
+// caller (SyncBaseBranch) reclassifies a match as a benign diverged-base
+// warning and returns nil, so a too-broad needle would silently swallow
+// genuine errors.
+func isNonFastForwardGitOutput(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"non-fast-forward",
+		"not a fast-forward",
+		"not possible to fast-forward",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
+}
 
 // ErrMergeConflict is returned by MergeLocalBranch when the local merge
 // cannot proceed without conflict resolution. The caller should surface this
@@ -133,21 +172,27 @@ type WorktreeManager interface {
 	// "main" if the ref doesn't exist.
 	DetectDefaultBranch(ctx context.Context, repoPath string) (string, error)
 
-	// EnsureBaseBranchReadyForSync verifies that the main repo at localPath
-	// is in a state where SyncBaseBranch can safely fast-forward the local
-	// base branch to match origin/<base>. It fetches origin/<base> as a
-	// side effect so divergence can be detected against the latest remote.
-	// Returns an error wrapping ErrBaseBranchNotReady when the working tree
-	// is dirty on the base branch or the local base has diverged from
-	// origin; the error message is safe to show to the user.
-	EnsureBaseBranchReadyForSync(ctx context.Context, localPath, base string) error
-
-	// SyncBaseBranch fetches origin and fast-forwards the local base branch
-	// to match origin/<base>. If <base> is the currently checked-out branch
-	// it uses `git merge --ff-only`; otherwise it performs a direct ref
-	// update via `git fetch origin <base>:<base>` which leaves the working
-	// tree untouched. Also prunes stale remote-tracking refs.
+	// SyncBaseBranch freshens refs/remotes/origin/<base> (always, via
+	// `git fetch --prune origin`) and then best-effort fast-forwards the
+	// local refs/heads/<base>. It is never a merge blocker:
+	//   - base not checked out → direct ref update via
+	//     `git fetch origin <base>:<base>` (refuses non-fast-forward, so safe).
+	//   - base checked out + clean → `git merge --ff-only`.
+	//   - base checked out + dirty and a fast-forward is available → the local
+	//     fast-forward is recorded and ErrLocalSyncDeferred is returned; the
+	//     remote-tracking ref is already freshened. RetryDeferredBaseSyncs
+	//     applies it later once the tree is clean.
+	// A diverged local base is never force-moved: sync logs a warning and
+	// returns nil, leaving the operator's commits intact.
 	SyncBaseBranch(ctx context.Context, localPath, base string) error
+
+	// RetryDeferredBaseSyncs re-attempts any local base fast-forwards that
+	// SyncBaseBranch previously deferred (ErrLocalSyncDeferred) because the
+	// base was checked out with a dirty working tree. Safety is re-validated
+	// at apply time (a base that became diverged or is still dirty is left
+	// alone), so it is safe to call on daemon start. Best-effort: it returns
+	// no error and logs a one-line summary.
+	RetryDeferredBaseSyncs(ctx context.Context)
 
 	// IsAncestor reports whether ref is an ancestor of target in the repo
 	// at localPath. Returns (false, nil) when it is not an ancestor;
@@ -241,6 +286,9 @@ type Manager struct {
 	// PATH can't find `pnpm` and setup silently skips dep/hook installation.
 	// Set once after construction (main.go); zero value preserves direct exec.
 	LoginShell string
+
+	mu              sync.Mutex        // guards pendingBaseSync
+	pendingBaseSync map[string]string // localPath -> base awaiting a deferred local fast-forward
 }
 
 // NewManager creates a new git WorktreeManager.
@@ -461,6 +509,10 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 		return nil, fmt.Errorf("origin/%s does not exist", opts.BaseBranch)
 	}
 	if !opts.Force {
+		// For tracker-linked creates the CreateSession dedup guard (BOS-236)
+		// fires before reaching here, so availableNewBranchName's allowSuffix
+		// rename never masks a tracker duplicate. Behavior for non-tracker /
+		// explicit-branch creates is unchanged.
 		uniqueBranch, err := m.availableNewBranchName(ctx, opts.RepoPath, branch, opts.BranchName == "")
 		if err != nil {
 			return nil, err
@@ -1067,71 +1119,20 @@ func (m *Manager) IsGitRepo(ctx context.Context, path string) bool {
 	return err == nil
 }
 
-// EnsureBaseBranchReadyForSync checks that the main repo at localPath can
-// be fast-forwarded to match origin/<base>. It does not modify any branch
-// refs — it only fetches origin/<base> so the divergence check sees current
-// remote state. See WorktreeManager.EnsureBaseBranchReadyForSync.
-func (m *Manager) EnsureBaseBranchReadyForSync(ctx context.Context, localPath, base string) error {
-	if base == "" {
-		return fmt.Errorf("base branch is required")
-	}
-
-	// Refresh the remote-tracking ref so divergence is measured against
-	// the latest remote state, not a stale cache.
-	if _, err := runGit(ctx, localPath, "fetch", "origin", base); err != nil {
-		return fmt.Errorf("fetch origin/%s: %w", base, err)
-	}
-
-	current, isDetached, err := currentBranch(ctx, localPath)
-	if err != nil {
-		return fmt.Errorf("resolve HEAD: %w", err)
-	}
-
-	// If the base branch has no local ref yet, there is nothing to
-	// fast-forward — SyncBaseBranch will create it.
-	if !branchExists(ctx, localPath, base) {
-		return nil
-	}
-
-	if !isDetached && current == base {
-		// Working tree must be clean so `merge --ff-only` won't trip on
-		// uncommitted changes.
-		dirty, err := runGit(ctx, localPath, "status", "--porcelain")
-		if err != nil {
-			return fmt.Errorf("git status: %w", err)
-		}
-		if dirty != "" {
-			return fmt.Errorf(
-				"%w: main repo at %s has uncommitted changes on %s; commit/stash or switch branches before merging",
-				ErrBaseBranchNotReady, localPath, base,
-			)
-		}
-	}
-
-	// Require `refs/heads/<base>` to be an ancestor of `origin/<base>` so the
-	// sync step can fast-forward. Divergence needs manual resolution.
-	if _, err := runGit(ctx, localPath,
-		"merge-base", "--is-ancestor", "refs/heads/"+base, "refs/remotes/origin/"+base,
-	); err != nil {
-		return fmt.Errorf(
-			"%w: local %s has diverged from origin/%s in %s; rebase or reset before merging",
-			ErrBaseBranchNotReady, base, base, localPath,
-		)
-	}
-
-	return nil
-}
-
-// SyncBaseBranch fetches origin and fast-forwards the local base branch to
-// match origin/<base>. See WorktreeManager.SyncBaseBranch.
+// SyncBaseBranch freshens refs/remotes/origin/<base> and best-effort
+// fast-forwards the local refs/heads/<base>. It is never a merge blocker:
+// a dirty checked-out base yields ErrLocalSyncDeferred (recorded for a later
+// retry) and a diverged base is left untouched with a warning. See
+// WorktreeManager.SyncBaseBranch for the full contract.
 func (m *Manager) SyncBaseBranch(ctx context.Context, localPath, base string) error {
 	if base == "" {
 		return fmt.Errorf("base branch is required")
 	}
 
-	// Fetch with --prune so merged-and-deleted remote branches (e.g. the
-	// session branch that `gh pr merge --delete-branch` just removed) are
-	// dropped from the local remote-tracking refs.
+	// Safe half — always runs. Fetch with --prune so merged-and-deleted
+	// remote branches (e.g. the session branch `gh pr merge --delete-branch`
+	// just removed) are dropped, and refs/remotes/origin/<base> reflects the
+	// merged tip so new worktrees branch from it. Never touches the working tree.
 	if _, err := runGit(ctx, localPath, "fetch", "--prune", "origin"); err != nil {
 		return fmt.Errorf("fetch --prune origin: %w", err)
 	}
@@ -1141,26 +1142,136 @@ func (m *Manager) SyncBaseBranch(ctx context.Context, localPath, base string) er
 		return fmt.Errorf("resolve HEAD: %w", err)
 	}
 
-	if !isDetached && current == base {
-		// Base is checked out — fast-forward via merge so the working tree
-		// stays in sync with HEAD.
-		if _, err := runGit(ctx, localPath,
-			"merge", "--ff-only", "refs/remotes/origin/"+base,
-		); err != nil {
-			return fmt.Errorf("ff-only merge origin/%s: %w", base, err)
+	baseCheckedOut := !isDetached && current == base
+
+	if !baseCheckedOut {
+		// Base is not checked out — update the local ref directly without
+		// touching the working tree. `fetch origin <base>:<base>` refuses any
+		// non-fast-forward, so a diverged local base is rejected rather than
+		// rewritten.
+		if _, ferr := runGit(ctx, localPath, "fetch", "origin", base+":"+base); ferr != nil {
+			if isNonFastForwardGitOutput(ferr) {
+				m.warnDivergedBase(localPath, base)
+				m.clearPendingBaseSync(localPath)
+				return nil
+			}
+			return fmt.Errorf("fast-forward local %s: %w", base, ferr)
 		}
+		m.clearPendingBaseSync(localPath)
 		return nil
 	}
 
-	// Base is not checked out — update the local ref directly without
-	// touching the working tree. `fetch origin <base>:<base>` refuses any
-	// non-fast-forward, so this remains safe.
-	if _, err := runGit(ctx, localPath,
-		"fetch", "origin", base+":"+base,
-	); err != nil {
-		return fmt.Errorf("fast-forward local %s: %w", base, err)
+	// Base is checked out — the fast-forward would move the working tree, so
+	// it must be clean.
+	dirty, err := runGit(ctx, localPath, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("git status: %w", err)
 	}
+
+	if dirty == "" {
+		// Clean — fast-forward via merge so the working tree tracks HEAD.
+		if _, merr := runGit(ctx, localPath, "merge", "--ff-only", "refs/remotes/origin/"+base); merr != nil {
+			if isNonFastForwardGitOutput(merr) {
+				m.warnDivergedBase(localPath, base)
+				m.clearPendingBaseSync(localPath)
+				return nil
+			}
+			return fmt.Errorf("ff-only merge origin/%s: %w", base, merr)
+		}
+		m.clearPendingBaseSync(localPath)
+		return nil
+	}
+
+	// Dirty and checked out — decide whether a fast-forward is even needed.
+	// If origin/<base> is already an ancestor of the local base, the local
+	// ref is at or ahead of origin: nothing to do.
+	originIsAncestor, err := m.IsAncestor(ctx, localPath, "refs/remotes/origin/"+base, "refs/heads/"+base)
+	if err != nil {
+		return fmt.Errorf("check origin ancestry of local %s: %w", base, err)
+	}
+	if originIsAncestor {
+		m.clearPendingBaseSync(localPath)
+		return nil
+	}
+
+	// A clean fast-forward is available (local base is an ancestor of origin)
+	// but the tree is dirty — defer it and record for a later retry.
+	localIsAncestor, err := m.IsAncestor(ctx, localPath, "refs/heads/"+base, "refs/remotes/origin/"+base)
+	if err != nil {
+		return fmt.Errorf("check local %s ancestry of origin: %w", base, err)
+	}
+	if localIsAncestor {
+		m.recordPendingBaseSync(localPath, base)
+		return ErrLocalSyncDeferred
+	}
+
+	// Neither is an ancestor — the base has diverged. Never force-move.
+	m.warnDivergedBase(localPath, base)
+	m.clearPendingBaseSync(localPath)
 	return nil
+}
+
+// warnDivergedBase logs the one-line divergence warning shared by the sync
+// paths: the operator has local-only commits on <base>, so it is left as-is.
+func (m *Manager) warnDivergedBase(localPath, base string) {
+	m.logger.Warn().
+		Str("local_path", localPath).
+		Str("base", base).
+		Msgf("local %s has diverged from origin/%s; leaving local ref untouched", base, base)
+}
+
+func (m *Manager) recordPendingBaseSync(localPath, base string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pendingBaseSync == nil {
+		m.pendingBaseSync = make(map[string]string)
+	}
+	m.pendingBaseSync[localPath] = base
+}
+
+func (m *Manager) clearPendingBaseSync(localPath string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.pendingBaseSync, localPath)
+}
+
+// RetryDeferredBaseSyncs re-runs SyncBaseBranch for each pending deferred local
+// fast-forward. See WorktreeManager.RetryDeferredBaseSyncs.
+func (m *Manager) RetryDeferredBaseSyncs(ctx context.Context) {
+	type pending struct{ localPath, base string }
+
+	m.mu.Lock()
+	snapshot := make([]pending, 0, len(m.pendingBaseSync))
+	for localPath, base := range m.pendingBaseSync {
+		snapshot = append(snapshot, pending{localPath: localPath, base: base})
+	}
+	m.mu.Unlock()
+
+	if len(snapshot) == 0 {
+		return
+	}
+
+	stillDeferred := 0
+	for _, p := range snapshot {
+		// SyncBaseBranch re-validates safety at apply time and self-updates the
+		// pending map (clears on success/divergence, re-records if still dirty).
+		if err := m.SyncBaseBranch(ctx, p.localPath, p.base); err != nil {
+			if errors.Is(err, ErrLocalSyncDeferred) {
+				stillDeferred++
+				continue
+			}
+			// Log-and-continue: a single bad repo must not block the rest.
+			m.logger.Warn().Err(err).
+				Str("local_path", p.localPath).
+				Str("base", p.base).
+				Msg("retry of deferred local base sync failed")
+		}
+	}
+
+	m.logger.Info().
+		Int("retried", len(snapshot)).
+		Int("still_deferred", stillDeferred).
+		Msg("retried deferred local base syncs")
 }
 
 // FetchBase fetches origin/<base> so refs/remotes/origin/<base> reflects
@@ -1233,8 +1344,10 @@ func (m *Manager) MergeLocalBranch(ctx context.Context, localPath, base, head, s
 	}
 
 	// If origin exists, refresh remote state and reject if local base has
-	// diverged — the same invariant EnsureBaseBranchReadyForSync enforces
-	// for GitHub-backed merges. Missing origin is fine (local-only repo).
+	// diverged. Unlike the GitHub-backed merge path (where the local
+	// fast-forward is deferrable), a local-only merge genuinely mutates this
+	// checkout, so a clean, non-diverged base is a hard precondition. Missing
+	// origin is fine (local-only repo).
 	originURL, _ := m.DetectOriginURL(ctx, localPath)
 	if originURL != "" {
 		if _, err := runGit(ctx, localPath, "fetch", "origin", base); err != nil {

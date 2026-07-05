@@ -120,6 +120,11 @@ check_smoke_script() {
   require_grep "scripts/verify-bosso-k8s.sh" "placeholder value in bs-bosso-secret" "smoke script must fail closed on placeholder secret values"
   require_grep "scripts/verify-bosso-k8s.sh" "https://orchestrator-k8s-staging.bossanova.dev" "smoke script must include staging canary URL"
   require_grep "scripts/verify-bosso-k8s.sh" "https://orchestrator-k8s.bossanova.dev" "smoke script must include production canary URL"
+  # Deploy-ordering gate (BOS-241): the post-deploy smoke must assert the live
+  # server supports the API version the built clients request, so production can
+  # never trail circulating clients.
+  require_grep "scripts/verify-bosso-k8s.sh" "go run ./cmd/apiversioncheck -url" "smoke script must run the API-version deploy-ordering gate"
+  require_file "services/bossd/cmd/apiversioncheck/main.go"
 
   local required_keys=(
     "BOSSO_DB_DRIVER"

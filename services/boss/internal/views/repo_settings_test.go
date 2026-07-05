@@ -670,6 +670,19 @@ func (s *stubRepoClient) DeleteCronJob(context.Context, string) error { panic("u
 func (s *stubRepoClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
+func (s *stubRepoClient) ListAccounts(context.Context, string) ([]*pb.Account, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) AddAccount(context.Context, *pb.AddAccountRequest) (*pb.Account, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) UpdateAccount(context.Context, *pb.UpdateAccountRequest) (*pb.Account, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) RemoveAccount(context.Context, string) error { panic("unused") }
+func (s *stubRepoClient) TestAccount(context.Context, string) (*pb.TestAccountResponse, error) {
+	panic("unused")
+}
 func (s *stubRepoClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
 	panic("unused")
 }

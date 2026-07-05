@@ -1,7 +1,13 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/recurser/boss/internal/daemon"
 	"github.com/spf13/cobra"
@@ -106,6 +112,7 @@ func runMcpStatus(_ *cobra.Command) error {
 		if st.PID > 0 {
 			fmt.Printf("  PID:     %d\n", st.PID)
 		}
+		fmt.Println(mcpBuildDriftLine(fetchRunningMcpBuildInfo(daemon.DefaultMcpPort), fetchOnDiskMcpBuildInfo()))
 	default:
 		fmt.Println("MCP server is installed but not running.")
 	}
@@ -113,6 +120,77 @@ func runMcpStatus(_ *cobra.Command) error {
 		fmt.Printf("  service: %s\n", st.ServicePath)
 	}
 	return nil
+}
+
+// mcpBuildInfo mirrors serve.BuildInfo (the /buildinfo JSON body). The type is
+// duplicated rather than imported: services/boss must not depend on the mcp
+// service's internal packages.
+type mcpBuildInfo struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	Date    string `json:"date"`
+	Summary string `json:"summary"`
+}
+
+// mcpBuildDriftLine formats the running-vs-on-disk buildinfo comparison for
+// `boss mcp status`, naming drift when the running service is built from a
+// different binary than the one now on disk. An empty side means that build
+// could not be determined (service unreachable, or binary not found).
+func mcpBuildDriftLine(running, onDisk string) string {
+	switch {
+	case running == "" && onDisk == "":
+		return "  build:   unavailable (could not read running or on-disk build info)"
+	case running == "":
+		return fmt.Sprintf("  build:   on-disk %s (running build unavailable)", onDisk)
+	case onDisk == "":
+		return fmt.Sprintf("  build:   running %s (on-disk build unavailable)", running)
+	case running == onDisk:
+		return fmt.Sprintf("  build:   %s (running matches on-disk)", running)
+	default:
+		return fmt.Sprintf("  build:   ⚠ drift — running %s but on-disk %s; restart the MCP service to load the rebuilt binary", running, onDisk)
+	}
+}
+
+// fetchRunningMcpBuildInfo reads the running HTTP service's build metadata from
+// its loopback /buildinfo endpoint. Best-effort: any failure yields "".
+func fetchRunningMcpBuildInfo(port int) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	url := fmt.Sprintf("http://127.0.0.1:%d/buildinfo", port)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var bi mcpBuildInfo
+	if err := json.NewDecoder(resp.Body).Decode(&bi); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(bi.Summary)
+}
+
+// fetchOnDiskMcpBuildInfo runs the on-disk mcp binary with --version to read its
+// compiled-in build metadata. Best-effort: any failure yields "".
+func fetchOnDiskMcpBuildInfo() string {
+	mcpPath, err := daemon.ResolveMcpPath()
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// mcpPath comes from daemon.ResolveMcpPath (next to boss or on PATH); args fixed.
+	out, err := exec.CommandContext(ctx, mcpPath, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func runMcpStart(_ *cobra.Command) error {

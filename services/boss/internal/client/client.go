@@ -104,6 +104,13 @@ type BossClient interface {
 	DeleteCronJob(ctx context.Context, id string) error
 	RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
 
+	// Accounts (agent credential registry). Local-daemon only, like cron jobs.
+	ListAccounts(ctx context.Context, provider string) ([]*pb.Account, error)
+	AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error)
+	UpdateAccount(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error)
+	RemoveAccount(ctx context.Context, id string) error
+	TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error)
+
 	// Repair diagnostics — surfaced via `boss repair doctor`.
 	RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, error)
 

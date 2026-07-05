@@ -532,7 +532,7 @@ func (c *StreamClient) dispatchSendChatMessage(ctx context.Context, cmdID string
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		out, err := c.commandHandler.SendChatMessage(ctx, req.GetAgentSessionId(), req.GetMessage(), req.GetWakeIfAsleep())
+		out, err := c.commandHandler.SendChatMessage(ctx, req.GetAgentSessionId(), req.GetMessage(), req.GetWakeIfAsleep(), req.GetSubmit())
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}

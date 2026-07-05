@@ -118,6 +118,14 @@ echo
 echo "Checking streaming transport duplex (streamprobe)"
 (cd services/bossd && go run ./cmd/streamprobe -url "${BASE_URL}")
 
+# Deploy-ordering gate (BOS-241): the freshly-deployed server must support the
+# API version this build's first-party clients request. apiversioncheck sends a
+# side-effect-free, unauthenticated out-of-range probe and fails if the live
+# server's supported-max trails the built client Current — so production can
+# never be released trailing the versions in circulation. See docs/api-versioning.md.
+echo "Checking API version support (server must not trail built clients)"
+(cd services/bossd && go run ./cmd/apiversioncheck -url "${BASE_URL}")
+
 echo "Checking NEG endpoint attachment"
 if gcloud compute network-endpoint-groups describe "bs-bosso-neg-${ENVIRONMENT}" \
   --zone europe-west1-b --project madverts-production \

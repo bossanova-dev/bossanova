@@ -106,7 +106,7 @@ func TestEnsureNoActivePRSession(t *testing.T) {
 	})
 
 	t.Run("terminal states do not block", func(t *testing.T) {
-		for _, state := range []machine.State{machine.Blocked, machine.Merged, machine.Closed} {
+		for _, state := range []machine.State{machine.Blocked, machine.Merged, machine.Closed, machine.Orphaned} {
 			store := newDuplicateStore(duplicateTestSession(state))
 			if err := EnsureNoActivePRSession(ctx, store, "repo-1", intPtr(7)); err != nil {
 				t.Fatalf("EnsureNoActivePRSession() with state %v = %v, want nil", state, err)

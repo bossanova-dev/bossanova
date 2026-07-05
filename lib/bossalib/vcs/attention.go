@@ -16,6 +16,13 @@ const (
 	AttentionReasonAwaitingHumanInput
 	AttentionReasonReviewRequested
 	AttentionReasonMergeConflictUnresolvable
+	// AttentionReasonAgentAuthFailed marks a session whose agent pane shows the
+	// login-required terminal shape ("Not logged in" / "Please run /login").
+	// Its integer value (5) matches pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED
+	// so the direct cast in attentionStatusToProto stays 1:1. It is surfaced by
+	// bossd's server hydration (which has the status tracker in scope), not by
+	// ComputeAttentionStatus, so it is not returned here.
+	AttentionReasonAgentAuthFailed
 )
 
 // AttentionStatus represents whether and why a session needs human attention.
@@ -38,6 +45,21 @@ func ComputeAttentionStatus(sess *models.Session, repo *models.Repo) AttentionSt
 		return AttentionStatus{
 			NeedsAttention: true,
 			Reason:         AttentionReasonBlockedMaxAttempts,
+			Summary:        summary,
+			Since:          sess.UpdatedAt,
+		}
+
+	case machine.Orphaned:
+		// A headless run killed by a daemon restart: the human decides whether to
+		// re-dispatch (a one-shot's prompt may have side effects), so surface it
+		// loudly rather than letting the bootstrap-only PR read as done.
+		summary := "orphaned — headless run killed by daemon restart; needs human"
+		if sess.BlockedReason != nil && *sess.BlockedReason != "" {
+			summary = *sess.BlockedReason
+		}
+		return AttentionStatus{
+			NeedsAttention: true,
+			Reason:         AttentionReasonAwaitingHumanInput,
 			Summary:        summary,
 			Since:          sess.UpdatedAt,
 		}

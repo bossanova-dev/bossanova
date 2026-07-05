@@ -595,6 +595,33 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 		return nil
 	}
 
+	// A clean branch whose only commit is the empty draft-PR bootstrap commit
+	// did no real work, even though a PR exists. For a non-cron (headless
+	// detach) run — the /bs-epic fan-out path — do not attach + mark it ready as
+	// a green PR: record a no-changes outcome so the session Blocks and a
+	// headless driver fail-isolates it instead of merging an empty PR. Cron
+	// finalize is left byte-identical: its no-op runs are already handled by the
+	// deleted_no_changes / placeholder-commit paths, and this gate is skipped
+	// for cron sessions. A git error fails open toward "real work" so a
+	// transient failure never wrongly blocks a legitimate run.
+	if !isCronSession(session) {
+		if hasReal, realErr := l.branchHasRealCommits(ctx, session); realErr != nil {
+			l.logger.Warn().Err(realErr).
+				Str("session", session.ID).
+				Str("branch", session.BranchName).
+				Msg("finalize: real-commit check failed for clean branch with PR; treating as real work")
+		} else if !hasReal {
+			l.logger.Info().
+				Str("session", session.ID).
+				Str("branch", session.BranchName).
+				Msg("finalize: clean branch has an existing PR but no real commits; recording no-op headless run")
+			return &FinalizeResult{
+				Outcome: models.CronJobOutcomePRNoChanges,
+				Err:     errors.New("headless run produced no changes beyond the empty draft-PR bootstrap commit"),
+			}
+		}
+	}
+
 	l.logger.Info().
 		Str("session", session.ID).
 		Str("branch", session.BranchName).
@@ -642,6 +669,16 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 	if !hasCommittedWork {
 		return nil
 	}
+
+	// NOTE: the empty-vs-real-work gate lives only in the sibling
+	// attachExistingPRIfCleanBranchHasOne path, not here. A no-op headless
+	// /bs-epic run always carries bossd's bootstrap draft PR, so it is classified
+	// by that attach path (checked first in classifyFinalizeOutcome) before this
+	// no-existing-PR path is ever reached; a branch that is HEAD-ahead-of-base
+	// by only the empty bootstrap commit but has no PR is not a shape session
+	// start produces (the bootstrap commit and PR are created together). Keeping
+	// the gate out of here also preserves this path's existing behavior for
+	// interactive non-GitHub sessions byte-identical.
 
 	if !isGitHubOrigin {
 		// Same routing as the dirty-output no-github branch in
@@ -732,6 +769,26 @@ func (l *Lifecycle) cleanBranchHasCommittedWork(ctx context.Context, session *mo
 		return false, fmt.Errorf("check branch commits against %s: %w", baseRef, err)
 	}
 	return !headInBase, nil
+}
+
+// branchHasRealCommits reports whether the session's branch carries any commit
+// beyond bossd's empty draft-PR bootstrap commit — i.e. the run produced real
+// work rather than leaving only the placeholder. It reuses realCommitSubjects
+// (the same placeholder filter the cron PR-title path uses) against the local
+// base ref, so it needs no remote fetch. The non-cron (headless detach)
+// finalize paths use it to refuse to surface a no-op run as a green PR: a
+// bootstrap-only branch is HEAD-ahead-of-base (so cleanBranchHasCommittedWork
+// and an attached bootstrap PR both read as "work"), yet its diff vs base is
+// empty. A legitimate tiny/docs change carries a real commit and still passes.
+func (l *Lifecycle) branchHasRealCommits(ctx context.Context, session *models.Session) (bool, error) {
+	if session.BaseBranch == "" {
+		return false, fmt.Errorf("base branch is empty for branch %q", session.BranchName)
+	}
+	subjects, err := l.worktrees.CommitSubjects(ctx, session.WorktreePath, session.BaseBranch)
+	if err != nil {
+		return false, fmt.Errorf("read commit subjects: %w", err)
+	}
+	return len(realCommitSubjects(subjects)) > 0, nil
 }
 
 func (l *Lifecycle) originURLIfConfigured(ctx context.Context, repo *models.Repo) (string, error) {
@@ -925,7 +982,8 @@ func needsAttention(o models.CronJobOutcome) bool {
 	case models.CronJobOutcomePRFailed,
 		models.CronJobOutcomePRSkippedNoGitHub,
 		models.CronJobOutcomeChatSpawnFailed,
-		models.CronJobOutcomeCleanupFailed:
+		models.CronJobOutcomeCleanupFailed,
+		models.CronJobOutcomePRNoChanges:
 		return true
 	case models.CronJobOutcomeDeletedNoChanges,
 		models.CronJobOutcomePRCreated,

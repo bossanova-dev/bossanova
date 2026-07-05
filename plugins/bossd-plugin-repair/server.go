@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -260,6 +262,13 @@ type repairMonitor struct {
 	host   hostClient
 	logger zerolog.Logger
 
+	// dispatcherID is this repair-plugin instance's stable identity, sent on
+	// SetRepairStatus so the daemon's single-repairer lease is taken for and
+	// released by this dispatcher. Re-entrant across a session's repair passes
+	// (same id), and distinct from any other repair dispatcher (a /boss-repair
+	// chat or a bs-epic driver), which is refused while this lease is held.
+	dispatcherID string
+
 	mu                           sync.Mutex
 	ctx                          context.Context      // Workflow context
 	cancel                       context.CancelFunc   // Cancel function for the workflow
@@ -281,11 +290,25 @@ type repairMonitor struct {
 	wg sync.WaitGroup
 }
 
+// newDispatcherID mints a process-stable identity for this repair-plugin
+// instance's single-repairer lease. crypto/rand gives a collision-free id
+// across restarts; a pid-based fallback keeps the plugin working if the entropy
+// source is somehow unavailable (the value only needs to be stable per process
+// and distinct from other dispatchers).
+func newDispatcherID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("repair-plugin-%d", os.Getpid())
+	}
+	return "repair-plugin-" + hex.EncodeToString(b[:])
+}
+
 func newRepairMonitor(host hostClient, logger zerolog.Logger) *repairMonitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &repairMonitor{
 		host:                         host,
 		logger:                       logger,
+		dispatcherID:                 newDispatcherID(),
 		ctx:                          ctx,
 		cancel:                       cancel,
 		stopped:                      true, // Reject notifications until StartWorkflow sets config.
@@ -1327,10 +1350,33 @@ func (m *repairMonitor) repairSession(
 		Str("repo", repoName).
 		Logger()
 
+	// repairFlagSet records whether any attempt in this session took the
+	// single-repairer lease (SetRepairStatus IsRepairing=true). The lease is
+	// held for the whole repairSession — every attempt AND its post-repair
+	// assessment window (which can wait up to 30 minutes) — and released only
+	// here, once the bounded loop exits. Releasing it per-attempt (inside
+	// runRepairAttempt) would drop repair_active to false during the assessment
+	// wait, letting a bs-epic/manual dispatcher start a second /boss-repair on
+	// the same worktree.
+	repairFlagSet := false
+
 	defer func() {
 		m.mu.Lock()
 		delete(m.repairing, sessionID)
 		m.mu.Unlock()
+
+		if !repairFlagSet {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), repairStatusClearTimeout)
+		defer cancel()
+		if _, err := m.host.SetRepairStatus(cleanupCtx, &bossanovav1.SetRepairStatusRequest{
+			SessionId:    sessionID,
+			IsRepairing:  false,
+			DispatcherId: m.dispatcherID,
+		}); err != nil {
+			log.Warn().Err(err).Msg("failed to clear repair status")
+		}
 	}()
 
 	currentDisplayStatus := displayStatus
@@ -1375,6 +1421,7 @@ func (m *repairMonitor) repairSession(
 			currentReviewFingerprint,
 			currentReviewFingerprintAvailable,
 			resumeAgentSessionID,
+			&repairFlagSet,
 		)
 		if !ok {
 			return
@@ -1484,6 +1531,7 @@ func (m *repairMonitor) runRepairAttempt(
 	reviewFingerprint string,
 	reviewFingerprintAvailable bool,
 	resumeAgentSessionID string,
+	repairFlagSet *bool,
 ) (string, bool) {
 	log := m.logger.With().
 		Str("session_id", sessionID).
@@ -1493,7 +1541,6 @@ func (m *repairMonitor) runRepairAttempt(
 
 	attemptRan := false
 	runOwned := false
-	repairFlagSet := false
 	startedAt := time.Now()
 	var (
 		outcomeAgentSessionID string
@@ -1553,18 +1600,10 @@ func (m *repairMonitor) runRepairAttempt(
 				}
 			}()
 		}
-
-		if !repairFlagSet {
-			return
-		}
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), repairStatusClearTimeout)
-		defer cancel()
-		if _, err := m.host.SetRepairStatus(cleanupCtx, &bossanovav1.SetRepairStatusRequest{
-			SessionId:   sessionID,
-			IsRepairing: false,
-		}); err != nil {
-			log.Warn().Err(err).Msg("failed to clear repair status")
-		}
+		// The single-repairer lease taken below (SetRepairStatus IsRepairing=true)
+		// is intentionally NOT cleared here: repairSession holds it across this
+		// attempt and the following post-repair assessment window, releasing it
+		// once the whole bounded loop exits.
 	}()
 
 	// markStartRefused records daemon refusals (gRPC FailedPrecondition — eg.
@@ -1658,14 +1697,17 @@ func (m *repairMonitor) runRepairAttempt(
 	log.Info().Str("agent_session_id", agentSessionID).Msg("repair chat run started")
 
 	// Set IsRepairing only after we own the run, so a losing instance does
-	// not clobber the winner's flag in its deferred cleanup.
+	// not clobber the winner's flag in its deferred cleanup. repairSession owns
+	// clearing the flag once its bounded loop (including post-repair assessment)
+	// finishes, so we flag it as set for the whole session here.
 	if _, err := m.host.SetRepairStatus(ctx, &bossanovav1.SetRepairStatusRequest{
-		SessionId:   sessionID,
-		IsRepairing: true,
+		SessionId:    sessionID,
+		IsRepairing:  true,
+		DispatcherId: m.dispatcherID,
 	}); err != nil {
 		log.Warn().Err(err).Msg("failed to set repair status")
 	} else {
-		repairFlagSet = true
+		*repairFlagSet = true
 	}
 
 	waitResp, waitErr := m.host.WaitChatRun(ctx, &bossanovav1.WaitChatRunHostRequest{

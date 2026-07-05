@@ -18,8 +18,10 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/semver"
+	"golang.org/x/term"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/recurser/boss/internal/accountflow"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/boss/internal/preflight"
@@ -51,6 +53,94 @@ func newClient(cmd *cobra.Command) (client.BossClient, error) {
 	}
 
 	return client.NewLocal(socketPath), nil
+}
+
+// guardInteractiveStdin fails fast when an interactive registration flow would
+// block on a terminal that is not attached. --token-stdin (claude) is the one
+// non-interactive escape hatch and skips the guard. Returning cleanly here —
+// before any client dial or subprocess — is what a headless agent or cron hits.
+func guardInteractiveStdin(tokenStdin bool) error {
+	if tokenStdin {
+		return nil
+	}
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil
+	}
+	return errors.New("boss account add is interactive; run it in a terminal (or pass --token-stdin for claude)")
+}
+
+// requireLocalRegistration refuses interactive account registration against a
+// remote (--remote) daemon: the setup-token walkthrough and codex device flow
+// mint credentials by running a LOCAL subprocess, so the flow is only coherent
+// against the local daemon. It runs before any client dial or subprocess.
+func requireLocalRegistration(cmd *cobra.Command) error {
+	if remoteURL(cmd) != "" {
+		return errors.New("boss account add registers credentials on the local daemon and cannot target a remote (--remote) daemon")
+	}
+	return nil
+}
+
+// runAccountAddClaude drives the interactive `boss account add claude`
+// registration: the claude setup-token walkthrough, or a pasted/piped token
+// with --token-stdin. The TTY guard runs before any RPC or subprocess.
+func runAccountAddClaude(cmd *cobra.Command) error {
+	if err := requireLocalRegistration(cmd); err != nil {
+		return err
+	}
+	tokenStdin, _ := cmd.Flags().GetBool("token-stdin")
+	if err := guardInteractiveStdin(tokenStdin); err != nil {
+		return err
+	}
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+	label, _ := cmd.Flags().GetString("label")
+	email, _ := cmd.Flags().GetString("email")
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+	priority, _ := cmd.Flags().GetInt32("priority")
+	return accountflow.RunClaudeAdd(cmd.Context(), accountflow.ClaudeOptions{
+		Exec:      accountflow.NewOSExec(),
+		Prompter:  accountflow.NewIOPrompter(cmd.InOrStdin(), cmd.OutOrStdout()),
+		Client:    c,
+		Timeout:   timeout,
+		PasteMode: tokenStdin,
+		Label:     label,
+		Email:     email,
+		Priority:  priority,
+	})
+}
+
+// runAccountAddCodex drives the interactive `boss account add codex` device
+// flow. Codex has no token-stdin path (it needs an interactive browser
+// round-trip), so --token-stdin is rejected up front.
+func runAccountAddCodex(cmd *cobra.Command) error {
+	if err := requireLocalRegistration(cmd); err != nil {
+		return err
+	}
+	if tokenStdin, _ := cmd.Flags().GetBool("token-stdin"); tokenStdin {
+		return errors.New("--token-stdin is not supported for codex; codex registration uses an interactive device flow")
+	}
+	if err := guardInteractiveStdin(false); err != nil {
+		return err
+	}
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+	label, _ := cmd.Flags().GetString("label")
+	email, _ := cmd.Flags().GetString("email")
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+	priority, _ := cmd.Flags().GetInt32("priority")
+	return accountflow.RunCodexAdd(cmd.Context(), accountflow.CodexOptions{
+		Exec:     accountflow.NewOSExec(),
+		Prompter: accountflow.NewIOPrompter(cmd.InOrStdin(), cmd.OutOrStdout()),
+		Client:   c,
+		Timeout:  timeout,
+		Label:    label,
+		Email:    email,
+		Priority: priority,
+	})
 }
 
 // newRemoteClient creates a RemoteClient with a JWT from the keychain.
@@ -896,13 +986,14 @@ func runNew(cmd *cobra.Command) error {
 	repo, _ := cmd.Flags().GetString("repo")
 	prompt, _ := cmd.Flags().GetString("prompt")
 	title, _ := cmd.Flags().GetString("title")
+	model, _ := cmd.Flags().GetString("model")
 	detach, _ := cmd.Flags().GetBool("detach")
 	noAttach, _ := cmd.Flags().GetBool("no-attach")
 	detach = detach || noAttach
 
 	// Non-interactive path: --repo and --prompt both provided.
 	if repo != "" && prompt != "" {
-		return runNewDetach(cmd, repo, prompt, title, agentName, detach)
+		return runNewDetach(cmd, repo, prompt, title, agentName, model, detach)
 	}
 
 	return launchTUI(cmd, func(app *views.App) {
@@ -917,7 +1008,30 @@ func runNew(cmd *cobra.Command) error {
 // and prints the session-id and chat-id (agent_session_id) before returning.
 // When detach is false the user can still pipe this output, but the session
 // starts running in the background either way.
-func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName string, _ bool) error {
+// newDetachRequest builds the CreateSessionRequest for the non-interactive
+// `boss new --repo --prompt` scripting path. Detach is always true here: the
+// prompt runs as a headless agent pass (codex exec / claude --print) on the
+// daemon. The local --detach flag only governs whether this CLI waits/attaches
+// after creating the session; interactive TUI sessions leave Detach false and
+// start the agent on attach instead. agentName and model are optional
+// (empty → server/agent default) and stay unset in the request when empty.
+func newDetachRequest(repoID, prompt, title, agentName, model string) *pb.CreateSessionRequest {
+	req := &pb.CreateSessionRequest{
+		RepoId: repoID,
+		Plan:   prompt,
+		Title:  title,
+		Detach: true,
+	}
+	if agentName != "" {
+		req.AgentName = &agentName
+	}
+	if model != "" {
+		req.Model = &model
+	}
+	return req
+}
+
+func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName, model string, _ bool) error {
 	c, err := newClient(cmd)
 	if err != nil {
 		return err
@@ -935,21 +1049,7 @@ func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName string, 
 		return err
 	}
 
-	req := &pb.CreateSessionRequest{
-		RepoId: repoID,
-		Plan:   prompt,
-		Title:  title,
-		// This is the non-interactive scripting path: the prompt runs as a
-		// headless agent pass (codex exec / claude --print) on the daemon.
-		// Detach is always true here regardless of the local --detach flag,
-		// which only governs whether this CLI waits/attaches after creating
-		// the session. Interactive TUI sessions leave Detach false and start
-		// the agent on attach instead.
-		Detach: true,
-	}
-	if agentName != "" {
-		req.AgentName = &agentName
-	}
+	req := newDetachRequest(repoID, prompt, title, agentName, model)
 
 	stream, err := c.CreateSession(ctx, req)
 	if err != nil {

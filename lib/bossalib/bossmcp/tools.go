@@ -327,6 +327,24 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		r, err := jsonResult(out)
 		return r, nil, err
 	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "list_accounts",
+		Description: "List registry accounts (agent credentials), optionally filtered by provider. Credentials are never returned.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListAccountsArgs) (*mcp.CallToolResult, any, error) {
+		out, err := backend.ListAccounts(ctx, args.Provider)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+}
+
+// ListAccountsArgs is the typed argument struct for list_accounts.
+type ListAccountsArgs struct {
+	Provider string `json:"provider,omitempty" jsonschema:"optional provider filter (claude|codex); empty returns all"`
 }
 
 // ListSessionsArgs is the typed argument struct for list_sessions.

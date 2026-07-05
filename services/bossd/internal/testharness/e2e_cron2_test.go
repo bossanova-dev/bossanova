@@ -222,7 +222,7 @@ func TestE2ECron_FinalizingRecovery(t *testing.T) {
 // TestE2ECron_HookAuth exercises three auth sub-cases for the stop-hook endpoint.
 func TestE2ECron_HookAuth(t *testing.T) {
 	// One shared harness for all subtests. Cron-ready tmux factory so the
-	// startCronTmuxChat path can complete (it now requires Available()).
+	// startTmuxChat path can complete (it now requires Available()).
 	h := testharness.NewWithOptions(t, testharness.Options{
 		TmuxCommandFactory: testharness.CronReadyTmuxFactory(),
 	})

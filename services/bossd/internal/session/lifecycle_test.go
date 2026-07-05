@@ -24,6 +24,7 @@ import (
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
+	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/tmux"
 )
 
@@ -37,6 +38,30 @@ var (
 	_ agent.AgentDispatcher  = (*mockAgentRunner)(nil)
 	_ vcs.Provider           = (*mockVCSProvider)(nil)
 )
+
+// newTestLifecycle builds a Lifecycle exactly like NewLifecycle but injects a
+// keyring-free proof-env resolver. Every session test constructs its lifecycle
+// through this so the whole package stays hermetic in one place: the real
+// spawn paths (StartSession --detach, cron tmux chats, ResurrectSession,
+// StartTmuxChat) resolve the proof env overlay, and the production resolver
+// opens the real OS keyring — which is non-deterministic (it can prompt) and,
+// on Linux, spawns a godbus connection goroutine that is never closed (a leak
+// goleak flags). Production wires proofenv.New via NewLifecycle.
+func newTestLifecycle(
+	sessions db.SessionStore,
+	repos db.RepoStore,
+	agentChats db.AgentChatStore,
+	cronJobs db.CronJobStore,
+	worktrees gitpkg.WorktreeManager,
+	agentRunner agent.AgentDispatcher,
+	tmuxClient *tmux.Client,
+	provider vcs.Provider,
+	logger zerolog.Logger,
+) *Lifecycle {
+	lc := NewLifecycle(sessions, repos, agentChats, cronJobs, worktrees, agentRunner, tmuxClient, provider, logger)
+	lc.SetProofEnvResolver(proofenv.NewNoop())
+	return lc
+}
 
 // --- Mock SessionStore ---
 
@@ -170,6 +195,9 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	if params.BlockedReason != nil {
 		s.BlockedReason = *params.BlockedReason
 	}
+	if params.LastAttemptHeadSHA != nil {
+		s.LastAttemptHeadSHA = *params.LastAttemptHeadSHA
+	}
 	if params.TmuxSessionName != nil {
 		s.TmuxSessionName = *params.TmuxSessionName
 	}
@@ -178,6 +206,9 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	}
 	if params.HookToken != nil {
 		s.HookToken = *params.HookToken
+	}
+	if params.TmuxUnattended != nil {
+		s.TmuxUnattended = *params.TmuxUnattended
 	}
 	return s, nil
 }
@@ -544,6 +575,7 @@ type mockWorktreeManager struct {
 	isAncestorFn                func(localPath, ref, target string) (bool, error)
 	injectPRNumbersCalls        []injectPRNumbersCall
 	injectPRNumbersErr          error
+	retryDeferredBaseSyncsCalls int
 }
 
 type injectPRNumbersCall struct {
@@ -694,8 +726,8 @@ func (m *mockWorktreeManager) DetectDefaultBranch(_ context.Context, _ string) (
 	return "main", nil
 }
 
-func (m *mockWorktreeManager) EnsureBaseBranchReadyForSync(_ context.Context, _, _ string) error {
-	return nil
+func (m *mockWorktreeManager) RetryDeferredBaseSyncs(_ context.Context) {
+	m.retryDeferredBaseSyncsCalls++
 }
 
 func (m *mockWorktreeManager) IsAncestor(_ context.Context, localPath, ref, target string) (bool, error) {
@@ -743,6 +775,7 @@ type mockStartCall struct {
 	workDir string
 	plan    string
 	resume  *string
+	model   string
 }
 
 func newMockAgentRunner() *mockAgentRunner {
@@ -752,8 +785,8 @@ func newMockAgentRunner() *mockAgentRunner {
 	}
 }
 
-func (m *mockAgentRunner) Start(_ context.Context, workDir, plan string, resume *string, _, _ string) (string, error) {
-	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume})
+func (m *mockAgentRunner) Start(_ context.Context, workDir, plan string, resume *string, _, model string, _ map[string]string) (string, error) {
+	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model})
 	if m.startErr != nil {
 		return "", m.startErr
 	}
@@ -789,8 +822,8 @@ func (m *mockAgentRunner) History(_ string) []agent.OutputLine {
 // StartByAgent forwards to Start so existing test assertions still fire.
 // The test fakes don't need to inspect the agent name — by-agent routing
 // is exercised by the dispatcher tests in services/bossd/internal/agent.
-func (m *mockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan string, resume *string, agentSessionID, model string) (string, error) {
-	return m.Start(ctx, workDir, plan, resume, agentSessionID, model)
+func (m *mockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string) (string, error) {
+	return m.Start(ctx, workDir, plan, resume, agentSessionID, model, extraEnv)
 }
 
 // StopByAgent forwards to Stop, ignoring the agent name (see StartByAgent).
@@ -941,7 +974,7 @@ func TestStartSession(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	// Detach=true is the `boss new --detach` headless path that auto-runs the
 	// agent. Interactive sessions (Detach=false) are covered by the
@@ -1022,7 +1055,7 @@ func TestStartSession_TrackerSession_AwaitsManualStart(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -1052,6 +1085,118 @@ func TestStartSession_TrackerSession_AwaitsManualStart(t *testing.T) {
 	}
 }
 
+// TestStartSession_ForkGovernedByDetach pins the BOS-179 fix: Detach — NOT
+// tracker-sourcing — decides headless-vs-idle for a non-cron session. The
+// regression this guards is a detached, tracker-sourced session (exactly what
+// /bs-epic's headless create_session fan-out produces) being forced into the
+// idle "awaiting manual start on first attach" branch and never running. The
+// !detach cases must stay byte-identical (idle) regardless of the tracker id.
+func TestStartSession_ForkGovernedByDetach(t *testing.T) {
+	cases := []struct {
+		name         string
+		detach       bool
+		tracker      bool
+		wantHeadless bool
+	}{
+		{name: "detach+tracker runs headlessly (the fix)", detach: true, tracker: true, wantHeadless: true},
+		{name: "detach without tracker runs headlessly", detach: true, tracker: false, wantHeadless: true},
+		{name: "no-detach with tracker stays idle", detach: false, tracker: true, wantHeadless: false},
+		{name: "no-detach without tracker stays idle", detach: false, tracker: false, wantHeadless: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			wt := &mockWorktreeManager{}
+			cr := newMockAgentRunner()
+			logger := zerolog.Nop()
+
+			repos.repos["repo-1"] = &models.Repo{
+				ID:                "repo-1",
+				LocalPath:         "/tmp/repo",
+				DefaultBaseBranch: "main",
+				WorktreeBaseDir:   "/tmp/worktrees",
+			}
+			sess := &models.Session{
+				ID:         "sess-1",
+				RepoID:     "repo-1",
+				Title:      "Test Session",
+				Plan:       "Do the work",
+				BaseBranch: "main",
+				State:      machine.CreatingWorktree,
+			}
+			if tc.tracker {
+				sess.TrackerID = ptr("BOS-123")
+			}
+			sessions.sessions["sess-1"] = sess
+
+			lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+
+			if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: tc.detach}); err != nil {
+				t.Fatalf("StartSession: %v", err)
+			}
+
+			got := sessions.sessions["sess-1"]
+			if tc.wantHeadless {
+				if len(cr.started) != 1 {
+					t.Fatalf("expected 1 headless agent start, got %d", len(cr.started))
+				}
+				if got.AgentSessionID == nil || *got.AgentSessionID != "claude-123" {
+					t.Errorf("agent session id = %v, want claude-123 (headless run)", got.AgentSessionID)
+				}
+			} else {
+				if len(cr.started) != 0 {
+					t.Fatalf("expected 0 agent starts (idle), got %d", len(cr.started))
+				}
+				if got.AgentSessionID != nil {
+					t.Errorf("agent session id = %v, want nil (idle)", got.AgentSessionID)
+				}
+			}
+		})
+	}
+}
+
+// TestStartSession_HeadlessRunUsesSessionModel pins that a headless (detach) run
+// passes the session's opaque Model id through to StartByAgent, so a session
+// created with model=<opus id> runs `claude … --model <opus id>`.
+func TestStartSession_HeadlessRunUsesSessionModel(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		Plan:       "Do the work",
+		BaseBranch: "main",
+		Model:      "claude-opus-4-8",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if len(cr.started) != 1 {
+		t.Fatalf("expected 1 headless agent start, got %d", len(cr.started))
+	}
+	if cr.started[0].model != "claude-opus-4-8" {
+		t.Errorf("headless run model = %q, want claude-opus-4-8", cr.started[0].model)
+	}
+}
+
 // TestStartSession_NewPR_AwaitsManualStart pins the fix for the "headless agent
 // run failed" bug: a plain interactive new-PR session (no TrackerID, no
 // CronJobID, Detach=false) must NOT auto-fire a headless `claude --print` run.
@@ -1078,7 +1223,7 @@ func TestStartSession_NewPR_AwaitsManualStart(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -1123,7 +1268,7 @@ func TestStartSession_ExistingPR_AwaitsManualStart(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{ExistingBranch: "feature/pr-42"}); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -1168,7 +1313,7 @@ func TestStartSession_DraftPRNotAttemptedWhenBranchHasNoCommitsOverBase(t *testi
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -1229,7 +1374,7 @@ func TestStartSession_NoCommitsBetweenProviderErrorIncludesBranchSHAs(t *testing
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -1290,7 +1435,7 @@ func TestStartSession_DuplicatePRErrorAttachesExistingPRAndClearsBlockedReason(t
 		},
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -1344,7 +1489,7 @@ func TestStartSession_CronPRTitleNormalizesSessionTitleWhenLatestCommitSubjectFa
 		AgentName:  "claude",
 	}
 
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, vp, logger)
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, vp, logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
 	lc.SetAgentLogsDir(t.TempDir())
 
@@ -1386,7 +1531,7 @@ func TestStartSession_ExistingBranchNotOnRemote_FallsBackToCreate(t *testing.T) 
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	// Pass a branch name that doesn't exist on the remote.
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{ExistingBranch: "dave/fre-1176"}); err != nil {
@@ -1428,7 +1573,7 @@ func TestStopSession(t *testing.T) {
 		AgentSessionID: &agentSessionID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StopSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("StopSession: %v", err)
@@ -1469,7 +1614,7 @@ func TestArchiveSession(t *testing.T) {
 		AgentSessionID: &agentSessionID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.ArchiveSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ArchiveSession: %v", err)
@@ -1532,7 +1677,7 @@ func TestResurrectSession(t *testing.T) {
 	oldClaudeID := "claude-old"
 	sess.AgentSessionID = &oldClaudeID
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.ResurrectSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ResurrectSession: %v", err)
@@ -1575,7 +1720,7 @@ func TestResurrectSessionNotArchived(t *testing.T) {
 		// ArchivedAt is nil — not archived.
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	err := lc.ResurrectSession(ctx, "sess-1")
 	if err == nil {
@@ -1601,7 +1746,7 @@ func TestStopSessionNoClaudeProcess(t *testing.T) {
 		// No ClaudeSessionID.
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StopSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("StopSession: %v", err)
@@ -1643,7 +1788,7 @@ func TestSubmitPR(t *testing.T) {
 		State:        machine.ImplementingPlan,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	if err := lc.SubmitPR(ctx, "sess-1"); err != nil {
 		t.Fatalf("SubmitPR: %v", err)
@@ -1716,7 +1861,7 @@ func TestSubmitPR_ClearsOnlyDraftPRBlockedReasonAfterCreate(t *testing.T) {
 			BlockedReason: &reason,
 		}
 
-		lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+		lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 		if err := lc.SubmitPR(ctx, "sess-1"); err != nil {
 			t.Fatalf("SubmitPR: %v", err)
@@ -1761,7 +1906,7 @@ func TestSubmitPR_ClearsOnlyDraftPRBlockedReasonAfterCreate(t *testing.T) {
 			BlockedReason: &reason,
 		}
 
-		lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+		lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 		if err := lc.SubmitPR(ctx, "sess-1"); err != nil {
 			t.Fatalf("SubmitPR: %v", err)
@@ -1806,7 +1951,7 @@ func TestSubmitPR_ExistingPRStillPushesImplementationCommits(t *testing.T) {
 		PRURL:        &existingURL,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	if err := lc.SubmitPR(ctx, "sess-1"); err != nil {
 		t.Fatalf("SubmitPR: %v", err)
@@ -1852,7 +1997,7 @@ func TestSubmitPRWrongState(t *testing.T) {
 		State:  machine.CreatingWorktree, // wrong state for SubmitPR
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	err := lc.SubmitPR(ctx, "sess-1")
 	if err == nil {
@@ -1889,7 +2034,7 @@ func TestStartSession_NoPlan_CreateDraftPRFailsRepoNotReady(t *testing.T) {
 	vp.nextPRInfo = nil
 	vp.createPRErr = vcs.ErrRepoNotReady
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{})
 	if err != nil {
@@ -1933,7 +2078,7 @@ func TestStartSession_SkipSetupScript_NilsSetupScript(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	// skipSetupScript = true with an existing branch (dependabot PR path).
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
@@ -1976,7 +2121,7 @@ func TestStartSession_SkipSetupScript_NewBranch(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	// skipSetupScript = true with no existing branch (new branch path).
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{SkipSetupScript: true}); err != nil {
@@ -2036,7 +2181,7 @@ func TestStartSession_SetsInitializingWhenSetupScriptPresent(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 	f := &fakeSettingUp{}
 	lc.SetDisplayTracker(f)
 
@@ -2073,7 +2218,7 @@ func TestStartSession_ClearsInitializingOnCreateError(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 	f := &fakeSettingUp{}
 	lc.SetDisplayTracker(f)
 
@@ -2109,7 +2254,7 @@ func TestStartSession_NoInitializingWithoutSetupScript(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 	f := &fakeSettingUp{}
 	lc.SetDisplayTracker(f)
 
@@ -2144,7 +2289,7 @@ func TestStartQuickChatSession(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StartQuickChatSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("StartQuickChatSession: %v", err)
@@ -2201,7 +2346,7 @@ func TestArchiveQuickChatSession(t *testing.T) {
 		AgentSessionID: &agentSessionID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.ArchiveSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ArchiveSession: %v", err)
@@ -2244,7 +2389,7 @@ func TestResurrectQuickChatSession(t *testing.T) {
 		AgentSessionID: &oldClaudeID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.ResurrectSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ResurrectSession: %v", err)
@@ -2283,7 +2428,7 @@ func TestResolveOriginURL_AlreadySet(t *testing.T) {
 		OriginURL: "git@github.com:owner/repo.git",
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.resolveOriginURL(ctx, repos.repos["repo-1"]); err != nil {
 		t.Fatalf("resolveOriginURL: %v", err)
@@ -2307,7 +2452,7 @@ func TestResolveOriginURL_EmptyReDetected(t *testing.T) {
 		OriginURL: "", // empty — needs re-detection
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.resolveOriginURL(ctx, repos.repos["repo-1"]); err != nil {
 		t.Fatalf("resolveOriginURL: %v", err)
@@ -2333,7 +2478,7 @@ func TestResolveOriginURL_EmptyNoRemote(t *testing.T) {
 		OriginURL:   "",
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
 	if err == nil {
@@ -2369,7 +2514,7 @@ func TestStartSession_NoPlan_EmptyOriginURL_ReDetected(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -2413,7 +2558,7 @@ func TestStartSession_NoSkipSetupScript_PassesSetupScript(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	// skipSetupScript = false with existing branch.
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
@@ -2461,7 +2606,7 @@ func TestStartSession_DeferPRFalse_CreatesDraftPR(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -2484,7 +2629,7 @@ func TestStartSession_CreateDraftPRFailureStoresBlockedReason(t *testing.T) {
 	worktrees := &mockWorktreeManager{}
 	agentRunner := newMockAgentRunner()
 	provider := newMockVCSProvider()
-	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+	lifecycle := newTestLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
 
 	repo := &models.Repo{
 		ID:              "repo-1",
@@ -2559,7 +2704,7 @@ func TestStartSession_CreateDraftPRFailureLogsBranchDiagnostics(t *testing.T) {
 		agentChats := &mockAgentChatStore{}
 		agentRunner := newMockAgentRunner()
 		provider := newMockVCSProvider()
-		lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, logger)
+		lifecycle := newTestLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, logger)
 
 		repo := &models.Repo{
 			ID:              "repo-1",
@@ -2701,7 +2846,7 @@ func TestStartSession_BlocksDraftPRWhenWorktreeBranchMismatches(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{})
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -2750,7 +2895,7 @@ func TestStartSession_DeferPRTrue_SkipsDraftPR(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{DeferPR: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -2797,7 +2942,7 @@ func TestStartSession_CronJobID_Persisted(t *testing.T) {
 		AgentName:  "claude",
 	}
 
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
 	lc.SetAgentLogsDir(t.TempDir())
 
@@ -2854,7 +2999,7 @@ func TestStartSession_HookToken_CallsConfigureFinalizeHook(t *testing.T) {
 	}
 
 	fa := newFakeAgent()
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
 	lc.SetHookPort(45678)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
 	lc.SetAgentLogsDir(t.TempDir())
@@ -2919,7 +3064,7 @@ func TestEnsurePR_Idempotent(t *testing.T) {
 			PRURL:        &existingURL,
 		}
 
-		lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+		lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 		if err := lc.EnsurePR(ctx, "sess-1"); err != nil {
 			t.Fatalf("EnsurePR: %v", err)
@@ -2955,7 +3100,7 @@ func TestEnsurePR_Idempotent(t *testing.T) {
 			BaseBranch:   "main",
 		}
 
-		lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+		lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 		if err := lc.EnsurePR(ctx, "sess-1"); err != nil {
 			t.Fatalf("EnsurePR: %v", err)
@@ -3026,7 +3171,7 @@ func TestEnsurePR_CreateDraftPRFailureLogsBranchDiagnostics(t *testing.T) {
 		BaseBranch:   "main",
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, zerolog.New(&logs))
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, zerolog.New(&logs))
 
 	err := lc.EnsurePR(ctx, "sess-1")
 	if err == nil {
@@ -3095,7 +3240,7 @@ func TestEnsurePR_RetriesDraftPRWithoutEmptyCommitAndClearsBlockedReason(t *test
 	worktrees := &mockWorktreeManager{}
 	agentRunner := newMockAgentRunner()
 	provider := newMockVCSProvider()
-	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+	lifecycle := newTestLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
 
 	repo := &models.Repo{
 		ID:              "repo-1",
@@ -3155,7 +3300,7 @@ func TestEnsurePR_ClearBlockedReasonFailureKeepsAttachedPR(t *testing.T) {
 	worktrees := &mockWorktreeManager{}
 	agentRunner := newMockAgentRunner()
 	provider := newMockVCSProvider()
-	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+	lifecycle := newTestLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
 
 	repo := &models.Repo{
 		ID:              "repo-1",
@@ -3224,7 +3369,7 @@ func TestEnsurePR_AttachesExistingPROnDuplicateError(t *testing.T) {
 	worktrees := &mockWorktreeManager{}
 	agentRunner := newMockAgentRunner()
 	provider := newMockVCSProvider()
-	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+	lifecycle := newTestLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
 
 	repo := &models.Repo{
 		ID:              "repo-1",
@@ -3286,7 +3431,7 @@ func TestAttachOpenPRForBranch_MatchesLiveBranchAndPersists(t *testing.T) {
 	worktrees := &mockWorktreeManager{}
 	agentRunner := newMockAgentRunner()
 	provider := newMockVCSProvider()
-	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+	lifecycle := newTestLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
 
 	branches := &reconcileMockBranchResolver{
 		branches: map[string]string{"/wt/sess-1": "dave/won-1208-foo"},
@@ -3342,7 +3487,7 @@ func TestAttachOpenPRForBranch_PrefersStoredBranchOverLiveBranch(t *testing.T) {
 	worktrees := &mockWorktreeManager{}
 	agentRunner := newMockAgentRunner()
 	provider := newMockVCSProvider()
-	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+	lifecycle := newTestLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
 
 	branches := &reconcileMockBranchResolver{
 		branches: map[string]string{"/wt/sess-1": "live-branch"},
@@ -3409,7 +3554,7 @@ func TestAttachOpenPRForBranch_NonCronAdoptsDivergentPRTitle(t *testing.T) {
 	worktrees := &mockWorktreeManager{}
 	agentRunner := newMockAgentRunner()
 	provider := newMockVCSProvider()
-	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+	lifecycle := newTestLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
 
 	session := &models.Session{
 		ID:           "sess-1",
@@ -3461,7 +3606,7 @@ func TestEnsurePR_AttachesExistingCronPRAndUpdatesMessyTitle(t *testing.T) {
 	}
 	agentRunner := newMockAgentRunner()
 	provider := newMockVCSProvider()
-	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+	lifecycle := newTestLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
 
 	repo := &models.Repo{
 		ID:              "repo-1",
@@ -3532,7 +3677,7 @@ func TestEnsurePR_AttachesExistingNonCronPRWithoutUpdatingTitle(t *testing.T) {
 	}
 	agentRunner := newMockAgentRunner()
 	provider := newMockVCSProvider()
-	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+	lifecycle := newTestLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
 
 	repo := &models.Repo{
 		ID:              "repo-1",
@@ -3585,7 +3730,7 @@ func TestEnsurePR_AttachExistingCronPRTitleUpdateFailureReturnsError(t *testing.
 	agentRunner := newMockAgentRunner()
 	provider := newMockVCSProvider()
 	provider.updatePRTitleErr = errors.New("gh pr edit failed")
-	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+	lifecycle := newTestLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
 
 	repo := &models.Repo{
 		ID:              "repo-1",
@@ -3639,7 +3784,7 @@ func TestEnsurePR_AttachExistingPRReturnsClearBlockedReasonFailure(t *testing.T)
 	worktrees := &mockWorktreeManager{}
 	agentRunner := newMockAgentRunner()
 	provider := newMockVCSProvider()
-	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+	lifecycle := newTestLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
 
 	repo := &models.Repo{
 		ID:              "repo-1",
@@ -3768,7 +3913,7 @@ func TestLinkPR_NumberUpdatesSessionAndCronLastRun(t *testing.T) {
 		BlockedReason: &blockedReason,
 	}
 
-	lifecycle := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lifecycle := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	updated, err := lifecycle.LinkPR(ctx, "sess-1", "42")
 	if err != nil {
 		t.Fatalf("LinkPR: %v", err)
@@ -3823,7 +3968,7 @@ func TestLinkPR_AdoptsPRTitleOnFirstAssociation(t *testing.T) {
 			State:      machine.AwaitingChecks,
 		}
 
-		lifecycle := NewLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, logger)
+		lifecycle := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, logger)
 		updated, err := lifecycle.LinkPR(ctx, "sess-1", "42")
 		if err != nil {
 			t.Fatalf("LinkPR: %v", err)
@@ -3847,7 +3992,7 @@ func TestLinkPR_AdoptsPRTitleOnFirstAssociation(t *testing.T) {
 			PRNumber:   &existingPR,
 		}
 
-		lifecycle := NewLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, logger)
+		lifecycle := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, logger)
 		updated, err := lifecycle.LinkPR(ctx, "sess-1", "42")
 		if err != nil {
 			t.Fatalf("LinkPR: %v", err)
@@ -3883,7 +4028,7 @@ func TestLinkPR_FinalizingSessionMovesToAwaitingChecks(t *testing.T) {
 		CronJobID:  &cronJobID,
 	}
 
-	lifecycle := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lifecycle := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
 	updated, err := lifecycle.LinkPR(ctx, "sess-1", "42")
 	if err != nil {
 		t.Fatalf("LinkPR: %v", err)
@@ -3924,7 +4069,7 @@ func TestLinkPR_URLRejectsWrongRepo(t *testing.T) {
 		State:  machine.Blocked,
 	}
 
-	lifecycle := NewLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, logger)
+	lifecycle := newTestLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, logger)
 	_, err := lifecycle.LinkPR(ctx, "sess-1", "https://github.com/other/repo/pull/42")
 	if err == nil {
 		t.Fatal("expected wrong-repo PR URL to be rejected")
@@ -4013,6 +4158,21 @@ func (f *fakeTmux) hasSubcommand(name string) bool {
 	return false
 }
 
+// enterSendKeysCount reports how many recorded send-keys calls submit the
+// composer with a bare Enter (args end with "Enter"). Used to assert that a
+// DeliverySubmit path presses Enter and a DeliveryPrefillOnly path does not.
+func (f *fakeTmux) enterSendKeysCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if c.subcommand == "send-keys" && len(c.args) > 0 && c.args[len(c.args)-1] == "Enter" {
+			n++
+		}
+	}
+	return n
+}
+
 // hasLiteralSendKeys reports whether any recorded send-keys call used the "-l"
 // literal flag. Used to assert literal-keystroke delivery without pinning the
 // full, payload-dependent arg vector.
@@ -4067,7 +4227,7 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 		AgentName:  "claude",
 	}
 
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
 	lc.SetAgentLogsDir(t.TempDir())
 
@@ -4145,6 +4305,140 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 	}
 }
 
+// TestStartSession_TmuxUnattended_RoutesToTmux verifies that a tmux_unattended
+// session (opts.TmuxUnattended=true, NO CronJobID) routes through the durable
+// tmux-hosted path — a tmux new-session spawning claude, an agent_chats row with
+// the PLAIN session title (not the cron `Run "<name>"` title) — and NOT the
+// headless StartByAgent path.
+func TestStartSession_TmuxUnattended_RoutesToTmux(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	fake := newFakeTmux()
+	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Epic child task",
+		Plan:       "Do the epic work",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		AgentName:  "claude",
+	}
+
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	lc.SetAgentLogsDir(t.TempDir())
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		DeferPR:        true,
+		TmuxUnattended: true,
+	}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// The headless StartByAgent path must NOT have run.
+	if len(cr.started) != 0 {
+		t.Errorf("expected 0 headless StartByAgent calls on tmux_unattended path, got %d", len(cr.started))
+	}
+
+	// tmux new-session must have spawned claude.
+	if !fake.hasSubcommand("new-session") {
+		t.Fatal("expected tmux new-session call, none recorded")
+	}
+
+	// An agent_chats row must have been created with the PLAIN session title
+	// (tmux_unattended keeps the session title; only cron gets `Run "<name>"`).
+	if len(chats.createCalls) != 1 {
+		t.Fatalf("expected 1 agentChats.Create call, got %d", len(chats.createCalls))
+	}
+	if got, want := chats.createCalls[0].Title, "Epic child task"; got != want {
+		t.Errorf("Title = %q, want plain session title %q", got, want)
+	}
+
+	// The TmuxUnattended flag was persisted.
+	if !sessions.sessions["sess-1"].TmuxUnattended {
+		t.Error("expected TmuxUnattended persisted on the session row")
+	}
+	if sessions.sessions["sess-1"].State != machine.ImplementingPlan {
+		t.Errorf("session.State = %v, want ImplementingPlan", sessions.sessions["sess-1"].State)
+	}
+}
+
+// TestStartSession_TmuxUnattended_HookToken_ConfiguresFinalizeHook verifies that
+// a tmux_unattended session started with a HookToken installs its finalize Stop
+// hook (ConfigureFinalizeHook fires) and persists the token onto the session
+// row, so a daemon restart can re-arm it. This is the arming the server does
+// when it mints a HookToken for CreateSession {tmux_unattended:true}.
+func TestStartSession_TmuxUnattended_HookToken_ConfiguresFinalizeHook(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	fake := newFakeTmux()
+	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Epic child task",
+		Plan:       "Do the epic work",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		AgentName:  "claude",
+	}
+
+	fakeAgent := newFakeAgent()
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fakeAgent})
+	lc.SetAgentLogsDir(t.TempDir())
+	lc.SetHookPort(45678)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		DeferPR:        true,
+		TmuxUnattended: true,
+		HookToken:      "hooktok-123",
+	}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if len(fakeAgent.ConfigureHookReqs) == 0 {
+		t.Fatal("expected ConfigureFinalizeHook to fire for a HookToken session")
+	}
+	req := fakeAgent.ConfigureHookReqs[0]
+	if req.GetHookToken() != "hooktok-123" {
+		t.Errorf("ConfigureFinalizeHook HookToken = %q, want hooktok-123", req.GetHookToken())
+	}
+	if req.GetHookPort() != 45678 {
+		t.Errorf("ConfigureFinalizeHook HookPort = %d, want 45678", req.GetHookPort())
+	}
+	if sessions.sessions["sess-1"].HookToken == nil || *sessions.sessions["sess-1"].HookToken != "hooktok-123" {
+		t.Errorf("expected HookToken persisted on session, got %v", sessions.sessions["sess-1"].HookToken)
+	}
+}
+
 // TestStartSession_CronJobID_TmuxUnavailable_Errors verifies that when
 // tmux is not available, the cron branch returns an error before any
 // tmux session is created or any claude_chats row is written. The
@@ -4178,7 +4472,7 @@ func TestStartSession_CronJobID_TmuxUnavailable_Errors(t *testing.T) {
 		AgentName:  "claude",
 	}
 
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
 	lc.SetAgentLogsDir(t.TempDir())
 
@@ -4237,7 +4531,7 @@ func TestStartSession_CronJobID_ChatCreateFails_KillsTmux(t *testing.T) {
 		AgentName:  "claude",
 	}
 
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
 	lc.SetAgentLogsDir(t.TempDir())
 
@@ -4329,7 +4623,7 @@ func TestFinalizeNoChanges_KillsChatTmuxSessionsBeforeDelete(t *testing.T) {
 		CronJobID:    &cronJobID,
 	}
 
-	lc := NewLifecycle(wrappedSessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, vp, logger)
+	lc := newTestLifecycle(wrappedSessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -4401,7 +4695,7 @@ func TestSetAgents_RoutesByAgentName(t *testing.T) {
 	claudeAgent := newFakeAgent()
 	openCodeAgent := newFakeAgent()
 
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
 	lc.SetHookPort(45678)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{
 		"claude":   claudeAgent,
@@ -4458,7 +4752,7 @@ func TestSetAgents_UnknownAgentErrors(t *testing.T) {
 	}
 
 	claudeAgent := newFakeAgent()
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
 	lc.SetHookPort(45678)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": claudeAgent})
 
@@ -4511,7 +4805,7 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRun(t *testing.T) {
 	fa.IsSupported = false // hookless agent (e.g. codex)
 
 	armer := &fakePollArmer{}
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fa})
 	lc.SetAgentLogsDir(t.TempDir())
@@ -4572,7 +4866,7 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRunWithoutHookToken(t *te
 	fa := newFakeAgent()
 	fa.IsSupported = false
 	armer := &fakePollArmer{}
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fa})
 	lc.SetAgentLogsDir(t.TempDir())
 	lc.SetPollArmer(armer)
@@ -4616,7 +4910,7 @@ func TestSignalSessionRunCompleteCleanExitFinalizesHeadlessRun(t *testing.T) {
 		AgentSessionID: &runID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, zerolog.Nop())
+	lc := newTestLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, zerolog.Nop())
 
 	lc.SignalSessionRunComplete("sess-1", "run-1", "")
 
@@ -4645,7 +4939,7 @@ func TestSignalSessionRunCompleteFailedExitBlocksHeadlessRun(t *testing.T) {
 		AgentSessionID: &runID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, zerolog.Nop())
+	lc := newTestLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, zerolog.Nop())
 
 	lc.SignalSessionRunComplete("sess-1", "run-1", "boom: command exited 1")
 
@@ -4722,7 +5016,7 @@ func TestSignalSessionRunCompleteCronAndAdvancedAreNoOps(t *testing.T) {
 		AgentSessionID: &runAdv,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, zerolog.Nop())
+	lc := newTestLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, zerolog.Nop())
 
 	lc.SignalSessionRunComplete("sess-cron", "run-cron", "")
 	lc.SignalSessionRunComplete("sess-adv", "run-adv", "")
@@ -4764,9 +5058,11 @@ func TestBootstrapDoesNotReArmHeadlessImplementingRuns(t *testing.T) {
 	fa := newFakeAgent()
 	fa.IsSupported = false
 	armer := &fakePollArmer{}
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fa})
 	lc.SetPollArmer(armer)
+	// Session reported dead so the orphan sweep engages.
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}})
 	lc.SetDaemonCtx(ctx)
 
 	lc.Bootstrap(ctx)
@@ -4774,8 +5070,138 @@ func TestBootstrapDoesNotReArmHeadlessImplementingRuns(t *testing.T) {
 	if armer.armCalled {
 		t.Fatalf("Bootstrap must NOT re-arm a paneless headless ImplementingPlan run (phantom-clean-exit risk); armed %v", armer.armedSessions)
 	}
-	if got := sessions.sessions["sess-headless"].State; got != machine.ImplementingPlan {
-		t.Fatalf("headless run must be left in ImplementingPlan on restart, got %s", got)
+	// The run is never re-armed, but a restart-killed headless run must not be
+	// left stranded-and-silent: the orphan sweep marks it ORPHANED.
+	if got := sessions.sessions["sess-headless"].State; got != machine.Orphaned {
+		t.Fatalf("dead headless run must be marked Orphaned on restart, got %s", got)
+	}
+	if r := sessions.sessions["sess-headless"].BlockedReason; r == nil || *r == "" {
+		t.Fatalf("orphaned headless run must carry a reason, got %v", r)
+	}
+}
+
+// TestBootstrapDoesNotOrphanLiveHeadlessRun pins the conservative rule: a headless
+// ImplementingPlan session whose liveness reports still-alive (e.g. an interactive
+// run whose tmux pane survived the restart) is left untouched, never orphaned.
+func TestBootstrapDoesNotOrphanLiveHeadlessRun(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	runH := "run-live"
+	sessions.sessions["sess-live"] = &models.Session{
+		ID:             "sess-live",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-live",
+		BaseBranch:     "main",
+		State:          machine.ImplementingPlan,
+		AgentName:      "codex",
+		AgentSessionID: &runH,
+	}
+
+	chats := &mockAgentChatStore{}
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{"sess-live": true}})
+	lc.SetDaemonCtx(ctx)
+
+	lc.Bootstrap(ctx)
+
+	if got := sessions.sessions["sess-live"].State; got != machine.ImplementingPlan {
+		t.Fatalf("a live headless run must not be orphaned, got %s", got)
+	}
+}
+
+// TestBootstrapRetriesDeferredBaseSyncs pins that Bootstrap flushes any base-branch
+// syncs that were deferred (e.g. because the worktree wasn't clean at merge time) by
+// calling RetryDeferredBaseSyncs exactly once during startup.
+func TestBootstrapRetriesDeferredBaseSyncs(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	chats := &mockAgentChatStore{}
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	lc.SetDaemonCtx(ctx)
+
+	lc.Bootstrap(ctx)
+
+	if wt.retryDeferredBaseSyncsCalls != 1 {
+		t.Fatalf("Bootstrap must retry deferred base syncs exactly once, got %d", wt.retryDeferredBaseSyncsCalls)
+	}
+}
+
+// TestBootstrapDoesNotOrphanWithoutLiveness pins fail-toward-not-orphaning when the
+// liveness checker is unwired: with no way to confirm death, the session stays put.
+func TestBootstrapDoesNotOrphanWithoutLiveness(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	runH := "run-nolive"
+	sessions.sessions["sess-nolive"] = &models.Session{
+		ID:             "sess-nolive",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-nolive",
+		BaseBranch:     "main",
+		State:          machine.ImplementingPlan,
+		AgentName:      "codex",
+		AgentSessionID: &runH,
+	}
+
+	chats := &mockAgentChatStore{}
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	// No SetSessionLiveness — liveness unwired.
+	lc.SetDaemonCtx(ctx)
+
+	lc.Bootstrap(ctx)
+
+	if got := sessions.sessions["sess-nolive"].State; got != machine.ImplementingPlan {
+		t.Fatalf("without liveness the sweep must not orphan, got %s", got)
+	}
+}
+
+// TestBootstrapDoesNotOrphanUnattended pins that cron / tmux_unattended sessions —
+// tmux-hosted and owned by the re-arm loop + stranded-cron sweep — are never
+// treated as headless orphans, even when liveness reports them dead.
+func TestBootstrapDoesNotOrphanUnattended(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	runH := "run-cron"
+	cronID := "cron-1"
+	sessions.sessions["sess-cron"] = &models.Session{
+		ID:             "sess-cron",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-cron",
+		BaseBranch:     "main",
+		State:          machine.ImplementingPlan,
+		AgentName:      "codex",
+		AgentSessionID: &runH,
+		CronJobID:      &cronID,
+	}
+
+	chats := &mockAgentChatStore{}
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // dead
+	lc.SetDaemonCtx(ctx)
+
+	lc.Bootstrap(ctx)
+
+	if got := sessions.sessions["sess-cron"].State; got != machine.ImplementingPlan {
+		t.Fatalf("unattended session must not be orphaned by the headless sweep, got %s", got)
 	}
 }
 
@@ -4823,7 +5249,7 @@ func TestBootstrapDoesNotPollHooklessTmuxRuns(t *testing.T) {
 
 	armer := &fakePollArmer{}
 	notifier := &recordingCronCompletionNotifier{}
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fa})
 	lc.SetAgentLogsDir(t.TempDir())
@@ -4885,7 +5311,7 @@ func TestBootstrapDoesNotArmForHookedAgents(t *testing.T) {
 
 	fa := newFakeAgent() // IsSupported defaults to true
 	armer := &fakePollArmer{}
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
 	lc.SetAgentLogsDir(t.TempDir())
@@ -4950,7 +5376,7 @@ func TestBootstrapReConfiguresHookForEveryWorktree(t *testing.T) {
 	}
 
 	fa := newFakeAgent() // IsSupported defaults to true
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
 	lc.SetAgentLogsDir(t.TempDir())
@@ -4970,6 +5396,87 @@ func TestBootstrapReConfiguresHookForEveryWorktree(t *testing.T) {
 	}
 	if !gotWorkDirs["/tmp/wt-1"] || !gotWorkDirs["/tmp/wt-2"] {
 		t.Errorf("ConfigureFinalizeHook worktrees = %v, want both /tmp/wt-1 and /tmp/wt-2", gotWorkDirs)
+	}
+}
+
+// TestBootstrapReArmsTmuxUnattendedButNotHeadless is BOS-208's #1 required
+// proof: after a daemon restart, Bootstrap re-arms completion for a
+// tmux_unattended + HookToken session (it is tmux-hosted, just like a cron
+// session) exactly as it would for a cron session, while a headless,
+// paneless, hookless ImplementingPlan run is left alone. Both rows are seeded
+// in a single Bootstrap call so the test proves the CONTRAST, not just that
+// one flavor works in isolation.
+func TestBootstrapReArmsTmuxUnattendedButNotHeadless(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	// Session A: tmux_unattended (e.g. a /bs-epic child), carries a HookToken
+	// like a cron session does, and has a live tmux-hosted chat surviving the
+	// restart.
+	tokA := "tok-a"
+	runA := "run-a"
+	sessions.sessions["sess-tu"] = &models.Session{
+		ID:             "sess-tu",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-tu",
+		BaseBranch:     "main",
+		State:          machine.ImplementingPlan,
+		AgentName:      "claude",
+		HookToken:      &tokA,
+		AgentSessionID: &runA,
+		TmuxUnattended: true,
+	}
+
+	// Session B: headless (boss new, non-cron, non-tmux_unattended) run — no
+	// HookToken, no live tmux pane to survive the restart.
+	runB := "run-b"
+	sessions.sessions["sess-headless"] = &models.Session{
+		ID:             "sess-headless",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-headless",
+		BaseBranch:     "main",
+		State:          machine.ImplementingPlan,
+		AgentName:      "claude",
+		AgentSessionID: &runB,
+		TmuxUnattended: false,
+	}
+
+	tmuxA := "tmux-tu"
+	chats := &mockAgentChatStore{
+		chatsWithTmux: []*models.AgentChat{
+			// Only session A has a surviving tmux-hosted chat; session B is
+			// paneless (no chat here), matching a headless run's shape.
+			{ID: "chat-tu", SessionID: "sess-tu", AgentSessionID: runA, AgentName: "claude", TmuxSessionName: &tmuxA},
+		},
+	}
+
+	fa := newFakeAgent() // IsSupported defaults to true (claude owns a finalize hook)
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetHookPort(45678)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
+	lc.SetAgentLogsDir(t.TempDir())
+	lc.SetDaemonCtx(ctx)
+
+	lc.Bootstrap(ctx)
+
+	if len(fa.ConfigureHookReqs) != 1 {
+		t.Fatalf("ConfigureFinalizeHook calls = %d, want 1 (only the tmux_unattended session)", len(fa.ConfigureHookReqs))
+	}
+	req := fa.ConfigureHookReqs[0]
+	if req.GetWorkDir() != "/tmp/wt-tu" || req.GetSessionId() != "sess-tu" {
+		t.Errorf("ConfigureFinalizeHook called for WorkDir=%q SessionId=%q, want /tmp/wt-tu / sess-tu (tmux_unattended session A)",
+			req.GetWorkDir(), req.GetSessionId())
+	}
+	for _, r := range fa.ConfigureHookReqs {
+		if r.GetWorkDir() == "/tmp/wt-headless" || r.GetSessionId() == "sess-headless" {
+			t.Errorf("Bootstrap must NOT re-arm the headless paneless session, but called ConfigureFinalizeHook for it: %+v", r)
+		}
+	}
+	if got := sessions.sessions["sess-headless"].State; got != machine.ImplementingPlan {
+		t.Errorf("headless run must be left in ImplementingPlan on restart, got %s", got)
 	}
 }
 
@@ -5005,7 +5512,7 @@ func TestStartSessionDoesNotArmPollFallbackWhenHookSupported(t *testing.T) {
 
 	fa := newFakeAgent() // IsSupported defaults to true
 	armer := &fakePollArmer{}
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
 	lc.SetAgentLogsDir(t.TempDir())
@@ -5054,7 +5561,7 @@ func TestStartSession_DeferPRTrue_HookSupportedDoesNotArmPollFallback(t *testing
 
 	client := newFakeAgent()
 	pollArmer := &fakePollArmer{}
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": client})
 	lc.SetAgentLogsDir(t.TempDir())
@@ -5103,7 +5610,7 @@ func TestStartSession_DeferPRTrue_HooklessAgentDoesNotArmPollFallback(t *testing
 
 	pollArmer := &fakePollArmer{}
 	notifier := &recordingCronCompletionNotifier{}
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
 	lc.newTmuxChatAgentSessionID = func() string { return "agent-1" }
 	lc.tmuxCompletionPollInterval = time.Millisecond
 	lc.SetHookPort(45678)
@@ -5149,7 +5656,7 @@ func newLabeledRunner(name string) *labeledRunner {
 	return &labeledRunner{name: name}
 }
 
-func (r *labeledRunner) Start(_ context.Context, _, _ string, _ *string, agentSessionID, _ string) (string, error) {
+func (r *labeledRunner) Start(_ context.Context, _, _ string, _ *string, agentSessionID, _ string, _ map[string]string) (string, error) {
 	tag := r.name + ":" + agentSessionID
 	r.startSeen.Store(&tag)
 	if agentSessionID == "" {
@@ -5216,7 +5723,7 @@ func TestStartSession_RoutesToCodexWhenSessionAgentNameIsCodex(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, nil, wt, dispatcher, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, dispatcher, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -5271,7 +5778,7 @@ func TestStartSession_CreatesAgentChatRowForHeadlessRun(t *testing.T) {
 		AgentName:  "codex",
 	}
 
-	lc := NewLifecycle(sessions, repos, chats, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, chats, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -5312,7 +5819,7 @@ func TestStartSession_TrackerSessionCreatesNoChatRow(t *testing.T) {
 		State: machine.CreatingWorktree, AgentName: "codex", TrackerID: &tracker,
 	}
 
-	lc := NewLifecycle(sessions, repos, chats, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc := newTestLifecycle(sessions, repos, chats, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
@@ -5360,7 +5867,7 @@ func (f *flipRunner) IsRunningByAgent(_, _ string) bool {
 func TestWatchHeadlessRunStatus_MarksWorkingThenStopped(t *testing.T) {
 	cr := &flipRunner{mockAgentRunner: newMockAgentRunner(), trueFor: 3}
 	rec := &recordingChatStatus{}
-	lc := NewLifecycle(newMockSessionStore(), newMockRepoStore(), &mockAgentChatStore{}, nil, &mockWorktreeManager{}, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), &mockAgentChatStore{}, nil, &mockWorktreeManager{}, cr, nil, newMockVCSProvider(), zerolog.Nop())
 	lc.SetChatStatus(rec)
 	lc.headlessStatusPollInterval = time.Millisecond
 
@@ -5387,7 +5894,7 @@ func TestWatchHeadlessRunStatus_MarksWorkingThenStopped(t *testing.T) {
 func TestWatchHeadlessRunStatus_RefreshesWorking(t *testing.T) {
 	cr := &flipRunner{mockAgentRunner: newMockAgentRunner(), trueFor: 3}
 	rec := &recordingChatStatus{}
-	lc := NewLifecycle(newMockSessionStore(), newMockRepoStore(), &mockAgentChatStore{}, nil, &mockWorktreeManager{}, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), &mockAgentChatStore{}, nil, &mockWorktreeManager{}, cr, nil, newMockVCSProvider(), zerolog.Nop())
 	lc.SetChatStatus(rec)
 	lc.headlessStatusPollInterval = time.Millisecond
 

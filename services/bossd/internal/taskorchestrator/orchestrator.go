@@ -2,6 +2,7 @@ package taskorchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/mergepolicy"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/session"
@@ -64,18 +66,16 @@ type TaskSourceProvider interface {
 	GetTaskSources() []plugin.TaskSource
 }
 
-// BaseBranchSyncer fast-forwards the local base branch in a main repo to
-// match origin/<base>. Implemented by git.Manager; kept as a narrow
-// interface here to avoid an internal/git import from the orchestrator and
-// to simplify test doubles.
+// BaseBranchSyncer freshens refs/remotes/origin/<base> and best-effort
+// fast-forwards the local base branch in a main repo. Implemented by
+// git.Manager; kept as a narrow interface here to simplify test doubles.
 //
-// EnsureBaseBranchReadyForSync, FetchBase, and IsAncestor participate in
-// auto-merge safety: the pre-check rejects merges against a diverged local
-// base, and the fetch+ancestor pair verify the PR's merge commit actually
-// landed on origin/<base> before the mapping is marked complete.
+// The local fast-forward is never a merge blocker: SyncBaseBranch runs AFTER
+// the auto-merge and returns git.ErrLocalSyncDeferred (non-fatal) when the
+// operator's base checkout is dirty. FetchBase and IsAncestor verify the PR's
+// merge commit actually landed on origin/<base> before the mapping completes.
 type BaseBranchSyncer interface {
 	SyncBaseBranch(ctx context.Context, localPath, base string) error
-	EnsureBaseBranchReadyForSync(ctx context.Context, localPath, base string) error
 	FetchBase(ctx context.Context, localPath, base string) error
 	IsAncestor(ctx context.Context, localPath, ref, target string) (bool, error)
 }
@@ -854,23 +854,10 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 		Str("repo", repo.displayName).
 		Msg("auto-merging PR")
 
-	// Mirror MergeSession's pre-merge invariant: refuse to auto-merge when
-	// the local base has diverged from origin. Dependabot runs unattended,
-	// so surprises here compound silently across many PRs — fail loud and
-	// early instead.
-	if o.baseSyncer != nil && repo.localPath != "" && repo.baseBranch != "" {
-		if err := o.baseSyncer.EnsureBaseBranchReadyForSync(ctx, repo.localPath, repo.baseBranch); err != nil {
-			o.logger.Error().Err(err).
-				Int("pr", prNumber).
-				Str("repo", repo.displayName).
-				Str("local_path", repo.localPath).
-				Str("base", repo.baseBranch).
-				Msg("auto-merge aborted: local base branch not ready for sync")
-			o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
-			return
-		}
-	}
-
+	// The GitHub merge always completes regardless of the operator's local
+	// checkout state. The local fast-forward of refs/heads/<base> is a
+	// best-effort, deferrable step handled after the merge (see the
+	// SyncBaseBranch call below), never a pre-merge abort.
 	strategy, err := mergepolicy.ResolveStrategy(ctx, o.provider, repo.originURL, repo.mergeStrategy)
 	if err != nil {
 		o.logger.Error().Err(err).
@@ -918,12 +905,24 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 	// rather than failing the task — the server-side merge is already done.
 	if o.baseSyncer != nil && repo.localPath != "" && repo.baseBranch != "" {
 		if err := o.baseSyncer.SyncBaseBranch(ctx, repo.localPath, repo.baseBranch); err != nil {
-			o.logger.Warn().Err(err).
-				Int("pr", prNumber).
-				Str("repo", repo.displayName).
-				Str("local_path", repo.localPath).
-				Str("base", repo.baseBranch).
-				Msg("post-merge sync of local base branch failed; user can run `git fetch` manually")
+			if errors.Is(err, gitpkg.ErrLocalSyncDeferred) {
+				// Non-fatal: origin/<base> is already freshened; the local
+				// fast-forward is recorded and retried once the base checkout
+				// is clean. The mapping still completes.
+				o.logger.Info().Err(err).
+					Int("pr", prNumber).
+					Str("repo", repo.displayName).
+					Str("local_path", repo.localPath).
+					Str("base", repo.baseBranch).
+					Msg("post-merge local base sync deferred: base checked out with uncommitted changes; will fast-forward once clean")
+			} else {
+				o.logger.Warn().Err(err).
+					Int("pr", prNumber).
+					Str("repo", repo.displayName).
+					Str("local_path", repo.localPath).
+					Str("base", repo.baseBranch).
+					Msg("post-merge sync of local base branch failed; user can run `git fetch` manually")
+			}
 		}
 	}
 

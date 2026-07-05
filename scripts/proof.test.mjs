@@ -6,14 +6,143 @@ import { test } from 'node:test'
 
 import {
   agentSurface,
+  evaluateRunPreflight,
   isDocsOnlyChange,
   prefixStillFileNames,
+  resolveSurfacePlan,
   shouldPostDocsBuildCheck,
   shouldCleanupRunDir,
   tuiAgentBridgeEnv,
   tuiAgentUsable,
 } from './proof.mjs'
-import { selectRecipes } from './proof-lib.mjs'
+import { planSurfaceBudget, selectRecipes } from './proof-lib.mjs'
+import { aggregateExitCode, classifySurfaceOutcomes } from './proof-finalize-outcome.mjs'
+
+// ── evaluateRunPreflight (BOS-138 hard preflight) ─────────────────────────────
+
+const PREFLIGHT_IDS = [
+  'PROOF_ANTHROPIC_API_KEY',
+  'CLOUDFLARE_API_TOKEN',
+  'BOSS_PROOF_R2_BUCKET',
+  'BOSS_PROOF_PUBLIC_BASE_URL',
+  'CLOUDFLARE_ACCOUNT_ID',
+  'agg',
+  'ffmpeg',
+  'chromium',
+  'web-node-modules',
+  'go-toolchain',
+  'gh-auth',
+  'git-credential',
+]
+
+function preflightLookups(present) {
+  const has = (id) => present.has(id)
+  return {
+    env: (key) => (has(key) ? 'x' : undefined),
+    hasBin: (bin) => has(bin),
+    chromiumPresent: () => has('chromium'),
+    webDepsPresent: () => has('web-node-modules'),
+    goToolchainPresent: () => has('go-toolchain'),
+    ghAuthOk: () => has('gh-auth'),
+    gitCredentialOk: () => has('git-credential'),
+  }
+}
+
+test('evaluateRunPreflight: all prerequisites present → null (proceed, run pipeline)', () => {
+  const decision = evaluateRunPreflight({
+    surface: 'web',
+    shouldUpload: true,
+    lookups: preflightLookups(new Set(PREFLIGHT_IDS)),
+    env: {},
+  })
+  assert.equal(decision, null)
+})
+
+test('evaluateRunPreflight: a missing web prereq → env-unavailable naming exactly what is missing (no stage started)', () => {
+  const present = new Set(PREFLIGHT_IDS)
+  present.delete('ffmpeg')
+  const decision = evaluateRunPreflight({
+    surface: 'web',
+    shouldUpload: true,
+    lookups: preflightLookups(present),
+    env: {},
+  })
+  assert.ok(decision, 'a missing prereq must defer the run before any pipeline stage')
+  assert.equal(decision.reasonCode, 'env-unavailable')
+  assert.deepEqual(decision.missing, ['ffmpeg'])
+  assert.equal(decision.report.ok, false)
+})
+
+test('evaluateRunPreflight: BOSS_PROOF_MODE=agent satisfies the agent-key requirement', () => {
+  const present = new Set(PREFLIGHT_IDS)
+  present.delete('PROOF_ANTHROPIC_API_KEY')
+  const decision = evaluateRunPreflight({
+    surface: 'tui',
+    shouldUpload: true,
+    lookups: preflightLookups(present),
+    env: { BOSS_PROOF_MODE: 'agent' },
+  })
+  assert.equal(decision, null, 'agent mode forces the key present; nothing else is missing')
+})
+
+test('evaluateRunPreflight: the recipe surface requires the recipe path deps, not the agent key/agg/Go', () => {
+  // An explicit --recipe run takes the deterministic recipe path (main() passes
+  // surface:'recipe'). It must NOT over-require the agent key / agg / Go (a TUI
+  // surface would), and it MUST require chromium + web deps the recipe path uses.
+  const recipeDepsPresent = new Set([
+    'ffmpeg',
+    'chromium',
+    'web-node-modules',
+    ...[
+      'CLOUDFLARE_API_TOKEN',
+      'BOSS_PROOF_R2_BUCKET',
+      'BOSS_PROOF_PUBLIC_BASE_URL',
+      'CLOUDFLARE_ACCOUNT_ID',
+    ],
+    'gh-auth',
+    'git-credential',
+  ])
+  // Agent key / agg / Go deliberately absent — a recipe run must not care.
+  assert.equal(
+    evaluateRunPreflight({
+      surface: 'recipe',
+      shouldUpload: true,
+      lookups: preflightLookups(recipeDepsPresent),
+      env: {},
+    }),
+    null,
+    'recipe preflight must pass without the agent key / agg / Go',
+  )
+  // Drop a real recipe-path dep → it must defer.
+  const missingChromium = new Set(recipeDepsPresent)
+  missingChromium.delete('chromium')
+  const decision = evaluateRunPreflight({
+    surface: 'recipe',
+    shouldUpload: true,
+    lookups: preflightLookups(missingChromium),
+    env: {},
+  })
+  assert.ok(decision, 'a missing recipe-path dep must defer')
+  assert.deepEqual(decision.missing, ['chromium'])
+})
+
+test('evaluateRunPreflight: dry-run drops upload/push creds from the required set', () => {
+  const present = new Set([
+    'PROOF_ANTHROPIC_API_KEY',
+    'ffmpeg',
+    'chromium',
+    'web-node-modules',
+    'agg',
+    'go-toolchain',
+  ])
+  const decision = evaluateRunPreflight({
+    surface: 'web',
+    shouldUpload: false,
+    lookups: preflightLookups(present),
+    env: {},
+  })
+  assert.equal(decision, null, 'a dry-run must not defer on missing R2/gh credentials')
+})
 
 // ── agentSurface() routing ────────────────────────────────────────────────────
 
@@ -374,4 +503,98 @@ test('agentSurface: mixed marketing + docs change → recipe', () => {
       'recipe',
     )
   })
+})
+
+// ── resolveSurfacePlan: multi-surface dispatch planning (BOS-139 D5/D13) ──────
+
+const planCat = fixturecat
+
+test('resolveSurfacePlan: mixed diff → both surfaces, cheap-first order', () => {
+  const plan = resolveSurfacePlan({
+    catalog: planCat,
+    changedFiles: ['services/boss/internal/views/foo.go', 'services/web/src/App.tsx'],
+    requiredProofBullets: [],
+  })
+  assert.deepEqual(plan.surfaces, { tui: true, web: true })
+  assert.deepEqual(plan.order, ['tui', 'web'])
+})
+
+test('resolveSurfacePlan: web-scoped bullets order web first', () => {
+  const plan = resolveSurfacePlan({
+    catalog: planCat,
+    changedFiles: ['services/boss/internal/views/foo.go', 'services/web/src/App.tsx'],
+    requiredProofBullets: ['The /settings page shows the new toggle in the browser'],
+  })
+  assert.deepEqual(plan.order, ['web', 'tui'])
+})
+
+test('resolveSurfacePlan: BOSS_PROOF_AGENT_SURFACE=web narrows to web only', () => {
+  const plan = resolveSurfacePlan({
+    catalog: planCat,
+    changedFiles: ['services/boss/internal/views/foo.go', 'services/web/src/App.tsx'],
+    requiredProofBullets: [],
+    env: { BOSS_PROOF_AGENT_SURFACE: 'web' },
+  })
+  assert.deepEqual(plan.order, ['web'])
+  assert.deepEqual(plan.surfaces, { tui: false, web: true })
+})
+
+test('resolveSurfacePlan: brief surface narrows when no env override', () => {
+  const plan = resolveSurfacePlan({
+    catalog: planCat,
+    changedFiles: ['services/boss/internal/views/foo.go', 'services/web/src/App.tsx'],
+    requiredProofBullets: [],
+    env: {},
+    briefSurface: 'tui',
+  })
+  assert.deepEqual(plan.order, ['tui'])
+})
+
+test('resolveSurfacePlan: backend-only + web-scoped bullet FORCES web (D16 mitigation)', () => {
+  const plan = resolveSurfacePlan({
+    catalog: planCat,
+    changedFiles: ['services/bossd/internal/server/server.go'],
+    requiredProofBullets: ['The browser page reflects the new backend field'],
+  })
+  assert.equal(plan.surfaces.web, true)
+  assert.deepEqual(plan.order, ['web'])
+})
+
+test('resolveSurfacePlan: backend-only + no bullets → empty order + recipes', () => {
+  const plan = resolveSurfacePlan({
+    catalog: planCat,
+    changedFiles: ['services/bossd/internal/server/server.go'],
+    requiredProofBullets: [],
+  })
+  assert.deepEqual(plan.order, [])
+  assert.deepEqual(plan.recipes, [])
+})
+
+// ── D5 shared-budget sequencing: TUI consuming the budget defers web ─────────
+
+test('D5: TUI consuming the shared budget defers web with budget-exceeded (exit 0)', () => {
+  const totalBudgetMs = 15 * 60 * 1000
+  let elapsedMs = 0
+  // TUI runs first (cheap-first) and consumes ~13 minutes of the shared budget.
+  const tuiBudget = planSurfaceBudget({ surface: 'tui', elapsedMs, totalBudgetMs })
+  assert.equal(tuiBudget.run, true)
+  elapsedMs += 13 * 60 * 1000
+  // Web can no longer fit its 6-min floor in the ~2 min remaining → deferral.
+  const webBudget = planSurfaceBudget({ surface: 'web', elapsedMs, totalBudgetMs })
+  assert.deepEqual(webBudget, { run: false, reasonCode: 'budget-exceeded' })
+  // The dispatcher records web as a synthetic deferred run; it classifies and
+  // contributes a NEUTRAL exit code (partial success is not a failure).
+  const perSurface = classifySurfaceOutcomes([
+    { surface: 'tui', hasFailure: false, noSurface: false, captureShapes: [{ fileName: 't.mp4' }] },
+    {
+      surface: 'web',
+      hasFailure: false,
+      noSurface: false,
+      reasonCode: 'budget-exceeded',
+      captureShapes: [],
+    },
+  ])
+  assert.equal(perSurface[1].outcome, 'deferred')
+  assert.equal(perSurface[1].reasonCode, 'budget-exceeded')
+  assert.equal(aggregateExitCode(perSurface), 0)
 })

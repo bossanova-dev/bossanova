@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/dotenv"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/tmux"
 )
@@ -35,8 +36,22 @@ var ErrWakeChatNotFound = errors.New("chat not found")
 // run reports WORKING in the status tracker but has no tmux session, so
 // waking it would spawn a second, tmux-hosted agent on the same worktree
 // while the original process is still writing to it. Callers map this to a
-// FailedPrecondition so clients retry once the run stops.
-var ErrHeadlessRunActive = errors.New("headless run still active")
+// FailedPrecondition so clients retry once the run stops. The wrapped detail
+// (see headlessRunActiveMessage) is actionable — it tells the human why the
+// attach was refused and where to tail the live run instead — because every
+// attach surface (TUI, CLI, web) renders the error string verbatim.
+var ErrHeadlessRunActive = errors.New("headless run in progress")
+
+// headlessRunActiveMessage builds the actionable refusal a human sees when they
+// attach to a still-running detach run: attaching would duplicate the agent, so
+// point them at the live agent log to tail instead. The path mirrors the daemon's
+// agent-logs convention (~/.bossanova/agent-logs/<agent-session>.log).
+func headlessRunActiveMessage(agentSessionID string) error {
+	return fmt.Errorf(
+		"%w: attaching would duplicate the agent — tail the live run instead: ~/.bossanova/agent-logs/%s.log",
+		ErrHeadlessRunActive, agentSessionID,
+	)
+}
 
 // WakeChatInternal is the transport-agnostic body of the WakeChat RPC.
 // Both the connect handler (browser/CLI direct path) and the stream
@@ -103,7 +118,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		if s.chatStatus != nil {
 			if e := s.chatStatus.Get(agentSessionID); e != nil && e.Status == pb.ChatStatus_CHAT_STATUS_WORKING {
 				if deps.Tmux == nil || !deps.Tmux.HasSession(ctx, tmuxName) {
-					return nil, fmt.Errorf("%w: %s", ErrHeadlessRunActive, agentSessionID)
+					return nil, headlessRunActiveMessage(agentSessionID)
 				}
 			}
 		}
@@ -133,7 +148,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			TmuxName:           tmuxName,
 			ForceFresh:         forceFresh,
 			AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath),
-			SessionEnv:         session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
+			SessionEnv:         dotenv.Overlay(session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName), sess.WorktreePath),
 			Model:              sess.Model,
 			McpConfigPath:      mcpConfigPath,
 		})

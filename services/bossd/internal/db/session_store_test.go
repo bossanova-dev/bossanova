@@ -10,6 +10,54 @@ import (
 	"github.com/recurser/bossalib/models"
 )
 
+// TestUpdateLastAttemptHeadSHA round-trips the BOS-235 last_attempt_head_sha
+// column through the store: set a value, then clear it to NULL via the
+// nullable-string double-pointer convention.
+func TestUpdateLastAttemptHeadSHA(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "last attempt head sha test",
+		WorktreePath: "/tmp/wt/las",
+		BranchName:   "feat/las",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Fresh session: column is NULL → nil.
+	if sess.LastAttemptHeadSHA != nil {
+		t.Fatalf("fresh LastAttemptHeadSHA = %q, want nil", *sess.LastAttemptHeadSHA)
+	}
+
+	// Set a value.
+	head := "deadbeef"
+	headPtr := &head
+	got, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{LastAttemptHeadSHA: &headPtr})
+	if err != nil {
+		t.Fatalf("update set: %v", err)
+	}
+	if got.LastAttemptHeadSHA == nil || *got.LastAttemptHeadSHA != "deadbeef" {
+		t.Fatalf("LastAttemptHeadSHA = %v, want deadbeef", got.LastAttemptHeadSHA)
+	}
+
+	// Clear it to NULL (*nil inner pointer).
+	var clear *string
+	got, err = sessionStore.Update(ctx, sess.ID, UpdateSessionParams{LastAttemptHeadSHA: &clear})
+	if err != nil {
+		t.Fatalf("update clear: %v", err)
+	}
+	if got.LastAttemptHeadSHA != nil {
+		t.Fatalf("LastAttemptHeadSHA = %q after clear, want nil", *got.LastAttemptHeadSHA)
+	}
+}
+
 // TestUpdateRepairDiagnostics_CountResetsOnSuccess pins the semantic that
 // last_repair_attempt_count tracks consecutive failures since the last
 // clean run, not total attempts. Regression guard for the cursor-bot
@@ -146,6 +194,62 @@ func TestSessionPRMetadataAndCronLastRunRoundTrip(t *testing.T) {
 	}
 	if gotCron.LastRunOutcome == nil || *gotCron.LastRunOutcome != models.CronJobOutcomePRCreated {
 		t.Fatalf("LastRunOutcome = %v, want pr_created", gotCron.LastRunOutcome)
+	}
+}
+
+// TestSessionTmuxUnattendedRoundTrip pins the persistence contract for the
+// tmux_unattended column added in BOS-208 Task 1: it defaults false on
+// creation, an explicit Update sets it, and a nil-valued Update (the "don't
+// touch this field" convention used throughout UpdateSessionParams) leaves
+// the previously-set value unchanged.
+func TestSessionTmuxUnattendedRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Tmux unattended round trip",
+		WorktreePath: "/tmp/wt/tmux-unattended",
+		BranchName:   "feat/tmux-unattended",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if sess.TmuxUnattended {
+		t.Fatalf("TmuxUnattended = true on creation, want false (default)")
+	}
+
+	tmuxUnattended := true
+	if _, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{
+		TmuxUnattended: &tmuxUnattended,
+	}); err != nil {
+		t.Fatalf("update session tmux_unattended: %v", err)
+	}
+	gotSess, err := sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if !gotSess.TmuxUnattended {
+		t.Fatalf("TmuxUnattended = false after Update(true), want true")
+	}
+
+	// An Update with a nil TmuxUnattended pointer must not touch the column.
+	renamedTitle := "Tmux unattended round trip (renamed)"
+	if _, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{
+		Title: &renamedTitle,
+	}); err != nil {
+		t.Fatalf("update session title: %v", err)
+	}
+	gotSess, err = sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get session after unrelated update: %v", err)
+	}
+	if !gotSess.TmuxUnattended {
+		t.Fatalf("TmuxUnattended = false after unrelated Update, want true (unchanged)")
 	}
 }
 

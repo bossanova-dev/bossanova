@@ -24,7 +24,7 @@ import (
 )
 
 // Tests for Lifecycle.StartTmuxChat — the generalized form of the cron-only
-// helper that previously lived in startCronTmuxChat. Cron-specific behavior
+// helper that previously lived in startTmuxChat. Cron-specific behavior
 // stays in lifecycle_test.go (the cron test cluster around
 // TestStartSession_CronJobID_*); this file targets the generic method
 // directly so any future caller (repair, interactive UI button) gets the
@@ -60,11 +60,11 @@ func TestChatInputRenderPromptPreservesRawText(t *testing.T) {
 	}
 }
 
-func TestCronChatInputFromPromptConvertsLeadingSlashCommand(t *testing.T) {
+func TestChatInputMechanicsFromPromptConvertsLeadingSlashCommand(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
-	input := cronChatInputFromPrompt("/bs-sweep-debt")
+	input := chatInputMechanicsFromPrompt("/bs-sweep-debt")
 	if input.Prompt != "" {
 		t.Fatalf("Prompt = %q, want empty", input.Prompt)
 	}
@@ -73,11 +73,11 @@ func TestCronChatInputFromPromptConvertsLeadingSlashCommand(t *testing.T) {
 	}
 }
 
-func TestCronChatInputFromPromptConvertsLeadingDollarCommand(t *testing.T) {
+func TestChatInputMechanicsFromPromptConvertsLeadingDollarCommand(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
-	input := cronChatInputFromPrompt("$bs-sweep-mutation")
+	input := chatInputMechanicsFromPrompt("$bs-sweep-mutation")
 	if input.Prompt != "" {
 		t.Fatalf("Prompt = %q, want empty", input.Prompt)
 	}
@@ -86,11 +86,11 @@ func TestCronChatInputFromPromptConvertsLeadingDollarCommand(t *testing.T) {
 	}
 }
 
-func TestCronChatInputFromPromptTrimsSurroundingWhitespace(t *testing.T) {
+func TestChatInputMechanicsFromPromptTrimsSurroundingWhitespace(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
-	input := cronChatInputFromPrompt("  /bs-sweep-mutation  ")
+	input := chatInputMechanicsFromPrompt("  /bs-sweep-mutation  ")
 	if input.Prompt != "" {
 		t.Fatalf("Prompt = %q, want empty", input.Prompt)
 	}
@@ -104,7 +104,7 @@ func TestCronChatInputFromPromptTrimsSurroundingWhitespace(t *testing.T) {
 // submit-verified send-line path. Routing it to the paste path instead leaves
 // the command loaded-but-not-executed in the headless cron's input box — the
 // bug that stalled the "/wc-merge-review headless" sweep.
-func TestCronChatInputFromPromptConvertsLeadingCommandWithArgs(t *testing.T) {
+func TestChatInputMechanicsFromPromptConvertsLeadingCommandWithArgs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
@@ -117,7 +117,7 @@ func TestCronChatInputFromPromptConvertsLeadingCommandWithArgs(t *testing.T) {
 		{"  /wc-merge-review headless  ", "/wc-merge-review headless"},
 		{"$boss-repair now", "$boss-repair now"},
 	} {
-		input := cronChatInputFromPrompt(tc.prompt)
+		input := chatInputMechanicsFromPrompt(tc.prompt)
 		if input.Prompt != "" {
 			t.Fatalf("prompt %q: Prompt = %q, want empty", tc.prompt, input.Prompt)
 		}
@@ -129,12 +129,12 @@ func TestCronChatInputFromPromptConvertsLeadingCommandWithArgs(t *testing.T) {
 
 // Embedded commands must NOT be extracted: doing so silently truncates the
 // surrounding free-text instruction, which is the user's actual cron plan.
-func TestCronChatInputFromPromptKeepsEmbeddedCommandAsPrompt(t *testing.T) {
+func TestChatInputMechanicsFromPromptKeepsEmbeddedCommandAsPrompt(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
 	prompt := "Run /bs-sweep-mutation"
-	input := cronChatInputFromPrompt(prompt)
+	input := chatInputMechanicsFromPrompt(prompt)
 	if input.Prompt != prompt {
 		t.Fatalf("Prompt = %q, want %q", input.Prompt, prompt)
 	}
@@ -145,7 +145,7 @@ func TestCronChatInputFromPromptKeepsEmbeddedCommandAsPrompt(t *testing.T) {
 
 // A single-line free-text prompt containing a slash (path/URL) or dollar
 // (price) must stay a prompt rather than being truncated into a bogus command.
-func TestCronChatInputFromPromptKeepsFreeTextWithSlashOrDollar(t *testing.T) {
+func TestChatInputMechanicsFromPromptKeepsFreeTextWithSlashOrDollar(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
@@ -154,7 +154,7 @@ func TestCronChatInputFromPromptKeepsFreeTextWithSlashOrDollar(t *testing.T) {
 		"Add a $5 discount banner",
 		"Summarize https://example.com/foo",
 	} {
-		input := cronChatInputFromPrompt(prompt)
+		input := chatInputMechanicsFromPrompt(prompt)
 		if input.Prompt != prompt {
 			t.Fatalf("prompt %q: Prompt = %q, want unchanged", prompt, input.Prompt)
 		}
@@ -164,12 +164,12 @@ func TestCronChatInputFromPromptKeepsFreeTextWithSlashOrDollar(t *testing.T) {
 	}
 }
 
-func TestCronChatInputFromPromptKeepsMultilinePrompt(t *testing.T) {
+func TestChatInputMechanicsFromPromptKeepsMultilinePrompt(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
 	prompt := "/bs-sweep-mutation\nwith extra notes"
-	input := cronChatInputFromPrompt(prompt)
+	input := chatInputMechanicsFromPrompt(prompt)
 	if input.Prompt != prompt {
 		t.Fatalf("Prompt = %q, want %q", input.Prompt, prompt)
 	}
@@ -178,17 +178,140 @@ func TestCronChatInputFromPromptKeepsMultilinePrompt(t *testing.T) {
 	}
 }
 
-func TestCronChatInputFromPromptKeepsEmptyAndWhitespace(t *testing.T) {
+func TestChatInputMechanicsFromPromptKeepsEmptyAndWhitespace(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
 	for _, prompt := range []string{"", "   ", "\t"} {
-		input := cronChatInputFromPrompt(prompt)
+		input := chatInputMechanicsFromPrompt(prompt)
 		if input.Command != "" {
 			t.Fatalf("prompt %q: Command = %q, want empty", prompt, input.Command)
 		}
 		if input.Prompt != prompt {
 			t.Fatalf("prompt %q: Prompt = %q, want unchanged", prompt, input.Prompt)
+		}
+	}
+}
+
+// chatInputMechanicsFromPrompt selects delivery MECHANICS only (command vs
+// paste). It must never set a delivery intent — that is derived from session
+// provenance at the call site — so every shape leaves Delivery at the safe
+// PrefillOnly zero value.
+func TestChatInputMechanicsFromPromptSetsNoDeliveryIntent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	for _, prompt := range []string{
+		"/bs-sweep-debt",
+		"$bs-sweep-mutation",
+		"/wc-merge-review headless",
+		"do the thing",
+		"Review /internal/auth",
+		"/bs-sweep-mutation\nwith notes",
+		"line one\nline two",
+	} {
+		if got := chatInputMechanicsFromPrompt(prompt).Delivery; got != DeliveryPrefillOnly {
+			t.Errorf("prompt %q: Delivery = %v, want DeliveryPrefillOnly (mechanics must not set intent)", prompt, got)
+		}
+	}
+}
+
+// TestStartTmuxChat_ProvenanceDrivesSubmitIntent proves the provenance→intent
+// derivation in startTmuxChat: an unattended session (cron OR tmux_unattended)
+// has no human to press Enter, so its plan is delivered with DeliverySubmit —
+// the composer is submitted (a bare-Enter send-keys is recorded). An
+// interactive session yields the safe PrefillOnly default and presses no Enter.
+func TestStartTmuxChat_ProvenanceDrivesSubmitIntent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	cronID := "cron-1"
+	for _, tc := range []struct {
+		name       string
+		mutate     func(s *models.Session)
+		opts       StartSessionOpts
+		wantSubmit bool
+	}{
+		{
+			name:       "cron session submits",
+			mutate:     func(s *models.Session) { s.CronJobID = &cronID },
+			opts:       StartSessionOpts{CronJobID: cronID},
+			wantSubmit: true,
+		},
+		{
+			name:       "tmux_unattended session submits",
+			mutate:     func(s *models.Session) { s.TmuxUnattended = true },
+			wantSubmit: true,
+		},
+		{
+			name:       "interactive session prefills only",
+			mutate:     func(s *models.Session) {},
+			wantSubmit: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			h := newStartTmuxChatHarness(t)
+			h.sessions.sessions["sess-1"].Plan = "do the audit"
+			tc.mutate(h.sessions.sessions["sess-1"])
+
+			if _, err := h.lc.startTmuxChat(ctx, "sess-1", tc.opts, h.sessions.sessions["sess-1"], nil); err != nil {
+				t.Fatalf("startTmuxChat: %v", err)
+			}
+			got := h.tmuxFake.enterSendKeysCount()
+			if tc.wantSubmit && got == 0 {
+				t.Errorf("unattended provenance must submit (press Enter), got %d Enter send-keys", got)
+			}
+			if !tc.wantSubmit && got != 0 {
+				t.Errorf("interactive provenance must prefill only (no Enter), got %d Enter send-keys", got)
+			}
+		})
+	}
+}
+
+// TestInjectTmuxChatInput_DeliveryMatrix drives injectTmuxChatInput across the
+// {Submit, PrefillOnly} × {single-line command, single-line free text,
+// multi-line} matrix. Submit paths press Enter (and, for the fake, verify a
+// clean pane); PrefillOnly paths deliver into the composer but press NO Enter.
+// The multi-line Submit case is the exact #1028/#1029 shape that previously
+// no-op'd — it must now auto-submit.
+func TestInjectTmuxChatInput_DeliveryMatrix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	cmdResp := &bossanovav1.BuildInteractiveCommandResponse{ReadyMarker: "❯", CommandPrefix: "$"}
+	for _, tc := range []struct {
+		name  string
+		input ChatInput
+	}{
+		{"single-line command", ChatInput{Command: "boss-repair"}},
+		{"single-line free text", ChatInput{Prompt: "do the thing"}},
+		{"multi-line", ChatInput{Prompt: "line one\nline two"}},
+	} {
+		for _, submit := range []bool{true, false} {
+			label := tc.name
+			input := tc.input
+			if submit {
+				input.Delivery = DeliverySubmit
+				label += "/submit"
+			} else {
+				input.Delivery = DeliveryPrefillOnly
+				label += "/prefill"
+			}
+			t.Run(label, func(t *testing.T) {
+				ctx := context.Background()
+				h := newStartTmuxChatHarness(t)
+				if err := h.lc.injectTmuxChatInput(ctx, "bossd-agent-run-x", input, cmdResp); err != nil {
+					t.Fatalf("injectTmuxChatInput: %v", err)
+				}
+				got := h.tmuxFake.enterSendKeysCount()
+				if submit && got == 0 {
+					t.Errorf("submit path must press Enter, got %d", got)
+				}
+				if !submit && got != 0 {
+					t.Errorf("prefill path must press NO Enter, got %d", got)
+				}
+			})
 		}
 	}
 }
@@ -243,7 +366,7 @@ func newStartTmuxChatHarness(t *testing.T) *startTmuxChatHarness {
 		State:        machine.ImplementingPlan,
 		AgentName:    "claude",
 	}
-	h.lc = NewLifecycle(h.sessions, h.repos, h.chats, &stubCronJobStore{}, h.wt, h.agentRun, h.tmuxClient, newMockVCSProvider(), zerolog.Nop())
+	h.lc = newTestLifecycle(h.sessions, h.repos, h.chats, &stubCronJobStore{}, h.wt, h.agentRun, h.tmuxClient, newMockVCSProvider(), zerolog.Nop())
 	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake})
 	h.lc.SetAgentLogsDir(h.logsDir)
 	return h
@@ -341,7 +464,7 @@ func TestStartTmuxChat_SendsModel(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.sessions.sessions["sess-1"].Model = "sonnet"
 
-	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair"}, "title", HookOpts{}); err != nil {
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{}); err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
 	if got := h.agentFake.LastBuildInteractiveCommand.GetModel(); got != "sonnet" {
@@ -361,7 +484,7 @@ func TestStartTmuxChat_PassesMcpConfigPath(t *testing.T) {
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 
-	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair"}, "title", HookOpts{})
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{})
 	if err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
@@ -415,7 +538,7 @@ func TestStartTmuxChat_HappyPath(t *testing.T) {
 	const supplyTitle = "Repair: Some session"
 	const supplyPrompt = "/boss-repair"
 
-	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: supplyPrompt}, supplyTitle, HookOpts{})
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: supplyPrompt, Delivery: DeliverySubmit}, supplyTitle, HookOpts{})
 	if err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
@@ -512,7 +635,7 @@ func TestStartTmuxChat_UsesAgentReadyMarker(t *testing.T) {
 	h.agentFake.ReadyMarker = "›"
 	h.tmuxFake.capturePaneOutput = "OpenAI Codex\n›\n"
 
-	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair"}, "Repair: Some session", HookOpts{}); err != nil {
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "Repair: Some session", HookOpts{}); err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
 	if !h.tmuxFake.hasLiteralSendKeys() {
@@ -530,7 +653,7 @@ func TestStartTmuxChat_TmuxUnavailable(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.tmuxFake.available = false
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when tmux unavailable")
 	}
@@ -553,7 +676,7 @@ func TestStartTmuxChat_AgentRunnerNotLoaded(t *testing.T) {
 	// Replace the agent registry with an empty map so claude is unloaded.
 	h.lc.SetAgents(map[string]agent.AgentRunnerClient{})
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when agent runner not loaded")
 	}
@@ -575,7 +698,7 @@ func TestStartTmuxChat_NewSessionFails(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.tmuxFake.failSubcommand["new-session"] = true
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when tmux new-session fails")
 	}
@@ -604,7 +727,7 @@ func TestStartTmuxChat_EmptyArgvFails(t *testing.T) {
 	// Make BuildInteractiveCommand return empty argv.
 	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": &emptyArgvAgent{}})
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when BuildInteractiveCommand returns empty argv")
 	}
@@ -629,7 +752,7 @@ func TestStartTmuxChat_ChatCreateFails(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.chats.createErr = fmt.Errorf("simulated DB failure")
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when Create fails")
 	}
@@ -658,7 +781,7 @@ func TestStartTmuxChat_UpdateTmuxSessionNameFails(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.chats.updateTmuxNameErr = fmt.Errorf("simulated update failure")
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when UpdateTmuxSessionName fails")
 	}
@@ -697,7 +820,7 @@ func TestStartTmuxChat_SendPlanFails(t *testing.T) {
 	// the load-buffer failure injection still exercises the SendPlan error.
 	h.tmuxFake.failSubcommand["load-buffer"] = true
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "line one\nline two"}, "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "line one\nline two", Delivery: DeliverySubmit}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when SendPlan fails")
 	}
@@ -742,7 +865,7 @@ func TestStartTmuxChat_AlreadyExists_LiveTmux(t *testing.T) {
 	// returns 0 (success) when the subcommand is allowed. Default factory
 	// returns "true" so HasSession returns true.
 
-	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected AlreadyExists when a live tmux chat is present")
 	}
@@ -783,7 +906,7 @@ func TestStartTmuxChat_AllowSiblingChatBypassesLiveChatIdempotency(t *testing.T)
 		}},
 	}
 
-	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-finalize"}, "Finalize", HookOpts{
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-finalize", Delivery: DeliverySubmit}, "Finalize", HookOpts{
 		AllowSiblingChat: true,
 	})
 	if err != nil {
@@ -834,7 +957,7 @@ func TestStartTmuxChat_StaleTmux_PreservesRowAndStartsFresh(t *testing.T) {
 	// classified as a completed historical run.
 	h.tmuxFake.failSubcommand["has-session"] = true
 
-	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{})
 	if err != nil {
 		t.Fatalf("StartTmuxChat after stale row: %v", err)
 	}
@@ -1163,7 +1286,7 @@ func TestStartTmuxChat_MissingAgentLogsDir(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetAgentLogsDir("") // explicitly clear
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when agentLogsDir is unset")
 	}
@@ -1185,7 +1308,7 @@ func TestStartTmuxChat_NoWorktreePath(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.sessions.sessions["sess-1"].WorktreePath = ""
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when session has no worktree path")
 	}
@@ -1195,8 +1318,8 @@ func TestStartTmuxChat_NoWorktreePath(t *testing.T) {
 }
 
 // TestStartCronTmuxChat_WrapperPropagatesPlanAndCronTitle pins the wrapper
-// contract: the cron entry point (startCronTmuxChat) must continue to call
-// StartTmuxChat with prompt=session.Plan and title=`Run "<cron name>"`,
+// contract: the cron entry point (startTmuxChat with a CronJobID) must continue
+// to call StartTmuxChat with prompt=session.Plan and title=`Run "<cron name>"`,
 // regardless of how the underlying method evolves.
 func TestStartCronTmuxChat_WrapperPropagatesPlanAndCronTitle(t *testing.T) {
 	if testing.Short() {
@@ -1208,9 +1331,9 @@ func TestStartCronTmuxChat_WrapperPropagatesPlanAndCronTitle(t *testing.T) {
 	h.sessions.sessions["sess-1"].Plan = "Run the audit"
 	h.sessions.sessions["sess-1"].Title = "Nightly audit"
 
-	_, err := h.lc.startCronTmuxChat(ctx, "sess-1", StartSessionOpts{}, h.sessions.sessions["sess-1"], nil)
+	_, err := h.lc.startTmuxChat(ctx, "sess-1", StartSessionOpts{CronJobID: "cron-1"}, h.sessions.sessions["sess-1"], nil)
 	if err != nil {
-		t.Fatalf("startCronTmuxChat: %v", err)
+		t.Fatalf("startTmuxChat: %v", err)
 	}
 
 	if len(h.chats.createCalls) != 1 {
@@ -1241,9 +1364,9 @@ func TestStartCronTmuxChat_CommandAvoidsBracketedPaste(t *testing.T) {
 	h.sessions.sessions["sess-1"].Plan = "/bs-sweep-mutation"
 	h.sessions.sessions["sess-1"].Title = "Nightly mutation test"
 
-	_, err := h.lc.startCronTmuxChat(ctx, "sess-1", StartSessionOpts{}, h.sessions.sessions["sess-1"], nil)
+	_, err := h.lc.startTmuxChat(ctx, "sess-1", StartSessionOpts{CronJobID: "cron-1"}, h.sessions.sessions["sess-1"], nil)
 	if err != nil {
-		t.Fatalf("startCronTmuxChat: %v", err)
+		t.Fatalf("startTmuxChat: %v", err)
 	}
 
 	if h.tmuxFake.hasSubcommand("load-buffer") || h.tmuxFake.hasSubcommand("paste-buffer") {
@@ -1284,7 +1407,7 @@ func TestStartTmuxChat_CommandUsesLiteralKeys(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.agentFake.CommandPrefix = "$"
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-repair"}, "Repair: Some session", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-repair", Delivery: DeliverySubmit}, "Repair: Some session", HookOpts{})
 	if err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
@@ -1328,7 +1451,7 @@ func TestStartTmuxChat_ConsumedStartupInputSkipsPaneInjection(t *testing.T) {
 	h.agentFake.CommandPrefix = "$"
 	h.agentFake.ConsumesInitialInput = true
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-repair"}, "Repair: Some session", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-repair", Delivery: DeliverySubmit}, "Repair: Some session", HookOpts{})
 	if err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
@@ -1363,7 +1486,7 @@ func TestStartTmuxChat_ConfiguresHookBeforeLaunchForConsumedStartupInput(t *test
 		configuredBeforeLaunch = !h.tmuxFake.hasSubcommand("new-session")
 	}
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-repair"}, "Repair: Some session", HookOpts{Token: "tok"})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-repair", Delivery: DeliverySubmit}, "Repair: Some session", HookOpts{Token: "tok"})
 	if err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
@@ -1394,7 +1517,7 @@ func TestStartTmuxChat_HooklessCommandDoesNotArmPollFallback(t *testing.T) {
 	h.lc.SetPollArmer(armer)
 	h.lc.SetDaemonCtx(ctx)
 
-	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-repair"}, "Repair: Some session", HookOpts{
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-repair", Delivery: DeliverySubmit}, "Repair: Some session", HookOpts{
 		Token: "repair-run-token",
 	})
 	if err != nil {
@@ -1422,7 +1545,7 @@ func TestStartTmuxChat_HookOptsToken_ConfiguresRunKeyedHook(t *testing.T) {
 	h.lc.SetHookPort(54321)
 
 	const tok = "tok-run-12345"
-	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{Token: tok})
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{Token: tok})
 	if err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
@@ -1457,7 +1580,7 @@ func TestStartTmuxChat_HookOptsEmpty_DoesNotConfigureHook(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetHookPort(12345)
 
-	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{}); err != nil {
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{}); err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
 	if h.agentFake.LastConfigureHookReq != nil {
@@ -1478,7 +1601,7 @@ func TestStartTmuxChat_HookOptsTokenWithoutHookPort_FailsClosed(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	// Deliberately don't call SetHookPort.
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{Token: "tok"})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{Token: "tok"})
 	if err == nil {
 		t.Fatal("expected error when hook port unset and HookOpts.Token non-empty")
 	}
@@ -1513,7 +1636,7 @@ func TestStartTmuxChat_HookConfigureFails_TearsDown(t *testing.T) {
 	h.lc.SetHookPort(12345)
 	h.agentFake.ConfigureHookErr = fmt.Errorf("simulated hook config failure")
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{Token: "tok"})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{Token: "tok"})
 	if err == nil {
 		t.Fatal("expected error when ConfigureFinalizeHook fails")
 	}
@@ -1554,7 +1677,7 @@ func TestStartTmuxChatDoesNotArmPollWhenHookUnsupported(t *testing.T) {
 	h.lc.SetDaemonCtx(ctx)
 	h.lc.tmuxCompletionPollInterval = time.Millisecond
 
-	id, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "the prompt"}, "the title", HookOpts{Token: "tok-2"})
+	id, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "the prompt", Delivery: DeliverySubmit}, "the title", HookOpts{Token: "tok-2"})
 	if err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
@@ -1594,7 +1717,7 @@ func TestStartTmuxChatDoesNotArmPollWhenHookSupported(t *testing.T) {
 	h.lc.SetPollArmer(armer)
 	h.lc.SetDaemonCtx(ctx)
 
-	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{Token: "tok-2"}); err != nil {
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{Token: "tok-2"}); err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
 	if armer.armCalled {
@@ -1613,7 +1736,7 @@ func TestStartTmuxChat_ResumeReusesIDAndSetsResume(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 
 	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
-		ChatInput{Command: "boss-repair", ResumeAgentSessionID: "agent-session-prior"},
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: "agent-session-prior", Delivery: DeliverySubmit},
 		"T", HookOpts{})
 	if err != nil {
 		t.Fatalf("StartTmuxChat resume: %v", err)
@@ -1656,7 +1779,7 @@ func TestStartTmuxChat_ResumeDeletesPriorRowNoDuplicate(t *testing.T) {
 	h.tmuxFake.failSubcommand["has-session"] = true
 
 	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
-		ChatInput{Command: "boss-repair", ResumeAgentSessionID: "agent-session-prior"},
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: "agent-session-prior", Delivery: DeliverySubmit},
 		"T", HookOpts{})
 	if err != nil {
 		t.Fatalf("StartTmuxChat resume: %v", err)
@@ -1701,7 +1824,7 @@ func TestStartTmuxChat_ResumeReusesLivePane(t *testing.T) {
 	}
 
 	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
-		ChatInput{Command: "boss-repair", ResumeAgentSessionID: agentSessionID},
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: agentSessionID, Delivery: DeliverySubmit},
 		"T", HookOpts{Token: "tok-resume"})
 	if err != nil {
 		t.Fatalf("StartTmuxChat resume into live pane: %v", err)
@@ -1775,7 +1898,7 @@ func TestStartTmuxChat_ResumeReusesLivePaneByProviderSessionID(t *testing.T) {
 	}
 
 	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
-		ChatInput{Command: "boss-repair", ResumeAgentSessionID: providerSessionID},
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: providerSessionID, Delivery: DeliverySubmit},
 		"T", HookOpts{Token: "tok-codex"})
 	if err != nil {
 		t.Fatalf("StartTmuxChat resume into Codex live pane: %v", err)
@@ -1822,7 +1945,7 @@ func TestStartTmuxChat_ResumeStillArmsCompletion(t *testing.T) {
 	h.lc.tmuxCompletionPollInterval = time.Millisecond
 
 	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
-		ChatInput{Prompt: "p", ResumeAgentSessionID: "agent-session-prior"},
+		ChatInput{Prompt: "p", ResumeAgentSessionID: "agent-session-prior", Delivery: DeliverySubmit},
 		"the title", HookOpts{Token: "tok-2"})
 	if err != nil {
 		t.Fatalf("StartTmuxChat resume: %v", err)
@@ -1859,7 +1982,7 @@ func TestStartTmuxChat_ResumeDeleteErrorTearsDown(t *testing.T) {
 	h.chats.deleteErr = errors.New("boom")
 
 	_, err := h.lc.StartTmuxChat(ctx, "sess-1",
-		ChatInput{Prompt: "p", ResumeAgentSessionID: "agent-session-prior"},
+		ChatInput{Prompt: "p", ResumeAgentSessionID: "agent-session-prior", Delivery: DeliverySubmit},
 		"T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when DeleteByAgentSessionID fails")
@@ -1979,6 +2102,164 @@ func TestBossSessionContext_MentionsMcpWhenAvailable(t *testing.T) {
 	}
 }
 
+// TestResolveRepoLocalBoss covers the BOS-230 repo-local fallback in isolation:
+// it returns <worktree>/bin/boss only when that path exists and is an executable
+// regular file, and "" for every other shape (no worktree, missing file, a
+// directory, or a non-executable file).
+func TestResolveRepoLocalBoss(t *testing.T) {
+	if got := resolveRepoLocalBoss(""); got != "" {
+		t.Fatalf("empty worktree should resolve nothing, got %q", got)
+	}
+
+	// Worktree with no bin/boss at all.
+	empty := t.TempDir()
+	if got := resolveRepoLocalBoss(empty); got != "" {
+		t.Fatalf("worktree without bin/boss should resolve nothing, got %q", got)
+	}
+
+	// Worktree with an executable bin/boss → resolved.
+	exe := t.TempDir()
+	binDir := filepath.Join(exe, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bossPath := filepath.Join(binDir, "boss")
+	if err := os.WriteFile(bossPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveRepoLocalBoss(exe); got != bossPath {
+		t.Fatalf("executable repo bin/boss should resolve to %q, got %q", bossPath, got)
+	}
+
+	// Worktree whose bin/boss is not executable → not resolved.
+	nonExe := t.TempDir()
+	nonExeBin := filepath.Join(nonExe, "bin")
+	if err := os.MkdirAll(nonExeBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nonExeBin, "boss"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveRepoLocalBoss(nonExe); got != "" {
+		t.Fatalf("non-executable bin/boss must not resolve, got %q", got)
+	}
+
+	// Worktree whose bin/boss is a directory → not resolved.
+	dirCase := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dirCase, "bin", "boss"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveRepoLocalBoss(dirCase); got != "" {
+		t.Fatalf("directory bin/boss must not resolve, got %q", got)
+	}
+}
+
+// TestResolveSessionFacts_RepoLocalBossFallback proves ResolveSessionFacts wires
+// the repo-local fallback: with no trusted `boss` resolvable (PATH neutralized)
+// but the session worktree carrying an executable bin/boss, BossBin is the repo
+// build. Neither trusted nor repo-local → BossBin stays "".
+func TestResolveSessionFacts_RepoLocalBossFallback(t *testing.T) {
+	// Neutralize PATH so config.ResolveTrustedExecutable("boss") returns "".
+	t.Setenv("PATH", t.TempDir())
+
+	wt := t.TempDir()
+	binDir := filepath.Join(wt, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bossPath := filepath.Join(binDir, "boss")
+	if err := os.WriteFile(bossPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: wt}
+	f := ResolveSessionFacts(sess, "agent-1", "claude")
+	if f.BossBin != bossPath {
+		t.Fatalf("expected repo-local fallback BossBin=%q, got %q", bossPath, f.BossBin)
+	}
+
+	// A worktree with no repo build resolves nothing.
+	noBuild := &models.Session{ID: "s2", WorktreePath: t.TempDir()}
+	if f := ResolveSessionFacts(noBuild, "agent-2", "claude"); f.BossBin != "" {
+		t.Fatalf("no trusted or repo-local boss should leave BossBin empty, got %q", f.BossBin)
+	}
+}
+
+// TestBossSessionContext_BossBinAdvertisedWhenResolved proves the resolved case:
+// BossBin present → the identifier list advertises BOSS_BIN and the guidance
+// points at the resolved binary, with no "not available"/`make build` fallback.
+func TestBossSessionContext_BossBinAdvertisedWhenResolved(t *testing.T) {
+	got := bossSessionContext(SessionFacts{SessionID: "s", BossBin: "/trusted/boss", McpBin: "/trusted/mcp"})
+	// Byte-stable identifier tail from today (regression guard on the resolved case).
+	if !strings.Contains(got, "BOSS_SETTINGS_PATH, BOSS_SOCKET, BOSS_BIN, BOSS_MCP_BIN (context for you, not an") {
+		t.Fatalf("resolved prompt must advertise BOSS_BIN/BOSS_MCP_BIN in the identifier list: %q", got)
+	}
+	if !strings.Contains(got, "/trusted/boss env") {
+		t.Fatalf("resolved prompt must point guidance at the resolved binary: %q", got)
+	}
+	if strings.Contains(got, "make build") || strings.Contains(got, "./bin/boss") {
+		t.Fatalf("resolved prompt must not name the make build fallback: %q", got)
+	}
+}
+
+// TestBossSessionContext_BossBinOmittedWhenUnresolved proves the BOS-230 honest
+// prompt: no resolvable boss → BOSS_BIN is omitted from the identifier list and
+// the guidance names the `make build` + `./bin/boss` fallback instead of an
+// advertised-but-empty var.
+func TestBossSessionContext_BossBinOmittedWhenUnresolved(t *testing.T) {
+	got := bossSessionContext(SessionFacts{SessionID: "s"})
+	if strings.Contains(got, "BOSS_BIN") {
+		t.Fatalf("unresolved prompt must not advertise BOSS_BIN: %q", got)
+	}
+	// With neither binary resolved, the list ends at BOSS_SOCKET.
+	if !strings.Contains(got, "BOSS_SETTINGS_PATH, BOSS_SOCKET (context for you, not an") {
+		t.Fatalf("unresolved list must end at BOSS_SOCKET: %q", got)
+	}
+	if !strings.Contains(got, "make build") || !strings.Contains(got, "./bin/boss") {
+		t.Fatalf("unresolved prompt must name the make build + ./bin/boss fallback: %q", got)
+	}
+}
+
+// TestBossSessionContext_AdvertisesExactlyExportedIdentifiers guards the
+// SessionFacts invariant that the prompt's advertised env-var list can never
+// disagree with what managedSessionEnv actually exports (BOS-230). The advertised
+// idVars list is a parallel copy of managedSessionEnv's export gating; this test
+// is the drift guard that keeps the copy honest. For fully-resolved facts, every
+// exported identifier (all keys except the behavioral cron vars) must appear in
+// the prompt, and the two conditional vars must be omitted when their binary is
+// unresolved — so a future unconditional export can't silently drift the prompt.
+func TestBossSessionContext_AdvertisesExactlyExportedIdentifiers(t *testing.T) {
+	f := SessionFacts{
+		SessionID: "s", AgentSessionID: "a", RepoID: "r", Agent: "claude",
+		Worktree: "/wt", SettingsPath: "/cfg", Socket: "/sock",
+		BossBin: "/trusted/boss", McpBin: "/trusted/mcp",
+		IsCron: true, IsUnattended: true, CronJobID: "j", CronName: "n",
+	}
+	// Behavioral (non-identifier) vars are intentionally never advertised.
+	behavioral := map[string]bool{"BOSS_CRON": true, "BOSS_CRON_JOB_ID": true, "BOSS_CRON_NAME": true}
+
+	prompt := bossSessionContext(f)
+	for name := range managedSessionEnv(f) {
+		if behavioral[name] {
+			continue
+		}
+		if !strings.Contains(prompt, name) {
+			t.Errorf("exported identifier %q is not advertised in the prompt — env/prompt drift", name)
+		}
+	}
+
+	// The two conditional vars must vanish from the prompt when unexported.
+	fNoBins := f
+	fNoBins.BossBin = ""
+	fNoBins.McpBin = ""
+	noBinPrompt := bossSessionContext(fNoBins)
+	if strings.Contains(noBinPrompt, "BOSS_BIN") {
+		t.Errorf("BOSS_BIN advertised when not exported: %q", noBinPrompt)
+	}
+	if strings.Contains(noBinPrompt, "BOSS_MCP_BIN") {
+		t.Errorf("BOSS_MCP_BIN advertised when not exported: %q", noBinPrompt)
+	}
+}
+
 func TestResolveSessionFacts(t *testing.T) {
 	sess := &models.Session{
 		ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: "/wt", Title: "Manual",
@@ -2048,5 +2329,134 @@ func TestManagedSessionEnv(t *testing.T) {
 	cenv := ManagedSessionEnv(cron, "agent-1", "")
 	if cenv["BOSS_CRON"] != "true" || cenv["BOSS_CRON_JOB_ID"] != "cron-42" || cenv["BOSS_CRON_NAME"] != "Nightly" {
 		t.Fatalf("cron env wrong: %v", cenv)
+	}
+}
+
+// TestManagedSessionEnv_TmuxUnattended proves a tmux_unattended session (no
+// CronJobID) gets BOSS_CRON=true — so shell-mode/autonomy detection fires — but
+// NOT BOSS_CRON_JOB_ID/BOSS_CRON_NAME, which are meaningless without a real
+// scheduled job.
+func TestManagedSessionEnv_TmuxUnattended(t *testing.T) {
+	sess := &models.Session{ID: "s9", Title: "Epic child", TmuxUnattended: true}
+	env := ManagedSessionEnv(sess, "agent-9", "claude")
+	if env["BOSS_CRON"] != "true" {
+		t.Fatalf("tmux_unattended session must set BOSS_CRON=true, got %q", env["BOSS_CRON"])
+	}
+	if _, ok := env["BOSS_CRON_JOB_ID"]; ok {
+		t.Errorf("tmux_unattended session must not set BOSS_CRON_JOB_ID, got %q", env["BOSS_CRON_JOB_ID"])
+	}
+	if _, ok := env["BOSS_CRON_NAME"]; ok {
+		t.Errorf("tmux_unattended session must not set BOSS_CRON_NAME, got %q", env["BOSS_CRON_NAME"])
+	}
+}
+
+// TestAppendSystemPromptFor_TmuxUnattended proves the autonomy directive is
+// appended for a tmux_unattended session (no CronJobID), just as for cron.
+func TestAppendSystemPromptFor_TmuxUnattended(t *testing.T) {
+	sess := &models.Session{ID: "s9", Title: "Epic child", TmuxUnattended: true}
+	prompt := AppendSystemPromptFor(sess, "agent-9", "claude", "")
+	if !strings.Contains(prompt, cronAutonomyDirective) {
+		t.Fatal("tmux_unattended session must get the autonomy directive")
+	}
+}
+
+func TestMergeEnv_ManagedKeysWin(t *testing.T) {
+	overlay := map[string]string{
+		"PROOF_ANTHROPIC_API_KEY": "secret-anthropic",
+		"BOSS_PROOF_R2_BUCKET":    "bossanova-proof-production",
+		// A hostile/misconfigured overlay must never be able to shadow a
+		// managed BOSS_* key.
+		"BOSS_SESSION_ID": "OVERLAY-SHOULD-NOT-WIN",
+	}
+
+	cases := []struct {
+		name string
+		sess *models.Session
+	}{
+		{"non-cron", &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: "/wt"}},
+		{"cron", func() *models.Session {
+			job := "cron-9"
+			return &models.Session{ID: "s2", RepoID: "r2", AgentName: "codex", WorktreePath: "/wt2", Title: "Nightly", CronJobID: &job}
+		}()},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := ManagedSessionEnv(tc.sess, "agent-x", "")
+			merged := mergeEnv(base, overlay)
+
+			// Managed key wins on conflict.
+			if merged["BOSS_SESSION_ID"] != tc.sess.ID {
+				t.Errorf("BOSS_SESSION_ID = %q, want managed %q (overlay must not win)", merged["BOSS_SESSION_ID"], tc.sess.ID)
+			}
+			// Overlay-only keys are added.
+			if merged["PROOF_ANTHROPIC_API_KEY"] != "secret-anthropic" {
+				t.Errorf("proof secret not merged: %v", merged)
+			}
+			if merged["BOSS_PROOF_R2_BUCKET"] != "bossanova-proof-production" {
+				t.Errorf("proof constant not merged: %v", merged)
+			}
+			// Every managed key survives.
+			for k, v := range base {
+				if merged[k] != v {
+					t.Errorf("managed key %q lost: got %q want %q", k, merged[k], v)
+				}
+			}
+		})
+	}
+}
+
+// fakeProofEnvResolver is a proofEnvResolver returning a fixed overlay
+// without touching a real keyring.
+type fakeProofEnvResolver struct{ env map[string]string }
+
+func (f fakeProofEnvResolver) Resolve() map[string]string { return f.env }
+
+// TestLifecycleTmuxEnvIncludesProofOverlay exercises the exact expression at
+// the tmux NewSession call site — mergeEnv(ManagedSessionEnv(...),
+// l.resolveProofEnv()) — with an injected fake resolver, asserting the proof
+// overlay reaches the session env while managed BOSS_* keys stay authoritative.
+func TestLifecycleTmuxEnvIncludesProofOverlay(t *testing.T) {
+	l := &Lifecycle{}
+	l.SetProofEnvResolver(fakeProofEnvResolver{env: map[string]string{
+		"PROOF_ANTHROPIC_API_KEY": "secret-anthropic",
+		"CLOUDFLARE_API_TOKEN":    "secret-cf",
+		"BOSS_PROOF_R2_BUCKET":    "bossanova-proof-production",
+		"BOSS_SESSION_ID":         "OVERLAY-MUST-NOT-WIN",
+	}})
+
+	sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: "/wt"}
+	env := mergeEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName), l.resolveProofEnv())
+
+	if env["PROOF_ANTHROPIC_API_KEY"] != "secret-anthropic" || env["CLOUDFLARE_API_TOKEN"] != "secret-cf" {
+		t.Errorf("proof secrets missing from tmux env: %v", env)
+	}
+	if env["BOSS_PROOF_R2_BUCKET"] != "bossanova-proof-production" {
+		t.Errorf("proof constant missing from tmux env: %v", env)
+	}
+	if env["BOSS_SESSION_ID"] != "s1" {
+		t.Errorf("managed BOSS_SESSION_ID overwritten by overlay: %q", env["BOSS_SESSION_ID"])
+	}
+}
+
+// TestLifecycleResolveProofEnvNilResolver confirms a lifecycle with no
+// resolver wired degrades to nil (older/test wiring) rather than panicking.
+func TestLifecycleResolveProofEnvNilResolver(t *testing.T) {
+	l := &Lifecycle{}
+	if got := l.resolveProofEnv(); got != nil {
+		t.Errorf("expected nil overlay with no resolver, got %v", got)
+	}
+}
+
+func TestMergeEnv_NilOverlayPreservesBase(t *testing.T) {
+	base := map[string]string{"BOSS_SESSION_ID": "s1", "BOSS_AGENT": "claude"}
+	merged := mergeEnv(base, nil)
+	if len(merged) != len(base) {
+		t.Fatalf("nil overlay changed size: %v", merged)
+	}
+	for k, v := range base {
+		if merged[k] != v {
+			t.Errorf("key %q = %q, want %q", k, merged[k], v)
+		}
 	}
 }

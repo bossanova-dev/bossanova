@@ -1,6 +1,58 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { validateBrief, generateBriefFromDiff } from './proof-brief.mjs'
+import {
+  BRIEF_SCHEMA,
+  generateBriefFromDiff,
+  MAX_SCENES,
+  normalizeScenes,
+  orderSurfaces,
+  requiresLiveAgent,
+  scopeRequiredProof,
+  validateBrief,
+} from './proof-brief.mjs'
+
+// BRIEF_SCHEMA is passed verbatim to the Anthropic structured-output API
+// (output_config.format.schema), which is strict: it rejects `maxItems`/
+// `minItems` on arrays, AND requires every 'object' node to explicitly set
+// `additionalProperties: false` — both crash brief generation for the whole
+// proof pipeline with a 400 invalid_request_error (regressions caught by the
+// BOS-140 T13 live run). These recursive guards keep any future schema addition
+// API-compatible; the scene-count bound lives in validateBrief + normalizeScenes.
+function collectUnsupportedKeywords(node, path = 'BRIEF_SCHEMA') {
+  const hits = []
+  if (Array.isArray(node)) {
+    node.forEach((child, i) => hits.push(...collectUnsupportedKeywords(child, `${path}[${i}]`)))
+  } else if (node && typeof node === 'object') {
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'maxItems' || key === 'minItems') hits.push(`${path}.${key}`)
+      hits.push(...collectUnsupportedKeywords(value, `${path}.${key}`))
+    }
+  }
+  return hits
+}
+
+function collectObjectsMissingAdditionalPropsFalse(node, path = 'BRIEF_SCHEMA') {
+  const hits = []
+  if (Array.isArray(node)) {
+    node.forEach((child, i) =>
+      hits.push(...collectObjectsMissingAdditionalPropsFalse(child, `${path}[${i}]`)),
+    )
+  } else if (node && typeof node === 'object') {
+    if (node.type === 'object' && node.additionalProperties !== false) hits.push(path)
+    for (const [key, value] of Object.entries(node)) {
+      hits.push(...collectObjectsMissingAdditionalPropsFalse(value, `${path}.${key}`))
+    }
+  }
+  return hits
+}
+
+test('BRIEF_SCHEMA: no maxItems/minItems (unsupported by structured-output API)', () => {
+  assert.deepEqual(collectUnsupportedKeywords(BRIEF_SCHEMA), [])
+})
+
+test('BRIEF_SCHEMA: every object sets additionalProperties:false (strict structured output)', () => {
+  assert.deepEqual(collectObjectsMissingAdditionalPropsFalse(BRIEF_SCHEMA), [])
+})
 
 // ---------------------------------------------------------------------------
 // Eval fixtures (used only when RUN_PROOF_EVAL=1)
@@ -189,6 +241,307 @@ test('validateBrief: preserves genAi flag', () => {
   const { brief, errors } = validateBrief({ title: 't', description: 'd', genAi: true })
   assert.deepEqual(errors, [])
   assert.equal(brief.genAi, true)
+})
+
+// ── brief.scenes[] schema (BOS-140 P3a) ──────────────────────────────────────
+
+test('validateBrief: scene-less brief still validates (back-compat)', () => {
+  const { brief, errors } = validateBrief({ title: 't', description: 'd' })
+  assert.deepEqual(errors, [])
+  assert.equal(brief.scenes, undefined)
+})
+
+test('validateBrief: accepts up to MAX_SCENES scenes', () => {
+  const scenes = Array.from({ length: MAX_SCENES }, (_, i) => ({
+    title: `scene ${i}`,
+    expectedEvidence: ['x'],
+  }))
+  const { brief, errors } = validateBrief({ title: 't', description: 'd', scenes })
+  assert.deepEqual(errors, [])
+  assert.equal(brief.scenes.length, MAX_SCENES)
+})
+
+test('validateBrief: rejects more than MAX_SCENES scenes with a scenes error', () => {
+  const scenes = Array.from({ length: MAX_SCENES + 1 }, (_, i) => ({
+    title: `scene ${i}`,
+    expectedEvidence: ['x'],
+  }))
+  const { brief, errors } = validateBrief({ title: 't', description: 'd', scenes })
+  assert.equal(brief, null)
+  assert.ok(
+    errors.some((e) => /scenes/.test(e)),
+    `expected a scenes error, got: ${JSON.stringify(errors)}`,
+  )
+})
+
+test('validateBrief: rejects a scene missing title', () => {
+  const { brief, errors } = validateBrief({
+    title: 't',
+    description: 'd',
+    scenes: [{ expectedEvidence: ['x'] }],
+  })
+  assert.equal(brief, null)
+  assert.ok(errors.some((e) => /scenes/.test(e)))
+})
+
+test('validateBrief: rejects a scene missing expectedEvidence', () => {
+  const { brief, errors } = validateBrief({
+    title: 't',
+    description: 'd',
+    scenes: [{ title: 'a' }],
+  })
+  assert.equal(brief, null)
+  assert.ok(errors.some((e) => /scenes/.test(e)))
+})
+
+test('validateBrief: rejects two scenes sharing an explicit duplicate id', () => {
+  const { brief, errors } = validateBrief({
+    title: 't',
+    description: 'd',
+    scenes: [
+      { id: 'dup', title: 'a', expectedEvidence: ['x'] },
+      { id: 'dup', title: 'b', expectedEvidence: ['y'] },
+    ],
+  })
+  assert.equal(brief, null)
+  assert.ok(
+    errors.some((e) => /scenes\[1\]\.id duplicates an earlier scene id/.test(e)),
+    `expected a duplicate scene id error, got: ${JSON.stringify(errors)}`,
+  )
+})
+
+test('validateBrief: distinct explicit scene ids are valid', () => {
+  const { brief, errors } = validateBrief({
+    title: 't',
+    description: 'd',
+    scenes: [
+      { id: 'a', title: 'a', expectedEvidence: ['x'] },
+      { id: 'b', title: 'b', expectedEvidence: ['y'] },
+    ],
+  })
+  assert.deepEqual(errors, [])
+  assert.equal(brief.scenes.length, 2)
+})
+
+test('validateBrief: defaulted/absent scene ids are valid even when repeated (not checked)', () => {
+  const { brief, errors } = validateBrief({
+    title: 't',
+    description: 'd',
+    scenes: [
+      { title: 'a', expectedEvidence: ['x'] },
+      { title: 'b', expectedEvidence: ['y'] },
+    ],
+  })
+  assert.deepEqual(errors, [])
+  assert.equal(brief.scenes.length, 2)
+})
+
+test('normalizeScenes: scene-less brief synthesizes one scene from top-level fields', () => {
+  const brief = {
+    title: 'My Proof',
+    stepsHints: ['click submit'],
+    expectedEvidence: ['form submitted'],
+  }
+  const scenes = normalizeScenes(brief)
+  assert.deepEqual(scenes, [
+    {
+      id: 'scene-01',
+      title: 'My Proof',
+      stepsHints: ['click submit'],
+      expectedEvidence: ['form submitted'],
+      liveAgent: false,
+    },
+  ])
+})
+
+test('normalizeScenes: scene-less brief with missing fields defaults gracefully', () => {
+  const scenes = normalizeScenes({})
+  assert.deepEqual(scenes, [
+    { id: 'scene-01', title: 'proof', stepsHints: [], expectedEvidence: [], liveAgent: false },
+  ])
+})
+
+test('normalizeScenes: 2-scene brief defaults absent ids and keeps provided ones', () => {
+  const brief = {
+    scenes: [
+      { title: 'first flow', expectedEvidence: ['A'] },
+      { id: 'custom-id', title: 'second flow', expectedEvidence: ['B'] },
+    ],
+  }
+  const scenes = normalizeScenes(brief)
+  assert.equal(scenes.length, 2)
+  assert.equal(scenes[0].id, 'scene-01')
+  assert.equal(scenes[1].id, 'custom-id')
+  assert.equal(scenes[0].title, 'first flow')
+  assert.equal(scenes[1].title, 'second flow')
+})
+
+test('normalizeScenes: clamps to MAX_SCENES', () => {
+  const brief = {
+    scenes: Array.from({ length: MAX_SCENES + 2 }, (_, i) => ({
+      title: `scene ${i}`,
+      expectedEvidence: ['x'],
+    })),
+  }
+  const scenes = normalizeScenes(brief)
+  assert.equal(scenes.length, MAX_SCENES)
+})
+
+// ── scene.liveAgent opt-in (BOS-142 T1): mechanical, never model-settable ────
+
+test('BRIEF_SCHEMA: does not contain liveAgent (structured output can never emit it)', () => {
+  assert.ok(!JSON.stringify(BRIEF_SCHEMA).includes('liveAgent'))
+})
+
+test('normalizeScenes: an authored liveAgent:true scene survives normalization', () => {
+  const brief = {
+    scenes: [
+      { id: 'live', title: 'live flow', expectedEvidence: ['A'], liveAgent: true },
+      { id: 'plain', title: 'plain flow', expectedEvidence: ['B'] },
+    ],
+  }
+  const scenes = normalizeScenes(brief)
+  assert.equal(scenes[0].liveAgent, true, 'authored liveAgent:true must be preserved')
+  assert.equal(scenes[1].liveAgent, false, 'a scene without liveAgent normalizes to false')
+})
+
+test('normalizeScenes: a scene-less brief yields liveAgent:false', () => {
+  const scenes = normalizeScenes({ title: 'plain', expectedEvidence: ['x'] })
+  assert.equal(scenes.length, 1)
+  assert.equal(scenes[0].liveAgent, false)
+})
+
+test('validateBrief: authored brief with one liveAgent:true scene validates and preserves it', () => {
+  const { brief, errors } = validateBrief({
+    title: 't',
+    description: 'd',
+    scenes: [
+      { title: 'a', expectedEvidence: ['x'], liveAgent: true },
+      { title: 'b', expectedEvidence: ['y'] },
+    ],
+  })
+  assert.deepEqual(errors, [])
+  assert.equal(brief.scenes[0].liveAgent, true)
+  assert.equal(brief.scenes[1].liveAgent, undefined)
+})
+
+test('validateBrief: authored brief with TWO liveAgent:true scenes is rejected', () => {
+  const { brief, errors } = validateBrief({
+    title: 't',
+    description: 'd',
+    scenes: [
+      { title: 'a', expectedEvidence: ['x'], liveAgent: true },
+      { title: 'b', expectedEvidence: ['y'], liveAgent: true },
+    ],
+  })
+  assert.equal(brief, null)
+  assert.ok(
+    errors.some((e) => /liveAgent/.test(e) && /scenes/.test(e)),
+    `expected a liveAgent-cardinality error, got: ${JSON.stringify(errors)}`,
+  )
+})
+
+test('validateBrief: authored brief with a non-boolean liveAgent is rejected', () => {
+  const { brief, errors } = validateBrief({
+    title: 't',
+    description: 'd',
+    scenes: [{ title: 'a', expectedEvidence: ['x'], liveAgent: 'yes' }],
+  })
+  assert.equal(brief, null)
+  assert.ok(
+    errors.some((e) => /liveAgent/.test(e)),
+    `expected a liveAgent type error, got: ${JSON.stringify(errors)}`,
+  )
+})
+
+test('validateBrief: source:"generated" strips liveAgent from every scene', () => {
+  const { brief, errors } = validateBrief(
+    {
+      title: 't',
+      description: 'd',
+      scenes: [{ title: 'a', expectedEvidence: ['x'], liveAgent: true }],
+    },
+    { source: 'generated' },
+  )
+  assert.deepEqual(errors, [])
+  assert.ok(
+    !('liveAgent' in brief.scenes[0]),
+    `expected liveAgent stripped, got: ${JSON.stringify(brief.scenes[0])}`,
+  )
+})
+
+test('validateBrief: source:"generated" strips even a would-be-invalid TWO-liveAgent brief (never trips the cardinality check)', () => {
+  const { brief, errors } = validateBrief(
+    {
+      title: 't',
+      description: 'd',
+      scenes: [
+        { title: 'a', expectedEvidence: ['x'], liveAgent: true },
+        { title: 'b', expectedEvidence: ['y'], liveAgent: true },
+      ],
+    },
+    { source: 'generated' },
+  )
+  assert.deepEqual(errors, [])
+  assert.ok(!('liveAgent' in brief.scenes[0]))
+  assert.ok(!('liveAgent' in brief.scenes[1]))
+})
+
+test('validateBrief: default source is "authored" (omitting options preserves liveAgent)', () => {
+  const { brief, errors } = validateBrief({
+    title: 't',
+    description: 'd',
+    scenes: [{ title: 'a', expectedEvidence: ['x'], liveAgent: true }],
+  })
+  assert.deepEqual(errors, [])
+  assert.equal(brief.scenes[0].liveAgent, true)
+})
+
+test('requiresLiveAgent: bullet containing "live-agent" marker → true', () => {
+  assert.equal(requiresLiveAgent(['demonstrate a live-agent session end to end']), true)
+})
+
+test('requiresLiveAgent: case-insensitive marker match', () => {
+  assert.equal(requiresLiveAgent(['Run a LIVE-AGENT chat and show the reply']), true)
+})
+
+test('requiresLiveAgent: ordinary bullets without the marker → false', () => {
+  assert.equal(requiresLiveAgent(['click the submit button', 'settled screen shows total']), false)
+})
+
+test('requiresLiveAgent: empty/undefined/null bullets → false', () => {
+  assert.equal(requiresLiveAgent([]), false)
+  assert.equal(requiresLiveAgent(undefined), false)
+  assert.equal(requiresLiveAgent(null), false)
+})
+
+// ── BOS-142 T7: consolidated "never launches real runner by default" guarantee ─
+// One greppable, enumerated regression. The detailed cases live above (and in the
+// sibling files proof-agent.test.mjs / services/web/tests/e2e/real/bossd-env.test.ts
+// + real-smoke.spec.ts); these thin wrappers re-assert the load-bearing property
+// under a single grep tag so the whole guarantee is discoverable. Grep tag:
+// "never launches real runner by default".
+//
+// (a) A brief GENERATED from a diff (i.e. NOT an explicit authored BOSS_PROOF_BRIEF)
+//     can never carry a liveAgent opt-in that would drive a real agent: the
+//     production generate path (scripts/proof-agent.mjs calls
+//     validateBrief(rawBrief, {source:'generated'})) strips liveAgent from every
+//     scene BEFORE it can reach the driver. Model structured output likewise can
+//     never emit it (BRIEF_SCHEMA has no liveAgent key — see the schema test above).
+test('never launches real runner by default (a): a generated brief cannot carry a liveAgent opt-in', () => {
+  const { brief, errors } = validateBrief(
+    {
+      title: 't',
+      description: 'd',
+      scenes: [{ title: 'a', expectedEvidence: ['x'], liveAgent: true }],
+    },
+    { source: 'generated' },
+  )
+  assert.deepEqual(errors, [])
+  assert.ok(
+    !('liveAgent' in brief.scenes[0]),
+    `generated brief must not expose liveAgent to the driver, got: ${JSON.stringify(brief.scenes[0])}`,
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -479,4 +832,128 @@ test('loadPlanEvidence: merges evidence from multiple plan docs deduped', async 
     async (path) => (path.endsWith('plan-a.md') ? planA : planB),
   )
   assert.deepEqual(result, ['item A', 'shared', 'item B'])
+})
+
+// ── scopeRequiredProof / orderSurfaces (BOS-139 / D13) ───────────────────────
+
+test('scopeRequiredProof: tui-only bullet scoped to tui', () => {
+  const s = scopeRequiredProof(['Settled screen shows the new TUI status line'])
+  assert.deepEqual(s.tui, ['Settled screen shows the new TUI status line'])
+  assert.deepEqual(s.web, [])
+  assert.deepEqual(s.unscoped, [])
+})
+
+test('scopeRequiredProof: web-only bullet scoped to web', () => {
+  const s = scopeRequiredProof(['The /settings page renders the new toggle in the browser'])
+  assert.deepEqual(s.web, ['The /settings page renders the new toggle in the browser'])
+  assert.deepEqual(s.tui, [])
+})
+
+test('scopeRequiredProof: both-hint bullet → unscoped', () => {
+  const s = scopeRequiredProof(['The TUI and the web page both show the count'])
+  assert.deepEqual(s.unscoped, ['The TUI and the web page both show the count'])
+  assert.deepEqual(s.tui, [])
+  assert.deepEqual(s.web, [])
+})
+
+test('scopeRequiredProof: no-hint bullet → unscoped', () => {
+  const s = scopeRequiredProof(['The exported total matches the ledger sum'])
+  assert.deepEqual(s.unscoped, ['The exported total matches the ledger sum'])
+})
+
+test('scopeRequiredProof: empty / null input → empty buckets', () => {
+  assert.deepEqual(scopeRequiredProof([]), { tui: [], web: [], unscoped: [] })
+  assert.deepEqual(scopeRequiredProof(null), { tui: [], web: [], unscoped: [] })
+})
+
+test('orderSurfaces: web-scoped bullets outnumber tui → web first', () => {
+  const order = orderSurfaces({
+    surfaces: { tui: true, web: true },
+    scoped: { tui: ['a'], web: ['b', 'c'] },
+  })
+  assert.deepEqual(order, ['web', 'tui'])
+})
+
+test('orderSurfaces: tie (incl. zero bullets) → cheap-first TUI', () => {
+  assert.deepEqual(
+    orderSurfaces({ surfaces: { tui: true, web: true }, scoped: { tui: [], web: [] } }),
+    ['tui', 'web'],
+  )
+})
+
+test('orderSurfaces: single-surface set → singleton', () => {
+  assert.deepEqual(
+    orderSurfaces({ surfaces: { tui: false, web: true }, scoped: { tui: [], web: [] } }),
+    ['web'],
+  )
+})
+
+test('orderSurfaces: empty set → []', () => {
+  assert.deepEqual(
+    orderSurfaces({ surfaces: { tui: false, web: false }, scoped: { tui: [], web: [] } }),
+    [],
+  )
+})
+
+// ── buildBriefPrompt: required-first block (BOS-139 / D13) ────────────────────
+
+test('buildBriefPrompt: includes the required block only when bullets present', () => {
+  const base = { diff: 'diff', changedFiles: ['a.ts'], routes: 'R', fixtures: 'F' }
+  const without = buildBriefPrompt(base)
+  assert.ok(!without.includes('REQUIRES demonstrating'))
+  // Default is byte-identical to a call that omits requiredProof.
+  assert.equal(buildBriefPrompt({ ...base, requiredProof: [] }), without)
+
+  const withReq = buildBriefPrompt({ ...base, requiredProof: ['Show the toggle'] })
+  assert.ok(withReq.includes('REQUIRES demonstrating'))
+  assert.ok(withReq.includes('- Show the toggle'))
+  // Required block comes before the changed-files inventory.
+  assert.ok(withReq.indexOf('REQUIRES demonstrating') < withReq.indexOf('## Changed files'))
+  // Existing sections are preserved.
+  assert.ok(withReq.includes('## Available routes'))
+  assert.ok(withReq.includes('## Diff'))
+})
+
+// ── generateBriefFromDiff: required-proof wiring (BOS-139 T8, stubbed SDK) ────
+
+test('generateBriefFromDiff: injected planRequiredProof leads the prompt AND sets the brief field', async () => {
+  let seenContent = ''
+  const createMessage = async ({ content }) => {
+    seenContent = content
+    return { title: 'T', description: 'D', targetRoutes: [], stepsHints: [], expectedEvidence: [] }
+  }
+  const raw = await generateBriefFromDiff({
+    diff: 'd',
+    changedFiles: ['a.ts'],
+    routes: 'R',
+    fixtures: 'F',
+    model: 'm',
+    planRequiredProof: ['Show the toggle', 'Open settings'],
+    createMessage,
+  })
+  assert.ok(seenContent.includes('REQUIRES demonstrating'), 'required block present in prompt')
+  assert.ok(seenContent.includes('- Show the toggle'))
+  assert.ok(
+    seenContent.indexOf('REQUIRES demonstrating') < seenContent.indexOf('## Changed files'),
+    'required block leads the prompt',
+  )
+  assert.deepEqual(raw.planRequiredProof, ['Show the toggle', 'Open settings'])
+})
+
+test('generateBriefFromDiff: no injected bullets → no required block, no forced field', async () => {
+  let seenContent = ''
+  const createMessage = async ({ content }) => {
+    seenContent = content
+    return { title: 'T', description: 'D' }
+  }
+  const raw = await generateBriefFromDiff({
+    diff: 'd',
+    changedFiles: ['a.ts'],
+    routes: 'R',
+    fixtures: 'F',
+    model: 'm',
+    createMessage,
+  })
+  assert.ok(!seenContent.includes('REQUIRES demonstrating'))
+  assert.equal(raw.planRequiredProof, undefined)
 })

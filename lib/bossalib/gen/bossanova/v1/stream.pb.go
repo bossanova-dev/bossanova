@@ -1624,9 +1624,14 @@ type SessionCreateChunk struct {
 	//	*SessionCreateChunk_SetupOutput
 	//	*SessionCreateChunk_Created
 	//	*SessionCreateChunk_Error
-	Body          isSessionCreateChunk_Body `protobuf_oneof:"body"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Body isSessionCreateChunk_Body `protobuf_oneof:"body"`
+	// True when the terminal `created` frame reports an EXISTING active session
+	// the daemon attached to (dedup) rather than a freshly created one. Mirrors
+	// SessionCreated.attached_existing so the flag survives the daemon → bosso
+	// upstream hop; only meaningful alongside `created`.
+	AttachedExisting bool `protobuf:"varint,5,opt,name=attached_existing,json=attachedExisting,proto3" json:"attached_existing,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *SessionCreateChunk) Reset() {
@@ -1698,6 +1703,13 @@ func (x *SessionCreateChunk) GetError() *CreateError {
 		}
 	}
 	return nil
+}
+
+func (x *SessionCreateChunk) GetAttachedExisting() bool {
+	if x != nil {
+		return x.AttachedExisting
+	}
+	return false
 }
 
 type isSessionCreateChunk_Body interface {
@@ -2093,6 +2105,10 @@ type CreateSessionCommand struct {
 	// Full selected issue + source, so the daemon can format the plan (D3).
 	TrackerIssue  *TrackerIssue `protobuf:"bytes,11,opt,name=tracker_issue,json=trackerIssue,proto3,oneof" json:"tracker_issue,omitempty"`
 	TrackerSource *string       `protobuf:"bytes,12,opt,name=tracker_source,json=trackerSource,proto3,oneof" json:"tracker_source,omitempty"`
+	// Bypass the BOS-236 tracker-issue dedup guard (mirrors
+	// CreateSessionRequest.force) so the reverse-stream create path carries the
+	// same escape hatch as the direct socket create.
+	Force         bool `protobuf:"varint,13,opt,name=force,proto3" json:"force,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2209,6 +2225,13 @@ func (x *CreateSessionCommand) GetTrackerSource() string {
 		return *x.TrackerSource
 	}
 	return ""
+}
+
+func (x *CreateSessionCommand) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
 }
 
 // WakeChatCommand asks the daemon to bring a chat's tmux+claude back to
@@ -2819,6 +2842,7 @@ type SendChatMessageCommand struct {
 	AgentSessionId string                 `protobuf:"bytes,1,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
 	Message        string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
 	WakeIfAsleep   bool                   `protobuf:"varint,3,opt,name=wake_if_asleep,json=wakeIfAsleep,proto3" json:"wake_if_asleep,omitempty"`
+	Submit         bool                   `protobuf:"varint,4,opt,name=submit,proto3" json:"submit,omitempty"` // when true, submit (press Enter + verify) a single-line command; default (false) prefills the composer without submitting
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2870,6 +2894,13 @@ func (x *SendChatMessageCommand) GetMessage() string {
 func (x *SendChatMessageCommand) GetWakeIfAsleep() bool {
 	if x != nil {
 		return x.WakeIfAsleep
+	}
+	return false
+}
+
+func (x *SendChatMessageCommand) GetSubmit() bool {
+	if x != nil {
+		return x.Submit
 	}
 	return false
 }
@@ -3859,13 +3890,14 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x1eERROR_CODE_FAILED_PRECONDITION\x10\x02B\t\n" +
 	"\apayload\"1\n" +
 	"\fTokenRefresh\x12!\n" +
-	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\"\xc6\x01\n" +
+	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\"\xf3\x01\n" +
 	"\x12SessionCreateChunk\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12#\n" +
 	"\fsetup_output\x18\x02 \x01(\tH\x00R\vsetupOutput\x121\n" +
 	"\acreated\x18\x03 \x01(\v2\x15.bossanova.v1.SessionH\x00R\acreated\x121\n" +
-	"\x05error\x18\x04 \x01(\v2\x19.bossanova.v1.CreateErrorH\x00R\x05errorB\x06\n" +
+	"\x05error\x18\x04 \x01(\v2\x19.bossanova.v1.CreateErrorH\x00R\x05error\x12+\n" +
+	"\x11attached_existing\x18\x05 \x01(\bR\x10attachedExistingB\x06\n" +
 	"\x04body\"'\n" +
 	"\vCreateError\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\"\x9b\x02\n" +
@@ -3890,7 +3922,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"5\n" +
 	"\x14AttachSessionCommand\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\x9e\x04\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xb4\x04\n" +
 	"\x14CreateSessionCommand\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
@@ -3910,7 +3942,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	" \x01(\tH\x03R\n" +
 	"trackerUrl\x88\x01\x01\x12D\n" +
 	"\rtracker_issue\x18\v \x01(\v2\x1a.bossanova.v1.TrackerIssueH\x04R\ftrackerIssue\x88\x01\x01\x12*\n" +
-	"\x0etracker_source\x18\f \x01(\tH\x05R\rtrackerSource\x88\x01\x01B\f\n" +
+	"\x0etracker_source\x18\f \x01(\tH\x05R\rtrackerSource\x88\x01\x01\x12\x14\n" +
+	"\x05force\x18\r \x01(\bR\x05forceB\f\n" +
 	"\n" +
 	"_pr_numberB\x0e\n" +
 	"\f_branch_nameB\r\n" +
@@ -3962,11 +3995,12 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12(\n" +
 	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\x12!\n" +
-	"\fmax_messages\x18\x03 \x01(\x05R\vmaxMessages\"\x82\x01\n" +
+	"\fmax_messages\x18\x03 \x01(\x05R\vmaxMessages\"\x9a\x01\n" +
 	"\x16SendChatMessageCommand\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12$\n" +
-	"\x0ewake_if_asleep\x18\x03 \x01(\bR\fwakeIfAsleep\"\x8b\x01\n" +
+	"\x0ewake_if_asleep\x18\x03 \x01(\bR\fwakeIfAsleep\x12\x16\n" +
+	"\x06submit\x18\x04 \x01(\bR\x06submit\"\x8b\x01\n" +
 	"\x16TransferSessionCommand\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12(\n" +

@@ -1,5 +1,11 @@
 package vcs
 
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
+
 // DisplayStatus represents the unified display status for a session in the TUI.
 type DisplayStatus int
 
@@ -24,7 +30,17 @@ type DisplayInfo struct {
 	Status              DisplayStatus
 	HasFailures         bool
 	HasChangesRequested bool
-	HeadSHA             string
+	// ChangesRequestedBy lists the sorted, deduped logins whose latest review
+	// is CHANGES_REQUESTED. Populated only when HasChangesRequested is true and
+	// the reviews carry an author login; empty otherwise (e.g. when the block
+	// comes from pr.LatestReviewState, which has no associated author).
+	ChangesRequestedBy []string
+	HeadSHA            string
+	// Mergeable is the PR's mergeability as last polled: nil when unknown/not
+	// yet fetched, true when mergeable, false when conflicting. Surfaced so a
+	// conflict-after-green is detectable without attempting a merge. Set by the
+	// display poller from the PR fetch, not derived by ComputeDisplayStatus.
+	Mergeable *bool
 }
 
 // ComputeDisplayStatus derives a unified display status from PR state, CI checks,
@@ -103,23 +119,28 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 		hasApproval = true
 	case ReviewStateUnspecified, ReviewStateCommented, ReviewStateDismissed, ReviewStateRequired:
 	}
-	for _, state := range latestByAuthor {
+	var changesRequestedBy []string
+	for author, state := range latestByAuthor {
 		if state == ReviewStateChangesRequested {
 			hasChangesRequested = true
+			if author != "" {
+				changesRequestedBy = append(changesRequestedBy, author)
+			}
 		}
 		if state == ReviewStateApproved {
 			hasApproval = true
 		}
 	}
+	sort.Strings(changesRequestedBy)
 
 	// If checks are still running, it's checking (with metadata flags for styling).
 	if hasRunning {
-		return DisplayInfo{Status: DisplayStatusChecking, HasFailures: hasFailed, HasChangesRequested: hasChangesRequested}
+		return DisplayInfo{Status: DisplayStatusChecking, HasFailures: hasFailed, HasChangesRequested: hasChangesRequested, ChangesRequestedBy: changesRequestedBy}
 	}
 
 	// Rejected takes priority — any outstanding changes_requested blocks approval.
 	if hasChangesRequested {
-		return DisplayInfo{Status: DisplayStatusRejected}
+		return DisplayInfo{Status: DisplayStatusRejected, ChangesRequestedBy: changesRequestedBy}
 	}
 
 	// When mergeable is unknown we can't confirm passing/approved — show "checking".
@@ -140,8 +161,110 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 
 	// Mergeability hasn't been confirmed — show "checking" until resolved.
 	if mergeableUnknown {
-		return DisplayInfo{Status: DisplayStatusChecking, HasChangesRequested: hasChangesRequested}
+		return DisplayInfo{Status: DisplayStatusChecking, HasChangesRequested: hasChangesRequested, ChangesRequestedBy: changesRequestedBy}
 	}
 
 	return DisplayInfo{Status: DisplayStatusIdle}
+}
+
+// MergeGate mirrors the proto MergeBlock.Gate enum values EXACTLY (keep in sync).
+type MergeGate int
+
+const (
+	MergeGateUnspecified MergeGate = iota // 0
+	MergeGateNone                         // 1
+	MergeGateReview                       // 2
+	MergeGateCI                           // 3
+	MergeGatePending                      // 4
+	MergeGateConflict                     // 5
+	MergeGateBaseSync                     // 6
+	MergeGateDraft                        // 7
+)
+
+// Slug is the stable lowercase token used in the merge_session error prefix
+// (`merge blocked: gate=<slug>; ...`). bs-epic parses gate=<slug>.
+func (g MergeGate) Slug() string {
+	switch g {
+	case MergeGateNone:
+		return "none"
+	case MergeGateReview:
+		return "review"
+	case MergeGateCI:
+		return "ci"
+	case MergeGatePending:
+		return "pending"
+	case MergeGateConflict:
+		return "conflict"
+	case MergeGateBaseSync:
+		return "base_sync"
+	case MergeGateDraft:
+		return "draft"
+	case MergeGateUnspecified:
+		return "unspecified"
+	default:
+		return "unspecified"
+	}
+}
+
+// MergeBlockReason describes why a PR can't merge, derived purely from display state.
+type MergeBlockReason struct {
+	Gate              MergeGate
+	Detail            string
+	BlockingReviewers []string
+	Status            DisplayStatus
+}
+
+// DeriveMergeBlock maps a DisplayStatus (+ metadata) to a structured merge-block
+// reason. This is the single source of truth for the enum→gate mapping (do not
+// duplicate it). It is pure: it only reads the passed display state.
+func DeriveMergeBlock(status DisplayStatus, hasFailures bool, changesRequestedBy []string) MergeBlockReason {
+	reason := MergeBlockReason{
+		Status:            status,
+		BlockingReviewers: changesRequestedBy,
+	}
+
+	switch status {
+	case DisplayStatusRejected:
+		reason.Gate = MergeGateReview
+		reason.Detail = reviewBlockDetail(changesRequestedBy)
+	case DisplayStatusFailing:
+		reason.Gate = MergeGateCI
+		reason.Detail = "one or more CI checks are failing"
+	case DisplayStatusChecking:
+		reason.Gate = MergeGatePending
+		reason.Detail = "CI checks are still running or mergeability is unknown"
+	case DisplayStatusConflict:
+		reason.Gate = MergeGateConflict
+		reason.Detail = "the PR has a merge conflict with its base branch"
+	case DisplayStatusDraft:
+		reason.Gate = MergeGateDraft
+		reason.Detail = "the PR is a draft"
+	case DisplayStatusUnspecified, DisplayStatusIdle, DisplayStatusPassing,
+		DisplayStatusMerged, DisplayStatusClosed, DisplayStatusApproved,
+		DisplayStatusReview:
+		reason.Gate = MergeGateNone
+	default:
+		reason.Gate = MergeGateNone
+	}
+
+	return reason
+}
+
+// divergenceNote explains that the daemon's merge gate trusts its own
+// review/CI tracker, so GitHub may still report the PR mergeable.
+const divergenceNote = "the daemon's merge gate trusts its own review/CI tracker — GitHub may still report the PR mergeable"
+
+// reviewBlockDetail builds the human-readable one-liner for a review gate,
+// naming the outstanding reviewers when their logins are known and degrading
+// gracefully to a count-agnostic phrasing when they are not.
+func reviewBlockDetail(changesRequestedBy []string) string {
+	if len(changesRequestedBy) == 0 {
+		return "an outstanding changes-requested review blocks the merge; " + divergenceNote
+	}
+	noun := "review"
+	if len(changesRequestedBy) > 1 {
+		noun = "reviews"
+	}
+	return fmt.Sprintf("%d outstanding changes-requested %s from %s; %s",
+		len(changesRequestedBy), noun, strings.Join(changesRequestedBy, ", "), divergenceNote)
 }

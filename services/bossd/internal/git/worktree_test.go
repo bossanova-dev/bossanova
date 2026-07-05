@@ -1659,81 +1659,302 @@ func commitOnOrigin(t *testing.T, workingRepo, branch string) string { //nolint:
 	return sha
 }
 
-func TestEnsureBaseBranchReadyForSync_CleanAndFFSafe(t *testing.T) {
-	repo := initTestRepo(t)
-	mgr := NewManager(zerolog.Nop())
-
-	if err := mgr.EnsureBaseBranchReadyForSync(context.Background(), repo, "main"); err != nil {
-		t.Fatalf("expected nil, got %v", err)
+// makeLocalCommit authors a local commit on the currently-checked-out branch
+// of repo and returns the new HEAD SHA. Used to diverge a local base from
+// origin so the never-force-move guards can be exercised.
+func makeLocalCommit(t *testing.T, repo, message string) string {
+	t.Helper()
+	if _, err := runGit(context.Background(), repo, "commit", "--allow-empty", "-m", message); err != nil {
+		t.Fatalf("local commit %q: %v", message, err)
 	}
+	sha, err := runGit(context.Background(), repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	return sha
 }
 
-func TestEnsureBaseBranchReadyForSync_DirtyTreeOnBase(t *testing.T) {
+// TestSyncBaseBranch_BaseCheckedOutDirty_Defers is case A (dirty variant): the
+// base is checked out with an uncommitted change while origin/<base> is ahead.
+// The GitHub merge already happened, so the local fast-forward must defer
+// (ErrLocalSyncDeferred) rather than fail — leaving the local ref untouched
+// while still freshening refs/remotes/origin/<base> and recording the pending
+// entry for a later retry.
+func TestSyncBaseBranch_BaseCheckedOutDirty_Defers(t *testing.T) {
 	repo := initTestRepo(t)
 	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
 
-	// Create an untracked file so `git status --porcelain` reports dirty.
+	oldLocal, err := runGit(ctx, repo, "rev-parse", "refs/heads/main")
+	if err != nil {
+		t.Fatalf("rev-parse main: %v", err)
+	}
+	wantSHA := commitOnOrigin(t, repo, "main")
+
+	// Uncommitted change on the checked-out base.
 	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatalf("write untracked: %v", err)
 	}
 
-	err := mgr.EnsureBaseBranchReadyForSync(context.Background(), repo, "main")
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	err = mgr.SyncBaseBranch(ctx, repo, "main")
+	if !errors.Is(err, ErrLocalSyncDeferred) {
+		t.Fatalf("expected ErrLocalSyncDeferred, got %v", err)
 	}
-	if !errors.Is(err, ErrBaseBranchNotReady) {
-		t.Errorf("expected ErrBaseBranchNotReady, got %v", err)
+
+	// Local base ref unchanged (still at the old tip).
+	gotLocal, err := runGit(ctx, repo, "rev-parse", "refs/heads/main")
+	if err != nil {
+		t.Fatalf("rev-parse main after sync: %v", err)
 	}
-	if !strings.Contains(err.Error(), "uncommitted changes") {
-		t.Errorf("expected 'uncommitted changes' in message, got %q", err.Error())
+	if gotLocal != oldLocal {
+		t.Errorf("local main moved to %s, want unchanged %s", gotLocal, oldLocal)
+	}
+
+	// refs/remotes/origin/main freshened regardless.
+	gotOrigin, err := runGit(ctx, repo, "rev-parse", "refs/remotes/origin/main")
+	if err != nil {
+		t.Fatalf("rev-parse origin/main: %v", err)
+	}
+	if gotOrigin != wantSHA {
+		t.Errorf("origin/main = %s, want freshened %s", gotOrigin, wantSHA)
+	}
+
+	// Pending entry recorded for a later retry.
+	mgr.mu.Lock()
+	pending := mgr.pendingBaseSync[repo]
+	mgr.mu.Unlock()
+	if pending != "main" {
+		t.Errorf("pending base sync = %q, want %q", pending, "main")
 	}
 }
 
-func TestEnsureBaseBranchReadyForSync_DirtyTreeNotOnBase(t *testing.T) {
+// TestSyncBaseBranch_DetachedHead_AdvancesRef is case A (detached variant): with
+// a detached HEAD and the local base behind origin, the base ref advances via a
+// direct fetch (never touching the working tree) and returns nil.
+func TestSyncBaseBranch_DetachedHead_AdvancesRef(t *testing.T) {
 	repo := initTestRepo(t)
 	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
 
-	// Check out a different branch so the dirty-tree rule does not apply.
-	if _, err := runGit(context.Background(), repo, "checkout", "-b", "feature"); err != nil {
+	if _, err := runGit(ctx, repo, "checkout", "--detach", "HEAD"); err != nil {
+		t.Fatalf("detach HEAD: %v", err)
+	}
+	wantSHA := commitOnOrigin(t, repo, "main")
+
+	if err := mgr.SyncBaseBranch(ctx, repo, "main"); err != nil {
+		t.Fatalf("SyncBaseBranch: %v", err)
+	}
+	gotSHA, err := runGit(ctx, repo, "rev-parse", "refs/heads/main")
+	if err != nil {
+		t.Fatalf("rev-parse main: %v", err)
+	}
+	if gotSHA != wantSHA {
+		t.Errorf("local main at %s, want %s", gotSHA, wantSHA)
+	}
+}
+
+// TestSyncBaseBranch_UpToDateDirty_NoDefer is case A (no-FF-needed variant):
+// the base is checked out and dirty, but already up to date with origin, so
+// there is nothing to fast-forward — returns nil and records nothing pending.
+func TestSyncBaseBranch_UpToDateDirty_NoDefer(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	// Dirty tree, but origin has no new commits.
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write untracked: %v", err)
+	}
+
+	if err := mgr.SyncBaseBranch(ctx, repo, "main"); err != nil {
+		t.Fatalf("expected nil (nothing to fast-forward), got %v", err)
+	}
+	mgr.mu.Lock()
+	_, pending := mgr.pendingBaseSync[repo]
+	mgr.mu.Unlock()
+	if pending {
+		t.Error("expected nothing pending when base is already up to date")
+	}
+}
+
+// TestSyncBaseBranch_DivergedCheckedOutClean_NeverForces is case B (checked-out
+// clean variant): local <base> holds a commit origin does not, and origin holds
+// a different commit. Sync must NOT force-move the operator's commit — it warns,
+// returns nil, leaves the local ref untouched, and records nothing pending.
+func TestSyncBaseBranch_DivergedCheckedOutClean_NeverForces(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	commitOnOrigin(t, repo, "main")                               // origin advances one way…
+	localSHA := makeLocalCommit(t, repo, "operator local commit") // …local another.
+
+	if err := mgr.SyncBaseBranch(ctx, repo, "main"); err != nil {
+		t.Fatalf("expected nil on diverged base, got %v", err)
+	}
+	gotLocal, err := runGit(ctx, repo, "rev-parse", "refs/heads/main")
+	if err != nil {
+		t.Fatalf("rev-parse main: %v", err)
+	}
+	if gotLocal != localSHA {
+		t.Errorf("local main moved to %s, want operator commit %s (never force-moved)", gotLocal, localSHA)
+	}
+	mgr.mu.Lock()
+	_, pending := mgr.pendingBaseSync[repo]
+	mgr.mu.Unlock()
+	if pending {
+		t.Error("diverged base must not be left pending")
+	}
+}
+
+// TestSyncBaseBranch_DivergedNotCheckedOut_NeverForces is case B (not-checked-out
+// variant): same divergence but the operator is on another branch. The direct
+// `fetch base:base` refuses the non-fast-forward; sync warns, returns nil, and
+// leaves the local ref untouched.
+func TestSyncBaseBranch_DivergedNotCheckedOut_NeverForces(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	commitOnOrigin(t, repo, "main")
+	localSHA := makeLocalCommit(t, repo, "operator local commit")
+	if _, err := runGit(ctx, repo, "checkout", "-b", "feature"); err != nil {
 		t.Fatalf("checkout feature: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("x"), 0o600); err != nil {
-		t.Fatalf("write untracked: %v", err)
-	}
 
-	if err := mgr.EnsureBaseBranchReadyForSync(context.Background(), repo, "main"); err != nil {
-		t.Errorf("expected nil when base is not checked out, got %v", err)
+	if err := mgr.SyncBaseBranch(ctx, repo, "main"); err != nil {
+		t.Fatalf("expected nil on diverged base, got %v", err)
+	}
+	gotLocal, err := runGit(ctx, repo, "rev-parse", "refs/heads/main")
+	if err != nil {
+		t.Fatalf("rev-parse main: %v", err)
+	}
+	if gotLocal != localSHA {
+		t.Errorf("local main moved to %s, want operator commit %s (never force-moved)", gotLocal, localSHA)
+	}
+	mgr.mu.Lock()
+	_, pending := mgr.pendingBaseSync[repo]
+	mgr.mu.Unlock()
+	if pending {
+		t.Error("diverged base must not be left pending")
 	}
 }
 
-func TestEnsureBaseBranchReadyForSync_Diverged(t *testing.T) {
+// TestRetryDeferredBaseSyncs_AppliesAfterTreeCleaned is case C (AC3 proof): a
+// deferred sync is retried once the working tree is clean, fast-forwarding the
+// local base to the origin tip. A second retry is a no-op. Proves safety is
+// re-validated at apply time, not captured at defer time.
+func TestRetryDeferredBaseSyncs_AppliesAfterTreeCleaned(t *testing.T) {
 	repo := initTestRepo(t)
 	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
 
-	// Advance origin/main by one commit…
-	commitOnOrigin(t, repo, "main")
-
-	// …then advance local main by a different commit. Now local main is
-	// neither an ancestor of nor equal to origin/main.
-	for _, args := range [][]string{
-		{"commit", "--allow-empty", "-m", "local commit"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
-		}
+	wantSHA := commitOnOrigin(t, repo, "main")
+	dirtyPath := filepath.Join(repo, "untracked.txt")
+	if err := os.WriteFile(dirtyPath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write untracked: %v", err)
 	}
 
-	err := mgr.EnsureBaseBranchReadyForSync(context.Background(), repo, "main")
-	if err == nil {
-		t.Fatal("expected divergence error, got nil")
+	if err := mgr.SyncBaseBranch(ctx, repo, "main"); !errors.Is(err, ErrLocalSyncDeferred) {
+		t.Fatalf("expected ErrLocalSyncDeferred, got %v", err)
 	}
-	if !errors.Is(err, ErrBaseBranchNotReady) {
-		t.Errorf("expected ErrBaseBranchNotReady, got %v", err)
+
+	// Clean the tree, then retry — the local base should now fast-forward.
+	if err := os.Remove(dirtyPath); err != nil {
+		t.Fatalf("remove dirty file: %v", err)
 	}
-	if !strings.Contains(err.Error(), "diverged") {
-		t.Errorf("expected 'diverged' in message, got %q", err.Error())
+	mgr.RetryDeferredBaseSyncs(ctx)
+
+	gotSHA, err := runGit(ctx, repo, "rev-parse", "refs/heads/main")
+	if err != nil {
+		t.Fatalf("rev-parse main: %v", err)
+	}
+	if gotSHA != wantSHA {
+		t.Errorf("local main at %s after retry, want fast-forwarded %s", gotSHA, wantSHA)
+	}
+	mgr.mu.Lock()
+	_, pending := mgr.pendingBaseSync[repo]
+	mgr.mu.Unlock()
+	if pending {
+		t.Error("pending entry should be cleared after a successful retry")
+	}
+
+	// A second retry is a no-op (nothing pending) and must not error.
+	mgr.RetryDeferredBaseSyncs(ctx)
+	gotSHA2, err := runGit(ctx, repo, "rev-parse", "refs/heads/main")
+	if err != nil {
+		t.Fatalf("rev-parse main: %v", err)
+	}
+	if gotSHA2 != wantSHA {
+		t.Errorf("local main at %s after second retry, want %s", gotSHA2, wantSHA)
+	}
+}
+
+// TestSyncBaseBranch_DeferredFreshensOriginRefForWorktree is case D: after a
+// deferred local sync, refs/remotes/origin/<base> points at the merged tip, so a
+// worktree created from the base branches from the merged tip rather than the
+// stale local <base>.
+func TestSyncBaseBranch_DeferredFreshensOriginRefForWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	wantSHA := commitOnOrigin(t, repo, "main")
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write untracked: %v", err)
+	}
+	if err := mgr.SyncBaseBranch(ctx, repo, "main"); !errors.Is(err, ErrLocalSyncDeferred) {
+		t.Fatalf("expected ErrLocalSyncDeferred, got %v", err)
+	}
+
+	gotOrigin, err := runGit(ctx, repo, "rev-parse", "refs/remotes/origin/main")
+	if err != nil {
+		t.Fatalf("rev-parse origin/main: %v", err)
+	}
+	if gotOrigin != wantSHA {
+		t.Errorf("origin/main = %s, want merged tip %s", gotOrigin, wantSHA)
+	}
+
+	// A new worktree branches from the merged tip (origin/main), not stale local.
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repo,
+		BaseBranch:      "main",
+		WorktreeBaseDir: filepath.Join(t.TempDir(), "worktrees"),
+		RepoName:        "my-repo",
+		Title:           "branch from merged tip",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	wtHead := gitOutput(t, result.WorktreePath, "rev-parse", "HEAD")
+	if wtHead != wantSHA {
+		t.Errorf("worktree HEAD = %s, want merged tip %s", wtHead, wantSHA)
+	}
+}
+
+func TestIsNonFastForwardGitOutput(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"fetch rejected non-fast-forward", errors.New("! [rejected] main -> main (non-fast-forward)"), true},
+		{"merge not possible", errors.New("fatal: Not possible to fast-forward, aborting."), true},
+		{"push rejected non-fast-forward", errors.New("! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs"), true},
+		// A bare "rejected" with NO fast-forward phrase must NOT be classified
+		// as a non-fast-forward: it appears in unrelated ref-update failures
+		// (tag clobbers, shallow refusals) that must surface, not be swallowed
+		// as a benign diverged-base warning.
+		{"rejected without ff phrase not matched", errors.New("! [rejected] v1 -> v1 (would clobber existing tag)"), false},
+		{"unrelated failure", errors.New("fatal: not a git repository"), false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isNonFastForwardGitOutput(tc.err); got != tc.want {
+				t.Errorf("isNonFastForwardGitOutput(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 

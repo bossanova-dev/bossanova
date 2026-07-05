@@ -46,7 +46,10 @@ func translatePullRequest(e *github.PullRequestEvent) ([]vcs.Event, int, error) 
 			return []vcs.Event{vcs.PRClosed{PRID: pr}}, pr, nil
 		case "synchronize":
 			if e.PullRequest != nil && e.PullRequest.Mergeable != nil && !*e.PullRequest.Mergeable {
-				return []vcs.Event{vcs.ConflictDetected{PRID: pr}}, pr, nil
+				// Carry the head SHA so the dispatcher can head-SHA-gate
+				// attempt counting (BOS-235): a conflict re-observed on an
+				// unchanged commit is a free settle lap, not a fresh attempt.
+				return []vcs.Event{vcs.ConflictDetected{PRID: pr, HeadSHA: e.PullRequest.GetHead().GetSHA()}}, pr, nil
 			}
 		}
 	}
@@ -136,7 +139,9 @@ func translateCheckRun(e *github.CheckRunEvent) ([]vcs.Event, int, error) {
 		Status:     vcs.CheckStatusCompleted,
 		Conclusion: &conclusion,
 	}}
-	return []vcs.Event{vcs.ChecksFailed{PRID: pr, FailedChecks: failed}}, pr, nil
+	// HeadSHA lets the dispatcher head-SHA-gate attempt counting (BOS-235): a
+	// same-commit check re-run is a free settle lap, not a fresh attempt.
+	return []vcs.Event{vcs.ChecksFailed{PRID: pr, FailedChecks: failed, HeadSHA: e.CheckRun.GetHeadSHA()}}, pr, nil
 }
 
 func translateCheckSuite(e *github.CheckSuiteEvent) ([]vcs.Event, int, error) {
@@ -151,15 +156,18 @@ func translateCheckSuite(e *github.CheckSuiteEvent) ([]vcs.Event, int, error) {
 		return nil, 0, nil
 	}
 
+	// HeadSHA lets the dispatcher head-SHA-gate attempt counting (BOS-235): a
+	// same-commit check-suite re-run is a free settle lap, not a fresh attempt.
+	headSHA := e.CheckSuite.GetHeadSHA()
 	switch e.CheckSuite.GetConclusion() {
 	case "success":
 		return nil, pr, nil
 	case "failure":
 		conclusion := vcs.CheckConclusionFailure
-		return []vcs.Event{vcs.ChecksFailed{PRID: pr, FailedChecks: []vcs.CheckResult{checkSuiteResult(e.CheckSuite, conclusion)}}}, pr, nil
+		return []vcs.Event{vcs.ChecksFailed{PRID: pr, FailedChecks: []vcs.CheckResult{checkSuiteResult(e.CheckSuite, conclusion)}, HeadSHA: headSHA}}, pr, nil
 	case "timed_out":
 		conclusion := vcs.CheckConclusionTimedOut
-		return []vcs.Event{vcs.ChecksFailed{PRID: pr, FailedChecks: []vcs.CheckResult{checkSuiteResult(e.CheckSuite, conclusion)}}}, pr, nil
+		return []vcs.Event{vcs.ChecksFailed{PRID: pr, FailedChecks: []vcs.CheckResult{checkSuiteResult(e.CheckSuite, conclusion)}, HeadSHA: headSHA}}, pr, nil
 	default:
 		return nil, pr, nil
 	}

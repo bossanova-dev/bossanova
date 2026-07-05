@@ -1,0 +1,405 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/recurser/bossalib/migrate"
+	"github.com/recurser/bossalib/models"
+)
+
+func TestAccountStore_CreateGetDefaults(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{
+		Provider:      models.AccountProviderClaude,
+		Label:         "work",
+		AccountEmail:  "dev@example.com",
+		Priority:      5,
+		Tier:          "max",
+		AllowedModels: []string{"claude-opus-4-8", "claude-sonnet-5"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if acct.ID == "" {
+		t.Error("id should not be empty")
+	}
+	if acct.Status != models.AccountStatusActive {
+		t.Errorf("status = %q, want %q", acct.Status, models.AccountStatusActive)
+	}
+	if acct.Health != models.AccountHealthOK {
+		t.Errorf("health = %q, want %q", acct.Health, models.AccountHealthOK)
+	}
+	if acct.CreatedAt.IsZero() || acct.UpdatedAt.IsZero() {
+		t.Errorf("timestamps should be non-zero: created=%v updated=%v", acct.CreatedAt, acct.UpdatedAt)
+	}
+	if acct.CooldownUntil != nil || acct.LastUsedAt != nil {
+		t.Errorf("cooldown/last-used should be nil on create: %v %v", acct.CooldownUntil, acct.LastUsedAt)
+	}
+
+	got, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Provider != models.AccountProviderClaude {
+		t.Errorf("provider = %q, want claude", got.Provider)
+	}
+	if got.Label != "work" || got.AccountEmail != "dev@example.com" {
+		t.Errorf("label/email = %q/%q", got.Label, got.AccountEmail)
+	}
+	if got.Priority != 5 || got.Tier != "max" {
+		t.Errorf("priority/tier = %d/%q", got.Priority, got.Tier)
+	}
+	if len(got.AllowedModels) != 2 || got.AllowedModels[0] != "claude-opus-4-8" || got.AllowedModels[1] != "claude-sonnet-5" {
+		t.Errorf("allowed_models = %v, want [claude-opus-4-8 claude-sonnet-5]", got.AllowedModels)
+	}
+}
+
+func TestAccountStore_CreateEmptyAllowedModels(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{
+		Provider: models.AccountProviderCodex,
+		Label:    "no-models",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got.AllowedModels) != 0 {
+		t.Errorf("allowed_models = %v, want empty", got.AllowedModels)
+	}
+}
+
+func TestAccountStore_UpdateFields(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{
+		Provider: models.AccountProviderClaude,
+		Label:    "upd",
+		Priority: 1,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	newLabel := "renamed"
+	newEmail := "new@example.com"
+	newStatus := models.AccountStatusDisabled
+	newPriority := 9
+	newHealth := models.AccountHealthFailed
+	newTier := "pro"
+	newModels := []string{"gpt-5"}
+	cooldown := time.Now().Add(time.Hour).UTC().Truncate(time.Millisecond)
+	lastUsed := time.Now().Add(-time.Minute).UTC().Truncate(time.Millisecond)
+
+	updated, err := store.Update(ctx, acct.ID, UpdateAccountParams{
+		Label:         &newLabel,
+		AccountEmail:  &newEmail,
+		Status:        &newStatus,
+		Priority:      &newPriority,
+		Health:        &newHealth,
+		Tier:          &newTier,
+		AllowedModels: &newModels,
+		CooldownUntil: func() **time.Time { p := &cooldown; return &p }(),
+		LastUsedAt:    func() **time.Time { p := &lastUsed; return &p }(),
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.Label != newLabel || updated.AccountEmail != newEmail {
+		t.Errorf("label/email = %q/%q", updated.Label, updated.AccountEmail)
+	}
+	if updated.Status != newStatus || updated.Health != newHealth {
+		t.Errorf("status/health = %q/%q", updated.Status, updated.Health)
+	}
+	if updated.Priority != newPriority || updated.Tier != newTier {
+		t.Errorf("priority/tier = %d/%q", updated.Priority, updated.Tier)
+	}
+	if len(updated.AllowedModels) != 1 || updated.AllowedModels[0] != "gpt-5" {
+		t.Errorf("allowed_models = %v", updated.AllowedModels)
+	}
+	if updated.CooldownUntil == nil || !updated.CooldownUntil.Equal(cooldown) {
+		t.Errorf("cooldown_until = %v, want %v", updated.CooldownUntil, cooldown)
+	}
+	if updated.LastUsedAt == nil || !updated.LastUsedAt.Equal(lastUsed) {
+		t.Errorf("last_used_at = %v, want %v", updated.LastUsedAt, lastUsed)
+	}
+	if !updated.UpdatedAt.After(acct.CreatedAt) && !updated.UpdatedAt.Equal(acct.CreatedAt) {
+		t.Errorf("updated_at %v should be >= created_at %v", updated.UpdatedAt, acct.CreatedAt)
+	}
+
+	// Clear the nullable times back to NULL via the *nil double-pointer path.
+	cleared, err := store.Update(ctx, acct.ID, UpdateAccountParams{
+		CooldownUntil: func() **time.Time { var p *time.Time; return &p }(),
+		LastUsedAt:    func() **time.Time { var p *time.Time; return &p }(),
+	})
+	if err != nil {
+		t.Fatalf("clear update: %v", err)
+	}
+	if cleared.CooldownUntil != nil {
+		t.Errorf("cooldown_until = %v, want nil after clear", cleared.CooldownUntil)
+	}
+	if cleared.LastUsedAt != nil {
+		t.Errorf("last_used_at = %v, want nil after clear", cleared.LastUsedAt)
+	}
+}
+
+func TestAccountStore_UpdateUnknownID(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	label := "x"
+	if _, err := store.Update(ctx, "does-not-exist", UpdateAccountParams{Label: &label}); err != sql.ErrNoRows {
+		t.Errorf("update unknown: got %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestAccountStore_CooldownRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{
+		Provider: models.AccountProviderClaude,
+		Label:    "cooldown",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		val  *time.Time
+	}{
+		{"past", ptrTime(time.Now().Add(-time.Hour).UTC().Truncate(time.Millisecond))},
+		{"future", ptrTime(time.Now().Add(24 * time.Hour).UTC().Truncate(time.Millisecond))},
+		{"null", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := store.Update(ctx, acct.ID, UpdateAccountParams{
+				CooldownUntil: &tc.val,
+			})
+			if err != nil {
+				t.Fatalf("update: %v", err)
+			}
+			if tc.val == nil {
+				if got.CooldownUntil != nil {
+					t.Errorf("cooldown_until = %v, want nil", got.CooldownUntil)
+				}
+				return
+			}
+			if got.CooldownUntil == nil || !got.CooldownUntil.Equal(*tc.val) {
+				t.Errorf("cooldown_until = %v, want %v (store must not interpret expiry)", got.CooldownUntil, *tc.val)
+			}
+		})
+	}
+}
+
+func TestAccountStore_ListOrderingAndProviderFilter(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	// Deliberately create out of priority order and across providers.
+	claudeB, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "claude-b", Priority: 10})
+	claudeA, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "claude-a", Priority: 1})
+	codexA, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "codex-a", Priority: 3})
+
+	all, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("list len = %d, want 3", len(all))
+	}
+	// provider ASC ('claude' < 'codex'), then priority ASC: claudeA(1), claudeB(10), codexA(3).
+	wantOrder := []string{claudeA.ID, claudeB.ID, codexA.ID}
+	for i, id := range wantOrder {
+		if all[i].ID != id {
+			t.Errorf("list[%d].ID = %q, want %q (order: provider,priority,created_at)", i, all[i].ID, id)
+		}
+	}
+
+	claudeOnly, err := store.ListByProvider(ctx, models.AccountProviderClaude)
+	if err != nil {
+		t.Fatalf("list by provider: %v", err)
+	}
+	if len(claudeOnly) != 2 {
+		t.Fatalf("claude len = %d, want 2", len(claudeOnly))
+	}
+	for _, a := range claudeOnly {
+		if a.Provider != models.AccountProviderClaude {
+			t.Errorf("provider filter leaked %q", a.Provider)
+		}
+	}
+	if claudeOnly[0].ID != claudeA.ID || claudeOnly[1].ID != claudeB.ID {
+		t.Errorf("claude order = [%q %q], want [%q %q]", claudeOnly[0].ID, claudeOnly[1].ID, claudeA.ID, claudeB.ID)
+	}
+
+	codexOnly, _ := store.ListByProvider(ctx, models.AccountProviderCodex)
+	if len(codexOnly) != 1 || codexOnly[0].ID != codexA.ID {
+		t.Errorf("codex filter = %v, want [%q]", codexOnly, codexA.ID)
+	}
+}
+
+func TestAccountStore_UniqueProviderLabel(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	if _, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "dup"}); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	_, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "dup"})
+	if err == nil {
+		t.Error("expected UNIQUE(provider,label) violation for duplicate claude/dup")
+	} else if !errors.Is(err, ErrAccountExists) {
+		t.Errorf("duplicate create should wrap ErrAccountExists, got: %v", err)
+	}
+	// Same label under a different provider is allowed.
+	if _, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "dup"}); err != nil {
+		t.Errorf("same label under other provider should succeed: %v", err)
+	}
+}
+
+func TestAccountStore_Delete(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "del"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := store.Delete(ctx, acct.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := store.Get(ctx, acct.ID); err != sql.ErrNoRows {
+		t.Errorf("get after delete: got %v, want sql.ErrNoRows", err)
+	}
+	if err := store.Delete(ctx, acct.ID); err != sql.ErrNoRows {
+		t.Errorf("second delete: got %v, want sql.ErrNoRows", err)
+	}
+}
+
+// TestAccountsMigrationIdempotent asserts the accounts table exists after
+// setupTestDB and that re-running the migration set is a no-op (goose version
+// tracking), after which the table is still writable.
+func TestAccountsMigrationIdempotent(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM accounts").Scan(&count); err != nil {
+		t.Fatalf("accounts table should exist: %v", err)
+	}
+
+	// Re-run migrations; goose version tracking makes this a no-op.
+	if err := migrate.Run(db, os.DirFS(migrationsDir())); err != nil {
+		t.Fatalf("second migration run should be a no-op: %v", err)
+	}
+
+	store := NewAccountStore(db)
+	if _, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "post-migrate"}); err != nil {
+		t.Fatalf("insert after second migration: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM accounts").Scan(&count); err != nil {
+		t.Fatalf("select after second migration: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("accounts count = %d, want 1", count)
+	}
+}
+
+// TestAccountStore_TestResultColumnsDefault asserts the BOS-160 columns default
+// to "never tested" on create: last_test_ok_at NULL, last_test_error "".
+func TestAccountStore_TestResultColumnsDefault(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "fresh"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if acct.LastTestOkAt != nil {
+		t.Errorf("last_test_ok_at = %v, want nil on create", acct.LastTestOkAt)
+	}
+	if acct.LastTestError != "" {
+		t.Errorf("last_test_error = %q, want empty on create", acct.LastTestError)
+	}
+}
+
+func TestAccountStore_RecordTestResult(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "rec"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	okAt := time.Now().Add(-time.Minute).UTC().Truncate(time.Millisecond)
+
+	cases := []struct {
+		name       string
+		okAt       *time.Time
+		testErr    string
+		wantOK     bool // whether last_test_ok_at should be set afterward
+		wantErrStr string
+	}{
+		{"pass", ptrTime(okAt), "", true, ""},
+		{"fail_clears_ok", nil, "smoke failed: boom", false, "smoke failed: boom"},
+		{"pass_clears_err", ptrTime(okAt), "", true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := store.RecordTestResult(ctx, acct.ID, tc.okAt, tc.testErr); err != nil {
+				t.Fatalf("record: %v", err)
+			}
+			got, err := store.Get(ctx, acct.ID)
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			if tc.wantOK {
+				if got.LastTestOkAt == nil || !got.LastTestOkAt.Equal(okAt) {
+					t.Errorf("last_test_ok_at = %v, want %v", got.LastTestOkAt, okAt)
+				}
+			} else if got.LastTestOkAt != nil {
+				t.Errorf("last_test_ok_at = %v, want nil", got.LastTestOkAt)
+			}
+			if got.LastTestError != tc.wantErrStr {
+				t.Errorf("last_test_error = %q, want %q", got.LastTestError, tc.wantErrStr)
+			}
+		})
+	}
+}
+
+func TestAccountStore_RecordTestResultUnknownID(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	if err := store.RecordTestResult(ctx, "nope", nil, "x"); err != sql.ErrNoRows {
+		t.Errorf("record unknown: got %v, want sql.ErrNoRows", err)
+	}
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }

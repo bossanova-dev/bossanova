@@ -11,8 +11,25 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// displayEntryToMergeBlock derives the structured MergeBlock proto from a
+// cached DisplayEntry via vcs.DeriveMergeBlock (the single source of truth for
+// the DisplayStatus→gate mapping). Returns nil for a nil entry.
+func displayEntryToMergeBlock(e *status.DisplayEntry) *pb.MergeBlock {
+	if e == nil {
+		return nil
+	}
+	mb := vcs.DeriveMergeBlock(e.Status, e.HasFailures, e.ChangesRequestedBy)
+	return &pb.MergeBlock{
+		Gate:              pb.MergeBlock_Gate(mb.Gate),
+		Detail:            mb.Detail,
+		BlockingReviewers: mb.BlockingReviewers,
+		DisplayStatus:     pb.DisplayStatus(mb.Status),
+	}
+}
 
 func protoString(s string) string {
 	return strings.ToValidUTF8(s, "\uFFFD")
@@ -219,6 +236,36 @@ func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionS
 	}
 	if c.NextRunAt != nil {
 		p.NextRunAt = timestamppb.New(*c.NextRunAt)
+	}
+	return p
+}
+
+// accountToProto converts a domain Account to its protobuf representation.
+// It maps METADATA ONLY — the credential blob is never a field on either side
+// (locked decision D3) and is never read here.
+func accountToProto(a *models.Account) *pb.Account {
+	p := &pb.Account{
+		Id:            a.ID,
+		Provider:      string(a.Provider),
+		Label:         a.Label,
+		Email:         a.AccountEmail,
+		Status:        string(a.Status),
+		Priority:      int32(a.Priority),
+		Health:        string(a.Health),
+		Tier:          a.Tier,
+		AllowedModels: a.AllowedModels,
+		LastTestError: a.LastTestError,
+		CreatedAt:     timestamppb.New(a.CreatedAt),
+		UpdatedAt:     timestamppb.New(a.UpdatedAt),
+	}
+	if a.CooldownUntil != nil {
+		p.CooldownUntil = timestamppb.New(*a.CooldownUntil)
+	}
+	if a.LastUsedAt != nil {
+		p.LastUsedAt = timestamppb.New(*a.LastUsedAt)
+	}
+	if a.LastTestOkAt != nil {
+		p.LastTestOkAt = timestamppb.New(*a.LastTestOkAt)
 	}
 	return p
 }

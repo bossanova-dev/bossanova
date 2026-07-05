@@ -9,8 +9,10 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/status"
@@ -262,6 +264,18 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		Msg("display poller: fetched PR status")
 
 	if prStatus.State == vcs.PRStateMerged || prStatus.State == vcs.PRStateClosed {
+		// Reconcile a session wedged in Blocked (pollableState excludes Blocked, so
+		// the state-machine poller never re-examines it) — or a terminal row still
+		// carrying a stale block reason — BEFORE recording the terminal tracker
+		// entry. Once the entry is terminal, poll() and RefreshPR() skip the
+		// session, so a transient store error inside the reconcile would otherwise
+		// never retry until a daemon restart. On error, leave the tracker
+		// non-terminal so the next poll cycle retries; the stale "finalize failed"
+		// hint would otherwise linger forever (BOS-246).
+		if err := p.reconcileTerminalPRForBlockedSession(ctx, sessionID, prStatus); err != nil {
+			p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: terminal-PR reconcile failed; will retry next poll")
+			return
+		}
 		info := vcs.ComputeDisplayStatus(prStatus, nil, nil)
 		info.HeadSHA = prStatus.HeadSHA
 		p.tracker.Set(sessionID, info)
@@ -303,8 +317,193 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		info.Status = vcs.DisplayStatusConflict
 	}
 	info.HeadSHA = prStatus.HeadSHA
+	// Surface mergeability so a conflict-after-green is readable from
+	// get_session without a merge attempt (BOS-234). nil stays unknown.
+	info.Mergeable = prStatus.Mergeable
 	p.tracker.Set(sessionID, info)
 	p.persistSnapshot(ctx, sessionID, prStatus, checks, info)
+
+	// A session Blocked by a stale fix-loop exhaustion is never re-examined by
+	// the state-machine poller (pollableState excludes Blocked), so once the PR
+	// is genuinely clean+green+mergeable nothing clears the block and
+	// merge_session stays wedged. The display poller already has live PR state
+	// here, so downgrade it (BOS-235 Bug 1, direction 2).
+	p.maybeClearStaleFixLoopBlock(ctx, sessionID, prStatus, checks, info)
+}
+
+// maybeClearStaleFixLoopBlock auto-unblocks a session sitting in Blocked with
+// the FixLoopExhausted reason when the live PR is observed clean + green +
+// mergeable. It is deliberately narrow: it only ever touches the
+// FixLoopExhausted reason (genuine human-required blocks are left alone), and
+// only when the PR is Open, mergeable is a concrete true, no checks are still
+// running, and the computed status is a green terminal-ready state
+// (Passing or Approved).
+func (p *DisplayPoller) maybeClearStaleFixLoopBlock(ctx context.Context, sessionID string, prStatus *vcs.PRStatus, checks []vcs.CheckResult, info vcs.DisplayInfo) {
+	if info.Status != vcs.DisplayStatusPassing && info.Status != vcs.DisplayStatusApproved {
+		return
+	}
+	if prStatus.State != vcs.PRStateOpen {
+		return
+	}
+	if prStatus.Mergeable == nil || !*prStatus.Mergeable {
+		return
+	}
+	if anyCheckRunning(checks) {
+		return
+	}
+
+	sess, err := p.sessions.Get(ctx, sessionID)
+	if err != nil {
+		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get session for stale-block check")
+		return
+	}
+	if sess.State != machine.Blocked {
+		return
+	}
+	if sess.BlockedReason == nil || *sess.BlockedReason != sessionreason.FixLoopExhausted() {
+		return
+	}
+
+	// Fire Unblock on a machine restored to Blocked; actionClearBlocked resets
+	// BlockedReason + AttemptCount in the machine, and we persist the same.
+	sm := machine.NewWithContext(machine.Blocked, &machine.SessionContext{
+		AttemptCount:  sess.AttemptCount,
+		MaxAttempts:   machine.MaxAttempts,
+		BlockedReason: *sess.BlockedReason,
+	})
+	if err := sm.FireCtx(ctx, machine.Unblock); err != nil {
+		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: fire unblock for stale fix_loop_exhausted block")
+		return
+	}
+
+	newState := int(sm.State())
+	zeroAttempts := 0
+	var clearReason *string  // *nil → set blocked_reason NULL
+	var clearHeadSHA *string // *nil → set last_attempt_head_sha NULL
+	if _, err := p.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		State:              &newState,
+		AttemptCount:       &zeroAttempts,
+		BlockedReason:      &clearReason,
+		LastAttemptHeadSHA: &clearHeadSHA,
+	}); err != nil {
+		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: persist stale fix_loop_exhausted unblock")
+		return
+	}
+
+	p.logger.Info().
+		Str("session", sessionID).
+		Str("new_state", sm.State().String()).
+		Msg("display poller: fix_loop_exhausted cleared, unblock fired on clean green PR")
+}
+
+// reconcileTerminalPRForBlockedSession reconciles the persisted block metadata of
+// a session whose PR the provider now reports resolved (merged or closed). It
+// handles two cases and returns an error only when a reconcile it attempted could
+// not be persisted, so the caller can decline to record a terminal tracker entry
+// and retry on the next poll (a nil return means the row is already clean or was
+// reconciled here):
+//
+//   - Wedged in Blocked: pollableState excludes Blocked, so the state-machine
+//     poller never re-examines it. Fire the terminal transition, whose
+//     OnExit(actionClearBlocked) resets the block reason + attempt count, and
+//     persist the cleared fields alongside the new terminal state.
+//   - Already terminal (Merged/Closed) but still carrying a stale block reason —
+//     e.g. a pre-fix PRClosed webhook advanced a Blocked session to Closed while
+//     the old handler wrote only State. Nothing else revisits such a row (poll /
+//     RefreshPR skip terminal tracker entries and pollableState excludes terminal
+//     states) and web sessionWarningHints surfaces a bare blockedReason, so the
+//     stale hint would linger forever. Clear the residual metadata in place, with
+//     no transition (the state is already correct).
+//
+// It is the merged/closed counterpart of maybeClearStaleFixLoopBlock but is
+// deliberately NOT gated on a specific block reason: a resolved PR is terminal
+// truth for the work, so whatever reason set the block (typically a non-gating
+// "finalize failed" hint) is moot. A non-Blocked, non-terminal session (e.g.
+// ReadyForReview) is left untouched — the dispatcher / webhook path
+// (handlePRMerged) still owns advancing it. Like maybeClearStaleFixLoopBlock, it
+// emits no completion notification.
+func (p *DisplayPoller) reconcileTerminalPRForBlockedSession(ctx context.Context, sessionID string, prStatus *vcs.PRStatus) error {
+	if prStatus.State != vcs.PRStateMerged && prStatus.State != vcs.PRStateClosed {
+		return nil
+	}
+
+	sess, err := p.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("get session for terminal-PR reconcile: %w", err)
+	}
+
+	switch {
+	case sess.State == machine.Blocked:
+		return p.reconcileWedgedBlockToTerminal(ctx, sessionID, sess, prStatus)
+	case isResolvedTerminalState(sess.State) && sess.BlockedReason != nil:
+		// Terminal row with residual metadata: clear in place, no transition.
+		params := db.UpdateSessionParams{}
+		clearBlockMetadata(&params)
+		if _, err := p.sessions.Update(ctx, sessionID, params); err != nil {
+			return fmt.Errorf("clear residual block metadata on terminal session: %w", err)
+		}
+		p.logger.Info().
+			Str("session", sessionID).
+			Str("state", sess.State.String()).
+			Msg("display poller: cleared stale block reason on already-terminal session")
+		return nil
+	default:
+		return nil
+	}
+}
+
+// reconcileWedgedBlockToTerminal fires the terminal transition on a session still
+// in Blocked whose PR has resolved, persisting the state plus the block metadata
+// that OnExit(actionClearBlocked) reset in the machine.
+func (p *DisplayPoller) reconcileWedgedBlockToTerminal(ctx context.Context, sessionID string, sess *models.Session, prStatus *vcs.PRStatus) error {
+	reason := ""
+	if sess.BlockedReason != nil {
+		reason = *sess.BlockedReason
+	}
+	sm := machine.NewWithContext(machine.Blocked, &machine.SessionContext{
+		AttemptCount:  sess.AttemptCount,
+		MaxAttempts:   machine.MaxAttempts,
+		BlockedReason: reason,
+	})
+
+	event := machine.PRMerged
+	if prStatus.State == vcs.PRStateClosed {
+		event = machine.PRClosed
+	}
+	if err := sm.FireCtx(ctx, event); err != nil {
+		return fmt.Errorf("fire terminal transition for wedged block: %w", err)
+	}
+
+	newState := int(sm.State())
+	params := db.UpdateSessionParams{State: &newState}
+	clearBlockMetadata(&params)
+	if _, err := p.sessions.Update(ctx, sessionID, params); err != nil {
+		return fmt.Errorf("persist terminal-PR reconcile: %w", err)
+	}
+
+	p.logger.Info().
+		Str("session", sessionID).
+		Str("new_state", sm.State().String()).
+		Msg("display poller: wedged block reconciled to terminal state on resolved PR")
+	return nil
+}
+
+// isResolvedTerminalState reports whether a machine state is one of the two
+// PR-resolved terminals (Merged or Closed) — the states an already-resolved row
+// can sit in while still carrying stale block metadata.
+func isResolvedTerminalState(s machine.State) bool {
+	return s == machine.Merged || s == machine.Closed
+}
+
+// anyCheckRunning reports whether any check has not yet completed. Used to hold
+// off the stale-block downgrade while CI is still settling.
+func anyCheckRunning(checks []vcs.CheckResult) bool {
+	for _, c := range checks {
+		if c.Status != vcs.CheckStatusCompleted {
+			return true
+		}
+	}
+	return false
 }
 
 func prStateString(state vcs.PRState) string {

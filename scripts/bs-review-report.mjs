@@ -3,9 +3,10 @@
 // Mirrors the wondercanvas `wc-auto-review` layout so the report is easy to
 // skim: a one-line header + horizontal rule, a ✅/❌ verdict block where the
 // badge signals pass/fail at a glance, and collapsible <details> sections for
-// the long material (round-by-round evidence, must-fix detail, leave-as-is
-// rationales, the follow-up-ticket prompt). The renderer OWNS the layout and
-// the ✅/❌ classification so a hand-written report can't drift per run.
+// the long material (test-coverage prose, round-by-round evidence, must-fix
+// detail, leave-as-is rationales, the "Create N Linear issues" prompt). The
+// renderer OWNS the layout and the ✅/❌ classification so a hand-written report
+// can't drift per run.
 //
 // Node built-ins only — cron worktrees are dependency-free.
 
@@ -27,6 +28,17 @@ export const VERDICT_OK = {
   recommendation: (v) => /^\s*(merge|ship|approve)\b/i.test(v), // Merge/Ship/Approve ✅ | Fix/Hold ❌
 }
 
+// Escape the HTML-significant characters in caller-supplied free text so a
+// literal tag like `<details>` in prose renders as visible text instead of
+// being parsed as HTML by GitHub — which, for an unclosed tag, would swallow
+// every following section into it. Applied ONLY to plain-markdown text; never
+// to the renderer's own <details>/<summary>/<strong> markup, and never to
+// content inside code spans/fences (already literal there). Markdown emphasis
+// and inline `code` in the prose are left intact — only &<> are neutralised.
+function esc(text) {
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 // Pick a code-fence long enough to wrap `text` without a backtick run inside it
 // breaking out of the block (matches wc-auto-review's codeFence).
 function codeFence(text) {
@@ -40,8 +52,9 @@ function codeFence(text) {
 function verdictLine(field, label, value) {
   const v = String(value).replace(/^\s*[✅❌]\s*/, '')
   const classify = VERDICT_OK[field]
-  if (!classify || v === 'N/A') return `**${label}:** ${v}`
-  return `${classify(v) ? '✅' : '❌'} **${label}:** ${v}`
+  // Classify on the raw value; escape only for display.
+  if (!classify || v === 'N/A') return `**${label}:** ${esc(v)}`
+  return `${classify(v) ? '✅' : '❌'} **${label}:** ${esc(v)}`
 }
 
 // `file:line` location suffix in code font, e.g. ` (`a/b.ts:42`)`. '' when no file.
@@ -77,12 +90,17 @@ function renderVerdictBlock({ verdict = {}, issuesHeadline = '', security = [] }
     n > 0
       ? `**🚨 ${n} security ${n === 1 ? 'issue' : 'issues'} identified 🚨**`
       : 'No security issues identified.'
-  const headline = issuesHeadline ? `**${String(issuesHeadline).replace(/\.\s*$/, '')}.** ` : ''
+  const headline = issuesHeadline
+    ? `**${esc(String(issuesHeadline).replace(/\.\s*$/, ''))}.** `
+    : ''
   lines.push(`${headline}${securityStatus}`)
   if (n > 0) {
     lines.push(
       security
-        .map((s) => `- **${s.severity}** ${s.title}${loc(s)}${s.fix ? ` — Fix: ${s.fix}` : ''}`)
+        .map(
+          (s) =>
+            `- **${esc(s.severity)}** ${esc(s.title)}${loc(s)}${s.fix ? ` — Fix: ${esc(s.fix)}` : ''}`,
+        )
         .join('\n'),
     )
   }
@@ -101,7 +119,7 @@ function renderVerdictBlock({ verdict = {}, issuesHeadline = '', security = [] }
 function renderEvidence({ evidenceRows = [], gates = [] } = {}) {
   const parts = []
   if (evidenceRows.length) {
-    const rows = evidenceRows.map((r) => `| ${r.round} | ${r.result} |`).join('\n')
+    const rows = evidenceRows.map((r) => `| ${esc(r.round)} | ${esc(r.result)} |`).join('\n')
     parts.push(`| Round | Result |\n|-------|--------|\n${rows}`)
   }
   if (gates.length) {
@@ -119,34 +137,43 @@ function renderMustfix(mustfix = {}) {
   return items
     .map((it) => {
       const commit = it.commit ? ` (\`${it.commit}\`)` : ''
-      const detail = it.detail ? ` — ${it.detail}` : ''
-      return `- ${badge(it.disposition)} — **${it.title}**${loc(it)}${detail}${commit}`
+      const detail = it.detail ? ` — ${esc(it.detail)}` : ''
+      return `- ${badge(it.disposition)} — **${esc(it.title)}**${loc(it)}${detail}${commit}`
     })
     .join('\n')
 }
 
 function renderLeaveAsIs(leaveAsIs = []) {
   if (!leaveAsIs.length) return ''
-  return leaveAsIs.map((l) => `- **${l.title}**${loc(l)} — ${l.rationale}`).join('\n')
+  return leaveAsIs.map((l) => `- **${esc(l.title)}**${loc(l)} — ${esc(l.rationale)}`).join('\n')
 }
 
-// "Suggestions (open pool) & follow-up-ticket prompt": a single copyable,
-// fence-guarded block an agent can paste to file each suggestion as a Linear
-// ticket. '' when there are no suggestions.
+// "Create N Linear issues": a single copyable, fence-guarded block an agent can
+// paste to file each suggestion as a Linear issue. '' when there are no
+// suggestions. The fenced code block is what gives GitHub the copy-to-clipboard
+// button.
 function renderSuggestions(suggestions = []) {
   if (!suggestions.length) return ''
   const list = suggestions
     .map((s) => `- ${s.title}${loc(s)}${s.detail ? ` — ${s.detail}` : ''}`)
     .join('\n')
   const prompt = [
-    'Using the linear-bossanova MCP, create one Bossanova ticket per item below (priority None,',
+    'Using the linear-bossanova MCP, create one Bossanova issue per item below (priority None,',
     'no project filter). Title = the item title; description = the detail + originating file:line.',
-    'Do not create duplicates of existing Todo/In Progress tickets.',
+    'Do not create duplicates of existing Todo/In Progress issues.',
     '',
     list,
   ].join('\n')
   const fence = codeFence(prompt)
   return `${fence}\n${prompt}\n${fence}`
+}
+
+// "Test Coverage" details body: the optional coverage prose complementing the
+// one-line verdict badge. '' when `verdict.testing_detail` is absent/empty, so
+// detailsSection omits the toggle entirely (the badge still renders).
+function renderTestCoverage(verdict = {}) {
+  const detail = verdict.testing_detail
+  return detail ? esc(String(detail).trim()) : ''
 }
 
 /**
@@ -171,8 +198,10 @@ export function renderReport(data = {}) {
   blocks.push(`${MARKER}\n${renderHeader(data)}`)
   blocks.push('---')
   blocks.push('### bs-review report')
-  if (summary) blocks.push(summary)
+  if (summary) blocks.push(esc(summary))
   blocks.push(...renderVerdictBlock({ verdict, issuesHeadline, security }))
+
+  blocks.push(detailsSection('Test Coverage', renderTestCoverage(verdict)))
 
   const evidence = renderEvidence({ evidenceRows, gates })
   if (evidence) blocks.push(detailsSection('Evidence — rounds & gates', evidence))
@@ -186,9 +215,10 @@ export function renderReport(data = {}) {
   }
 
   blocks.push(detailsSection('Leave as-is', renderLeaveAsIs(leaveAsIs)))
+  const n = suggestions.length
   blocks.push(
     detailsSection(
-      'Suggestions (open pool) & follow-up-ticket prompt',
+      `<strong>Create ${n} Linear ${n === 1 ? 'issue' : 'issues'}</strong>`,
       renderSuggestions(suggestions),
     ),
   )

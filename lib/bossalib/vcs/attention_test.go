@@ -44,6 +44,29 @@ func TestComputeAttentionStatus(t *testing.T) {
 			wantSummary:   "blocked — needs human intervention",
 		},
 		{
+			name: "orphaned session needs attention",
+			session: &models.Session{
+				State:     machine.Orphaned,
+				UpdatedAt: now,
+			},
+			repo:          &models.Repo{},
+			wantAttention: true,
+			wantReason:    AttentionReasonAwaitingHumanInput,
+			wantSummary:   "orphaned — headless run killed by daemon restart; needs human",
+		},
+		{
+			name: "orphaned session with reason uses that summary",
+			session: &models.Session{
+				State:         machine.Orphaned,
+				BlockedReason: &blockedReason,
+				UpdatedAt:     now,
+			},
+			repo:          &models.Repo{},
+			wantAttention: true,
+			wantReason:    AttentionReasonAwaitingHumanInput,
+			wantSummary:   blockedReason,
+		},
+		{
 			name: "green draft with auto-merge off does not need attention",
 			session: &models.Session{
 				State:     machine.GreenDraft,

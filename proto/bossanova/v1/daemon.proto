@@ -104,6 +104,28 @@ service DaemonService {
   // Subject to the same overlap and concurrency-cap rules as scheduled fires.
   rpc RunCronJobNow(RunCronJobNowRequest) returns (RunCronJobNowResponse);
 
+  // --- Accounts (BOS-157 rotation registry) ---
+
+  // ListAccounts returns registry accounts, optionally filtered by provider.
+  // Metadata only — credential blobs never cross the wire.
+  rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse);
+
+  // AddAccount registers a new provider login. The credential blob travels
+  // inbound only and is stored in the keyring; it is never echoed back.
+  rpc AddAccount(AddAccountRequest) returns (AddAccountResponse);
+
+  // UpdateAccount mutates account metadata. Mutable fields are optional
+  // (present-only update semantics).
+  rpc UpdateAccount(UpdateAccountRequest) returns (UpdateAccountResponse);
+
+  // RemoveAccount deletes the account row and purges its keyring credential.
+  rpc RemoveAccount(RemoveAccountRequest) returns (RemoveAccountResponse);
+
+  // TestAccount validates the account's stored credential and, when a live
+  // smoke runner is wired, runs a trivial CLI invocation. It records the
+  // outcome (last_test_ok_at / last_test_error) and never tears down a session.
+  rpc TestAccount(TestAccountRequest) returns (TestAccountResponse);
+
   // --- Repair Diagnostics ---
 
   // RepairDoctor returns a structured health report for the auto-repair
@@ -270,6 +292,14 @@ message CreateSessionRequest {
   // first attach. Set by `boss new --detach`. Default false = interactive:
   // no headless run fires, the agent starts when the user attaches.
   bool detach = 14;
+  // Opaque agent model id to run this session under (e.g. an Opus id).
+  // Empty → the agent plugin's default model. Mirrors `boss cron add --model`;
+  // set by `boss new --model` and the MCP create_session tool.
+  optional string model = 15;
+  bool tmux_unattended = 16;
+  // If true, bypass the tracker-issue dedup guard and create a second session
+  // for a tracker/PR/branch that already has an active one (BOS-236 escape hatch).
+  bool force = 17;
 }
 
 message CreateSessionResponse {
@@ -285,6 +315,11 @@ message SetupScriptOutput {
 
 message SessionCreated {
   Session session = 1;
+  // True when this event reports an EXISTING active session that already owns
+  // the requested branch/PR (the create was a dedup/attach), rather than a
+  // newly created session. On the attach path the request's plan/prompt is NOT
+  // run — the caller must run it in the existing session (e.g. send_chat_message).
+  bool attached_existing = 2;
 }
 
 message GetSessionRequest {
@@ -544,6 +579,7 @@ message SendChatMessageRequest {
   string agent_session_id = 1;  // target chat
   string message = 2;           // text to deliver to the agent
   bool wake_if_asleep = 3;      // when true, wake an asleep chat before pasting
+  bool submit = 4;               // when true, submit (press Enter + verify) a single-line command; default (false) prefills the composer without submitting
 }
 message SendChatMessageResponse {
   string tmux_session_name = 1;
@@ -685,6 +721,60 @@ message RunCronJobNowResponse {
   optional Session session = 1;
   // Reason the fire was skipped, when session is unset.
   string skipped_reason = 2;
+}
+
+// --- Accounts (BOS-157 rotation registry) ---
+
+message ListAccountsRequest {
+  // Optional provider filter ("claude" | "codex"). Empty returns all accounts.
+  optional string provider = 1;
+}
+
+message ListAccountsResponse {
+  repeated Account accounts = 1;
+}
+
+message AddAccountRequest {
+  string provider   = 1;   // "claude" | "codex"
+  string label      = 2;
+  string email      = 3;   // optional informational account email
+  int32  priority   = 4;   // sort order; lower = preferred
+  // Credential blob (Claude setup-token string; Codex auth.json bytes).
+  // Inbound only — consumed straight into the keyring, NEVER echoed back.
+  bytes  credential = 5;
+}
+
+message AddAccountResponse {
+  Account account = 1;   // metadata only; never the credential
+}
+
+message UpdateAccountRequest {
+  string id = 1;
+  optional string label    = 2;
+  optional string email    = 3;
+  optional int32  priority = 4;
+  optional string status   = 5;   // "active" | "disabled"
+  repeated string allowed_models = 6; // replaces the set when present
+}
+
+message UpdateAccountResponse {
+  Account account = 1;
+}
+
+message RemoveAccountRequest {
+  string id = 1;
+}
+
+message RemoveAccountResponse {}
+
+message TestAccountRequest {
+  string id = 1;
+}
+
+message TestAccountResponse {
+  Account account = 1;         // updated metadata (last_test_ok_at / last_test_error)
+  bool   live_smoke_ran = 2;   // true only when a live smoke runner executed
+  string detail = 3;           // human-readable outcome detail
 }
 
 // --- Repair Diagnostics ---

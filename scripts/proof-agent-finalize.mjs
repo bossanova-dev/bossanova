@@ -17,10 +17,23 @@ import {
   githubCommentCommand,
   proofCommentMarker,
   r2UploadCommand,
-  renderComment,
-  renderDeferredComment,
+  renderConsolidatedComment,
 } from './proof-lib.mjs'
+import {
+  aggregateExitCode,
+  classifySurfaceOutcomes,
+  surfaceRunHasMedia,
+} from './proof-finalize-outcome.mjs'
+import { buildSurfaceSections } from './proof-finalize-render.mjs'
+import {
+  addLabelCommand,
+  ensureLabelCommand,
+  judgeProof,
+  labelActionForJudge,
+  removeLabelCommand,
+} from './proof-judge.mjs'
 import { publishProofReport } from './proof-publish-report.mjs'
+import { scrubSecrets } from './proof-stage.mjs'
 import { collapsePriorProofComments, shouldCleanupRunDir, uploadBundle } from './proof.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -34,6 +47,36 @@ function runCommand(commandTuple) {
   })
   if (result.status !== 0) {
     throw new Error(`${command} ${args.join(' ')} exited ${result.status}`)
+  }
+}
+
+/**
+ * Best-effort, idempotent application of the `proof-invalid` label (BOS-141
+ * D12). Every spawn is individually try/catch'd with a one-line warn — a gh
+ * failure (rate limit, missing permission, label already in the desired
+ * state) must NEVER throw into finalize. `remove` does not `ensure` first:
+ * `gh pr edit --remove-label` on an absent label exits non-zero, which the
+ * catch below swallows, so there is nothing to create on the remove path.
+ * @param {{ action: 'add'|'remove', prNumber: string }} opts
+ */
+function applyJudgeLabel({ action, prNumber }) {
+  if (action === 'add') {
+    try {
+      runCommand(ensureLabelCommand())
+    } catch (err) {
+      console.warn(`[proof-agent] proof-invalid label ensure skipped: ${err.message}`)
+    }
+    try {
+      runCommand(addLabelCommand({ prNumber }))
+    } catch (err) {
+      console.warn(`[proof-agent] proof-invalid label add skipped: ${err.message}`)
+    }
+    return
+  }
+  try {
+    runCommand(removeLabelCommand({ prNumber }))
+  } catch (err) {
+    console.warn(`[proof-agent] proof-invalid label remove skipped: ${err.message}`)
   }
 }
 
@@ -64,17 +107,6 @@ function currentRepoIdentity() {
 }
 
 /**
- * Returns a shell hint for re-running the proof capture manually. Includes
- * `--recipe <id>` when a recipe id is available on the first capture.
- * @param {object} manifest
- * @returns {string}
- */
-function recaptureHintFor(manifest) {
-  const recipeId = manifest.captures?.[0]?.recipeId
-  return recipeId ? `node scripts/proof.mjs run --recipe ${recipeId}` : 'node scripts/proof.mjs run'
-}
-
-/**
  * Default external-effect seams for the finalize step.
  * Overridable via the `deps` argument to finalizeAgentProof so unit tests can
  * drive the orchestrator without hitting R2 or GitHub.
@@ -90,6 +122,12 @@ export function defaultFinalizeDeps() {
       runCommand(r2UploadCommand({ bucket, key, file, contentType: 'application/json' })),
     currentRepoIdentity,
     currentBranch,
+    // BOS-141 P4a: fresh-context judge, advisory-only (D6). Overridable so
+    // tests never hit the network.
+    judge: judgeProof,
+    // BOS-141 D12 (Task 5): best-effort proof-invalid label. Overridable so
+    // tests never shell out to gh.
+    applyJudgeLabel,
   }
 }
 
@@ -131,6 +169,8 @@ export async function finalizeAgentProof({
   agentResult,
   hasFailure,
   noSurface = false,
+  pipelineError = null,
+  surfaceRuns,
   prNumber,
   commit,
   runId,
@@ -147,38 +187,105 @@ export async function finalizeAgentProof({
 }) {
   const fd = { ...defaultFinalizeDeps(), ...(deps ?? {}) }
 
-  // ── Step 4: Build manifest ─────────────────────────────────────────────────
-  const captures = captureShapes ?? [captureShape]
+  // ── Normalize to surfaceRuns ───────────────────────────────────────────────
+  // BOS-139: the consolidated finalize renders N surface runs. When called with
+  // the legacy singular params (no surfaceRuns), wrap them as ONE implicit run
+  // so there is a single render path. Each run's pipelineError stderr tail is
+  // scrubbed here (a crashing stage runs with the proof secrets in its env).
+  const rawRuns = surfaceRuns ?? [
+    {
+      surface: (captureShapes ?? [captureShape]).find((c) => c?.surface)?.surface ?? 'web',
+      captureShapes: captureShapes ?? [captureShape],
+      brief,
+      agentResult,
+      hasFailure,
+      noSurface,
+      reasonCode: null,
+      pipelineError,
+    },
+  ]
+  const runs = rawRuns.map((run) => ({
+    ...run,
+    pipelineError: run.pipelineError
+      ? {
+          stage: run.pipelineError.stage,
+          message: run.pipelineError.message,
+          stderrTail: scrubSecrets(run.pipelineError.stderrTail),
+          ...(run.pipelineError.elapsedMs !== undefined
+            ? { elapsedMs: run.pipelineError.elapsedMs }
+            : {}),
+        }
+      : null,
+  }))
+
+  // ── Step 4: Build manifest (flat captures + per-surface summary) ───────────
+  const captures = runs.flatMap((r) => r.captureShapes ?? [])
+  const perSurface = classifySurfaceOutcomes(runs)
+  const anyDeferred = perSurface.some((p) => p.outcome === 'deferred')
+  const runsHasFailure = runs.some((r) => r.hasFailure)
+  const canUploadArtifacts = !shouldUpload || Boolean(bucket)
   const manifest = buildManifest({
     commit,
     prNumber,
     runId,
-    publicBaseUrl,
+    publicBaseUrl: canUploadArtifacts ? publicBaseUrl : null,
     agentRunnerStubbed,
     captures,
-    title: brief.title,
-    verdict: hasFailure ? 'failed' : 'passed',
+    title: (surfaceRuns ? null : brief?.title) ?? runs[0]?.brief?.title,
+    verdict: runsHasFailure ? 'failed' : 'passed',
     genAiLive: false,
-    agentSummary: agentResult.summary ?? null,
-    brief: { genAi: brief.genAi ?? false },
+    // Single-surface keeps its top-level summary; multi-surface carries summaries
+    // in the per-surface sections instead.
+    agentSummary: runs.length === 1 ? (runs[0].agentResult?.summary ?? null) : null,
+    brief: { genAi: (runs.length === 1 ? runs[0].brief?.genAi : false) ?? false },
   })
 
-  // A run that did not pass or produced no media is degraded: it defers to a
-  // neutral comment (never the ❌ verdict block). Mark it BEFORE persisting and
-  // uploading the manifest so the stored artifact carries `deferred: true`.
-  const hasMedia = manifest.captures?.some(
-    (c) => c?.fileName || c?.posterFileName || (c?.stills?.length ?? 0) > 0,
-  )
-  const degraded = manifest.verdict !== 'passed' || !hasMedia
-  if (degraded) {
+  // A deferred surface marks the persisted artifact deferred. A recorded stage
+  // crash is OUR bug (pipeline-error): tag the manifest with the first one so it
+  // carries the failed stage for post-hoc debugging.
+  if (anyDeferred) {
     manifest.deferred = true
+  }
+  const firstPipelineError = runs.find((r) => r.pipelineError)?.pipelineError ?? null
+  if (firstPipelineError) {
+    manifest.pipelineError = firstPipelineError
+  }
+  // Per-surface summary block (additive; captures stays the flat list).
+  manifest.surfaces = perSurface.map((p, i) => ({
+    surface: p.surface,
+    outcome: p.outcome,
+    reasonCode: p.reasonCode,
+    briefTitle: runs[i]?.brief?.title ?? null,
+  }))
+
+  // ── Judge (BOS-141 P4a, advisory-only D6) ─────────────────────────────────
+  // Runs AFTER outcome classification, BEFORE the manifest write below, so
+  // ONE write/upload carries manifest.judge. A no-media run has nothing to
+  // grade — skip the API call entirely rather than pay for (and caveat) a
+  // judgment with zero evidence; a run with media always gets a fresh-context
+  // opinion, even when mechanically deferred (the clamp downgrades it). The
+  // judge NEVER affects process.exitCode (Step 7 below, unchanged).
+  if (!runs.some((r) => surfaceRunHasMedia(r))) {
+    manifest.judge = { unjudged: true, reason: 'not-applicable' }
+  } else {
+    try {
+      manifest.judge = await fd.judge({ surfaceRuns: runs, manifest, localDir })
+    } catch (err) {
+      manifest.judge = { unjudged: true, reason: err?.message || 'judge-error' }
+    }
   }
 
   fs.writeFileSync(path.join(localDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
   console.log(JSON.stringify(manifest, null, 2))
 
   // ── Step 6: Upload (if enabled) ───────────────────────────────────────────
-  if (shouldUpload) {
+  // Guard on `bucket`: the multi-surface dispatcher resolves the R2 bucket
+  // lazily (null when BOSS_PROOF_R2_BUCKET is absent) so a missing bucket defers
+  // per-surface as env-unavailable rather than throwing. In that case every
+  // surface deferred (no media to upload), so skip the upload and still post the
+  // honest consolidated deferral comment below. Legacy single-surface callers
+  // always pass a real bucket when shouldUpload, so this never skips a real one.
+  if (shouldUpload && bucket) {
     fd.uploadBundle({ localDir, publicPrefix: paths.publicPrefix, manifest, bucket })
 
     // Best-effort report publish — must not throw into the run.
@@ -214,33 +321,33 @@ export async function finalizeAgentProof({
     }
   }
 
-  // ── Step 7: Render and post comment ──────────────────────────────────────
-  // `degraded` / `manifest.deferred` were determined before the manifest write.
+  // ── Step 7: Render and post ONE consolidated comment ──────────────────────
   const marker = proofCommentMarker(prNumber)
-
-  let commentBody
-  if (degraded) {
-    commentBody = renderDeferredComment({
-      marker,
-      manifest,
-      reasonCode: noSurface
-        ? 'no-ui-surface'
-        : manifest.verdict !== 'passed'
-          ? 'agent-incomplete'
-          : 'no-media',
-      // No recapture hint for a no-surface skip: there is nothing to re-run.
-      recaptureHint: noSurface ? undefined : recaptureHintFor(manifest),
-    })
-  } else {
-    commentBody = renderComment({ marker, manifest })
-  }
+  // The consolidated comment's chapter links (renderSceneChapters) need each
+  // capture's uploaded videoUrl, which only the manifest carries (buildManifest
+  // maps each input capture to a NEW object with url/videoUrl; the raw
+  // captureShapes on the runs do not). manifest.captures is exactly the flat
+  // runs.flatMap(r => r.captureShapes) order, 1:1 and order-preserving, so slice
+  // it back per run by cumulative count and feed the URL-bearing captures to
+  // buildSurfaceSections. Slice-by-count (not surface filter) is exact even when
+  // two runs share a surface. Spreading ...run keeps agentResult/surface/brief/
+  // pipelineError/missing; only captureShapes is swapped.
+  let capIdx = 0
+  const enrichedRuns = runs.map((run) => {
+    const count = (run.captureShapes ?? []).length
+    const enriched = manifest.captures.slice(capIdx, capIdx + count)
+    capIdx += count
+    return { ...run, captureShapes: enriched }
+  })
+  const sections = buildSurfaceSections({ runs: enrichedRuns, perSurface })
+  const commentBody = renderConsolidatedComment({ marker, manifest, sections })
   const commentPath = path.join(localDir, 'comment.md')
   fs.writeFileSync(commentPath, commentBody)
 
-  // A no-surface outcome is a neutral skip ("nothing to prove here"), not a
-  // failure — keep exit 0 so it does not redden the PR. Genuine agent failures
-  // still signal so the proof check reflects that the change was not captured.
-  if (hasFailure && !noSurface) {
+  // Exit policy (BOS-139): aggregate the per-surface contributions. A no-surface
+  // outcome and every neutral deferral keep exit 0; a web agent-incomplete or
+  // any pipeline crash signals exit 1; a TUI agent-incomplete stays 0 (Q6).
+  if (aggregateExitCode(perSurface) === 1) {
     process.exitCode = 1
   }
 
@@ -250,9 +357,22 @@ export async function finalizeAgentProof({
       prNumber,
       bodyFile: path.relative(repoRoot, commentPath),
     })
+
+    // BOS-141 D12 (Task 5): best-effort, idempotent proof-invalid label.
+    // Belt-and-suspenders: labelActionForJudge is pure and can't throw, but
+    // fd.applyJudgeLabel is a dep (tests can inject a throwing one) — a
+    // throw here must never fail finalize or change the exit code/manifest.
+    const labelAction = labelActionForJudge({ judge: manifest.judge, shouldUpload, prNumber })
+    if (labelAction) {
+      try {
+        await fd.applyJudgeLabel({ action: labelAction, prNumber })
+      } catch (err) {
+        console.warn(`[proof-agent] proof-invalid label step skipped: ${err.message}`)
+      }
+    }
   }
 
-  if (shouldCleanupRunDir({ shouldUpload, hasFailure, prNumber, keepWebm })) {
+  if (shouldCleanupRunDir({ shouldUpload, hasFailure: runsHasFailure, prNumber, keepWebm })) {
     fs.rmSync(localDir, { recursive: true, force: true })
   }
 

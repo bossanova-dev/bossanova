@@ -1,11 +1,40 @@
 package status
 
 import (
+	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/recurser/bossalib/vcs"
 )
+
+func TestDisplayTracker_ChangesRequestedBy_RoundTrip(t *testing.T) {
+	tr := NewDisplayTracker()
+
+	want := []string{"alice", "bob"}
+	tr.Set("sess-cr", vcs.DisplayInfo{
+		Status:              vcs.DisplayStatusRejected,
+		HasChangesRequested: true,
+		ChangesRequestedBy:  want,
+	})
+
+	e := tr.Get("sess-cr")
+	if e == nil {
+		t.Fatal("expected entry, got nil")
+	}
+	if !reflect.DeepEqual(e.ChangesRequestedBy, want) {
+		t.Errorf("Get ChangesRequestedBy = %v, want %v", e.ChangesRequestedBy, want)
+	}
+
+	batch := tr.GetBatch([]string{"sess-cr"})
+	be, ok := batch["sess-cr"]
+	if !ok {
+		t.Fatal("expected sess-cr in batch")
+	}
+	if !reflect.DeepEqual(be.ChangesRequestedBy, want) {
+		t.Errorf("GetBatch ChangesRequestedBy = %v, want %v", be.ChangesRequestedBy, want)
+	}
+}
 
 func TestDisplayTracker_Set_and_Get(t *testing.T) {
 	tr := NewDisplayTracker()
@@ -25,6 +54,36 @@ func TestDisplayTracker_Set_and_Get(t *testing.T) {
 	}
 	if e.UpdatedAt.IsZero() {
 		t.Error("expected non-zero UpdatedAt")
+	}
+}
+
+func TestDisplayTracker_Mergeable_ThreadsThroughSetGetBatch(t *testing.T) {
+	tr := NewDisplayTracker()
+	conflicting := false
+	mergeable := true
+
+	// Conflicting: false → surfaced verbatim on Get and GetBatch.
+	tr.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusConflict, Mergeable: &conflicting})
+	e := tr.Get("sess-1")
+	if e == nil || e.Mergeable == nil || *e.Mergeable != false {
+		t.Fatalf("Get Mergeable = %v, want pointer to false", e.Mergeable)
+	}
+	batch := tr.GetBatch([]string{"sess-1"})
+	if b := batch["sess-1"]; b == nil || b.Mergeable == nil || *b.Mergeable != false {
+		t.Fatalf("GetBatch Mergeable = %v, want pointer to false", batch["sess-1"].Mergeable)
+	}
+
+	// A later poll flips it to mergeable — Set carries the fresh value (not
+	// preserved from the prior entry, unlike IsRepairing).
+	tr.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, Mergeable: &mergeable})
+	if e := tr.Get("sess-1"); e == nil || e.Mergeable == nil || *e.Mergeable != true {
+		t.Fatalf("Get Mergeable after reset = %v, want pointer to true", e.Mergeable)
+	}
+
+	// Unknown mergeability (nil) round-trips as nil.
+	tr.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusChecking})
+	if e := tr.Get("sess-1"); e == nil || e.Mergeable != nil {
+		t.Fatalf("Get Mergeable unknown = %v, want nil", e.Mergeable)
 	}
 }
 

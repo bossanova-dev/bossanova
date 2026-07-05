@@ -23,8 +23,11 @@ type AgentRunner interface {
 	// If sessionID is non-empty, it is passed via --session-id and used as the tracking key.
 	// When sessionID is empty, a generated claude-<timestamp> ID is used instead.
 	// model is an opaque agent model id; "" means the plugin's default model.
+	// extraEnv is an allowlisted, never-logged env overlay (proof credentials
+	// + non-secret proof constants) applied to the spawned process; nil/empty
+	// leaves the inherited environment unchanged.
 	// Returns the session ID assigned to this process.
-	Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model string) (string, error)
+	Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string) (string, error)
 
 	// Stop terminates the Claude process for the given session.
 	Stop(sessionID string) error
@@ -52,7 +55,7 @@ type AgentRunner interface {
 // fresh runs, non-empty for resume.
 type AgentDispatcher interface {
 	AgentRunner
-	StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string) (string, error)
+	StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string) (string, error)
 	StopByAgent(agentName, agentSessionID string) error
 	IsRunningByAgent(agentName, agentSessionID string) bool
 }

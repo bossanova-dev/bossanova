@@ -213,3 +213,68 @@ func TestConcurrency(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestSetAuthFailed_and_AuthFailed(t *testing.T) {
+	tr := NewTracker()
+
+	if tr.AuthFailed("chat-1") {
+		t.Fatal("AuthFailed on unknown chat = true, want false")
+	}
+
+	tr.SetAuthFailed("chat-1", true)
+	if !tr.AuthFailed("chat-1") {
+		t.Fatal("AuthFailed after SetAuthFailed(true) = false, want true")
+	}
+
+	// Clearing removes the marker immediately.
+	tr.SetAuthFailed("chat-1", false)
+	if tr.AuthFailed("chat-1") {
+		t.Fatal("AuthFailed after SetAuthFailed(false) = true, want false")
+	}
+}
+
+func TestAuthFailed_Stale(t *testing.T) {
+	tr := NewTracker()
+	tr.SetAuthFailed("chat-1", true)
+
+	// Backdate the marker beyond StaleThreshold: a stale marker must read as
+	// absent (fail toward not flagging).
+	tr.mu.Lock()
+	tr.authFailed["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	if tr.AuthFailed("chat-1") {
+		t.Fatal("AuthFailed on stale marker = true, want false")
+	}
+}
+
+func TestRemove_ClearsAuthFailed(t *testing.T) {
+	tr := NewTracker()
+	tr.SetAuthFailed("chat-1", true)
+	tr.Remove("chat-1")
+	if tr.AuthFailed("chat-1") {
+		t.Fatal("AuthFailed after Remove = true, want false")
+	}
+}
+
+func TestCleanup_RemovesStaleAuthFailed(t *testing.T) {
+	tr := NewTracker()
+	tr.SetAuthFailed("fresh", true)
+	tr.SetAuthFailed("stale", true)
+	tr.mu.Lock()
+	tr.authFailed["stale"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	tr.Cleanup()
+
+	tr.mu.RLock()
+	_, freshOK := tr.authFailed["fresh"]
+	_, staleOK := tr.authFailed["stale"]
+	tr.mu.RUnlock()
+	if !freshOK {
+		t.Error("Cleanup removed a fresh auth marker")
+	}
+	if staleOK {
+		t.Error("Cleanup kept a stale auth marker")
+	}
+}

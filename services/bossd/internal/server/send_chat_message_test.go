@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -12,6 +13,9 @@ import (
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/tmux"
 )
+
+// errTestDelivery is a canned delivery failure for exercising the error path.
+var errTestDelivery = errors.New("delivery failed")
 
 // newSendMessageTestServer wires a Server with the minimum surface SendChatMessage needs.
 func newSendMessageTestServer(t *testing.T, chat *models.AgentChat, sess *models.Session, tmuxer *fakeTmuxClient) *Server {
@@ -204,6 +208,112 @@ func TestSendChatMessage_HeadlessRunActive_FailedPrecondition(t *testing.T) {
 	tmuxer.mu.Unlock()
 	if spawnCount != 0 {
 		t.Errorf("expected 0 spawns while headless run active, got %d", spawnCount)
+	}
+}
+
+// TestSendChatMessage_Submit_ThreadsSubmitAndClaudeMarker verifies the handler
+// forwards submit=true and resolves the claude ready marker for a chat with no
+// (legacy "") agent name.
+func TestSendChatMessage_Submit_ThreadsSubmitAndClaudeMarker(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+	s := newSendMessageTestServer(t, chat, sess, tmuxer)
+
+	if _, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "/boss-repair watch",
+		Submit:         true,
+	})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tmuxer.mu.Lock()
+	msgs := append([]sentMessage(nil), tmuxer.sentMessages...)
+	tmuxer.mu.Unlock()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(msgs))
+	}
+	if !msgs[0].submit {
+		t.Errorf("submit = false, want true")
+	}
+	if msgs[0].readyMarker != "❯" {
+		t.Errorf("readyMarker = %q, want claude marker %q", msgs[0].readyMarker, "❯")
+	}
+}
+
+// TestSendChatMessage_DefaultsToPrefill verifies that an omitted submit field
+// defaults to false (prefill) — the behavior change the caller audit guards.
+func TestSendChatMessage_DefaultsToPrefill(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+	s := newSendMessageTestServer(t, chat, sess, tmuxer)
+
+	if _, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "hello",
+	})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tmuxer.mu.Lock()
+	msgs := append([]sentMessage(nil), tmuxer.sentMessages...)
+	tmuxer.mu.Unlock()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(msgs))
+	}
+	if msgs[0].submit {
+		t.Errorf("submit = true, want false (default prefill)")
+	}
+}
+
+// TestSendChatMessage_CodexChat_UsesCodexMarker verifies the ready marker is
+// resolved from the chat's agent so the submit path waits for codex's composer
+// glyph, not claude's.
+func TestSendChatMessage_CodexChat_UsesCodexMarker(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "codex"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "codex"}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+	s := newSendMessageTestServer(t, chat, sess, tmuxer)
+
+	if _, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "/status",
+		Submit:         true,
+	})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tmuxer.mu.Lock()
+	msgs := append([]sentMessage(nil), tmuxer.sentMessages...)
+	tmuxer.mu.Unlock()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(msgs))
+	}
+	if msgs[0].readyMarker != "›" {
+		t.Errorf("readyMarker = %q, want codex marker %q", msgs[0].readyMarker, "›")
+	}
+}
+
+// TestSendChatMessage_DeliveryError_SurfacesInternal verifies a delivery/verify
+// failure surfaces as a CodeInternal error rather than a silent "delivered".
+func TestSendChatMessage_DeliveryError_SurfacesInternal(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true, sendMessageErr: errTestDelivery}
+	s := newSendMessageTestServer(t, chat, sess, tmuxer)
+
+	_, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "/boss-repair watch",
+		Submit:         true,
+	}))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if connect.CodeOf(err) != connect.CodeInternal {
+		t.Fatalf("expected CodeInternal, got %v", connect.CodeOf(err))
 	}
 }
 

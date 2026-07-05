@@ -967,6 +967,18 @@ func TestTmuxStatusPoller_Bootstrap_IdleByDefault(t *testing.T) {
 		t.Errorf("expected IDLE, got %v", entry.Status)
 	}
 
+	// Bootstrap has not observed any genuine agent output — it only captured
+	// pre-existing (possibly stale) pane content on restart. LastOutputAt must
+	// therefore be seeded in the past (>= IdleThreshold ago), NOT `now`, so a
+	// stalled pane that survived the restart does not read as freshly active via
+	// last_agent_activity_at. (ReceivedAt stays fresh — that is the heartbeat.)
+	if entry.LastOutputAt.IsZero() {
+		t.Fatal("expected a seeded LastOutputAt after bootstrap")
+	}
+	if age := time.Since(entry.LastOutputAt); age < IdleThreshold {
+		t.Errorf("bootstrap LastOutputAt is only %v old, want >= IdleThreshold (%v) in the past", age, IdleThreshold)
+	}
+
 	// Should also be registered in prevCaptures.
 	poller.mu.Lock()
 	_, exists := poller.prevCaptures[agentSessionID]
@@ -1439,5 +1451,69 @@ func TestPollOnceMissingAgentClientFallsThroughToIdle(t *testing.T) {
 	}
 	if entry.Status != pb.ChatStatus_CHAT_STATUS_IDLE {
 		t.Errorf("expected IDLE for chat with missing agent client, got %v", entry.Status)
+	}
+}
+
+func TestTmuxStatusPoller_AuthFailedDetected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-authfail"
+	agentSessionID := "claude-auth"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{
+			tmuxName: "Invalid API key · Please run /login\n❯ \n",
+		},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	if !tracker.AuthFailed(agentSessionID) {
+		t.Error("expected auth-failed marker after polling a login-required pane")
+	}
+}
+
+func TestTmuxStatusPoller_AuthFailedClearedOnNormalOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-authclear"
+	agentSessionID := "claude-clear"
+	// Pre-seed a stale auth marker; a normal pane must clear it.
+	tracker.SetAuthFailed(agentSessionID, true)
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{
+			tmuxName: "Working on some code changes...",
+		},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	if tracker.AuthFailed(agentSessionID) {
+		t.Error("expected auth-failed marker cleared after a normal pane")
 	}
 }

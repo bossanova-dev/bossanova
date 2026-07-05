@@ -432,6 +432,12 @@ type sendPlanOpts struct {
 	readyMarker      string
 	submitVerifyWait time.Duration
 	submitVerifyTick time.Duration
+
+	// prefillOnly delivers the payload into the composer but sends no Enter and
+	// runs no submission verification: the human (or composer owner) submits.
+	// Used by the Prefill* wrappers; the Send* wrappers leave it false so they
+	// submit and verify as before.
+	prefillOnly bool
 }
 
 // SendPlan delivers a plan to a tmux-hosted agent session as a bracketed paste.
@@ -457,10 +463,11 @@ func (c *Client) SendPlan(ctx context.Context, sessionName, plan string) error {
 // A cron session is headless, so a paste that loads but doesn't execute (the
 // failure mode SendLine warns about) would otherwise be reported as a clean
 // fire while nothing ran; the verification turns that silent no-op into a
-// surfaced error. The check is line-oriented, so it applies to a single-line,
-// non-empty payload (e.g. a free-text cron prompt); multi-line plans and the
-// empty string are skipped explicitly (see sendPlan), since neither sits as a
-// single matchable prompt row.
+// surfaced error. Every non-empty payload shape is verified: a single-line
+// payload against its literal prompt row, a multi-line plan against the
+// shape-aware multiLineSubmitted signal (see sendPlan). The empty string is the
+// only shape skipped, since it matches any row. When the first Enter is
+// swallowed the verifier sends one more Enter and re-checks before erroring.
 func (c *Client) SendPlanWithReadyMarker(ctx context.Context, sessionName, plan, readyMarker string) error {
 	return c.sendPlan(ctx, sessionName, plan, sendPlanOpts{
 		deadline:         sendPlanDefaultDeadline,
@@ -484,46 +491,78 @@ func (c *Client) SendLineWithReadyMarker(ctx context.Context, sessionName, line,
 	})
 }
 
-// SendMessage delivers text to an existing tmux session via bracketed paste
-// (load-buffer → paste-buffer -p → send-keys Enter). It does not poll for
-// a ready marker or verify submission; callers that need those guarantees
-// should use SendPlan or SendPlanWithReadyMarker instead.
-func (c *Client) SendMessage(ctx context.Context, sessionName, text string) error {
+// PrefillPlanWithReadyMarker delivers a plan into the composer WITHOUT
+// submitting it: it waits for the ready marker and pastes/types the payload,
+// but sends no Enter and runs no verification. Use it when the composer owner
+// (a human, or a later explicit-submit step) will submit — the counterpart to
+// SendPlanWithReadyMarker's auto-submit-and-verify behaviour.
+func (c *Client) PrefillPlanWithReadyMarker(ctx context.Context, sessionName, plan, readyMarker string) error {
+	return c.sendPlan(ctx, sessionName, plan, sendPlanOpts{
+		deadline:     sendPlanDefaultDeadline,
+		pollInterval: sendPlanDefaultPollInterval,
+		readyMarker:  readyMarker,
+		prefillOnly:  true,
+	})
+}
+
+// PrefillLineWithReadyMarker delivers a short literal line into the composer
+// WITHOUT submitting it (no Enter, no verification), mirroring
+// SendLineWithReadyMarker for the prefill case.
+func (c *Client) PrefillLineWithReadyMarker(ctx context.Context, sessionName, line, readyMarker string) error {
+	return c.sendLine(ctx, sessionName, line, sendPlanOpts{
+		deadline:     sendPlanDefaultDeadline,
+		pollInterval: sendPlanDefaultPollInterval,
+		readyMarker:  readyMarker,
+		prefillOnly:  true,
+	})
+}
+
+// SendMessage delivers text into an existing chat's live agent composer,
+// routing on submit intent and payload shape (BOS-242 Gap 1). readyMarker is
+// the agent's input-box prompt glyph (e.g. claude "❯", codex "›"); an empty
+// marker defaults to the legacy Claude marker.
+//
+// Routing (honoring the send_chat_message submit contract exactly):
+//
+//   - submit && single-line (a lone slash-command, "$…", or one line of text):
+//     deliver the text, press Enter, and run the BOS-228 submit-verifier so a
+//     swallowed Enter is retried once and a false "submitted" cannot happen —
+//     a delivery that never executes surfaces as a loud error, not a silent
+//     no-op. Routes through SendLineWithReadyMarker.
+//   - submit && multi-line: paste-only, NO Enter. A multi-line payload is never
+//     auto-submitted — the swallowed-Enter failure mode makes a bare Enter
+//     unsafe — so it is pasted into the composer for the owner to submit.
+//     Routes through PrefillPlanWithReadyMarker.
+//   - !submit (prefill, the default): paste/type into the composer, NO Enter.
+//     Single-line prefills via PrefillLineWithReadyMarker, multi-line via
+//     PrefillPlanWithReadyMarker.
+//
+// An empty/whitespace-only payload has nothing to submit, so it is always
+// treated as a prefill (no Enter, no verification) regardless of submit.
+func (c *Client) SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string) error {
 	if sessionName == "" {
 		return fmt.Errorf("session name is required")
 	}
 
-	loadCmd := c.cmdFunc(ctx, "tmux", "load-buffer", "-")
-	loadCmd.Stdin = strings.NewReader(text)
-	var loadStderr bytes.Buffer
-	loadCmd.Stderr = &loadStderr
-	if err := loadCmd.Run(); err != nil {
-		if msg := strings.TrimSpace(loadStderr.String()); msg != "" {
-			return fmt.Errorf("tmux load-buffer for %q: %w (stderr: %s)", sessionName, err, msg)
-		}
-		return fmt.Errorf("tmux load-buffer for %q: %w", sessionName, err)
-	}
+	trimmed := strings.TrimSpace(text)
+	multiLine := strings.ContainsAny(trimmed, "\r\n")
 
-	pasteCmd := c.cmdFunc(ctx, "tmux", "paste-buffer", "-d", "-p", "-t", sessionName)
-	var pasteStderr bytes.Buffer
-	pasteCmd.Stderr = &pasteStderr
-	if err := pasteCmd.Run(); err != nil {
-		if msg := strings.TrimSpace(pasteStderr.String()); msg != "" {
-			return fmt.Errorf("tmux paste-buffer for %q: %w (stderr: %s)", sessionName, err, msg)
-		}
-		return fmt.Errorf("tmux paste-buffer for %q: %w", sessionName, err)
+	switch {
+	case submit && trimmed != "" && !multiLine:
+		// Single-line submit: deliver + Enter + verify (fails toward "still
+		// pending"). Pass the trimmed text so a trailing newline can't be typed
+		// as a literal keystroke that submits prematurely on the send-keys -l path.
+		return c.SendLineWithReadyMarker(ctx, sessionName, trimmed, readyMarker)
+	case multiLine:
+		// Multi-line (submit or prefill): paste-only, never auto-submit.
+		return c.PrefillPlanWithReadyMarker(ctx, sessionName, text, readyMarker)
+	case trimmed == "":
+		// Nothing meaningful to submit; paste the (possibly empty) buffer.
+		return c.PrefillPlanWithReadyMarker(ctx, sessionName, text, readyMarker)
+	default:
+		// Single-line prefill (submit=false): type into the composer, no Enter.
+		return c.PrefillLineWithReadyMarker(ctx, sessionName, trimmed, readyMarker)
 	}
-
-	enterCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "Enter")
-	var enterStderr bytes.Buffer
-	enterCmd.Stderr = &enterStderr
-	if err := enterCmd.Run(); err != nil {
-		if msg := strings.TrimSpace(enterStderr.String()); msg != "" {
-			return fmt.Errorf("tmux send-keys Enter for %q: %w (stderr: %s)", sessionName, err, msg)
-		}
-		return fmt.Errorf("tmux send-keys Enter for %q: %w", sessionName, err)
-	}
-	return nil
 }
 
 // sendPlan is the test-injectable variant of SendPlan that accepts custom
@@ -547,35 +586,44 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 		return err
 	}
 
-	// Steps 2-4: deliver the payload. A non-empty single-line payload (e.g. a
-	// free-text cron prompt) is typed via literal keystrokes + Enter, which
-	// Claude Code's TUI reliably executes; bracketed paste can leave such a
-	// payload loaded but not submitted (the failure mode SendLine warns about).
-	// Multi-line plans and the empty string keep the bracketed-paste path so
-	// intermediate newlines aren't treated as premature submits. The dispatch
-	// keys off the trimmed payload — and types the trimmed text — so a single
-	// logical line carrying surrounding whitespace (e.g. a trailing newline)
-	// still takes the reliable literal path rather than slipping into paste,
-	// matching the trimmed payload the step-5 verifier checks for.
+	// Step 2: deliver the payload into the composer WITHOUT submitting. A
+	// non-empty single-line payload (e.g. a free-text cron prompt) is typed via
+	// literal keystrokes, which Claude Code's TUI reliably executes; bracketed
+	// paste can leave such a payload loaded but not submitted (the failure mode
+	// SendLine warns about). Multi-line plans and the empty string keep the
+	// bracketed-paste path so intermediate newlines aren't treated as premature
+	// submits. The dispatch keys off the trimmed payload — and types the trimmed
+	// text — so a single logical line carrying surrounding whitespace (e.g. a
+	// trailing newline) still takes the reliable literal path rather than
+	// slipping into paste, matching the trimmed payload the verifier checks for.
 	trimmedPlan := strings.TrimSpace(plan)
 	if trimmedPlan != "" && !strings.ContainsAny(trimmedPlan, "\r\n") {
-		if err := c.sendLiteralLineAndEnter(ctx, sessionName, trimmedPlan); err != nil {
+		if err := c.typeLiteralLineNoEnter(ctx, sessionName, trimmedPlan); err != nil {
 			return err
 		}
-	} else if err := c.SendMessage(ctx, sessionName, plan); err != nil {
+	} else if err := c.pasteBufferNoEnter(ctx, sessionName, plan); err != nil {
 		return err
 	}
 
-	// Step 5: verify the payload actually left the prompt, so a delivery that
-	// loaded but did not execute surfaces as an error instead of a silent
-	// no-op. The check is line-oriented (lineStillAtPrompt matches the payload
-	// against a single prompt row), so it only applies to a single-line,
-	// non-empty payload. Multi-line plans never sit as one matchable row, and
-	// the empty string matches any row — both are skipped explicitly so the
-	// verification neither runs a needless capture-pane nor reports a spurious
-	// error for content it cannot meaningfully check.
-	if opts.submitVerifyWait > 0 && trimmedPlan != "" && !strings.ContainsAny(trimmedPlan, "\r\n") {
-		if err := c.waitForLineSubmission(ctx, sessionName, trimmedPlan, opts.submitVerifyWait, opts.submitVerifyTick); err != nil {
+	// Prefill delivery stops here: the composer owner submits, so we send no
+	// Enter and run no verification.
+	if opts.prefillOnly {
+		return nil
+	}
+
+	// Step 3: submit with Enter.
+	if err := c.sendEnter(ctx, sessionName); err != nil {
+		return err
+	}
+
+	// Step 4: verify the payload actually left the prompt, so a delivery that
+	// loaded but did not execute surfaces as an error instead of a silent no-op.
+	// Every non-empty payload shape is verified — single-line against its literal
+	// prompt row, multi-line against the shape-aware multiLineSubmitted signal.
+	// Only the empty string is skipped (it matches any row). A first Enter the
+	// TUI swallows is retried once inside verifyWithEnterRetry before erroring.
+	if opts.submitVerifyWait > 0 && trimmedPlan != "" {
+		if err := c.verifyWithEnterRetry(ctx, sessionName, plan, opts); err != nil {
 			return err
 		}
 	}
@@ -601,23 +649,34 @@ func (c *Client) sendLine(ctx context.Context, sessionName, line string, opts se
 		return err
 	}
 
-	if err := c.sendLiteralLineAndEnter(ctx, sessionName, line); err != nil {
+	if err := c.typeLiteralLineNoEnter(ctx, sessionName, line); err != nil {
+		return err
+	}
+
+	// Prefill delivery stops before Enter: the composer owner submits.
+	if opts.prefillOnly {
+		return nil
+	}
+
+	if err := c.sendEnter(ctx, sessionName); err != nil {
 		return err
 	}
 	if opts.submitVerifyWait > 0 {
-		if err := c.waitForLineSubmission(ctx, sessionName, line, opts.submitVerifyWait, opts.submitVerifyTick); err != nil {
+		if err := c.verifyWithEnterRetry(ctx, sessionName, line, opts); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// sendLiteralLineAndEnter types line as literal keystrokes (send-keys -l) and
-// then submits it with a separate send-keys Enter. Used for "must execute"
-// content — single-line cron prompts and command invocations — where bracketed
-// paste can leave some TUIs (Claude Code) with the text loaded but not run.
-// stderr from either tmux invocation is wrapped into the returned error.
-func (c *Client) sendLiteralLineAndEnter(ctx context.Context, sessionName, line string) error {
+// typeLiteralLineNoEnter types line as literal keystrokes (send-keys -l) WITHOUT
+// submitting. Delivery and submission are split — this types, sendEnter submits
+// — so prefill delivery can type without Enter and the submit path can retry the
+// Enter independently. Used for "must execute" content (single-line cron prompts
+// and command invocations) where bracketed paste can leave some TUIs (Claude
+// Code) with the text loaded but not run. stderr from tmux is wrapped into the
+// returned error.
+func (c *Client) typeLiteralLineNoEnter(ctx context.Context, sessionName, line string) error {
 	// The "--" terminator stops tmux from parsing a payload that begins with
 	// "-" (e.g. a free-text cron prompt starting with a hyphen) as a send-keys
 	// flag, which would otherwise fail with "unknown flag" and strand the run.
@@ -633,7 +692,43 @@ func (c *Client) sendLiteralLineAndEnter(ctx context.Context, sessionName, line 
 		}
 		return fmt.Errorf("tmux send-keys literal line for %q: %w", sessionName, err)
 	}
+	return nil
+}
 
+// pasteBufferNoEnter loads text into a tmux paste buffer and pastes it into the
+// composer with bracketed paste enabled (-p) WITHOUT submitting. It is the
+// load-buffer → paste-buffer half of SendMessage, split out so prefill delivery
+// and the multi-line submit path can paste without an Enter. stderr from either
+// tmux invocation is wrapped into the returned error.
+func (c *Client) pasteBufferNoEnter(ctx context.Context, sessionName, text string) error {
+	loadCmd := c.cmdFunc(ctx, "tmux", "load-buffer", "-")
+	loadCmd.Stdin = strings.NewReader(text)
+	var loadStderr bytes.Buffer
+	loadCmd.Stderr = &loadStderr
+	if err := loadCmd.Run(); err != nil {
+		if msg := strings.TrimSpace(loadStderr.String()); msg != "" {
+			return fmt.Errorf("tmux load-buffer for %q: %w (stderr: %s)", sessionName, err, msg)
+		}
+		return fmt.Errorf("tmux load-buffer for %q: %w", sessionName, err)
+	}
+
+	pasteCmd := c.cmdFunc(ctx, "tmux", "paste-buffer", "-d", "-p", "-t", sessionName)
+	var pasteStderr bytes.Buffer
+	pasteCmd.Stderr = &pasteStderr
+	if err := pasteCmd.Run(); err != nil {
+		if msg := strings.TrimSpace(pasteStderr.String()); msg != "" {
+			return fmt.Errorf("tmux paste-buffer for %q: %w (stderr: %s)", sessionName, err, msg)
+		}
+		return fmt.Errorf("tmux paste-buffer for %q: %w", sessionName, err)
+	}
+	return nil
+}
+
+// sendEnter submits the current composer contents with a single send-keys
+// Enter. It is the submission half of the literal/paste delivery helpers, split
+// out so prefill delivery can skip it and the submit path can retry it
+// independently. stderr from tmux is wrapped into the returned error.
+func (c *Client) sendEnter(ctx context.Context, sessionName string) error {
 	enterCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "Enter")
 	var enterStderr bytes.Buffer
 	enterCmd.Stderr = &enterStderr
@@ -660,116 +755,6 @@ func escapeSendKeysLiteral(line string) string {
 		return line[:len(line)-1] + `\;`
 	}
 	return line
-}
-
-func (c *Client) waitForLineSubmission(ctx context.Context, sessionName, line string, waitFor, tickEvery time.Duration) error {
-	if tickEvery <= 0 {
-		tickEvery = 100 * time.Millisecond
-	}
-
-	deadline := time.NewTimer(waitFor)
-	defer deadline.Stop()
-
-	ticker := time.NewTicker(tickEvery)
-	defer ticker.Stop()
-
-	for {
-		pane, err := c.CapturePane(ctx, sessionName)
-		if err != nil {
-			return fmt.Errorf("verify command submission: %w", err)
-		}
-		if !lineStillAtPrompt(pane, line) {
-			return nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline.C:
-			return fmt.Errorf("command was not submitted; %q is still present at the tmux prompt", line)
-		case <-ticker.C:
-		}
-	}
-}
-
-func lineStillAtPrompt(pane, line string) bool {
-	lines := strings.Split(pane, "\n")
-
-	// Locate the bottom-most prompt-marker row: the live input box. Everything
-	// below it is footer — a separator rule, the "model | cwd" line, and any
-	// custom statusline rows, which are arbitrary user text (e.g. "PR #133",
-	// "◉ xhigh · /effort") that no fixed predicate can enumerate — so the scan
-	// skips all of it while finding the marker. The empty prompt ("❯" with no
-	// text) is a marker too, so a cleared/submitted input reports false below.
-	markerIdx := -1
-	for i := len(lines) - 1; i >= 0; i-- {
-		if hasPromptMarker(strings.TrimSpace(lines[i])) {
-			markerIdx = i
-			break
-		}
-	}
-	if markerIdx == -1 {
-		return false
-	}
-
-	// If agent activity appears below that marker, the marker is a submitted
-	// prompt echoed into the transcript ("❯ do the thing" above the agent's
-	// response or working spinner) with no fresh input box drawn yet, so the
-	// payload has already left the prompt. Footer and statusline rows are not
-	// agent activity, so a still-pending payload beneath a custom statusline is
-	// never mistaken for a submitted one.
-	for _, l := range lines[markerIdx+1:] {
-		if isAgentActivity(strings.TrimSpace(l)) {
-			return false
-		}
-	}
-	return strings.Contains(strings.TrimSpace(lines[markerIdx]), line)
-}
-
-// hasPromptMarker reports whether a trimmed pane row begins with one of the
-// input-box prompt indicators.
-func hasPromptMarker(text string) bool {
-	for _, marker := range []string{"❯", "›", ">"} {
-		if strings.HasPrefix(text, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// agentActivityMarkers are the leading glyphs that mark a pane row as agent
-// activity below the input box — an assistant/tool response, tool output, or a
-// thinking/working spinner — rather than input-box footer or statusline chrome.
-// The verifier runs against both Claude Code and Codex panes, so it covers
-// both grammars: the Claude working/output markers statusdetect already trusts
-// (lib/bossalib/statusdetect/question.go optionStopMarkers: ⎿ ⏺ · ✻) plus the
-// "✽" spinner frame, and Codex's working bullet (plugins/bossd-plugin-codex/
-// question.go codexWorking: "• Working (…)"). This lets the predicate recognise
-// the activity row each agent renders immediately after accepting a line and
-// before any response body appears.
-var agentActivityMarkers = []string{
-	"⏺", // Claude response / tool-use bullet (U+23FA)
-	"⎿", // Claude tool-result branch (U+23BF)
-	"·", // Claude working spinner (U+00B7)
-	"✻", // Claude thinking spinner (U+273B)
-	"✽", // Claude thinking spinner (U+273D)
-	"•", // Codex working bullet (U+2022)
-}
-
-// isAgentActivity reports whether a trimmed pane row begins with an agent
-// activity marker. Matching only the leading glyph keeps custom statusline rows
-// safe (e.g. "◉ xhigh · /effort" has a mid-row "·" but does not start with
-// one). It is deliberately conservative on unknown rows: misclassifying footer
-// chrome as activity would let lineStillAtPrompt report a still-pending payload
-// as submitted — the silent cron no-op this guards against — so only these
-// distinctive glyphs qualify and arbitrary footer/statusline text never does.
-func isAgentActivity(text string) bool {
-	for _, marker := range agentActivityMarkers {
-		if strings.HasPrefix(text, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 // waitForReadyMarker polls CapturePane until the Claude Code ready marker

@@ -994,6 +994,11 @@ type ProxyCreateSessionRequest struct {
 	TrackerUrl    *string                `protobuf:"bytes,11,opt,name=tracker_url,json=trackerUrl,proto3,oneof" json:"tracker_url,omitempty"`
 	TrackerIssue  *TrackerIssue          `protobuf:"bytes,12,opt,name=tracker_issue,json=trackerIssue,proto3,oneof" json:"tracker_issue,omitempty"`
 	TrackerSource *string                `protobuf:"bytes,13,opt,name=tracker_source,json=trackerSource,proto3,oneof" json:"tracker_source,omitempty"`
+	// Bypass the BOS-236 tracker-issue dedup guard so a caller can intentionally
+	// create a second session for a tracker/PR/branch that already has an active
+	// one. Mirrors CreateSessionRequest.force so the hosted MCP gateway path has
+	// the same escape hatch as the local socket backend.
+	Force         bool `protobuf:"varint,14,opt,name=force,proto3" json:"force,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1119,6 +1124,13 @@ func (x *ProxyCreateSessionRequest) GetTrackerSource() string {
 	return ""
 }
 
+func (x *ProxyCreateSessionRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
+}
+
 // ProxyCreateSessionResponse is streamed from orchestrator to the client as
 // creation progresses: setup output lines, then a terminal created Session or
 // an in-band error message.
@@ -1129,9 +1141,14 @@ type ProxyCreateSessionResponse struct {
 	//	*ProxyCreateSessionResponse_SetupOutput
 	//	*ProxyCreateSessionResponse_Created
 	//	*ProxyCreateSessionResponse_Error
-	Body          isProxyCreateSessionResponse_Body `protobuf_oneof:"body"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Body isProxyCreateSessionResponse_Body `protobuf_oneof:"body"`
+	// True when the terminal `created` frame reports an EXISTING active session
+	// the daemon attached to (dedup) rather than a freshly created one. Carries
+	// SessionCreateChunk.attached_existing through the hosted create path so the
+	// MCP gateway can surface it; only meaningful alongside `created`.
+	AttachedExisting bool `protobuf:"varint,4,opt,name=attached_existing,json=attachedExisting,proto3" json:"attached_existing,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ProxyCreateSessionResponse) Reset() {
@@ -1196,6 +1213,13 @@ func (x *ProxyCreateSessionResponse) GetError() string {
 		}
 	}
 	return ""
+}
+
+func (x *ProxyCreateSessionResponse) GetAttachedExisting() bool {
+	if x != nil {
+		return x.AttachedExisting
+	}
+	return false
 }
 
 type isProxyCreateSessionResponse_Body interface {
@@ -2129,8 +2153,12 @@ type ProxySendChatMessageRequest struct {
 	AgentSessionId string                 `protobuf:"bytes,1,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
 	Message        string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
 	WakeIfAsleep   bool                   `protobuf:"varint,3,opt,name=wake_if_asleep,json=wakeIfAsleep,proto3" json:"wake_if_asleep,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// when true, submit the message (BOS-242); when false, prefill only.
+	// optional so an omitting (pre-BOS-242) client is treated as submit=true
+	// server-side, preserving the prior always-submit proxy behavior.
+	Submit        *bool `protobuf:"varint,4,opt,name=submit,proto3,oneof" json:"submit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProxySendChatMessageRequest) Reset() {
@@ -2180,6 +2208,13 @@ func (x *ProxySendChatMessageRequest) GetMessage() string {
 func (x *ProxySendChatMessageRequest) GetWakeIfAsleep() bool {
 	if x != nil {
 		return x.WakeIfAsleep
+	}
+	return false
+}
+
+func (x *ProxySendChatMessageRequest) GetSubmit() bool {
+	if x != nil && x.Submit != nil {
+		return *x.Submit
 	}
 	return false
 }
@@ -4891,7 +4926,7 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"outputLine\x12>\n" +
 	"\fstate_change\x18\x02 \x01(\v2\x19.bossanova.v1.StateChangeH\x00R\vstateChange\x12A\n" +
 	"\rsession_ended\x18\x03 \x01(\v2\x1a.bossanova.v1.SessionEndedH\x00R\fsessionEndedB\a\n" +
-	"\x05event\"\xc0\x04\n" +
+	"\x05event\"\xd6\x04\n" +
 	"\x19ProxyCreateSessionRequest\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -4912,18 +4947,20 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\vtracker_url\x18\v \x01(\tH\x03R\n" +
 	"trackerUrl\x88\x01\x01\x12D\n" +
 	"\rtracker_issue\x18\f \x01(\v2\x1a.bossanova.v1.TrackerIssueH\x04R\ftrackerIssue\x88\x01\x01\x12*\n" +
-	"\x0etracker_source\x18\r \x01(\tH\x05R\rtrackerSource\x88\x01\x01B\f\n" +
+	"\x0etracker_source\x18\r \x01(\tH\x05R\rtrackerSource\x88\x01\x01\x12\x14\n" +
+	"\x05force\x18\x0e \x01(\bR\x05forceB\f\n" +
 	"\n" +
 	"_pr_numberB\x0e\n" +
 	"\f_branch_nameB\r\n" +
 	"\v_tracker_idB\x0e\n" +
 	"\f_tracker_urlB\x10\n" +
 	"\x0e_tracker_issueB\x11\n" +
-	"\x0f_tracker_source\"\x94\x01\n" +
+	"\x0f_tracker_source\"\xc1\x01\n" +
 	"\x1aProxyCreateSessionResponse\x12#\n" +
 	"\fsetup_output\x18\x01 \x01(\tH\x00R\vsetupOutput\x121\n" +
 	"\acreated\x18\x02 \x01(\v2\x15.bossanova.v1.SessionH\x00R\acreated\x12\x16\n" +
-	"\x05error\x18\x03 \x01(\tH\x00R\x05errorB\x06\n" +
+	"\x05error\x18\x03 \x01(\tH\x00R\x05error\x12+\n" +
+	"\x11attached_existing\x18\x04 \x01(\bR\x10attachedExistingB\x06\n" +
 	"\x04body\")\n" +
 	"\x17ProxyStopSessionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"K\n" +
@@ -4978,11 +5015,13 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\x1eProxyGetChatTranscriptResponse\x125\n" +
 	"\bmessages\x18\x01 \x03(\v2\x19.bossanova.v1.ChatMessageR\bmessages\x120\n" +
 	"\x14final_assistant_text\x18\x02 \x01(\tR\x12finalAssistantText\x12\x16\n" +
-	"\x06exists\x18\x03 \x01(\bR\x06exists\"\x87\x01\n" +
+	"\x06exists\x18\x03 \x01(\bR\x06exists\"\xaf\x01\n" +
 	"\x1bProxySendChatMessageRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12$\n" +
-	"\x0ewake_if_asleep\x18\x03 \x01(\bR\fwakeIfAsleep\"h\n" +
+	"\x0ewake_if_asleep\x18\x03 \x01(\bR\fwakeIfAsleep\x12\x1b\n" +
+	"\x06submit\x18\x04 \x01(\bH\x00R\x06submit\x88\x01\x01B\t\n" +
+	"\a_submit\"h\n" +
 	"\x1cProxySendChatMessageResponse\x12*\n" +
 	"\x11tmux_session_name\x18\x01 \x01(\tR\x0ftmuxSessionName\x12\x1c\n" +
 	"\tdelivered\x18\x02 \x01(\bR\tdelivered\"\xb9\x01\n" +
@@ -5496,6 +5535,7 @@ func file_bossanova_v1_orchestrator_proto_init() {
 		(*ProxyCreateSessionResponse_Created)(nil),
 		(*ProxyCreateSessionResponse_Error)(nil),
 	}
+	file_bossanova_v1_orchestrator_proto_msgTypes[35].OneofWrappers = []any{}
 	file_bossanova_v1_orchestrator_proto_msgTypes[45].OneofWrappers = []any{}
 	file_bossanova_v1_orchestrator_proto_msgTypes[48].OneofWrappers = []any{
 		(*ProxyChatListEvent_Snapshot)(nil),

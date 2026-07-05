@@ -11,7 +11,9 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/status"
@@ -1071,6 +1073,340 @@ func TestPollIntervalRefreshPRSuppressesImmediateScheduledPoll(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// TestDisplayPollerAutoUnblocksStaleFixLoopExhausted is BOS-235 acceptance
+// criterion 4: a session sitting in Blocked with the FixLoopExhausted reason
+// whose live PR is observed clean + green + mergeable is auto-unblocked — it
+// leaves Blocked, its blocked_reason is cleared, and attempt_count resets to 0.
+// The stale tracker entry (a non-Passing status) must not prevent the
+// downgrade, because the display poller reads live PR state.
+func TestDisplayPollerAutoUnblocksStaleFixLoopExhausted(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	var logs bytes.Buffer
+	logger := zerolog.New(&logs)
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	blockedReason := sessionreason.FixLoopExhausted()
+	staleSHA := "sha-stale"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:                 "sess-1",
+		RepoID:             "repo-1",
+		PRNumber:           intPtr(42),
+		State:              machine.Blocked,
+		BlockedReason:      &blockedReason,
+		AttemptCount:       machine.MaxAttempts,
+		LastAttemptHeadSHA: &staleSHA,
+	}
+
+	// Live PR: open, mergeable, all checks passed → computes Passing.
+	success := vcs.CheckConclusionSuccess
+	vp.nextCheckResults = []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}}
+	vp.nextReviewComments = nil
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: boolPtr(true), HeadSHA: "sha-green"}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+
+	sess := sessions.sessions["sess-1"]
+	if sess.State == machine.Blocked {
+		t.Fatalf("session still Blocked; want auto-unblocked (state=%v)", sess.State)
+	}
+	if sess.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil (cleared)", *sess.BlockedReason)
+	}
+	if sess.AttemptCount != 0 {
+		t.Fatalf("AttemptCount = %d, want 0 after unblock", sess.AttemptCount)
+	}
+	if sess.LastAttemptHeadSHA != nil {
+		t.Fatalf("LastAttemptHeadSHA = %q, want nil (cleared)", *sess.LastAttemptHeadSHA)
+	}
+	if !strings.Contains(logs.String(), "fix_loop_exhausted cleared") {
+		t.Fatalf("log output missing %q: %s", "fix_loop_exhausted cleared", logs.String())
+	}
+}
+
+// TestDisplayPollerLeavesOtherBlockedReasonsUntouched pins the narrowness of
+// the auto-unblock: a session Blocked for any reason OTHER than
+// FixLoopExhausted (a genuine human-required block) must be left alone even
+// when the live PR is clean + green + mergeable.
+func TestDisplayPollerLeavesOtherBlockedReasonsUntouched(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	humanReason := "needs human: risky migration"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:            "sess-1",
+		RepoID:        "repo-1",
+		PRNumber:      intPtr(42),
+		State:         machine.Blocked,
+		BlockedReason: &humanReason,
+		AttemptCount:  2,
+	}
+
+	success := vcs.CheckConclusionSuccess
+	vp.nextCheckResults = []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}}
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: boolPtr(true), HeadSHA: "sha-green"}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.Blocked {
+		t.Fatalf("state = %v, want Blocked (non-fix-loop reason must be untouched)", sess.State)
+	}
+	if sess.BlockedReason == nil || *sess.BlockedReason != humanReason {
+		t.Fatalf("BlockedReason = %v, want %q (untouched)", sess.BlockedReason, humanReason)
+	}
+}
+
+// TestDisplayPollerReconcilesBlockedSessionOnMergedPR covers the BOS-246 fix:
+// a session wedged in Blocked (e.g. by a non-gating finalize failure) whose PR
+// is later observed merged is reconciled to Merged, clearing blocked_reason and
+// attempt_count. The reconcile is deliberately NOT gated on the block reason — a
+// merged PR is terminal truth for any block.
+func TestDisplayPollerReconcilesBlockedSessionOnMergedPR(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	var logs bytes.Buffer
+	logger := zerolog.New(&logs)
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	blockedReason := "finalize failed: worktree has uncommitted changes"
+	staleSHA := "sha-stale"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:                 "sess-1",
+		RepoID:             "repo-1",
+		PRNumber:           intPtr(42),
+		State:              machine.Blocked,
+		BlockedReason:      &blockedReason,
+		AttemptCount:       machine.MaxAttempts,
+		LastAttemptHeadSHA: &staleSHA,
+	}
+
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: "sha-merged"}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.Merged {
+		t.Fatalf("state = %v, want Merged (reconciled)", sess.State)
+	}
+	if sess.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil (cleared)", *sess.BlockedReason)
+	}
+	if sess.AttemptCount != 0 {
+		t.Fatalf("AttemptCount = %d, want 0 (cleared)", sess.AttemptCount)
+	}
+	if sess.LastAttemptHeadSHA != nil {
+		t.Fatalf("LastAttemptHeadSHA = %q, want nil (cleared)", *sess.LastAttemptHeadSHA)
+	}
+	if !strings.Contains(logs.String(), "reconciled") {
+		t.Fatalf("log output missing reconcile line: %s", logs.String())
+	}
+}
+
+// TestDisplayPollerReconcilesBlockedSessionOnClosedPR is the closed-PR mirror:
+// a Blocked session whose PR is closed without merging reconciles to Closed with
+// its block reason cleared.
+func TestDisplayPollerReconcilesBlockedSessionOnClosedPR(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	blockedReason := "finalize failed: mark PR ready"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:            "sess-1",
+		RepoID:        "repo-1",
+		PRNumber:      intPtr(42),
+		State:         machine.Blocked,
+		BlockedReason: &blockedReason,
+		AttemptCount:  2,
+	}
+
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateClosed, HeadSHA: "sha-closed"}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.Closed {
+		t.Fatalf("state = %v, want Closed (reconciled)", sess.State)
+	}
+	if sess.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil (cleared)", *sess.BlockedReason)
+	}
+}
+
+// TestDisplayPollerLeavesNonBlockedSessionUntouchedOnMerge guards against
+// over-reach: the reconcile fires only from Blocked, so a non-Blocked session
+// whose PR merges keeps its machine state (it is advanced by the dispatcher /
+// webhook path, not by this display-poller backstop).
+func TestDisplayPollerLeavesNonBlockedSessionUntouchedOnMerge(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		PRNumber: intPtr(42),
+		State:    machine.ReadyForReview,
+	}
+
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: "sha-merged"}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.ReadyForReview {
+		t.Fatalf("state = %v, want ReadyForReview (non-Blocked session must be untouched)", sess.State)
+	}
+}
+
+// TestDisplayPollerClearsStaleBlockReasonOnAlreadyTerminalSession covers the
+// upgrade case: a session that a pre-fix PRClosed webhook advanced to Closed while
+// the old handler wrote only State is already terminal but still carries a stale
+// blocked_reason (which web sessionWarningHints surfaces). The reconcile must clear
+// the residual metadata in place even though the session is no longer Blocked.
+func TestDisplayPollerClearsStaleBlockReasonOnAlreadyTerminalSession(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	var logs bytes.Buffer
+	logger := zerolog.New(&logs)
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	blockedReason := "finalize failed: mark PR ready"
+	staleSHA := "sha-stale"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:                 "sess-1",
+		RepoID:             "repo-1",
+		PRNumber:           intPtr(42),
+		State:              machine.Closed, // already terminal from a pre-fix webhook
+		BlockedReason:      &blockedReason,
+		AttemptCount:       2,
+		LastAttemptHeadSHA: &staleSHA,
+	}
+
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateClosed, HeadSHA: "sha-closed"}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.Closed {
+		t.Fatalf("state = %v, want Closed (unchanged; no transition on already-terminal row)", sess.State)
+	}
+	if sess.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil (cleared on terminal row)", *sess.BlockedReason)
+	}
+	if sess.AttemptCount != 0 {
+		t.Fatalf("AttemptCount = %d, want 0 (cleared)", sess.AttemptCount)
+	}
+	if sess.LastAttemptHeadSHA != nil {
+		t.Fatalf("LastAttemptHeadSHA = %q, want nil (cleared)", *sess.LastAttemptHeadSHA)
+	}
+	if !strings.Contains(logs.String(), "cleared stale block reason") {
+		t.Fatalf("log output missing clear line: %s", logs.String())
+	}
+}
+
+// TestDisplayPollerRetriesTerminalReconcileAfterStoreError covers the retry
+// window: a transient store error while reconciling a wedged Blocked session must
+// NOT leave a terminal tracker entry, or poll() / RefreshPR() would skip the row
+// forever (until daemon restart). The next poll must retry and reconcile cleanly.
+func TestDisplayPollerRetriesTerminalReconcileAfterStoreError(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	blockedReason := "finalize failed: worktree dirty"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:            "sess-1",
+		RepoID:        "repo-1",
+		PRNumber:      intPtr(42),
+		State:         machine.Blocked,
+		BlockedReason: &blockedReason,
+		AttemptCount:  2,
+	}
+
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: "sha-merged"}
+
+	// Fail the first Update (the reconcile persist), succeed thereafter.
+	failedOnce := false
+	sessions.updateHook = func(_ string, _ db.UpdateSessionParams) error {
+		if !failedOnce {
+			failedOnce = true
+			return fmt.Errorf("transient store error")
+		}
+		return nil
+	}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+
+	// First refresh: reconcile Update fails → tracker must NOT be marked terminal.
+	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+	if entry := tracker.Get("sess-1"); entry != nil && isTerminalDisplayStatus(entry.Status) {
+		t.Fatalf("tracker marked terminal despite reconcile store error; next poll would skip the retry")
+	}
+	if sessions.sessions["sess-1"].State != machine.Blocked {
+		t.Fatalf("state = %v, want still Blocked after failed reconcile", sessions.sessions["sess-1"].State)
+	}
+
+	// Second refresh: Update now succeeds → session reconciles to Merged + cleared.
+	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("RefreshPR (retry) returned error: %v", err)
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.Merged {
+		t.Fatalf("state = %v, want Merged after retry", sess.State)
+	}
+	if sess.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil after retry", *sess.BlockedReason)
+	}
+}
 
 func intPtr(i int) *int { return &i }
 

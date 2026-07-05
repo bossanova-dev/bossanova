@@ -189,6 +189,6 @@ func resolveCodexModel(reqModel, envModel string) string {
 // UUID parsed from `thread.started` (via the SessionIDFromOutput hook wired
 // in C.6); falls back to the caller-supplied hint if no UUID was observed
 // in time.
-func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string) (string, error) {
-	return r.Runner.Start(ctx, workDir, plan, resume, sessionID, logPath, model)
+func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string, extraEnv map[string]string) (string, error) {
+	return r.Runner.Start(ctx, workDir, plan, resume, sessionID, logPath, model, extraEnv)
 }

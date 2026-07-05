@@ -162,6 +162,7 @@ var stateToProtoMap = map[machine.State]pb.SessionState{
 	machine.Merged:           pb.SessionState_SESSION_STATE_MERGED,
 	machine.Closed:           pb.SessionState_SESSION_STATE_CLOSED,
 	machine.Finalizing:       pb.SessionState_SESSION_STATE_FINALIZING,
+	machine.Orphaned:         pb.SessionState_SESSION_STATE_ORPHANED,
 }
 
 var stateFromProtoMap = map[pb.SessionState]machine.State{
@@ -178,6 +179,7 @@ var stateFromProtoMap = map[pb.SessionState]machine.State{
 	pb.SessionState_SESSION_STATE_MERGED:            machine.Merged,
 	pb.SessionState_SESSION_STATE_CLOSED:            machine.Closed,
 	pb.SessionState_SESSION_STATE_FINALIZING:        machine.Finalizing,
+	pb.SessionState_SESSION_STATE_ORPHANED:          machine.Orphaned,
 }
 
 func stateToProto(s machine.State) pb.SessionState {

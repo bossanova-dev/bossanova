@@ -6,7 +6,7 @@ option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
 
 import "google/protobuf/timestamp.proto";
 
-// SessionState represents the 13 states of the session lifecycle.
+// SessionState represents the 14 states of the session lifecycle.
 enum SessionState {
   SESSION_STATE_UNSPECIFIED = 0;
   SESSION_STATE_CREATING_WORKTREE = 1;
@@ -22,6 +22,10 @@ enum SessionState {
   SESSION_STATE_MERGED = 11;
   SESSION_STATE_CLOSED = 12;
   SESSION_STATE_FINALIZING = 13;
+  // ORPHANED: a headless (boss new --detach) run killed mid-flight by a daemon
+  // restart — no recorded exit, no live agent process. Distinct from GREEN_DRAFT
+  // so its bootstrap-only PR is never surfaced as green.
+  SESSION_STATE_ORPHANED = 14;
 }
 
 // SessionEvent represents the 16 events that trigger state transitions.
@@ -265,6 +269,30 @@ message Session {
   // a non-empty reason IS the latest repair-related state.
   string last_repair_blocked_reason = 51;
   optional google.protobuf.Timestamp last_repair_blocked_at = 52;
+
+  // True while a single-repairer lease is held for this session — i.e. a repair
+  // chat has started and its post-repair status has not yet been assessed.
+  // Transport-only: hydrated server-side from the in-memory RepairLeaseManager
+  // and never persisted. Distinct from display_is_repairing (field 24), which
+  // is a best-effort display flag; repair_active is the authoritative,
+  // lease-backed signal a dispatcher (bs-epic driver, /boss-repair, plugin
+  // sweep) reads to defer to an already-active repairer without racing.
+  bool repair_active = 53;
+
+  // PR mergeability, hydrated server-side from the display poller's PR fetch so
+  // a conflict-after-green is detectable without attempting a merge. Unset when
+  // unknown/not yet polled; true = mergeable; false = conflicting. Transport-
+  // only, never persisted.
+  optional bool pr_mergeable = 54;
+
+  // Structured reason a session's PR cannot currently be merged, hydrated on
+  // get_session/list_sessions from the daemon's display tracker. Lets an
+  // unattended driver (bs-epic) decide repair-vs-proceed without scraping tmux.
+  MergeBlock merge_block = 55;
+
+  // Most-recent real agent output across the session's chats; advances on
+  // genuine output, NOT pane mtime. Absent when never observed.
+  optional google.protobuf.Timestamp last_agent_activity_at = 56;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display
@@ -402,6 +430,9 @@ enum AttentionReason {
   ATTENTION_REASON_AWAITING_HUMAN_INPUT = 2;
   ATTENTION_REASON_REVIEW_REQUESTED = 3;
   ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE = 4;
+  // Agent emitted a login-required signal ("Not logged in" / "Please run
+  // /login"); driver should trigger login-rotation recovery.
+  ATTENTION_REASON_AGENT_AUTH_FAILED = 5;
 }
 
 // AttentionStatus represents whether and why a session needs human attention.
@@ -426,6 +457,25 @@ enum DisplayStatus {
   DISPLAY_STATUS_DRAFT = 9;
   DISPLAY_STATUS_APPROVED = 10;
   DISPLAY_STATUS_REVIEW = 11;
+}
+
+// MergeBlock explains why a session's PR cannot currently be merged, so an
+// unattended driver (bs-epic) can decide repair-vs-proceed without scraping tmux.
+message MergeBlock {
+  enum Gate {
+    GATE_UNSPECIFIED = 0;
+    GATE_NONE = 1;       // not blocked — merge should succeed
+    GATE_REVIEW = 2;     // outstanding changes-requested review
+    GATE_CI = 3;         // failing checks
+    GATE_PENDING = 4;    // checks still running / mergeability unknown
+    GATE_CONFLICT = 5;   // merge conflict
+    GATE_BASE_SYNC = 6;  // local base branch can't fast-forward (merge-time only)
+    GATE_DRAFT = 7;      // PR is a draft
+  }
+  Gate gate = 1;
+  string detail = 2;                       // human-readable one-liner
+  repeated string blocking_reviewers = 3;  // logins whose latest review is CHANGES_REQUESTED
+  DisplayStatus display_status = 4;         // the DisplayStatus this derives from
 }
 
 // WorkflowStatus represents the lifecycle state of an autopilot workflow.
@@ -522,6 +572,29 @@ message CronJob {
   string model = 16;                   // opaque agent model id; "" = plugin default. Never enumerated by bossd.
   string gate_command = 17;            // optional gate command run before each fire; empty = no gate
   bool   run_setup_command = 18;       // run the repo setup script before the agent; default true
+}
+
+// Account is registry metadata for one provider login used by account
+// rotation (BOS-157). It carries METADATA ONLY — the credential blob is never
+// a field here and never crosses this message (locked decision D3); secrets
+// live only in the OS keyring on the daemon host.
+message Account {
+  string id       = 1;
+  string provider = 2;   // "claude" | "codex"
+  string label    = 3;
+  string email    = 4;   // account email (informational)
+  string status   = 5;   // "active" | "disabled"
+  int32  priority = 6;    // sort order; lower = preferred
+  google.protobuf.Timestamp cooldown_until = 7;
+  google.protobuf.Timestamp last_used_at   = 8;
+  string health   = 9;   // "ok" | "failed"
+  string tier     = 10;  // plan/tier metadata, free-form
+  repeated string allowed_models = 11;
+  google.protobuf.Timestamp last_test_ok_at = 12; // last time a credential test passed
+  string last_test_error = 13;                    // most recent test failure detail; "" = none
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp updated_at = 15;
+  // NO credential field. Ever.
 }
 
 // ChatMessage is a transport-neutral, single turn of an agent chat transcript,

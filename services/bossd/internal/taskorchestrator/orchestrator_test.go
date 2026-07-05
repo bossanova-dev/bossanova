@@ -16,6 +16,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/session"
 )
@@ -750,20 +751,14 @@ func TestUpdateMappingStatus_ClearsLastErrorForNonFailedStatus(t *testing.T) {
 // mockBaseSyncer implements BaseBranchSyncer for orchestrator tests that
 // need to drive the new pre-merge check + post-merge verification paths.
 type mockBaseSyncer struct {
-	ensureErr     error
 	fetchErr      error
 	ancestorFn    func(ref, target string) (bool, error)
 	syncErr       error
-	ensureCalls   int
 	syncCalls     int
 	fetchCalls    int
 	ancestorCalls int
 }
 
-func (m *mockBaseSyncer) EnsureBaseBranchReadyForSync(_ context.Context, _, _ string) error {
-	m.ensureCalls++
-	return m.ensureErr
-}
 func (m *mockBaseSyncer) SyncBaseBranch(_ context.Context, _, _ string) error {
 	m.syncCalls++
 	return m.syncErr
@@ -941,20 +936,24 @@ func (p *strategyCapturingProvider) MergePR(ctx context.Context, repoPath string
 	return p.Provider.MergePR(ctx, repoPath, prID, strategy)
 }
 
-func TestRouteTask_AutoMerge_RejectsDivergedBase(t *testing.T) {
-	// Auto-merge must not proceed when local <base> has diverged from
-	// origin/<base>. Otherwise the post-merge sync fails silently and the
-	// next auto-merge compounds the problem.
+func TestRouteTask_AutoMerge_DefersLocalBaseSync(t *testing.T) {
+	// BOS-233 (AC4): a not-fast-forwardable local base (operator's checkout is
+	// dirty) must NOT abort auto-merge. The GitHub merge still runs, the
+	// deferred local sync is non-fatal, and the mapping still completes.
 	var mergeCalled bool
 	var finalStatus models.TaskMappingStatus
 
-	syncer := &mockBaseSyncer{ensureErr: errors.New("base branch not ready for sync: local main has diverged")}
+	syncer := &mockBaseSyncer{
+		ancestorFn: func(_, _ string) (bool, error) { return true, nil }, // merge landed on base
+		syncErr:    gitpkg.ErrLocalSyncDeferred,
+	}
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.provider = &mockProvider{
 			mergeFn: func(_ context.Context, _ string, _ int) error {
 				mergeCalled = true
 				return nil
 			},
+			mergeCommitFn: func(_ int) (string, error) { return "abc123", nil },
 		}
 		o.baseSyncer = syncer
 		o.taskMappings = &mockTaskMappingStore{
@@ -979,11 +978,14 @@ func TestRouteTask_AutoMerge_RejectsDivergedBase(t *testing.T) {
 		baseBranch: "main",
 	}, "dependabot")
 
-	if mergeCalled {
-		t.Error("MergePR must not be called when pre-check rejects local base divergence")
+	if !mergeCalled {
+		t.Error("MergePR must still run even when the local base sync will defer")
 	}
-	if finalStatus != models.TaskMappingStatusFailed {
-		t.Errorf("want Failed, got %d", finalStatus)
+	if syncer.syncCalls == 0 {
+		t.Error("SyncBaseBranch should have been attempted post-merge")
+	}
+	if finalStatus != models.TaskMappingStatusCompleted {
+		t.Errorf("want Completed (deferred local sync is non-fatal), got %d", finalStatus)
 	}
 }
 

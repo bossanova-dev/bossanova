@@ -9,6 +9,7 @@ import (
 	"github.com/recurser/bossalib/apiversion"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"google.golang.org/protobuf/proto"
 )
 
 // RemoteClient communicates with the orchestrator service, proxying
@@ -303,6 +304,10 @@ func (c *RemoteClient) SendChatMessage(ctx context.Context, req *pb.SendChatMess
 		AgentSessionId: req.GetAgentSessionId(),
 		Message:        req.GetMessage(),
 		WakeIfAsleep:   req.GetWakeIfAsleep(),
+		// Carry the BOS-242 submit intent through the proxy; always set it
+		// (present) so an explicit --submit=false (prefill) survives rather than
+		// being defaulted to submit=true server-side.
+		Submit: proto.Bool(req.GetSubmit()),
 	}))
 	if err != nil {
 		return nil, err
@@ -416,6 +421,28 @@ func (c *RemoteClient) DeleteCronJob(_ context.Context, _ string) error {
 
 func (c *RemoteClient) RunCronJobNow(_ context.Context, _ string) (*pb.RunCronJobNowResponse, error) {
 	return nil, errLocalOnly("RunCronJobNow")
+}
+
+// --- Accounts (local only) ---
+
+func (c *RemoteClient) ListAccounts(_ context.Context, _ string) ([]*pb.Account, error) {
+	return nil, errLocalOnly("ListAccounts")
+}
+
+func (c *RemoteClient) AddAccount(_ context.Context, _ *pb.AddAccountRequest) (*pb.Account, error) {
+	return nil, errLocalOnly("AddAccount")
+}
+
+func (c *RemoteClient) UpdateAccount(_ context.Context, _ *pb.UpdateAccountRequest) (*pb.Account, error) {
+	return nil, errLocalOnly("UpdateAccount")
+}
+
+func (c *RemoteClient) RemoveAccount(_ context.Context, _ string) error {
+	return errLocalOnly("RemoveAccount")
+}
+
+func (c *RemoteClient) TestAccount(_ context.Context, _ string) (*pb.TestAccountResponse, error) {
+	return nil, errLocalOnly("TestAccount")
 }
 
 func (c *RemoteClient) RepairDoctor(_ context.Context) (*pb.RepairDoctorResponse, error) {

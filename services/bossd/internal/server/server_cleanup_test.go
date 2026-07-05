@@ -257,10 +257,10 @@ func (m *cleanupWorktreeManager) IsGitRepo(context.Context, string) bool {
 func (m *cleanupWorktreeManager) DetectDefaultBranch(context.Context, string) (string, error) {
 	panic("not used")
 }
-func (m *cleanupWorktreeManager) EnsureBaseBranchReadyForSync(context.Context, string, string) error {
+func (m *cleanupWorktreeManager) SyncBaseBranch(context.Context, string, string) error {
 	panic("not used")
 }
-func (m *cleanupWorktreeManager) SyncBaseBranch(context.Context, string, string) error {
+func (m *cleanupWorktreeManager) RetryDeferredBaseSyncs(context.Context) {
 	panic("not used")
 }
 func (m *cleanupWorktreeManager) IsAncestor(context.Context, string, string, string) (bool, error) {

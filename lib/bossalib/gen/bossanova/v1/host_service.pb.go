@@ -679,7 +679,14 @@ type SetRepairStatusRequest struct {
 	// Session ID to set repair status on.
 	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	// Whether the session is currently being repaired.
-	IsRepairing   bool `protobuf:"varint,2,opt,name=is_repairing,json=isRepairing,proto3" json:"is_repairing,omitempty"`
+	IsRepairing bool `protobuf:"varint,2,opt,name=is_repairing,json=isRepairing,proto3" json:"is_repairing,omitempty"`
+	// Stable identity of the repair dispatcher (e.g. the repair plugin instance).
+	// Used to take/release the per-session single-repairer lease: setting
+	// is_repairing=true acquires the lease for this dispatcher (re-entrant for the
+	// same id, refused with FailedPrecondition for a different one while held);
+	// is_repairing=false releases it. Empty for legacy callers, which then only
+	// toggle the advisory display flag without lease enforcement.
+	DispatcherId  string `protobuf:"bytes,3,opt,name=dispatcher_id,json=dispatcherId,proto3" json:"dispatcher_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -726,6 +733,13 @@ func (x *SetRepairStatusRequest) GetIsRepairing() bool {
 		return x.IsRepairing
 	}
 	return false
+}
+
+func (x *SetRepairStatusRequest) GetDispatcherId() string {
+	if x != nil {
+		return x.DispatcherId
+	}
+	return ""
 }
 
 type SetRepairStatusResponse struct {
@@ -1545,11 +1559,12 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x120\n" +
 	"\x05event\x18\x02 \x01(\x0e2\x1a.bossanova.v1.SessionEventR\x05event\"7\n" +
 	"\x18FireSessionEventResponse\x12\x1b\n" +
-	"\tnew_state\x18\x01 \x01(\tR\bnewState\"Z\n" +
+	"\tnew_state\x18\x01 \x01(\tR\bnewState\"\x7f\n" +
 	"\x16SetRepairStatusRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12!\n" +
-	"\fis_repairing\x18\x02 \x01(\bR\visRepairing\"\x19\n" +
+	"\fis_repairing\x18\x02 \x01(\bR\visRepairing\x12#\n" +
+	"\rdispatcher_id\x18\x03 \x01(\tR\fdispatcherId\"\x19\n" +
 	"\x17SetRepairStatusResponse\"Q\n" +
 	"\x18StartAgentRunHostRequest\x12\x1d\n" +
 	"\n" +

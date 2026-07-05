@@ -21,6 +21,18 @@ import { test } from 'node:test'
 
 import { finalizeAgentProof } from './proof-agent-finalize.mjs'
 
+// Hermeticity guard (BOS-141): finalizeAgentProof's default `judge` dep
+// (judgeProof) makes a REAL Anthropic API call whenever PROOF_ANTHROPIC_API_KEY
+// is set — and it IS set in every provisioned worktree (repo .env is copied
+// in). runAgentProof forwards its merged deps verbatim into finalize, and the
+// test deps here are partial (no `judge`), so drop the key for this file's
+// test process: judgeProof then short-circuits to
+// { unjudged: true, reason: 'missing-key' } BEFORE constructing the SDK
+// (unit-proven in proof-judge.test.mjs). Tests that need the key present
+// (agentModeAvailable) set and restore it around themselves, unaffected.
+// node --test runs each file in its own process, so this cannot leak.
+delete process.env.PROOF_ANTHROPIC_API_KEY
+
 function requireFfmpeg(t, reason) {
   const ffmpegCheck = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' })
   if (ffmpegCheck.status !== 0) {
@@ -405,6 +417,156 @@ test('runAgentProof: clean run reaches uploadBundle', async (t) => {
   fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true })
 })
 
+// ── BOS-142: per-scene agentRunnerStubbed disclosure → manifest flag ──────────
+//
+// The Task 5 web driver marks each AgentResult scene with `liveAgent` (true only
+// for a scene that ran live against the real Claude plugin). proof-agent.mjs
+// turns that into a per-scene `agentRunnerStubbed:false` on live scenes ONLY
+// (absent ⇒ stubbed, byte-compat), and the run-level manifest flag is stubbed
+// iff ANY scene is stub-backed.
+
+// Writes a tiny black webm + a proof-result.json carrying the given scenes so
+// runAgentProof takes the passed video branch. Returns a spawnPlaywright stub.
+function livePlaywrightStub(scenes) {
+  return ({ localDir }) => {
+    const rawDir = path.join(localDir, 'raw')
+    fs.mkdirSync(rawDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(rawDir, 'proof-result.json'),
+      JSON.stringify({ passed: true, summary: 'ok', evidence: [], steps: 2, scenes }),
+    )
+    const result = spawnSync(
+      'ffmpeg',
+      [
+        '-y',
+        '-loglevel',
+        'error',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=black:s=32x32:d=0.25',
+        '-c:v',
+        'libvpx',
+        '-pix_fmt',
+        'yuv420p',
+        path.join(rawDir, 'session.webm'),
+      ],
+      { stdio: 'ignore' },
+    )
+    assert.equal(result.status, 0, 'test video fixture must be created')
+    return { status: 0 }
+  }
+}
+
+async function runWithScenes(t, runId, scenes) {
+  const { runAgentProof } = await import('./proof-agent.mjs')
+  if (!requireFfmpeg(t, 'ffmpeg is required for per-scene stub-flag regression test')) return null
+  const brief = { title: 'Scene flag feature', description: 'Proves per-scene stubbing' }
+  let manifest
+  await withTempBrief(brief, (briefPath) =>
+    withEnv(
+      {
+        BOSS_PROOF_BRIEF: briefPath,
+        BOSS_PROOF_UPLOAD: '0',
+        BOSS_PROOF_RUN_ID: runId,
+        BOSS_PROOF_RUN_TOKEN: 'tokscene1',
+        BOSS_PROOF_PUBLIC_BASE_URL: 'https://proof.test.dev',
+      },
+      async () => {
+        ;({ manifest } = await runAgentProof({
+          prNumber: 'local',
+          commit: 'abc1234',
+          changedFiles: [],
+          dryRun: true,
+          deps: {
+            spawnPlaywright: livePlaywrightStub(scenes),
+            uploadBundle: () => {},
+            uploadManifest: () => {},
+            publishProofReport: async () => ({ ok: false, reason: 'stubbed' }),
+            collapsePriorProofComments: () => {},
+            postComment: () => {},
+          },
+        }))
+      },
+    ),
+  )
+  fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true })
+  return manifest
+}
+
+test('runAgentProof: all-stub scenes → manifest agentRunnerStubbed true, no per-scene field', async (t) => {
+  const manifest = await runWithScenes(t, 'test-scene-allstub', [
+    { id: 'scene-01', title: 'a', passed: true, missing: [], atMs: 50, liveAgent: false },
+    { id: 'scene-02', title: 'b', passed: true, missing: [], atMs: 90, liveAgent: false },
+  ])
+  if (!manifest) return
+  assert.equal(manifest.agentRunnerStubbed, true)
+  const captureScenes = manifest.captures[0].scenes
+  assert.equal(captureScenes.length, 2)
+  for (const s of captureScenes) {
+    assert.ok(!('agentRunnerStubbed' in s), 'stub scenes must not carry the field (byte-compat)')
+  }
+})
+
+test('runAgentProof: mixed scenes → manifest true, only the live scene marked false', async (t) => {
+  const manifest = await runWithScenes(t, 'test-scene-mixed', [
+    { id: 'scene-01', title: 'live', passed: true, missing: [], atMs: 50, liveAgent: true },
+    { id: 'scene-02', title: 'stub', passed: true, missing: [], atMs: 90, liveAgent: false },
+  ])
+  if (!manifest) return
+  assert.equal(manifest.agentRunnerStubbed, true)
+  const [live, stub] = manifest.captures[0].scenes
+  assert.equal(live.agentRunnerStubbed, false)
+  assert.ok(!('agentRunnerStubbed' in stub))
+})
+
+test('runAgentProof: all-live scenes → manifest flag absent (unstubbed), every scene false', async (t) => {
+  const manifest = await runWithScenes(t, 'test-scene-alllive', [
+    { id: 'scene-01', title: 'live1', passed: true, missing: [], atMs: 50, liveAgent: true },
+    { id: 'scene-02', title: 'live2', passed: true, missing: [], atMs: 90, liveAgent: true },
+  ])
+  if (!manifest) return
+  assert.ok(
+    !('agentRunnerStubbed' in manifest),
+    'an all-live capture must leave the manifest flag unset (unstubbed)',
+  )
+  for (const s of manifest.captures[0].scenes) {
+    assert.equal(s.agentRunnerStubbed, false)
+  }
+})
+
+test('runAgentProof: an honestly-deferred live scene beside a passing sibling → capture PASSED (not failed)', async (t) => {
+  // BOS-142 graceful degradation: a liveAgent scene whose prereq was missing
+  // defers (passed:false + liveDeferred marker). It must NOT drag the capture
+  // red when a sibling passed — failedScenes excludes liveDeferred scenes,
+  // mirroring the spec-side computeLivePassed.
+  const manifest = await runWithScenes(t, 'test-scene-deferred', [
+    {
+      id: 'scene-01',
+      title: 'live (deferred)',
+      passed: false,
+      missing: [],
+      atMs: 0,
+      liveAgent: false,
+      liveDeferred: { missing: ['claude', 'tmux'] },
+    },
+    {
+      id: 'scene-02',
+      title: 'stub sibling',
+      passed: true,
+      missing: [],
+      atMs: 90,
+      liveAgent: false,
+    },
+  ])
+  if (!manifest) return
+  const capture = manifest.captures[0]
+  assert.equal(capture.status, 'passed', 'a deferral must not fail a passing sibling capture')
+  assert.ok(!capture.error, 'no scene(s)-failed error naming the deferral')
+  // The run is still honestly stubbed (a deferred scene never ran live).
+  assert.equal(manifest.agentRunnerStubbed, true)
+})
+
 test('runAgentProof: passed agent result without captured video marks proof failed', async () => {
   const { runAgentProof } = await import('./proof-agent.mjs')
 
@@ -786,6 +948,11 @@ test('finalizeAgentProof treats stills-only captures as media', async () => {
     })
     assert.equal(manifest.deferred, undefined, 'stills-only media must not be deferred')
     assert.ok(commentBody.includes('✅'), 'stills-only passed proof keeps normal verdict')
+    // Hermeticity tripwire: this media-carrying run reaches finalize's judge
+    // dep, which must have short-circuited on the deleted
+    // PROOF_ANTHROPIC_API_KEY — any other value means a real (or attempted)
+    // Anthropic call leaked into a unit test.
+    assert.deepEqual(manifest.judge, { unjudged: true, reason: 'missing-key' })
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true })
   }
@@ -854,6 +1021,177 @@ test('runAgentProof: has raw stills → fallback extractor NOT invoked', async (
             2,
             'capture must have exactly 2 stills (the real ones)',
           )
+        },
+      ),
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true })
+  }
+})
+
+// ── BOS-140 P3b/P3c: per-scene stills + evidence gate ───────────────────────
+
+test('runAgentProof: findRawStills accepts both legacy and scene-prefixed still names', async () => {
+  const { runAgentProof } = await import('./proof-agent.mjs')
+
+  const brief = { title: 'Scene stills feature', description: 'Agent took scene-prefixed shots' }
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        {
+          BOSS_PROOF_BRIEF: briefPath,
+          BOSS_PROOF_UPLOAD: '0',
+          BOSS_PROOF_RUN_ID: 'test-run-scene-stills',
+          BOSS_PROOF_RUN_TOKEN: 'tokscenestills1',
+          BOSS_PROOF_PUBLIC_BASE_URL: 'https://proof.test.dev',
+        },
+        async () => {
+          const { manifest } = await runAgentProof({
+            prNumber: 'local',
+            commit: 'cafed00d',
+            changedFiles: [],
+            dryRun: true,
+            deps: {
+              spawnPlaywright: ({ localDir }) => {
+                const rawDir = path.join(localDir, 'raw')
+                fs.mkdirSync(rawDir, { recursive: true })
+                fs.writeFileSync(
+                  path.join(rawDir, 'proof-result.json'),
+                  JSON.stringify({ passed: true, summary: 'ok', evidence: [], steps: 2 }),
+                )
+                fs.writeFileSync(path.join(rawDir, 'session.webm'), 'fake-webm-data')
+                // Legacy name (no scene prefix) and BOS-140 scene-prefixed name.
+                fs.writeFileSync(path.join(rawDir, '01-legacy.png'), 'fake-png-1')
+                fs.writeFileSync(path.join(rawDir, 'scene-01-02-scoped.png'), 'fake-png-2')
+                return { status: 0 }
+              },
+              uploadBundle: () => {},
+              uploadManifest: () => {},
+              publishProofReport: async () => ({ ok: false, reason: 'stubbed' }),
+              collapsePriorProofComments: () => {},
+              postComment: () => {},
+            },
+          })
+
+          const capture = manifest.captures[0]
+          assert.equal(capture.stills.length, 2, 'both naming conventions must be picked up')
+          const legacy = capture.stills.find((s) => s.fileName.endsWith('01-legacy.png'))
+          const scoped = capture.stills.find((s) => s.fileName.endsWith('scene-01-02-scoped.png'))
+          assert.ok(legacy, 'legacy NN-label.png still must be found')
+          assert.ok(scoped, 'scene-SS-NN-label.png still must be found')
+          assert.equal(legacy.sceneId, undefined, 'legacy still has no scene prefix to derive from')
+          assert.equal(
+            scoped.sceneId,
+            'scene-01',
+            'scene-01-02-*.png must be attributed to scene-01 (the scene-less brief’s synthetic scene)',
+          )
+        },
+      ),
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true })
+  }
+})
+
+test('runAgentProof: a failed scene forces captureShape.status to failed even when the agent passed', async (t) => {
+  const { runAgentProof } = await import('./proof-agent.mjs')
+
+  if (!requireFfmpeg(t, 'ffmpeg is required to produce a real mp4 for this regression test')) return
+
+  const brief = { title: 'Failed scene feature', description: 'One of two scenes never proved out' }
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        {
+          BOSS_PROOF_BRIEF: briefPath,
+          BOSS_PROOF_UPLOAD: '0',
+          BOSS_PROOF_RUN_ID: 'test-run-scene-fail',
+          BOSS_PROOF_RUN_TOKEN: 'tokscenefail1',
+          BOSS_PROOF_PUBLIC_BASE_URL: 'https://proof.test.dev',
+        },
+        async () => {
+          const { manifest } = await runAgentProof({
+            prNumber: 'local',
+            commit: 'deadc0de',
+            changedFiles: [],
+            dryRun: true,
+            deps: {
+              spawnPlaywright: ({ localDir }) => {
+                const rawDir = path.join(localDir, 'raw')
+                fs.mkdirSync(rawDir, { recursive: true })
+                fs.writeFileSync(
+                  path.join(rawDir, 'proof-result.json'),
+                  JSON.stringify({
+                    passed: true,
+                    summary: 'agent believes it passed',
+                    evidence: ['ok'],
+                    steps: 4,
+                    interactions: 2,
+                    scenes: [
+                      { id: 'scene-01', title: 'Open list', passed: true, missing: [], atMs: 0 },
+                      {
+                        id: 'scene-02',
+                        title: 'Open settings',
+                        passed: false,
+                        missing: ['Deploy'],
+                        atMs: 0,
+                      },
+                    ],
+                  }),
+                )
+                const result = spawnSync(
+                  'ffmpeg',
+                  [
+                    '-y',
+                    '-loglevel',
+                    'error',
+                    '-f',
+                    'lavfi',
+                    '-i',
+                    'color=c=black:s=32x32:d=0.25',
+                    '-c:v',
+                    'libvpx',
+                    '-pix_fmt',
+                    'yuv420p',
+                    path.join(rawDir, 'session.webm'),
+                  ],
+                  { stdio: 'ignore' },
+                )
+                assert.equal(result.status, 0, 'test video fixture must be created')
+                fs.writeFileSync(path.join(rawDir, 'scene-01-01-list.png'), 'fake-png-1')
+                return { status: 0 }
+              },
+              uploadBundle: () => {},
+              uploadManifest: () => {},
+              publishProofReport: async () => ({ ok: false, reason: 'stubbed' }),
+              collapsePriorProofComments: () => {},
+              postComment: () => {},
+            },
+          })
+
+          const capture = manifest.captures[0]
+          assert.equal(
+            capture.status,
+            'failed',
+            'a failed scene must fail the capture even though the agent said passed',
+          )
+          assert.match(capture.error, /scene\(s\) failed: scene-02/)
+          assert.ok(Array.isArray(capture.scenes), 'capture must carry the per-scene outcomes')
+          assert.equal(capture.scenes.length, 2)
+          // BOS-140/P3b: a successful post-process (no intro card, so introMs is
+          // 0) maps a wall-offset-0 marker to output-clock 0 — proves the
+          // timeline produced by postprocessProofVideo threads through to each
+          // scene's chapter timestamp.
+          assert.equal(capture.scenes[0].outputMs, 0)
+          assert.equal(capture.scenes[1].outputMs, 0)
         },
       ),
     )
@@ -962,4 +1300,276 @@ test('runAgentProof: timed-out Playwright drive defers with the agent capture on
     process.exitCode = originalExitCode
     fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true })
   }
+})
+
+// ── BOS-139: collect mode (orchestrator owns identity + budget) ──────────────
+
+test('runAgentProof: collect mode returns a SurfaceRun (no finalize), per-surface brief, clamped budget', async () => {
+  const { runAgentProof } = await import('./proof-agent.mjs')
+  const brief = {
+    title: 'Collect web',
+    description: 'collect-mode web run',
+    budgets: { maxWallClockMs: 720000 },
+  }
+  const localDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-agent-collect-'))
+  let uploadCalled = false
+  let postCalled = false
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv({ BOSS_PROOF_BRIEF: briefPath, BOSS_PROOF_UPLOAD: '0' }, async () => {
+        const surfaceRun = await runAgentProof({
+          prNumber: 'local',
+          commit: 'abc1234',
+          changedFiles: [],
+          dryRun: true,
+          runContext: {
+            runId: 'RUN',
+            token: 'tok',
+            paths: { publicPrefix: 'proof/bossanova/pr-local/abc1234/RUN/tok' },
+            localDir,
+            briefFileName: 'brief-web.json',
+            maxWallClockMs: 60_000,
+            collect: true,
+          },
+          deps: {
+            // No webm produced → no-media failed capture; enough to exercise collect.
+            spawnPlaywright: () => ({ status: 1 }),
+            uploadBundle: () => {
+              uploadCalled = true
+            },
+            postComment: () => {
+              postCalled = true
+            },
+          },
+        })
+        assert.equal(surfaceRun.surface, 'web')
+        assert.ok(Array.isArray(surfaceRun.captureShapes))
+        assert.equal(surfaceRun.brief.budgets.maxWallClockMs, 60_000, 'budget clamped to grant')
+        assert.equal(surfaceRun.reasonCode, null)
+        assert.equal(typeof surfaceRun.elapsedMs, 'number')
+        assert.ok(fs.existsSync(path.join(localDir, 'brief-web.json')), 'per-surface brief written')
+        assert.equal(uploadCalled, false, 'collect mode must not finalize/upload')
+        assert.equal(postCalled, false, 'collect mode must not post a comment')
+      }),
+    )
+  } finally {
+    fs.rmSync(localDir, { recursive: true, force: true })
+  }
+})
+
+// ── BOS-142: live-agent harness-mode decision ────────────────────────────────
+
+test('buildPlaywrightEnv: liveAgent:true sets BOSS_PROOF_LIVE_AGENT and never the deferred key', async () => {
+  const { buildPlaywrightEnv } = await import('./proof-agent.mjs')
+  const env = buildPlaywrightEnv(
+    {},
+    { briefPath: 'b.json', localDir: '/out', model: 'claude-haiku-4-5', liveAgent: true },
+  )
+  assert.equal(env.BOSS_PROOF_LIVE_AGENT, '1')
+  assert.equal(env.BOSS_PROOF_LIVE_AGENT_DEFERRED, undefined)
+  // The fixed harness keys are still layered over base.
+  assert.equal(env.E2E_REAL, '1')
+  assert.equal(env.E2E_AGENT_PROOF, '1')
+  assert.equal(env.BOSS_PROOF_BRIEF, 'b.json')
+  assert.equal(env.BOSS_PROOF_OUT, '/out')
+  assert.equal(env.BOSS_PROOF_MODEL, 'claude-haiku-4-5')
+})
+
+test('buildPlaywrightEnv: liveAgentDeferred sets the comma-joined deferred key, not the live flag', async () => {
+  const { buildPlaywrightEnv } = await import('./proof-agent.mjs')
+  const env = buildPlaywrightEnv(
+    {},
+    { briefPath: 'b.json', localDir: '/out', model: 'm', liveAgentDeferred: ['claude', 'tmux'] },
+  )
+  assert.equal(env.BOSS_PROOF_LIVE_AGENT_DEFERRED, 'claude,tmux')
+  assert.equal(env.BOSS_PROOF_LIVE_AGENT, undefined)
+})
+
+test('buildPlaywrightEnv: neither flag → both live-agent env keys unset', async () => {
+  const { buildPlaywrightEnv } = await import('./proof-agent.mjs')
+  const env = buildPlaywrightEnv({}, { briefPath: 'b.json', localDir: '/out', model: 'm' })
+  assert.equal(env.BOSS_PROOF_LIVE_AGENT, undefined)
+  assert.equal(env.BOSS_PROOF_LIVE_AGENT_DEFERRED, undefined)
+  // An empty deferred array must NOT set the deferred key either.
+  const env2 = buildPlaywrightEnv(
+    {},
+    { briefPath: 'b.json', localDir: '/out', model: 'm', liveAgentDeferred: [] },
+  )
+  assert.equal(env2.BOSS_PROOF_LIVE_AGENT_DEFERRED, undefined)
+})
+
+test('buildPlaywrightEnv: hermetic — an ambient live flag in base can NEVER leak into a non-live run', async () => {
+  const { buildPlaywrightEnv } = await import('./proof-agent.mjs')
+  // A stray operator/CI export (or a nested run) sets both live-agent keys in
+  // the ambient env. A non-live decision (no liveAgent, no deferred ids) must
+  // strip them so the child spec never boots live mode / the real runner.
+  const env = buildPlaywrightEnv(
+    { BOSS_PROOF_LIVE_AGENT: '1', BOSS_PROOF_LIVE_AGENT_DEFERRED: 'stale' },
+    { briefPath: 'b.json', localDir: '/out', model: 'm' },
+  )
+  assert.equal(env.BOSS_PROOF_LIVE_AGENT, undefined, 'ambient live flag must be cleared')
+  assert.equal(
+    env.BOSS_PROOF_LIVE_AGENT_DEFERRED,
+    undefined,
+    'ambient deferred key must be cleared',
+  )
+
+  // A deferred decision over the same polluted base clears the stale live flag.
+  const deferred = buildPlaywrightEnv(
+    { BOSS_PROOF_LIVE_AGENT: '1' },
+    { briefPath: 'b.json', localDir: '/out', model: 'm', liveAgentDeferred: ['claude'] },
+  )
+  assert.equal(deferred.BOSS_PROOF_LIVE_AGENT, undefined, 'a deferral must not inherit a live flag')
+  assert.equal(deferred.BOSS_PROOF_LIVE_AGENT_DEFERRED, 'claude')
+})
+
+// ── BOS-142 T7: consolidated "never launches real runner by default" guarantee ─
+// (d) An orchestrator run with no liveAgent scene never sets BOSS_PROOF_LIVE_AGENT.
+//     buildPlaywrightEnv is the single gate that maps the internal opts.liveAgent
+//     flag onto the BOSS_PROOF_LIVE_AGENT env var that the real-stack harness
+//     (services/web/tests/e2e/real/global-setup.ts) reads to decide 'stub' vs
+//     'live'. No live scene ⇒ opts has no liveAgent ⇒ the var stays unset ⇒
+//     global-setup boots the stub harness, never the real bossd-plugin-claude.
+//     The runAgentProof spawnPlaywright-spy test above ('runAgentProof: non-live
+//     brief never calls liveAgentPreflight and passes no live flags') proves the
+//     upstream half: a non-live run never even puts liveAgent on the opts.
+//     Grep tag: "never launches real runner by default".
+test('never launches real runner by default (d): no live scene → BOSS_PROOF_LIVE_AGENT stays unset', async () => {
+  const { buildPlaywrightEnv } = await import('./proof-agent.mjs')
+  const env = buildPlaywrightEnv({}, { briefPath: 'b.json', localDir: '/out', model: 'm' })
+  assert.equal(env.BOSS_PROOF_LIVE_AGENT, undefined)
+  assert.equal(env.BOSS_PROOF_LIVE_AGENT_DEFERRED, undefined)
+})
+
+async function runWithSpies(brief, deps, extraEnv = {}, { planRequiredProof } = {}) {
+  const { runAgentProof } = await import('./proof-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        {
+          BOSS_PROOF_BRIEF: briefPath,
+          BOSS_PROOF_UPLOAD: '0',
+          BOSS_PROOF_RUN_ID: 'test-run-live',
+          BOSS_PROOF_RUN_TOKEN: 'toklive1',
+          BOSS_PROOF_PUBLIC_BASE_URL: 'https://proof.test.dev',
+          ...extraEnv,
+        },
+        () =>
+          runAgentProof({
+            prNumber: 'local',
+            commit: 'abc1234',
+            changedFiles: [],
+            dryRun: true,
+            planRequiredProof,
+            deps: {
+              uploadBundle: () => {},
+              uploadManifest: () => {},
+              publishProofReport: async () => ({ ok: false, reason: 'stubbed' }),
+              collapsePriorProofComments: () => {},
+              postComment: () => {},
+              ...deps,
+            },
+          }),
+      ),
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true })
+  }
+}
+
+test('runAgentProof: non-live brief never calls liveAgentPreflight and passes no live flags', async () => {
+  let preflightCalled = false
+  let capturedOpts = null
+  await runWithSpies(
+    { title: 'Plain feature', description: 'no live scene, no live-agent bullet' },
+    {
+      spawnPlaywright: (opts) => {
+        capturedOpts = opts
+        return { status: 1 } // no webm → no-media capture; enough to capture opts
+      },
+      liveAgentPreflight: () => {
+        preflightCalled = true
+        return []
+      },
+    },
+  )
+  assert.equal(preflightCalled, false, 'preflight must not run when no live scene is requested')
+  assert.ok(capturedOpts, 'spawnPlaywright must have been called')
+  assert.ok(!('liveAgent' in capturedOpts), 'no liveAgent flag on a non-live run')
+  assert.ok(!('liveAgentDeferred' in capturedOpts), 'no liveAgentDeferred flag on a non-live run')
+})
+
+test('runAgentProof: a plan `live-agent` bullet ALONE (no live scene) never boots live mode', async () => {
+  // Marker-only opt-in must NOT enable live MODE: a generated brief has its
+  // scene.liveAgent stripped, so proof.spec.ts would fall through to the plain
+  // LLM/stub path — booting the real runner with no live scene to drive would
+  // spend without a deterministic gate or disclosure. Live mode is keyed solely
+  // off an actual live scene in the validated brief.
+  let preflightCalled = false
+  let capturedOpts = null
+  await runWithSpies(
+    { title: 'Plain feature', description: 'no live scene; opt-in only via a plan bullet' },
+    {
+      spawnPlaywright: (opts) => {
+        capturedOpts = opts
+        return { status: 1 }
+      },
+      liveAgentPreflight: () => {
+        preflightCalled = true
+        return []
+      },
+    },
+    {},
+    { planRequiredProof: ['demonstrate a live-agent Claude session end to end'] },
+  )
+  assert.equal(preflightCalled, false, 'a plan bullet alone must not trigger the live preflight')
+  assert.ok(capturedOpts, 'spawnPlaywright must have been called')
+  assert.ok(!('liveAgent' in capturedOpts), 'no liveAgent flag from a marker-only brief')
+  assert.ok(!('liveAgentDeferred' in capturedOpts), 'no deferred flag from a marker-only brief')
+})
+
+test('runAgentProof: live scene + all prereqs present → spawnPlaywright gets liveAgent:true', async () => {
+  let capturedOpts = null
+  await runWithSpies(
+    {
+      title: 'Live feature',
+      description: 'has a live scene',
+      scenes: [{ id: 'live', title: 'live flow', expectedEvidence: ['X'], liveAgent: true }],
+    },
+    {
+      spawnPlaywright: (opts) => {
+        capturedOpts = opts
+        return { status: 1 }
+      },
+      liveAgentPreflight: () => [], // all prereqs present
+    },
+  )
+  assert.ok(capturedOpts, 'spawnPlaywright must have been called')
+  assert.equal(capturedOpts.liveAgent, true, 'a satisfied live scene runs genuinely live')
+  assert.ok(!('liveAgentDeferred' in capturedOpts), 'no deferred ids when nothing is missing')
+})
+
+test('runAgentProof: live scene + a missing prereq → spawnPlaywright gets liveAgentDeferred, not liveAgent', async () => {
+  let capturedOpts = null
+  await runWithSpies(
+    {
+      title: 'Live feature',
+      description: 'has a live scene but claude is missing',
+      scenes: [{ id: 'live', title: 'live flow', expectedEvidence: ['X'], liveAgent: true }],
+    },
+    {
+      spawnPlaywright: (opts) => {
+        capturedOpts = opts
+        return { status: 1 }
+      },
+      liveAgentPreflight: () => ['claude'], // one prereq missing → defer
+    },
+  )
+  assert.ok(capturedOpts, 'spawnPlaywright must have been called')
+  assert.ok(Array.isArray(capturedOpts.liveAgentDeferred), 'deferred ids must be passed')
+  assert.ok(capturedOpts.liveAgentDeferred.includes('claude'), 'the missing id is named')
+  assert.ok(!('liveAgent' in capturedOpts), 'a deferred live run must NOT set liveAgent:true')
 })

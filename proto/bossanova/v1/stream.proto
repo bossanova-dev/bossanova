@@ -274,6 +274,11 @@ message SessionCreateChunk {
     Session created = 3;
     CreateError error = 4;
   }
+  // True when the terminal `created` frame reports an EXISTING active session
+  // the daemon attached to (dedup) rather than a freshly created one. Mirrors
+  // SessionCreated.attached_existing so the flag survives the daemon → bosso
+  // upstream hop; only meaningful alongside `created`.
+  bool attached_existing = 5;
 }
 
 // CreateError carries a human-readable failure reason for a CreateSession that
@@ -344,6 +349,10 @@ message CreateSessionCommand {
   // Full selected issue + source, so the daemon can format the plan (D3).
   optional TrackerIssue tracker_issue = 11;
   optional string tracker_source = 12;
+  // Bypass the BOS-236 tracker-issue dedup guard (mirrors
+  // CreateSessionRequest.force) so the reverse-stream create path carries the
+  // same escape hatch as the direct socket create.
+  bool force = 13;
 }
 
 // WakeChatCommand asks the daemon to bring a chat's tmux+claude back to
@@ -441,6 +450,7 @@ message SendChatMessageCommand {
   string agent_session_id = 1;
   string message = 2;
   bool wake_if_asleep = 3;
+  bool submit = 4;  // when true, submit (press Enter + verify) a single-line command; default (false) prefills the composer without submitting
 }
 
 // TransferSessionCommand asks a daemon to take part in a coordinated transfer

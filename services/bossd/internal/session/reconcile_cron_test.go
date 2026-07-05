@@ -124,7 +124,7 @@ func newSweepLifecycle(t *testing.T, logsDir string) (*Lifecycle, *mockSessionSt
 	t.Helper()
 	sessions := newMockSessionStore()
 	runner := newMockAgentRunner()
-	lc := NewLifecycle(sessions, nil, &mockAgentChatStore{}, nil, nil, runner, nil, nil, zerolog.Nop())
+	lc := newTestLifecycle(sessions, nil, &mockAgentChatStore{}, nil, nil, runner, nil, nil, zerolog.Nop())
 	lc.SetAgentLogsDir(logsDir)
 	rec := &recordingCronCompletionNotifier{}
 	lc.SetCronCompletionNotifier(rec)
@@ -209,6 +209,30 @@ func TestRecoverStrandedCronSessions_NonCron_Skipped(t *testing.T) {
 	}
 }
 
+func TestRecoverStrandedCronSessions_TmuxUnattended_Routed(t *testing.T) {
+	// A tmux_unattended session (e.g. /bs-epic) has no CronJobID but is still
+	// unattended, so the completion gate defers it to this sweep. It must be
+	// recovered on the same terms as a cron session, not skipped forever.
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	s := strandedCronSession("s1", "a1")
+	s.CronJobID = nil
+	s.TmuxUnattended = true
+	sessions.sessions["s1"] = s
+	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute) // idle -> run over
+
+	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("routed=%d, want 1 (tmux_unattended is unattended)", n)
+	}
+	if got := rec.callsCopy(); len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("notifier=%v, want [s1]", got)
+	}
+}
+
 func TestRecoverStrandedCronSessions_NoLog_LivenessDead_Routed(t *testing.T) {
 	// A logless cron run (e.g. Codex, or a failed tmux pipe-pane) has no durable
 	// idle evidence, but a wired liveness checker confirms the agent is gone — so
@@ -281,7 +305,7 @@ func TestRecoverStrandedCronSessions_FreshLog_LivenessAlive_Skipped(t *testing.T
 func TestRecoverStrandedCronSessions_NoNotifier_NoOp(t *testing.T) {
 	dir := t.TempDir()
 	sessions := newMockSessionStore()
-	lc := NewLifecycle(sessions, nil, &mockAgentChatStore{}, nil, nil, newMockAgentRunner(), nil, nil, zerolog.Nop())
+	lc := newTestLifecycle(sessions, nil, &mockAgentChatStore{}, nil, nil, newMockAgentRunner(), nil, nil, zerolog.Nop())
 	lc.SetAgentLogsDir(dir)
 	sessions.sessions["s2"] = strandedCronSession("s2", "a2")
 	seedLog(t, dir, "a2", cronAgentIdleThreshold+time.Minute)

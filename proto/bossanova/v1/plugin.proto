@@ -477,6 +477,11 @@ message StartAgentRunRequest {
   string session_id = 4;   // empty = plugin generates
   string log_path = 5;     // bossd-owned, openat(O_NOFOLLOW)
   string model = 6;        // opaque agent model id; "" = plugin default. Never enumerated by bossd.
+  // extra_env is an allowlisted, daemon-resolved environment overlay
+  // (proof credentials + non-secret proof constants) applied to the
+  // spawned agent process on top of the inherited environment. Values are
+  // NEVER logged by bossd or the plugin — treat as secret-bearing.
+  map<string, string> extra_env = 7;
 }
 message StartAgentRunResponse {
   string session_id = 1;   // resolved session ID

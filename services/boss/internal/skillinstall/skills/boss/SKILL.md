@@ -73,6 +73,7 @@ Launches the interactive session creation flow. When both --repo and --prompt ar
 
 - `--agent` — Override default agent plugin for this session (e.g. claude, opencode)
 - `--detach` — Exit immediately after creating the session; print session-id and chat-id
+- `--model` — Agent model id to run this session under (e.g. an Opus id); empty = agent default
 - `--no-attach` — Alias for --detach
 - `--prompt` — Initial prompt / plan for the session (enables non-interactive mode when combined with --repo)
 - `--repo` — Repository id, name, or local path (enables non-interactive mode when combined with --prompt)
@@ -105,11 +106,15 @@ boss show abc123
 
 Interact with session chats headlessly
 
-### `boss chat send <session-id|chat-id> <message>`
+### `boss chat send <session-id|chat-id> <message> [flags]`
 
 Send a message to a chat
 
 Delivers a follow-up message to a running chat identified by a session id or agent_session_id (the chat-id printed by `boss new --detach`). When given a session id, boss targets that session's primary chat. The daemon wakes a sleeping chat before pasting the message.
+
+**Flags:**
+
+- `--submit` — Submit the message (press Enter and verify); false prefills the composer without submitting (default: true)
 
 ```bash
 boss chat send <session-id|chat-id> "please also add tests"
@@ -273,6 +278,60 @@ Update cron job settings
 - `--run-setup` — Run the repo setup script before the agent (unset preserves current)
 - `--schedule` — Set the cron schedule
 - `--tz` — Set the IANA timezone (empty string clears it)
+
+## Account Management
+
+### `boss account`
+
+Manage agent accounts (credential registry)
+
+### `boss account add [provider] [flags]`
+
+Register an agent account
+
+**Flags:**
+
+- `--credential-file` — Read the credential from a file (or '-' for stdin); preferred over --token
+- `--email` — Informational account email
+- `--label` — Human label, unique per provider (required for the non-interactive flag path)
+- `--priority` — Sort order; lower = preferred (default: 0)
+- `--provider` — Account provider (claude|codex) (or pass as a positional arg)
+- `--timeout` — Deadline for an interactive registration walkthrough (default: 10m0s)
+- `--token` — Credential token (prefer --credential-file - or stdin to keep it out of shell history)
+- `--token-stdin` — claude only: read the setup token from stdin instead of running the walkthrough
+
+### `boss account ls [flags]`
+
+List accounts
+
+**Flags:**
+
+- `--json` — Emit a stable JSON schema instead of a table
+- `--provider` — Filter by provider (claude|codex)
+
+### `boss account remove <account-id>`
+
+Remove an account and its stored credential
+
+### `boss account test <account-id> [flags]`
+
+Validate an account's credential and record the outcome
+
+**Flags:**
+
+- `--json` — Emit a stable JSON schema instead of text
+
+### `boss account update <account-id> [flags]`
+
+Update account metadata
+
+**Flags:**
+
+- `--allowed-models` — Replace the allowed-models set (comma-separated)
+- `--email` — Set the account email
+- `--label` — Set the label
+- `--priority` — Set the priority (lower = preferred) (default: 0)
+- `--status` — Set the status (active|disabled)
 
 ## Trash Management
 
@@ -523,6 +582,18 @@ Report this session's boss context and the full CLI + MCP capability inventory
 **Flags:**
 
 - `--json` — Emit a stable JSON schema instead of human-readable text
+
+### `boss proof`
+
+Provision credentials for the proof pipeline
+
+### `boss proof set-secret [proof-anthropic-api-key|proof-cloudflare-api-token] [flags]`
+
+Store a proof secret in the keyring, read from stdin
+
+**Flags:**
+
+- `--check` — Report which proof secrets are set (never prints values) and exit
 
 ### `boss repair`
 

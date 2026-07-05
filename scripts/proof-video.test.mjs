@@ -1,8 +1,11 @@
 // Unit tests for the pure planning/rendering half of proof-video.mjs.
-// The ffmpeg orchestration (postprocessProofVideo) is exercised against a
-// real recording manually — these tests pin down the analysis math.
+// Most of the ffmpeg orchestration (postprocessProofVideo) is exercised
+// against a real recording manually — these tests pin down the analysis
+// math. One postprocessProofVideo test below (ffmpeg-gated) pins the
+// `timeline` shape on the no-condense success branch.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -18,6 +21,8 @@ import {
   findStaticRuns,
   planRetime,
   retimedDurationMs,
+  mapSourceToOutputMs,
+  postprocessProofVideo,
   fastForwardSeconds,
   buildRetimeFilter,
   formatElapsed,
@@ -32,6 +37,15 @@ import {
   TIMER_W,
   TIMER_H,
 } from './proof-video.mjs'
+
+function requireFfmpeg(t) {
+  const check = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' })
+  if (check.status !== 0) {
+    t.skip('ffmpeg is required for this test')
+    return false
+  }
+  return true
+}
 
 // ── computeFrameDiffs ────────────────────────────────────────────────────────
 
@@ -238,6 +252,112 @@ test('planRetime: run touching the start emits no empty leading segment', () => 
 
 test('planRetime: no static runs → single 1x segment', () => {
   assert.deepEqual(planRetime([], 5000, {}), [{ startMs: 0, endMs: 5000, speed: 1 }])
+})
+
+// ── mapSourceToOutputMs (BOS-140/P3b) ───────────────────────────────────────
+
+test('mapSourceToOutputMs: null timeline → null (degrade: chapter without a link)', () => {
+  assert.equal(mapSourceToOutputMs(null, 12345), null)
+})
+
+test('mapSourceToOutputMs: non-finite sourceMs → null', () => {
+  const identity = { trimMs: 0, segments: [], introMs: 0 }
+  assert.equal(mapSourceToOutputMs(identity, undefined), null)
+  assert.equal(mapSourceToOutputMs(identity, Number.NaN), null)
+})
+
+test('mapSourceToOutputMs: identity timeline (no trim, no segments, no intro) → passthrough', () => {
+  assert.equal(mapSourceToOutputMs({ trimMs: 0, segments: [], introMs: 0 }, 4200), 4200)
+})
+
+test('mapSourceToOutputMs: trim-only → sourceMs - trimMs, clamped to 0', () => {
+  const tl = { trimMs: 1000, segments: [], introMs: 0 }
+  assert.equal(mapSourceToOutputMs(tl, 5000), 4000)
+  assert.equal(mapSourceToOutputMs(tl, 500), 0, 'source before the trimmed head clamps to 0')
+})
+
+test('mapSourceToOutputMs: 3-segment retime plan (1x/10x/1x) maps into the fast segment', () => {
+  const segments = [
+    { startMs: 0, endMs: 10_000, speed: 1 },
+    { startMs: 10_000, endMs: 50_000, speed: 10 },
+    { startMs: 50_000, endMs: 60_000, speed: 1 },
+  ]
+  const tl = { trimMs: 0, segments, introMs: 0 }
+  // 10_000ms of 1x + 20_000ms into the 10x segment (2_000ms output).
+  assert.equal(mapSourceToOutputMs(tl, 30_000), 12_000)
+})
+
+test('mapSourceToOutputMs: a point past the fast segment adds the fully-retimed prefix', () => {
+  const segments = [
+    { startMs: 0, endMs: 10_000, speed: 1 },
+    { startMs: 10_000, endMs: 50_000, speed: 10 },
+    { startMs: 50_000, endMs: 60_000, speed: 1 },
+  ]
+  const tl = { trimMs: 0, segments, introMs: 0 }
+  // 10_000 (1x) + 4_000 (the whole 40_000ms fast segment / 10) + 5_000 (1x tail).
+  assert.equal(mapSourceToOutputMs(tl, 55_000), 10_000 + 4_000 + 5_000)
+})
+
+test('mapSourceToOutputMs: introMs adds a flat offset on top of the retimed value', () => {
+  const tl = { trimMs: 0, segments: [{ startMs: 0, endMs: 10_000, speed: 1 }], introMs: 2000 }
+  assert.equal(mapSourceToOutputMs(tl, 4000), 6000)
+})
+
+test('mapSourceToOutputMs: cross-check against retimedDurationMs — mapping the full duration equals introMs + retimedDurationMs(segments)', () => {
+  const segments = [
+    { startMs: 0, endMs: 10_000, speed: 1 },
+    { startMs: 10_000, endMs: 50_000, speed: 10 },
+    { startMs: 50_000, endMs: 60_000, speed: 1 },
+  ]
+  const durationMs = 60_000
+  const introMs = 2000
+  const tl = { trimMs: 0, segments, introMs }
+  assert.equal(mapSourceToOutputMs(tl, durationMs), introMs + retimedDurationMs(segments))
+})
+
+// ── postprocessProofVideo: timeline shape (BOS-140/P3b) ─────────────────────
+
+test('postprocessProofVideo: no-condense branch returns timeline {trimMs, segments, introMs:0}', (t) => {
+  if (!requireFfmpeg(t)) return
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-video-timeline-'))
+  try {
+    const webmPath = path.join(dir, 'in.webm')
+    // A short, constant-color clip: too brief for any static run to clear
+    // MIN_STATIC_RUN_MS, so planRetime degenerates to a single identity
+    // segment (the no-condense branch) and neither leading-trim detector fires
+    // (an all-static/all-bright clip is "not a lead-in" by design).
+    const gen = spawnSync('ffmpeg', [
+      '-y',
+      '-loglevel',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'color=c=blue:s=64x64:d=0.5',
+      '-c:v',
+      'libvpx',
+      '-pix_fmt',
+      'yuv420p',
+      webmPath,
+    ])
+    assert.equal(gen.status, 0, 'synthetic webm fixture must be created')
+
+    const result = postprocessProofVideo({
+      webmPath,
+      timedPath: path.join(dir, 'timed.mp4'),
+      outPath: path.join(dir, 'out.mp4'),
+      scratchPath: path.join(dir, 'scratch.raw'),
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.condensed, false)
+    assert.ok(result.timeline, 'a successful result must carry a timeline')
+    assert.equal(result.timeline.trimMs, 0)
+    assert.equal(result.timeline.introMs, 0, 'no intro card was supplied')
+    assert.deepEqual(result.timeline.segments, [{ startMs: 0, endMs: result.outputMs, speed: 1 }])
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 // ── fastForwardSeconds ───────────────────────────────────────────────────────

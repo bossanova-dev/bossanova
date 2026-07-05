@@ -86,3 +86,29 @@ func TestRemoteClient_SendChatMessage(t *testing.T) {
 		t.Fatalf("fields not forwarded: %+v", got)
 	}
 }
+
+// TestRemoteClient_SendChatMessage_PropagatesSubmit asserts the BOS-242 submit
+// intent survives the SendChatMessageRequest → ProxySendChatMessageRequest
+// conversion, set as present so an explicit false (prefill) is not defaulted to
+// submit=true server-side.
+func TestRemoteClient_SendChatMessage_PropagatesSubmit(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+
+	for _, submit := range []bool{true, false} {
+		if _, err := c.SendChatMessage(context.Background(), &pb.SendChatMessageRequest{
+			AgentSessionId: "agent-9",
+			Message:        "hello",
+			Submit:         submit,
+		}); err != nil {
+			t.Fatalf("SendChatMessage(submit=%v): %v", submit, err)
+		}
+		got := fake.sendReq
+		if got.Submit == nil {
+			t.Fatalf("submit=%v: expected submit set (present), got nil", submit)
+		}
+		if got.GetSubmit() != submit {
+			t.Fatalf("submit forwarded = %v, want %v", got.GetSubmit(), submit)
+		}
+	}
+}

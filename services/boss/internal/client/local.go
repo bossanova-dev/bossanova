@@ -509,6 +509,49 @@ func (c *LocalClient) RunCronJobNow(ctx context.Context, id string) (*pb.RunCron
 	return resp.Msg, nil
 }
 
+// --- Accounts ---
+
+func (c *LocalClient) ListAccounts(ctx context.Context, provider string) ([]*pb.Account, error) {
+	req := &pb.ListAccountsRequest{}
+	if provider != "" {
+		req.Provider = &provider
+	}
+	resp, err := c.rpc.ListAccounts(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Accounts, nil
+}
+
+func (c *LocalClient) AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error) {
+	resp, err := c.rpc.AddAccount(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Account, nil
+}
+
+func (c *LocalClient) UpdateAccount(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error) {
+	resp, err := c.rpc.UpdateAccount(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Account, nil
+}
+
+func (c *LocalClient) RemoveAccount(ctx context.Context, id string) error {
+	_, err := c.rpc.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: id}))
+	return err
+}
+
+func (c *LocalClient) TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error) {
+	resp, err := c.rpc.TestAccount(ctx, connect.NewRequest(&pb.TestAccountRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (c *LocalClient) RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, error) {
 	resp, err := c.rpc.RepairDoctor(ctx, connect.NewRequest(&pb.RepairDoctorRequest{}))
 	if err != nil {

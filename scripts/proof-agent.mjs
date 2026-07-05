@@ -13,13 +13,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { proofRunPaths } from './proof-lib.mjs'
-import { generateBriefFromDiff, validateBrief } from './proof-brief.mjs'
+import { capturesAgentRunnerStubbed, proofRunPaths } from './proof-lib.mjs'
+import { generateBriefFromDiff, normalizeScenes, validateBrief } from './proof-brief.mjs'
+import { LIVE_AGENT_CHECKS, defaultDoctorLookups, doctorReport } from './proof-doctor.mjs'
 import { finalizeAgentProof } from './proof-agent-finalize.mjs'
 import { buildPosterArgs } from './proof-poster.mjs'
 import {
   applyMinHeightRatio,
   evenCropHeight,
+  mapSourceToOutputMs,
   postprocessProofVideo,
   probeDimensions,
 } from './proof-video.mjs'
@@ -89,6 +91,58 @@ export function runInterruptible(command, args, { cwd, env, timeoutMs }) {
 }
 
 /**
+ * The doctor check ids that are relevant to a live-agent scene (BOS-142). A
+ * live run is deferred when ANY of these is missing; the deferred set is joined
+ * into BOSS_PROOF_LIVE_AGENT_DEFERRED. PROOF_ANTHROPIC_API_KEY is included even
+ * though the daemon injects it: a live agent genuinely spends the key, so it is
+ * required to run live (never exempted the way the normal preflight exempts it).
+ */
+const LIVE_AGENT_PREREQ_IDS = new Set([
+  ...LIVE_AGENT_CHECKS.map((c) => c.id),
+  'PROOF_ANTHROPIC_API_KEY',
+])
+
+/**
+ * Builds the Playwright child env for the agent-proof run. Pure — no fs/env/
+ * spawn. Layers the fixed harness keys over `base` (normally `process.env`) and
+ * encodes the live-agent decision (BOS-142):
+ *   - `liveAgent:true` → set BOSS_PROOF_LIVE_AGENT='1' (run genuinely live);
+ *   - else a non-empty `liveAgentDeferred` array → set
+ *     BOSS_PROOF_LIVE_AGENT_DEFERRED to its comma-joined ids (and DO NOT set
+ *     BOSS_PROOF_LIVE_AGENT) so the driver marks the scene deferred;
+ *   - neither → leave both unset (byte-identical to the pre-BOS-142 env).
+ * @param {NodeJS.ProcessEnv} base
+ * @param {{ briefPath: string, localDir: string, model: string, liveAgent?: boolean, liveAgentDeferred?: string[]|null }} opts
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function buildPlaywrightEnv(
+  base,
+  { briefPath, localDir, model, liveAgent = false, liveAgentDeferred = null },
+) {
+  const env = {
+    ...base,
+    E2E_REAL: '1',
+    E2E_AGENT_PROOF: '1',
+    BOSS_PROOF_BRIEF: briefPath,
+    BOSS_PROOF_OUT: localDir,
+    BOSS_PROOF_MODEL: model,
+  }
+  // Hermetic: the live-agent decision is set EXCLUSIVELY from the args below, so
+  // an ambient BOSS_PROOF_LIVE_AGENT / _DEFERRED inherited through `...base`
+  // (a stray operator/CI export, a nested run) can never leak a non-live run
+  // into live mode and boot the real runner. Clear BOTH first, then set exactly
+  // one (or neither) from the decision.
+  delete env.BOSS_PROOF_LIVE_AGENT
+  delete env.BOSS_PROOF_LIVE_AGENT_DEFERRED
+  if (liveAgent) {
+    env.BOSS_PROOF_LIVE_AGENT = '1'
+  } else if (Array.isArray(liveAgentDeferred) && liveAgentDeferred.length > 0) {
+    env.BOSS_PROOF_LIVE_AGENT_DEFERRED = liveAgentDeferred.join(',')
+  }
+  return env
+}
+
+/**
  * Default external-effect seams. Overridable via the `deps` argument to
  * runAgentProof so unit tests can drive the orchestrator without spawning
  * Playwright, calling the Anthropic SDK, or hitting R2/GitHub. Production calls
@@ -98,7 +152,7 @@ function defaultDeps(timeoutMs) {
   return {
     // Spawns the Playwright agent-proof project.
     // Returns Promise<{ status: number, timedOut: boolean }>.
-    spawnPlaywright: async ({ briefPath, localDir, model }) => {
+    spawnPlaywright: async ({ briefPath, localDir, model, liveAgent, liveAgentDeferred }) => {
       const result = await runInterruptible(
         'pnpm',
         [
@@ -112,18 +166,29 @@ function defaultDeps(timeoutMs) {
         ],
         {
           cwd: repoRoot,
-          env: {
-            ...process.env,
-            E2E_REAL: '1',
-            E2E_AGENT_PROOF: '1',
-            BOSS_PROOF_BRIEF: briefPath,
-            BOSS_PROOF_OUT: localDir,
-            BOSS_PROOF_MODEL: model,
-          },
+          env: buildPlaywrightEnv(process.env, {
+            briefPath,
+            localDir,
+            model,
+            liveAgent,
+            liveAgentDeferred,
+          }),
           timeoutMs,
         },
       )
       return { status: result.timedOut ? -1 : (result.code ?? -1), timedOut: result.timedOut }
+    },
+    // Live-agent preflight (BOS-142): returns the subset of live-agent-relevant
+    // doctor prereqs that are MISSING for a live web run. An empty array means
+    // all prereqs are present and the scene may run genuinely live; a non-empty
+    // array defers the live scene (its ids ride BOSS_PROOF_LIVE_AGENT_DEFERRED).
+    liveAgentPreflight: () => {
+      const report = doctorReport({
+        surface: 'web',
+        liveAgent: true,
+        lookups: defaultDoctorLookups({ repoRoot }),
+      })
+      return report.missing.filter((id) => LIVE_AGENT_PREREQ_IDS.has(id))
     },
     // Extracts the last frame of a video as a fallback still. Returns { status }.
     extractFallbackFrame: ({ mp4Path, fallbackPath }) =>
@@ -139,18 +204,39 @@ function defaultDeps(timeoutMs) {
 
 /**
  * Main agent proof orchestrator.
- * @param {{ prNumber: string, commit: string, changedFiles: string[], dryRun: boolean, deps?: object }} opts
- * @returns {Promise<{ manifest: object, commentBody: string }>}
+ *
+ * When `runContext` is provided (BOS-139 collect mode), the orchestrator owns
+ * run identity and the shared budget: this runner uses the provided
+ * runId/token/paths/localDir, writes its brief to `<localDir>/<briefFileName>`
+ * (so a shared run dir does not collide with the TUI runner's brief), clamps the
+ * brief's inner wall-clock budget to `runContext.maxWallClockMs`, and — when
+ * `collect` is set — returns a SurfaceRun instead of self-finalizing (the
+ * consolidated finalize consumes N of these). Without `runContext`, behavior is
+ * byte-identical to today (compute own identity, write `brief.json`, finalize).
+ *
+ * @param {{ prNumber: string, commit: string, changedFiles: string[], dryRun: boolean, deps?: object, planRequiredProof?: string[], runContext?: object }} opts
+ * @returns {Promise<{ manifest: object, commentBody: string } | object>}
  */
-export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, deps }) {
+export async function runAgentProof({
+  prNumber,
+  commit,
+  changedFiles,
+  dryRun,
+  deps,
+  planRequiredProof,
+  runContext,
+}) {
+  const startedAt = Date.now()
   const model = process.env.BOSS_PROOF_MODEL ?? DEFAULT_MODEL
   const shouldUpload = !dryRun && process.env.BOSS_PROOF_UPLOAD !== '0'
   const bucket = shouldUpload ? requiredProofBucket() : null
 
-  const runId = process.env.BOSS_PROOF_RUN_ID || new Date().toISOString().replaceAll(/[:.]/g, '-')
-  const token = process.env.BOSS_PROOF_RUN_TOKEN || randomUUID()
-  const paths = proofRunPaths({ prNumber, commit, runId, token })
-  const localDir = path.join(repoRoot, paths.localDir)
+  const runId =
+    runContext?.runId ??
+    (process.env.BOSS_PROOF_RUN_ID || new Date().toISOString().replaceAll(/[:.]/g, '-'))
+  const token = runContext?.token ?? (process.env.BOSS_PROOF_RUN_TOKEN || randomUUID())
+  const paths = runContext?.paths ?? proofRunPaths({ prNumber, commit, runId, token })
+  const localDir = runContext?.localDir ?? path.join(repoRoot, paths.localDir)
   fs.mkdirSync(localDir, { recursive: true })
 
   // ── Step 1: Resolve brief ─────────────────────────────────────────────────
@@ -168,16 +254,39 @@ export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, de
     const diff = gatherDiff()
     const routes = gatherRouteMap()
     const fixtures = gatherFixturesSummary()
-    const rawBrief = await generateBriefFromDiff({ diff, changedFiles, routes, fixtures, model })
-    const result = validateBrief(rawBrief)
+    const rawBrief = await generateBriefFromDiff({
+      diff,
+      changedFiles,
+      routes,
+      fixtures,
+      model,
+      planRequiredProof,
+    })
+    const result = validateBrief(rawBrief, { source: 'generated' })
     if (result.brief === null) {
       throw new Error(`Generated brief failed validation: ${result.errors.join(', ')}`)
     }
     brief = result.brief
   }
 
-  // Write brief to run dir so the Playwright spec can read it
-  const briefPath = path.join(localDir, 'brief.json')
+  // Collect mode: clamp the brief's inner wall-clock budget to the orchestrator's
+  // shared-budget grant AFTER the default-merge (validateBrief already merged
+  // DEFAULT_BUDGETS). resolveAgentBackstopMs then derives the outer SIGKILL from
+  // the clamped value automatically. The clamped brief is written below so the
+  // Playwright spec reads the reduced timeout.
+  if (runContext?.maxWallClockMs) {
+    brief.budgets = {
+      ...(brief.budgets ?? {}),
+      maxWallClockMs: Math.min(
+        brief.budgets?.maxWallClockMs ?? DEFAULT_INNER_BUDGET_MS,
+        runContext.maxWallClockMs,
+      ),
+    }
+  }
+
+  // Write brief to run dir so the Playwright spec can read it. In collect mode a
+  // per-surface filename avoids colliding with the TUI runner in a shared dir.
+  const briefPath = path.join(localDir, runContext?.briefFileName ?? 'brief.json')
   fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`)
 
   // Outer SIGKILL backstop, derived from the brief's inner wall-clock budget so
@@ -198,9 +307,31 @@ export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, de
   let agentResult = { passed: false, summary: 'agent did not run', evidence: [], steps: 0 }
   let agentTimedOut = false
 
+  // Live-agent decision (BOS-142): live MODE is enabled ONLY when the VALIDATED
+  // brief actually carries a `liveAgent:true` scene — the exact condition under
+  // which proof.spec.ts runs the deterministic live driver (it keys off
+  // scene.liveAgent). A generated brief always has the flag stripped
+  // (validateBrief source:'generated'), so it stays stubbed. We must NOT boot
+  // live mode off a plan `live-agent` bullet alone: a generated brief can never
+  // carry the scene to drive, so the spec would fall through to the plain
+  // LLM/stub path while the real runner was booted — spending with no live
+  // scene and no disclosure. The bullet still widens the shared budget in
+  // proof.mjs (a harmless over-grant). Only when requested do we run the
+  // preflight; all prereqs present ⇒ genuinely live, otherwise the run proceeds
+  // with the deferred ids so the driver marks the scene deferred (honest, non-red).
+  const liveAgentRequested =
+    Array.isArray(brief.scenes) && brief.scenes.some((s) => s.liveAgent === true)
+  let liveAgentOpts = {}
+  if (liveAgentRequested) {
+    const missing = d.liveAgentPreflight()
+    liveAgentOpts = missing.length === 0 ? { liveAgent: true } : { liveAgentDeferred: missing }
+  }
+
   try {
     // spawnPlaywright may be async (real path) or sync (test stubs); await handles both.
-    const pwResult = await Promise.resolve(d.spawnPlaywright({ briefPath, localDir, model }))
+    const pwResult = await Promise.resolve(
+      d.spawnPlaywright({ briefPath, localDir, model, ...liveAgentOpts }),
+    )
     agentTimedOut = Boolean(pwResult.timedOut)
     if (agentTimedOut) {
       console.warn(
@@ -230,6 +361,29 @@ export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, de
     }
   }
 
+  // Per-scene pass/fail (BOS-140 P3b/P3c), from the web tracker's DOM-text
+  // evidence audit (AgentResult.scenes). A miss on ANY scene forces the
+  // capture to 'failed' even when the agent's own done(passed=true) and the
+  // whole-run interaction gate both succeeded — parity with the TUI gate.
+  const scenes = Array.isArray(agentResult.scenes) ? agentResult.scenes : []
+  // A live-deferred scene (BOS-142: prereq missing) carries passed:false but is
+  // an HONEST env deferral, NOT a failure — exclude it from the failure set so a
+  // passing sibling scene is never dragged red and the capture summary never
+  // names a deferral as "failed". This mirrors the spec-side computeLivePassed,
+  // which also excludes liveDeferred scenes; keeping the two in lockstep is what
+  // lets a mixed (deferred-live + passing-stub) brief finish green.
+  const failedScenes = scenes.filter((s) => s.passed === false && !s.liveDeferred)
+
+  // Per-scene agent-runner disclosure (BOS-142). A scene that actually ran
+  // against the real Claude plugin (Task 5 driver set `liveAgent === true`) is
+  // unstubbed → mark it `agentRunnerStubbed: false`. Every other scene (stub-run
+  // OR live-deferred) stays stubbed and we ADD NO field, so an all-stub capture
+  // stays byte-identical to the BOS-141 goldens (absent field ⇒ stubbed). The
+  // run-level manifest flag is then `capturesAgentRunnerStubbed([captureShape])`.
+  for (const scene of scenes) {
+    if (scene.liveAgent === true) scene.agentRunnerStubbed = false
+  }
+
   // ── Step 3: Find the Playwright video and post-process ───────────────────
   // The agent-proof project saves the video under the test output dir.
   // Playwright writes it as <uuid>.webm inside the output dir; we find the
@@ -253,15 +407,18 @@ export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, de
 
     // Extract still stills from raw/*.png
     const rawStills = findRawStills(rawDir)
+    const normalizedScenes = normalizeScenes(brief)
 
     // Copy stills to captureDir
     let stills = rawStills.map((stillPath) => {
       const base = path.basename(stillPath)
       const dest = path.join(captureDir, base)
       fs.copyFileSync(stillPath, dest)
+      const sceneId = sceneIdFromStillName(base, normalizedScenes)
       return {
         fileName: `${captureId}/${base}`,
         label: labelFromStillName(base),
+        ...(sceneId ? { sceneId } : {}),
       }
     })
 
@@ -302,6 +459,21 @@ export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, de
       if (fallback.status !== 0) {
         console.warn('[proof-agent] ffmpeg fallback mp4 conversion also failed — no video artifact')
       }
+    }
+
+    // Chapter-timestamp mapping (BOS-140/P3b): map each scene's wall-offset
+    // marker (AgentResult.scenes[].atMs, from the web tracker's begin_scene)
+    // through the video's trim + retime + intro to the output mp4's clock, so
+    // the comment/gallery (Task 7) can link `[m:ss]` into the video. Null-safe:
+    // a failed post-process (post.ok === false, plain-mp4 fallback) has no
+    // known timeline, so scenes degrade to outputMs: null (unlinked chapters).
+    // Double-approximation note: for web, `atMs` is measured from the runner's
+    // `t0`, while `post.timeline.trimMs` also strips the pre-`t0` recording
+    // pre-roll (context creation predates `t0` by ~1-2s, see Task 5's clock
+    // note) — the two approximations compound, so mapped `#t=` links can skew
+    // slightly early. Accepted per the plan's risk note; no behavior change.
+    for (const scene of scenes) {
+      scene.outputMs = mapSourceToOutputMs(post.ok ? post.timeline : null, scene.atMs)
     }
 
     // Fallback still: if the agent took no screenshots, extract the final frame
@@ -355,14 +527,19 @@ export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, de
     }
 
     const mp4Exists = fs.existsSync(mp4Path)
-    const captureStatus = agentPassed && agentResult.passed && mp4Exists ? 'passed' : 'failed'
+    const captureStatus =
+      agentPassed && agentResult.passed && mp4Exists && failedScenes.length === 0
+        ? 'passed'
+        : 'failed'
     const captureError = !agentPassed
       ? agentResult.summary || 'agent proof test failed'
       : !agentResult.passed
         ? agentResult.summary || 'agent run did not pass'
         : !mp4Exists
           ? 'agent passed but no converted video artifact was produced'
-          : null
+          : failedScenes.length > 0
+            ? `scene(s) failed: ${failedScenes.map((s) => s.id).join(', ')}`
+            : null
     captureShape = {
       recipeId: captureId,
       title: brief.title,
@@ -373,6 +550,7 @@ export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, de
       ...(mp4Exists ? { fileName: `${captureId}/${captureId}.mp4` } : {}),
       ...(fs.existsSync(pngPath) ? { posterFileName: `${captureId}/${captureId}.png` } : {}),
       ...(stills.length > 0 ? { stills } : {}),
+      ...(scenes.length > 0 ? { scenes } : {}),
       ...(captureError ? { error: captureError } : {}),
     }
   } else {
@@ -383,6 +561,7 @@ export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, de
       surface: 'web',
       privacy: 'fixture',
       status: 'failed',
+      ...(scenes.length > 0 ? { scenes } : {}),
       error: agentResult.passed
         ? 'no video artifact captured'
         : agentResult.summary || 'no video artifact captured',
@@ -395,6 +574,30 @@ export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, de
   // via done({noSurface:true}), that this change has no demonstrable surface —
   // a neutral outcome the finalizer maps to the honest "no UI surface" note.
   const noSurface = agentResult.noSurface === true
+
+  // Surface-specific texts for the secret scan (manifest is always scanned
+  // inside finalizeAgentProof — these are the extra web-path texts).
+  const scanTexts = [
+    agentResult.summary ?? '',
+    ...(agentResult.evidence ?? []),
+    captureShape.error ?? '',
+  ]
+
+  // Collect mode (BOS-139): return a SurfaceRun for the consolidated finalize
+  // instead of self-finalizing.
+  if (runContext?.collect) {
+    return {
+      surface: 'web',
+      captureShapes: [captureShape],
+      brief,
+      agentResult,
+      hasFailure,
+      noSurface,
+      scanTexts,
+      elapsedMs: Date.now() - startedAt,
+      reasonCode: null,
+    }
+  }
 
   // ── Steps 4–7: Build manifest, secret scan, upload, render + post comment ─
   const publicBaseUrl = `${publicProofBaseUrl()}/${paths.publicPrefix}`
@@ -413,14 +616,10 @@ export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, de
     publicBaseUrl,
     shouldUpload,
     bucket,
-    // Surface-specific texts for the secret scan (manifest is always scanned
-    // inside finalizeAgentProof — these are the extra web-path texts).
-    scanTexts: [
-      agentResult.summary ?? '',
-      ...(agentResult.evidence ?? []),
-      captureShape.error ?? '',
-    ],
-    agentRunnerStubbed: true,
+    scanTexts,
+    // BOS-142: computed, not hardcoded. false only when the web capture is
+    // entirely live scenes; any stub/deferred scene keeps it true (honest).
+    agentRunnerStubbed: capturesAgentRunnerStubbed([captureShape]),
     // Forward the full merged deps so test stubs (uploadBundle, postComment,
     // etc.) injected into runAgentProof still take effect inside finalize.
     deps: d,
@@ -493,8 +692,12 @@ function findFirstFile(dir, pattern) {
   return null
 }
 
+// Matches both the legacy `NN-label.png` shape and the BOS-140 P3b per-scene
+// `scene-SS-NN-label.png` shape (mirrors proof.spec.ts's STILL_RE).
+const STILL_RE = /^(?:scene-\d\d-)?\d\d-.*\.png$/
+const SCENE_STILL_PREFIX_RE = /^scene-(\d{2})-/
+
 function findRawStills(rawDir) {
-  const STILL_RE = /^\d\d-.*\.png$/
   try {
     return fs
       .readdirSync(rawDir)
@@ -509,6 +712,17 @@ function findRawStills(rawDir) {
 function labelFromStillName(filename) {
   // Convert "01-open-home.png" → "01 open home"
   return path.basename(filename, '.png').replaceAll('-', ' ')
+}
+
+/** Derive a still's sceneId from its `scene-SS-` filename prefix by mapping the
+ * ordinal onto the brief's normalized scenes. Returns undefined for a legacy
+ * `NN-label.png` still (no prefix) so it falls into the gallery's trailing
+ * unlabeled group instead of being misattributed to scene 1. */
+function sceneIdFromStillName(filename, normalizedScenes) {
+  const match = SCENE_STILL_PREFIX_RE.exec(filename)
+  if (!match) return undefined
+  const ordinal = Number(match[1])
+  return normalizedScenes[ordinal - 1]?.id
 }
 
 function requiredProofBucket() {

@@ -150,10 +150,62 @@ test('non-empty sections render collapsible <details> with the right summaries',
     /<details><summary>Must-fix detail — found 1 \/ fixed 1 \/ verified 0 \/ unresolved 0<\/summary>/,
   )
   assert.match(md, /<details><summary>Leave as-is<\/summary>/)
-  assert.match(
-    md,
-    /<details><summary>Suggestions \(open pool\) & follow-up-ticket prompt<\/summary>/,
-  )
+  assert.match(md, /<details><summary><strong>Create 1 Linear issue<\/strong><\/summary>/)
+})
+
+test('the follow-up block summary counts suggestions with singular/plural', () => {
+  const one = renderReport({
+    suggestions: [{ title: 'Only one', file: 'a.ts', line: 1 }],
+  })
+  assert.match(one, /<details><summary><strong>Create 1 Linear issue<\/strong><\/summary>/)
+  const two = renderReport({
+    suggestions: [
+      { title: 'First', file: 'a.ts', line: 1 },
+      { title: 'Second', file: 'b.ts', line: 2 },
+    ],
+  })
+  assert.match(two, /<details><summary><strong>Create 2 Linear issues<\/strong><\/summary>/)
+})
+
+test('the copyable prompt refers to issues, not tickets', () => {
+  const md = renderReport(cleanFixture())
+  assert.match(md, /create one Bossanova issue per item/)
+  assert.match(md, /existing Todo\/In Progress issues\./)
+  assert.doesNotMatch(md, /ticket/i)
+})
+
+test('Test Coverage <details> renders when verdict.testing_detail is present', () => {
+  const data = cleanFixture()
+  data.verdict.testing_detail = 'Added a table-driven test covering the new plural branch.'
+  const md = renderReport(data)
+  assert.match(md, /<details><summary>Test Coverage<\/summary>/)
+  assert.match(md, /Added a table-driven test covering the new plural branch\./)
+  // The one-line badge on the verdict line is preserved alongside the body.
+  assert.match(md, /✅ \*\*Test Coverage:\*\* Satisfactory/)
+})
+
+test('Test Coverage <details> is omitted when verdict.testing_detail is absent', () => {
+  const md = renderReport(cleanFixture())
+  assert.doesNotMatch(md, /<details><summary>Test Coverage<\/summary>/)
+  // But the badged verdict line still renders.
+  assert.match(md, /✅ \*\*Test Coverage:\*\* Satisfactory/)
+})
+
+test('literal HTML in free-text prose is escaped so it cannot break the layout', () => {
+  const data = cleanFixture()
+  // Prose that names a tag — GitHub would otherwise parse the raw <details> as
+  // an HTML element and swallow every following section into it.
+  data.verdict.testing_detail = 'Covers the Test Coverage <details> present/absent behaviour.'
+  data.summary = 'Reviewed the <summary> & <strong> rendering paths.'
+  const md = renderReport(data)
+  // The tags render as visible text, not as HTML elements.
+  assert.match(md, /Covers the Test Coverage &lt;details&gt; present\/absent behaviour\./)
+  assert.match(md, /Reviewed the &lt;summary&gt; &amp; &lt;strong&gt; rendering paths\./)
+  // No stray unescaped tag leaks out of the prose into the document body.
+  assert.doesNotMatch(md, /behaviour\.\n[\s\S]*<details>(?!<summary>)/)
+  // Sibling sections after Test Coverage still render at the top level.
+  assert.match(md, /<details><summary>Evidence — rounds & gates<\/summary>/)
+  assert.match(md, /<details><summary>Leave as-is<\/summary>/)
 })
 
 test('empty sections are omitted entirely (no empty <details>)', () => {

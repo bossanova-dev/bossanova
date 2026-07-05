@@ -13,6 +13,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/status"
 	goproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -856,5 +857,94 @@ func TestIsSubdirOf(t *testing.T) {
 				t.Errorf("isSubdirOf(%q, %q) = %v, want %v", tt.child, tt.parent, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestMergeGateProtoEnumLockstep locks the invariant that vcs.MergeGate and the
+// generated pb.MergeBlock_Gate enum share byte-identical integer values.
+// displayEntryToMergeBlock casts vcs.MergeGate -> pb.MergeBlock_Gate by raw
+// value, so reordering or inserting a value in either enum would silently
+// misreport the gate on get_session/list_sessions while every Go-only test
+// stayed green. This is the compile-adjacent guard the "keep in sync EXACTLY"
+// comments only document.
+func TestMergeGateProtoEnumLockstep(t *testing.T) {
+	cases := []struct {
+		vcsGate vcs.MergeGate
+		pbGate  pb.MergeBlock_Gate
+	}{
+		{vcs.MergeGateUnspecified, pb.MergeBlock_GATE_UNSPECIFIED},
+		{vcs.MergeGateNone, pb.MergeBlock_GATE_NONE},
+		{vcs.MergeGateReview, pb.MergeBlock_GATE_REVIEW},
+		{vcs.MergeGateCI, pb.MergeBlock_GATE_CI},
+		{vcs.MergeGatePending, pb.MergeBlock_GATE_PENDING},
+		{vcs.MergeGateConflict, pb.MergeBlock_GATE_CONFLICT},
+		{vcs.MergeGateBaseSync, pb.MergeBlock_GATE_BASE_SYNC},
+		{vcs.MergeGateDraft, pb.MergeBlock_GATE_DRAFT},
+	}
+	for _, c := range cases {
+		if int32(c.vcsGate) != int32(c.pbGate) {
+			t.Errorf("enum drift: vcs.MergeGate(%d) != pb.MergeBlock_Gate %s(%d)",
+				c.vcsGate, c.pbGate, int32(c.pbGate))
+		}
+	}
+}
+
+// TestDisplayStatusProtoEnumLockstep locks the same invariant for the
+// DisplayStatus enum, which displayEntryToMergeBlock also casts by raw value.
+func TestDisplayStatusProtoEnumLockstep(t *testing.T) {
+	cases := []struct {
+		vcsStatus vcs.DisplayStatus
+		pbStatus  pb.DisplayStatus
+	}{
+		{vcs.DisplayStatusUnspecified, pb.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED},
+		{vcs.DisplayStatusIdle, pb.DisplayStatus_DISPLAY_STATUS_IDLE},
+		{vcs.DisplayStatusChecking, pb.DisplayStatus_DISPLAY_STATUS_CHECKING},
+		{vcs.DisplayStatusFailing, pb.DisplayStatus_DISPLAY_STATUS_FAILING},
+		{vcs.DisplayStatusConflict, pb.DisplayStatus_DISPLAY_STATUS_CONFLICT},
+		{vcs.DisplayStatusRejected, pb.DisplayStatus_DISPLAY_STATUS_REJECTED},
+		{vcs.DisplayStatusPassing, pb.DisplayStatus_DISPLAY_STATUS_PASSING},
+		{vcs.DisplayStatusMerged, pb.DisplayStatus_DISPLAY_STATUS_MERGED},
+		{vcs.DisplayStatusClosed, pb.DisplayStatus_DISPLAY_STATUS_CLOSED},
+		{vcs.DisplayStatusDraft, pb.DisplayStatus_DISPLAY_STATUS_DRAFT},
+		{vcs.DisplayStatusApproved, pb.DisplayStatus_DISPLAY_STATUS_APPROVED},
+		{vcs.DisplayStatusReview, pb.DisplayStatus_DISPLAY_STATUS_REVIEW},
+	}
+	for _, c := range cases {
+		if int32(c.vcsStatus) != int32(c.pbStatus) {
+			t.Errorf("enum drift: vcs.DisplayStatus(%d) != pb.DisplayStatus %s(%d)",
+				c.vcsStatus, c.pbStatus, int32(c.pbStatus))
+		}
+	}
+}
+
+// TestDisplayEntryToMergeBlock covers the read-path hydration helper: nil entry
+// -> nil, a review-blocked entry -> GATE_REVIEW with reviewers and detail, and a
+// passing entry -> GATE_NONE.
+func TestDisplayEntryToMergeBlock(t *testing.T) {
+	if got := displayEntryToMergeBlock(nil); got != nil {
+		t.Errorf("nil entry: got %v, want nil", got)
+	}
+
+	review := displayEntryToMergeBlock(&status.DisplayEntry{
+		Status:              vcs.DisplayStatusRejected,
+		HasChangesRequested: true,
+		ChangesRequestedBy:  []string{"octocat"},
+	})
+	if review.GetGate() != pb.MergeBlock_GATE_REVIEW {
+		t.Errorf("review entry gate = %v, want GATE_REVIEW", review.GetGate())
+	}
+	if review.GetDetail() == "" {
+		t.Error("review entry detail is empty, want non-empty")
+	}
+	if got := review.GetBlockingReviewers(); len(got) != 1 || got[0] != "octocat" {
+		t.Errorf("review entry blocking_reviewers = %v, want [octocat]", got)
+	}
+	if review.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_REJECTED {
+		t.Errorf("review entry display_status = %v, want REJECTED", review.GetDisplayStatus())
+	}
+
+	passing := displayEntryToMergeBlock(&status.DisplayEntry{Status: vcs.DisplayStatusPassing})
+	if passing.GetGate() != pb.MergeBlock_GATE_NONE {
+		t.Errorf("passing entry gate = %v, want GATE_NONE", passing.GetGate())
 	}
 }

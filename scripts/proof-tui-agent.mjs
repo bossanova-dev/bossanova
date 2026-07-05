@@ -46,8 +46,10 @@ import {
 } from './proof-lib.mjs'
 import {
   generateBriefFromDiff as defaultGenerateBriefFromDiff,
+  normalizeScenes,
   validateBrief,
 } from './proof-brief.mjs'
+import { mapSourceToOutputMs } from './proof-video.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -93,6 +95,7 @@ export const SYSTEM_PROMPT = [
   'Before calling done(passed=true), complete every step in provided hints and visit every screen they mention.',
   'Do not call done(passed=true) until you observed ALL listed expected-evidence strings on screen.',
   'You may call done(passed=false) early when the app is broken or you cannot complete a hint; include the observed blocker.',
+  "SCENES: the goal lists numbered scenes; call begin_scene({id}) before starting each scene's actions (scene 1 is active from the start), complete scenes in order, and make each scene's expected evidence visible on screen WITHIN that scene before moving on.",
 ].join(' ')
 
 const TOOL_DEFS = [
@@ -119,6 +122,16 @@ const TOOL_DEFS = [
       type: 'object',
       properties: { text: { type: 'string' } },
       required: ['text'],
+    },
+  },
+  {
+    name: 'begin_scene',
+    description:
+      'Mark the start of the named brief scene. Call once per scene, in order, BEFORE its first action.',
+    input_schema: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
     },
   },
   {
@@ -360,6 +373,9 @@ function readCastTailMs(castPath) {
  * with an install hint — the same skip-don't-fail semantics the agent applies
  * when a capture step degrades. The shared
  * finishVideo pipeline adds the intro card, timer, idle speedup, and poster.
+ * The returned `timeline` (BOS-140/P3b, null on the plain-mp4 fallback path)
+ * is what `mapSourceToOutputMs` needs to place scene markers on the mp4 clock.
+ * @returns {{mp4Path: string, posterPath?: string, timeline: object|null}|null}
  */
 export function defaultCastToVideo({
   castPath,
@@ -419,8 +435,9 @@ export function defaultCastToVideo({
     )
   }
 
+  let finished
   try {
-    finishVideo({
+    finished = finishVideo({
       recipeDir: captureDir,
       recipeId: captureId,
       webmPath,
@@ -444,7 +461,34 @@ export function defaultCastToVideo({
 
   const mp4Path = path.join(captureDir, `${captureId}.mp4`)
   if (!fs.existsSync(mp4Path)) return null
-  return { mp4Path, posterPath: fs.existsSync(posterPath) ? posterPath : undefined }
+  return {
+    mp4Path,
+    posterPath: fs.existsSync(posterPath) ? posterPath : undefined,
+    timeline: finished.timeline,
+  }
+}
+
+// ── Evidence gate ─────────────────────────────────────────────────────────────
+
+/**
+ * Journey-wide per-scene evidence gate (P3c — replaces the final-screen-only
+ * T1 gate). An evidence substring passes when it appears in ANY settled screen
+ * captured while its scene was active. Literal substring match (short
+ * on-screen tokens), NOT fuzzy. A scene with zero captured screens fails with
+ * all its evidence missing. Pure.
+ * @param {{ scenes: Array<{id:string,title:string,expectedEvidence:string[]}>,
+ *           screens: Array<{ seq: number, text: string }>,
+ *           sceneForScreen: Record<number, string> }} opts
+ * @returns {Array<{ id: string, title: string, passed: boolean, missing: string[] }>}
+ */
+export function evaluateSceneEvidence({ scenes, screens, sceneForScreen }) {
+  return scenes.map((scene) => {
+    const texts = screens.filter((s) => sceneForScreen[s.seq] === scene.id).map((s) => s.text)
+    const missing = (scene.expectedEvidence ?? []).filter(
+      (sub) => !texts.some((t) => t.includes(sub)),
+    )
+    return { id: scene.id, title: scene.title, passed: missing.length === 0, missing }
+  })
 }
 
 /**
@@ -459,16 +503,24 @@ export async function runTuiAgentProof({
   dryRun,
   fallbackRecipeCaptures,
   deps,
+  planRequiredProof,
+  runContext,
 }) {
+  const startedAt = Date.now()
   const d = { ...defaultDeps(), ...(deps ?? {}) }
   const model = process.env.BOSS_PROOF_MODEL ?? DEFAULT_MODEL
   const shouldUpload = !dryRun && process.env.BOSS_PROOF_UPLOAD !== '0'
   const bucket = shouldUpload ? requiredProofBucket() : null
 
-  const runId = process.env.BOSS_PROOF_RUN_ID || new Date().toISOString().replaceAll(/[:.]/g, '-')
-  const token = process.env.BOSS_PROOF_RUN_TOKEN || randomUUID()
-  const paths = proofRunPaths({ prNumber, commit, runId, token })
-  const localDir = path.join(repoRoot, paths.localDir)
+  // Collect mode (BOS-139): the orchestrator owns run identity + the shared
+  // budget; use its values instead of computing our own. Without runContext,
+  // behavior is byte-identical to today.
+  const runId =
+    runContext?.runId ??
+    (process.env.BOSS_PROOF_RUN_ID || new Date().toISOString().replaceAll(/[:.]/g, '-'))
+  const token = runContext?.token ?? (process.env.BOSS_PROOF_RUN_TOKEN || randomUUID())
+  const paths = runContext?.paths ?? proofRunPaths({ prNumber, commit, runId, token })
+  const localDir = runContext?.localDir ?? path.join(repoRoot, paths.localDir)
   fs.mkdirSync(localDir, { recursive: true })
   const rawDir = path.join(localDir, 'raw')
   fs.mkdirSync(rawDir, { recursive: true })
@@ -478,12 +530,23 @@ export async function runTuiAgentProof({
     model,
     changedFiles,
     generateBriefFromDiff: d.generateBriefFromDiff,
+    planRequiredProof,
   })
   // Apply TUI default budgets, letting any brief-specified budget win.
   const rawBudgets = brief.rawBudgets ?? {}
   delete brief.rawBudgets
   brief.budgets = { ...TUI_BUDGETS, ...rawBudgets }
-  fs.writeFileSync(path.join(localDir, 'brief.json'), `${JSON.stringify(brief, null, 2)}\n`)
+  // Collect mode: clamp the inner wall-clock budget to the orchestrator's grant
+  // AFTER the default-merge, so a shared-budget run cannot overrun its slice.
+  if (runContext?.maxWallClockMs) {
+    brief.budgets.maxWallClockMs = Math.min(brief.budgets.maxWallClockMs, runContext.maxWallClockMs)
+  }
+  // In collect mode write a per-surface brief filename so a shared run dir does
+  // not collide with the web runner's brief.json.
+  fs.writeFileSync(
+    path.join(localDir, runContext?.briefFileName ?? 'brief.json'),
+    `${JSON.stringify(brief, null, 2)}\n`,
+  )
 
   // ── Step 2 + 3 (bridge region): loop → frames → zero-frame fallback ───────
   const captureDir = path.join(localDir, CAPTURE_ID)
@@ -494,25 +557,42 @@ export async function runTuiAgentProof({
   let finalScreen = ''
   let stills = []
   let captionTimings = []
+  let screens = []
+  let sceneForScreen = {}
+  // Populated by the try block below; read afterwards (Step 4) to map each
+  // scene's cast-clock start onto the finished mp4's clock (BOS-140/P3b).
+  let sceneTimings = []
+  const scenes = normalizeScenes(brief)
 
   try {
-    const loop = await runAgentLoop({ brief, model, modelDep: d.model, bridge, rawDir })
+    const loop = await runAgentLoop({ brief, scenes, model, modelDep: d.model, bridge, rawDir })
     agentResult = loop.agentResult
     finalScreen = loop.finalScreen
     captionTimings = loop.captionTimings ?? []
+    screens = loop.screens ?? []
+    sceneForScreen = loop.sceneForScreen ?? {}
+    sceneTimings = loop.sceneTimings ?? []
     // Persist the per-step caption timings (raw/caption-timings.json) — the
     // single source the video step reads to burn captions onto the mp4 (BOS-121).
     fs.writeFileSync(
       path.join(rawDir, 'caption-timings.json'),
       `${JSON.stringify(captionTimings, null, 2)}\n`,
     )
+    // Persist the per-scene cast-clock start times (raw/scene-timings.json,
+    // P3b/BOS-140) — the source Task 4's per-scene evidence gate and the
+    // chaptered video/gallery consume.
+    fs.writeFileSync(
+      path.join(rawDir, 'scene-timings.json'),
+      `${JSON.stringify(sceneTimings, null, 2)}\n`,
+    )
 
-    // Render each captured settled screen → frame-NN.png for the gallery.
+    // Render each captured settled screen → scene-SS-frame-NN.png for the gallery.
     stills = await renderFrames({
       rawDir,
       captureDir,
       title: brief.title,
       renderStill: d.renderStill,
+      sceneForScreen,
     })
 
     // Zero-frame fallback: an image-only reviewer must always get one still.
@@ -522,10 +602,16 @@ export async function runTuiAgentProof({
         finalScreen = screen || finalScreen
         const screenPath = path.join(rawDir, 'screen-01.txt')
         fs.writeFileSync(screenPath, screen ?? '')
-        const framePath = path.join(captureDir, 'frame-01.png')
+        const framePath = path.join(captureDir, 'scene-01-frame-01.png')
         await d.renderStill({ input: screenPath, output: framePath, title: brief.title })
         if (fs.existsSync(framePath)) {
-          stills = [{ fileName: `${CAPTURE_ID}/frame-01.png`, label: 'frame 01' }]
+          stills = [
+            {
+              fileName: `${CAPTURE_ID}/scene-01-frame-01.png`,
+              label: 'scene 01 frame 01',
+              sceneId: 'scene-01',
+            },
+          ]
         }
       } catch (err) {
         console.warn(`[proof-tui-agent] zero-frame fallback failed: ${err.message}`)
@@ -577,12 +663,30 @@ export async function runTuiAgentProof({
     }
   }
 
-  // ── Step 4: T1 evidence gate ──────────────────────────────────────────────
-  // Every brief.expectedEvidence substring must appear in the FINAL settled
-  // screen. A miss forces the verdict to failed regardless of done(passed=true).
-  const expected = brief.expectedEvidence ?? []
-  const missingEvidence = expected.filter((sub) => !finalScreen.includes(sub))
-  const evidenceOK = missingEvidence.length === 0
+  // ── Step 4: journey-wide per-scene evidence gate (P3c, BOS-140) ────────────
+  // REPLACES the old final-screen-only T1 gate (was: every
+  // brief.expectedEvidence substring must appear in the FINAL settled screen
+  // only). That gate made multi-scene journeys gate-hostile: evidence that
+  // surfaced mid-scene and then scrolled off screen before the run ended
+  // failed spuriously even though the run genuinely demonstrated it. Now each
+  // scene's expectedEvidence is checked against ANY settled screen captured
+  // while that scene was active — a miss on any scene forces the verdict to
+  // failed regardless of done(passed=true). Deliberate, epic-locked behavior
+  // change: a single-scene brief (the common case, `scenes` synthesized by
+  // `normalizeScenes`) now matches evidence against ANY settled screen in the
+  // run, not only the final one.
+  //
+  // Chapter-timestamp mapping (BOS-140/P3b): each scene's cast-clock startMs
+  // is mapped through the video's trim + retime + intro to the output mp4's
+  // clock, so the comment/gallery (Task 7) can link `[m:ss]` into the video.
+  // Null-safe both ways — a marker-less run only has sceneTimings[0], and a
+  // stills-only proof (no agg/video) has no timeline at all, so later scenes
+  // and/or all scenes degrade to outputMs: null (chapters render unlinked).
+  const perScene = evaluateSceneEvidence({ scenes, screens, sceneForScreen }).map((scene, i) => ({
+    ...scene,
+    outputMs: mapSourceToOutputMs(castResult?.timeline ?? null, sceneTimings[i]?.startMs),
+  }))
+  const evidenceOK = perScene.every((s) => s.passed)
 
   // ── Step 5: captureShape + finalize ───────────────────────────────────────
   // Missing video alone does NOT fail the run as long as at least one still was
@@ -597,7 +701,10 @@ export async function runTuiAgentProof({
   if (!agentResult.passed) {
     error = agentResult.summary || 'agent did not pass'
   } else if (!evidenceOK) {
-    error = `evidence gate failed: screen missing ${missingEvidence.join(', ')}`
+    error = `evidence gate failed: ${perScene
+      .filter((s) => !s.passed)
+      .map((s) => `${s.id} missing ${s.missing.join(', ')}`)
+      .join('; ')}`
   } else if (!hasMedia) {
     error = 'no media artifact captured'
   }
@@ -608,6 +715,7 @@ export async function runTuiAgentProof({
     surface: 'tui',
     privacy: 'fixture',
     status,
+    scenes: perScene,
     ...(mp4Exists ? { mediaType: 'mp4', fileName: `${CAPTURE_ID}/${CAPTURE_ID}.mp4` } : {}),
     ...(posterFileName ? { posterFileName } : {}),
     ...(stills.length > 0 ? { stills } : {}),
@@ -616,6 +724,25 @@ export async function runTuiAgentProof({
   const recipeFloorCaptures = hasFailure
     ? captureFallbackRecipeFloor({ fallbackRecipeCaptures, localDir, keepWebm: !shouldUpload })
     : []
+
+  const scanTexts = [finalScreen, brief.title, brief.description, agentResult.summary ?? '']
+
+  // Collect mode (BOS-139): return a SurfaceRun for the consolidated finalize
+  // instead of self-finalizing. noSurface is always false for the TUI path (a
+  // boss/TUI diff always has a TUI surface to demonstrate).
+  if (runContext?.collect) {
+    return {
+      surface: 'tui',
+      captureShapes: [captureShape, ...recipeFloorCaptures],
+      brief,
+      agentResult,
+      hasFailure,
+      noSurface: false,
+      scanTexts,
+      elapsedMs: Date.now() - startedAt,
+      reasonCode: null,
+    }
+  }
 
   const publicBaseUrl = `${publicProofBaseUrl()}/${paths.publicPrefix}`
   return finalizeAgentProof({
@@ -632,7 +759,7 @@ export async function runTuiAgentProof({
     publicBaseUrl,
     shouldUpload,
     bucket,
-    scanTexts: [finalScreen, brief.title, brief.description, agentResult.summary ?? ''],
+    scanTexts,
     agentRunnerStubbed: true,
     deps: d.finalizeDeps,
   })
@@ -659,10 +786,19 @@ function captureFallbackRecipeFloor({ fallbackRecipeCaptures, localDir, keepWebm
  * and records the cast-relative time of that settled screen (read from the live
  * session.cast tail via `readCastMs`) so captions can be burned into the video at
  * the right moment (BOS-121). `readCastMs` is injectable for tests.
- * @returns {Promise<{ agentResult: object, finalScreen: string, captionTimings: Array<{seq:number,caption:string,startMs:number}> }>}
+ *
+ * P3b (BOS-140): `scenes` is the normalized brief.scenes list (defaults to
+ * `normalizeScenes(brief)`, which always yields at least one scene — a
+ * scene-less brief synthesizes ONE scene from its top-level fields, so a
+ * marker-less run degrades to today's single-window behavior byte-for-byte).
+ * Scene 1 is auto-opened at startMs 0. The model marks later scene boundaries
+ * via the `begin_scene` tool; each settled screen is attributed to whichever
+ * scene is active when it is captured (`sceneForScreen`).
+ * @returns {Promise<{ agentResult: object, finalScreen: string, captionTimings: Array<{seq?:number,caption:string,startMs:number}>, sceneTimings: Array<{id:string,title:string,startMs:number}>, sceneForScreen: Record<number,string>, screens: Array<{seq:number,text:string}> }>}
  */
 export async function runAgentLoop({
   brief,
+  scenes = normalizeScenes(brief),
   model,
   modelDep,
   bridge,
@@ -671,15 +807,30 @@ export async function runAgentLoop({
 }) {
   const goal = [
     `Goal: ${brief.description}`,
-    brief.stepsHints?.length ? `Hints:\n- ${brief.stepsHints.join('\n- ')}` : '',
+    scenes.length > 1
+      ? [
+          'Scenes:',
+          ...scenes.map((s, i) => {
+            const parts = [`Scene ${i + 1} (${s.id}) — ${s.title}:`]
+            if (s.stepsHints?.length) parts.push(`hints: ${s.stepsHints.join('; ')}`)
+            if (s.expectedEvidence?.length)
+              parts.push(`must show: ${s.expectedEvidence.join(' | ')}`)
+            return parts.join(' ')
+          }),
+        ].join('\n')
+      : [
+          brief.stepsHints?.length ? `Hints:\n- ${brief.stepsHints.join('\n- ')}` : '',
+          brief.expectedEvidence?.length
+            ? `You must see ALL of these on screen before done(passed=true): ${brief.expectedEvidence.join(' | ')}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
     // SOFT steering only: plan-derived proof guides the run but never feeds the
     // hard expectedEvidence substring gate (plan prose rarely appears verbatim
     // on a TUI screen, so gating on it would deterministically fail the run).
     brief.planRequiredProof?.length
       ? `The change's plan expects this proof — steer your run to demonstrate it:\n- ${brief.planRequiredProof.join('\n- ')}`
-      : '',
-    brief.expectedEvidence?.length
-      ? `You must see ALL of these on screen before done(passed=true): ${brief.expectedEvidence.join(' | ')}`
       : '',
   ]
     .filter(Boolean)
@@ -695,6 +846,14 @@ export async function runAgentLoop({
   let finalText = ''
   let bridgeError = null
   const captionTimings = []
+  const screens = []
+  const sceneForScreen = {}
+  // Scene 1 is active from the start with startMs 0 (BOS-140/P3b): a
+  // marker-less run therefore attributes every screen to scene 1 and produces
+  // a single sceneTimings entry, matching today's single-window behavior.
+  let activeSceneIndex = 0
+  const sceneTimings =
+    scenes.length > 0 ? [{ id: scenes[0].id, title: scenes[0].title, startMs: 0 }] : []
 
   for (let step = 0; step < brief.budgets.maxSteps; step++) {
     if (Date.now() - started > brief.budgets.maxWallClockMs) break
@@ -728,9 +887,11 @@ export async function runAgentLoop({
     // would caption early frames with later actions whenever one response
     // carries more than one observe/send_keys/type_text block.
     let pendingCaption = ''
+    let pendingCaptionTimed = false
     for (const block of resp.content ?? []) {
       if (block.type === 'text') {
         pendingCaption = pendingCaption ? `${pendingCaption}\n${block.text}` : block.text
+        pendingCaptionTimed = false
         continue
       }
       if (block.type !== 'tool_use') continue
@@ -740,6 +901,32 @@ export async function runAgentLoop({
         done.summary = String(block.input?.summary ?? '')
         done.evidence = Array.isArray(block.input?.evidence) ? block.input.evidence : []
         toolResult = { ok: true }
+      } else if (block.name === 'begin_scene') {
+        const id = String(block.input?.id ?? '')
+        const activeId = scenes[activeSceneIndex]?.id
+        const nextIndex = activeSceneIndex + 1
+        const expectedId = scenes[nextIndex]?.id
+        if (id === activeId) {
+          // Duplicate marker for the already-active scene: no-op.
+          toolResult = { ok: true }
+        } else if (expectedId && id === expectedId) {
+          activeSceneIndex = nextIndex
+          const n = activeSceneIndex + 1
+          const scene = scenes[activeSceneIndex]
+          const markerMs = readCastMs()
+          sceneTimings.push({ id: scene.id, title: scene.title, startMs: markerMs })
+          // Burn a default scene-change caption only when no narration already
+          // precedes this marker — the marker's own caption+cast-timestamp is
+          // the epic's requirement, but explicit narration wins.
+          pendingCaption = pendingCaption || `Scene ${n} — ${scene.title}`
+          captionTimings.push({ caption: pendingCaption, startMs: markerMs })
+          pendingCaptionTimed = true
+          toolResult = { ok: true, scene: id }
+        } else {
+          toolResult = {
+            error: `unknown or out-of-order scene id; expected ${expectedId ?? 'none'}`,
+          }
+        }
       } else if (
         block.name === 'observe' ||
         block.name === 'send_keys' ||
@@ -769,8 +956,14 @@ export async function runAgentLoop({
           fs.writeFileSync(path.join(rawDir, `caption-${seq}.txt`), pendingCaption)
           // Record the cast-relative time of THIS settled screen so the caption
           // can be burned into the video for the window that starts here (BOS-121).
-          captionTimings.push({ seq: screenN, caption: pendingCaption, startMs: readCastMs() })
+          const screenMs = readCastMs()
+          if (!pendingCaptionTimed) {
+            captionTimings.push({ seq: screenN, caption: pendingCaption, startMs: screenMs })
+          }
+          screens.push({ seq: screenN, text: screen })
+          sceneForScreen[screenN] = scenes[activeSceneIndex]?.id
           pendingCaption = ''
+          pendingCaptionTimed = false
           toolResult = { screen }
         } catch (err) {
           bridgeError = err
@@ -799,24 +992,39 @@ export async function runAgentLoop({
     evidence: done.evidence,
     steps,
   }
-  return { agentResult, finalScreen, captionTimings }
+  return { agentResult, finalScreen, captionTimings, sceneTimings, sceneForScreen, screens }
 }
 
 // ── Capture helpers ────────────────────────────────────────────────────────────
 
-/** Render every raw/screen-NN.txt to captureDir/frame-NN.png.
+/** 2-digit scene ordinal parsed from a `scene-NN`-shaped sceneId; defaults to
+ * '01' when the id is missing or carries no numeric suffix (P3b naming). */
+function sceneOrdinal(sceneId) {
+  const m = /(\d+)/.exec(String(sceneId ?? ''))
+  return m ? m[1].padStart(2, '0') : '01'
+}
+
+/** Render every raw/screen-NN.txt to captureDir/scene-SS-frame-NN.png.
  *
  * By default all frames render in ONE browser via `renderStills` (the
  * `--manifest` batch), avoiding a cold Chromium launch per frame. When `renderStill`
  * is overridden (unit-test stubs) the original per-item path runs instead, so the
  * batch only engages with the production default renderer — `renderStill` may be
- * sync (default spawnSync) or async (test stub) and both are awaited. */
+ * sync (default spawnSync) or async (test stub) and both are awaited.
+ *
+ * `sceneForScreen` (P3b, BOS-140) maps each captured screen's sequence number
+ * to the sceneId active when it was taken (`runAgentLoop`'s return field); a
+ * screen with no entry (or an omitted map entirely — back-compat) defaults to
+ * scene 1's ordinal so single-scene runs keep today's naming shape (`scene-01-`
+ * prefix). Each returned still carries `sceneId` so it survives into the
+ * manifest (`buildManifest` spreads stills verbatim). */
 export async function renderFrames({
   rawDir,
   captureDir,
   title,
   renderStill = defaultRenderStill,
   renderStills,
+  sceneForScreen = {},
 }) {
   const screenFiles = fs
     .readdirSync(rawDir)
@@ -832,17 +1040,25 @@ export async function renderFrames({
     } catch {
       caption = ''
     }
+    const sceneId = sceneForScreen[Number(n)] ?? sceneForScreen[n] ?? 'scene-01'
+    const ss = sceneOrdinal(sceneId)
     return {
       n,
+      ss,
+      sceneId,
       input: path.join(rawDir, sf),
-      output: path.join(captureDir, `frame-${n}.png`),
+      output: path.join(captureDir, `scene-${ss}-frame-${n}.png`),
       caption,
     }
   })
   const collect = () =>
     jobs
       .filter((j) => fs.existsSync(j.output))
-      .map((j) => ({ fileName: `${CAPTURE_ID}/frame-${j.n}.png`, label: `frame ${j.n}` }))
+      .map((j) => ({
+        fileName: `${CAPTURE_ID}/scene-${j.ss}-frame-${j.n}.png`,
+        label: `scene ${j.ss} frame ${j.n}`,
+        sceneId: j.sceneId,
+      }))
 
   // Batch only when the renderer is the production default (tests override
   // renderStill with a stub and expect the per-item path). renderStills may be
@@ -899,6 +1115,7 @@ async function resolveBrief({
   model,
   changedFiles = [],
   generateBriefFromDiff = defaultGenerateBriefFromDiff,
+  planRequiredProof,
 }) {
   const explicitBriefPath = process.env.BOSS_PROOF_BRIEF
   let raw
@@ -913,6 +1130,7 @@ async function resolveBrief({
         routes: TUI_CONTEXT_BLOCK,
         fixtures: TUI_CONTEXT_BLOCK,
         model,
+        planRequiredProof,
       })
     } catch (err) {
       if (isMissingModuleError(err)) {
@@ -921,7 +1139,10 @@ async function resolveBrief({
       throw err
     }
   }
-  const result = validateBrief(raw)
+  // BOS-142 T1: scene.liveAgent is stripped for the generated (LLM) path so it
+  // can never be model-settable; the explicit/authored BOSS_PROOF_BRIEF path
+  // preserves it.
+  const result = validateBrief(raw, { source: explicitBriefPath ? 'authored' : 'generated' })
   if (result.brief === null) {
     throw new Error(
       `${explicitBriefPath ? 'Invalid BOSS_PROOF_BRIEF' : 'Generated brief failed validation'}: ${result.errors.join(', ')}`,

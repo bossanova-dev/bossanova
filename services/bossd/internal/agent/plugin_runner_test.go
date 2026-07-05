@@ -77,7 +77,7 @@ func TestPluginRunner_Start_ResolvesLogPath(t *testing.T) {
 	tl := NewTailer(zerolog.Nop())
 	pr := NewPluginRunner(fc, tl, t.TempDir(), zerolog.Nop())
 
-	sid, err := pr.Start(context.Background(), "/work", "plan", nil, "explicit-sid", "")
+	sid, err := pr.Start(context.Background(), "/work", "plan", nil, "explicit-sid", "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -96,10 +96,33 @@ func TestPluginRunner_Start_ResolvesLogPath(t *testing.T) {
 	}
 }
 
+func TestPluginRunner_Start_CarriesExtraEnv(t *testing.T) {
+	fc := &fakeAgentClient{startResp: &bossanovav1.StartAgentRunResponse{SessionId: "sid"}}
+	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
+
+	extra := map[string]string{
+		"PROOF_ANTHROPIC_API_KEY": "secret-value",
+		"BOSS_PROOF_R2_BUCKET":    "bossanova-proof-production",
+	}
+	if _, err := pr.Start(context.Background(), "/work", "plan", nil, "sid", "", extra); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	got := fc.startReq.Load()
+	if got == nil {
+		t.Fatal("StartRun req not recorded")
+	}
+	if got.GetExtraEnv()["PROOF_ANTHROPIC_API_KEY"] != "secret-value" {
+		t.Errorf("ExtraEnv secret not forwarded: %v", got.GetExtraEnv())
+	}
+	if got.GetExtraEnv()["BOSS_PROOF_R2_BUCKET"] != "bossanova-proof-production" {
+		t.Errorf("ExtraEnv constant not forwarded: %v", got.GetExtraEnv())
+	}
+}
+
 func TestPluginRunner_Start_PropagatesError(t *testing.T) {
 	fc := &fakeAgentClient{startErr: errors.New("boom")}
 	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
-	_, err := pr.Start(context.Background(), "/w", "p", nil, "sid", "")
+	_, err := pr.Start(context.Background(), "/w", "p", nil, "sid", "", nil)
 	if err == nil || !errors.Is(err, fc.startErr) && err.Error() != "boom" {
 		t.Errorf("expected wrapped err, got %v", err)
 	}

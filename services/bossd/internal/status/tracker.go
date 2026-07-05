@@ -26,6 +26,15 @@ type Tracker struct {
 	mu      sync.RWMutex
 	entries map[string]*Entry // claude_id -> entry
 
+	// authFailed records, per agent session ID, the time the login-required
+	// terminal shape ("Not logged in" / "Please run /login") was last observed
+	// on the chat's pane. It is kept separate from entries because Update
+	// recreates the Entry on every heartbeat (which would otherwise wipe the
+	// marker); this map is only written by the poller's dedicated SetAuthFailed
+	// path. A marker older than StaleThreshold is treated as absent so a chat
+	// that logged back in (or died) stops flagging — fail toward NOT flagging.
+	authFailed map[string]time.Time // agent_session_id -> last observed
+
 	// onUpdate, when non-nil, is invoked after every Update with the
 	// claude_id whose status changed. The hook resolves claude_id →
 	// sessionID and triggers DisplayStatusComputer.Recompute. Kept as a
@@ -38,7 +47,8 @@ type Tracker struct {
 // NewTracker creates a new empty Tracker.
 func NewTracker() *Tracker {
 	return &Tracker{
-		entries: make(map[string]*Entry),
+		entries:    make(map[string]*Entry),
+		authFailed: make(map[string]time.Time),
 	}
 }
 
@@ -59,6 +69,35 @@ func (t *Tracker) Update(agentSessionID string, status pb.ChatStatus, lastOutput
 	if hook != nil && (!hadPrev || prev.Status != status) {
 		hook(agentSessionID)
 	}
+}
+
+// SetAuthFailed records or clears the login-required marker for a chat. When
+// failed is true it stamps the current time; when false it clears any existing
+// marker immediately (so a chat that logged back in stops flagging on the next
+// poll tick). Called by the tmux poller every tick with the current pane state.
+func (t *Tracker) SetAuthFailed(agentSessionID string, failed bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if failed {
+		t.authFailed[agentSessionID] = time.Now()
+	} else {
+		delete(t.authFailed, agentSessionID)
+	}
+}
+
+// AuthFailed reports whether the chat's pane currently shows the login-required
+// terminal shape and the marker is fresh (observed within StaleThreshold). A
+// stale marker — the poller stopped re-observing it (the chat logged in, its
+// pane changed, or it died) — is treated as absent so the flag clears itself and
+// never sticks. This fails toward NOT flagging.
+func (t *Tracker) AuthFailed(agentSessionID string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	at, ok := t.authFailed[agentSessionID]
+	if !ok {
+		return false
+	}
+	return time.Since(at) <= StaleThreshold
 }
 
 // SetOnUpdate wires a callback fired after Update when the chat's status
@@ -147,6 +186,7 @@ func (t *Tracker) Remove(agentSessionID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.entries, agentSessionID)
+	delete(t.authFailed, agentSessionID)
 }
 
 // Cleanup removes all stale entries (older than StaleThreshold).
@@ -157,6 +197,11 @@ func (t *Tracker) Cleanup() {
 	for id, e := range t.entries {
 		if now.Sub(e.ReceivedAt) > StaleThreshold {
 			delete(t.entries, id)
+		}
+	}
+	for id, at := range t.authFailed {
+		if now.Sub(at) > StaleThreshold {
+			delete(t.authFailed, id)
 		}
 	}
 }

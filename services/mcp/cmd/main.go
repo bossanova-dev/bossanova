@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/recurser/bossalib/bossmcp"
+	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossanova-mcp/internal/serve"
 	"github.com/recurser/bossanova-mcp/internal/socketbackend"
 )
@@ -28,8 +29,16 @@ func run(args []string) error {
 	httpAddr := fs.String("http", "", "Serve Streamable HTTP on this address (e.g. 127.0.0.1:8765); empty runs over stdio")
 	readOnly := fs.Bool("read-only", false, "Register only read-only tools")
 	socketPath := fs.String("socket", "", "Path to the bossd Unix socket (defaults to the configured socket path)")
+	showVersion := fs.Bool("version", false, "Print build info and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	// --version prints the on-disk binary's build metadata without starting the
+	// server, so `boss mcp status` can compare it against the running service.
+	if *showVersion {
+		fmt.Println(buildinfo.String())
+		return nil
 	}
 
 	resolvedSocket := *socketPath

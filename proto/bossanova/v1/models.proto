@@ -49,6 +49,40 @@ enum SessionEvent {
   SESSION_EVENT_FINALIZE_REQUESTED = 16;
 }
 
+// RotationTrigger says why a rotation decision was evaluated. (BOS-176)
+enum RotationTrigger {
+  ROTATION_TRIGGER_UNSPECIFIED = 0;
+  ROTATION_TRIGGER_USAGE_LIMITED = 1;    // usage-cap banner / ErrUsageLimited
+  ROTATION_TRIGGER_AUTH_INVALIDATED = 2; // auth failure treated as rotation signal
+  ROTATION_TRIGGER_MANUAL = 3;           // user-initiated switch (E3/3.3)
+}
+
+// RotationOutcome says what the rotation engine decided. (BOS-176)
+enum RotationOutcome {
+  ROTATION_OUTCOME_UNSPECIFIED = 0;
+  ROTATION_OUTCOME_ROTATED = 1;                   // swapped to to_account and resumed
+  ROTATION_OUTCOME_STATUS_ONLY_DISABLED = 2;      // kill-switch off: status set, no swap
+  ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY = 3; // agent lacks rotation capability
+  ROTATION_OUTCOME_EXHAUSTED = 4;                 // all accounts cooling: parked until reset_at
+  ROTATION_OUTCOME_FAILED = 5;                    // swap attempted and failed
+}
+
+// RotationEvent is one audit record of a rotation decision (BOS-176).
+// Account fields carry labels/ids only — never credentials.
+message RotationEvent {
+  string id = 1;
+  string session_id = 2;
+  string chat_id = 3; // empty for headless runs
+  string provider = 4; // "claude" | "codex" | …
+  RotationTrigger trigger = 5;
+  string from_account = 6; // account label (or id when label empty)
+  string to_account = 7;   // empty unless outcome == ROTATED
+  optional google.protobuf.Timestamp reset_at = 8; // parsed reset / min cooldown
+  RotationOutcome outcome = 9;
+  string detail = 10; // short human line, e.g. "resets 15:00"; no secrets
+  google.protobuf.Timestamp created_at = 11;
+}
+
 // CheckStatus represents the status of a CI check run.
 enum CheckStatus {
   CHECK_STATUS_UNSPECIFIED = 0;
@@ -275,7 +309,7 @@ message Session {
   // Transport-only: hydrated server-side from the in-memory RepairLeaseManager
   // and never persisted. Distinct from display_is_repairing (field 24), which
   // is a best-effort display flag; repair_active is the authoritative,
-  // lease-backed signal a dispatcher (bs-epic driver, /boss-repair, plugin
+  // lease-backed signal a dispatcher (boss-epic driver, /boss-repair, plugin
   // sweep) reads to defer to an already-active repairer without racing.
   bool repair_active = 53;
 
@@ -287,12 +321,25 @@ message Session {
 
   // Structured reason a session's PR cannot currently be merged, hydrated on
   // get_session/list_sessions from the daemon's display tracker. Lets an
-  // unattended driver (bs-epic) decide repair-vs-proceed without scraping tmux.
+  // unattended driver (boss-epic) decide repair-vs-proceed without scraping tmux.
   MergeBlock merge_block = 55;
 
   // Most-recent real agent output across the session's chats; advances on
   // genuine output, NOT pane mtime. Absent when never observed.
   optional google.protobuf.Timestamp last_agent_activity_at = 56;
+
+  // account_id binds the session to a rotation account; empty/absent =
+  // system-default account 0 (no injected env, D9).
+  optional string account_id = 57;
+
+  // account_label is the server-resolved human label for account_id ("System
+  // default" when unbound); read-only, non-secret.
+  optional string account_label = 58;
+
+  // Recent rotation audit events (newest first, capped server-side at 10),
+  // hydrated by bossd like the display_* fields so TUI/web render history,
+  // the exhausted badge, and toasts from one field. (BOS-176)
+  repeated RotationEvent rotation_events = 59;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display
@@ -460,7 +507,7 @@ enum DisplayStatus {
 }
 
 // MergeBlock explains why a session's PR cannot currently be merged, so an
-// unattended driver (bs-epic) can decide repair-vs-proceed without scraping tmux.
+// unattended driver (boss-epic) can decide repair-vs-proceed without scraping tmux.
 message MergeBlock {
   enum Gate {
     GATE_UNSPECIFIED = 0;
@@ -507,6 +554,7 @@ enum ChatStatus {
   CHAT_STATUS_IDLE = 2;
   CHAT_STATUS_STOPPED = 3;
   CHAT_STATUS_QUESTION = 4;
+  CHAT_STATUS_LIMITED = 5;
 }
 
 // ClaudeChat represents a Claude Code conversation associated with a session.

@@ -40,6 +40,16 @@ func (f *fakeAgentChatStore) GetByAgentSessionID(_ context.Context, id string) (
 	return nil, sql.ErrNoRows
 }
 
+func (f *fakeAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.AgentChat, error) {
+	var out []*models.AgentChat
+	for _, chat := range f.byAgentSessionID {
+		if chat.SessionID == sessionID {
+			out = append(out, chat)
+		}
+	}
+	return out, nil
+}
+
 func TestNewDispatcherLookup_PrefersSessionByBossID(t *testing.T) {
 	sessions := &fakeSessionStore{byID: map[string]*models.Session{
 		"sess-1": {ID: "sess-1", AgentName: "codex"},

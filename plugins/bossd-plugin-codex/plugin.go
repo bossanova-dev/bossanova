@@ -49,9 +49,13 @@ var agentRunnerServiceDesc = grpc.ServiceDesc{
 		{MethodName: "GetChatTitle", Handler: agentGetChatTitleHandler},
 		{MethodName: "SuggestPRTitle", Handler: agentSuggestPRTitleHandler},
 		{MethodName: "HasQuestionPrompt", Handler: agentHasQuestionPromptHandler},
+		{MethodName: "DetectUsageLimit", Handler: agentDetectUsageLimitHandler},
+		{MethodName: "HasWorkingIndicator", Handler: agentHasWorkingIndicatorHandler},
 		{MethodName: "LastTurnIsUser", Handler: agentLastTurnIsUserHandler},
 		{MethodName: "TranscriptExists", Handler: agentTranscriptExistsHandler},
 		{MethodName: "ReadTranscript", Handler: agentReadTranscriptHandler},
+		{MethodName: "RotationCapability", Handler: agentRotationCapabilityHandler},
+		{MethodName: "MaterializeAccount", Handler: agentMaterializeAccountHandler},
 	},
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "bossanova/v1/plugin.proto",
@@ -71,9 +75,13 @@ type agentRunnerServiceHandler interface {
 	GetChatTitle(context.Context, *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error)
 	SuggestPRTitle(context.Context, *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
 	HasQuestionPrompt(context.Context, *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
+	DetectUsageLimit(context.Context, *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error)
+	HasWorkingIndicator(context.Context, *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error)
 	LastTurnIsUser(context.Context, *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error)
 	TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error)
 	ReadTranscript(context.Context, *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error)
+	RotationCapability(context.Context, *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error)
+	MaterializeAccount(context.Context, *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error)
 }
 
 func agentGetInfoHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -180,6 +188,22 @@ func agentHasQuestionPromptHandler(srv any, ctx context.Context, dec func(any) e
 	return srv.(agentRunnerServiceHandler).HasQuestionPrompt(ctx, req)
 }
 
+func agentDetectUsageLimitHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.DetectUsageLimitRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).DetectUsageLimit(ctx, req)
+}
+
+func agentHasWorkingIndicatorHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.HasWorkingIndicatorRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).HasWorkingIndicator(ctx, req)
+}
+
 func agentLastTurnIsUserHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
 	req := new(bossanovav1.LastTurnIsUserRequest)
 	if err := dec(req); err != nil {
@@ -202,4 +226,20 @@ func agentReadTranscriptHandler(srv any, ctx context.Context, dec func(any) erro
 		return nil, err
 	}
 	return srv.(agentRunnerServiceHandler).ReadTranscript(ctx, req)
+}
+
+func agentRotationCapabilityHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.RotationCapabilityRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).RotationCapability(ctx, req)
+}
+
+func agentMaterializeAccountHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.MaterializeAccountRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).MaterializeAccount(ctx, req)
 }

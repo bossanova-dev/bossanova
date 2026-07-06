@@ -8,7 +8,7 @@ import { resolveSkillsRoot, skillsRootAvailable } from './construct-skills.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const manifest = JSON.parse(
-  fs.readFileSync(path.join(root, '.claude/skills/bs-implement/construct.json'), 'utf8'),
+  fs.readFileSync(path.join(root, '.claude/skills/boss-implement/construct.json'), 'utf8'),
 )
 
 test('resolveSkillsRoot honors the SUPERPOWERS_SKILLS_DIR override', () => {

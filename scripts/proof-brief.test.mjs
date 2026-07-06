@@ -652,8 +652,8 @@ import { isLowSignalDiffPath, prioritizeDiff, buildBriefPrompt } from './proof-b
 test('isLowSignalDiffPath flags docs/markdown/skill/sum files', () => {
   for (const p of [
     'docs/plans/x.md',
-    '.claude/skills/bs-proof/SKILL.md',
-    '.codex/skills/bs-proof/SKILL.md',
+    '.claude/skills/boss-proof/SKILL.md',
+    '.codex/skills/boss-proof/SKILL.md',
     'README.md',
     'go.work.sum',
     'pnpm-lock.yaml',

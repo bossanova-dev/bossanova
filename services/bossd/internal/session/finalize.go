@@ -597,7 +597,7 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 
 	// A clean branch whose only commit is the empty draft-PR bootstrap commit
 	// did no real work, even though a PR exists. For a non-cron (headless
-	// detach) run — the /bs-epic fan-out path — do not attach + mark it ready as
+	// detach) run — the /boss-epic fan-out path — do not attach + mark it ready as
 	// a green PR: record a no-changes outcome so the session Blocks and a
 	// headless driver fail-isolates it instead of merging an empty PR. Cron
 	// finalize is left byte-identical: its no-op runs are already handled by the
@@ -672,7 +672,7 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 
 	// NOTE: the empty-vs-real-work gate lives only in the sibling
 	// attachExistingPRIfCleanBranchHasOne path, not here. A no-op headless
-	// /bs-epic run always carries bossd's bootstrap draft PR, so it is classified
+	// /boss-epic run always carries bossd's bootstrap draft PR, so it is classified
 	// by that attach path (checked first in classifyFinalizeOutcome) before this
 	// no-existing-PR path is ever reached; a branch that is HEAD-ahead-of-base
 	// by only the empty bootstrap commit but has no PR is not a shape session

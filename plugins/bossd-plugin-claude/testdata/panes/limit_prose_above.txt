@@ -1,0 +1,8 @@
+⏺ Here is what that provider error looks like when it fires:
+
+  "Claude usage limit reached — you've hit your usage limit, resets in 5 hours"
+
+  I've added handling so the daemon surfaces it. Anything else?
+
+❯
+  claude-opus-4 · ~/code/bossanova · ready

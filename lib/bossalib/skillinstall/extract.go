@@ -222,6 +222,14 @@ func embeddedFiles(fsys fs.FS) ([]embeddedFile, error) {
 	return files, nil
 }
 
+// hasShebang reports whether data begins with a "#!" interpreter line. This
+// catches extensionless embedded helper scripts that executableSkillFile's
+// filename heuristic misses but skill prose invokes directly. Markdown headings
+// begin with "# " (hash-space), never "#!", so this does not over-mark docs.
+func hasShebang(data []byte) bool {
+	return bytes.HasPrefix(data, []byte("#!"))
+}
+
 func executableSkillFile(path string) bool {
 	if strings.HasSuffix(path, ".sh") {
 		return true
@@ -280,8 +288,12 @@ func Extract(dir string, fsys fs.FS) error {
 			return fmt.Errorf("read embedded skill: %w", err)
 		}
 		// Use 0o755 for scripts so they remain executable after extraction.
+		// go:embed drops the on-disk mode, so exec bits are re-derived here from
+		// the filename heuristic plus a shebang probe — extensionless helper
+		// scripts (e.g. support/.../scripts/review-package) are invoked directly
+		// by skill prose and would otherwise hit "permission denied".
 		mode := os.FileMode(0o644)
-		if executableSkillFile(path) {
+		if executableSkillFile(path) || hasShebang(data) {
 			mode = 0o755
 		}
 		return os.WriteFile(destPath, data, mode)

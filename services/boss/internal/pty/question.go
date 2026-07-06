@@ -9,6 +9,11 @@ func hasQuestionPrompt(data []byte) bool {
 	return statusdetect.HasQuestionPrompt(data)
 }
 
+// hasWorkingIndicator delegates to the shared statusdetect library.
+func hasWorkingIndicator(data []byte) bool {
+	return statusdetect.HasWorkingIndicator(data)
+}
+
 // stripANSI delegates to the shared statusdetect library.
 func stripANSI(data []byte) []byte {
 	return statusdetect.StripANSI(data)

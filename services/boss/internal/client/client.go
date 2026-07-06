@@ -61,6 +61,11 @@ type BossClient interface {
 	RemoveSession(ctx context.Context, id string) error
 	UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 	LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error)
+	// SwitchSessionAccount stops the session's live chat, rebinds it to the
+	// chosen rotation account, and brings the chat back up under it. Local-daemon
+	// only, like the account registry RPCs — the orchestrator does not host tmux
+	// panes to swap.
+	SwitchSessionAccount(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error)
 
 	// Archive / Resurrect
 	ArchiveSession(ctx context.Context, id string) (*pb.Session, error)

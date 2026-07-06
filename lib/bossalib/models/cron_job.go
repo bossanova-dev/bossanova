@@ -24,7 +24,7 @@ const (
 	// clean but produced no real work — the branch carries only the empty
 	// draft-PR bootstrap commit, so any attached PR is a no-op. It is an
 	// attention outcome (see needsAttention): the session is Blocked rather than
-	// surfaced as a green ready-for-review PR, so a headless /bs-epic driver
+	// surfaced as a green ready-for-review PR, so a headless /boss-epic driver
 	// fail-isolates the dead session instead of merging an empty PR.
 	CronJobOutcomePRNoChanges CronJobOutcome = "pr_no_changes"
 )

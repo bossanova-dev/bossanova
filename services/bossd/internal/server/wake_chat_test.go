@@ -324,6 +324,83 @@ func TestWakeChat_RoutesArgvByAgentName(t *testing.T) {
 	}
 }
 
+// TestWakeChat_CrossAgentDropsSessionModel is the BOS-255 regression: a codex
+// chat living inside a claude session must NOT inherit the session's claude
+// model id (e.g. "opus"), which Codex rejects as an unknown model. The model
+// forwarded to the codex runner must be empty so the codex plugin resolves its
+// own default.
+func TestWakeChat_CrossAgentDropsSessionModel(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "codex"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "claude", Model: "opus"}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	builder := &fakeArgvBuilder{
+		fresh: map[string][]string{
+			"claude": {"claude", "--session-id"},
+			"codex":  {"codex"},
+		},
+		resume: map[string][]string{
+			"claude": {"claude", "--resume"},
+			"codex":  {"codex", "resume"},
+		},
+	}
+	s := &Server{
+		agentChats: &chatStoreFake{chat: chat},
+		sessions:   &sessionStoreFake{sess: sess},
+		wakeHook: wakeHook{
+			spawner:     tmuxer,
+			transcripts: &fakeTranscriptOracle{exists: false},
+			argv:        builder,
+		},
+	}
+
+	if _, err := s.WakeChat(context.Background(), connect.NewRequest(&pb.WakeChatRequest{
+		AgentSessionId: "agent-1",
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(builder.calls) != 1 {
+		t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
+	}
+	if got := builder.calls[0].agentName; got != "codex" {
+		t.Fatalf("cross-agent spawn agent = %q, want codex", got)
+	}
+	if got := builder.calls[0].model; got != "" {
+		t.Fatalf("cross-agent spawn model = %q, want empty (codex must not receive a claude model)", got)
+	}
+}
+
+// TestWakeChat_SameAgentForwardsModel guards the common path: a claude chat in
+// a claude session still forwards the session model ("opus"). This locks in
+// that the BOS-255 fix does not over-broadly strip models from same-agent
+// chats (protecting the untouched consistent sites in tmux_chat.go too).
+func TestWakeChat_SameAgentForwardsModel(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "claude"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "claude", Model: "opus"}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	builder := claudeArgvBuilder()
+	s := &Server{
+		agentChats: &chatStoreFake{chat: chat},
+		sessions:   &sessionStoreFake{sess: sess},
+		wakeHook: wakeHook{
+			spawner:     tmuxer,
+			transcripts: &fakeTranscriptOracle{exists: false},
+			argv:        builder,
+		},
+	}
+
+	if _, err := s.WakeChat(context.Background(), connect.NewRequest(&pb.WakeChatRequest{
+		AgentSessionId: "agent-1",
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(builder.calls) != 1 {
+		t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
+	}
+	if got := builder.calls[0].model; got != "opus" {
+		t.Fatalf("same-agent spawn model = %q, want opus", got)
+	}
+}
+
 func TestWakeChat_UsesProviderSessionIDForResume(t *testing.T) {
 	providerID := "codex-real-1"
 	chat := &models.AgentChat{

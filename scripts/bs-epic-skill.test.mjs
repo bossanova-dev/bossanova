@@ -1,11 +1,11 @@
-// Content/contract test for the bs-epic skill (BOS-177).
+// Content/contract test for the boss-epic skill (BOS-177).
 //
-// bs-epic orchestrates an entire epic of planned Linear tickets to merged PRs,
+// boss-epic orchestrates an entire epic of planned Linear tickets to merged PRs,
 // unattended: it assembles the epic's sub-issues, computes a dependency-ordered
-// schedule, spawns parallel bs-implement sessions, drives repair on failures,
+// schedule, spawns parallel boss-implement sessions, drives repair on failures,
 // serializes merges, and reports progress on the parent issue. This test follows
 // the BOS-144 content-test pattern (scripts/bs-<skill>-skill.test.mjs, mirroring
-// scripts/bs-plan-skill.test.mjs). It pins:
+// scripts/boss-plan-skill.test.mjs). It pins:
 //   * the shared helper module + contract symbols the SKILL references,
 //   * the merge-serialization and session-isolation safety statements,
 //   * the never-mutate-outside-the-epic-set guarantee,
@@ -24,14 +24,14 @@ import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
 
-const CLAUDE = read('../.claude/skills/bs-epic/SKILL.md')
-const CODEX = read('../.codex/skills/bs-epic/SKILL.md')
+const CLAUDE = read('../.claude/skills/boss-epic/SKILL.md')
+const CODEX = read('../.codex/skills/boss-epic/SKILL.md')
 
 test('size ratchet', () => {
   // Ratchet = committed size rounded up to the next KiB. Never raise this
   // casually — a growing SKILL.md erodes the headless context budget; split
-  // situational sections into references/ (bs-plan-skill precedent) before
-  // bumping. Bumped 19456 → 24576 for BOS-179, the "make bs-epic work
+  // situational sections into references/ (boss-plan-skill precedent) before
+  // bumping. Bumped 19456 → 24576 for BOS-179, the "make boss-epic work
   // headlessly" ticket: Phase 3 was rewritten from live-chat steering to
   // headless detached dispatch (detach+model create_session, unattended
   // preamble, fresh /boss-repair watch runs, merge-time external re-check,
@@ -40,19 +40,24 @@ test('size ratchet', () => {
   // Bumped 24576 → 25600 for BOS-243: Phase 3c now documents the
   // `attached_existing` create_session signal (attach vs orphan-PR fallback)
   // so the repair driver can distinguish an attach from a fresh session.
-  const RATCHET = 25600
+  // Bumped 25600 → 27648 for BOS-198, the "rebuild boss-epic on the extracted
+  // adapters" ticket: the SKILL now exposes the three pluggable seams (pure DAG
+  // scheduler dag-scheduler.mjs, resolveTrackerAdapter, resolveSessionRunnerAdapter)
+  // and routes assembly/state/progress + session choreography + sub-skill
+  // dispatch (subSkills.implement/repair) through them — the core deliverable.
+  const RATCHET = 27648
   const bytes = Buffer.byteLength(CLAUDE, 'utf8')
   assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
 })
 
 test('frontmatter identifies the skill', () => {
-  assert.match(CLAUDE, /^---\r?\nname: bs-epic\r?\n/, 'frontmatter must declare name: bs-epic')
+  assert.match(CLAUDE, /^---\r?\nname: boss-epic\r?\n/, 'frontmatter must declare name: boss-epic')
 })
 
 test('codex mirror is exactly the rewrite of the claude source', () => {
   assert.equal(
     CODEX,
-    rewriteClaudeSkillMarkdown(CLAUDE, '.claude/skills/bs-epic/SKILL.md'),
+    rewriteClaudeSkillMarkdown(CLAUDE, '.claude/skills/boss-epic/SKILL.md'),
     'codex SKILL.md mirror must equal the generated rewrite of the claude skill',
   )
 })
@@ -69,7 +74,7 @@ test('contract tokens present in both mirrors', () => {
       'send_chat_message',
       'transitiveDependents',
       'nextToMerge',
-      'bs-epic-progress',
+      'boss-epic-progress',
       '/boss-repair watch',
     ]) {
       assert.ok(body.includes(token), `missing token: ${token}`)

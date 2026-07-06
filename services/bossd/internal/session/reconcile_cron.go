@@ -86,7 +86,7 @@ func (c *CronActivityChecker) RunActive(sess *models.Session) bool {
 }
 
 // RecoverStrandedCronSessions finalizes unattended sessions — cron-scheduled or
-// tmux_unattended (e.g. /bs-epic) — whose agent run has ended but whose Stop-hook
+// tmux_unattended (e.g. /boss-epic) — whose agent run has ended but whose Stop-hook
 // finalize signal never reached the daemon — e.g. the daemon restarted as the run
 // finished, so the loopback hook server's ephemeral port (baked into the
 // worktree's settings.local.json at session start) was stale and the Stop-hook
@@ -128,7 +128,7 @@ func (l *Lifecycle) RecoverStrandedCronSessions(ctx context.Context) (int, error
 	routed := 0
 	for _, sess := range stranded {
 		// Match the completion gate's eligibility exactly: recover both
-		// cron-scheduled and tmux_unattended (e.g. /bs-epic) sessions. A
+		// cron-scheduled and tmux_unattended (e.g. /boss-epic) sessions. A
 		// tmux_unattended session has no CronJobID, so filtering on it here would
 		// leave those sessions stranded forever.
 		if !isUnattendedSession(sess) {

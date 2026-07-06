@@ -47,6 +47,8 @@ var agentRunnerServiceDesc = grpc.ServiceDesc{
 		{MethodName: "GetChatTitle", Handler: agentGetChatTitleHandler},
 		{MethodName: "SuggestPRTitle", Handler: agentSuggestPRTitleHandler},
 		{MethodName: "HasQuestionPrompt", Handler: agentHasQuestionPromptHandler},
+		{MethodName: "DetectUsageLimit", Handler: agentDetectUsageLimitHandler},
+		{MethodName: "HasWorkingIndicator", Handler: agentHasWorkingIndicatorHandler},
 		{MethodName: "LastTurnIsUser", Handler: agentLastTurnIsUserHandler},
 		{MethodName: "TranscriptExists", Handler: agentTranscriptExistsHandler},
 	},
@@ -68,6 +70,8 @@ type agentRunnerServiceHandler interface {
 	GetChatTitle(context.Context, *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error)
 	SuggestPRTitle(context.Context, *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
 	HasQuestionPrompt(context.Context, *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
+	DetectUsageLimit(context.Context, *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error)
+	HasWorkingIndicator(context.Context, *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error)
 	LastTurnIsUser(context.Context, *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error)
 	TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error)
 }
@@ -174,6 +178,22 @@ func agentHasQuestionPromptHandler(srv any, ctx context.Context, dec func(any) e
 		return nil, err
 	}
 	return srv.(agentRunnerServiceHandler).HasQuestionPrompt(ctx, req)
+}
+
+func agentDetectUsageLimitHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.DetectUsageLimitRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).DetectUsageLimit(ctx, req)
+}
+
+func agentHasWorkingIndicatorHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.HasWorkingIndicatorRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).HasWorkingIndicator(ctx, req)
 }
 
 func agentLastTurnIsUserHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {

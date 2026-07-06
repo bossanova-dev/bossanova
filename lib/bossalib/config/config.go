@@ -144,6 +144,87 @@ func (c RepairConfig) SkillName() string {
 	return "boss-repair"
 }
 
+// RotationConfig holds account-rotation policy knobs.
+type RotationConfig struct {
+	DefaultCooldownMinutes int `json:"default_cooldown_minutes,omitempty"`
+	// Enabled gates auto-rotation of headless runs. nil = unset = enabled;
+	// unlike the int-based knobs below, a default-true bool can't use the
+	// "if x > 0" idiom, so this is a *bool.
+	Enabled                  *bool `json:"enabled,omitempty"`
+	MaxRotationsPerRun       int   `json:"max_rotations_per_run,omitempty"`
+	ParkSweepIntervalSeconds int   `json:"park_sweep_interval_seconds,omitempty"`
+
+	// AutoRotateChats is the global scope for automatic rotation of interactive
+	// tmux chats on a CHAT_STATUS_LIMITED transition (Epic 4.3, BOS-175). nil
+	// means ON (decision D4: fully automatic by default). Distinct from Enabled,
+	// which gates headless-run rotation (BOS-174).
+	AutoRotateChats *bool `json:"auto_rotate_chats,omitempty"`
+	// AutoRotateChatsPerRepo overrides the global interactive-chat scope per repo
+	// ID (both directions). The global kill-switch/settings UX is BOS-176.
+	AutoRotateChatsPerRepo map[string]bool `json:"auto_rotate_chats_per_repo,omitempty"`
+	// ChatRotateMinIntervalMinutes rate-limits automatic rotation attempts per
+	// chat (belt-and-braces against banner-flap loops). 0 = default (10m).
+	ChatRotateMinIntervalMinutes int `json:"chat_rotate_min_interval_minutes,omitempty"`
+}
+
+// AutoRotateChatsEnabled resolves the interactive-chat auto-rotate scope for a
+// repo: per-repo override → global → default ON (decision D4).
+func (c RotationConfig) AutoRotateChatsEnabled(repoID string) bool {
+	if v, ok := c.AutoRotateChatsPerRepo[repoID]; ok {
+		return v
+	}
+	if c.AutoRotateChats != nil {
+		return *c.AutoRotateChats
+	}
+	return true
+}
+
+// ChatRotateMinInterval returns the per-chat automatic-rotation rate limit, or
+// the default of 10 minutes when unset.
+func (c RotationConfig) ChatRotateMinInterval() time.Duration {
+	if c.ChatRotateMinIntervalMinutes > 0 {
+		return time.Duration(c.ChatRotateMinIntervalMinutes) * time.Minute
+	}
+	return 10 * time.Minute
+}
+
+// DefaultCooldown returns the configured default cooldown applied to a
+// usage-limited account when the signal carries no reset time, or 60 minutes
+// when unset.
+func (c RotationConfig) DefaultCooldown() time.Duration {
+	if c.DefaultCooldownMinutes > 0 {
+		return time.Duration(c.DefaultCooldownMinutes) * time.Minute
+	}
+	return 60 * time.Minute
+}
+
+// RotationEnabled returns whether auto-rotation is enabled. Unset (nil)
+// defaults to true.
+func (c RotationConfig) RotationEnabled() bool {
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
+// MaxRotations returns the configured cap on rotations per headless run, or
+// the default of 3 when unset.
+func (c RotationConfig) MaxRotations() int {
+	if c.MaxRotationsPerRun > 0 {
+		return c.MaxRotationsPerRun
+	}
+	return 3
+}
+
+// ParkSweepInterval returns the configured interval between sweeps of parked
+// sessions awaiting rotation, or the default of 60 seconds when unset.
+func (c RotationConfig) ParkSweepInterval() time.Duration {
+	if c.ParkSweepIntervalSeconds > 0 {
+		return time.Duration(c.ParkSweepIntervalSeconds) * time.Second
+	}
+	return 60 * time.Second
+}
+
 const pluginPrefix = "bossd-plugin-"
 
 // DedupPluginConfigs returns cfgs with duplicate entries removed, keeping the
@@ -548,6 +629,7 @@ type Settings struct {
 	PostHogHost                    string            `json:"posthog_host,omitempty"`
 	Plugins                        []PluginConfig    `json:"plugins,omitempty"`
 	Repair                         RepairConfig      `json:"repair,omitzero"`
+	Rotation                       RotationConfig    `json:"rotation,omitzero"`
 	ProvidersAcknowledged          bool              `json:"providers_acknowledged,omitempty"`
 	KnownAgentProviders            []string          `json:"known_agent_providers,omitempty"`
 	// LoginShell is the user's interactive shell ($SHELL), captured by the TUI

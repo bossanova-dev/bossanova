@@ -23,7 +23,7 @@ const privateMutationSkillPath = fileURLToPath(
   new URL('../.claude/skills/bs-sweep-mutation/SKILL.md', import.meta.url),
 )
 const privatePlanSkillPath = fileURLToPath(
-  new URL('../.claude/skills/bs-plan/SKILL.md', import.meta.url),
+  new URL('../.claude/skills/boss-plan/SKILL.md', import.meta.url),
 )
 
 function tmpDir() {
@@ -124,14 +124,14 @@ describe('sync-codex-skills', () => {
   )
 
   it(
-    'keeps bs-plan defaulting to agent-friendly with needs-human as the explained exception',
+    'keeps boss-plan defaulting to agent-friendly with needs-human as the explained exception',
     {
       skip: !fs.existsSync(privatePlanSkillPath) && 'private plan skill fixture is absent',
     },
     () => {
       const skill = fs.readFileSync(privatePlanSkillPath, 'utf8')
 
-      assert.match(skill, /^name: bs-plan/m)
+      assert.match(skill, /^name: boss-plan/m)
       // Both labels are documented as workspace facts and mutually exclusive.
       assert.match(skill, /`agent-friendly`, `needs-human`/)
       assert.match(skill, /mutually exclusive/)
@@ -354,15 +354,15 @@ name: example
 description: example description
 ---
 
-Run \`/bs-plan\` then **/boss-finalize**.
-Also run /bs-proof now and use /superpowers:writing-plans for plans.
+Run \`/boss-plan\` then **/boss-finalize**.
+Also run /boss-proof now and use /superpowers:writing-plans for plans.
 `)
 
-    assert.match(rewritten, /`\$bs-plan`/)
+    assert.match(rewritten, /`\$boss-plan`/)
     assert.match(rewritten, /\*\*\$boss-finalize\*\*/)
-    assert.match(rewritten, /run \$bs-proof now/)
+    assert.match(rewritten, /run \$boss-proof now/)
     assert.match(rewritten, /use \$superpowers:writing-plans for plans/)
-    assert.doesNotMatch(rewritten, /\/bs-plan/)
+    assert.doesNotMatch(rewritten, /\/boss-plan/)
     assert.doesNotMatch(rewritten, /\/boss-finalize/)
   })
 

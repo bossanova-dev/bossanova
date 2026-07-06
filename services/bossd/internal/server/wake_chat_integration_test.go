@@ -138,6 +138,14 @@ func (*codexTUITestClient) GetChatTitle(context.Context, *pb.GetChatTitleRequest
 func (*codexTUITestClient) HasQuestionPrompt(context.Context, *pb.HasQuestionPromptRequest) (*pb.HasQuestionPromptResponse, error) {
 	return &pb.HasQuestionPromptResponse{}, nil
 }
+
+func (*codexTUITestClient) DetectUsageLimit(context.Context, *pb.DetectUsageLimitRequest) (*pb.DetectUsageLimitResponse, error) {
+	return &pb.DetectUsageLimitResponse{}, nil
+}
+
+func (*codexTUITestClient) HasWorkingIndicator(context.Context, *pb.HasWorkingIndicatorRequest) (*pb.HasWorkingIndicatorResponse, error) {
+	return &pb.HasWorkingIndicatorResponse{}, nil
+}
 func (*codexTUITestClient) LastTurnIsUser(context.Context, *pb.LastTurnIsUserRequest) (*pb.LastTurnIsUserResponse, error) {
 	return &pb.LastTurnIsUserResponse{}, nil
 }
@@ -151,6 +159,12 @@ func (*codexTUITestClient) TranscriptExists(_ context.Context, req *pb.Transcrip
 }
 func (*codexTUITestClient) ReadTranscript(context.Context, *pb.ReadTranscriptRequest) (*pb.ReadTranscriptResponse, error) {
 	return &pb.ReadTranscriptResponse{}, nil
+}
+func (*codexTUITestClient) RotationCapability(context.Context, *pb.RotationCapabilityRequest) (*pb.RotationCapabilityResponse, error) {
+	return &pb.RotationCapabilityResponse{}, nil
+}
+func (*codexTUITestClient) MaterializeAccount(context.Context, *pb.MaterializeAccountRequest) (*pb.MaterializeAccountResponse, error) {
+	return &pb.MaterializeAccountResponse{}, nil
 }
 
 type codexRolloutMeta struct {
@@ -276,6 +290,14 @@ func (*claudeIntegrationClient) GetChatTitle(context.Context, *pb.GetChatTitleRe
 func (*claudeIntegrationClient) HasQuestionPrompt(context.Context, *pb.HasQuestionPromptRequest) (*pb.HasQuestionPromptResponse, error) {
 	return &pb.HasQuestionPromptResponse{}, nil
 }
+
+func (*claudeIntegrationClient) DetectUsageLimit(context.Context, *pb.DetectUsageLimitRequest) (*pb.DetectUsageLimitResponse, error) {
+	return &pb.DetectUsageLimitResponse{}, nil
+}
+
+func (*claudeIntegrationClient) HasWorkingIndicator(context.Context, *pb.HasWorkingIndicatorRequest) (*pb.HasWorkingIndicatorResponse, error) {
+	return &pb.HasWorkingIndicatorResponse{}, nil
+}
 func (*claudeIntegrationClient) LastTurnIsUser(context.Context, *pb.LastTurnIsUserRequest) (*pb.LastTurnIsUserResponse, error) {
 	return &pb.LastTurnIsUserResponse{}, nil
 }
@@ -290,6 +312,12 @@ func (*claudeIntegrationClient) TranscriptExists(_ context.Context, req *pb.Tran
 }
 func (*claudeIntegrationClient) ReadTranscript(context.Context, *pb.ReadTranscriptRequest) (*pb.ReadTranscriptResponse, error) {
 	return &pb.ReadTranscriptResponse{}, nil
+}
+func (*claudeIntegrationClient) RotationCapability(context.Context, *pb.RotationCapabilityRequest) (*pb.RotationCapabilityResponse, error) {
+	return &pb.RotationCapabilityResponse{}, nil
+}
+func (*claudeIntegrationClient) MaterializeAccount(context.Context, *pb.MaterializeAccountRequest) (*pb.MaterializeAccountResponse, error) {
+	return &pb.MaterializeAccountResponse{}, nil
 }
 
 // buildStubClaude builds the testdata stub-claude binary and returns the

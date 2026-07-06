@@ -127,15 +127,27 @@ const (
 	// AgentRunnerServiceHasQuestionPromptProcedure is the fully-qualified name of the
 	// AgentRunnerService's HasQuestionPrompt RPC.
 	AgentRunnerServiceHasQuestionPromptProcedure = "/bossanova.v1.AgentRunnerService/HasQuestionPrompt"
+	// AgentRunnerServiceHasWorkingIndicatorProcedure is the fully-qualified name of the
+	// AgentRunnerService's HasWorkingIndicator RPC.
+	AgentRunnerServiceHasWorkingIndicatorProcedure = "/bossanova.v1.AgentRunnerService/HasWorkingIndicator"
 	// AgentRunnerServiceLastTurnIsUserProcedure is the fully-qualified name of the AgentRunnerService's
 	// LastTurnIsUser RPC.
 	AgentRunnerServiceLastTurnIsUserProcedure = "/bossanova.v1.AgentRunnerService/LastTurnIsUser"
+	// AgentRunnerServiceDetectUsageLimitProcedure is the fully-qualified name of the
+	// AgentRunnerService's DetectUsageLimit RPC.
+	AgentRunnerServiceDetectUsageLimitProcedure = "/bossanova.v1.AgentRunnerService/DetectUsageLimit"
 	// AgentRunnerServiceTranscriptExistsProcedure is the fully-qualified name of the
 	// AgentRunnerService's TranscriptExists RPC.
 	AgentRunnerServiceTranscriptExistsProcedure = "/bossanova.v1.AgentRunnerService/TranscriptExists"
 	// AgentRunnerServiceReadTranscriptProcedure is the fully-qualified name of the AgentRunnerService's
 	// ReadTranscript RPC.
 	AgentRunnerServiceReadTranscriptProcedure = "/bossanova.v1.AgentRunnerService/ReadTranscript"
+	// AgentRunnerServiceRotationCapabilityProcedure is the fully-qualified name of the
+	// AgentRunnerService's RotationCapability RPC.
+	AgentRunnerServiceRotationCapabilityProcedure = "/bossanova.v1.AgentRunnerService/RotationCapability"
+	// AgentRunnerServiceMaterializeAccountProcedure is the fully-qualified name of the
+	// AgentRunnerService's MaterializeAccount RPC.
+	AgentRunnerServiceMaterializeAccountProcedure = "/bossanova.v1.AgentRunnerService/MaterializeAccount"
 )
 
 // TaskSourceServiceClient is a client for the bossanova.v1.TaskSourceService service.
@@ -818,10 +830,23 @@ type AgentRunnerServiceClient interface {
 	// grammar; daemon owns the timing logic that combines this with content-
 	// change detection.
 	HasQuestionPrompt(context.Context, *connect.Request[v1.HasQuestionPromptRequest]) (*connect.Response[v1.HasQuestionPromptResponse], error)
+	// HasWorkingIndicator scans pane content for the agent's TUI grammar that
+	// signals "still actively working" (e.g. a running background shell or an
+	// active spinner), even when the pane is otherwise static. Plugin owns its
+	// grammar; the daemon uses it to keep a busy-but-static pane from flipping
+	// idle. Consulted only in the would-be-idle branch, so active chats pay no
+	// extra RPC.
+	HasWorkingIndicator(context.Context, *connect.Request[v1.HasWorkingIndicatorRequest]) (*connect.Response[v1.HasWorkingIndicatorResponse], error)
 	// LastTurnIsUser reports whether the most recent meaningful turn in the
 	// agent's transcript is a user message (not a tool-result-only entry).
 	// Used to suppress the QUESTION status when the user has already replied.
 	LastTurnIsUser(context.Context, *connect.Request[v1.LastTurnIsUserRequest]) (*connect.Response[v1.LastTurnIsUserResponse], error)
+	// DetectUsageLimit scans pane content for the agent's usage-cap banner in
+	// the CLI-owned status region below the bottom-most prompt marker. Plugin
+	// owns the per-agent banner grammar; the daemon owns the LIMITED status
+	// transition and reset-time plumbing. Fail-safe: no status-region match =>
+	// limited=false. reset_at is absent when no reset time is parseable.
+	DetectUsageLimit(context.Context, *connect.Request[v1.DetectUsageLimitRequest]) (*connect.Response[v1.DetectUsageLimitResponse], error)
 	// TranscriptExists reports whether a non-empty transcript file is present
 	// on disk for (work_dir, agent_session_id). Used by wake-up logic to
 	// choose between resume and fresh-start argv.
@@ -830,6 +855,28 @@ type AgentRunnerServiceClient interface {
 	// its messages plus the derived final assistant message. Each plugin resolves
 	// the transcript path the same way it does for TranscriptExists.
 	ReadTranscript(context.Context, *connect.Request[v1.ReadTranscriptRequest]) (*connect.Response[v1.ReadTranscriptResponse], error)
+	// RotationCapability reports whether this agent supports account rotation and,
+	// if so, how its credentials are injected (an env token like
+	// CLAUDE_CODE_OAUTH_TOKEN, or a per-account home dir like CODEX_HOME). Agents
+	// that do not implement it (codes.Unimplemented) degrade to status-only:
+	// supports_rotation=false, never an error.
+	RotationCapability(context.Context, *connect.Request[v1.RotationCapabilityRequest]) (*connect.Response[v1.RotationCapabilityResponse], error)
+	// MaterializeAccount turns an opaque, provider-specific credential blob into a
+	// concrete process-credential spec: an environment overlay (e.g.
+	// CLAUDE_CODE_OAUTH_TOKEN) and/or home-dir files (e.g. codex auth.json) plus
+	// the env key that must point at that home dir (home_dir_env_key, e.g.
+	// CODEX_HOME). Only the owning plugin ever sees its provider's blob. The blob
+	// and all returned secret material are NEVER logged.
+	//
+	// codex note: the returned home-dir spec assumes a BASE-SEEDED codex home —
+	// the per-account dir must have its sessions/ (and session_index.jsonl) shared
+	// or symlinked from a shared base home, with only auth.json written fresh.
+	// BOS-158 proved a per-account home whose sessions/ lacks the rollout fails
+	// fast (thread/resume: no rollout found ... code -32600). Seeding sessions/ is
+	// BOS-162's credmaterialize executor's job, NOT this RPC's; MaterializeAccount
+	// returns only auth.json + HomeDirEnvKey=CODEX_HOME. See
+	// docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
+	MaterializeAccount(context.Context, *connect.Request[v1.MaterializeAccountRequest]) (*connect.Response[v1.MaterializeAccountResponse], error)
 }
 
 // NewAgentRunnerServiceClient constructs a client for the bossanova.v1.AgentRunnerService service.
@@ -921,10 +968,22 @@ func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(agentRunnerServiceMethods.ByName("HasQuestionPrompt")),
 			connect.WithClientOptions(opts...),
 		),
+		hasWorkingIndicator: connect.NewClient[v1.HasWorkingIndicatorRequest, v1.HasWorkingIndicatorResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceHasWorkingIndicatorProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("HasWorkingIndicator")),
+			connect.WithClientOptions(opts...),
+		),
 		lastTurnIsUser: connect.NewClient[v1.LastTurnIsUserRequest, v1.LastTurnIsUserResponse](
 			httpClient,
 			baseURL+AgentRunnerServiceLastTurnIsUserProcedure,
 			connect.WithSchema(agentRunnerServiceMethods.ByName("LastTurnIsUser")),
+			connect.WithClientOptions(opts...),
+		),
+		detectUsageLimit: connect.NewClient[v1.DetectUsageLimitRequest, v1.DetectUsageLimitResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceDetectUsageLimitProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("DetectUsageLimit")),
 			connect.WithClientOptions(opts...),
 		),
 		transcriptExists: connect.NewClient[v1.TranscriptExistsRequest, v1.TranscriptExistsResponse](
@@ -937,6 +996,18 @@ func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			httpClient,
 			baseURL+AgentRunnerServiceReadTranscriptProcedure,
 			connect.WithSchema(agentRunnerServiceMethods.ByName("ReadTranscript")),
+			connect.WithClientOptions(opts...),
+		),
+		rotationCapability: connect.NewClient[v1.RotationCapabilityRequest, v1.RotationCapabilityResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceRotationCapabilityProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("RotationCapability")),
+			connect.WithClientOptions(opts...),
+		),
+		materializeAccount: connect.NewClient[v1.MaterializeAccountRequest, v1.MaterializeAccountResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceMaterializeAccountProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("MaterializeAccount")),
 			connect.WithClientOptions(opts...),
 		),
 	}
@@ -957,9 +1028,13 @@ type agentRunnerServiceClient struct {
 	getChatTitle                *connect.Client[v1.GetChatTitleRequest, v1.GetChatTitleResponse]
 	suggestPRTitle              *connect.Client[v1.SuggestPRTitleRequest, v1.SuggestPRTitleResponse]
 	hasQuestionPrompt           *connect.Client[v1.HasQuestionPromptRequest, v1.HasQuestionPromptResponse]
+	hasWorkingIndicator         *connect.Client[v1.HasWorkingIndicatorRequest, v1.HasWorkingIndicatorResponse]
 	lastTurnIsUser              *connect.Client[v1.LastTurnIsUserRequest, v1.LastTurnIsUserResponse]
+	detectUsageLimit            *connect.Client[v1.DetectUsageLimitRequest, v1.DetectUsageLimitResponse]
 	transcriptExists            *connect.Client[v1.TranscriptExistsRequest, v1.TranscriptExistsResponse]
 	readTranscript              *connect.Client[v1.ReadTranscriptRequest, v1.ReadTranscriptResponse]
+	rotationCapability          *connect.Client[v1.RotationCapabilityRequest, v1.RotationCapabilityResponse]
+	materializeAccount          *connect.Client[v1.MaterializeAccountRequest, v1.MaterializeAccountResponse]
 }
 
 // GetInfo calls bossanova.v1.AgentRunnerService.GetInfo.
@@ -1027,9 +1102,19 @@ func (c *agentRunnerServiceClient) HasQuestionPrompt(ctx context.Context, req *c
 	return c.hasQuestionPrompt.CallUnary(ctx, req)
 }
 
+// HasWorkingIndicator calls bossanova.v1.AgentRunnerService.HasWorkingIndicator.
+func (c *agentRunnerServiceClient) HasWorkingIndicator(ctx context.Context, req *connect.Request[v1.HasWorkingIndicatorRequest]) (*connect.Response[v1.HasWorkingIndicatorResponse], error) {
+	return c.hasWorkingIndicator.CallUnary(ctx, req)
+}
+
 // LastTurnIsUser calls bossanova.v1.AgentRunnerService.LastTurnIsUser.
 func (c *agentRunnerServiceClient) LastTurnIsUser(ctx context.Context, req *connect.Request[v1.LastTurnIsUserRequest]) (*connect.Response[v1.LastTurnIsUserResponse], error) {
 	return c.lastTurnIsUser.CallUnary(ctx, req)
+}
+
+// DetectUsageLimit calls bossanova.v1.AgentRunnerService.DetectUsageLimit.
+func (c *agentRunnerServiceClient) DetectUsageLimit(ctx context.Context, req *connect.Request[v1.DetectUsageLimitRequest]) (*connect.Response[v1.DetectUsageLimitResponse], error) {
+	return c.detectUsageLimit.CallUnary(ctx, req)
 }
 
 // TranscriptExists calls bossanova.v1.AgentRunnerService.TranscriptExists.
@@ -1040,6 +1125,16 @@ func (c *agentRunnerServiceClient) TranscriptExists(ctx context.Context, req *co
 // ReadTranscript calls bossanova.v1.AgentRunnerService.ReadTranscript.
 func (c *agentRunnerServiceClient) ReadTranscript(ctx context.Context, req *connect.Request[v1.ReadTranscriptRequest]) (*connect.Response[v1.ReadTranscriptResponse], error) {
 	return c.readTranscript.CallUnary(ctx, req)
+}
+
+// RotationCapability calls bossanova.v1.AgentRunnerService.RotationCapability.
+func (c *agentRunnerServiceClient) RotationCapability(ctx context.Context, req *connect.Request[v1.RotationCapabilityRequest]) (*connect.Response[v1.RotationCapabilityResponse], error) {
+	return c.rotationCapability.CallUnary(ctx, req)
+}
+
+// MaterializeAccount calls bossanova.v1.AgentRunnerService.MaterializeAccount.
+func (c *agentRunnerServiceClient) MaterializeAccount(ctx context.Context, req *connect.Request[v1.MaterializeAccountRequest]) (*connect.Response[v1.MaterializeAccountResponse], error) {
+	return c.materializeAccount.CallUnary(ctx, req)
 }
 
 // AgentRunnerServiceHandler is an implementation of the bossanova.v1.AgentRunnerService service.
@@ -1096,10 +1191,23 @@ type AgentRunnerServiceHandler interface {
 	// grammar; daemon owns the timing logic that combines this with content-
 	// change detection.
 	HasQuestionPrompt(context.Context, *connect.Request[v1.HasQuestionPromptRequest]) (*connect.Response[v1.HasQuestionPromptResponse], error)
+	// HasWorkingIndicator scans pane content for the agent's TUI grammar that
+	// signals "still actively working" (e.g. a running background shell or an
+	// active spinner), even when the pane is otherwise static. Plugin owns its
+	// grammar; the daemon uses it to keep a busy-but-static pane from flipping
+	// idle. Consulted only in the would-be-idle branch, so active chats pay no
+	// extra RPC.
+	HasWorkingIndicator(context.Context, *connect.Request[v1.HasWorkingIndicatorRequest]) (*connect.Response[v1.HasWorkingIndicatorResponse], error)
 	// LastTurnIsUser reports whether the most recent meaningful turn in the
 	// agent's transcript is a user message (not a tool-result-only entry).
 	// Used to suppress the QUESTION status when the user has already replied.
 	LastTurnIsUser(context.Context, *connect.Request[v1.LastTurnIsUserRequest]) (*connect.Response[v1.LastTurnIsUserResponse], error)
+	// DetectUsageLimit scans pane content for the agent's usage-cap banner in
+	// the CLI-owned status region below the bottom-most prompt marker. Plugin
+	// owns the per-agent banner grammar; the daemon owns the LIMITED status
+	// transition and reset-time plumbing. Fail-safe: no status-region match =>
+	// limited=false. reset_at is absent when no reset time is parseable.
+	DetectUsageLimit(context.Context, *connect.Request[v1.DetectUsageLimitRequest]) (*connect.Response[v1.DetectUsageLimitResponse], error)
 	// TranscriptExists reports whether a non-empty transcript file is present
 	// on disk for (work_dir, agent_session_id). Used by wake-up logic to
 	// choose between resume and fresh-start argv.
@@ -1108,6 +1216,28 @@ type AgentRunnerServiceHandler interface {
 	// its messages plus the derived final assistant message. Each plugin resolves
 	// the transcript path the same way it does for TranscriptExists.
 	ReadTranscript(context.Context, *connect.Request[v1.ReadTranscriptRequest]) (*connect.Response[v1.ReadTranscriptResponse], error)
+	// RotationCapability reports whether this agent supports account rotation and,
+	// if so, how its credentials are injected (an env token like
+	// CLAUDE_CODE_OAUTH_TOKEN, or a per-account home dir like CODEX_HOME). Agents
+	// that do not implement it (codes.Unimplemented) degrade to status-only:
+	// supports_rotation=false, never an error.
+	RotationCapability(context.Context, *connect.Request[v1.RotationCapabilityRequest]) (*connect.Response[v1.RotationCapabilityResponse], error)
+	// MaterializeAccount turns an opaque, provider-specific credential blob into a
+	// concrete process-credential spec: an environment overlay (e.g.
+	// CLAUDE_CODE_OAUTH_TOKEN) and/or home-dir files (e.g. codex auth.json) plus
+	// the env key that must point at that home dir (home_dir_env_key, e.g.
+	// CODEX_HOME). Only the owning plugin ever sees its provider's blob. The blob
+	// and all returned secret material are NEVER logged.
+	//
+	// codex note: the returned home-dir spec assumes a BASE-SEEDED codex home —
+	// the per-account dir must have its sessions/ (and session_index.jsonl) shared
+	// or symlinked from a shared base home, with only auth.json written fresh.
+	// BOS-158 proved a per-account home whose sessions/ lacks the rollout fails
+	// fast (thread/resume: no rollout found ... code -32600). Seeding sessions/ is
+	// BOS-162's credmaterialize executor's job, NOT this RPC's; MaterializeAccount
+	// returns only auth.json + HomeDirEnvKey=CODEX_HOME. See
+	// docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
+	MaterializeAccount(context.Context, *connect.Request[v1.MaterializeAccountRequest]) (*connect.Response[v1.MaterializeAccountResponse], error)
 }
 
 // NewAgentRunnerServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -1195,10 +1325,22 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 		connect.WithSchema(agentRunnerServiceMethods.ByName("HasQuestionPrompt")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentRunnerServiceHasWorkingIndicatorHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceHasWorkingIndicatorProcedure,
+		svc.HasWorkingIndicator,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("HasWorkingIndicator")),
+		connect.WithHandlerOptions(opts...),
+	)
 	agentRunnerServiceLastTurnIsUserHandler := connect.NewUnaryHandler(
 		AgentRunnerServiceLastTurnIsUserProcedure,
 		svc.LastTurnIsUser,
 		connect.WithSchema(agentRunnerServiceMethods.ByName("LastTurnIsUser")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServiceDetectUsageLimitHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceDetectUsageLimitProcedure,
+		svc.DetectUsageLimit,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("DetectUsageLimit")),
 		connect.WithHandlerOptions(opts...),
 	)
 	agentRunnerServiceTranscriptExistsHandler := connect.NewUnaryHandler(
@@ -1211,6 +1353,18 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 		AgentRunnerServiceReadTranscriptProcedure,
 		svc.ReadTranscript,
 		connect.WithSchema(agentRunnerServiceMethods.ByName("ReadTranscript")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServiceRotationCapabilityHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceRotationCapabilityProcedure,
+		svc.RotationCapability,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("RotationCapability")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServiceMaterializeAccountHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceMaterializeAccountProcedure,
+		svc.MaterializeAccount,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("MaterializeAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
 	return "/bossanova.v1.AgentRunnerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1241,12 +1395,20 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 			agentRunnerServiceSuggestPRTitleHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceHasQuestionPromptProcedure:
 			agentRunnerServiceHasQuestionPromptHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceHasWorkingIndicatorProcedure:
+			agentRunnerServiceHasWorkingIndicatorHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceLastTurnIsUserProcedure:
 			agentRunnerServiceLastTurnIsUserHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceDetectUsageLimitProcedure:
+			agentRunnerServiceDetectUsageLimitHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceTranscriptExistsProcedure:
 			agentRunnerServiceTranscriptExistsHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceReadTranscriptProcedure:
 			agentRunnerServiceReadTranscriptHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceRotationCapabilityProcedure:
+			agentRunnerServiceRotationCapabilityHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceMaterializeAccountProcedure:
+			agentRunnerServiceMaterializeAccountHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1308,8 +1470,16 @@ func (UnimplementedAgentRunnerServiceHandler) HasQuestionPrompt(context.Context,
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.HasQuestionPrompt is not implemented"))
 }
 
+func (UnimplementedAgentRunnerServiceHandler) HasWorkingIndicator(context.Context, *connect.Request[v1.HasWorkingIndicatorRequest]) (*connect.Response[v1.HasWorkingIndicatorResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.HasWorkingIndicator is not implemented"))
+}
+
 func (UnimplementedAgentRunnerServiceHandler) LastTurnIsUser(context.Context, *connect.Request[v1.LastTurnIsUserRequest]) (*connect.Response[v1.LastTurnIsUserResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.LastTurnIsUser is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) DetectUsageLimit(context.Context, *connect.Request[v1.DetectUsageLimitRequest]) (*connect.Response[v1.DetectUsageLimitResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.DetectUsageLimit is not implemented"))
 }
 
 func (UnimplementedAgentRunnerServiceHandler) TranscriptExists(context.Context, *connect.Request[v1.TranscriptExistsRequest]) (*connect.Response[v1.TranscriptExistsResponse], error) {
@@ -1318,4 +1488,12 @@ func (UnimplementedAgentRunnerServiceHandler) TranscriptExists(context.Context, 
 
 func (UnimplementedAgentRunnerServiceHandler) ReadTranscript(context.Context, *connect.Request[v1.ReadTranscriptRequest]) (*connect.Response[v1.ReadTranscriptResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.ReadTranscript is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) RotationCapability(context.Context, *connect.Request[v1.RotationCapabilityRequest]) (*connect.Response[v1.RotationCapabilityResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.RotationCapability is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) MaterializeAccount(context.Context, *connect.Request[v1.MaterializeAccountRequest]) (*connect.Response[v1.MaterializeAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.MaterializeAccount is not implemented"))
 }

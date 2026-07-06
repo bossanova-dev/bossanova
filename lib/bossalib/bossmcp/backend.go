@@ -84,6 +84,7 @@ type Backend interface {
 	UpdateAccount(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error)
 	RemoveAccount(ctx context.Context, id string) error
 	TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error)
+	SwitchSessionAccount(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error)
 
 	// Diagnostics
 	ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error)

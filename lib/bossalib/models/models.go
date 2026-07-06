@@ -31,6 +31,7 @@ type Repo struct {
 	CanAutoMerge           bool
 	CanAutoMergeDependabot bool
 	CanAutoRepair          bool
+	CanAutoRotate          bool
 	MergeStrategy          MergeStrategy
 	LinearAPIKey           string
 	SentryAPIKey           string
@@ -71,12 +72,24 @@ type Session struct {
 	// failure starts from a clean slate (BOS-235). Distinct from
 	// LastRepairHeadSHA (the repair plugin's cooldown lane).
 	LastAttemptHeadSHA *string
-	ArchivedAt         *time.Time
-	CronJobID          *string
-	HookToken          *string
-	TmuxUnattended     bool
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+
+	// RotationAttemptCount tracks how many account rotations have been
+	// consumed by this headless run (mirrors AttemptCount's per-run tally).
+	RotationAttemptCount int
+	// RotationResumeAt is the wall-clock time at which a parked (rotation
+	// cooldown) session should be resumed. Nil means the session is not
+	// currently parked awaiting rotation.
+	RotationResumeAt *time.Time
+
+	ArchivedAt *time.Time
+	CronJobID  *string
+	HookToken  *string
+	// AccountID binds the session to a rotation account; nil/empty = the
+	// system-default account 0 (no injected env, D9).
+	AccountID      *string
+	TmuxUnattended bool
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 
 	// Composite display fields, persisted so every client renders the same
 	// label/intent/spinner verbatim. Populated by the DisplayStatusComputer in
@@ -147,7 +160,10 @@ type AgentChat struct {
 	// (failed to start) badge instead of silently swallowing the
 	// attempt.
 	StartError *string
-	CreatedAt  time.Time
+	// AccountID binds the chat to a rotation account; nil/empty = the
+	// system-default account 0 (no injected env, D9).
+	AccountID *string
+	CreatedAt time.Time
 }
 
 // TaskMappingStatus represents the state of a task mapping.

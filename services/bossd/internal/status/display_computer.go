@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -166,9 +167,10 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 	// session create / resurrect time and is not updated when the user adds
 	// a new chat, so it can keep pointing at a now-stopped chat while a
 	// freshly-created sibling is the one actually working. Precedence
-	// (QUESTION > WORKING > IDLE > STOPPED) mirrors Server.GetSessionStatuses
-	// so the chat picker and the session list agree.
+	// (QUESTION > LIMITED > WORKING > IDLE > STOPPED) mirrors
+	// Server.GetSessionStatuses so the chat picker and the session list agree.
 	chatStatus := pb.ChatStatus_CHAT_STATUS_STOPPED
+	var chatResetAt time.Time
 	if c.chats != nil && c.chat != nil {
 		chatList, listErr := c.chats.ListBySession(ctx, sessionID)
 		if listErr == nil {
@@ -179,12 +181,19 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 				}
 				if e.Status == pb.ChatStatus_CHAT_STATUS_QUESTION {
 					chatStatus = pb.ChatStatus_CHAT_STATUS_QUESTION
+					chatResetAt = time.Time{}
 					break
+				}
+				// LIMITED ranks just below QUESTION (which short-circuits above),
+				// so it beats WORKING/IDLE/STOPPED but never overrides a question.
+				if e.Status == pb.ChatStatus_CHAT_STATUS_LIMITED {
+					chatStatus = pb.ChatStatus_CHAT_STATUS_LIMITED
+					chatResetAt = e.ResetAt
 				}
 				// A QUESTION chat short-circuits the loop above, so chatStatus
 				// is never QUESTION here — WORKING can upgrade STOPPED/IDLE
 				// without guarding against a QUESTION it can't observe.
-				if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING {
+				if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING && chatStatus != pb.ChatStatus_CHAT_STATUS_LIMITED {
 					chatStatus = pb.ChatStatus_CHAT_STATUS_WORKING
 				}
 				if e.Status == pb.ChatStatus_CHAT_STATUS_IDLE && chatStatus == pb.ChatStatus_CHAT_STATUS_STOPPED {
@@ -195,8 +204,9 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 	}
 
 	out := displaystatus.Compute(displaystatus.Input{
-		Session:    pbSess,
-		ChatStatus: chatStatus,
+		Session:     pbSess,
+		ChatStatus:  chatStatus,
+		ChatResetAt: chatResetAt,
 	})
 
 	// Skip the UPDATE when nothing changed — keeps recompute idempotent and

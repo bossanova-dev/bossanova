@@ -8,8 +8,10 @@ import { test } from 'node:test'
 import {
   STATE_RANK,
   TERMINAL_STATE_NAMES,
+  STARTED_RANK,
   rankOf,
   isTerminalStateName,
+  isStartedStateName,
   parseLinearTag,
   groupPrsByTicket,
   computeCloseable,
@@ -45,6 +47,20 @@ test('rankOf / isTerminalStateName', () => {
   for (const t of ['Done', 'Canceled', 'Duplicate']) assert.ok(isTerminalStateName(t))
   assert.ok(TERMINAL_STATE_NAMES.has('Duplicate'))
   assert.equal(isTerminalStateName('Todo'), false)
+})
+
+test('isStartedStateName / STARTED_RANK: true only for non-terminal started states', () => {
+  assert.equal(STARTED_RANK, STATE_RANK['In Progress'])
+  // Started, non-terminal → true.
+  assert.equal(isStartedStateName('In Progress'), true)
+  assert.equal(isStartedStateName('In Review'), true)
+  // Not-started → false.
+  for (const s of ['Backlog', 'Unplanned', 'Todo']) assert.equal(isStartedStateName(s), false)
+  // Terminal → false even though Done outranks In Progress.
+  for (const s of ['Done', 'Canceled', 'Duplicate']) assert.equal(isStartedStateName(s), false)
+  // Unrankable / missing → false, never a throw.
+  assert.equal(isStartedStateName('Triage'), false)
+  assert.equal(isStartedStateName(undefined), false)
 })
 
 // --- parseLinearTag ---------------------------------------------------------
@@ -184,22 +200,73 @@ test('computeRollups: parent moves forward to least-advanced open child', () => 
   ])
 })
 
-test('computeRollups: mixed children target the least-advanced OPEN child', () => {
+test('computeRollups: a mix of not-started and started children rolls the parent to the least-advanced STARTED child', () => {
   const parents = [
     {
       id: 'p',
       identifier: 'BOS-200',
       state: st('Backlog', 'backlog'),
       children: [
-        { id: 'a', identifier: 'BOS-201', state: st('Done', 'completed') }, // ignored
-        { id: 'b', identifier: 'BOS-202', state: st('Todo') }, // least-advanced open
-        { id: 'c', identifier: 'BOS-203', state: st('In Progress', 'started') },
+        { id: 'a', identifier: 'BOS-201', state: st('Done', 'completed') }, // terminal → ignored
+        { id: 'b', identifier: 'BOS-202', state: st('Todo') }, // not-started → does NOT drag the target down
+        { id: 'c', identifier: 'BOS-203', state: st('In Progress', 'started') }, // least-advanced STARTED child
       ],
     },
   ]
   const { move } = computeRollups(parents)
   assert.equal(move.length, 1)
-  assert.equal(move[0].to, 'Todo')
+  assert.equal(move[0].to, 'In Progress')
+})
+
+test('computeRollups: an epic mixing Unplanned and In Progress children rolls to In Progress (started when any started)', () => {
+  const parents = [
+    {
+      id: 'p',
+      identifier: 'BOS-250',
+      state: st('Unplanned', 'unstarted'),
+      children: [
+        { id: 'a', identifier: 'BOS-251', state: st('Unplanned', 'unstarted') },
+        { id: 'b', identifier: 'BOS-252', state: st('In Progress', 'started') },
+      ],
+    },
+  ]
+  const { move } = computeRollups(parents)
+  assert.equal(move.length, 1)
+  assert.equal(move[0].to, 'In Progress')
+})
+
+test('computeRollups: with no started child, the target is still the least-advanced open child', () => {
+  const parents = [
+    {
+      id: 'p',
+      identifier: 'BOS-260',
+      state: st('Backlog', 'backlog'),
+      children: [
+        { id: 'a', identifier: 'BOS-261', state: st('Unplanned', 'unstarted') },
+        { id: 'b', identifier: 'BOS-262', state: st('Todo') },
+      ],
+    },
+  ]
+  const { move } = computeRollups(parents)
+  assert.equal(move.length, 1)
+  assert.equal(move[0].to, 'Unplanned')
+})
+
+test('computeRollups: an epic whose open children are all In Review still rolls to In Review', () => {
+  const parents = [
+    {
+      id: 'p',
+      identifier: 'BOS-270',
+      state: st('Todo'),
+      children: [
+        { id: 'a', identifier: 'BOS-271', state: st('In Review', 'started') },
+        { id: 'b', identifier: 'BOS-272', state: st('In Review', 'started') },
+      ],
+    },
+  ]
+  const { move } = computeRollups(parents)
+  assert.equal(move.length, 1)
+  assert.equal(move[0].to, 'In Review')
 })
 
 test('computeRollups: no move when parent already at/above least-advanced open child', () => {

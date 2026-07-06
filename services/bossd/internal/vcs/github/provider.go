@@ -517,23 +517,70 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 	comments := make([]vcs.ReviewComment, 0, len(raw))
 	for _, r := range raw {
 		state := parseReviewState(r.State)
-		// Promote bot COMMENTED reviews to CHANGES_REQUESTED only when the bot
-		// has unresolved review threads. This avoids false "rejected" status
-		// when all review issues have been addressed.
+		// Promote a bot COMMENTED review to CHANGES_REQUESTED only when it is
+		// review-scoped actionable: the bot still has an unresolved thread on the
+		// PR AND *this* review carries its own inline comments. The review's
+		// summary body is NOT consulted — a substantive body cannot be told apart
+		// from benign prose ("LGTM", "No issues found"), so promoting on body
+		// alone false-blocks (BOS-254); only the review's own inline suggestions
+		// are treated as actionable.
+		//
+		// An empty bot review (no inline comments of its own) is dropped from the
+		// surfaced set even when the same bot has a separate unresolved/outdated
+		// thread elsewhere on the PR. This is the BOS-254 fix:
+		// chatgpt-codex-connector[bot] posts a byte-identical boilerplate
+		// COMMENTED review on every pushed commit, and the old author-scoped
+		// heuristic promoted every one of them off a single stale thread, wedging
+		// the merge gate in a loop boss-repair could never clear.
+		//
+		// The empty review is dropped rather than appended as COMMENTED: because
+		// ComputeDisplayStatus keys off each author's *latest* review state, an
+		// appended trailing COMMENTED entry would overwrite an earlier promoted
+		// CHANGES_REQUESTED from the same bot (the common codex flow: real inline
+		// suggestions, then a later empty follow-up review) and silently unblock
+		// genuinely-actionable feedback. Dropping it preserves the earlier
+		// promotion while still not gating on the empty review itself.
+		//
 		// This feeds the display-poller path (ComputeDisplayStatus keys off
-		// per-comment State); the realtime path performs an equivalent promotion
-		// in upstream.WebhookDispatcher.enrichReviewComments. Keep both in sync.
+		// per-comment State); the realtime path performs an equivalent
+		// review-scoped, inline-comment-based promotion in
+		// upstream.WebhookDispatcher.enrichReviewComments. Keep both in sync.
 		if state == vcs.ReviewStateCommented && botReviewUsers[r.User.Login] && botsWithUnresolved != nil {
 			if !botsWithUnresolved[r.User.Login] {
+				// This bot's threads are all resolved (or it has none): the
+				// feedback has been addressed — never block, drop the review.
 				continue
 			}
-			state = vcs.ReviewStateChangesRequested
+			// The bot still has an unresolved thread. Fetch *this* review's own
+			// inline comments so the promotion decision is review-scoped.
+			var inlineComments []vcs.ReviewComment
+			if r.ID != 0 {
+				inlineComments, err = p.getInlineReviewComments(ctx, repoPath, prID, r.ID)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if len(inlineComments) == 0 {
+				// No actionable inline content of its own: drop it (do not
+				// promote on body substance, do not append as COMMENTED — see the
+				// notes above).
+				continue
+			}
+			comments = append(comments, vcs.ReviewComment{
+				Author: r.User.Login,
+				Body:   r.Body,
+				State:  vcs.ReviewStateChangesRequested,
+			})
+			comments = append(comments, inlineComments...)
+			continue
 		}
 		comments = append(comments, vcs.ReviewComment{
 			Author: r.User.Login,
 			Body:   r.Body,
 			State:  state,
 		})
+		// A review GitHub already reports as CHANGES_REQUESTED carries its
+		// actionable feedback as inline comments; surface them too.
 		if state == vcs.ReviewStateChangesRequested && r.ID != 0 {
 			inlineComments, err := p.getInlineReviewComments(ctx, repoPath, prID, r.ID)
 			if err != nil {

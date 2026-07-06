@@ -120,6 +120,14 @@ func (f *fakeAgentForLifecycle) HasQuestionPrompt(_ context.Context, _ *bossanov
 	return &bossanovav1.HasQuestionPromptResponse{}, nil
 }
 
+func (f *fakeAgentForLifecycle) DetectUsageLimit(_ context.Context, _ *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) {
+	return &bossanovav1.DetectUsageLimitResponse{}, nil
+}
+
+func (f *fakeAgentForLifecycle) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
+	return &bossanovav1.HasWorkingIndicatorResponse{}, nil
+}
+
 func (f *fakeAgentForLifecycle) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
 	return &bossanovav1.LastTurnIsUserResponse{}, nil
 }
@@ -130,6 +138,14 @@ func (f *fakeAgentForLifecycle) TranscriptExists(_ context.Context, _ *bossanova
 
 func (f *fakeAgentForLifecycle) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
 	return &bossanovav1.ReadTranscriptResponse{}, nil
+}
+
+func (f *fakeAgentForLifecycle) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
+	return &bossanovav1.RotationCapabilityResponse{}, nil
+}
+
+func (f *fakeAgentForLifecycle) MaterializeAccount(_ context.Context, _ *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
+	return &bossanovav1.MaterializeAccountResponse{}, nil
 }
 
 // fakePollArmer records calls to Arm so tests can assert that the poll

@@ -149,7 +149,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			ForceFresh:         forceFresh,
 			AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath),
 			SessionEnv:         dotenv.Overlay(session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName), sess.WorktreePath),
-			Model:              sess.Model,
+			Model:              modelForChatAgent(sess, chat.AgentName),
 			McpConfigPath:      mcpConfigPath,
 		})
 		if err != nil {

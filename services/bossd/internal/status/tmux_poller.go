@@ -155,9 +155,11 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		// marker to surface the AGENT_AUTH_FAILED attention reason.
 		p.tracker.SetAuthFailed(agentSessionID, statusdetect.IsLoginRequired([]byte(content)))
 
-		// Resolve question state before taking p.mu — questionState
-		// may issue plugin RPCs / DB queries and we hold the mutex only
-		// briefly below.
+		// Resolve limit + question state before taking p.mu — both may issue
+		// plugin RPCs / DB queries and we hold the mutex only briefly below.
+		// A usage-limit banner wins over every other signal (plan D-C), so
+		// resolve it first and let it short-circuit the status switch.
+		paneLimited, limitResetAt := p.limitState(ctx, chat, content)
 		paneShowsQuestion, questionSuppressed := p.questionState(ctx, chat, content)
 
 		p.mu.Lock()
@@ -165,7 +167,13 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		captureChanged := !hasPrev || content != prev.content || prev.at.IsZero()
 
 		var status pb.ChatStatus
+		wouldBeIdle := false
 		switch {
+		case paneLimited:
+			// Highest precedence: a limited pane beats question/working/idle.
+			// When the banner later redraws away, limitState returns false and
+			// the chat falls through to the existing branches (WORKING/IDLE).
+			status = pb.ChatStatus_CHAT_STATUS_LIMITED
 		case paneShowsQuestion && !questionSuppressed:
 			status = pb.ChatStatus_CHAT_STATUS_QUESTION
 		case questionSuppressed:
@@ -178,6 +186,12 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		case captureChanged:
 			status = pb.ChatStatus_CHAT_STATUS_WORKING
 		case now.Sub(prev.at) > IdleThreshold:
+			// The pane is unchanged past the idle threshold. Defer the final
+			// IDLE decision until after we release p.mu: a genuinely-busy pane
+			// (a running background shell, an active spinner) stays static yet
+			// must not flip to IDLE. paneShowsWorking below issues the plugin
+			// RPC only in this would-be-idle branch, so active chats add none.
+			wouldBeIdle = true
 			status = pb.ChatStatus_CHAT_STATUS_IDLE
 		default:
 			// Content unchanged but not yet past idle threshold -- keep working.
@@ -194,7 +208,19 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		}
 		p.mu.Unlock()
 
-		p.tracker.Update(agentSessionID, status, lastOutputAt)
+		// Consult the working indicator only when we would otherwise report
+		// IDLE (RPC held outside p.mu, and skipped entirely for active chats).
+		// Preserves QUESTION > WORKING > IDLE: this branch is only reached when
+		// the pane is neither a live question nor freshly changed.
+		if wouldBeIdle && p.paneShowsWorking(ctx, chat, content) {
+			status = pb.ChatStatus_CHAT_STATUS_WORKING
+		}
+
+		if paneLimited {
+			p.tracker.UpdateLimited(agentSessionID, limitResetAt, lastOutputAt)
+		} else {
+			p.tracker.Update(agentSessionID, status, lastOutputAt)
+		}
 	}
 }
 
@@ -312,16 +338,26 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 
 		p.tracker.SetAuthFailed(chat.AgentSessionID, statusdetect.IsLoginRequired([]byte(content)))
 
+		paneLimited, limitResetAt := p.limitState(ctx, chat, content)
 		paneShowsQuestion, questionSuppressed := p.questionState(ctx, chat, content)
 
 		var status pb.ChatStatus
 		switch {
+		case paneLimited:
+			// Seed LIMITED for a session that restarts while its pane still
+			// shows the usage-cap banner. Highest precedence, mirrors pollOnce.
+			status = pb.ChatStatus_CHAT_STATUS_LIMITED
 		case paneShowsQuestion && !questionSuppressed:
 			status = pb.ChatStatus_CHAT_STATUS_QUESTION
 		case questionSuppressed:
 			// Mirror pollOnce: the pane still matches the question pattern but
 			// the transcript shows the user has answered. Report WORKING so the
 			// UI doesn't flash IDLE before the first poll cycle corrects it.
+			status = pb.ChatStatus_CHAT_STATUS_WORKING
+		case p.paneShowsWorking(ctx, chat, content):
+			// A session restored mid-background-shell (or with an active
+			// spinner) seeds WORKING, not IDLE, so it doesn't flash idle until
+			// the pane next changes. Mirrors pollOnce's would-be-idle override.
 			status = pb.ChatStatus_CHAT_STATUS_WORKING
 		default:
 			status = pb.ChatStatus_CHAT_STATUS_IDLE
@@ -331,7 +367,11 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 		p.prevCaptures[chat.AgentSessionID] = captureEntry{content: content, at: pastTime}
 		p.mu.Unlock()
 
-		p.tracker.Update(chat.AgentSessionID, status, pastTime)
+		if paneLimited {
+			p.tracker.UpdateLimited(chat.AgentSessionID, limitResetAt, pastTime)
+		} else {
+			p.tracker.Update(chat.AgentSessionID, status, pastTime)
+		}
 		p.logger.Debug().
 			Str("agentSessionID", chat.AgentSessionID).
 			Str("tmuxSession", tmuxName).
@@ -378,6 +418,53 @@ func (p *TmuxStatusPoller) questionState(ctx context.Context, chat *models.Agent
 	})
 	questionSuppressed = err == nil && luResp != nil && luResp.GetIsUser()
 	return paneShowsQuestion, questionSuppressed
+}
+
+// paneShowsWorking asks the chat's AgentRunner plugin whether the captured
+// pane content shows an affirmative "still working" marker (a running
+// background shell or an active spinner). It is dispatched per-agent over the
+// HasWorkingIndicator RPC so each agent owns its own grammar, exactly like
+// questionState. Called only in the would-be-idle branch of pollOnce/Bootstrap
+// so active chats add no extra RPC. When no client is registered for the
+// chat's AgentName it fails open to "not working" — a missing plugin can never
+// pin a chat in WORKING.
+func (p *TmuxStatusPoller) paneShowsWorking(ctx context.Context, chat *models.AgentChat, content string) bool {
+	if chat == nil {
+		return false
+	}
+	client, ok := p.agentClients[chat.AgentName]
+	if !ok {
+		p.logMissingAgentOnce(chat.AgentName)
+		return false
+	}
+	resp, err := client.HasWorkingIndicator(ctx, &pb.HasWorkingIndicatorRequest{PaneContent: []byte(content)})
+	return err == nil && resp != nil && resp.GetIsWorking()
+}
+
+// limitState resolves whether the captured pane content shows a usage-limit
+// banner and, if so, when the limit resets. It is dispatched per-agent over the
+// DetectUsageLimit RPC so each agent owns its own banner grammar and reset
+// parser, exactly like questionState / paneShowsWorking. When no client is
+// registered for the chat's AgentName, or the RPC errors, it fails open to "not
+// limited" — a missing plugin can never pin a chat in LIMITED. resetAt carries
+// the parsed reset time when the banner supplied one, and is zero otherwise.
+func (p *TmuxStatusPoller) limitState(ctx context.Context, chat *models.AgentChat, content string) (limited bool, resetAt time.Time) {
+	if chat == nil {
+		return false, time.Time{}
+	}
+	client, ok := p.agentClients[chat.AgentName]
+	if !ok {
+		p.logMissingAgentOnce(chat.AgentName)
+		return false, time.Time{}
+	}
+	resp, err := client.DetectUsageLimit(ctx, &pb.DetectUsageLimitRequest{PaneContent: []byte(content)})
+	if err != nil || resp == nil || !resp.GetLimited() {
+		return false, time.Time{}
+	}
+	if r := resp.GetResetAt(); r != nil {
+		resetAt = r.AsTime()
+	}
+	return true, resetAt
 }
 
 func chatResumeSessionID(chat *models.AgentChat) string {

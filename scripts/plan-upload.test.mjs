@@ -9,6 +9,7 @@ import {
   parsePlanUploadArgs,
   planObjectKey,
   planPublicUrl,
+  uploadPlanFile,
 } from './plan-upload.mjs'
 
 test('issueSlug lowercases, hyphenates, and upcases the id', () => {
@@ -71,4 +72,48 @@ test('parsePlanUploadArgs throws when --file is missing', () => {
 
 test('parsePlanUploadArgs throws when --key is missing', () => {
   assert.throws(() => parsePlanUploadArgs(['--file', '/tmp/p.md']), /--key/)
+})
+
+test('uploadPlanFile returns the public URL and invokes the runner with the r2 command', () => {
+  const calls = []
+  const url = uploadPlanFile({
+    file: '/tmp/p.md',
+    key: 'plans/bossanova/BOS-5/abc.md',
+    env: {
+      BOSS_PROOF_R2_BUCKET: 'bossanova-proof-production',
+      BOSS_PROOF_PUBLIC_BASE_URL: 'https://proof.bossanova.dev',
+    },
+    runImpl: (cmd) => calls.push(cmd),
+  })
+  assert.equal(url, 'https://proof.bossanova.dev/plans/bossanova/BOS-5/abc.md')
+  assert.equal(calls.length, 1)
+  const [command, args] = calls[0]
+  assert.equal(command, 'pnpm')
+  assert.ok(args.includes('--remote'))
+  assert.ok(args.includes('bossanova-proof-production/plans/bossanova/BOS-5/abc.md'))
+  // Lock the load-bearing content-type (the public URL 404s / renders wrong without it).
+  assert.deepEqual(args.slice(args.indexOf('--content-type'), args.indexOf('--content-type') + 2), [
+    '--content-type',
+    'text/markdown; charset=utf-8',
+  ])
+})
+
+test('uploadPlanFile in dryRun mode does not invoke the runner', () => {
+  const calls = []
+  const url = uploadPlanFile({
+    file: '/tmp/p.md',
+    key: 'plans/bossanova/BOS-5/abc.md',
+    env: { BOSS_PROOF_R2_BUCKET: 'b' },
+    dryRun: true,
+    runImpl: (cmd) => calls.push(cmd),
+  })
+  assert.match(url, /\/plans\/bossanova\/BOS-5\/abc\.md$/)
+  assert.equal(calls.length, 0)
+})
+
+test('uploadPlanFile throws when the bucket is missing', () => {
+  assert.throws(
+    () => uploadPlanFile({ file: '/tmp/p.md', key: 'k', env: {}, runImpl: () => {} }),
+    /BOSS_PROOF_R2_BUCKET is required/,
+  )
 })

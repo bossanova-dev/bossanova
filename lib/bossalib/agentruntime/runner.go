@@ -207,10 +207,12 @@ func defaultBinName(s string) string {
 // reason. These exist because the log file used to remain at 0 bytes
 // when the subprocess died before producing output, leaving no on-disk
 // record of why a run failed.
-// extraEnv, when non-empty, is an allowlisted KEY=VALUE overlay (proof
-// credentials + non-secret proof constants, resolved daemon-side) applied
-// on top of the inherited os.Environ() for the spawned process. Its VALUES
-// are never logged — the spawn preamble records argv/cwd/PATH only.
+// extraEnv, when non-empty, is an allowlisted, daemon-resolved KEY=VALUE
+// overlay applied on top of the inherited os.Environ() for the spawned
+// process. It carries proof credentials/constants and, for account
+// rotation, the selected account's env (e.g. CLAUDE_CODE_OAUTH_TOKEN /
+// CODEX_HOME). Its VALUES are never logged — the spawn preamble records
+// argv/cwd/PATH only.
 func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string, extraEnv map[string]string) (string, error) {
 	// Determine whether the caller provided a session ID.
 	providedSessionID := sessionID != ""

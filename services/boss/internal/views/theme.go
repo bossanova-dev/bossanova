@@ -226,6 +226,17 @@ type bannerOpts struct {
 	line2 string
 }
 
+// accountBannerLabel renders the bound-account label shown beside the worktree
+// line in the session banner. The Session message carries only the account id
+// today (no server-provided label), so we surface that id verbatim and fall
+// back to "System default" for an unbound session. Best-effort — never panics.
+func accountBannerLabel(accountID string) string {
+	if accountID == "" {
+		return "System default"
+	}
+	return accountID
+}
+
 func renderBanner(active View, opts bannerOpts) string {
 	// Logo chars per row, matching `npx oh-my-logo "B" dawn --filled --block-font tiny`.
 	row1 := []string{" ", "█", "▄", "▄"}
@@ -268,12 +279,14 @@ func renderBanner(active View, opts bannerOpts) string {
 		}
 		line1 = title
 
-		// Worktree root path.
+		// Worktree root path, followed by the bound account label (best-effort;
+		// "System default" when the session is unbound).
 		wt := opts.session.GetWorktreePath()
 		if home, err := os.UserHomeDir(); err == nil {
 			wt = strings.Replace(wt, home, "~", 1)
 		}
 		line2 = styleSubtle.Render(wt)
+		line2 += "  " + styleSubtle.Render("· "+accountBannerLabel(opts.session.GetAccountId()))
 
 	case opts.repo != nil:
 		line1 = opts.repo.DisplayName

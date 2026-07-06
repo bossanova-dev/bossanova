@@ -1,13 +1,17 @@
 package agent_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/agent"
@@ -17,9 +21,11 @@ import (
 // exercises ExitStatus; the other methods are defined as no-ops so the
 // fake satisfies the full interface.
 type fakePollAgentClient struct {
-	exitCalls int32
-	complete  bool
-	exitErr   string
+	exitCalls    int32
+	complete     bool
+	exitErr      string
+	failureClass string
+	resetAt      *timestamppb.Timestamp
 }
 
 func (f *fakePollAgentClient) GetInfo(context.Context) (*bossanovav1.PluginInfo, error) {
@@ -27,7 +33,13 @@ func (f *fakePollAgentClient) GetInfo(context.Context) (*bossanovav1.PluginInfo,
 }
 func (f *fakePollAgentClient) ExitStatus(_ context.Context, _ *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) {
 	atomic.AddInt32(&f.exitCalls, 1)
-	return &bossanovav1.AgentExitStatusResponse{IsComplete: f.complete, ExitError: f.exitErr}, nil
+	resp := &bossanovav1.AgentExitStatusResponse{IsComplete: f.complete, ExitError: f.exitErr}
+	if f.failureClass != "" {
+		fc := f.failureClass
+		resp.FailureClass = &fc
+	}
+	resp.ResetAt = f.resetAt
+	return resp, nil
 }
 
 func (f *fakePollAgentClient) StartRun(_ context.Context, _ *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
@@ -64,6 +76,14 @@ func (f *fakePollAgentClient) GetChatTitle(_ context.Context, _ *bossanovav1.Get
 func (f *fakePollAgentClient) HasQuestionPrompt(_ context.Context, _ *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
 	return &bossanovav1.HasQuestionPromptResponse{}, nil
 }
+
+func (f *fakePollAgentClient) DetectUsageLimit(_ context.Context, _ *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) {
+	return &bossanovav1.DetectUsageLimitResponse{}, nil
+}
+
+func (f *fakePollAgentClient) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
+	return &bossanovav1.HasWorkingIndicatorResponse{}, nil
+}
 func (f *fakePollAgentClient) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
 	return &bossanovav1.LastTurnIsUserResponse{}, nil
 }
@@ -72,6 +92,12 @@ func (f *fakePollAgentClient) TranscriptExists(_ context.Context, _ *bossanovav1
 }
 func (f *fakePollAgentClient) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
 	return &bossanovav1.ReadTranscriptResponse{}, nil
+}
+func (f *fakePollAgentClient) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
+	return &bossanovav1.RotationCapabilityResponse{}, nil
+}
+func (f *fakePollAgentClient) MaterializeAccount(_ context.Context, _ *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
+	return &bossanovav1.MaterializeAccountResponse{}, nil
 }
 
 type fakeCompleter struct {
@@ -149,6 +175,75 @@ func TestPollFallbackSurfacesExitErrorVerbatim(t *testing.T) {
 			t.Fatal("never signaled")
 		case <-time.After(5 * time.Millisecond):
 		}
+	}
+}
+
+// TestPollFallbackRecordsUsageLimitedExit is the BOS-165 record-only harness
+// test: a usage_exhausted ExitStatus response emits a structured log line
+// (with reset_at) and still completes the run verbatim — no rotation or other
+// action, and exit handling is unchanged.
+func TestPollFallbackRecordsUsageLimitedExit(t *testing.T) {
+	t.Parallel()
+	reset := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	ac := &fakePollAgentClient{
+		complete:     true,
+		exitErr:      "agent usage limit reached (resets at 2026-07-08T15:00:00Z)",
+		failureClass: "usage_exhausted",
+		resetAt:      timestamppb.New(reset),
+	}
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+	cc := &fakeCompleter{}
+	p := agent.NewPollFallback(logger, 10*time.Millisecond, 0, cc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	p.Arm(ctx, "sess-cap", "agent-cap", ac)
+
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		signaled, _, exitErr, _ := cc.snapshot()
+		if signaled {
+			// Record-only: the run still completes with the verbatim exit
+			// error (no rotation / no state change).
+			if exitErr != "agent usage limit reached (resets at 2026-07-08T15:00:00Z)" {
+				t.Errorf("exitErr = %q, want verbatim usage-limited message", exitErr)
+			}
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("never signaled")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	// Assert the structured record-only log line was emitted.
+	var found bool
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry["failure_class"] != "usage_exhausted" {
+			continue
+		}
+		found = true
+		if entry["agent_session"] != "agent-cap" {
+			t.Errorf("agent_session = %v, want agent-cap", entry["agent_session"])
+		}
+		if entry["session"] != "sess-cap" {
+			t.Errorf("session = %v, want sess-cap", entry["session"])
+		}
+		if entry["reset_at"] == nil {
+			t.Error("reset_at missing from record-only log line")
+		}
+	}
+	if !found {
+		t.Fatalf("no usage_exhausted record-only log line emitted; logs=%q", buf.String())
 	}
 }
 

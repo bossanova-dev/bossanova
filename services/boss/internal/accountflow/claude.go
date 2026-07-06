@@ -247,18 +247,6 @@ func storeAndTest(ctx context.Context, p Prompter, c AccountClient, provider, la
 			p.Say("Account %q registered and verified.", label)
 		}
 		return nil
-	case testDeferred:
-		// The daemon accepted the credential but no live smoke runner executed
-		// (credential materialization is still pending — 1.5), so the live test
-		// is deferred, not failed. Keep the just-registered valid account and
-		// let rotation retry the live test later instead of prompting to remove.
-		if display != "" {
-			p.Say("Account %q registered (%s); live verification deferred: %s", label, display, reason)
-		} else {
-			p.Say("Account %q registered; live verification deferred: %s", label, reason)
-		}
-		p.Say("Rotation will run the live test once credential materialization is available.")
-		return nil
 	case testFailed:
 		return keepOrRemove(ctx, p, c, id, label, reason, testErr)
 	}
@@ -307,32 +295,15 @@ const (
 	// testVerified: the credential is stored and the live smoke passed (or
 	// there is simply nothing to report).
 	testVerified testOutcome = iota
-	// testDeferred: the daemon accepted the credential but no live smoke runner
-	// executed, so the live test was not actually run (e.g. credential
-	// materialization is still pending). Not a failure — the account is valid.
-	testDeferred
 	// testFailed: a transport error, or a live smoke that ran and reported an
 	// error.
 	testFailed
 )
 
-// liveSmokeUnavailableMarker is a stable substring of the daemon's
-// last_test_error when TestAccount degraded because no live smoke runner was
-// wired (credential materialization pending — 1.5). It mirrors
-// liveSmokeUnavailableDetail in services/bossd/internal/server/account.go;
-// duplicated here because the plugin/CLI boundary must not import daemon
-// internals. ONLY this deferred case is treated as a non-failure — the daemon
-// also returns live_smoke_ran=false for genuine credential-validation failures
-// (malformed/missing blob), which must still offer keep-or-remove.
-const liveSmokeUnavailableMarker = "live smoke unavailable"
-
 // classifyTest maps a TestAccount response (and any transport error) to an
 // outcome plus a display reason. A transport error is always a hard failure. A
-// non-empty last_test_error is deferred (not a failure) ONLY when the live
-// smoke never ran AND the detail is the known live-smoke-unavailable degrade;
-// any other last_test_error — including credential-validation failures that
-// also report live_smoke_ran=false — is a hard failure so the bad credential is
-// not silently kept (see credential materialization 1.5).
+// non-empty last_test_error is a hard failure so a bad or unverified credential
+// is not silently kept.
 func classifyTest(resp *pb.TestAccountResponse, err error) (testOutcome, string) {
 	if err != nil {
 		return testFailed, err.Error()
@@ -340,9 +311,6 @@ func classifyTest(resp *pb.TestAccountResponse, err error) (testOutcome, string)
 	detail := resp.GetAccount().GetLastTestError()
 	if detail == "" {
 		return testVerified, ""
-	}
-	if !resp.GetLiveSmokeRan() && strings.Contains(detail, liveSmokeUnavailableMarker) {
-		return testDeferred, detail
 	}
 	return testFailed, detail
 }

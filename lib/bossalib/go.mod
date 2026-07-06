@@ -10,19 +10,20 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-plugin v1.8.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
-	github.com/posthog/posthog-go v1.16.2
-	github.com/pressly/goose/v3 v3.27.1
+	github.com/posthog/posthog-go v1.17.5
+	github.com/pressly/goose/v3 v3.27.2
 	github.com/qmuntal/stateless v1.8.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/zerolog v1.35.1
 	go.uber.org/goleak v1.3.0
-	google.golang.org/grpc v1.81.1
+	google.golang.org/grpc v1.82.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
 require (
 	github.com/99designs/go-keychain v0.0.0-20191008050251-8e49817e8af4 // indirect
+	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/danieljoos/wincred v1.1.2 // indirect
 	github.com/dvsekhvalnov/jose2go v1.7.0 // indirect
 	github.com/fatih/color v1.13.0 // indirect
@@ -34,6 +35,7 @@ require (
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
+	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.21 // indirect
@@ -48,7 +50,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect

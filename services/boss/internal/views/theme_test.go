@@ -182,6 +182,21 @@ func TestRenderBannerBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("account label beside worktree", func(t *testing.T) {
+		bound := "acct-work"
+		boundSess := &pb.Session{Title: "Work", AccountId: &bound}
+		banner := renderBanner(ViewChatPicker, bannerOpts{session: boundSess})
+		if !strings.Contains(banner, "acct-work") {
+			t.Fatalf("bound banner missing account label acct-work: %q", banner)
+		}
+
+		unboundSess := &pb.Session{Title: "Work"}
+		unbound := renderBanner(ViewChatPicker, bannerOpts{session: unboundSess})
+		if !strings.Contains(unbound, "System default") {
+			t.Fatalf("unbound banner missing System default account label: %q", unbound)
+		}
+	})
+
 	t.Run("repo banner with home tilde", func(t *testing.T) {
 		home, err := os.UserHomeDir()
 		if err != nil {

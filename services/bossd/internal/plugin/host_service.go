@@ -12,8 +12,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossalib/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -119,6 +121,12 @@ type HostServiceServer struct {
 	// SetProofEnvResolver overrides it for tests. Resolved fresh per spawn;
 	// values are never logged.
 	proofEnv proofEnvResolver
+
+	// accountEnv resolves the per-account spawn env overlay for a session's
+	// AccountID binding, applied to repair agent runs started here (parity with
+	// the lifecycle spawn paths). Nil degrades to no overlay (account 0);
+	// resolved fresh per spawn; values are never logged.
+	accountEnv accountEnvResolver
 
 	// activeRuns maps session_id → activeRun for the currently-active
 	// repair run on each session. Guarded by runMu. The repair plugin's
@@ -247,6 +255,45 @@ func (s *HostServiceServer) resolveProofEnv() map[string]string {
 		return nil
 	}
 	return s.proofEnv.Resolve()
+}
+
+// accountEnvResolver resolves the per-account spawn env overlay for a session's
+// AccountID binding. The concrete implementation is
+// accountwiring.SpawnEnvResolver; the interface keeps the host service testable
+// and dependency-light.
+type accountEnvResolver interface {
+	Resolve(ctx context.Context, sess *models.Session) map[string]string
+}
+
+// SetAccountEnvResolver overrides the account env resolver. Safe to leave unset
+// (nil degrades to no overlay = account 0).
+func (s *HostServiceServer) SetAccountEnvResolver(r accountEnvResolver) { s.accountEnv = r }
+
+// resolveAccountEnv returns the account env overlay for sess, or nil when no
+// resolver is wired or the session is unbound. Never logs values.
+func (s *HostServiceServer) resolveAccountEnv(ctx context.Context, sess *models.Session) map[string]string {
+	if s.accountEnv == nil {
+		return nil
+	}
+	return s.accountEnv.Resolve(ctx, sess)
+}
+
+// mergeAccountOverProof overlays the per-account env above proof (disjoint keys
+// today; account wins by convention, mirroring the lifecycle precedence). A
+// nil/empty result is returned as nil so dotenv.Overlay behaves exactly as it
+// did before an account overlay existed.
+func mergeAccountOverProof(proof, account map[string]string) map[string]string {
+	if len(proof) == 0 && len(account) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(proof)+len(account))
+	for k, v := range proof {
+		m[k] = v
+	}
+	for k, v := range account {
+		m[k] = v
+	}
+	return m
 }
 
 func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
@@ -1088,7 +1135,7 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 		Plan:     req.GetPrompt(),
 		LogPath:  filepath.Join(s.agentLogsDir, "repair-"+sessionID+".log"),
 		Model:    sess.Model,
-		ExtraEnv: dotenv.Overlay(s.resolveProofEnv(), sess.WorktreePath),
+		ExtraEnv: dotenv.Overlay(mergeAccountOverProof(s.resolveProofEnv(), s.resolveAccountEnv(ctx, sess)), sess.WorktreePath),
 	}
 	startResp, err := client.StartRun(context.Background(), startReq)
 	if err != nil {
@@ -1164,6 +1211,19 @@ func (s *HostServiceServer) WaitAgentRun(ctx context.Context, req *bossanovav1.W
 			return nil, grpcstatus.Errorf(codes.Internal, "exit status: %v", err)
 		}
 		if es.GetIsComplete() {
+			// Record-only (BOS-165): log a usage-cap exit for observability.
+			// No status change, event, or rotation — those belong to E4. The
+			// new fields are threaded only as far as this log; they are not
+			// added to WaitAgentRunHostResponse or session-completion state.
+			if es.GetFailureClass() == agenterr.KindUsageExhausted.String() {
+				ev := log.Info().
+					Str("agent_session", agentSessionID).
+					Str("failure_class", es.GetFailureClass())
+				if ts := es.GetResetAt(); ts != nil {
+					ev = ev.Time("reset_at", ts.AsTime())
+				}
+				ev.Msg("agent run exited usage-limited (record-only)")
+			}
 			return &bossanovav1.WaitAgentRunHostResponse{ExitError: es.GetExitError()}, nil
 		}
 		select {

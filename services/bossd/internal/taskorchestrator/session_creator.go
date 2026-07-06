@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -71,6 +72,15 @@ type SessionCreator interface {
 	CreateSession(ctx context.Context, opts CreateSessionOpts) (*models.Session, error)
 }
 
+// DefaultAccountResolver picks the default rotation account for a provider at
+// session-creation time so task-created (cron/dependabot) sessions honor the
+// same default-account policy as the interactive StreamCreateSession path.
+// Satisfied by *account.Resolver; kept as a narrow local interface so
+// taskorchestrator stays testable and does not depend on the account package.
+type DefaultAccountResolver interface {
+	DefaultAccountID(ctx context.Context, provider string, now time.Time) (string, error)
+}
+
 // lifecycleSessionCreator implements SessionCreator by creating a
 // session record in the DB and starting it via the Lifecycle.
 type lifecycleSessionCreator struct {
@@ -83,7 +93,12 @@ type lifecycleSessionCreator struct {
 	// Without it the row lingers as a phantom in the web read model until
 	// the daemon reconnects and re-snapshots.
 	onSessionDeleted func(context.Context, string)
-	logger           zerolog.Logger
+	// defaultAccount, when non-nil, applies the creation-time default-account
+	// policy so task-created sessions bind to the same default account the
+	// interactive path would pick. A resolver error never fails creation — the
+	// session is created unbound (account 0).
+	defaultAccount DefaultAccountResolver
+	logger         zerolog.Logger
 }
 
 // NewSessionCreator creates a SessionCreator backed by the DB and Lifecycle.
@@ -135,12 +150,29 @@ func NewSessionCreatorWithNotifier(
 	onSessionDeleted func(context.Context, string),
 	logger zerolog.Logger,
 ) SessionCreator {
+	return NewSessionCreatorWithAccountResolver(sessions, lifecycle, defaultAgentProvider, duplicateLiveness, onSessionDeleted, nil, logger)
+}
+
+// NewSessionCreatorWithAccountResolver is like NewSessionCreatorWithNotifier
+// but also takes a DefaultAccountResolver so task-created sessions apply the
+// creation-time default-account policy. A nil resolver preserves the prior
+// (unbound) behavior.
+func NewSessionCreatorWithAccountResolver(
+	sessions db.SessionStore,
+	lifecycle SessionStarter,
+	defaultAgentProvider func() string,
+	duplicateLiveness SessionLivenessChecker,
+	onSessionDeleted func(context.Context, string),
+	defaultAccount DefaultAccountResolver,
+	logger zerolog.Logger,
+) SessionCreator {
 	return &lifecycleSessionCreator{
 		sessions:             sessions,
 		lifecycle:            lifecycle,
 		defaultAgentProvider: defaultAgentProvider,
 		duplicateLiveness:    duplicateLiveness,
 		onSessionDeleted:     onSessionDeleted,
+		defaultAccount:       defaultAccount,
 		logger:               logger.With().Str("component", "session-creator").Logger(),
 	}
 }
@@ -179,7 +211,7 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 		err = session.EnsureNoActivePROrBranchSessionWithLiveness(ctx, c.sessions, opts.RepoID, opts.PRNumber, opts.HeadBranch, c.isDuplicateSessionAlive)
 	}
 	if err == nil {
-		sess, err = c.sessions.Create(ctx, db.CreateSessionParams{
+		params := db.CreateSessionParams{
 			RepoID:     opts.RepoID,
 			Title:      opts.Title,
 			Plan:       opts.Plan,
@@ -189,7 +221,9 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 			AgentName:  agentName,
 			Model:      opts.Model,
 			BranchName: branchName,
-		})
+		}
+		params.AccountID = c.resolveDefaultAccountID(ctx, agentName)
+		sess, err = c.sessions.Create(ctx, params)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
@@ -240,6 +274,27 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 	}
 
 	return sess, nil
+}
+
+// resolveDefaultAccountID applies the creation-time default-account policy for
+// task-created sessions, returning the bound account id or nil (account 0 /
+// system default). A resolver error NEVER fails session creation — it logs and
+// returns nil, mirroring the interactive server's resolveSessionAccount
+// behavior. A nil resolver leaves sessions unbound.
+func (c *lifecycleSessionCreator) resolveDefaultAccountID(ctx context.Context, agentName string) *string {
+	if c.defaultAccount == nil {
+		return nil
+	}
+	id, err := c.defaultAccount.DefaultAccountID(ctx, agentName, time.Now())
+	if err != nil {
+		c.logger.Warn().Err(err).Str("agent", agentName).
+			Msg("account: default-account policy failed; creating session unbound")
+		return nil
+	}
+	if id == "" {
+		return nil
+	}
+	return &id
 }
 
 func (c *lifecycleSessionCreator) isDuplicateSessionAlive(ctx context.Context, sessionID string) bool {

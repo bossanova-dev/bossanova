@@ -14,8 +14,6 @@ import {
   browserCaptureCommand,
   buildManifest,
   capturesAgentRunnerStubbed,
-  classifySurfaces,
-  classifyTuiSurface,
   githubCommentCommand,
   listProofCommentsCommand,
   minimizeCommentCommand,
@@ -35,8 +33,16 @@ import {
   tuiAgentBridgeBuildCommand,
   validateBrowserRoute,
   validateRecipeId,
-  webUiSurfacePresent,
 } from './proof-lib.mjs'
+import {
+  BUILTIN_SURFACES,
+  captureSurfaceDescriptor,
+  classifySurfaces,
+  classifyTuiSurface,
+  resolveSurfaceRegistry,
+  surfaceBudget,
+  webUiSurfacePresent,
+} from './proof-surfaces.mjs'
 import {
   loadPlanEvidence,
   orderSurfaces,
@@ -141,6 +147,7 @@ async function main() {
     return
   }
   const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'))
+  const surfaceRegistry = resolveSurfaceRegistry(catalog)
   const changedFiles = args.changedFiles.length > 0 ? args.changedFiles : changedFilesFromGit()
 
   if (args.command === 'doctor') {
@@ -303,7 +310,7 @@ async function main() {
   // Keep the source .webm when we're not uploading (dry-run / BOSS_PROOF_UPLOAD=0)
   // so `proof-postprocess-video.mjs --proof-dir` can re-run the pipeline locally.
   const captures = selected.map((recipe) =>
-    captureRecipe({ recipe, localDir, keepWebm: !shouldUpload }),
+    captureRecipe({ recipe, localDir, registry: surfaceRegistry, keepWebm: !shouldUpload }),
   )
   const publicBaseUrl = `${publicProofBaseUrl()}/${paths.publicPrefix}`
   const hasFailure = captures.some((capture) => capture.status === 'failed')
@@ -405,9 +412,17 @@ async function main() {
   }
 }
 
-function captureRecipe({ recipe: rawRecipe, localDir, keepWebm = false }) {
+function captureRecipe({
+  recipe: rawRecipe,
+  localDir,
+  registry = BUILTIN_SURFACES,
+  keepWebm = false,
+}) {
   const recipe = normalizeRecipe(rawRecipe)
   const recipeId = validateRecipeId(recipe.id)
+  // Resolve the browser-capture descriptor once; browserCaptureCommand reads
+  // serviceDir/specRoot/crop/stageEnv from it (surface-name-agnostic core).
+  const descriptor = captureSurfaceDescriptor(registry, recipe.surface)
   const recipeDir = path.join(localDir, recipeId)
   fs.mkdirSync(recipeDir, { recursive: true })
   const recipePath = path.join(recipeDir, 'recipe.json')
@@ -423,6 +438,7 @@ function captureRecipe({ recipe: rawRecipe, localDir, keepWebm = false }) {
       // no single recipe.route to validate here.
       runCommand(
         browserCaptureCommand({
+          descriptor,
           surface: recipe.surface,
           recipePath: path.relative(repoRoot, recipePath),
           outputDir: path.relative(repoRoot, recipeDir),
@@ -511,6 +527,7 @@ function captureRecipe({ recipe: rawRecipe, localDir, keepWebm = false }) {
       validateBrowserRoute(recipe.route)
       runCommand(
         browserCaptureCommand({
+          descriptor,
           surface: recipe.surface,
           recipePath: path.relative(repoRoot, recipePath),
           outputDir: path.relative(repoRoot, recipeDir),
@@ -914,51 +931,75 @@ async function runAgentSurfaces({ plan, changedFiles, args }) {
   let elapsedMs = 0
   const surfaceRuns = []
 
+  // Resolve the bespoke-surface drivers ONCE (BOS-203): the built-in tui/web
+  // reference drivers unioned with any repo-local `agent-driver` skill
+  // extensions, discovered via the BOS-193 contract. The runners are still
+  // dynamically imported here (cycle-break) and handed to the built-ins as deps.
+  const { discoverAgentDrivers, driverForSurface } = await import('./proof-agent-drivers.mjs')
+  const runTuiAgentProof = (await import('./proof-tui-agent.mjs')).runTuiAgentProof
+  const runAgentProof = (await import('./proof-agent.mjs')).runAgentProof
+  const agentDrivers = await discoverAgentDrivers({
+    repoRoot,
+    deps: {
+      tuiAgentUsable,
+      buildTuiAgentBridge,
+      tuiAgentBridgeEnv,
+      agentModeAvailable,
+      webUiSurfacePresent,
+      evaluateRunPreflight,
+      runTuiAgentProof,
+      runAgentProof,
+    },
+  })
+
   for (const surface of plan.order) {
     // Scoped bullets are this surface's PRIMARY brief content; unscoped bullets
     // feed every surface (D13).
     const planRequiredProof = [...(plan.scoped[surface] ?? []), ...plan.scoped.unscoped]
 
+    // Registry-driven dispatch (BOS-203): resolve THIS surface's driver and run
+    // it through the AgentDriver interface. The per-surface reason-code order is
+    // PRESERVED byte-identically — no driver / preflight-missing / not-usable /
+    // no-ui-surface / budget-exceeded each defer THIS surface without blocking
+    // the others; a run crash becomes a per-surface pipeline-error.
+    const driver = driverForSurface(agentDrivers, surface)
+    if (!driver) {
+      surfaceRuns.push(syntheticDeferredRun(surface, 'agent-unavailable'))
+      continue
+    }
+
     // Per-surface hard preflight (BOS-138): a missing prereq defers THIS surface.
-    const preflight = evaluateRunPreflight({ surface, shouldUpload, repoRoot })
-    if (preflight) {
-      surfaceRuns.push(
-        syntheticDeferredRun(surface, 'env-unavailable', { missing: preflight.missing }),
-      )
+    const missing = driver.preflightMissing({ shouldUpload, repoRoot })
+    if (missing.length > 0) {
+      surfaceRuns.push(syntheticDeferredRun(surface, 'env-unavailable', { missing }))
       continue
     }
 
     // Per-surface agent gate.
-    if (surface === 'tui') {
-      if (!tuiAgentUsable()) {
-        surfaceRuns.push(syntheticDeferredRun(surface, 'agent-unavailable'))
-        continue
-      }
-      if (!process.env.BOSS_PROOF_TUI_BRIDGE_BIN) {
-        const existingBossBin = process.env.BOSS_PROOF_BOSS_BIN
-        const { bridgeBin, bossBin } = buildTuiAgentBridge({ bossBinOverride: existingBossBin })
-        const bridgeEnv = tuiAgentBridgeEnv({ bridgeBin, bossBin, existingBossBin })
-        process.env.BOSS_PROOF_TUI_BRIDGE_BIN = bridgeEnv.BOSS_PROOF_TUI_BRIDGE_BIN
-        process.env.BOSS_PROOF_BOSS_BIN = bridgeEnv.BOSS_PROOF_BOSS_BIN
-      }
-    } else if (surface === 'web') {
-      if (!agentModeAvailable({ explicitRecipeSelection: false })) {
-        surfaceRuns.push(syntheticDeferredRun(surface, 'agent-unavailable'))
-        continue
-      }
-      // BOS-118 pre-gate: skip the ~12-min web run for a change with no visible
-      // web surface — UNLESS a required-proof bullet forced web (D16).
-      if (!webForced && !webUiSurfacePresent(changedFiles)) {
-        surfaceRuns.push(syntheticDeferredRun(surface, 'no-ui-surface'))
-        continue
-      }
+    if (!driver.usable(process.env)) {
+      surfaceRuns.push(syntheticDeferredRun(surface, 'agent-unavailable'))
+      continue
     }
+
+    // BOS-118 pre-gate: skip the ~12-min web run for a change with no visible web
+    // surface — UNLESS a required-proof bullet forced web (D16). This is a
+    // diff-classification POLICY decision, so it stays in the dispatcher rather
+    // than becoming a driver capability.
+    if (surface === 'web' && !webForced && !webUiSurfacePresent(changedFiles)) {
+      surfaceRuns.push(syntheticDeferredRun(surface, 'no-ui-surface'))
+      continue
+    }
+
+    // Prebuild BEFORE the budget gate (matches the current tui control flow); the
+    // driver's guard makes it idempotent (skips when the bridge bin is set).
+    if (driver.prebuild) driver.prebuild({ repoRoot, env: process.env })
 
     // Shared-budget grant for THIS surface; a run that cannot fit defers.
     const budget = planSurfaceBudget({
       surface,
       elapsedMs,
       totalBudgetMs,
+      budget: surfaceBudget(driver.budgetClass),
       liveAgent: surface === 'web' && liveAgentInRun,
     })
     if (!budget.run) {
@@ -976,11 +1017,7 @@ async function runAgentSurfaces({ plan, changedFiles, args }) {
       collect: true,
     }
     try {
-      const runner =
-        surface === 'tui'
-          ? (await import('./proof-tui-agent.mjs')).runTuiAgentProof
-          : (await import('./proof-agent.mjs')).runAgentProof
-      const surfaceRun = await runner({
+      const surfaceRun = await driver.run({
         prNumber,
         commit,
         changedFiles,

@@ -255,7 +255,7 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) 
 // empty-vs-real-work signal: a non-cron (headless detach) session whose branch
 // carries only the empty draft-PR bootstrap commit — even though a PR exists —
 // must NOT be surfaced as a green ready-for-review PR. It records pr_no_changes
-// and Blocks the session so a headless /bs-epic driver fail-isolates it instead
+// and Blocks the session so a headless /boss-epic driver fail-isolates it instead
 // of merging an empty PR.
 func TestFinalizeSession_HeadlessNonCronEmptyRun_BlocksNoChanges(t *testing.T) {
 	ctx := context.Background()

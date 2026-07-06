@@ -58,6 +58,229 @@ func TestUpdateLastAttemptHeadSHA(t *testing.T) {
 	}
 }
 
+// TestUpdateRotationFields round-trips the BOS-174 rotation_attempt_count and
+// rotation_resume_at columns: defaults, set, and clear-to-NULL.
+func TestUpdateRotationFields(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "rotation fields test",
+		WorktreePath: "/tmp/wt/rotation",
+		BranchName:   "feat/rotation",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Fresh session: defaults.
+	if sess.RotationAttemptCount != 0 {
+		t.Fatalf("fresh RotationAttemptCount = %d, want 0", sess.RotationAttemptCount)
+	}
+	if sess.RotationResumeAt != nil {
+		t.Fatalf("fresh RotationResumeAt = %v, want nil", *sess.RotationResumeAt)
+	}
+
+	// Set both fields.
+	count := 2
+	resumeAt := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	resumeAtStr := resumeAt.UTC().Format("2006-01-02T15:04:05.000Z")
+	resumeAtPtr := &resumeAtStr
+	got, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{
+		RotationAttemptCount: &count,
+		RotationResumeAt:     &resumeAtPtr,
+	})
+	if err != nil {
+		t.Fatalf("update set: %v", err)
+	}
+	if got.RotationAttemptCount != 2 {
+		t.Fatalf("RotationAttemptCount = %d, want 2", got.RotationAttemptCount)
+	}
+	if got.RotationResumeAt == nil || !got.RotationResumeAt.Equal(resumeAt) {
+		t.Fatalf("RotationResumeAt = %v, want %v", got.RotationResumeAt, resumeAt)
+	}
+
+	// Re-fetch to verify persistence.
+	reread, err := sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if reread.RotationAttemptCount != 2 {
+		t.Fatalf("reread RotationAttemptCount = %d, want 2", reread.RotationAttemptCount)
+	}
+	if reread.RotationResumeAt == nil || !reread.RotationResumeAt.Equal(resumeAt) {
+		t.Fatalf("reread RotationResumeAt = %v, want %v", reread.RotationResumeAt, resumeAt)
+	}
+
+	// Clear RotationResumeAt to NULL (*nil inner pointer).
+	var clear *string
+	got, err = sessionStore.Update(ctx, sess.ID, UpdateSessionParams{RotationResumeAt: &clear})
+	if err != nil {
+		t.Fatalf("update clear: %v", err)
+	}
+	if got.RotationResumeAt != nil {
+		t.Fatalf("RotationResumeAt = %v after clear, want nil", *got.RotationResumeAt)
+	}
+	// RotationAttemptCount must be untouched by the clear (nil = don't touch).
+	if got.RotationAttemptCount != 2 {
+		t.Fatalf("RotationAttemptCount = %d after unrelated update, want unchanged 2", got.RotationAttemptCount)
+	}
+}
+
+// TestSessionStore_AccountIDRoundTrip pins the BOS-170 nullable account_id
+// column: a session created with an explicit account binding reads it back
+// (through Get and the join-based ListWithRepo scan), and one created without
+// a binding reads back nil (system-default account 0).
+func TestSessionStore_AccountIDRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+
+	// Bound session: account_id persists and round-trips.
+	acct := "a1"
+	bound, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "bound",
+		WorktreePath: "/tmp/wt/acct-bound",
+		BranchName:   "feat/acct-bound",
+		BaseBranch:   "main",
+		AccountID:    &acct,
+	})
+	if err != nil {
+		t.Fatalf("create bound: %v", err)
+	}
+	if bound.AccountID == nil || *bound.AccountID != "a1" {
+		t.Fatalf("create AccountID = %v, want a1", bound.AccountID)
+	}
+	got, err := sessionStore.Get(ctx, bound.ID)
+	if err != nil {
+		t.Fatalf("get bound: %v", err)
+	}
+	if got.AccountID == nil || *got.AccountID != "a1" {
+		t.Fatalf("get AccountID = %v, want a1", got.AccountID)
+	}
+
+	// Unbound session: no account_id → nil (system-default account 0).
+	unbound, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "unbound",
+		WorktreePath: "/tmp/wt/acct-unbound",
+		BranchName:   "feat/acct-unbound",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create unbound: %v", err)
+	}
+	if unbound.AccountID != nil {
+		t.Fatalf("unbound create AccountID = %q, want nil", *unbound.AccountID)
+	}
+	gotUnbound, err := sessionStore.Get(ctx, unbound.ID)
+	if err != nil {
+		t.Fatalf("get unbound: %v", err)
+	}
+	if gotUnbound.AccountID != nil {
+		t.Fatalf("unbound get AccountID = %q, want nil", *gotUnbound.AccountID)
+	}
+
+	// The join-based ListWithRepo path has its own scan order — confirm the
+	// bound session's account_id survives it too.
+	rows, err := sessionStore.ListWithRepo(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("list with repo: %v", err)
+	}
+	var sawBound bool
+	for _, r := range rows {
+		if r.ID == bound.ID {
+			sawBound = true
+			if r.AccountID == nil || *r.AccountID != "a1" {
+				t.Errorf("list with repo AccountID = %v, want a1", r.AccountID)
+			}
+		}
+	}
+	if !sawBound {
+		t.Error("bound session missing from ListWithRepo")
+	}
+}
+
+// TestUpdateSessionAccountID round-trips the BOS-171 manual-switch rebind
+// through UpdateSessionParams.AccountID: bind to an account, then clear it back
+// to NULL (system-default account 0) via the nullable-string double-pointer
+// convention, leaving unrelated fields untouched.
+func TestUpdateSessionAccountID(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "account rebind test",
+		WorktreePath: "/tmp/wt/acct-rebind",
+		BranchName:   "feat/acct-rebind",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Fresh session: no binding.
+	if sess.AccountID != nil {
+		t.Fatalf("fresh AccountID = %q, want nil", *sess.AccountID)
+	}
+
+	// Bind to an account.
+	acct := "acct-42"
+	acctPtr := &acct
+	got, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{AccountID: &acctPtr})
+	if err != nil {
+		t.Fatalf("update bind: %v", err)
+	}
+	if got.AccountID == nil || *got.AccountID != "acct-42" {
+		t.Fatalf("AccountID = %v, want acct-42", got.AccountID)
+	}
+	reread, err := sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if reread.AccountID == nil || *reread.AccountID != "acct-42" {
+		t.Fatalf("reread AccountID = %v, want acct-42", reread.AccountID)
+	}
+
+	// Clear back to NULL (system-default account 0) via the *nil inner pointer.
+	var clear *string
+	got, err = sessionStore.Update(ctx, sess.ID, UpdateSessionParams{AccountID: &clear})
+	if err != nil {
+		t.Fatalf("update clear: %v", err)
+	}
+	if got.AccountID != nil {
+		t.Fatalf("AccountID = %q after clear, want nil", *got.AccountID)
+	}
+
+	// A nil AccountID pointer must not touch the column.
+	acct2 := "acct-99"
+	acct2Ptr := &acct2
+	if _, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{AccountID: &acct2Ptr}); err != nil {
+		t.Fatalf("re-bind: %v", err)
+	}
+	title := "renamed"
+	got, err = sessionStore.Update(ctx, sess.ID, UpdateSessionParams{Title: &title})
+	if err != nil {
+		t.Fatalf("unrelated update: %v", err)
+	}
+	if got.AccountID == nil || *got.AccountID != "acct-99" {
+		t.Fatalf("AccountID = %v after unrelated update, want unchanged acct-99", got.AccountID)
+	}
+}
+
 // TestUpdateRepairDiagnostics_CountResetsOnSuccess pins the semantic that
 // last_repair_attempt_count tracks consecutive failures since the last
 // clean run, not total attempts. Regression guard for the cursor-bot

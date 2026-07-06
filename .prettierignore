@@ -20,3 +20,8 @@ services/marketing/
 # human-read artifact and IS Prettier-formatted during construction.
 .claude/skills/*/support/
 .codex/skills/*/support/
+# The embedded public-skill payloads (copy-public-skills.mjs → skillinstall, then
+# mirrored to the claude plugin) are byte-for-byte copies of the raw support/
+# assets above; Prettier must leave them untouched or it fights copy-public-skills-check.
+services/boss/internal/skillinstall/skills/*/support/
+plugins/bossd-plugin-claude/skilldata/skills/*/support/

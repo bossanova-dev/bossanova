@@ -26,6 +26,14 @@ type chatPickerStub struct {
 	wakeErr       error
 	session       *pb.Session
 	repos         []*pb.Repo
+
+	// Switch-account canned data (BOS-171). accounts is returned by
+	// ListAccounts; switchResp / switchErr drive SwitchSessionAccount; and
+	// switchCalls records the requests the TUI dispatched.
+	accounts    []*pb.Account
+	switchResp  *pb.SwitchSessionAccountResponse
+	switchErr   error
+	switchCalls []*pb.SwitchSessionAccountRequest
 }
 
 type wakeChatCall struct {
@@ -170,7 +178,7 @@ func (s *chatPickerStub) RunCronJobNow(context.Context, string) (*pb.RunCronJobN
 	panic("unused")
 }
 func (s *chatPickerStub) ListAccounts(context.Context, string) ([]*pb.Account, error) {
-	panic("unused")
+	return s.accounts, nil
 }
 func (s *chatPickerStub) AddAccount(context.Context, *pb.AddAccountRequest) (*pb.Account, error) {
 	panic("unused")
@@ -387,6 +395,73 @@ func TestChatPicker_RendersRepairChatTitle(t *testing.T) {
 	rendered := m.View().Content
 	if !strings.Contains(rendered, "Repair:") {
 		t.Errorf("rendered chat picker missing %q in:\n%s", "Repair:", rendered)
+	}
+}
+
+// TestChatPicker_SurfacesLimitedProviderLine verifies the BOS-167 provider line:
+// when a chat's daemon status is limited, the chat picker names the limited
+// provider above the chat list so the operator sees which agent hit its cap.
+func TestChatPicker_SurfacesLimitedProviderLine(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
+	updated, _ := m.Update(chatsListedMsg{
+		chats: []*pb.ClaudeChat{{
+			SessionId:      "session-1",
+			AgentSessionId: "agent-1",
+			Title:          "A chat",
+			AgentName:      "claude",
+			CreatedAt:      timestamppb.Now(),
+		}},
+		daemonStatuses: map[string]string{"agent-1": statusLimited},
+	})
+	m = updated.(ChatPickerModel)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+	m.session = &pb.Session{Id: "session-1"}
+
+	rendered := stripANSI(m.View().Content)
+	if !strings.Contains(rendered, "usage-limited") || !strings.Contains(rendered, "claude") {
+		t.Errorf("chat picker missing limited-provider line naming claude in:\n%s", rendered)
+	}
+}
+
+// TestChatPicker_LimitedProviderLine unit-tests the helper: only limited chats
+// contribute, provider names are de-duplicated, and non-limited providers are
+// omitted.
+func TestChatPicker_LimitedProviderLine(t *testing.T) {
+	m := ChatPickerModel{
+		chats: []*pb.ClaudeChat{
+			{AgentSessionId: "a", AgentName: "claude"},
+			{AgentSessionId: "b", AgentName: "codex"},
+			{AgentSessionId: "c", AgentName: "claude"},
+		},
+		daemonStatuses: map[string]string{
+			"a": statusLimited,
+			"b": statusWorking,
+			"c": statusLimited,
+		},
+	}
+	got := m.limitedProviderLine()
+	if !strings.Contains(got, "claude") {
+		t.Errorf("expected limited provider claude in %q", got)
+	}
+	if strings.Contains(got, "codex") {
+		t.Errorf("codex is not limited and must not appear in %q", got)
+	}
+	if n := strings.Count(got, "claude"); n != 1 {
+		t.Errorf("expected claude named once (dedup), got %d in %q", n, got)
+	}
+}
+
+// TestChatPicker_LimitedProviderLine_EmptyWhenNoneLimited confirms the helper
+// stays silent (and callers skip the line) when no chat is limited.
+func TestChatPicker_LimitedProviderLine_EmptyWhenNoneLimited(t *testing.T) {
+	m := ChatPickerModel{
+		chats:          []*pb.ClaudeChat{{AgentSessionId: "a", AgentName: "claude"}},
+		daemonStatuses: map[string]string{"a": statusWorking},
+	}
+	if got := m.limitedProviderLine(); got != "" {
+		t.Errorf("expected empty limited-provider line, got %q", got)
 	}
 }
 
@@ -1410,4 +1485,26 @@ func TestChatPicker_WebOpenErrorMessageIsGeneric(t *testing.T) {
 	if strings.Contains(m.statusMsg, "GitHub") {
 		t.Fatalf("web-open error statusMsg = %q, must not be GitHub-specific (shared with [l]inear)", m.statusMsg)
 	}
+}
+
+func (s *chatPickerStub) SwitchSessionAccount(_ context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.switchCalls = append(s.switchCalls, req)
+	if s.switchErr != nil {
+		return nil, s.switchErr
+	}
+	if s.switchResp != nil {
+		return s.switchResp, nil
+	}
+	return &pb.SwitchSessionAccountResponse{}, nil
+}
+
+// switchCallsSnapshot returns a copy of the recorded switch requests.
+func (s *chatPickerStub) switchCallsSnapshot() []*pb.SwitchSessionAccountRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*pb.SwitchSessionAccountRequest, len(s.switchCalls))
+	copy(out, s.switchCalls)
+	return out
 }

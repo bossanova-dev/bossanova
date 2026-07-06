@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -406,6 +407,116 @@ func TestRecompute_QuestionChatOutranksWorkingSibling(t *testing.T) {
 	}
 	if got.DisplayLabel != "? question" {
 		t.Errorf("DisplayLabel = %q, want %q (question chat must outrank working sibling)", got.DisplayLabel, "? question")
+	}
+}
+
+// TestRecompute_LimitedChatRanking pins the LIMITED rank: it must beat a
+// WORKING sibling (LIMITED > WORKING) but lose to a QUESTION sibling
+// (QUESTION > LIMITED), matching Server.GetSessionStatuses.
+func TestRecompute_LimitedChatRanking(t *testing.T) {
+	tests := []struct {
+		name      string
+		siblings  map[string]pb.ChatStatus
+		wantLabel string
+	}{
+		{
+			name: "limited beats working",
+			siblings: map[string]pb.ChatStatus{
+				"working": pb.ChatStatus_CHAT_STATUS_WORKING,
+				"limited": pb.ChatStatus_CHAT_STATUS_LIMITED,
+			},
+			wantLabel: "usage-limited",
+		},
+		{
+			name: "question beats limited",
+			siblings: map[string]pb.ChatStatus{
+				"question": pb.ChatStatus_CHAT_STATUS_QUESTION,
+				"limited":  pb.ChatStatus_CHAT_STATUS_LIMITED,
+			},
+			wantLabel: "? question",
+		},
+		{
+			name: "limited beats idle",
+			siblings: map[string]pb.ChatStatus{
+				"idle":    pb.ChatStatus_CHAT_STATUS_IDLE,
+				"limited": pb.ChatStatus_CHAT_STATUS_LIMITED,
+			},
+			wantLabel: "usage-limited",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sessions, workflows, chats, repos := newTestDB(t)
+			repoID := mustRepo(t, repos)
+			sessID := mustSession(t, sessions, repoID)
+
+			entries := map[string]*Entry{}
+			for suffix, status := range tc.siblings {
+				agentSessionID := "claude-" + suffix + "-" + sessID
+				if _, err := chats.Create(context.Background(), db.CreateAgentChatParams{
+					SessionID:      sessID,
+					AgentSessionID: agentSessionID,
+					Title:          "chat",
+				}); err != nil {
+					t.Fatalf("create chat %s: %v", agentSessionID, err)
+				}
+				entries[agentSessionID] = &Entry{Status: status, ReceivedAt: time.Now()}
+			}
+
+			chatTr := &fakeChatReader{entries: entries}
+			disp := NewDisplayTracker()
+			disp.Set(sessID, vcs.DisplayInfo{Status: vcs.DisplayStatusDraft})
+
+			c := NewDisplayStatusComputer(sessions, disp, chatTr, chats, workflows, zerolog.Nop())
+			if err := c.Recompute(context.Background(), sessID); err != nil {
+				t.Fatalf("recompute: %v", err)
+			}
+
+			got, err := sessions.Get(context.Background(), sessID)
+			if err != nil {
+				t.Fatalf("get session: %v", err)
+			}
+			if got.DisplayLabel != tc.wantLabel {
+				t.Errorf("DisplayLabel = %q, want %q", got.DisplayLabel, tc.wantLabel)
+			}
+		})
+	}
+}
+
+// TestRecompute_LimitedChatComposesResetTime pins that a limited chat carrying
+// a non-zero ResetAt renders the composed "usage-limited (resets ~HH:MM)" label.
+func TestRecompute_LimitedChatComposesResetTime(t *testing.T) {
+	sessions, workflows, chats, repos := newTestDB(t)
+	repoID := mustRepo(t, repos)
+	sessID := mustSession(t, sessions, repoID)
+
+	agentSessionID := "claude-limited-" + sessID
+	if _, err := chats.Create(context.Background(), db.CreateAgentChatParams{
+		SessionID:      sessID,
+		AgentSessionID: agentSessionID,
+		Title:          "chat",
+	}); err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+
+	resetAt := time.Date(2026, 1, 2, 15, 0, 0, 0, time.UTC)
+	chatTr := &fakeChatReader{entries: map[string]*Entry{
+		agentSessionID: {Status: pb.ChatStatus_CHAT_STATUS_LIMITED, ResetAt: resetAt, ReceivedAt: time.Now()},
+	}}
+	disp := NewDisplayTracker()
+	disp.Set(sessID, vcs.DisplayInfo{Status: vcs.DisplayStatusDraft})
+
+	c := NewDisplayStatusComputer(sessions, disp, chatTr, chats, workflows, zerolog.Nop())
+	if err := c.Recompute(context.Background(), sessID); err != nil {
+		t.Fatalf("recompute: %v", err)
+	}
+
+	got, err := sessions.Get(context.Background(), sessID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if !strings.Contains(got.DisplayLabel, "usage-limited (resets ~") {
+		t.Errorf("DisplayLabel = %q, want it to contain %q", got.DisplayLabel, "usage-limited (resets ~")
 	}
 }
 

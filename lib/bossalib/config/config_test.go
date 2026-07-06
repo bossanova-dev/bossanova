@@ -1037,6 +1037,123 @@ func TestRepairConfig_CooldownDuration(t *testing.T) {
 	})
 }
 
+func TestRotationConfig_DefaultCooldown(t *testing.T) {
+	t.Run("returns default when unset", func(t *testing.T) {
+		c := RotationConfig{}
+		got := c.DefaultCooldown()
+		if got != 60*time.Minute {
+			t.Errorf("DefaultCooldown() = %v, want %v", got, 60*time.Minute)
+		}
+	})
+	t.Run("returns configured value when set", func(t *testing.T) {
+		c := RotationConfig{DefaultCooldownMinutes: 5}
+		got := c.DefaultCooldown()
+		if got != 5*time.Minute {
+			t.Errorf("DefaultCooldown() = %v, want %v", got, 5*time.Minute)
+		}
+	})
+	t.Run("zero falls back to default", func(t *testing.T) {
+		c := RotationConfig{DefaultCooldownMinutes: 0}
+		got := c.DefaultCooldown()
+		if got != 60*time.Minute {
+			t.Errorf("DefaultCooldown() = %v, want %v", got, 60*time.Minute)
+		}
+	})
+}
+
+func TestRotationConfig_RotationEnabled(t *testing.T) {
+	t.Run("nil defaults to true", func(t *testing.T) {
+		c := RotationConfig{}
+		if !c.RotationEnabled() {
+			t.Error("RotationEnabled() = false, want true when Enabled is nil")
+		}
+	})
+	t.Run("explicit false", func(t *testing.T) {
+		f := false
+		c := RotationConfig{Enabled: &f}
+		if c.RotationEnabled() {
+			t.Error("RotationEnabled() = true, want false when Enabled = &false")
+		}
+	})
+	t.Run("explicit true", func(t *testing.T) {
+		tr := true
+		c := RotationConfig{Enabled: &tr}
+		if !c.RotationEnabled() {
+			t.Error("RotationEnabled() = false, want true when Enabled = &true")
+		}
+	})
+}
+
+// TestRotationConfig_KillSwitchRoundTrip pins the global kill-switch (BOS-176)
+// through Save/Load: an absent `rotation.enabled` key reads as ON (default-ON per
+// D4), while an explicit false persists and reloads as OFF; DefaultSettings is ON.
+func TestRotationConfig_KillSwitchRoundTrip(t *testing.T) {
+	if !DefaultSettings().Rotation.RotationEnabled() {
+		t.Error("DefaultSettings().Rotation.RotationEnabled() = false, want true (default-ON)")
+	}
+
+	t.Run("explicit false persists as disabled", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "settings.json")
+		s := DefaultSettings()
+		f := false
+		s.Rotation.Enabled = &f
+		if err := SaveTo(path, s); err != nil {
+			t.Fatalf("SaveTo: %v", err)
+		}
+		loaded, err := LoadFrom(path)
+		if err != nil {
+			t.Fatalf("LoadFrom: %v", err)
+		}
+		if loaded.Rotation.RotationEnabled() {
+			t.Error("reloaded RotationEnabled() = true, want false after saving enabled=false")
+		}
+	})
+
+	t.Run("absent key reloads as enabled", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "settings.json")
+		if err := SaveTo(path, DefaultSettings()); err != nil {
+			t.Fatalf("SaveTo: %v", err)
+		}
+		loaded, err := LoadFrom(path)
+		if err != nil {
+			t.Fatalf("LoadFrom: %v", err)
+		}
+		if !loaded.Rotation.RotationEnabled() {
+			t.Error("reloaded RotationEnabled() = false, want true when key absent")
+		}
+	})
+}
+
+func TestRotationConfig_MaxRotations(t *testing.T) {
+	t.Run("zero falls back to default", func(t *testing.T) {
+		c := RotationConfig{}
+		if got := c.MaxRotations(); got != 3 {
+			t.Errorf("MaxRotations() = %d, want 3", got)
+		}
+	})
+	t.Run("returns configured value when set", func(t *testing.T) {
+		c := RotationConfig{MaxRotationsPerRun: 5}
+		if got := c.MaxRotations(); got != 5 {
+			t.Errorf("MaxRotations() = %d, want 5", got)
+		}
+	})
+}
+
+func TestRotationConfig_ParkSweepInterval(t *testing.T) {
+	t.Run("zero falls back to default", func(t *testing.T) {
+		c := RotationConfig{}
+		if got := c.ParkSweepInterval(); got != 60*time.Second {
+			t.Errorf("ParkSweepInterval() = %v, want %v", got, 60*time.Second)
+		}
+	})
+	t.Run("returns configured value when set", func(t *testing.T) {
+		c := RotationConfig{ParkSweepIntervalSeconds: 30}
+		if got := c.ParkSweepInterval(); got != 30*time.Second {
+			t.Errorf("ParkSweepInterval() = %v, want %v", got, 30*time.Second)
+		}
+	})
+}
+
 func TestRepairConfig_PollInterval(t *testing.T) {
 	t.Run("returns default when unset", func(t *testing.T) {
 		c := RepairConfig{}
@@ -1714,5 +1831,45 @@ func TestScanForPluginsDevSkipsChecksum(t *testing.T) {
 	got, rej := scanForPlugins(dir, discoveryPolicy{requireSafePerms: true, verifyChecksums: false})
 	if len(got) != 1 || len(rej) != 0 {
 		t.Fatalf("dev build should accept without manifest: got=%d rej=%d", len(got), len(rej))
+	}
+}
+
+func TestRotationConfig_AutoRotateChatsEnabled(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	cases := []struct {
+		name   string
+		cfg    RotationConfig
+		repoID string
+		want   bool
+	}{
+		{"default is ON (D4)", RotationConfig{}, "r1", true},
+		{"global false disables", RotationConfig{AutoRotateChats: boolPtr(false)}, "r1", false},
+		{"global true enables", RotationConfig{AutoRotateChats: boolPtr(true)}, "r1", true},
+		{"per-repo false overrides global default", RotationConfig{
+			AutoRotateChatsPerRepo: map[string]bool{"r1": false},
+		}, "r1", false},
+		{"per-repo true overrides global false", RotationConfig{
+			AutoRotateChats:        boolPtr(false),
+			AutoRotateChatsPerRepo: map[string]bool{"r1": true},
+		}, "r1", true},
+		{"other repo unaffected by per-repo entry", RotationConfig{
+			AutoRotateChatsPerRepo: map[string]bool{"r1": false},
+		}, "r2", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.AutoRotateChatsEnabled(tc.repoID); got != tc.want {
+				t.Fatalf("AutoRotateChatsEnabled(%q) = %v, want %v", tc.repoID, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRotationConfig_ChatRotateMinInterval(t *testing.T) {
+	if got := (RotationConfig{}).ChatRotateMinInterval(); got != 10*time.Minute {
+		t.Fatalf("default interval = %v, want 10m", got)
+	}
+	if got := (RotationConfig{ChatRotateMinIntervalMinutes: 3}).ChatRotateMinInterval(); got != 3*time.Minute {
+		t.Fatalf("configured interval = %v, want 3m", got)
 	}
 }

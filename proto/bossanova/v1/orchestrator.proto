@@ -51,6 +51,15 @@ service OrchestratorService {
   rpc ProxyRecordChat(ProxyRecordChatRequest) returns (ProxyRecordChatResponse);
   // Deletes a chat via the owning daemon's reverse stream.
   rpc ProxyDeleteChat(ProxyDeleteChatRequest) returns (ProxyDeleteChatResponse);
+  // Switches a session's live chat to a different account (stop+swap+resume)
+  // via the owning daemon's reverse stream. Routes by session_id
+  // (FindSessionDaemon) with an optional GetChat authz check, like ProxyWakeChat.
+  rpc ProxySwitchSessionAccount(ProxySwitchSessionAccountRequest) returns (ProxySwitchSessionAccountResponse);
+  // Lists the rotation accounts on the daemon owning session_id (web
+  // account-switch picker). Routes by session_id (FindSessionDaemon) for authz
+  // scope, like ProxySwitchSessionAccount. Accounts are metadata only — never
+  // credentials. Optional provider filter ("" = all).
+  rpc ProxyListAccounts(ProxyListAccountsRequest) returns (ProxyListAccountsResponse);
   // Reads a chat's transcript via the owning daemon's reverse stream. Routes by
   // session_id (FindSessionDaemon) with a GetChat authz check, like ProxyWakeChat.
   rpc ProxyGetChatTranscript(ProxyGetChatTranscriptRequest) returns (ProxyGetChatTranscriptResponse);
@@ -237,6 +246,14 @@ message ProxyCreateSessionRequest {
   // one. Mirrors CreateSessionRequest.force so the hosted MCP gateway path has
   // the same escape hatch as the local socket backend.
   bool force = 14;
+  // Unattended-session fields carried through the hosted gateway so a hosted
+  // MCP client (e.g. /boss-epic) gets the same create_session behavior as the
+  // local socket backend. Mirror CreateSessionRequest.{detach,model,
+  // tmux_unattended}; without them a hosted create silently runs interactively
+  // on the daemon's default model and never fires the unattended prompt.
+  bool detach = 15;
+  optional string model = 16;
+  bool tmux_unattended = 17;
 }
 
 // ProxyCreateSessionResponse is streamed from orchestrator to the client as
@@ -320,6 +337,22 @@ message ProxyDeleteChatRequest {
 }
 message ProxyDeleteChatResponse {}
 
+// ProxySwitchSessionAccountRequest switches a session's live chat to a
+// different account. session_id is required for authz scoping (mirror
+// ProxyWakeChat). agent_session_id is optional; empty => the session's
+// primary live chat (resolved by the daemon).
+message ProxySwitchSessionAccountRequest {
+  string session_id = 1;       // for authz scoping (mirror ProxyWakeChat)
+  string agent_session_id = 2; // optional; empty => session's primary live chat
+  string account_id = 3;       // "" = system default
+  bool force = 4;
+}
+message ProxySwitchSessionAccountResponse {
+  bool resumed = 1;
+  string target_label = 2;
+  string notice_text = 3;
+}
+
 // ProxyGetChatTranscriptRequest reads a chat by agent_session_id, scoped to
 // session_id for authz (mirror ProxyWakeChat). max_messages == 0 returns all.
 message ProxyGetChatTranscriptRequest {
@@ -384,6 +417,19 @@ message ProxyListAgentsRequest {
 
 message ProxyListAgentsResponse {
   repeated AgentInfo agents = 1;
+}
+
+// ProxyListAccountsRequest lists the rotation accounts on the daemon owning
+// session_id. session_id locates the owning daemon (FindSessionDaemon) and
+// scopes authz. provider optionally filters ("" = all). Accounts are metadata
+// only — never credentials.
+message ProxyListAccountsRequest {
+  string session_id = 1;
+  string provider = 2;
+}
+
+message ProxyListAccountsResponse {
+  repeated Account accounts = 1;
 }
 
 message ProxyListRepoPRsRequest {

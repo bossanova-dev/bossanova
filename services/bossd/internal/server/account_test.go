@@ -55,13 +55,15 @@ func (f *fakeCredStore) Delete(id string) error {
 // fakeSmoke records whether Smoke ran and with what provider, returning a
 // configurable error.
 type fakeSmoke struct {
-	called   bool
-	provider string
-	err      error
+	called    bool
+	accountID string
+	provider  string
+	err       error
 }
 
-func (f *fakeSmoke) Smoke(_ context.Context, provider string, _ []byte) error {
+func (f *fakeSmoke) Smoke(_ context.Context, accountID, provider string, _ []byte) error {
 	f.called = true
+	f.accountID = accountID
 	f.provider = provider
 	return f.err
 }

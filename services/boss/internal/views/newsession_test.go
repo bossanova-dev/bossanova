@@ -31,6 +31,9 @@ type stubClient struct {
 	trackerLastSource string // captures the source arg of the last ListTrackerIssues call
 	agents            []client.AgentInfo
 	agentsErr         error
+	accounts          []*pb.Account // returned by ListAccounts (provider-scoped account picker)
+	accountsErr       error
+	accountsProvider  string // captures the provider arg of the last ListAccounts call
 	createdCronReq    *pb.CreateCronJobRequest
 	updatedCronReq    *pb.UpdateCronJobRequest
 }
@@ -224,8 +227,9 @@ func (s *stubClient) DeleteCronJob(context.Context, string) error { panic("unuse
 func (s *stubClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
-func (s *stubClient) ListAccounts(context.Context, string) ([]*pb.Account, error) {
-	panic("unused")
+func (s *stubClient) ListAccounts(_ context.Context, provider string) ([]*pb.Account, error) {
+	s.accountsProvider = provider
+	return s.accounts, s.accountsErr
 }
 func (s *stubClient) AddAccount(context.Context, *pb.AddAccountRequest) (*pb.Account, error) {
 	panic("unused")
@@ -1683,6 +1687,236 @@ func TestNewSession_AgentSelect_ViewRendersAgentNames(t *testing.T) {
 	}
 }
 
+// --- Account-select phase ---
+
+func twoAccounts() []*pb.Account {
+	return []*pb.Account{
+		{Id: "acct-work", Provider: "claude", Label: "Work", Status: "active"},
+		{Id: "acct-personal", Provider: "claude", Label: "Personal", Status: "active"},
+	}
+}
+
+// driveToAccountPhase runs the wizard from startup to just after the agent is
+// chosen, using a single-repo/single-agent stub so the account picker is the
+// only interactive gate the model lands on. Returns the model in whatever phase
+// the account decision produced.
+func driveToAccountPhase(t *testing.T, sc *stubClient) NewSessionModel {
+	t.Helper()
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	return m
+}
+
+func TestNewSession_TwoAccounts_EntersAccountSelect(t *testing.T) {
+	sc := &stubClient{
+		repos:    oneRepo(),
+		agents:   []client.AgentInfo{{Name: "claude", Version: "v1"}},
+		accounts: twoAccounts(),
+	}
+	m := driveToAccountPhase(t, sc)
+
+	if m.phase != newSessionPhaseAccountSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseAccountSelect (%d)", m.phase, newSessionPhaseAccountSelect)
+	}
+	if sc.accountsProvider != "claude" {
+		t.Fatalf("ListAccounts provider = %q, want claude", sc.accountsProvider)
+	}
+
+	// The rendered picker must show the system-default row and both accounts.
+	view := m.View().Content
+	for _, want := range []string{"System default", "Work", "Personal"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("account-select view missing %q in:\n%s", want, view)
+		}
+	}
+}
+
+func TestNewSession_AccountSelect_EnterSetsSelectedAccount(t *testing.T) {
+	sc := &stubClient{
+		repos:    oneRepo(),
+		agents:   []client.AgentInfo{{Name: "claude", Version: "v1"}},
+		accounts: twoAccounts(),
+	}
+	m := driveToAccountPhase(t, sc)
+	if m.phase != newSessionPhaseAccountSelect {
+		t.Fatalf("expected account-select phase, got %d", m.phase)
+	}
+
+	// Row 0 is "System default"; cursor down once selects the first account.
+	m = sendKey(t, m, 'j')
+	m = sendSpecialKey(t, m, tea.KeyEnter)
+
+	if m.selectedAccount != "acct-work" {
+		t.Errorf("selectedAccount = %q, want acct-work", m.selectedAccount)
+	}
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Errorf("phase = %d, want newSessionPhaseTypeSelect after account pick", m.phase)
+	}
+}
+
+func TestNewSession_AccountSelect_SystemDefaultRowMapsToEmpty(t *testing.T) {
+	sc := &stubClient{
+		repos:    oneRepo(),
+		agents:   []client.AgentInfo{{Name: "claude", Version: "v1"}},
+		accounts: twoAccounts(),
+	}
+	m := driveToAccountPhase(t, sc)
+	if m.phase != newSessionPhaseAccountSelect {
+		t.Fatalf("expected account-select phase, got %d", m.phase)
+	}
+
+	// Cursor is on row 0 (System default); Enter binds the empty account.
+	m = sendSpecialKey(t, m, tea.KeyEnter)
+
+	if m.selectedAccount != "" {
+		t.Errorf("selectedAccount = %q, want \"\" for the System default row", m.selectedAccount)
+	}
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Errorf("phase = %d, want newSessionPhaseTypeSelect", m.phase)
+	}
+}
+
+func TestNewSession_ZeroAccounts_SkipsAccountSelect(t *testing.T) {
+	sc := &stubClient{
+		repos:  oneRepo(),
+		agents: []client.AgentInfo{{Name: "claude", Version: "v1"}},
+		// no accounts registered for the provider
+	}
+	m := driveToAccountPhase(t, sc)
+
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect; empty account list must skip the picker", m.phase)
+	}
+	if m.selectedAccount != "" {
+		t.Errorf("selectedAccount = %q, want \"\" when the picker is skipped", m.selectedAccount)
+	}
+}
+
+func TestNewSession_AccountListerError_SkipsAccountSelect(t *testing.T) {
+	sc := &stubClient{
+		repos:       oneRepo(),
+		agents:      []client.AgentInfo{{Name: "claude", Version: "v1"}},
+		accounts:    twoAccounts(),
+		accountsErr: fmt.Errorf("remote client is local-only"),
+	}
+	m := driveToAccountPhase(t, sc)
+
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect; a lister error must skip the picker", m.phase)
+	}
+	if m.selectedAccount != "" {
+		t.Errorf("selectedAccount = %q, want \"\" on lister error", m.selectedAccount)
+	}
+}
+
+func TestNewSession_InitialAccount_BypassesPicker(t *testing.T) {
+	sc := &stubClient{
+		repos:    oneRepo(),
+		agents:   []client.AgentInfo{{Name: "claude", Version: "v1"}},
+		accounts: twoAccounts(),
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m.SetInitialAccount("acct-personal")
+	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect; --account override must bypass the picker", m.phase)
+	}
+	if m.selectedAccount != "acct-personal" {
+		t.Errorf("selectedAccount = %q, want acct-personal (from override)", m.selectedAccount)
+	}
+}
+
+func TestNewSession_AccountLister_SeamOverridesClient(t *testing.T) {
+	sc := &stubClient{
+		repos:  oneRepo(),
+		agents: []client.AgentInfo{{Name: "claude", Version: "v1"}},
+		// stub client would return no accounts; the injected lister wins.
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m.SetAccountLister(func(provider string) ([]*pb.Account, error) {
+		if provider != "claude" {
+			t.Errorf("lister provider = %q, want claude", provider)
+		}
+		return twoAccounts(), nil
+	})
+	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	if m.phase != newSessionPhaseAccountSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseAccountSelect via injected lister", m.phase)
+	}
+}
+
+func TestNewSession_AccountSelect_BindsAccountIntoCreateRequest(t *testing.T) {
+	sc := &stubClient{
+		repos:    oneRepo(),
+		agents:   []client.AgentInfo{{Name: "claude", Version: "v1"}},
+		accounts: twoAccounts(),
+		created:  &pb.Session{Id: "session-1"},
+	}
+	m := driveToAccountPhase(t, sc)
+	if m.phase != newSessionPhaseAccountSelect {
+		t.Fatalf("expected account-select phase, got %d", m.phase)
+	}
+
+	// Select the first real account (row 1), then drive Quick Chat to create.
+	m = sendKey(t, m, 'j')
+	m = sendSpecialKey(t, m, tea.KeyEnter) // account -> type select
+
+	// Quick Chat is the last row; select it and submit the (optional) name form.
+	m.selectedType = sessionTypeQuickChat
+	cmd := m.startCreating()
+	if cmd == nil {
+		t.Fatal("startCreating returned nil cmd")
+	}
+	cmd()
+	if sc.createReq == nil {
+		t.Fatal("CreateSession was not called")
+	}
+	if sc.createReq.GetAccountId() != "acct-work" {
+		t.Errorf("CreateSessionRequest.account_id = %q, want acct-work", sc.createReq.GetAccountId())
+	}
+}
+
+// TestNewSession_AccountSelect_SystemDefaultSendsPresentEmpty proves the P1 fix
+// at the TUI layer: explicitly picking "System default (account 0)" sends a
+// present-but-empty account_id (not an omitted field), so the daemon binds
+// account 0 and skips the default-account policy.
+func TestNewSession_AccountSelect_SystemDefaultSendsPresentEmpty(t *testing.T) {
+	sc := &stubClient{
+		repos:    oneRepo(),
+		agents:   []client.AgentInfo{{Name: "claude", Version: "v1"}},
+		accounts: twoAccounts(),
+		created:  &pb.Session{Id: "session-1"},
+	}
+	m := driveToAccountPhase(t, sc)
+	if m.phase != newSessionPhaseAccountSelect {
+		t.Fatalf("expected account-select phase, got %d", m.phase)
+	}
+
+	// Cursor starts on row 0 ("System default (account 0)"); Enter confirms it.
+	m = sendSpecialKey(t, m, tea.KeyEnter) // account -> type select
+
+	m.selectedType = sessionTypeQuickChat
+	cmd := m.startCreating()
+	if cmd == nil {
+		t.Fatal("startCreating returned nil cmd")
+	}
+	cmd()
+	if sc.createReq == nil {
+		t.Fatal("CreateSession was not called")
+	}
+	if sc.createReq.AccountId == nil {
+		t.Fatal("account_id must be present (non-nil) for an explicit System-default pick")
+	}
+	if *sc.createReq.AccountId != "" {
+		t.Errorf("account_id = %q, want present-empty \"\" (explicit account 0)", *sc.createReq.AccountId)
+	}
+}
+
 // --- Enter-key selection bounds checks (PR / issue pickers) ---
 //
 // These exercise the `idx >= 0 && idx < len(...)` guards that decide whether
@@ -2067,4 +2301,8 @@ func TestNewSession_CreatingViewAnimates(t *testing.T) {
 	if frame0 == frameN {
 		t.Fatalf("spinner did not animate: frame unchanged across 6 ticks:\n%q", frame0)
 	}
+}
+
+func (s *stubClient) SwitchSessionAccount(context.Context, *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+	panic("unused")
 }

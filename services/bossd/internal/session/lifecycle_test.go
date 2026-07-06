@@ -207,8 +207,21 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	if params.HookToken != nil {
 		s.HookToken = *params.HookToken
 	}
+	if params.AccountID != nil {
+		s.AccountID = *params.AccountID
+	}
 	if params.TmuxUnattended != nil {
 		s.TmuxUnattended = *params.TmuxUnattended
+	}
+	if params.RotationAttemptCount != nil {
+		s.RotationAttemptCount = *params.RotationAttemptCount
+	}
+	if params.RotationResumeAt != nil {
+		if *params.RotationResumeAt == nil {
+			s.RotationResumeAt = nil
+		} else if parsed, err := time.Parse(time.RFC3339, **params.RotationResumeAt); err == nil {
+			s.RotationResumeAt = &parsed
+		}
 	}
 	return s, nil
 }
@@ -776,6 +789,7 @@ type mockStartCall struct {
 	plan    string
 	resume  *string
 	model   string
+	env     map[string]string
 }
 
 func newMockAgentRunner() *mockAgentRunner {
@@ -785,8 +799,8 @@ func newMockAgentRunner() *mockAgentRunner {
 	}
 }
 
-func (m *mockAgentRunner) Start(_ context.Context, workDir, plan string, resume *string, _, model string, _ map[string]string) (string, error) {
-	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model})
+func (m *mockAgentRunner) Start(_ context.Context, workDir, plan string, resume *string, _, model string, env map[string]string) (string, error) {
+	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model, env: env})
 	if m.startErr != nil {
 		return "", m.startErr
 	}
@@ -1088,7 +1102,7 @@ func TestStartSession_TrackerSession_AwaitsManualStart(t *testing.T) {
 // TestStartSession_ForkGovernedByDetach pins the BOS-179 fix: Detach — NOT
 // tracker-sourcing — decides headless-vs-idle for a non-cron session. The
 // regression this guards is a detached, tracker-sourced session (exactly what
-// /bs-epic's headless create_session fan-out produces) being forced into the
+// /boss-epic's headless create_session fan-out produces) being forced into the
 // idle "awaiting manual start on first attach" branch and never running. The
 // !detach cases must stay byte-identical (idle) regardless of the tracker id.
 func TestStartSession_ForkGovernedByDetach(t *testing.T) {
@@ -5413,7 +5427,7 @@ func TestBootstrapReArmsTmuxUnattendedButNotHeadless(t *testing.T) {
 	wt := &mockWorktreeManager{}
 	cr := newMockAgentRunner()
 
-	// Session A: tmux_unattended (e.g. a /bs-epic child), carries a HookToken
+	// Session A: tmux_unattended (e.g. a /boss-epic child), carries a HookToken
 	// like a cron session does, and has a live tmux-hosted chat surviving the
 	// restart.
 	tokA := "tok-a"

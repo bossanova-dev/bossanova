@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,7 +10,9 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/table"
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/recurser/boss/internal/views"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -261,6 +264,67 @@ func runAccountUpdate(cmd *cobra.Command, id string) error {
 		return fmt.Errorf("update account: %w", err)
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Updated account %s\n", id)
+	return nil
+}
+
+// accountSwitcher is the narrow client surface `boss account switch` needs. The
+// real client (client.BossClient) satisfies it; tests inject a fake.
+type accountSwitcher interface {
+	SwitchSessionAccount(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error)
+}
+
+// switchTargetAccountID maps the `<account>` positional arg to the account_id
+// the daemon expects. The daemon treats an empty account_id as the system
+// default (account 0), so the friendly sentinels below all resolve to "".
+// Any other value is passed through verbatim as the account id (or label the
+// daemon resolves).
+func switchTargetAccountID(arg string) string {
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "", "system-default", "system", "default", "none", "0":
+		return ""
+	default:
+		return arg
+	}
+}
+
+// runAccountSwitch is the cobra RunE for `boss account switch <session> <account>`.
+func runAccountSwitch(cmd *cobra.Command, args []string) error {
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+	return accountSwitch(cmd, c, args[0], args[1])
+}
+
+// accountSwitch stops the session's live chat, rebinds it to the chosen
+// account, and respawns with resume. It is split from runAccountSwitch so tests
+// can drive it with a fake accountSwitcher without a live daemon.
+func accountSwitch(cmd *cobra.Command, c accountSwitcher, sessionArg, accountArg string) error {
+	req := &pb.SwitchSessionAccountRequest{
+		SessionId: sessionArg,
+		AccountId: switchTargetAccountID(accountArg),
+	}
+	if force, _ := cmd.Flags().GetBool("force"); force {
+		req.Force = true
+	}
+	// Only pin a specific chat when --chat is given; otherwise leave nil so the
+	// daemon targets the session's primary live chat.
+	if cmd.Flags().Changed("chat") {
+		chat, _ := cmd.Flags().GetString("chat")
+		req.AgentSessionId = proto.String(chat)
+	}
+
+	resp, err := c.SwitchSessionAccount(cmd.Context(), req)
+	if err != nil {
+		// The daemon's mid-turn rejection is FailedPrecondition and its message
+		// already asks to confirm/--force; surface it cleanly. Add the --force
+		// nudge when the caller has not already passed it.
+		if force, _ := cmd.Flags().GetBool("force"); connect.CodeOf(err) == connect.CodeFailedPrecondition && !force {
+			return fmt.Errorf("switch account: %w\nre-run with --force to interrupt a mid-turn (WORKING) chat", err)
+		}
+		return fmt.Errorf("switch account: %w", err)
+	}
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), resp.GetNoticeText())
 	return nil
 }
 

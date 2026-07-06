@@ -183,6 +183,7 @@ func TestSessionToProto(t *testing.T) {
 	prNum := 42
 	prURL := "https://github.com/owner/repo/pull/42"
 	blocked := "CI failed"
+	acct := "a1"
 
 	sess := &models.Session{
 		ID:                "sess-1",
@@ -201,6 +202,7 @@ func TestSessionToProto(t *testing.T) {
 		AutomationEnabled: true,
 		AttemptCount:      3,
 		BlockedReason:     &blocked,
+		AccountID:         &acct,
 		ArchivedAt:        &now,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -240,6 +242,9 @@ func TestSessionToProto(t *testing.T) {
 	if p.AttemptCount != 3 {
 		t.Errorf("AttemptCount = %d, want 3", p.AttemptCount)
 	}
+	if p.AccountId == nil || *p.AccountId != "a1" {
+		t.Errorf("AccountId = %v, want a1", p.AccountId)
+	}
 }
 
 func TestSessionToProto_NilOptionals(t *testing.T) {
@@ -263,6 +268,9 @@ func TestSessionToProto_NilOptionals(t *testing.T) {
 	}
 	if p.ArchivedAt != nil {
 		t.Errorf("ArchivedAt should be nil")
+	}
+	if p.AccountId != nil {
+		t.Errorf("AccountId should be nil")
 	}
 }
 

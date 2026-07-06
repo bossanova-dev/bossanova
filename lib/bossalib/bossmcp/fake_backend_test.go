@@ -59,6 +59,7 @@ type fakeBackend struct {
 	updateAccount        func(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error)
 	removeAccount        func(ctx context.Context, id string) error
 	testAccount          func(ctx context.Context, id string) (*pb.TestAccountResponse, error)
+	switchSessionAccount func(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error)
 	listCheckSnapshots   func(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error)
 	repairDoctor         func(ctx context.Context) (*pb.RepairDoctorResponse, error)
 	listAgents           func(ctx context.Context) ([]*pb.AgentInfo, error)
@@ -383,6 +384,13 @@ func (f *fakeBackend) RemoveAccount(ctx context.Context, id string) error {
 func (f *fakeBackend) TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error) {
 	if f.testAccount != nil {
 		return f.testAccount(ctx, id)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) SwitchSessionAccount(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+	if f.switchSessionAccount != nil {
+		return f.switchSessionAccount(ctx, req)
 	}
 	return nil, errNotImpl
 }

@@ -122,6 +122,94 @@ func (m *mockDuplicateLiveness) IsSessionAlive(_ context.Context, sessionID stri
 	return m.alive[sessionID]
 }
 
+// fakeAccountResolver implements DefaultAccountResolver for the Fix #2
+// default-account policy tests.
+type fakeAccountResolver struct {
+	id  string
+	err error
+}
+
+func (f fakeAccountResolver) DefaultAccountID(_ context.Context, _ string, _ time.Time) (string, error) {
+	return f.id, f.err
+}
+
+// TestCreateSession_BindsDefaultAccount proves a task-created session binds the
+// account the resolver selects, matching the interactive StreamCreateSession
+// path (Fix #2).
+func TestCreateSession_BindsDefaultAccount(t *testing.T) {
+	var capturedParams db.CreateSessionParams
+	store := &mockSessionStore{
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			capturedParams = params
+			return &models.Session{ID: "sess-acct", RepoID: params.RepoID}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1"}, nil
+		},
+	}
+	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
+
+	creator := NewSessionCreatorWithAccountResolver(store, starter, func() string { return "claude" }, nil, nil,
+		fakeAccountResolver{id: "acct-42"}, zerolog.Nop())
+
+	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "t", BaseBranch: "main"}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if capturedParams.AccountID == nil || *capturedParams.AccountID != "acct-42" {
+		t.Errorf("AccountID = %v, want acct-42", capturedParams.AccountID)
+	}
+}
+
+// TestCreateSession_ResolverErrorDoesNotFail proves a default-account resolver
+// error never fails session creation — the session is created unbound.
+func TestCreateSession_ResolverErrorDoesNotFail(t *testing.T) {
+	var capturedParams db.CreateSessionParams
+	store := &mockSessionStore{
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			capturedParams = params
+			return &models.Session{ID: "sess-unbound", RepoID: params.RepoID}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1"}, nil
+		},
+	}
+	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
+
+	creator := NewSessionCreatorWithAccountResolver(store, starter, func() string { return "claude" }, nil, nil,
+		fakeAccountResolver{err: errors.New("registry down")}, zerolog.Nop())
+
+	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "t", BaseBranch: "main"}); err != nil {
+		t.Fatalf("CreateSession must not fail on resolver error: %v", err)
+	}
+	if capturedParams.AccountID != nil {
+		t.Errorf("AccountID = %v, want nil (unbound) on resolver error", capturedParams.AccountID)
+	}
+}
+
+// TestCreateSession_NilResolverLeavesUnbound proves the degrade-safe default: a
+// nil DefaultAccountResolver (e.g. the legacy constructors) leaves AccountID nil.
+func TestCreateSession_NilResolverLeavesUnbound(t *testing.T) {
+	var capturedParams db.CreateSessionParams
+	store := &mockSessionStore{
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			capturedParams = params
+			return &models.Session{ID: "sess-legacy", RepoID: params.RepoID}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1"}, nil
+		},
+	}
+	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
+
+	creator := NewSessionCreator(store, starter, "claude", zerolog.Nop())
+	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "t", BaseBranch: "main"}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if capturedParams.AccountID != nil {
+		t.Errorf("AccountID = %v, want nil with no resolver", capturedParams.AccountID)
+	}
+}
+
 func TestCreateSession_Success(t *testing.T) {
 	var capturedParams db.CreateSessionParams
 	var capturedSessionID, capturedBranch string

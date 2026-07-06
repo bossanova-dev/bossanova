@@ -15,7 +15,7 @@
 // pins that `extractSurvivors` reproduces EVERY survivor present in a captured
 // mutation-suite output (scripts/bs-sweep-mutation-skill.test.mjs).
 //
-// This layers its own token vocabularies on top of scripts/bs-run-sentinel.mjs's
+// This layers its own token vocabularies on top of skills-toolbox/bs-run-sentinel.mjs's
 // generic run-file mechanics (BOS-144 convention: children reuse the mechanics
 // verbatim and add their own token sets). The finalize completion-watch reuses
 // bs-run-sentinel.mjs's REPAIR_RESULTS set directly.

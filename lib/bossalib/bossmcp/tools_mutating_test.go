@@ -64,6 +64,47 @@ func TestMutatingTools(t *testing.T) {
 		},
 		{
 			tool: "create_session",
+			args: map[string]any{"repo_id": "r1", "prompt": "do it", "title": "Do the thing", "account": "a1"},
+			backend: &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error) {
+				// BOS-99 parity: the account arg forwards to CreateSessionRequest.AccountId.
+				if req.GetAccountId() != "a1" {
+					t.Errorf("create_session did not forward account: %q", req.GetAccountId())
+				}
+				return &CreateSessionResult{Session: &pb.Session{Id: "sess-cs-acct"}}, nil
+			}},
+			sentinel: "sess-cs-acct",
+		},
+		{
+			// A present-empty "account" is an explicit account-0 opt-out: it must
+			// forward a present-empty AccountId (skips the default-account policy),
+			// NOT get dropped.
+			tool: "create_session",
+			args: map[string]any{"repo_id": "r1", "prompt": "do it", "title": "T", "account": ""},
+			backend: &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error) {
+				if req.AccountId == nil {
+					t.Error("create_session dropped present-empty account: AccountId nil, want present-empty")
+				} else if *req.AccountId != "" {
+					t.Errorf("create_session present-empty account = %q, want \"\"", *req.AccountId)
+				}
+				return &CreateSessionResult{Session: &pb.Session{Id: "sess-cs-acct0"}}, nil
+			}},
+			sentinel: "sess-cs-acct0",
+		},
+		{
+			// An omitted "account" leaves AccountId unset so the daemon applies its
+			// default-account policy.
+			tool: "create_session",
+			args: map[string]any{"repo_id": "r1", "prompt": "do it", "title": "T"},
+			backend: &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error) {
+				if req.AccountId != nil {
+					t.Errorf("create_session omitted account = %v, want nil (unset)", req.AccountId)
+				}
+				return &CreateSessionResult{Session: &pb.Session{Id: "sess-cs-noacct"}}, nil
+			}},
+			sentinel: "sess-cs-noacct",
+		},
+		{
+			tool: "create_session",
 			args: map[string]any{"repo_id": "r1", "prompt": "Add avatar upload\nto the profile page"},
 			backend: &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error) {
 				// Title omitted -> derived from the first line of the prompt so
@@ -153,6 +194,28 @@ func TestMutatingTools(t *testing.T) {
 				return &pb.ClaudeChat{Id: "chat-rc"}, nil
 			}},
 			sentinel: "chat-rc",
+		},
+		{
+			tool: "switch_account",
+			args: map[string]any{"session_id": "s1", "account_id": "acct-9", "agent_session_id": "a1", "force": true},
+			backend: &fakeBackend{switchSessionAccount: func(_ context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+				if req.GetSessionId() != "s1" || req.GetAccountId() != "acct-9" || req.GetAgentSessionId() != "a1" || !req.GetForce() {
+					t.Errorf("switch_account args not forwarded: %+v", req)
+				}
+				return &pb.SwitchSessionAccountResponse{Resumed: true, TargetLabel: "work", NoticeText: "switched to work — resumed"}, nil
+			}},
+			sentinel: "switched to work",
+		},
+		{
+			tool: "switch_account",
+			args: map[string]any{"session_id": "s2", "account_id": ""},
+			backend: &fakeBackend{switchSessionAccount: func(_ context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+				if req.GetSessionId() != "s2" || req.GetAccountId() != "" || req.AgentSessionId != nil || req.GetForce() {
+					t.Errorf("switch_account default args not forwarded: %+v", req)
+				}
+				return &pb.SwitchSessionAccountResponse{TargetLabel: "system default", NoticeText: "switched to system default — started fresh"}, nil
+			}},
+			sentinel: "started fresh",
 		},
 		{
 			tool: "update_chat_title",

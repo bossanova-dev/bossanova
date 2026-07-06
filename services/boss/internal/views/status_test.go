@@ -95,6 +95,26 @@ func TestRenderDisplayStatus_ReadsCompositeFields(t *testing.T) {
 	}
 }
 
+// TestRenderDisplayStatus_UsageLimitedLabel guards the no-client-change path for
+// BOS-167: the session badge renders the backend-computed usage-limited label
+// (with reset ETA) in the warn style straight from the composite display
+// fields, so surfacing the limited state needed no client logic change.
+func TestRenderDisplayStatus_UsageLimitedLabel(t *testing.T) {
+	sp := newStatusSpinner()
+	const label = "usage-limited (resets ~15:00)"
+	sess := &pb.Session{
+		DisplayLabel:  label,
+		DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+	}
+	got := renderDisplayStatus(sess, sp)
+	if !strings.Contains(got, label) {
+		t.Errorf("renderDisplayStatus missing %q; got %q", label, got)
+	}
+	if want := styleStatusWarning.Render(label); got != want {
+		t.Errorf("usage-limited label not warn-styled: got %q want %q", got, want)
+	}
+}
+
 // TestRenderDisplayStatus_ParityWithStyleForIntent confirms that the rendered
 // output is byte-identical to the legacy path's "styleForIntent(intent).Render(label)"
 // when no spinner is involved. Guards against accidental ANSI drift.
@@ -564,6 +584,147 @@ func TestSelectedSessionWarningBlock_NoHints(t *testing.T) {
 func TestSelectedSessionWarningBlock_NilSession(t *testing.T) {
 	if got := selectedSessionWarningBlock(nil, 80); got != "" {
 		t.Errorf("selectedSessionWarningBlock = %q, want empty for nil session", got)
+	}
+}
+
+func rotationSession(evs ...*pb.RotationEvent) *pb.Session {
+	return &pb.Session{RotationEvents: evs}
+}
+
+// TestRotationExhaustedHint covers the parked-timer badge: an unexpired
+// exhausted episode surfaces a countdown, an expired one clears, and
+// non-exhausted / no-history sessions stay silent. Assertions are on the
+// rendered hint string.
+func TestRotationExhaustedHint(t *testing.T) {
+	now := time.Date(2026, 7, 6, 15, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name         string
+		sess         *pb.Session
+		wantContains string // "" means the hint must be empty
+	}{
+		{
+			name: "exhausted with future reset",
+			sess: rotationSession(&pb.RotationEvent{
+				Outcome: pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED,
+				ResetAt: timestamppb.New(now.Add(30 * time.Minute)),
+			}),
+			wantContains: "all accounts limited, resumes in ~",
+		},
+		{
+			name: "exhausted with expired reset",
+			sess: rotationSession(&pb.RotationEvent{
+				Outcome: pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED,
+				ResetAt: timestamppb.New(now.Add(-1 * time.Minute)),
+			}),
+			wantContains: "",
+		},
+		{
+			name: "exhausted without reset time",
+			sess: rotationSession(&pb.RotationEvent{
+				Outcome: pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED,
+			}),
+			wantContains: "all accounts limited",
+		},
+		{
+			name: "newest is rotated",
+			sess: rotationSession(&pb.RotationEvent{
+				Outcome:     pb.RotationOutcome_ROTATION_OUTCOME_ROTATED,
+				FromAccount: "acct-a",
+				ToAccount:   "acct-b",
+			}),
+			wantContains: "",
+		},
+		{name: "no events", sess: rotationSession(), wantContains: ""},
+		{name: "nil session", sess: nil, wantContains: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rotationExhaustedHint(tc.sess, now)
+			if tc.wantContains == "" {
+				if got != "" {
+					t.Errorf("rotationExhaustedHint = %q, want empty", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.wantContains) {
+				t.Errorf("rotationExhaustedHint = %q, want contains %q", got, tc.wantContains)
+			}
+		})
+	}
+}
+
+// TestRotationExhaustedHint_WiredIntoWarnings verifies the exhausted badge
+// flows through the rendered warning block operators actually see.
+func TestRotationExhaustedHint_WiredIntoWarnings(t *testing.T) {
+	sess := rotationSession(&pb.RotationEvent{
+		Outcome: pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED,
+		ResetAt: timestamppb.New(time.Now().Add(45 * time.Minute)),
+	})
+	got := selectedSessionWarningBlock(sess, 80)
+	if !strings.Contains(got, "all accounts limited, resumes in ~") {
+		t.Errorf("warning block missing exhausted hint: %q", got)
+	}
+}
+
+// TestRotationHistoryBlock covers the rendered rotation-history block: a
+// rotated event shows the account transition, and a session with no history
+// renders nothing.
+func TestRotationHistoryBlock(t *testing.T) {
+	cases := []struct {
+		name         string
+		sess         *pb.Session
+		wantContains string
+	}{
+		{
+			name: "rotated latest",
+			sess: rotationSession(&pb.RotationEvent{
+				Outcome:     pb.RotationOutcome_ROTATION_OUTCOME_ROTATED,
+				FromAccount: "acct-a",
+				ToAccount:   "acct-b",
+				CreatedAt:   timestamppb.New(time.Now()),
+			}),
+			wantContains: "acct-a → acct-b rotated",
+		},
+		{name: "no events", sess: rotationSession(), wantContains: ""},
+		{name: "nil session", sess: nil, wantContains: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rotationHistoryBlock(tc.sess, 80)
+			if tc.wantContains == "" {
+				if got != "" {
+					t.Errorf("rotationHistoryBlock = %q, want empty", got)
+				}
+				return
+			}
+			if !strings.Contains(got, "Rotation history") {
+				t.Errorf("rotationHistoryBlock missing header: %q", got)
+			}
+			if !strings.Contains(got, tc.wantContains) {
+				t.Errorf("rotationHistoryBlock = %q, want contains %q", got, tc.wantContains)
+			}
+		})
+	}
+}
+
+// TestRotationEventLabel pins the per-outcome phrasing.
+func TestRotationEventLabel(t *testing.T) {
+	cases := []struct {
+		outcome pb.RotationOutcome
+		want    string
+	}{
+		{pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, "acct-a → acct-b rotated"},
+		{pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_DISABLED, "rotation disabled — status only"},
+		{pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY, "agent cannot rotate — status only"},
+		{pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED, "all accounts limited"},
+		{pb.RotationOutcome_ROTATION_OUTCOME_FAILED, "switch to acct-b failed"},
+		{pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED, "rotation event"},
+	}
+	for _, tc := range cases {
+		ev := &pb.RotationEvent{Outcome: tc.outcome, FromAccount: "acct-a", ToAccount: "acct-b"}
+		if got := rotationEventLabel(ev); got != tc.want {
+			t.Errorf("rotationEventLabel(%v) = %q, want %q", tc.outcome, got, tc.want)
+		}
 	}
 }
 

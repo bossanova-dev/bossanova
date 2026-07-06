@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { introCardCommand } from './proof-lib.mjs'
+import { surfaceRenderServiceDir } from './proof-surfaces.mjs'
 import { buildPosterArgs } from './proof-poster.mjs'
 import { evenCropHeight, postprocessProofVideo, probeDimensions } from './proof-video.mjs'
 
@@ -58,7 +59,7 @@ export function finishVideo({
     try {
       runCommand(
         introCardCommand({
-          surface,
+          serviceDir: surfaceRenderServiceDir(surface),
           out: path.relative(repoRoot, introPngPath),
           width: dims.width,
           height: introHeight,

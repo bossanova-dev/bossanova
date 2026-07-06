@@ -30,6 +30,7 @@ import (
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/trackerprompt"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
@@ -37,6 +38,7 @@ import (
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/mergepolicy"
 	"github.com/recurser/bossd/internal/plugin"
+	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/tmux"
@@ -86,9 +88,12 @@ type Server struct {
 	taskMappings       db.TaskMappingStore
 	cronJobs           db.CronJobStore
 	accounts           db.AccountStore
+	rotationEngine     *rotation.Engine
+	resolver           *account.Resolver
 	accountCreds       AccountCredentialStore
 	accountSmoke       AccountSmokeRunner
 	checkSnapshots     db.CheckSnapshotStore
+	rotationEvents     db.RotationEventStore
 	cronScheduler      *cron.Scheduler
 	chatStatus         *status.Tracker
 	displayTracker     *status.DisplayTracker
@@ -143,16 +148,26 @@ type Config struct {
 	TaskMappings db.TaskMappingStore
 	CronJobs     db.CronJobStore
 	Accounts     db.AccountStore
+	// RotationEngine is the account-rotation policy engine, held on the daemon
+	// for future auto-rotate consumers (BOS-174/175). Optional, may be nil.
+	RotationEngine *rotation.Engine
+	// Resolver applies the creation-time default-account policy (which registry
+	// account a new session binds to when the client omits account_id).
+	// Optional, may be nil (older/test wiring then leaves sessions on account 0).
+	Resolver *account.Resolver
 	// AccountCredentials is the keyring-backed credential-blob plane for
 	// accounts (satisfied by accountcred.Store on the daemon). Metadata lives
 	// in Accounts; secrets never touch SQLite. Optional, may be nil (account
 	// RPCs then fail closed with a clear error).
 	AccountCredentials AccountCredentialStore
-	// AccountSmokeRunner runs the live TestAccount smoke. Optional, may be nil
-	// until credential materialization (1.5) wires a real runner; when nil,
-	// TestAccount validates the credential and reports live_smoke_ran=false.
+	// AccountSmokeRunner runs the live TestAccount smoke. Optional, may be nil;
+	// when nil, TestAccount records live_smoke_ran=false with an unavailable
+	// detail.
 	AccountSmokeRunner AccountSmokeRunner
 	CheckSnapshots     db.CheckSnapshotStore
+	// RotationEvents is the rotation audit store hydrated onto
+	// Session.rotation_events for TUI/web history (BOS-176). Nil-safe.
+	RotationEvents     db.RotationEventStore
 	CronScheduler      *cron.Scheduler
 	ChatStatus         *status.Tracker
 	DisplayTracker     *status.DisplayTracker
@@ -214,11 +229,9 @@ type AccountCredentialStore interface {
 
 // AccountSmokeRunner runs a trivial live provider invocation to prove a
 // credential works (claude -p "ok" / codex equivalent). It is injected and
-// nil-safe: until credential materialization (1.5) wires a real runner,
-// TestAccount degrades to credential-plane validation only. Guarded exactly
-// like PRAssociationResolver.
+// nil-safe: when absent, TestAccount records an unavailable smoke result.
 type AccountSmokeRunner interface {
-	Smoke(ctx context.Context, provider string, blob []byte) error
+	Smoke(ctx context.Context, accountID, provider string, blob []byte) error
 }
 
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
@@ -232,9 +245,12 @@ func New(cfg Config) *Server {
 		taskMappings:   cfg.TaskMappings,
 		cronJobs:       cfg.CronJobs,
 		accounts:       cfg.Accounts,
+		rotationEngine: cfg.RotationEngine,
+		resolver:       cfg.Resolver,
 		accountCreds:   cfg.AccountCredentials,
 		accountSmoke:   cfg.AccountSmokeRunner,
 		checkSnapshots: cfg.CheckSnapshots,
+		rotationEvents: cfg.RotationEvents,
 		cronScheduler:  cfg.CronScheduler,
 		chatStatus:     cfg.ChatStatus,
 		displayTracker: cfg.DisplayTracker,
@@ -257,6 +273,11 @@ func New(cfg Config) *Server {
 		logger:             cfg.Logger,
 	}
 }
+
+// RotationEngine returns the account-rotation policy engine held on the
+// daemon. It is wired but not yet invoked on any cap signal (BOS-174/175
+// own the live rotation flow). May be nil if no account store was configured.
+func (s *Server) RotationEngine() *rotation.Engine { return s.rotationEngine }
 
 // Listen binds a Unix socket and initializes the underlying http.Server
 // synchronously. After Listen returns the server is fully configured and
@@ -1074,6 +1095,21 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		createParams.PRURL = prURL
 	}
 
+	// Account binding: honor an explicit account_id (validated against the
+	// registry and the resolved agent's provider), an explicit empty account_id
+	// (account 0, opting out of the policy), or — when the field is absent — apply
+	// the default-account policy. Pass the raw optional pointer so presence is
+	// preserved: msg.GetAccountId() would collapse absent and explicit-empty. An
+	// empty result leaves AccountID nil (account 0). A resolver error never fails
+	// creation — only an invalid explicit account_id does.
+	accountID, err := s.resolveSessionAccount(ctx, msg.AccountId, agentName)
+	if err != nil {
+		return err
+	}
+	if accountID != "" {
+		createParams.AccountID = &accountID
+	}
+
 	sess, err := s.sessions.Create(ctx, createParams)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
@@ -1091,7 +1127,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		pr, pw := io.Pipe()
 		defer pr.Close() //nolint:errcheck // best-effort cleanup
 
-		// Build the start options. A tmux_unattended session (e.g. /bs-epic) runs
+		// Build the start options. A tmux_unattended session (e.g. /boss-epic) runs
 		// through the durable tmux-hosted path and carries a freshly-minted
 		// HookToken so its finalize Stop hook installs (and re-arms across a
 		// daemon restart). Mint it up front so a crypto/rand failure surfaces as a
@@ -1256,9 +1292,14 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 	// has no access to).
 	if s.agentChats != nil {
 		if chats, err := s.agentChats.ListBySession(ctx, session.ID); err == nil {
-			s.hydrateAgentObservability(p, chats)
+			HydrateAgentObservability(s.chatStatus, p, chats)
 		}
 	}
+
+	// Resolve the non-secret account label for display (best-effort).
+	s.withAccountLabel(ctx, p, session)
+	// Hydrate the recent rotation audit events for the history block (best-effort).
+	s.withRotationEvents(ctx, p, session)
 
 	return connect.NewResponse(&pb.GetSessionResponse{Session: p}), nil
 }
@@ -1315,6 +1356,10 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 			p.RepoDisplayName = row.RepoDisplayName
 			p.RepoOriginUrl = CanonicalRepoOriginURL(row.RepoOriginURL)
 		}
+		// Resolve the non-secret account label for display (best-effort).
+		s.withAccountLabel(ctx, p, sess)
+		// Hydrate recent rotation audit events for the history block (best-effort).
+		s.withRotationEvents(ctx, p, sess)
 		pbSessions = append(pbSessions, p)
 	}
 
@@ -1362,7 +1407,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	// Runs after suppressStaleConflictAttention so the auth overlay sees the
 	// final attention state (and only fills in where none exists).
 	for _, p := range pbSessions {
-		s.hydrateAgentObservability(p, chatsBySession[p.Id])
+		HydrateAgentObservability(s.chatStatus, p, chatsBySession[p.Id])
 	}
 
 	for _, p := range pbSessions {
@@ -1466,7 +1511,14 @@ func shouldKeepCheckingCompositeOverReview(sess *pb.Session, chatStatus pb.ChatS
 	if sess == nil {
 		return false
 	}
-	if chatStatus == pb.ChatStatus_CHAT_STATUS_QUESTION || chatStatus == pb.ChatStatus_CHAT_STATUS_WORKING {
+	if chatStatus == pb.ChatStatus_CHAT_STATUS_QUESTION ||
+		chatStatus == pb.ChatStatus_CHAT_STATUS_WORKING ||
+		chatStatus == pb.ChatStatus_CHAT_STATUS_LIMITED {
+		// LIMITED ranks above the PR-derived "checking"/review labels in
+		// displaystatus.Compute (branch 1b), so it must be allowed to win here
+		// just like QUESTION/WORKING — otherwise ListSessions would keep
+		// rendering "checking" while the Recompute path (no keep-checking guard)
+		// renders "limited", making the two display paths disagree.
 		return false
 	}
 	// Keep the visible list/status-view label consistent when a review-required
@@ -1891,7 +1943,7 @@ func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.Upda
 		}
 		params.Title = &title
 	}
-	// tracker_url/tracker_id let a running session (e.g. a cron bs-implement run)
+	// tracker_url/tracker_id let a running session (e.g. a cron boss-implement run)
 	// link itself to the Linear ticket it selected after creation, so the TUI
 	// [l]inear shortcut — gated on a non-empty tracker URL — becomes available.
 	// UpdateSessionParams uses **string so nil means "leave unchanged"; take the
@@ -2080,6 +2132,142 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 	return connect.NewResponse(&pb.EmptyTrashResponse{DeletedCount: deleted}), nil
 }
 
+// SwitchSessionAccount stops the session's live chat, rebinds the session to the
+// chosen rotation account, and brings the chat back up under it (session core
+// owns the stop/rebind/resume-or-fresh orchestration). When agent_session_id is
+// omitted the handler resolves the session's primary live chat — the most
+// recently created chat that still has a tmux session. A mid-turn chat is
+// refused unless force is set, so callers surface a confirmation first.
+func (s *Server) SwitchSessionAccount(ctx context.Context, req *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error) {
+	msg := req.Msg
+	if strings.TrimSpace(msg.SessionId) == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
+	}
+
+	agentSessionID := strings.TrimSpace(msg.GetAgentSessionId())
+	if agentSessionID == "" {
+		resolved, err := s.resolvePrimaryLiveChat(ctx, msg.SessionId)
+		if err != nil {
+			return nil, err
+		}
+		agentSessionID = resolved
+	}
+
+	// Resolve the switch target through the same id/label + eligibility validation
+	// as session creation. account_id is advertised as an account id OR a
+	// provider-scoped label ("id or label"), and an explicitly-targeted account
+	// must match the chat's provider and be eligible (active, healthy, not
+	// cooling). An empty target is the explicit "system default (account 0)"
+	// choice and skips validation. Scope to the CHAT's agent (the account picker
+	// is scoped to the chat's provider), falling back to the session's agent for a
+	// legacy chat with no AgentName.
+	agentName, err := s.switchTargetAgentName(ctx, msg.SessionId, agentSessionID)
+	if err != nil {
+		return nil, err
+	}
+	requested := msg.AccountId
+	targetAccountID, err := s.resolveSessionAccount(ctx, &requested, agentName)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := s.lifecycle.SwitchAccount(ctx, session.SwitchAccountParams{
+		SessionID:       msg.SessionId,
+		AgentSessionID:  agentSessionID,
+		TargetAccountID: targetAccountID,
+		Force:           msg.Force,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrChatMidTurn):
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("chat is mid-turn; confirm the switch (force) to interrupt it: %w", err))
+		case errors.Is(err, session.ErrCrossAgentSwitchUnsupported):
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		case errors.Is(err, session.ErrAccountCooling), errors.Is(err, session.ErrAccountDisabled):
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, connect.NewError(connect.CodeNotFound, err)
+		default:
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("switch session account: %w", err))
+		}
+	}
+
+	// Publish the rebound session so the cloud/web read model reflects the new
+	// account immediately, mirroring update/archive/resurrect. The switch changed
+	// the durable sessions.account_id; without this delta ProxyGetSession and the
+	// stream-driven read model keep showing the old account badge until the next
+	// daemon snapshot. Best-effort: the switch already succeeded, so a load/publish
+	// failure must not fail the RPC.
+	if s.onSessionUpdated != nil {
+		if sess, gerr := s.sessions.Get(ctx, msg.SessionId); gerr == nil {
+			p := s.sessionProtoWithRepo(ctx, sess)
+			// Hydrate the non-secret account label so the streamed delta matches
+			// the Get/List read paths; otherwise the web AccountBadge shows the
+			// raw account id until the next full snapshot.
+			s.withAccountLabel(ctx, p, sess)
+			s.withRotationEvents(ctx, p, sess)
+			s.onSessionUpdated(ctx, p)
+		} else {
+			s.logger.Warn().Err(gerr).Str("session", msg.SessionId).
+				Msg("switch account: failed to load session for stream update")
+		}
+	}
+
+	return connect.NewResponse(&pb.SwitchSessionAccountResponse{
+		Resumed:     res.Resumed,
+		TargetLabel: res.TargetLabel,
+		NoticeText:  res.NoticeText,
+	}), nil
+}
+
+// resolvePrimaryLiveChat returns the agent_session_id of the session's primary
+// live chat — the most recently created chat that still hosts a tmux session —
+// when the caller did not name a specific chat. It returns CodeFailedPrecondition
+// when the session has no live chat to switch.
+func (s *Server) resolvePrimaryLiveChat(ctx context.Context, sessionID string) (string, error) {
+	chats, err := s.agentChats.ListBySession(ctx, sessionID)
+	if err != nil {
+		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("list chats for session %s: %w", sessionID, err))
+	}
+	var primary *models.AgentChat
+	for _, c := range chats {
+		if c == nil || c.TmuxSessionName == nil || *c.TmuxSessionName == "" {
+			continue
+		}
+		if primary == nil || c.CreatedAt.After(primary.CreatedAt) {
+			primary = c
+		}
+	}
+	if primary == nil {
+		return "", connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no live chat to switch for session %s", sessionID))
+	}
+	return primary.AgentSessionID, nil
+}
+
+// switchTargetAgentName returns the agent (provider) the switch target should be
+// validated against: the selected chat's own AgentName, falling back to the
+// session's AgentName for a legacy chat with none. The switch's account picker is
+// scoped to the chat's provider, so account id/label resolution and eligibility
+// must be scoped the same way (a claude account must not bind a codex chat).
+func (s *Server) switchTargetAgentName(ctx context.Context, sessionID, agentSessionID string) (string, error) {
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("get chat %s: %w", agentSessionID, err))
+	}
+	if chat == nil {
+		return "", connect.NewError(connect.CodeNotFound, fmt.Errorf("chat not found for agent_session_id %q", agentSessionID))
+	}
+	if chat.AgentName != "" {
+		return chat.AgentName, nil
+	}
+	sess, err := s.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return "", connect.NewError(connect.CodeNotFound, fmt.Errorf("get session %s: %w", sessionID, err))
+	}
+	return sess.AgentName, nil
+}
+
 // --- Claude Chat Tracking ---
 
 func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
@@ -2178,14 +2366,26 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		}
 	}
 	mcpConfigPath := session.SessionMcpConfigPath(sess, chat.AgentSessionID, chat.AgentName)
+	// Merge the bound account's spawn env UNDER the managed session env so a
+	// persisted account_id gets its credentials materialized on the attach path,
+	// mirroring the lifecycle/host spawn paths. Managed BOSS_* keys always win on
+	// conflict; a nil resolver or account 0 leaves SessionEnv byte-identical to
+	// the ambient-login behavior. Values are never logged. The account is
+	// resolved for the CHAT's agent (spawnChatTmux launches chat.AgentName), not
+	// the parent session's, so a cross-agent chat never receives another
+	// provider's account env.
+	sessionEnv := mergeManagedOverAccount(
+		session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
+		s.resolveChatAccountEnv(ctx, sess, chat),
+	)
 	result, err := spawnChatTmux(ctx, deps, spawnInput{
 		Chat:               chat,
 		WorktreePath:       sess.WorktreePath,
 		TmuxName:           tmuxName,
 		ForceFresh:         !resume,
 		AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath),
-		SessionEnv:         dotenv.Overlay(session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName), sess.WorktreePath),
-		Model:              sess.Model,
+		SessionEnv:         dotenv.Overlay(sessionEnv, sess.WorktreePath),
+		Model:              modelForChatAgent(sess, chat.AgentName),
 		McpConfigPath:      mcpConfigPath,
 	})
 	if err != nil {
@@ -2384,12 +2584,21 @@ func (s *Server) DeleteChat(ctx context.Context, req *connect.Request[pb.DeleteC
 	}
 	s.killChatTmuxSession(ctx, chat)
 
+	// Clear cached status while the chat row is still present. The status
+	// tracker's auth-change hook resolves agent_session_id -> session through the
+	// chat store; doing this after deletion would prevent a reverse-stream clear
+	// delta for a prior AGENT_AUTH_FAILED overlay.
+	if s.chatStatus != nil && chat != nil {
+		s.chatStatus.Remove(req.Msg.AgentSessionId)
+	}
+
 	if err := s.agentChats.DeleteByAgentSessionID(ctx, req.Msg.AgentSessionId); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete chat: %w", err))
 	}
 
-	// Also clean up any cached status for this chat.
-	if s.chatStatus != nil {
+	// Also clean up any cached status for idempotent deletes where the chat row
+	// was already gone before this request.
+	if s.chatStatus != nil && chat == nil {
 		s.chatStatus.Remove(req.Msg.AgentSessionId)
 	}
 
@@ -2564,14 +2773,22 @@ func (s *Server) chatStatusFromSessionChats(ctx context.Context, chats []*models
 	}
 	entries := s.chatStatus.GetBatch(agentSessionIDs)
 
-	// Compute best status: question > working > idle > stopped.
+	// Compute best status: question > limited > working > idle > stopped.
+	// LIMITED ranks just below QUESTION, matching displaystatus.Compute and the
+	// DisplayStatusComputer aggregation so the session list and chat picker agree.
 	best := pb.ChatStatus_CHAT_STATUS_STOPPED
 	for _, e := range entries {
 		if e.Status == pb.ChatStatus_CHAT_STATUS_QUESTION {
 			best = pb.ChatStatus_CHAT_STATUS_QUESTION
 			break
 		}
-		if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING && best != pb.ChatStatus_CHAT_STATUS_QUESTION {
+		// QUESTION short-circuits above, so best is never QUESTION here; LIMITED
+		// beats WORKING/IDLE/STOPPED.
+		if e.Status == pb.ChatStatus_CHAT_STATUS_LIMITED {
+			best = pb.ChatStatus_CHAT_STATUS_LIMITED
+		}
+		if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING &&
+			best != pb.ChatStatus_CHAT_STATUS_LIMITED {
 			best = pb.ChatStatus_CHAT_STATUS_WORKING
 		}
 		if e.Status == pb.ChatStatus_CHAT_STATUS_IDLE && best == pb.ChatStatus_CHAT_STATUS_STOPPED {
@@ -2612,17 +2829,17 @@ const agentAuthFailedSummary = "agent not logged in — run /login to re-authent
 // Caveat: LastOutputAt reflects any pane-content change, which includes a
 // submit=false composer prefill (typed/pasted input the agent has not yet
 // consumed), not only agent-produced output. The primary recovery consumer
-// (bs-epic) only ever submits (never prefills the chats it monitors), so this
+// (boss-epic) only ever submits (never prefills the chats it monitors), so this
 // does not affect its stale-vs-live signal. Excluding composer-only edits needs
 // composer-region-aware diffing in the shared status poller (which also feeds
 // get_chat_statuses) and is tracked as a follow-up, not scoped to BOS-242.
-func (s *Server) latestAgentActivity(chats []*models.AgentChat) (time.Time, bool) {
-	if s.chatStatus == nil {
+func latestAgentActivity(tracker *status.Tracker, chats []*models.AgentChat) (time.Time, bool) {
+	if tracker == nil {
 		return time.Time{}, false
 	}
 	var latest time.Time
 	for _, chat := range chats {
-		e := s.chatStatus.Get(chat.AgentSessionID)
+		e := tracker.Get(chat.AgentSessionID)
 		if e == nil {
 			continue
 		}
@@ -2647,22 +2864,69 @@ func (s *Server) latestAgentActivity(chats []*models.AgentChat) (time.Time, bool
 
 // sessionAuthFailed reports whether any of the session's chats currently shows
 // the login-required terminal shape (a fresh auth-failed marker in the tracker).
-func (s *Server) sessionAuthFailed(chats []*models.AgentChat) bool {
-	if s.chatStatus == nil {
+func sessionAuthFailed(tracker *status.Tracker, chats []*models.AgentChat) bool {
+	if tracker == nil {
 		return false
 	}
 	for _, chat := range chats {
-		if s.chatStatus.AuthFailed(chat.AgentSessionID) {
+		if tracker.AuthFailed(chat.AgentSessionID) {
 			return true
 		}
 	}
 	return false
 }
 
-// hydrateAgentObservability sets the liveness heartbeat (last_agent_activity_at)
+// HydrateBaseAttention populates attention_status from the session's VCS state
+// for the blocked/orphaned reasons that would otherwise be clobbered by the
+// AGENT_AUTH_FAILED overlay on the reverse stream.
+//
+// The reverse-stream projection (cmd/main.go) builds its Session protos straight
+// from SessionToProto, which carries the persisted blocked_reason but never
+// attention_status. HydrateAgentObservability only overlays AGENT_AUTH_FAILED
+// when attention_status is nil, so without applying the base attention first a
+// blocked/orphaned session that ALSO has an auth-failed chat would have its real
+// blocked_reason overwritten by the low-priority auth overlay — and bosso's
+// full-replacement read model would lose the actionable failure reason. Call
+// this before HydrateAgentObservability on every reverse-stream session. repo
+// may be nil (no-op); best-effort enrichment, never a hard dependency.
+//
+// Scope is deliberately limited to Blocked/Orphaned. ComputeAttentionStatus also
+// emits ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE for a FixingChecks session
+// in a CanAutoRepair=false repo, but that reason is only correct while the
+// display tracker still reads DISPLAY_STATUS_CONFLICT: the local ListSessions
+// path clears it via suppressStaleConflictAttention once the tracker moves out
+// of conflict. Reverse-stream protos carry no hydrated display status to run
+// that suppression against, so emitting the conflict reason here would resurrect
+// a stale conflict attention AND (being non-nil) block the auth overlay. Merge
+// conflicts already reach the read model through the display-status path, so
+// they need no base-attention hydration here.
+func HydrateBaseAttention(p *pb.Session, session *models.Session, repo *models.Repo) {
+	if p == nil || session == nil || repo == nil {
+		return
+	}
+	switch session.State {
+	case machine.Blocked, machine.Orphaned:
+		p.AttentionStatus = attentionStatusToProto(vcs.ComputeAttentionStatus(session, repo))
+	default:
+		// All other states (including FixingChecks) carry no base attention on the
+		// reverse stream; see the doc comment above for why merge-conflict attention
+		// is deliberately excluded.
+	}
+}
+
+// HydrateAgentObservability sets the liveness heartbeat (last_agent_activity_at)
 // from real agent output and, when the agent pane shows the login-required shape
 // AND the session has no other attention reason, overlays the AGENT_AUTH_FAILED
 // attention reason plus a stable blocked_reason.
+//
+// It is a standalone (tracker-parameterized) function, not a Server method, so
+// BOTH the local GetSession/ListSessions RPC read paths AND the reverse-stream
+// snapshot/delta projection (wired in cmd/main.go) produce identical
+// observability fields. The cloud/web read model is fed ONLY by the reverse
+// stream, so without applying this there it never sees last_agent_activity_at or
+// AGENT_AUTH_FAILED. Because bosso applies session deltas as full replacements,
+// every reverse-stream session UPDATED delta must carry this overlay too, or an
+// unrelated recompute would clobber a live AGENT_AUTH_FAILED back off.
 //
 // Priority: auth is the LOWEST-priority reason — it is overlaid only where
 // ComputeAttentionStatus returned no attention. A session already Blocked or
@@ -2671,17 +2935,17 @@ func (s *Server) sessionAuthFailed(chats []*models.AgentChat) bool {
 // previously no attention, so neutralizing it for older clients restores the
 // prior "just went quiet" behavior. Fails toward NOT flagging: no marker → no
 // change.
-func (s *Server) hydrateAgentObservability(p *pb.Session, chats []*models.AgentChat) {
+func HydrateAgentObservability(tracker *status.Tracker, p *pb.Session, chats []*models.AgentChat) {
 	if p == nil || len(chats) == 0 {
 		return
 	}
-	if latest, ok := s.latestAgentActivity(chats); ok {
+	if latest, ok := latestAgentActivity(tracker, chats); ok {
 		p.LastAgentActivityAt = timestamppb.New(latest)
 	}
 	if p.GetAttentionStatus() != nil {
 		return // keep an existing, unrelated attention reason
 	}
-	if !s.sessionAuthFailed(chats) {
+	if !sessionAuthFailed(tracker, chats) {
 		return
 	}
 	br := agentAuthFailedBlockedReason

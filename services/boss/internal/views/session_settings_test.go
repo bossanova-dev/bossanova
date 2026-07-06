@@ -494,3 +494,7 @@ func TestSessionSettingsView(t *testing.T) {
 		}
 	})
 }
+
+func (s *stubSessionSettingsClient) SwitchSessionAccount(context.Context, *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+	panic("unused")
+}

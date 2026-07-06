@@ -19,7 +19,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DISPATCH_FAILURE } from './bs-run-sentinel.mjs'
+import { DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 import { parseDetectorFindings, candidateKey } from './bs-sweep-debt-survey.mjs'
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')

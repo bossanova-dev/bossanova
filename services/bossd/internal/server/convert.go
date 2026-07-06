@@ -130,6 +130,9 @@ func SessionToProto(s *models.Session) *pb.Session {
 	if s.BlockedReason != nil {
 		p.BlockedReason = protoStringPtr(s.BlockedReason)
 	}
+	if s.AccountID != nil {
+		p.AccountId = protoStringPtr(s.AccountID)
+	}
 	if s.ArchivedAt != nil {
 		p.ArchivedAt = timestamppb.New(*s.ArchivedAt)
 	}

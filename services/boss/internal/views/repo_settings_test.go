@@ -693,3 +693,7 @@ func (s *stubRepoClient) ListAgents(context.Context) ([]client.AgentInfo, error)
 func (s *stubRepoClient) ListPlugins(context.Context) ([]*pb.InstalledPlugin, error) {
 	return nil, nil
 }
+
+func (s *stubRepoClient) SwitchSessionAccount(context.Context, *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+	panic("unused")
+}

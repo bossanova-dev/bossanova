@@ -40,6 +40,19 @@ export function normalizeChangedFiles(files) {
 }
 
 /**
+ * Generic pure prefix-match: true when ANY changed file (after
+ * normalizeChangedFiles) starts with ANY of `prefixes`. Surface-agnostic — the
+ * concrete prefix lists live in proof-surfaces.mjs (BOS-201).
+ * @param {string[]|null|undefined} changedFiles
+ * @param {readonly string[]} prefixes
+ * @returns {boolean}
+ */
+export function matchesAnyPrefix(changedFiles, prefixes) {
+  const normalized = normalizeChangedFiles(changedFiles ?? [])
+  return normalized.some((file) => prefixes.some((prefix) => file.startsWith(prefix)))
+}
+
+/**
  * Normalizes a recipe so browser (web/marketing/docs) surfaces prefer video.
  * - TUI is agent-only (no TUI recipes in the catalog); any stray surface:'tui'
  *   recipe passes through unchanged — browser-style video normalization never
@@ -54,11 +67,17 @@ export function normalizeChangedFiles(files) {
  *   steps: goto the route, settle, then scroll the whole page (so the full page
  *   is always captured). The poster .png the video branch emits is the "both" still.
  * Pure and idempotent.
+ *
+ * The agent-surface test is injected (BOS-201): callers pass
+ * `isAgentSurface` from proof-surfaces.mjs so this engine never hardcodes a
+ * surface name. The default predicate `(s) => s === 'tui'` keeps behavior
+ * byte-identical for any caller that omits it.
  * @param {object} recipe
+ * @param {{ isAgentSurface?: (surface: string) => boolean }} [opts]
  * @returns {object}
  */
-export function normalizeRecipe(recipe) {
-  if (!recipe || recipe.surface === 'tui') {
+export function normalizeRecipe(recipe, { isAgentSurface = (s) => s === 'tui' } = {}) {
+  if (!recipe || isAgentSurface(recipe.surface)) {
     return recipe
   }
   const optedOutStill = recipe.capture === 'still' || recipe.capture === 'image'
@@ -81,74 +100,9 @@ export function normalizeRecipe(recipe) {
   return normalized
 }
 
-/**
- * Path prefixes that identify a TUI (boss) change. BOS-115 makes the TUI proof
- * surface agent-only and catalog-independent: surface detection keys off these
- * prefixes rather than the (now-removed) TUI recipe pathRules. Kept as a single
- * exported source of truth so the classifier and its test cannot drift.
- * @type {readonly string[]}
- */
-export const TUI_SURFACE_PREFIXES = [
-  'services/boss/internal/views/',
-  'services/boss/internal/tuitest/',
-  'services/boss/internal/tuidriver/',
-  'services/boss/internal/fixtures/',
-  'services/boss/internal/client/',
-  'services/boss/cmd/',
-  'proto/',
-]
-
-/**
- * Pure path classifier: true when ANY changed file lives under a TUI prefix.
- * Independent of the recipe catalog, so a boss-only diff routes to the agentic
- * TUI proof path even though the catalog no longer holds any TUI recipes.
- *
- * Note: a mixed diff that touches BOTH a TUI prefix and a web/marketing/docs
- * surface classifies as TUI (any-match wins). This differs from the old
- * recipe-surface rule (which only inferred TUI when every matched recipe was
- * TUI); it is intentional — a PR that changes a TUI view should prove that view
- * via the agent rather than fall through to the web/recipe path.
- * @param {string[]|null|undefined} changedFiles
- * @returns {boolean}
- */
-export function classifyTuiSurface(changedFiles) {
-  const normalized = normalizeChangedFiles(changedFiles ?? [])
-  return normalized.some((file) => TUI_SURFACE_PREFIXES.some((prefix) => file.startsWith(prefix)))
-}
-
-/**
- * Path prefixes that hold the Vite web app's user-visible surface — the pages,
- * components, and assets the proof agent can actually drive in the running app.
- * Deliberately excludes `services/web/tests/` (the agent + specs themselves) and
- * everything under `scripts/`, the Go services, docs, and proto: a change there
- * has no surface to demonstrate. Single exported source of truth so the
- * classifier and its test cannot drift. Mirrors TUI_SURFACE_PREFIXES.
- * @type {readonly string[]}
- */
-export const WEB_UI_SURFACE_PREFIXES = [
-  'services/web/src/',
-  'services/web/index.html',
-  'services/web/public/',
-]
-
-/**
- * Pure path pre-gate: true when ANY changed file lives under a web UI surface
- * prefix. Used to skip the (expensive, ~12-minute) web agent run entirely for a
- * change with no demonstrable web surface (e.g. a scripts-only or backend-only
- * PR), so it posts an honest "no UI surface" note instead of running the agent,
- * having it decline, and posting useless filler. Biased slightly broad: a
- * non-visual change under `services/web/src/` still passes the gate and lets the
- * agent decide (and honestly defer), which is cheaper than a wrongful skip that
- * hides a real change.
- * @param {string[]|null|undefined} changedFiles
- * @returns {boolean}
- */
-export function webUiSurfacePresent(changedFiles) {
-  const normalized = normalizeChangedFiles(changedFiles ?? [])
-  return normalized.some((file) =>
-    WEB_UI_SURFACE_PREFIXES.some((prefix) => file.startsWith(prefix)),
-  )
-}
+// The TUI/web surface path-prefix maps and their classifiers (classifyTuiSurface,
+// webUiSurfacePresent, classifySurfaces) now live in scripts/proof-surfaces.mjs
+// (BOS-201); the generic prefix matcher they build on is matchesAnyPrefix above.
 
 // Default TOTAL wall-clock budget shared across ALL agent surfaces in one proof
 // run (BOS-139 / epic D5). A NEW orchestrator concept — distinct from
@@ -156,81 +110,51 @@ export function webUiSurfacePresent(changedFiles) {
 // abort). Overridable per run via BOSS_PROOF_TOTAL_BUDGET_MS.
 export const DEFAULT_TOTAL_PROOF_BUDGET_MS = 15 * 60 * 1000
 
-// Per-surface wall-clock defaults + viability floors. defaultMs mirrors the
-// runner defaults (TUI_BUDGETS 4min / DEFAULT_BUDGETS 12min); floorMs is the
-// minimum in which a run is worth starting (below it → budget-exceeded). Note
-// 4 + 12 = 16min > the 15min shared total, so clamping is mandatory.
-export const SURFACE_BUDGET_SPEC = {
-  tui: { defaultMs: 4 * 60 * 1000, floorMs: 2 * 60 * 1000 },
-  web: { defaultMs: 12 * 60 * 1000, floorMs: 6 * 60 * 1000 },
-}
+// The per-surface wall-clock defaults + viability floors (the old
+// SURFACE_BUDGET_SPEC) now live in scripts/proof-surfaces.mjs as descriptor
+// `budget` values; planSurfaceBudget takes the resolved `budget` as a parameter
+// (BOS-201). The ladder logic + DEFAULT_TOTAL_PROOF_BUDGET_MS stay here.
 
-// Extra wall-clock granted to a WEB surface run that drives a genuine
-// live-agent scene (BOS-142: unstubbed live-agent scenes drive a real Claude
-// session over tmux, which is materially slower than the stub's synchronous
-// finish). Web-only: TUI live scenes are out of scope for this ticket. This
-// extends the per-surface default (see `planSurfaceBudget`); extending the
-// shared TOTAL pool for the whole run is the caller's job (scripts/proof.mjs)
-// since only the caller knows whether `totalBudgetMs` is the default or an
-// operator-supplied `BOSS_PROOF_TOTAL_BUDGET_MS` override that must remain a
-// hard ceiling.
+// Extra wall-clock granted to a run that drives a genuine live-agent scene
+// (BOS-142: unstubbed live-agent scenes drive a real Claude session over tmux,
+// which is materially slower than the stub's synchronous finish). The CALLER
+// (scripts/proof.mjs) decides which surface is eligible (web today) and passes
+// `liveAgent: true` only for it; planSurfaceBudget stays surface-name-agnostic.
+// Extending the shared TOTAL pool so a live web run does not squeeze a sibling
+// TUI floor is also the caller's job (bump `totalBudgetMs` before calling this
+// for every surface in the run) — this function only ever widens the granted
+// ceiling against whatever `remaining` it is given.
 export const LIVE_AGENT_EXTRA_MS = 4 * 60 * 1000
-
-/**
- * Surface SET classifier (BOS-139 / epic D5). Replaces the single-select
- * dispatch (agentSurface) so a mixed diff proves BOTH the TUI and the web app.
- *
- * KNOWN LIMITATION (epic D16 / outside-voice #9): classification is by changed
- * FILE PATH, so a backend-only change with UI-visible effects (e.g. a bossd
- * handler that alters what the web app renders) classifies as no surface.
- * Mitigation: a plan `## Required proof` bullet that names a surface FORCES it
- * into the set via `forcedSurfaces` — required-proof bullets are the primary
- * brief source (D13) precisely because file paths cannot see behavior. Keep
- * this note in sync with the bs-proof SKILL.md "Known limitation" section.
- *
- * @param {{ changedFiles: string[], catalog: object, forcedSurfaces?: string[] }} opts
- * @returns {{ tui: boolean, web: boolean, recipes: object[] }}
- */
-export function classifySurfaces({ changedFiles, catalog, forcedSurfaces = [] }) {
-  const matched = selectRecipes(catalog, changedFiles)
-  return {
-    tui: classifyTuiSurface(changedFiles) || forcedSurfaces.includes('tui'),
-    web: webUiSurfacePresent(changedFiles) || forcedSurfaces.includes('web'),
-    recipes: matched.filter((r) => r.surface === 'marketing' || r.surface === 'docs'),
-  }
-}
 
 /**
  * Sequential shared-budget planner (BOS-139 / epic D5). Pure. `elapsedMs` is the
  * wall-clock already spent by earlier surface runs in THIS proof invocation.
- * Returns a grant clamped to the surface default and the remaining budget, or a
- * `budget-exceeded` deferral when what remains is below the surface's viability
- * floor (or the surface is unknown).
+ * `budget` is the resolved `{defaultMs, floorMs}` for this surface (from
+ * proof-surfaces.mjs `surfaceBudget`) — a null/absent budget (an unknown or
+ * recipe surface the ladder never grants) → `budget-exceeded`. Returns a grant
+ * clamped to the surface default and the remaining budget, or a
+ * `budget-exceeded` deferral when what remains is below the viability floor.
  *
- * `liveAgent` (BOS-142, default false) grants a web surface run an extra
- * `LIVE_AGENT_EXTRA_MS` of wall-clock (a genuine live-agent scene is slower
- * than the stub). It is a no-op for any other surface (TUI live scenes are
- * out of scope here) and a no-op when false/omitted — every existing caller
- * that never passes it sees byte-identical output. Extending the shared
- * TOTAL pool so a live web run does not squeeze a sibling TUI floor is the
- * CALLER's responsibility (bump `totalBudgetMs` before calling this for every
- * surface in the run) — this function only ever widens the WEB surface's own
- * default against whatever `remaining` it is given.
+ * `liveAgent` (BOS-142, default false) grants an extra `LIVE_AGENT_EXTRA_MS` of
+ * wall-clock (a genuine live-agent scene is slower than the stub). The CALLER
+ * gates it to the eligible surface (web today) — this engine applies it whenever
+ * `liveAgent` is true and stays surface-name-agnostic. A no-op when false/omitted,
+ * so every existing caller that never passes it sees byte-identical output.
  *
- * @param {{ surface: string, elapsedMs: number, totalBudgetMs?: number, liveAgent?: boolean }} opts
+ * @param {{ surface: string, elapsedMs: number, totalBudgetMs?: number, budget: {defaultMs:number,floorMs:number}|null, liveAgent?: boolean }} opts
  * @returns {{ run: true, maxWallClockMs: number } | { run: false, reasonCode: 'budget-exceeded' }}
  */
 export function planSurfaceBudget({
   surface,
   elapsedMs,
   totalBudgetMs = DEFAULT_TOTAL_PROOF_BUDGET_MS,
+  budget,
   liveAgent = false,
 }) {
-  const spec = SURFACE_BUDGET_SPEC[surface]
-  const extraMs = liveAgent && surface === 'web' ? LIVE_AGENT_EXTRA_MS : 0
+  const extraMs = liveAgent ? LIVE_AGENT_EXTRA_MS : 0
   const remaining = totalBudgetMs - elapsedMs
-  if (!spec || remaining < spec.floorMs) return { run: false, reasonCode: 'budget-exceeded' }
-  return { run: true, maxWallClockMs: Math.min(spec.defaultMs + extraMs, remaining) }
+  if (!budget || remaining < budget.floorMs) return { run: false, reasonCode: 'budget-exceeded' }
+  return { run: true, maxWallClockMs: Math.min(budget.defaultMs + extraMs, remaining) }
 }
 
 export function selectRecipes(catalog, changedFiles, explicitRecipeIds = []) {
@@ -1179,37 +1103,40 @@ export function bossE2eBuildCommand({ outBin }) {
   return ['go', ['build', '-tags', 'e2e', '-o', outBin, './cmd'], { cwd: 'services/boss' }]
 }
 
-// Maps a browser proof surface to the package that owns its Playwright config
-// and dev/preview webServer: docs → Docusaurus site, marketing → Astro site,
-// anything else → the Vite web app.
-export function browserServiceDir(surface) {
-  if (surface === 'marketing') return 'services/marketing'
-  if (surface === 'docs') return 'services/docs'
-  return 'services/web'
-}
-
-export function browserCaptureCommand({ surface, recipePath, outputDir }) {
-  const serviceDir = browserServiceDir(surface)
-  return [
-    'pnpm',
-    [
-      '--dir',
-      serviceDir,
-      'exec',
-      'node',
-      '../../scripts/proof-playwright-runner.mjs',
-      '--surface',
-      surface,
-      '--recipe',
-      relativeFromService(serviceDir, recipePath),
-      '--output-dir',
-      relativeFromService(serviceDir, outputDir),
-    ],
+// The surface→descriptor map now lives in scripts/proof-surfaces.mjs
+// (resolveSurfaceRegistry / captureSurfaceDescriptor); the command builders below
+// take a resolved surface `descriptor` as an opaque parameter (BOS-201/BOS-202) and
+// never reference surface names, so a consumer-declared surface flows through
+// unchanged. The descriptor carries `serviceDir` (the package whose
+// playwright.config.ts webServer builds+serves the site), `specRoot` (where the
+// runner writes its spec), `defaultCropToSelector` (the video crop fallback), and
+// optional `stageEnv` (extra env the runner exports before Playwright).
+export function browserCaptureCommand({ descriptor, surface, recipePath, outputDir }) {
+  const { serviceDir, specRoot, defaultCropToSelector, stageEnv } = descriptor
+  const argv = [
+    '--dir',
+    serviceDir,
+    'exec',
+    'node',
+    relativeFromService(serviceDir, './scripts/proof-playwright-runner.mjs'),
+    '--surface',
+    surface,
+    '--recipe',
+    relativeFromService(serviceDir, recipePath),
+    '--output-dir',
+    relativeFromService(serviceDir, outputDir),
+    '--spec-root',
+    specRoot,
+    '--default-crop',
+    defaultCropToSelector,
   ]
+  if (stageEnv && Object.keys(stageEnv).length > 0) {
+    argv.push('--stage-env', JSON.stringify(stageEnv))
+  }
+  return ['pnpm', argv]
 }
 
-export function introCardCommand({ surface, out, width, height, label, title = '' }) {
-  const serviceDir = browserServiceDir(surface)
+export function introCardCommand({ serviceDir, out, width, height, label, title = '' }) {
   return [
     'pnpm',
     [

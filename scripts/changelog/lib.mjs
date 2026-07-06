@@ -1,6 +1,34 @@
 // Pure, network-free helpers for the changelog generator. Unit-tested in
 // lib.test.mjs. All I/O lives in ../generate-changelog.mjs.
 
+// Resolve the repo to query for release/tag/PR/compare data. In CI this is the
+// repo the workflow runs in (GITHUB_REPOSITORY), where semantic-release has
+// already cut the tag + GitHub Release and where the PRs actually live. Falls
+// back to the canonical private repo for local/manual backfill runs.
+export function resolveRepo(env = {}) {
+  const fromCi = (env.GITHUB_REPOSITORY || '').trim()
+  return fromCi || 'recurser/bossanova'
+}
+
+// Resolve the changelog entry date from a fetched GitHub Release object (or
+// null when the release could not be fetched — the caller passes null on a
+// missing-release/non-blocking fallback). Prefers the published timestamp, then
+// the created timestamp, and finally `now` when neither is present or parses.
+// Always returns a Date and never throws, so a missing or malformed release can
+// never abort the non-blocking generator downstream (renderFrontmatter calls
+// .toISOString(), which would throw on an Invalid Date).
+export function releaseDate(rel, now = new Date()) {
+  // Try each candidate in preference order, parsing before accepting, so a
+  // malformed published_at falls through to a valid created_at (not straight to
+  // `now`) — the `||` short-circuit would otherwise skip a good created_at.
+  for (const stamp of [rel?.published_at, rel?.created_at]) {
+    if (!stamp) continue
+    const d = new Date(stamp)
+    if (!Number.isNaN(d.getTime())) return d
+  }
+  return now
+}
+
 export function linearIdFromBranch(branchName) {
   if (!branchName) return null
   const m = branchName.match(/\bbos-(\d+)\b/i)

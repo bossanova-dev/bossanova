@@ -80,6 +80,67 @@ func TestAgentChatStore_CRUD(t *testing.T) {
 	}
 }
 
+// TestAgentChatStore_AccountIDRoundTrip pins the BOS-170 nullable account_id
+// column on agent_chats: a chat created with an explicit account binding reads
+// it back, and one created without a binding reads back nil.
+func TestAgentChatStore_AccountIDRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	chatStore := NewAgentChatStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Chat account_id test",
+		WorktreePath: "/tmp/wt/chat-acct",
+		BranchName:   "feat/chat-acct",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Bound chat: account_id persists on the returned model and round-trips.
+	acct := "a1"
+	bound, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID:      sess.ID,
+		AgentSessionID: "agent-acct-bound",
+		Title:          "bound chat",
+		AccountID:      &acct,
+	})
+	if err != nil {
+		t.Fatalf("create bound chat: %v", err)
+	}
+	if bound.AccountID == nil || *bound.AccountID != "a1" {
+		t.Fatalf("create chat AccountID = %v, want a1", bound.AccountID)
+	}
+	got, err := chatStore.GetByAgentSessionID(ctx, "agent-acct-bound")
+	if err != nil {
+		t.Fatalf("get bound chat: %v", err)
+	}
+	if got.AccountID == nil || *got.AccountID != "a1" {
+		t.Fatalf("get chat AccountID = %v, want a1", got.AccountID)
+	}
+
+	// Unbound chat: no account_id → nil.
+	if _, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID:      sess.ID,
+		AgentSessionID: "agent-acct-unbound",
+		Title:          "unbound chat",
+	}); err != nil {
+		t.Fatalf("create unbound chat: %v", err)
+	}
+	gotUnbound, err := chatStore.GetByAgentSessionID(ctx, "agent-acct-unbound")
+	if err != nil {
+		t.Fatalf("get unbound chat: %v", err)
+	}
+	if gotUnbound.AccountID != nil {
+		t.Fatalf("unbound chat AccountID = %q, want nil", *gotUnbound.AccountID)
+	}
+}
+
 func TestAgentChatStore_MarkStartFailedSanitizesInvalidUTF8(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

@@ -246,7 +246,7 @@ func (m CronListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Open form in create mode.
 		return m, func() tea.Msg { return cronFormOpenMsg{job: nil} }
 
-	case "e":
+	case "e", "enter":
 		// Open form in edit mode for highlighted row.
 		if job := m.selectedJob(); job != nil {
 			return m, func() tea.Msg { return cronFormOpenMsg{job: job} }
@@ -303,10 +303,6 @@ func (m CronListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				skippedReason: resp.SkippedReason,
 			}
 		}
-
-	case "enter":
-		// no-op v1; reserved for future detail view.
-		return m, nil
 
 	case "esc":
 		m.cancel = true
@@ -649,7 +645,7 @@ func (m CronListModel) View() tea.View {
 			b.WriteString("\n")
 		}
 		b.WriteString(actionBar(
-			[]string{"[n]ew", "[e]dit", "[d]elete", "[space] toggle", "[r]un now"},
+			[]string{"[n]ew", "[e/enter]dit", "[d]elete", "[space] toggle", "[r]un now"},
 			[]string{"[esc] back"},
 		))
 	}

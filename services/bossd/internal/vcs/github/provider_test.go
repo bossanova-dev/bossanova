@@ -1062,6 +1062,119 @@ func TestGetReviewComments_BotWithUnresolvedThreadOnSecondPage(t *testing.T) {
 	}
 }
 
+// codexBoilerplateBody is the byte-identical summary body that
+// chatgpt-codex-connector[bot] posts on every COMMENTED review. It carries no
+// PR-specific prose (real feedback arrives as inline comments), so a review
+// whose only content is this boilerplate must not be promoted to
+// CHANGES_REQUESTED (BOS-254).
+const codexBoilerplateBody = "\n### 💡 Codex Review\n\n" +
+	"Here are some automated review suggestions for this pull request.\n\n" +
+	"**Reviewed commit:** `57beeafbb5`\n    \n\n" +
+	"<details> <summary>ℹ️ About Codex in GitHub</summary>\n<br/>\n\n" +
+	"[Your team has set up Codex to review pull requests in this repo](https://chatgpt.com/codex/cloud/settings/general). Reviews are triggered when you\n" +
+	"- Open a pull request for review\n- Mark a draft as ready\n- Comment \"@codex review\".\n\n" +
+	"If Codex has suggestions, it will comment; otherwise it will react with 👍.\n\n\n\n\n" +
+	"Codex can also answer questions or update the PR. Try commenting \"@codex address that feedback\".\n            \n</details>\n"
+
+// TestGetReviewComments_EmptyCodexCommentedReviewWithStaleThreadIsDropped is
+// the BOS-254 headline: an empty codex COMMENTED review (boilerplate-only body,
+// zero inline comments of its own) must NOT be promoted to ChangesRequested
+// even when the same bot has a separate unresolved/outdated thread on the PR.
+// The old author-scoped heuristic promoted it off that stale thread, wedging the
+// merge gate in a loop boss-repair could never clear. The empty review is
+// dropped (not surfaced) rather than appended as COMMENTED, so it cannot
+// overwrite an earlier promoted CHANGES_REQUESTED from the same bot in
+// ComputeDisplayStatus's latest-by-author map.
+func TestGetReviewComments_EmptyCodexCommentedReviewWithStaleThreadIsDropped(t *testing.T) {
+	reviewsJSON := fmt.Sprintf(
+		`[{"id":111,"user":{"login":"chatgpt-codex-connector[bot]"},"body":%q,"state":"COMMENTED"}]`,
+		codexBoilerplateBody,
+	)
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			// The bot has a separate, unresolved (outdated) thread on the PR —
+			// but NOT one belonging to this empty review.
+			return graphqlThreadsResponse(
+				struct {
+					resolved bool
+					author   string
+				}{false, "chatgpt-codex-connector"},
+			), nil
+		}
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/111/comments") {
+			// This review carries no inline comments of its own.
+			return `[]`, nil
+		}
+		return reviewsJSON, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 0 {
+		t.Fatalf("got %d comments, want the empty boilerplate codex review dropped (not promoted, not surfaced)", len(comments))
+	}
+}
+
+// TestGetReviewComments_EmptyCodexFollowupDoesNotClobberEarlierPromotion pins
+// BOS-254 finding #2: when a bot posts a real review with unresolved inline
+// suggestions and then a later empty boilerplate COMMENTED review, the empty
+// follow-up must not overwrite the earlier promoted CHANGES_REQUESTED in the
+// surfaced set. The earlier review's ChangesRequested entries must survive so
+// ComputeDisplayStatus keeps the bot's latest-by-author state blocking.
+func TestGetReviewComments_EmptyCodexFollowupDoesNotClobberEarlierPromotion(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return graphqlThreadsResponse(
+				struct {
+					resolved bool
+					author   string
+				}{false, "chatgpt-codex-connector"},
+			), nil
+		}
+		// Review 111 (earlier) carries a real inline suggestion; review 222
+		// (later, empty follow-up) has none.
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/111/comments") {
+			return `[
+				{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"handle the nil case","path":"session.go","line":87}
+			]`, nil
+		}
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/222/comments") {
+			return `[]`, nil
+		}
+		return fmt.Sprintf(
+			`[{"id":111,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"reviewed","state":"COMMENTED"},`+
+				`{"id":222,"user":{"login":"chatgpt-codex-connector[bot]"},"body":%q,"state":"COMMENTED"}]`,
+			codexBoilerplateBody,
+		), nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Expect [promoted summary(CR), inline(CR)]; the empty follow-up is dropped.
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want the promoted review + its inline comment (empty follow-up dropped)", len(comments))
+	}
+	for i, c := range comments {
+		if c.State != vcs.ReviewStateChangesRequested {
+			t.Fatalf("comment[%d].State = %v, want ChangesRequested (earlier promotion must survive)", i, c.State)
+		}
+	}
+	// Mirror the display-layer consequence: latest-by-author stays blocking.
+	latestByAuthor := map[string]vcs.ReviewState{}
+	for _, c := range comments {
+		latestByAuthor[c.Author] = c.State
+	}
+	if latestByAuthor["chatgpt-codex-connector[bot]"] != vcs.ReviewStateChangesRequested {
+		t.Fatalf("latest-by-author codex state = %v, want ChangesRequested (empty follow-up must not clobber)", latestByAuthor["chatgpt-codex-connector[bot]"])
+	}
+}
+
 func TestGetReviewComments_BotAllThreadsResolved(t *testing.T) {
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		if args[0] == "api" && args[1] == "graphql" {
@@ -1175,7 +1288,7 @@ func TestGetReviewComments_NoBotReviews(t *testing.T) {
 func TestGetReviewComments_MultipleBotsMixed(t *testing.T) {
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		if args[0] == "api" && args[1] == "graphql" {
-			// cursor has unresolved thread, cubic-dev-ai all resolved.
+			// cursor has an unresolved thread, cubic-dev-ai all resolved.
 			return graphqlThreadsResponse(
 				struct {
 					resolved bool
@@ -1187,12 +1300,16 @@ func TestGetReviewComments_MultipleBotsMixed(t *testing.T) {
 				}{true, "cubic-dev-ai"},
 			), nil
 		}
-		if args[0] == "api" && strings.Contains(args[1], "/comments") {
-			return `[]`, nil
+		// cursor's review carries its own inline suggestion; cubic-dev-ai is
+		// dropped (all resolved) before its inline comments are ever fetched.
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/501/comments") {
+			return `[
+				{"user":{"login":"cursor[bot]"},"body":"fix the leak","path":"main.go","line":10}
+			]`, nil
 		}
 		return `[
-			{"user":{"login":"cursor[bot]"},"body":"issue found","state":"COMMENTED"},
-			{"user":{"login":"cubic-dev-ai[bot]"},"body":"issue found","state":"COMMENTED"}
+			{"id":501,"user":{"login":"cursor[bot]"},"body":"issue found","state":"COMMENTED"},
+			{"id":502,"user":{"login":"cubic-dev-ai[bot]"},"body":"issue found","state":"COMMENTED"}
 		]`, nil
 	}
 
@@ -1201,12 +1318,17 @@ func TestGetReviewComments_MultipleBotsMixed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(comments) != 1 {
-		t.Fatalf("got %d comments, want only unresolved bot review", len(comments))
+	// cursor[bot] carries its own inline suggestion under an unresolved thread →
+	// promoted (summary + inline). cubic-dev-ai[bot]'s threads are all resolved →
+	// dropped.
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want cursor's promoted summary + inline (cubic dropped)", len(comments))
 	}
-	// cursor[bot] has unresolved threads — promoted.
 	if comments[0].State != vcs.ReviewStateChangesRequested {
-		t.Errorf("cursor[bot] state = %v, want ChangesRequested", comments[0].State)
+		t.Errorf("cursor[bot] summary state = %v, want ChangesRequested", comments[0].State)
+	}
+	if comments[1].Body != "fix the leak" {
+		t.Errorf("inline comment body = %q, want fix the leak", comments[1].Body)
 	}
 }
 

@@ -18,7 +18,7 @@ import {
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
 
 const liveManifest = JSON.parse(
-  fs.readFileSync(path.join(rootDir, '.claude/skills/bs-implement/construct.json'), 'utf8'),
+  fs.readFileSync(path.join(rootDir, '.claude/skills/boss-implement/construct.json'), 'utf8'),
 )
 // Construction reads the component skills from the installed superpowers plugin.
 // Where it is absent (a fresh CI runner), skip the integration tests rather than fail.
@@ -70,7 +70,7 @@ test(
   { skip: sourceSkip },
   () => {
     const manifest = JSON.parse(
-      fs.readFileSync(path.join(rootDir, '.claude/skills/bs-implement/construct.json'), 'utf8'),
+      fs.readFileSync(path.join(rootDir, '.claude/skills/boss-implement/construct.json'), 'utf8'),
     )
     for (const reference of manifest.references ?? []) {
       const fresh = constructReference(manifest, reference, { rootDir })
@@ -86,11 +86,11 @@ test(
 
 test('committed SKILL.md matches a fresh construction (no drift)', { skip: sourceSkip }, () => {
   const manifest = JSON.parse(
-    fs.readFileSync(path.join(rootDir, '.claude/skills/bs-implement/construct.json'), 'utf8'),
+    fs.readFileSync(path.join(rootDir, '.claude/skills/boss-implement/construct.json'), 'utf8'),
   )
   const fresh = constructSkill(manifest, { rootDir })
   const committed = fs.readFileSync(
-    path.join(rootDir, '.claude/skills/bs-implement/SKILL.md'),
+    path.join(rootDir, '.claude/skills/boss-implement/SKILL.md'),
     'utf8',
   )
   assert.equal(committed, fresh)
@@ -98,7 +98,7 @@ test('committed SKILL.md matches a fresh construction (no drift)', { skip: sourc
 
 test('constructed SKILL.md is already Prettier-stable', { skip: sourceSkip }, () => {
   const manifest = JSON.parse(
-    fs.readFileSync(path.join(rootDir, '.claude/skills/bs-implement/construct.json'), 'utf8'),
+    fs.readFileSync(path.join(rootDir, '.claude/skills/boss-implement/construct.json'), 'utf8'),
   )
   const fresh = constructSkill(manifest, { rootDir })
   const formatted = execFileSync(
@@ -107,7 +107,7 @@ test('constructed SKILL.md is already Prettier-stable', { skip: sourceSkip }, ()
       'exec',
       'prettier',
       '--stdin-filepath',
-      path.join(rootDir, '.claude/skills/bs-implement/SKILL.md'),
+      path.join(rootDir, '.claude/skills/boss-implement/SKILL.md'),
     ],
     { cwd: rootDir, encoding: 'utf8', input: fresh },
   )

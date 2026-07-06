@@ -57,11 +57,26 @@ func (s *stubAgentRunner) GetChatTitle(context.Context, *bossanovav1.GetChatTitl
 func (s *stubAgentRunner) HasQuestionPrompt(context.Context, *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
 	return &bossanovav1.HasQuestionPromptResponse{}, nil
 }
+
+func (s *stubAgentRunner) DetectUsageLimit(context.Context, *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) {
+	return &bossanovav1.DetectUsageLimitResponse{}, nil
+}
+
+func (s *stubAgentRunner) HasWorkingIndicator(context.Context, *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
+	return &bossanovav1.HasWorkingIndicatorResponse{}, nil
+}
 func (s *stubAgentRunner) LastTurnIsUser(context.Context, *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
 	return &bossanovav1.LastTurnIsUserResponse{}, nil
 }
 func (s *stubAgentRunner) TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	return &bossanovav1.TranscriptExistsResponse{}, nil
+}
+
+func (s *stubAgentRunner) RotationCapability(context.Context, *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
+	return &bossanovav1.RotationCapabilityResponse{}, nil
+}
+func (s *stubAgentRunner) MaterializeAccount(context.Context, *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
+	return &bossanovav1.MaterializeAccountResponse{}, nil
 }
 
 func (s *stubAgentRunner) ReadTranscript(context.Context, *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {

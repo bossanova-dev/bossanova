@@ -48,6 +48,7 @@ const (
 	settingsRowKindErrorTracking                        // built-in error tracking toggle (Sentry)
 	settingsRowKindPostHogToken                         // built-in PostHog project token
 	settingsRowKindPostHogHost                          // built-in PostHog host
+	settingsRowKindRotation                             // built-in automatic account rotation kill-switch
 )
 
 // settingsRow is a single addressable line in the settings TUI. Header
@@ -348,6 +349,7 @@ func (m *SettingsModel) rebuildRows() {
 	m.rows = append(m.rows,
 		settingsRow{Kind: settingsRowKindWorktree, Label: "Worktree base directory"},
 		settingsRow{Kind: settingsRowKindPollInterval, Label: "Poll interval (seconds)"},
+		settingsRow{Kind: settingsRowKindRotation, Label: "Enable automatic account rotation"},
 	)
 
 	// Default agent picker — only meaningful when >1 agent is enabled.
@@ -606,6 +608,14 @@ func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 		m.settings.ErrorTrackingEnabled = !m.settings.ErrorTrackingEnabled
 		if err := config.Save(m.settings); err != nil {
 			m.err = err
+		}
+	case settingsRowKindRotation:
+		next := !m.settings.Rotation.RotationEnabled()
+		m.settings.Rotation.Enabled = &next
+		if err := config.Save(m.settings); err != nil {
+			m.err = err
+		} else {
+			m.rebuildRows()
 		}
 	case settingsRowKindPostHogToken:
 		m.editingRow = m.cursor
@@ -914,6 +924,12 @@ func (m SettingsModel) renderRow(b *strings.Builder, i int, row settingsRow, edi
 			val = "ON"
 		}
 		line = fmt.Sprintf("%s%s: %s", cursor, row.Label, val)
+	case settingsRowKindRotation:
+		check := " "
+		if m.settings.Rotation.RotationEnabled() {
+			check = "x"
+		}
+		line = fmt.Sprintf("%s[%s] %s", cursor, check, row.Label)
 	case settingsRowKindPostHogToken:
 		val := m.settings.PostHogProjectToken
 		if val == "" {

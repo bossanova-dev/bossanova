@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/protobuf/proto"
+
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -107,7 +109,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "create_session",
-		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session (its agent_session_id is the primary chat id — no sqlite read needed). DEDUP: if an active session already owns the target branch or PR (via pr_number/branch_name), the daemon ATTACHES to that existing session instead of creating one — the result then has attached_existing=true and the supplied prompt is NOT run; deliver it yourself via send_chat_message with the returned agent_session_id (force does NOT bypass this branch/PR attach — two active sessions cannot share one branch). If instead an active session already owns the same tracker_id with no branch collision, the create fails with AlreadyExists; pass force:true to create a second session for that tracker. Supports running the initial agent pass headlessly (detach) or in a durable tmux-hosted pane that survives a daemon restart (tmux_unattended, used by /bs-epic) under a chosen model (model), attaching to an existing PR (pr_number), quick chats (quick_chat), explicit base/branch names, and linking an external tracker issue (tracker_id/tracker_url/tracker_source). The composite tracker_issue field is web-only and not exposed here.",
+		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session (its agent_session_id is the primary chat id — no sqlite read needed). DEDUP: if an active session already owns the target branch or PR (via pr_number/branch_name), the daemon ATTACHES to that existing session instead of creating one — the result then has attached_existing=true and the supplied prompt is NOT run; deliver it yourself via send_chat_message with the returned agent_session_id (force does NOT bypass this branch/PR attach — two active sessions cannot share one branch). If instead an active session already owns the same tracker_id with no branch collision, the create fails with AlreadyExists; pass force:true to create a second session for that tracker. Supports running the initial agent pass headlessly (detach) or in a durable tmux-hosted pane that survives a daemon restart (tmux_unattended, used by /boss-epic) under a chosen model (model), under a specific rotation account (account, an account id or label; empty = system default), attaching to an existing PR (pr_number), quick chats (quick_chat), explicit base/branch names, and linking an external tracker issue (tracker_id/tracker_url/tracker_source). The composite tracker_issue field is web-only and not exposed here.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args CreateSessionArgs) (*mcp.CallToolResult, any, error) {
 		req := &pb.CreateSessionRequest{
@@ -123,10 +125,10 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			Force: args.Force,
 			// Detach runs the initial agent pass headlessly (claude --print /
 			// codex exec) instead of leaving the session idle until attach —
-			// what an unattended /bs-epic fan-out needs.
+			// what an unattended /boss-epic fan-out needs.
 			Detach: args.Detach,
 			// TmuxUnattended runs the session in a durable tmux-hosted pane that
-			// survives a daemon restart and is attach-safe — the /bs-epic fan-out
+			// survives a daemon restart and is attach-safe — the /boss-epic fan-out
 			// path, distinct from Detach's headless runs.
 			TmuxUnattended: args.TmuxUnattended,
 			// Optional pointer args map straight through; nil stays unset.
@@ -138,6 +140,12 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		}
 		if args.Agent != "" {
 			req.AgentName = &args.Agent
+		}
+		// account carries flag PRESENCE: a present-empty "" is an explicit
+		// account-0 opt-out (skips the daemon's default-account policy), distinct
+		// from an omitted arg (nil) which lets the policy run.
+		if args.Account != nil {
+			req.AccountId = args.Account
 		}
 		if args.Model != "" {
 			req.Model = &args.Model
@@ -406,6 +414,27 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		r, err := jsonResult(out)
 		return r, nil, err
 	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "switch_account",
+		Description: "Stop the session's live chat, rebind it to the chosen account, and respawn with resume. Pass account_id empty to target the system default (account 0). Omit agent_session_id to target the session's primary live chat. A mid-turn (WORKING) chat is rejected unless force is set; a cooling or disabled target is rejected with a human-readable reason.",
+		Annotations: &mcp.ToolAnnotations{},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SwitchAccountArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.SwitchSessionAccountRequest{
+			SessionId: args.SessionID,
+			AccountId: args.AccountID,
+			Force:     args.Force,
+		}
+		if args.AgentSessionID != "" {
+			req.AgentSessionId = proto.String(args.AgentSessionID)
+		}
+		out, err := backend.SwitchSessionAccount(ctx, req)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
 }
 
 // registerSessionStateTool installs a simple id-keyed session lifecycle tool.
@@ -475,13 +504,14 @@ type CreateSessionArgs struct {
 	Prompt         string  `json:"prompt" jsonschema:"the plan/prompt for the session"`
 	Title          string  `json:"title,omitempty" jsonschema:"session title; auto-derived from the first line of the prompt when omitted"`
 	Agent          string  `json:"agent,omitempty" jsonschema:"agent runner plugin name (empty = server default)"`
+	Account        *string `json:"account,omitempty" jsonschema:"Account id or label to run this session under; empty = system default"`
 	BaseBranch     string  `json:"base_branch,omitempty" jsonschema:"base branch to create the session from (empty = repo default)"`
 	BranchName     *string `json:"branch_name,omitempty" jsonschema:"explicit branch name (e.g. a tracker's suggested branch)"`
 	ForceBranch    bool    `json:"force_branch,omitempty" jsonschema:"remove any existing branch with the same name before creating"`
 	Force          bool    `json:"force,omitempty" jsonschema:"bypass tracker-issue dedup and create a second session for a tracker/PR/branch that already has an active one"`
 	QuickChat      bool    `json:"quick_chat,omitempty" jsonschema:"quick chat session: no worktree, branch, or PR"`
 	Detach         bool    `json:"detach,omitempty" jsonschema:"run the initial agent pass headlessly (claude --print / codex exec) instead of leaving the session idle until attach; set true for unattended orchestration"`
-	TmuxUnattended bool    `json:"tmux_unattended,omitempty" jsonschema:"run the session in a durable tmux-hosted pane that survives a daemon restart and is attach-safe (used by /bs-epic); a distinct autonomous-unattended path from detach's headless runs"`
+	TmuxUnattended bool    `json:"tmux_unattended,omitempty" jsonschema:"run the session in a durable tmux-hosted pane that survives a daemon restart and is attach-safe (used by /boss-epic); a distinct autonomous-unattended path from detach's headless runs"`
 	Model          string  `json:"model,omitempty" jsonschema:"opaque agent model id to run this session under (e.g. an Opus id); empty = the agent plugin's default"`
 	PRNumber       *int32  `json:"pr_number,omitempty" jsonschema:"target an existing PR. If an active session already owns that PR's branch, create_session ATTACHES to it and returns attached_existing=true WITHOUT running prompt — run the prompt in that session (send_chat_message with the returned agent_session_id). force does NOT bypass this branch attach"`
 	TrackerID      *string `json:"tracker_id,omitempty" jsonschema:"external issue id (e.g. FRE-1176). If an active session already owns this tracker id (with no branch collision), create_session fails with AlreadyExists — pass force:true to create a second session for the same tracker"`
@@ -551,6 +581,14 @@ type SendChatMessageArgs struct {
 	Message        string `json:"message" jsonschema:"the user message to deliver"`
 	WakeIfAsleep   *bool  `json:"wake_if_asleep,omitempty" jsonschema:"wake the agent if it is currently asleep; defaults to true when omitted"`
 	Submit         *bool  `json:"submit,omitempty" jsonschema:"submit a single-line message (press Enter and verify) instead of only prefilling the composer; a multi-line message is never auto-submitted; defaults to false (prefill) when omitted"`
+}
+
+// SwitchAccountArgs is the typed argument struct for switch_account.
+type SwitchAccountArgs struct {
+	SessionID      string `json:"session_id" jsonschema:"the session whose live chat to switch"`
+	AccountID      string `json:"account_id" jsonschema:"target account id or empty for system default"`
+	AgentSessionID string `json:"agent_session_id,omitempty" jsonschema:"optional specific chat; defaults to the session's primary live chat"`
+	Force          bool   `json:"force,omitempty" jsonschema:"interrupt a mid-turn chat"`
 }
 
 // UpdateCronJobArgs is the typed argument struct for update_cron_job. Optional

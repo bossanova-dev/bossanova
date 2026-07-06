@@ -987,19 +987,31 @@ func runNew(cmd *cobra.Command) error {
 	prompt, _ := cmd.Flags().GetString("prompt")
 	title, _ := cmd.Flags().GetString("title")
 	model, _ := cmd.Flags().GetString("model")
+	account, _ := cmd.Flags().GetString("account")
+	// Thread flag PRESENCE, not just the value: an explicit `--account=` (even
+	// empty) is an opt-out to account 0, distinct from omitting the flag (the
+	// daemon then applies its default-account policy). nil = absent.
+	var accountArg *string
+	if cmd.Flags().Changed("account") {
+		a := account
+		accountArg = &a
+	}
 	detach, _ := cmd.Flags().GetBool("detach")
 	noAttach, _ := cmd.Flags().GetBool("no-attach")
 	detach = detach || noAttach
 
 	// Non-interactive path: --repo and --prompt both provided.
 	if repo != "" && prompt != "" {
-		return runNewDetach(cmd, repo, prompt, title, agentName, model, detach)
+		return runNewDetach(cmd, repo, prompt, title, agentName, model, accountArg, detach)
 	}
 
 	return launchTUI(cmd, func(app *views.App) {
 		app.SetInitialView(views.ViewNewSession)
 		if agentName != "" {
 			app.SetInitialAgent(agentName)
+		}
+		if accountArg != nil {
+			app.SetInitialAccount(*accountArg)
 		}
 	})
 }
@@ -1015,7 +1027,10 @@ func runNew(cmd *cobra.Command) error {
 // after creating the session; interactive TUI sessions leave Detach false and
 // start the agent on attach instead. agentName and model are optional
 // (empty → server/agent default) and stay unset in the request when empty.
-func newDetachRequest(repoID, prompt, title, agentName, model string) *pb.CreateSessionRequest {
+// account is optional and carries flag PRESENCE: nil omits account_id (the
+// daemon applies its default-account policy), a non-nil pointer (even to "")
+// binds explicitly — "" is the account-0 opt-out that skips the policy.
+func newDetachRequest(repoID, prompt, title, agentName, model string, account *string) *pb.CreateSessionRequest {
 	req := &pb.CreateSessionRequest{
 		RepoId: repoID,
 		Plan:   prompt,
@@ -1028,10 +1043,13 @@ func newDetachRequest(repoID, prompt, title, agentName, model string) *pb.Create
 	if model != "" {
 		req.Model = &model
 	}
+	if account != nil {
+		req.AccountId = account
+	}
 	return req
 }
 
-func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName, model string, _ bool) error {
+func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName, model string, account *string, _ bool) error {
 	c, err := newClient(cmd)
 	if err != nil {
 		return err
@@ -1049,7 +1067,7 @@ func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName, model s
 		return err
 	}
 
-	req := newDetachRequest(repoID, prompt, title, agentName, model)
+	req := newDetachRequest(repoID, prompt, title, agentName, model, account)
 
 	stream, err := c.CreateSession(ctx, req)
 	if err != nil {
@@ -1854,6 +1872,49 @@ func resolveArchivedSessionID(c client.BossClient, ctx context.Context, prefix s
 	}
 }
 
+// accountShowLabel renders the bound-account line for `boss show`. It prefers
+// the server-computed account_label (one source of truth, matching the web
+// SessionDetail badge); when the daemon has not populated a label it falls back
+// to the raw account id, and to "System default" for an unbound session (empty
+// account id = the daemon's default-account policy applied).
+func accountShowLabel(accountID, accountLabel string) string {
+	if accountLabel != "" {
+		return accountLabel
+	}
+	if accountID == "" {
+		return "System default"
+	}
+	return accountID
+}
+
+// printSessionShowHeader writes the key-value header block for `boss show` to
+// stdout. Kept separate from runShow so its formatting (including the Account
+// line) is unit-testable without a live daemon client.
+func printSessionShowHeader(sess *pb.Session) {
+	id := sess.Id
+	if len(id) > 8 {
+		id = id[:8]
+	}
+	fmt.Printf("  ID:       %s\n", id)
+	fmt.Printf("  Title:    %s\n", sess.Title)
+	fmt.Printf("  Repo:     %s\n", sess.RepoDisplayName)
+	fmt.Printf("  Branch:   %s\n", sess.BranchName)
+	fmt.Printf("  State:    %s\n", views.StateLabel(sess.State))
+	fmt.Printf("  Account:  %s\n", accountShowLabel(sess.GetAccountId(), sess.GetAccountLabel()))
+	if sess.PrNumber != nil {
+		fmt.Printf("  PR:       #%d\n", *sess.PrNumber)
+	}
+	if sess.GetWorktreePath() != "" {
+		fmt.Printf("  Worktree: %s\n", sess.GetWorktreePath())
+	}
+	if sess.CreatedAt != nil {
+		fmt.Printf("  Created:  %s\n", views.RelativeTime(sess.CreatedAt.AsTime()))
+	}
+	if sess.ArchivedAt != nil {
+		fmt.Printf("  Archived: %s\n", views.RelativeTime(sess.ArchivedAt.AsTime()))
+	}
+}
+
 func runShow(cmd *cobra.Command, sessionID string) error {
 	c, err := newClient(cmd)
 	if err != nil {
@@ -1872,27 +1933,7 @@ func runShow(cmd *cobra.Command, sessionID string) error {
 	}
 
 	// Print key-value header.
-	id := sess.Id
-	if len(id) > 8 {
-		id = id[:8]
-	}
-	fmt.Printf("  ID:       %s\n", id)
-	fmt.Printf("  Title:    %s\n", sess.Title)
-	fmt.Printf("  Repo:     %s\n", sess.RepoDisplayName)
-	fmt.Printf("  Branch:   %s\n", sess.BranchName)
-	fmt.Printf("  State:    %s\n", views.StateLabel(sess.State))
-	if sess.PrNumber != nil {
-		fmt.Printf("  PR:       #%d\n", *sess.PrNumber)
-	}
-	if sess.GetWorktreePath() != "" {
-		fmt.Printf("  Worktree: %s\n", sess.GetWorktreePath())
-	}
-	if sess.CreatedAt != nil {
-		fmt.Printf("  Created:  %s\n", views.RelativeTime(sess.CreatedAt.AsTime()))
-	}
-	if sess.ArchivedAt != nil {
-		fmt.Printf("  Archived: %s\n", views.RelativeTime(sess.ArchivedAt.AsTime()))
-	}
+	printSessionShowHeader(sess)
 
 	// Last repair-attempt diagnostics, when present. last_repair_started_at
 	// is the "an attempt was recorded" sentinel — it stays nil for sessions
@@ -2237,12 +2278,15 @@ func runSettings(cmd *cobra.Command) error {
 	// If no flags provided, display current settings.
 	anyChanged := cmd.Flags().Changed("skip-permissions") ||
 		cmd.Flags().Changed("no-skip-permissions") ||
+		cmd.Flags().Changed("rotation") ||
+		cmd.Flags().Changed("no-rotation") ||
 		cmd.Flags().Changed("worktree-dir") ||
 		cmd.Flags().Changed("default-agent") ||
 		cmd.Flags().Changed("poll-interval")
 
 	if !anyChanged {
 		fmt.Printf("  Skip permissions: %v\n", config.PluginConfigBool(&s, "claude", "dangerously_skip_permissions"))
+		fmt.Printf("  Rotation enabled: %v\n", s.Rotation.RotationEnabled())
 		fmt.Printf("  Worktree dir:     %s\n", s.WorktreeBaseDir)
 		fmt.Printf("  Default agent:    %s\n", s.DefaultAgent)
 		interval := "30 (default)"
@@ -2262,6 +2306,17 @@ func runSettings(cmd *cobra.Command) error {
 	}
 	if cmd.Flags().Changed("no-skip-permissions") {
 		config.SetPluginConfigBool(&s, "claude", "dangerously_skip_permissions", false)
+	}
+	if cmd.Flags().Changed("rotation") && cmd.Flags().Changed("no-rotation") {
+		return fmt.Errorf("cannot use both --rotation and --no-rotation")
+	}
+	if cmd.Flags().Changed("rotation") {
+		v := true
+		s.Rotation.Enabled = &v
+	}
+	if cmd.Flags().Changed("no-rotation") {
+		v := false
+		s.Rotation.Enabled = &v
 	}
 	if cmd.Flags().Changed("worktree-dir") {
 		v, _ := cmd.Flags().GetString("worktree-dir")

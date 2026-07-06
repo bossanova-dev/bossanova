@@ -16,9 +16,27 @@
     "pathRules": {
       "type": "array",
       "items": { "$ref": "#/$defs/pathRule" }
+    },
+    "surfaces": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/surface" }
     }
   },
   "$defs": {
+    "surfaceName": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "serviceDir", "specRoot", "defaultCropToSelector"],
+      "properties": {
+        "name": { "$ref": "#/$defs/surfaceName" },
+        "kind": { "enum": ["browser"] },
+        "serviceDir": { "type": "string", "minLength": 1 },
+        "specRoot": { "type": "string", "minLength": 1 },
+        "defaultCropToSelector": { "type": "string", "minLength": 1 },
+        "stageEnv": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
     "pathRule": {
       "type": "object",
       "additionalProperties": false,
@@ -45,7 +63,7 @@
       "required": ["id", "surface", "title", "description", "privacy"],
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
-        "surface": { "enum": ["web", "marketing"] },
+        "surface": { "$ref": "#/$defs/surfaceName" },
         "title": { "type": "string", "minLength": 1 },
         "description": { "type": "string", "minLength": 1 },
         "privacy": { "enum": ["fixture", "live"] }
@@ -60,7 +78,7 @@
           "required": ["id", "surface", "title", "description", "privacy", "viewport"],
           "properties": {
             "id": { "type": "string" },
-            "surface": { "enum": ["web", "marketing"] },
+            "surface": { "$ref": "#/$defs/surfaceName" },
             "title": { "type": "string" },
             "description": { "type": "string" },
             "privacy": { "enum": ["fixture", "live"] },
@@ -119,7 +137,10 @@
                     "then": { "required": ["selector", "value"] }
                   },
                   {
-                    "if": { "properties": { "action": { "const": "scroll" } }, "required": ["action"] },
+                    "if": {
+                      "properties": { "action": { "const": "scroll" } },
+                      "required": ["action"]
+                    },
                     "then": {
                       "anyOf": [
                         { "required": ["toSelector"] },

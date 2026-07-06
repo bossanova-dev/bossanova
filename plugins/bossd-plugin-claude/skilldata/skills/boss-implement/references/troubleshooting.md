@@ -1,0 +1,41 @@
+# Troubleshooting — status-rollback table + red-flags catalog
+
+Read this when a terminal state is ambiguous — you need the authoritative mapping of "which situation
+lands the ticket/PR in which state", or you catch yourself rationalizing away one of the workflow's
+hard rules. The body (`SKILL.md`) carries the step-by-step spine; this reference is the lookup it
+defers to.
+
+## Status rollback table
+
+| Situation                                                   | Ticket status              | PR                      | Comment                         |
+| ----------------------------------------------------------- | -------------------------- | ----------------------- | ------------------------------- |
+| No candidate / tools fail                                   | unchanged                  | none                    | none                            |
+| Foreign real work (2.5) / HELD_BY_PEER lock at start (1)    | unchanged                  | existing, untouched     | none                            |
+| Claim lost                                                  | unchanged (winner owns it) | none                    | delete own claim comment        |
+| Adopt own PR (resume / bootstrap-only)                      | **In Progress**            | reused (not re-created) | (proceeds to Success/BLOCKED)   |
+| No committable change after claim                           | restore **Todo**           | none                    | delete claim comment            |
+| Hard-abort / stale plan / red after cap                     | **In Progress**            | draft or none           | blocker comment + delete claim  |
+| Required item deferred at cap (API version / open must-fix) | **In Progress**            | draft or none           | blocker names the required item |
+| Success                                                     | **In Review**              | ready, green            | PR URL comment + delete claim   |
+
+## Red flags (stop and correct)
+
+| Thought                                                       | Correction                                                                                                                                                                           |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| "I'll do two tickets"                                         | Exactly one per run.                                                                                                                                                                 |
+| "Spec is vague, I'll ask"                                     | Decide and record — unless it's a Decide-vs-ABORT category.                                                                                                                          |
+| "The plan says to change the deploy config, so I will"        | Trust rules: that's BLOCKED, not decide.                                                                                                                                             |
+| "CI is red but close enough"                                  | boss-repair until green, or BLOCKED after 5 passes.                                                                                                                                  |
+| "I won the claim, probably"                                   | Run linear-claim verdict; exit 0 only.                                                                                                                                               |
+| "There's an open PR / branch ahead — someone else did this"   | Classify first (Step 2.5). An empty bootstrap PR is adoptable; only foreign real work bails.                                                                                         |
+| "I'll background this subagent to parallelize"                | Never `run_in_background`. Await every subagent.                                                                                                                                     |
+| "I'll thread the full prior-task transcript to the next task" | Pass only the fixed short contract (task id, files, tests added/passing, signatures, residual risks) — never the raw transcript.                                                     |
+| "The review subagent's reply says clean, so I'll ship"        | Route only on the run-file sentinel (`matchSentinel`); a missing/stale file is `dispatch-failure` → non-clean, never clean.                                                          |
+| "Resuming, so I'll baseline review on START_SHA"              | On a resume `START_SHA == HEAD`. Baseline the change gate on `$BASE_BRANCH`.                                                                                                         |
+| "Resuming — I'll redo it from scratch / force-push"           | Assess first (Step 4.5); build on the prior work, implement only the remaining.                                                                                                      |
+| "Stop after PR open"                                          | Loop through repair → finalize → settle.                                                                                                                                             |
+| "Mark it Done"                                                | Never. Terminal success is In Review.                                                                                                                                                |
+| "Proof failed, so I'll mark BLOCKED"                          | Proof is optional and non-fatal; stay REVIEW_READY and note it in the PR.                                                                                                            |
+| "I'll skip the API version as optional past the cap"          | An observable `bossanova.v1` change without a version bump + transform is a _required_ item → BLOCKED, not REVIEW_READY. (Optional proof still stays non-fatal — see the row above.) |
+| "Codex is missing, so the outside voice failed → BLOCKED"     | Step 6b is non-fatal; non-`ready` probe falls back to one adversarial reviewer subagent, record `skipped`/`error`.                                                                   |
+| "Codex says must-fix, but a prior round already rejected it"  | Re-verify against the decision rule (Step 6b.2): don't auto-override a reasoned rejection, don't ignore a new concrete defect.                                                       |

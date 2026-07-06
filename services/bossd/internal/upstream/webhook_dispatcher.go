@@ -198,9 +198,17 @@ func (d *WebhookDispatcher) enrichReviewComments(ctx context.Context, repoOrigin
 		review.Comments = append(review.Comments, comments...)
 		// Realtime-path promotion: handleReviewSubmitted gates the fix loop on the
 		// review's summary State, so a bot COMMENTED review with actionable inline
-		// feedback must be promoted here. This mirrors the provider-side promotion
-		// in github.Provider.GetReviewComments (which feeds the display-poller path
-		// that keys off per-comment State); keep both in sync.
+		// feedback must be promoted here. This is review-scoped and inline-based:
+		// only a review carrying its own changes-requested inline comment(s) is
+		// promoted, so an empty bot COMMENTED review (e.g.
+		// chatgpt-codex-connector[bot]'s per-commit boilerplate) or a benign
+		// body-only review ("LGTM", "No issues found") is never treated as
+		// changes-requested (BOS-254). Unlike the provider path, the realtime path
+		// has no review-thread context, so it deliberately does NOT promote on a
+		// substantive body alone (that would false-promote benign bot prose). This
+		// mirrors the provider-side promotion in github.Provider.GetReviewComments
+		// (which feeds the display-poller path that keys off per-comment State);
+		// keep both review-scoped and inline-based.
 		if review.State == vcs.ReviewStateCommented && hasActionableBotReviewComments(review, comments) {
 			review.State = vcs.ReviewStateChangesRequested
 		}
@@ -222,6 +230,15 @@ func reviewNeedsCommentEnrichment(state vcs.ReviewState) bool {
 	return state == vcs.ReviewStateChangesRequested || state == vcs.ReviewStateCommented
 }
 
+// hasActionableBotReviewComments reports whether a bot's COMMENTED review is
+// review-scoped actionable: it carries its own changes-requested inline
+// comment(s). An empty bot review, or a benign body-only one ("LGTM",
+// "No issues found"), is never actionable, so it is not promoted to
+// CHANGES_REQUESTED (BOS-254). The realtime path intentionally does not consult
+// the summary body: without the provider path's review-thread context it cannot
+// tell benign prose from a change request, so promoting on a substantive body
+// alone would false-block. Kept review-scoped + inline-based, in sync with the
+// provider-side promotion in github.Provider.GetReviewComments.
 func hasActionableBotReviewComments(review vcs.ReviewSubmitted, comments []vcs.ReviewComment) bool {
 	if !strings.HasSuffix(review.Author, "[bot]") {
 		return false

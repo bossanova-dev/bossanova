@@ -255,6 +255,7 @@ func newCmd() *cobra.Command {
 	cmd.Flags().String("prompt", "", "Initial prompt / plan for the session (enables non-interactive mode when combined with --repo)")
 	cmd.Flags().String("title", "", "Session title (optional, auto-derived from prompt when absent)")
 	cmd.Flags().String("model", "", "Agent model id to run this session under (e.g. an Opus id); empty = agent default")
+	cmd.Flags().String("account", "", "Account id or label to run this session under (empty = system default)")
 	cmd.Flags().Bool("detach", false, "Exit immediately after creating the session; print session-id and chat-id")
 	cmd.Flags().Bool("no-attach", false, "Alias for --detach")
 	return cmd
@@ -507,6 +508,20 @@ func accountCmd() *cobra.Command {
 	test.Flags().Bool("json", false, "Emit a stable JSON schema instead of text")
 	account.AddCommand(test)
 
+	switchCmd := &cobra.Command{
+		Use:   "switch <session> <account>",
+		Short: "Stop a session's live chat, rebind it to the chosen account, and resume",
+		Long: "Stop the session's live chat, rebind it to the chosen account, and respawn with resume.\n\n" +
+			"<account> is an account id or label; pass \"system-default\" (or \"0\"/\"none\") to target the system default (account 0).\n" +
+			"By default the session's primary live chat is switched; use --chat to target a specific agent chat.\n" +
+			"A mid-turn (WORKING) chat is rejected unless --force is set.",
+		Args: cobra.ExactArgs(2),
+		RunE: runAccountSwitch,
+	}
+	switchCmd.Flags().String("chat", "", "Target a specific agent chat (agent session id); default: the session's primary live chat")
+	switchCmd.Flags().Bool("force", false, "Interrupt a mid-turn / WORKING chat")
+	account.AddCommand(switchCmd)
+
 	return account
 }
 
@@ -614,6 +629,8 @@ func settingsCmd() *cobra.Command {
 	}
 	cmd.Flags().Bool("skip-permissions", false, "Enable Claude --dangerously-skip-permissions")
 	cmd.Flags().Bool("no-skip-permissions", false, "Disable Claude --dangerously-skip-permissions")
+	cmd.Flags().Bool("rotation", false, "Enable automatic account rotation")
+	cmd.Flags().Bool("no-rotation", false, "Disable automatic account rotation (global kill-switch; manual switching still works)")
 	cmd.Flags().String("worktree-dir", "", "Set worktree base directory")
 	cmd.Flags().String("default-agent", "", "Set the default agent plugin (e.g. claude, opencode)")
 	cmd.Flags().Int("poll-interval", 0, "Set poll interval in seconds (0 = default)")

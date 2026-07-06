@@ -22,6 +22,7 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // claudeTranscriptPathForTest mirrors the path resolution that the real
@@ -137,10 +138,16 @@ func claudeLastTurnIsUserForTest(path string) bool {
 // fixtures these tests use.
 type claudeFakeClient struct {
 	hasPromptCalls atomic.Int64
+	workingCalls   atomic.Int64
 	lastTurnCalls  atomic.Int64
 	title          string
 	titleCalls     atomic.Int64
 	lastTitleReq   *pb.GetChatTitleRequest
+	// limited, when true, makes DetectUsageLimit report a usage-cap banner.
+	// limitResetAt (when non-zero) is surfaced as the reset_at timestamp.
+	limited      bool
+	limitResetAt time.Time
+	limitCalls   atomic.Int64
 }
 
 func (c *claudeFakeClient) GetInfo(context.Context) (*pb.PluginInfo, error) {
@@ -189,6 +196,18 @@ func (c *claudeFakeClient) HasQuestionPrompt(_ context.Context, req *pb.HasQuest
 	c.hasPromptCalls.Add(1)
 	return &pb.HasQuestionPromptResponse{HasPrompt: statusdetect.HasQuestionPrompt(req.GetPaneContent())}, nil
 }
+func (c *claudeFakeClient) DetectUsageLimit(context.Context, *pb.DetectUsageLimitRequest) (*pb.DetectUsageLimitResponse, error) {
+	c.limitCalls.Add(1)
+	resp := &pb.DetectUsageLimitResponse{Limited: c.limited}
+	if c.limited && !c.limitResetAt.IsZero() {
+		resp.ResetAt = timestamppb.New(c.limitResetAt)
+	}
+	return resp, nil
+}
+func (c *claudeFakeClient) HasWorkingIndicator(_ context.Context, req *pb.HasWorkingIndicatorRequest) (*pb.HasWorkingIndicatorResponse, error) {
+	c.workingCalls.Add(1)
+	return &pb.HasWorkingIndicatorResponse{IsWorking: statusdetect.HasWorkingIndicator(req.GetPaneContent())}, nil
+}
 func (c *claudeFakeClient) LastTurnIsUser(_ context.Context, req *pb.LastTurnIsUserRequest) (*pb.LastTurnIsUserResponse, error) {
 	c.lastTurnCalls.Add(1)
 	path, err := claudeTranscriptPathForTest(req.GetWorkDir(), req.GetAgentSessionId())
@@ -211,6 +230,12 @@ func (c *claudeFakeClient) TranscriptExists(_ context.Context, req *pb.Transcrip
 func (c *claudeFakeClient) ReadTranscript(_ context.Context, _ *pb.ReadTranscriptRequest) (*pb.ReadTranscriptResponse, error) {
 	return &pb.ReadTranscriptResponse{}, nil
 }
+func (c *claudeFakeClient) RotationCapability(_ context.Context, _ *pb.RotationCapabilityRequest) (*pb.RotationCapabilityResponse, error) {
+	return &pb.RotationCapabilityResponse{}, nil
+}
+func (c *claudeFakeClient) MaterializeAccount(_ context.Context, _ *pb.MaterializeAccountRequest) (*pb.MaterializeAccountResponse, error) {
+	return &pb.MaterializeAccountResponse{}, nil
+}
 
 // claudeAgentClients is shorthand for the per-name registry expected by
 // NewTmuxStatusPoller. Tests pass this for the common single-agent case.
@@ -229,6 +254,10 @@ func (c *codexRecordingClient) GetInfo(context.Context) (*pb.PluginInfo, error) 
 
 func (c *codexRecordingClient) HasQuestionPrompt(context.Context, *pb.HasQuestionPromptRequest) (*pb.HasQuestionPromptResponse, error) {
 	return &pb.HasQuestionPromptResponse{HasPrompt: true}, nil
+}
+
+func (c *codexRecordingClient) DetectUsageLimit(context.Context, *pb.DetectUsageLimitRequest) (*pb.DetectUsageLimitResponse, error) {
+	return &pb.DetectUsageLimitResponse{}, nil
 }
 
 func (c *codexRecordingClient) LastTurnIsUser(_ context.Context, req *pb.LastTurnIsUserRequest) (*pb.LastTurnIsUserResponse, error) {
@@ -492,6 +521,171 @@ func TestTmuxStatusPoller_WorkingDetected(t *testing.T) {
 	}
 }
 
+func TestTmuxStatusPoller_LimitedDetected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-limited1"
+	agentSessionID := "claude-limited-1"
+	reset := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "You've hit your usage limit.\n\n❯ "},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	fake := &claudeFakeClient{limited: true, limitResetAt: reset}
+	clients := map[string]agent.AgentRunnerClient{"claude": fake}
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, clients, zerolog.Nop())
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	entry := tracker.Get(agentSessionID)
+	if entry == nil {
+		t.Fatal("expected entry after poll")
+		return
+	}
+	if entry.Status != pb.ChatStatus_CHAT_STATUS_LIMITED {
+		t.Errorf("expected LIMITED, got %v", entry.Status)
+	}
+	if !entry.ResetAt.Equal(reset) {
+		t.Errorf("expected ResetAt %v, got %v", reset, entry.ResetAt)
+	}
+}
+
+func TestTmuxStatusPoller_LimitedRevertsWhenBannerLeaves(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-limited2"
+	agentSessionID := "claude-limited-2"
+
+	captures := map[string]string{tmuxName: "You've hit your usage limit.\n\n❯ "}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: captures,
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+
+	fake := &claudeFakeClient{limited: true, limitResetAt: time.Now().Add(time.Hour)}
+	clients := map[string]agent.AgentRunnerClient{"claude": fake}
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, clients, zerolog.Nop())
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	if entry := tracker.Get(agentSessionID); entry == nil || entry.Status != pb.ChatStatus_CHAT_STATUS_LIMITED {
+		t.Fatalf("expected LIMITED on first poll, got %v", entry)
+	}
+
+	// Banner redraws away: the pane changes and DetectUsageLimit no longer
+	// reports limited. The chat must fall through to WORKING (captureChanged).
+	fake.limited = false
+	captures[tmuxName] = "Working on the next step...\n"
+	poller.pollOnce(context.Background())
+
+	entry := tracker.Get(agentSessionID)
+	if entry == nil {
+		t.Fatal("expected entry after second poll")
+		return
+	}
+	if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Errorf("expected WORKING after banner leaves, got %v", entry.Status)
+	}
+	if !entry.ResetAt.IsZero() {
+		t.Errorf("expected zero ResetAt after revert, got %v", entry.ResetAt)
+	}
+}
+
+func TestTmuxStatusPoller_LimitedMissingClientNeverLimited(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-limited3"
+	agentSessionID := "claude-limited-3"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "You've hit your usage limit.\n\n❯ "},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	// No client registered for "claude" — limitState must fail open.
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, nil, zerolog.Nop())
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	entry := tracker.Get(agentSessionID)
+	if entry == nil {
+		t.Fatal("expected entry after poll")
+		return
+	}
+	if entry.Status == pb.ChatStatus_CHAT_STATUS_LIMITED {
+		t.Errorf("missing client must never yield LIMITED, got %v", entry.Status)
+	}
+}
+
+func TestTmuxStatusPoller_Bootstrap_LimitedSeeded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-limited-boot"
+	agentSessionID := "claude-limited-boot"
+	reset := time.Now().Add(90 * time.Minute).UTC().Truncate(time.Second)
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "You've hit your usage limit.\n\n❯ "},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	fake := &claudeFakeClient{limited: true, limitResetAt: reset}
+	clients := map[string]agent.AgentRunnerClient{"claude": fake}
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, clients, zerolog.Nop())
+	poller.Bootstrap(context.Background())
+
+	entry := tracker.Get(agentSessionID)
+	if entry == nil {
+		t.Fatal("expected entry after bootstrap")
+		return
+	}
+	if entry.Status != pb.ChatStatus_CHAT_STATUS_LIMITED {
+		t.Errorf("expected LIMITED seeded on bootstrap, got %v", entry.Status)
+	}
+	if !entry.ResetAt.Equal(reset) {
+		t.Errorf("expected ResetAt %v, got %v", reset, entry.ResetAt)
+	}
+}
+
 func TestTmuxStatusPoller_RegisterChatEmptyPaneSeedsLastOutputAt(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
@@ -585,6 +779,94 @@ func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 	}
 	if !entry.LastOutputAt.Equal(lastOutputAt) {
 		t.Errorf("LastOutputAt = %v, want previous capture time %v", entry.LastOutputAt, lastOutputAt)
+	}
+}
+
+// TestTmuxStatusPoller_WorkingIndicatorKeepsWorking is the BOS-152 regression:
+// a chat whose pane is UNCHANGED and aged past IdleThreshold, but whose content
+// carries an "N shells still running" marker, must be reported WORKING, not
+// IDLE. Without the working-indicator override this pane would flip to IDLE
+// even though a background shell keeps the agent busy. It also proves the
+// HasWorkingIndicator RPC is consulted in the would-be-idle branch.
+func TestTmuxStatusPoller_WorkingIndicatorKeepsWorking(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-working-marker"
+	agentSessionID := "claude-working-marker"
+	content := "✻ Cooked for 48s · 2 shells still running"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: content},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	client := &claudeFakeClient{}
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient,
+		map[string]agent.AgentRunnerClient{"claude": client}, zerolog.Nop())
+
+	// Previous capture with identical content >IdleThreshold ago: the pane is
+	// static and would otherwise be classified IDLE.
+	poller.mu.Lock()
+	poller.prevCaptures[agentSessionID] = captureEntry{content: content, at: time.Now().Add(-10 * time.Second)}
+	poller.mu.Unlock()
+
+	poller.pollOnce(context.Background())
+
+	entry := tracker.Get(agentSessionID)
+	if entry == nil {
+		t.Fatal("expected entry after poll")
+		return
+	}
+	if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Errorf("expected WORKING (background shell running), got %v", entry.Status)
+	}
+	if client.workingCalls.Load() == 0 {
+		t.Error("expected HasWorkingIndicator to be consulted in the would-be-idle branch")
+	}
+}
+
+// TestTmuxStatusPoller_Bootstrap_WorkingIndicatorSeedsWorking mirrors the
+// pollOnce regression for daemon-restart recovery: a session restored while a
+// background shell is running must seed WORKING, not IDLE.
+func TestTmuxStatusPoller_Bootstrap_WorkingIndicatorSeedsWorking(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-boot-working-marker"
+	agentSessionID := "claude-boot-working-marker"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "✻ Cooked for 12s · 1 shell still running"},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.Bootstrap(context.Background())
+
+	entry := tracker.Get(agentSessionID)
+	if entry == nil {
+		t.Fatal("expected entry after bootstrap")
+		return
+	}
+	if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Errorf("expected WORKING (restored mid-background-shell), got %v", entry.Status)
 	}
 }
 
@@ -1344,6 +1626,12 @@ func (c *recordingAgentClient) HasQuestionPrompt(_ context.Context, _ *pb.HasQue
 	c.hasPromptCalls.Add(1)
 	return &pb.HasQuestionPromptResponse{HasPrompt: c.hasPromptResponse}, nil
 }
+func (c *recordingAgentClient) DetectUsageLimit(context.Context, *pb.DetectUsageLimitRequest) (*pb.DetectUsageLimitResponse, error) {
+	return &pb.DetectUsageLimitResponse{}, nil
+}
+func (c *recordingAgentClient) HasWorkingIndicator(_ context.Context, _ *pb.HasWorkingIndicatorRequest) (*pb.HasWorkingIndicatorResponse, error) {
+	return &pb.HasWorkingIndicatorResponse{}, nil
+}
 func (c *recordingAgentClient) LastTurnIsUser(context.Context, *pb.LastTurnIsUserRequest) (*pb.LastTurnIsUserResponse, error) {
 	return &pb.LastTurnIsUserResponse{}, nil
 }
@@ -1352,6 +1640,12 @@ func (c *recordingAgentClient) TranscriptExists(context.Context, *pb.TranscriptE
 }
 func (c *recordingAgentClient) ReadTranscript(context.Context, *pb.ReadTranscriptRequest) (*pb.ReadTranscriptResponse, error) {
 	return &pb.ReadTranscriptResponse{}, nil
+}
+func (c *recordingAgentClient) RotationCapability(context.Context, *pb.RotationCapabilityRequest) (*pb.RotationCapabilityResponse, error) {
+	return &pb.RotationCapabilityResponse{}, nil
+}
+func (c *recordingAgentClient) MaterializeAccount(context.Context, *pb.MaterializeAccountRequest) (*pb.MaterializeAccountResponse, error) {
+	return &pb.MaterializeAccountResponse{}, nil
 }
 
 // TestPollOnceDispatchesQuestionPromptByAgent proves pollOnce routes

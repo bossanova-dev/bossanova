@@ -5,6 +5,8 @@ import (
 
 	goplugin "github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	sharedplugin "github.com/recurser/bossalib/plugin"
@@ -26,9 +28,13 @@ type AgentRunner interface {
 	GetChatTitle(ctx context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error)
 	SuggestPRTitle(ctx context.Context, req *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
 	HasQuestionPrompt(ctx context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
+	DetectUsageLimit(ctx context.Context, req *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error)
+	HasWorkingIndicator(ctx context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error)
 	LastTurnIsUser(ctx context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error)
 	TranscriptExists(ctx context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error)
 	ReadTranscript(ctx context.Context, req *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error)
+	RotationCapability(ctx context.Context, req *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error)
+	MaterializeAccount(ctx context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error)
 }
 
 // AgentRunnerGRPCPlugin implements go-plugin's GRPCPlugin interface for
@@ -175,6 +181,22 @@ func (c *agentRunnerGRPCClient) HasQuestionPrompt(ctx context.Context, req *boss
 	return resp, nil
 }
 
+func (c *agentRunnerGRPCClient) DetectUsageLimit(ctx context.Context, req *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) {
+	resp := &bossanovav1.DetectUsageLimitResponse{}
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/DetectUsageLimit", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *agentRunnerGRPCClient) HasWorkingIndicator(ctx context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
+	resp := &bossanovav1.HasWorkingIndicatorResponse{}
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/HasWorkingIndicator", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
 func (c *agentRunnerGRPCClient) LastTurnIsUser(ctx context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
 	resp := &bossanovav1.LastTurnIsUserResponse{}
 	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/LastTurnIsUser", req, resp); err != nil {
@@ -194,6 +216,37 @@ func (c *agentRunnerGRPCClient) TranscriptExists(ctx context.Context, req *bossa
 func (c *agentRunnerGRPCClient) ReadTranscript(ctx context.Context, req *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
 	resp := &bossanovav1.ReadTranscriptResponse{}
 	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/ReadTranscript", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// degradeRotationCapability applies the D8 status-only degrade: a plugin that
+// does not implement RotationCapability (codes.Unimplemented) is treated as
+// non-supporting (supports_rotation=false), NOT as an error. Any other error
+// propagates unchanged.
+func degradeRotationCapability(resp *bossanovav1.RotationCapabilityResponse, err error) (*bossanovav1.RotationCapabilityResponse, error) {
+	if err != nil {
+		if grpcstatus.Code(err) == codes.Unimplemented {
+			return &bossanovav1.RotationCapabilityResponse{SupportsRotation: false}, nil
+		}
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *agentRunnerGRPCClient) RotationCapability(ctx context.Context, req *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
+	resp := &bossanovav1.RotationCapabilityResponse{}
+	err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/RotationCapability", req, resp)
+	return degradeRotationCapability(resp, err)
+}
+
+// MaterializeAccount forwards to the plugin. Unlike RotationCapability it does
+// NOT degrade Unimplemented — it is only called for agents already known to
+// support rotation, so an Unimplemented here is a real programming error.
+func (c *agentRunnerGRPCClient) MaterializeAccount(ctx context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
+	resp := &bossanovav1.MaterializeAccountResponse{}
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/MaterializeAccount", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

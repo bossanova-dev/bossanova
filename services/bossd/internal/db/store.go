@@ -37,6 +37,7 @@ type UpdateRepoParams struct {
 	CanAutoMerge           *bool
 	CanAutoMergeDependabot *bool
 	CanAutoRepair          *bool
+	CanAutoRotate          *bool
 	MergeStrategy          *models.MergeStrategy
 	LinearAPIKey           *string
 	SentryAPIKey           *string
@@ -96,10 +97,13 @@ type CreateSessionParams struct {
 	BaseBranch   string
 	AgentName    string // Agent plugin name; daemon callers should pass a resolved name. Empty falls back to "claude" for legacy callers.
 	Model        string // Opaque agent model id; "" = plugin default.
-	PRNumber     *int
-	PRURL        *string
-	TrackerID    *string
-	TrackerURL   *string
+	// AccountID binds the session to a rotation account; nil/empty = the
+	// system-default account 0 (no injected env, D9).
+	AccountID  *string
+	PRNumber   *int
+	PRURL      *string
+	TrackerID  *string
+	TrackerURL *string
 }
 
 // UpdateSessionParams holds the fields that can be updated on a session.
@@ -123,10 +127,25 @@ type UpdateSessionParams struct {
 	// nil = don't touch, *nil = clear to NULL (reset on green / auto-unblock),
 	// *val = set the SHA at which an attempt was just counted (BOS-235).
 	LastAttemptHeadSHA **string
-	ArchivedAt         **string // ISO 8601 string or nil
-	CronJobID          **string
-	HookToken          **string // double pointer: nil = don't update, *nil = clear (cleared on finalize success)
-	TmuxUnattended     *bool
+
+	// RotationAttemptCount and RotationResumeAt track account-rotation state
+	// for the headless auto-rotation feature (BOS-174).
+	RotationAttemptCount *int
+	// RotationResumeAt follows the nullable-string double-pointer convention:
+	// nil = don't touch, *nil = clear to NULL (resume due / rotation
+	// complete), *val = set the ISO 8601 resume time (mirrors
+	// LastAttemptHeadSHA).
+	RotationResumeAt **string
+
+	ArchivedAt **string // ISO 8601 string or nil
+	CronJobID  **string
+	HookToken  **string // double pointer: nil = don't update, *nil = clear (cleared on finalize success)
+	// AccountID rebinds the session to a rotation account (BOS-171 manual
+	// switch). Follows the nullable-string double-pointer convention: nil =
+	// don't touch, *nil = clear to NULL (system-default account 0), *val =
+	// bind to that account id.
+	AccountID      **string
+	TmuxUnattended *bool
 
 	// Composite display fields, updated by the DisplayStatusComputer (Step 2).
 	// Pointer-typed so a nil value means "don't touch" and a zero value means
@@ -208,6 +227,9 @@ type CreateAgentChatParams struct {
 	ProviderSessionID *string
 	AgentName         string // Agent plugin name; empty falls back to "claude".
 	Title             string
+	// AccountID binds the chat to a rotation account; nil/empty = the
+	// system-default account 0 (no injected env, D9).
+	AccountID *string
 }
 
 // AgentChatStore defines the interface for agent chat persistence.

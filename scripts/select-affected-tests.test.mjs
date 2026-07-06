@@ -62,6 +62,12 @@ test('selects scripts tests for proof recipe changes', () => {
   ])
 })
 
+test('selectTargets maps skills-toolbox changes to script tests', () => {
+  assert.deepEqual(selectTargets(['skills-toolbox/bs-epic-lib.mjs']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+  ])
+})
+
 test('selectTargets maps manifest and agent instruction changes to manifest checks', () => {
   assert.deepEqual(
     selectTargets(['AGENTS.md', 'CLAUDE.md', 'docs/testing/test-command-manifest.md']),

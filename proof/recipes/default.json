@@ -1,6 +1,30 @@
 {
   "$schema": "./schema.json",
   "version": 1,
+  "surfaces": [
+    {
+      "name": "web",
+      "kind": "browser",
+      "serviceDir": "services/web",
+      "specRoot": "tests/e2e/specs",
+      "defaultCropToSelector": "#root",
+      "stageEnv": { "VITE_E2E": "1" }
+    },
+    {
+      "name": "marketing",
+      "kind": "browser",
+      "serviceDir": "services/marketing",
+      "specRoot": "tests/e2e",
+      "defaultCropToSelector": "main"
+    },
+    {
+      "name": "docs",
+      "kind": "browser",
+      "serviceDir": "services/docs",
+      "specRoot": "tests/e2e",
+      "defaultCropToSelector": "#root"
+    }
+  ],
   "recipes": [
     {
       "id": "web-sessions",
@@ -50,6 +74,16 @@
       "privacy": "fixture",
       "route": "/sessions/sess-e2e-1",
       "viewport": { "width": 390, "height": 844 }
+    },
+    {
+      "id": "web-account-switch",
+      "surface": "web",
+      "title": "Web Account Switch",
+      "description": "Session-detail account controls: the current-account badge with the adjacent Switch account button (data-testid switch-account-button) that stops, swaps, and resumes the session under a chosen rotation account (BOS-171).",
+      "privacy": "fixture",
+      "route": "/sessions/sess-e2e-1",
+      "cropToSelector": ".sub-header-actions",
+      "viewport": { "width": 1440, "height": 1000 }
     },
     {
       "id": "web-sessions-mobile",

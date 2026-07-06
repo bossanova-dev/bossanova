@@ -51,8 +51,7 @@ export function parsePlanUploadArgs(argv) {
   return args
 }
 
-function runCommand(commandTuple) {
-  const [command, commandArgs] = commandTuple
+function defaultRunImpl([command, commandArgs]) {
   const result = spawnSync(command, commandArgs, {
     cwd: repoRoot,
     stdio: 'inherit',
@@ -63,15 +62,20 @@ function runCommand(commandTuple) {
   }
 }
 
-function main() {
-  const { file, key, dryRun } = parsePlanUploadArgs(process.argv.slice(2))
-  const bucket = process.env.BOSS_PROOF_R2_BUCKET
+export function uploadPlanFile({
+  file,
+  key,
+  env = process.env,
+  dryRun = false,
+  runImpl = defaultRunImpl,
+}) {
+  const bucket = env.BOSS_PROOF_R2_BUCKET
   if (!bucket) {
     throw new Error(
       'BOSS_PROOF_R2_BUCKET is required. Load repo-root .env first: set -a; . ./.env; set +a',
     )
   }
-  const url = planPublicUrl(process.env.BOSS_PROOF_PUBLIC_BASE_URL, key)
+  const url = planPublicUrl(env.BOSS_PROOF_PUBLIC_BASE_URL, key)
   const command = r2UploadCommand({
     bucket,
     key,
@@ -80,10 +84,15 @@ function main() {
   })
   if (dryRun) {
     console.error(`[dry-run] ${command[0]} ${command[1].join(' ')}`)
-    console.log(url)
-    return
+    return url
   }
-  runCommand(command)
+  runImpl(command)
+  return url
+}
+
+function main() {
+  const { file, key, dryRun } = parsePlanUploadArgs(process.argv.slice(2))
+  const url = uploadPlanFile({ file, key, env: process.env, dryRun })
   console.log(url)
 }
 

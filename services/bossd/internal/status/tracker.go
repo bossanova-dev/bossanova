@@ -19,6 +19,11 @@ type Entry struct {
 	Status       pb.ChatStatus
 	LastOutputAt time.Time
 	ReceivedAt   time.Time
+	// ResetAt is the usage-limit reset time, set only when Status is
+	// CHAT_STATUS_LIMITED and the banner carried a parseable reset time.
+	// Zero when unknown or the chat is not limited. Plumbed for the display
+	// layer; human-readable rendering is BOS-167.
+	ResetAt time.Time
 }
 
 // Tracker is a thread-safe in-memory cache of chat process statuses.
@@ -42,6 +47,25 @@ type Tracker struct {
 	// resolver type, and to keep this package free of cross-package
 	// imports for chat lookup.
 	onUpdate func(agentSessionID string)
+
+	// onLimitTransition, when non-nil, is fired exactly once when a chat enters
+	// CHAT_STATUS_LIMITED and exactly once when it leaves. entered is true on the
+	// enter transition (not-limited → limited) and false on the leave transition
+	// (limited → not-limited); it never fires on same-limited-state repeated
+	// polls. Wired in cmd/main.go to emit a structured audit log per transition;
+	// the durable sink is Epic 4.4.
+	onLimitTransition func(agentSessionID string, entered bool)
+
+	// onAuthChange, when non-nil, is invoked after SetAuthFailed whenever the
+	// chat's EFFECTIVE auth-failed state flips (absent/stale → fresh, or
+	// present → cleared). It is separate from onUpdate because the auth-failed
+	// overlay is an attention_status change that need not coincide with a chat
+	// STATUS change — a WORKING chat can go login-required without Update ever
+	// firing. The hook resolves agent_session_id → session and emits a
+	// SessionDelta so the cloud/web read model (fed only by the reverse stream)
+	// receives ATTENTION_REASON_AGENT_AUTH_FAILED. Fired only on a transition,
+	// so the poller's per-tick SetAuthFailed calls don't storm the stream.
+	onAuthChange func(agentSessionID string)
 }
 
 // NewTracker creates a new empty Tracker.
@@ -52,16 +76,34 @@ func NewTracker() *Tracker {
 	}
 }
 
-// Update upserts a heartbeat for the given claude ID.
+// Update upserts a heartbeat for the given claude ID. ResetAt is cleared —
+// use UpdateLimited for the CHAT_STATUS_LIMITED path that carries a reset time.
 func (t *Tracker) Update(agentSessionID string, status pb.ChatStatus, lastOutputAt time.Time) {
+	t.update(agentSessionID, status, lastOutputAt, time.Time{})
+}
+
+// UpdateLimited upserts a CHAT_STATUS_LIMITED heartbeat carrying the usage-limit
+// reset time (zero when the banner had no parseable reset). Separate from Update
+// so the common status path stays a two-value call and only the limit path
+// threads a reset time. The onUpdate hook fires on transitions into and out of
+// LIMITED because those change Status.
+func (t *Tracker) UpdateLimited(agentSessionID string, resetAt, lastOutputAt time.Time) {
+	t.update(agentSessionID, pb.ChatStatus_CHAT_STATUS_LIMITED, lastOutputAt, resetAt)
+}
+
+func (t *Tracker) update(agentSessionID string, status pb.ChatStatus, lastOutputAt, resetAt time.Time) {
 	t.mu.Lock()
 	prev, hadPrev := t.entries[agentSessionID]
 	t.entries[agentSessionID] = &Entry{
 		Status:       status,
 		LastOutputAt: lastOutputAt,
 		ReceivedAt:   time.Now(),
+		ResetAt:      resetAt,
 	}
 	hook := t.onUpdate
+	limitHook := t.onLimitTransition
+	wasLimited := hadPrev && prev.Status == pb.ChatStatus_CHAT_STATUS_LIMITED
+	isLimited := status == pb.ChatStatus_CHAT_STATUS_LIMITED
 	t.mu.Unlock()
 
 	// Fire the hook only when the status actually changed — avoids burning
@@ -69,19 +111,39 @@ func (t *Tracker) Update(agentSessionID string, status pb.ChatStatus, lastOutput
 	if hook != nil && (!hadPrev || prev.Status != status) {
 		hook(agentSessionID)
 	}
+
+	// Fire the limit-transition hook exactly once on the false→true flip and
+	// once on the true→false flip; never on same-limited-state repeated polls.
+	if limitHook != nil && wasLimited != isLimited {
+		limitHook(agentSessionID, isLimited)
+	}
 }
 
 // SetAuthFailed records or clears the login-required marker for a chat. When
 // failed is true it stamps the current time; when false it clears any existing
 // marker immediately (so a chat that logged back in stops flagging on the next
 // poll tick). Called by the tmux poller every tick with the current pane state.
+//
+// It fires onAuthChange only when the EFFECTIVE auth-failed state flips — a
+// fresh marker appearing where there was none (or a stale one), or a fresh
+// marker being cleared. Because the poller calls this every tick, gating on the
+// transition keeps the hook from re-emitting a SessionDelta on every poll while
+// the state holds steady.
 func (t *Tracker) SetAuthFailed(agentSessionID string, failed bool) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	prevAt, had := t.authFailed[agentSessionID]
+	wasFailed := had && time.Since(prevAt) <= StaleThreshold
 	if failed {
 		t.authFailed[agentSessionID] = time.Now()
 	} else {
 		delete(t.authFailed, agentSessionID)
+	}
+	hook := t.onAuthChange
+	shouldFire := (!failed && had) || (failed && !wasFailed)
+	t.mu.Unlock()
+
+	if hook != nil && shouldFire {
+		hook(agentSessionID)
 	}
 }
 
@@ -108,6 +170,25 @@ func (t *Tracker) SetOnUpdate(fn func(agentSessionID string)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.onUpdate = fn
+}
+
+// SetOnLimitTransition wires a callback fired once when a chat enters
+// CHAT_STATUS_LIMITED and once when it leaves. The wiring lives in cmd/main.go
+// and emits a structured audit log per transition. Tests usually leave this nil.
+func (t *Tracker) SetOnLimitTransition(fn func(agentSessionID string, entered bool)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onLimitTransition = fn
+}
+
+// SetOnAuthChange wires a callback fired after SetAuthFailed when the chat's
+// effective auth-failed state flips. The wiring lives in cmd/main.go and
+// resolves agent_session_id → session before emitting a SessionDelta carrying
+// the AGENT_AUTH_FAILED overlay. Tests usually leave this nil.
+func (t *Tracker) SetOnAuthChange(fn func(agentSessionID string)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onAuthChange = fn
 }
 
 // Get returns the cached entry for the given claude ID, or nil if not found
@@ -149,6 +230,7 @@ func (t *Tracker) GetBatch(agentSessionIDs []string) map[string]*Entry {
 				Status:       e.Status,
 				LastOutputAt: e.LastOutputAt,
 				ReceivedAt:   e.ReceivedAt,
+				ResetAt:      e.ResetAt,
 			}
 		}
 	}
@@ -176,6 +258,7 @@ func (t *Tracker) Snapshot() map[string]*Entry {
 			Status:       e.Status,
 			LastOutputAt: e.LastOutputAt,
 			ReceivedAt:   e.ReceivedAt,
+			ResetAt:      e.ResetAt,
 		}
 	}
 	return out
@@ -184,24 +267,39 @@ func (t *Tracker) Snapshot() map[string]*Entry {
 // Remove deletes the entry for the given claude ID.
 func (t *Tracker) Remove(agentSessionID string) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	_, hadAuthMarker := t.authFailed[agentSessionID]
 	delete(t.entries, agentSessionID)
 	delete(t.authFailed, agentSessionID)
+	hook := t.onAuthChange
+	t.mu.Unlock()
+
+	if hook != nil && hadAuthMarker {
+		hook(agentSessionID)
+	}
 }
 
 // Cleanup removes all stale entries (older than StaleThreshold).
 func (t *Tracker) Cleanup() {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	now := time.Now()
 	for id, e := range t.entries {
 		if now.Sub(e.ReceivedAt) > StaleThreshold {
 			delete(t.entries, id)
 		}
 	}
+	var clearedAuthMarkers []string
 	for id, at := range t.authFailed {
 		if now.Sub(at) > StaleThreshold {
 			delete(t.authFailed, id)
+			clearedAuthMarkers = append(clearedAuthMarkers, id)
+		}
+	}
+	hook := t.onAuthChange
+	t.mu.Unlock()
+
+	if hook != nil {
+		for _, id := range clearedAuthMarkers {
+			hook(id)
 		}
 	}
 }

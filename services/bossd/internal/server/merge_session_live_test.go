@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -164,6 +165,75 @@ func TestMergeSessionAllowsLiveApproved(t *testing.T) {
 	}
 	if !approved.mergeCalled {
 		t.Fatal("expected execution to reach the actual merge (MergePR), but the gate blocked it")
+	}
+}
+
+// TestMergeSessionAllowsEmptyCodexCommentedReview is the BOS-254 merge-gate
+// headline: a green, mergeable PR whose sole outstanding review is an empty
+// chatgpt-codex-connector[bot] COMMENTED review (the state the fixed provider
+// now returns for boilerplate-only bot reviews) must NOT be blocked — the gate
+// returns nil and execution reaches the actual merge.
+func TestMergeSessionAllowsEmptyCodexCommentedReview(t *testing.T) {
+	prov := &mergeGateProvider{
+		prStatus: &vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			Mergeable:        boolPtr(true),
+			MergeStateStatus: vcs.MergeStateStatusClean,
+		},
+		checks: []vcs.CheckResult{{
+			Status:     vcs.CheckStatusCompleted,
+			Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess),
+		}},
+		reviews: []vcs.ReviewComment{{
+			Author: "chatgpt-codex-connector[bot]",
+			Body:   "### 💡 Codex Review\n\nHere are some automated review suggestions for this pull request.",
+			State:  vcs.ReviewStateCommented,
+		}},
+		mergeErr: errors.New("merge short-circuited in test"),
+	}
+	srv := mergeGateServer(t, prov, vcs.DisplayStatusRejected)
+
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	if connect.CodeOf(err) == connect.CodeFailedPrecondition {
+		t.Fatalf("empty-codex-COMMENTED PR was rejected by the merge gate: %v", err)
+	}
+	if !prov.mergeCalled {
+		t.Fatal("expected execution to reach the actual merge (MergePR), but the gate blocked it")
+	}
+}
+
+// TestMergeSessionRejectsActionableCodexReview pins the other half of BOS-254:
+// a live actionable changes-requested review (what the fixed provider returns
+// for a codex review carrying real inline suggestions) still blocks with
+// gate=review, exactly as the get/list surface reports it.
+func TestMergeSessionRejectsActionableCodexReview(t *testing.T) {
+	prov := &mergeGateProvider{
+		prStatus: &vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			Mergeable:        boolPtr(true),
+			MergeStateStatus: vcs.MergeStateStatusBlocked,
+		},
+		checks: []vcs.CheckResult{{
+			Status:     vcs.CheckStatusCompleted,
+			Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess),
+		}},
+		reviews: []vcs.ReviewComment{{
+			Author: "chatgpt-codex-connector[bot]",
+			Body:   "handle the nil case",
+			State:  vcs.ReviewStateChangesRequested,
+		}},
+	}
+	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
+
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (err=%v)", connect.CodeOf(err), err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "merge blocked: gate=review;") {
+		t.Fatalf("error = %v, want it to contain 'merge blocked: gate=review;'", err)
+	}
+	if prov.mergeCalled {
+		t.Fatal("an actionable changes-requested PR must not reach the actual merge")
 	}
 }
 

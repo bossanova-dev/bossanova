@@ -14,7 +14,11 @@ import { normalizeRecipe, validateBrowserRoute } from './proof-lib.mjs'
 // comment-enforced "keep BYTE-IDENTICAL" duplication with import-equality.
 export { OVERLAY_CAPTION_CSS }
 
-const validSurfaces = new Set(['web', 'marketing', 'docs'])
+// Surfaces are no longer a closed allowlist (BOS-202): a consuming repo declares
+// its own via the catalog `surfaces` block, and proof.mjs passes the descriptor's
+// --spec-root/--default-crop/--stage-env in. The runner only validates the surface
+// id SHAPE (the same slug rule recipe ids use) so it stays a safe path segment.
+const validSurfacePattern = /^[a-z0-9][a-z0-9-]*$/
 const validRecipeIdPattern = /^[a-z0-9][a-z0-9-]*$/
 const VIDEO_ACTIONS = new Set(['goto', 'click', 'type', 'wait', 'scroll', 'press'])
 const DEFAULT_VIDEO_SLOWMO_MS = 350
@@ -39,12 +43,22 @@ function run(argv) {
   validateRecipe(recipe)
   fs.mkdirSync(args['output-dir'], { recursive: true })
 
-  const specDir = path.join(serviceSpecRoot(args.surface), `proof-${process.pid}`)
+  const specDir = path.join(
+    serviceSpecRoot(args['spec-root'], args.surface),
+    `proof-${process.pid}`,
+  )
   fs.mkdirSync(specDir, { recursive: true })
   const specPath = path.join(specDir, 'proof.spec.ts')
+  const stageEnv = stageEnvForArgs(args)
   fs.writeFileSync(
     specPath,
-    buildSpec({ recipe, outputDir: path.resolve(args['output-dir']), surface: args.surface }),
+    buildSpec({
+      recipe,
+      outputDir: path.resolve(args['output-dir']),
+      surface: args.surface,
+      defaultCrop: args['default-crop'],
+      stageEnv,
+    }),
   )
 
   let cleaned = false
@@ -60,7 +74,9 @@ function run(argv) {
     stdio: 'inherit',
     env: {
       ...process.env,
-      VITE_E2E: args.surface === 'web' ? '1' : process.env.VITE_E2E,
+      // The staging env (web's VITE_E2E today) arrives via --stage-env from the
+      // surface descriptor; a surface without one exports nothing extra.
+      ...(stageEnv ?? {}),
     },
   })
 
@@ -84,7 +100,7 @@ function run(argv) {
   })
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const parsed = {}
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i]
@@ -99,10 +115,20 @@ function parseArgs(argv) {
       throw new Error(`missing --${required}`)
     }
   }
-  if (!validSurfaces.has(parsed.surface)) {
+  if (!validSurfacePattern.test(parsed.surface)) {
     throw new Error(`invalid --surface: ${parsed.surface}`)
   }
   return parsed
+}
+
+export function stageEnvForArgs(args) {
+  if (args['stage-env']) {
+    return JSON.parse(args['stage-env'])
+  }
+  if (args.surface === 'web') {
+    return { VITE_E2E: '1' }
+  }
+  return undefined
 }
 
 /**
@@ -175,17 +201,17 @@ function requireVideoStepString(step, field) {
   }
 }
 
-function serviceSpecRoot(surface) {
-  // marketing (Astro) and docs (Docusaurus) keep their proof specs in tests/e2e;
-  // the web app nests them under tests/e2e/specs.
-  return path.resolve(
-    surface === 'marketing' || surface === 'docs' ? 'tests/e2e' : 'tests/e2e/specs',
-  )
+function serviceSpecRoot(specRoot, surface) {
+  // Prefer the catalog-declared spec root (passed by proof.mjs via --spec-root);
+  // fall back to the shipped convention (marketing/docs → tests/e2e, everything
+  // else → tests/e2e/specs) for direct/legacy invocations without the arg.
+  const fallback = surface === 'marketing' || surface === 'docs' ? 'tests/e2e' : 'tests/e2e/specs'
+  return path.resolve(specRoot || fallback)
 }
 
-export function buildSpec({ recipe, outputDir, surface }) {
+export function buildSpec({ recipe, outputDir, surface, defaultCrop, stageEnv }) {
   if (recipe.capture === 'video') {
-    return buildVideoSpec({ recipe, outputDir, surface })
+    return buildVideoSpec({ recipe, outputDir, surface, defaultCrop, stageEnv })
   }
   const fileName = `${recipe.id}.png`
   const target = JSON.stringify(path.join(outputDir, fileName))
@@ -195,7 +221,7 @@ export function buildSpec({ recipe, outputDir, surface }) {
   const cropToSelector = JSON.stringify(recipe.cropToSelector ?? '')
   const viewport = JSON.stringify(recipe.viewport ?? { width: 1440, height: 1000 })
   const fullPage = Boolean(recipe.fullPage)
-  const stageWeb = surface === 'web' ? webStageScript() : ''
+  const stageWeb = stageEnv ? webStageScript() : ''
   const testTitle = JSON.stringify(`proof screenshot: ${recipe.id}`)
 
   return `
@@ -238,7 +264,7 @@ test(${testTitle}, async ({ page }) => {
 `
 }
 
-function buildVideoSpec({ recipe, outputDir, surface }) {
+function buildVideoSpec({ recipe, outputDir, surface, defaultCrop, stageEnv }) {
   const webmPath = JSON.stringify(path.join(outputDir, `${recipe.id}.webm`))
   const posterPath = JSON.stringify(path.join(outputDir, `${recipe.id}.png`))
   const auditTarget = JSON.stringify(path.join(outputDir, 'audit.txt'))
@@ -247,11 +273,13 @@ function buildVideoSpec({ recipe, outputDir, surface }) {
   const viewportObj = recipe.viewport ?? { width: 1440, height: 1000 }
   const viewport = JSON.stringify(viewportObj)
 
-  // Determine the effective crop selector: recipe-level, then per-surface default.
-  const defaultCropToSelector = surface === 'marketing' ? 'main' : '#root'
+  // Determine the effective crop selector: recipe-level, then the descriptor's
+  // default crop (passed via --default-crop), then the shipped surface heuristic
+  // as a fallback for direct/legacy invocations.
+  const defaultCropToSelector = defaultCrop ?? (surface === 'marketing' ? 'main' : '#root')
   const cropToSelector = jsString(recipe.cropToSelector ?? defaultCropToSelector)
 
-  const stageWeb = surface === 'web' ? webStageScript() : ''
+  const stageWeb = stageEnv ? webStageScript() : ''
   const testTitle = JSON.stringify(`proof video: ${recipe.id}`)
   const slowMo = Number(recipe.slowMo ?? DEFAULT_VIDEO_SLOWMO_MS)
 

@@ -857,3 +857,7 @@ func TestSignalBossdProcessesSurfacesFindFailures(t *testing.T) {
 		t.Fatalf("signalBossdProcesses error = %v, want %v", err, findErr)
 	}
 }
+
+func (s *agentPreflightStub) SwitchSessionAccount(context.Context, *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+	panic("unused")
+}

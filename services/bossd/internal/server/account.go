@@ -18,9 +18,8 @@ import (
 )
 
 // liveSmokeUnavailableDetail is recorded as last_test_error and returned as the
-// TestAccount detail when no AccountSmokeRunner is wired (pre-1.5). The
-// credential still validates; only the live exec is deferred.
-const liveSmokeUnavailableDetail = "live smoke unavailable (credential materialization pending — 1.5)"
+// TestAccount detail when no AccountSmokeRunner is wired.
+const liveSmokeUnavailableDetail = "live smoke runner unavailable"
 
 // ListAccounts returns registry accounts, optionally filtered by provider.
 // Metadata only — credential blobs never cross the wire.
@@ -222,7 +221,7 @@ func (s *Server) TestAccount(ctx context.Context, req *connect.Request[pb.TestAc
 	if s.accountSmoke == nil {
 		return s.recordAndRespond(ctx, id, false, liveSmokeUnavailableDetail)
 	}
-	if err := s.accountSmoke.Smoke(ctx, provider, blob); err != nil {
+	if err := s.accountSmoke.Smoke(ctx, id, provider, blob); err != nil {
 		return s.recordAndRespond(ctx, id, true, err.Error())
 	}
 	return s.recordAndRespond(ctx, id, true, "")
@@ -261,9 +260,9 @@ func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan b
 }
 
 // validateCredentialBlob checks a stored credential is well-formed for its
-// provider. This is a credential-plane sanity check only — full materialization
-// (and the real live exec) lands in 1.5. claude: a non-empty setup-token
-// string. codex: JSON carrying access/refresh/id_token keys.
+// provider before the live smoke runner spends a provider invocation on it.
+// claude: a non-empty setup-token string. codex: JSON carrying
+// access/refresh/id_token keys.
 func validateCredentialBlob(provider string, blob []byte) error {
 	switch models.AccountProvider(provider) {
 	case models.AccountProviderClaude:

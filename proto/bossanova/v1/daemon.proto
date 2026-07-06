@@ -37,6 +37,11 @@ service DaemonService {
   rpc RemoveSession(RemoveSessionRequest) returns (RemoveSessionResponse);
   rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
   rpc LinkSessionPR(LinkSessionPRRequest) returns (LinkSessionPRResponse);
+  // SwitchSessionAccount stops the session's live chat, rebinds the session to
+  // the chosen rotation account, and brings the chat back up under it —
+  // resuming the prior conversation cross-account when feasible, else fresh.
+  // A mid-turn (WORKING) chat is refused unless force is set (operator confirm).
+  rpc SwitchSessionAccount(SwitchSessionAccountRequest) returns (SwitchSessionAccountResponse);
 
   // Archive / resurrect
   rpc ArchiveSession(ArchiveSessionRequest) returns (ArchiveSessionResponse);
@@ -300,6 +305,11 @@ message CreateSessionRequest {
   // If true, bypass the tracker-issue dedup guard and create a second session
   // for a tracker/PR/branch that already has an active one (BOS-236 escape hatch).
   bool force = 17;
+  // account_id binds the session to a rotation account. Presence matters: absent
+  // applies the default-account policy; present-and-empty ("") is an explicit
+  // system-default account 0 opt-out (no injected env, D9); present-and-non-empty
+  // binds that account.
+  optional string account_id = 18;
 }
 
 message CreateSessionResponse {
@@ -447,6 +457,19 @@ message LinkSessionPRRequest {
 
 message LinkSessionPRResponse {
   Session session = 1;
+}
+
+message SwitchSessionAccountRequest {
+  string session_id = 1;
+  string account_id = 2;                 // target account id; "" = system default ("account 0")
+  optional string agent_session_id = 3;  // which chat to switch; if unset, the session's primary live chat
+  bool force = 4;                        // interrupt a mid-turn (WORKING) chat
+}
+
+message SwitchSessionAccountResponse {
+  bool resumed = 1;
+  string target_label = 2;
+  string notice_text = 3;
 }
 
 // --- Archive / Resurrect ---

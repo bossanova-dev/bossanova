@@ -14,13 +14,15 @@ import {
   linearIdFromBranch,
   parsePrNumbers,
   previousVersionTag,
+  releaseDate,
   renderFrontmatter,
+  resolveRepo,
   stripHtmlTags,
   summaryFromBody,
 } from './changelog/lib.mjs'
 
 const MODEL = 'claude-sonnet-4-6'
-const REPO = 'bossanova-dev/bossanova'
+const REPO = resolveRepo(process.env)
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const OUT_DIR = resolve(ROOT, 'services/marketing/src/content/changelog')
 
@@ -112,8 +114,21 @@ async function generateOne(version) {
     console.log(`[changelog] ${entryFilename(version)} already exists, skipping`)
     return
   }
-  const rel = JSON.parse(gh(['api', `repos/${REPO}/releases/tags/${tag}`]))
-  const date = new Date(rel.published_at || rel.created_at)
+  // Defense-in-depth: the GitHub Release may not exist yet at changelog time
+  // (or ever, for a manual backfill). A missing release must never abort
+  // generation — log a non-blocking warning and fall back to the current date,
+  // then continue synthesizing from the compare range.
+  let rel = null
+  try {
+    rel = JSON.parse(gh(['api', `repos/${REPO}/releases/tags/${tag}`]))
+  } catch (err) {
+    console.warn(
+      `[changelog] no GitHub release for ${tag} yet; using current date (non-blocking): ${err.message}`,
+    )
+  }
+  // releaseDate is pure + unit-tested (changelog/lib.mjs): published_at ||
+  // created_at || now, always a valid Date so renderFrontmatter can't throw.
+  const date = releaseDate(rel)
   const { prs, commits } = prsAndCommitsInRange(previousTag(tag), tag)
   const tickets = await fetchTickets(prs)
   // Sanitize the model output before it is committed and deployed to the public

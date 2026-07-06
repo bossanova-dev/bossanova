@@ -312,20 +312,24 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// Step 6: spawn the tmux session. Cron-spawned sessions get BOSS_CRON=true
 	// (and job id/name) in the session environment so the agent — and any skill
 	// it runs — can detect that it is an unattended, autonomous run.
-	// Overlay the allowlisted proof env (proof credentials + non-secret
-	// proof constants) onto the managed BOSS_* env so the agentic proof
+	// The session environment merges three layers with precedence managed
+	// (BOSS_*) > account > proof: the allowlisted proof env (proof
+	// credentials + non-secret proof constants) so the agentic proof
 	// pipeline can run in this chat — including unattended cron worktrees,
-	// which reach here and nowhere else. Managed BOSS_* keys win on
-	// conflict; secrets are never placed on SessionFacts (which feeds the
-	// system prompt) and never logged. The worktree's repo-local .env is
-	// overlaid beneath everything (dotenv.Overlay: absent .env is a no-op)
-	// so ${VAR} expansions in the worktree's .mcp.json resolve like they
-	// would in a developer's direnv shell.
+	// which reach here and nowhere else — and, beneath managed but above
+	// proof, an account env overlay for account rotation (empty/no-op in
+	// this ticket; BOS-170 wires real per-session account binding). Managed
+	// BOSS_* keys always win on conflict; secrets are never placed on
+	// SessionFacts (which feeds the system prompt) and never logged. The
+	// worktree's repo-local .env is overlaid beneath everything
+	// (dotenv.Overlay: absent .env is a no-op) so ${VAR} expansions in the
+	// worktree's .mcp.json resolve like they would in a developer's direnv
+	// shell.
 	if err := l.tmux.NewSession(ctx, tmux.NewSessionOpts{
 		Name:    tmuxName,
 		WorkDir: sess.WorktreePath,
 		Command: cmdResp.Argv,
-		Env:     dotenv.Overlay(mergeEnv(ManagedSessionEnv(sess, agentSessionID, sess.AgentName), l.resolveProofEnv()), sess.WorktreePath),
+		Env:     dotenv.Overlay(mergeSessionEnv(ManagedSessionEnv(sess, agentSessionID, sess.AgentName), l.resolveAccountEnv(ctx, sess), l.resolveProofEnv()), sess.WorktreePath),
 	}); err != nil {
 		return "", fmt.Errorf("create tmux session %q: %w", tmuxName, err)
 	}
@@ -771,7 +775,7 @@ func agentLogPathFor(agentLogsDir, agentSessionID string) string {
 
 // startTmuxChat is a thin wrapper around StartTmuxChat that supplies the
 // tmux-hosted prompt (the session plan) and a title. A cron session keeps its
-// `Run "<cron name>"` title; a tmux_unattended session (e.g. /bs-epic) uses the
+// `Run "<cron name>"` title; a tmux_unattended session (e.g. /boss-epic) uses the
 // plain session title. All actual lifecycle work — tmux spawn, agent_chats row,
 // idempotency, cleanup — lives in StartTmuxChat.
 func (l *Lifecycle) startTmuxChat(
@@ -827,7 +831,7 @@ func isCronSession(sess *models.Session) bool {
 }
 
 // isUnattendedSession reports whether a session runs autonomously with no human
-// in the loop — a scheduled cron job OR a tmux_unattended session (e.g. /bs-epic).
+// in the loop — a scheduled cron job OR a tmux_unattended session (e.g. /boss-epic).
 // Cron-job scheduler bookkeeping stays keyed on CronJobID; this predicate governs
 // autonomy: env (BOSS_CRON), the autonomy directive, headless-finalize exclusion,
 // and completion-gate eligibility.

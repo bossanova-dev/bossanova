@@ -33,7 +33,7 @@ var writeToolNames = []string{
 	"update_session", "link_session_pr", "record_chat", "update_chat_title",
 	"wake_chat", "report_chat_status", "create_cron_job", "update_cron_job",
 	"run_cron_job_now", "add_account", "update_account", "test_account",
-	"send_chat_message",
+	"send_chat_message", "switch_account",
 	// destructive
 	"remove_repo", "close_session", "merge_session", "remove_session",
 	"archive_session", "resurrect_session", "delete_chat", "empty_trash",

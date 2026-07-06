@@ -62,6 +62,14 @@ func (f *fakeAgentClient) GetChatTitle(context.Context, *bossanovav1.GetChatTitl
 func (f *fakeAgentClient) HasQuestionPrompt(context.Context, *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
 	return &bossanovav1.HasQuestionPromptResponse{}, nil
 }
+
+func (f *fakeAgentClient) DetectUsageLimit(context.Context, *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) {
+	return &bossanovav1.DetectUsageLimitResponse{}, nil
+}
+
+func (f *fakeAgentClient) HasWorkingIndicator(context.Context, *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
+	return &bossanovav1.HasWorkingIndicatorResponse{}, nil
+}
 func (f *fakeAgentClient) LastTurnIsUser(context.Context, *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
 	return &bossanovav1.LastTurnIsUserResponse{}, nil
 }
@@ -70,6 +78,12 @@ func (f *fakeAgentClient) TranscriptExists(context.Context, *bossanovav1.Transcr
 }
 func (f *fakeAgentClient) ReadTranscript(context.Context, *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
 	return &bossanovav1.ReadTranscriptResponse{}, nil
+}
+func (f *fakeAgentClient) RotationCapability(context.Context, *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
+	return &bossanovav1.RotationCapabilityResponse{}, nil
+}
+func (f *fakeAgentClient) MaterializeAccount(context.Context, *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
+	return &bossanovav1.MaterializeAccountResponse{}, nil
 }
 
 func TestPluginRunner_Start_ResolvesLogPath(t *testing.T) {

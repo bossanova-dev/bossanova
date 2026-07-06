@@ -1,6 +1,6 @@
-// Content/contract test for the bs-plan skill (BOS-147).
+// Content/contract test for the boss-plan skill (BOS-147).
 //
-// bs-plan's headless (BOSS_CRON=true) path isolates recon + plan drafting into ONE
+// boss-plan's headless (BOSS_CRON=true) path isolates recon + plan drafting into ONE
 // awaited general-purpose subagent that returns only a plan-file path + bounded
 // metadata, and splits mode-exclusive prose into references/. This test follows the
 // BOS-144 content-test file pattern (scripts/bs-<skill>-skill.test.mjs, wired into
@@ -20,17 +20,17 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { DISPATCH_FAILURE } from './bs-run-sentinel.mjs'
+import { DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
 
-const SKILL = read('../.claude/skills/bs-plan/SKILL.md')
-const CODEX = read('../.codex/skills/bs-plan/SKILL.md')
-const INTERACTIVE = read('../.claude/skills/bs-plan/references/interactive-mode.md')
-const BRIEF = read('../.claude/skills/bs-plan/references/headless-drafting-brief.md')
-const CODEX_INTERACTIVE = read('../.codex/skills/bs-plan/references/interactive-mode.md')
-const CODEX_BRIEF = read('../.codex/skills/bs-plan/references/headless-drafting-brief.md')
+const SKILL = read('../.claude/skills/boss-plan/SKILL.md')
+const CODEX = read('../.codex/skills/boss-plan/SKILL.md')
+const INTERACTIVE = read('../.claude/skills/boss-plan/references/interactive-mode.md')
+const BRIEF = read('../.claude/skills/boss-plan/references/headless-drafting-brief.md')
+const CODEX_INTERACTIVE = read('../.codex/skills/boss-plan/references/interactive-mode.md')
+const CODEX_BRIEF = read('../.codex/skills/boss-plan/references/headless-drafting-brief.md')
 
 const count = (body, needle) => body.split(needle).length - 1
 
@@ -46,7 +46,7 @@ function sectionBetween(body, startMarker, endMarker) {
 const REFERENCE_TABLE = sectionBetween(SKILL, '## On-demand references', '\n## Phase 0')
 const INTERACTIVE_SECTION = sectionBetween(
   SKILL,
-  '### Interactive (default `/bs-plan`)',
+  '### Interactive (default `/boss-plan`)',
   '\n### Headless',
 )
 const HEADLESS_SECTION = sectionBetween(
@@ -56,7 +56,7 @@ const HEADLESS_SECTION = sectionBetween(
 )
 const PHASE_4_SECTION = sectionBetween(
   SKILL,
-  '## Phase 4 — Upload to R2 and write back to Linear',
+  '## Phase 4 — Publish the plan and write back to the tracker',
   '\n## Phase 5',
 )
 
@@ -244,7 +244,7 @@ test('the SKILL carries the bulk-output-discipline block', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Byte-identical Linear description section contract (bs-implement/bs-sweep-plan consume it).
+// Byte-identical Linear description section contract (boss-implement/bs-sweep-plan consume it).
 // ---------------------------------------------------------------------------
 
 test('the resident body documents the byte-identical description section contract', () => {
@@ -363,7 +363,7 @@ test('the resident body does not duplicate the full drafting spec', () => {
 
 test('the resident SKILL.md body stays under the ratchet, below the pre-split baseline', () => {
   const PRE_SPLIT_BASELINE = 25548 // bytes, the hand-written body before this split
-  const RATCHET = 25344 // pinned ceiling: just above the post-split size, below baseline
+  const RATCHET = 25531 // pinned ceiling: post-split size + BOS-205's Phase 4 publish/tracker adapter seam (re-baselined after aggressive reclaim; still 17B below the pre-split baseline)
   assert.ok(
     RATCHET < PRE_SPLIT_BASELINE,
     'the ratchet ceiling must sit below the pre-split baseline',
@@ -382,7 +382,7 @@ test('the resident SKILL.md body stays under the ratchet, below the pre-split ba
 test('the .codex mirror is regenerated from the full .claude skill body', () => {
   assert.equal(
     CODEX,
-    rewriteClaudeSkillMarkdown(SKILL, '.claude/skills/bs-plan/SKILL.md'),
+    rewriteClaudeSkillMarkdown(SKILL, '.claude/skills/boss-plan/SKILL.md'),
     'codex SKILL.md mirror must equal the generated rewrite of the full claude skill',
   )
 })

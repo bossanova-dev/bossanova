@@ -62,15 +62,16 @@ func (m *NewSessionModel) trackerSourceLabel() string {
 type newSessionPhase int
 
 const (
-	newSessionPhaseLoading     newSessionPhase = iota // Fetching repos
-	newSessionPhaseRepoSelect                         // Table-based repo picker
-	newSessionPhaseAgentSelect                        // Table-based agent picker (multi-agent installs)
-	newSessionPhaseTypeSelect                         // Table-based session type picker
-	newSessionPhasePRSelect                           // Table-based PR picker
-	newSessionPhaseIssueSelect                        // Table-based issue picker (Linear)
-	newSessionPhaseForm                               // Main huh form active
-	newSessionPhaseCreating                           // Waiting for CreateSession RPC
-	newSessionPhaseDone                               // Terminal
+	newSessionPhaseLoading       newSessionPhase = iota // Fetching repos
+	newSessionPhaseRepoSelect                           // Table-based repo picker
+	newSessionPhaseAgentSelect                          // Table-based agent picker (multi-agent installs)
+	newSessionPhaseAccountSelect                        // Table-based account picker (provider has ≥1 registered account)
+	newSessionPhaseTypeSelect                           // Table-based session type picker
+	newSessionPhasePRSelect                             // Table-based PR picker
+	newSessionPhaseIssueSelect                          // Table-based issue picker (Linear)
+	newSessionPhaseForm                                 // Main huh form active
+	newSessionPhaseCreating                             // Waiting for CreateSession RPC
+	newSessionPhaseDone                                 // Terminal
 )
 
 // reposMsg carries the result of a ListRepos RPC call.
@@ -246,6 +247,33 @@ type NewSessionModel struct {
 	filterAgentsBySettings bool
 	agentTable             table.Model
 
+	// Accounts drive the per-session account-select phase, shown after the
+	// agent is chosen when the provider has ≥1 registered rotation account and
+	// no CLI override was supplied. accounts is loaded lazily (provider-scoped)
+	// at the agent→account transition. selectedAccount is the confirmed account
+	// id ("" = system default / account 0). initialAccount is the `--account`
+	// CLI override that bypasses the picker.
+	accounts        []*pb.Account
+	accountTable    table.Model
+	selectedAccount string
+	initialAccount  string
+	// initialAccountSet records whether the `--account` flag was present at all
+	// (even as an empty string). It distinguishes an explicit `--account=`
+	// opt-out to account 0 from an omitted flag: only the former binds account 0
+	// and skips the picker/default-account policy.
+	initialAccountSet bool
+	// accountPicked is true once the user confirms a row in the account picker.
+	// It distinguishes an explicit "System default (account 0)" choice
+	// (selectedAccount == "", accountPicked == true → send an empty account_id so
+	// the daemon binds account 0 and skips the default-account policy) from the
+	// bypass/degrade cases (accountPicked == false → omit account_id so the daemon
+	// applies its default-account policy).
+	accountPicked bool
+
+	// accountLister lists registered accounts for a provider (agent). When nil
+	// the model falls back to the daemon client. Injected for tests.
+	accountLister func(provider string) ([]*pb.Account, error)
+
 	// Tables
 	repoTable table.Model
 	typeTable table.Model
@@ -319,6 +347,30 @@ func (m *NewSessionModel) SetAgentSettings(settings config.Settings) {
 // SetAgentSelectionHandler registers a callback for confirmed picker choices.
 func (m *NewSessionModel) SetAgentSelectionHandler(fn func(string) error) {
 	m.onAgentSelected = fn
+}
+
+// SetInitialAccount overrides the account for the session created by this
+// wizard, bypassing the account picker. Empty means "system default" — the
+// daemon applies its default-account policy when the request omits account_id.
+func (m *NewSessionModel) SetInitialAccount(account string) {
+	m.initialAccount = account
+	m.initialAccountSet = true
+}
+
+// SetAccountLister injects a provider-scoped account lister, used by tests to
+// drive the account-select phase without a live daemon. When unset the model
+// lists accounts via its daemon client.
+func (m *NewSessionModel) SetAccountLister(fn func(provider string) ([]*pb.Account, error)) {
+	m.accountLister = fn
+}
+
+// listAccounts returns the registered accounts for a provider (agent name),
+// preferring the injected lister and falling back to the daemon client.
+func (m *NewSessionModel) listAccounts(provider string) ([]*pb.Account, error) {
+	if m.accountLister != nil {
+		return m.accountLister(provider)
+	}
+	return m.client.ListAccounts(m.ctx, provider)
 }
 
 func (m NewSessionModel) Init() tea.Cmd {
@@ -485,6 +537,100 @@ func (m NewSessionModel) filterEnabledAgents(agents []client.AgentInfo) []client
 		}
 	}
 	return out
+}
+
+// accountRowLabel renders an account's picker label, falling back to the id
+// when it has no human-facing label.
+func accountRowLabel(a *pb.Account) string {
+	if a.GetLabel() != "" {
+		return a.GetLabel()
+	}
+	return a.GetId()
+}
+
+// buildAccountTable populates m.accountTable from m.accounts. The first row is
+// always "System default (account 0)" mapping to "" (the daemon's
+// default-account policy); the remaining rows are the provider's registered
+// accounts (label / provider / status). Mirrors buildAgentTable.
+func (m *NewSessionModel) buildAccountTable() {
+	labels := make([]string, len(m.accounts)+1)
+	providers := make([]string, len(m.accounts)+1)
+	statuses := make([]string, len(m.accounts)+1)
+	labels[0] = "System default (account 0)"
+	for i, a := range m.accounts {
+		labels[i+1] = accountRowLabel(a)
+		providers[i+1] = a.GetProvider()
+		statuses[i+1] = a.GetStatus()
+	}
+
+	cols := []table.Column{
+		cursorColumn,
+		{Title: "ACCOUNT", Width: maxColWidth("ACCOUNT", labels, 30) + tableColumnSep},
+		{Title: "PROVIDER", Width: maxColWidth("PROVIDER", providers, 12) + tableColumnSep},
+		{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 12) + tableColumnSep},
+	}
+
+	rows := make([]table.Row, len(labels))
+	for i := range labels {
+		indicator := ""
+		if i == 0 {
+			indicator = cursorChevron
+		}
+		rows[i] = table.Row{indicator, labels[i], providers[i], styleSubtle.Render(statuses[i])}
+	}
+
+	m.accountTable = newBossTable(cols, rows, len(rows)+1)
+	m.accountTable.SetCursor(0)
+	m.accountTable.SetWidth(columnsWidth(cols))
+}
+
+// enterAccountSelectOrSkip decides whether to show the account picker before
+// the session-type chooser. It returns true (and switches phase to
+// newSessionPhaseAccountSelect) only when the chosen provider has ≥1 registered
+// account and no `--account` override was supplied. In every skip case it
+// resolves m.selectedAccount and leaves the caller to advance to type select:
+//   - `--account` override: honour it as the bound account, skip the picker.
+//   - no agent/provider decided yet: cannot scope accounts, bind system default.
+//   - lister error / errLocalOnly (remote client) / empty list: bind system
+//     default (account 0).
+func (m *NewSessionModel) enterAccountSelectOrSkip() bool {
+	if m.initialAccountSet {
+		// An explicit `--account` override (even `--account=`) bypasses the
+		// picker. A present-empty override is the account-0 opt-out, so mark it
+		// picked to send a present-empty account_id and skip the policy.
+		m.selectedAccount = m.initialAccount
+		if m.initialAccount == "" {
+			m.accountPicked = true
+		}
+		return false
+	}
+	if m.initialAgent == "" {
+		m.selectedAccount = ""
+		return false
+	}
+	accounts, err := m.listAccounts(m.initialAgent)
+	if err != nil || len(accounts) == 0 {
+		m.selectedAccount = ""
+		m.accounts = nil
+		return false
+	}
+	m.accounts = accounts
+	m.selectedAccount = ""
+	m.phase = newSessionPhaseAccountSelect
+	m.buildAccountTable()
+	return true
+}
+
+// advanceToAccountOrType routes into the account picker when applicable, else
+// straight to the session-type chooser. Returns the updated model so callers
+// can hand it back to bubbletea directly.
+func (m *NewSessionModel) advanceToAccountOrType() NewSessionModel {
+	if m.enterAccountSelectOrSkip() {
+		return *m
+	}
+	m.phase = newSessionPhaseTypeSelect
+	m.buildTypeTable()
+	return *m
 }
 
 func (m *NewSessionModel) buildTypeTable() {
@@ -760,6 +906,10 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.agents) == 1 {
 				m.initialAgent = m.agents[0].Name
 				m.preferredAgent = m.initialAgent
+				// Now that a provider is known, the account picker may apply.
+				if m.enterAccountSelectOrSkip() {
+					return m, nil
+				}
 			}
 		}
 		return m, nil
@@ -921,8 +1071,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.err = err
 						}
 					}
-					m.phase = newSessionPhaseTypeSelect
-					m.buildTypeTable()
+					return m.advanceToAccountOrType(), nil
 				}
 				return m, nil
 			}
@@ -933,13 +1082,56 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		if m.phase == newSessionPhaseAccountSelect {
+			switch msg.String() {
+			case "esc":
+				// Retreat to the previous picker: agent select if it ran,
+				// else repo select, else cancel.
+				if len(m.agents) > 1 {
+					m.phase = newSessionPhaseAgentSelect
+					m.buildAgentTable()
+					return m, nil
+				}
+				if len(m.repos) > 1 {
+					m.phase = newSessionPhaseRepoSelect
+					return m, nil
+				}
+				m.cancel = true
+				return m, nil
+			case "enter", " ", "space":
+				idx := m.accountTable.Cursor()
+				// Row 0 is "System default" mapping to "". Rows 1..N map to
+				// m.accounts[idx-1]. Mark the choice as an explicit pick so an
+				// empty selection is sent as account 0 (opt out of the policy)
+				// rather than an omitted account_id.
+				if idx <= 0 || idx > len(m.accounts) {
+					m.selectedAccount = ""
+				} else {
+					m.selectedAccount = m.accounts[idx-1].GetId()
+				}
+				m.accountPicked = true
+				m.phase = newSessionPhaseTypeSelect
+				m.buildTypeTable()
+				return m, nil
+			}
+
+			var cmd tea.Cmd
+			m.accountTable, cmd = m.accountTable.Update(msg)
+			updateCursorColumn(&m.accountTable)
+			return m, cmd
+		}
+
 		if m.phase == newSessionPhaseTypeSelect {
 			switch msg.String() {
 			case "esc":
-				// Go back to the most-recent picker. Agent select takes
-				// priority — if it ran, the user expects esc to undo that
-				// pick before retreating further. Otherwise fall back to
-				// repo select if multiple repos exist; else cancel.
+				// Go back to the most-recent picker. Account select (if it
+				// ran) takes priority, then agent select, then repo select;
+				// else cancel.
+				if len(m.accounts) > 0 {
+					m.phase = newSessionPhaseAccountSelect
+					m.buildAccountTable()
+					return m, nil
+				}
 				if len(m.agents) > 1 {
 					m.phase = newSessionPhaseAgentSelect
 					m.buildAgentTable()
@@ -1124,9 +1316,7 @@ func (m *NewSessionModel) advanceFromRepo() NewSessionModel {
 		m.initialAgent = m.agents[0].Name
 		m.preferredAgent = m.initialAgent
 	}
-	m.phase = newSessionPhaseTypeSelect
-	m.buildTypeTable()
-	return *m
+	return m.advanceToAccountOrType()
 }
 
 func (m *NewSessionModel) advanceFromTypeSelect() (tea.Model, tea.Cmd) {
@@ -1219,6 +1409,17 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 		// not the model field (which may be mutated later).
 		agent := m.initialAgent
 		req.AgentName = &agent
+	}
+	if m.selectedAccount != "" || m.accountPicked {
+		// Copy to a local so req.AccountId points at request-owned memory.
+		//   - selectedAccount != "": an explicit account (picker row or --account).
+		//   - selectedAccount == "" && accountPicked: the user explicitly chose
+		//     "System default (account 0)" — send an empty account_id so the
+		//     daemon binds account 0 and skips the default-account policy.
+		// When neither holds (a bypass/degrade case), account_id stays unset and
+		// the daemon applies its default-account policy.
+		account := m.selectedAccount
+		req.AccountId = &account
 	}
 
 	switch m.selectedType {
@@ -1316,6 +1517,18 @@ func (m NewSessionModel) View() tea.View {
 			"Multiple agents are installed — pick one for this session."))
 		b.WriteString("\n\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.agentTable.View()))
+		b.WriteString("\n")
+		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
+		return tea.NewView(b.String())
+	}
+
+	if m.phase == newSessionPhaseAccountSelect {
+		var b strings.Builder
+		b.WriteString(m.headerView())
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render(
+			"Pick an account for this session (or the system default)."))
+		b.WriteString("\n\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.accountTable.View()))
 		b.WriteString("\n")
 		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
 		return tea.NewView(b.String())

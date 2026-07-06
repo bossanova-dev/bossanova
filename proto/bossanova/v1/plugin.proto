@@ -449,10 +449,25 @@ service AgentRunnerService {
   // change detection.
   rpc HasQuestionPrompt(HasQuestionPromptRequest) returns (HasQuestionPromptResponse);
 
+  // HasWorkingIndicator scans pane content for the agent's TUI grammar that
+  // signals "still actively working" (e.g. a running background shell or an
+  // active spinner), even when the pane is otherwise static. Plugin owns its
+  // grammar; the daemon uses it to keep a busy-but-static pane from flipping
+  // idle. Consulted only in the would-be-idle branch, so active chats pay no
+  // extra RPC.
+  rpc HasWorkingIndicator(HasWorkingIndicatorRequest) returns (HasWorkingIndicatorResponse);
+
   // LastTurnIsUser reports whether the most recent meaningful turn in the
   // agent's transcript is a user message (not a tool-result-only entry).
   // Used to suppress the QUESTION status when the user has already replied.
   rpc LastTurnIsUser(LastTurnIsUserRequest) returns (LastTurnIsUserResponse);
+
+  // DetectUsageLimit scans pane content for the agent's usage-cap banner in
+  // the CLI-owned status region below the bottom-most prompt marker. Plugin
+  // owns the per-agent banner grammar; the daemon owns the LIMITED status
+  // transition and reset-time plumbing. Fail-safe: no status-region match =>
+  // limited=false. reset_at is absent when no reset time is parseable.
+  rpc DetectUsageLimit(DetectUsageLimitRequest) returns (DetectUsageLimitResponse);
 
   // TranscriptExists reports whether a non-empty transcript file is present
   // on disk for (work_dir, agent_session_id). Used by wake-up logic to
@@ -463,6 +478,30 @@ service AgentRunnerService {
   // its messages plus the derived final assistant message. Each plugin resolves
   // the transcript path the same way it does for TranscriptExists.
   rpc ReadTranscript(ReadTranscriptRequest) returns (ReadTranscriptResponse);
+
+  // RotationCapability reports whether this agent supports account rotation and,
+  // if so, how its credentials are injected (an env token like
+  // CLAUDE_CODE_OAUTH_TOKEN, or a per-account home dir like CODEX_HOME). Agents
+  // that do not implement it (codes.Unimplemented) degrade to status-only:
+  // supports_rotation=false, never an error.
+  rpc RotationCapability(RotationCapabilityRequest) returns (RotationCapabilityResponse);
+
+  // MaterializeAccount turns an opaque, provider-specific credential blob into a
+  // concrete process-credential spec: an environment overlay (e.g.
+  // CLAUDE_CODE_OAUTH_TOKEN) and/or home-dir files (e.g. codex auth.json) plus
+  // the env key that must point at that home dir (home_dir_env_key, e.g.
+  // CODEX_HOME). Only the owning plugin ever sees its provider's blob. The blob
+  // and all returned secret material are NEVER logged.
+  //
+  // codex note: the returned home-dir spec assumes a BASE-SEEDED codex home —
+  // the per-account dir must have its sessions/ (and session_index.jsonl) shared
+  // or symlinked from a shared base home, with only auth.json written fresh.
+  // BOS-158 proved a per-account home whose sessions/ lacks the rollout fails
+  // fast (thread/resume: no rollout found ... code -32600). Seeding sessions/ is
+  // BOS-162's credmaterialize executor's job, NOT this RPC's; MaterializeAccount
+  // returns only auth.json + HomeDirEnvKey=CODEX_HOME. See
+  // docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
+  rpc MaterializeAccount(MaterializeAccountRequest) returns (MaterializeAccountResponse);
 }
 
 message AgentRunnerServiceGetInfoRequest {}
@@ -477,10 +516,11 @@ message StartAgentRunRequest {
   string session_id = 4;   // empty = plugin generates
   string log_path = 5;     // bossd-owned, openat(O_NOFOLLOW)
   string model = 6;        // opaque agent model id; "" = plugin default. Never enumerated by bossd.
-  // extra_env is an allowlisted, daemon-resolved environment overlay
-  // (proof credentials + non-secret proof constants) applied to the
-  // spawned agent process on top of the inherited environment. Values are
-  // NEVER logged by bossd or the plugin — treat as secret-bearing.
+  // extra_env is an allowlisted, daemon-resolved environment overlay applied to
+  // the spawned agent process on top of the inherited environment. It carries
+  // proof credentials/constants AND (for account rotation) the account's env
+  // overlay (e.g. CLAUDE_CODE_OAUTH_TOKEN / CODEX_HOME). Values are NEVER logged
+  // by bossd or the plugin — treat as secret-bearing.
   map<string, string> extra_env = 7;
 }
 message StartAgentRunResponse {
@@ -505,6 +545,15 @@ message AgentExitStatusRequest {
 message AgentExitStatusResponse {
   bool is_complete = 1;
   string exit_error = 2; // empty on clean exit
+  // failure_class is the shared agenterr taxonomy string (e.g.
+  // "usage_exhausted", "auth_invalidated") when the plugin classified the
+  // exit as a known cap/auth failure; unset otherwise. Read-only signal —
+  // the daemon logs it and (later) reacts, but exit_error is untouched.
+  optional string failure_class = 3;
+  // reset_at is the parsed usage-cap reset time, set only alongside a
+  // "usage_exhausted" failure_class when the banner carried a parseable
+  // reset. Unset when unknown.
+  optional google.protobuf.Timestamp reset_at = 4;
 }
 
 message ConfigureFinalizeHookRequest {
@@ -623,6 +672,21 @@ message HasQuestionPromptResponse {
   bool has_prompt = 1;
 }
 
+message DetectUsageLimitRequest {
+  bytes pane_content = 1;
+}
+message DetectUsageLimitResponse {
+  bool limited = 1;
+  optional google.protobuf.Timestamp reset_at = 2;
+}
+
+message HasWorkingIndicatorRequest {
+  bytes pane_content = 1;
+}
+message HasWorkingIndicatorResponse {
+  bool is_working = 1;
+}
+
 message LastTurnIsUserRequest {
   string work_dir = 1;
   string agent_session_id = 2;
@@ -648,6 +712,49 @@ message ReadTranscriptResponse {
   repeated ChatMessage messages = 1;
   string final_assistant_text = 2; // last assistant turn, flattened — the "result"
   bool exists = 3;                 // false when no transcript file is found
+}
+
+// AuthKind identifies how an agent's per-account credential is injected into a
+// spawned process. Reported by RotationCapability.
+enum AuthKind {
+  AUTH_KIND_UNSPECIFIED = 0;
+  // Agent does not support rotation.
+  AUTH_KIND_NONE = 1;
+  // Credential is a single environment token (e.g. CLAUDE_CODE_OAUTH_TOKEN).
+  AUTH_KIND_ENV_TOKEN = 2;
+  // Credential is a per-account home directory (e.g. CODEX_HOME) containing
+  // auth material on disk.
+  AUTH_KIND_HOME_DIR = 3;
+}
+
+message RotationCapabilityRequest {}
+message RotationCapabilityResponse {
+  bool supports_rotation = 1;
+  AuthKind auth_kind = 2;
+}
+
+// MaterializedFile is one file the daemon must write into the agent's
+// per-account home directory. content is secret-bearing and NEVER logged.
+message MaterializedFile {
+  string relative_path = 1;   // path relative to the home dir, e.g. "auth.json"
+  bytes content = 2;          // file bytes; secret-bearing, never logged
+  uint32 mode = 3;            // unix file mode, e.g. 0600
+}
+
+message MaterializeAccountRequest {
+  // Opaque, provider-specific credential blob. Only the owning plugin can
+  // interpret it. NEVER logged.
+  bytes credential_blob = 1;
+}
+message MaterializeAccountResponse {
+  // Environment overlay applied to the spawned agent (e.g.
+  // CLAUDE_CODE_OAUTH_TOKEN=<token>). Values are secret-bearing, never logged.
+  map<string, string> env = 1;
+  // Files to write into the per-account home dir (e.g. codex auth.json).
+  repeated MaterializedFile files = 2;
+  // Env key that must point at the per-account home dir (e.g. "CODEX_HOME").
+  // Empty for env-token agents (claude).
+  string home_dir_env_key = 3;
 }
 
 message UserSetting {

@@ -34,8 +34,9 @@ The `gating` and `gated` statuses come from the optional **gate command**
 running, and `gated` is remembered when the last tick was blocked by a
 non-zero gate exit.
 
-The action bar shows the available keys: `[n]ew`, `[e]dit`,
+The action bar shows the available keys: `[n]ew`, `[e/enter]dit`,
 `[d]elete`, `[space] toggle`, `[r]un now`. `esc` returns to Settings.
+Both `e` and `Enter` open the highlighted job in the edit form.
 
 ## Add a cron job
 

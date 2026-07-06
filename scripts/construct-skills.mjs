@@ -226,6 +226,17 @@ function loadManifests(rootDir) {
 
 export function run({ rootDir, check }) {
   let drift = false
+  // Public-mirror checkouts strip .claude/skills entirely (mirror-public.yml) but
+  // restore test-scripts.yml, which runs construct-skills-check. loadManifests()
+  // would then throw ENOENT reading the absent skills root. Skip loudly when the
+  // root is gone, mirroring copy-public-skills-check / vendor-toolbox-check. Only
+  // relevant to --check: write mode runs in a full checkout where the root exists.
+  if (check && !fs.existsSync(path.join(rootDir, '.claude', 'skills'))) {
+    console.warn(
+      'construct-skills-check skipped: .claude/skills is absent (public mirror or stripped checkout)',
+    )
+    return
+  }
   for (const manifest of loadManifests(rootDir)) {
     if (!skillsRootAvailable(manifest)) {
       const where = resolveSkillsRoot(manifest)

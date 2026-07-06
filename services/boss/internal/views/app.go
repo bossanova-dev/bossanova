@@ -67,9 +67,16 @@ type App struct {
 	cronList          CronListModel
 	cronForm          CronFormModel
 	onboarding        OnboardingModel
-	width             int
-	height            int
-	quitting          bool
+	// toast is a single-slot, non-blocking notice line rendered under the
+	// banner (currently: automatic account rotations, BOS-176).
+	toast toastModel
+	// rotationSeen tracks the newest rotation-event id per session so a new
+	// rotation decision can be detected across refreshes and surfaced as a
+	// toast. nil until the first session list is observed (seed pass).
+	rotationSeen map[string]string
+	width        int
+	height       int
+	quitting     bool
 }
 
 // WithTelemetry installs a telemetry client for action-level view events.
@@ -162,6 +169,13 @@ func (a *App) SetInitialAgent(name string) {
 	a.newSession.SetInitialAgent(name)
 }
 
+// SetInitialAccount overrides the account for new sessions created via the
+// NewSession view. Empty means "system default" (the daemon applies its
+// default-account policy).
+func (a *App) SetInitialAccount(account string) {
+	a.newSession.SetInitialAccount(account)
+}
+
 func (a App) newSessionModel() NewSessionModel {
 	m := NewNewSessionModel(a.client, a.ctx)
 	m.SetTelemetry(a.telemetry)
@@ -220,7 +234,38 @@ type repoAddCompletedMsg struct {
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Route keys through the rotation toast first. It only consumes Esc while a
+	// toast is visible, letting the operator dismiss the notice without also
+	// triggering the active view's back action.
+	if _, ok := msg.(tea.KeyPressMsg); ok {
+		var consumed bool
+		if a.toast, consumed = a.toast.Update(msg); consumed {
+			return a, nil
+		}
+	}
+
 	switch msg := msg.(type) {
+	case toastExpireMsg:
+		a.toast, _ = a.toast.Update(msg)
+		return a, nil
+	case sessionListMsg:
+		// Surface a non-blocking toast when a new automatic rotation lands.
+		// Seeded silently on first observation so a fresh TUI doesn't replay
+		// history. Session rotation state only flows into the Home model, so
+		// forward the message onward for its normal handling and batch the
+		// toast command.
+		if a.activeView == ViewHome && msg.err == nil {
+			seen, toasts := detectNewRotationEvents(a.rotationSeen, msg.sessions)
+			a.rotationSeen = seen
+			var toastCmd tea.Cmd
+			if len(toasts) > 0 {
+				a.toast, toastCmd = a.toast.Show(toasts[0])
+			}
+			updated, cmd := a.home.Update(msg)
+			a.home = updated.(HomeModel)
+			a.userSettings = a.home.settings
+			return a, tea.Batch(cmd, toastCmd)
+		}
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
@@ -846,7 +891,11 @@ func (a App) View() tea.View {
 		case ViewOnboarding:
 			opts.line1 = "Welcome to Bossanova"
 		}
-		v.Content = renderBanner(a.activeView, opts) + "\n" + v.Content
+		content := renderBanner(a.activeView, opts)
+		if toastLine := a.toast.View(a.width); toastLine != "" {
+			content += "\n" + toastLine
+		}
+		v.Content = content + "\n" + v.Content
 	}
 
 	v.AltScreen = true

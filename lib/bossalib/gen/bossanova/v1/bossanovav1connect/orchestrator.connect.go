@@ -84,6 +84,12 @@ const (
 	// OrchestratorServiceProxyDeleteChatProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyDeleteChat RPC.
 	OrchestratorServiceProxyDeleteChatProcedure = "/bossanova.v1.OrchestratorService/ProxyDeleteChat"
+	// OrchestratorServiceProxySwitchSessionAccountProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxySwitchSessionAccount RPC.
+	OrchestratorServiceProxySwitchSessionAccountProcedure = "/bossanova.v1.OrchestratorService/ProxySwitchSessionAccount"
+	// OrchestratorServiceProxyListAccountsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListAccounts RPC.
+	OrchestratorServiceProxyListAccountsProcedure = "/bossanova.v1.OrchestratorService/ProxyListAccounts"
 	// OrchestratorServiceProxyGetChatTranscriptProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyGetChatTranscript RPC.
 	OrchestratorServiceProxyGetChatTranscriptProcedure = "/bossanova.v1.OrchestratorService/ProxyGetChatTranscript"
@@ -188,6 +194,15 @@ type OrchestratorServiceClient interface {
 	ProxyRecordChat(context.Context, *connect.Request[v1.ProxyRecordChatRequest]) (*connect.Response[v1.ProxyRecordChatResponse], error)
 	// Deletes a chat via the owning daemon's reverse stream.
 	ProxyDeleteChat(context.Context, *connect.Request[v1.ProxyDeleteChatRequest]) (*connect.Response[v1.ProxyDeleteChatResponse], error)
+	// Switches a session's live chat to a different account (stop+swap+resume)
+	// via the owning daemon's reverse stream. Routes by session_id
+	// (FindSessionDaemon) with an optional GetChat authz check, like ProxyWakeChat.
+	ProxySwitchSessionAccount(context.Context, *connect.Request[v1.ProxySwitchSessionAccountRequest]) (*connect.Response[v1.ProxySwitchSessionAccountResponse], error)
+	// Lists the rotation accounts on the daemon owning session_id (web
+	// account-switch picker). Routes by session_id (FindSessionDaemon) for authz
+	// scope, like ProxySwitchSessionAccount. Accounts are metadata only — never
+	// credentials. Optional provider filter ("" = all).
+	ProxyListAccounts(context.Context, *connect.Request[v1.ProxyListAccountsRequest]) (*connect.Response[v1.ProxyListAccountsResponse], error)
 	// Reads a chat's transcript via the owning daemon's reverse stream. Routes by
 	// session_id (FindSessionDaemon) with a GetChat authz check, like ProxyWakeChat.
 	ProxyGetChatTranscript(context.Context, *connect.Request[v1.ProxyGetChatTranscriptRequest]) (*connect.Response[v1.ProxyGetChatTranscriptResponse], error)
@@ -357,6 +372,18 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteChat")),
 			connect.WithClientOptions(opts...),
 		),
+		proxySwitchSessionAccount: connect.NewClient[v1.ProxySwitchSessionAccountRequest, v1.ProxySwitchSessionAccountResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxySwitchSessionAccountProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxySwitchSessionAccount")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyListAccounts: connect.NewClient[v1.ProxyListAccountsRequest, v1.ProxyListAccountsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListAccountsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAccounts")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyGetChatTranscript: connect.NewClient[v1.ProxyGetChatTranscriptRequest, v1.ProxyGetChatTranscriptResponse](
 			httpClient,
 			baseURL+OrchestratorServiceProxyGetChatTranscriptProcedure,
@@ -505,6 +532,8 @@ type orchestratorServiceClient struct {
 	proxyArchiveSession        *connect.Client[v1.ProxyArchiveSessionRequest, v1.ProxyArchiveSessionResponse]
 	proxyRecordChat            *connect.Client[v1.ProxyRecordChatRequest, v1.ProxyRecordChatResponse]
 	proxyDeleteChat            *connect.Client[v1.ProxyDeleteChatRequest, v1.ProxyDeleteChatResponse]
+	proxySwitchSessionAccount  *connect.Client[v1.ProxySwitchSessionAccountRequest, v1.ProxySwitchSessionAccountResponse]
+	proxyListAccounts          *connect.Client[v1.ProxyListAccountsRequest, v1.ProxyListAccountsResponse]
 	proxyGetChatTranscript     *connect.Client[v1.ProxyGetChatTranscriptRequest, v1.ProxyGetChatTranscriptResponse]
 	proxySendChatMessage       *connect.Client[v1.ProxySendChatMessageRequest, v1.ProxySendChatMessageResponse]
 	proxyListReposAggregated   *connect.Client[v1.ProxyListReposAggregatedRequest, v1.ProxyListReposAggregatedResponse]
@@ -611,6 +640,16 @@ func (c *orchestratorServiceClient) ProxyRecordChat(ctx context.Context, req *co
 // ProxyDeleteChat calls bossanova.v1.OrchestratorService.ProxyDeleteChat.
 func (c *orchestratorServiceClient) ProxyDeleteChat(ctx context.Context, req *connect.Request[v1.ProxyDeleteChatRequest]) (*connect.Response[v1.ProxyDeleteChatResponse], error) {
 	return c.proxyDeleteChat.CallUnary(ctx, req)
+}
+
+// ProxySwitchSessionAccount calls bossanova.v1.OrchestratorService.ProxySwitchSessionAccount.
+func (c *orchestratorServiceClient) ProxySwitchSessionAccount(ctx context.Context, req *connect.Request[v1.ProxySwitchSessionAccountRequest]) (*connect.Response[v1.ProxySwitchSessionAccountResponse], error) {
+	return c.proxySwitchSessionAccount.CallUnary(ctx, req)
+}
+
+// ProxyListAccounts calls bossanova.v1.OrchestratorService.ProxyListAccounts.
+func (c *orchestratorServiceClient) ProxyListAccounts(ctx context.Context, req *connect.Request[v1.ProxyListAccountsRequest]) (*connect.Response[v1.ProxyListAccountsResponse], error) {
+	return c.proxyListAccounts.CallUnary(ctx, req)
 }
 
 // ProxyGetChatTranscript calls bossanova.v1.OrchestratorService.ProxyGetChatTranscript.
@@ -757,6 +796,15 @@ type OrchestratorServiceHandler interface {
 	ProxyRecordChat(context.Context, *connect.Request[v1.ProxyRecordChatRequest]) (*connect.Response[v1.ProxyRecordChatResponse], error)
 	// Deletes a chat via the owning daemon's reverse stream.
 	ProxyDeleteChat(context.Context, *connect.Request[v1.ProxyDeleteChatRequest]) (*connect.Response[v1.ProxyDeleteChatResponse], error)
+	// Switches a session's live chat to a different account (stop+swap+resume)
+	// via the owning daemon's reverse stream. Routes by session_id
+	// (FindSessionDaemon) with an optional GetChat authz check, like ProxyWakeChat.
+	ProxySwitchSessionAccount(context.Context, *connect.Request[v1.ProxySwitchSessionAccountRequest]) (*connect.Response[v1.ProxySwitchSessionAccountResponse], error)
+	// Lists the rotation accounts on the daemon owning session_id (web
+	// account-switch picker). Routes by session_id (FindSessionDaemon) for authz
+	// scope, like ProxySwitchSessionAccount. Accounts are metadata only — never
+	// credentials. Optional provider filter ("" = all).
+	ProxyListAccounts(context.Context, *connect.Request[v1.ProxyListAccountsRequest]) (*connect.Response[v1.ProxyListAccountsResponse], error)
 	// Reads a chat's transcript via the owning daemon's reverse stream. Routes by
 	// session_id (FindSessionDaemon) with a GetChat authz check, like ProxyWakeChat.
 	ProxyGetChatTranscript(context.Context, *connect.Request[v1.ProxyGetChatTranscriptRequest]) (*connect.Response[v1.ProxyGetChatTranscriptResponse], error)
@@ -922,6 +970,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteChat")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxySwitchSessionAccountHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxySwitchSessionAccountProcedure,
+		svc.ProxySwitchSessionAccount,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxySwitchSessionAccount")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyListAccountsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListAccountsProcedure,
+		svc.ProxyListAccounts,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAccounts")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyGetChatTranscriptHandler := connect.NewUnaryHandler(
 		OrchestratorServiceProxyGetChatTranscriptProcedure,
 		svc.ProxyGetChatTranscript,
@@ -1084,6 +1144,10 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyRecordChatHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyDeleteChatProcedure:
 			orchestratorServiceProxyDeleteChatHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxySwitchSessionAccountProcedure:
+			orchestratorServiceProxySwitchSessionAccountHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListAccountsProcedure:
+			orchestratorServiceProxyListAccountsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyGetChatTranscriptProcedure:
 			orchestratorServiceProxyGetChatTranscriptHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxySendChatMessageProcedure:
@@ -1201,6 +1265,14 @@ func (UnimplementedOrchestratorServiceHandler) ProxyRecordChat(context.Context, 
 
 func (UnimplementedOrchestratorServiceHandler) ProxyDeleteChat(context.Context, *connect.Request[v1.ProxyDeleteChatRequest]) (*connect.Response[v1.ProxyDeleteChatResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyDeleteChat is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxySwitchSessionAccount(context.Context, *connect.Request[v1.ProxySwitchSessionAccountRequest]) (*connect.Response[v1.ProxySwitchSessionAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxySwitchSessionAccount is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListAccounts(context.Context, *connect.Request[v1.ProxyListAccountsRequest]) (*connect.Response[v1.ProxyListAccountsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListAccounts is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyGetChatTranscript(context.Context, *connect.Request[v1.ProxyGetChatTranscriptRequest]) (*connect.Response[v1.ProxyGetChatTranscriptResponse], error) {

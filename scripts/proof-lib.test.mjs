@@ -8,17 +8,12 @@ import { fileURLToPath } from 'node:url'
 
 import {
   PROOF_MEDIA_TYPES,
-  TUI_SURFACE_PREFIXES,
-  WEB_UI_SURFACE_PREFIXES,
   DEFAULT_TOTAL_PROOF_BUDGET_MS,
   LIVE_AGENT_EXTRA_MS,
-  SURFACE_BUDGET_SPEC,
   buildManifest,
   bossE2eBuildCommand,
   browserCaptureCommand,
   capturesAgentRunnerStubbed,
-  classifySurfaces,
-  classifyTuiSurface,
   deferredReasonMessage,
   deriveVerdictBlock,
   planSurfaceBudget,
@@ -29,6 +24,7 @@ import {
   judgeHeadline,
   judgeVerdictLines,
   listProofCommentsCommand,
+  matchesAnyPrefix,
   mediaTypeForPath,
   minimizeCommentCommand,
   normalizeChangedFiles,
@@ -57,7 +53,6 @@ import {
   validateProofUploadRelativePath,
   validateRecipeId,
   verdictBlockLines,
-  webUiSurfacePresent,
 } from './proof-lib.mjs'
 
 const catalog = {
@@ -693,6 +688,12 @@ test('bossE2eBuildCommand builds boss e2e binary with e2e tags', () => {
 test('browserCaptureCommand runs web proof through services/web dependencies', () => {
   assert.deepEqual(
     browserCaptureCommand({
+      descriptor: {
+        serviceDir: 'services/web',
+        specRoot: 'tests/e2e/specs',
+        defaultCropToSelector: '#root',
+        stageEnv: { VITE_E2E: '1' },
+      },
       surface: 'web',
       recipePath: '.proof/web/recipe.json',
       outputDir: '.proof/web',
@@ -711,6 +712,12 @@ test('browserCaptureCommand runs web proof through services/web dependencies', (
         '../../.proof/web/recipe.json',
         '--output-dir',
         '../../.proof/web',
+        '--spec-root',
+        'tests/e2e/specs',
+        '--default-crop',
+        '#root',
+        '--stage-env',
+        '{"VITE_E2E":"1"}',
       ],
     ],
   )
@@ -719,6 +726,11 @@ test('browserCaptureCommand runs web proof through services/web dependencies', (
 test('browserCaptureCommand runs marketing proof through services/marketing dependencies', () => {
   assert.deepEqual(
     browserCaptureCommand({
+      descriptor: {
+        serviceDir: 'services/marketing',
+        specRoot: 'tests/e2e',
+        defaultCropToSelector: 'main',
+      },
       surface: 'marketing',
       recipePath: '.proof/m/recipe.json',
       outputDir: '.proof/m',
@@ -737,6 +749,10 @@ test('browserCaptureCommand runs marketing proof through services/marketing depe
         '../../.proof/m/recipe.json',
         '--output-dir',
         '../../.proof/m',
+        '--spec-root',
+        'tests/e2e',
+        '--default-crop',
+        'main',
       ],
     ],
   )
@@ -745,6 +761,11 @@ test('browserCaptureCommand runs marketing proof through services/marketing depe
 test('browserCaptureCommand runs docs proof through services/docs dependencies', () => {
   assert.deepEqual(
     browserCaptureCommand({
+      descriptor: {
+        serviceDir: 'services/docs',
+        specRoot: 'tests/e2e',
+        defaultCropToSelector: '#root',
+      },
       surface: 'docs',
       recipePath: '.proof/d/recipe.json',
       outputDir: '.proof/d',
@@ -763,89 +784,60 @@ test('browserCaptureCommand runs docs proof through services/docs dependencies',
         '../../.proof/d/recipe.json',
         '--output-dir',
         '../../.proof/d',
+        '--spec-root',
+        'tests/e2e',
+        '--default-crop',
+        '#root',
       ],
     ],
   )
 })
 
-// ── classifyTuiSurface: catalog-independent TUI path detection (BOS-115) ──────
-
-test('classifyTuiSurface is true for any changed file under a TUI prefix', () => {
-  for (const prefix of TUI_SURFACE_PREFIXES) {
-    assert.equal(
-      classifyTuiSurface([`${prefix}some/file.go`]),
-      true,
-      `expected ${prefix}* to classify as TUI`,
-    )
-  }
+test('browserCaptureCommand passes descriptor spec-root, crop, and stage env to the runner', () => {
+  const [, argv] = browserCaptureCommand({
+    descriptor: {
+      serviceDir: 'services/web',
+      specRoot: 'tests/e2e/specs',
+      defaultCropToSelector: '#root',
+      stageEnv: { VITE_E2E: '1' },
+    },
+    surface: 'web',
+    recipePath: '/repo/.proof/x/recipe.json',
+    outputDir: '/repo/.proof/x/out',
+  })
+  assert.equal(argv[argv.indexOf('--spec-root') + 1], 'tests/e2e/specs')
+  assert.equal(argv[argv.indexOf('--default-crop') + 1], '#root')
+  assert.equal(JSON.parse(argv[argv.indexOf('--stage-env') + 1]).VITE_E2E, '1')
 })
 
-test('classifyTuiSurface covers the documented TUI prefixes', () => {
-  assert.deepEqual(TUI_SURFACE_PREFIXES, [
-    'services/boss/internal/views/',
-    'services/boss/internal/tuitest/',
-    'services/boss/internal/tuidriver/',
-    'services/boss/internal/fixtures/',
-    'services/boss/internal/client/',
-    'services/boss/cmd/',
-    'proto/',
-  ])
+test('browserCaptureCommand omits --stage-env for a surface without stageEnv', () => {
+  const [, argv] = browserCaptureCommand({
+    descriptor: { serviceDir: 'apps/portal', specRoot: 'e2e', defaultCropToSelector: 'main' },
+    surface: 'portal',
+    recipePath: '/repo/.proof/x/recipe.json',
+    outputDir: '/repo/.proof/x/out',
+  })
+  assert.ok(!argv.includes('--stage-env'))
+  assert.equal(argv[argv.indexOf('--dir') + 1], 'apps/portal')
+  assert.equal(argv[argv.indexOf('node') + 1], '../../scripts/proof-playwright-runner.mjs')
+  assert.equal(argv[argv.indexOf('--default-crop') + 1], 'main')
 })
 
-test('classifyTuiSurface is false for web/marketing/docs and unrelated paths', () => {
-  assert.equal(classifyTuiSurface(['services/web/src/App.tsx']), false)
-  assert.equal(classifyTuiSurface(['services/marketing/src/pages/index.astro']), false)
-  assert.equal(classifyTuiSurface(['services/docs/docs/guides/mcp.md']), false)
-  assert.equal(classifyTuiSurface(['services/bossd/internal/server/server.go']), false)
-  assert.equal(classifyTuiSurface(['README.md']), false)
-  assert.equal(classifyTuiSurface([]), false)
-  assert.equal(classifyTuiSurface(null), false)
-})
+test('browserCaptureCommand resolves runner path relative to nested serviceDir', () => {
+  const [, argv] = browserCaptureCommand({
+    descriptor: {
+      serviceDir: 'services/plugins/portal',
+      specRoot: 'e2e',
+      defaultCropToSelector: 'main',
+    },
+    surface: 'portal',
+    recipePath: '.proof/portal/recipe.json',
+    outputDir: '.proof/portal',
+  })
 
-test('classifyTuiSurface is true when ANY changed file is a TUI path (mixed diff)', () => {
-  assert.equal(
-    classifyTuiSurface(['services/web/src/App.tsx', 'services/boss/internal/views/home.go']),
-    true,
-  )
-})
-
-// ── webUiSurfacePresent: no-UI-surface pre-gate (BOS-118) ────────────────────
-
-test('webUiSurfacePresent is true for any changed file under a web UI prefix', () => {
-  for (const prefix of WEB_UI_SURFACE_PREFIXES) {
-    assert.equal(
-      webUiSurfacePresent([`${prefix}some/file.tsx`]),
-      true,
-      `expected ${prefix}* to count as a web UI surface`,
-    )
-  }
-})
-
-test('webUiSurfacePresent covers the documented web UI prefixes', () => {
-  assert.deepEqual(WEB_UI_SURFACE_PREFIXES, [
-    'services/web/src/',
-    'services/web/index.html',
-    'services/web/public/',
-  ])
-})
-
-test('webUiSurfacePresent is false for changes with no demonstrable web surface', () => {
-  // The proof scripts themselves (this very PR's shape).
-  assert.equal(webUiSurfacePresent(['scripts/proof-agent.mjs', 'scripts/proof.mjs']), false)
-  // The web agent/specs are tests, not app UI.
-  assert.equal(webUiSurfacePresent(['services/web/tests/e2e/agent/runner.ts']), false)
-  // Backend, docs, proto.
-  assert.equal(webUiSurfacePresent(['services/bossd/internal/server/server.go']), false)
-  assert.equal(webUiSurfacePresent(['docs/plans/BOS-118.md']), false)
-  assert.equal(webUiSurfacePresent([]), false)
-  assert.equal(webUiSurfacePresent(null), false)
-})
-
-test('webUiSurfacePresent is true when ANY changed file is a web UI path (mixed diff)', () => {
-  assert.equal(
-    webUiSurfacePresent(['scripts/proof.mjs', 'services/web/src/pages/SessionDetail.tsx']),
-    true,
-  )
+  assert.equal(argv[argv.indexOf('node') + 1], '../../../scripts/proof-playwright-runner.mjs')
+  assert.equal(argv[argv.indexOf('--recipe') + 1], '../../../.proof/portal/recipe.json')
+  assert.equal(argv[argv.indexOf('--output-dir') + 1], '../../../.proof/portal')
 })
 
 test('renderDeferredComment carries the honest no-ui-surface reason and no red verdict', () => {
@@ -892,9 +884,12 @@ test('renderDeferredComment suppresses synthetic no-ui-surface scene chapters', 
   )
 })
 
-test('classifyTuiSurface normalizes leading ./ and backslashes', () => {
-  assert.equal(classifyTuiSurface(['./services/boss/cmd/root.go']), true)
-  assert.equal(classifyTuiSurface(['services\\boss\\cmd\\root.go']), true)
+test('matchesAnyPrefix normalizes files then prefix-matches', () => {
+  assert.equal(matchesAnyPrefix(['./services/web/src/App.tsx'], ['services/web/src/']), true)
+  assert.equal(matchesAnyPrefix(['services\\web\\src\\App.tsx'], ['services/web/src/']), true)
+  assert.equal(matchesAnyPrefix(['scripts/x.mjs'], ['services/web/src/']), false)
+  assert.equal(matchesAnyPrefix([], ['services/web/src/']), false)
+  assert.equal(matchesAnyPrefix(null, ['services/web/src/']), false)
 })
 
 test('proofRunPaths creates stable proof bundle paths', () => {
@@ -1076,6 +1071,22 @@ test('recipe schema route pattern rejects control-character browser routes', () 
   assert.equal(pattern.test('/admin\u007F'), false)
 })
 
+test('recipe schema allows consumer-declared browser surface names', () => {
+  const schema = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/schema.json', import.meta.url), 'utf8'),
+  )
+  const surfaceName = schema.$defs.surfaceName
+  const pattern = new RegExp(surfaceName.pattern, 'u')
+
+  assert.deepEqual(schema.$defs.baseRecipe.properties.surface, { $ref: '#/$defs/surfaceName' })
+  assert.deepEqual(schema.$defs.browserRecipe.allOf[1].properties.surface, {
+    $ref: '#/$defs/surfaceName',
+  })
+  assert.equal(pattern.test('portal'), true)
+  assert.equal(pattern.test('customer-portal'), true)
+  assert.equal(pattern.test('CustomerPortal'), false)
+})
+
 test('browser video step schema requires action-specific fields', () => {
   const schema = JSON.parse(
     fs.readFileSync(new URL('../proof/recipes/schema.json', import.meta.url), 'utf8'),
@@ -1223,7 +1234,7 @@ test('validateProofUploadRelativePath accepts webm, gif, mp4, rejects traversal 
 test('introCardCommand runs through services/web for surface web', () => {
   assert.deepEqual(
     introCardCommand({
-      surface: 'web',
+      serviceDir: 'services/web',
       out: '.proof/intro.png',
       width: 1440,
       height: 900,
@@ -1298,7 +1309,7 @@ test('proofAncestorDirs returns [] when no .proof segment exists', () => {
 
 test('introCardCommand defaults an omitted title to an empty string', () => {
   const [, args] = introCardCommand({
-    surface: 'web',
+    serviceDir: 'services/web',
     out: '.proof/intro.png',
     width: 1440,
     height: 900,
@@ -1314,7 +1325,7 @@ test('introCardCommand defaults an omitted title to an empty string', () => {
 test('introCardCommand runs through services/marketing for surface marketing', () => {
   assert.deepEqual(
     introCardCommand({
-      surface: 'marketing',
+      serviceDir: 'services/marketing',
       out: '.proof/intro.png',
       width: 1920,
       height: 1080,
@@ -2608,115 +2619,99 @@ test('normalizeRecipe passes TUI recipes through unchanged', () => {
   assert.deepEqual(normalizeRecipe(tui), tui)
 })
 
-// ── classifySurfaces: surface SET classifier (BOS-139 / D5) ──────────────────
-
-test('classifySurfaces: tui-only diff → tui true, web false, no recipes', () => {
-  const s = classifySurfaces({ changedFiles: ['services/boss/internal/views/home.go'], catalog })
-  assert.equal(s.tui, true)
-  assert.equal(s.web, false)
-  assert.deepEqual(s.recipes, [])
+test('normalizeRecipe: default predicate treats only tui as an agent surface (web normalizes to video)', () => {
+  const tui = { surface: 'tui', route: '/x' }
+  assert.equal(normalizeRecipe(tui), tui) // returned unchanged
+  const web = normalizeRecipe({ surface: 'web', route: '/x' })
+  assert.equal(web.capture, 'video')
 })
 
-test('classifySurfaces: web-only diff → web true, tui false', () => {
-  const s = classifySurfaces({ changedFiles: ['services/web/src/App.tsx'], catalog })
-  assert.equal(s.tui, false)
-  assert.equal(s.web, true)
-  assert.deepEqual(s.recipes, [])
-})
-
-test('classifySurfaces: mixed diff → BOTH true (any-match-wins single-select gone)', () => {
-  const s = classifySurfaces({
-    changedFiles: ['services/boss/internal/views/home.go', 'services/web/src/App.tsx'],
-    catalog,
-  })
-  assert.equal(s.tui, true)
-  assert.equal(s.web, true)
-})
-
-test('classifySurfaces: neither (backend-only) → both false, no recipes', () => {
-  const s = classifySurfaces({
-    changedFiles: ['services/bossd/internal/server/server.go'],
-    catalog,
-  })
-  assert.equal(s.tui, false)
-  assert.equal(s.web, false)
-  assert.deepEqual(s.recipes, [])
-})
-
-test('classifySurfaces: marketing + web → web true and marketing recipe surfaced', () => {
-  const s = classifySurfaces({
-    changedFiles: ['services/web/src/App.tsx', 'services/marketing/src/pages/index.astro'],
-    catalog,
-  })
-  assert.equal(s.web, true)
-  assert.ok(s.recipes.some((r) => r.surface === 'marketing'))
-})
-
-test('classifySurfaces: forcedSurfaces forces tui onto a backend-only diff (D16 mitigation)', () => {
-  const s = classifySurfaces({
-    changedFiles: ['services/bossd/internal/server/server.go'],
-    catalog,
-    forcedSurfaces: ['tui'],
-  })
-  assert.equal(s.tui, true)
-  assert.equal(s.web, false)
+test('normalizeRecipe: an injected isAgentSurface predicate overrides the tui default', () => {
+  // BOS-201: the surface classification is injected, so the engine never
+  // hardcodes a surface name. A predicate that marks web as an agent surface
+  // makes normalizeRecipe pass a web recipe through untouched.
+  const web = { surface: 'web', route: '/x' }
+  assert.equal(normalizeRecipe(web, { isAgentSurface: (s) => s === 'web' }), web)
+  // ...and with that predicate a tui recipe is no longer treated as agent-only,
+  // so it gets the browser video normalization instead.
+  const tui = normalizeRecipe(
+    { surface: 'tui', route: '/y' },
+    { isAgentSurface: (s) => s === 'web' },
+  )
+  assert.equal(tui.capture, 'video')
 })
 
 // ── planSurfaceBudget: sequential shared budget (BOS-139 / D5) ────────────────
+// The per-surface budget spec now lives in proof-surfaces.mjs; the ladder takes
+// the resolved `budget` as a parameter (BOS-201). These reuse the tui/web specs.
+const TUI_BUDGET = { defaultMs: 4 * 60 * 1000, floorMs: 2 * 60 * 1000 }
+const WEB_BUDGET = { defaultMs: 12 * 60 * 1000, floorMs: 6 * 60 * 1000 }
 
 test('planSurfaceBudget: first-run TUI gets the 4min default', () => {
-  assert.deepEqual(planSurfaceBudget({ surface: 'tui', elapsedMs: 0 }), {
+  assert.deepEqual(planSurfaceBudget({ surface: 'tui', elapsedMs: 0, budget: TUI_BUDGET }), {
     run: true,
     maxWallClockMs: 4 * 60 * 1000,
   })
 })
 
 test('planSurfaceBudget: first-run web gets the 12min default', () => {
-  assert.deepEqual(planSurfaceBudget({ surface: 'web', elapsedMs: 0 }), {
+  assert.deepEqual(planSurfaceBudget({ surface: 'web', elapsedMs: 0, budget: WEB_BUDGET }), {
     run: true,
     maxWallClockMs: 12 * 60 * 1000,
   })
 })
 
 test('planSurfaceBudget: web after TUI consumed 4min → clamped to remaining 11min', () => {
-  assert.deepEqual(planSurfaceBudget({ surface: 'web', elapsedMs: 4 * 60 * 1000 }), {
-    run: true,
-    maxWallClockMs: 11 * 60 * 1000,
-  })
+  assert.deepEqual(
+    planSurfaceBudget({ surface: 'web', elapsedMs: 4 * 60 * 1000, budget: WEB_BUDGET }),
+    {
+      run: true,
+      maxWallClockMs: 11 * 60 * 1000,
+    },
+  )
 })
 
 test('planSurfaceBudget: web with 5min remaining (< 6min floor) → budget-exceeded', () => {
-  assert.deepEqual(planSurfaceBudget({ surface: 'web', elapsedMs: 10 * 60 * 1000 }), {
-    run: false,
-    reasonCode: 'budget-exceeded',
-  })
+  assert.deepEqual(
+    planSurfaceBudget({ surface: 'web', elapsedMs: 10 * 60 * 1000, budget: WEB_BUDGET }),
+    {
+      run: false,
+      reasonCode: 'budget-exceeded',
+    },
+  )
 })
 
 test('planSurfaceBudget: TUI with 1min remaining (< 2min floor) → budget-exceeded', () => {
-  assert.deepEqual(planSurfaceBudget({ surface: 'tui', elapsedMs: 14 * 60 * 1000 }), {
-    run: false,
-    reasonCode: 'budget-exceeded',
-  })
+  assert.deepEqual(
+    planSurfaceBudget({ surface: 'tui', elapsedMs: 14 * 60 * 1000, budget: TUI_BUDGET }),
+    {
+      run: false,
+      reasonCode: 'budget-exceeded',
+    },
+  )
 })
 
 test('planSurfaceBudget: honors a custom totalBudgetMs', () => {
   assert.deepEqual(
-    planSurfaceBudget({ surface: 'tui', elapsedMs: 0, totalBudgetMs: 3 * 60 * 1000 }),
+    planSurfaceBudget({
+      surface: 'tui',
+      elapsedMs: 0,
+      totalBudgetMs: 3 * 60 * 1000,
+      budget: TUI_BUDGET,
+    }),
     { run: true, maxWallClockMs: 3 * 60 * 1000 },
   )
 })
 
-test('planSurfaceBudget: unknown surface → budget-exceeded (never crashes dispatch)', () => {
-  assert.deepEqual(planSurfaceBudget({ surface: 'nope', elapsedMs: 0 }), {
+test('planSurfaceBudget: null budget (unknown/recipe surface) → budget-exceeded (never crashes dispatch)', () => {
+  assert.deepEqual(planSurfaceBudget({ surface: 'nope', elapsedMs: 0, budget: null }), {
     run: false,
     reasonCode: 'budget-exceeded',
   })
 })
 
-test('SURFACE_BUDGET_SPEC + DEFAULT_TOTAL_PROOF_BUDGET_MS constants are exported', () => {
+test('DEFAULT_TOTAL_PROOF_BUDGET_MS constant is exported', () => {
   assert.equal(DEFAULT_TOTAL_PROOF_BUDGET_MS, 15 * 60 * 1000)
-  assert.equal(SURFACE_BUDGET_SPEC.tui.floorMs, 2 * 60 * 1000)
-  assert.equal(SURFACE_BUDGET_SPEC.web.floorMs, 6 * 60 * 1000)
 })
 
 // ── planSurfaceBudget: liveAgent extension (BOS-142) ───────────────────────
@@ -2726,17 +2721,27 @@ test('LIVE_AGENT_EXTRA_MS constant is exported and equals 4 minutes', () => {
 })
 
 test('planSurfaceBudget: liveAgent:false is byte-identical to omitting liveAgent (web, first run)', () => {
-  const omitted = planSurfaceBudget({ surface: 'web', elapsedMs: 0 })
-  const explicitFalse = planSurfaceBudget({ surface: 'web', elapsedMs: 0, liveAgent: false })
+  const omitted = planSurfaceBudget({ surface: 'web', elapsedMs: 0, budget: WEB_BUDGET })
+  const explicitFalse = planSurfaceBudget({
+    surface: 'web',
+    elapsedMs: 0,
+    budget: WEB_BUDGET,
+    liveAgent: false,
+  })
   assert.deepEqual(explicitFalse, omitted)
   assert.deepEqual(explicitFalse, { run: true, maxWallClockMs: 12 * 60 * 1000 })
 })
 
 test('planSurfaceBudget: liveAgent:false is byte-identical to omitting liveAgent (tui, floor deferral)', () => {
-  const omitted = planSurfaceBudget({ surface: 'tui', elapsedMs: 14 * 60 * 1000 })
+  const omitted = planSurfaceBudget({
+    surface: 'tui',
+    elapsedMs: 14 * 60 * 1000,
+    budget: TUI_BUDGET,
+  })
   const explicitFalse = planSurfaceBudget({
     surface: 'tui',
     elapsedMs: 14 * 60 * 1000,
+    budget: TUI_BUDGET,
     liveAgent: false,
   })
   assert.deepEqual(explicitFalse, omitted)
@@ -2745,11 +2750,17 @@ test('planSurfaceBudget: liveAgent:false is byte-identical to omitting liveAgent
 
 test('planSurfaceBudget: liveAgent:true on web extends maxWallClockMs by exactly LIVE_AGENT_EXTRA_MS (ample total)', () => {
   const ampleTotal = 30 * 60 * 1000
-  const withoutLive = planSurfaceBudget({ surface: 'web', elapsedMs: 0, totalBudgetMs: ampleTotal })
+  const withoutLive = planSurfaceBudget({
+    surface: 'web',
+    elapsedMs: 0,
+    totalBudgetMs: ampleTotal,
+    budget: WEB_BUDGET,
+  })
   const withLive = planSurfaceBudget({
     surface: 'web',
     elapsedMs: 0,
     totalBudgetMs: ampleTotal,
+    budget: WEB_BUDGET,
     liveAgent: true,
   })
   assert.equal(withoutLive.run, true)
@@ -2758,11 +2769,27 @@ test('planSurfaceBudget: liveAgent:true on web extends maxWallClockMs by exactly
   assert.equal(withLive.maxWallClockMs, 12 * 60 * 1000 + LIVE_AGENT_EXTRA_MS)
 })
 
-test('planSurfaceBudget: liveAgent:true on tui is a no-op — extension is web-only', () => {
-  const withoutLive = planSurfaceBudget({ surface: 'tui', elapsedMs: 0 })
-  const withLive = planSurfaceBudget({ surface: 'tui', elapsedMs: 0, liveAgent: true })
-  assert.deepEqual(withLive, withoutLive)
-  assert.deepEqual(withLive, { run: true, maxWallClockMs: 4 * 60 * 1000 })
+test('planSurfaceBudget: the surface eligible for the live extension is the caller’s choice, not this engine’s', () => {
+  // BOS-201: the web-only-ness of the live extension moved to the call site
+  // (scripts/proof.mjs passes liveAgent only for web). planSurfaceBudget stays
+  // surface-name-agnostic and applies the extra whenever liveAgent is true for
+  // whatever budget it is handed — here demonstrated with the tui budget.
+  const ampleTotal = 30 * 60 * 1000
+  const withoutLive = planSurfaceBudget({
+    surface: 'tui',
+    elapsedMs: 0,
+    totalBudgetMs: ampleTotal,
+    budget: TUI_BUDGET,
+  })
+  const withLive = planSurfaceBudget({
+    surface: 'tui',
+    elapsedMs: 0,
+    totalBudgetMs: ampleTotal,
+    budget: TUI_BUDGET,
+    liveAgent: true,
+  })
+  assert.deepEqual(withoutLive, { run: true, maxWallClockMs: 4 * 60 * 1000 })
+  assert.equal(withLive.maxWallClockMs - withoutLive.maxWallClockMs, LIVE_AGENT_EXTRA_MS)
 })
 
 test('planSurfaceBudget: liveAgent:true web that cannot fit still defers budget-exceeded (floor unchanged)', () => {
@@ -2772,6 +2799,7 @@ test('planSurfaceBudget: liveAgent:true web that cannot fit still defers budget-
     surface: 'web',
     elapsedMs: 10 * 60 * 1000,
     totalBudgetMs: DEFAULT_TOTAL_PROOF_BUDGET_MS,
+    budget: WEB_BUDGET,
     liveAgent: true,
   })
   assert.deepEqual(result, { run: false, reasonCode: 'budget-exceeded' })
@@ -2786,6 +2814,7 @@ test('planSurfaceBudget: an explicit totalBudgetMs override remains a hard ceili
     surface: 'web',
     elapsedMs: 0,
     totalBudgetMs: explicitOverride,
+    budget: WEB_BUDGET,
     liveAgent: true,
   })
   assert.deepEqual(result, { run: false, reasonCode: 'budget-exceeded' })
@@ -2799,6 +2828,7 @@ test('planSurfaceBudget: an explicit totalBudgetMs override caps maxWallClockMs 
     surface: 'web',
     elapsedMs: 0,
     totalBudgetMs: explicitOverride,
+    budget: WEB_BUDGET,
     liveAgent: true,
   })
   assert.deepEqual(result, { run: true, maxWallClockMs: explicitOverride })
@@ -2822,6 +2852,7 @@ test('planSurfaceBudget: extending the shared TOTAL (call-site responsibility) k
     surface: 'web',
     elapsedMs: 0,
     totalBudgetMs: nonExtendedTotal,
+    budget: WEB_BUDGET,
     liveAgent: true,
   })
   assert.equal(webWithoutExtension.run, true)
@@ -2830,6 +2861,7 @@ test('planSurfaceBudget: extending the shared TOTAL (call-site responsibility) k
     surface: 'tui',
     elapsedMs: webWithoutExtension.maxWallClockMs,
     totalBudgetMs: nonExtendedTotal,
+    budget: TUI_BUDGET,
   })
   assert.deepEqual(tuiAfterSqueeze, { run: false, reasonCode: 'budget-exceeded' })
 
@@ -2839,6 +2871,7 @@ test('planSurfaceBudget: extending the shared TOTAL (call-site responsibility) k
     surface: 'web',
     elapsedMs: 0,
     totalBudgetMs: extendedTotal,
+    budget: WEB_BUDGET,
     liveAgent: true,
   })
   assert.equal(webWithExtension.run, true)
@@ -2847,6 +2880,7 @@ test('planSurfaceBudget: extending the shared TOTAL (call-site responsibility) k
     surface: 'tui',
     elapsedMs: webWithExtension.maxWallClockMs,
     totalBudgetMs: extendedTotal,
+    budget: TUI_BUDGET,
   })
   assert.deepEqual(tuiAfterExtension, { run: true, maxWallClockMs: 3 * 60 * 1000 })
 })

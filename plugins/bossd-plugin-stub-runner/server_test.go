@@ -35,6 +35,22 @@ func TestRemoveAgentRunHookReturnsUnsupported(t *testing.T) {
 	}
 }
 
+func TestDetectUsageLimitAlwaysUnlimited(t *testing.T) {
+	s := newServer(zerolog.Nop())
+	resp, err := s.DetectUsageLimit(context.Background(), &bossanovav1.DetectUsageLimitRequest{
+		PaneContent: []byte("❯ \nusage limit reached — resets in 5 hours\n"),
+	})
+	if err != nil {
+		t.Fatalf("DetectUsageLimit: %v", err)
+	}
+	if resp.GetLimited() {
+		t.Error("Limited = true, want false for stub (never renders a usage-cap banner)")
+	}
+	if resp.GetResetAt() != nil {
+		t.Error("ResetAt set, want nil for stub")
+	}
+}
+
 func TestAgentRunnerServiceDescIncludesRemoveAgentRunHook(t *testing.T) {
 	for _, method := range agentRunnerServiceDesc.Methods {
 		if method.MethodName == "RemoveAgentRunHook" {

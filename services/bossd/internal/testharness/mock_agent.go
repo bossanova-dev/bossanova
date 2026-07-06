@@ -139,12 +139,28 @@ func (*MockAgentClient) HasQuestionPrompt(_ context.Context, _ *bossanovav1.HasQ
 	return &bossanovav1.HasQuestionPromptResponse{}, nil
 }
 
+func (*MockAgentClient) DetectUsageLimit(_ context.Context, _ *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) {
+	return &bossanovav1.DetectUsageLimitResponse{}, nil
+}
+
+func (*MockAgentClient) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
+	return &bossanovav1.HasWorkingIndicatorResponse{}, nil
+}
+
 func (*MockAgentClient) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
 	return &bossanovav1.LastTurnIsUserResponse{}, nil
 }
 
 func (*MockAgentClient) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
 	return &bossanovav1.ReadTranscriptResponse{}, nil
+}
+
+func (*MockAgentClient) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
+	return &bossanovav1.RotationCapabilityResponse{}, nil
+}
+
+func (*MockAgentClient) MaterializeAccount(_ context.Context, _ *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
+	return &bossanovav1.MaterializeAccountResponse{}, nil
 }
 
 // TranscriptExists checks the conventional Claude transcript path on disk so

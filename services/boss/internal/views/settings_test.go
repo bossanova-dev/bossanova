@@ -86,6 +86,57 @@ func TestSettings_ErrorTrackingToggle(t *testing.T) {
 	}
 }
 
+func TestSettings_RendersRotationRow(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	view := m.View().Content
+	if !strings.Contains(view, "Enable automatic account rotation") {
+		t.Errorf("settings view missing rotation row.\nGot:\n%s", view)
+	}
+	// Default is ON (nil Enabled), so the checkbox renders checked.
+	if !strings.Contains(view, "[x] Enable automatic account rotation") {
+		t.Errorf("rotation row should render checked by default.\nGot:\n%s", view)
+	}
+}
+
+func TestSettings_RotationToggleFlipsRenderedValue(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	idx := -1
+	for i, r := range m.rows {
+		if r.Kind == settingsRowKindRotation {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("settingsRowKindRotation row not found")
+	}
+	m.cursor = idx
+
+	if !m.settings.Rotation.RotationEnabled() {
+		t.Fatalf("precondition: rotation should default to enabled (nil)")
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	sm := updated.(SettingsModel)
+	if sm.settings.Rotation.RotationEnabled() {
+		t.Errorf("rotation did not flip to disabled after Enter")
+	}
+	if !strings.Contains(sm.View().Content, "[ ] Enable automatic account rotation") {
+		t.Errorf("rendered rotation row should be unchecked after toggle.\nGot:\n%s", sm.View().Content)
+	}
+
+	updated, _ = sm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	sm = updated.(SettingsModel)
+	if !sm.settings.Rotation.RotationEnabled() {
+		t.Errorf("rotation did not flip back to enabled")
+	}
+	if !strings.Contains(sm.View().Content, "[x] Enable automatic account rotation") {
+		t.Errorf("rendered rotation row should be checked after second toggle.\nGot:\n%s", sm.View().Content)
+	}
+}
+
 func TestSettings_EventTracingToggleSeedsDefaults(t *testing.T) {
 	withTempConfigHome(t)
 	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())

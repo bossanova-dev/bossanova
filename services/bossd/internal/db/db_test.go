@@ -959,6 +959,45 @@ func TestRepoStore_SettingsFields(t *testing.T) {
 	}
 }
 
+// TestRepoStore_CanAutoRotate round-trips the BOS-174 can_auto_rotate column:
+// it should default to true on create, and Update should persist false.
+func TestRepoStore_CanAutoRotate(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewRepoStore(db)
+	ctx := context.Background()
+
+	repo, err := store.Create(ctx, CreateRepoParams{
+		DisplayName:       "rotation-test",
+		LocalPath:         "/tmp/rotation-test",
+		OriginURL:         "https://github.com/test/rotation.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !repo.CanAutoRotate {
+		t.Error("CanAutoRotate should default to true")
+	}
+
+	falseVal := false
+	updated, err := store.Update(ctx, repo.ID, UpdateRepoParams{CanAutoRotate: &falseVal})
+	if err != nil {
+		t.Fatalf("update CanAutoRotate: %v", err)
+	}
+	if updated.CanAutoRotate {
+		t.Error("CanAutoRotate should be false after update")
+	}
+
+	got, err := store.Get(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.CanAutoRotate {
+		t.Error("CanAutoRotate should persist as false")
+	}
+}
+
 func TestRepoStore_UpdateOriginURL(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewRepoStore(db)

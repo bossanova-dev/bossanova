@@ -210,7 +210,7 @@ func TestRecoverStrandedCronSessions_NonCron_Skipped(t *testing.T) {
 }
 
 func TestRecoverStrandedCronSessions_TmuxUnattended_Routed(t *testing.T) {
-	// A tmux_unattended session (e.g. /bs-epic) has no CronJobID but is still
+	// A tmux_unattended session (e.g. /boss-epic) has no CronJobID but is still
 	// unattended, so the completion gate defers it to this sweep. It must be
 	// recovered on the same terms as a cron session, not skipped forever.
 	dir := t.TempDir()

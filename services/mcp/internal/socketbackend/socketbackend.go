@@ -523,6 +523,14 @@ func (b *Backend) TestAccount(ctx context.Context, id string) (*pb.TestAccountRe
 	return resp.Msg, nil
 }
 
+func (b *Backend) SwitchSessionAccount(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+	resp, err := b.rpc.SwitchSessionAccount(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // --- Diagnostics ---
 
 func (b *Backend) ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error) {

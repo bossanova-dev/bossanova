@@ -7,10 +7,59 @@ import {
   linearIdFromBranch,
   parsePrNumbers,
   previousVersionTag,
+  releaseDate,
   renderFrontmatter,
+  resolveRepo,
   stripHtmlTags,
   summaryFromBody,
 } from './lib.mjs'
+
+test('resolveRepo returns GITHUB_REPOSITORY when set', () => {
+  assert.equal(resolveRepo({ GITHUB_REPOSITORY: 'recurser/bossanova' }), 'recurser/bossanova')
+  assert.equal(resolveRepo({ GITHUB_REPOSITORY: 'owner/other' }), 'owner/other')
+})
+
+test('resolveRepo trims surrounding whitespace on the env value', () => {
+  assert.equal(resolveRepo({ GITHUB_REPOSITORY: '  recurser/bossanova\n' }), 'recurser/bossanova')
+})
+
+test('resolveRepo falls back to the canonical private repo when unset or empty', () => {
+  assert.equal(resolveRepo({}), 'recurser/bossanova')
+  assert.equal(resolveRepo(), 'recurser/bossanova')
+  assert.equal(resolveRepo({ GITHUB_REPOSITORY: '' }), 'recurser/bossanova')
+  assert.equal(resolveRepo({ GITHUB_REPOSITORY: '   ' }), 'recurser/bossanova')
+})
+
+test('releaseDate prefers published_at, then created_at', () => {
+  assert.equal(
+    releaseDate({
+      published_at: '2024-01-02T03:04:05Z',
+      created_at: '2023-12-31T00:00:00Z',
+    }).toISOString(),
+    '2024-01-02T03:04:05.000Z',
+  )
+  assert.equal(
+    releaseDate({ published_at: null, created_at: '2023-12-31T00:00:00Z' }).toISOString(),
+    '2023-12-31T00:00:00.000Z',
+  )
+  // A malformed published_at must fall through to a valid created_at, not skip
+  // straight to `now` (regression guard for the `||`-before-parse pitfall).
+  assert.equal(
+    releaseDate({ published_at: 'not-a-date', created_at: '2023-12-31T00:00:00Z' }).toISOString(),
+    '2023-12-31T00:00:00.000Z',
+  )
+})
+
+test('releaseDate falls back to now for a missing/absent/malformed release', () => {
+  const now = new Date('2025-07-05T12:00:00Z')
+  // null → release could not be fetched (non-blocking fallback)
+  assert.equal(releaseDate(null, now).toISOString(), now.toISOString())
+  // present release object but no timestamps
+  assert.equal(releaseDate({}, now).toISOString(), now.toISOString())
+  // unparseable timestamp must not yield an Invalid Date (which would throw
+  // downstream in renderFrontmatter's toISOString())
+  assert.equal(releaseDate({ published_at: 'not-a-date' }, now).toISOString(), now.toISOString())
+})
 
 test('linearIdFromBranch extracts BOS id case-insensitively', () => {
   assert.equal(linearIdFromBranch('dave/bos-88-add-a-changelog-page'), 'BOS-88')

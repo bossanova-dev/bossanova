@@ -43,6 +43,14 @@ export function selectTargets(files) {
       continue
     }
 
+    // The vendored skill toolbox helpers (skills-toolbox/*.mjs) ship their unit tests as
+    // skills-toolbox/*.test.mjs, which `make test-scripts` globs. A change touching only
+    // skills-toolbox/ must run those tests, not fall through to test-smoke.
+    if (file.startsWith('skills-toolbox/')) {
+      selectWholeTarget(selections, 'test-scripts')
+      continue
+    }
+
     if (isSkillPath(file)) {
       selectWholeTarget(selections, 'test-manifest')
       selectWholeTarget(selections, 'test-no-inline-stop-hooks')

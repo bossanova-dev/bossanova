@@ -71,6 +71,7 @@ Launches the interactive session creation flow. When both --repo and --prompt ar
 
 **Flags:**
 
+- `--account` — Account id or label to run this session under (empty = system default)
 - `--agent` — Override default agent plugin for this session (e.g. claude, opencode)
 - `--detach` — Exit immediately after creating the session; print session-id and chat-id
 - `--model` — Agent model id to run this session under (e.g. an Opus id); empty = agent default
@@ -312,6 +313,15 @@ List accounts
 ### `boss account remove <account-id>`
 
 Remove an account and its stored credential
+
+### `boss account switch <session> <account> [flags]`
+
+Stop a session's live chat, rebind it to the chosen account, and resume
+
+**Flags:**
+
+- `--chat` — Target a specific agent chat (agent session id); default: the session's primary live chat
+- `--force` — Interrupt a mid-turn / WORKING chat
 
 ### `boss account test <account-id> [flags]`
 
@@ -562,8 +572,10 @@ View or update global settings
 **Flags:**
 
 - `--default-agent` — Set the default agent plugin (e.g. claude, opencode)
+- `--no-rotation` — Disable automatic account rotation (global kill-switch; manual switching still works)
 - `--no-skip-permissions` — Disable Claude --dangerously-skip-permissions
 - `--poll-interval` — Set poll interval in seconds (0 = default) (default: 0)
+- `--rotation` — Enable automatic account rotation
 - `--skip-permissions` — Enable Claude --dangerously-skip-permissions
 - `--worktree-dir` — Set worktree base directory
 

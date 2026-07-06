@@ -1,0 +1,12 @@
+╭──────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.129.0)                               │
+╰──────────────────────────────────────────────────────────╯
+
+• I ran into this provider error earlier while testing:
+
+  "usage_limit_reached — your weekly limit is exhausted, resets in 3 hours"
+
+  I've retried and it's working now.
+
+›
+  gpt-5.5 medium · ~/code/bossanova · ready

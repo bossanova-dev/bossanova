@@ -69,8 +69,12 @@ func (m *Manager) SessionStatus(sessionID string) string {
 			best = StatusQuestion
 			continue
 		}
+		// Recent output OR an affirmative working marker (a running background
+		// shell / active spinner) keeps the process WORKING even when the pane
+		// is otherwise static. Question precedence is preserved by the
+		// best != StatusQuestion guard.
 		lw := p.LastWrite()
-		if !lw.IsZero() && time.Since(lw) < activeThreshold {
+		if (!lw.IsZero() && time.Since(lw) < activeThreshold) || p.HasWorkingIndicator() {
 			if best != StatusQuestion {
 				best = StatusWorking
 			}
@@ -161,7 +165,7 @@ func (m *Manager) ProcessStatus(agentSessionID string) string {
 		return StatusQuestion
 	}
 	lw := p.LastWrite()
-	if !lw.IsZero() && time.Since(lw) < activeThreshold {
+	if (!lw.IsZero() && time.Since(lw) < activeThreshold) || p.HasWorkingIndicator() {
 		return StatusWorking
 	}
 	return StatusIdle
@@ -209,7 +213,7 @@ func (m *Manager) AllStatuses() map[string]ProcessInfo {
 			status = StatusQuestion
 		} else {
 			lw := p.LastWrite()
-			if !lw.IsZero() && time.Since(lw) < activeThreshold {
+			if (!lw.IsZero() && time.Since(lw) < activeThreshold) || p.HasWorkingIndicator() {
 				status = StatusWorking
 			} else {
 				status = StatusIdle
@@ -302,6 +306,14 @@ const questionTailSize = 16384
 // question prompt (AskUserQuestion or permission UI).
 func (p *Process) HasQuestionPrompt() bool {
 	return hasQuestionPrompt(p.buf.Tail(questionTailSize))
+}
+
+// HasWorkingIndicator reports whether the PTY ring buffer shows an affirmative
+// "still working" marker (a running background shell or an active spinner).
+// Used to keep a busy-but-static process from being reported idle when its
+// last PTY output is older than activeThreshold.
+func (p *Process) HasWorkingIndicator() bool {
+	return hasWorkingIndicator(p.buf.Tail(questionTailSize))
 }
 
 // RecentOutput returns up to the last n bytes of buffered PTY output. Used by

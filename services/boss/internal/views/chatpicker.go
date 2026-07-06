@@ -16,6 +16,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossalib/vcs"
+	"google.golang.org/protobuf/proto"
 )
 
 // chatPickerSessionMsg carries a session fetched via RPC for the chat picker.
@@ -107,6 +108,7 @@ const (
 	confirmDelete
 	confirmMerge
 	confirmArchive
+	confirmSwitch // switch-account against a mid-turn (WORKING) chat
 )
 
 // wakeResultMsg carries the result of an async WakeChat RPC call.
@@ -114,6 +116,22 @@ type wakeResultMsg struct {
 	agentSessionID string
 	resp           *pb.WakeChatResponse
 	err            error
+}
+
+// switchAccountsLoadedMsg carries the accounts fetched for the switch-account
+// picker (BOS-171), scoped to the target chat's provider (agent name). A load
+// error is non-fatal: the picker still opens with just the "System default" row
+// so the operator can at least switch to account 0.
+type switchAccountsLoadedMsg struct {
+	accounts []*pb.Account
+	err      error
+}
+
+// switchAccountResultMsg carries the result of an async SwitchSessionAccount
+// RPC call (BOS-171: stop → swap → resume under the chosen account).
+type switchAccountResultMsg struct {
+	resp *pb.SwitchSessionAccountResponse
+	err  error
 }
 
 // ChatPickerModel lets the user choose between starting a new chat or
@@ -164,6 +182,23 @@ type ChatPickerModel struct {
 	agents       []client.AgentInfo
 	agentTable   table.Model
 	pickingAgent bool // true while showing the one-shot agent picker
+
+	// Switch-account flow (BOS-171). switchTargetChatID is the agent_session_id
+	// of the chat captured when the operator triggered the switch; the flow reads
+	// its live status back out of m.daemonStatuses to decide whether a mid-turn
+	// confirm is needed. switchAccounts / switchAccountTable drive the account
+	// picker (mirroring the new-session wizard's account select).
+	// switchSelectedAccount is the account_id chosen in the picker ("" = system
+	// default) held across the optional confirm step. switching is true while the
+	// RPC is in flight; switchNotice is the passive system line rendered with the
+	// daemon's NoticeText on success or its error message on failure.
+	switchTargetChatID    string
+	switchAccounts        []*pb.Account
+	switchAccountTable    table.Model
+	pickingAccount        bool
+	switchSelectedAccount string
+	switching             bool
+	switchNotice          string
 }
 
 // SetTelemetry installs a telemetry client for successful chat-picker actions.
@@ -385,6 +420,34 @@ func (m *ChatPickerModel) buildTableRows() {
 	m.table.SetCursor(cursor)
 }
 
+// limitedProviderLine returns a concise warning line naming the provider(s)
+// whose chats are currently usage-limited, e.g. "⚠ claude usage-limited". It
+// returns "" when no chat in the session is limited, so callers can skip
+// rendering entirely (no empty line, no layout shift). Provider names are
+// de-duplicated in first-seen order, so a session with two limited claude
+// chats reads "⚠ claude usage-limited" rather than naming claude twice.
+// Answers the BOS-167 acceptance criterion that session detail names which
+// provider/agent (Claude/Codex) is limited.
+func (m ChatPickerModel) limitedProviderLine() string {
+	var providers []string
+	seen := make(map[string]bool)
+	for _, chat := range m.chats {
+		if m.daemonStatuses[chat.AgentSessionId] != statusLimited {
+			continue
+		}
+		name := m.chatAgentName(chat)
+		if name == "" || name == "-" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		providers = append(providers, name)
+	}
+	if len(providers) == 0 {
+		return ""
+	}
+	return "⚠ " + strings.Join(providers, ", ") + " usage-limited"
+}
+
 func (m *ChatPickerModel) chatAgentName(chat *pb.ClaudeChat) string {
 	if chat.GetAgentName() != "" {
 		return chat.GetAgentName()
@@ -499,7 +562,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else if m.daemonStatuses != nil {
 			for i, chat := range m.chats {
-				if s := m.daemonStatuses[chat.AgentSessionId]; s == statusWorking || s == statusIdle || s == statusQuestion {
+				if s := m.daemonStatuses[chat.AgentSessionId]; s == statusWorking || s == statusIdle || s == statusQuestion || s == statusLimited {
 					m.table.SetCursor(i)
 					updateCursorColumn(&m.table)
 					break
@@ -605,6 +668,35 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// without waiting for the next tick.
 		return m, m.refreshStatuses()
 
+	case switchAccountsLoadedMsg:
+		// Load errors are non-fatal — open the picker with just the System
+		// default row so the operator can still switch to account 0.
+		if msg.err != nil {
+			m.switchAccounts = nil
+		} else {
+			m.switchAccounts = msg.accounts
+		}
+		m.pickingAccount = true
+		m.buildSwitchAccountTable()
+		return m, nil
+
+	case switchAccountResultMsg:
+		m.switching = false
+		if msg.err != nil {
+			// Surface the daemon's human-readable error (cooling/disabled/other)
+			// on the same notice line used for success.
+			m.switchNotice = msg.err.Error()
+			return m, nil
+		}
+		m.switchNotice = msg.resp.GetNoticeText()
+		// Reload the chat list AND refresh statuses. A fresh-fallback switch
+		// (resumed=false) respawns under a NEW agent_session_id, so it creates a
+		// new agent_chats row; refreshing statuses alone would leave m.chats stale
+		// and the newly spawned pane unselectable until the picker is reopened.
+		// listChats picks up the new row; refreshStatuses keeps the session/PR
+		// refresh and the STATUS column current.
+		return m, tea.Batch(m.listChats(), m.refreshStatuses())
+
 	case tickMsg:
 		return m, tea.Batch(m.refreshStatuses(), tickCmd())
 
@@ -680,7 +772,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// can't invisibly enter another confirm state before the async result
 		// routes the picker. Esc is the exception: it navigates away while
 		// allowing the RPC to finish in the background.
-		if m.merging || m.archiving {
+		if m.merging || m.archiving || m.switching {
 			if msg.String() == "esc" {
 				m.cancel = true
 			}
@@ -688,6 +780,9 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.pickingAgent {
 			return m.updateAgentSelect(msg)
+		}
+		if m.pickingAccount {
+			return m.updateSwitchAccountSelect(msg)
 		}
 		if m.confirm != confirmNone {
 			return m.updateConfirm(msg)
@@ -789,6 +884,18 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					err:            err,
 				}
 			}
+		case "c":
+			// swit[c]h account (BOS-171): stop → swap → resume the selected chat
+			// under a chosen rotation account. Open the account picker scoped to
+			// the chat's provider; the mid-turn confirm (if WORKING) comes after
+			// the account is chosen.
+			chat := m.selectedChat()
+			if chat == nil {
+				return m, nil
+			}
+			m.switchTargetChatID = chat.AgentSessionId
+			m.switchNotice = ""
+			return m, m.loadSwitchAccounts(m.chatAgentName(chat))
 		case "d":
 			if chat := m.selectedChat(); chat != nil && m.deletingAgentSessionID == "" {
 				m.confirm = confirmDelete
@@ -834,6 +941,10 @@ func (m ChatPickerModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.archiveCmd()
 		case confirmDelete:
 			return m.startDelete()
+		case confirmSwitch:
+			// Confirmed against a mid-turn chat — force the interrupt.
+			m.switching = true
+			return m, m.switchAccountCmd(true)
 		case confirmNone:
 			return m, nil
 		}
@@ -927,6 +1038,109 @@ func (m ChatPickerModel) updateAgentSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	}
 }
 
+// loadSwitchAccounts lists the registered rotation accounts for the given
+// provider (the chat's agent name) off the update loop. Errors resolve to an
+// empty list via switchAccountsLoadedMsg — the picker still opens with the
+// System default row.
+func (m ChatPickerModel) loadSwitchAccounts(provider string) tea.Cmd {
+	c := m.client
+	ctx := m.ctx
+	return func() tea.Msg {
+		accounts, err := c.ListAccounts(ctx, provider)
+		return switchAccountsLoadedMsg{accounts: accounts, err: err}
+	}
+}
+
+// buildSwitchAccountTable populates m.switchAccountTable. Row 0 is always
+// "System default (account 0)" mapping to "" (the daemon's default-account
+// policy); the remaining rows are the provider's registered accounts. Mirrors
+// the new-session wizard's buildAccountTable.
+func (m *ChatPickerModel) buildSwitchAccountTable() {
+	labels := make([]string, len(m.switchAccounts)+1)
+	providers := make([]string, len(m.switchAccounts)+1)
+	statuses := make([]string, len(m.switchAccounts)+1)
+	labels[0] = "System default (account 0)"
+	for i, a := range m.switchAccounts {
+		labels[i+1] = accountRowLabel(a)
+		providers[i+1] = a.GetProvider()
+		statuses[i+1] = a.GetStatus()
+	}
+
+	cols := []table.Column{
+		cursorColumn,
+		{Title: "ACCOUNT", Width: maxColWidth("ACCOUNT", labels, 30) + tableColumnSep},
+		{Title: "PROVIDER", Width: maxColWidth("PROVIDER", providers, 12) + tableColumnSep},
+		{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 12) + tableColumnSep},
+	}
+	rows := make([]table.Row, len(labels))
+	for i := range labels {
+		indicator := ""
+		if i == 0 {
+			indicator = cursorChevron
+		}
+		rows[i] = table.Row{indicator, labels[i], providers[i], styleSubtle.Render(statuses[i])}
+	}
+
+	m.switchAccountTable = newBossTable(cols, rows, len(rows)+1)
+	m.switchAccountTable.SetCursor(0)
+	m.switchAccountTable.SetWidth(columnsWidth(cols))
+}
+
+// updateSwitchAccountSelect handles key input while the switch-account picker
+// is showing. Esc cancels back to the chat list; Enter confirms the account,
+// then either fires the RPC directly or — when the target chat is mid-turn
+// (WORKING) — routes through the confirm dialog first (which forces the switch).
+func (m ChatPickerModel) updateSwitchAccountSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.pickingAccount = false
+		return m, nil
+	case "enter", " ", "space":
+		idx := m.switchAccountTable.Cursor()
+		// Row 0 is "System default" mapping to "". Rows 1..N map to
+		// m.switchAccounts[idx-1].
+		if idx <= 0 || idx > len(m.switchAccounts) {
+			m.switchSelectedAccount = ""
+		} else {
+			m.switchSelectedAccount = m.switchAccounts[idx-1].GetId()
+		}
+		m.pickingAccount = false
+		// The TUI knows the chat's live status locally, so gate the interrupt on
+		// a confirm dialog when the target chat is mid-turn rather than sending
+		// Force=false and reacting to a FailedPrecondition round-trip.
+		if m.daemonStatuses[m.switchTargetChatID] == statusWorking {
+			m.confirm = confirmSwitch
+			return m, nil
+		}
+		m.switching = true
+		return m, m.switchAccountCmd(false)
+	default:
+		var cmd tea.Cmd
+		m.switchAccountTable, cmd = m.switchAccountTable.Update(msg)
+		updateCursorColumn(&m.switchAccountTable)
+		return m, cmd
+	}
+}
+
+// switchAccountCmd runs SwitchSessionAccount off the update loop. Captures
+// everything by value so the model copy is safe under bubbletea.
+func (m ChatPickerModel) switchAccountCmd(force bool) tea.Cmd {
+	c := m.client
+	ctx := m.ctx
+	sessionID := m.sessionID
+	accountID := m.switchSelectedAccount
+	chatID := m.switchTargetChatID
+	return func() tea.Msg {
+		resp, err := c.SwitchSessionAccount(ctx, &pb.SwitchSessionAccountRequest{
+			SessionId:      sessionID,
+			AccountId:      accountID,
+			AgentSessionId: proto.String(chatID),
+			Force:          force,
+		})
+		return switchAccountResultMsg{resp: resp, err: err}
+	}
+}
+
 // startDelete records the in-flight chat id (drives the table badge) and
 // returns the DeleteChat command. Returns (model, cmd) because it mutates the
 // model, unlike mergeCmd/archiveCmd which only read it.
@@ -976,8 +1190,20 @@ func (m ChatPickerModel) tableHeight() int {
 	// gap + actionbar padding + actionbar, plus the session warning block
 	// (below the header, above the chat list). Reserving its lines shrinks the
 	// chat table rather than letting the block push the table off-screen.
-	overhead := bannerOverhead + 1 + actionBarPadY + 1 + m.warningBlockHeight()
+	overhead := bannerOverhead + 1 + actionBarPadY + 1 + m.warningBlockHeight() + m.limitedLineHeight() + m.rotationHistoryHeight()
 	return clampedTableHeight(len(m.chats), m.height, overhead)
+}
+
+// rotationHistoryHeight returns the vertical lines the rotation-history block
+// (BOS-176) occupies above the chat list — the rendered block plus the single
+// blank line View renders below it — or 0 when the session has no rotation
+// history. Reserving these keeps the block from pushing a chat row off-screen.
+func (m ChatPickerModel) rotationHistoryHeight() int {
+	block := rotationHistoryBlock(m.session, m.table.Width())
+	if block == "" {
+		return 0
+	}
+	return lipgloss.Height(block) + 1
 }
 
 // warningBlockHeight returns the number of vertical lines the session warning
@@ -991,6 +1217,17 @@ func (m ChatPickerModel) warningBlockHeight() int {
 		return 0
 	}
 	return lipgloss.Height(block) + 1
+}
+
+// limitedLineHeight returns the vertical lines the usage-limited provider hint
+// (BOS-167) occupies above the chat list — the hint line plus the single blank
+// line View renders below it — or 0 when no chat is limited. Reserving these in
+// tableHeight keeps the hint from pushing a chat row off-screen.
+func (m ChatPickerModel) limitedLineHeight() int {
+	if m.limitedProviderLine() == "" {
+		return 0
+	}
+	return 2
 }
 
 func (m ChatPickerModel) View() tea.View {
@@ -1040,6 +1277,17 @@ func (m ChatPickerModel) View() tea.View {
 		return tea.NewView(b.String())
 	}
 
+	if m.pickingAccount {
+		var b strings.Builder
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render(
+			"Switch this chat to which account?"))
+		b.WriteString("\n\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.switchAccountTable.View()))
+		b.WriteString("\n")
+		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] cancel"}))
+		return tea.NewView(b.String())
+	}
+
 	var b strings.Builder
 
 	// Surface the session's full finalize/repair error below the header and
@@ -1048,6 +1296,22 @@ func (m ChatPickerModel) View() tea.View {
 	// "\n\n" yields the single blank line below, before the chat list.
 	if block := selectedSessionWarningBlock(m.session, m.table.Width()); block != "" {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(block))
+		b.WriteString("\n\n")
+	}
+
+	// Recent automatic-rotation decisions for this session (BOS-176), below the
+	// warnings and above the chat list. Empty (skipped) when there is no
+	// rotation history, so sessions that never rotated see no extra block.
+	if hist := rotationHistoryBlock(m.session, m.table.Width()); hist != "" {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(hist))
+		b.WriteString("\n\n")
+	}
+
+	// Name the usage-limited provider(s) (BOS-167) above the chat list so the
+	// operator can see at a glance which agent hit its cap without scanning the
+	// per-chat STATUS column. Only rendered when at least one chat is limited.
+	if line := m.limitedProviderLine(); line != "" {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(styleStatusWarning.Render(line)))
 		b.WriteString("\n\n")
 	}
 
@@ -1064,6 +1328,15 @@ func (m ChatPickerModel) View() tea.View {
 	} else if m.archiving {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + "Archiving session..."))
+	} else if m.switching {
+		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
+			m.spinner.View() + "Switching account..."))
+	} else if m.confirm == confirmSwitch {
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
+			"This chat is mid-turn. Switch account and interrupt it?"))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else if m.confirm == confirmDelete {
 		chat := m.selectedChat()
 		if chat != nil {
@@ -1094,6 +1367,13 @@ func (m ChatPickerModel) View() tea.View {
 	} else {
 		if m.statusMsg != "" {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg))
+			b.WriteString("\n")
+		}
+		// Passive system/notice line for the switch-account outcome (BOS-171):
+		// the daemon's "switched to <label> — resumed/started fresh" text, or its
+		// human-readable error. Rendered muted, not injected into any input.
+		if m.switchNotice != "" {
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusMuted.Render(m.switchNotice)))
 			b.WriteString("\n")
 		}
 		if m.merged {
@@ -1128,6 +1408,7 @@ func (m ChatPickerModel) View() tea.View {
 			if m.daemonStatuses[chat.AgentSessionId] == statusStopped {
 				left = append(left, "[w]ake")
 			}
+			left = append(left, "swit[c]h account")
 			b.WriteString(actionBar(
 				left,
 				middle,

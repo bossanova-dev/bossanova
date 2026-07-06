@@ -1,0 +1,62 @@
+{
+  "lensMap": [
+    {
+      "id": "go",
+      "skill": "golang-pro",
+      "glob": "**/*.go",
+      "fallbackRubric": "review through an inline Go rubric: idiomatic error handling and wrapping, goroutine/channel safety and leaks, interface and generics design, allocation on hot paths, and table-driven test coverage for new/changed logic"
+    },
+    {
+      "id": "tui",
+      "skill": "tui-design",
+      "glob": "services/boss/**",
+      "fallbackRubric": "review through an inline Bubbletea v2 rubric: view/update purity, key-binding and action-bar consistency, layout-constant reuse, confirmation-dialog patterns, and no blocking work in Update"
+    },
+    {
+      "id": "web",
+      "skill": "impeccable",
+      "glob": "services/web/**",
+      "fallbackRubric": "review through an inline React/TypeScript/web-UI rubric: component correctness, hook/effect races, accessibility, type-boundary cleanliness, dead/duplicated code"
+    }
+  ],
+  "commands": {
+    "build": "make build",
+    "lint": "make lint",
+    "format": "make format",
+    "testSmoke": "make test-smoke",
+    "testAffected": "make test-affected",
+    "testFull": "make test-full",
+    "testModule": "make test-{module}"
+  },
+  "test": { "manifestPath": "docs/testing/test-command-manifest.md" },
+  "env": {
+    "headlessSignals": [
+      { "var": "BOSS_CRON", "equals": "true" },
+      { "var": "BS_HEADLESS", "equals": "1" },
+      { "var": "OPENCLAW_SESSION", "present": true }
+    ],
+    "headlessWhenNoTty": true
+  },
+  "adapters": {
+    "tracker": "linear",
+    "finalize": "boss-finalize",
+    "publish": "proof",
+    "sessionRunner": "bossd"
+  },
+  "planContract": {
+    "version": 1,
+    "sections": [
+      { "heading": "## Summary", "required": "always" },
+      { "heading": "## Approach", "required": "always" },
+      { "heading": "## Key changes", "required": "always" },
+      { "heading": "## Testing", "required": "always" },
+      { "heading": "## Risks / unknowns", "required": "always" },
+      { "heading": "## Acceptance criteria", "required": "always" },
+      { "heading": "## Required proof", "required": "always" },
+      { "heading": "## Why this needs a human", "required": "needs-human" },
+      { "heading": "## Open Questions", "required": "open-questions" },
+      { "heading": "## Planning", "required": "always" },
+      { "heading": "## Original notes", "required": "always" }
+    ]
+  }
+}

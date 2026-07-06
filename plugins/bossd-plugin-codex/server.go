@@ -4,15 +4,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/recurser/bossalib/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/loginshell"
 	"github.com/recurser/bossalib/plugin/hostclient"
@@ -119,11 +121,25 @@ func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusR
 		return &bossanovav1.AgentExitStatusResponse{IsComplete: false}, nil
 	}
 	err := s.runner.ExitError(req.SessionId)
-	var msg string
+	resp := &bossanovav1.AgentExitStatusResponse{IsComplete: true}
 	if err != nil {
-		msg = err.Error()
+		resp.ExitError = err.Error()
 	}
-	return &bossanovav1.AgentExitStatusResponse{IsComplete: true, ExitError: msg}, nil
+	// Surface the typed classification through the two optional fields while
+	// leaving exit_error (above) untouched so existing consumers keep working.
+	var ul agenterr.ErrUsageLimited
+	switch {
+	case errors.As(err, &ul):
+		fc := agenterr.KindUsageExhausted.String()
+		resp.FailureClass = &fc
+		if !ul.ResetAt.IsZero() {
+			resp.ResetAt = timestamppb.New(ul.ResetAt)
+		}
+	case errors.Is(err, ErrAuthRequired):
+		fc := agenterr.KindAuthInvalidated.String()
+		resp.FailureClass = &fc
+	}
+	return resp, nil
 }
 
 // ConfigureFinalizeHook reports unsupported. Unlike claude, codex has no
@@ -365,6 +381,15 @@ func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuesti
 	}, nil
 }
 
+// HasWorkingIndicator always returns false for codex. Codex's TUI spinner
+// animates, so its pane content keeps changing while it works and the daemon's
+// content-diff path already reports WORKING — there is no static-but-busy pane
+// to rescue. A codex-specific detector (via its codexWorking regex) is a
+// possible follow-up but is intentionally out of scope here.
+func (s *Server) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.HasWorkingIndicatorResponse{IsWorking: false}, nil
+}
+
 // LastTurnIsUser reports whether the last meaningful entry in the codex
 // rollout JSONL transcript for agentSessionID is a real user turn (not a
 // function_call_output or token_count bookkeeping event). Returns
@@ -394,9 +419,40 @@ func (s *Server) TranscriptExists(_ context.Context, req *bossanovav1.Transcript
 // (nil error) when no rollout file is found, so callers can distinguish
 // "never started" from hard errors.
 func (s *Server) ReadTranscript(_ context.Context, req *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
-	home, err := os.UserHomeDir()
+	root, err := codexSessionsRoot()
 	if err != nil {
 		return &bossanovav1.ReadTranscriptResponse{Exists: false}, nil
 	}
-	return readTranscriptAt(filepath.Join(home, codexSessionsDir), req.WorkDir, req.AgentSessionId, req.MaxMessages)
+	return readTranscriptAt(root, req.WorkDir, req.AgentSessionId, req.MaxMessages)
+}
+
+// RotationCapability: codex injects its credential as a per-account home dir.
+func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.RotationCapabilityResponse{
+		SupportsRotation: true,
+		AuthKind:         bossanovav1.AuthKind_AUTH_KIND_HOME_DIR,
+	}, nil
+}
+
+// MaterializeAccount turns the stored codex credential blob into an auth.json
+// file spec (mode 0600) plus HomeDirEnvKey=CODEX_HOME.
+//
+// IMPORTANT (BOS-158): the returned home-dir spec assumes a BASE-SEEDED codex
+// home. The per-account dir must have its sessions/ (and session_index.jsonl)
+// shared/symlinked from a shared base home; only auth.json is written fresh
+// here. A per-account home whose sessions/ lacks the rollout makes codex resume
+// fail fast (thread/resume: no rollout found ... code -32600). Seeding sessions/
+// is BOS-162's credmaterialize executor's responsibility, NOT this RPC's — this
+// method returns ONLY auth.json + HomeDirEnvKey. See
+// docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
+// The blob is NEVER logged.
+func (s *Server) MaterializeAccount(_ context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) { //nolint:unparam // interface implementation; error result always nil today
+	return &bossanovav1.MaterializeAccountResponse{
+		Files: []*bossanovav1.MaterializedFile{{
+			RelativePath: "auth.json",
+			Content:      req.GetCredentialBlob(),
+			Mode:         0o600,
+		}},
+		HomeDirEnvKey: "CODEX_HOME",
+	}, nil
 }

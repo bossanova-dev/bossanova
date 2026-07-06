@@ -17,13 +17,14 @@ require (
 	go.uber.org/goleak v1.3.0
 	golang.org/x/net v0.56.0
 	golang.org/x/sync v0.21.0
-	google.golang.org/grpc v1.81.1
+	google.golang.org/grpc v1.82.0
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.53.0
 )
 
 require (
 	github.com/99designs/go-keychain v0.0.0-20191008050251-8e49817e8af4 // indirect
+	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/danieljoos/wincred v1.1.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/dvsekhvalnov/jose2go v1.7.0 // indirect
@@ -38,14 +39,15 @@ require (
 	github.com/gsterjov/go-libsecret v0.0.0-20161001094733-a6f4afe4910c // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
+	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.21 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/mtibben/percent v0.2.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/oklog/run v1.1.0 // indirect
-	github.com/posthog/posthog-go v1.16.2 // indirect
-	github.com/pressly/goose/v3 v3.27.1 // indirect
+	github.com/posthog/posthog-go v1.17.5 // indirect
+	github.com/pressly/goose/v3 v3.27.2 // indirect
 	github.com/qmuntal/stateless v1.8.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/segmentio/asm v1.2.1 // indirect

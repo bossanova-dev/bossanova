@@ -445,6 +445,30 @@ func (c *RemoteClient) TestAccount(_ context.Context, _ string) (*pb.TestAccount
 	return nil, errLocalOnly("TestAccount")
 }
 
+// SwitchSessionAccount proxies the switch through the orchestrator, which routes
+// by session_id to the owning daemon (mirroring StopSession/WakeChat). Account
+// registry management stays local-only, but the switch acts on a session the
+// remote client can already stop/resume, so it must reach the same daemon rather
+// than return the local-only error. Empty agent_session_id ⇒ the session's
+// primary live chat (the proxy request field carries no optional wrapper, and the
+// daemon treats empty and unset identically).
+func (c *RemoteClient) SwitchSessionAccount(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+	resp, err := c.rpc.ProxySwitchSessionAccount(ctx, connect.NewRequest(&pb.ProxySwitchSessionAccountRequest{
+		SessionId:      req.GetSessionId(),
+		AgentSessionId: req.GetAgentSessionId(),
+		AccountId:      req.GetAccountId(),
+		Force:          req.GetForce(),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.SwitchSessionAccountResponse{
+		Resumed:     resp.Msg.GetResumed(),
+		TargetLabel: resp.Msg.GetTargetLabel(),
+		NoticeText:  resp.Msg.GetNoticeText(),
+	}, nil
+}
+
 func (c *RemoteClient) RepairDoctor(_ context.Context) (*pb.RepairDoctorResponse, error) {
 	return nil, errLocalOnly("RepairDoctor")
 }

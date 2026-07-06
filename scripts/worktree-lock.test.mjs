@@ -8,7 +8,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, test } from 'node:test'
 
-const scriptPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'worktree-lock.sh')
+const scriptPath = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'skills-toolbox',
+  'worktree-lock.sh',
+)
 const tempRoots = []
 
 function lockHome() {

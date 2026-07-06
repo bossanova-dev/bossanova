@@ -1,4 +1,4 @@
-.PHONY: all build build-all build-docs clean codex-skills codex-skills-check construct-skills construct-skills-check copy-skills deps format generate gen-skill kill kill-all lint \
+.PHONY: all build build-all build-docs clean codex-skills codex-skills-check construct-skills construct-skills-check copy-skills copy-public-skills copy-public-skills-check deps format format-affected generate gen-skill kill kill-all lint vendor-toolbox vendor-toolbox-check \
 	lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
@@ -103,6 +103,14 @@ construct-skills:
 ## construct-skills-check: Fail if any constructed SKILL.md is out of date (skips where superpowers is not installed)
 construct-skills-check:
 	node scripts/construct-skills.mjs --root . --check
+
+## vendor-toolbox: Copy the canonical skills-toolbox/ helpers into each skill's toolbox/.
+vendor-toolbox:
+	node scripts/vendor-toolbox.mjs
+
+## vendor-toolbox-check: Fail if any vendored skill toolbox has drifted.
+vendor-toolbox-check:
+	node scripts/vendor-toolbox.mjs --check
 
 deploy-staging:
 	$(MAKE) -C infra/kustomize deploy-staging
@@ -232,14 +240,14 @@ setup-worktree:
 	else \
 		echo "pnpm not found on PATH — skipping JS dep + hook install (non-fatal)"; \
 	fi
-	@# Install the Playwright Chromium the bs-proof pipeline drives (BOS-138). Best
+	@# Install the Playwright Chromium the boss-proof pipeline drives (BOS-138). Best
 	@# effort: guarded on pnpm + web node_modules and NEVER fatal — a worktree that
 	@# can't fetch Chromium still provisions; `node scripts/proof.mjs doctor` reports
 	@# the gap at run time (env-unavailable, not a crash). Host-level tools the proof
 	@# video path needs are NOT installable here: run `brew install agg ffmpeg`
 	@# (macOS) / your distro equivalent on the host once; doctor reports their absence.
 	@if command -v pnpm >/dev/null 2>&1 && [ -d "$$WORKTREE_DIR/services/web/node_modules" ]; then \
-		echo "==> Installing Playwright Chromium (bs-proof, best-effort)"; \
+		echo "==> Installing Playwright Chromium (boss-proof, best-effort)"; \
 		( cd "$$WORKTREE_DIR" && pnpm exec playwright install chromium ) \
 			|| echo "playwright install chromium failed — proof web/recipe capture unavailable (non-fatal)"; \
 	else \
@@ -262,6 +270,17 @@ $(WEB_DEPS_STAMP): services/web/package.json pnpm-lock.yaml
 ## on every CLI/daemon restart.
 copy-skills:
 	@rsync -a --delete "$(SKILLS_SRC_DIR)/" "$(SKILLS_PLUGIN_DIR)/"
+
+## copy-public-skills: Package the constructed boss-* dev skills into the embedded
+## skillinstall payload (minus build inputs), then mirror to the plugin copy so the
+## boss binary ships them to end users alongside boss-repair/boss-finalize.
+copy-public-skills:
+	node scripts/copy-public-skills.mjs --root .
+	$(MAKE) copy-skills
+
+## copy-public-skills-check: Fail if the embedded boss-* payload has drifted from .claude/skills.
+copy-public-skills-check:
+	node scripts/copy-public-skills.mjs --root . --check
 
 ## gen-skill: Regenerate the /boss skill command reference from the CLI, then mirror it.
 ## The reference region of services/boss/internal/skillinstall/skills/boss/SKILL.md is
@@ -331,7 +350,7 @@ $(BIN_DIR)/bossd-plugin-%: $(GEN_STAMP)
 $(BIN_DIR)/bossd-plugin-claude: copy-skills
 
 ## test: Run tests across all modules (generates protos first if needed)
-test: $(GEN_STAMP) copy-skills codex-skills-check construct-skills-check
+test: $(GEN_STAMP) copy-skills codex-skills-check construct-skills-check copy-public-skills-check vendor-toolbox-check
 	$(MAKE) test-scripts
 	$(MAKE) test-readme
 	$(MAKE) test-no-inline-stop-hooks
@@ -349,7 +368,7 @@ test-full:
 	$(MAKE) test
 
 ## test-smoke: Fast agent loop. No coverage, no race, no forced cache bypass.
-test-smoke: $(GEN_STAMP) copy-skills codex-skills-check construct-skills-check
+test-smoke: $(GEN_STAMP) copy-skills codex-skills-check construct-skills-check copy-public-skills-check vendor-toolbox-check
 	node --test scripts/bs-*-skill.test.mjs
 	$(MAKE) -C lib/bossalib test-fast GO_TEST_PACKAGES="./config ./cronutil ./displaystatus ./sessionreason ./statusdetect"
 	$(MAKE) -C services/boss test-fast GO_TEST_PACKAGES="./internal/agent ./internal/auth ./internal/client ./internal/preflight"
@@ -393,6 +412,10 @@ test-affected:
 			fi; \
 		done; \
 	fi
+
+## format-affected: Format only files changed vs origin/main (+ staged/untracked). Fast local/agent loop.
+format-affected:
+	@node scripts/format-affected.mjs
 
 ## test-race: Run the full test suite under -race (sets RACE=1 for sub-makes).
 ## Race detector is opt-in: `make test` skips it; `make test-race` or `RACE=1 make test` enables it.

@@ -18,10 +18,20 @@ format:
 GO_TEST_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 include $(dir $(lastword $(MAKEFILE_LIST)))../../mk/go-test.mk
 
-## dev: Run the bossd daemon in dev mode (generates protos first if needed)
+## dev: Run the bossd daemon in dev mode (generates protos first if needed).
+## Builds bossd AND the co-located `mcp` binary into ../../bin, then runs the
+## built bossd from there rather than via `go run`. The daemon resolves the
+## trusted MCP binary relative to its own executable (config.ResolveMcpBinary
+## prefers `boss-mcp`, then local-dev `mcp`, checking next-to-exe before PATH
+## for each name), so a fallback `mcp` must sit next to bin/bossd or every
+## spawned agent session launches with no mcp__boss__* tools. `go run` puts the
+## executable in a temp dir with no sibling `mcp`, which silently disables the
+## boss MCP wiring for all sessions the dev daemon spawns.
 dev:
 	$(MAKE) -C ../.. generate
-	go run -ldflags '$(LDFLAGS)' ./cmd
+	$(MAKE) -C ../mcp build
+	go build -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd
+	$(BIN)
 
 ## build: Build the bossd binary
 build:

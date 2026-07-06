@@ -36,7 +36,9 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountcred"
+	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/agent"
 	cronpkg "github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
@@ -44,6 +46,7 @@ import (
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
 	"github.com/recurser/bossd/internal/proofenvkeyring"
+	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
@@ -78,6 +81,62 @@ func (a *sessionListerAdapter) ListSessions(ctx context.Context) ([]*bossanovav1
 		pbSessions = append(pbSessions, pbSess)
 	}
 	return pbSessions, nil
+}
+
+// protoSessionListerFunc adapts a bare function to upstream.ProtoSessionLister
+// (the snapshot reader's input) so the snapshot path can post-process the
+// projected sessions — applying the reverse-stream observability overlay —
+// without a dedicated struct.
+type protoSessionListerFunc func(ctx context.Context) ([]*bossanovav1.Session, error)
+
+func (f protoSessionListerFunc) ListSessions(ctx context.Context) ([]*bossanovav1.Session, error) {
+	return f(ctx)
+}
+
+func publishAuthFailedSessionDelta(
+	ctx context.Context,
+	agentSessionID string,
+	agentChats db.AgentChatStore,
+	rawSessions db.SessionStore,
+	repos db.RepoStore,
+	chatStatusTracker *status.Tracker,
+	streamBus *upstream.StreamBus,
+	logger zerolog.Logger,
+) {
+	if agentChats == nil || rawSessions == nil || chatStatusTracker == nil || streamBus == nil {
+		return
+	}
+	chat, err := agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil || chat == nil {
+		return
+	}
+	row, err := rawSessions.Get(ctx, chat.SessionID)
+	if err != nil {
+		logger.Debug().Err(err).Str("session_id", chat.SessionID).Msg("auth-change: session lookup failed")
+		return
+	}
+	pbSess := server.SessionToProto(row)
+	if row.RepoID != "" && repos != nil {
+		if r, err := repos.Get(ctx, row.RepoID); err == nil && r != nil {
+			pbSess.RepoDisplayName = r.DisplayName
+			pbSess.RepoOriginUrl = server.CanonicalRepoOriginURL(r.OriginURL)
+			// Compute the base attention before the auth overlay so a session that
+			// is already Blocked/Orphaned keeps its real blocked_reason instead of
+			// being clobbered by the low-priority AGENT_AUTH_FAILED overlay below.
+			server.HydrateBaseAttention(pbSess, row, r)
+		}
+	}
+	chats, err := agentChats.ListBySession(ctx, pbSess.Id)
+	if err != nil {
+		return
+	}
+	server.HydrateAgentObservability(chatStatusTracker, pbSess, chats)
+	streamBus.Publish(upstream.StreamEvent{
+		Session: &upstream.SessionEvent{
+			Kind:    bossanovav1.SessionDelta_KIND_UPDATED,
+			Session: pbSess,
+		},
+	})
 }
 
 type repoPRSessionStore interface {
@@ -313,6 +372,10 @@ func run(opts runOpts) error {
 	rawWorkflows := db.NewWorkflowStore(database)
 	cronJobs := db.NewCronJobStore(database)
 	accounts := db.NewAccountStore(database)
+	// Account-rotation policy engine (BOS-173). Held on the daemon for the
+	// headless/interactive auto-rotate consumers (BOS-174/175) to call; no cap
+	// signal invokes it yet.
+	rotationEngine := rotation.NewEngine(accounts, rotation.WithDefaultCooldown(settings.Rotation.DefaultCooldown()))
 	// Credential blobs for account rotation live in the OS keyring, never in
 	// SQLite (decision D3). accountcred links keyring/dbus and is daemon-only.
 	accountCreds := accountcred.New()
@@ -344,6 +407,59 @@ func run(opts runOpts) error {
 	streamBus := upstream.NewStreamBus(log.Logger)
 	defer streamBus.Close()
 
+	// accountLabeler resolves the human-friendly account label for the reverse
+	// stream. It needs only the registry (the full accountResolver below also
+	// wires a credential materializer that depends on plugin clients not yet
+	// constructed here), so it is a lightweight label-only Resolver. Label
+	// degrades safely: "System default" for account 0, a short id on any miss —
+	// so the stream overlay never hard-fails.
+	accountLabeler := account.NewResolver(accountwiring.NewRegistry(accounts), nil, log.Logger)
+
+	// hydrateSessionForStream applies the same last_agent_activity_at +
+	// AGENT_AUTH_FAILED observability overlay that the local GetSession/
+	// ListSessions RPCs add, to a Session proto bound for the reverse stream.
+	// bosso applies session deltas as FULL replacements, so EVERY session
+	// UPDATED delta (and the DaemonSnapshot) must carry this overlay
+	// consistently — otherwise a display recompute that omits it would clobber a
+	// live AGENT_AUTH_FAILED attention back off in the cloud/web read model.
+	// Fails toward NOT flagging on any lookup error (the overlay is best-effort
+	// enrichment, never a hard dependency of the delta).
+	hydrateSessionForStream := func(ctx context.Context, pbSess *bossanovav1.Session) {
+		if pbSess == nil || agentChats == nil {
+			return
+		}
+		// Compute the base attention (blocked/orphaned/…) BEFORE the auth overlay,
+		// exactly as the local GetSession/ListSessions RPCs do. Reverse-stream
+		// protos come straight from SessionToProto, which carries blocked_reason
+		// but no attention_status, and HydrateAgentObservability only overlays
+		// AGENT_AUTH_FAILED where attention_status is nil — so without this a
+		// blocked/orphaned session with an auth-failed chat would have its real
+		// blocked_reason clobbered by the low-priority auth overlay. Best-effort:
+		// skip on any lookup error.
+		if row, err := rawSessions.Get(ctx, pbSess.Id); err == nil && row != nil {
+			if repo, err := repos.Get(ctx, row.RepoID); err == nil && repo != nil {
+				server.HydrateBaseAttention(pbSess, row, repo)
+			}
+			// Populate account_label so cloud/multi-instance web SessionDetail shows
+			// the friendly account name instead of the raw account_id. The local
+			// GetSession/ListSessions RPCs add this via the server's withAccountLabel;
+			// the reverse-stream path must do the same on EVERY delta (bosso applies
+			// deltas as full replacements, so a delta that omits it would blank a
+			// previously-set label). Best-effort: Label never hard-fails.
+			accountID := ""
+			if row.AccountID != nil {
+				accountID = *row.AccountID
+			}
+			label, _ := accountLabeler.Label(ctx, accountID)
+			pbSess.AccountLabel = &label
+		}
+		chats, err := agentChats.ListBySession(ctx, pbSess.Id)
+		if err != nil {
+			return
+		}
+		server.HydrateAgentObservability(chatStatusTracker, pbSess, chats)
+	}
+
 	// Wire the chat-status tracker similarly. It is keyed by claude_id, so
 	// resolve to a session before calling Recompute. In addition to the
 	// display-side recompute (which fans out a SessionDelta UPDATE for the
@@ -351,6 +467,13 @@ func run(opts runOpts) error {
 	// bosso receives per-chat status updates with claude_id populated.
 	// Without this publisher, ChatStatusDelta events never reach the wire
 	// and the orchestrator's per-chat status map stays empty.
+	// chatRotator auto-rotates interactive chats on CHAT_STATUS_LIMITED
+	// transitions (BOS-175). Declared here so the tracker on-update closure can
+	// reference it; constructed once the lifecycle + rotation engine adapters are
+	// in scope (below). The nil-guard covers the brief startup window before it is
+	// assigned.
+	var chatRotator *rotation.ChatRotator
+
 	chatStatusTracker.SetOnUpdate(func(agentSessionID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -374,6 +497,31 @@ func run(opts runOpts) error {
 			})
 		}
 		_ = displayComputer.Recompute(ctx, chat.SessionID)
+
+		// Auto-rotate interactive chats on LIMITED transitions (BOS-175). The
+		// tracker only fires this hook on real transitions, and the rotator itself
+		// is non-blocking + internally rate-limited, so a no-op call on every other
+		// status transition is cheap.
+		if chatRotator != nil {
+			if entry := chatStatusTracker.Get(agentSessionID); entry != nil {
+				chatRotator.OnChatStatus(agentSessionID, entry.Status, entry.ResetAt)
+			}
+		}
+	})
+
+	// Emit a structured audit log each time a chat enters or leaves the
+	// usage-limited state. Fired exactly once per transition by the tracker;
+	// the durable sink is Epic 4.4. Logging only — no behavior change.
+	chatStatusTracker.SetOnLimitTransition(func(agentSessionID string, entered bool) {
+		event := "limit-recovered"
+		if entered {
+			event = "limit-entered"
+		}
+		entry := log.Info().Str("agent_session_id", agentSessionID).Bool("entered", entered)
+		if e := chatStatusTracker.Get(agentSessionID); e != nil && !e.ResetAt.IsZero() {
+			entry = entry.Time("reset_at", e.ResetAt)
+		}
+		entry.Msg(event)
 	})
 
 	// Wire chat-store mutations onto the stream bus. Without this the
@@ -462,6 +610,7 @@ func run(opts runOpts) error {
 					pbSess.RepoOriginUrl = server.CanonicalRepoOriginURL(r.OriginURL)
 				}
 			}
+			hydrateSessionForStream(ctx, pbSess)
 			streamBus.Publish(upstream.StreamEvent{
 				Session: &upstream.SessionEvent{
 					Kind:    bossanovav1.SessionDelta_KIND_UPDATED,
@@ -531,6 +680,13 @@ func run(opts runOpts) error {
 	checkSnapshots := db.NewCheckSnapshotStore(database)
 	displayPoller.SetSnapshotStore(checkSnapshots)
 
+	// Rotation audit trail (BOS-176): one store, shared by the Recorder (which
+	// every rotation decision path writes through) and the gRPC server below
+	// (which hydrates Session.rotation_events for the TUI/web history). Auditing
+	// never fails a rotation — the Recorder swallows insert errors.
+	rotationEvents := db.NewRotationEventStore(database)
+	rotationRecorder := rotation.NewRecorder(db.NewRotationAuditStore(rotationEvents), log.Logger)
+
 	// --- Plugin Host ---
 
 	pluginBus := eventbus.New(log.Logger)
@@ -579,7 +735,7 @@ func run(opts runOpts) error {
 				log.Info().Msg("persisted discovered plugins to settings")
 			}
 		}
-	} else {
+	} else if opts.plugins == nil {
 		// The config already lists plugins, but a freshly-built plugin binary
 		// (e.g. a new bossd-plugin-* that isn't in settings.json yet — or whose
 		// entry a clobbering save stripped) wouldn't otherwise load. Merge any
@@ -670,11 +826,30 @@ func run(opts runOpts) error {
 		agentRunner = agent.NewDispatcher(pluginRunners, lookup, settings.DefaultAgent, log.Logger)
 	}
 
+	// Account binding (BOS-170): the resolver decides which registry account a
+	// session runs under and materializes its spawn env via the provider plugin.
+	// Degrade-safe — an empty registry, an unbound session, or a plugin without
+	// rotation all collapse to account 0 (no per-account env). Wired into the
+	// server (creation-time default policy) and both spawn seams below.
+	accountMaterializer := accountwiring.NewMaterializer(agentClients, accounts, accountCreds, log.Logger)
+	accountResolver := account.NewResolver(
+		accountwiring.NewRegistry(accounts),
+		accountMaterializer,
+		log.Logger,
+	)
+	accountSpawnEnv := accountwiring.NewSpawnEnvResolver(accountResolver, log.Logger)
+	pluginHost.SetAccountEnvResolver(accountSpawnEnv)
+	accountSmoke, err := accountwiring.NewSmokeRunner(agentClients, accountCreds, log.Logger)
+	if err != nil {
+		log.Warn().Err(err).Msg("account smoke runner unavailable; account test will validate credential shape only")
+	}
+
 	lifecycle := session.NewLifecycle(sessions, repos, agentChats, cronJobs, worktrees, agentRunner, tmuxClient, ghProvider, log.Logger)
 	// The lifecycle constructor defaults to a hermetic no-op proof env resolver
 	// (keeps unit tests off the OS keyring); the daemon must inject the real
 	// keyring-backed resolver so proof credentials reach managed session spawns.
 	lifecycle.SetProofEnvResolver(proofenvkeyring.New(log.Logger))
+	lifecycle.SetAccountEnvResolver(accountSpawnEnv)
 	lifecycle.SetSessionDeletedNotifier(func(_ context.Context, sessionID string) {
 		streamBus.Publish(upstream.StreamEvent{
 			Session: &upstream.SessionEvent{
@@ -693,6 +868,113 @@ func run(opts runOpts) error {
 	// this, the extracted method would fail-closed with FailedPrecondition.
 	lifecycle.SetAgentLogsDir(agentLogsDir)
 	lifecycle.SetChatStatus(chatStatusTracker)
+	// Manual account switch (BOS-171): the registry validates the target
+	// account, the transcript probe drives resume-vs-fresh via the agent
+	// plugins, and the mid-turn reader adapts the server-held status.Tracker so
+	// a WORKING chat is not interrupted without --force. The session→account
+	// binding defaults from the lifecycle's own session store.
+	lifecycle.SetAccountSwitchDeps(accounts, agentClients, func(agentSessionID string) bool {
+		e := chatStatusTracker.Get(agentSessionID)
+		return e != nil && e.Status == bossanovav1.ChatStatus_CHAT_STATUS_WORKING
+	})
+
+	// Auto-rotate interactive chats (BOS-175): on a CHAT_STATUS_LIMITED transition
+	// the rotator asks the BOS-173 engine for the next account and executes the
+	// swap through the BOS-171 SwitchAccount primitive (Auto path). All seams are
+	// fail-safe — any error leaves the chat LIMITED. Config is re-read live so the
+	// opt-out applies without a daemon restart.
+	chatRotator = rotation.NewChatRotator(rotation.ChatRotatorDeps{
+		Logger:   log.Logger,
+		Recorder: rotationRecorder,
+		LoadConfig: func() (config.RotationConfig, error) {
+			loaded, err := config.Load()
+			if err != nil {
+				return config.RotationConfig{}, err
+			}
+			return loaded.Rotation, nil
+		},
+		ChatContext: func(ctx context.Context, agentSessionID string) (rotation.ChatContext, error) {
+			chat, err := agentChats.GetByAgentSessionID(ctx, agentSessionID)
+			if err != nil {
+				return rotation.ChatContext{}, err
+			}
+			if chat == nil {
+				return rotation.ChatContext{}, fmt.Errorf("agent chat not found for agent_session_id %q", agentSessionID)
+			}
+			sess, err := sessions.Get(ctx, chat.SessionID)
+			if err != nil {
+				return rotation.ChatContext{}, err
+			}
+			return rotation.ChatContext{SessionID: sess.ID, RepoID: sess.RepoID, Provider: sess.AgentName}, nil
+		},
+		CurrentStatus: func(agentSessionID string) bossanovav1.ChatStatus {
+			if e := chatStatusTracker.Get(agentSessionID); e != nil {
+				return e.Status
+			}
+			return bossanovav1.ChatStatus_CHAT_STATUS_UNSPECIFIED
+		},
+		// Decide adapter: build the BOS-173 engine's real Signal (the currently
+		// bound account is the "capped" account; capability is probed live via the
+		// provider plugin) and map its Outcome onto rotation.Decision.
+		Decide: func(ctx context.Context, req rotation.DecideRequest) (rotation.Decision, error) {
+			sess, err := sessions.Get(ctx, req.SessionID)
+			if err != nil {
+				return rotation.Decision{}, err
+			}
+			capped := ""
+			if sess.AccountID != nil {
+				capped = *sess.AccountID
+			}
+			capable, err := accountMaterializer.SupportsRotation(ctx, req.Provider)
+			if err != nil {
+				return rotation.Decision{}, err
+			}
+			var resetPtr *time.Time
+			if !req.ResetAt.IsZero() {
+				r := req.ResetAt
+				resetPtr = &r
+			}
+			out, err := rotationEngine.Decide(ctx, rotation.Signal{
+				Provider:        req.Provider,
+				CappedAccountID: capped,
+				Kind:            rotation.UsageLimited,
+				ResetAt:         resetPtr,
+				RotationCapable: capable,
+			})
+			if err != nil {
+				return rotation.Decision{}, err
+			}
+			switch out.Kind {
+			case rotation.OutcomeRotate:
+				if out.NextAccount == nil {
+					return rotation.Decision{Kind: rotation.DecisionStatusOnly}, nil
+				}
+				return rotation.Decision{
+					Kind:      rotation.DecisionSwitch,
+					AccountID: out.NextAccount.ID,
+					Label:     out.NextAccount.Label,
+				}, nil
+			case rotation.OutcomeAllExhausted:
+				return rotation.Decision{Kind: rotation.DecisionAllExhausted, ResumeAt: out.ResumeAt}, nil
+			default:
+				return rotation.Decision{Kind: rotation.DecisionStatusOnly}, nil
+			}
+		},
+		// Switch adapter: the BOS-171 manual-switch primitive on its Auto path.
+		Switch: func(ctx context.Context, req rotation.SwitchRequest) (rotation.SwitchResult, error) {
+			res, err := lifecycle.SwitchAccount(ctx, session.SwitchAccountParams{
+				SessionID:       req.SessionID,
+				AgentSessionID:  req.AgentSessionID,
+				TargetAccountID: req.AccountID,
+				Auto:            true,
+				PreviousResetAt: req.PreviousResetAt,
+			})
+			if err != nil {
+				return rotation.SwitchResult{}, err
+			}
+			return rotation.SwitchResult{SwitchedToLabel: res.TargetLabel, Fresh: !res.Resumed}, nil
+		},
+	})
 	cronGate := session.NewCronCompletionGate(session.CronCompletionGateDeps{
 		Sessions:  sessions,
 		Finalizer: lifecycle,
@@ -735,6 +1017,20 @@ func run(opts runOpts) error {
 	}
 	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, agentChats, agentForSession, tmuxClient)
 	lifecycle.SetSessionLiveness(livenessChecker)
+
+	// Auto-rotation wiring (BOS-174). Install the policy knobs (kill switch,
+	// max rotations, sweep interval) and the real rotation.Engine as the
+	// decision port. rotationBinding (session→account binding) and
+	// accountMaterializer (keyring blob → MaterializeAccount RPC overlay) are
+	// deliberately left UNSET here: BOS-170 supplies the live binding + a
+	// materializer adapter, and rotation activates automatically once they are
+	// wired. Until then every seam-gated path (attemptUsageLimitRotation and
+	// SweepParkedRotations) degrades to today's Block on the nil binding, so the
+	// feature is dormant and fail-safe in production.
+	lifecycle.SetRotationConfig(settings.Rotation)
+	lifecycle.SetRotationConfigLoader(config.Load)
+	lifecycle.SetRotationDecider(rotationEngine)
+	lifecycle.SetRotationRecorder(rotationRecorder)
 
 	// Recover sessions left in Finalizing from a previous daemon crash.
 	// They can't be safely re-driven (we don't know whether EnsurePR ran
@@ -848,7 +1144,7 @@ func run(opts runOpts) error {
 		log.Warn().Msg("tmux is not installed or not in PATH; interactive sessions will not work, and cron fires will record fire_failed")
 	}
 
-	sessionCreator := taskorchestrator.NewSessionCreatorWithNotifier(sessions, lifecycle, func() string {
+	sessionCreator := taskorchestrator.NewSessionCreatorWithAccountResolver(sessions, lifecycle, func() string {
 		loaded, err := config.Load()
 		if err != nil {
 			log.Warn().Err(err).Msg("load config for orchestrated session default agent")
@@ -864,7 +1160,7 @@ func run(opts runOpts) error {
 				Session: &bossanovav1.Session{Id: sessionID},
 			},
 		})
-	}, log.Logger)
+	}, accountResolver, log.Logger)
 	orchestrator := taskorchestrator.New(
 		pluginHost, repos, taskMappings, sessionCreator, ghProvider,
 		worktrees, livenessChecker, taskorchestrator.DefaultPollInterval, log.Logger,
@@ -941,12 +1237,30 @@ func run(opts runOpts) error {
 				pbSess.RepoOriginUrl = server.CanonicalRepoOriginURL(r.OriginURL)
 			}
 		}
+		// Full-replacement semantics (above) also mean this recompute-driven
+		// delta must re-assert the observability overlay, or it would clobber a
+		// live AGENT_AUTH_FAILED that the auth-change hook published.
+		hydrateSessionForStream(ctx, pbSess)
 		streamBus.Publish(upstream.StreamEvent{
 			Session: &upstream.SessionEvent{
 				Kind:    bossanovav1.SessionDelta_KIND_UPDATED,
 				Session: pbSess,
 			},
 		})
+	})
+
+	// Wire the auth-failed change hook: when a chat's login-required state flips
+	// — which need not coincide with any chat STATUS change — resolve it to its
+	// session and emit a hydrated SessionDelta{UPDATED}. Without this the
+	// AGENT_AUTH_FAILED attention only ever appears on local daemon reads
+	// (GetSession/ListSessions); the cloud/web read model, fed solely by the
+	// reverse stream, would never see it for a session whose status stays
+	// WORKING. SetAuthFailed gates the hook on an effective-state transition, so
+	// the poller's per-tick calls don't storm the stream.
+	chatStatusTracker.SetOnAuthChange(func(agentSessionID string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		publishAuthFailedSessionDelta(ctx, agentSessionID, agentChats, rawSessions, repos, chatStatusTracker, streamBus, log.Logger)
 	})
 
 	var streamClient *upstream.StreamClient
@@ -1069,7 +1383,22 @@ func run(opts runOpts) error {
 
 		// Snapshot readers pull from the bossd stores, projecting
 		// to the slim pb types the snapshot expects.
-		snapshotSessions := upstream.NewSessionSnapshotReader(sessionLister)
+		// Hydrate the observability overlay onto every snapshot session so the
+		// cloud/web read model's initial state on (re)connect matches what the
+		// local RPCs serve — a session already login-required at connect time
+		// shows AGENT_AUTH_FAILED without waiting for the next auth transition.
+		snapshotSessions := upstream.NewSessionSnapshotReader(protoSessionListerFunc(
+			func(ctx context.Context) ([]*bossanovav1.Session, error) {
+				pbSessions, err := sessionLister.ListSessions(ctx)
+				if err != nil {
+					return nil, err
+				}
+				for _, s := range pbSessions {
+					hydrateSessionForStream(ctx, s)
+				}
+				return pbSessions, nil
+			},
+		))
 		// Snapshot the canonical https://<host>/<owner>/<repo> form of each
 		// repo's origin URL so it matches the identifier bosso's webhook
 		// dispatcher routes by (the GitHub html_url / GitLab web_url, also
@@ -1298,19 +1627,20 @@ func run(opts runOpts) error {
 	}
 
 	srv := server.New(server.Config{
-		Repos:        repos,
-		Sessions:     sessions,
-		Attempts:     attempts,
-		AgentChats:   agentChats,
-		Workflows:    workflows,
-		TaskMappings: taskMappings,
-		CronJobs:     cronJobs,
-		Accounts:     accounts,
-		// AccountCredentials wires the keyring-backed blob store; AccountSmokeRunner
-		// stays nil until credential materialization (1.5), so TestAccount validates
-		// credentials and reports live_smoke_ran=false in the interim.
+		Repos:              repos,
+		Sessions:           sessions,
+		Attempts:           attempts,
+		AgentChats:         agentChats,
+		Workflows:          workflows,
+		TaskMappings:       taskMappings,
+		CronJobs:           cronJobs,
+		Accounts:           accounts,
+		RotationEngine:     rotationEngine,
+		Resolver:           accountResolver,
 		AccountCredentials: accountCreds,
+		AccountSmokeRunner: accountSmoke,
 		CheckSnapshots:     checkSnapshots,
+		RotationEvents:     rotationEvents,
 		CronScheduler:      cronScheduler,
 		ChatStatus:         chatStatusTracker,
 		DisplayTracker:     displayTracker,
@@ -1342,7 +1672,13 @@ func run(opts runOpts) error {
 				},
 			})
 		},
-		OnSessionUpdated: func(_ context.Context, sess *bossanovav1.Session) {
+		OnSessionUpdated: func(ctx context.Context, sess *bossanovav1.Session) {
+			// Re-assert the observability overlay under bosso's full-replacement
+			// delta semantics so an RPC-driven update (rename, PR link, …)
+			// doesn't clobber a live AGENT_AUTH_FAILED. The RPC handlers that
+			// serve GetSession/ListSessions already overlay it locally; this
+			// keeps the reverse-stream copy consistent.
+			hydrateSessionForStream(ctx, sess)
 			streamBus.Publish(upstream.StreamEvent{
 				Session: &upstream.SessionEvent{
 					Kind:    bossanovav1.SessionDelta_KIND_UPDATED,
@@ -1562,6 +1898,27 @@ func run(opts runOpts) error {
 					log.Warn().Err(err).Msg("periodic stranded-cron recovery: failed")
 				} else if n > 0 {
 					log.Info().Int("count", n).Msg("periodic stranded-cron recovery: finalized stranded cron sessions")
+				}
+			}
+		}
+	})
+
+	// Periodically re-dispatch headless runs parked mid-rotation once their
+	// resume-at stamp comes due (BOS-174). Level-triggered off persisted
+	// rotation_resume_at, so it re-arms every parked run across a daemon restart
+	// (no in-memory timer). The kill switch (RotationEnabled) short-circuits the
+	// sweep, and until BOS-170 wires the binding/materializer every candidate
+	// stays parked. Cadence comes from the rotation config (defaulted when unset).
+	trackedGo(func() {
+		ticker := time.NewTicker(settings.Rotation.ParkSweepInterval())
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pollerCtx.Done():
+				return
+			case <-ticker.C:
+				if n := lifecycle.SweepParkedRotations(pollerCtx); n > 0 {
+					log.Info().Int("count", n).Msg("parked-rotation sweep: redispatched parked headless runs")
 				}
 			}
 		}

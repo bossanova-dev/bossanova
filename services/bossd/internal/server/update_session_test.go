@@ -60,7 +60,7 @@ func TestUpdateSession_EmitsOnSessionUpdated(t *testing.T) {
 }
 
 // TestUpdateSession_LinksTrackerWithoutTitle verifies a tracker-only update
-// (the cron bs-implement path linking its selected Linear ticket) persists
+// (the cron boss-implement path linking its selected Linear ticket) persists
 // tracker_url/tracker_id and does NOT require or blank the title.
 func TestUpdateSession_LinksTrackerWithoutTitle(t *testing.T) {
 	url := "https://linear.app/bossanova-dev/issue/BOS-123"

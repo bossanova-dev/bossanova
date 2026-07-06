@@ -49,6 +49,10 @@ type MockDaemon struct {
 	// assert the TUI sent the expected title / field updates.
 	updateSessionCalls []*pb.UpdateSessionRequest
 
+	// switchSessionAccountCalls records every SwitchSessionAccount request so
+	// tests can assert the TUI/CLI sent the expected session/account/force.
+	switchSessionAccountCalls []*pb.SwitchSessionAccountRequest
+
 	// Channel-backed AttachSession streaming. Tests push events via
 	// PushOutputLine / PushStateChange / PushSessionEnded; the AttachSession
 	// RPC reads from the per-session channel and forwards to the stream.
@@ -800,6 +804,25 @@ func (m *MockDaemon) LinkSessionPR(_ context.Context, req *connect.Request[pb.Li
 		}
 	}
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.Id))
+}
+
+func (m *MockDaemon) SwitchSessionAccount(_ context.Context, req *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.switchSessionAccountCalls = append(m.switchSessionAccountCalls, req.Msg)
+	return connect.NewResponse(&pb.SwitchSessionAccountResponse{
+		Resumed:     true,
+		TargetLabel: req.Msg.AccountId,
+		NoticeText:  "switched to " + req.Msg.AccountId,
+	}), nil
+}
+
+// SwitchSessionAccountCalls returns every SwitchSessionAccount request the mock
+// received so tests can assert on what the TUI/CLI sent.
+func (m *MockDaemon) SwitchSessionAccountCalls() []*pb.SwitchSessionAccountRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]*pb.SwitchSessionAccountRequest(nil), m.switchSessionAccountCalls...)
 }
 
 func parseMockPRRef(ref string) (int32, string, error) {

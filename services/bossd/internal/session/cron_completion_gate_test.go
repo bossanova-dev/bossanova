@@ -285,7 +285,7 @@ func TestCronCompletionGateFinalizesWhenRunIsOverUnwired(t *testing.T) {
 
 // TestCronCompletionGateFinalizesUnattendedTmuxSession proves the gate finalizes
 // a tmux_unattended session (TmuxUnattended=true, CronJobID nil) once its run is
-// over — the durable-tmux completion path for /bs-epic — mirroring the cron path.
+// over — the durable-tmux completion path for /boss-epic — mirroring the cron path.
 func TestCronCompletionGateFinalizesUnattendedTmuxSession(t *testing.T) {
 	sessions := newGateSessionStore()
 	finalizer := &recordingCronFinalizer{}

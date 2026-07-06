@@ -9,6 +9,10 @@ export const GENERATED_HEADER =
 const COMMON_REWRITES = [
   [/~\/\.claude\/skills\//g, '~/.codex/skills/'],
   [/\bnode \.claude\/skills\//g, 'node .codex/skills/'],
+  // Vendored skill toolboxes (BOS-191): helpers are re-pointed via
+  // .claude/skills/<skill>/toolbox/<helper>. Mirror that path into .codex for the
+  // var-assignment / prose forms the `node .claude/skills/` rule above doesn't catch.
+  [/\.claude\/skills\/([a-z0-9-]+)\/toolbox\//g, '.codex/skills/$1/toolbox/'],
   [/~\/\.claude\/skills\/bossanova\//g, '~/.codex/skills/bossanova/'],
   [/\bCLAUDE\.md\b/g, 'AGENTS.md'],
   [/\bClaude Code\b/g, 'Codex'],

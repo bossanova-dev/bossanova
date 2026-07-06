@@ -35,24 +35,36 @@ const transcriptTailSize = 32 * 1024
 // transcript for a given session UUID by globbing across the date shards.
 const codexSessionsDir = ".codex/sessions"
 
+// codexSessionsRoot returns the codex sessions/ directory, honoring CODEX_HOME
+// (via codexConfigDir) so per-account homes resolve their own rollouts. With
+// CODEX_HOME unset this is byte-identical to ~/.codex/sessions.
+func codexSessionsRoot() (string, error) {
+	dir, err := codexConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "sessions"), nil
+}
+
 // transcriptPath resolves the on-disk codex rollout JSONL file for the
-// given agent session UUID by globbing every date shard under
-// ~/.codex/sessions/. The workDir argument is unused (codex transcripts
-// are not keyed by working directory) but kept in the signature to match
-// the daemon-side host_service contract that all agent plugins share.
+// given agent session UUID by globbing every date shard under the codex
+// sessions root (honoring CODEX_HOME; see codexSessionsRoot). The workDir
+// argument is unused (codex transcripts are not keyed by working directory)
+// but kept in the signature to match the daemon-side host_service contract
+// that all agent plugins share.
 //
-// Returns ("", error) when the home dir is unresolvable, when no rollout
-// file matches the UUID, or when more than one match exists (which would
-// indicate a corrupted sessions tree).
+// Returns ("", error) when the sessions root is unresolvable, when no
+// rollout file matches the UUID, or when more than one match exists (which
+// would indicate a corrupted sessions tree).
 func transcriptPath(_ string, agentSessionID string) (string, error) {
 	if agentSessionID == "" {
 		return "", errors.New("agentSessionID is empty")
 	}
-	home, err := os.UserHomeDir()
+	root, err := codexSessionsRoot()
 	if err != nil {
 		return "", err
 	}
-	return findRolloutPath(filepath.Join(home, codexSessionsDir), agentSessionID)
+	return findRolloutPath(root, agentSessionID)
 }
 
 // findRolloutPath globs `<root>/<YYYY>/<MM>/<DD>/rollout-*-<uuid>.jsonl`
@@ -220,11 +232,11 @@ func readSessionMeta(path string) (codexSessionMetaPayload, bool) {
 }
 
 func resolveInteractiveSessionID(workDir string, launchedAfter time.Time) (id, transcriptPath string, ambiguous bool, reason string) {
-	home, err := os.UserHomeDir()
+	root, err := codexSessionsRoot()
 	if err != nil {
 		return "", "", false, "no matching codex-tui rollout found"
 	}
-	return resolveInteractiveSessionIDAt(filepath.Join(home, codexSessionsDir), workDir, launchedAfter)
+	return resolveInteractiveSessionIDAt(root, workDir, launchedAfter)
 }
 
 func resolveInteractiveSessionIDAt(root, workDir string, launchedAfter time.Time) (id, transcriptPath string, ambiguous bool, reason string) {
@@ -242,11 +254,11 @@ func resolveInteractiveSessionIDAt(root, workDir string, launchedAfter time.Time
 }
 
 func resolveLegacyInteractiveSessionID(workDir string, chatCreatedAt time.Time) (id, transcriptPath string, ambiguous bool, reason string) {
-	home, err := os.UserHomeDir()
+	root, err := codexSessionsRoot()
 	if err != nil {
 		return "", "", false, "no matching codex-tui rollout found"
 	}
-	return resolveLegacyInteractiveSessionIDAt(filepath.Join(home, codexSessionsDir), workDir, chatCreatedAt, time.Now())
+	return resolveLegacyInteractiveSessionIDAt(root, workDir, chatCreatedAt, time.Now())
 }
 
 func resolveLegacyInteractiveSessionIDAt(root, workDir string, chatCreatedAt, now time.Time) (id, transcriptPath string, ambiguous bool, reason string) {

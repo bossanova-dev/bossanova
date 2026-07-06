@@ -16,7 +16,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { REPAIR_RESULTS, DISPATCH_FAILURE } from './bs-run-sentinel.mjs'
+import { REPAIR_RESULTS, DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 import {
   MUTATION_RESULTS,
   PER_MUTANT_RESULTS,

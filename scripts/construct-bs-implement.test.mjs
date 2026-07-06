@@ -7,7 +7,7 @@ import { constructSkill, constructReference, skillsRootAvailable } from './const
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
 const manifest = JSON.parse(
-  fs.readFileSync(path.join(rootDir, '.claude/skills/bs-implement/construct.json'), 'utf8'),
+  fs.readFileSync(path.join(rootDir, '.claude/skills/boss-implement/construct.json'), 'utf8'),
 )
 // Construction reads the component skills from the installed superpowers plugin.
 // Skip (don't throw at import) where it is absent — e.g. a fresh CI runner.
@@ -73,8 +73,8 @@ test('headless mode + mode-aware proof are present', { skip: sourceSkip }, () =>
 const BODY_CAP_BYTES = 40960 // <40 KB — BOS-134 ratchet; never raise it.
 const BODY_FLOOR_BYTES = 39936 // <39 KB headroom — BOS-148; keep the body well below the cap.
 const RESIDENT_BODY_SKILLS = [
-  '.claude/skills/bs-implement/SKILL.md',
-  '.codex/skills/bs-implement/SKILL.md',
+  '.claude/skills/boss-implement/SKILL.md',
+  '.codex/skills/boss-implement/SKILL.md',
 ]
 
 test('the always-resident body stays under the <40KB acceptance target', () => {
@@ -109,10 +109,11 @@ test('the always-resident body keeps real headroom under the ratchet (BOS-148 fl
 
 test('every moved reference is reachable: a body pointer plus an existing file', () => {
   const skillDirs = [
-    path.join(rootDir, '.claude/skills/bs-implement'),
-    path.join(rootDir, '.codex/skills/bs-implement'),
+    path.join(rootDir, '.claude/skills/boss-implement'),
+    path.join(rootDir, '.codex/skills/boss-implement'),
   ]
   const references = [
+    'references/core-spine.md',
     'references/subagent-driven-development.md',
     'references/test-driven-development.md',
     'references/code-reviewer-template.md',
@@ -121,6 +122,8 @@ test('every moved reference is reachable: a body pointer plus an existing file',
     'references/proof-capture.md',
     'references/cron-gate.md',
     'references/troubleshooting.md',
+    'references/resume-assessment.md',
+    'references/standalone-mode.md',
   ]
 
   for (const skillDir of skillDirs) {
@@ -171,8 +174,8 @@ test('Step 6 routes the review verdict from a run-file sentinel, not returned pr
   }
 })
 
-test('Step 6c bs-review sentinel is advisory and cannot drive the run-file verdict', () => {
-  for (const skillDir of ['.claude/skills/bs-implement', '.codex/skills/bs-implement']) {
+test('Step 6c boss-review sentinel is advisory and cannot drive the run-file verdict', () => {
+  for (const skillDir of ['.claude/skills/boss-implement', '.codex/skills/boss-implement']) {
     const reviewStack = fs.readFileSync(
       path.join(rootDir, skillDir, 'references/review-stack.md'),
       'utf8',
@@ -220,7 +223,7 @@ test('Step 11 names proof.mjs run as the single proof channel (BOS-138)', () => 
     )
   }
 
-  for (const skillDir of ['.claude/skills/bs-implement', '.codex/skills/bs-implement']) {
+  for (const skillDir of ['.claude/skills/boss-implement', '.codex/skills/boss-implement']) {
     const proofCapture = fs.readFileSync(
       path.join(rootDir, skillDir, 'references/proof-capture.md'),
       'utf8',
@@ -260,8 +263,8 @@ test('runtime helper references are local to generated Claude and Codex skills',
   ]
 
   const skillDirs = [
-    path.join(rootDir, '.claude/skills/bs-implement'),
-    path.join(rootDir, '.codex/skills/bs-implement'),
+    path.join(rootDir, '.claude/skills/boss-implement'),
+    path.join(rootDir, '.codex/skills/boss-implement'),
   ]
 
   for (const skillDir of skillDirs) {
@@ -296,18 +299,24 @@ test('runtime helper references are local to generated Claude and Codex skills',
 
 // BOS-181: finalize is reordered so the [#PR] tag-injection + force-push runs BEFORE the
 // boss-repair green gate (CI runs once on the tagged head), Step 9 becomes an idempotent guard
-// that re-injects only when repair added untagged commits, and the Step 7 bs-review comment is
+// that re-injects only when repair added untagged commits, and the Step 7 boss-review comment is
 // unconditional. Pin all three in the committed .claude body (the shipped artifact) so the
 // reorder can never silently regress to the double-CI-wait / conditional-comment shape.
+// BOS-200: the tag-injection command is now the finalize adapter's inject-PR-tag capability
+// (scripts/finalize/cli.mjs inject-pr-tag, which delegates to add-pr-numbers.sh); the assertions
+// track that command while preserving the BOS-181 order/guard/ready invariants.
 const claudeBody = () =>
-  fs.readFileSync(path.join(rootDir, '.claude/skills/bs-implement/SKILL.md'), 'utf8')
+  fs.readFileSync(path.join(rootDir, '.claude/skills/boss-implement/SKILL.md'), 'utf8')
 
 test('Step 8 injects the [#PR] tag before the boss-repair green gate (BOS-181)', () => {
   const skill = claudeBody()
   const step8 = skill.slice(skill.indexOf('## Step 8:'), skill.indexOf('## Step 9:'))
-  const tagIdx = step8.indexOf('add-pr-numbers.sh')
+  const tagIdx = step8.indexOf('inject-pr-tag')
   const gateIdx = step8.search(/Then run \*\*boss-repair\*\*/)
-  assert.ok(tagIdx !== -1, 'Step 8 must inject the tag via add-pr-numbers.sh')
+  assert.ok(
+    tagIdx !== -1,
+    'Step 8 must inject the tag via the finalize adapter inject-pr-tag capability',
+  )
   assert.ok(gateIdx !== -1, 'Step 8 must run the boss-repair green gate after tagging')
   assert.ok(tagIdx < gateIdx, 'tag injection must run BEFORE the boss-repair green gate')
   // The daemon-race guard is preserved on the (now-earlier) push.
@@ -321,27 +330,27 @@ test('Step 9 re-injects the tag only via an idempotent guard (BOS-181)', () => {
   assert.match(step9, /idempotent/i, 'Step 9 must document the idempotent guard')
   // Guarded re-inject: conditional on commits still lacking the tag, not an unconditional rewrite.
   assert.match(step9, /if git log[^\n]*grep -qv/, 'Step 9 re-inject must be conditional')
-  assert.match(step9, /add-pr-numbers\.sh/, 'Step 9 must keep the re-inject helper')
+  assert.match(step9, /inject-pr-tag/, 'Step 9 must keep the re-inject capability')
   assert.match(step9, /gh pr ready/, 'Step 9 must ready the PR')
 })
 
-test('Step 7 always posts the bs-review comment, unconditionally (BOS-181)', () => {
+test('Step 7 always posts the boss-review comment, unconditionally (BOS-181)', () => {
   const skill = claudeBody()
   const step7 = skill.slice(skill.indexOf('## Step 7:'), skill.indexOf('## Step 8:'))
   // The old conditional-skip clause is gone.
   assert.doesNotMatch(step7, /Skip this when Step 6c was skipped/i)
   // Always upsert one marker comment, with an honest fallback when there is no report.
-  assert.match(step7, /Post the bs-review comment \(always\)/)
+  assert.match(step7, /Post the boss-review comment \(always\)/)
   assert.match(step7, /fallback note/i)
 })
 
-// BOS-240: bs-implement must finalize BLOCKED (not REVIEW_READY) when it defers a *required*
+// BOS-240: boss-implement must finalize BLOCKED (not REVIEW_READY) when it defers a *required*
 // item at the wall-clock cap. These assertions pin the honest-finalize invariant into the
 // shipped Claude and Codex artifacts so the terminal-state logic can't silently regress. They
 // read the committed generated files (no source skip) so CI enforces them without superpowers.
 const RESIDENT_BODIES = {
-  claude: '.claude/skills/bs-implement/SKILL.md',
-  codex: '.codex/skills/bs-implement/SKILL.md',
+  claude: '.claude/skills/boss-implement/SKILL.md',
+  codex: '.codex/skills/boss-implement/SKILL.md',
 }
 const readSkill = (rel) => fs.readFileSync(path.join(rootDir, rel), 'utf8')
 const readRef = (mirror, ref) =>

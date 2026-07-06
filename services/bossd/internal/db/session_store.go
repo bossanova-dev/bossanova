@@ -53,11 +53,11 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, params CreateSessionPar
 		agentName = "claude"
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, agent_name, model, pr_number, pr_url, tracker_id, tracker_url, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, agent_name, model, account_id, pr_number, pr_url, tracker_id, tracker_url, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.RepoID, params.Title, params.Plan,
 		params.WorktreePath, params.BranchName, params.BaseBranch,
-		int(machine.CreatingWorktree), agentName, params.Model, params.PRNumber, params.PRURL,
+		int(machine.CreatingWorktree), agentName, params.Model, params.AccountID, params.PRNumber, params.PRURL,
 		params.TrackerID, params.TrackerURL, now, now,
 	)
 	if err != nil {
@@ -230,6 +230,14 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "last_attempt_head_sha = ?")
 		args = append(args, *params.LastAttemptHeadSHA)
 	}
+	if params.RotationAttemptCount != nil {
+		sets = append(sets, "rotation_attempt_count = ?")
+		args = append(args, *params.RotationAttemptCount)
+	}
+	if params.RotationResumeAt != nil {
+		sets = append(sets, "rotation_resume_at = ?")
+		args = append(args, *params.RotationResumeAt)
+	}
 	if params.ArchivedAt != nil {
 		sets = append(sets, "archived_at = ?")
 		args = append(args, *params.ArchivedAt)
@@ -241,6 +249,10 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 	if params.HookToken != nil {
 		sets = append(sets, "hook_token = ?")
 		args = append(args, *params.HookToken)
+	}
+	if params.AccountID != nil {
+		sets = append(sets, "account_id = ?")
+		args = append(args, *params.AccountID)
 	}
 	if params.TmuxUnattended != nil {
 		sets = append(sets, "tmux_unattended = ?")
@@ -463,7 +475,8 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 	s.display_label, s.display_intent, s.display_spinner, s.agent_name, s.model,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
-	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha
+	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
+	s.rotation_attempt_count, s.rotation_resume_at, s.account_id
 	FROM sessions s`
 
 // sessionSelectWithRepoSQL joins sessions with repos so ListActiveWithRepo
@@ -477,6 +490,7 @@ const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.wor
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
 	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
+	s.rotation_attempt_count, s.rotation_resume_at, s.account_id,
 	COALESCE(r.display_name, ''), COALESCE(r.origin_url, '')
 	FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id`
 
@@ -503,6 +517,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 	var displaySpinner int
 	var lastRepairStartedAt *int64
 	var lastRepairBlockedAt *int64
+	var rotationResumeAt *string
 	var repoDisplayName, repoOriginURL string
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
@@ -513,10 +528,12 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
-		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA, &repoDisplayName, &repoOriginURL)
+		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA,
+		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID, &repoDisplayName, &repoOriginURL)
 	if err != nil {
 		return nil, "", "", err
 	}
+	sess.RotationResumeAt = sqlutil.ParseOptionalTime(rotationResumeAt)
 	sess.State = machine.State(state)
 	sess.LastCheckState = machine.CheckState(lastCheckState)
 	sess.LastObservedReviewState = lastObservedReviewState
@@ -553,6 +570,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var displaySpinner int
 	var lastRepairStartedAt *int64
 	var lastRepairBlockedAt *int64
+	var rotationResumeAt *string
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
@@ -562,10 +580,12 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
-		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA)
+		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA,
+		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID)
 	if err != nil {
 		return nil, err
 	}
+	sess.RotationResumeAt = sqlutil.ParseOptionalTime(rotationResumeAt)
 	sess.State = machine.State(state)
 	sess.LastCheckState = machine.CheckState(lastCheckState)
 	sess.LastObservedReviewState = lastObservedReviewState

@@ -147,6 +147,54 @@ func TestListSessions_CheckingCompositeOverridesLiveReviewStatus(t *testing.T) {
 	}
 }
 
+func TestListSessions_LimitedChatOverridesCheckingCompositeReviewGuard(t *testing.T) {
+	agentSessionID := "agent-1"
+	sess := &models.Session{
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		Title:          "Fix status mismatch",
+		State:          machine.ImplementingPlan,
+		AgentSessionID: &agentSessionID,
+		DisplayLabel:   "checking",
+		DisplayIntent:  int32(pb.DisplayIntent_DISPLAY_INTENT_WARNING),
+		DisplaySpinner: true,
+		CreatedAt:      time.Now(),
+	}
+	displayTracker := status.NewDisplayTracker()
+	displayTracker.Set(sess.ID, vcs.DisplayInfo{
+		Status: vcs.DisplayStatusReview,
+	})
+	chatStatus := status.NewTracker()
+	chatStatus.UpdateLimited(agentSessionID, time.Time{}, time.Now())
+	chats := map[string][]*models.AgentChat{
+		sess.ID: {{
+			ID:             "chat-1",
+			SessionID:      sess.ID,
+			AgentSessionID: agentSessionID,
+		}},
+	}
+	s := newListSessionsDisplayStatusTestServer([]*models.Session{sess}, chats, displayTracker, chatStatus)
+
+	resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	got := onlySession(t, resp.Msg.Sessions)
+
+	// A LIMITED chat ranks above the PR "checking"/review composite, so the
+	// keep-checking guard must not suppress the recompute — the label flips to
+	// "usage-limited" (matching the DisplayStatusComputer.Recompute path).
+	if got.DisplayLabel != "usage-limited" {
+		t.Fatalf("DisplayLabel = %q, want %q", got.DisplayLabel, "usage-limited")
+	}
+	if got.DisplaySpinner {
+		t.Fatalf("DisplaySpinner = true, want false")
+	}
+	if got.DisplayIntent != pb.DisplayIntent_DISPLAY_INTENT_WARNING {
+		t.Fatalf("DisplayIntent = %v, want WARNING", got.DisplayIntent)
+	}
+}
+
 func TestListSessions_RepairingOverridesCheckingCompositeReviewGuard(t *testing.T) {
 	sess := &models.Session{
 		ID:             "sess-1",

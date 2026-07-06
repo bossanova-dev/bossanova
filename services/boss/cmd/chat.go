@@ -259,7 +259,10 @@ func chatWaitTick(ctx context.Context, c interface {
 				continue
 			}
 			switch s.Status {
-			case pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_QUESTION, pb.ChatStatus_CHAT_STATUS_STOPPED:
+			case pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_QUESTION, pb.ChatStatus_CHAT_STATUS_STOPPED, pb.ChatStatus_CHAT_STATUS_LIMITED:
+				// LIMITED is a settled state: a usage-capped chat produces no
+				// further output until the cap resets, so treat it like IDLE and
+				// return the transcript result rather than spinning until timeout.
 				return chatWaitTranscriptDone(ctx, c, target, baselineFinal, baselineGraceExpired)
 			case pb.ChatStatus_CHAT_STATUS_WORKING:
 				return false, "", nil

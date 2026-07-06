@@ -182,7 +182,7 @@ const (
 )
 
 // Slug is the stable lowercase token used in the merge_session error prefix
-// (`merge blocked: gate=<slug>; ...`). bs-epic parses gate=<slug>.
+// (`merge blocked: gate=<slug>; ...`). boss-epic parses gate=<slug>.
 func (g MergeGate) Slug() string {
 	switch g {
 	case MergeGateNone:

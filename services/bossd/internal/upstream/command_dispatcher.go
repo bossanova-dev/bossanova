@@ -53,6 +53,8 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchCreate(ctx, cmdID, cmd.GetCreateSession(), outbound)
 	case *pb.OrchestratorCommand_WakeChat:
 		return c.dispatchWakeChat(ctx, cmdID, cmd.GetWakeChat())
+	case *pb.OrchestratorCommand_SwitchAccount:
+		return c.dispatchSwitchAccount(ctx, cmdID, cmd.GetSwitchAccount())
 	case *pb.OrchestratorCommand_Merge:
 		return c.dispatchMerge(ctx, cmdID, cmd.GetMerge())
 	case *pb.OrchestratorCommand_Archive:
@@ -65,6 +67,8 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchListRepos(ctx, cmdID, outbound)
 	case *pb.OrchestratorCommand_ListAgents:
 		return c.dispatchListAgents(ctx, cmdID, outbound)
+	case *pb.OrchestratorCommand_ListAccounts:
+		return c.dispatchListAccounts(ctx, cmdID, cmd.GetListAccounts(), outbound)
 	case *pb.OrchestratorCommand_ListRepoPrs:
 		return c.dispatchListRepoPRs(ctx, cmdID, cmd.GetListRepoPrs(), outbound)
 	case *pb.OrchestratorCommand_ListTrackerIssues:
@@ -322,6 +326,35 @@ func (c *StreamClient) dispatchWakeChat(ctx context.Context, cmdID string, req *
 	}}
 }
 
+// dispatchSwitchAccount routes the SwitchAccountCommand to the configured
+// handler and packages the (resumed, targetLabel, noticeText) into a
+// CommandResult{SwitchAccountResult} payload. Failures attach the
+// handler-classified ErrorCode so bosso can map back to the right ConnectRPC
+// code (CodeFailedPrecondition, CodeNotFound, …) without parsing the
+// human-readable `error` string. Mirrors dispatchWakeChat.
+func (c *StreamClient) dispatchSwitchAccount(ctx context.Context, cmdID string, req *pb.SwitchAccountCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	resumed, targetLabel, noticeText, errorCode, err := c.commandHandler.SwitchAccount(ctx, req.GetSessionId(), req.GetAgentSessionId(), req.GetAccountId(), req.GetForce())
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), errorCode)
+	}
+	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
+		Result: &pb.CommandResult{
+			CommandId: cmdID,
+			Ok:        true,
+			Payload: &pb.CommandResult_SwitchAccount{
+				SwitchAccount: &pb.SwitchAccountResult{
+					Resumed:     resumed,
+					TargetLabel: targetLabel,
+					NoticeText:  noticeText,
+				},
+			},
+		},
+	}}
+}
+
 func (c *StreamClient) dispatchMerge(ctx context.Context, cmdID string, req *pb.MergeSessionCommand) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
@@ -457,6 +490,30 @@ func (c *StreamClient) dispatchListAgents(ctx context.Context, cmdID string, out
 				CommandId: cmdID,
 				Ok:        true,
 				Payload:   &pb.CommandResult_ListAgents{ListAgents: out},
+			},
+		}}
+	})
+}
+
+// dispatchListAccounts routes a (session-scoped by bosso) ListAccountsCommand to
+// the handler and wraps the daemon's rotation accounts in a
+// CommandResult{list_accounts}. Accounts are metadata only — never credentials.
+// Dispatched asynchronously so it can't block the command reader (mirrors
+// dispatchListAgents).
+func (c *StreamClient) dispatchListAccounts(ctx context.Context, cmdID string, req *pb.ListAccountsCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.ListAccounts(ctx, req.GetProvider())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
+			Result: &pb.CommandResult{
+				CommandId: cmdID,
+				Ok:        true,
+				Payload:   &pb.CommandResult_ListAccounts{ListAccounts: out},
 			},
 		}}
 	})

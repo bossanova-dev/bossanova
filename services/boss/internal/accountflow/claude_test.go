@@ -274,27 +274,28 @@ func TestRunClaudeAdd(t *testing.T) {
 		}
 	})
 
-	t.Run("livesmoke_deferred_keeps_account", func(t *testing.T) {
-		// The daemon reports live_smoke_ran=false with a deferred last_test_error
-		// when no smoke runner is wired (credential materialization 1.5). This is
-		// a valid registration, not a failure: no keep/remove prompt, account kept.
+	t.Run("livesmoke_unavailable_prompts_keep_or_remove", func(t *testing.T) {
+		// If the daemon cannot run live smoke, the account is not verified. The
+		// CLI must not present this as a successful deferred registration.
 		tok := claudeToken()
-		pr := &fakePrompter{answers: []string{tok, "", ""}}
+		pr := &fakePrompter{answers: []string{tok, "", ""}, confirms: []bool{false}}
 		cl := &fakeAccountClient{testResult: &pb.TestAccountResponse{
-			Account:      &pb.Account{Id: "acc-new", LastTestError: "live smoke unavailable (credential materialization pending — 1.5)"},
+			Account:      &pb.Account{Id: "acc-new", LastTestError: "live smoke runner unavailable"},
 			LiveSmokeRan: false,
 		}}
-		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Prompter: pr, Client: cl, PasteMode: true}); err != nil {
-			t.Fatalf("deferred live smoke should succeed: %v", err)
+		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Prompter: pr, Client: cl, PasteMode: true}); err == nil {
+			t.Fatalf("want error when unavailable live smoke is rejected")
 		}
-		if len(cl.removedIDs) != 0 {
-			t.Fatalf("account must not be removed when live smoke is deferred: %v", cl.removedIDs)
+		if len(cl.removedIDs) != 1 {
+			t.Fatalf("account should be removed when unavailable live smoke is rejected: %v", cl.removedIDs)
 		}
-		if strings.Contains(pr.transcript(), "Live test failed") {
-			t.Fatalf("keep/remove prompt must not be shown for a deferred live smoke:\n%s", pr.transcript())
+		if strings.Contains(pr.transcript(), "deferred") ||
+			strings.Contains(pr.transcript(), "credential materialization pending") ||
+			strings.Contains(pr.transcript(), "Rotation will run the live test") {
+			t.Fatalf("stale deferred copy leaked into transcript:\n%s", pr.transcript())
 		}
-		if !strings.Contains(pr.transcript(), "deferred") {
-			t.Fatalf("no 'deferred' notice in transcript:\n%s", pr.transcript())
+		if !strings.Contains(pr.transcript(), "Live test failed") {
+			t.Fatalf("keep/remove prompt must be shown:\n%s", pr.transcript())
 		}
 	})
 

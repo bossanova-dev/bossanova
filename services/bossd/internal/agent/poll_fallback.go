@@ -7,6 +7,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/safego"
 )
@@ -71,6 +72,19 @@ func (p *PollFallback) Arm(ctx context.Context, sessionID, agentSessionID string
 			}
 			if !resp.IsComplete {
 				continue
+			}
+			// Record-only (BOS-165): a usage-cap exit is logged for
+			// observability but takes NO further action here — no status
+			// change, no rotation. The run still completes normally below.
+			if resp.GetFailureClass() == agenterr.KindUsageExhausted.String() {
+				ev := p.logger.Info().
+					Str("agent_session", agentSessionID).
+					Str("session", sessionID).
+					Str("failure_class", resp.GetFailureClass())
+				if ts := resp.GetResetAt(); ts != nil {
+					ev = ev.Time("reset_at", ts.AsTime())
+				}
+				ev.Msg("agent run exited usage-limited (record-only)")
 			}
 			p.completer.SignalSessionRunComplete(sessionID, agentSessionID, resp.ExitError)
 			return

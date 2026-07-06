@@ -9,9 +9,10 @@
 //   1. Auto-close: a non-terminal ticket whose matched `[BOS-NNN]` PRs have ALL
 //      merged is moved to Done. Any non-merged matched PR (or none) → untouched.
 //      Conflicting PR states → escalate, never guess.
-//   2. Parent rollup: a parent that trails its least-advanced OPEN child is moved
-//      FORWARD to that child's state. A parent at/above it is untouched; a parent
-//      is never moved backward.
+//   2. Parent rollup: a parent is moved FORWARD to reflect its children — started
+//      when any child has started (target the least-advanced STARTED open child),
+//      else the least-advanced OPEN child. A parent at/above it is untouched; a
+//      parent is never moved backward.
 
 import { linearRequest } from './linear-gate-lib.mjs'
 
@@ -41,6 +42,18 @@ export function rankOf(stateName) {
 
 export function isTerminalStateName(stateName) {
   return TERMINAL_STATE_NAMES.has(stateName)
+}
+
+// The rank at/above which a workflow state means "work has started" — matches
+// Linear's `started` state type (In Progress, In Review). Below this (Backlog,
+// Unplanned, Todo) the item has not started.
+export const STARTED_RANK = STATE_RANK['In Progress']
+
+// True for a started, non-terminal state (In Progress / In Review). Used by the
+// rollup: a not-started child must not drag a parent below a started sibling.
+export function isStartedStateName(stateName) {
+  const r = rankOf(stateName)
+  return r !== null && r >= STARTED_RANK && !isTerminalStateName(stateName)
 }
 
 // --- PR tag parsing --------------------------------------------------------
@@ -157,9 +170,12 @@ export function computeCloseable(
 
 // --- Behaviour 2: parent rollup --------------------------------------------
 
-// For each parent, roll it FORWARD to the state of its least-advanced OPEN child
-// (children in a terminal state are ignored). Never regress.
-//   move     when the parent strictly trails its least-advanced open child.
+// For each parent, roll it FORWARD to reflect its non-terminal children (children
+// in a terminal state are ignored). Started when any child has started: if any open
+// child is In Progress/In Review, target the least-advanced STARTED open child so a
+// not-started sibling never drags it down; otherwise the least-advanced open child.
+// Never regress.
+//   move     when the parent strictly trails its computed target.
 //   skip     when the parent is already at/above it, or has no open children.
 //   escalate when an open child (or the parent) is in an unrankable state.
 export function computeRollups(parents) {
@@ -204,9 +220,15 @@ export function computeRollups(parents) {
       continue
     }
 
-    // Least-advanced open child = the minimum rank; that child's state is the target.
-    let target = open[0]
-    for (const c of open) {
+    // "Started when any child is started; not finished until all are finished."
+    // A not-started child (Backlog/Unplanned/Todo) must NOT pull the parent below a
+    // started sibling, so when any open child has started we target the
+    // least-advanced STARTED open child; otherwise the least-advanced open child.
+    // (All open children are already rankable here — unrankable ones escalated above.)
+    const started = open.filter((c) => isStartedStateName(c.state.name))
+    const pool = started.length > 0 ? started : open
+    let target = pool[0]
+    for (const c of pool) {
       if (rankOf(c.state.name) < rankOf(target.state.name)) target = c
     }
     const targetRank = rankOf(target.state.name)

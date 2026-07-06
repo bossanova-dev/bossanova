@@ -653,7 +653,7 @@ func TestRunnerSessionIDFromOutputToleratesSlowStartup(t *testing.T) {
 }
 
 // TestRunnerGeneratesUUIDWhenNoSessionIDProvided is a regression guard for a
-// headless-dispatch bug (bs-epic / cron sessions). When the caller passed no
+// headless-dispatch bug (boss-epic / cron sessions). When the caller passed no
 // session ID, the runner minted "<bin>-<nanos>" (e.g.
 // "claude-1783144936819808000") and marked it NOT provided, so the argv builder
 // never injected it. claude then generated its own rollout UUID, the runner

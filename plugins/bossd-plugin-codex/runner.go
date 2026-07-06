@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -95,6 +96,14 @@ func NewRunner(logger zerolog.Logger, opts ...Option) *Runner {
 		PostExit: func(orig error, tail []byte) error {
 			if orig != nil && detectAuthFailure(tail) {
 				return ErrAuthRequired
+			}
+			// Auth is checked first (above) so it wins when both an auth and a
+			// usage-cap marker appear in the same tail, preserving today's
+			// behavior. Only a non-nil exit can be a usage cap.
+			if orig != nil {
+				if err := classifyUsageCap(logger, tail, time.Now()); err != nil {
+					return err
+				}
 			}
 			return nil
 		},

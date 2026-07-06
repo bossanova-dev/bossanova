@@ -1622,3 +1622,107 @@ func TestHasQuestionPrompt_FooterInsideLongToolOutput(t *testing.T) {
 			string(tail))
 	}
 }
+
+func TestHasWorkingIndicator(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{
+			name: "empty input",
+			data: "",
+			want: false,
+		},
+		{
+			// The ticket's exact footer: a background shell keeps running while
+			// the visible pane text is otherwise static.
+			name: "one shell still running (ticket fixture)",
+			data: "✻ Cooked for 48s · 1 shell still running\n",
+			want: true,
+		},
+		{
+			name: "multiple shells still running",
+			data: "  ✽ Planning… · 3 shells still running\n",
+			want: true,
+		},
+		{
+			name: "esc to interrupt spinner footer",
+			data: "✻ Thinking… (esc to interrupt)\n",
+			want: true,
+		},
+		{
+			name: "working spinner with esc to interrupt",
+			data: "· Working (3s · esc to interrupt)\n",
+			want: true,
+		},
+		{
+			name: "idle prompt with no marker",
+			data: "❯ \n",
+			want: false,
+		},
+		{
+			name: "plain conversation text",
+			data: "⏺ Done. The file has been updated.\n",
+			want: false,
+		},
+		{
+			// The AskUserQuestion footer says "Esc to cancel", not
+			// "esc to interrupt" — it must not read as WORKING (QUESTION owns it).
+			name: "AskUserQuestion Esc to cancel footer is not working",
+			data: "  Chat about this\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n",
+			want: false,
+		},
+		{
+			// Prose mentioning shells without the exact "N shell(s) still
+			// running" grammar must not false-positive.
+			name: "prose about shells is not a working marker",
+			data: "I ran the shell command and it finished.\n",
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasWorkingIndicator([]byte(tt.data)); got != tt.want {
+				t.Errorf("HasWorkingIndicator(%q) = %v, want %v", tt.data, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHasWorkingIndicator_StaleMarkerEvicted proves the detector reflects the
+// CURRENT screen, not stale history. A "1 shell still running" footer from an
+// earlier frame, followed by a full idle-screen re-render (the shell finished
+// and Claude redrew the idle input box), must NOT report working. Without the
+// current-screen scope the raw ring buffer -- and tmux scrollback -- still
+// contains the old footer and would pin the pane WORKING until enough new
+// output evicted it.
+func TestHasWorkingIndicator_StaleMarkerEvicted(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("✻ Cooked for 48s · 1 shell still running\n")
+	// Fresh idle content re-rendered after the shell finished. This pushes the
+	// stale footer above the current-screen window.
+	for range 35 {
+		b.WriteString("⏺ finished a step\n")
+	}
+	b.WriteString("╭──────────────╮\n")
+	b.WriteString("│ ❯            │\n")
+	b.WriteString("╰──────────────╯\n")
+	if HasWorkingIndicator([]byte(b.String())) {
+		t.Error("stale working marker above the current screen must not report working")
+	}
+}
+
+// TestHasWorkingIndicator_CurrentScreenMarker guards the positive path: a marker
+// rendered at the bottom of the current screen still reports working even when a
+// lot of older output precedes it in the buffer.
+func TestHasWorkingIndicator_CurrentScreenMarker(t *testing.T) {
+	var b strings.Builder
+	for range 60 {
+		b.WriteString("⏺ older conversation line\n")
+	}
+	b.WriteString("✻ Cooked for 48s · 1 shell still running\n")
+	if !HasWorkingIndicator([]byte(b.String())) {
+		t.Error("current-screen working marker must report working")
+	}
+}

@@ -579,6 +579,47 @@ func HasQuestionPrompt(data []byte) bool {
 	return false
 }
 
+// claudeWorkingRe matches Claude Code footers that mean the session is actively
+// working even when the visible pane text is otherwise static:
+//   - "N shell still running" / "N shells still running" — a background shell
+//     is running (e.g. "✻ Cooked for 48s · 1 shell still running").
+//   - "esc to interrupt" — Claude's active thinking/working spinner footer
+//     (e.g. "✻ Thinking… (esc to interrupt)", "· Working (3s · esc to interrupt)").
+var claudeWorkingRe = regexp.MustCompile(`[0-9]+ shells? still running|esc to interrupt`)
+
+// HasWorkingIndicator reports whether the pane shows an affirmative "the agent
+// is busy" marker. Unlike working/idle inference from content-change timing,
+// this is a positive signal: it stays true while a background shell runs or the
+// spinner is active, so a static-but-busy pane is not misclassified as idle.
+//
+// The matcher is deliberately narrow: the "Esc to cancel" AskUserQuestion
+// footer does not contain "esc to interrupt", so there is no overlap with
+// HasQuestionPrompt (QUESTION still takes precedence over WORKING).
+func HasWorkingIndicator(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	// Scope the match to the current screen (the last ~30 lines) rather than
+	// the whole buffer, mirroring HasQuestionPrompt. Both callers feed history,
+	// not just the live screen: the boss in-process PTY monitor scans the raw
+	// ring buffer, where every bubbletea re-render frame accumulates as text
+	// (StripANSI turns each frame's cursor-position sequences into fresh lines),
+	// and the daemon tmux poller captures 1000 lines of scrollback. A spinner /
+	// "N shell still running" footer from an earlier frame or a completed turn
+	// therefore lingers as text after the pane has returned to an idle prompt.
+	// Matching the full history keeps reporting WORKING until that stale footer
+	// is evicted; restricting to the current-screen tail reflects only what the
+	// pane shows now. A genuine marker always renders at the visible-pane
+	// bottom, so it stays inside the window.
+	tail := LastNLines(StripANSI(data), workingTailLines)
+	return claudeWorkingRe.Match(tail)
+}
+
+// workingTailLines bounds HasWorkingIndicator to the current screen. It matches
+// the 30-line window HasQuestionPrompt uses so both detectors read the same
+// "recent pane" region.
+const workingTailLines = 30
+
 // LastNLines returns the last n lines of data as a single byte slice.
 func LastNLines(data []byte, n int) []byte {
 	// Walk backwards to find the start of the last n lines.

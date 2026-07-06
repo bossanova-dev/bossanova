@@ -743,6 +743,7 @@ func TestHasQuestionPromptDelegatesToDetector(t *testing.T) {
 func TestLastTurnIsUserMissingTranscriptCollapsesToFalse(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "") // guard against CODEX_HOME leaking in from the ambient environment
 
 	s := newTestServer(t)
 	resp, err := s.LastTurnIsUser(context.Background(), &bossanovav1.LastTurnIsUserRequest{
@@ -762,6 +763,7 @@ func TestLastTurnIsUserMissingTranscriptCollapsesToFalse(t *testing.T) {
 func TestTranscriptExistsRPCMatchesDiskState(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "") // guard against CODEX_HOME leaking in from the ambient environment
 
 	s := newTestServer(t)
 
@@ -796,6 +798,7 @@ func TestTranscriptExistsRPCMatchesDiskState(t *testing.T) {
 func TestResolveInteractiveSessionIDRPCUsesRolloutMetadata(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "") // guard against CODEX_HOME leaking in from the ambient environment
 	workDir := t.TempDir()
 	launchedAfter := time.Date(2026, 5, 8, 7, 45, 40, 0, time.UTC)
 	path := writeSessionMetaRollout(t,
@@ -840,6 +843,7 @@ func TestResolveInteractiveSessionIDRPCUsesRolloutMetadata(t *testing.T) {
 func TestGetChatTitleSupportedEvenWithoutTranscript(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "") // guard against CODEX_HOME leaking in from the ambient environment
 
 	s := newTestServer(t)
 	resp, err := s.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{

@@ -75,7 +75,7 @@ func waitForCronListPopulated(t *testing.T, h *tuitest.Harness) {
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
 		return strings.Contains(screen, "Daily update") ||
 			strings.Contains(screen, "Roundtrip Job") ||
-			strings.Contains(screen, "[e]dit")
+			strings.Contains(screen, "[e/enter]dit")
 	}); err != nil {
 		t.Fatalf("expected cron table rows to be visible; screen:\n%s", h.Driver.Screen())
 	}

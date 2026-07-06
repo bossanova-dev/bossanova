@@ -116,12 +116,32 @@ func (f *repairFakeAgentClient) HasQuestionPrompt(context.Context, *bossanovav1.
 	return &bossanovav1.HasQuestionPromptResponse{}, nil
 }
 
+func (f *repairFakeAgentClient) DetectUsageLimit(context.Context, *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) {
+	return &bossanovav1.DetectUsageLimitResponse{}, nil
+}
+
+func (f *repairFakeAgentClient) HasWorkingIndicator(context.Context, *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
+	return &bossanovav1.HasWorkingIndicatorResponse{}, nil
+}
+
 func (f *repairFakeAgentClient) LastTurnIsUser(context.Context, *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
 	return &bossanovav1.LastTurnIsUserResponse{}, nil
 }
 
 func (f *repairFakeAgentClient) TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	return &bossanovav1.TranscriptExistsResponse{}, nil
+}
+
+func (f *repairFakeAgentClient) ReadTranscript(context.Context, *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+	return &bossanovav1.ReadTranscriptResponse{}, nil
+}
+
+func (f *repairFakeAgentClient) RotationCapability(context.Context, *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
+	return &bossanovav1.RotationCapabilityResponse{}, nil
+}
+
+func (f *repairFakeAgentClient) MaterializeAccount(context.Context, *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
+	return &bossanovav1.MaterializeAccountResponse{}, nil
 }
 
 func setupRepairE2E(t *testing.T, fake agent.AgentRunnerClient) (*testharness.Harness, context.Context, string) {
@@ -294,12 +314,32 @@ func (f *wrappedRepairFakeAgentClient) HasQuestionPrompt(ctx context.Context, re
 	return f.inner.HasQuestionPrompt(ctx, req)
 }
 
+func (f *wrappedRepairFakeAgentClient) DetectUsageLimit(ctx context.Context, req *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) {
+	return f.inner.DetectUsageLimit(ctx, req)
+}
+
+func (f *wrappedRepairFakeAgentClient) HasWorkingIndicator(ctx context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
+	return f.inner.HasWorkingIndicator(ctx, req)
+}
+
 func (f *wrappedRepairFakeAgentClient) LastTurnIsUser(ctx context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
 	return f.inner.LastTurnIsUser(ctx, req)
 }
 
 func (f *wrappedRepairFakeAgentClient) TranscriptExists(ctx context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	return f.inner.TranscriptExists(ctx, req)
+}
+
+func (f *wrappedRepairFakeAgentClient) ReadTranscript(ctx context.Context, req *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+	return f.inner.ReadTranscript(ctx, req)
+}
+
+func (f *wrappedRepairFakeAgentClient) RotationCapability(ctx context.Context, req *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
+	return f.inner.RotationCapability(ctx, req)
+}
+
+func (f *wrappedRepairFakeAgentClient) MaterializeAccount(ctx context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
+	return f.inner.MaterializeAccount(ctx, req)
 }
 
 func TestRepairE2E_TeeWrapperFailsBeforePromptAndRecordsStartError(t *testing.T) {

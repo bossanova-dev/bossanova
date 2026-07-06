@@ -16,6 +16,7 @@ const (
 	statusIdle     = "idle"
 	statusQuestion = "question"
 	statusStopped  = "stopped"
+	statusLimited  = "limited"
 )
 
 // newStatusSpinner creates an unstyled spinner for status display.
@@ -33,6 +34,8 @@ func chatStatusString(s pb.ChatStatus) string {
 		return statusIdle
 	case pb.ChatStatus_CHAT_STATUS_QUESTION:
 		return statusQuestion
+	case pb.ChatStatus_CHAT_STATUS_LIMITED:
+		return statusLimited
 	default:
 		return statusStopped
 	}
@@ -97,14 +100,96 @@ func sessionWarningHints(sess *pb.Session) []string {
 	if sess == nil {
 		return nil
 	}
-	hints := make([]string, 0, 2)
+	hints := make([]string, 0, 3)
 	if hint := repairHint(sess); hint != "" {
 		hints = append(hints, hint)
 	}
 	if hint := attentionWarningHint(sess); hint != "" {
 		hints = append(hints, hint)
 	}
+	if hint := rotationExhaustedHint(sess, time.Now()); hint != "" {
+		hints = append(hints, hint)
+	}
 	return hints
+}
+
+// rotationExhaustedHint returns "all accounts limited, resumes in ~Xm" when the
+// session's newest rotation event is an unexpired exhausted episode — every
+// account the agent can rotate to is usage-limited (BOS-176). Empty when there
+// is no rotation history, the newest event is not an exhausted outcome, or the
+// parked reset time has already passed (the operator should resume). The
+// countdown mirrors the repair retry-in hint so the operator sees why the
+// session is parked rather than a bare "limited" with no ETA.
+func rotationExhaustedHint(sess *pb.Session, now time.Time) string {
+	if sess == nil {
+		return ""
+	}
+	evs := sess.GetRotationEvents()
+	if len(evs) == 0 {
+		return ""
+	}
+	latest := evs[0] // hydrated newest-first
+	if latest.GetOutcome() != pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED {
+		return ""
+	}
+	reset := latest.GetResetAt()
+	if reset == nil {
+		return "all accounts limited"
+	}
+	remaining := reset.AsTime().Sub(now)
+	if remaining <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("all accounts limited, resumes in ~%s", shortDuration(remaining))
+}
+
+// rotationHistoryBlock renders the session's recent rotation decisions
+// (newest-first, capped) as a muted block, e.g.
+// "15:02 acct-a → acct-b rotated". Returns "" when the session has no
+// rotation history so callers can skip rendering entirely (no layout shift).
+func rotationHistoryBlock(sess *pb.Session, width int) string {
+	if sess == nil {
+		return ""
+	}
+	evs := sess.GetRotationEvents()
+	if len(evs) == 0 {
+		return ""
+	}
+	const maxRows = 5
+	lines := make([]string, 0, maxRows+1)
+	lines = append(lines, "Rotation history")
+	for i, ev := range evs {
+		if i == maxRows {
+			break
+		}
+		line := fmt.Sprintf("%s %s",
+			ev.GetCreatedAt().AsTime().Local().Format("15:04"),
+			rotationEventLabel(ev))
+		if detail := strings.TrimSpace(ev.GetDetail()); detail != "" {
+			line += " — " + detail
+		}
+		lines = append(lines, line)
+	}
+	return styleStatusMuted.Width(width).Render(strings.Join(lines, "\n"))
+}
+
+// rotationEventLabel renders a single rotation decision as a short,
+// human-readable phrase keyed off its outcome (BOS-176).
+func rotationEventLabel(ev *pb.RotationEvent) string {
+	switch ev.GetOutcome() {
+	case pb.RotationOutcome_ROTATION_OUTCOME_ROTATED:
+		return fmt.Sprintf("%s → %s rotated", ev.GetFromAccount(), ev.GetToAccount())
+	case pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_DISABLED:
+		return "rotation disabled — status only"
+	case pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY:
+		return "agent cannot rotate — status only"
+	case pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED:
+		return "all accounts limited"
+	case pb.RotationOutcome_ROTATION_OUTCOME_FAILED:
+		return fmt.Sprintf("switch to %s failed", ev.GetToAccount())
+	default:
+		return "rotation event"
+	}
 }
 
 func attentionWarningHint(sess *pb.Session) string {
@@ -273,6 +358,8 @@ func renderClaudeStatus(status string, sp spinner.Model) string {
 	switch status {
 	case statusQuestion:
 		return styleStatusWarning.Render("? question")
+	case statusLimited:
+		return styleStatusWarning.Render("limited")
 	case statusWorking:
 		return styleStatusSuccess.Render(sp.View() + "working")
 	case statusIdle:

@@ -14,24 +14,27 @@ import (
 )
 
 type fakeCommandHandler struct {
-	stopCalls        atomic.Int32
-	pauseCalls       atomic.Int32
-	resumeCalls      atomic.Int32
-	wakeCalls        atomic.Int32
-	mergeCalls       atomic.Int32
-	archiveCalls     atomic.Int32
-	recordChatCalls  atomic.Int32
-	deleteChatCalls  atomic.Int32
-	deleteChatScope  string // last sessionID passed to DeleteChat
-	listReposCalls   atomic.Int32
-	listAgentsCalls  atomic.Int32
-	returnErr        error
-	session          *pb.Session
-	mergeSession     *pb.Session
-	archiveSession   *pb.Session
-	recordChatResult *pb.ClaudeChat
-	listReposResult  *pb.ListReposResponse
-	listAgentsResult *pb.ListAgentsResponse
+	stopCalls            atomic.Int32
+	pauseCalls           atomic.Int32
+	resumeCalls          atomic.Int32
+	wakeCalls            atomic.Int32
+	mergeCalls           atomic.Int32
+	archiveCalls         atomic.Int32
+	recordChatCalls      atomic.Int32
+	deleteChatCalls      atomic.Int32
+	deleteChatScope      string // last sessionID passed to DeleteChat
+	listReposCalls       atomic.Int32
+	listAgentsCalls      atomic.Int32
+	listAccountsCalls    atomic.Int32
+	returnErr            error
+	session              *pb.Session
+	mergeSession         *pb.Session
+	archiveSession       *pb.Session
+	recordChatResult     *pb.ClaudeChat
+	listReposResult      *pb.ListReposResponse
+	listAgentsResult     *pb.ListAgentsResponse
+	listAccountsResult   *pb.ListAccountsResponse
+	listAccountsProvider string // last provider passed to ListAccounts
 	// ListRepoPRs / ListTrackerIssues knobs.
 	repoPRs    *pb.ListRepoPRsResponse
 	issues     *pb.ListTrackerIssuesResponse
@@ -48,6 +51,17 @@ type fakeCommandHandler struct {
 	wakeReason    string
 	wakeErrorCode pb.CommandResult_ErrorCode
 	wakeErr       error
+	// SwitchAccount-specific knobs.
+	switchCalls       atomic.Int32
+	switchResumed     bool
+	switchTargetLabel string
+	switchNoticeText  string
+	switchErrorCode   pb.CommandResult_ErrorCode
+	switchErr         error
+	switchSessionID   string // last sessionID passed to SwitchAccount
+	switchAgentID     string // last agentSessionID passed to SwitchAccount
+	switchAccountID   string // last accountID passed to SwitchAccount
+	switchForce       bool   // last force flag passed to SwitchAccount
 	// GetChatTranscript / SendChatMessage knobs.
 	transcript        *pb.GetChatTranscriptResponse
 	transcriptSession string // last sessionID passed to GetChatTranscript
@@ -73,6 +87,14 @@ func (f *fakeCommandHandler) WakeChat(_ context.Context, _ string, _ bool) (pb.W
 	f.wakeCalls.Add(1)
 	return f.wakeOutcome, f.wakeTmuxName, f.wakeReason, f.wakeErrorCode, f.wakeErr
 }
+func (f *fakeCommandHandler) SwitchAccount(_ context.Context, sessionID, agentSessionID, accountID string, force bool) (bool, string, string, pb.CommandResult_ErrorCode, error) {
+	f.switchCalls.Add(1)
+	f.switchSessionID = sessionID
+	f.switchAgentID = agentSessionID
+	f.switchAccountID = accountID
+	f.switchForce = force
+	return f.switchResumed, f.switchTargetLabel, f.switchNoticeText, f.switchErrorCode, f.switchErr
+}
 func (f *fakeCommandHandler) MergeSession(_ context.Context, _ string) (*pb.Session, error) {
 	f.mergeCalls.Add(1)
 	return f.mergeSession, f.returnErr
@@ -97,6 +119,11 @@ func (f *fakeCommandHandler) ListRepos(_ context.Context) (*pb.ListReposResponse
 func (f *fakeCommandHandler) ListAgents(_ context.Context) (*pb.ListAgentsResponse, error) {
 	f.listAgentsCalls.Add(1)
 	return f.listAgentsResult, f.returnErr
+}
+func (f *fakeCommandHandler) ListAccounts(_ context.Context, provider string) (*pb.ListAccountsResponse, error) {
+	f.listAccountsCalls.Add(1)
+	f.listAccountsProvider = provider
+	return f.listAccountsResult, f.returnErr
 }
 func (f *fakeCommandHandler) ListRepoPRs(_ context.Context, repoID string) (*pb.ListRepoPRsResponse, error) {
 	f.lastRepoID = repoID
@@ -586,6 +613,70 @@ func TestDispatchCommand_WakeChat_FailedPreconditionSetsErrorCode(t *testing.T) 
 	}
 	if r.GetErrorCode() != pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION {
 		t.Fatalf("error_code = %v, want FAILED_PRECONDITION", r.GetErrorCode())
+	}
+}
+
+func TestDispatchCommand_SwitchAccount_CallsHandler(t *testing.T) {
+	handler := &fakeCommandHandler{
+		switchResumed:     true,
+		switchTargetLabel: "Account B",
+		switchNoticeText:  "Switched to Account B",
+	}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-s1",
+			Cmd: &pb.OrchestratorCommand_SwitchAccount{
+				SwitchAccount: &pb.SwitchAccountCommand{
+					SessionId:      "sess-1",
+					AgentSessionId: "agent-1",
+					AccountId:      "acct-b",
+					Force:          true,
+				},
+			},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.switchCalls.Load() != 1 {
+		t.Fatalf("switch calls = %d, want 1", handler.switchCalls.Load())
+	}
+	if handler.switchSessionID != "sess-1" || handler.switchAgentID != "agent-1" ||
+		handler.switchAccountID != "acct-b" || !handler.switchForce {
+		t.Fatalf("forwarded args = (%q,%q,%q,%v)", handler.switchSessionID, handler.switchAgentID, handler.switchAccountID, handler.switchForce)
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() {
+		t.Fatalf("expected ok result: %+v", ev)
+	}
+	sw := r.GetSwitchAccount()
+	if sw == nil {
+		t.Fatalf("expected SwitchAccountResult payload, got %+v", r)
+	}
+	if !sw.GetResumed() || sw.GetTargetLabel() != "Account B" || sw.GetNoticeText() != "Switched to Account B" {
+		t.Fatalf("payload = %+v", sw)
+	}
+}
+
+func TestDispatchCommand_SwitchAccount_FailedPreconditionSetsErrorCode(t *testing.T) {
+	handler := &fakeCommandHandler{
+		switchErrorCode: pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION,
+		switchErr:       errors.New("target account is cooling down"),
+	}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-s2",
+			Cmd: &pb.OrchestratorCommand_SwitchAccount{
+				SwitchAccount: &pb.SwitchAccountCommand{SessionId: "sess-1", AccountId: "acct-b"},
+			},
+		}, make(chan *pb.DaemonEvent, 4))
+	r := ev.GetResult()
+	if r == nil || r.GetOk() {
+		t.Fatalf("expected error result, got %+v", ev)
+	}
+	if r.GetErrorCode() != pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION {
+		t.Fatalf("error_code = %v, want FAILED_PRECONDITION", r.GetErrorCode())
+	}
+	if r.GetError() != "target account is cooling down" {
+		t.Fatalf("error message = %q", r.GetError())
 	}
 }
 
@@ -1199,6 +1290,56 @@ func TestDispatchCommand_ListAgents_HandlerError_ReturnsCommandErr(t *testing.T)
 	}
 	if r.GetError() != "list agents boom" {
 		t.Fatalf("expected error %q, got %q", "list agents boom", r.GetError())
+	}
+}
+
+func TestDispatchCommand_ListAccounts_CallsHandler(t *testing.T) {
+	accounts := &pb.ListAccountsResponse{Accounts: []*pb.Account{{Id: "acc-1", Provider: "claude", Label: "primary"}}}
+	handler := &fakeCommandHandler{listAccountsResult: accounts}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	if ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-lacc1",
+			Cmd:       &pb.OrchestratorCommand_ListAccounts{ListAccounts: &pb.ListAccountsCommand{Provider: "claude"}},
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
+	if handler.listAccountsCalls.Load() != 1 {
+		t.Fatalf("list_accounts calls = %d, want 1", handler.listAccountsCalls.Load())
+	}
+	if handler.listAccountsProvider != "claude" {
+		t.Fatalf("list_accounts provider = %q, want claude", handler.listAccountsProvider)
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-lacc1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	got := r.GetListAccounts().GetAccounts()
+	if len(got) != 1 || got[0].GetId() != "acc-1" {
+		t.Fatalf("expected list_accounts payload with acc-1, got %+v", got)
+	}
+}
+
+func TestDispatchCommand_ListAccounts_HandlerError_ReturnsCommandErr(t *testing.T) {
+	handler := &fakeCommandHandler{returnErr: errors.New("list accounts boom")}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	if ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-lacc-err",
+			Cmd:       &pb.OrchestratorCommand_ListAccounts{ListAccounts: &pb.ListAccountsCommand{}},
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
+	r := ev.GetResult()
+	if r == nil || r.GetOk() {
+		t.Fatalf("expected error result, got %+v", ev)
+	}
+	if r.GetError() != "list accounts boom" {
+		t.Fatalf("expected error %q, got %q", "list accounts boom", r.GetError())
 	}
 }
 

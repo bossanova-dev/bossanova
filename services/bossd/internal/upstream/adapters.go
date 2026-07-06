@@ -17,6 +17,7 @@ import (
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/safego"
 	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -132,11 +133,13 @@ type AutomationToggler interface {
 // import cycle with the server package (same pattern as ChatWaker).
 type SessionCommandServer interface {
 	MergeSession(context.Context, *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error)
+	SwitchSessionAccount(context.Context, *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error)
 	ArchiveSession(context.Context, *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error)
 	RecordChat(context.Context, *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error)
 	DeleteChat(context.Context, *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error)
 	ListRepos(context.Context, *connect.Request[pb.ListReposRequest]) (*connect.Response[pb.ListReposResponse], error)
 	ListAgents(context.Context, *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error)
+	ListAccounts(context.Context, *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error)
 	ListTrackerIssues(context.Context, *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error)
 	GetChatTranscript(context.Context, *connect.Request[pb.GetChatTranscriptRequest]) (*connect.Response[pb.GetChatTranscriptResponse], error)
@@ -217,6 +220,34 @@ func (a *CommandHandlerAdapter) WakeChat(ctx context.Context, agentSessionID str
 		return pb.WakeChatResult_OUTCOME_UNSPECIFIED, "", "", pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("wake_chat: waker not wired")
 	}
 	return a.Waker.WakeChatStream(ctx, agentSessionID, forceFresh)
+}
+
+// SwitchAccount implements SessionCommandHandler.SwitchAccount by delegating
+// to the daemon's SwitchSessionAccount RPC. An empty agentSessionID maps to
+// nil (proto3 optional) so the daemon resolves the session's primary live chat;
+// on error it classifies the connect code so the dispatcher can attach a typed
+// CommandResult.error_code (mirrors the WakeChat / merge typed-code paths).
+func (a *CommandHandlerAdapter) SwitchAccount(ctx context.Context, sessionID, agentSessionID, accountID string, force bool) (bool, string, string, pb.CommandResult_ErrorCode, error) {
+	if sessionID == "" {
+		return false, "", "", pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("switch_account: session_id required")
+	}
+	if a.Commands == nil {
+		return false, "", "", pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("switch_account: command server not wired")
+	}
+	var agentSessionIDPtr *string
+	if agentSessionID != "" {
+		agentSessionIDPtr = proto.String(agentSessionID)
+	}
+	resp, err := a.Commands.SwitchSessionAccount(ctx, connect.NewRequest(&pb.SwitchSessionAccountRequest{
+		SessionId:      sessionID,
+		AccountId:      accountID,
+		AgentSessionId: agentSessionIDPtr,
+		Force:          force,
+	}))
+	if err != nil {
+		return false, "", "", classifyCommandError(err), fmt.Errorf("switch session account: %w", err)
+	}
+	return resp.Msg.GetResumed(), resp.Msg.GetTargetLabel(), resp.Msg.GetNoticeText(), pb.CommandResult_ERROR_CODE_UNSPECIFIED, nil
 }
 
 // Resume implements SessionCommandHandler.Resume by re-enabling automation.
@@ -324,6 +355,25 @@ func (a *CommandHandlerAdapter) ListAgents(ctx context.Context) (*pb.ListAgentsR
 	resp, err := a.Commands.ListAgents(ctx, connect.NewRequest(&pb.ListAgentsRequest{}))
 	if err != nil {
 		return nil, fmt.Errorf("list agents: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// ListAccounts implements SessionCommandHandler.ListAccounts by delegating to
+// the daemon's ListAccounts connect handler and unwrapping the response message.
+// An empty provider maps to nil (proto3 optional) so the daemon returns every
+// account; a non-empty provider is passed through as the filter.
+func (a *CommandHandlerAdapter) ListAccounts(ctx context.Context, provider string) (*pb.ListAccountsResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("list_accounts: command server not wired")
+	}
+	req := &pb.ListAccountsRequest{}
+	if provider != "" {
+		req.Provider = proto.String(provider)
+	}
+	resp, err := a.Commands.ListAccounts(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, fmt.Errorf("list accounts: %w", err)
 	}
 	return resp.Msg, nil
 }
@@ -617,6 +667,12 @@ func (a *SessionCreatorAdapter) Create(ctx context.Context, cmd *pb.CreateSessio
 		TrackerIssue:  cmd.TrackerIssue,
 		TrackerSource: cmd.TrackerSource,
 		Force:         cmd.GetForce(),
+		// Unattended-session fields carried over the reverse stream so a hosted
+		// create runs the same headless/unattended flow as a direct socket
+		// create rather than starting interactive on the default model.
+		Detach:         cmd.GetDetach(),
+		Model:          cmd.Model,
+		TmuxUnattended: cmd.GetTmuxUnattended(),
 	}
 	if name := cmd.GetAgentName(); name != "" {
 		req.AgentName = &name

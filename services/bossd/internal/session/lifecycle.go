@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -30,6 +31,7 @@ import (
 	"github.com/recurser/bossd/internal/dotenv"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/proofenv"
+	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/tmux"
 )
 
@@ -189,6 +191,54 @@ type Lifecycle struct {
 	// NewLifecycle to a real keyring-backed resolver; SetProofEnvResolver
 	// overrides it for tests. Resolved fresh per spawn; never logged.
 	proofEnv proofEnvResolver
+
+	// accountEnv resolves the selected account's env overlay (e.g.
+	// CLAUDE_CODE_OAUTH_TOKEN / CODEX_HOME) for account rotation, keyed off the
+	// session's AccountID binding. Nil in older/test wiring degrades to no
+	// overlay (account 0). Resolved fresh per spawn; never logged.
+	accountEnv accountEnvResolver
+
+	// rotationConfig holds the auto-rotation policy knobs (kill switch, max
+	// rotations). The zero value enables rotation with default caps, so an
+	// unset config is a safe production default. Injected via SetRotationConfig.
+	rotationConfig config.RotationConfig
+
+	// rotationDecider, accountMaterializer, and rotationBinding are the narrow
+	// injected seams the usage-limit rotation intercept consumes. Any nil seam
+	// degrades rotation to today's Block path (fail-safe). Production wires the
+	// real rotation.Engine / MaterializeAccount RPC / BOS-170 binding via the
+	// setters in rotation.go; tests inject fakes.
+	rotationDecider     rotationDecider
+	accountMaterializer accountMaterializer
+	rotationBinding     rotationBinding
+
+	// rotationRecorder audits every rotation decision outcome (BOS-176). Nil is
+	// safe: the Recorder's methods no-op on a nil receiver, so an unwired daemon
+	// simply records nothing. Injected via SetRotationRecorder.
+	rotationRecorder *rotation.Recorder
+
+	// rotationConfigLoader re-reads settings on every rotation decision so a
+	// kill-switch flip takes effect instantly without a daemon restart (BOS-176).
+	// Nil ⇒ fall back to the config injected via SetRotationConfig (the cached
+	// value used by unit tests). Production wires config.Load here.
+	rotationConfigLoader func() (config.Settings, error)
+
+	// clock is the time source for the resume-at-T parked-rotation sweep. It is
+	// nil in production (now() falls back to time.Now); tests inject a fake via
+	// SetClockForTest so the "past resume_at" boundary is deterministic. Kept
+	// off the hot classify path (classifyUsageLimit still uses time.Now).
+	clock func() time.Time
+
+	// Account-switch seams (BOS-171 manual switch). All are nil-safe:
+	// accountSwitchBinding defaults lazily from `sessions`; a nil registry
+	// makes SwitchAccount error (it can't validate the target); a nil working
+	// reader treats the chat as not mid-turn; a nil transcript probe assumes a
+	// present resume id is resumable. Wired in production via
+	// SetAccountSwitchDeps; tests set the fields directly.
+	accountSwitchBinding     accountBinding
+	accountSwitchRegistry    accountRegistry
+	accountSwitchWorking     chatStatusReader
+	accountSwitchTranscripts transcriptProbe
 }
 
 // proofEnvResolver resolves the allowlisted proof environment overlay. The
@@ -212,6 +262,28 @@ func (l *Lifecycle) resolveProofEnv() map[string]string {
 	return l.proofEnv.Resolve()
 }
 
+// accountEnvResolver resolves the per-account environment overlay for
+// rotation, keyed off the session's AccountID binding. Kept as an interface so
+// the real resolver (accountwiring.SpawnEnvResolver, wrapping account.Resolver)
+// can be injected without the session package depending on db/plugin plumbing.
+type accountEnvResolver interface {
+	Resolve(ctx context.Context, sess *models.Session) map[string]string
+}
+
+// SetAccountEnvResolver overrides the account env resolver (tests inject a
+// synthetic map; the daemon installs the real one). Safe to leave unset.
+func (l *Lifecycle) SetAccountEnvResolver(r accountEnvResolver) { l.accountEnv = r }
+
+// resolveAccountEnv returns the account env overlay for sess, or nil when no
+// resolver is wired (older/test wiring) or the session is unbound. Never logs
+// values.
+func (l *Lifecycle) resolveAccountEnv(ctx context.Context, sess *models.Session) map[string]string {
+	if l.accountEnv == nil {
+		return nil
+	}
+	return l.accountEnv.Resolve(ctx, sess)
+}
+
 // mergeEnv overlays extra onto base, returning a new map. base wins on key
 // conflict: the managed BOSS_* environment is authoritative and must never
 // be shadowed by the proof overlay. A nil/empty extra returns base
@@ -225,6 +297,16 @@ func mergeEnv(base, extra map[string]string) map[string]string {
 		merged[k] = v // base wins on conflict
 	}
 	return merged
+}
+
+// mergeSessionEnv builds the tmux session environment with precedence
+// managed (BOSS_*) > account > proof. Managed keys are authoritative and are
+// NEVER shadowed; the account overlay overrides proof values but not managed
+// ones. A nil/empty account map yields a result byte-identical to the prior
+// mergeEnv(managed, proof) — the account-rotation no-op path (D9). Values are
+// never logged.
+func mergeSessionEnv(managed, account, proof map[string]string) map[string]string {
+	return mergeEnv(managed, mergeEnv(account, proof))
 }
 
 // SetHookPort records the hook server's bound loopback port so
@@ -530,6 +612,13 @@ func (l *Lifecycle) SetCronCompletionNotifier(n cronCompletionNotifier) {
 // run completes. It preserves host-service waiter completion for StartChatRun
 // and independently routes lifecycle-owned unattended sessions to the cron gate.
 func (l *Lifecycle) SignalSessionRunComplete(sessionID, agentSessionID, exitError string) {
+	// Rotation intercept: a usage-limited exit on a live, rotatable plan run is
+	// rotated-and-restarted (or parked) here. When handled, skip the normal
+	// finalize/block fan-out below; the restarted run re-enters via its own
+	// completion signal.
+	if l.attemptUsageLimitRotation(context.Background(), sessionID, agentSessionID, exitError) {
+		return
+	}
 	if l.pollCompleter != nil {
 		l.pollCompleter.SignalRunComplete(sessionID, agentSessionID, exitError)
 	}
@@ -550,13 +639,22 @@ func headlessRunBlockedReason(exitError string) string {
 	if summary == "" {
 		summary = "agent run failed"
 	}
+	return "headless agent run failed: " + truncateBlockedReason(summary)
+}
+
+// truncateBlockedReason keeps only the first line of a blocked-reason summary
+// (so stack traces / multi-line agent output don't leak) and truncates it on a
+// rune boundary to headlessRunBlockedReasonMaxLen. Shared by the headless-run
+// block path and the rotation park path.
+func truncateBlockedReason(summary string) string {
+	summary = strings.TrimSpace(summary)
 	if idx := strings.IndexByte(summary, '\n'); idx >= 0 {
 		summary = strings.TrimSpace(summary[:idx])
 	}
 	if utf8.RuneCountInString(summary) > headlessRunBlockedReasonMaxLen {
 		summary = string([]rune(summary)[:headlessRunBlockedReasonMaxLen]) + "…"
 	}
-	return "headless agent run failed: " + summary
+	return summary
 }
 
 // finalizeHeadlessRunIfApplicable advances a non-unattended headless session
@@ -620,7 +718,7 @@ func (l *Lifecycle) finalizeHeadlessRunIfApplicable(ctx context.Context, session
 }
 
 // notifyCronCompletionIfUnattended routes an unattended session — cron-scheduled
-// or tmux_unattended (e.g. /bs-epic) — to the cron completion gate. The gate
+// or tmux_unattended (e.g. /boss-epic) — to the cron completion gate. The gate
 // re-checks isUnattendedSession and runIsOver, so this pre-filter only avoids a
 // pointless dispatch for interactive sessions; it must admit the same set the
 // gate does or tmux_unattended sessions never finalize.
@@ -1034,19 +1132,19 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		Msg("starting claude")
 
 	// Start the agent. Cron-spawned sessions and tmux_unattended sessions (e.g.
-	// /bs-epic's durable tmux-hosted runs) run in a tmux-hosted Claude UI so
+	// /boss-epic's durable tmux-hosted runs) run in a tmux-hosted Claude UI so
 	// the user can attach to the live session. Interactive sessions (the TUI's
 	// new-PR / existing-PR flows, and tracker-sourced Linear/Sentry sessions
 	// created WITHOUT detach) are created idle: no agent runs yet, and it starts
 	// interactively on first attach (RecordChat → tmux). A detached run
-	// (opts.Detach) — `boss new --detach`, or `/bs-epic`'s headless
+	// (opts.Detach) — `boss new --detach`, or `/boss-epic`'s headless
 	// create_session fan-out — takes the headless `claude --print` / `codex
 	// exec` path, because that caller wants an autonomous pass with a prompt.
 	//
 	// Detach — NOT tracker-sourcing — is the sole signal that governs
 	// headless-vs-idle here. A tracker id only links the Linear/Sentry issue; it
 	// must not force the idle branch, or an unattended orchestrator that sets
-	// {detach:true, tracker_id} (which /bs-epic always does) would sit idle
+	// {detach:true, tracker_id} (which /boss-epic always does) would sit idle
 	// forever waiting for a client attach that never comes (the BOS-179
 	// blocker). Interactive TUI creation still leaves Detach=false → idle, so
 	// that path is unchanged. Firing a headless run for an interactive,
@@ -1074,7 +1172,11 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			Msg("interactive session created idle; awaiting manual start on first attach")
 	default:
 		headlessRun = true
-		claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, dotenv.Overlay(l.resolveProofEnv(), result.WorktreePath))
+		// Account env sits above proof (disjoint keys today; account wins by
+		// convention, mirroring the interactive tmux precedence account > proof).
+		// There is no managed BOSS_* layer on the headless path.
+		headlessEnv := dotenv.Overlay(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), result.WorktreePath)
+		claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, headlessEnv)
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
 		}
@@ -2115,7 +2217,10 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 		resume = session.AgentSessionID
 	}
 
-	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, session.AgentName, session.WorktreePath, session.Plan, resume, "", session.Model, dotenv.Overlay(l.resolveProofEnv(), session.WorktreePath))
+	// Account env sits above proof (disjoint keys today; account wins by
+	// convention). No managed BOSS_* layer on the resume path.
+	resumeEnv := dotenv.Overlay(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), session.WorktreePath)
+	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, session.AgentName, session.WorktreePath, session.Plan, resume, "", session.Model, resumeEnv)
 	if err != nil {
 		return fmt.Errorf("start claude: %w", err)
 	}

@@ -292,6 +292,13 @@ type SessionCommandHandler interface {
 	// proxy maps it back to the right ConnectRPC code without parsing
 	// the human-readable error string).
 	WakeChat(ctx context.Context, agentSessionID string, forceFresh bool) (outcome pb.WakeChatResult_Outcome, tmuxName string, reason string, errorCode pb.CommandResult_ErrorCode, err error)
+	// SwitchAccount switches a session's live chat to a different account
+	// (stop+swap+resume). agentSessionID, when empty, resolves the session's
+	// primary live chat. accountID "" means the system default (account 0).
+	// errorCode classifies any failure so the dispatcher can attach a typed
+	// CommandResult.error_code (the proxy maps it back to the right ConnectRPC
+	// code without parsing the human-readable error string).
+	SwitchAccount(ctx context.Context, sessionID, agentSessionID, accountID string, force bool) (resumed bool, targetLabel, noticeText string, errorCode pb.CommandResult_ErrorCode, err error)
 	MergeSession(ctx context.Context, sessionID string) (*pb.Session, error)
 	ArchiveSession(ctx context.Context, sessionID string) (*pb.Session, error)
 	RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.ClaudeChat, error)
@@ -307,6 +314,10 @@ type SessionCommandHandler interface {
 	// ListAgents returns the daemon's installed agents. Not session-scoped —
 	// bosso proxies a per-daemon agent listing for the wizard.
 	ListAgents(ctx context.Context) (*pb.ListAgentsResponse, error)
+	// ListAccounts returns the daemon's rotation accounts (metadata only — never
+	// credentials), optionally filtered by provider ("" = all). Bosso proxies
+	// this for the web account-switch picker, scoped to a session's owning daemon.
+	ListAccounts(ctx context.Context, provider string) (*pb.ListAccountsResponse, error)
 	// ListRepoPRs returns a repo's open PRs for the web "existing PR" picker.
 	ListRepoPRs(ctx context.Context, repoID string) (*pb.ListRepoPRsResponse, error)
 	// ListTrackerIssues returns a repo's tracker issues (optional server-side

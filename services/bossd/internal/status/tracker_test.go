@@ -233,6 +233,95 @@ func TestSetAuthFailed_and_AuthFailed(t *testing.T) {
 	}
 }
 
+func TestSetAuthFailed_FiresOnAuthChangeOnlyOnTransition(t *testing.T) {
+	tr := NewTracker()
+	var mu sync.Mutex
+	var fired []string
+	tr.SetOnAuthChange(func(id string) {
+		mu.Lock()
+		fired = append(fired, id)
+		mu.Unlock()
+	})
+
+	// absent → failed: a transition, fires once.
+	tr.SetAuthFailed("chat-1", true)
+	// failed → failed (the poller re-observes login-required every tick): no
+	// transition, must NOT re-fire and storm the stream.
+	tr.SetAuthFailed("chat-1", true)
+	tr.SetAuthFailed("chat-1", true)
+	// failed → cleared: a transition, fires once.
+	tr.SetAuthFailed("chat-1", false)
+	// cleared → cleared (poller keeps reporting not-login-required): no fire.
+	tr.SetAuthFailed("chat-1", false)
+
+	mu.Lock()
+	got := append([]string(nil), fired...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("onAuthChange fired %d times (%v), want 2 (set + clear transitions)", len(got), got)
+	}
+	for _, id := range got {
+		if id != "chat-1" {
+			t.Errorf("onAuthChange fired for %q, want chat-1", id)
+		}
+	}
+}
+
+func TestSetAuthFailed_StaleMarkerCountsAsTransition(t *testing.T) {
+	tr := NewTracker()
+	var fires int
+	var mu sync.Mutex
+	tr.SetOnAuthChange(func(string) {
+		mu.Lock()
+		fires++
+		mu.Unlock()
+	})
+
+	tr.SetAuthFailed("chat-1", true) // fire 1 (absent → fresh)
+
+	// Age the marker past StaleThreshold: effectively absent per AuthFailed.
+	tr.mu.Lock()
+	tr.authFailed["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	tr.SetAuthFailed("chat-1", true) // fire 2 (stale/effectively-absent → fresh)
+
+	mu.Lock()
+	got := fires
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("onAuthChange fired %d times, want 2 (a stale marker refreshing is a transition)", got)
+	}
+}
+
+func TestSetAuthFailed_FalseClearsStaleMarkerWithAuthChange(t *testing.T) {
+	tr := NewTracker()
+	var fires int
+	var mu sync.Mutex
+	tr.SetOnAuthChange(func(string) {
+		mu.Lock()
+		fires++
+		mu.Unlock()
+	})
+
+	tr.SetAuthFailed("chat-1", true) // fire 1 (absent -> fresh)
+	tr.mu.Lock()
+	tr.authFailed["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	// Even though the stale marker already reads as AuthFailed=false locally,
+	// remote stream state may still hold the last fresh "failed" delta. Clearing
+	// the stale marker must publish a clear transition.
+	tr.SetAuthFailed("chat-1", false) // fire 2 (stale marker removed)
+
+	mu.Lock()
+	got := fires
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("onAuthChange fired %d times, want 2 (set + stale clear)", got)
+	}
+}
+
 func TestAuthFailed_Stale(t *testing.T) {
 	tr := NewTracker()
 	tr.SetAuthFailed("chat-1", true)
@@ -257,6 +346,102 @@ func TestRemove_ClearsAuthFailed(t *testing.T) {
 	}
 }
 
+func TestRemove_FiresOnAuthChangeWhenMarkerCleared(t *testing.T) {
+	tr := NewTracker()
+	var fired []string
+	var mu sync.Mutex
+	tr.SetOnAuthChange(func(id string) {
+		mu.Lock()
+		fired = append(fired, id)
+		mu.Unlock()
+	})
+
+	tr.SetAuthFailed("chat-1", true) // set transition
+	tr.Remove("chat-1")              // clear transition
+	tr.Remove("chat-1")              // no marker left, no extra transition
+
+	mu.Lock()
+	got := append([]string(nil), fired...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("onAuthChange fired %d times (%v), want 2", len(got), got)
+	}
+	for _, id := range got {
+		if id != "chat-1" {
+			t.Errorf("onAuthChange fired for %q, want chat-1", id)
+		}
+	}
+}
+
+func TestUpdate_LimitResetCarried(t *testing.T) {
+	tr := NewTracker()
+	now := time.Now()
+	resetAt := time.Date(2026, 1, 2, 15, 0, 0, 0, time.UTC)
+
+	tr.UpdateLimited("chat-1", resetAt, now)
+
+	e := tr.Get("chat-1")
+	if e == nil {
+		t.Fatal("expected entry, got nil")
+		return
+	}
+	if e.Status != pb.ChatStatus_CHAT_STATUS_LIMITED {
+		t.Errorf("expected LIMITED, got %v", e.Status)
+	}
+	if !e.ResetAt.Equal(resetAt) {
+		t.Errorf("expected ResetAt %v, got %v", resetAt, e.ResetAt)
+	}
+}
+
+func TestUpdate_LimitEventFiresOncePerTransition(t *testing.T) {
+	tr := NewTracker()
+	now := time.Now()
+	resetAt := time.Date(2026, 1, 2, 15, 0, 0, 0, time.UTC)
+
+	var mu sync.Mutex
+	var enters, leaves int
+	tr.SetOnLimitTransition(func(id string, entered bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if id != "chat-1" {
+			t.Errorf("onLimitTransition fired for %q, want chat-1", id)
+		}
+		if entered {
+			enters++
+		} else {
+			leaves++
+		}
+	})
+
+	// Enter LIMITED and re-poll it N times: exactly one enter event.
+	for i := 0; i < 5; i++ {
+		tr.UpdateLimited("chat-1", resetAt, now)
+	}
+
+	mu.Lock()
+	gotEnters, gotLeaves := enters, leaves
+	mu.Unlock()
+	if gotEnters != 1 {
+		t.Fatalf("enter events = %d, want 1 (once on the transition into LIMITED)", gotEnters)
+	}
+	if gotLeaves != 0 {
+		t.Fatalf("leave events = %d, want 0 before leaving LIMITED", gotLeaves)
+	}
+
+	// Leave LIMITED: exactly one leave event.
+	tr.Update("chat-1", pb.ChatStatus_CHAT_STATUS_IDLE, now)
+
+	mu.Lock()
+	gotEnters, gotLeaves = enters, leaves
+	mu.Unlock()
+	if gotEnters != 1 {
+		t.Fatalf("enter events = %d after leaving, want still 1", gotEnters)
+	}
+	if gotLeaves != 1 {
+		t.Fatalf("leave events = %d, want 1 (once on the transition out of LIMITED)", gotLeaves)
+	}
+}
+
 func TestCleanup_RemovesStaleAuthFailed(t *testing.T) {
 	tr := NewTracker()
 	tr.SetAuthFailed("fresh", true)
@@ -276,5 +461,34 @@ func TestCleanup_RemovesStaleAuthFailed(t *testing.T) {
 	}
 	if staleOK {
 		t.Error("Cleanup kept a stale auth marker")
+	}
+}
+
+func TestCleanup_FiresOnAuthChangeForRemovedStaleAuthMarkers(t *testing.T) {
+	tr := NewTracker()
+	var fired []string
+	var mu sync.Mutex
+	tr.SetOnAuthChange(func(id string) {
+		mu.Lock()
+		fired = append(fired, id)
+		mu.Unlock()
+	})
+
+	tr.SetAuthFailed("fresh", true)
+	tr.SetAuthFailed("stale", true)
+	tr.mu.Lock()
+	tr.authFailed["stale"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	tr.Cleanup()
+
+	mu.Lock()
+	got := append([]string(nil), fired...)
+	mu.Unlock()
+	if len(got) != 3 {
+		t.Fatalf("onAuthChange fired %d times (%v), want 3 (two sets + stale clear)", len(got), got)
+	}
+	if got[2] != "stale" {
+		t.Fatalf("cleanup clear fired for %q, want stale", got[2])
 	}
 }

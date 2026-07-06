@@ -153,6 +153,17 @@ func (s *Server) HasQuestionPrompt(_ context.Context, _ *bossanovav1.HasQuestion
 	return &bossanovav1.HasQuestionPromptResponse{HasPrompt: false}, nil
 }
 
+// DetectUsageLimit always returns limited=false; the stub never renders a
+// usage-cap banner. Present to keep the AgentRunnerService contract complete.
+func (s *Server) DetectUsageLimit(_ context.Context, _ *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.DetectUsageLimitResponse{Limited: false}, nil
+}
+
+// HasWorkingIndicator always returns false; the stub never renders a working marker.
+func (s *Server) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.HasWorkingIndicatorResponse{IsWorking: false}, nil
+}
+
 // LastTurnIsUser always returns false; the stub has no transcript.
 func (s *Server) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.LastTurnIsUserResponse{IsUser: false}, nil

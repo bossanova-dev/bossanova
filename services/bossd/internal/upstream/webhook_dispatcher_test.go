@@ -508,6 +508,46 @@ func TestDispatch_ReviewSubmittedCommentedBotReviewStaysCommentedWhenNoActionabl
 	}
 }
 
+// TestDispatch_ReviewSubmittedCommentedBotReviewWithBenignBodyStaysCommented
+// pins the realtime-path half of BOS-254: a bot COMMENTED review whose summary
+// body is benign prose ("LGTM") with no changes-requested inline comments is
+// NOT promoted — the realtime path has no review-thread context, so it must not
+// promote on a substantive body alone.
+func TestDispatch_ReviewSubmittedCommentedBotReviewWithBenignBodyStaysCommented(t *testing.T) {
+	payload := mutateJSONFixture(t, loadFixture(t, "pull_request_review_changes_requested.json"), func(body map[string]any) {
+		review := body["review"].(map[string]any)
+		review["state"] = "commented"
+		review["body"] = "LGTM — no issues found."
+		user := review["user"].(map[string]any)
+		user["login"] = "chatgpt-codex-connector[bot]"
+	})
+
+	refresher := &fakePRRefresher{}
+	emitter := &fakeEmitter{}
+	reviews := &fakeReviewCommentProvider{}
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request_review",
+		RepoOriginUrl: "https://github.com/recurser/bossanova",
+		PullRequest:   345,
+		Payload:       payload,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if len(emitter.calls) != 1 {
+		t.Fatalf("EmitForPR call count = %d, want 1", len(emitter.calls))
+	}
+	review, ok := emitter.calls[0].events[0].(vcs.ReviewSubmitted)
+	if !ok {
+		t.Fatalf("event type = %T, want vcs.ReviewSubmitted", emitter.calls[0].events[0])
+	}
+	if review.State != vcs.ReviewStateCommented {
+		t.Fatalf("ReviewSubmitted.State = %v, want Commented (benign body must not promote)", review.State)
+	}
+}
+
 func TestDispatch_ReviewSubmittedMergesSummaryAndInlineComments(t *testing.T) {
 	payload, err := os.ReadFile("testdata/pull_request_review_changes_requested.json")
 	if err != nil {

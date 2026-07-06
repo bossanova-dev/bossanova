@@ -266,7 +266,7 @@ type repairMonitor struct {
 	// SetRepairStatus so the daemon's single-repairer lease is taken for and
 	// released by this dispatcher. Re-entrant across a session's repair passes
 	// (same id), and distinct from any other repair dispatcher (a /boss-repair
-	// chat or a bs-epic driver), which is refused while this lease is held.
+	// chat or a boss-epic driver), which is refused while this lease is held.
 	dispatcherID string
 
 	mu                           sync.Mutex
@@ -1356,7 +1356,7 @@ func (m *repairMonitor) repairSession(
 	// assessment window (which can wait up to 30 minutes) — and released only
 	// here, once the bounded loop exits. Releasing it per-attempt (inside
 	// runRepairAttempt) would drop repair_active to false during the assessment
-	// wait, letting a bs-epic/manual dispatcher start a second /boss-repair on
+	// wait, letting a boss-epic/manual dispatcher start a second /boss-repair on
 	// the same worktree.
 	repairFlagSet := false
 

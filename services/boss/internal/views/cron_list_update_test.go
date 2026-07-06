@@ -325,6 +325,21 @@ func TestCronListUpdate_NormalKeys(t *testing.T) {
 		t.Fatalf("e without selection: cmd != nil, want nil")
 	}
 
+	// "enter" is an alias for "e": opens the form in edit mode for the highlighted job.
+	withJobEnter := newCronListForUpdate([]*pb.CronJob{job})
+	_, cmdEnter := withJobEnter.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmdEnter == nil {
+		t.Fatalf("enter with selection: cmd = nil, want a cronFormOpenMsg command")
+	}
+	openEnter, ok := cmdEnter().(cronFormOpenMsg)
+	if !ok || openEnter.job != job {
+		t.Fatalf("enter with selection: cmd produced %#v, want cronFormOpenMsg{job: %v}", cmdEnter(), job)
+	}
+	noJobEnter := newCronListForUpdate(nil)
+	if _, cmd := noJobEnter.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
+		t.Fatalf("enter without selection: cmd != nil, want nil")
+	}
+
 	// "d" opens the delete-confirm overlay for the highlighted job.
 	withJobD := newCronListForUpdate([]*pb.CronJob{job})
 	updatedD, _ := withJobD.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})

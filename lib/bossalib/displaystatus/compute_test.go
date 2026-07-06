@@ -3,6 +3,7 @@ package displaystatus
 import (
 	"errors"
 	"testing"
+	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/sessionreason"
@@ -33,6 +34,51 @@ func TestCompute(t *testing.T) {
 				ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING,
 			},
 			want: Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, Spinner: true},
+		},
+		{
+			name: "chat LIMITED wins over PR status, warning, no spinner (no reset → fallback label)",
+			in: Input{
+				Session:    &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_LIMITED,
+			},
+			want: Output{Label: "usage-limited", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "chat LIMITED with reset time composes resets ~HH:MM",
+			in: Input{
+				Session:     &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
+				ChatStatus:  pb.ChatStatus_CHAT_STATUS_LIMITED,
+				ChatResetAt: time.Date(2026, 1, 2, 15, 0, 0, 0, time.UTC),
+			},
+			want: Output{Label: "usage-limited (resets ~15:00)", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "chat LIMITED with zero reset falls back to bare usage-limited",
+			in: Input{
+				Session:     &pb.Session{DisplaySettingUp: true},
+				ChatStatus:  pb.ChatStatus_CHAT_STATUS_LIMITED,
+				ChatResetAt: time.Time{},
+			},
+			// SettingUp normally shows "initializing"; LIMITED ranks above it,
+			// mirroring how QUESTION ranks above SettingUp.
+			want: Output{Label: "usage-limited", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "QUESTION outranks LIMITED even with a reset time set",
+			in: Input{
+				Session:     &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
+				ChatStatus:  pb.ChatStatus_CHAT_STATUS_QUESTION,
+				ChatResetAt: time.Date(2026, 1, 2, 15, 0, 0, 0, time.UTC),
+			},
+			want: Output{Label: "? question", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "LIMITED outranks a WORKING-eligible session (draft PR) as usage-limited",
+			in: Input{
+				Session:    &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_DRAFT},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_LIMITED,
+			},
+			want: Output{Label: "usage-limited", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
 		},
 		{
 			name: "chat WORKING over PR conflict uses danger intent",

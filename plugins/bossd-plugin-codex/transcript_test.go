@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -185,6 +186,7 @@ func TestLastTurnIsUserTreatsTaskCompleteAsAgentTurn(t *testing.T) {
 func TestTranscriptExistsAcrossStates(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "") // guard against CODEX_HOME leaking in from the ambient environment
 
 	// 1) Missing → false.
 	if transcriptExists("/anywhere", "no-such-uuid") {
@@ -469,6 +471,92 @@ func TestReadTranscriptAt(t *testing.T) {
 		}
 		if resp.FinalAssistantText != "" {
 			t.Errorf("expected empty FinalAssistantText for missing rollout, got %q", resp.FinalAssistantText)
+		}
+	})
+}
+
+// TestCodexSessionsRootHonorsCodexHome is the core CODEX_HOME regression: the
+// PUBLIC transcriptPath wrapper (not just the *At seam the rest of this file
+// drives) must resolve rollouts under CODEX_HOME/sessions when CODEX_HOME is
+// set, so a per-account codex home actually gets its own transcripts read.
+func TestCodexSessionsRootHonorsCodexHome(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("CODEX_HOME", tmp)
+
+	uuid := "codex-home-uuid"
+	dst := shardedRolloutPath(filepath.Join(tmp, "sessions"), uuid)
+	copyFixture(t, "testdata/transcripts/sample.jsonl", dst)
+
+	got, err := transcriptPath("", uuid)
+	if err != nil {
+		t.Fatalf("transcriptPath: %v", err)
+	}
+	if got != dst {
+		t.Errorf("transcriptPath = %q, want %q", got, dst)
+	}
+}
+
+// TestCodexSessionsRootUnsetIsByteIdenticalToToday pins the "CODEX_HOME
+// unset" behavior of codexSessionsRoot: it must equal ~/.codex/sessions,
+// exactly matching the pre-fix hardcoded resolution (home + codexSessionsDir).
+func TestCodexSessionsRootUnsetIsByteIdenticalToToday(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
+
+	got, err := codexSessionsRoot()
+	if err != nil {
+		t.Fatalf("codexSessionsRoot: %v", err)
+	}
+	want := filepath.Join(tmpHome, ".codex", "sessions")
+	if got != want {
+		t.Errorf("codexSessionsRoot = %q, want %q", got, want)
+	}
+}
+
+// TestTranscriptPathSharedSessionsResumeReachability locks the BOS-158
+// cross-account-resume constraint at the daemon boundary: a per-account
+// CODEX_HOME is only resume-reachable when its sessions/ directory is
+// seeded (symlinked/shared) from a base home that actually holds the
+// rollout. Seeding sessions/ is BOS-162's credmaterialize executor's job,
+// NOT this RPC's/helper's — this test only asserts that transcriptPath
+// resolves correctly THROUGH a properly-seeded symlink, and fails fast
+// (not-found) when a per-account home's sessions/ is empty/unseeded. See
+// docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
+func TestTranscriptPathSharedSessionsResumeReachability(t *testing.T) {
+	uuid := "shared-sessions-uuid"
+
+	t.Run("properly-seeded per-account home resolves through the symlink", func(t *testing.T) {
+		base := t.TempDir()
+		dst := shardedRolloutPath(filepath.Join(base, "sessions"), uuid)
+		copyFixture(t, "testdata/transcripts/sample.jsonl", dst)
+
+		acct := t.TempDir()
+		if err := os.Symlink(filepath.Join(base, "sessions"), filepath.Join(acct, "sessions")); err != nil {
+			t.Fatalf("symlink sessions/: %v", err)
+		}
+		t.Setenv("CODEX_HOME", acct)
+
+		got, err := transcriptPath("", uuid)
+		if err != nil {
+			t.Fatalf("transcriptPath through symlinked sessions/: %v", err)
+		}
+		wantSuffix := filepath.Join("sessions", "2026", "05", "08")
+		if !strings.Contains(got, wantSuffix) {
+			t.Errorf("transcriptPath = %q, want it to resolve through the shared sessions/ shard", got)
+		}
+	})
+
+	t.Run("unseeded per-account home fails fast instead of silently resuming nothing", func(t *testing.T) {
+		acct2 := t.TempDir()
+		sessionsDir := filepath.Join(acct2, "sessions")
+		if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+			t.Fatalf("mkdir empty sessions/: %v", err)
+		}
+		t.Setenv("CODEX_HOME", acct2)
+
+		if _, err := transcriptPath("", uuid); err == nil {
+			t.Fatal("expected an error for an unseeded per-account sessions/ dir, got nil")
 		}
 	})
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
@@ -148,6 +149,159 @@ func TestListSessions_NoAuthFlagOnNormalOutput(t *testing.T) {
 	}
 	if got.GetBlockedReason() != "" {
 		t.Errorf("blocked_reason = %q, want empty", got.GetBlockedReason())
+	}
+}
+
+// TestHydrateAgentObservability_StandaloneAppliesOverlay locks the reverse-stream
+// contract: the standalone overlay (used by cmd/main.go for snapshot + session
+// deltas) applies AGENT_AUTH_FAILED and last_agent_activity_at to a bare Session
+// proto, independent of the ListSessions display pipeline. Without this the
+// cloud/web read model — fed solely by the reverse stream — never sees them.
+func TestHydrateAgentObservability_StandaloneAppliesOverlay(t *testing.T) {
+	agentSessionID := "agent-1"
+	chats := []*models.AgentChat{{ID: "chat-1", SessionID: "sess-1", AgentSessionID: agentSessionID}}
+	tracker := status.NewTracker()
+	lastOutput := time.Now().Add(-2 * time.Second)
+	tracker.Update(agentSessionID, pb.ChatStatus_CHAT_STATUS_WORKING, lastOutput)
+	tracker.SetAuthFailed(agentSessionID, true)
+
+	p := &pb.Session{Id: "sess-1", UpdatedAt: timestamppb.New(time.Now())}
+	HydrateAgentObservability(tracker, p, chats)
+
+	if p.GetLastAgentActivityAt() == nil || !p.GetLastAgentActivityAt().AsTime().Equal(lastOutput) {
+		t.Errorf("last_agent_activity_at = %v, want %v", p.GetLastAgentActivityAt().AsTime(), lastOutput)
+	}
+	if p.GetAttentionStatus().GetReason() != pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED {
+		t.Errorf("attention reason = %v, want AGENT_AUTH_FAILED", p.GetAttentionStatus().GetReason())
+	}
+	if p.GetBlockedReason() != agentAuthFailedBlockedReason {
+		t.Errorf("blocked_reason = %q, want %q", p.GetBlockedReason(), agentAuthFailedBlockedReason)
+	}
+}
+
+// TestHydrateBaseAttention_PreservesBlockedReasonUnderAuthOverlay locks the
+// reverse-stream fix: a Blocked session that also has an auth-failed chat must
+// keep its real blocked_reason. cmd/main.go computes HydrateBaseAttention on the
+// bare SessionToProto output (which carries blocked_reason but no
+// attention_status) before HydrateAgentObservability — mirroring the local
+// GetSession/ListSessions ordering. Without the base attention step the auth
+// overlay would overwrite blocked_reason and bosso's full-replacement read model
+// would lose the actionable failure reason.
+func TestHydrateBaseAttention_PreservesBlockedReasonUnderAuthOverlay(t *testing.T) {
+	agentSessionID := "agent-1"
+	blockedReason := "blocked — max attempts reached"
+	sess := &models.Session{
+		ID:            "sess-1",
+		RepoID:        "repo-1",
+		State:         machine.Blocked,
+		BlockedReason: &blockedReason,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	repo := &models.Repo{ID: "repo-1"}
+	chats := []*models.AgentChat{{ID: "chat-1", SessionID: sess.ID, AgentSessionID: agentSessionID}}
+	tracker := status.NewTracker()
+	tracker.SetAuthFailed(agentSessionID, true) // auth marker present, but session is Blocked
+
+	// Reverse-stream projection order: bare proto -> base attention -> overlay.
+	p := SessionToProto(sess)
+	HydrateBaseAttention(p, sess, repo)
+	HydrateAgentObservability(tracker, p, chats)
+
+	if p.GetAttentionStatus() == nil {
+		t.Fatal("attention_status = nil, want BLOCKED_MAX_ATTEMPTS preserved")
+	}
+	if p.GetAttentionStatus().GetReason() != pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS {
+		t.Errorf("attention reason = %v, want BLOCKED_MAX_ATTEMPTS (auth must not override)", p.GetAttentionStatus().GetReason())
+	}
+	if p.GetBlockedReason() != blockedReason {
+		t.Errorf("blocked_reason = %q, want %q (real reason preserved, not clobbered by auth overlay)", p.GetBlockedReason(), blockedReason)
+	}
+}
+
+// TestHydrateBaseAttention_AuthOverlayStillAppliesWhenNoBaseAttention confirms
+// the fix does not regress the normal case: a non-blocked session with an
+// auth-failed chat still gets the AGENT_AUTH_FAILED overlay, because
+// HydrateBaseAttention leaves attention_status nil when there is no VCS-derived
+// reason.
+func TestHydrateBaseAttention_AuthOverlayStillAppliesWhenNoBaseAttention(t *testing.T) {
+	agentSessionID := "agent-1"
+	sess := &models.Session{
+		ID:        "sess-1",
+		RepoID:    "repo-1",
+		State:     machine.ImplementingPlan,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	repo := &models.Repo{ID: "repo-1"}
+	chats := []*models.AgentChat{{ID: "chat-1", SessionID: sess.ID, AgentSessionID: agentSessionID}}
+	tracker := status.NewTracker()
+	tracker.SetAuthFailed(agentSessionID, true)
+
+	p := SessionToProto(sess)
+	HydrateBaseAttention(p, sess, repo)
+	HydrateAgentObservability(tracker, p, chats)
+
+	if p.GetAttentionStatus().GetReason() != pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED {
+		t.Errorf("attention reason = %v, want AGENT_AUTH_FAILED", p.GetAttentionStatus().GetReason())
+	}
+	if p.GetBlockedReason() != agentAuthFailedBlockedReason {
+		t.Errorf("blocked_reason = %q, want %q", p.GetBlockedReason(), agentAuthFailedBlockedReason)
+	}
+}
+
+// TestHydrateBaseAttention_FixingChecksNoAutoRepairDoesNotResurrectStaleConflict
+// locks the P2 follow-up: HydrateBaseAttention runs on bare SessionToProto protos
+// with no hydrated display status, so it must NOT emit the FixingChecks/
+// CanAutoRepair=false MERGE_CONFLICT_UNRESOLVABLE reason. The local ListSessions
+// path suppresses that reason once the display tracker moves out of
+// DISPLAY_STATUS_CONFLICT; the reverse stream cannot run that suppression, so
+// emitting it here would resurrect a stale conflict AND block the auth overlay.
+// The session must instead receive AGENT_AUTH_FAILED when it has an auth-failed
+// chat.
+func TestHydrateBaseAttention_FixingChecksNoAutoRepairDoesNotResurrectStaleConflict(t *testing.T) {
+	agentSessionID := "agent-1"
+	sess := &models.Session{
+		ID:        "sess-1",
+		RepoID:    "repo-1",
+		State:     machine.FixingChecks,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	repo := &models.Repo{ID: "repo-1", CanAutoRepair: false}
+	chats := []*models.AgentChat{{ID: "chat-1", SessionID: sess.ID, AgentSessionID: agentSessionID}}
+	tracker := status.NewTracker()
+	tracker.SetAuthFailed(agentSessionID, true)
+
+	// Reverse-stream projection: bare proto (no display status) -> base attention
+	// -> overlay. The display tracker has moved out of conflict (nothing hydrated
+	// it here), so the conflict reason is stale and must not be resurrected.
+	p := SessionToProto(sess)
+	HydrateBaseAttention(p, sess, repo)
+	HydrateAgentObservability(tracker, p, chats)
+
+	if p.GetAttentionStatus() == nil {
+		t.Fatal("attention_status = nil, want AGENT_AUTH_FAILED overlay")
+	}
+	if got := p.GetAttentionStatus().GetReason(); got == pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE {
+		t.Fatalf("attention reason = MERGE_CONFLICT_UNRESOLVABLE, stale conflict resurrected on reverse stream")
+	}
+	if got := p.GetAttentionStatus().GetReason(); got != pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED {
+		t.Errorf("attention reason = %v, want AGENT_AUTH_FAILED", got)
+	}
+	if p.GetBlockedReason() != agentAuthFailedBlockedReason {
+		t.Errorf("blocked_reason = %q, want %q", p.GetBlockedReason(), agentAuthFailedBlockedReason)
+	}
+}
+
+// TestHydrateAgentObservability_NilTrackerIsNoop guards the poller/main.go seams
+// that may run before the tracker is wired: no panic, no overlay.
+func TestHydrateAgentObservability_NilTrackerIsNoop(t *testing.T) {
+	chats := []*models.AgentChat{{ID: "chat-1", SessionID: "sess-1", AgentSessionID: "agent-1"}}
+	p := &pb.Session{Id: "sess-1"}
+	HydrateAgentObservability(nil, p, chats)
+	if p.GetAttentionStatus() != nil || p.GetLastAgentActivityAt() != nil {
+		t.Error("nil tracker must leave the proto untouched")
 	}
 }
 

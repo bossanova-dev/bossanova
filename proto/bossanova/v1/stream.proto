@@ -110,6 +110,12 @@ message OrchestratorCommand {
     GetChatTranscriptCommand get_chat_transcript = 20;
     // bosso → daemon: send a user message into a chat. Replies CommandResult{send_chat_message}.
     SendChatMessageCommand send_chat_message = 21;
+    // bosso → daemon: switch a session's live chat to a different account
+    // (stop+swap+resume). Replies CommandResult{SwitchAccountResult}.
+    SwitchAccountCommand switch_account = 22;
+    // bosso → daemon: list the daemon's rotation accounts (web account-switch
+    // picker). Optional provider filter. Replies CommandResult{list_accounts}.
+    ListAccountsCommand list_accounts = 23;
   }
 }
 
@@ -247,6 +253,11 @@ message CommandResult {
     GetChatTranscriptResponse get_chat_transcript = 13;
     // SendChatMessage returns the delivery outcome (reuses daemon.proto type).
     SendChatMessageResponse send_chat_message = 14;
+    // SwitchAccount returns the resumed flag + target label + notice text.
+    SwitchAccountResult switch_account = 15;
+    // ListAccounts returns the daemon's rotation accounts (reuses daemon.proto
+    // type; metadata only — never credentials).
+    ListAccountsResponse list_accounts = 16;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -353,6 +364,14 @@ message CreateSessionCommand {
   // CreateSessionRequest.force) so the reverse-stream create path carries the
   // same escape hatch as the direct socket create.
   bool force = 13;
+  // Unattended-session fields carried over the reverse stream so a hosted
+  // create (bosso → daemon) reproduces the local socket create. Mirror
+  // CreateSessionRequest.{detach,model,tmux_unattended}; without them the
+  // daemon builds an interactive/default-model session and skips the
+  // unattended prompt.
+  bool detach = 14;
+  optional string model = 15;
+  bool tmux_unattended = 16;
 }
 
 // WakeChatCommand asks the daemon to bring a chat's tmux+claude back to
@@ -382,6 +401,28 @@ message WakeChatResult {
   string tmux_session_name = 2;
   // Stable machine-readable reason when outcome is OUTCOME_FRESH_FALLBACK.
   string reason = 3;
+}
+
+// SwitchAccountCommand asks the daemon to switch a session's live chat to a
+// different account (stop+swap+resume). The daemon replies with a
+// CommandResult carrying a SwitchAccountResult payload.
+message SwitchAccountCommand {
+  // owning session (daemon resolves primary live chat if agent_session_id empty)
+  string session_id = 1;
+  // optional; empty => session's primary live chat
+  string agent_session_id = 2;
+  // target; "" = system default (account 0)
+  string account_id = 3;
+  // interrupt a mid-turn (WORKING) chat
+  bool force = 4;
+}
+
+// SwitchAccountResult is the payload sent in a CommandResult for a successful
+// SwitchAccountCommand. Mirrors the daemon's SwitchSessionAccountResponse.
+message SwitchAccountResult {
+  bool resumed = 1;
+  string target_label = 2;
+  string notice_text = 3;
 }
 
 // MergeSessionCommand asks the daemon to merge a session's PR.
@@ -421,6 +462,14 @@ message ListReposCommand {}
 // bosso → daemon: list the daemon's installed agents.
 // Replies with CommandResult carrying a ListAgentsResponse (list_agents = 10).
 message ListAgentsCommand {}
+
+// bosso → daemon: list the daemon's rotation accounts, optionally filtered by
+// provider (empty = all). Reuses daemon.proto's ListAccountsResponse (metadata
+// only — never credentials). Replies with CommandResult carrying a
+// ListAccountsResponse (list_accounts = 16).
+message ListAccountsCommand {
+  string provider = 1;
+}
 
 // ListRepoPRsCommand asks the daemon for a repo's open PRs (new-session
 // "existing PR" picker). Reuses daemon.proto's ListRepoPRsResponse.

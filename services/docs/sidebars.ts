@@ -19,6 +19,7 @@ const sidebars: SidebarsConfig = {
       label: 'Guides',
       collapsed: false,
       items: [
+        'guides/account-rotation',
         'guides/agent-plugins',
         'guides/mcp',
         'guides/setup-scripts',

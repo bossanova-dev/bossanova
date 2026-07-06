@@ -4,6 +4,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -13,7 +14,9 @@ import (
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/recurser/bossalib/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/loginshell"
 	"github.com/recurser/bossalib/plugin/hostclient"
@@ -105,11 +108,22 @@ func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusR
 		return &bossanovav1.AgentExitStatusResponse{IsComplete: false}, nil
 	}
 	err := s.runner.ExitError(req.SessionId)
-	var msg string
+	resp := &bossanovav1.AgentExitStatusResponse{IsComplete: true}
 	if err != nil {
-		msg = err.Error()
+		resp.ExitError = err.Error()
 	}
-	return &bossanovav1.AgentExitStatusResponse{IsComplete: true, ExitError: msg}, nil
+	// Surface a usage-cap classification through the two optional fields while
+	// leaving exit_error (above) untouched. Claude has no auth sentinel, so
+	// only the usage-limited branch applies here.
+	var ul agenterr.ErrUsageLimited
+	if errors.As(err, &ul) {
+		fc := agenterr.KindUsageExhausted.String()
+		resp.FailureClass = &fc
+		if !ul.ResetAt.IsZero() {
+			resp.ResetAt = timestamppb.New(ul.ResetAt)
+		}
+	}
+	return resp, nil
 }
 
 func (s *Server) ConfigureFinalizeHook(_ context.Context, req *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
@@ -335,6 +349,17 @@ func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuesti
 	}, nil
 }
 
+// HasWorkingIndicator reports whether the supplied pane bytes show an
+// affirmative "still working" marker (a running background shell or an active
+// spinner), so the daemon can keep a busy-but-static pane from flipping idle.
+// Delegates to bossalib/statusdetect, shared between the daemon's tmux poller
+// and the client-side PTY monitor.
+func (s *Server) HasWorkingIndicator(_ context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.HasWorkingIndicatorResponse{
+		IsWorking: statusdetect.HasWorkingIndicator(req.PaneContent),
+	}, nil
+}
+
 // LastTurnIsUser reports whether the last meaningful entry in the Claude Code
 // JSONL transcript for (work_dir, agent_session_id) is a real user text turn
 // (skipping tool_result-only "user" entries). Returns is_user=false when the
@@ -376,5 +401,23 @@ func (s *Server) ReadTranscript(_ context.Context, req *bossanovav1.ReadTranscri
 		Messages:           msgs,
 		FinalAssistantText: finalAssistant,
 		Exists:             exists,
+	}, nil
+}
+
+// RotationCapability: claude injects its credential as an env token.
+func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.RotationCapabilityResponse{
+		SupportsRotation: true,
+		AuthKind:         bossanovav1.AuthKind_AUTH_KIND_ENV_TOKEN,
+	}, nil
+}
+
+// MaterializeAccount turns the stored claude credential blob (the raw OAuth
+// token string) into a CLAUDE_CODE_OAUTH_TOKEN env overlay. No home dir, no
+// files. The blob/token is NEVER logged.
+func (s *Server) MaterializeAccount(_ context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) { //nolint:unparam // interface implementation; error result always nil today
+	token := strings.TrimSpace(string(req.GetCredentialBlob()))
+	return &bossanovav1.MaterializeAccountResponse{
+		Env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": token},
 	}, nil
 }

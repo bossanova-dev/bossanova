@@ -531,6 +531,15 @@ func (h *Host) SetProofEnvResolver(r proofEnvResolver) {
 	}
 }
 
+// SetAccountEnvResolver injects the per-account spawn env resolver used on the
+// plugin-side agent spawn path (parity with the lifecycle spawn seams). No-op
+// when no HostService exists (no plugins loaded).
+func (h *Host) SetAccountEnvResolver(r accountEnvResolver) {
+	if h.hostService != nil {
+		h.hostService.SetAccountEnvResolver(r)
+	}
+}
+
 // NotifyStatusChange broadcasts a PR status change to all workflow plugins.
 // Each plugin call runs in its own panic-recovered goroutine with a bounded
 // timeout so a slow plugin cannot hold a goroutine open indefinitely.

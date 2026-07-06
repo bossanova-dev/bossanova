@@ -1,0 +1,9 @@
+⏺ I'll run the tests and then commit the change.
+
+⎿ Running make test-boss…
+
+⏺ The suite is green. Committing now.
+
+❯
+  Claude usage limit reached · You've hit your usage limit — resets in 5 hours
+  claude-opus-4 · ~/code/bossanova · ⧉ 1 line selected

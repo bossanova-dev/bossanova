@@ -16,7 +16,13 @@ import {
   tuiAgentUsable,
 } from './proof.mjs'
 import { planSurfaceBudget, selectRecipes } from './proof-lib.mjs'
+import { surfaceBudget } from './proof-surfaces.mjs'
 import { aggregateExitCode, classifySurfaceOutcomes } from './proof-finalize-outcome.mjs'
+import {
+  builtinAgentDrivers,
+  driverForSurface,
+  validateSurfaceRun,
+} from './proof-agent-drivers.mjs'
 
 // ── evaluateRunPreflight (BOS-138 hard preflight) ─────────────────────────────
 
@@ -576,11 +582,21 @@ test('D5: TUI consuming the shared budget defers web with budget-exceeded (exit 
   const totalBudgetMs = 15 * 60 * 1000
   let elapsedMs = 0
   // TUI runs first (cheap-first) and consumes ~13 minutes of the shared budget.
-  const tuiBudget = planSurfaceBudget({ surface: 'tui', elapsedMs, totalBudgetMs })
+  const tuiBudget = planSurfaceBudget({
+    surface: 'tui',
+    elapsedMs,
+    totalBudgetMs,
+    budget: surfaceBudget('tui'),
+  })
   assert.equal(tuiBudget.run, true)
   elapsedMs += 13 * 60 * 1000
   // Web can no longer fit its 6-min floor in the ~2 min remaining → deferral.
-  const webBudget = planSurfaceBudget({ surface: 'web', elapsedMs, totalBudgetMs })
+  const webBudget = planSurfaceBudget({
+    surface: 'web',
+    elapsedMs,
+    totalBudgetMs,
+    budget: surfaceBudget('web'),
+  })
   assert.deepEqual(webBudget, { run: false, reasonCode: 'budget-exceeded' })
   // The dispatcher records web as a synthetic deferred run; it classifies and
   // contributes a NEUTRAL exit code (partial success is not a failure).
@@ -597,4 +613,46 @@ test('D5: TUI consuming the shared budget defers web with budget-exceeded (exit 
   assert.equal(perSurface[1].outcome, 'deferred')
   assert.equal(perSurface[1].reasonCode, 'budget-exceeded')
   assert.equal(aggregateExitCode(perSurface), 0)
+})
+
+// BOS-203: anchor the dispatcher's driver-selection contract in this suite. The
+// runAgentSurfaces dispatcher routes each surface through the agent-driver
+// registry; these assertions pin the selection + validation behavior it relies
+// on. (runAgentSurfaces itself is unexported and process/env-coupled, so it is
+// not invoked directly here.)
+const driverStubDeps = {
+  tuiAgentUsable: () => true,
+  buildTuiAgentBridge: () => ({ bridgeBin: '/tmp/b', bossBin: '/tmp/boss' }),
+  tuiAgentBridgeEnv: () => ({
+    BOSS_PROOF_TUI_BRIDGE_BIN: '/tmp/b',
+    BOSS_PROOF_BOSS_BIN: '/tmp/boss',
+  }),
+  agentModeAvailable: () => true,
+  webUiSurfacePresent: () => true,
+  evaluateRunPreflight: () => null,
+  runTuiAgentProof: async () => ({ surface: 'tui' }),
+  runAgentProof: async () => ({ surface: 'web' }),
+}
+
+test('agent-driver registry: dispatcher selects tui/web drivers', () => {
+  const drivers = builtinAgentDrivers(driverStubDeps)
+  assert.deepEqual(drivers.map((d) => d.surface).sort(), ['tui', 'web'])
+  // Unknown surface → no driver → the dispatcher's agent-unavailable path.
+  assert.equal(driverForSurface(drivers, 'unknown'), null)
+})
+
+test('agent-driver registry: SurfaceRun validation happy + missing-key', () => {
+  const full = {
+    surface: 'web',
+    captureShapes: [],
+    brief: {},
+    agentResult: { passed: true, summary: '', evidence: [], steps: 0 },
+    hasFailure: false,
+    noSurface: false,
+    scanTexts: [],
+    elapsedMs: 0,
+    reasonCode: null,
+  }
+  assert.equal(validateSurfaceRun(full, 'web').ok, true)
+  assert.equal(validateSurfaceRun({ surface: 'web' }, 'web').ok, false)
 })

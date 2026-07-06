@@ -9,6 +9,7 @@ package displaystatus
 
 import (
 	"fmt"
+	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/sessionreason"
@@ -27,6 +28,11 @@ type Input struct {
 	// fields zero-valued.
 	Session    *pb.Session
 	ChatStatus pb.ChatStatus
+	// ChatResetAt is the winning chat's usage-limit reset time when ChatStatus
+	// is CHAT_STATUS_LIMITED (zero otherwise). Plumbed through so the reset
+	// value is available to downstream consumers; the human-readable
+	// "resets ~HH:MM" rendering is BOS-167 and deliberately not done here.
+	ChatResetAt time.Time
 }
 
 // Output is the rendered result clients consume.
@@ -52,6 +58,9 @@ type Output struct {
 //  0. State ORPHANED      → "orphaned" / DANGER / no spinner (terminal dead run;
 //     wins over a stale chat status or a green/draft PR label — honest green)
 //  1. ChatStatus QUESTION → "? question" / WARNING / no spinner
+//     1b. ChatStatus LIMITED → "usage-limited (resets ~HH:MM)" (or "usage-limited"
+//     when no reset time is known) / WARNING / no spinner (below QUESTION,
+//     above WORKING and the PR-derived labels)
 //  2. Draft PR failure    → "? PR failed" / WARNING / no spinner
 //  3. DisplaySettingUp    → "initializing" / INFO / spinner
 //  4. ChatStatus WORKING  → "working"    / SUCCESS / spinner
@@ -72,6 +81,18 @@ func Compute(in Input) Output {
 	}
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_QUESTION {
 		return Output{Label: "? question", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
+	}
+	// A usage-limit banner ranks immediately below QUESTION: a limited chat
+	// wins over WORKING/IDLE/the PR-derived labels but a live question still
+	// takes priority. When Input.ChatResetAt is known we compose the reset
+	// time into the label ("usage-limited (resets ~HH:MM)"); otherwise we fall
+	// back to a bare "usage-limited".
+	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_LIMITED {
+		label := "usage-limited"
+		if !in.ChatResetAt.IsZero() {
+			label += " (resets ~" + in.ChatResetAt.Format("15:04") + ")"
+		}
+		return Output{Label: label, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
 	}
 	if in.Session != nil && sessionreason.IsDraftPRCreationFailure(in.Session.BlockedReason) {
 		return Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}

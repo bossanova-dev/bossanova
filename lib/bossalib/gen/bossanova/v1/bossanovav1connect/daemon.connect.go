@@ -98,6 +98,9 @@ const (
 	// DaemonServiceLinkSessionPRProcedure is the fully-qualified name of the DaemonService's
 	// LinkSessionPR RPC.
 	DaemonServiceLinkSessionPRProcedure = "/bossanova.v1.DaemonService/LinkSessionPR"
+	// DaemonServiceSwitchSessionAccountProcedure is the fully-qualified name of the DaemonService's
+	// SwitchSessionAccount RPC.
+	DaemonServiceSwitchSessionAccountProcedure = "/bossanova.v1.DaemonService/SwitchSessionAccount"
 	// DaemonServiceArchiveSessionProcedure is the fully-qualified name of the DaemonService's
 	// ArchiveSession RPC.
 	DaemonServiceArchiveSessionProcedure = "/bossanova.v1.DaemonService/ArchiveSession"
@@ -218,6 +221,11 @@ type DaemonServiceClient interface {
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
 	LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error)
+	// SwitchSessionAccount stops the session's live chat, rebinds the session to
+	// the chosen rotation account, and brings the chat back up under it —
+	// resuming the prior conversation cross-account when feasible, else fresh.
+	// A mid-turn (WORKING) chat is refused unless force is set (operator confirm).
+	SwitchSessionAccount(context.Context, *connect.Request[v1.SwitchSessionAccountRequest]) (*connect.Response[v1.SwitchSessionAccountResponse], error)
 	// Archive / resurrect
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
 	ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest]) (*connect.Response[v1.ResurrectSessionResponse], error)
@@ -449,6 +457,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("LinkSessionPR")),
 			connect.WithClientOptions(opts...),
 		),
+		switchSessionAccount: connect.NewClient[v1.SwitchSessionAccountRequest, v1.SwitchSessionAccountResponse](
+			httpClient,
+			baseURL+DaemonServiceSwitchSessionAccountProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("SwitchSessionAccount")),
+			connect.WithClientOptions(opts...),
+		),
 		archiveSession: connect.NewClient[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse](
 			httpClient,
 			baseURL+DaemonServiceArchiveSessionProcedure,
@@ -662,6 +676,7 @@ type daemonServiceClient struct {
 	removeSession        *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
 	updateSession        *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
 	linkSessionPR        *connect.Client[v1.LinkSessionPRRequest, v1.LinkSessionPRResponse]
+	switchSessionAccount *connect.Client[v1.SwitchSessionAccountRequest, v1.SwitchSessionAccountResponse]
 	archiveSession       *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
 	resurrectSession     *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
 	emptyTrash           *connect.Client[v1.EmptyTrashRequest, v1.EmptyTrashResponse]
@@ -803,6 +818,11 @@ func (c *daemonServiceClient) UpdateSession(ctx context.Context, req *connect.Re
 // LinkSessionPR calls bossanova.v1.DaemonService.LinkSessionPR.
 func (c *daemonServiceClient) LinkSessionPR(ctx context.Context, req *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error) {
 	return c.linkSessionPR.CallUnary(ctx, req)
+}
+
+// SwitchSessionAccount calls bossanova.v1.DaemonService.SwitchSessionAccount.
+func (c *daemonServiceClient) SwitchSessionAccount(ctx context.Context, req *connect.Request[v1.SwitchSessionAccountRequest]) (*connect.Response[v1.SwitchSessionAccountResponse], error) {
+	return c.switchSessionAccount.CallUnary(ctx, req)
 }
 
 // ArchiveSession calls bossanova.v1.DaemonService.ArchiveSession.
@@ -987,6 +1007,11 @@ type DaemonServiceHandler interface {
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
 	LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error)
+	// SwitchSessionAccount stops the session's live chat, rebinds the session to
+	// the chosen rotation account, and brings the chat back up under it —
+	// resuming the prior conversation cross-account when feasible, else fresh.
+	// A mid-turn (WORKING) chat is refused unless force is set (operator confirm).
+	SwitchSessionAccount(context.Context, *connect.Request[v1.SwitchSessionAccountRequest]) (*connect.Response[v1.SwitchSessionAccountResponse], error)
 	// Archive / resurrect
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
 	ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest]) (*connect.Response[v1.ResurrectSessionResponse], error)
@@ -1212,6 +1237,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceLinkSessionPRProcedure,
 		svc.LinkSessionPR,
 		connect.WithSchema(daemonServiceMethods.ByName("LinkSessionPR")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceSwitchSessionAccountHandler := connect.NewUnaryHandler(
+		DaemonServiceSwitchSessionAccountProcedure,
+		svc.SwitchSessionAccount,
+		connect.WithSchema(daemonServiceMethods.ByName("SwitchSessionAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceArchiveSessionHandler := connect.NewUnaryHandler(
@@ -1446,6 +1477,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceUpdateSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceLinkSessionPRProcedure:
 			daemonServiceLinkSessionPRHandler.ServeHTTP(w, r)
+		case DaemonServiceSwitchSessionAccountProcedure:
+			daemonServiceSwitchSessionAccountHandler.ServeHTTP(w, r)
 		case DaemonServiceArchiveSessionProcedure:
 			daemonServiceArchiveSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceResurrectSessionProcedure:
@@ -1603,6 +1636,10 @@ func (UnimplementedDaemonServiceHandler) UpdateSession(context.Context, *connect
 
 func (UnimplementedDaemonServiceHandler) LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.LinkSessionPR is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) SwitchSessionAccount(context.Context, *connect.Request[v1.SwitchSessionAccountRequest]) (*connect.Response[v1.SwitchSessionAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SwitchSessionAccount is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error) {

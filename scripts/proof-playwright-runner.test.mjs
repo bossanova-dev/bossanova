@@ -12,6 +12,8 @@ import {
   buildSpec,
   validateRecipe,
   slugify,
+  parseArgs,
+  stageEnvForArgs,
   OVERLAY_CAPTION_CSS,
 } from './proof-playwright-runner.mjs'
 import { OVERLAY_CAPTION_CSS as SPEC_OVERLAY_CAPTION_CSS } from './proof-caption-spec.mjs'
@@ -169,7 +171,9 @@ test('rejects recipe ids that are unsafe as screenshot filenames', () => {
   assert.equal(fs.existsSync(path.join(outputDir, 'bad')), false)
 })
 
-test('rejects unsupported browser proof surfaces before playwright starts', () => {
+test('rejects malformed browser proof surface ids before playwright starts', () => {
+  // BOS-202: surfaces are no longer a closed allowlist (a consumer declares its
+  // own), but the id must still be a safe slug — a malformed id is rejected.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-runner-bad-surface-'))
   const recipePath = path.join(dir, 'recipe.json')
   fs.writeFileSync(
@@ -183,7 +187,7 @@ test('rejects unsupported browser proof surfaces before playwright starts', () =
 
   const result = runRunner([
     '--surface',
-    'desktop',
+    'Bad_Surface',
     '--recipe',
     recipePath,
     '--output-dir',
@@ -659,3 +663,87 @@ function runRunner(args) {
     timeout: 5000,
   })
 }
+
+// ── Surface-agnostic runner: spec-root, crop, stage env via CLI args (BOS-202) ──
+
+test('parseArgs accepts an arbitrary surface when spec-root is supplied', () => {
+  const parsed = parseArgs([
+    '--surface',
+    'portal',
+    '--recipe',
+    'r.json',
+    '--output-dir',
+    'o',
+    '--spec-root',
+    'e2e',
+    '--default-crop',
+    'main',
+  ])
+  assert.equal(parsed.surface, 'portal')
+  assert.equal(parsed['spec-root'], 'e2e')
+  assert.equal(parsed['default-crop'], 'main')
+})
+
+test('parseArgs still rejects a malformed surface id', () => {
+  assert.throws(
+    () => parseArgs(['--surface', 'Bad Surface', '--recipe', 'r.json', '--output-dir', 'o']),
+    /invalid --surface/,
+  )
+})
+
+test('stageEnvForArgs preserves legacy direct web staging without --stage-env', () => {
+  assert.deepEqual(stageEnvForArgs({ surface: 'web' }), { VITE_E2E: '1' })
+  assert.equal(stageEnvForArgs({ surface: 'marketing' }), undefined)
+  assert.deepEqual(stageEnvForArgs({ surface: 'web', 'stage-env': '{"CUSTOM":"1"}' }), {
+    CUSTOM: '1',
+  })
+})
+
+test('buildSpec video honors an explicit defaultCrop over the surface heuristic', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'v',
+      surface: 'docs',
+      capture: 'video',
+      steps: [{ action: 'goto', route: '/' }],
+      viewport: { width: 1280, height: 1000 },
+    },
+    outputDir: '/out',
+    surface: 'docs',
+    defaultCrop: '.docs-main',
+  })
+  assert.ok(spec.includes('.docs-main'))
+})
+
+test('buildSpec video falls back to the surface crop heuristic when no defaultCrop', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'v',
+      surface: 'marketing',
+      capture: 'video',
+      steps: [{ action: 'goto', route: '/' }],
+      viewport: { width: 1280, height: 1000 },
+    },
+    outputDir: '/out',
+    surface: 'marketing',
+  })
+  assert.ok(spec.includes("'main'"))
+})
+
+test('buildSpec stages the web fixture only when a stageEnv is supplied', () => {
+  const base = {
+    id: 's',
+    surface: 'web',
+    route: '/',
+    viewport: { width: 1280, height: 1000 },
+  }
+  const staged = buildSpec({
+    recipe: base,
+    outputDir: '/out',
+    surface: 'web',
+    stageEnv: { VITE_E2E: '1' },
+  })
+  assert.ok(staged.includes('window.bossanovaE2e'))
+  const unstaged = buildSpec({ recipe: base, outputDir: '/out', surface: 'web' })
+  assert.ok(!unstaged.includes('window.bossanovaE2e'))
+})

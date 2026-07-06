@@ -29,7 +29,7 @@ type repairLease struct {
 }
 
 // RepairLeaseManager enforces a per-session single-repairer invariant. At most
-// one dispatcher (the repair plugin sweep, a /boss-repair watch chat, a bs-epic
+// one dispatcher (the repair plugin sweep, a /boss-repair watch chat, a boss-epic
 // driver) may hold a session's repair lease at a time; a second acquirer is
 // refused with ErrRepairLeaseHeld until the holder releases it or the lease
 // TTL-expires. Expiry is lazy — evaluated on each read/acquire against the

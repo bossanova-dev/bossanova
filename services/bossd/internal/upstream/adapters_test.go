@@ -19,10 +19,21 @@ type fakeSessionCommandServer struct {
 	lastRecordChat   *pb.RecordChatRequest
 	lastTranscriptID string
 	lastSendReq      *pb.SendChatMessageRequest
+	lastSwitchReq    *pb.SwitchSessionAccountRequest
+	switchResp       *pb.SwitchSessionAccountResponse
 }
 
 func (f *fakeSessionCommandServer) MergeSession(_ context.Context, _ *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
 	return connect.NewResponse(&pb.MergeSessionResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) SwitchSessionAccount(_ context.Context, req *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error) {
+	f.lastSwitchReq = req.Msg
+	resp := f.switchResp
+	if resp == nil {
+		resp = &pb.SwitchSessionAccountResponse{}
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func (f *fakeSessionCommandServer) ArchiveSession(_ context.Context, _ *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {
@@ -46,6 +57,10 @@ func (f *fakeSessionCommandServer) ListRepos(_ context.Context, _ *connect.Reque
 
 func (f *fakeSessionCommandServer) ListAgents(_ context.Context, _ *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error) {
 	return connect.NewResponse(&pb.ListAgentsResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) ListAccounts(_ context.Context, _ *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error) {
+	return connect.NewResponse(&pb.ListAccountsResponse{}), nil
 }
 
 func (f *fakeSessionCommandServer) ListRepoPRs(_ context.Context, _ *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {
@@ -117,6 +132,10 @@ func (e *errCommandServer) MergeSession(context.Context, *connect.Request[pb.Mer
 	return nil, e.err
 }
 
+func (e *errCommandServer) SwitchSessionAccount(context.Context, *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error) {
+	return nil, e.err
+}
+
 func (e *errCommandServer) ArchiveSession(context.Context, *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {
 	return nil, e.err
 }
@@ -134,6 +153,10 @@ func (e *errCommandServer) ListRepos(context.Context, *connect.Request[pb.ListRe
 }
 
 func (e *errCommandServer) ListAgents(context.Context, *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ListAccounts(context.Context, *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error) {
 	return nil, e.err
 }
 
@@ -288,20 +311,24 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 	trackerURL := "https://linear.app/FRE-1"
 	issueTitle := "Do the thing"
 	source := "linear"
+	model := "claude-opus-4-8"
 
 	fake := &fakeStreamCreateSessioner{}
 	adapter := &SessionCreatorAdapter{Server: fake, Logger: zerolog.Nop()}
 
 	ch, err := adapter.Create(context.Background(), &pb.CreateSessionCommand{
-		RepoId:        "r1",
-		Title:         "x",
-		PrNumber:      &pr,
-		BranchName:    &branch,
-		TrackerId:     &trackerID,
-		TrackerUrl:    &trackerURL,
-		TrackerIssue:  &pb.TrackerIssue{Title: issueTitle},
-		TrackerSource: &source,
-		Force:         true,
+		RepoId:         "r1",
+		Title:          "x",
+		PrNumber:       &pr,
+		BranchName:     &branch,
+		TrackerId:      &trackerID,
+		TrackerUrl:     &trackerURL,
+		TrackerIssue:   &pb.TrackerIssue{Title: issueTitle},
+		TrackerSource:  &source,
+		Force:          true,
+		Detach:         true,
+		Model:          &model,
+		TmuxUnattended: true,
 	}, "cmd-rt")
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -332,6 +359,18 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 	}
 	if !req.GetForce() {
 		t.Errorf("Force: got false, want true")
+	}
+	// Unattended-session fields must survive the reverse-stream Command→Request
+	// mapping so a hosted create runs headless/unattended on the requested model
+	// rather than starting interactive on the default.
+	if !req.GetDetach() {
+		t.Errorf("Detach: got false, want true")
+	}
+	if !req.GetTmuxUnattended() {
+		t.Errorf("TmuxUnattended: got false, want true")
+	}
+	if req.GetModel() != model {
+		t.Errorf("Model: got %q, want %q", req.GetModel(), model)
 	}
 }
 
@@ -603,6 +642,69 @@ func TestCommandHandlerAdapter_MergeSession(t *testing.T) {
 	})
 }
 
+func TestCommandHandlerAdapter_SwitchAccount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty session id is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		if _, _, _, _, err := adapter.SwitchAccount(context.Background(), "", "", "acct", false); err == nil || !strings.Contains(err.Error(), "switch_account: session_id required") {
+			t.Fatalf("SwitchAccount error = %v, want session_id required", err)
+		}
+	})
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, _, _, _, err := adapter.SwitchAccount(context.Background(), "s1", "", "acct", false); err == nil || !strings.Contains(err.Error(), "switch_account: command server not wired") {
+			t.Fatalf("SwitchAccount error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("connect error is classified and wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: connect.NewError(connect.CodeFailedPrecondition, errors.New("cooling"))}}
+		_, _, _, code, err := adapter.SwitchAccount(context.Background(), "s1", "", "acct", false)
+		if err == nil || !strings.Contains(err.Error(), "switch session account:") || !strings.Contains(err.Error(), "cooling") {
+			t.Fatalf("SwitchAccount error = %v, want wrapped cooling", err)
+		}
+		if code != pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION {
+			t.Fatalf("error code = %v, want FAILED_PRECONDITION", code)
+		}
+	})
+
+	t.Run("forwards fields and maps empty agent id to nil", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{switchResp: &pb.SwitchSessionAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		resumed, label, notice, code, err := adapter.SwitchAccount(context.Background(), "s1", "", "acct-b", true)
+		if err != nil {
+			t.Fatalf("SwitchAccount returned error: %v", err)
+		}
+		if !resumed || label != "Account B" || notice != "ok" || code != pb.CommandResult_ERROR_CODE_UNSPECIFIED {
+			t.Fatalf("result = (%v,%q,%q,%v)", resumed, label, notice, code)
+		}
+		if fake.lastSwitchReq.GetSessionId() != "s1" || fake.lastSwitchReq.GetAccountId() != "acct-b" || !fake.lastSwitchReq.GetForce() {
+			t.Fatalf("forwarded req = %+v", fake.lastSwitchReq)
+		}
+		if fake.lastSwitchReq.AgentSessionId != nil {
+			t.Fatalf("agent_session_id = %v, want nil for empty input", fake.lastSwitchReq.AgentSessionId)
+		}
+	})
+
+	t.Run("maps non-empty agent id to a pointer", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		if _, _, _, _, err := adapter.SwitchAccount(context.Background(), "s1", "agent-1", "acct-b", false); err != nil {
+			t.Fatalf("SwitchAccount returned error: %v", err)
+		}
+		if fake.lastSwitchReq.GetAgentSessionId() != "agent-1" {
+			t.Fatalf("agent_session_id = %q, want agent-1", fake.lastSwitchReq.GetAgentSessionId())
+		}
+	})
+}
+
 func TestCommandHandlerAdapter_ArchiveSession(t *testing.T) {
 	t.Parallel()
 
@@ -727,6 +829,38 @@ func TestCommandHandlerAdapter_ListAgents(t *testing.T) {
 		}
 		if resp == nil {
 			t.Fatal("ListAgents returned nil response on success")
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_ListAccounts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.ListAccounts(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "list_accounts: command server not wired") {
+			t.Fatalf("ListAccounts error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.ListAccounts(context.Background(), "claude"); err == nil || !strings.Contains(err.Error(), "list accounts: boom") {
+			t.Fatalf("ListAccounts error = %v, want list accounts: boom", err)
+		}
+	})
+
+	t.Run("returns the response on success", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		resp, err := adapter.ListAccounts(context.Background(), "")
+		if err != nil {
+			t.Fatalf("ListAccounts returned error: %v", err)
+		}
+		if resp == nil {
+			t.Fatal("ListAccounts returned nil response on success")
 		}
 	})
 }

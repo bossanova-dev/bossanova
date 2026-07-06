@@ -37,8 +37,8 @@ func (s *SQLiteRepoStore) Create(ctx context.Context, params CreateRepoParams) (
 	}
 	now := sqlutil.TimeNow()
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 'merge', '', '', '', ?, ?)`,
+		`INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, 'merge', '', '', '', ?, ?)`,
 		id, params.DisplayName, params.LocalPath, params.OriginURL,
 		params.DefaultBaseBranch, params.WorktreeBaseDir, params.SetupScript, now, now,
 	)
@@ -50,21 +50,21 @@ func (s *SQLiteRepoStore) Create(ctx context.Context, params CreateRepoParams) (
 
 func (s *SQLiteRepoStore) Get(ctx context.Context, id string) (*models.Repo, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
+		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
 		 FROM repos WHERE id = ?`, id)
 	return scanRepo(row)
 }
 
 func (s *SQLiteRepoStore) GetByPath(ctx context.Context, localPath string) (*models.Repo, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
+		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
 		 FROM repos WHERE local_path = ?`, localPath)
 	return scanRepo(row)
 }
 
 func (s *SQLiteRepoStore) GetByOrigin(ctx context.Context, originURL string) (*models.Repo, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
+		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
 		 FROM repos WHERE origin_url = ?`, originURL)
 	repo, err := scanRepo(row)
 	if err == nil {
@@ -102,7 +102,7 @@ func (s *SQLiteRepoStore) GetByOrigin(ctx context.Context, originURL string) (*m
 
 func (s *SQLiteRepoStore) List(ctx context.Context) ([]*models.Repo, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
+		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
 		 FROM repos ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list repos: %w", err)
@@ -156,6 +156,10 @@ func (s *SQLiteRepoStore) Update(ctx context.Context, id string, params UpdateRe
 	if params.CanAutoRepair != nil {
 		sets = append(sets, "can_auto_repair = ?")
 		args = append(args, sqlutil.BoolToInt(*params.CanAutoRepair))
+	}
+	if params.CanAutoRotate != nil {
+		sets = append(sets, "can_auto_rotate = ?")
+		args = append(args, sqlutil.BoolToInt(*params.CanAutoRotate))
 	}
 	if params.MergeStrategy != nil {
 		sets = append(sets, "merge_strategy = ?")
@@ -231,11 +235,11 @@ func (s *SQLiteRepoStore) Delete(ctx context.Context, id string) error {
 func scanRepo(s sqlutil.Scanner) (*models.Repo, error) {
 	var r models.Repo
 	var createdAt, updatedAt string
-	var canAutoMerge, canAutoMergeDependabot, canAutoRepair int
+	var canAutoMerge, canAutoMergeDependabot, canAutoRepair, canAutoRotate int
 	var mergeStrategy string
 	err := s.Scan(&r.ID, &r.DisplayName, &r.LocalPath, &r.OriginURL,
 		&r.DefaultBaseBranch, &r.WorktreeBaseDir, &r.SetupScript,
-		&canAutoMerge, &canAutoMergeDependabot, &canAutoRepair,
+		&canAutoMerge, &canAutoMergeDependabot, &canAutoRepair, &canAutoRotate,
 		&mergeStrategy,
 		&r.LinearAPIKey,
 		&r.SentryAPIKey, &r.SentryOrg,
@@ -246,6 +250,7 @@ func scanRepo(s sqlutil.Scanner) (*models.Repo, error) {
 	r.CanAutoMerge = canAutoMerge != 0
 	r.CanAutoMergeDependabot = canAutoMergeDependabot != 0
 	r.CanAutoRepair = canAutoRepair != 0
+	r.CanAutoRotate = canAutoRotate != 0
 	r.MergeStrategy = models.MergeStrategy(mergeStrategy)
 	r.CreatedAt = sqlutil.ParseTime(createdAt)
 	r.UpdatedAt = sqlutil.ParseTime(updatedAt)

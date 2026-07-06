@@ -4,7 +4,7 @@
 // scripts/bs-<skill>-skill.test.mjs, wired into `make test-smoke` via the
 // `scripts/bs-*-skill.test.mjs` glob. It pins the byte-stable external contracts
 // the SKILL.md documents — the two subagent dispatch directives, the run-file
-// sentinel tokens (sourced from scripts/bs-run-sentinel.mjs, the single source of
+// sentinel tokens (sourced from skills-toolbox/bs-run-sentinel.mjs, the single source of
 // truth), the dead-subagent/dispatch-failure branch, and the dry-run contract —
 // plus a behavior-parity check that the triage gate selects a known batch on a
 // non-empty fixture set.
@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { REPAIR_RESULTS, DISPATCH_FAILURE } from './bs-run-sentinel.mjs'
+import { REPAIR_RESULTS, DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 
 const readSkill = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
 const SKILL = readSkill('../.claude/skills/bs-sweep-security/SKILL.md')
@@ -85,7 +85,7 @@ test('the SKILL documents every REPAIR_RESULT token from the shared helper', () 
 })
 
 test('the SKILL uses the byte-identical DISPATCH_FAILURE token', () => {
-  // Sourced from scripts/bs-run-sentinel.mjs so the matcher fn stays the single source.
+  // Sourced from skills-toolbox/bs-run-sentinel.mjs so the matcher fn stays the single source.
   assert.equal(DISPATCH_FAILURE, 'dispatch-failure')
   assert.ok(SKILL.includes(DISPATCH_FAILURE), 'SKILL.md must use the dispatch-failure token')
   // The shell constant must be pinned byte-identical to the module constant.

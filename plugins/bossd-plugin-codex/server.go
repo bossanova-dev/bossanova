@@ -351,13 +351,11 @@ func (s *Server) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgn
 }
 
 func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) { //nolint:unparam // interface implementation
-	title := chatTitle(req.WorkDir, req.SessionId)
+	title, explicit := chatTitle(req.WorkDir, req.SessionId)
 	return &bossanovav1.GetChatTitleResponse{
 		Supported: true,
 		Title:     title,
-		// Codex has no confirmed rename marker yet. Keep first-prompt titles
-		// non-explicit so bossd never clobbers a curated title with them.
-		Explicit: false,
+		Explicit:  explicit,
 	}, nil
 }
 

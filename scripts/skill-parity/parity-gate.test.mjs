@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -110,4 +110,10 @@ test('an unexpected role-mismatch skip reports DRIFT (typo not a known sibling)'
 
 test('main returns 0 on the wired tree', async () => {
   assert.equal(await main(), 0)
+})
+
+test('CLI entrypoint lets stdout drain by avoiding process.exit()', () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts', 'skill-parity', 'parity-gate.mjs'), 'utf8')
+  assert.equal(source.includes('process.exit('), false)
+  assert.equal(source.includes('process.exitCode'), true)
 })

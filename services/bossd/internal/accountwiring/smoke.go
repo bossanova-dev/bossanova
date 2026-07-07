@@ -218,6 +218,7 @@ func smokeDiagnostic(logPath string) string {
 	if err != nil || len(data) == 0 {
 		return ""
 	}
+	data = agenterr.Redact(data)
 	if len(data) > smokeDiagnosticTailBytes {
 		data = data[len(data)-smokeDiagnosticTailBytes:]
 		if i := strings.IndexByte(string(data), '\n'); i >= 0 && i+1 < len(data) {

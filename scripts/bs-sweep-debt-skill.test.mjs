@@ -20,6 +20,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
+import { hasOpenCronPR } from './cron-open-pr.mjs'
 import { parseDetectorFindings, candidateKey } from './bs-sweep-debt-survey.mjs'
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -200,6 +201,32 @@ test('a missing/stale sentinel is a distinct dispatch-failure on the safe non-gr
 test('green is re-verified by a cheap gh call, never trusted from the sentinel alone', () => {
   assert.match(CLAUDE_SKILL, /re-verif/i, 'green must be re-verified')
   assert.ok(CLAUDE_SKILL.includes('gh pr checks'), 'green re-verify uses a cheap gh pr checks call')
+})
+
+test('cron gate exists and uses shared open-PR suppression', () => {
+  for (const dir of skillDirs) {
+    const gate = read(path.join(dir, 'gate/gate.mjs'))
+    const skill = read(path.join(dir, 'SKILL.md'))
+    assert.match(gate, /cron-open-pr\.mjs/, `${dir} gate must use shared cron-open-pr helper`)
+    assert.match(gate, /Bossanova sweep debt/, `${dir} gate must match the live cron name`)
+    assert.match(gate, /prior sweep PR still open/, `${dir} skip reason must be loud`)
+    assert.match(gate, /gateExit\(false/, `${dir} gh errors must fail closed`)
+    assert.match(skill, /GateCommand/, `${dir}/SKILL.md must document the gate command`)
+    assert.doesNotMatch(skill, /Intentionally ungated/, `${dir}/SKILL.md must not say ungated`)
+    assert.doesNotMatch(
+      skill,
+      /Leave `GateCommand` empty/,
+      `${dir}/SKILL.md must not tell operators to leave the gate empty`,
+    )
+  }
+  assert.equal(
+    hasOpenCronPR(
+      [{ headRefName: 'cron-bossanova-sweep-debt-1780000000' }],
+      ['Bossanova sweep debt', 'bs-sweep-debt'],
+    ),
+    true,
+  )
+  assert.equal(hasOpenCronPR([], ['Bossanova sweep debt', 'bs-sweep-debt']), false)
 })
 
 test('the codex mirror carries the same dispatch + sentinel tokens (no un-synced drift)', () => {

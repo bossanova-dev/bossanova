@@ -154,3 +154,19 @@ func TestSmokeRunnerReturnsRedactedLogDiagnostic(t *testing.T) {
 		t.Fatalf("StopRun calls = %d, want 1", len(client.stopReqs))
 	}
 }
+
+func TestSmokeDiagnosticRedactsBeforeTailingLongLine(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "smoke.log")
+	secretTail := strings.Repeat("b", smokeDiagnosticTailBytes+1024)
+	if err := os.WriteFile(logPath, []byte("provider rejected access_token="+secretTail), 0o600); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	got := smokeDiagnostic(logPath)
+	if strings.Contains(got, strings.Repeat("b", 64)) {
+		t.Fatalf("smokeDiagnostic leaked token suffix: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("smokeDiagnostic = %q, want redacted sentinel", got)
+	}
+}

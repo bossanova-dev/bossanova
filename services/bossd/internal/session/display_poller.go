@@ -202,9 +202,10 @@ func (p *DisplayPoller) RefreshPR(ctx context.Context, repoOriginURL string, prN
 		if entry := p.tracker.Get(sess.ID); entry != nil && isTerminalDisplayStatus(entry.Status) {
 			continue
 		}
-		p.pollSession(ctx, repo, sess.ID, *sess.PRNumber)
-		refreshed++
-		refreshedSessions = append(refreshedSessions, sess.ID)
+		if p.pollSession(ctx, repo, sess.ID, *sess.PRNumber) {
+			refreshed++
+			refreshedSessions = append(refreshedSessions, sess.ID)
+		}
 	}
 	if refreshed > 0 {
 		for _, sessionID := range refreshedSessions {
@@ -260,12 +261,12 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 
 // pollSession fetches PR status, checks, and reviews for a single session
 // and updates the tracker with the computed display status.
-func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sessionID string, prNumber int) {
+func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sessionID string, prNumber int) bool {
 	repoPath := repo.OriginURL
 	prStatus, err := p.provider.GetPRStatus(ctx, repoPath, prNumber)
 	if err != nil {
 		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get PR status")
-		return
+		return false
 	}
 
 	p.logger.Info().
@@ -283,13 +284,13 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		// otherwise never retry until a daemon restart.
 		if err := p.reconcileTerminalPRForSession(ctx, sessionID, prStatus); err != nil {
 			p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: terminal-PR reconcile failed; will retry next poll")
-			return
+			return false
 		}
 		info := vcs.ComputeDisplayStatus(prStatus, nil, nil)
 		info.HeadSHA = prStatus.HeadSHA
 		p.tracker.Set(sessionID, info)
 		p.persistSnapshot(ctx, sessionID, prStatus, nil, info)
-		return
+		return true
 	}
 
 	// Skip checks and reviews for draft PRs — they aren't ready for review
@@ -300,7 +301,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		info.HeadSHA = prStatus.HeadSHA
 		p.tracker.Set(sessionID, info)
 		p.persistSnapshot(ctx, sessionID, prStatus, nil, info)
-		return
+		return true
 	}
 
 	// On any inputs error, skip the update rather than recomputing with empty
@@ -312,13 +313,13 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	checks, err := p.provider.GetCheckResults(ctx, repoPath, prNumber)
 	if err != nil {
 		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get check results; preserving previous status")
-		return
+		return false
 	}
 
 	reviews, err := p.provider.GetReviewComments(ctx, repoPath, prNumber)
 	if err != nil {
 		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get review comments; preserving previous status")
-		return
+		return false
 	}
 
 	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
@@ -338,6 +339,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	// merge_session stays wedged. The display poller already has live PR state
 	// here, so downgrade it (BOS-235 Bug 1, direction 2).
 	p.maybeClearStaleFixLoopBlock(ctx, sessionID, prStatus, checks, info)
+	return true
 }
 
 // maybeClearStaleFixLoopBlock auto-unblocks a session sitting in Blocked with
@@ -473,7 +475,10 @@ func (p *DisplayPoller) reconcileNonTerminalToResolved(ctx context.Context, sess
 		event = machine.PRClosed
 	}
 	if !sm.CanFire(event) {
-		return nil
+		if sess.State == 0 {
+			return nil
+		}
+		return fmt.Errorf("terminal PR event %s cannot fire from state %s", event.String(), sess.State.String())
 	}
 	if err := sm.FireCtx(ctx, event); err != nil {
 		return fmt.Errorf("fire terminal transition for resolved PR: %w", err)

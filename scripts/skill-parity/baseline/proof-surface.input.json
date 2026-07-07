@@ -1,7 +1,7 @@
 [
-  "services/boss/internal/views/session_detail.go",
+  "services/boss/internal/views/session_settings.go",
   "services/web/src/pages/Sessions.tsx",
-  "services/marketing/src/pages/Home.tsx",
-  "services/docs/docs/guides/mcp/index.md",
+  "services/marketing/src/pages/index.astro",
+  "services/docs/docs/guides/mcp.md",
   "README.md"
 ]

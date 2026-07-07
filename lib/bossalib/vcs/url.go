@@ -73,7 +73,7 @@ func RepoSlug(originURL string) string {
 // without registering it anywhere, as long as both ends route through
 // this helper.
 func NormalizeRepoURL(originURL string) string {
-	host, slug := parseOriginURL(originURL)
+	host, slug := parseCanonicalOriginURL(originURL)
 	if host == "" || slug == "" {
 		return ""
 	}
@@ -124,6 +124,22 @@ func PullRequestWebLink(originURL string, prNumber int) (provider, webURL string
 // parseOriginURL splits an origin URL into (host, "owner/repo").
 // Returns ("", "") if the URL cannot be parsed.
 func parseOriginURL(originURL string) (host, slug string) {
+	host, parts := parseOriginURLParts(originURL)
+	if host == "" || len(parts) < 2 {
+		return "", ""
+	}
+	return host, parts[0] + "/" + parts[1]
+}
+
+func parseCanonicalOriginURL(originURL string) (host, slug string) {
+	host, parts := parseOriginURLParts(originURL)
+	if host == "" || len(parts) < 2 {
+		return "", ""
+	}
+	return host, strings.Join(parts, "/")
+}
+
+func parseOriginURLParts(originURL string) (host string, parts []string) {
 	s := originURL
 	// Handle SSH shorthand: git@github.com:owner/repo.git → github.com/owner/repo.git.
 	// Detect by ":" not followed by "/" (excludes "https://").
@@ -147,9 +163,9 @@ func parseOriginURL(originURL string) (host, slug string) {
 	s = strings.TrimSuffix(s, ".git")
 	// Strip trailing slash.
 	s = strings.TrimSuffix(s, "/")
-	parts := strings.SplitN(s, "/", 4)
+	parts = strings.Split(s, "/")
 	if len(parts) < 3 || parts[1] == "" || parts[2] == "" {
-		return "", ""
+		return "", nil
 	}
-	return parts[0], parts[1] + "/" + parts[2]
+	return parts[0], parts[1:]
 }

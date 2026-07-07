@@ -2,10 +2,14 @@ package server
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/config"
 	"github.com/rs/zerolog"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -32,6 +36,32 @@ func mustAddCodex(t *testing.T, srv *Server, label string, cred []byte) *pb.Acco
 }
 
 func strptr(s string) *string { return &s }
+
+type accountBindingStore struct {
+	byProvider map[models.AccountProvider][]*models.Account
+}
+
+func (s accountBindingStore) Create(context.Context, db.CreateAccountParams) (*models.Account, error) {
+	return nil, errors.New("not implemented")
+}
+func (s accountBindingStore) Get(context.Context, string) (*models.Account, error) {
+	return nil, sql.ErrNoRows
+}
+func (s accountBindingStore) List(context.Context) ([]*models.Account, error) {
+	return nil, errors.New("not implemented")
+}
+func (s accountBindingStore) ListByProvider(_ context.Context, p models.AccountProvider) ([]*models.Account, error) {
+	return s.byProvider[p], nil
+}
+func (s accountBindingStore) Update(context.Context, string, db.UpdateAccountParams) (*models.Account, error) {
+	return nil, errors.New("not implemented")
+}
+func (s accountBindingStore) Delete(context.Context, string) error {
+	return errors.New("not implemented")
+}
+func (s accountBindingStore) RecordTestResult(context.Context, string, *time.Time, string) error {
+	return errors.New("not implemented")
+}
 
 // TestResolveSessionAccount_ExplicitID covers the explicit account_id path:
 // unknown id and provider mismatch are InvalidArgument; a matching-provider id
@@ -69,6 +99,8 @@ func TestResolveSessionAccount_Label(t *testing.T) {
 	claude := mustAddClaude(t, s, "work", []byte("blob"))
 	// A codex account sharing no label with the claude one.
 	mustAddCodex(t, s, "codex-only", []byte("blob"))
+	codexShared := mustAddCodex(t, s, "shared", []byte("blob"))
+	claudeShared := mustAddClaude(t, s, "shared", []byte("blob"))
 
 	// A valid claude label resolves to the claude account's real id.
 	id, err := s.resolveSessionAccount(context.Background(), strptr("work"), "claude")
@@ -79,19 +111,50 @@ func TestResolveSessionAccount_Label(t *testing.T) {
 		t.Errorf("label %q resolved to %q, want %q (the real id, not the label)", "work", id, claude.Id)
 	}
 
+	// A label shared across providers resolves within the session provider.
+	id, err = s.resolveSessionAccount(context.Background(), strptr("shared"), "claude")
+	if err != nil {
+		t.Fatalf("shared cross-provider label: unexpected err %v", err)
+	}
+	if id != claudeShared.Id || id == codexShared.Id {
+		t.Errorf("shared label resolved to %q, want claude account %q and never codex account %q", id, claudeShared.Id, codexShared.Id)
+	}
+
 	// The codex label is not visible to a claude session (provider-scoped).
-	if _, err := s.resolveSessionAccount(context.Background(), strptr("codex-only"), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+	if _, err := s.resolveSessionAccount(context.Background(), strptr("codex-only"), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument ||
+		!strings.Contains(err.Error(), `provider "codex"`) ||
+		!strings.Contains(err.Error(), `session runs "claude"`) {
 		t.Errorf("wrong-provider label: err = %v, want InvalidArgument", err)
 	}
 
 	// An unknown label is not found.
-	if _, err := s.resolveSessionAccount(context.Background(), strptr("nope"), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+	if _, err := s.resolveSessionAccount(context.Background(), strptr("nope"), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument ||
+		!strings.Contains(err.Error(), `account "nope" not found`) {
 		t.Errorf("unknown label: err = %v, want InvalidArgument", err)
 	}
 
 	// A real id still resolves via the id path (no label lookup needed).
 	if got, err := s.resolveSessionAccount(context.Background(), strptr(claude.Id), "claude"); err != nil || got != claude.Id {
 		t.Errorf("id path: got (%q,%v), want (%q,nil)", got, err, claude.Id)
+	}
+}
+
+func TestResolveSessionAccount_DuplicateProviderLabelIsAmbiguous(t *testing.T) {
+	s := &Server{
+		accounts: accountBindingStore{byProvider: map[models.AccountProvider][]*models.Account{
+			models.AccountProviderClaude: {
+				{ID: "acct-1", Provider: models.AccountProviderClaude, Label: "work", Status: models.AccountStatusActive, Health: models.AccountHealthOK},
+				{ID: "acct-2", Provider: models.AccountProviderClaude, Label: "work", Status: models.AccountStatusActive, Health: models.AccountHealthOK},
+			},
+		}},
+		logger: zerolog.Nop(),
+	}
+
+	_, err := s.resolveSessionAccount(context.Background(), strptr("work"), "claude")
+	if connect.CodeOf(err) != connect.CodeInvalidArgument ||
+		!strings.Contains(err.Error(), `multiple claude accounts are labeled "work"`) ||
+		!strings.Contains(err.Error(), "specify the account id") {
+		t.Fatalf("duplicate label err = %v, want ambiguity InvalidArgument", err)
 	}
 }
 
@@ -187,5 +250,31 @@ func TestResolveSessionAccount_DefaultPolicy(t *testing.T) {
 	s.resolver = nil
 	if id, err := s.resolveSessionAccount(context.Background(), nil, "claude"); err != nil || id != "" {
 		t.Errorf("nil resolver: got (%q,%v), want (\"\",nil)", id, err)
+	}
+}
+
+func TestResolveSessionAccount_DefaultPolicyDisabledByRotationKillSwitch(t *testing.T) {
+	s, accts := newAccountServer(t, newFakeCredStore(), nil)
+	acct := mustAddClaude(t, s, "work", []byte("blob"))
+	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), nil, zerolog.Nop())
+	disabled := false
+	s.rotationConfig = func() (config.RotationConfig, error) {
+		return config.RotationConfig{Enabled: &disabled}, nil
+	}
+
+	id, err := s.resolveSessionAccount(context.Background(), nil, "claude")
+	if err != nil {
+		t.Fatalf("rotation disabled default policy: unexpected err %v", err)
+	}
+	if id != "" {
+		t.Errorf("rotation disabled default policy id = %q, want account 0", id)
+	}
+
+	got, err := s.resolveSessionAccount(context.Background(), strptr(acct.Id), "claude")
+	if err != nil {
+		t.Fatalf("explicit id with rotation disabled: %v", err)
+	}
+	if got != acct.Id {
+		t.Errorf("explicit id with rotation disabled = %q, want %q", got, acct.Id)
 	}
 }

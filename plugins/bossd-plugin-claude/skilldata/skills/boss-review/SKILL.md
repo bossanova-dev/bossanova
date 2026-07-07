@@ -4,7 +4,7 @@ description: Multi-lens, subagent-driven code review for a Bossanova branch. Run
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Task, Skill
 ---
 
-# BS Review
+# boss-review
 
 Run a converging, multi-lens review over the current branch's changes, fix every
 must-fix finding, and report. This is the Bossanova analogue of `wc-auto-review`,

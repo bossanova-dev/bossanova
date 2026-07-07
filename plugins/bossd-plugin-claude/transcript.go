@@ -183,9 +183,10 @@ func pathToProjectKey(path string) string {
 
 // jsonlLine is a minimal representation of a JSONL line for parsing.
 type jsonlLine struct {
-	Type    string   `json:"type"`
-	Message jsonlMsg `json:"message"`
-	Summary string   `json:"summary"`
+	Type        string   `json:"type"`
+	Message     jsonlMsg `json:"message"`
+	Summary     string   `json:"summary"`
+	CustomTitle string   `json:"customTitle"`
 }
 
 type jsonlMsg struct {
@@ -203,28 +204,42 @@ func parseSessionMeta(path string) (summary string, explicit bool) {
 	}
 	defer func() { _ = f.Close() }()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 256*1024), 256*1024)
-
 	var firstUserSummary string
+	var customTitle string
 	var renameSummary string
-	for i := 0; scanner.Scan(); i++ {
-		var line jsonlLine
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-			continue
+	reader := bufio.NewReader(f)
+	for i := 0; ; i++ {
+		lineBytes, err := reader.ReadBytes('\n')
+		if len(lineBytes) == 0 && err != nil {
+			break
 		}
-
-		if line.Type == "summary" {
-			if t := truncate(firstLine(stripXMLTags(line.Summary))); t != "" {
-				renameSummary = t
+		var line jsonlLine
+		if err := json.Unmarshal(bytes.TrimSpace(lineBytes), &line); err == nil {
+			if line.Type == "custom-title" {
+				// Claude Code appends a fresh custom-title line on every explicit
+				// rename and never writes an empty one, so keeping the last
+				// non-empty value tracks the user's most recent chosen title.
+				if t := truncate(firstLine(stripXMLTags(line.CustomTitle))); t != "" {
+					customTitle = t
+				}
+			}
+			if line.Type == "summary" {
+				if t := truncate(firstLine(stripXMLTags(line.Summary))); t != "" {
+					renameSummary = t
+				}
+			}
+			if i < maxScanLines && line.Type == "user" && line.Message.Role == "user" && firstUserSummary == "" {
+				firstUserSummary = extractText(line.Message.Content)
 			}
 		}
-
-		if i < maxScanLines && line.Type == "user" && line.Message.Role == "user" && firstUserSummary == "" {
-			firstUserSummary = extractText(line.Message.Content)
+		if err != nil {
+			break
 		}
 	}
 
+	if customTitle != "" {
+		return customTitle, true
+	}
 	if renameSummary != "" {
 		return renameSummary, true
 	}

@@ -326,8 +326,8 @@ test('the boss-plan-draft extension is authored and discoverable', () => {
 test('the boss-plan-draft extension points at the core drafting brief', () => {
   assert.match(
     DRAFT,
-    /\.\.\/boss-plan\/references\/headless-drafting-brief\.md` Step 5/,
-    'boss-plan-draft must reference the sibling core drafting brief',
+    /\.\.\/\.\.\/\.\.\/plugins\/bossd-plugin-claude\/skilldata\/skills\/boss-plan\/references\/headless-drafting-brief\.md` Step 5/,
+    'boss-plan-draft must reference the canonical core drafting brief',
   )
 })
 

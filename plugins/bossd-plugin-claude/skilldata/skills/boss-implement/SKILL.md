@@ -3,7 +3,7 @@ name: boss-implement
 description: Use when asked to implement a planned Linear ticket on a schedule, "implement the next ticket", "boss-implement", or given a ticket ID like BOS-12 to implement. Unattended cron-safe sibling of boss-plan — it consumes agent-friendly planned Todos and ships review-ready PRs.
 ---
 
-# BS Implement
+# boss-implement
 
 Implement exactly **one** planned Linear ticket end to end, unattended, and hand off a
 review-ready PR. This skill is the second half of the pair whose first half is `boss-plan`

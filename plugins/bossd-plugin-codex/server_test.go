@@ -864,6 +864,100 @@ func TestGetChatTitleSupportedEvenWithoutTranscript(t *testing.T) {
 	}
 }
 
+func TestGetChatTitle_FromSessionIndexThreadName(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	sessionID := "019f3a91-a6bb-7492-9173-976fa6354cc0"
+	sessionsRoot := filepath.Join(codexHome, "sessions")
+	writeSessionMetaRollout(t, sessionsRoot, sessionID, t.TempDir(), "codex-tui", time.Now())
+
+	index := `{"id":"older","thread_name":"Ignore me","updated_at":"2026-07-07T03:10:00Z"}` + "\n" +
+		`{"id":"` + sessionID + `","thread_name":"Rename Test","updated_at":"2026-07-07T03:14:20Z"}` + "\n"
+	if err := os.WriteFile(filepath.Join(codexHome, "session_index.jsonl"), []byte(index), 0o600); err != nil {
+		t.Fatalf("write session index: %v", err)
+	}
+
+	s := newTestServer(t)
+	resp, err := s.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{
+		WorkDir: "/anywhere", SessionId: sessionID,
+	})
+	if err != nil {
+		t.Fatalf("GetChatTitle: %v", err)
+	}
+	if resp.Title != "Rename Test" {
+		t.Errorf("Title = %q, want session index thread name", resp.Title)
+	}
+	if !resp.Explicit {
+		t.Error("Explicit = false, want true for session index thread name")
+	}
+}
+
+// TestGetChatTitle_SessionIndexLatestSameIDWins locks the "latest wins"
+// scan: if the index ever carries more than one entry for a session id, the
+// last non-empty thread_name is the one surfaced.
+func TestGetChatTitle_SessionIndexLatestSameIDWins(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	sessionID := "019f3a91-a6bb-7492-9173-976fa6354cc0"
+	sessionsRoot := filepath.Join(codexHome, "sessions")
+	writeSessionMetaRollout(t, sessionsRoot, sessionID, t.TempDir(), "codex-tui", time.Now())
+
+	index := `{"id":"` + sessionID + `","thread_name":"First Name","updated_at":"2026-07-07T03:10:00Z"}` + "\n" +
+		`{"id":"` + sessionID + `","thread_name":"Latest Name","updated_at":"2026-07-07T03:14:20Z"}` + "\n"
+	if err := os.WriteFile(filepath.Join(codexHome, "session_index.jsonl"), []byte(index), 0o600); err != nil {
+		t.Fatalf("write session index: %v", err)
+	}
+
+	s := newTestServer(t)
+	resp, err := s.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{
+		WorkDir: "/anywhere", SessionId: sessionID,
+	})
+	if err != nil {
+		t.Fatalf("GetChatTitle: %v", err)
+	}
+	if resp.Title != "Latest Name" {
+		t.Errorf("Title = %q, want latest thread name", resp.Title)
+	}
+	if !resp.Explicit {
+		t.Error("Explicit = false, want true for latest thread name")
+	}
+}
+
+// TestGetChatTitle_EmptyThreadNameFallsBackToRollout verifies that an
+// explicit-but-empty thread_name does not produce an explicit title: it must
+// fall back to the non-explicit rollout first-message so bossd never treats a
+// cleared name as a curated one.
+func TestGetChatTitle_EmptyThreadNameFallsBackToRollout(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
+
+	sessionID := "019f3a91-a6bb-7492-9173-976fa6354cc0"
+	dst := shardedRolloutPath(filepath.Join(tmpHome, codexSessionsDir), sessionID)
+	copyFixture(t, "testdata/transcripts/sample.jsonl", dst)
+
+	index := `{"id":"` + sessionID + `","thread_name":"","updated_at":"2026-07-07T03:14:20Z"}` + "\n"
+	if err := os.WriteFile(filepath.Join(tmpHome, ".codex", "session_index.jsonl"), []byte(index), 0o600); err != nil {
+		t.Fatalf("write session index: %v", err)
+	}
+
+	s := newTestServer(t)
+	resp, err := s.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{
+		WorkDir: "/anywhere", SessionId: sessionID,
+	})
+	if err != nil {
+		t.Fatalf("GetChatTitle: %v", err)
+	}
+	if resp.Title != "say hello and exit" {
+		t.Errorf("Title = %q, want rollout first message", resp.Title)
+	}
+	if resp.Explicit {
+		t.Error("Explicit = true, want false when thread_name is empty")
+	}
+}
+
 // TestListIgnoredDirtyFilesReturnsEmptySlice asserts the codex plugin's
 // ignoredDirtyFiles is empty (no .claude/settings.local.json equivalent),
 // and that the response carries an empty (non-nil) slice — the daemon

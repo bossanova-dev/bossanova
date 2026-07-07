@@ -88,6 +88,10 @@ export function discoverExtensions({ core, root, role }) {
       skipped.push({ name: entry.name, reason: `extends "${marker.extends}", not "${core}"` })
       continue
     }
+    if (typeof role === 'string' && role !== '' && !KNOWN_EXTENSION_ROLES.has(role)) {
+      skipped.push({ name: entry.name, reason: `unknown requested role "${role}"` })
+      continue
+    }
     // A same-prefix extension that extends this core but declares another known role is a
     // legitimate cross-role sibling (e.g. boss-review lens vs round) and should not pollute
     // `skipped`. A typo'd/unknown role remains a misconfiguration and is recorded as a skip.

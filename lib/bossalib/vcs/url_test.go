@@ -90,6 +90,8 @@ func TestNormalizeRepoURL(t *testing.T) {
 		{"self-hosted ssh", "git@git.company.com:team/service.git", "https://git.company.com/team/service"},
 		{"self-hosted https", "https://git.company.com/team/service", "https://git.company.com/team/service"},
 		{"self-hosted ssh:// with port-less host", "ssh://git@git.company.com/team/service.git", "https://git.company.com/team/service"},
+		{"nested namespace https", "https://gitlab.example/group/subgroup/repo-a.git", "https://gitlab.example/group/subgroup/repo-a"},
+		{"nested namespace ssh", "git@gitlab.example:group/subgroup/repo-a.git", "https://gitlab.example/group/subgroup/repo-a"},
 
 		// Unparseable inputs return "" so callers can filter.
 		{"empty", "", ""},

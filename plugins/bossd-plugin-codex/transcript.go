@@ -409,17 +409,63 @@ func lastTurnIsUser(path string) bool {
 	return false
 }
 
-// chatTitle reads the codex rollout JSONL for the given session and returns
-// the first user-typed message as a chat title. Returns "" if the file is
-// missing, unreadable, or contains no real user message. The workDir
-// argument is unused (codex transcripts are not keyed by working directory)
-// but preserved to match the daemon-side host_service signature.
-func chatTitle(workDir, agentSessionID string) string {
+// chatTitle reads codex's session index for an explicit thread rename, falling
+// back to the rollout JSONL's first user-typed message. explicit is true only
+// for session-index thread names.
+func chatTitle(workDir, agentSessionID string) (string, bool) {
+	if name := sessionIndexThreadName(agentSessionID); name != "" {
+		return name, true
+	}
 	path, err := transcriptPath(workDir, agentSessionID)
+	if err != nil {
+		return "", false
+	}
+	return chatTitleAtPath(path), false
+}
+
+type codexSessionIndexEntry struct {
+	ID         string `json:"id"`
+	ThreadName string `json:"thread_name"`
+}
+
+// sessionIndexThreadName returns the latest thread_name recorded for a codex
+// session id in CODEX_HOME/session_index.jsonl.
+func sessionIndexThreadName(agentSessionID string) string {
+	if agentSessionID == "" {
+		return ""
+	}
+	configDir, err := codexConfigDir()
 	if err != nil {
 		return ""
 	}
-	return chatTitleAtPath(path)
+	f, err := os.Open(filepath.Join(configDir, "session_index.jsonl"))
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+
+	var title string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	for scanner.Scan() {
+		var entry codexSessionIndexEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			continue
+		}
+		if entry.ID != agentSessionID {
+			continue
+		}
+		// Keep the last non-empty thread_name for this id. Codex upserts one
+		// entry per session id (keyed by id, carrying updated_at), so in
+		// practice there is a single match and "latest wins" is trivial; the
+		// full scan just makes us robust if codex ever switches to append.
+		// An empty thread_name never overwrites a real name and leaves title
+		// "", so chatTitle falls back to the non-explicit rollout title.
+		if t := truncate(firstLine(stripXMLTags(entry.ThreadName))); t != "" {
+			title = t
+		}
+	}
+	return title
 }
 
 // chatTitleAtPath scans the first maxScanLines of the rollout JSONL at path

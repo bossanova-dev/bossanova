@@ -3,7 +3,7 @@ name: boss-plan
 description: Plan a Linear backlog ticket. Grabs the next Unplanned issue by priority (or a ticket ID you provide), resolves drafting through boss-plan draft extensions or portable fallbacks, hosts the plan on proof.bossanova.dev, then writes a summary, labels, Fibonacci estimate, priority, and a plan link back to the issue and moves it Unplanned -> Todo. Internal Bossanova project skill. Interactive by default; runs fully headless when BOSS_CRON=true.
 ---
 
-# BS Plan
+# boss-plan
 
 Turn a vague, one-line Linear ticket into a fully-planned **Todo** with an
 implementation-ready plan attached. Use when asked to "plan a linear ticket",

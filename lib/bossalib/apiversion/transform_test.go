@@ -1095,6 +1095,31 @@ func TestLimitedChatStatusChange_DownConvertsSessionDisplayForOlderVersions(t *t
 	}
 }
 
+func TestLimitedChatStatusChange_RecomputesOlderDisplayInsteadOfForcingIdle(t *testing.T) {
+	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.LimitedChatStatusChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	msg := &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{{
+		DisplayLabel:   "usage-limited (resets ~15:00)",
+		DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+		DisplaySpinner: false,
+		DisplayStatus:  pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+	}}}
+
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, msg, apiversion.V20260705)
+	sess := msg.GetSessions()[0]
+	if got := sess.GetDisplayLabel(); got != "✓ passing" {
+		t.Fatalf("display_label = %q, want ✓ passing", got)
+	}
+	if got := sess.GetDisplayIntent(); got != pb.DisplayIntent_DISPLAY_INTENT_SUCCESS {
+		t.Fatalf("display_intent = %v, want SUCCESS", got)
+	}
+	if sess.GetDisplaySpinner() {
+		t.Fatal("display_spinner = true, want false")
+	}
+}
+
 func TestLimitedChatStatusChange_DownConvertsStatusResponsesForOlderVersions(t *testing.T) {
 	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.LimitedChatStatusChange{})
 	if err != nil {

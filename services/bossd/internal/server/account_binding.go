@@ -66,6 +66,9 @@ func (s *Server) resolveSessionAccount(ctx context.Context, requested *string, a
 	if s.resolver == nil {
 		return "", nil
 	}
+	if !s.creationDefaultBindingEnabled() {
+		return "", nil
+	}
 	id, err := s.resolver.DefaultAccountID(ctx, agentName, time.Now())
 	if err != nil {
 		s.logger.Warn().Err(err).Str("agent", agentName).
@@ -88,16 +91,60 @@ func (s *Server) resolveAccountLabel(ctx context.Context, requested, agentName s
 		return "", connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("account %q not found", requested))
 	}
+	var matches []*models.Account
 	for _, acct := range accts {
 		if acct.Label == requested {
-			if err := checkAccountEligible(requested, acct); err != nil {
-				return "", err
-			}
-			return acct.ID, nil
+			matches = append(matches, acct)
 		}
+	}
+	switch len(matches) {
+	case 1:
+		if err := checkAccountEligible(requested, matches[0]); err != nil {
+			return "", err
+		}
+		return matches[0].ID, nil
+	case 0:
+		if provider, ok := s.findAccountLabelProvider(ctx, requested, agentName); ok {
+			return "", connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("account %q is registered under provider %q, but this session runs %q - account switch is provider-scoped", requested, provider, agentName))
+		}
+	default:
+		return "", connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("multiple %s accounts are labeled %q; specify the account id (see \"boss account ls\")", agentName, requested))
 	}
 	return "", connect.NewError(connect.CodeInvalidArgument,
 		fmt.Errorf("account %q not found", requested))
+}
+
+func (s *Server) findAccountLabelProvider(ctx context.Context, requested, agentName string) (string, bool) {
+	for _, provider := range []models.AccountProvider{models.AccountProviderClaude, models.AccountProviderCodex} {
+		if string(provider) == agentName {
+			continue
+		}
+		accts, err := s.accounts.ListByProvider(ctx, provider)
+		if err != nil {
+			continue
+		}
+		for _, acct := range accts {
+			if acct.Label == requested {
+				return string(provider), true
+			}
+		}
+	}
+	return "", false
+}
+
+func (s *Server) creationDefaultBindingEnabled() bool {
+	if s.rotationConfig == nil {
+		return true
+	}
+	cfg, err := s.rotationConfig()
+	if err != nil {
+		s.logger.Warn().Err(err).
+			Msg("account: rotation config load failed; using system default")
+		return false
+	}
+	return cfg.RotationEnabled()
 }
 
 // checkAccountEligible rejects an explicitly-requested account that the rotation

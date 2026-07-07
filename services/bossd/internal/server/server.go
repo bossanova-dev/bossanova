@@ -90,6 +90,7 @@ type Server struct {
 	accounts           db.AccountStore
 	rotationEngine     *rotation.Engine
 	resolver           *account.Resolver
+	rotationConfig     func() (config.RotationConfig, error)
 	accountCreds       AccountCredentialStore
 	accountSmoke       AccountSmokeRunner
 	checkSnapshots     db.CheckSnapshotStore
@@ -155,6 +156,9 @@ type Config struct {
 	// account a new session binds to when the client omits account_id).
 	// Optional, may be nil (older/test wiring then leaves sessions on account 0).
 	Resolver *account.Resolver
+	// RotationConfig re-reads the live rotation policy for creation-time default
+	// binding. Nil means rotation is enabled, preserving legacy/test behavior.
+	RotationConfig func() (config.RotationConfig, error)
 	// AccountCredentials is the keyring-backed credential-blob plane for
 	// accounts (satisfied by accountcred.Store on the daemon). Metadata lives
 	// in Accounts; secrets never touch SQLite. Optional, may be nil (account
@@ -247,6 +251,7 @@ func New(cfg Config) *Server {
 		accounts:       cfg.Accounts,
 		rotationEngine: cfg.RotationEngine,
 		resolver:       cfg.Resolver,
+		rotationConfig: cfg.RotationConfig,
 		accountCreds:   cfg.AccountCredentials,
 		accountSmoke:   cfg.AccountSmokeRunner,
 		checkSnapshots: cfg.CheckSnapshots,

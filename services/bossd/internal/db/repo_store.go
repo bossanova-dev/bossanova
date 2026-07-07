@@ -25,22 +25,35 @@ type SQLiteRepoStore struct {
 	db *sql.DB
 }
 
+type repoSQL interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // NewRepoStore creates a new SQLite-backed RepoStore.
 func NewRepoStore(db *sql.DB) *SQLiteRepoStore {
 	return &SQLiteRepoStore{db: db}
 }
 
 func (s *SQLiteRepoStore) Create(ctx context.Context, params CreateRepoParams) (*models.Repo, error) {
-	if err := s.ensureUniqueCanonicalOrigin(ctx, params.OriginURL, ""); err != nil {
-		return nil, err
-	}
-
 	id, err := sqlutil.NewID()
 	if err != nil {
 		return nil, fmt.Errorf("new repo id: %w", err)
 	}
+	conn, err := s.beginImmediate(ctx)
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer s.closeImmediate(ctx, conn, &committed)
+
+	if err := s.ensureUniqueCanonicalOrigin(ctx, conn, params.OriginURL, ""); err != nil {
+		return nil, err
+	}
+
 	now := sqlutil.TimeNow()
-	_, err = s.db.ExecContext(ctx,
+	_, err = conn.ExecContext(ctx,
 		`INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, 'merge', '', '', '', ?, ?)`,
 		id, params.DisplayName, params.LocalPath, params.OriginURL,
@@ -49,11 +62,23 @@ func (s *SQLiteRepoStore) Create(ctx context.Context, params CreateRepoParams) (
 	if err != nil {
 		return nil, fmt.Errorf("insert repo: %w", err)
 	}
-	return s.Get(ctx, id)
+	repo, err := s.get(ctx, conn, id)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return nil, fmt.Errorf("commit repo create: %w", err)
+	}
+	committed = true
+	return repo, nil
 }
 
 func (s *SQLiteRepoStore) Get(ctx context.Context, id string) (*models.Repo, error) {
-	row := s.db.QueryRowContext(ctx,
+	return s.get(ctx, s.db, id)
+}
+
+func (s *SQLiteRepoStore) get(ctx context.Context, q repoSQL, id string) (*models.Repo, error) {
+	row := q.QueryRowContext(ctx,
 		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
 		 FROM repos WHERE id = ?`, id)
 	return scanRepo(row)
@@ -108,7 +133,11 @@ func (s *SQLiteRepoStore) GetByOrigin(ctx context.Context, originURL string) (*m
 }
 
 func (s *SQLiteRepoStore) List(ctx context.Context) ([]*models.Repo, error) {
-	rows, err := s.db.QueryContext(ctx,
+	return s.list(ctx, s.db)
+}
+
+func (s *SQLiteRepoStore) list(ctx context.Context, q repoSQL) ([]*models.Repo, error) {
+	rows, err := q.QueryContext(ctx,
 		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
 		 FROM repos ORDER BY created_at DESC`)
 	if err != nil {
@@ -129,11 +158,30 @@ func (s *SQLiteRepoStore) List(ctx context.Context) ([]*models.Repo, error) {
 
 func (s *SQLiteRepoStore) Update(ctx context.Context, id string, params UpdateRepoParams) (*models.Repo, error) {
 	if params.OriginURL != nil {
-		if err := s.ensureUniqueCanonicalOrigin(ctx, *params.OriginURL, id); err != nil {
+		conn, err := s.beginImmediate(ctx)
+		if err != nil {
 			return nil, err
 		}
+		committed := false
+		defer s.closeImmediate(ctx, conn, &committed)
+		if err := s.ensureUniqueCanonicalOrigin(ctx, conn, *params.OriginURL, id); err != nil {
+			return nil, err
+		}
+		repo, err := s.update(ctx, conn, id, params)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+			return nil, fmt.Errorf("commit repo update: %w", err)
+		}
+		committed = true
+		return repo, nil
 	}
 
+	return s.update(ctx, s.db, id, params)
+}
+
+func (s *SQLiteRepoStore) update(ctx context.Context, q repoSQL, id string, params UpdateRepoParams) (*models.Repo, error) {
 	now := sqlutil.TimeNow()
 	sets := []string{"updated_at = ?"}
 	args := []any{now}
@@ -192,23 +240,45 @@ func (s *SQLiteRepoStore) Update(ctx context.Context, id string, params UpdateRe
 	}
 	args = append(args, id)
 	query := "UPDATE repos SET " + strings.Join(sets, ", ") + " WHERE id = ?"
-	res, err := s.db.ExecContext(ctx, query, args...)
+	res, err := q.ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("update repo: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return nil, sql.ErrNoRows
 	}
-	return s.Get(ctx, id)
+	return s.get(ctx, q, id)
 }
 
-func (s *SQLiteRepoStore) ensureUniqueCanonicalOrigin(ctx context.Context, originURL string, excludeID string) error {
+func (s *SQLiteRepoStore) beginImmediate(ctx context.Context) (*sql.Conn, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("repo write connection: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("begin repo write transaction: %w", err)
+	}
+	return conn, nil
+}
+
+func (s *SQLiteRepoStore) closeImmediate(ctx context.Context, conn *sql.Conn, committed *bool) {
+	if conn == nil {
+		return
+	}
+	if committed == nil || !*committed {
+		_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+	}
+	_ = conn.Close()
+}
+
+func (s *SQLiteRepoStore) ensureUniqueCanonicalOrigin(ctx context.Context, q repoSQL, originURL string, excludeID string) error {
 	targetWebURL := vcs.NormalizeRepoURL(originURL)
 	if targetWebURL == "" {
 		return nil
 	}
 
-	repos, err := s.List(ctx)
+	repos, err := s.list(ctx, q)
 	if err != nil {
 		return err
 	}

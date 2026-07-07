@@ -29,6 +29,7 @@ type AgentRunner interface {
 	SuggestPRTitle(ctx context.Context, req *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
 	HasQuestionPrompt(ctx context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
 	DetectUsageLimit(ctx context.Context, req *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error)
+	ProbeRateLimit(ctx context.Context, req *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error)
 	HasWorkingIndicator(ctx context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error)
 	LastTurnIsUser(ctx context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error)
 	TranscriptExists(ctx context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error)
@@ -184,6 +185,14 @@ func (c *agentRunnerGRPCClient) HasQuestionPrompt(ctx context.Context, req *boss
 func (c *agentRunnerGRPCClient) DetectUsageLimit(ctx context.Context, req *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) {
 	resp := &bossanovav1.DetectUsageLimitResponse{}
 	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/DetectUsageLimit", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *agentRunnerGRPCClient) ProbeRateLimit(ctx context.Context, req *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) {
+	resp := &bossanovav1.ProbeRateLimitResponse{}
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/ProbeRateLimit", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

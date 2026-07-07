@@ -511,10 +511,13 @@ func (c *LocalClient) RunCronJobNow(ctx context.Context, id string) (*pb.RunCron
 
 // --- Accounts ---
 
-func (c *LocalClient) ListAccounts(ctx context.Context, provider string) ([]*pb.Account, error) {
+func (c *LocalClient) ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error) {
 	req := &pb.ListAccountsRequest{}
 	if provider != "" {
 		req.Provider = &provider
+	}
+	if refresh {
+		req.Refresh = &refresh
 	}
 	resp, err := c.rpc.ListAccounts(ctx, connect.NewRequest(req))
 	if err != nil {

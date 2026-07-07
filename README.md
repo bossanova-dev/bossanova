@@ -7,10 +7,7 @@
 
 Bossanova is an orchestrator for Claude Code and Codex.
 
-Orchestrate AI agents across multiple machines in isolated workspaces. Repair
-and respond to reviews automatically. Run scheduled tasks. Control remote Claude
-Code and Codex sessions from the web (remote control requires a Bossanova Cloud
-subscription).
+Orchestrate agents across multiple machines in isolated workspaces. Send messages between chat sessions across different providers. Repair CI and respond to reviews automatically. Run scheduled tasks. Control remote agent sessions from the web.
 
 ## Installation
 

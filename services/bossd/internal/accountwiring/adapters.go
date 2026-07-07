@@ -15,6 +15,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -36,6 +40,11 @@ type AccountStore interface {
 	List(ctx context.Context) ([]*models.Account, error)
 	Get(ctx context.Context, id string) (*models.Account, error)
 	Update(ctx context.Context, id string, params db.UpdateAccountParams) (*models.Account, error)
+}
+
+type usageProbeStore interface {
+	Get(ctx context.Context, id string) (*models.Account, error)
+	RecordUsageProbe(ctx context.Context, id string, snap models.UsageSnapshot) error
 }
 
 // CredentialLoader loads an account's opaque credential blob. Satisfied by the
@@ -176,6 +185,221 @@ func (m *materializerAdapter) MaterializeAccount(ctx context.Context, accountID 
 		return nil, fmt.Errorf("plugin MaterializeAccount: %w", err)
 	}
 	return resp.GetEnv(), nil
+}
+
+// RecordUsageProbe probes the currently bound account through its provider
+// plugin and stores only the returned usage metadata. Credential material is
+// loaded solely to produce the probe env and is never persisted or logged.
+func (m *materializerAdapter) RecordUsageProbe(ctx context.Context, accountID string) error {
+	store, ok := m.store.(usageProbeStore)
+	if !ok {
+		return nil
+	}
+	snap, err := m.ProbeUsageSnapshot(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	if snap.FetchedAt == nil {
+		return nil
+	}
+	if err := store.RecordUsageProbe(ctx, accountID, snap); err != nil {
+		return fmt.Errorf("record usage probe: %w", err)
+	}
+	return nil
+}
+
+// ProbeUsageSnapshot probes the currently bound account through its provider
+// plugin and returns only normalized usage metadata. It does not persist the
+// snapshot, letting callers cache the exact probe result they used for a
+// decision.
+func (m *materializerAdapter) ProbeUsageSnapshot(ctx context.Context, accountID string) (models.UsageSnapshot, error) {
+	store, ok := m.store.(interface {
+		Get(ctx context.Context, id string) (*models.Account, error)
+	})
+	if !ok || m.creds == nil {
+		return models.UsageSnapshot{}, nil
+	}
+	acct, err := store.Get(ctx, accountID)
+	if err != nil {
+		return models.UsageSnapshot{}, fmt.Errorf("lookup account for usage probe: %w", err)
+	}
+	client, ok := m.client(string(acct.Provider))
+	if !ok {
+		return models.UsageSnapshot{}, nil
+	}
+	blob, err := m.creds.Load(accountID)
+	if err != nil {
+		return models.UsageSnapshot{}, fmt.Errorf("load account credential for usage probe: %w", err)
+	}
+	mat, err := client.MaterializeAccount(ctx, &bossanovav1.MaterializeAccountRequest{CredentialBlob: blob})
+	if err != nil {
+		return models.UsageSnapshot{}, fmt.Errorf("plugin MaterializeAccount for usage probe: %w", err)
+	}
+	env, cleanup, err := usageProbeCredentialEnv(mat)
+	if err != nil {
+		return models.UsageSnapshot{}, err
+	}
+	defer cleanup()
+	resp, err := client.ProbeRateLimit(ctx, &bossanovav1.ProbeRateLimitRequest{CredentialEnv: env})
+	if err != nil {
+		return models.UsageSnapshot{}, fmt.Errorf("plugin ProbeRateLimit: %w", err)
+	}
+	now := time.Now().UTC()
+	return usageSnapshotFromRateLimitStatus(resp.GetStatus(), now), nil
+}
+
+func usageProbeCredentialEnv(mat *bossanovav1.MaterializeAccountResponse) (map[string]string, func(), error) {
+	env := map[string]string{}
+	for k, v := range mat.GetEnv() {
+		env[k] = v
+	}
+	cleanup := func() {}
+	homeKey := mat.GetHomeDirEnvKey()
+	if homeKey == "" {
+		return env, cleanup, nil
+	}
+	dir, err := os.MkdirTemp("", "boss-usage-probe-*")
+	if err != nil {
+		return nil, cleanup, fmt.Errorf("create usage probe home: %w", err)
+	}
+	cleanup = func() { _ = os.RemoveAll(dir) }
+	if err := os.Chmod(dir, 0o700); err != nil {
+		cleanup()
+		return nil, func() {}, fmt.Errorf("secure usage probe home: %w", err)
+	}
+	if err := seedUsageProbeHome(homeKey, dir); err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	for _, file := range mat.GetFiles() {
+		rel := file.GetRelativePath()
+		if rel == "" || !filepath.IsLocal(rel) {
+			cleanup()
+			return nil, func() {}, fmt.Errorf("materialized usage probe file has invalid relative path")
+		}
+		path := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			cleanup()
+			return nil, func() {}, fmt.Errorf("create usage probe credential dir: %w", err)
+		}
+		mode := os.FileMode(file.GetMode())
+		if mode == 0 {
+			mode = 0o600
+		}
+		if err := os.WriteFile(path, file.GetContent(), mode); err != nil {
+			cleanup()
+			return nil, func() {}, fmt.Errorf("write usage probe credential file: %w", err)
+		}
+	}
+	env[homeKey] = dir
+	return env, cleanup, nil
+}
+
+func seedUsageProbeHome(homeKey, dstHome string) error {
+	if homeKey != "CODEX_HOME" {
+		return nil
+	}
+	srcHome := strings.TrimSpace(os.Getenv(homeKey))
+	if srcHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil
+		}
+		srcHome = filepath.Join(home, ".codex")
+	}
+	for _, rel := range []string{"session_index.jsonl", "sessions"} {
+		src := filepath.Join(srcHome, rel)
+		dst := filepath.Join(dstHome, rel)
+		if err := copyProbeSeedPath(src, dst); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyProbeSeedPath(src, dst string) error {
+	resolved, err := filepath.EvalSymlinks(src)
+	if err == nil {
+		src = resolved
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat usage probe seed path: %w", err)
+	}
+	if info.IsDir() {
+		return copyProbeSeedDir(src, dst)
+	}
+	return copyProbeSeedFile(src, dst, info.Mode())
+}
+
+func copyProbeSeedDir(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("walk usage probe seed dir: %w", err)
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return fmt.Errorf("rel usage probe seed path: %w", err)
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				return fmt.Errorf("create usage probe seed dir: %w", err)
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("stat usage probe seed file: %w", err)
+		}
+		return copyProbeSeedFile(path, target, info.Mode())
+	})
+}
+
+func copyProbeSeedFile(src, dst string, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return fmt.Errorf("create usage probe seed file dir: %w", err)
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open usage probe seed file: %w", err)
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode.Perm())
+	if err != nil {
+		return fmt.Errorf("create usage probe seed file: %w", err)
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return fmt.Errorf("copy usage probe seed file: %w", copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close usage probe seed file: %w", closeErr)
+	}
+	return nil
+}
+
+func usageSnapshotFromRateLimitStatus(status *bossanovav1.RateLimitStatus, now time.Time) models.UsageSnapshot {
+	snap := models.UsageSnapshot{
+		Util5h:    status.GetUtil_5H(),
+		Util7d:    status.GetUtil_7D(),
+		Status:    status.GetStatus().String(),
+		PlanTier:  status.GetPlanTier(),
+		FetchedAt: &now,
+	}
+	if reset := status.GetReset_5H(); reset != nil {
+		t := reset.AsTime().UTC()
+		snap.Reset5h = &t
+	}
+	if reset := status.GetReset_7D(); reset != nil {
+		t := reset.AsTime().UTC()
+		snap.Reset7d = &t
+	}
+	return snap
 }
 
 // --- Lifecycle rotation adapters -----------------------------------------

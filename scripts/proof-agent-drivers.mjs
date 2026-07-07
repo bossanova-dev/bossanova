@@ -59,10 +59,23 @@ export function builtinAgentDrivers(deps) {
     usable: () => deps.tuiAgentUsable(),
     preflightMissing: ({ shouldUpload, repoRoot }) =>
       deps.evaluateRunPreflight({ surface: 'tui', shouldUpload, repoRoot })?.missing ?? [],
-    prebuild: ({ env }) => {
+    prebuild: ({ repoRoot, env }) => {
       if (env.BOSS_PROOF_TUI_BRIDGE_BIN) return
+      // Prefer prebuilt bins (BOS-215) so the go builds never run inside the
+      // capture budget; fall back byte-identically to an in-budget build when
+      // nothing is prebuilt. The log line makes the choice observable.
+      const prebuilt = deps.resolvePrebuiltTuiBins({ repoRoot, env })
+      const usingPrebuilt = Boolean(prebuilt.bridgeBin && prebuilt.bossBin)
+      console.error(
+        usingPrebuilt
+          ? '[proof] tui: using prebuilt bridge + boss binaries (0 go builds in budget)'
+          : '[proof] tui: building bridge/boss at proof time (no prebuilt binaries found)',
+      )
       const existingBossBin = env.BOSS_PROOF_BOSS_BIN
-      const { bridgeBin, bossBin } = deps.buildTuiAgentBridge({ bossBinOverride: existingBossBin })
+      const { bridgeBin, bossBin } = deps.buildTuiAgentBridge({
+        bridgeBinOverride: prebuilt.bridgeBin ?? undefined,
+        bossBinOverride: prebuilt.bossBin ?? existingBossBin,
+      })
       const bridgeEnv = deps.tuiAgentBridgeEnv({ bridgeBin, bossBin, existingBossBin })
       env.BOSS_PROOF_TUI_BRIDGE_BIN = bridgeEnv.BOSS_PROOF_TUI_BRIDGE_BIN
       env.BOSS_PROOF_BOSS_BIN = bridgeEnv.BOSS_PROOF_BOSS_BIN

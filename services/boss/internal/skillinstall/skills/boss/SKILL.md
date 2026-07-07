@@ -309,6 +309,7 @@ List accounts
 
 - `--json` — Emit a stable JSON schema instead of a table
 - `--provider` — Filter by provider (claude|codex)
+- `--refresh` — Force a live usage probe of each account before listing
 
 ### `boss account refresh <account-id> [flags]`
 
@@ -532,6 +533,29 @@ Uninstall the MCP server service
 ```bash
 boss mcp uninstall
 ```
+
+## Skills
+
+### `boss skills`
+
+Manage installed boss skills
+
+### `boss skills install [flags]`
+
+Install or refresh boss skills (fresh-installs missing trees); --force reinstalls even when current
+
+**Flags:**
+
+- `--agent` — Restrict to one agent: claude or codex (default: all on PATH)
+- `--force` — Reinstall (Extract) unconditionally, even when current
+
+### `boss skills sync [flags]`
+
+Refresh installed boss skills to match this binary (update-only, no prompt)
+
+**Flags:**
+
+- `--agent` — Restrict to one agent: claude or codex (default: all on PATH)
 
 ## Settings & Auth
 

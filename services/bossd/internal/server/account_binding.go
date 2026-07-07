@@ -14,6 +14,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+var legacyAccountBindingCutoff = time.Date(2026, time.July, 4, 12, 0, 0, 0, time.UTC)
+
 // resolveSessionAccount decides which registry account a new session binds to.
 // account_id is an optional proto field, so its presence is meaningful and the
 // three cases are distinct:
@@ -66,7 +68,7 @@ func (s *Server) resolveSessionAccount(ctx context.Context, requested *string, a
 	if s.resolver == nil {
 		return "", nil
 	}
-	if !s.creationDefaultBindingEnabled() {
+	if !s.defaultAccountBindingEnabled() {
 		return "", nil
 	}
 	id, err := s.resolver.DefaultAccountID(ctx, agentName, time.Now())
@@ -134,19 +136,6 @@ func (s *Server) findAccountLabelProvider(ctx context.Context, requested, agentN
 	return "", false
 }
 
-func (s *Server) creationDefaultBindingEnabled() bool {
-	if s.rotationConfig == nil {
-		return true
-	}
-	cfg, err := s.rotationConfig()
-	if err != nil {
-		s.logger.Warn().Err(err).
-			Msg("account: rotation config load failed; using system default")
-		return false
-	}
-	return cfg.RotationEnabled()
-}
-
 // checkAccountEligible rejects an explicitly-requested account that the rotation
 // engine would skip — disabled, failed health, or cooling down — mirroring the
 // default-account policy's selectability predicate. Explicitly binding a
@@ -197,6 +186,10 @@ func (s *Server) resolveAccountEnv(ctx context.Context, sess *models.Session) ma
 // returns nil so the agent falls back to the ambient CLI login. Env values are
 // never logged.
 func (s *Server) resolveChatAccountEnv(ctx context.Context, sess *models.Session, chat *models.AgentChat) map[string]string {
+	return s.resolveChatAccountEnvForSpawn(ctx, sess, chat, "")
+}
+
+func (s *Server) resolveChatAccountEnvForSpawn(ctx context.Context, sess *models.Session, chat *models.AgentChat, defaultAccountID string) map[string]string {
 	if s.resolver == nil || chat == nil {
 		return nil
 	}
@@ -204,8 +197,12 @@ func (s *Server) resolveChatAccountEnv(ctx context.Context, sess *models.Session
 	switch {
 	case chat.AccountID != nil:
 		accountID = *chat.AccountID
-	case sess != nil && chat.AgentName == sess.AgentName:
-		accountID = derefAccountID(sess.AccountID)
+	case sameAgentSessionChat(sess, chat):
+		if sess.AccountID != nil {
+			accountID = *sess.AccountID
+		} else {
+			accountID = defaultAccountID
+		}
 	}
 	env, err := s.resolver.ResolveSpawnEnv(ctx, accountID, chat.AgentName, time.Now())
 	if err != nil {
@@ -214,6 +211,87 @@ func (s *Server) resolveChatAccountEnv(ctx context.Context, sess *models.Session
 		return nil
 	}
 	return env
+}
+
+func (s *Server) defaultAccountIDForChat(ctx context.Context, sess *models.Session, chat *models.AgentChat) string {
+	if s.resolver == nil || sess == nil || chat == nil {
+		return ""
+	}
+	if sess.AccountID != nil && *sess.AccountID != "" {
+		return ""
+	}
+	if chat.AccountID != nil {
+		return ""
+	}
+	if !sameAgentSessionChat(sess, chat) {
+		return ""
+	}
+	if !legacyNilAccountBinding(sess) {
+		return ""
+	}
+	if !s.defaultAccountBindingEnabled() {
+		return ""
+	}
+
+	accountID, err := s.resolver.DefaultAccountID(ctx, accountAgentName(chat.AgentName), time.Now())
+	if err != nil {
+		s.logger.Warn().Err(err).Str("agent", accountAgentName(chat.AgentName)).
+			Msg("account: default-account policy failed for chat spawn; using system default")
+		return ""
+	}
+	return accountID
+}
+
+func (s *Server) defaultAccountBindingEnabled() bool {
+	if s.rotationConfig == nil {
+		return true
+	}
+	cfg, err := s.rotationConfig()
+	if err != nil {
+		s.logger.Warn().Err(err).
+			Msg("account: rotation config load failed; using system default")
+		return false
+	}
+	return cfg.RotationEnabled()
+}
+
+// legacyNilAccountBinding is the only nil Session.AccountID shape we can safely
+// upgrade to a managed default. After the accounts migration, nil may also mean
+// an older build persisted an explicit account-0/system-default choice as NULL.
+func legacyNilAccountBinding(sess *models.Session) bool {
+	return sess != nil &&
+		sess.AccountID == nil &&
+		!sess.CreatedAt.IsZero() &&
+		sess.CreatedAt.Before(legacyAccountBindingCutoff) &&
+		(sess.UpdatedAt.IsZero() || sess.UpdatedAt.Before(legacyAccountBindingCutoff))
+}
+
+func (s *Server) persistDefaultAccountForChat(ctx context.Context, sess *models.Session, chat *models.AgentChat, accountID string) {
+	if s.sessions == nil || sess == nil || chat == nil || accountID == "" {
+		return
+	}
+	if sess.AccountID != nil || chat.AccountID != nil || !sameAgentSessionChat(sess, chat) {
+		return
+	}
+
+	accountIDPtr := &accountID
+	if _, err := s.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{AccountID: &accountIDPtr}); err != nil {
+		s.logger.Warn().Err(err).Str("session", sess.ID).Str("agent", accountAgentName(chat.AgentName)).
+			Msg("account: failed to persist default account for chat spawn; using system default")
+		return
+	}
+	sess.AccountID = &accountID
+}
+
+func sameAgentSessionChat(sess *models.Session, chat *models.AgentChat) bool {
+	return sess != nil && chat != nil && accountAgentName(sess.AgentName) == accountAgentName(chat.AgentName)
+}
+
+func accountAgentName(agentName string) string {
+	if agentName == "" {
+		return defaultLegacyAgent
+	}
+	return agentName
 }
 
 // derefAccountID returns the pointed-to account id, or "" (account 0) for a nil

@@ -2269,8 +2269,10 @@ type ProxyGetChatTranscriptResponse struct {
 	Messages           []*ChatMessage         `protobuf:"bytes,1,rep,name=messages,proto3" json:"messages,omitempty"`
 	FinalAssistantText string                 `protobuf:"bytes,2,opt,name=final_assistant_text,json=finalAssistantText,proto3" json:"final_assistant_text,omitempty"`
 	Exists             bool                   `protobuf:"varint,3,opt,name=exists,proto3" json:"exists,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// reason mirrors GetChatTranscriptResponse.reason: why a miss occurred.
+	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProxyGetChatTranscriptResponse) Reset() {
@@ -2322,6 +2324,13 @@ func (x *ProxyGetChatTranscriptResponse) GetExists() bool {
 		return x.Exists
 	}
 	return false
+}
+
+func (x *ProxyGetChatTranscriptResponse) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
 }
 
 // ProxySendChatMessageRequest carries only agent_session_id (the MCP send tool
@@ -5310,11 +5319,12 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12(\n" +
 	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\x12!\n" +
-	"\fmax_messages\x18\x03 \x01(\x05R\vmaxMessages\"\xa1\x01\n" +
+	"\fmax_messages\x18\x03 \x01(\x05R\vmaxMessages\"\xb9\x01\n" +
 	"\x1eProxyGetChatTranscriptResponse\x125\n" +
 	"\bmessages\x18\x01 \x03(\v2\x19.bossanova.v1.ChatMessageR\bmessages\x120\n" +
 	"\x14final_assistant_text\x18\x02 \x01(\tR\x12finalAssistantText\x12\x16\n" +
-	"\x06exists\x18\x03 \x01(\bR\x06exists\"\xaf\x01\n" +
+	"\x06exists\x18\x03 \x01(\bR\x06exists\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\"\xaf\x01\n" +
 	"\x1bProxySendChatMessageRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12$\n" +

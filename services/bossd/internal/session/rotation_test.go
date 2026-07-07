@@ -14,6 +14,8 @@ import (
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/rotation"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // --- rotation adapter fakes ---
@@ -52,6 +54,20 @@ type fakeRotationBinding struct {
 
 func (f *fakeRotationBinding) CurrentBinding(_ context.Context, _ *models.Session) (RotationBinding, bool, error) {
 	return f.binding, f.bound, f.err
+}
+
+type fakeRateLimitProbe struct {
+	snap  models.UsageSnapshot
+	err   error
+	calls int
+}
+
+func (f *fakeRateLimitProbe) Probe(_ context.Context, _ string) (models.UsageSnapshot, error) {
+	f.calls++
+	if f.err != nil {
+		return models.UsageSnapshot{}, f.err
+	}
+	return f.snap, nil
 }
 
 type adapterShapeMaterializer struct {
@@ -109,6 +125,7 @@ type rotationFixture struct {
 	decider      *fakeRotationDecider
 	binding      *fakeRotationBinding
 	materializer *fakeAccountMaterializer
+	probe        *fakeRateLimitProbe
 	sessionID    string
 }
 
@@ -147,13 +164,22 @@ func newRotationFixture(t *testing.T) *rotationFixture {
 		bound:   true,
 	}
 	materializer := &fakeAccountMaterializer{env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "next-token"}}
+	reset := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Millisecond)
+	fetched := time.Now().UTC().Truncate(time.Millisecond)
+	probe := &fakeRateLimitProbe{snap: models.UsageSnapshot{
+		Util5h:    1,
+		Reset5h:   &reset,
+		Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
+		FetchedAt: &fetched,
+	}}
 	lc.SetRotationDecider(decider.Decide)
 	lc.SetRotationBinding(binding)
 	lc.SetAccountMaterializer(materializer)
+	lc.SetRateLimitProbe(probe.Probe)
 
 	return &rotationFixture{
 		lc: lc, sessions: sessions, runner: runner,
-		decider: decider, binding: binding, materializer: materializer,
+		decider: decider, binding: binding, materializer: materializer, probe: probe,
 		sessionID: "sess-1",
 	}
 }
@@ -299,6 +325,77 @@ func TestAttemptUsageLimitRotation_RotatesThroughAdapterShapes(t *testing.T) {
 	}
 }
 
+func TestAttemptUsageLimitRotation_ProbeGate(t *testing.T) {
+	limitedReset := time.Date(2026, 7, 7, 17, 0, 0, 0, time.UTC)
+	fetched := time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		snap        models.UsageSnapshot
+		probeErr    error
+		wantHandled bool
+		wantDecide  bool
+		wantReset   *time.Time
+	}{
+		{
+			name: "limited uses probe reset",
+			snap: models.UsageSnapshot{
+				Util5h:    1,
+				Reset5h:   &limitedReset,
+				Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
+				FetchedAt: &fetched,
+			},
+			wantHandled: true,
+			wantDecide:  true,
+			wantReset:   &limitedReset,
+		},
+		{
+			name: "healthy falls through",
+			snap: models.UsageSnapshot{
+				Util5h:    0.08,
+				Status:    "RATE_LIMIT_PLAN_STATUS_ACTIVE",
+				FetchedAt: &fetched,
+			},
+		},
+		{name: "probe error falls through", probeErr: context.Canceled},
+		{name: "auth failure falls through", probeErr: status.Error(codes.Unauthenticated, "auth invalidated")},
+		{
+			name: "unsupported falls through",
+			snap: models.UsageSnapshot{
+				Status:    "RATE_LIMIT_PLAN_STATUS_UNSUPPORTED",
+				FetchedAt: &fetched,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newRotationFixture(t)
+			f.probe.snap = tt.snap
+			f.probe.err = tt.probeErr
+			f.decider.outcome = rotation.Outcome{
+				Kind:            rotation.OutcomeRotate,
+				NextAccount:     &models.Account{ID: "acct-next"},
+				CooldownApplied: true,
+			}
+
+			handled := f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "You have reached your 5-hour limit")
+			if handled != tt.wantHandled {
+				t.Fatalf("handled = %v, want %v", handled, tt.wantHandled)
+			}
+			if (f.decider.calls > 0) != tt.wantDecide {
+				t.Fatalf("decider calls = %d, want called=%v", f.decider.calls, tt.wantDecide)
+			}
+			if tt.wantReset != nil {
+				if f.decider.lastSig.ResetAt == nil || !f.decider.lastSig.ResetAt.Equal(*tt.wantReset) {
+					t.Fatalf("ResetAt = %v, want %v", f.decider.lastSig.ResetAt, *tt.wantReset)
+				}
+			}
+			if !tt.wantDecide && len(f.runner.started) != 0 {
+				t.Fatalf("starts = %d, want 0", len(f.runner.started))
+			}
+		})
+	}
+}
+
 // Re-arm: rotated headless run arms the poll fallback with the new id.
 func TestAttemptUsageLimitRotation_RearmsPollFallback(t *testing.T) {
 	f := newRotationFixture(t)
@@ -348,6 +445,28 @@ func TestAttemptUsageLimitRotation_BoundedExhaustionPark(t *testing.T) {
 	}
 	if captured.RotationResumeAt != nil {
 		t.Errorf("resume_at should be NULL on bounded exhaustion, got %v", captured.RotationResumeAt)
+	}
+}
+
+func TestAttemptUsageLimitRotation_BoundedExhaustionRequiresConfirmedProbe(t *testing.T) {
+	f := newRotationFixture(t)
+	f.sessions.sessions[f.sessionID].RotationAttemptCount = 3 // == default MaxRotations
+	fetched := time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC)
+	f.probe.snap = models.UsageSnapshot{
+		Util5h:    0.08,
+		Status:    "RATE_LIMIT_PLAN_STATUS_ACTIVE",
+		FetchedAt: &fetched,
+	}
+
+	handled := f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "usage_limit_reached")
+	if handled {
+		t.Fatal("healthy probe must fall through even when max rotations is reached")
+	}
+	if f.decider.calls != 0 {
+		t.Fatalf("decider calls = %d, want 0", f.decider.calls)
+	}
+	if f.sessions.sessions[f.sessionID].State == machine.Blocked {
+		t.Fatal("healthy probe must not park the session as bounded exhaustion")
 	}
 }
 
@@ -564,6 +683,12 @@ func TestAttemptUsageLimitRotation_NilAdaptersFallThrough(t *testing.T) {
 	if f2.lc.attemptUsageLimitRotation(context.Background(), f2.sessionID, "agent-old", "usage_limit_reached") {
 		t.Fatal("nil decider must return handled=false")
 	}
+
+	f3 := newRotationFixture(t)
+	f3.lc.rateLimitProbe = nil
+	if f3.lc.attemptUsageLimitRotation(context.Background(), f3.sessionID, "agent-old", "usage_limit_reached") {
+		t.Fatal("nil rate-limit probe must return handled=false")
+	}
 }
 
 func TestHasLiveRotationSeams(t *testing.T) {
@@ -581,5 +706,11 @@ func TestHasLiveRotationSeams(t *testing.T) {
 	f.lc.accountMaterializer = nil
 	if f.lc.HasLiveRotationSeams() {
 		t.Fatal("HasLiveRotationSeams = true with nil materializer, want false")
+	}
+
+	f = newRotationFixture(t)
+	f.lc.rateLimitProbe = nil
+	if f.lc.HasLiveRotationSeams() {
+		t.Fatal("HasLiveRotationSeams = true with nil probe, want false")
 	}
 }

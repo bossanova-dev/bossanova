@@ -48,6 +48,7 @@ var agentRunnerServiceDesc = grpc.ServiceDesc{
 		{MethodName: "SuggestPRTitle", Handler: agentSuggestPRTitleHandler},
 		{MethodName: "HasQuestionPrompt", Handler: agentHasQuestionPromptHandler},
 		{MethodName: "DetectUsageLimit", Handler: agentDetectUsageLimitHandler},
+		{MethodName: "ProbeRateLimit", Handler: agentProbeRateLimitHandler},
 		{MethodName: "HasWorkingIndicator", Handler: agentHasWorkingIndicatorHandler},
 		{MethodName: "LastTurnIsUser", Handler: agentLastTurnIsUserHandler},
 		{MethodName: "TranscriptExists", Handler: agentTranscriptExistsHandler},
@@ -71,6 +72,7 @@ type agentRunnerServiceHandler interface {
 	SuggestPRTitle(context.Context, *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
 	HasQuestionPrompt(context.Context, *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
 	DetectUsageLimit(context.Context, *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error)
+	ProbeRateLimit(context.Context, *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error)
 	HasWorkingIndicator(context.Context, *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error)
 	LastTurnIsUser(context.Context, *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error)
 	TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error)
@@ -186,6 +188,14 @@ func agentDetectUsageLimitHandler(srv any, ctx context.Context, dec func(any) er
 		return nil, err
 	}
 	return srv.(agentRunnerServiceHandler).DetectUsageLimit(ctx, req)
+}
+
+func agentProbeRateLimitHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.ProbeRateLimitRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).ProbeRateLimit(ctx, req)
 }
 
 func agentHasWorkingIndicatorHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {

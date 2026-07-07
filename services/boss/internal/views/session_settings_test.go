@@ -155,7 +155,7 @@ func (s *stubSessionSettingsClient) DeleteCronJob(context.Context, string) error
 func (s *stubSessionSettingsClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) ListAccounts(context.Context, string) ([]*pb.Account, error) {
+func (s *stubSessionSettingsClient) ListAccounts(context.Context, string, bool) ([]*pb.Account, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) AddAccount(context.Context, *pb.AddAccountRequest) (*pb.Account, error) {

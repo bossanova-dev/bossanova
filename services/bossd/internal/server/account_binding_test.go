@@ -62,6 +62,9 @@ func (s accountBindingStore) Delete(context.Context, string) error {
 func (s accountBindingStore) RecordTestResult(context.Context, string, *time.Time, string) error {
 	return errors.New("not implemented")
 }
+func (s accountBindingStore) RecordUsageProbe(context.Context, string, models.UsageSnapshot) error {
+	return errors.New("not implemented")
+}
 
 // TestResolveSessionAccount_ExplicitID covers the explicit account_id path:
 // unknown id and provider mismatch are InvalidArgument; a matching-provider id
@@ -96,11 +99,11 @@ func TestResolveSessionAccount_ExplicitID(t *testing.T) {
 // InvalidArgument, and a real id still resolves.
 func TestResolveSessionAccount_Label(t *testing.T) {
 	s, _ := newAccountServer(t, newFakeCredStore(), nil)
-	claude := mustAddClaude(t, s, "work", []byte("blob"))
+	claude := mustAddClaude(t, s, "work", []byte("claude-work-blob"))
 	// A codex account sharing no label with the claude one.
-	mustAddCodex(t, s, "codex-only", []byte("blob"))
-	codexShared := mustAddCodex(t, s, "shared", []byte("blob"))
-	claudeShared := mustAddClaude(t, s, "shared", []byte("blob"))
+	mustAddCodex(t, s, "codex-only", []byte("codex-only-blob"))
+	codexShared := mustAddCodex(t, s, "shared", []byte("codex-shared-blob"))
+	claudeShared := mustAddClaude(t, s, "shared", []byte("claude-shared-blob"))
 
 	// A valid claude label resolves to the claude account's real id.
 	id, err := s.resolveSessionAccount(context.Background(), strptr("work"), "claude")
@@ -253,7 +256,7 @@ func TestResolveSessionAccount_DefaultPolicy(t *testing.T) {
 	}
 }
 
-func TestResolveSessionAccount_DefaultPolicyDisabledByRotationKillSwitch(t *testing.T) {
+func TestResolveSessionAccount_DefaultPolicyHonorsRotationKillSwitch(t *testing.T) {
 	s, accts := newAccountServer(t, newFakeCredStore(), nil)
 	acct := mustAddClaude(t, s, "work", []byte("blob"))
 	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), nil, zerolog.Nop())

@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -20,16 +22,23 @@ import (
 // mirrors accountcred.Store's not-found semantics and can be forced to fail
 // Load to simulate a locked/unreadable keyring.
 type fakeCredStore struct {
-	blobs     map[string][]byte
-	loadErr   error // when non-nil, Load returns this (simulates locked keyring)
-	deleteErr error
-	saveHook  func(id string, blob []byte)
+	mu          sync.Mutex
+	blobs       map[string][]byte
+	loadErr     error // when non-nil, Load returns this (simulates locked keyring)
+	deleteErr   error
+	preSaveHook func(id string, blob []byte)
+	saveHook    func(id string, blob []byte)
 }
 
 func newFakeCredStore() *fakeCredStore { return &fakeCredStore{blobs: map[string][]byte{}} }
 
 func (f *fakeCredStore) Save(id string, blob []byte) error {
+	if f.preSaveHook != nil {
+		f.preSaveHook(id, append([]byte(nil), blob...))
+	}
+	f.mu.Lock()
 	f.blobs[id] = append([]byte(nil), blob...)
+	f.mu.Unlock()
 	if f.saveHook != nil {
 		f.saveHook(id, append([]byte(nil), blob...))
 	}
@@ -37,6 +46,8 @@ func (f *fakeCredStore) Save(id string, blob []byte) error {
 }
 
 func (f *fakeCredStore) Load(id string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.loadErr != nil {
 		return nil, f.loadErr
 	}
@@ -48,6 +59,8 @@ func (f *fakeCredStore) Load(id string) ([]byte, error) {
 }
 
 func (f *fakeCredStore) Delete(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
@@ -76,6 +89,16 @@ func (f *fakeSmoke) Smoke(_ context.Context, accountID, provider string, blob []
 	return f.err
 }
 
+type fakeUsageProbe struct {
+	ids []string
+	err error
+}
+
+func (f *fakeUsageProbe) RecordUsageProbe(_ context.Context, accountID string) error {
+	f.ids = append(f.ids, accountID)
+	return f.err
+}
+
 func newAccountServer(t *testing.T, creds AccountCredentialStore, smoke AccountSmokeRunner) (*Server, db.AccountStore) {
 	t.Helper()
 	sqlDB := setupServerTestDB(t)
@@ -86,6 +109,45 @@ func newAccountServer(t *testing.T, creds AccountCredentialStore, smoke AccountS
 		accountSmoke: smoke,
 		logger:       zerolog.Nop(),
 	}, accts
+}
+
+func TestListAccountsRefreshUsesUsageProbeFailSoft(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, store := newAccountServer(t, creds, nil)
+	ctx := context.Background()
+
+	first := mustAddClaude(t, srv, "first", []byte("token-a"))
+	second := mustAddClaude(t, srv, "second", []byte("token-b"))
+	refresh := true
+	probe := &fakeUsageProbe{err: errors.New("probe down")}
+	srv.usageProbe = probe
+
+	listed, err := srv.ListAccounts(ctx, connect.NewRequest(&pb.ListAccountsRequest{Refresh: &refresh}))
+	if err != nil {
+		t.Fatalf("ListAccounts refresh: %v", err)
+	}
+	if len(listed.Msg.Accounts) != 2 {
+		t.Fatalf("list len = %d, want 2", len(listed.Msg.Accounts))
+	}
+	if len(probe.ids) != 2 {
+		t.Fatalf("probe calls = %v, want both accounts", probe.ids)
+	}
+	if probe.ids[0] != first.Id || probe.ids[1] != second.Id {
+		t.Fatalf("probe ids = %v, want [%s %s]", probe.ids, first.Id, second.Id)
+	}
+
+	probe.ids = nil
+	refresh = false
+	if _, err := srv.ListAccounts(ctx, connect.NewRequest(&pb.ListAccountsRequest{Refresh: &refresh})); err != nil {
+		t.Fatalf("ListAccounts no refresh: %v", err)
+	}
+	if len(probe.ids) != 0 {
+		t.Fatalf("refresh=false probe calls = %v, want none", probe.ids)
+	}
+
+	if _, err := store.Get(ctx, first.Id); err != nil {
+		t.Fatalf("store still readable after fail-soft probe: %v", err)
+	}
 }
 
 func mustAddClaude(t *testing.T, srv *Server, label string, cred []byte) *pb.Account {
@@ -210,6 +272,141 @@ func TestAddAccountDuplicateLabel(t *testing.T) {
 	}
 }
 
+func TestAddAccountDuplicateCredential(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, _ := newAccountServer(t, creds, nil)
+
+	first := mustAddClaude(t, srv, "work", []byte("same-token"))
+
+	_, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+		Provider:   "claude",
+		Label:      "personal",
+		Credential: []byte("same-token"),
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeAlreadyExists {
+		t.Fatalf("code = %v, want AlreadyExists (err=%v)", got, err)
+	}
+	if len(creds.blobs) != 1 {
+		t.Errorf("cred store has %d blobs, want 1 (duplicate credential must not persist)", len(creds.blobs))
+	}
+	if got := string(creds.blobs[first.Id]); got != "same-token" {
+		t.Errorf("original credential = %q, want %q", got, "same-token")
+	}
+}
+
+func TestAddAccountDuplicateCodexCredentialNormalizesTokenShapes(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, _ := newAccountServer(t, creds, nil)
+
+	resp, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+		Provider:   "codex",
+		Label:      "interactive",
+		Credential: []byte(`{"access":"access-token","refresh":"refresh-token","id_token":"id-token"}`),
+	}))
+	if err != nil {
+		t.Fatalf("AddAccount flat codex: %v", err)
+	}
+
+	_, err = srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+		Provider: "codex",
+		Label:    "nested-credential-file",
+		Credential: []byte(`{"tokens":{` +
+			`"access_token":"access-token",` +
+			`"refresh_token":"refresh-token",` +
+			`"id_token":"id-token"` +
+			`}}`),
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeAlreadyExists {
+		t.Fatalf("code = %v, want AlreadyExists (err=%v)", got, err)
+	}
+	_, err = srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+		Provider:   "codex",
+		Label:      "empty-nested-credential-file",
+		Credential: []byte(`{"access":"access-token","refresh":"refresh-token","id_token":"id-token","tokens":{}}`),
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeAlreadyExists {
+		t.Fatalf("empty nested tokens code = %v, want AlreadyExists (err=%v)", got, err)
+	}
+	_, err = srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+		Provider: "codex",
+		Label:    "partial-nested-credential-file",
+		Credential: []byte(`{"access":"access-token","refresh":"refresh-token","id_token":"id-token",` +
+			`"tokens":{"access_token":"access-token"}}`),
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeAlreadyExists {
+		t.Fatalf("partial nested tokens code = %v, want AlreadyExists (err=%v)", got, err)
+	}
+	if len(creds.blobs) != 1 {
+		t.Fatalf("cred store has %d blobs, want 1", len(creds.blobs))
+	}
+	if got, want := string(creds.blobs[resp.Msg.Account.GetId()]), `{"access":"access-token","refresh":"refresh-token","id_token":"id-token"}`; got != want {
+		t.Fatalf("stored credential = %q, want %q", got, want)
+	}
+}
+
+func TestAddAccountConcurrentDuplicateCredential(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, _ := newAccountServer(t, creds, nil)
+	ctx := context.Background()
+
+	firstSaveReached := make(chan struct{})
+	releaseFirstSave := make(chan struct{})
+	var pauseFirstSave sync.Once
+	creds.preSaveHook = func(_ string, _ []byte) {
+		pauseFirstSave.Do(func() {
+			close(firstSaveReached)
+			<-releaseFirstSave
+		})
+	}
+
+	errs := make(chan error, 2)
+	go func() {
+		_, err := srv.AddAccount(ctx, connect.NewRequest(&pb.AddAccountRequest{
+			Provider:   "claude",
+			Label:      "work",
+			Credential: []byte("same-token"),
+		}))
+		errs <- err
+	}()
+
+	select {
+	case <-firstSaveReached:
+	case <-time.After(time.Second):
+		t.Fatal("first AddAccount did not reach credential save")
+	}
+
+	go func() {
+		_, err := srv.AddAccount(ctx, connect.NewRequest(&pb.AddAccountRequest{
+			Provider:   "claude",
+			Label:      "personal",
+			Credential: []byte("same-token"),
+		}))
+		errs <- err
+	}()
+	close(releaseFirstSave)
+
+	var success, alreadyExists int
+	for i := 0; i < 2; i++ {
+		err := <-errs
+		if err == nil {
+			success++
+			continue
+		}
+		switch connect.CodeOf(err) {
+		case connect.CodeAlreadyExists:
+			alreadyExists++
+		default:
+			t.Fatalf("unexpected AddAccount error: %v", err)
+		}
+	}
+	if success != 1 || alreadyExists != 1 {
+		t.Fatalf("success/AlreadyExists = %d/%d, want 1/1", success, alreadyExists)
+	}
+	if len(creds.blobs) != 1 {
+		t.Fatalf("cred store has %d blobs, want 1", len(creds.blobs))
+	}
+}
+
 // TestUpdateAccountReservedLabelRejected proves renaming an account to the
 // reserved system-default label (case-insensitively) is a client error, so no
 // real account can ever take the "Unmanaged local credentials" label the
@@ -297,6 +494,34 @@ func TestRefreshAccountReplacesCredentialAndReturnsMetadataOnly(t *testing.T) {
 	}
 	if bytes.Contains(raw, secret) {
 		t.Fatalf("RefreshAccount response wire form leaked the credential")
+	}
+}
+
+func TestRefreshAccountRejectsDuplicateCredentialExceptSelf(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, _ := newAccountServer(t, creds, nil)
+	first := mustAddClaude(t, srv, "work", []byte("token-a"))
+	second := mustAddClaude(t, srv, "personal", []byte("token-b"))
+
+	_, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:         second.Id,
+		Credential: []byte("token-a"),
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeAlreadyExists {
+		t.Fatalf("code = %v, want AlreadyExists (err=%v)", got, err)
+	}
+	if got := string(creds.blobs[first.Id]); got != "token-a" {
+		t.Fatalf("first credential = %q, want token-a", got)
+	}
+	if got := string(creds.blobs[second.Id]); got != "token-b" {
+		t.Fatalf("second credential = %q, want token-b after rejected refresh", got)
+	}
+
+	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:         first.Id,
+		Credential: []byte("token-a"),
+	})); err != nil {
+		t.Fatalf("RefreshAccount self credential: %v", err)
 	}
 }
 

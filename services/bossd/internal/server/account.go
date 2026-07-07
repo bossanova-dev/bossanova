@@ -41,6 +41,21 @@ func (s *Server) ListAccounts(ctx context.Context, req *connect.Request[pb.ListA
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list accounts: %w", err))
 	}
+	if req.Msg.GetRefresh() && s.usageProbe != nil {
+		for _, a := range accounts {
+			if err := s.usageProbe.RecordUsageProbe(ctx, a.ID); err != nil {
+				s.logger.Warn().Err(err).Str("account_id", a.ID).Msg("ListAccounts: usage refresh failed")
+			}
+		}
+		if req.Msg.Provider != nil && strings.TrimSpace(*req.Msg.Provider) != "" {
+			accounts, err = s.accounts.ListByProvider(ctx, models.AccountProvider(strings.TrimSpace(*req.Msg.Provider)))
+		} else {
+			accounts, err = s.accounts.List(ctx)
+		}
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list accounts after refresh: %w", err))
+		}
+	}
 	out := make([]*pb.Account, 0, len(accounts))
 	for _, a := range accounts {
 		out = append(out, accountToProto(a))
@@ -76,6 +91,14 @@ func (s *Server) AddAccount(ctx context.Context, req *connect.Request[pb.AddAcco
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("account credential store not configured"))
 	}
 
+	credential := normalizeCredentialBlobForSave(provider, msg.Credential)
+	s.addAccountMu.Lock()
+	defer s.addAccountMu.Unlock()
+
+	if err := s.rejectDuplicateCredential(ctx, provider, credential, ""); err != nil {
+		return nil, err
+	}
+
 	account, err := s.accounts.Create(ctx, db.CreateAccountParams{
 		Provider:     models.AccountProvider(provider),
 		Label:        label,
@@ -90,7 +113,6 @@ func (s *Server) AddAccount(ctx context.Context, req *connect.Request[pb.AddAcco
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create account: %w", err))
 	}
 
-	credential := normalizeCredentialBlobForSave(provider, msg.Credential)
 	if err := s.accountCreds.Save(account.ID, credential); err != nil {
 		// Roll back so we never keep metadata for an account whose credential
 		// never landed in the keyring.
@@ -102,6 +124,30 @@ func (s *Server) AddAccount(ctx context.Context, req *connect.Request[pb.AddAcco
 	}
 
 	return connect.NewResponse(&pb.AddAccountResponse{Account: accountToProto(account)}), nil
+}
+
+func (s *Server) rejectDuplicateCredential(ctx context.Context, provider string, credential []byte, excludeAccountID string) error {
+	accounts, err := s.accounts.ListByProvider(ctx, models.AccountProvider(provider))
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("list accounts for duplicate credential check: %w", err))
+	}
+	for _, acct := range accounts {
+		if acct.ID == excludeAccountID {
+			continue
+		}
+		stored, err := s.accountCreds.Load(acct.ID)
+		if err != nil {
+			if errors.Is(err, accountcred.ErrCredentialNotFound) {
+				continue
+			}
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("load account credential for duplicate check: %w", err))
+		}
+		if sameCredential(provider, stored, credential) {
+			return connect.NewError(connect.CodeAlreadyExists,
+				fmt.Errorf("%s account with this credential already exists as %q", provider, acct.Label))
+		}
+	}
+	return nil
 }
 
 // RefreshAccount replaces an existing account's stored credential in place.
@@ -126,6 +172,12 @@ func (s *Server) RefreshAccount(ctx context.Context, req *connect.Request[pb.Ref
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("account credential store not configured"))
 	}
 	credential := normalizeCredentialBlobForSave(string(account.Provider), msg.GetCredential())
+	s.addAccountMu.Lock()
+	defer s.addAccountMu.Unlock()
+
+	if err := s.rejectDuplicateCredential(ctx, string(account.Provider), credential, id); err != nil {
+		return nil, err
+	}
 	if err := s.accountCreds.Save(id, credential); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save account credential: %w", err))
 	}
@@ -430,6 +482,57 @@ func normalizeCredentialBlobForSave(provider string, blob []byte) []byte {
 		return blob
 	}
 	return out
+}
+
+func sameCredential(provider string, left, right []byte) bool {
+	if models.AccountProvider(provider) == models.AccountProviderClaude {
+		return bytes.Equal(bytes.TrimSpace(left), bytes.TrimSpace(right))
+	}
+	leftTokens, leftOK := codexCredentialTokens(left)
+	rightTokens, rightOK := codexCredentialTokens(right)
+	return leftOK && rightOK && leftTokens == rightTokens
+}
+
+type codexCredentialKey struct {
+	access  string
+	refresh string
+	idToken string
+}
+
+func codexCredentialTokens(blob []byte) (codexCredentialKey, bool) {
+	var payload struct {
+		Access  string `json:"access"`
+		Refresh string `json:"refresh"`
+		IDToken string `json:"id_token"`
+		Tokens  *struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			IDToken      string `json:"id_token"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(blob, &payload); err != nil {
+		return codexCredentialKey{}, false
+	}
+	key := codexCredentialKey{
+		access:  payload.Access,
+		refresh: payload.Refresh,
+		idToken: payload.IDToken,
+	}
+	if payload.Tokens != nil {
+		if payload.Tokens.AccessToken != "" {
+			key.access = payload.Tokens.AccessToken
+		}
+		if payload.Tokens.RefreshToken != "" {
+			key.refresh = payload.Tokens.RefreshToken
+		}
+		if payload.Tokens.IDToken != "" {
+			key.idToken = payload.Tokens.IDToken
+		}
+	}
+	if key.access == "" || key.refresh == "" || key.idToken == "" {
+		return codexCredentialKey{}, false
+	}
+	return key, true
 }
 
 // isReservedAccountLabel reports whether label collides (case-insensitively)

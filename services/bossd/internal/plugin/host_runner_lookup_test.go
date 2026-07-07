@@ -62,6 +62,10 @@ func (s *stubAgentRunner) DetectUsageLimit(context.Context, *bossanovav1.DetectU
 	return &bossanovav1.DetectUsageLimitResponse{}, nil
 }
 
+func (s *stubAgentRunner) ProbeRateLimit(context.Context, *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) {
+	return &bossanovav1.ProbeRateLimitResponse{}, nil
+}
+
 func (s *stubAgentRunner) HasWorkingIndicator(context.Context, *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
 	return &bossanovav1.HasWorkingIndicatorResponse{}, nil
 }
@@ -142,14 +146,30 @@ func TestAgentRunnersReturnsAllRunners(t *testing.T) {
 	if len(runners) != 2 {
 		t.Fatalf("AgentRunners returned %d entries, want 2 (got %v)", len(runners), runners)
 	}
-	if runners["claude"] != claudeRunner {
-		t.Errorf("AgentRunners[claude] = %v, want claudeRunner", runners["claude"])
-	}
-	if runners["opencode"] != opencodeRunner {
-		t.Errorf("AgentRunners[opencode] = %v, want opencodeRunner", runners["opencode"])
-	}
+	// AgentRunners returns stable per-name proxies, not the raw dispensed
+	// runners (so captured references survive a plugin respawn). Assert each
+	// proxy resolves to the right plugin by name — the stub's GetInfo echoes
+	// its name.
+	assertProxyResolvesTo(t, runners["claude"], "claude")
+	assertProxyResolvesTo(t, runners["opencode"], "opencode")
 	if _, ok := runners["linear"]; ok {
 		t.Errorf("AgentRunners should omit plugins with nil agentRunner; found 'linear'")
+	}
+}
+
+// assertProxyResolvesTo checks that an AgentRunners() value routes to the
+// plugin named want by calling GetInfo (the stub echoes its own name).
+func assertProxyResolvesTo(t *testing.T, r AgentRunner, want string) {
+	t.Helper()
+	if r == nil {
+		t.Fatalf("AgentRunners[%s] is nil", want)
+	}
+	info, err := r.GetInfo(context.Background())
+	if err != nil {
+		t.Fatalf("AgentRunners[%s].GetInfo: %v", want, err)
+	}
+	if info.GetName() != want {
+		t.Errorf("AgentRunners[%s] resolved to plugin %q, want %q", want, info.GetName(), want)
 	}
 }
 
@@ -168,9 +188,7 @@ func TestAgentRunnersReturnsCopy(t *testing.T) {
 	if len(second) != 1 {
 		t.Fatalf("mutation of returned map leaked into host; second call returned %d entries", len(second))
 	}
-	if second["claude"] != claudeRunner {
-		t.Errorf("expected host to still hold claudeRunner; got %v", second["claude"])
-	}
+	assertProxyResolvesTo(t, second["claude"], "claude")
 	if _, ok := second["injected"]; ok {
 		t.Error("injected entry leaked into host's runner map")
 	}

@@ -409,18 +409,17 @@ func lastTurnIsUser(path string) bool {
 	return false
 }
 
-// chatTitle reads codex's session index for an explicit thread rename, falling
-// back to the rollout JSONL's first user-typed message. explicit is true only
-// for session-index thread names.
-func chatTitle(workDir, agentSessionID string) (string, bool) {
+// chatTitle reads codex's session index for a display thread name, falling
+// back to the rollout JSONL's first user-typed message.
+func chatTitle(workDir, agentSessionID string) string {
 	if name := sessionIndexThreadName(agentSessionID); name != "" {
-		return name, true
+		return name
 	}
 	path, err := transcriptPath(workDir, agentSessionID)
 	if err != nil {
-		return "", false
+		return ""
 	}
-	return chatTitleAtPath(path), false
+	return chatTitleAtPath(path)
 }
 
 type codexSessionIndexEntry struct {

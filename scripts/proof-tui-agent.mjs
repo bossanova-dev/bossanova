@@ -59,13 +59,25 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const DEFAULT_MODEL = 'claude-haiku-4-5'
 const CAPTURE_ID = 'tui-agent'
 
+// BRIDGE_OP_TIMEOUT_MS bounds how long the Node side waits for a single NDJSON
+// op response from the Go proof-tui-agent bridge. It MUST stay above the Go
+// bridge's maximum settle hard cap (maxHardCapMs = 30_000ms in
+// services/boss/cmd/proof-tui-agent/agent.go): a caller can set hardCapMs to
+// that maximum, and settle() legitimately polls the full 30s — then overshoots
+// by up to one poll interval (it only checks the deadline around sleeps) before
+// writing its reply back over stdio. A 30s timeout here raced that reply and
+// deterministically surfaced valid max-hard-cap ops as `bridge op ... timed
+// out`; the 15s of headroom absorbs the overshoot plus stdio round-trip while
+// still bounding a genuinely hung bridge.
+const BRIDGE_OP_TIMEOUT_MS = 45_000
+
 // P1 — TUI runs are short, keystroke-driven, and fixture-backed, so they get
 // tighter budgets than the generic web defaults. Still per-brief overridable.
 const TUI_BUDGETS = { maxSteps: 25, maxWallClockMs: 4 * 60 * 1000, maxTokens: 200_000 }
 
 // The fixed TUI key map + DemoWorld summary that anchors the brief. Passed as the
 // `routes` arg to generateBriefFromDiff (no proof-brief.mjs change needed).
-const TUI_CONTEXT_BLOCK = [
+export const TUI_CONTEXT_BLOCK = [
   'Bossanova TUI key map (drive the app with these keystrokes):',
   '  home screen:',
   '    s → Settings',
@@ -73,6 +85,11 @@ const TUI_CONTEXT_BLOCK = [
   '    a → Add repo → "Open project" → type path → Enter to confirm',
   '    n → New session',
   '  esc → back/cancel; enter → confirm.',
+  '  navigation keys (send via send_keys):',
+  '    up / down / left / right → move selection',
+  '    tab / shift+tab → cycle fields; pgup / pgdn → page lists',
+  '    home / end → jump to start/end; backspace / delete → edit text',
+  '    f1–f12 → function keys.',
   '',
   'DemoWorld fixture: a deterministic in-memory world with one demo repository',
   'already cloned and a couple of example sessions, so the TUI boots straight to',
@@ -98,7 +115,7 @@ export const SYSTEM_PROMPT = [
   "SCENES: the goal lists numbered scenes; call begin_scene({id}) before starting each scene's actions (scene 1 is active from the start), complete scenes in order, and make each scene's expected evidence visible on screen WITHIN that scene before moving on.",
 ].join(' ')
 
-const TOOL_DEFS = [
+export const TOOL_DEFS = [
   {
     name: 'observe',
     description: 'Read the current settled terminal screen (plain text). No input.',
@@ -107,7 +124,11 @@ const TOOL_DEFS = [
   {
     name: 'send_keys',
     description:
-      'Send one or more keystrokes to the TUI (e.g. ["s"], ["enter"], ["esc"]). Returns the resulting settled screen.',
+      'Send one or more keystrokes to the TUI. Accepts single characters, "ctrl+<a-z>", "enter"/"esc", ' +
+      'the arrows "up"/"down"/"left"/"right", "tab"/"shift+tab", "pgup"/"pgdn", "home"/"end", ' +
+      '"backspace"/"delete", and "f1"–"f12" (e.g. ["s"], ["down","enter"], ["shift+tab"], ["pgdn"]). ' +
+      'Send "esc" as its own call — a leading "esc" chained before another key in the same array ' +
+      'is read as alt+<key>, not a cancel. Returns the resulting settled screen.',
     input_schema: {
       type: 'object',
       properties: { keys: { type: 'array', items: { type: 'string' } } },
@@ -1185,6 +1206,26 @@ function resolveBridge(d, { localDir, rawDir }) {
  * tiny fake-bridge fixture via BOSS_PROOF_TUI_BRIDGE_BIN. It degrades with a
  * clear error if the binary is missing.
  */
+// settleExtra picks only the recognized per-op settle-override fields so a
+// caller can't inject arbitrary NDJSON keys. Absent fields ⇒ {} ⇒ payload is
+// byte-identical to the no-override case (default behavior unchanged). The
+// guard is Number.isSafeInteger, not isInteger or isFinite: the Go bridge
+// decodes these into int64 fields, so two classes of value must be dropped
+// before they reach the payload. A fractional value (e.g. 10.5) fails
+// json.Unmarshal; and an oversized integer (e.g. 1e30 — Number.isInteger
+// accepts it) overflows int64 and also fails json.Unmarshal, erroring the whole
+// op before resolveSettle can apply its max clamp. Number.isSafeInteger rejects
+// both: only values in [-(2^53-1), 2^53-1] pass, comfortably inside int64 and
+// far above the Go side's maxSettleMs/maxHardCapMs clamp ceilings, so anything
+// larger is nonsensical anyway. Rejected inputs are dropped here (⇒ default
+// behavior), never forwarded.
+export const settleExtra = (opts = {}) => {
+  const extra = {}
+  if (Number.isSafeInteger(opts.settleMs)) extra.settleMs = opts.settleMs
+  if (Number.isSafeInteger(opts.hardCapMs)) extra.hardCapMs = opts.hardCapMs
+  return extra
+}
+
 export function makeStdioBridge({ localDir, rawDir }) {
   const bridgeBin = process.env.BOSS_PROOF_TUI_BRIDGE_BIN
   if (!bridgeBin || !fs.existsSync(bridgeBin)) {
@@ -1268,7 +1309,7 @@ export function makeStdioBridge({ localDir, rawDir }) {
         const timer = setTimeout(() => {
           waiters.delete(id)
           reject(new Error(`bridge op '${op}' timed out`))
-        }, 30_000)
+        }, BRIDGE_OP_TIMEOUT_MS)
         waiters.set(id, (msg) => {
           clearTimeout(timer)
           resolve(msg)
@@ -1296,10 +1337,10 @@ export function makeStdioBridge({ localDir, rawDir }) {
   }
 
   return {
-    observe: () => request('observe'),
+    observe: (opts = {}) => request('observe', settleExtra(opts)),
     // NDJSON op names match the BOS-69 bridge: 'key' (keys[]) and 'type' (text).
-    sendKeys: (keys) => request('key', { keys }),
-    typeText: (text) => request('type', { text }),
+    sendKeys: (keys, opts = {}) => request('key', { keys, ...settleExtra(opts) }),
+    typeText: (text, opts = {}) => request('type', { text, ...settleExtra(opts) }),
     quit: async () => {
       try {
         await request('quit')

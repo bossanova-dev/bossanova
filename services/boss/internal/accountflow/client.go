@@ -11,7 +11,7 @@ import (
 // flows depend on: list existing accounts (duplicate detection), add a new
 // account, verify it, and remove it when verification is rejected.
 type AccountClient interface {
-	ListAccounts(ctx context.Context, provider string) ([]*pb.Account, error)
+	ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error)
 	AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error)
 	TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error)
 	RemoveAccount(ctx context.Context, id string) error

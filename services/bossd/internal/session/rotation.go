@@ -25,6 +25,11 @@ const steeringNotice = "You were interrupted mid-task by an account switch. Veri
 // rotation. Nil ⇒ rotation degrades to today's Block path (fail-safe).
 type rotationDecider func(ctx context.Context, sig rotation.Signal) (rotation.Outcome, error)
 
+// rateLimitProbe authoritatively probes a bound account before the lifecycle
+// cools it. Nil/error/unfetched/healthy snapshots fall through to today's Block
+// path without changing account cooldowns.
+type rateLimitProbe func(ctx context.Context, accountID string) (models.UsageSnapshot, error)
+
 // accountMaterializer resolves the env overlay for the account to switch to.
 // The real implementation forwards the account's keyring credential blob to the
 // agent plugin's MaterializeAccount RPC (BOS-169); tests inject a synthetic
@@ -62,10 +67,13 @@ func (l *Lifecycle) SetAccountMaterializer(m accountMaterializer) { l.accountMat
 // leave unset (nil ⇒ Block fallback).
 func (l *Lifecycle) SetRotationBinding(b rotationBinding) { l.rotationBinding = b }
 
+// SetRateLimitProbe injects the authoritative confirm-before-cool probe.
+func (l *Lifecycle) SetRateLimitProbe(p rateLimitProbe) { l.rateLimitProbe = p }
+
 // HasLiveRotationSeams reports whether the lifecycle has both live seams needed
 // for headless/session-lifecycle auto-rotation.
 func (l *Lifecycle) HasLiveRotationSeams() bool {
-	return l.rotationBinding != nil && l.accountMaterializer != nil
+	return l.rotationBinding != nil && l.accountMaterializer != nil && l.rateLimitProbe != nil
 }
 
 // SetRotationConfig installs the rotation policy knobs (kill switch, max
@@ -156,7 +164,7 @@ func classifyUsageLimit(exitError string) (resetAt time.Time, ok bool) {
 // unbound account, missing adapter, decider error, or a status-only outcome —
 // returns false so today's Block path runs unchanged.
 func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ /*agentSessionID*/, exitError string) (handled bool) {
-	resetAt, ok := classifyUsageLimit(exitError)
+	_, ok := classifyUsageLimit(exitError)
 	if !ok {
 		return false
 	}
@@ -194,17 +202,8 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 		return false
 	}
 
-	// Bounded-exhaustion: too many rotations already — park without asking the
-	// engine (a human unblocks).
-	maxRotations := rotationConfig.MaxRotations()
-	if session.RotationAttemptCount >= maxRotations {
-		l.parkRotatedSession(ctx, sessionID,
-			fmt.Sprintf("usage-limited: max rotations (%d) reached", maxRotations), nil)
-		return true
-	}
-
 	// Require all adapters; any missing seam degrades to today's Block.
-	if l.rotationBinding == nil || l.rotationDecider == nil || l.accountMaterializer == nil {
+	if l.rotationBinding == nil || l.rotationDecider == nil || l.accountMaterializer == nil || l.rateLimitProbe == nil {
 		return false
 	}
 	b, bound, err := l.rotationBinding.CurrentBinding(ctx, session)
@@ -213,9 +212,33 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 		return false
 	}
 
+	snap, err := l.rateLimitProbe(ctx, b.CappedAccountID)
+	if err != nil {
+		l.logger.Warn().Err(err).Str("session", sessionID).Str("account_id", b.CappedAccountID).
+			Msg("usage-limit rotation: usage probe failed; falling back to block")
+		return false
+	}
+	if !rotation.UsageSnapshotConfirmsLimited(snap) {
+		l.logger.Info().Str("session", sessionID).Str("account_id", b.CappedAccountID).
+			Str("status", snap.Status).Float64("util_5h", snap.Util5h).Float64("util_7d", snap.Util7d).
+			Msg("usage-limit rotation: usage probe says account is not limited; falling back to block")
+		return false
+	}
+
+	// Bounded-exhaustion parks only after the authoritative probe confirms the
+	// current account is genuinely limited. A loose false-positive exit string
+	// must still fall through to today's Block/finalize path without rotation
+	// bookkeeping.
+	maxRotations := rotationConfig.MaxRotations()
+	if session.RotationAttemptCount >= maxRotations {
+		l.parkRotatedSession(ctx, sessionID,
+			fmt.Sprintf("usage-limited: max rotations (%d) reached", maxRotations), nil)
+		return true
+	}
+
 	var resetPtr *time.Time
-	if !resetAt.IsZero() {
-		resetPtr = &resetAt
+	if probedReset := rotation.UsageSnapshotResetAt(snap); probedReset != nil {
+		resetPtr = probedReset
 	}
 	sig := rotation.Signal{
 		Provider:        b.Provider,
@@ -248,8 +271,8 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 				return false
 			}
 			detail := ""
-			if !resetAt.IsZero() {
-				detail = "resets " + resetAt.Format("15:04")
+			if resetPtr != nil {
+				detail = "resets " + resetPtr.Format("15:04")
 			}
 			l.recordRotation(ctx, session, b, "ROTATION_OUTCOME_ROTATED",
 				outcome.NextAccount.ID, detail, resetPtr)

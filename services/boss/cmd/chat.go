@@ -138,6 +138,9 @@ func runChatShow(cmd *cobra.Command, chatID string) error {
 		return fmt.Errorf("get transcript: %w", err)
 	}
 	if !resp.Exists {
+		if reason := resp.GetReason(); reason != "" {
+			return fmt.Errorf("chat %s not found: %s", chatID, reason)
+		}
 		return fmt.Errorf("chat %s not found", chatID)
 	}
 
@@ -232,6 +235,15 @@ func chatWaitTimeout(cmd *cobra.Command, c interface {
 	if done, result, err := chatWaitTick(ctx, c, target, baseline, true); err == nil && done {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), result)
 		return nil
+	}
+	// Surface the daemon's fail-loud reason (e.g. "codex rollout not yet
+	// discovered for this chat") when the last read reported one, so a timeout
+	// explains why the transcript never became readable.
+	if resp, err := c.GetChatTranscript(ctx, &pb.GetChatTranscriptRequest{
+		SessionId:      target.SessionID,
+		AgentSessionId: target.AgentSessionID,
+	}); err == nil && !resp.GetExists() && resp.GetReason() != "" {
+		return fmt.Errorf("timed out waiting for chat %s after %s: %s", chatID, timeout, resp.GetReason())
 	}
 	return fmt.Errorf("timed out waiting for chat %s after %s", chatID, timeout)
 }

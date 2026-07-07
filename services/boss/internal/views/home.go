@@ -183,14 +183,17 @@ type HomeModel struct {
 	now                  func() time.Time
 
 	// Upgrade banner / restart prompt
-	upgradeAvailable bool
-	upgradeCurrent   string
-	upgradeLatest    string
-	upgradeURL       string
-	upgradeChecking  bool
-	upgradeError     string
-	upgradeDone      bool
-	restartPrompt    bool
+	upgradeAvailable  bool
+	upgradeCurrent    string
+	upgradeLatest     string
+	upgradeURL        string
+	upgradeChecking   bool
+	upgradeError      string
+	upgradeDone       bool
+	restartPrompt     bool
+	upgrading         bool
+	restarting        bool
+	daemonRemediation string
 }
 
 // NewHomeModel creates a HomeModel wired to the daemon client.
@@ -526,10 +529,101 @@ var runUpgradeCmd = func(executable string) tea.Cmd {
 	}
 }
 
+var restartDaemon = daemon.Restart
+
+var runBossDaemonRestart = func() error {
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(executable, "daemon", "restart")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if trimmed := strings.TrimSpace(string(output)); trimmed != "" {
+			return fmt.Errorf("%w: %s", err, trimmed)
+		}
+		return err
+	}
+	return nil
+}
+
+var defaultSocketPath = client.DefaultSocketPath
+
+var daemonSocketReachable = daemon.IsSocketReachable
+
+var daemonGetStatus = daemon.GetStatus
+
+var restartPollInterval = 100 * time.Millisecond
+
+var restartWaitTimeout = 5 * time.Second
+
+type daemonRestartReadiness struct {
+	waitForSocketGone bool
+	oldPID            int
+}
+
 func restartDaemonCmd() tea.Cmd {
 	return func() tea.Msg {
-		return daemonRestartMsg{err: daemon.Restart()}
+		socketPath, err := defaultSocketPath()
+		if err != nil {
+			return daemonRestartMsg{err: fmt.Errorf("daemon restart: %w", err)}
+		}
+		if socketPath == "" {
+			return daemonRestartMsg{err: errors.New("daemon restart: could not resolve daemon socket path")}
+		}
+		socketReachableBeforeRestart := daemonSocketReachable(socketPath)
+		readiness, err := restartDaemonForStatus(socketReachableBeforeRestart)
+		if err != nil {
+			return daemonRestartMsg{err: err}
+		}
+		deadline := time.Now().Add(restartWaitTimeout)
+		socketGone := !readiness.waitForSocketGone
+		for {
+			reachable := daemonSocketReachable(socketPath)
+			if !socketGone {
+				socketGone = !reachable || daemonRestartedWithNewPID(readiness.oldPID)
+			}
+			if socketGone && reachable {
+				return daemonRestartMsg{}
+			}
+			if !time.Now().Before(deadline) {
+				if !socketGone {
+					return daemonRestartMsg{err: errors.New("daemon restart timed out waiting for old socket to stop; check 'boss daemon status'")}
+				}
+				return daemonRestartMsg{err: errors.New("daemon restarted but socket did not become reachable; check 'boss daemon status'")}
+			}
+			time.Sleep(restartPollInterval)
+		}
 	}
+}
+
+func restartDaemonForStatus(socketReachableBeforeRestart bool) (daemonRestartReadiness, error) {
+	st, err := daemonGetStatus()
+	if err != nil {
+		return daemonRestartReadiness{}, fmt.Errorf("daemon restart: %w", err)
+	}
+	if st != nil && !st.Installed {
+		if err := runBossDaemonRestart(); err != nil {
+			return daemonRestartReadiness{}, fmt.Errorf("restart standalone bossd failed: %w", err)
+		}
+		return daemonRestartReadiness{}, nil
+	}
+	readiness := daemonRestartReadiness{waitForSocketGone: socketReachableBeforeRestart}
+	if st != nil {
+		readiness.oldPID = st.PID
+	}
+	if err := restartDaemon(); err != nil {
+		return daemonRestartReadiness{}, fmt.Errorf("restart daemon failed: %w", err)
+	}
+	return readiness, nil
+}
+
+func daemonRestartedWithNewPID(oldPID int) bool {
+	if oldPID <= 0 {
+		return false
+	}
+	st, err := daemonGetStatus()
+	return err == nil && st != nil && st.Running && st.PID > 0 && st.PID != oldPID
 }
 
 // renderAttentionIndicator returns a colored "!" for sessions needing attention,
@@ -740,6 +834,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case upgradeRunMsg:
+		h.upgrading = false
 		if msg.err != nil {
 			h.upgradeError = upgradeRunError(msg)
 			return h, nil
@@ -750,6 +845,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case daemonRestartMsg:
+		h.restarting = false
 		if msg.err != nil {
 			h.upgradeError = msg.err.Error()
 			return h, nil
@@ -757,11 +853,18 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.upgradeError = ""
 		h.restartPrompt = false
 		h.upgradeAvailable = false
+		h.pollFailures = 0
+		h.err = nil
+		h.daemonRemediation = ""
 		return h, nil
 
 	case sessionListMsg:
 		h.loading = false
 		if msg.err != nil {
+			if h.restarting {
+				h.buildTableRows()
+				return h, nil
+			}
 			// Debounce transient poll failures: keep the last-good session list
 			// on screen and only surface the "Cannot connect to daemon" view
 			// after several consecutive failures. This stops the constant
@@ -769,6 +872,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.pollFailures++
 			if h.pollFailures >= pollFailureThreshold {
 				h.err = msg.err
+				h.daemonRemediation = daemonDownRemediation()
 			}
 			h.buildTableRows()
 			return h, nil
@@ -776,6 +880,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Successful poll: clear the failure streak and any error screen.
 		h.pollFailures = 0
 		h.err = nil
+		h.daemonRemediation = ""
 		h.sessions = msg.sessions
 		h.latchValueDeliveredIfNeeded()
 		h.daemonStatuses = msg.daemonStatuses
@@ -836,9 +941,17 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return h, cmd
 		}
+		if msg.String() == "q" {
+			return h, tea.Quit
+		}
+		if h.upgrading || h.restarting {
+			return h, nil
+		}
 		if h.restartPrompt {
 			switch msg.String() {
 			case "r", "enter":
+				h.restarting = true
+				h.upgradeError = ""
 				return h, restartDaemonCmd()
 			case "esc":
 				h.restartPrompt = false
@@ -857,6 +970,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return h, nil
 				}
 				h.upgradeError = ""
+				h.upgrading = true
 				return h, runUpgradeCmd(executable)
 			case "d":
 				h.upgradeAvailable = false
@@ -916,8 +1030,6 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return h, nil
-		case "q":
-			return h, tea.Quit
 		}
 
 		// Forward navigation keys to the table.
@@ -953,6 +1065,10 @@ func (h HomeModel) upgradeStatusView() string {
 		lines = append(lines, renderError("Upgrade: "+h.upgradeError, h.width))
 	}
 	switch {
+	case h.upgrading:
+		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(h.spinner.View()+" Upgrading..."))
+	case h.restarting:
+		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(h.spinner.View()+" Restarting daemon..."))
 	case h.restartPrompt:
 		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render("Upgrade installed. Quit boss after restart to use the new binary. [r]estart [esc] later"))
 	case h.upgradeDone:
@@ -965,6 +1081,14 @@ func (h HomeModel) upgradeStatusView() string {
 		)))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func daemonDownRemediation() string {
+	return "Try:\n\n" +
+		"  boss daemon restart   # start or restart the daemon\n" +
+		"  boss daemon status    # inspect daemon health\n" +
+		"  boss daemon install   # set up automatic startup\n" +
+		"  bossd                 # start the daemon manually"
 }
 
 func upgradeRunError(msg upgradeRunMsg) string {
@@ -1154,10 +1278,14 @@ func (h HomeModel) cloudCheckoutStatusLine() string {
 
 func (h HomeModel) View() tea.View {
 	if h.err != nil {
+		remediation := h.daemonRemediation
+		if remediation == "" {
+			remediation = daemonDownRemediation()
+		}
 		return tea.NewView(
 			renderError(fmt.Sprintf("Cannot connect to daemon (%v)", h.err), h.width) +
 				"\n" +
-				lipgloss.NewStyle().Padding(0, 2).Render("Start the daemon with: bossd") +
+				lipgloss.NewStyle().Padding(0, 2).Render(remediation) +
 				"\n" +
 				styleActionBar.Render("Press q to quit."),
 		)
@@ -1190,11 +1318,13 @@ func (h HomeModel) View() tea.View {
 				nav = append(nav, ca)
 			}
 			content = lipgloss.NewStyle().Padding(0, 2).Render(
-				"Welcome to Bossanova!\n\n"+
-					"To get started, you need to add a repository for us to work on together.\n\n"+
+				"Welcome to Bossanova!\n\n" +
+					"To get started, you need to add a repository for us to work on together.\n\n" +
 					lipgloss.NewStyle().Bold(true).Render("Press Enter to add your first repository"),
-			) + "\n" +
-				actionBar(nav, []string{"[q]uit"})
+			)
+			if !h.upgrading && !h.restarting {
+				content += "\n" + actionBar(nav, []string{"[q]uit"})
+			}
 		} else {
 			// Repos exist but no sessions - show simplified guidance
 			left := []string{"[n]ew session"}
@@ -1209,10 +1339,12 @@ func (h HomeModel) View() tea.View {
 				nav = append(nav, ca)
 			}
 			content = lipgloss.NewStyle().Padding(0, 2).Render(
-				"You have no active sessions.\n\n"+
+				"You have no active sessions.\n\n" +
 					lipgloss.NewStyle().Bold(true).Render("Press 'n' to create a new session."),
-			) + "\n" +
-				actionBar(left, nav, []string{"[q]uit"})
+			)
+			if !h.upgrading && !h.restarting {
+				content += "\n" + actionBar(left, nav, []string{"[q]uit"})
+			}
 		}
 		if discovery != "" {
 			content += discovery
@@ -1251,7 +1383,11 @@ func (h HomeModel) View() tea.View {
 	if h.confirm.active {
 		b.WriteString("\n")
 		b.WriteString(h.logoutConfirmationView())
-	} else {
+	} else if h.upgrading || h.restarting {
+		if upgradeStatus := h.upgradeStatusView(); upgradeStatus != "" {
+			b.WriteString(upgradeStatus)
+		}
+	} else if !h.upgrading && !h.restarting {
 		left := []string{"[n]ew session", "[enter] select"}
 		nav := []string{"[s]ettings"}
 		if la := h.loginAction(); la != "" {

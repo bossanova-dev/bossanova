@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	bossskillinstall "github.com/recurser/boss/internal/skillinstall"
@@ -190,6 +192,188 @@ func TestMaybeInstallSkillsPromptsForStaleInstalledSkills(t *testing.T) {
 	}
 }
 
+func TestMaybeInstallSkillsSelfHealsStaleTreeNonInteractively(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	codexDir := filepath.Join(home, ".codex", "skills")
+	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	stalePath := filepath.Join(codexDir, libskillinstall.Namespace, "boss", "SKILL.md")
+	if err := os.WriteFile(stalePath, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setAvailableSkillAgents(map[string]bool{"codex": true})
+	// No prompt may be emitted on the non-TTY self-heal path.
+	skillInstallReadAnswer = func() string {
+		t.Fatal("self-heal must not prompt")
+		return ""
+	}
+	skillInstallIsTerminal = func() bool { return false }
+
+	if err := maybeInstallSkills(); err != nil {
+		t.Fatalf("maybeInstallSkills: %v", err)
+	}
+	data, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) == "stale" {
+		t.Fatal("stale skill was not self-healed on the non-TTY path")
+	}
+}
+
+func TestSelfHealSkillsRespectsDeclinedCurrentManifest(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	// The user previously answered `n` to the update prompt for this exact
+	// manifest in an interactive session. The non-TTY self-heal path must honor
+	// that opt-out instead of silently overwriting the declined stale tree on
+	// every headless daemon/tmux/cron invocation.
+	manifest := currentTestSkillManifest(t)
+	if err := config.Save(config.Settings{
+		SkillsDeclinedByAgent: map[string]bool{
+			"codex": true,
+		},
+		SkillsDeclinedManifestByAgent: map[string]string{
+			"codex": manifest,
+		},
+	}); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+	codexDir := filepath.Join(home, ".codex", "skills")
+	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	stalePath := filepath.Join(codexDir, libskillinstall.Namespace, "boss", "SKILL.md")
+	if err := os.WriteFile(stalePath, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setAvailableSkillAgents(map[string]bool{"codex": true})
+	skillInstallReadAnswer = func() string {
+		t.Fatal("self-heal must not prompt")
+		return ""
+	}
+	skillInstallIsTerminal = func() bool { return false }
+
+	if err := maybeInstallSkills(); err != nil {
+		t.Fatalf("maybeInstallSkills: %v", err)
+	}
+	data, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "stale" {
+		t.Fatal("declined stale skill was refreshed by self-heal, want opt-out honored")
+	}
+}
+
+func TestSelfHealSkillsRefreshesAfterDeclinedManifestChanges(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	// A decline is recorded against an older manifest. The embedded payload has
+	// since changed, so the opt-out no longer applies and self-heal should
+	// refresh the stale tree — mirroring the interactive re-prompt behavior.
+	if err := config.Save(config.Settings{
+		SkillsDeclinedByAgent: map[string]bool{
+			"codex": true,
+		},
+		SkillsDeclinedManifestByAgent: map[string]string{
+			"codex": "old-manifest",
+		},
+	}); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+	codexDir := filepath.Join(home, ".codex", "skills")
+	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	stalePath := filepath.Join(codexDir, libskillinstall.Namespace, "boss", "SKILL.md")
+	if err := os.WriteFile(stalePath, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setAvailableSkillAgents(map[string]bool{"codex": true})
+	skillInstallReadAnswer = func() string {
+		t.Fatal("self-heal must not prompt")
+		return ""
+	}
+	skillInstallIsTerminal = func() bool { return false }
+
+	if err := maybeInstallSkills(); err != nil {
+		t.Fatalf("maybeInstallSkills: %v", err)
+	}
+	data, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) == "stale" {
+		t.Fatal("stale skill was not refreshed after the declined manifest changed")
+	}
+}
+
+func TestSelfHealSkillsPreservesMalformedSettings(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	// A malformed settings.json makes config.Load return defaults plus an error.
+	// Self-heal must refresh the stale tree without persisting those defaults —
+	// otherwise config.Save would clobber the user's real (broken) file.
+	settingsPath := filepath.Join(home, "settings.json")
+	malformed := []byte("{ this is not valid json")
+	if err := os.WriteFile(settingsPath, malformed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	codexDir := filepath.Join(home, ".codex", "skills")
+	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	stalePath := filepath.Join(codexDir, libskillinstall.Namespace, "boss", "SKILL.md")
+	if err := os.WriteFile(stalePath, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setAvailableSkillAgents(map[string]bool{"codex": true})
+	skillInstallReadAnswer = func() string {
+		t.Fatal("self-heal must not prompt")
+		return ""
+	}
+	skillInstallIsTerminal = func() bool { return false }
+
+	if err := maybeInstallSkills(); err != nil {
+		t.Fatalf("maybeInstallSkills: %v", err)
+	}
+	// The stale tree is still refreshed.
+	data, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) == "stale" {
+		t.Fatal("stale skill was not self-healed on the non-TTY path")
+	}
+	// The malformed settings file is left untouched, not overwritten with defaults.
+	saved, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(saved, malformed) {
+		t.Fatalf("settings.json was rewritten to %q, want malformed content preserved", saved)
+	}
+}
+
+func TestMaybeInstallSkillsNonInteractiveDoesNotFreshInstall(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	setAvailableSkillAgents(map[string]bool{"claude": true, "codex": true})
+	skillInstallReadAnswer = func() string {
+		t.Fatal("self-heal must not prompt")
+		return ""
+	}
+	skillInstallIsTerminal = func() bool { return false }
+
+	if err := maybeInstallSkills(); err != nil {
+		t.Fatalf("maybeInstallSkills: %v", err)
+	}
+	if libskillinstall.IsInstalled(filepath.Join(home, ".claude", "skills")) {
+		t.Fatal("claude skills fresh-installed on the non-TTY path, want no-op")
+	}
+	if libskillinstall.IsInstalled(filepath.Join(home, ".codex", "skills")) {
+		t.Fatal("codex skills fresh-installed on the non-TTY path, want no-op")
+	}
+}
+
 func TestMaybeInstallSkillsSkipsNonInteractiveAndEnvOptOut(t *testing.T) {
 	setupSkillStartupTest(t)
 	setAvailableSkillAgents(map[string]bool{"claude": true, "codex": true})
@@ -228,6 +412,41 @@ func TestGenSkillSkipsStartupSkillInstall(t *testing.T) {
 	root.SetErr(io.Discard)
 	if err := root.Execute(); err != nil {
 		t.Fatalf("gen-skill --check: %v", err)
+	}
+}
+
+func TestSkillsCommandBypassesStartupInstaller(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	setAvailableSkillAgents(map[string]bool{"claude": true})
+	// The startup installer must never run for the `skills` subtree: neither the
+	// interactive [Y/n] prompt nor the non-TTY self-heal may pre-empt the command.
+	skillInstallReadAnswer = func() string {
+		t.Fatal("skills subtree must not trigger the startup prompt")
+		return ""
+	}
+	// Interactive terminal: if the pre-run installer ran, it would prompt (fatal
+	// above). A stale-but-installed tree also proves the self-heal did not run
+	// before the command: `boss skills sync` reports "updated", not "up to date".
+	skillInstallIsTerminal = func() bool { return true }
+	claudeDir := filepath.Join(home, ".claude", "skills")
+	if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	stalePath := filepath.Join(claudeDir, libskillinstall.Namespace, "boss", "SKILL.md")
+	if err := os.WriteFile(stalePath, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	root := rootCmd()
+	root.SetArgs([]string{"skills", "sync", "--agent", "claude"})
+	root.SetOut(&out)
+	root.SetErr(io.Discard)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("boss skills sync: %v", err)
+	}
+	if !strings.Contains(out.String(), "boss skills: updated claude") {
+		t.Fatalf("output = %q, want 'updated' (self-heal must not pre-empt the command)", out.String())
 	}
 }
 

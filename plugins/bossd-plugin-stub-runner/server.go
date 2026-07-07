@@ -159,6 +159,16 @@ func (s *Server) DetectUsageLimit(_ context.Context, _ *bossanovav1.DetectUsageL
 	return &bossanovav1.DetectUsageLimitResponse{Limited: false}, nil
 }
 
+// ProbeRateLimit always reports unsupported; the stub queries no provider.
+func (s *Server) ProbeRateLimit(_ context.Context, _ *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.ProbeRateLimitResponse{
+		Status: &bossanovav1.RateLimitStatus{
+			Limited: false,
+			Status:  bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_UNSUPPORTED,
+		},
+	}, nil
+}
+
 // HasWorkingIndicator always returns false; the stub never renders a working marker.
 func (s *Server) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.HasWorkingIndicatorResponse{IsWorking: false}, nil

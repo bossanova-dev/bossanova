@@ -1,0 +1,12 @@
+{
+  "five_hour": {
+    "utilization": 100.0,
+    "resets_at": "2026-04-11T07:00:00.528743+00:00"
+  },
+  "seven_day": {
+    "utilization": 74.0,
+    "resets_at": "2026-04-17T00:59:59.951713+00:00"
+  },
+  "status": "rate_limited",
+  "rate_limit_tier": "max_5x"
+}

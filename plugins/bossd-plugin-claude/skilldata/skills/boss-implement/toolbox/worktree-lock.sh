@@ -63,7 +63,7 @@ case "$cmd" in
     fi
     o_hb="$(eff_heartbeat)"
     age=$(( $(now) - ${o_hb:-0} ))
-    if [ "$age" -lt "$STALE_SECS" ]; then
+    if [ "$age" -le "$STALE_SECS" ]; then
       echo "HELD_BY_PEER runid=${o_runid:-unknown} age=${age}s"; exit 3
     fi
     # Genuinely stale -> steal ATOMICALLY: rename(2) the stale lock aside. Exactly one

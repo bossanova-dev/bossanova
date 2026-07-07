@@ -601,6 +601,10 @@ message GetChatTranscriptResponse {
   repeated ChatMessage messages = 1;
   string final_assistant_text = 2;
   bool exists = 3;
+  // reason explains a miss (exists=false): why the transcript could not be
+  // read (e.g. codex rollout not yet discovered, or not found on disk). Empty
+  // on a hit. Never a bare {} on a genuine miss.
+  string reason = 4;
 }
 message SendChatMessageRequest {
   string agent_session_id = 1;  // target chat
@@ -755,6 +759,8 @@ message RunCronJobNowResponse {
 message ListAccountsRequest {
   // Optional provider filter ("claude" | "codex"). Empty returns all accounts.
   optional string provider = 1;
+  // Force a live usage probe of each returned account before responding.
+  optional bool refresh = 2;
 }
 
 message ListAccountsResponse {

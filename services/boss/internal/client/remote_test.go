@@ -26,6 +26,7 @@ func (f *fakeChatOrchestrator) ProxyGetChatTranscript(_ context.Context, req *co
 		Messages:           []*pb.ChatMessage{{Text: "line"}},
 		FinalAssistantText: "final",
 		Exists:             true,
+		Reason:             "codex rollout not yet discovered",
 	}), nil
 }
 
@@ -59,6 +60,11 @@ func TestRemoteClient_GetChatTranscript(t *testing.T) {
 	}
 	if !resp.GetExists() || resp.GetFinalAssistantText() != "final" || len(resp.GetMessages()) != 1 {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+	// The transcript miss reason must survive the proxy unwrap so cloud/remote
+	// `boss chat show`/`wait` consumers see it instead of a bare error.
+	if resp.GetReason() != "codex rollout not yet discovered" {
+		t.Fatalf("reason not propagated: %q", resp.GetReason())
 	}
 	got := fake.transcriptReq
 	if got.GetSessionId() != "sess-1" || got.GetAgentSessionId() != "agent-9" || got.GetMaxMessages() != 7 {

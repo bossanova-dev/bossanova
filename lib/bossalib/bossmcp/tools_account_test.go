@@ -22,14 +22,17 @@ func TestAccountTools(t *testing.T) {
 	}{
 		{
 			tool: "list_accounts",
-			args: map[string]any{"provider": "claude"},
-			backend: &fakeBackend{listAccounts: func(_ context.Context, provider string) ([]*pb.Account, error) {
+			args: map[string]any{"provider": "claude", "refresh": true},
+			backend: &fakeBackend{listAccounts: func(_ context.Context, provider string, refresh bool) ([]*pb.Account, error) {
 				if provider != "claude" {
 					t.Errorf("list_accounts provider not forwarded: %q", provider)
 				}
-				return []*pb.Account{{Id: "acct-la"}}, nil
+				if !refresh {
+					t.Errorf("list_accounts refresh not forwarded")
+				}
+				return []*pb.Account{{Id: "acct-la", Usage: &pb.UsageSnapshot{Util_5H: 0.75, Status: "limited"}}}, nil
 			}},
-			sentinel: "acct-la",
+			sentinel: "util_5h",
 		},
 		{
 			tool: "add_account",

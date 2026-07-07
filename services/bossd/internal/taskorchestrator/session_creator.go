@@ -291,7 +291,7 @@ func (c *lifecycleSessionCreator) resolveDefaultAccountID(ctx context.Context, a
 	if c.defaultAccount == nil {
 		return nil
 	}
-	if !c.defaultBindingEnabled() {
+	if !c.defaultAccountBindingEnabled() {
 		return nil
 	}
 	id, err := c.defaultAccount.DefaultAccountID(ctx, agentName, time.Now())
@@ -306,7 +306,7 @@ func (c *lifecycleSessionCreator) resolveDefaultAccountID(ctx context.Context, a
 	return &id
 }
 
-func (c *lifecycleSessionCreator) defaultBindingEnabled() bool {
+func (c *lifecycleSessionCreator) defaultAccountBindingEnabled() bool {
 	if c.rotationConfig == nil {
 		return true
 	}

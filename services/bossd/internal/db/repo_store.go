@@ -267,7 +267,7 @@ func (s *SQLiteRepoStore) closeImmediate(ctx context.Context, conn *sql.Conn, co
 		return
 	}
 	if committed == nil || !*committed {
-		_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), `ROLLBACK`)
 	}
 	_ = conn.Close()
 }

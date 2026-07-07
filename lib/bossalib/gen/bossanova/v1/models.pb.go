@@ -3618,7 +3618,10 @@ type Account struct {
 	LastTestOkAt  *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=last_test_ok_at,json=lastTestOkAt,proto3" json:"last_test_ok_at,omitempty"`  // last time a credential test passed
 	LastTestError string                 `protobuf:"bytes,13,opt,name=last_test_error,json=lastTestError,proto3" json:"last_test_error,omitempty"` // most recent test failure detail; "" = none
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // NO credential field. Ever.
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	// Cached per-account rate-limit usage snapshot (BOS-297). METADATA ONLY —
+	// never a credential. Absent = never probed.
+	Usage         *UsageSnapshot `protobuf:"bytes,16,opt,name=usage,proto3" json:"usage,omitempty"` // NO credential field. Ever.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3758,6 +3761,109 @@ func (x *Account) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Account) GetUsage() *UsageSnapshot {
+	if x != nil {
+		return x.Usage
+	}
+	return nil
+}
+
+// UsageSnapshot is a cached rate-limit usage reading for one account. It is
+// derived from the BOS-293 probe result and carries METADATA ONLY:
+// utilization fractions, reset instants, a status string, a plan-tier string,
+// and the fetch time. It NEVER contains a token or any credential.
+type UsageSnapshot struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Util_5H       float64                `protobuf:"fixed64,1,opt,name=util_5h,json=util5h,proto3" json:"util_5h,omitempty"`        // 0..1 fraction of the 5h window consumed
+	Util_7D       float64                `protobuf:"fixed64,2,opt,name=util_7d,json=util7d,proto3" json:"util_7d,omitempty"`        // 0..1 fraction of the 7d rolling window consumed
+	Reset_5H      *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=reset_5h,json=reset5h,proto3" json:"reset_5h,omitempty"`       // when the 5h window resets (absent = unknown)
+	Reset_7D      *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=reset_7d,json=reset7d,proto3" json:"reset_7d,omitempty"`       // when the 7d window resets (absent = unknown)
+	Status        string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`                        // rate-limit status string from RateLimitStatus
+	PlanTier      string                 `protobuf:"bytes,6,opt,name=plan_tier,json=planTier,proto3" json:"plan_tier,omitempty"`    // detected plan tier (free-form; e.g. "max", "pro")
+	FetchedAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=fetched_at,json=fetchedAt,proto3" json:"fetched_at,omitempty"` // when this snapshot was probed
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UsageSnapshot) Reset() {
+	*x = UsageSnapshot{}
+	mi := &file_bossanova_v1_models_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UsageSnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UsageSnapshot) ProtoMessage() {}
+
+func (x *UsageSnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_models_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UsageSnapshot.ProtoReflect.Descriptor instead.
+func (*UsageSnapshot) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *UsageSnapshot) GetUtil_5H() float64 {
+	if x != nil {
+		return x.Util_5H
+	}
+	return 0
+}
+
+func (x *UsageSnapshot) GetUtil_7D() float64 {
+	if x != nil {
+		return x.Util_7D
+	}
+	return 0
+}
+
+func (x *UsageSnapshot) GetReset_5H() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Reset_5H
+	}
+	return nil
+}
+
+func (x *UsageSnapshot) GetReset_7D() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Reset_7D
+	}
+	return nil
+}
+
+func (x *UsageSnapshot) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *UsageSnapshot) GetPlanTier() string {
+	if x != nil {
+		return x.PlanTier
+	}
+	return ""
+}
+
+func (x *UsageSnapshot) GetFetchedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.FetchedAt
+	}
+	return nil
+}
+
 // ChatMessage is a transport-neutral, single turn of an agent chat transcript,
 // flattened from the agent's on-disk JSONL by the owning plugin. It carries
 // enough to render a conversation and to derive the "final result" without the
@@ -3774,7 +3880,7 @@ type ChatMessage struct {
 
 func (x *ChatMessage) Reset() {
 	*x = ChatMessage{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[23]
+	mi := &file_bossanova_v1_models_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3786,7 +3892,7 @@ func (x *ChatMessage) String() string {
 func (*ChatMessage) ProtoMessage() {}
 
 func (x *ChatMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[23]
+	mi := &file_bossanova_v1_models_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3799,7 +3905,7 @@ func (x *ChatMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatMessage.ProtoReflect.Descriptor instead.
 func (*ChatMessage) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{23}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ChatMessage) GetRole() string {
@@ -4116,7 +4222,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"agent_name\x18\x0f \x01(\tR\tagentName\x12\x14\n" +
 	"\x05model\x18\x10 \x01(\tR\x05model\x12!\n" +
 	"\fgate_command\x18\x11 \x01(\tR\vgateCommand\x12*\n" +
-	"\x11run_setup_command\x18\x12 \x01(\bR\x0frunSetupCommand\"\xca\x04\n" +
+	"\x11run_setup_command\x18\x12 \x01(\bR\x0frunSetupCommand\"\xfd\x04\n" +
 	"\aAccount\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
@@ -4136,7 +4242,17 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"g\n" +
+	"updated_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x121\n" +
+	"\x05usage\x18\x10 \x01(\v2\x1b.bossanova.v1.UsageSnapshotR\x05usage\"\x9f\x02\n" +
+	"\rUsageSnapshot\x12\x17\n" +
+	"\autil_5h\x18\x01 \x01(\x01R\x06util5h\x12\x17\n" +
+	"\autil_7d\x18\x02 \x01(\x01R\x06util7d\x125\n" +
+	"\breset_5h\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\areset5h\x125\n" +
+	"\breset_7d\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\areset7d\x12\x16\n" +
+	"\x06status\x18\x05 \x01(\tR\x06status\x12\x1b\n" +
+	"\tplan_tier\x18\x06 \x01(\tR\bplanTier\x129\n" +
+	"\n" +
+	"fetched_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tfetchedAt\"g\n" +
 	"\vChatMessage\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x1c\n" +
@@ -4302,7 +4418,7 @@ func file_bossanova_v1_models_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_models_proto_enumTypes = make([]protoimpl.EnumInfo, 19)
-var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
+var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_bossanova_v1_models_proto_goTypes = []any{
 	(SessionState)(0),             // 0: bossanova.v1.SessionState
 	(SessionEvent)(0),             // 1: bossanova.v1.SessionEvent
@@ -4346,36 +4462,37 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(*ClaudeChat)(nil),            // 39: bossanova.v1.ClaudeChat
 	(*CronJob)(nil),               // 40: bossanova.v1.CronJob
 	(*Account)(nil),               // 41: bossanova.v1.Account
-	(*ChatMessage)(nil),           // 42: bossanova.v1.ChatMessage
-	(*timestamppb.Timestamp)(nil), // 43: google.protobuf.Timestamp
+	(*UsageSnapshot)(nil),         // 42: bossanova.v1.UsageSnapshot
+	(*ChatMessage)(nil),           // 43: bossanova.v1.ChatMessage
+	(*timestamppb.Timestamp)(nil), // 44: google.protobuf.Timestamp
 }
 var file_bossanova_v1_models_proto_depIdxs = []int32{
 	2,  // 0: bossanova.v1.RotationEvent.trigger:type_name -> bossanova.v1.RotationTrigger
-	43, // 1: bossanova.v1.RotationEvent.reset_at:type_name -> google.protobuf.Timestamp
+	44, // 1: bossanova.v1.RotationEvent.reset_at:type_name -> google.protobuf.Timestamp
 	3,  // 2: bossanova.v1.RotationEvent.outcome:type_name -> bossanova.v1.RotationOutcome
-	43, // 3: bossanova.v1.RotationEvent.created_at:type_name -> google.protobuf.Timestamp
-	43, // 4: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
-	43, // 5: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
+	44, // 3: bossanova.v1.RotationEvent.created_at:type_name -> google.protobuf.Timestamp
+	44, // 4: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
+	44, // 5: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
 	0,  // 6: bossanova.v1.Session.state:type_name -> bossanova.v1.SessionState
 	6,  // 7: bossanova.v1.Session.last_check_state:type_name -> bossanova.v1.ChecksOverall
-	43, // 8: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
-	43, // 9: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	43, // 10: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
+	44, // 8: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
+	44, // 9: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	44, // 10: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
 	13, // 11: bossanova.v1.Session.display_status:type_name -> bossanova.v1.DisplayStatus
 	37, // 12: bossanova.v1.Session.attention_status:type_name -> bossanova.v1.AttentionStatus
 	14, // 13: bossanova.v1.Session.workflow_display_status:type_name -> bossanova.v1.WorkflowStatus
 	11, // 14: bossanova.v1.Session.display_intent:type_name -> bossanova.v1.DisplayIntent
-	43, // 15: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
+	44, // 15: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
 	13, // 16: bossanova.v1.Session.last_repair_display_status:type_name -> bossanova.v1.DisplayStatus
-	43, // 17: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
-	43, // 18: bossanova.v1.Session.last_repair_blocked_at:type_name -> google.protobuf.Timestamp
+	44, // 17: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
+	44, // 18: bossanova.v1.Session.last_repair_blocked_at:type_name -> google.protobuf.Timestamp
 	38, // 19: bossanova.v1.Session.merge_block:type_name -> bossanova.v1.MergeBlock
-	43, // 20: bossanova.v1.Session.last_agent_activity_at:type_name -> google.protobuf.Timestamp
+	44, // 20: bossanova.v1.Session.last_agent_activity_at:type_name -> google.protobuf.Timestamp
 	19, // 21: bossanova.v1.Session.rotation_events:type_name -> bossanova.v1.RotationEvent
 	9,  // 22: bossanova.v1.Attempt.trigger:type_name -> bossanova.v1.AttemptTrigger
 	10, // 23: bossanova.v1.Attempt.result:type_name -> bossanova.v1.AttemptResult
-	43, // 24: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
-	43, // 25: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
+	44, // 24: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
+	44, // 25: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
 	7,  // 26: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
 	4,  // 27: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
 	5,  // 28: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
@@ -4390,25 +4507,29 @@ var file_bossanova_v1_models_proto_depIdxs = []int32{
 	24, // 37: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
 	25, // 38: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
 	12, // 39: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
-	43, // 40: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
+	44, // 40: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
 	18, // 41: bossanova.v1.MergeBlock.gate:type_name -> bossanova.v1.MergeBlock.Gate
 	13, // 42: bossanova.v1.MergeBlock.display_status:type_name -> bossanova.v1.DisplayStatus
-	43, // 43: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
-	43, // 44: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
-	43, // 45: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
-	43, // 46: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
-	43, // 47: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
+	44, // 43: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
+	44, // 44: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
+	44, // 45: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
+	44, // 46: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
+	44, // 47: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
 	17, // 48: bossanova.v1.CronJob.last_run_status:type_name -> bossanova.v1.CronJobStatus
-	43, // 49: bossanova.v1.Account.cooldown_until:type_name -> google.protobuf.Timestamp
-	43, // 50: bossanova.v1.Account.last_used_at:type_name -> google.protobuf.Timestamp
-	43, // 51: bossanova.v1.Account.last_test_ok_at:type_name -> google.protobuf.Timestamp
-	43, // 52: bossanova.v1.Account.created_at:type_name -> google.protobuf.Timestamp
-	43, // 53: bossanova.v1.Account.updated_at:type_name -> google.protobuf.Timestamp
-	54, // [54:54] is the sub-list for method output_type
-	54, // [54:54] is the sub-list for method input_type
-	54, // [54:54] is the sub-list for extension type_name
-	54, // [54:54] is the sub-list for extension extendee
-	0,  // [0:54] is the sub-list for field type_name
+	44, // 49: bossanova.v1.Account.cooldown_until:type_name -> google.protobuf.Timestamp
+	44, // 50: bossanova.v1.Account.last_used_at:type_name -> google.protobuf.Timestamp
+	44, // 51: bossanova.v1.Account.last_test_ok_at:type_name -> google.protobuf.Timestamp
+	44, // 52: bossanova.v1.Account.created_at:type_name -> google.protobuf.Timestamp
+	44, // 53: bossanova.v1.Account.updated_at:type_name -> google.protobuf.Timestamp
+	42, // 54: bossanova.v1.Account.usage:type_name -> bossanova.v1.UsageSnapshot
+	44, // 55: bossanova.v1.UsageSnapshot.reset_5h:type_name -> google.protobuf.Timestamp
+	44, // 56: bossanova.v1.UsageSnapshot.reset_7d:type_name -> google.protobuf.Timestamp
+	44, // 57: bossanova.v1.UsageSnapshot.fetched_at:type_name -> google.protobuf.Timestamp
+	58, // [58:58] is the sub-list for method output_type
+	58, // [58:58] is the sub-list for method input_type
+	58, // [58:58] is the sub-list for extension type_name
+	58, // [58:58] is the sub-list for extension extendee
+	0,  // [0:58] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_models_proto_init() }
@@ -4437,7 +4558,7 @@ func file_bossanova_v1_models_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_models_proto_rawDesc), len(file_bossanova_v1_models_proto_rawDesc)),
 			NumEnums:      19,
-			NumMessages:   24,
+			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

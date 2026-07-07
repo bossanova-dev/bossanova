@@ -9,6 +9,7 @@ import (
 
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 )
 
@@ -20,6 +21,7 @@ type ChatContext struct {
 	SessionID string
 	RepoID    string
 	Provider  string // Session.AgentName ("claude", "codex", ...)
+	AccountID string // persisted account binding; empty machine account-0 is not probeable
 }
 
 // DecideRequest is the rotator-side view of a rotation decision request. The
@@ -28,6 +30,7 @@ type DecideRequest struct {
 	Provider       string
 	SessionID      string
 	AgentSessionID string
+	AccountID      string
 	ResetAt        time.Time // zero when the banner had no parseable reset
 }
 
@@ -73,15 +76,20 @@ type SwitchResult struct {
 	Fresh           bool // restarted fresh (stale/unsupported resume)
 }
 
+// RateLimitProbe authoritatively probes the currently bound account. Any error
+// or non-confirming snapshot means do not cool/rotate.
+type RateLimitProbe func(ctx context.Context, accountID string) (models.UsageSnapshot, error)
+
 // ChatRotatorDeps carries the injected seams. All are required.
 type ChatRotatorDeps struct {
-	Logger        zerolog.Logger
-	LoadConfig    func() (config.RotationConfig, error)
-	ChatContext   func(ctx context.Context, agentSessionID string) (ChatContext, error)
-	CurrentStatus func(agentSessionID string) bossanovav1.ChatStatus
-	Decide        func(ctx context.Context, req DecideRequest) (Decision, error)
-	Switch        func(ctx context.Context, req SwitchRequest) (SwitchResult, error)
-	Now           func() time.Time // nil = time.Now
+	Logger         zerolog.Logger
+	LoadConfig     func() (config.RotationConfig, error)
+	ChatContext    func(ctx context.Context, agentSessionID string) (ChatContext, error)
+	CurrentStatus  func(agentSessionID string) bossanovav1.ChatStatus
+	RateLimitProbe RateLimitProbe
+	Decide         func(ctx context.Context, req DecideRequest) (Decision, error)
+	Switch         func(ctx context.Context, req SwitchRequest) (SwitchResult, error)
+	Now            func() time.Time // nil = time.Now
 	// Recorder audits each rotation decision outcome (BOS-176). Nil is safe: the
 	// Recorder's methods are nil-receiver no-ops.
 	Recorder *Recorder
@@ -205,12 +213,38 @@ func (r *ChatRotator) rotate(agentSessionID string, resetAt time.Time) {
 		log.Debug().Stringer("status", st).Msg("auto-rotate: chat no longer limited; aborting")
 		return
 	}
+	if cc.AccountID == "" || r.deps.RateLimitProbe == nil {
+		log.Warn().Msg("auto-rotate: no usage probe available; leaving chat limited")
+		r.recordProbeStatusOnly(ctx, cc, agentSessionID, nil, "usage probe unavailable")
+		r.forgetAttempt(agentSessionID)
+		return
+	}
+	snap, err := r.deps.RateLimitProbe(ctx, cc.AccountID)
+	if err != nil {
+		log.Warn().Err(err).Str("account_id", cc.AccountID).
+			Msg("auto-rotate: usage probe failed; leaving chat limited")
+		r.recordProbeStatusOnly(ctx, cc, agentSessionID, nil, "usage probe failed")
+		r.forgetAttempt(agentSessionID)
+		return
+	}
+	if !UsageSnapshotConfirmsLimited(snap) {
+		log.Info().Str("account_id", cc.AccountID).Str("status", snap.Status).
+			Float64("util_5h", snap.Util5h).Float64("util_7d", snap.Util7d).
+			Msg("auto-rotate: usage probe says account is not limited; ignoring loose trigger")
+		r.recordProbeStatusOnly(ctx, cc, agentSessionID, UsageSnapshotResetAt(snap), "usage probe did not confirm limit")
+		return
+	}
+	probedReset := time.Time{}
+	if reset := UsageSnapshotResetAt(snap); reset != nil {
+		probedReset = *reset
+	}
 
 	decision, err := r.deps.Decide(ctx, DecideRequest{
 		Provider:       cc.Provider,
 		SessionID:      cc.SessionID,
 		AgentSessionID: agentSessionID,
-		ResetAt:        resetAt,
+		AccountID:      cc.AccountID,
+		ResetAt:        probedReset,
 	})
 	if err != nil {
 		log.Warn().Err(err).Msg("auto-rotate: engine decide failed; leaving chat limited")
@@ -218,8 +252,8 @@ func (r *ChatRotator) rotate(agentSessionID string, resetAt time.Time) {
 	}
 
 	var resetPtr *time.Time
-	if !resetAt.IsZero() {
-		resetPtr = &resetAt
+	if !probedReset.IsZero() {
+		resetPtr = &probedReset
 	}
 	auditBase := AuditEvent{
 		SessionID: cc.SessionID,
@@ -236,7 +270,7 @@ func (r *ChatRotator) rotate(agentSessionID string, resetAt time.Time) {
 			AgentSessionID:  agentSessionID,
 			AccountID:       decision.AccountID,
 			Auto:            true,
-			PreviousResetAt: resetAt,
+			PreviousResetAt: probedReset,
 		})
 		if err != nil {
 			// A failed switch is fail-safe: leave the chat as-is. This also covers
@@ -281,6 +315,19 @@ func (r *ChatRotator) rotate(agentSessionID string, resetAt time.Time) {
 		log.Warn().Int("kind", int(decision.Kind)).
 			Msg("auto-rotate: unknown decision kind; leaving chat limited")
 	}
+}
+
+func (r *ChatRotator) recordProbeStatusOnly(ctx context.Context, cc ChatContext, agentSessionID string, resetAt *time.Time, detail string) {
+	r.deps.Recorder.Record(ctx, AuditEvent{
+		SessionID:   cc.SessionID,
+		ChatID:      agentSessionID,
+		Provider:    cc.Provider,
+		Trigger:     "ROTATION_TRIGGER_USAGE_LIMITED",
+		FromAccount: cc.AccountID,
+		ResetAt:     resetAt,
+		Outcome:     "ROTATION_OUTCOME_STATUS_ONLY_PROBE_UNCONFIRMED",
+		Detail:      detail,
+	})
 }
 
 func (r *ChatRotator) forgetAttempt(agentSessionID string) {

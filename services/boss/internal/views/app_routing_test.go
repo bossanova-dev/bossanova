@@ -263,6 +263,35 @@ func TestAppCtrlBOpensBugReport(t *testing.T) {
 	}
 }
 
+func TestAppCtrlBBlockedWhileHomeBusy(t *testing.T) {
+	ctrlB := tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl}
+	tests := []struct {
+		name       string
+		upgrading  bool
+		restarting bool
+	}{
+		{name: "upgrading", upgrading: true},
+		{name: "restarting", restarting: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewApp(nil, nil)
+			a.activeView = ViewHome
+			a.home.upgrading = tt.upgrading
+			a.home.restarting = tt.restarting
+
+			model, cmd := a.Update(ctrlB)
+			got := model.(App)
+			if cmd != nil {
+				t.Fatalf("ctrl+b while busy returned command %T, want nil", cmd)
+			}
+			if got.activeView != ViewHome {
+				t.Fatalf("ctrl+b while busy: activeView = %v, want %v", got.activeView, ViewHome)
+			}
+		})
+	}
+}
+
 // TestAppCurrentSession covers app.go:589 (`a.activeView == ViewChatPicker`).
 // Only the chat picker exposes a current session; every other view reports nil.
 // Kills the negation (`==` → `!=` would return nil for the chat picker).

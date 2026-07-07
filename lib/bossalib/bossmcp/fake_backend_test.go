@@ -54,7 +54,7 @@ type fakeBackend struct {
 	updateCronJob        func(ctx context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error)
 	deleteCronJob        func(ctx context.Context, id string) error
 	runCronJobNow        func(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
-	listAccounts         func(ctx context.Context, provider string) ([]*pb.Account, error)
+	listAccounts         func(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error)
 	addAccount           func(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error)
 	refreshAccount       func(ctx context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error)
 	updateAccount        func(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error)
@@ -354,9 +354,9 @@ func (f *fakeBackend) RunCronJobNow(ctx context.Context, id string) (*pb.RunCron
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) ListAccounts(ctx context.Context, provider string) ([]*pb.Account, error) {
+func (f *fakeBackend) ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error) {
 	if f.listAccounts != nil {
-		return f.listAccounts(ctx, provider)
+		return f.listAccounts(ctx, provider, refresh)
 	}
 	return nil, errNotImpl
 }

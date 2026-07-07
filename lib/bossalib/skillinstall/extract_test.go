@@ -654,6 +654,33 @@ func TestEnsureUpdatedDoesNotInstallIntoEmptyDirectory(t *testing.T) {
 	}
 }
 
+func TestEnsureUpdatedNoOpOnCurrentInstall(t *testing.T) {
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	path := filepath.Join(dest, Namespace, "boss-test", "SKILL.md")
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := EnsureUpdated(dest, testFS())
+	if err != nil {
+		t.Fatalf("EnsureUpdated: %v", err)
+	}
+	if updated {
+		t.Fatal("EnsureUpdated = true on a current tree, want no-op")
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("current tree was rewritten: mtime %v -> %v", before.ModTime(), after.ModTime())
+	}
+}
+
 func TestEnsureUpdatedRefreshesStaleInstall(t *testing.T) {
 	dest := t.TempDir()
 	if err := Extract(dest, testFS()); err != nil {

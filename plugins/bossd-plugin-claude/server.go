@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"strings"
 	"time"
@@ -44,6 +45,11 @@ type Server struct {
 	// oneShot runs a single read-only claude prompt and returns its text output.
 	// Defaults to runClaudeOneShot; overridable in tests so they never exec claude.
 	oneShot func(ctx context.Context, workDir, prompt string) (string, error)
+
+	// httpClient and usage URLs back ProbeRateLimit; all are overridable in tests.
+	httpClient  *http.Client
+	usageURL    string
+	messagesURL string
 }
 
 func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...RunnerOption) *Server {
@@ -51,6 +57,9 @@ func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...Runn
 		host:   host,
 		logger: logger,
 		runner: NewRunner(logger, runnerOpts...),
+
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+		usageURL:   claudeUsageURL,
 	}
 	s.oneShot = s.runClaudeOneShot
 	return s

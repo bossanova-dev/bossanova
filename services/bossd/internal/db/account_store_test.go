@@ -402,4 +402,82 @@ func TestAccountStore_RecordTestResultUnknownID(t *testing.T) {
 	}
 }
 
+func TestAccountStore_RecordUsageProbeRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "usage"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if acct.Usage != nil {
+		t.Fatalf("fresh account Usage = %#v, want nil", acct.Usage)
+	}
+	before := acct.UpdatedAt
+	reset5h := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Millisecond)
+	reset7d := time.Now().Add(7 * 24 * time.Hour).UTC().Truncate(time.Millisecond)
+	fetchedAt := time.Now().UTC().Truncate(time.Millisecond)
+	snap := models.UsageSnapshot{
+		Util5h:    0.42,
+		Util7d:    0.73,
+		Reset5h:   &reset5h,
+		Reset7d:   &reset7d,
+		Status:    "warning",
+		PlanTier:  "max",
+		FetchedAt: &fetchedAt,
+	}
+
+	if err := store.RecordUsageProbe(ctx, acct.ID, snap); err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+	got, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Usage == nil {
+		t.Fatal("Usage = nil, want populated snapshot")
+	}
+	if got.Usage.Util5h != snap.Util5h || got.Usage.Util7d != snap.Util7d {
+		t.Errorf("utils = %v/%v, want %v/%v", got.Usage.Util5h, got.Usage.Util7d, snap.Util5h, snap.Util7d)
+	}
+	if got.Usage.Reset5h == nil || !got.Usage.Reset5h.Equal(reset5h) {
+		t.Errorf("reset_5h = %v, want %v", got.Usage.Reset5h, reset5h)
+	}
+	if got.Usage.Reset7d == nil || !got.Usage.Reset7d.Equal(reset7d) {
+		t.Errorf("reset_7d = %v, want %v", got.Usage.Reset7d, reset7d)
+	}
+	if got.Usage.Status != snap.Status || got.Usage.PlanTier != snap.PlanTier {
+		t.Errorf("status/plan = %q/%q, want %q/%q", got.Usage.Status, got.Usage.PlanTier, snap.Status, snap.PlanTier)
+	}
+	if got.Usage.FetchedAt == nil || !got.Usage.FetchedAt.Equal(fetchedAt) {
+		t.Errorf("fetched_at = %v, want %v", got.Usage.FetchedAt, fetchedAt)
+	}
+	if got.UpdatedAt.Before(before) {
+		t.Errorf("updated_at = %v, want >= %v", got.UpdatedAt, before)
+	}
+
+	empty, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "never-probed"})
+	if err != nil {
+		t.Fatalf("create never-probed: %v", err)
+	}
+	empty, err = store.Get(ctx, empty.ID)
+	if err != nil {
+		t.Fatalf("get never-probed: %v", err)
+	}
+	if empty.Usage != nil {
+		t.Errorf("never-probed Usage = %#v, want nil", empty.Usage)
+	}
+}
+
+func TestAccountStore_RecordUsageProbeUnknownID(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	if err := store.RecordUsageProbe(ctx, "nope", models.UsageSnapshot{}); err != sql.ErrNoRows {
+		t.Errorf("record usage unknown: got %v, want sql.ErrNoRows", err)
+	}
+}
+
 func ptrTime(t time.Time) *time.Time { return &t }

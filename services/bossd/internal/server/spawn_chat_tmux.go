@@ -166,6 +166,9 @@ type spawnInput struct {
 	McpConfigPath string
 	// SessionEnv is the canonical BOSS_* environment set on the spawned tmux session.
 	SessionEnv map[string]string
+	// SessionEnvFunc lazily builds SessionEnv after liveness checks pass. It lets
+	// callers defer credential materialization until a spawn will actually happen.
+	SessionEnvFunc func() map[string]string
 }
 
 type spawnResult struct {
@@ -251,7 +254,11 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (spawnRes
 	}
 
 	launchedAt := time.Now().UTC()
-	if err := deps.Tmux.NewSessionWithCmd(ctx, in.TmuxName, in.WorktreePath, args, in.SessionEnv); err != nil {
+	sessionEnv := in.SessionEnv
+	if in.SessionEnvFunc != nil {
+		sessionEnv = in.SessionEnvFunc()
+	}
+	if err := deps.Tmux.NewSessionWithCmd(ctx, in.TmuxName, in.WorktreePath, args, sessionEnv); err != nil {
 		return spawnResult{}, fmt.Errorf("new tmux session: %w", err)
 	}
 

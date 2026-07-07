@@ -208,6 +208,68 @@ test('discoverExtensions returns every marker-matched role when role is omitted'
   assert.deepEqual(extensions.map((e) => e.name).sort(), ['bs-plan-lensy', 'bs-plan-reviewer'])
 })
 
+// Repo-local tier-1 discovery regression (BOS-288). Bossanova rides its own opinionated
+// extensions because every worktree carries the committed `.claude/skills/boss-<skill>-*`
+// and this discover helper scans repo-local (`root` = cwd), never the installed payload.
+// This guards against a future move of discovery to the installed root, or an extension
+// being deleted / mis-marked. Assert INCLUSION of the known committed extensions (not an
+// exact-count equality) so adding a new extension never turns this into a churn magnet.
+const repoRoot = path.resolve(import.meta.dirname, '..')
+
+test('discoverExtensions finds the committed boss-plan draft extension repo-local', () => {
+  const { extensions } = discoverExtensions({ core: 'boss-plan', root: repoRoot, role: 'draft' })
+  const found = extensions.find((e) => e.name === 'boss-plan-draft')
+  assert.ok(found, `expected boss-plan-draft in ${JSON.stringify(extensions.map((e) => e.name))}`)
+  assert.equal(found.role, 'draft')
+})
+
+test('discoverExtensions finds the committed boss-review round extensions repo-local', () => {
+  const { extensions } = discoverExtensions({ core: 'boss-review', root: repoRoot, role: 'round' })
+  const names = extensions.map((e) => e.name)
+  for (const expected of [
+    'boss-review-requesting',
+    'boss-review-crossmodel',
+    'boss-review-thermonuclear',
+  ]) {
+    assert.ok(names.includes(expected), `expected ${expected} in ${JSON.stringify(names)}`)
+  }
+  assert.ok(
+    extensions.every((e) => e.role === 'round'),
+    `every round descriptor should carry role "round": ${JSON.stringify(extensions)}`,
+  )
+})
+
+test('discoverExtensions finds the committed boss-implement methodology extension repo-local', () => {
+  const out = execFileSync(
+    'node',
+    [
+      'scripts/skill-extensions.mjs',
+      'discover',
+      '--core',
+      'boss-implement',
+      '--role',
+      'methodology',
+      '--json',
+    ],
+    { encoding: 'utf8', cwd: process.cwd() },
+  )
+  const { extensions } = JSON.parse(out)
+  const found = extensions.find((e) => e.name === 'boss-implement-superpowers')
+  assert.ok(
+    found,
+    `expected boss-implement-superpowers in ${JSON.stringify(extensions.map((e) => e.name))}`,
+  )
+  assert.equal(found.role, 'methodology')
+})
+
+test('discoverExtensions finds the committed boss-proof surface extensions repo-local', () => {
+  const { extensions } = discoverExtensions({ core: 'boss-proof', root: repoRoot, role: 'surface' })
+  const names = extensions.map((e) => e.name)
+  for (const expected of ['boss-proof-web', 'boss-proof-marketing', 'boss-proof-docs']) {
+    assert.ok(names.includes(expected), `expected ${expected} in ${JSON.stringify(names)}`)
+  }
+})
+
 test('discoverExtensions is a no-op when the skills dir is absent', () => {
   const root = scratchRoot()
   const { extensions } = discoverExtensions({ core: 'bs-review', root })

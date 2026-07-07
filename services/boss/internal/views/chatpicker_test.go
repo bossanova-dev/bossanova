@@ -177,7 +177,7 @@ func (s *chatPickerStub) DeleteCronJob(context.Context, string) error { panic("u
 func (s *chatPickerStub) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) ListAccounts(context.Context, string) ([]*pb.Account, error) {
+func (s *chatPickerStub) ListAccounts(context.Context, string, bool) ([]*pb.Account, error) {
 	return s.accounts, nil
 }
 func (s *chatPickerStub) AddAccount(context.Context, *pb.AddAccountRequest) (*pb.Account, error) {

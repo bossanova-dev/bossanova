@@ -394,6 +394,10 @@ type AccountStore interface {
 	// last_test_ok_at to NULL; testErr is written verbatim ("" = no error).
 	// Returns sql.ErrNoRows when the account does not exist.
 	RecordTestResult(ctx context.Context, id string, okAt *time.Time, testErr string) error
+	// RecordUsageProbe overwrites only cached usage-snapshot metadata for a row
+	// and bumps updated_at. The snapshot never carries credentials. Returns
+	// sql.ErrNoRows when the account does not exist.
+	RecordUsageProbe(ctx context.Context, id string, snap models.UsageSnapshot) error
 }
 
 // CronJobStore defines the interface for cron job persistence.

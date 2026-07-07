@@ -504,6 +504,9 @@ var daemonStop = daemon.Stop
 
 var terminateAllBossdProcesses = terminateBossdProcesses
 
+var terminatePluginProcesses = terminateBossdPluginProcesses
+var terminateAllPluginProcesses = terminateAllBossdPluginProcesses
+
 var waitForDaemonSocketGone = waitForSocketGone
 
 var loadSettings = config.Load
@@ -1529,14 +1532,21 @@ func runDaemonStop(cmd *cobra.Command) error {
 		if err != nil {
 			return fmt.Errorf("stop standalone bossd failed: %w", err)
 		}
-		if n == 0 {
+		pluginCount, err := terminateAllPluginProcesses(profile)
+		if err != nil {
+			return fmt.Errorf("stop plugin processes failed: %w", err)
+		}
+		if n == 0 && pluginCount == 0 {
 			fmt.Println("No standalone bossd process is running.")
 			return nil
 		}
-		if !waitForDaemonSocketGone(profile.SocketPath) {
+		if n > 0 && !waitForDaemonSocketGone(profile.SocketPath) {
 			return fmt.Errorf("timed out waiting for daemon socket to stop")
 		}
-		fmt.Printf("Stopped %d bossd process(es) across all profiles.\n", n)
+		if n > 0 {
+			fmt.Printf("Stopped %d bossd process(es) across all profiles.\n", n)
+		}
+		printPluginCleanup(pluginCount)
 		return nil
 	}
 
@@ -1547,14 +1557,21 @@ func runDaemonStop(cmd *cobra.Command) error {
 		if err != nil {
 			return fmt.Errorf("stop standalone bossd failed: %w", err)
 		}
-		if n == 0 {
+		pluginCount, err := terminatePluginProcesses(profile)
+		if err != nil {
+			return fmt.Errorf("stop plugin processes failed: %w", err)
+		}
+		if n == 0 && pluginCount == 0 {
 			fmt.Println("Daemon is not installed and no standalone bossd is running.")
 			return nil
 		}
-		if !waitForDaemonSocketGone(profile.SocketPath) {
+		if n > 0 && !waitForDaemonSocketGone(profile.SocketPath) {
 			return fmt.Errorf("timed out waiting for standalone bossd to stop")
 		}
-		fmt.Println("Stopped standalone bossd for current profile.")
+		if n > 0 {
+			fmt.Println("Stopped standalone bossd for current profile.")
+		}
+		printPluginCleanup(pluginCount)
 		return nil
 	}
 	if !st.Running {
@@ -1564,14 +1581,22 @@ func runDaemonStop(cmd *cobra.Command) error {
 		if err != nil {
 			return fmt.Errorf("stop standalone bossd failed: %w", err)
 		}
+		pluginCount, err := terminatePluginProcesses(profile)
+		if err != nil {
+			return fmt.Errorf("stop plugin processes failed: %w", err)
+		}
 		if n > 0 {
 			if !waitForDaemonSocketGone(profile.SocketPath) {
 				return fmt.Errorf("timed out waiting for standalone bossd to stop")
 			}
 			fmt.Println("Stopped standalone bossd for current profile.")
+			printPluginCleanup(pluginCount)
 			return nil
 		}
-		fmt.Println("Daemon is already stopped.")
+		if pluginCount == 0 {
+			fmt.Println("Daemon is already stopped.")
+		}
+		printPluginCleanup(pluginCount)
 		return nil
 	}
 	if err := daemonStop(); err != nil {
@@ -1583,37 +1608,44 @@ func runDaemonStop(cmd *cobra.Command) error {
 	if !waitForDaemonSocketGone(profile.SocketPath) {
 		return fmt.Errorf("timed out waiting for daemon socket to stop")
 	}
+	pluginCount, err := terminatePluginProcesses(profile)
+	if err != nil {
+		return fmt.Errorf("stop plugin processes failed: %w", err)
+	}
 	fmt.Println("Daemon stopped.")
+	printPluginCleanup(pluginCount)
 	return nil
 }
 
 func runDaemonRestart(_ *cobra.Command) error {
-	st, err := daemon.GetStatus()
+	st, err := daemonGetStatus()
 	if err != nil {
 		return fmt.Errorf("daemon restart: %w", err)
 	}
-	socketPath, err := restartSocketPath(client.DefaultSocketPath())
+	profile, err := currentDaemonProfile()
 	if err != nil {
-		return err
+		return fmt.Errorf("daemon restart: %w", err)
 	}
+	socketPath := profile.SocketPath
 
 	if !st.Installed {
-		profile, err := currentDaemonProfile()
-		if err != nil {
-			return fmt.Errorf("daemon restart: %w", err)
-		}
 		n, err := terminateProfileBossdProcess(profile.AppDataDir, func(pid int) (processSignaler, error) {
 			return os.FindProcess(pid)
 		})
 		if err != nil {
 			return fmt.Errorf("restart standalone bossd failed: %w", err)
 		}
-		if n > 0 && !waitForSocketGone(socketPath) {
+		pluginCount, err := terminatePluginProcesses(profile)
+		if err != nil {
+			return fmt.Errorf("stop plugin processes failed: %w", err)
+		}
+		if n > 0 && !waitForDaemonSocketGone(socketPath) {
 			return fmt.Errorf("timed out waiting for standalone bossd to stop")
 		}
-		if err := daemon.EnsureRunning(socketPath); err != nil {
+		if err := daemonEnsureRunning(socketPath); err != nil {
 			return fmt.Errorf("restart standalone bossd failed: %w", err)
 		}
+		printPluginCleanup(pluginCount)
 		if n > 0 {
 			fmt.Println("Restarted standalone bossd for current profile.")
 		} else {
@@ -1621,13 +1653,26 @@ func runDaemonRestart(_ *cobra.Command) error {
 		}
 		return nil
 	}
-	if err := daemon.Restart(); err != nil {
+	if st.Running {
+		if err := daemonStop(); err != nil {
+			return fmt.Errorf("stop daemon failed: %w", err)
+		}
+		if !waitForDaemonSocketGone(socketPath) {
+			return fmt.Errorf("timed out waiting for daemon socket to stop")
+		}
+	}
+	pluginCount, err := terminatePluginProcesses(profile)
+	if err != nil {
+		return fmt.Errorf("stop plugin processes failed: %w", err)
+	}
+	if err := daemonEnsureRunning(socketPath); err != nil {
 		return fmt.Errorf("restart daemon failed: %w", err)
 	}
+	printPluginCleanup(pluginCount)
 	// Wait for the new bossd to come up so the next command doesn't race.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if daemon.IsSocketReachable(socketPath) {
+		if daemonSocketReachable(socketPath) {
 			fmt.Println("Daemon restarted.")
 			return nil
 		}
@@ -1730,13 +1775,7 @@ func metadataMatchesRunningProcess(metadata daemonstate.Metadata) bool {
 	if err != nil {
 		return false
 	}
-	fields := strings.Fields(commandLine)
-	if len(fields) == 0 {
-		return false
-	}
-	got := filepath.Clean(fields[0])
-	want := filepath.Clean(metadata.ExecutablePath)
-	return got == want
+	return commandLineStartsWithExecutable(commandLine, metadata.ExecutablePath)
 }
 
 func processCommandLine(pid int) (string, error) {
@@ -1779,6 +1818,161 @@ func signalBossdProcesses(pids []int, findProcess func(int) (processSignaler, er
 				continue
 			}
 			errs = append(errs, fmt.Errorf("signal bossd pid %d: %w", pid, err))
+			continue
+		}
+		signalled++
+	}
+	return signalled, errors.Join(errs...)
+}
+
+func terminateBossdPluginProcesses(profile daemonProfile) (int, error) {
+	return terminateBossdPluginProcessesMatching(profile, false)
+}
+
+func terminateAllBossdPluginProcesses(profile daemonProfile) (int, error) {
+	return terminateBossdPluginProcessesMatching(profile, true)
+}
+
+func terminateBossdPluginProcessesMatching(profile daemonProfile, includeHomebrewFallback bool) (int, error) {
+	settings, err := config.LoadFrom(profile.SettingsPath)
+	if err != nil {
+		return 0, err
+	}
+	pids, err := findBossdPluginPIDs()
+	if err != nil {
+		return 0, err
+	}
+	matches := bossdPluginProcessMatcher(settings.Plugins, includeHomebrewFallback)
+	return signalBossdPluginProcesses(pids, matches, func(pid int) (processSignaler, error) {
+		return os.FindProcess(pid)
+	})
+}
+
+func printPluginCleanup(n int) {
+	if n > 0 {
+		fmt.Printf("Stopped %d plugin process(es).\n", n)
+	}
+}
+
+var findBossdPluginPIDs = findBossdPluginPIDsFromPgrep
+
+func findBossdPluginPIDsFromPgrep() ([]int, error) {
+	out, err := exec.Command("pgrep", bossdPluginPgrepArgs()...).Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("pgrep bossd-plugin: %w", err)
+	}
+	return parsePgrepOutput(string(out)), nil
+}
+
+func bossdPluginPgrepArgs() []string {
+	return []string{"-u", strconv.Itoa(os.Geteuid()), "-f", "bossd-plugin-"}
+}
+
+func bossdPluginProcessMatcher(plugins []config.PluginConfig, matchAnyPluginExecutable bool) func(string) bool {
+	configuredPaths := make(map[string]struct{}, len(plugins))
+	for _, plugin := range plugins {
+		if plugin.Path == "" {
+			continue
+		}
+		clean := filepath.Clean(plugin.Path)
+		configuredPaths[clean] = struct{}{}
+		if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+			configuredPaths[filepath.Clean(resolved)] = struct{}{}
+		}
+	}
+	return func(commandLine string) bool {
+		for configuredPath := range configuredPaths {
+			if !strings.HasPrefix(filepath.Base(configuredPath), "bossd-plugin-") {
+				continue
+			}
+			if commandLineStartsWithExecutable(commandLine, configuredPath) {
+				return true
+			}
+		}
+		if !matchAnyPluginExecutable {
+			return false
+		}
+		return commandLineStartsWithBossdPluginExecutable(commandLine)
+	}
+}
+
+func commandLineStartsWithExecutable(commandLine, executable string) bool {
+	commandLine = strings.TrimSpace(commandLine)
+	executable = filepath.Clean(executable)
+	return commandLine == executable || strings.HasPrefix(commandLine, executable+" ")
+}
+
+func commandLineStartsWithBossdPluginExecutable(commandLine string) bool {
+	commandLine = strings.TrimSpace(commandLine)
+	if commandLine == "" {
+		return false
+	}
+	firstToken := commandLineFirstToken(commandLine)
+	if strings.HasPrefix(filepath.Base(filepath.Clean(firstToken)), "bossd-plugin-") {
+		return true
+	}
+	if commandLine[0] != '/' && commandLine[0] != '.' {
+		return false
+	}
+	if firstToken != "" {
+		cleanFirstToken := filepath.Clean(firstToken)
+		if info, err := os.Stat(cleanFirstToken); err == nil && !info.IsDir() &&
+			!strings.HasPrefix(filepath.Base(cleanFirstToken), "bossd-plugin-") {
+			return false
+		}
+	}
+	marker := strings.Index(commandLine, "/bossd-plugin-")
+	if marker < 0 {
+		return false
+	}
+	prefix := commandLine[:marker+1]
+	if strings.ContainsAny(prefix, " \t\r\n") && !strings.HasSuffix(prefix, "/plugins/") {
+		return false
+	}
+	end := len(commandLine)
+	for i := marker + 1; i < len(commandLine); i++ {
+		if commandLine[i] == ' ' || commandLine[i] == '\t' || commandLine[i] == '\r' || commandLine[i] == '\n' {
+			end = i
+			break
+		}
+	}
+	return strings.HasPrefix(filepath.Base(filepath.Clean(commandLine[:end])), "bossd-plugin-")
+}
+
+func commandLineFirstToken(commandLine string) string {
+	for i, r := range commandLine {
+		switch r {
+		case ' ', '\t', '\r', '\n':
+			return commandLine[:i]
+		}
+	}
+	return commandLine
+}
+
+func signalBossdPluginProcesses(pids []int, matches func(string) bool, findProcess func(int) (processSignaler, error)) (int, error) {
+	signalled := 0
+	var errs []error
+	for _, pid := range pids {
+		commandLine, err := bossdProcessCommandLine(pid)
+		if err != nil {
+			continue
+		}
+		if !matches(commandLine) {
+			continue
+		}
+		p, err := findProcess(pid)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("find bossd plugin pid %d: %w", pid, err))
+			continue
+		}
+		if err := p.Signal(syscall.SIGTERM); err != nil {
+			if errors.Is(err, syscall.ESRCH) || errors.Is(err, os.ErrProcessDone) {
+				continue
+			}
+			errs = append(errs, fmt.Errorf("signal bossd plugin pid %d: %w", pid, err))
 			continue
 		}
 		signalled++

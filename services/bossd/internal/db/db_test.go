@@ -1341,6 +1341,32 @@ func TestRepoStore_ConcurrentCreateRejectsDuplicateCanonicalOrigin(t *testing.T)
 	}
 }
 
+func TestRepoStore_CloseImmediateRollsBackWithCanceledContext(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewRepoStore(db)
+
+	conn, err := store.beginImmediate(context.Background())
+	if err != nil {
+		t.Fatalf("begin immediate: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	committed := false
+	store.closeImmediate(ctx, conn, &committed)
+
+	_, err = store.Create(context.Background(), CreateRepoParams{
+		DisplayName:       "after-cancel",
+		LocalPath:         "/tmp/after-cancel",
+		OriginURL:         "https://github.com/test/after-cancel.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees-after-cancel",
+	})
+	if err != nil {
+		t.Fatalf("create after canceled cleanup rollback: %v", err)
+	}
+}
+
 func TestForeignKeyCascade_DeleteRepo(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

@@ -299,6 +299,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.activeView == ViewBugReport {
 				break
 			}
+			if a.activeView == ViewHome && (a.home.upgrading || a.home.restarting) {
+				return a, nil
+			}
 			a.bugReport = NewBugReportModel(a.client, a.ctx, a.auth, a.activeView, a.currentSession(), a.currentDaemonStatuses())
 			a.bugReport.width = a.width
 			a.activeView = ViewBugReport

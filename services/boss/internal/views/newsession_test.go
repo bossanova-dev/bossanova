@@ -227,7 +227,7 @@ func (s *stubClient) DeleteCronJob(context.Context, string) error { panic("unuse
 func (s *stubClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
-func (s *stubClient) ListAccounts(_ context.Context, provider string) ([]*pb.Account, error) {
+func (s *stubClient) ListAccounts(_ context.Context, provider string, _ bool) ([]*pb.Account, error) {
 	s.accountsProvider = provider
 	return s.accounts, s.accountsErr
 }

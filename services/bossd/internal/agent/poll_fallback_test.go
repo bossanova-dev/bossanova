@@ -81,6 +81,10 @@ func (f *fakePollAgentClient) DetectUsageLimit(_ context.Context, _ *bossanovav1
 	return &bossanovav1.DetectUsageLimitResponse{}, nil
 }
 
+func (f *fakePollAgentClient) ProbeRateLimit(_ context.Context, _ *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) {
+	return &bossanovav1.ProbeRateLimitResponse{}, nil
+}
+
 func (f *fakePollAgentClient) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
 	return &bossanovav1.HasWorkingIndicatorResponse{}, nil
 }

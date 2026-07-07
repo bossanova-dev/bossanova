@@ -105,8 +105,8 @@ func TestRunCodexAdd(t *testing.T) {
 		// Unmarshaling into map[string]string above would fail on the raw
 		// {"tokens":{...}} shape (object value, not string), so success already
 		// proves the nested shape was flattened.
-		if req.GetEmail() != "codexuser@example.com" {
-			t.Fatalf("email default = %q, want id_token claim", req.GetEmail())
+		if req.GetEmail() != "" {
+			t.Fatalf("email default = %q, want empty unless --email is supplied", req.GetEmail())
 		}
 		if req.GetPriority() != 3 {
 			t.Fatalf("priority = %d, want 3 (--priority must reach AddAccount)", req.GetPriority())

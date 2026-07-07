@@ -864,7 +864,7 @@ func TestGetChatTitleSupportedEvenWithoutTranscript(t *testing.T) {
 	}
 }
 
-func TestGetChatTitle_FromSessionIndexThreadName(t *testing.T) {
+func TestGetChatTitle_FromSessionIndexThreadNameIsNonExplicit(t *testing.T) {
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
 
@@ -888,8 +888,8 @@ func TestGetChatTitle_FromSessionIndexThreadName(t *testing.T) {
 	if resp.Title != "Rename Test" {
 		t.Errorf("Title = %q, want session index thread name", resp.Title)
 	}
-	if !resp.Explicit {
-		t.Error("Explicit = false, want true for session index thread name")
+	if resp.Explicit {
+		t.Error("Explicit = true, want false for session index thread name")
 	}
 }
 
@@ -920,8 +920,8 @@ func TestGetChatTitle_SessionIndexLatestSameIDWins(t *testing.T) {
 	if resp.Title != "Latest Name" {
 		t.Errorf("Title = %q, want latest thread name", resp.Title)
 	}
-	if !resp.Explicit {
-		t.Error("Explicit = false, want true for latest thread name")
+	if resp.Explicit {
+		t.Error("Explicit = true, want false for latest thread name")
 	}
 }
 

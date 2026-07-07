@@ -198,22 +198,20 @@ func TestRunClaudeAdd(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate_email_forces_distinct_label", func(t *testing.T) {
-		// The collision-forces-a-distinct-label path is interactive (it re-prompts
-		// for a label), so this exercises the interactive paste flow: decline the
-		// walkthrough (confirm=false), paste the token, then type the colliding
-		// email and labels.
+	t.Run("duplicate_email_does_not_force_distinct_label", func(t *testing.T) {
 		tok := claudeToken()
-		pr := &fakePrompter{confirms: []bool{false}, answers: []string{tok, "dup@example.com", "claude-1", "claude-2"}}
-		cl := &fakeAccountClient{listResult: []*pb.Account{{Id: "a1", Provider: "claude", Label: "claude-1", Email: "dup@example.com"}}}
-		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Prompter: pr, Client: cl}); err != nil {
+		pr := &fakePrompter{answers: []string{tok}}
+		cl := &fakeAccountClient{listResult: []*pb.Account{{Id: "a1", Provider: "claude", Label: "existing", Email: "dup@example.com"}}}
+		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
+			Prompter: pr, Client: cl, PasteMode: true, Label: "claude-1", Email: "dup@example.com",
+		}); err != nil {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
-		if len(cl.addReqs) != 1 || cl.addReqs[0].GetLabel() != "claude-2" {
-			t.Fatalf("AddAccount label = %+v, want claude-2", cl.addReqs)
+		if len(cl.addReqs) != 1 || cl.addReqs[0].GetLabel() != "claude-1" || cl.addReqs[0].GetEmail() != "dup@example.com" {
+			t.Fatalf("AddAccount = %+v, want duplicate email accepted with supplied label", cl.addReqs)
 		}
-		if !strings.Contains(pr.transcript(), "already registered") {
-			t.Fatalf("no 'already registered' warning in transcript:\n%s", pr.transcript())
+		if strings.Contains(pr.transcript(), "already registered") {
+			t.Fatalf("duplicate email warning should not be shown:\n%s", pr.transcript())
 		}
 	})
 
@@ -313,24 +311,41 @@ func TestRunClaudeAdd(t *testing.T) {
 		}
 	})
 
-	t.Run("token_stdin_duplicate_email_needs_label", func(t *testing.T) {
-		// A headless registration whose --email collides with an existing account
-		// cannot prompt for a distinct label. Without a disambiguating --label it
-		// must fail with a clear error rather than EOF-prompting or silently
-		// registering a duplicate.
+	t.Run("token_stdin_duplicate_email_uses_default_label", func(t *testing.T) {
 		tok := claudeToken()
 		pr := NewIOPrompter(strings.NewReader(tok+"\n"), io.Discard)
 		cl := &fakeAccountClient{listResult: []*pb.Account{
 			{Id: "a1", Provider: "claude", Label: "claude-1", Email: "dup@example.com"},
 		}}
-		err := RunClaudeAdd(context.Background(), ClaudeOptions{
+		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
 			Prompter: pr, Client: cl, PasteMode: true, Email: "dup@example.com",
-		})
-		if err == nil || !strings.Contains(err.Error(), "distinct --label") {
-			t.Fatalf("err = %v, want 'distinct --label' guidance", err)
+		}); err != nil {
+			t.Fatalf("RunClaudeAdd: %v", err)
 		}
-		if len(cl.addReqs) != 0 {
-			t.Fatalf("AddAccount must not be called on an unresolved collision")
+		if len(cl.addReqs) != 1 {
+			t.Fatalf("want AddAccount, got %d", len(cl.addReqs))
+		}
+		if req := cl.addReqs[0]; req.GetEmail() != "dup@example.com" || req.GetLabel() != "claude-2" {
+			t.Fatalf("email/label = %q/%q, want duplicate email with default label claude-2", req.GetEmail(), req.GetLabel())
+		}
+	})
+
+	t.Run("token_stdin_sparse_labels_use_first_available_default", func(t *testing.T) {
+		tok := claudeToken()
+		pr := NewIOPrompter(strings.NewReader(tok+"\n"), io.Discard)
+		cl := &fakeAccountClient{listResult: []*pb.Account{
+			{Id: "a1", Provider: "claude", Label: "claude-2"},
+		}}
+		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
+			Prompter: pr, Client: cl, PasteMode: true,
+		}); err != nil {
+			t.Fatalf("RunClaudeAdd: %v", err)
+		}
+		if len(cl.addReqs) != 1 {
+			t.Fatalf("want AddAccount, got %d", len(cl.addReqs))
+		}
+		if req := cl.addReqs[0]; req.GetLabel() != "claude-1" {
+			t.Fatalf("label = %q, want first available default claude-1", req.GetLabel())
 		}
 	})
 

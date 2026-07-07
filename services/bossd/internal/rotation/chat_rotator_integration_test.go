@@ -10,6 +10,7 @@ import (
 
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/status"
 )
@@ -32,13 +33,23 @@ func TestChatRotator_TrackerTransitionDrivesRotation(t *testing.T) {
 		Logger:     zerolog.Nop(),
 		LoadConfig: func() (config.RotationConfig, error) { return config.RotationConfig{}, nil },
 		ChatContext: func(_ context.Context, _ string) (rotation.ChatContext, error) {
-			return rotation.ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude"}, nil
+			return rotation.ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-capped"}, nil
 		},
 		CurrentStatus: func(id string) bossanovav1.ChatStatus {
 			if e := tracker.Get(id); e != nil {
 				return e.Status
 			}
 			return bossanovav1.ChatStatus_CHAT_STATUS_UNSPECIFIED
+		},
+		RateLimitProbe: func(context.Context, string) (models.UsageSnapshot, error) {
+			fetched := time.Now().UTC()
+			reset := fetched.Add(2 * time.Hour)
+			return models.UsageSnapshot{
+				Util5h:    1,
+				Reset5h:   &reset,
+				Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
+				FetchedAt: &fetched,
+			}, nil
 		},
 		Decide: func(_ context.Context, _ rotation.DecideRequest) (rotation.Decision, error) {
 			return rotation.Decision{Kind: rotation.DecisionSwitch, AccountID: "acct-b-id"}, nil

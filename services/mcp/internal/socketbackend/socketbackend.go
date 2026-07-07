@@ -482,10 +482,13 @@ func (b *Backend) RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobN
 
 // --- Accounts ---
 
-func (b *Backend) ListAccounts(ctx context.Context, provider string) ([]*pb.Account, error) {
+func (b *Backend) ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error) {
 	req := &pb.ListAccountsRequest{}
 	if provider != "" {
 		req.Provider = &provider
+	}
+	if refresh {
+		req.Refresh = &refresh
 	}
 	resp, err := b.rpc.ListAccounts(ctx, connect.NewRequest(req))
 	if err != nil {

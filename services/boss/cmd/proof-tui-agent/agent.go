@@ -45,27 +45,78 @@ type request struct {
 	Keys      []string `json:"keys"`
 	Text      string   `json:"text"`
 	TimeoutMs int64    `json:"timeoutMs"`
+	// SettleMs/HardCapMs are optional per-op settle overrides (milliseconds).
+	// 0 or absent ⇒ use the process-default settleConfig. Shared with the
+	// BOS-217 daemon op, which reuses resolveSettle.
+	SettleMs  int64 `json:"settleMs"`
+	HardCapMs int64 `json:"hardCapMs"`
 }
 
-// settle polls t.Screen() until it is unchanged for st.stableFor, or st.hardCap
-// elapses, and returns the final screen.
+// Per-op settle-override clamp bounds (milliseconds). Positive request values
+// are clamped into these ranges; non-positive values fall back to the base
+// config. Shared by every settling op and by the BOS-217 daemon op.
+const (
+	minSettleMs  = 20
+	maxSettleMs  = 5_000
+	minHardCapMs = 100
+	maxHardCapMs = 30_000
+)
+
+// resolveSettle returns base with stableFor/hardCap overridden from req's
+// optional per-op values. poll/cols/rows are preserved. Non-positive override
+// values keep the base value; positive values are clamped into the [min,max]
+// bounds. The resolved hardCap is never below stableFor, so settle can always
+// reach stability at least once.
+func resolveSettle(base settleConfig, req request) settleConfig {
+	out := base
+	if req.SettleMs > 0 {
+		out.stableFor = clampMs(req.SettleMs, minSettleMs, maxSettleMs)
+	}
+	if req.HardCapMs > 0 {
+		out.hardCap = clampMs(req.HardCapMs, minHardCapMs, maxHardCapMs)
+	}
+	if out.hardCap < out.stableFor {
+		out.hardCap = out.stableFor
+	}
+	return out
+}
+
+// clampMs clamps v (milliseconds) into [lo, hi] and returns a Duration.
+func clampMs(v, lo, hi int64) time.Duration {
+	if v < lo {
+		v = lo
+	}
+	if v > hi {
+		v = hi
+	}
+	return time.Duration(v) * time.Millisecond
+}
+
+// settle polls t.Screen() until the NORMALIZED screen is unchanged for
+// st.stableFor (spinner animation ignored — see normalizeAnimation), or
+// st.hardCap elapses. It returns the RAW final screen; only the stability
+// comparison is normalized.
 func settle(t tui, st settleConfig) string {
 	deadline := time.Now().Add(st.hardCap)
-	last := t.Screen()
+	lastRaw := t.Screen()
+	lastNorm := normalizeAnimation(lastRaw)
 	stableSince := time.Now()
 	for {
 		if time.Now().After(deadline) {
-			return last
+			return lastRaw
 		}
 		time.Sleep(st.poll)
-		cur := t.Screen()
-		if cur != last {
-			last = cur
+		curRaw := t.Screen()
+		curNorm := normalizeAnimation(curRaw)
+		if curNorm != lastNorm {
+			lastRaw = curRaw
+			lastNorm = curNorm
 			stableSince = time.Now()
 			continue
 		}
+		lastRaw = curRaw // keep the freshest raw frame while stable
 		if time.Since(stableSince) >= st.stableFor {
-			return last
+			return lastRaw
 		}
 	}
 }
@@ -122,7 +173,7 @@ func handleLine(t tui, bw *bufio.Writer, line []byte, st settleConfig) (quit boo
 
 	switch req.Op {
 	case "observe":
-		screen := settle(t, st)
+		screen := settle(t, resolveSettle(st, req))
 		return false, writeJSON(bw, map[string]any{
 			"id":     req.ID,
 			"screen": screen,
@@ -139,22 +190,22 @@ func handleLine(t tui, bw *bufio.Writer, line []byte, st settleConfig) (quit boo
 				return false, writeJSON(bw, errorResponse(req.ID, serr.Error()))
 			}
 		}
-		return false, writeJSON(bw, okScreen(req.ID, settle(t, st)))
+		return false, writeJSON(bw, okScreen(req.ID, settle(t, resolveSettle(st, req))))
 	case "type":
 		if serr := t.PasteString(req.Text); serr != nil {
 			return false, writeJSON(bw, errorResponse(req.ID, serr.Error()))
 		}
-		return false, writeJSON(bw, okScreen(req.ID, settle(t, st)))
+		return false, writeJSON(bw, okScreen(req.ID, settle(t, resolveSettle(st, req))))
 	case "enter":
 		if serr := t.SendString("\r"); serr != nil {
 			return false, writeJSON(bw, errorResponse(req.ID, serr.Error()))
 		}
-		return false, writeJSON(bw, okScreen(req.ID, settle(t, st)))
+		return false, writeJSON(bw, okScreen(req.ID, settle(t, resolveSettle(st, req))))
 	case "esc":
 		if serr := t.SendString("\x1b"); serr != nil {
 			return false, writeJSON(bw, errorResponse(req.ID, serr.Error()))
 		}
-		return false, writeJSON(bw, okScreen(req.ID, settle(t, st)))
+		return false, writeJSON(bw, okScreen(req.ID, settle(t, resolveSettle(st, req))))
 	case "wait":
 		timeout := time.Duration(req.TimeoutMs) * time.Millisecond
 		if timeout <= 0 {
@@ -168,7 +219,7 @@ func handleLine(t tui, bw *bufio.Writer, line []byte, st settleConfig) (quit boo
 				"screen": t.Screen(),
 			})
 		}
-		return false, writeJSON(bw, okScreen(req.ID, settle(t, st)))
+		return false, writeJSON(bw, okScreen(req.ID, settle(t, resolveSettle(st, req))))
 	case "quit":
 		return true, writeJSON(bw, map[string]any{"id": req.ID, "ok": true})
 	default:

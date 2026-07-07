@@ -208,8 +208,14 @@ func DaemonIssue(err error) *Issue {
 	return &Issue{
 		Title: "Cannot connect to the bossd daemon",
 		Detail: fmt.Sprintf("%v\n\n", err) +
-			"Try one of:\n\n" +
-			"  boss daemon install   # set up automatic startup\n" +
-			"  bossd                 # start it manually in another terminal",
+			daemonRemediationDetail(),
 	}
+}
+
+func daemonRemediationDetail() string {
+	return "Try:\n\n" +
+		"  boss daemon restart   # start or restart the daemon\n" +
+		"  boss daemon status    # inspect daemon health\n" +
+		"  boss daemon install   # set up automatic startup\n" +
+		"  bossd                 # start the daemon manually"
 }

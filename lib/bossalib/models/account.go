@@ -26,6 +26,19 @@ const (
 	AccountHealthFailed AccountHealth = "failed"
 )
 
+// UsageSnapshot is a cached rate-limit usage reading for one account.
+// It carries metadata only: utilization fractions, reset instants, status,
+// plan tier, and fetch time. It never contains a token or credential.
+type UsageSnapshot struct {
+	Util5h    float64
+	Util7d    float64
+	Reset5h   *time.Time // nullable
+	Reset7d   *time.Time // nullable
+	Status    string
+	PlanTier  string
+	FetchedAt *time.Time // nil = never probed
+}
+
 // Account is registry metadata for one provider login used by account rotation.
 // Credential blobs are NEVER stored here — they live in the OS keyring via
 // services/bossd/internal/accountcred, keyed by this Account.ID. SQLite holds
@@ -52,6 +65,7 @@ type Account struct {
 	// test failure detail ("" = no error / last test passed).
 	LastTestOkAt  *time.Time // nullable
 	LastTestError string
+	Usage         *UsageSnapshot // nil = never probed; metadata only, never a credential
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }

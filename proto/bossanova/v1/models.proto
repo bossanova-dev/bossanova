@@ -642,7 +642,24 @@ message Account {
   string last_test_error = 13;                    // most recent test failure detail; "" = none
   google.protobuf.Timestamp created_at = 14;
   google.protobuf.Timestamp updated_at = 15;
+  // Cached per-account rate-limit usage snapshot (BOS-297). METADATA ONLY —
+  // never a credential. Absent = never probed.
+  UsageSnapshot usage = 16;
   // NO credential field. Ever.
+}
+
+// UsageSnapshot is a cached rate-limit usage reading for one account. It is
+// derived from the BOS-293 probe result and carries METADATA ONLY:
+// utilization fractions, reset instants, a status string, a plan-tier string,
+// and the fetch time. It NEVER contains a token or any credential.
+message UsageSnapshot {
+  double util_5h = 1;                       // 0..1 fraction of the 5h window consumed
+  double util_7d = 2;                       // 0..1 fraction of the 7d rolling window consumed
+  google.protobuf.Timestamp reset_5h = 3;  // when the 5h window resets (absent = unknown)
+  google.protobuf.Timestamp reset_7d = 4;  // when the 7d window resets (absent = unknown)
+  string status = 5;                        // rate-limit status string from RateLimitStatus
+  string plan_tier = 6;                     // detected plan tier (free-form; e.g. "max", "pro")
+  google.protobuf.Timestamp fetched_at = 7; // when this snapshot was probed
 }
 
 // ChatMessage is a transport-neutral, single turn of an agent chat transcript,

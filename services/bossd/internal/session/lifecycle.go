@@ -211,6 +211,7 @@ type Lifecycle struct {
 	rotationDecider     rotationDecider
 	accountMaterializer accountMaterializer
 	rotationBinding     rotationBinding
+	rateLimitProbe      rateLimitProbe
 
 	// rotationRecorder audits every rotation decision outcome (BOS-176). Nil is
 	// safe: the Recorder's methods no-op on a nil receiver, so an unwired daemon

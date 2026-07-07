@@ -1040,14 +1040,19 @@ func run(opts runOpts) error {
 	// the live session→account binding/materializer adapters. Existing gates
 	// still apply: rotation.enabled, ImplementingPlan, per-repo CanAutoRotate,
 	// account-0/unbound sessions, and Block-on-error degradation.
-	lifecycle.SetRotationConfig(settings.Rotation)
-	lifecycle.SetRotationConfigLoader(func() (config.RotationConfig, error) {
+	// Live re-read of the rotation kill-switch, shared by the lifecycle
+	// auto-rotation loader, the task/cron session creator, and the interactive
+	// server's creation-time binding gate. Each caller sees the current on-disk
+	// value rather than the boot-time snapshot.
+	rotationConfigLoader := func() (config.RotationConfig, error) {
 		loaded, err := config.Load()
 		if err != nil {
 			return config.RotationConfig{}, err
 		}
 		return loaded.Rotation, nil
-	})
+	}
+	lifecycle.SetRotationConfig(settings.Rotation)
+	lifecycle.SetRotationConfigLoader(rotationConfigLoader)
 	lifecycle.SetRotationDecider(rotationEngine.Decide)
 	lifecycle.SetRotationRecorder(rotationRecorder)
 	lifecycle.SetAccountMaterializer(accountwiring.NewLifecycleMaterializer(accountMaterializer))
@@ -1184,7 +1189,7 @@ func run(opts runOpts) error {
 				Session: &bossanovav1.Session{Id: sessionID},
 			},
 		})
-	}, accountResolver, log.Logger)
+	}, accountResolver, rotationConfigLoader, log.Logger)
 	orchestrator := taskorchestrator.New(
 		pluginHost, repos, taskMappings, sessionCreator, ghProvider,
 		worktrees, livenessChecker, taskorchestrator.DefaultPollInterval, log.Logger,
@@ -1662,6 +1667,7 @@ func run(opts runOpts) error {
 		Accounts:           accounts,
 		RotationEngine:     rotationEngine,
 		Resolver:           accountResolver,
+		RotationConfig:     rotationConfigLoader,
 		AccountCredentials: accountCreds,
 		AccountSmokeRunner: accountSmoke,
 		CheckSnapshots:     checkSnapshots,

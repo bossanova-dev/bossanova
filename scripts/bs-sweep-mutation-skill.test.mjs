@@ -17,6 +17,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { REPAIR_RESULTS, DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
+import { hasOpenCronPR } from './cron-open-pr.mjs'
 import {
   MUTATION_RESULTS,
   PER_MUTANT_RESULTS,
@@ -155,6 +156,41 @@ test('green is re-verified by one cheap gh call, never trusted from the sentinel
   assert.match(SKILL, /re-verif|re-check/i)
   assert.ok(SKILL.includes('isDraft'), 'green re-verify checks the draft state')
   assert.ok(SKILL.includes('statusCheckRollup'), 'green re-verify checks PR status checks')
+})
+
+test('cron gate exists and uses shared open-PR suppression', () => {
+  for (const [label, skill, gate] of [
+    [
+      '.claude/skills/bs-sweep-mutation',
+      SKILL,
+      read('../.claude/skills/bs-sweep-mutation/gate/gate.mjs'),
+    ],
+    [
+      '.codex/skills/bs-sweep-mutation',
+      CODEX,
+      read('../.codex/skills/bs-sweep-mutation/gate/gate.mjs'),
+    ],
+  ]) {
+    assert.match(gate, /cron-open-pr\.mjs/, `${label} gate must use shared cron-open-pr helper`)
+    assert.match(gate, /Bossanova sweep mutation/, `${label} gate must match the live cron name`)
+    assert.match(gate, /prior sweep PR still open/, `${label} skip reason must be loud`)
+    assert.match(gate, /gateExit\(false/, `${label} gh errors must fail closed`)
+    assert.match(skill, /GateCommand/, `${label}/SKILL.md must document the gate command`)
+    assert.doesNotMatch(skill, /Intentionally ungated/, `${label}/SKILL.md must not say ungated`)
+    assert.doesNotMatch(
+      skill,
+      /Leave `GateCommand` empty/,
+      `${label}/SKILL.md must not tell operators to leave the gate empty`,
+    )
+  }
+  assert.equal(
+    hasOpenCronPR(
+      [{ headRefName: 'cron-bossanova-sweep-mutation-1780000000' }],
+      ['Bossanova sweep mutation', 'bs-sweep-mutation'],
+    ),
+    true,
+  )
+  assert.equal(hasOpenCronPR([], ['Bossanova sweep mutation', 'bs-sweep-mutation']), false)
 })
 
 // ---------------------------------------------------------------------------

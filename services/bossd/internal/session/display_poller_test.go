@@ -1072,6 +1072,54 @@ func TestPollIntervalRefreshPRSuppressesImmediateScheduledPoll(t *testing.T) {
 	}
 }
 
+func TestRefreshPRFailedTerminalReconcileDoesNotSuppressImmediateScheduledPoll(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	prNum := 42
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	blockedReason := "finalize failed: worktree dirty"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:            "sess-1",
+		RepoID:        "repo-1",
+		PRNumber:      &prNum,
+		State:         machine.Blocked,
+		BlockedReason: &blockedReason,
+		AttemptCount:  2,
+	}
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: "sha-merged"}
+
+	failedOnce := false
+	sessions.updateHook = func(_ string, _ db.UpdateSessionParams) error {
+		if !failedOnce {
+			failedOnce = true
+			return fmt.Errorf("transient store error")
+		}
+		return nil
+	}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, 30*time.Second, logger)
+	if err := poller.RefreshPR(ctx, "owner/repo", prNum); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+	if len(vp.getPRStatusPRNumbers) != 1 {
+		t.Fatalf("RefreshPR GetPRStatus calls = %d, want 1", len(vp.getPRStatusPRNumbers))
+	}
+
+	poller.poll(ctx)
+
+	if len(vp.getPRStatusPRNumbers) != 2 {
+		t.Fatalf("scheduled poll GetPRStatus calls = %d, want 2 after failed refresh", len(vp.getPRStatusPRNumbers))
+	}
+	if sessions.sessions["sess-1"].State != machine.Merged {
+		t.Fatalf("state = %v, want Merged after retry", sessions.sessions["sess-1"].State)
+	}
+}
+
 func boolPtr(b bool) *bool { return &b }
 
 // TestDisplayPollerAutoUnblocksStaleFixLoopExhausted is BOS-235 acceptance
@@ -1450,6 +1498,41 @@ func TestDisplayPollerRetriesTerminalReconcileAfterStoreError(t *testing.T) {
 	}
 	if len(notifier.calls) != 1 {
 		t.Fatalf("expected 1 notifier call after successful retry, got %d", len(notifier.calls))
+	}
+}
+
+func TestDisplayPollerDoesNotMarkTerminalWhenMachineCannotFireResolvedPREvent(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		PRNumber: intPtr(42),
+		State:    machine.Orphaned,
+	}
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: "sha-merged"}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	notifier := &mockCompletionNotifier{}
+	poller.SetCompletionNotifier(notifier)
+	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+
+	if sessions.sessions["sess-1"].State != machine.Orphaned {
+		t.Fatalf("state = %v, want Orphaned", sessions.sessions["sess-1"].State)
+	}
+	if entry := tracker.Get("sess-1"); entry != nil && isTerminalDisplayStatus(entry.Status) {
+		t.Fatalf("tracker marked terminal despite unresolved persisted state")
+	}
+	if len(notifier.calls) != 0 {
+		t.Fatalf("expected no notifier call, got %d", len(notifier.calls))
 	}
 }
 

@@ -151,6 +151,28 @@ test('discoverExtensions rejects an unknown wrong-role extension into skipped', 
   assert.ok(skipped.some((s) => s.name === 'bs-plan-typo' && /role/.test(s.reason)))
 })
 
+test('discoverExtensions reports an unknown requested role as a skip', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'boss-proof-marketing', [
+    'name: boss-proof-marketing',
+    'x-boss-extension:',
+    '  extends: boss-proof',
+    '  role: surface',
+  ])
+  const { extensions, skipped } = discoverExtensions({
+    core: 'boss-proof',
+    root,
+    role: 'surfcae',
+  })
+  assert.deepEqual(extensions, [])
+  assert.ok(
+    skipped.some(
+      (s) => s.name === 'boss-proof-marketing' && /unknown requested role "surfcae"/.test(s.reason),
+    ),
+    `expected unknown requested role skip, got ${JSON.stringify(skipped)}`,
+  )
+})
+
 test('discoverExtensions ignores boss-plan draft sibling during plan-review discovery', () => {
   const root = scratchRoot()
   writeSkill(root, 'boss-plan-draft', [

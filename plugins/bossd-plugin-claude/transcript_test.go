@@ -84,6 +84,116 @@ func TestGetChatTitle_FromRenameSummary(t *testing.T) {
 	}
 }
 
+func TestGetChatTitle_FromCustomTitle(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	worktree := "/Users/dave/Code/myproj"
+	claudeID := "abcd-custom-title"
+
+	projectKey := strings.NewReplacer("/", "-", ".", "-").Replace(worktree)
+	projectDir := filepath.Join(tmpHome, ".claude", "projects", projectKey)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	jsonl := strings.Join([]string{
+		`{"type":"custom-title","customTitle":"Rename Test","sessionId":"abcd-custom-title"}`,
+		`{"type":"agent-name","agentName":"Rename Test","sessionId":"abcd-custom-title"}`,
+		`{"type":"user","message":{"role":"user","content":"Initial prompt"}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(projectDir, claudeID+".jsonl"), []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{logger: zerolog.Nop()}
+	resp, err := srv.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{
+		WorkDir: worktree, SessionId: claudeID,
+	})
+	if err != nil {
+		t.Fatalf("GetChatTitle: %v", err)
+	}
+	if resp.Title != "Rename Test" {
+		t.Errorf("Title = %q, want custom title", resp.Title)
+	}
+	if !resp.Explicit {
+		t.Error("Explicit = false, want true for custom title")
+	}
+}
+
+func TestGetChatTitle_CustomTitleOverSummary(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	worktree := "/Users/dave/Code/myproj"
+	claudeID := "abcd-custom-over-summary"
+
+	projectKey := strings.NewReplacer("/", "-", ".", "-").Replace(worktree)
+	projectDir := filepath.Join(tmpHome, ".claude", "projects", projectKey)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// An explicit custom title must win over an auto-generated summary line.
+	jsonl := strings.Join([]string{
+		`{"type":"user","message":{"role":"user","content":"Initial prompt"}}`,
+		`{"type":"summary","summary":"auto summary"}`,
+		`{"type":"custom-title","customTitle":"User Title","sessionId":"abcd-custom-over-summary"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(projectDir, claudeID+".jsonl"), []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{logger: zerolog.Nop()}
+	resp, err := srv.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{
+		WorkDir: worktree, SessionId: claudeID,
+	})
+	if err != nil {
+		t.Fatalf("GetChatTitle: %v", err)
+	}
+	if resp.Title != "User Title" {
+		t.Errorf("Title = %q, want custom title over summary", resp.Title)
+	}
+	if !resp.Explicit {
+		t.Error("Explicit = false, want true for custom title")
+	}
+}
+
+func TestGetChatTitle_EmptyCustomTitleFallsBackToSummary(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	worktree := "/Users/dave/Code/myproj"
+	claudeID := "abcd-empty-custom-title"
+
+	projectKey := strings.NewReplacer("/", "-", ".", "-").Replace(worktree)
+	projectDir := filepath.Join(tmpHome, ".claude", "projects", projectKey)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// An empty custom title must not shadow a real rename summary.
+	jsonl := strings.Join([]string{
+		`{"type":"user","message":{"role":"user","content":"Initial prompt"}}`,
+		`{"type":"custom-title","customTitle":"","sessionId":"abcd-empty-custom-title"}`,
+		`{"type":"summary","summary":"rename summary"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(projectDir, claudeID+".jsonl"), []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{logger: zerolog.Nop()}
+	resp, err := srv.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{
+		WorkDir: worktree, SessionId: claudeID,
+	})
+	if err != nil {
+		t.Fatalf("GetChatTitle: %v", err)
+	}
+	if resp.Title != "rename summary" {
+		t.Errorf("Title = %q, want rename summary fallback", resp.Title)
+	}
+	if !resp.Explicit {
+		t.Error("Explicit = false, want true for rename summary")
+	}
+}
+
 func TestGetChatTitle_MissingFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	srv := &Server{logger: zerolog.Nop()}
@@ -308,6 +418,50 @@ func TestParseSessionMeta_LastSummaryWins(t *testing.T) {
 	summary, explicit := parseSessionMeta(path)
 	if summary != "second rename" {
 		t.Fatalf("summary = %q, want last summary", summary)
+	}
+	if !explicit {
+		t.Fatal("explicit = false, want true")
+	}
+}
+
+func TestParseSessionMeta_LargeLineDoesNotHideLaterSummary(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	large := strings.Repeat("x", 300*1024)
+	jsonl := strings.Join([]string{
+		`{"type":"user","message":{"role":"user","content":"First prompt"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":"` + large + `"}}`,
+		`{"type":"summary","summary":"later rename"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, explicit := parseSessionMeta(path)
+	if summary != "later rename" {
+		t.Fatalf("summary = %q, want later rename", summary)
+	}
+	if !explicit {
+		t.Fatal("explicit = false, want true")
+	}
+}
+
+func TestParseSessionMeta_SummaryBeforeLongTailStillWins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	large := strings.Repeat("x", 300*1024)
+	jsonl := strings.Join([]string{
+		`{"type":"user","message":{"role":"user","content":"First prompt"}}`,
+		`{"type":"summary","summary":"old rename"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":"` + large + `"}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, explicit := parseSessionMeta(path)
+	if summary != "old rename" {
+		t.Fatalf("summary = %q, want old rename", summary)
 	}
 	if !explicit {
 		t.Fatal("explicit = false, want true")

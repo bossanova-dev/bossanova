@@ -233,5 +233,7 @@ export async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().then((code) => process.exit(code))
+  main().then((code) => {
+    process.exitCode = code
+  })
 }

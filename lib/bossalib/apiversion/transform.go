@@ -6,6 +6,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 )
@@ -515,9 +516,13 @@ func downconvertLimitedSession(s *pb.Session) *pb.Session {
 	if !ok {
 		return s
 	}
-	clone.DisplayLabel = "idle"
-	clone.DisplayIntent = pb.DisplayIntent_DISPLAY_INTENT_WARNING
-	clone.DisplaySpinner = false
+	out := displaystatus.Compute(displaystatus.Input{
+		Session:    clone,
+		ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE,
+	})
+	clone.DisplayLabel = out.Label
+	clone.DisplayIntent = out.Intent
+	clone.DisplaySpinner = out.Spinner
 	return clone
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
@@ -98,6 +99,9 @@ type lifecycleSessionCreator struct {
 	// interactive path would pick. A resolver error never fails creation — the
 	// session is created unbound (account 0).
 	defaultAccount DefaultAccountResolver
+	// rotationConfig re-reads the live rotation kill-switch for creation-time
+	// default binding. Nil means enabled, preserving legacy/test behavior.
+	rotationConfig func() (config.RotationConfig, error)
 	logger         zerolog.Logger
 }
 
@@ -150,7 +154,7 @@ func NewSessionCreatorWithNotifier(
 	onSessionDeleted func(context.Context, string),
 	logger zerolog.Logger,
 ) SessionCreator {
-	return NewSessionCreatorWithAccountResolver(sessions, lifecycle, defaultAgentProvider, duplicateLiveness, onSessionDeleted, nil, logger)
+	return NewSessionCreatorWithAccountResolver(sessions, lifecycle, defaultAgentProvider, duplicateLiveness, onSessionDeleted, nil, nil, logger)
 }
 
 // NewSessionCreatorWithAccountResolver is like NewSessionCreatorWithNotifier
@@ -164,6 +168,7 @@ func NewSessionCreatorWithAccountResolver(
 	duplicateLiveness SessionLivenessChecker,
 	onSessionDeleted func(context.Context, string),
 	defaultAccount DefaultAccountResolver,
+	rotationConfig func() (config.RotationConfig, error),
 	logger zerolog.Logger,
 ) SessionCreator {
 	return &lifecycleSessionCreator{
@@ -173,6 +178,7 @@ func NewSessionCreatorWithAccountResolver(
 		duplicateLiveness:    duplicateLiveness,
 		onSessionDeleted:     onSessionDeleted,
 		defaultAccount:       defaultAccount,
+		rotationConfig:       rotationConfig,
 		logger:               logger.With().Str("component", "session-creator").Logger(),
 	}
 }
@@ -285,6 +291,9 @@ func (c *lifecycleSessionCreator) resolveDefaultAccountID(ctx context.Context, a
 	if c.defaultAccount == nil {
 		return nil
 	}
+	if !c.defaultBindingEnabled() {
+		return nil
+	}
 	id, err := c.defaultAccount.DefaultAccountID(ctx, agentName, time.Now())
 	if err != nil {
 		c.logger.Warn().Err(err).Str("agent", agentName).
@@ -295,6 +304,19 @@ func (c *lifecycleSessionCreator) resolveDefaultAccountID(ctx context.Context, a
 		return nil
 	}
 	return &id
+}
+
+func (c *lifecycleSessionCreator) defaultBindingEnabled() bool {
+	if c.rotationConfig == nil {
+		return true
+	}
+	cfg, err := c.rotationConfig()
+	if err != nil {
+		c.logger.Warn().Err(err).
+			Msg("account: rotation config load failed; creating session unbound")
+		return false
+	}
+	return cfg.RotationEnabled()
 }
 
 func (c *lifecycleSessionCreator) isDuplicateSessionAlive(ctx context.Context, sessionID string) bool {

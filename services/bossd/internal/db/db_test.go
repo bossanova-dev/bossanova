@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1241,6 +1242,103 @@ func TestRepoStore_GetByOrigin(t *testing.T) {
 			t.Fatalf("duplicate canonical origin update err = %v, want ErrAmbiguousOrigin", err)
 		}
 	})
+}
+
+func TestRepoStore_NestedNamespaceOriginsRemainDistinct(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewRepoStore(db)
+	ctx := context.Background()
+
+	repoA, err := store.Create(ctx, CreateRepoParams{
+		DisplayName:       "repo-a",
+		LocalPath:         "/tmp/nested-repo-a",
+		OriginURL:         "https://gitlab.example/group/subgroup/repo-a.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees/a",
+	})
+	if err != nil {
+		t.Fatalf("create repo-a: %v", err)
+	}
+	repoB, err := store.Create(ctx, CreateRepoParams{
+		DisplayName:       "repo-b",
+		LocalPath:         "/tmp/nested-repo-b",
+		OriginURL:         "https://gitlab.example/group/subgroup/repo-b.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees/b",
+	})
+	if err != nil {
+		t.Fatalf("create repo-b: %v", err)
+	}
+
+	gotA, err := store.GetByOrigin(ctx, "git@gitlab.example:group/subgroup/repo-a.git")
+	if err != nil {
+		t.Fatalf("lookup repo-a: %v", err)
+	}
+	if gotA.ID != repoA.ID {
+		t.Fatalf("lookup repo-a ID = %q, want %q", gotA.ID, repoA.ID)
+	}
+	gotB, err := store.GetByOrigin(ctx, "https://gitlab.example/group/subgroup/repo-b")
+	if err != nil {
+		t.Fatalf("lookup repo-b: %v", err)
+	}
+	if gotB.ID != repoB.ID {
+		t.Fatalf("lookup repo-b ID = %q, want %q", gotB.ID, repoB.ID)
+	}
+}
+
+func TestRepoStore_ConcurrentCreateRejectsDuplicateCanonicalOrigin(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "bossd.db")
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := migrate.Run(db, os.DirFS(migrationsDir())); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	store := NewRepoStore(db)
+
+	const workers = 8
+	baseDir := t.TempDir()
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := store.Create(ctx, CreateRepoParams{
+				DisplayName:       "dupe",
+				LocalPath:         filepath.Join(baseDir, "repo", string(rune('a'+i))),
+				OriginURL:         "git@ghe.example:owner/repo.git",
+				DefaultBaseBranch: "main",
+				WorktreeBaseDir:   filepath.Join(baseDir, "worktrees", string(rune('a'+i))),
+			})
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	successes := 0
+	ambiguous := 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrAmbiguousOrigin):
+			ambiguous++
+		default:
+			t.Fatalf("unexpected create error: %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful creates = %d, want 1", successes)
+	}
+	if ambiguous != workers-1 {
+		t.Fatalf("ambiguous errors = %d, want %d", ambiguous, workers-1)
+	}
 }
 
 func TestForeignKeyCascade_DeleteRepo(t *testing.T) {

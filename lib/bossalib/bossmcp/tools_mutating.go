@@ -604,7 +604,7 @@ type SendChatMessageArgs struct {
 // SwitchAccountArgs is the typed argument struct for switch_account.
 type SwitchAccountArgs struct {
 	SessionID      string `json:"session_id" jsonschema:"the session whose live chat to switch"`
-	AccountID      string `json:"account_id" jsonschema:"target account id or empty for system default"`
+	AccountID      string `json:"account_id" jsonschema:"account id or provider-scoped label (unique within the session's provider); empty for system default"`
 	AgentSessionID string `json:"agent_session_id,omitempty" jsonschema:"optional specific chat; defaults to the session's primary live chat"`
 	Force          bool   `json:"force,omitempty" jsonschema:"interrupt a mid-turn chat"`
 }

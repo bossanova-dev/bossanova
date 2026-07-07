@@ -130,6 +130,95 @@ func chatInputMechanicsFromPrompt(prompt string) ChatInput {
 	return ChatInput{Prompt: prompt}
 }
 
+// isInstalledSkillCommand reports whether command's leading token (after its
+// "/" or "$" prefix) names an installed custom skill for the target agent. The
+// check is name-based instead of namespace-based so project-local commands such
+// as api-review/tui-qa and shipped bs-* commands are adapted too, while native
+// agent built-ins ("/model", "/status") are delivered verbatim when no matching
+// skill exists on disk.
+func isInstalledSkillCommand(command, commandPrefix, worktreePath string) bool {
+	name := skillCommandName(command)
+	if name == "" {
+		return false
+	}
+	for _, dir := range skillSearchDirs(commandPrefix, worktreePath) {
+		if skillExistsInDir(dir, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func skillCommandName(command string) string {
+	body := strings.TrimLeft(command, "/$")
+	fields := strings.Fields(body)
+	if len(fields) == 0 {
+		return ""
+	}
+	name := fields[0]
+	if strings.ContainsAny(name, `/\`) {
+		return ""
+	}
+	return name
+}
+
+func skillSearchDirs(commandPrefix, worktreePath string) []string {
+	agentDir := ".claude"
+	if commandPrefix == "$" {
+		agentDir = ".codex"
+	}
+	var dirs []string
+	if worktreePath != "" {
+		dirs = append(dirs, filepath.Join(worktreePath, agentDir, "skills"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, agentDir, "skills"))
+	}
+	return dirs
+}
+
+func skillExistsInDir(dir, name string) bool {
+	if dir == "" {
+		return false
+	}
+	if hasSkillFile(filepath.Join(dir, name)) {
+		return true
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*", name))
+	if err != nil {
+		return false
+	}
+	for _, match := range matches {
+		if hasSkillFile(match) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSkillFile(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, "SKILL.md"))
+	return err == nil && !info.IsDir()
+}
+
+// RenderBossCommandPrefix rewrites an installed custom skill command's leading
+// prefix to the given agent command prefix, leaving everything else untouched:
+// native agent built-ins ("/model", "/status"), free text, and multi-line input
+// all pass through verbatim. It is the live-send analogue of the plan-launch
+// rendering (chatInputMechanicsFromPrompt + ChatInput.render), scoped to the
+// custom skill names installed for the target agent so a caller hands an
+// agent-neutral "/boss-repair watch" or "/api-review" to a codex chat (prefix
+// "$") and the chat receives "$boss-repair watch" or "$api-review", while a
+// codex user's "/status" reaches codex unchanged. An empty prefix defaults to
+// claude's "/".
+func RenderBossCommandPrefix(message, commandPrefix, worktreePath string) string {
+	input := chatInputMechanicsFromPrompt(message)
+	if input.Command == "" || !isInstalledSkillCommand(input.Command, commandPrefix, worktreePath) {
+		return message
+	}
+	return input.render(commandPrefix)
+}
+
 // StartTmuxChat boots a Claude (or other agent) run inside a detached tmux
 // session and registers it as an agent_chats row so the chat list view can
 // surface it. It is the generalized form of the cron-only helper that

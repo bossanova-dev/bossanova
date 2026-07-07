@@ -666,7 +666,9 @@ func (a *SessionCreatorAdapter) Create(ctx context.Context, cmd *pb.CreateSessio
 		TrackerUrl:    cmd.TrackerUrl,
 		TrackerIssue:  cmd.TrackerIssue,
 		TrackerSource: cmd.TrackerSource,
+		AccountId:     cmd.AccountId,
 		Force:         cmd.GetForce(),
+		ForceBranch:   cmd.GetForceBranch(),
 		// Unattended-session fields carried over the reverse stream so a hosted
 		// create runs the same headless/unattended flow as a direct socket
 		// create rather than starting interactive on the default model.

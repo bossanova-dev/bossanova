@@ -20,7 +20,8 @@ import (
 type fakeDaemon struct {
 	bossanovav1connect.UnimplementedDaemonServiceHandler
 
-	sessions []*pb.Session
+	sessions   []*pb.Session
+	refreshReq *pb.RefreshAccountRequest
 	// createOutputs are emitted as SetupOutput events before the terminal
 	// SessionCreated event, exercising the stream-draining behaviour.
 	createOutputs []string
@@ -33,6 +34,15 @@ type fakeDaemon struct {
 
 func (f *fakeDaemon) ListSessions(_ context.Context, _ *connect.Request[pb.ListSessionsRequest]) (*connect.Response[pb.ListSessionsResponse], error) {
 	return connect.NewResponse(&pb.ListSessionsResponse{Sessions: f.sessions}), nil
+}
+
+func (f *fakeDaemon) RefreshAccount(_ context.Context, req *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error) {
+	f.refreshReq = req.Msg
+	return connect.NewResponse(&pb.RefreshAccountResponse{
+		Account:      &pb.Account{Id: req.Msg.GetId(), Label: "refreshed"},
+		LiveSmokeRan: req.Msg.GetTestAfterSave(),
+		Detail:       "credential test passed",
+	}), nil
 }
 
 func (f *fakeDaemon) CreateSession(_ context.Context, _ *connect.Request[pb.CreateSessionRequest], stream *connect.ServerStream[pb.CreateSessionResponse]) error {
@@ -131,6 +141,33 @@ func TestCreateSessionDrainsStream(t *testing.T) {
 	}
 	if res.AttachedExisting {
 		t.Fatalf("genuine create must report AttachedExisting=false")
+	}
+}
+
+func TestRefreshAccountRoundTrips(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeDaemon{}
+	socketPath := serveFakeDaemon(t, fake)
+
+	backend, err := New(socketPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	resp, err := backend.RefreshAccount(context.Background(), &pb.RefreshAccountRequest{
+		Id:            "acct-1",
+		Credential:    []byte("new-token"),
+		TestAfterSave: true,
+	})
+	if err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+	if fake.refreshReq.GetId() != "acct-1" || string(fake.refreshReq.GetCredential()) != "new-token" || !fake.refreshReq.GetTestAfterSave() {
+		t.Fatalf("request not forwarded: %+v", fake.refreshReq)
+	}
+	if resp.GetAccount().GetId() != "acct-1" || !resp.GetLiveSmokeRan() {
+		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
 

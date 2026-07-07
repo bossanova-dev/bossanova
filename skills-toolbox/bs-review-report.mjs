@@ -178,7 +178,7 @@ function renderTestCoverage(verdict = {}) {
 
 /**
  * Render the full bs-review PR comment markdown from a structured report.
- * @param {object} data See `.claude/skills/boss-review/SKILL.md` Phase 7 for the shape.
+ * @param {object} data See `services/boss/internal/skillinstall/skills/boss-review/SKILL.md` Phase 7 for the shape.
  * @returns {string} markdown, leading with the MARKER and trailing with a newline.
  */
 export function renderReport(data = {}) {

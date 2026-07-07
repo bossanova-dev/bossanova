@@ -3,6 +3,14 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const DEFAULT_ORDER = 100
+const KNOWN_EXTENSION_ROLES = new Set([
+  'lens',
+  'round',
+  'surface',
+  'plan-reviewer',
+  'agent-driver',
+  'draft',
+])
 
 // Minimal YAML-frontmatter reader. Supports the flat scalar keys and the single
 // nested `x-boss-extension:` block this contract needs — no external YAML dep
@@ -80,12 +88,13 @@ export function discoverExtensions({ core, root, role }) {
       skipped.push({ name: entry.name, reason: `extends "${marker.extends}", not "${core}"` })
       continue
     }
-    // A same-prefix extension that extends this core but declares the wrong (or a
-    // typo'd) role is a misconfiguration, not a valid descriptor: dispatching it
-    // under the caller's expected role would run the wrong add-on. When the caller
-    // supplies its expected `role`, reject the mismatch as a recorded skip instead.
+    // A same-prefix extension that extends this core but declares another known role is a
+    // legitimate cross-role sibling (e.g. boss-review lens vs round) and should not pollute
+    // `skipped`. A typo'd/unknown role remains a misconfiguration and is recorded as a skip.
     if (typeof role === 'string' && role !== '' && marker.role !== role) {
-      skipped.push({ name: entry.name, reason: `role "${marker.role}", not "${role}"` })
+      if (!KNOWN_EXTENSION_ROLES.has(marker.role)) {
+        skipped.push({ name: entry.name, reason: `role "${marker.role}", not "${role}"` })
+      }
       continue
     }
     extensions.push({
@@ -102,6 +111,7 @@ export function discoverExtensions({ core, root, role }) {
 
 export const ROLE_SCHEMAS = {
   lens: ['severity', 'file', 'line', 'title', 'detail'],
+  round: ['severity', 'file', 'line', 'title', 'detail'],
   surface: ['path', 'caption', 'evidenceTokens'],
   'plan-reviewer': ['severity', 'section', 'title', 'detail'],
 }

@@ -22,8 +22,10 @@ const privateDebtSkillPath = fileURLToPath(
 const privateMutationSkillPath = fileURLToPath(
   new URL('../.claude/skills/bs-sweep-mutation/SKILL.md', import.meta.url),
 )
+// boss-plan is a published core: its canonical committed home is the skillinstall
+// payload (BOS-271), no longer .claude/skills. This content pin reads that home.
 const privatePlanSkillPath = fileURLToPath(
-  new URL('../.claude/skills/boss-plan/SKILL.md', import.meta.url),
+  new URL('../services/boss/internal/skillinstall/skills/boss-plan/SKILL.md', import.meta.url),
 )
 
 function tmpDir() {

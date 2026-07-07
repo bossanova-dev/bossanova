@@ -28,6 +28,32 @@ func (f *fakeRepoStore) Get(_ context.Context, id string) (*models.Repo, error) 
 	return nil, sql.ErrNoRows
 }
 
+type fakeStreamAccountLabeler struct {
+	labels map[string]string
+}
+
+func (f fakeStreamAccountLabeler) Label(_ context.Context, accountID string) (string, error) {
+	if label, ok := f.labels[accountID]; ok {
+		return label, nil
+	}
+	return "System default", nil
+}
+
+type fakeRotationEventStore struct {
+	db.RotationEventStore
+	bySession map[string][]db.RotationEvent
+}
+
+func (f fakeRotationEventStore) Insert(context.Context, db.RotationEvent) error { return nil }
+
+func (f fakeRotationEventStore) RecentBySession(_ context.Context, sessionID string, limit int) ([]db.RotationEvent, error) {
+	evs := append([]db.RotationEvent(nil), f.bySession[sessionID]...)
+	if limit > 0 && len(evs) > limit {
+		evs = evs[:limit]
+	}
+	return evs, nil
+}
+
 func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 	t.Parallel()
 
@@ -39,6 +65,7 @@ func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 	agentSessionID := "agent-1"
 	sessionID := "sess-1"
 	repoID := "repo-1"
+	accountID := "acct-1"
 	now := time.Now()
 	sessions := &fakeSessionStore{byID: map[string]*models.Session{
 		sessionID: {
@@ -46,6 +73,7 @@ func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 			RepoID:    repoID,
 			Title:     "auth stream",
 			State:     machine.ImplementingPlan,
+			AccountID: &accountID,
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
@@ -57,8 +85,29 @@ func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 		repoID: {ID: repoID, DisplayName: "repo display", OriginURL: "git@github.com:acme/repo.git"},
 	}}
 	tracker := status.NewTracker()
+	rotationEvents := fakeRotationEventStore{bySession: map[string][]db.RotationEvent{
+		sessionID: {{
+			ID:          "rot-1",
+			SessionID:   sessionID,
+			Provider:    "claude",
+			Trigger:     "ROTATION_TRIGGER_USAGE_LIMITED",
+			FromAccount: "acct-a",
+			ToAccount:   "acct-b",
+			Outcome:     "ROTATION_OUTCOME_ROTATED",
+			CreatedAt:   now,
+		}},
+	}}
+	hydrator := &streamSessionHydrator{
+		agentChats:        chats,
+		rawSessions:       sessions,
+		repos:             repos,
+		chatStatusTracker: tracker,
+		rotationEvents:    rotationEvents,
+		accountLabeler:    fakeStreamAccountLabeler{labels: map[string]string{accountID: "Claude Team"}},
+		logger:            zerolog.Nop(),
+	}
 	tracker.SetOnAuthChange(func(id string) {
-		publishAuthFailedSessionDelta(ctx, id, chats, sessions, repos, tracker, bus, zerolog.Nop())
+		publishAuthFailedSessionDelta(ctx, id, hydrator, bus, zerolog.Nop())
 	})
 
 	tracker.SetAuthFailed(agentSessionID, true)
@@ -73,6 +122,12 @@ func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 	if got := setSession.GetRepoDisplayName(); got != "repo display" {
 		t.Fatalf("set delta repo_display_name = %q, want repo display", got)
 	}
+	if got := setSession.GetAccountLabel(); got != "Claude Team" {
+		t.Fatalf("set delta account_label = %q, want Claude Team", got)
+	}
+	if len(setSession.GetRotationEvents()) != 1 {
+		t.Fatalf("set delta rotation_events len = %d, want 1", len(setSession.GetRotationEvents()))
+	}
 
 	tracker.SetAuthFailed(agentSessionID, false)
 	clearEvent := nextStreamEvent(t, events)
@@ -82,6 +137,12 @@ func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 	}
 	if clearSession.BlockedReason != nil {
 		t.Fatalf("clear delta blocked_reason = %q, want nil", clearSession.GetBlockedReason())
+	}
+	if got := clearSession.GetAccountLabel(); got != "Claude Team" {
+		t.Fatalf("clear delta account_label = %q, want Claude Team", got)
+	}
+	if len(clearSession.GetRotationEvents()) != 1 {
+		t.Fatalf("clear delta rotation_events len = %d, want 1", len(clearSession.GetRotationEvents()))
 	}
 
 	tracker.SetAuthFailed(agentSessionID, true)

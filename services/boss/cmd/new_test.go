@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/recurser/boss/internal/views"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -81,11 +82,11 @@ func TestNewCmdRegistersAccountFlag(t *testing.T) {
 }
 
 // TestAccountShowLabel pins the `boss show` Account line: an unbound session
-// renders "System default", a bound one with no server label renders its
+// renders "Unmanaged local credentials", a bound one with no server label renders its
 // account id verbatim, and a server-computed label wins when present.
 func TestAccountShowLabel(t *testing.T) {
-	if got := accountShowLabel("", ""); got != "System default" {
-		t.Fatalf("accountShowLabel(\"\", \"\") = %q, want System default", got)
+	if got := accountShowLabel("", ""); got != views.UnmanagedLocalCredentialsLabel {
+		t.Fatalf("accountShowLabel(\"\", \"\") = %q, want %q", got, views.UnmanagedLocalCredentialsLabel)
 	}
 	if got := accountShowLabel("acct-9", ""); got != "acct-9" {
 		t.Fatalf("accountShowLabel(acct-9, \"\") = %q, want acct-9", got)
@@ -109,7 +110,7 @@ func TestPrintSessionShowHeaderRendersAccountLine(t *testing.T) {
 	unbound := captureStdout(t, func() {
 		printSessionShowHeader(&pb.Session{Id: "sess-1234abcd"})
 	})
-	if !strings.Contains(unbound, "Account:  System default") {
+	if !strings.Contains(unbound, "Account:  "+views.UnmanagedLocalCredentialsLabel) {
 		t.Fatalf("show header missing unbound Account line; got:\n%s", unbound)
 	}
 }

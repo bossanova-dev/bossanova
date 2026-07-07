@@ -12,6 +12,8 @@ import (
 	"github.com/recurser/bossalib/agentcred"
 )
 
+var errCodexDeviceAuthDisabled = errors.New("codex device-code login disabled")
+
 // CodexOptions configures the `boss account add codex` registration flow.
 type CodexOptions struct {
 	Exec     Exec
@@ -27,7 +29,7 @@ type CodexOptions struct {
 
 // RunCodexAdd registers an additional Codex account by driving
 // `codex login --device-auth` under a FRESH temp CODEX_HOME, capturing the
-// auth.json it writes, then storing and live-testing the raw blob.
+// auth.json it writes, then storing and verifying the raw blob.
 func RunCodexAdd(ctx context.Context, o CodexOptions) error {
 	if o.CodexBin == "" {
 		o.CodexBin = "codex"
@@ -56,6 +58,13 @@ func RunCodexAdd(ctx context.Context, o CodexOptions) error {
 
 	blob, err := codexCapture(ctx, o, dir)
 	if err != nil {
+		if errors.Is(err, errCodexDeviceAuthDisabled) {
+			o.Prompter.Say("Codex device-code login is disabled for this ChatGPT account.")
+			o.Prompter.Say("Enable it, then re-run this command:")
+			o.Prompter.Say("  1. Open https://chatgpt.com/#settings and go to the Security section.")
+			o.Prompter.Say("  2. Turn on \"Enable device code authorization for Codex\".")
+			o.Prompter.Say("  3. Re-run: boss account add codex")
+		}
 		return err
 	}
 
@@ -75,7 +84,7 @@ func RunCodexAdd(ctx context.Context, o CodexOptions) error {
 		return err
 	}
 	// Store the canonical account-store shape ({access,refresh,id_token}), not the
-	// raw auth.json: storeAndTest live-tests immediately via TestAccount, which
+	// raw auth.json: storeAndTest verifies immediately via TestAccount, which
 	// validates codex credentials in that flat shape. The 1.5 materializer owns
 	// merge semantics from there.
 	stored, err := agentcred.CodexAccountStoreJSON(auth)
@@ -86,8 +95,9 @@ func RunCodexAdd(ctx context.Context, o CodexOptions) error {
 }
 
 type codexResult struct {
-	err  error
-	last []string
+	err      error
+	last     []string
+	disabled bool
 }
 
 // codexCapture spawns the device-auth login, surfaces the URL+code the first
@@ -102,14 +112,20 @@ func codexCapture(ctx context.Context, o CodexOptions, dir string) ([]byte, erro
 	defer cancel()
 
 	done := make(chan codexResult, 1)
+	disabledSeen := make(chan struct{})
 	go func() {
 		var buf strings.Builder
 		var all []string
 		surfaced := false
+		disabled := false
 		for line := range proc.Lines() {
 			buf.WriteString(line)
 			buf.WriteByte('\n')
 			all = append(all, line)
+			if !disabled && agentcred.ParseCodexDeviceAuthDisabled(buf.String()) {
+				disabled = true
+				close(disabledSeen)
+			}
 			if !surfaced {
 				if prompt, ok := agentcred.ParseCodexDeviceAuthPrompt(buf.String()); ok {
 					o.Prompter.Say("Open %s in your browser and enter code %s, then finish signing in… (waiting)", prompt.URL, prompt.Code)
@@ -117,11 +133,14 @@ func codexCapture(ctx context.Context, o CodexOptions, dir string) ([]byte, erro
 				}
 			}
 		}
-		done <- codexResult{err: proc.Wait(), last: all}
+		done <- codexResult{err: proc.Wait(), last: all, disabled: disabled}
 	}()
 
 	select {
 	case res := <-done:
+		if res.disabled {
+			return nil, errCodexDeviceAuthDisabled
+		}
 		if res.err != nil {
 			return nil, fmt.Errorf("codex login exited with error (%v); last output: %s", res.err, strings.Join(lastN(res.last, 3), " | "))
 		}
@@ -130,7 +149,16 @@ func codexCapture(ctx context.Context, o CodexOptions, dir string) ([]byte, erro
 			return nil, fmt.Errorf("codex exited cleanly but wrote no auth.json to %s: %w", dir, rerr)
 		}
 		return data, nil
+	case <-disabledSeen:
+		_ = proc.Kill()
+		return nil, errCodexDeviceAuthDisabled
 	case <-tctx.Done():
+		select {
+		case <-disabledSeen:
+			_ = proc.Kill()
+			return nil, errCodexDeviceAuthDisabled
+		default:
+		}
 		_ = proc.Kill()
 		return nil, errors.New("codex device flow timed out (abandoned?)")
 	}

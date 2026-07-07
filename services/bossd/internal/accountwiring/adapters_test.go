@@ -17,6 +17,7 @@ import (
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/session"
 )
 
 // spyStore is an in-memory AccountStore that records Get/Update calls so tests
@@ -98,10 +99,10 @@ func (f *fakeRotationClient) MaterializeAccount(_ context.Context, req *bossanov
 	return &bossanovav1.MaterializeAccountResponse{Env: f.env}, nil
 }
 
-func newAccount(id, provider string) *models.Account {
+func newClaudeAccount() *models.Account {
 	return &models.Account{
-		ID:       id,
-		Provider: models.AccountProvider(provider),
+		ID:       "a1",
+		Provider: models.AccountProvider("claude"),
 		Status:   models.AccountStatusActive,
 		Priority: 1,
 	}
@@ -141,7 +142,7 @@ func TestSpawnEnvResolver_UnboundNoRPC(t *testing.T) {
 // (status-only binding): RotationCapability is consulted once, but no
 // MaterializeAccount and no last-used bump happen. The session still spawns.
 func TestSpawnEnvResolver_NoRotationDegrades(t *testing.T) {
-	store := &spyStore{accounts: map[string]*models.Account{"a1": newAccount("a1", "claude")}}
+	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
 	client := &fakeRotationClient{supports: false}
 	r := NewSpawnEnvResolver(newResolver(store, client, &fakeCreds{blob: []byte("blob")}), zerolog.Nop())
 
@@ -163,7 +164,7 @@ func TestSpawnEnvResolver_NoRotationDegrades(t *testing.T) {
 // (b)+(d) A bound, rotation-capable account materializes its env, forwards the
 // credential blob, and bumps last-used exactly once.
 func TestSpawnEnvResolver_BoundRotationInjectsEnvAndTouchesOnce(t *testing.T) {
-	store := &spyStore{accounts: map[string]*models.Account{"a1": newAccount("a1", "claude")}}
+	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
 	client := &fakeRotationClient{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "x"}}
 	creds := &fakeCreds{blob: []byte("secret-blob")}
 	r := NewSpawnEnvResolver(newResolver(store, client, creds), zerolog.Nop())
@@ -210,6 +211,90 @@ func TestMaterializer_SupportsRotationDegrades(t *testing.T) {
 		if ok, err := m.SupportsRotation(context.Background(), "claude"); ok || err != nil {
 			t.Errorf("%s: got (%v,%v), want (false,nil)", name, ok, err)
 		}
+	}
+}
+
+func TestLifecycleMaterializer_MaterializesAccount(t *testing.T) {
+	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	client := &fakeRotationClient{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "x"}}
+	creds := &fakeCreds{blob: []byte("secret-blob")}
+	m := NewLifecycleMaterializer(NewMaterializer(
+		map[string]agent.AgentRunnerClient{"claude": client},
+		store,
+		creds,
+		zerolog.Nop(),
+	))
+
+	env, err := m.Materialize(context.Background(), newClaudeAccount())
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
+		t.Fatalf("Materialize env = %v, want token", env)
+	}
+	if client.matCalls != 1 || creds.calls != 1 {
+		t.Fatalf("calls mat=%d creds=%d, want 1/1", client.matCalls, creds.calls)
+	}
+}
+
+func TestRotationBindingResolver_CurrentBinding(t *testing.T) {
+	tests := []struct {
+		name     string
+		sess     *models.Session
+		store    *spyStore
+		client   *fakeRotationClient
+		wantBind bool
+		want     session.RotationBinding
+	}{
+		{
+			name:     "unbound account zero",
+			sess:     &models.Session{AgentName: "claude"},
+			store:    &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}},
+			client:   &fakeRotationClient{supports: true},
+			wantBind: false,
+		},
+		{
+			name:     "missing account degrades unbound",
+			sess:     &models.Session{AgentName: "claude", AccountID: strptr("missing")},
+			store:    &spyStore{accounts: map[string]*models.Account{}},
+			client:   &fakeRotationClient{supports: true},
+			wantBind: false,
+		},
+		{
+			name:     "bound rotation capable",
+			sess:     &models.Session{AgentName: "claude", AccountID: strptr("a1")},
+			store:    &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}},
+			client:   &fakeRotationClient{supports: true},
+			wantBind: true,
+			want:     session.RotationBinding{CappedAccountID: "a1", Provider: "claude", RotationCapable: true},
+		},
+		{
+			name:     "bound status only",
+			sess:     &models.Session{AgentName: "claude", AccountID: strptr("a1")},
+			store:    &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}},
+			client:   &fakeRotationClient{supports: false},
+			wantBind: true,
+			want:     session.RotationBinding{CappedAccountID: "a1", Provider: "claude", RotationCapable: false},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRotationBindingResolver(
+				NewRegistry(tc.store),
+				NewMaterializer(map[string]agent.AgentRunnerClient{"claude": tc.client}, tc.store, &fakeCreds{}, zerolog.Nop()),
+			)
+			got, bound, err := r.CurrentBinding(context.Background(), tc.sess)
+			if err != nil {
+				t.Fatalf("CurrentBinding: %v", err)
+			}
+			if bound != tc.wantBind {
+				t.Fatalf("bound = %v, want %v", bound, tc.wantBind)
+			}
+			if got != tc.want {
+				t.Fatalf("binding = %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }
 

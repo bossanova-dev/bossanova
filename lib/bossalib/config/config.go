@@ -157,7 +157,7 @@ type RotationConfig struct {
 	// AutoRotateChats is the global scope for automatic rotation of interactive
 	// tmux chats on a CHAT_STATUS_LIMITED transition (Epic 4.3, BOS-175). nil
 	// means ON (decision D4: fully automatic by default). Distinct from Enabled,
-	// which gates headless-run rotation (BOS-174).
+	// which is the global kill switch for all automatic rotation.
 	AutoRotateChats *bool `json:"auto_rotate_chats,omitempty"`
 	// AutoRotateChatsPerRepo overrides the global interactive-chat scope per repo
 	// ID (both directions). The global kill-switch/settings UX is BOS-176.
@@ -168,7 +168,8 @@ type RotationConfig struct {
 }
 
 // AutoRotateChatsEnabled resolves the interactive-chat auto-rotate scope for a
-// repo: per-repo override → global → default ON (decision D4).
+// repo: per-repo override → global → default ON (decision D4). It does not apply
+// the global RotationEnabled kill switch; callers gate that separately.
 func (c RotationConfig) AutoRotateChatsEnabled(repoID string) bool {
 	if v, ok := c.AutoRotateChatsPerRepo[repoID]; ok {
 		return v

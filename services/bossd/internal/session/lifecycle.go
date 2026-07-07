@@ -206,7 +206,7 @@ type Lifecycle struct {
 	// rotationDecider, accountMaterializer, and rotationBinding are the narrow
 	// injected seams the usage-limit rotation intercept consumes. Any nil seam
 	// degrades rotation to today's Block path (fail-safe). Production wires the
-	// real rotation.Engine / MaterializeAccount RPC / BOS-170 binding via the
+	// rotation decide function / MaterializeAccount RPC / BOS-170 binding via the
 	// setters in rotation.go; tests inject fakes.
 	rotationDecider     rotationDecider
 	accountMaterializer accountMaterializer
@@ -217,11 +217,11 @@ type Lifecycle struct {
 	// simply records nothing. Injected via SetRotationRecorder.
 	rotationRecorder *rotation.Recorder
 
-	// rotationConfigLoader re-reads settings on every rotation decision so a
-	// kill-switch flip takes effect instantly without a daemon restart (BOS-176).
+	// rotationConfigLoader re-reads rotation policy for decisions and parked
+	// sweeps so policy changes take effect without a daemon restart (BOS-176).
 	// Nil ⇒ fall back to the config injected via SetRotationConfig (the cached
-	// value used by unit tests). Production wires config.Load here.
-	rotationConfigLoader func() (config.Settings, error)
+	// value used by unit tests). Production wires a config.Load-backed adapter.
+	rotationConfigLoader func() (config.RotationConfig, error)
 
 	// clock is the time source for the resume-at-T parked-rotation sweep. It is
 	// nil in production (now() falls back to time.Now); tests inject a fake via

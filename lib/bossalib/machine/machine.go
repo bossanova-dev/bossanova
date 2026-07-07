@@ -206,6 +206,7 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 		Permit(FinalizeRequested, Finalizing).
 		Permit(Block, Blocked).
 		Permit(Orphan, Orphaned).
+		Permit(PRMerged, Merged).
 		Permit(PRClosed, Closed)
 
 	sm.Configure(PushingBranch).

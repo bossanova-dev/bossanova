@@ -18,7 +18,7 @@ base branch never races itself.
 
 This skill is **prose driving tested primitives**. All scheduling, eligibility,
 dependency-graph, cascade-skip, and merge-ordering decisions are computed by the
-pure, unit-tested DAG scheduler `.claude/skills/boss-epic/toolbox/dag-scheduler.mjs`
+pure, unit-tested DAG scheduler in the installed `boss-epic/toolbox/dag-scheduler.mjs`
 (BOS-197) — re-exported through `bs-epic-lib.mjs`, which adds the tracker-coupled
 classify/normalize/parse surface — this skill never re-derives them inline. The
 skill's own job is the I/O, and it reaches every Bossanova coupling through the
@@ -86,13 +86,21 @@ Bossanova reference impls resolve to today's exact tools and sub-skills —
 
 ## The library: how to compute a decision
 
-Every scheduling decision is a call into `.claude/skills/boss-epic/toolbox/bs-epic-lib.mjs`. Feed it JSON
-on stdin and read JSON on stdout. The canonical invocation shape (reused at
+Every scheduling decision is a call into the installed `boss-epic/toolbox/bs-epic-lib.mjs`. Feed it
+JSON on stdin and read JSON on stdout. The canonical invocation shape (reused at
 every call-site — only the imported function and the piped payload change):
 
 ```bash
+if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+  for candidate in "$HOME/.claude/skills/bossanova" "$HOME/.codex/skills/bossanova"; do
+    if [ -d "$candidate/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+  done
+fi
+test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed bossanova skills not found"; exit 1; }
+BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"
+export BOSS_EPIC_TOOLBOX
 echo "$TICKETS_JSON" | node --input-type=module -e '
-  import { classifyTickets, normalizeTicket } from "./.claude/skills/boss-epic/toolbox/bs-epic-lib.mjs"
+  const { classifyTickets, normalizeTicket } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/bs-epic-lib.mjs`)
   const raw = JSON.parse(await new Promise((r) => {
     let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => r(s))
   }))
@@ -128,7 +136,7 @@ assumeCleared, assumeClearedAndMerge}`.
 
    ```bash
    node --input-type=module -e '
-     import { parseEpicArgs } from "./.claude/skills/boss-epic/toolbox/bs-epic-lib.mjs"
+     const { parseEpicArgs } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/bs-epic-lib.mjs`)
      process.stdout.write(JSON.stringify(parseEpicArgs(process.argv.slice(1))))
    ' -- BOS-177 --parallel 4 --agent claude
    ```

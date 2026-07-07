@@ -1,0 +1,6 @@
+[
+  "lib/bossalib/foo.go",
+  "services/boss/internal/views/session_list.go",
+  "services/web/src/App.tsx",
+  "docs/testing/test-command-manifest.md"
+]

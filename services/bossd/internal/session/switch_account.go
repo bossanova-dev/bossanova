@@ -8,14 +8,15 @@ import (
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/rotation"
 )
 
 // AccountStatus is the switch-relevant state of a target account, mapped from
-// the registry's models.Account view. Only Active is switchable; Disabled and
-// Cooling are refused with a typed error before any pane is touched.
+// the registry's models.Account view. Only Active is switchable; Disabled,
+// Failed, and Cooling are refused with a typed error before any pane is touched.
 type AccountStatus int
 
 const (
@@ -25,6 +26,10 @@ const (
 	AccountDisabled
 	// AccountCooling is an account inside its rotation cooldown window.
 	AccountCooling
+	// AccountFailed is an account whose last-known health check failed — the
+	// rotation engine sidelines it and session creation refuses to bind it, so a
+	// manual switch refuses it too (mirroring checkAccountEligible).
+	AccountFailed
 )
 
 // switchAccount is the switch's internal, provider-agnostic view of a target
@@ -120,6 +125,8 @@ var (
 	ErrAccountDisabled = errors.New("target account is disabled")
 	// ErrAccountCooling means the target account is inside its rotation cooldown.
 	ErrAccountCooling = errors.New("target account is cooling")
+	// ErrAccountFailed means the target account's last-known health check failed.
+	ErrAccountFailed = errors.New("target account failed its last health check")
 	// ErrChatMidTurn means the chat is WORKING and Force was not set.
 	ErrChatMidTurn = errors.New("chat is mid-turn")
 	// ErrCrossAgentSwitchUnsupported means the selected chat runs a different
@@ -207,6 +214,9 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	}
 	if target.Status == AccountDisabled {
 		return SwitchAccountResult{}, fmt.Errorf("%w: account %q is disabled", ErrAccountDisabled, target.Label)
+	}
+	if target.Status == AccountFailed {
+		return SwitchAccountResult{}, fmt.Errorf("%w: account %q", ErrAccountFailed, target.Label)
 	}
 	if target.Status == AccountCooling || (target.CooldownUntil != nil && target.CooldownUntil.After(l.switchNow())) {
 		return SwitchAccountResult{}, fmt.Errorf("%w: account %q is cooling until %s",
@@ -429,7 +439,7 @@ type accountRegistryAdapter struct {
 
 func (a accountRegistryAdapter) Account(ctx context.Context, accountID string) (switchAccount, error) {
 	if accountID == "" {
-		return switchAccount{ID: "", Label: "System default", Status: AccountActive}, nil
+		return switchAccount{ID: "", Label: account.UnmanagedLocalCredentialsLabel, Status: AccountActive}, nil
 	}
 	if a.store == nil {
 		return switchAccount{}, fmt.Errorf("account store not configured")
@@ -448,9 +458,15 @@ func (a accountRegistryAdapter) Account(ctx context.Context, accountID string) (
 	if sa.Label == "" {
 		sa.Label = shortAccountID(acct.ID)
 	}
+	// Mirror checkAccountEligible's selectability predicate (status/health/cooldown)
+	// so a manual switch refuses exactly what the rotation engine and session
+	// creation sideline. Disabled (operator intent) and Failed (bad health) take
+	// precedence over Cooling for the surfaced error; all three are non-switchable.
 	switch {
 	case acct.Status == models.AccountStatusDisabled:
 		sa.Status = AccountDisabled
+	case acct.Health == models.AccountHealthFailed:
+		sa.Status = AccountFailed
 	case acct.CooldownUntil != nil && acct.CooldownUntil.After(time.Now()):
 		sa.Status = AccountCooling
 	}

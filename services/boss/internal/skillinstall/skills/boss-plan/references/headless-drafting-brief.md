@@ -44,9 +44,9 @@ never lands on the orchestrator's main thread.
 
 ## Step 3 — Work the self-review dimensions yourself
 
-The interactive path invokes `plan-eng-review` for this; headless has no human to answer it, so you
-work the same review dimensions and answer each with a reasonable default, recording the decision
-you would otherwise have surfaced:
+The Bossanova interactive path gets these dimensions from its draft extension; headless has no
+human to answer them, so you work the same dimensions and answer each with a reasonable default,
+recording the decision you would otherwise have surfaced:
 
 - **Scope challenge** — is the ticket asking for the right thing? Trim gold-plating.
 - **Architecture** — where does the change belong; what are the module boundaries and contracts.
@@ -66,12 +66,25 @@ where a reasonable planner could have chosen the other option with comparable me
 noise defeats the signal). These become the `openQuestions` you return and the plan's
 `## Open Questions` section, and drive the `agent-question` label.
 
-## Step 5 — Write the polished plan (the shared drafting spec)
+## Step 5 — Resolve drafting, then write the polished plan
 
-Invoke `superpowers:writing-plans` via the Skill tool to produce the implementation plan from the
-fleshed-out decisions. Direct it to **write the plan to `PLAN_PATH`** (the path the orchestrator
-handed you) and **stop after saving the plan file** — do NOT continue into
-subagent-driven-development or executing-plans. We only want the plan document here.
+First run `node scripts/skill-extensions.mjs discover --core boss-plan --role draft --json`. If
+that helper is missing in an installed public skill payload, treat discovery as
+`{"extensions":[],"skipped":[]}` so the portable fallback tiers still run.
+
+- **Tier 1:** if a draft extension exists, load each discovered extension by its returned descriptor
+  `name` via the Skill tool with
+  `{ role: "draft", core: "boss-plan", context: { mode: "headless", planPath: PLAN_PATH, ticket },
+runTmp, outPath }`. The extension works the dimensions and writes the plan inside this single awaited
+  drafting context.
+- **Tier 2:** if no extension exists and the host exposes a native drafting command, use it and
+  normalize the result to the planContract sections in Step 7.
+- **Tier 3:** if neither exists, draft directly from Step 3 plus the self-contained plan-body
+  requirements below. This tier has no external skill dependency.
+
+Whichever tier runs, **write the plan to `PLAN_PATH`** and **stop after saving the plan file**. Do
+not continue into subagent-driven-development or executing-plans. We only want the plan document
+here.
 
 This section is the **shared drafting spec** for both modes — the interactive path
 (`references/interactive-mode.md`) points here too. Include, in the plan body, all of the following

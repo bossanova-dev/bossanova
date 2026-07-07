@@ -120,7 +120,7 @@ echo "Checking streaming transport duplex (streamprobe)"
 
 # Deploy-ordering gate (BOS-241): the freshly-deployed server must support the
 # API version this build's first-party clients request. apiversioncheck sends a
-# side-effect-free, unauthenticated out-of-range probe and fails if the live
+# side-effect-free, unauthenticated malformed-version probe and fails if the live
 # server's supported-max trails the built client Current — so production can
 # never be released trailing the versions in circulation. See docs/api-versioning.md.
 echo "Checking API version support (server must not trail built clients)"

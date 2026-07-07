@@ -41,6 +41,13 @@ func ParseCodexDeviceAuthPrompt(output string) (CodexDevicePrompt, bool) {
 	return CodexDevicePrompt{URL: url, Code: code}, true
 }
 
+// ParseCodexDeviceAuthDisabled detects the invariant core of the Codex CLI
+// error emitted when device-code authorization is disabled for the account.
+func ParseCodexDeviceAuthDisabled(output string) bool {
+	clean := strings.ToLower(StripANSI(output))
+	return strings.Contains(clean, "device code login is not enabled")
+}
+
 // CodexAuth is the validated token payload of a codex auth.json.
 type CodexAuth struct {
 	AccessToken  string

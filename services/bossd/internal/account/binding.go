@@ -181,12 +181,12 @@ func (r *Resolver) ResolveSpawnEnv(ctx context.Context, accountID, provider stri
 	return env, nil
 }
 
-// Label returns a human-friendly label for accountID. "" ⇒ "System default".
+// Label returns a human-friendly label for accountID. "" ⇒ "Unmanaged local credentials".
 // A known account returns its Label. When the registry is unreachable or the
 // account is unknown it falls back to a short ID prefix so it is never empty.
 func (r *Resolver) Label(ctx context.Context, accountID string) (string, error) {
 	if accountID == SystemDefaultAccountID {
-		return "System default", nil
+		return UnmanagedLocalCredentialsLabel, nil
 	}
 	if r == nil || r.reg == nil {
 		return shortID(accountID), nil

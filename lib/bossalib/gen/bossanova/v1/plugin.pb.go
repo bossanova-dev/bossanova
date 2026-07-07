@@ -7,12 +7,13 @@
 package bossanovav1
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -3877,9 +3878,12 @@ func (x *GetChatTitleRequest) GetSessionId() string {
 }
 
 type GetChatTitleResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Supported     bool                   `protobuf:"varint,1,opt,name=supported,proto3" json:"supported,omitempty"`
-	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Supported bool                   `protobuf:"varint,1,opt,name=supported,proto3" json:"supported,omitempty"`
+	Title     string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	// explicit is true when title came from an agent-side rename signal rather
+	// than the first-user-message fallback.
+	Explicit      bool `protobuf:"varint,3,opt,name=explicit,proto3" json:"explicit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3926,6 +3930,13 @@ func (x *GetChatTitleResponse) GetTitle() string {
 		return x.Title
 	}
 	return ""
+}
+
+func (x *GetChatTitleResponse) GetExplicit() bool {
+	if x != nil {
+		return x.Explicit
+	}
+	return false
 }
 
 type SuggestPRTitleRequest struct {
@@ -5256,10 +5267,11 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x13GetChatTitleRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x02 \x01(\tR\tsessionId\"J\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\"f\n" +
 	"\x14GetChatTitleResponse\x12\x1c\n" +
 	"\tsupported\x18\x01 \x01(\bR\tsupported\x12\x14\n" +
-	"\x05title\x18\x02 \x01(\tR\x05title\"\xaa\x01\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1a\n" +
+	"\bexplicit\x18\x03 \x01(\bR\bexplicit\"\xaa\x01\n" +
 	"\x15SuggestPRTitleRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12#\n" +
 	"\rcurrent_title\x18\x02 \x01(\tR\fcurrentTitle\x12\x17\n" +

@@ -11,11 +11,10 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// probeVersion is a valid YYYY-MM-DD date placed far in the future so it is
-// never a member of any registry. The server's version interceptor therefore
-// rejects it with the supported-range error BEFORE the ReportBug handler runs,
-// which makes the probe side-effect-free: no bug report is ever created.
-const probeVersion = "9999-12-31"
+// probeVersion is deliberately malformed so every version-aware server rejects
+// it with the supported-range error BEFORE the ReportBug handler runs, which
+// makes the probe side-effect-free: no bug report is ever created.
+const probeVersion = "not-a-date"
 
 // bugReporter is the one auth-exempt OrchestratorService method
 // (services/bosso/internal/auth/middleware.go). The generated
@@ -57,7 +56,7 @@ func supportedMaxFromError(errText string) (apiversion.Version, bool) {
 	return v, true
 }
 
-// checkCurrentSupported sends the side-effect-free out-of-range probe and
+// checkCurrentSupported sends the side-effect-free malformed-version probe and
 // verifies the live server advertises a supported-max at least as new as the
 // built client version. A server whose max trails current is the BOS-241 skew:
 // production has fallen behind the versions its own main-built clients request.
@@ -67,11 +66,11 @@ func checkCurrentSupported(ctx context.Context, r bugReporter, current apiversio
 
 	_, err := r.ReportBug(ctx, req)
 	if err == nil {
-		// The interceptor must reject an out-of-range version before the handler
-		// runs. A success means the server has no version interceptor (predates API
-		// versioning) or accepted an impossible version — either way the supported
+		// The interceptor must reject a malformed version before the handler runs.
+		// A success means the server has no version interceptor (predates API
+		// versioning) or accepted an invalid header — either way the supported
 		// range is unverifiable, so fail closed.
-		return fmt.Errorf("server accepted out-of-range probe version %q; cannot verify supported range (server may predate API versioning)", probeVersion)
+		return fmt.Errorf("server accepted malformed probe version %q; cannot verify supported range (server may predate API versioning)", probeVersion)
 	}
 
 	max, ok := supportedMaxFromError(err.Error())

@@ -1007,8 +1007,12 @@ type ProxyCreateSessionRequest struct {
 	Detach         bool    `protobuf:"varint,15,opt,name=detach,proto3" json:"detach,omitempty"`
 	Model          *string `protobuf:"bytes,16,opt,name=model,proto3,oneof" json:"model,omitempty"`
 	TmuxUnattended bool    `protobuf:"varint,17,opt,name=tmux_unattended,json=tmuxUnattended,proto3" json:"tmux_unattended,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	AccountId      *string `protobuf:"bytes,18,opt,name=account_id,json=accountId,proto3,oneof" json:"account_id,omitempty"`
+	// Mirror CreateSessionRequest.force_branch so hosted MCP create_session can
+	// intentionally replace an existing branch, matching the local socket path.
+	ForceBranch   bool `protobuf:"varint,19,opt,name=force_branch,json=forceBranch,proto3" json:"force_branch,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProxyCreateSessionRequest) Reset() {
@@ -1156,6 +1160,20 @@ func (x *ProxyCreateSessionRequest) GetModel() string {
 func (x *ProxyCreateSessionRequest) GetTmuxUnattended() bool {
 	if x != nil {
 		return x.TmuxUnattended
+	}
+	return false
+}
+
+func (x *ProxyCreateSessionRequest) GetAccountId() string {
+	if x != nil && x.AccountId != nil {
+		return *x.AccountId
+	}
+	return ""
+}
+
+func (x *ProxyCreateSessionRequest) GetForceBranch() bool {
+	if x != nil {
+		return x.ForceBranch
 	}
 	return false
 }
@@ -5187,7 +5205,7 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"outputLine\x12>\n" +
 	"\fstate_change\x18\x02 \x01(\v2\x19.bossanova.v1.StateChangeH\x00R\vstateChange\x12A\n" +
 	"\rsession_ended\x18\x03 \x01(\v2\x1a.bossanova.v1.SessionEndedH\x00R\fsessionEndedB\a\n" +
-	"\x05event\"\xbc\x05\n" +
+	"\x05event\"\x92\x06\n" +
 	"\x19ProxyCreateSessionRequest\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -5212,7 +5230,10 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\x05force\x18\x0e \x01(\bR\x05force\x12\x16\n" +
 	"\x06detach\x18\x0f \x01(\bR\x06detach\x12\x19\n" +
 	"\x05model\x18\x10 \x01(\tH\x06R\x05model\x88\x01\x01\x12'\n" +
-	"\x0ftmux_unattended\x18\x11 \x01(\bR\x0etmuxUnattendedB\f\n" +
+	"\x0ftmux_unattended\x18\x11 \x01(\bR\x0etmuxUnattended\x12\"\n" +
+	"\n" +
+	"account_id\x18\x12 \x01(\tH\aR\taccountId\x88\x01\x01\x12!\n" +
+	"\fforce_branch\x18\x13 \x01(\bR\vforceBranchB\f\n" +
 	"\n" +
 	"_pr_numberB\x0e\n" +
 	"\f_branch_nameB\r\n" +
@@ -5220,7 +5241,8 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\f_tracker_urlB\x10\n" +
 	"\x0e_tracker_issueB\x11\n" +
 	"\x0f_tracker_sourceB\b\n" +
-	"\x06_model\"\xc1\x01\n" +
+	"\x06_modelB\r\n" +
+	"\v_account_id\"\xc1\x01\n" +
 	"\x1aProxyCreateSessionResponse\x12#\n" +
 	"\fsetup_output\x18\x01 \x01(\tH\x00R\vsetupOutput\x121\n" +
 	"\acreated\x18\x02 \x01(\v2\x15.bossanova.v1.SessionH\x00R\acreated\x12\x16\n" +

@@ -43,6 +43,17 @@ func TestAccountTools(t *testing.T) {
 			sentinel: "acct-aa",
 		},
 		{
+			tool: "refresh_account",
+			args: map[string]any{"id": "acct-1", "credential": "new-token", "test_after_save": true},
+			backend: &fakeBackend{refreshAccount: func(_ context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+				if req.GetId() != "acct-1" || string(req.GetCredential()) != "new-token" || !req.GetTestAfterSave() {
+					t.Errorf("refresh_account args not forwarded: %+v", req)
+				}
+				return &pb.RefreshAccountResponse{Account: &pb.Account{Id: "acct-ra"}, Detail: "credential test passed"}, nil
+			}},
+			sentinel: "acct-ra",
+		},
+		{
 			tool: "update_account",
 			args: map[string]any{"id": "acct-1", "label": "renamed", "status": "disabled", "priority": 9, "allowed_models": []any{"opus", "sonnet"}},
 			backend: &fakeBackend{updateAccount: func(_ context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error) {
@@ -144,6 +155,34 @@ func TestAddAccountNeverEchoesCredential(t *testing.T) {
 	}
 }
 
+func TestRefreshAccountNeverEchoesCredential(t *testing.T) {
+	secret := "super-secret-refresh-token"
+	backend := &fakeBackend{refreshAccount: func(_ context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+		if string(req.GetCredential()) != secret {
+			t.Errorf("refresh_account did not forward the credential to the backend")
+		}
+		return &pb.RefreshAccountResponse{
+			Account:      &pb.Account{Id: "acct-secure", Provider: "claude", Label: "primary"},
+			LiveSmokeRan: true,
+			Detail:       "credential test passed",
+		}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "refresh_account",
+		Arguments: map[string]any{"id": "acct-secure", "credential": secret, "test_after_save": true},
+	})
+	if err != nil {
+		t.Fatalf("call refresh_account: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("refresh_account returned error: %s", textOf(t, res))
+	}
+	if got := textOf(t, res); strings.Contains(got, secret) {
+		t.Fatalf("refresh_account response echoed the credential blob: %s", got)
+	}
+}
+
 // jsonFieldNames extracts the json field names declared on a struct type,
 // skipping unexported/embedded protobuf bookkeeping fields (which carry no json
 // tag).
@@ -173,6 +212,7 @@ func TestAccountArgStructsMatchProto(t *testing.T) {
 		req  reflect.Type
 	}{
 		{"add_account", reflect.TypeOf(AddAccountArgs{}), reflect.TypeOf(pb.AddAccountRequest{})},
+		{"refresh_account", reflect.TypeOf(RefreshAccountArgs{}), reflect.TypeOf(pb.RefreshAccountRequest{})},
 		{"update_account", reflect.TypeOf(UpdateAccountArgs{}), reflect.TypeOf(pb.UpdateAccountRequest{})},
 	}
 	for _, tc := range cases {

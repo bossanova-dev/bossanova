@@ -330,8 +330,8 @@ func TestLabel(t *testing.T) {
 	reg := &stubRegistry{accounts: []AccountMeta{{ID: "acct-12345678abc", Provider: "claude", Label: "Work"}}}
 	r := NewResolver(reg, nil, zerolog.Nop())
 
-	if got, _ := r.Label(context.Background(), ""); got != "System default" {
-		t.Fatalf("empty id label = %q, want System default", got)
+	if got, _ := r.Label(context.Background(), ""); got != UnmanagedLocalCredentialsLabel {
+		t.Fatalf("empty id label = %q, want %q", got, UnmanagedLocalCredentialsLabel)
 	}
 	if got, _ := r.Label(context.Background(), "acct-12345678abc"); got != "Work" {
 		t.Fatalf("known id label = %q, want Work", got)

@@ -27,6 +27,7 @@ import (
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/session"
 )
 
 // AccountStore is the narrow slice of db.AccountStore the adapters read. The
@@ -175,6 +176,76 @@ func (m *materializerAdapter) MaterializeAccount(ctx context.Context, accountID 
 		return nil, fmt.Errorf("plugin MaterializeAccount: %w", err)
 	}
 	return resp.GetEnv(), nil
+}
+
+// --- Lifecycle rotation adapters -----------------------------------------
+
+// LifecycleMaterializer adapts account.Materializer to the session Lifecycle's
+// rotate-and-restart materializer seam.
+type LifecycleMaterializer struct {
+	materializer account.Materializer
+}
+
+// NewLifecycleMaterializer wraps materializer. A nil materializer yields nil
+// env, preserving the lifecycle's fail-safe behavior.
+func NewLifecycleMaterializer(materializer account.Materializer) *LifecycleMaterializer {
+	return &LifecycleMaterializer{materializer: materializer}
+}
+
+// Materialize returns the spawn env for account. It never logs env values.
+func (m *LifecycleMaterializer) Materialize(ctx context.Context, account *models.Account) (map[string]string, error) {
+	if m == nil || m.materializer == nil || account == nil {
+		return nil, nil
+	}
+	return m.materializer.MaterializeAccount(ctx, account.ID)
+}
+
+// RotationBindingResolver adapts the persisted session AccountID binding into
+// the rotation signal shape consumed by session.Lifecycle.
+type RotationBindingResolver struct {
+	registry     account.Registry
+	materializer account.Materializer
+}
+
+// NewRotationBindingResolver wraps the account registry/materializer for
+// lifecycle rotation decisions. Missing deps degrade to unbound/no-capability.
+func NewRotationBindingResolver(registry account.Registry, materializer account.Materializer) *RotationBindingResolver {
+	return &RotationBindingResolver{registry: registry, materializer: materializer}
+}
+
+// CurrentBinding reports the account currently bound to session. It returns
+// bound=false for account 0, missing sessions, missing registry, or a stale
+// AccountID that no longer exists.
+func (r *RotationBindingResolver) CurrentBinding(ctx context.Context, sess *models.Session) (session.RotationBinding, bool, error) {
+	if r == nil || sess == nil || sess.AccountID == nil || *sess.AccountID == "" || r.registry == nil {
+		return session.RotationBinding{}, false, nil
+	}
+	accountID := *sess.AccountID
+	acct, ok, err := r.registry.Get(ctx, accountID)
+	if err != nil {
+		return session.RotationBinding{}, false, err
+	}
+	if !ok {
+		return session.RotationBinding{}, false, nil
+	}
+
+	provider := acct.Provider
+	if provider == "" {
+		provider = sess.AgentName
+	}
+	capable := false
+	if r.materializer != nil {
+		supported, err := r.materializer.SupportsRotation(ctx, provider)
+		if err != nil {
+			return session.RotationBinding{}, false, err
+		}
+		capable = supported
+	}
+	return session.RotationBinding{
+		CappedAccountID: accountID,
+		Provider:        provider,
+		RotationCapable: capable,
+	}, true, nil
 }
 
 // --- Session-aware spawn-env resolver -------------------------------------

@@ -351,6 +351,24 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 	})
 
 	addTool(server, opts, &mcp.Tool{
+		Name:        "refresh_account",
+		Description: "Replace an existing account credential in place. The credential is stored in the keyring and never echoed back; the response returns metadata only.",
+		Annotations: &mcp.ToolAnnotations{},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args RefreshAccountArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.RefreshAccountRequest{
+			Id:            args.ID,
+			Credential:    []byte(args.Credential),
+			TestAfterSave: args.TestAfterSave,
+		}
+		out, err := backend.RefreshAccount(ctx, req)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
 		Name:        "update_account",
 		Description: "Update account metadata. Optional fields are applied only when present; allowed_models replaces the set when non-empty.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
@@ -374,7 +392,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "test_account",
-		Description: "Validate an account's credential and, when a live smoke runner is wired, run a trivial CLI invocation; records the outcome.",
+		Description: "Validate an account's credential and, when provider verification is available, run a trivial CLI invocation; records the outcome.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args IDArgs) (*mcp.CallToolResult, any, error) {
 		out, err := backend.TestAccount(ctx, args.ID)
@@ -615,6 +633,15 @@ type AddAccountArgs struct {
 	Email      string `json:"email,omitempty" jsonschema:"optional informational account email"`
 	Priority   int32  `json:"priority,omitempty" jsonschema:"sort order; lower = preferred"`
 	Credential string `json:"credential,omitempty" jsonschema:"credential blob (Claude setup-token string or Codex auth.json contents); stored in the keyring, never returned"`
+}
+
+// RefreshAccountArgs is the typed argument struct for refresh_account. It maps
+// 1:1 onto pb.RefreshAccountRequest. The credential is inbound only — no
+// response ever returns it.
+type RefreshAccountArgs struct {
+	ID            string `json:"id" jsonschema:"the account id"`
+	Credential    string `json:"credential,omitempty" jsonschema:"new credential blob; stored in the keyring, never returned"`
+	TestAfterSave bool   `json:"test_after_save,omitempty" jsonschema:"validate the refreshed credential after saving"`
 }
 
 // UpdateAccountArgs is the typed argument struct for update_account. Optional

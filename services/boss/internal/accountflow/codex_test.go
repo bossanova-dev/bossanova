@@ -160,6 +160,73 @@ func TestRunCodexAdd(t *testing.T) {
 		}
 	})
 
+	t.Run("disabled_setting", func(t *testing.T) {
+		dir := tempCodexHome(t)
+		proc := scriptedProcHook([]string{
+			"device code login is not enabled for this Codex server. Use the browser login or verify the server URL.",
+		}, errors.New("exit status 1"), nil)
+		ex := &fakeExec{proc: proc}
+		pr := &fakePrompter{}
+		cl := &fakeAccountClient{}
+		err := RunCodexAdd(context.Background(), CodexOptions{
+			Exec: ex, Prompter: pr, Client: cl,
+			HomeDir: func() (string, error) { return dir, nil },
+		})
+		if err == nil {
+			t.Fatalf("RunCodexAdd returned nil, want disabled-device-auth error")
+		}
+		tr := pr.transcript()
+		for _, want := range []string{
+			"chatgpt.com/#settings",
+			"device code authorization",
+			"Security",
+			"boss account add codex",
+		} {
+			if !strings.Contains(tr, want) {
+				t.Fatalf("transcript missing %q:\n%s", want, tr)
+			}
+		}
+		if strings.Contains(tr, "ABCD-EFGHI") {
+			t.Fatalf("device code leaked into remediation transcript:\n%s", tr)
+		}
+		if len(cl.addReqs) != 0 {
+			t.Fatalf("AddAccount must not be called")
+		}
+		if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+			t.Fatalf("CODEX_HOME not removed on disabled setting: %v", statErr)
+		}
+	})
+
+	t.Run("disabled_setting_wins_over_timeout", func(t *testing.T) {
+		dir := tempCodexHome(t)
+		proc := newBlockingProc([]string{
+			"device code login is not enabled for this Codex server. Use the browser login or verify the server URL.",
+		})
+		ex := &fakeExec{proc: proc}
+		pr := &fakePrompter{}
+		cl := &fakeAccountClient{}
+		err := RunCodexAdd(context.Background(), CodexOptions{
+			Exec: ex, Prompter: pr, Client: cl,
+			HomeDir: func() (string, error) { return dir, nil },
+			Timeout: 50 * time.Millisecond,
+		})
+		if err == nil || strings.Contains(err.Error(), "timed out") {
+			t.Fatalf("err = %v, want disabled-device-auth error before timeout", err)
+		}
+		if !strings.Contains(pr.transcript(), "Enable device code authorization for Codex") {
+			t.Fatalf("missing remediation transcript:\n%s", pr.transcript())
+		}
+		if !proc.wasKilled() {
+			t.Fatalf("proc was not killed after disabled-device-auth signal")
+		}
+		if len(cl.addReqs) != 0 {
+			t.Fatalf("AddAccount must not be called")
+		}
+		if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+			t.Fatalf("CODEX_HOME not removed on disabled setting: %v", statErr)
+		}
+	})
+
 	t.Run("no_auth_json", func(t *testing.T) {
 		dir := tempCodexHome(t)
 		proc := scriptedProcHook([]string{"logging in"}, nil, nil)

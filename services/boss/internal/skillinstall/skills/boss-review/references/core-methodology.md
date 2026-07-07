@@ -13,9 +13,8 @@ orchestrator** is the top-level run that owns aggregation, fixing, and commits; 
 
 ## Reviewer / orchestrator split
 
-- **Reviewers are read-only.** Every reviewer — a specialist lens, the always-on
-  requesting-code-review round, the cross-agent second voice, the thermonuclear round —
-  runs in a **fresh subagent** and **returns findings only**. A reviewer never edits,
+- **Reviewers are read-only.** Every reviewer — a specialist lens or an always-on whole-diff
+  round — runs in a **fresh subagent** and **returns findings only**. A reviewer never edits,
   stages, commits, or otherwise mutates the worktree, the index, or `HEAD`.
 - **The orchestrator owns everything stateful.** It aggregates findings, categorizes them
   by severity, drives the fix-loop, and makes every commit. Reviewers propose; the
@@ -62,15 +61,22 @@ Severity drives the loop; it is not a matter of per-subagent judgment at fix tim
 Two kinds of review compose:
 
 - **Always-on rounds review the whole diff, regardless of file type.** They are the
-  comprehensive safety net: a requesting-code-review round, a cross-agent second opinion,
-  and a thermonuclear round. Every changed file passes through them.
+  comprehensive safety net. A consuming repo may provide them as discovered `round`
+  extensions; if none are installed, the core falls back to a host-native whole-diff review
+  command or an inline whole-diff rubric. Every changed file passes through this layer.
 - **Specialist lenses are additive only.** A lens layers domain expertise (e.g. a
   language- or framework-specific rubric) on top of the always-on rounds for the files it
   matches. A file that matches no lens is still fully reviewed by the always-on rounds; it
   simply gets no extra specialist pass.
 
 The critical invariant: **selecting lenses never gates whether a file is reviewed.** An
-empty or absent lens registry degrades to "always-on rounds only" — never to "no review."
+empty or absent lens registry degrades to "whole-branch rounds only" — never to "no review."
+
+### Round fallback
+
+Round resolution follows strict precedence: discovered repo-local `round` extensions first, then
+a host-native whole-diff review command when available, then an inline rubric embedded in the core.
+Fallback tiers do not run when any round extension is discovered.
 
 ### Lens fallback
 

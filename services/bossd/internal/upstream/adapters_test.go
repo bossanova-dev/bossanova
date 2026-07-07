@@ -312,6 +312,7 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 	issueTitle := "Do the thing"
 	source := "linear"
 	model := "claude-opus-4-8"
+	accountID := "acct-hosted"
 
 	fake := &fakeStreamCreateSessioner{}
 	adapter := &SessionCreatorAdapter{Server: fake, Logger: zerolog.Nop()}
@@ -325,7 +326,9 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 		TrackerUrl:     &trackerURL,
 		TrackerIssue:   &pb.TrackerIssue{Title: issueTitle},
 		TrackerSource:  &source,
+		AccountId:      &accountID,
 		Force:          true,
+		ForceBranch:    true,
 		Detach:         true,
 		Model:          &model,
 		TmuxUnattended: true,
@@ -357,8 +360,14 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 	if req.TrackerSource == nil || *req.TrackerSource != source {
 		t.Errorf("TrackerSource: got %v, want %q", req.TrackerSource, source)
 	}
+	if req.AccountId == nil || *req.AccountId != accountID {
+		t.Errorf("AccountId: got %v, want %q", req.AccountId, accountID)
+	}
 	if !req.GetForce() {
 		t.Errorf("Force: got false, want true")
+	}
+	if !req.GetForceBranch() {
+		t.Errorf("ForceBranch: got false, want true")
 	}
 	// Unattended-session fields must survive the reverse-stream Command→Request
 	// mapping so a hosted create runs headless/unattended on the requested model
@@ -371,6 +380,29 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 	}
 	if req.GetModel() != model {
 		t.Errorf("Model: got %q, want %q", req.GetModel(), model)
+	}
+}
+
+func TestSessionCreatorAdapter_Create_PreservesPresentEmptyAccountID(t *testing.T) {
+	fake := &fakeStreamCreateSessioner{}
+	adapter := &SessionCreatorAdapter{Server: fake, Logger: zerolog.Nop()}
+	accountID := ""
+
+	ch, err := adapter.Create(context.Background(), &pb.CreateSessionCommand{
+		RepoId:    "r1",
+		Title:     "x",
+		AccountId: &accountID,
+	}, "cmd-account-empty")
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	drainCreateChunks(t, ch)
+
+	if fake.lastReq.AccountId == nil {
+		t.Fatal("AccountId nil, want present-empty")
+	}
+	if *fake.lastReq.AccountId != "" {
+		t.Fatalf("AccountId = %q, want present-empty", *fake.lastReq.AccountId)
 	}
 }
 

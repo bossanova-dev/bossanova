@@ -148,13 +148,13 @@ func hasUserTextBlock(raw json.RawMessage) bool {
 	return false
 }
 
-// chatTitle reads the JSONL file for the given Claude session and returns
-// the first user message as a title. Returns "" if the file doesn't exist
-// or no user message is found.
-func chatTitle(worktreePath, claudeID string) string {
+// chatTitle reads the JSONL file for the given Claude session and returns the
+// latest explicit rename summary when present, otherwise the first user message
+// as a title. explicit is true only for rename-derived titles.
+func chatTitle(worktreePath, claudeID string) (title string, explicit bool) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return "", false
 	}
 
 	projectDir := filepath.Join(homeDir, ".claude", "projects", pathToProjectKey(worktreePath))
@@ -163,10 +163,10 @@ func chatTitle(worktreePath, claudeID string) string {
 
 // chatTitleInDir reads the JSONL file for a Claude session from a specific
 // directory. Used by chatTitle and useful for testing.
-func chatTitleInDir(projectDir, claudeID string) string {
+func chatTitleInDir(projectDir, claudeID string) (title string, explicit bool) {
 	path := filepath.Join(projectDir, claudeID+".jsonl")
-	_, summary := parseSessionMeta(path)
-	return summary
+	summary, explicit := parseSessionMeta(path)
+	return summary, explicit
 }
 
 // pathToProjectKey converts a filesystem path to a Claude Code project key.
@@ -185,6 +185,7 @@ func pathToProjectKey(path string) string {
 type jsonlLine struct {
 	Type    string   `json:"type"`
 	Message jsonlMsg `json:"message"`
+	Summary string   `json:"summary"`
 }
 
 type jsonlMsg struct {
@@ -192,34 +193,42 @@ type jsonlMsg struct {
 	Content json.RawMessage `json:"content"`
 }
 
-// parseSessionMeta scans the first maxScanLines of a JSONL file to extract
-// the slug and first user message text.
-func parseSessionMeta(path string) (slug, summary string) {
+// parseSessionMeta scans a JSONL transcript to extract a title. It prefers the
+// last Claude /rename summary line, falling back to the first user message in
+// the bounded opening window.
+func parseSessionMeta(path string) (summary string, explicit bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", ""
+		return "", false
 	}
 	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
 
-	for i := 0; i < maxScanLines && scanner.Scan(); i++ {
+	var firstUserSummary string
+	var renameSummary string
+	for i := 0; scanner.Scan(); i++ {
 		var line jsonlLine
 		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
 			continue
 		}
 
-		if line.Type == "user" && line.Message.Role == "user" && summary == "" {
-			summary = extractText(line.Message.Content)
+		if line.Type == "summary" {
+			if t := truncate(firstLine(stripXMLTags(line.Summary))); t != "" {
+				renameSummary = t
+			}
 		}
 
-		if summary != "" {
-			break
+		if i < maxScanLines && line.Type == "user" && line.Message.Role == "user" && firstUserSummary == "" {
+			firstUserSummary = extractText(line.Message.Content)
 		}
 	}
 
-	return "", summary
+	if renameSummary != "" {
+		return renameSummary, true
+	}
+	return firstUserSummary, false
 }
 
 // extractText pulls the first text content from a user message.

@@ -259,8 +259,41 @@ test('discoverSkillDocs finds checked-in skill SKILL.md files recursively', () =
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
   fs.mkdirSync(path.join(repoRoot, '.claude', 'skills', 'alpha'), { recursive: true })
   fs.mkdirSync(path.join(repoRoot, '.claude', 'skills', 'beta', 'nested'), { recursive: true })
+  fs.mkdirSync(
+    path.join(repoRoot, 'services', 'boss', 'internal', 'skillinstall', 'skills', 'gamma'),
+    { recursive: true },
+  )
+  fs.mkdirSync(
+    path.join(repoRoot, 'plugins', 'bossd-plugin-claude', 'skilldata', 'skills', 'delta'),
+    { recursive: true },
+  )
   fs.writeFileSync(path.join(repoRoot, '.claude', 'skills', 'alpha', 'SKILL.md'), '# alpha\n')
   fs.writeFileSync(path.join(repoRoot, '.claude', 'skills', 'beta', 'nested', 'SKILL.md'), '# b\n')
+  fs.writeFileSync(
+    path.join(
+      repoRoot,
+      'services',
+      'boss',
+      'internal',
+      'skillinstall',
+      'skills',
+      'gamma',
+      'SKILL.md',
+    ),
+    '# gamma\n',
+  )
+  fs.writeFileSync(
+    path.join(
+      repoRoot,
+      'plugins',
+      'bossd-plugin-claude',
+      'skilldata',
+      'skills',
+      'delta',
+      'SKILL.md',
+    ),
+    '# delta\n',
+  )
   // Non-SKILL files are ignored.
   fs.writeFileSync(path.join(repoRoot, '.claude', 'skills', 'beta', 'NOTES.md'), '# notes\n')
 
@@ -269,6 +302,8 @@ test('discoverSkillDocs finds checked-in skill SKILL.md files recursively', () =
     [
       path.join('.claude', 'skills', 'alpha', 'SKILL.md'),
       path.join('.claude', 'skills', 'beta', 'nested', 'SKILL.md'),
+      path.join('plugins', 'bossd-plugin-claude', 'skilldata', 'skills', 'delta', 'SKILL.md'),
+      path.join('services', 'boss', 'internal', 'skillinstall', 'skills', 'gamma', 'SKILL.md'),
     ],
   )
 })
@@ -281,13 +316,25 @@ test('discoverSkillDocs returns empty when no skills directory exists', () => {
 
 test('checkDocMakeTargets flags dead make targets referenced in skill docs', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
-  fs.mkdirSync(path.join(repoRoot, '.claude', 'skills', 'demo'), { recursive: true })
+  fs.mkdirSync(
+    path.join(repoRoot, 'services', 'boss', 'internal', 'skillinstall', 'skills', 'demo'),
+    { recursive: true },
+  )
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
   fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), '')
   fs.writeFileSync(path.join(repoRoot, 'AGENTS.md'), '')
   fs.writeFileSync(path.join(repoRoot, 'README.md'), '')
   fs.writeFileSync(
-    path.join(repoRoot, '.claude', 'skills', 'demo', 'SKILL.md'),
+    path.join(
+      repoRoot,
+      'services',
+      'boss',
+      'internal',
+      'skillinstall',
+      'skills',
+      'demo',
+      'SKILL.md',
+    ),
     'Run `make test`, then `make ghost`.\n',
   )
 
@@ -296,13 +343,24 @@ test('checkDocMakeTargets flags dead make targets referenced in skill docs', () 
 
 test('checkDocMakeTargets passes when skill docs only use defined targets', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
-  fs.mkdirSync(path.join(repoRoot, '.claude', 'skills', 'demo'), { recursive: true })
+  fs.mkdirSync(
+    path.join(repoRoot, 'plugins', 'bossd-plugin-claude', 'skilldata', 'skills', 'demo'),
+    { recursive: true },
+  )
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\nlint:\n\t@true\n')
   fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), '')
   fs.writeFileSync(path.join(repoRoot, 'AGENTS.md'), '')
   fs.writeFileSync(path.join(repoRoot, 'README.md'), '')
   fs.writeFileSync(
-    path.join(repoRoot, '.claude', 'skills', 'demo', 'SKILL.md'),
+    path.join(
+      repoRoot,
+      'plugins',
+      'bossd-plugin-claude',
+      'skilldata',
+      'skills',
+      'demo',
+      'SKILL.md',
+    ),
     'Run `make test` and `make lint`.\n',
   )
 
@@ -328,7 +386,14 @@ test('script workflow runs the doc-target guard when checked docs change', () =>
 
   // Skill docs are scanned too, so a skill edit must also trigger the guard
   // (once in the push paths filter, once in the dorny/paths-filter block).
-  assert.equal(workflow.split('- .claude/skills/**').length - 1, 2)
+  for (const skillRoot of [
+    '.claude/skills/**',
+    '.codex/skills/**',
+    'plugins/bossd-plugin-claude/skilldata/skills/**',
+    'services/boss/internal/skillinstall/skills/**',
+  ]) {
+    assert.equal(workflow.split(`- ${skillRoot}`).length - 1, 2)
+  }
 })
 
 test('checkDocMakeTargets validates -C targets against that directory Makefile', () => {

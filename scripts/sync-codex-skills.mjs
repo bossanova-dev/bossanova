@@ -174,9 +174,8 @@ export function collectSkillSources(sourceRoot) {
     .sort((left, right) => left.dirName.localeCompare(right.dirName))
 }
 
-// Build inputs for constructed skills (see scripts/construct-skills.mjs): the
-// generated SKILL.md is the runtime artifact, so the template and manifest are
-// dead weight in the codex copy and would re-drift on every regeneration.
+// Legacy build inputs are runtime dead weight in the Codex copy and should not
+// reappear if a fixture or stale local skill still carries them.
 const CONSTRUCT_BUILD_INPUTS = new Set(['construct.json', 'SKILL.md.tmpl'])
 
 function copyRecursive(sourcePath, destPath, skippedPath) {

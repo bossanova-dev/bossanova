@@ -1,0 +1,30 @@
+{
+  "recipes": [
+    {
+      "id": "docs-home",
+      "surface": "docs"
+    },
+    {
+      "id": "docs-mcp-guide",
+      "surface": "docs"
+    },
+    {
+      "id": "marketing-changelog",
+      "surface": "marketing"
+    },
+    {
+      "id": "marketing-home",
+      "surface": "marketing"
+    },
+    {
+      "id": "marketing-home-scroll",
+      "surface": "marketing"
+    },
+    {
+      "id": "marketing-pricing",
+      "surface": "marketing"
+    }
+  ],
+  "tui": true,
+  "web": true
+}

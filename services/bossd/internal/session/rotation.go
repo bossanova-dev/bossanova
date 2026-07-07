@@ -21,13 +21,9 @@ import (
 // re-check the workspace before repeating side effects. Do NOT reword.
 const steeringNotice = "You were interrupted mid-task by an account switch. Verify current workspace/git/PR state before repeating any action (commits, pushes, comments may already exist)."
 
-// rotationDecider is the narrow decision port satisfied by *rotation.Engine.
-// Injected via SetRotationDecider so tests can supply a fake and production
-// wiring (Task 3) supplies the real engine. Nil ⇒ rotation degrades to today's
-// Block path (fail-safe).
-type rotationDecider interface {
-	Decide(ctx context.Context, sig rotation.Signal) (rotation.Outcome, error)
-}
+// rotationDecider is the narrow decision function consumed by usage-limit
+// rotation. Nil ⇒ rotation degrades to today's Block path (fail-safe).
+type rotationDecider func(ctx context.Context, sig rotation.Signal) (rotation.Outcome, error)
 
 // accountMaterializer resolves the env overlay for the account to switch to.
 // The real implementation forwards the account's keyring credential blob to the
@@ -39,9 +35,8 @@ type accountMaterializer interface {
 
 // rotationBinding resolves the session→account binding needed to build a
 // rotation signal: which account is currently capped, the provider, and whether
-// the agent can rotate at all. The real binding lands with BOS-170; until then
-// production wires a resolver that reports unbound and the path degrades to
-// today's Block (fail-safe).
+// the agent can rotate at all. Production wires the BOS-170 binding adapter;
+// nil or unbound still degrades to today's Block path (fail-safe).
 type rotationBinding interface {
 	CurrentBinding(ctx context.Context, session *models.Session) (RotationBinding, bool, error)
 }
@@ -54,8 +49,9 @@ type RotationBinding struct {
 	RotationCapable bool
 }
 
-// SetRotationDecider injects the rotation decision engine. Safe to leave unset:
-// a nil decider makes attemptUsageLimitRotation fall through to today's Block.
+// SetRotationDecider injects the rotation decision function. Safe to leave
+// unset: a nil decider makes attemptUsageLimitRotation fall through to today's
+// Block.
 func (l *Lifecycle) SetRotationDecider(d rotationDecider) { l.rotationDecider = d }
 
 // SetAccountMaterializer injects the account env materializer. Safe to leave
@@ -65,6 +61,12 @@ func (l *Lifecycle) SetAccountMaterializer(m accountMaterializer) { l.accountMat
 // SetRotationBinding injects the session→account binding resolver. Safe to
 // leave unset (nil ⇒ Block fallback).
 func (l *Lifecycle) SetRotationBinding(b rotationBinding) { l.rotationBinding = b }
+
+// HasLiveRotationSeams reports whether the lifecycle has both live seams needed
+// for headless/session-lifecycle auto-rotation.
+func (l *Lifecycle) HasLiveRotationSeams() bool {
+	return l.rotationBinding != nil && l.accountMaterializer != nil
+}
 
 // SetRotationConfig installs the rotation policy knobs (kill switch, max
 // rotations). The zero value enables rotation (RotationEnabled()==true) with the
@@ -76,11 +78,28 @@ func (l *Lifecycle) SetRotationConfig(c config.RotationConfig) { l.rotationConfi
 // daemon records no audit events.
 func (l *Lifecycle) SetRotationRecorder(r *rotation.Recorder) { l.rotationRecorder = r }
 
-// SetRotationConfigLoader installs the live settings re-loader used by the
-// per-decision kill-switch gate (BOS-176). Production wires config.Load; leaving
-// it unset falls back to the cached config from SetRotationConfig.
-func (l *Lifecycle) SetRotationConfigLoader(load func() (config.Settings, error)) {
+// SetRotationConfigLoader installs the live rotation-policy re-loader used by
+// rotation decisions and parked sweeps (BOS-176). Production wires a
+// config.Load-backed adapter; leaving it unset falls back to the cached config
+// from SetRotationConfig.
+func (l *Lifecycle) SetRotationConfigLoader(load func() (config.RotationConfig, error)) {
 	l.rotationConfigLoader = load
+}
+
+// currentRotationConfig returns the live rotation policy when a loader is wired,
+// otherwise the cached config injected at startup. It fails safe: a load error
+// disables automatic rotation for that decision.
+func (l *Lifecycle) currentRotationConfig() (config.RotationConfig, bool) {
+	if l.rotationConfigLoader == nil {
+		return l.rotationConfig, true
+	}
+	cfg, err := l.rotationConfigLoader()
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Msg("rotation gate: settings load failed; treating rotation as disabled")
+		return config.RotationConfig{}, false
+	}
+	return cfg, true
 }
 
 // autoRotateAllowed reports whether automatic rotation may act, re-reading
@@ -88,16 +107,8 @@ func (l *Lifecycle) SetRotationConfigLoader(load func() (config.Settings, error)
 // effect without a daemon restart). It fails safe: a load error disables
 // automatic rotation. With no loader it uses the cached injected config.
 func (l *Lifecycle) autoRotateAllowed() bool {
-	if l.rotationConfigLoader == nil {
-		return l.rotationConfig.RotationEnabled()
-	}
-	settings, err := l.rotationConfigLoader()
-	if err != nil {
-		l.logger.Warn().Err(err).
-			Msg("rotation gate: settings load failed; treating rotation as disabled")
-		return false
-	}
-	return settings.Rotation.RotationEnabled()
+	cfg, ok := l.currentRotationConfig()
+	return ok && cfg.RotationEnabled()
 }
 
 // recordRotation is the headless-intercept audit helper. It builds an
@@ -165,7 +176,8 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 	// per decision (BOS-176) so a flip takes effect without a daemon restart;
 	// a disabled flip records a STATUS_ONLY_DISABLED audit event and falls back
 	// to today's Block path (no swap).
-	if !l.autoRotateAllowed() {
+	rotationConfig, ok := l.currentRotationConfig()
+	if !ok || !rotationConfig.RotationEnabled() {
 		l.rotationRecorder.Record(ctx, rotation.AuditEvent{
 			SessionID: sessionID, Provider: session.AgentName,
 			Trigger: "ROTATION_TRIGGER_USAGE_LIMITED",
@@ -184,7 +196,7 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 
 	// Bounded-exhaustion: too many rotations already — park without asking the
 	// engine (a human unblocks).
-	maxRotations := l.rotationConfig.MaxRotations()
+	maxRotations := rotationConfig.MaxRotations()
 	if session.RotationAttemptCount >= maxRotations {
 		l.parkRotatedSession(ctx, sessionID,
 			fmt.Sprintf("usage-limited: max rotations (%d) reached", maxRotations), nil)
@@ -212,7 +224,7 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 		ResetAt:         resetPtr,
 		RotationCapable: b.RotationCapable,
 	}
-	outcome, err := l.rotationDecider.Decide(ctx, sig)
+	outcome, err := l.rotationDecider(ctx, sig)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", sessionID).
 			Msg("usage-limit rotation: decide failed; falling back to block")
@@ -308,6 +320,8 @@ func (l *Lifecycle) rotateAndRestart(ctx context.Context, session *models.Sessio
 
 	implementingState := int(machine.ImplementingPlan)
 	newCount := session.RotationAttemptCount + 1
+	nextAccountID := next.ID
+	nextAccountIDPtr := &nextAccountID
 	// Clear any parked resume-at stamp atomically with the restart persistence so
 	// the sweep never re-dispatches this run a second time.
 	var clearResumeAt *string
@@ -316,6 +330,7 @@ func (l *Lifecycle) rotateAndRestart(ctx context.Context, session *models.Sessio
 		State:                &implementingState,
 		RotationAttemptCount: &newCount,
 		RotationResumeAt:     &clearResumeAt,
+		AccountID:            &nextAccountIDPtr,
 	}); err != nil {
 		l.logger.Error().Err(err).Str("session", session.ID).
 			Msg("usage-limit rotation: persist restart failed")

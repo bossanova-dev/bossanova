@@ -54,6 +54,52 @@ func (f *fakeRotationBinding) CurrentBinding(_ context.Context, _ *models.Sessio
 	return f.binding, f.bound, f.err
 }
 
+type adapterShapeMaterializer struct {
+	supports       bool
+	supportsCalls  int
+	lastProvider   string
+	env            map[string]string
+	materializeID  string
+	materializeErr error
+}
+
+func (m *adapterShapeMaterializer) SupportsRotation(_ context.Context, provider string) (bool, error) {
+	m.supportsCalls++
+	m.lastProvider = provider
+	return m.supports, nil
+}
+
+func (m *adapterShapeMaterializer) MaterializeAccount(_ context.Context, accountID string) (map[string]string, error) {
+	m.materializeID = accountID
+	return m.env, m.materializeErr
+}
+
+type adapterShapeAccountMaterializer struct{ mat *adapterShapeMaterializer }
+
+func (m adapterShapeAccountMaterializer) Materialize(ctx context.Context, acct *models.Account) (map[string]string, error) {
+	if acct == nil {
+		return nil, nil
+	}
+	return m.mat.MaterializeAccount(ctx, acct.ID)
+}
+
+type adapterShapeRotationBinding struct{ mat *adapterShapeMaterializer }
+
+func (b adapterShapeRotationBinding) CurrentBinding(ctx context.Context, sess *models.Session) (RotationBinding, bool, error) {
+	if sess == nil || sess.AccountID == nil || *sess.AccountID == "" {
+		return RotationBinding{}, false, nil
+	}
+	capable, err := b.mat.SupportsRotation(ctx, sess.AgentName)
+	if err != nil {
+		return RotationBinding{}, false, err
+	}
+	return RotationBinding{
+		CappedAccountID: *sess.AccountID,
+		Provider:        sess.AgentName,
+		RotationCapable: capable,
+	}, true, nil
+}
+
 // rotationFixture wires a Lifecycle in ImplementingPlan with a rotatable repo
 // and the three rotation adapters, returning the pieces a test asserts on.
 type rotationFixture struct {
@@ -101,7 +147,7 @@ func newRotationFixture(t *testing.T) *rotationFixture {
 		bound:   true,
 	}
 	materializer := &fakeAccountMaterializer{env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "next-token"}}
-	lc.SetRotationDecider(decider)
+	lc.SetRotationDecider(decider.Decide)
 	lc.SetRotationBinding(binding)
 	lc.SetAccountMaterializer(materializer)
 
@@ -191,11 +237,65 @@ func TestAttemptUsageLimitRotation_RotateHappyPath_SteeringPrefix(t *testing.T) 
 	if s.RotationAttemptCount != 1 {
 		t.Errorf("RotationAttemptCount = %d, want 1", s.RotationAttemptCount)
 	}
+	if s.AccountID == nil || *s.AccountID != "acct-next" {
+		t.Errorf("AccountID = %v, want acct-next", s.AccountID)
+	}
 	if s.State != machine.ImplementingPlan {
 		t.Errorf("State = %v, want ImplementingPlan", s.State)
 	}
 	if f.materializer.lastAccount == nil || f.materializer.lastAccount.ID != "acct-next" {
 		t.Errorf("materializer called with wrong account: %v", f.materializer.lastAccount)
+	}
+}
+
+func TestAttemptUsageLimitRotation_RotatesThroughAdapterShapes(t *testing.T) {
+	f := newRotationFixture(t)
+	cappedID := "acct-capped"
+	f.sessions.sessions[f.sessionID].AccountID = &cappedID
+
+	mat := &adapterShapeMaterializer{
+		supports: true,
+		env:      map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "next-token"},
+	}
+	f.lc.SetRotationBinding(adapterShapeRotationBinding{mat: mat})
+	f.lc.SetAccountMaterializer(adapterShapeAccountMaterializer{mat: mat})
+	f.decider.outcome = rotation.Outcome{
+		Kind:            rotation.OutcomeRotate,
+		NextAccount:     &models.Account{ID: "acct-next"},
+		CooldownApplied: true,
+	}
+
+	handled := f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "usage_limit_reached: try later")
+	if !handled {
+		t.Fatal("expected handled=true on rotate")
+	}
+	if mat.supportsCalls != 1 || mat.lastProvider != "claude" {
+		t.Fatalf("SupportsRotation calls/provider = %d/%q, want 1/claude", mat.supportsCalls, mat.lastProvider)
+	}
+	if f.decider.lastSig.Provider != "claude" ||
+		f.decider.lastSig.CappedAccountID != "acct-capped" ||
+		!f.decider.lastSig.RotationCapable {
+		t.Fatalf("rotation signal = %+v, want provider claude capped acct-capped capable true", f.decider.lastSig)
+	}
+	if mat.materializeID != "acct-next" {
+		t.Fatalf("MaterializeAccount called with %q, want acct-next", mat.materializeID)
+	}
+	if len(f.runner.started) != 1 {
+		t.Fatalf("expected exactly 1 StartByAgent, got %d", len(f.runner.started))
+	}
+	call := f.runner.started[0]
+	if !strings.HasPrefix(call.plan, steeringNotice+"\n\n") {
+		t.Fatalf("restarted prompt missing steering notice prefix: %q", call.plan)
+	}
+	if call.env["CLAUDE_CODE_OAUTH_TOKEN"] != "next-token" {
+		t.Fatalf("account env overlay missing: env=%v", call.env)
+	}
+	s := f.sessions.sessions[f.sessionID]
+	if s.RotationAttemptCount != 1 {
+		t.Fatalf("RotationAttemptCount = %d, want 1", s.RotationAttemptCount)
+	}
+	if s.State != machine.ImplementingPlan {
+		t.Fatalf("State = %v, want ImplementingPlan", s.State)
 	}
 }
 
@@ -248,6 +348,35 @@ func TestAttemptUsageLimitRotation_BoundedExhaustionPark(t *testing.T) {
 	}
 	if captured.RotationResumeAt != nil {
 		t.Errorf("resume_at should be NULL on bounded exhaustion, got %v", captured.RotationResumeAt)
+	}
+}
+
+func TestAttemptUsageLimitRotation_UsesLiveMaxRotations(t *testing.T) {
+	f := newRotationFixture(t)
+	enabled := true
+	f.lc.SetRotationConfig(config.RotationConfig{MaxRotationsPerRun: 1})
+	f.lc.SetRotationConfigLoader(func() (config.RotationConfig, error) {
+		return config.RotationConfig{
+			Enabled:            &enabled,
+			MaxRotationsPerRun: 5,
+		}, nil
+	})
+	f.sessions.sessions[f.sessionID].RotationAttemptCount = 1
+	f.decider.outcome = rotation.Outcome{
+		Kind:            rotation.OutcomeRotate,
+		NextAccount:     &models.Account{ID: "acct-next"},
+		CooldownApplied: true,
+	}
+
+	handled := f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "usage_limit_reached")
+	if !handled {
+		t.Fatal("expected handled=true")
+	}
+	if f.decider.calls != 1 {
+		t.Fatalf("decider calls = %d, want 1 (live max should allow rotation)", f.decider.calls)
+	}
+	if len(f.runner.started) != 1 {
+		t.Fatalf("started runs = %d, want 1", len(f.runner.started))
 	}
 }
 
@@ -434,5 +563,23 @@ func TestAttemptUsageLimitRotation_NilAdaptersFallThrough(t *testing.T) {
 	f2.lc.rotationDecider = nil
 	if f2.lc.attemptUsageLimitRotation(context.Background(), f2.sessionID, "agent-old", "usage_limit_reached") {
 		t.Fatal("nil decider must return handled=false")
+	}
+}
+
+func TestHasLiveRotationSeams(t *testing.T) {
+	f := newRotationFixture(t)
+	if !f.lc.HasLiveRotationSeams() {
+		t.Fatal("HasLiveRotationSeams = false, want true when binding and materializer are wired")
+	}
+
+	f.lc.rotationBinding = nil
+	if f.lc.HasLiveRotationSeams() {
+		t.Fatal("HasLiveRotationSeams = true with nil binding, want false")
+	}
+
+	f = newRotationFixture(t)
+	f.lc.accountMaterializer = nil
+	if f.lc.HasLiveRotationSeams() {
+		t.Fatal("HasLiveRotationSeams = true with nil materializer, want false")
 	}
 }

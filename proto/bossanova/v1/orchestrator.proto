@@ -254,6 +254,10 @@ message ProxyCreateSessionRequest {
   bool detach = 15;
   optional string model = 16;
   bool tmux_unattended = 17;
+  optional string account_id = 18;
+  // Mirror CreateSessionRequest.force_branch so hosted MCP create_session can
+  // intentionally replace an existing branch, matching the local socket path.
+  bool force_branch = 19;
 }
 
 // ProxyCreateSessionResponse is streamed from orchestrator to the client as

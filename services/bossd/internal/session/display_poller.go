@@ -26,14 +26,15 @@ const (
 // DisplayPoller periodically polls PR status, checks, and reviews for all
 // active sessions with PRs and updates the DisplayTracker with computed display statuses.
 type DisplayPoller struct {
-	sessions  db.SessionStore
-	repos     db.RepoStore
-	provider  vcs.Provider
-	tracker   *status.DisplayTracker
-	snapshots db.CheckSnapshotStore // optional; nil disables persistence
-	interval  time.Duration
-	logger    zerolog.Logger
-	done      chan struct{}
+	sessions           db.SessionStore
+	repos              db.RepoStore
+	provider           vcs.Provider
+	tracker            *status.DisplayTracker
+	snapshots          db.CheckSnapshotStore // optional; nil disables persistence
+	completionNotifier SessionCompletionNotifier
+	interval           time.Duration
+	logger             zerolog.Logger
+	done               chan struct{}
 
 	refreshMu sync.Mutex
 	// latestWebhookRefresh maps session ID -> the last time a webhook refreshed
@@ -71,6 +72,18 @@ func NewDisplayPoller(
 // tests that don't want SQLite writes on every tick).
 func (p *DisplayPoller) SetSnapshotStore(s db.CheckSnapshotStore) {
 	p.snapshots = s
+}
+
+// SetCompletionNotifier wires the task-orchestrator completion hook for
+// terminal-state reconciles recovered by the display poller.
+func (p *DisplayPoller) SetCompletionNotifier(n SessionCompletionNotifier) {
+	p.completionNotifier = n
+}
+
+func (p *DisplayPoller) notifyCompletion(ctx context.Context, sessionID string, outcome models.TaskMappingStatus) {
+	if p.completionNotifier != nil {
+		p.completionNotifier.HandleSessionCompleted(ctx, sessionID, outcome)
+	}
 }
 
 // Run starts the polling loop in a background goroutine. It stops when the
@@ -264,15 +277,11 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		Msg("display poller: fetched PR status")
 
 	if prStatus.State == vcs.PRStateMerged || prStatus.State == vcs.PRStateClosed {
-		// Reconcile a session wedged in Blocked (pollableState excludes Blocked, so
-		// the state-machine poller never re-examines it) — or a terminal row still
-		// carrying a stale block reason — BEFORE recording the terminal tracker
-		// entry. Once the entry is terminal, poll() and RefreshPR() skip the
-		// session, so a transient store error inside the reconcile would otherwise
-		// never retry until a daemon restart. On error, leave the tracker
-		// non-terminal so the next poll cycle retries; the stale "finalize failed"
-		// hint would otherwise linger forever (BOS-246).
-		if err := p.reconcileTerminalPRForBlockedSession(ctx, sessionID, prStatus); err != nil {
+		// Reconcile persisted lifecycle state before recording the terminal
+		// tracker entry. Once the entry is terminal, poll() and RefreshPR() skip
+		// the session, so a transient store error inside the reconcile would
+		// otherwise never retry until a daemon restart.
+		if err := p.reconcileTerminalPRForSession(ctx, sessionID, prStatus); err != nil {
 			p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: terminal-PR reconcile failed; will retry next poll")
 			return
 		}
@@ -396,17 +405,16 @@ func (p *DisplayPoller) maybeClearStaleFixLoopBlock(ctx context.Context, session
 		Msg("display poller: fix_loop_exhausted cleared, unblock fired on clean green PR")
 }
 
-// reconcileTerminalPRForBlockedSession reconciles the persisted block metadata of
-// a session whose PR the provider now reports resolved (merged or closed). It
-// handles two cases and returns an error only when a reconcile it attempted could
-// not be persisted, so the caller can decline to record a terminal tracker entry
-// and retry on the next poll (a nil return means the row is already clean or was
-// reconciled here):
+// reconcileTerminalPRForSession reconciles persisted state for a session whose
+// PR the provider now reports resolved (merged or closed). It returns an error
+// only when a reconcile it attempted could not be persisted, so the caller can
+// decline to record a terminal tracker entry and retry on the next poll (a nil
+// return means the row is already clean or was reconciled here):
 //
-//   - Wedged in Blocked: pollableState excludes Blocked, so the state-machine
-//     poller never re-examines it. Fire the terminal transition, whose
-//     OnExit(actionClearBlocked) resets the block reason + attempt count, and
-//     persist the cleared fields alongside the new terminal state.
+//   - Active non-terminal rows: fire the terminal transition and persist it.
+//     This is the fallback for missed realtime webhooks.
+//   - Wedged in Blocked: same terminal transition, plus the machine's
+//     OnExit(actionClearBlocked) resets the block reason + attempt count.
 //   - Already terminal (Merged/Closed) but still carrying a stale block reason —
 //     e.g. a pre-fix PRClosed webhook advanced a Blocked session to Closed while
 //     the old handler wrote only State. Nothing else revisits such a row (poll /
@@ -415,14 +423,8 @@ func (p *DisplayPoller) maybeClearStaleFixLoopBlock(ctx context.Context, session
 //     stale hint would linger forever. Clear the residual metadata in place, with
 //     no transition (the state is already correct).
 //
-// It is the merged/closed counterpart of maybeClearStaleFixLoopBlock but is
-// deliberately NOT gated on a specific block reason: a resolved PR is terminal
-// truth for the work, so whatever reason set the block (typically a non-gating
-// "finalize failed" hint) is moot. A non-Blocked, non-terminal session (e.g.
-// ReadyForReview) is left untouched — the dispatcher / webhook path
-// (handlePRMerged) still owns advancing it. Like maybeClearStaleFixLoopBlock, it
-// emits no completion notification.
-func (p *DisplayPoller) reconcileTerminalPRForBlockedSession(ctx context.Context, sessionID string, prStatus *vcs.PRStatus) error {
+// Like maybeClearStaleFixLoopBlock, it emits no completion notification.
+func (p *DisplayPoller) reconcileTerminalPRForSession(ctx context.Context, sessionID string, prStatus *vcs.PRStatus) error {
 	if prStatus.State != vcs.PRStateMerged && prStatus.State != vcs.PRStateClosed {
 		return nil
 	}
@@ -433,8 +435,8 @@ func (p *DisplayPoller) reconcileTerminalPRForBlockedSession(ctx context.Context
 	}
 
 	switch {
-	case sess.State == machine.Blocked:
-		return p.reconcileWedgedBlockToTerminal(ctx, sessionID, sess, prStatus)
+	case !isResolvedTerminalState(sess.State):
+		return p.reconcileNonTerminalToResolved(ctx, sessionID, sess, prStatus)
 	case isResolvedTerminalState(sess.State) && sess.BlockedReason != nil:
 		// Terminal row with residual metadata: clear in place, no transition.
 		params := db.UpdateSessionParams{}
@@ -452,15 +454,15 @@ func (p *DisplayPoller) reconcileTerminalPRForBlockedSession(ctx context.Context
 	}
 }
 
-// reconcileWedgedBlockToTerminal fires the terminal transition on a session still
-// in Blocked whose PR has resolved, persisting the state plus the block metadata
-// that OnExit(actionClearBlocked) reset in the machine.
-func (p *DisplayPoller) reconcileWedgedBlockToTerminal(ctx context.Context, sessionID string, sess *models.Session, prStatus *vcs.PRStatus) error {
+// reconcileNonTerminalToResolved fires the terminal transition on a session whose
+// PR has resolved, persisting the state plus any block metadata that
+// OnExit(actionClearBlocked) reset in the machine.
+func (p *DisplayPoller) reconcileNonTerminalToResolved(ctx context.Context, sessionID string, sess *models.Session, prStatus *vcs.PRStatus) error {
 	reason := ""
 	if sess.BlockedReason != nil {
 		reason = *sess.BlockedReason
 	}
-	sm := machine.NewWithContext(machine.Blocked, &machine.SessionContext{
+	sm := machine.NewWithContext(sess.State, &machine.SessionContext{
 		AttemptCount:  sess.AttemptCount,
 		MaxAttempts:   machine.MaxAttempts,
 		BlockedReason: reason,
@@ -470,21 +472,32 @@ func (p *DisplayPoller) reconcileWedgedBlockToTerminal(ctx context.Context, sess
 	if prStatus.State == vcs.PRStateClosed {
 		event = machine.PRClosed
 	}
+	if !sm.CanFire(event) {
+		return nil
+	}
 	if err := sm.FireCtx(ctx, event); err != nil {
-		return fmt.Errorf("fire terminal transition for wedged block: %w", err)
+		return fmt.Errorf("fire terminal transition for resolved PR: %w", err)
 	}
 
 	newState := int(sm.State())
 	params := db.UpdateSessionParams{State: &newState}
-	clearBlockMetadata(&params)
+	if sess.State == machine.Blocked || sess.BlockedReason != nil {
+		clearBlockMetadata(&params)
+	}
 	if _, err := p.sessions.Update(ctx, sessionID, params); err != nil {
 		return fmt.Errorf("persist terminal-PR reconcile: %w", err)
 	}
 
+	outcome := models.TaskMappingStatusCompleted
+	if prStatus.State == vcs.PRStateClosed {
+		outcome = models.TaskMappingStatusFailed
+	}
+	p.notifyCompletion(ctx, sessionID, outcome)
+
 	p.logger.Info().
 		Str("session", sessionID).
 		Str("new_state", sm.State().String()).
-		Msg("display poller: wedged block reconciled to terminal state on resolved PR")
+		Msg("display poller: session reconciled to terminal state on resolved PR")
 	return nil
 }
 

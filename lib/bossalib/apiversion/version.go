@@ -40,15 +40,22 @@ const V20260701 Version = "2026-07-01"
 // down-converted to the prior observable behavior, SESSION_STATE_IMPLEMENTING_PLAN.
 const V20260704 Version = "2026-07-04"
 
-// V20260705 is the current production API version. It ships the
-// AgentAuthFailedChange transform: the OrchestratorService began serving the
-// AttentionReason value ATTENTION_REASON_AGENT_AUTH_FAILED on
+// V20260705 shipped the AgentAuthFailedChange transform: the OrchestratorService
+// began serving the AttentionReason value ATTENTION_REASON_AGENT_AUTH_FAILED on
 // Session.attention_status.reason, a new attention reason surfaced when an
 // agent's pane shows the login-required terminal shape ("Not logged in" /
 // "Please run /login"). Before this detection existed such a session showed no
 // auth-specific attention (it "just went quiet"), so clients pinned to an older
 // version (which never saw this reason) are down-converted back to no attention.
 const V20260705 Version = "2026-07-05"
+
+// V20260706 is the current production API version. It ships two transforms:
+// UnmanagedLabelChange, which restores the prior "System default" label for
+// older clients when the OrchestratorService serves "Unmanaged local
+// credentials" for the unbound rotation account; and LimitedChatStatusChange,
+// which maps CHAT_STATUS_LIMITED plus the derived "usage-limited..." session
+// display shape back to the prior idle-style behavior for older clients.
+const V20260706 Version = "2026-07-06"
 
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
@@ -150,11 +157,11 @@ func (r *Registry) Newer(a, b Version) bool {
 }
 
 // DefaultRegistry returns a Registry seeded with the known production API
-// versions, ordered oldest→newest: Baseline, V20260704 and V20260705. Current
-// is V20260705 (the newest released behavior) while Default stays Baseline (the
-// oldest supported version), so a header-less caller is pinned to Baseline and
-// is down-converted by ProductionChanges, and a client that negotiates
-// V20260705 runs zero transforms.
+// versions, ordered oldest→newest: Baseline, V20260704, V20260705 and
+// V20260706. Current is V20260706 (the newest released behavior) while Default
+// stays Baseline (the oldest supported version), so a header-less caller is
+// pinned to Baseline and is down-converted by ProductionChanges, and a client
+// that negotiates V20260706 runs zero transforms.
 //
 // V20260701 is intentionally NOT a member of the production registry — it
 // exists as an exported const for example and test use only (it is exercised
@@ -165,8 +172,8 @@ func (r *Registry) Newer(a, b Version) bool {
 // the full procedure.
 func DefaultRegistry() *Registry {
 	reg, err := NewRegistry(
-		[]Version{Baseline, V20260704, V20260705},
-		V20260705,
+		[]Version{Baseline, V20260704, V20260705, V20260706},
+		V20260706,
 		Baseline,
 	)
 	if err != nil {

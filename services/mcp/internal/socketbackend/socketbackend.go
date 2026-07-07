@@ -510,6 +510,14 @@ func (b *Backend) UpdateAccount(ctx context.Context, req *pb.UpdateAccountReques
 	return resp.Msg.GetAccount(), nil
 }
 
+func (b *Backend) RefreshAccount(ctx context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+	resp, err := b.rpc.RefreshAccount(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (b *Backend) RemoveAccount(ctx context.Context, id string) error {
 	_, err := b.rpc.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: id}))
 	return err

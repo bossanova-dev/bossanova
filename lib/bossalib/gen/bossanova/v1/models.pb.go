@@ -1631,8 +1631,8 @@ type Session struct {
 	// account_id binds the session to a rotation account; empty/absent =
 	// system-default account 0 (no injected env, D9).
 	AccountId *string `protobuf:"bytes,57,opt,name=account_id,json=accountId,proto3,oneof" json:"account_id,omitempty"`
-	// account_label is the server-resolved human label for account_id ("System
-	// default" when unbound); read-only, non-secret.
+	// account_label is the server-resolved human label for account_id ("Unmanaged
+	// local credentials" when unbound); read-only, non-secret.
 	AccountLabel *string `protobuf:"bytes,58,opt,name=account_label,json=accountLabel,proto3,oneof" json:"account_label,omitempty"`
 	// Recent rotation audit events (newest first, capped server-side at 10),
 	// hydrated by bossd like the display_* fields so TUI/web render history,

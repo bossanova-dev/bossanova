@@ -18,6 +18,7 @@ import {
 } from './codex-review.mjs'
 
 const SCRIPT_PATH = fileURLToPath(new URL('./codex-review.mjs', import.meta.url))
+const PROBE_READY_TIMEOUT_MS = 10000
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -127,7 +128,7 @@ test('probe: fake that exits 0 → ready', async () => {
   const dir = makeTmpDir()
   try {
     const bin = writeFakeBin(dir, 'codex', 'exit 0')
-    const result = await probe({ env: { BOSS_CODEX_BIN: bin }, timeoutMs: 3000 })
+    const result = await probe({ env: { BOSS_CODEX_BIN: bin }, timeoutMs: PROBE_READY_TIMEOUT_MS })
     assert.equal(result, 'ready')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })

@@ -8,7 +8,9 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -197,10 +199,10 @@ func mergeManagedOverAccount(managed, account map[string]string) map[string]stri
 }
 
 // withAccountLabel populates the read-only, non-secret account_label on a
-// session proto from the resolver ("System default" when unbound). It is
+// session proto from the resolver ("Unmanaged local credentials" when unbound). It is
 // best-effort: a nil resolver or a proto without an account binding is left
 // untouched, and a resolver error never fails the RPC (Label already falls
-// back to a short id / "System default").
+// back to a short id / "Unmanaged local credentials").
 func (s *Server) withAccountLabel(ctx context.Context, p *pb.Session, session *models.Session) {
 	if p == nil || s.resolver == nil {
 		return
@@ -214,7 +216,7 @@ func (s *Server) withAccountLabel(ctx context.Context, p *pb.Session, session *m
 		// Label is best-effort and never returns a hard failure in practice;
 		// on the off chance it does, fall back to a stable non-secret value.
 		if accountID == "" {
-			label = "System default"
+			label = account.UnmanagedLocalCredentialsLabel
 		} else {
 			label = accountID
 		}
@@ -234,10 +236,19 @@ func (s *Server) withRotationEvents(ctx context.Context, p *pb.Session, session 
 	if p == nil || s.rotationEvents == nil || session == nil {
 		return
 	}
-	evs, err := s.rotationEvents.RecentBySession(ctx, session.ID, rotationEventsCap)
+	HydrateRotationEvents(ctx, s.rotationEvents, s.logger, p, session.ID)
+}
+
+// HydrateRotationEvents hydrates recent rotation audit events onto p for code
+// paths outside Server that still publish full Session replacements (notably the
+// reverse stream). Best-effort: nil inputs or read errors leave the field empty.
+func HydrateRotationEvents(ctx context.Context, store db.RotationEventStore, logger zerolog.Logger, p *pb.Session, sessionID string) {
+	if p == nil || store == nil || sessionID == "" {
+		return
+	}
+	evs, err := store.RecentBySession(ctx, sessionID, rotationEventsCap)
 	if err != nil {
-		s.logger.Warn().Err(err).Str("session_id", session.ID).
-			Msg("hydrate rotation events failed")
+		logger.Warn().Err(err).Str("session_id", sessionID).Msg("hydrate rotation events failed")
 		return
 	}
 	p.RotationEvents = rotationEventsToProto(evs)

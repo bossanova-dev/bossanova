@@ -2,6 +2,7 @@ package rotation
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -149,10 +150,72 @@ func TestChatRotator_RateLimitPerChat(t *testing.T) {
 	}
 }
 
+func TestChatRotator_ContextLookupFailureDoesNotConsumeRateLimit(t *testing.T) {
+	now := time.Now()
+	var mu sync.Mutex
+	failContext := true
+	var switchCalls []SwitchRequest
+
+	r := NewChatRotator(ChatRotatorDeps{
+		Logger:     zerolog.Nop(),
+		LoadConfig: func() (config.RotationConfig, error) { return config.RotationConfig{}, nil },
+		ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if failContext {
+				return ChatContext{}, errors.New("temporary context lookup failure")
+			}
+			return ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude"}, nil
+		},
+		CurrentStatus: func(_ string) bossanovav1.ChatStatus { return chatStatusLimited() },
+		Decide: func(_ context.Context, _ DecideRequest) (Decision, error) {
+			return Decision{Kind: DecisionSwitch, AccountID: "acct-b-id"}, nil
+		},
+		Switch: func(_ context.Context, req SwitchRequest) (SwitchResult, error) {
+			mu.Lock()
+			switchCalls = append(switchCalls, req)
+			mu.Unlock()
+			return SwitchResult{SwitchedToLabel: "acct-b"}, nil
+		},
+		Now: func() time.Time { return now },
+	})
+
+	r.OnChatStatus(testChatID, chatStatusLimited(), time.Time{})
+	waitIdle(t, r)
+
+	mu.Lock()
+	failContext = false
+	mu.Unlock()
+	r.OnChatStatus(testChatID, chatStatusLimited(), time.Time{})
+	waitIdle(t, r)
+
+	mu.Lock()
+	got := len(switchCalls)
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("switches after transient context failure = %d, want 1", got)
+	}
+}
+
 func TestChatRotator_OptOutHonored(t *testing.T) {
 	boolPtr := func(b bool) *bool { return &b }
 	now := time.Now()
 
+	t.Run("rotation enabled false kills chat rotation", func(t *testing.T) {
+		f := &fakeDeps{status: chatStatusLimited(), decision: Decision{Kind: DecisionSwitch, AccountID: "x"},
+			cfg: config.RotationConfig{
+				Enabled:                      boolPtr(false),
+				AutoRotateChats:              boolPtr(true),
+				AutoRotateChatsPerRepo:       map[string]bool{"repo-1": true},
+				ChatRotateMinIntervalMinutes: 1,
+			}}
+		r := f.rotator(&now)
+		r.OnChatStatus(testChatID, chatStatusLimited(), time.Time{})
+		waitIdle(t, r)
+		if f.decides() != 0 || len(f.switched()) != 0 {
+			t.Fatalf("globally disabled rotation still rotated")
+		}
+	})
 	t.Run("global off", func(t *testing.T) {
 		f := &fakeDeps{status: chatStatusLimited(), decision: Decision{Kind: DecisionSwitch, AccountID: "x"},
 			cfg: config.RotationConfig{AutoRotateChats: boolPtr(false)}}

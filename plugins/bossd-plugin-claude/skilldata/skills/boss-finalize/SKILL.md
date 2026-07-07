@@ -172,8 +172,8 @@ Prefer an explicit aggregate gate when present and complete:
 
 ```bash
 make              # Only if Makefile exists and default target is the project gate
-make check        # Common aggregate gate
-make ci           # Common CI-equivalent gate
+make lint         # Common lint gate
+make test         # Common test gate
 just check        # If justfile declares the project gate
 task check        # If Taskfile declares the project gate
 ```

@@ -30,10 +30,16 @@ type smokeClient struct {
 	startReqs []*bossanovav1.StartAgentRunRequest
 	stopReqs  []*bossanovav1.StopAgentRunRequest
 	exitError string
+	logText   string
 }
 
 func (c *smokeClient) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	c.startReqs = append(c.startReqs, req)
+	if c.logText != "" {
+		if err := os.WriteFile(req.GetLogPath(), []byte(c.logText), 0o600); err != nil {
+			return nil, err
+		}
+	}
 	return &bossanovav1.StartAgentRunResponse{SessionId: req.GetSessionId()}, nil
 }
 
@@ -114,5 +120,37 @@ func TestSmokeRunnerReturnsExitError(t *testing.T) {
 	err = runner.Smoke(context.Background(), "acct-claude", "claude", []byte("sk-ant-oat01-secret"))
 	if err == nil || !strings.Contains(err.Error(), "401 unauthorized") {
 		t.Fatalf("Smoke err = %v, want exit error", err)
+	}
+}
+
+func TestSmokeRunnerReturnsRedactedLogDiagnostic(t *testing.T) {
+	client := &smokeClient{
+		exitError: "exit status 1",
+		logText:   `{"text":"authentication failed for agent.yuki@kamik.ai with token sk-ant-oat01-secretsecret"}` + "\n",
+	}
+	runner, err := NewSmokeRunner(map[string]agent.AgentRunnerClient{"claude": client}, &smokeCreds{
+		blobs: map[string][]byte{"acct-claude": []byte("sk-ant-oat01-secretsecret")},
+	}, zerolog.Nop(), WithSmokeBaseDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("NewSmokeRunner: %v", err)
+	}
+
+	err = runner.Smoke(context.Background(), "acct-claude", "claude", []byte("sk-ant-oat01-secretsecret"))
+	if err == nil {
+		t.Fatal("Smoke err = nil, want failure")
+	}
+	got := err.Error()
+	for _, want := range []string{"credential verification failed: exit status 1", "diagnostic:", "authentication failed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Smoke err = %q, want %q", got, want)
+		}
+	}
+	for _, secret := range []string{"sk-ant-oat01-secretsecret", "agent.yuki@kamik.ai"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("Smoke err leaked %q: %s", secret, got)
+		}
+	}
+	if len(client.stopReqs) != 1 {
+		t.Fatalf("StopRun calls = %d, want 1", len(client.stopReqs))
 	}
 }

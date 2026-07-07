@@ -1,0 +1,34 @@
+{
+  "lenses": [
+    {
+      "fallbackRubric": "review through an inline Go rubric: idiomatic error handling and wrapping, goroutine/channel safety and leaks, interface and generics design, allocation on hot paths, and table-driven test coverage for new/changed logic",
+      "files": [
+        "lib/bossalib/foo.go",
+        "services/boss/internal/views/session_list.go"
+      ],
+      "lens": "go",
+      "skill": "golang-pro"
+    },
+    {
+      "fallbackRubric": "review through an inline Bubbletea v2 rubric: view/update purity, key-binding and action-bar consistency, layout-constant reuse, confirmation-dialog patterns, and no blocking work in Update",
+      "files": [
+        "services/boss/internal/views/session_list.go"
+      ],
+      "lens": "tui",
+      "skill": "tui-design"
+    },
+    {
+      "fallbackRubric": "review through an inline React/TypeScript/web-UI rubric: component correctness, hook/effect races, accessibility, type-boundary cleanliness, dead/duplicated code",
+      "files": [
+        "services/web/src/App.tsx"
+      ],
+      "lens": "web",
+      "skill": "impeccable"
+    }
+  ],
+  "matchedLensIds": [
+    "go",
+    "tui",
+    "web"
+  ]
+}

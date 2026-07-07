@@ -433,6 +433,10 @@ func (c *RemoteClient) AddAccount(_ context.Context, _ *pb.AddAccountRequest) (*
 	return nil, errLocalOnly("AddAccount")
 }
 
+func (c *RemoteClient) RefreshAccount(_ context.Context, _ *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+	return nil, errLocalOnly("RefreshAccount")
+}
+
 func (c *RemoteClient) UpdateAccount(_ context.Context, _ *pb.UpdateAccountRequest) (*pb.Account, error) {
 	return nil, errLocalOnly("UpdateAccount")
 }

@@ -54,13 +54,22 @@ const PROBE_TOKENS = /^(ready|not_installed|not_authed|error)$/
 // helpers or *.test.mjs when reading from the canonical skills-toolbox/ source.
 const BUNDLED_FILES = VENDOR_MAP['boss-review']
 
-// Resolve where to read the bundled helper sources from. A full checkout has them
-// vendored under .claude/skills/boss-review/toolbox/. Public-mirror/stripped checkouts
-// remove .claude entirely (mirror-public.yml) yet still run scripts/*.test.mjs, so
-// fall back to the canonical skills-toolbox/ — byte-identical to the vendored copies
-// (enforced by `vendor-toolbox --check`), so the self-containment proof is unchanged.
+// Resolve where to read the bundled helper sources from. boss-review is a published
+// core whose canonical committed home is the skillinstall payload (BOS-271), where its
+// toolbox/ is vendored. If that is somehow absent, fall back to the canonical
+// skills-toolbox/ — byte-identical to the vendored copies (enforced by
+// `vendor-toolbox --check`), so the self-containment proof is unchanged.
 function resolveSourceToolbox() {
-  const vendored = path.join(REPO_ROOT, '.claude', 'skills', 'boss-review', 'toolbox')
+  const vendored = path.join(
+    REPO_ROOT,
+    'services',
+    'boss',
+    'internal',
+    'skillinstall',
+    'skills',
+    'boss-review',
+    'toolbox',
+  )
   return fs.existsSync(vendored) ? vendored : path.join(REPO_ROOT, 'skills-toolbox')
 }
 

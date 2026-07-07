@@ -9,12 +9,16 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/recurser/bossalib/apiversion"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 )
 
 // fakeStreamingHandlerConn is a minimal connect.StreamingHandlerConn test double.
 type fakeStreamingHandlerConn struct {
 	requestHeader  http.Header
 	responseHeader http.Header
+	spec           connect.Spec
+	sent           any
 }
 
 func newFakeStreamConn(reqHeader http.Header) *fakeStreamingHandlerConn {
@@ -24,11 +28,11 @@ func newFakeStreamConn(reqHeader http.Header) *fakeStreamingHandlerConn {
 	}
 }
 
-func (f *fakeStreamingHandlerConn) Spec() connect.Spec           { return connect.Spec{} }
+func (f *fakeStreamingHandlerConn) Spec() connect.Spec           { return f.spec }
 func (f *fakeStreamingHandlerConn) Peer() connect.Peer           { return connect.Peer{} }
 func (f *fakeStreamingHandlerConn) Receive(_ any) error          { return nil }
 func (f *fakeStreamingHandlerConn) RequestHeader() http.Header   { return f.requestHeader }
-func (f *fakeStreamingHandlerConn) Send(_ any) error             { return nil }
+func (f *fakeStreamingHandlerConn) Send(msg any) error           { f.sent = msg; return nil }
 func (f *fakeStreamingHandlerConn) ResponseHeader() http.Header  { return f.responseHeader }
 func (f *fakeStreamingHandlerConn) ResponseTrailer() http.Header { return make(http.Header) }
 
@@ -165,6 +169,56 @@ func TestInterceptor_UnaryUnknownVersion_CodeInvalidArgument(t *testing.T) {
 	}
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Errorf("error code = %v, want CodeInvalidArgument", connect.CodeOf(err))
+	}
+}
+
+func TestInterceptor_UnaryFutureVersion_ResolvesToCurrent(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	interceptor := apiversion.Interceptor(reg, nil)
+
+	var resolvedInNext apiversion.Version
+	next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		resolvedInNext = apiversion.ResolvedVersion(ctx)
+		return connect.NewResponse(&struct{}{}), nil
+	}
+
+	req := connect.NewRequest(&struct{}{})
+	req.Header().Set(apiversion.HeaderName, "2099-01-01")
+
+	resp, err := interceptor.WrapUnary(next)(context.Background(), req)
+	if err != nil {
+		t.Fatalf("WrapUnary: %v", err)
+	}
+	if resolvedInNext != reg.Current() {
+		t.Errorf("resolved in ctx = %q, want Current %q", resolvedInNext, reg.Current())
+	}
+	if got := resp.Header().Get(apiversion.HeaderName); got != reg.Current().String() {
+		t.Errorf("response header = %q, want %q", got, reg.Current())
+	}
+}
+
+func TestInterceptor_UnaryInRangeNonMemberVersion_ResolvesToNearestOlderSupported(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	interceptor := apiversion.Interceptor(reg, nil)
+
+	var resolvedInNext apiversion.Version
+	next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		resolvedInNext = apiversion.ResolvedVersion(ctx)
+		return connect.NewResponse(&struct{}{}), nil
+	}
+
+	req := connect.NewRequest(&struct{}{})
+	req.Header().Set(apiversion.HeaderName, "2026-07-03")
+
+	resp, err := interceptor.WrapUnary(next)(context.Background(), req)
+	if err != nil {
+		t.Fatalf("WrapUnary: %v", err)
+	}
+	if resolvedInNext != apiversion.Baseline {
+		t.Errorf("resolved in ctx = %q, want nearest older supported %q", resolvedInNext, apiversion.Baseline)
+	}
+	if got := resp.Header().Get(apiversion.HeaderName); got != apiversion.Baseline.String() {
+		t.Errorf("response header = %q, want %q", got, apiversion.Baseline)
 	}
 }
 
@@ -382,6 +436,33 @@ func TestInterceptor_StreamingHandler_ValidHeader_ResolvedAndEchoed(t *testing.T
 	}
 }
 
+func TestInterceptor_StreamingHandler_AppliesResponseTransforms(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	interceptor := apiversion.Interceptor(reg, apiversion.ProductionChanges())
+
+	nextHandler := func(_ context.Context, conn connect.StreamingHandlerConn) error {
+		return conn.Send(&pb.ProxyChatListEvent{Event: &pb.ProxyChatListEvent_StatusDelta{StatusDelta: &pb.ChatStatusDelta{
+			SessionId:      "sess-1",
+			AgentSessionId: "agent-1",
+			Status:         pb.ChatStatus_CHAT_STATUS_LIMITED,
+		}}})
+	}
+
+	conn := newFakeStreamConn(make(http.Header))
+	conn.spec = connect.Spec{Procedure: bossanovav1connect.OrchestratorServiceProxyStreamChatsProcedure}
+	err := interceptor.WrapStreamingHandler(nextHandler)(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("WrapStreamingHandler: %v", err)
+	}
+	got, ok := conn.sent.(*pb.ProxyChatListEvent)
+	if !ok {
+		t.Fatalf("sent message type = %T, want *ProxyChatListEvent", conn.sent)
+	}
+	if status := got.GetStatusDelta().GetStatus(); status != pb.ChatStatus_CHAT_STATUS_IDLE {
+		t.Fatalf("stream status = %v, want IDLE", status)
+	}
+}
+
 func TestInterceptor_StreamingHandler_UnknownVersion_CodeInvalidArgument(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
 	interceptor := apiversion.Interceptor(reg, nil)
@@ -401,6 +482,32 @@ func TestInterceptor_StreamingHandler_UnknownVersion_CodeInvalidArgument(t *test
 	}
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Errorf("error code = %v, want CodeInvalidArgument", connect.CodeOf(err))
+	}
+}
+
+func TestInterceptor_StreamingHandler_FutureVersion_ResolvesToCurrent(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	interceptor := apiversion.Interceptor(reg, nil)
+
+	var resolvedInNext apiversion.Version
+	nextHandler := func(ctx context.Context, _ connect.StreamingHandlerConn) error {
+		resolvedInNext = apiversion.ResolvedVersion(ctx)
+		return nil
+	}
+
+	reqHeader := make(http.Header)
+	reqHeader.Set(apiversion.HeaderName, "2099-01-01")
+	conn := newFakeStreamConn(reqHeader)
+
+	err := interceptor.WrapStreamingHandler(nextHandler)(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("WrapStreamingHandler: %v", err)
+	}
+	if resolvedInNext != reg.Current() {
+		t.Errorf("resolved in ctx = %q, want Current %q", resolvedInNext, reg.Current())
+	}
+	if got := conn.ResponseHeader().Get(apiversion.HeaderName); got != reg.Current().String() {
+		t.Errorf("response header = %q, want %q", got, reg.Current())
 	}
 }
 

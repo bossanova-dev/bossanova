@@ -14,6 +14,16 @@ import (
 
 func claudeToken() string { return "sk-ant-oat01-" + strings.Repeat("a", 40) }
 
+func countSaid(lines []string, want string) int {
+	count := 0
+	for _, line := range lines {
+		if line == want {
+			count++
+		}
+	}
+	return count
+}
+
 func TestRunClaudeAdd(t *testing.T) {
 	t.Run("walkthrough_happy", func(t *testing.T) {
 		tok := claudeToken()
@@ -81,6 +91,71 @@ func TestRunClaudeAdd(t *testing.T) {
 		}
 		if len(cl.addReqs) != 0 {
 			t.Fatalf("AddAccount must not be called")
+		}
+	})
+
+	t.Run("walkthrough_dedupes_claude_noise_and_preserves_unknown", func(t *testing.T) {
+		tok := claudeToken()
+		ex := &fakeExec{proc: newScriptedProc([]string{
+			"\x1b[2KWelcome to Claude Code v1.2.3\r",
+			"Welcome to Claude Code v1.2.3",
+			"Opening browser to sign in...",
+			"Opening browser to sign in...",
+			"Error opening browser: permission denied",
+			"Opening browser failed: permission denied",
+			"Non-token warning: browser launch failed once",
+			"Non-token warning: browser launch failed once",
+			tok,
+			tok,
+		}, nil)}
+		pr := &fakePrompter{confirms: []bool{true}, answers: []string{"", ""}}
+		cl := &fakeAccountClient{}
+		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Exec: ex, Prompter: pr, Client: cl}); err != nil {
+			t.Fatalf("RunClaudeAdd: %v", err)
+		}
+		transcript := pr.transcript()
+		if strings.Contains(transcript, tok) {
+			t.Fatalf("raw token leaked into transcript:\n%s", transcript)
+		}
+		if got := strings.Count(strings.Join(pr.said, "\n"), "Welcome to Claude Code"); got > 1 {
+			t.Fatalf("welcome banner emitted %d times, want at most once:\n%v", got, pr.said)
+		}
+		if got := countSaid(pr.said, "Opening browser for Claude sign-in..."); got > 1 {
+			t.Fatalf("opening-browser notice emitted %d times, want at most once:\n%v", got, pr.said)
+		}
+		if !strings.Contains(transcript, "Error opening browser: permission denied") {
+			t.Fatalf("opening-browser error was swallowed:\n%s", transcript)
+		}
+		if !strings.Contains(transcript, "Opening browser failed: permission denied") {
+			t.Fatalf("opening-browser failure was swallowed:\n%s", transcript)
+		}
+		if !strings.Contains(transcript, "Non-token warning: browser launch failed once") {
+			t.Fatalf("unknown warning was swallowed:\n%s", transcript)
+		}
+		for i := 1; i < len(pr.said); i++ {
+			if pr.said[i] == pr.said[i-1] {
+				t.Fatalf("consecutive duplicate emitted at %d: %q\n%v", i, pr.said[i], pr.said)
+			}
+		}
+	})
+
+	t.Run("walkthrough_collapses_only_consecutive_unknown_duplicates", func(t *testing.T) {
+		tok := claudeToken()
+		line := "Non-token warning: proxy retry"
+		ex := &fakeExec{proc: newScriptedProc([]string{
+			line,
+			line,
+			"different status line",
+			line,
+			tok,
+		}, nil)}
+		pr := &fakePrompter{confirms: []bool{true}, answers: []string{"", ""}}
+		cl := &fakeAccountClient{}
+		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Exec: ex, Prompter: pr, Client: cl}); err != nil {
+			t.Fatalf("RunClaudeAdd: %v", err)
+		}
+		if got := strings.Count(strings.Join(pr.said, "\n"), line); got != 2 {
+			t.Fatalf("unknown line emitted %d times, want consecutive-only dedupe to leave 2:\n%v", got, pr.said)
 		}
 	})
 
@@ -155,11 +230,11 @@ func TestRunClaudeAdd(t *testing.T) {
 	t.Run("livetest_fail_remove", func(t *testing.T) {
 		tok := claudeToken()
 		pr := &fakePrompter{answers: []string{tok, "", ""}, confirms: []bool{false}}
-		testErr := errors.New("smoke test failed: 401 unauthorized")
+		testErr := errors.New("credential verification failed: 401 unauthorized")
 		cl := &fakeAccountClient{testErr: testErr}
 		err := RunClaudeAdd(context.Background(), ClaudeOptions{Prompter: pr, Client: cl, PasteMode: true})
 		if err == nil {
-			t.Fatalf("want error from rejected live test")
+			t.Fatalf("want error from rejected verification")
 		}
 		if len(cl.removedIDs) != 1 {
 			t.Fatalf("account was not removed: %v", cl.removedIDs)
@@ -262,57 +337,57 @@ func TestRunClaudeAdd(t *testing.T) {
 	t.Run("livetest_fail_keep", func(t *testing.T) {
 		tok := claudeToken()
 		pr := &fakePrompter{answers: []string{tok, "", ""}, confirms: []bool{true}}
-		cl := &fakeAccountClient{testErr: errors.New("smoke test failed: 401")}
+		cl := &fakeAccountClient{testErr: errors.New("credential verification failed: 401")}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Prompter: pr, Client: cl, PasteMode: true}); err != nil {
 			t.Fatalf("keep-anyway should succeed: %v", err)
 		}
 		if len(cl.removedIDs) != 0 {
 			t.Fatalf("account must not be removed when kept")
 		}
-		if !strings.Contains(pr.transcript(), "unverified") {
-			t.Fatalf("no 'unverified' notice in transcript:\n%s", pr.transcript())
+		if !strings.Contains(pr.transcript(), "without verification") {
+			t.Fatalf("no verification notice in transcript:\n%s", pr.transcript())
 		}
 	})
 
 	t.Run("livesmoke_unavailable_prompts_keep_or_remove", func(t *testing.T) {
-		// If the daemon cannot run live smoke, the account is not verified. The
+		// If the daemon cannot run provider verification, the account is not verified. The
 		// CLI must not present this as a successful deferred registration.
 		tok := claudeToken()
 		pr := &fakePrompter{answers: []string{tok, "", ""}, confirms: []bool{false}}
 		cl := &fakeAccountClient{testResult: &pb.TestAccountResponse{
-			Account:      &pb.Account{Id: "acc-new", LastTestError: "live smoke runner unavailable"},
+			Account:      &pb.Account{Id: "acc-new", LastTestError: "provider verification unavailable"},
 			LiveSmokeRan: false,
 		}}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Prompter: pr, Client: cl, PasteMode: true}); err == nil {
-			t.Fatalf("want error when unavailable live smoke is rejected")
+			t.Fatalf("want error when unavailable verification is rejected")
 		}
 		if len(cl.removedIDs) != 1 {
-			t.Fatalf("account should be removed when unavailable live smoke is rejected: %v", cl.removedIDs)
+			t.Fatalf("account should be removed when unavailable verification is rejected: %v", cl.removedIDs)
 		}
 		if strings.Contains(pr.transcript(), "deferred") ||
 			strings.Contains(pr.transcript(), "credential materialization pending") ||
 			strings.Contains(pr.transcript(), "Rotation will run the live test") {
 			t.Fatalf("stale deferred copy leaked into transcript:\n%s", pr.transcript())
 		}
-		if !strings.Contains(pr.transcript(), "Live test failed") {
+		if !strings.Contains(pr.transcript(), "Account verification failed") {
 			t.Fatalf("keep/remove prompt must be shown:\n%s", pr.transcript())
 		}
 	})
 
 	t.Run("livesmoke_ran_fail_still_prompts", func(t *testing.T) {
-		// A live smoke that actually ran (live_smoke_ran=true) and failed is a real
+		// A provider check that actually ran (live_smoke_ran=true) and failed is a real
 		// failure: the keep/remove prompt applies and declining removes the account.
 		tok := claudeToken()
 		pr := &fakePrompter{answers: []string{tok, "", ""}, confirms: []bool{false}}
 		cl := &fakeAccountClient{testResult: &pb.TestAccountResponse{
-			Account:      &pb.Account{Id: "acc-new", LastTestError: "smoke test failed: 401 unauthorized"},
+			Account:      &pb.Account{Id: "acc-new", LastTestError: "credential verification failed: 401 unauthorized"},
 			LiveSmokeRan: true,
 		}}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Prompter: pr, Client: cl, PasteMode: true}); err == nil {
-			t.Fatalf("want error from rejected live smoke failure")
+			t.Fatalf("want error from rejected verification failure")
 		}
 		if len(cl.removedIDs) != 1 {
-			t.Fatalf("account should be removed when a ran-and-failed smoke is declined: %v", cl.removedIDs)
+			t.Fatalf("account should be removed when a failed verification is declined: %v", cl.removedIDs)
 		}
 	})
 
@@ -333,7 +408,7 @@ func TestRunClaudeAdd(t *testing.T) {
 		if len(cl.removedIDs) != 1 {
 			t.Fatalf("bad credential should be removed when declined, not deferred: %v", cl.removedIDs)
 		}
-		if !strings.Contains(pr.transcript(), "Live test failed") {
+		if !strings.Contains(pr.transcript(), "Account verification failed") {
 			t.Fatalf("keep/remove prompt must be shown for a validation failure:\n%s", pr.transcript())
 		}
 	})

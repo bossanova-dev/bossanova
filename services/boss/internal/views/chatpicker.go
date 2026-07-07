@@ -120,8 +120,8 @@ type wakeResultMsg struct {
 
 // switchAccountsLoadedMsg carries the accounts fetched for the switch-account
 // picker (BOS-171), scoped to the target chat's provider (agent name). A load
-// error is non-fatal: the picker still opens with just the "System default" row
-// so the operator can at least switch to account 0.
+// error is non-fatal: the picker still opens with just the unmanaged row so the
+// operator can at least switch to account 0.
 type switchAccountsLoadedMsg struct {
 	accounts []*pb.Account
 	err      error
@@ -1041,7 +1041,7 @@ func (m ChatPickerModel) updateAgentSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 // loadSwitchAccounts lists the registered rotation accounts for the given
 // provider (the chat's agent name) off the update loop. Errors resolve to an
 // empty list via switchAccountsLoadedMsg — the picker still opens with the
-// System default row.
+// unmanaged local credentials row.
 func (m ChatPickerModel) loadSwitchAccounts(provider string) tea.Cmd {
 	c := m.client
 	ctx := m.ctx
@@ -1051,26 +1051,64 @@ func (m ChatPickerModel) loadSwitchAccounts(provider string) tea.Cmd {
 	}
 }
 
-// buildSwitchAccountTable populates m.switchAccountTable. Row 0 is always
-// "System default (account 0)" mapping to "" (the daemon's default-account
-// policy); the remaining rows are the provider's registered accounts. Mirrors
-// the new-session wizard's buildAccountTable.
+func shouldShowUnmanagedSwitchOption(accounts []*pb.Account, currentAccountID string) bool {
+	return len(accounts) == 0 || currentAccountID == ""
+}
+
+func (m ChatPickerModel) currentSwitchAccountID() string {
+	if m.session == nil {
+		return ""
+	}
+	return m.session.GetAccountId()
+}
+
+// buildSwitchAccountTable populates m.switchAccountTable. Registered accounts
+// are always shown; the unmanaged row is only shown when it is the fallback or
+// current binding.
 func (m *ChatPickerModel) buildSwitchAccountTable() {
-	labels := make([]string, len(m.switchAccounts)+1)
-	providers := make([]string, len(m.switchAccounts)+1)
-	statuses := make([]string, len(m.switchAccounts)+1)
-	labels[0] = "System default (account 0)"
+	showUnmanaged := shouldShowUnmanagedSwitchOption(m.switchAccounts, m.currentSwitchAccountID())
+	rowCount := len(m.switchAccounts)
+	if showUnmanaged {
+		rowCount++
+	}
+	labels := make([]string, rowCount)
+	providers := make([]string, rowCount)
+	emails := make([]string, rowCount)
+	statuses := make([]string, rowCount)
+	healths := make([]string, rowCount)
+	cooldowns := make([]string, rowCount)
+	offset := 0
+	if showUnmanaged {
+		labels[0] = UnmanagedLocalCredentialsLabel
+		statuses[0] = "system"
+		offset = 1
+	}
+	now := time.Now()
 	for i, a := range m.switchAccounts {
-		labels[i+1] = accountRowLabel(a)
-		providers[i+1] = a.GetProvider()
-		statuses[i+1] = a.GetStatus()
+		row := i + offset
+		labels[row] = accountRowLabel(a)
+		providers[row] = a.GetProvider()
+		statuses[row] = a.GetStatus()
+		emails[row] = a.GetEmail()
+		healths[row] = accountHealthLabel(a)
+		cooldowns[row] = switchAccountCooldownLabel(a, now)
+		if reason := switchAccountDisabledReason(a, now); reason != "" {
+			if reason == "failed" {
+				healths[row] = reason
+			} else {
+				statuses[row] = reason
+			}
+		}
 	}
 
 	cols := []table.Column{
 		cursorColumn,
 		{Title: "ACCOUNT", Width: maxColWidth("ACCOUNT", labels, 30) + tableColumnSep},
 		{Title: "PROVIDER", Width: maxColWidth("PROVIDER", providers, 12) + tableColumnSep},
+		{Title: "EMAIL", Width: maxColWidth("EMAIL", emails, 24) + tableColumnSep},
 		{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 12) + tableColumnSep},
+		{Title: "HEALTH", Width: maxColWidth("HEALTH", healths, 10) + tableColumnSep},
+		{Title: "COOLDOWN", Width: maxColWidth("COOLDOWN", cooldowns, 14) + tableColumnSep},
 	}
 	rows := make([]table.Row, len(labels))
 	for i := range labels {
@@ -1078,7 +1116,28 @@ func (m *ChatPickerModel) buildSwitchAccountTable() {
 		if i == 0 {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, labels[i], providers[i], styleSubtle.Render(statuses[i])}
+		accountIndex := i - offset
+		if accountIndex >= 0 && switchAccountDisabledReason(m.switchAccounts[accountIndex], now) != "" {
+			rows[i] = table.Row{
+				indicator,
+				styleSubtle.Render(labels[i]),
+				styleSubtle.Render(providers[i]),
+				styleSubtle.Render(emails[i]),
+				styleSubtle.Render(statuses[i]),
+				styleSubtle.Render(healths[i]),
+				styleSubtle.Render(cooldowns[i]),
+			}
+			continue
+		}
+		rows[i] = table.Row{
+			indicator,
+			labels[i],
+			providers[i],
+			emails[i],
+			styleSubtle.Render(statuses[i]),
+			styleSubtle.Render(healths[i]),
+			styleSubtle.Render(cooldowns[i]),
+		}
 	}
 
 	m.switchAccountTable = newBossTable(cols, rows, len(rows)+1)
@@ -1097,12 +1156,24 @@ func (m ChatPickerModel) updateSwitchAccountSelect(msg tea.KeyMsg) (tea.Model, t
 		return m, nil
 	case "enter", " ", "space":
 		idx := m.switchAccountTable.Cursor()
-		// Row 0 is "System default" mapping to "". Rows 1..N map to
-		// m.switchAccounts[idx-1].
-		if idx <= 0 || idx > len(m.switchAccounts) {
+		showUnmanaged := shouldShowUnmanagedSwitchOption(m.switchAccounts, m.currentSwitchAccountID())
+		if showUnmanaged && idx == 0 {
 			m.switchSelectedAccount = ""
 		} else {
-			m.switchSelectedAccount = m.switchAccounts[idx-1].GetId()
+			accountIndex := idx
+			if showUnmanaged {
+				accountIndex--
+			}
+			if accountIndex < 0 || accountIndex >= len(m.switchAccounts) {
+				m.switchSelectedAccount = ""
+			} else {
+				account := m.switchAccounts[accountIndex]
+				if reason := switchAccountDisabledReason(account, time.Now()); reason != "" {
+					m.statusMsg = fmt.Sprintf("%s is %s — can't switch to it right now", accountRowLabel(account), reason)
+					return m, nil
+				}
+				m.switchSelectedAccount = account.GetId()
+			}
 		}
 		m.pickingAccount = false
 		// The TUI knows the chat's live status locally, so gate the interrupt on
@@ -1120,6 +1191,55 @@ func (m ChatPickerModel) updateSwitchAccountSelect(msg tea.KeyMsg) (tea.Model, t
 		updateCursorColumn(&m.switchAccountTable)
 		return m, cmd
 	}
+}
+
+// switchAccountDisabledReason mirrors the web switch picker: disabled,
+// health==failed, and cooling accounts are visible but not selectable.
+func switchAccountDisabledReason(a *pb.Account, now time.Time) string {
+	if a == nil {
+		return ""
+	}
+	if a.GetStatus() == "disabled" {
+		return "disabled"
+	}
+	if a.GetHealth() == "failed" {
+		return "failed"
+	}
+	if ts := a.GetCooldownUntil(); ts != nil && ts.AsTime().After(now) {
+		return "cooling"
+	}
+	return ""
+}
+
+func accountHealthLabel(a *pb.Account) string {
+	if a == nil || a.GetHealth() == "" {
+		return "ok"
+	}
+	return a.GetHealth()
+}
+
+func switchAccountCooldownLabel(a *pb.Account, now time.Time) string {
+	if a == nil || a.GetCooldownUntil() == nil {
+		return "—"
+	}
+	until := a.GetCooldownUntil().AsTime()
+	if !until.After(now) {
+		return "—"
+	}
+	return "cooling " + compactFutureDuration(until.Sub(now))
+}
+
+func compactFutureDuration(d time.Duration) string {
+	if d < time.Minute {
+		return "<1m"
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
 // switchAccountCmd runs SwitchSessionAccount off the update loop. Captures
@@ -1284,6 +1404,10 @@ func (m ChatPickerModel) View() tea.View {
 		b.WriteString("\n\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.switchAccountTable.View()))
 		b.WriteString("\n")
+		if m.statusMsg != "" {
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg))
+			b.WriteString("\n")
+		}
 		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] cancel"}))
 		return tea.NewView(b.String())
 	}

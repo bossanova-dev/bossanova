@@ -99,6 +99,24 @@ func chatReadyMarker(agentName string) string {
 	}
 }
 
+// chatCommandPrefix returns the leading token an agent's CLI expects for a
+// custom (boss) command: claude accepts "/boss-repair", codex only "$boss-repair"
+// (it reserves "/" for its own built-ins and rejects an unknown "/boss-repair").
+// Mirrors each agent plugin's BuildInteractiveCommandResponse CommandPrefix
+// (claude "/", codex "$"); an unknown or empty agent name falls back to claude's
+// "/", the same "" → "claude" legacy default used elsewhere in this package. It
+// is the send-path sibling of chatReadyMarker: SendChatMessage renders a
+// command-shaped message through this prefix so agent-neutral skill dispatches
+// (e.g. "/boss-repair watch") reach codex correctly.
+func chatCommandPrefix(agentName string) string {
+	switch agentName {
+	case "codex":
+		return "$"
+	default:
+		return "/"
+	}
+}
+
 // argvBuilder resolves the tmux command argv for a given agent. The live
 // impl dispatches to the matching AgentRunner plugin's
 // BuildInteractiveCommand RPC so each agent can own its own CLI shape and

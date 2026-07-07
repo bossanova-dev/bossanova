@@ -75,10 +75,11 @@ func TestListTrackerIssuesCredentialValidation(t *testing.T) {
 
 	mkRepo := func(t *testing.T, params db.UpdateRepoParams) string {
 		t.Helper()
+		name := strings.NewReplacer("/", "-", " ", "-").Replace(t.Name())
 		repo, err := repos.Create(ctx, db.CreateRepoParams{
 			DisplayName:       "repo",
-			LocalPath:         "/tmp/repo-" + t.Name(),
-			OriginURL:         "https://github.com/acme/repo",
+			LocalPath:         "/tmp/repo-" + name,
+			OriginURL:         "https://github.com/acme/repo-" + name,
 			DefaultBaseBranch: "main",
 			WorktreeBaseDir:   "/tmp/wt",
 		})

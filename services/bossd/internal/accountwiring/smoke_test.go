@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/rs/zerolog"
@@ -74,6 +75,9 @@ func TestSmokeRunnerClaudeStartsLiveRunWithAccountEnv(t *testing.T) {
 	}
 	if req.GetWorkDir() == "" || req.GetLogPath() == "" || req.GetPlan() == "" {
 		t.Fatalf("smoke StartRun missing required fields: %+v", req)
+	}
+	if _, err := uuid.Parse(req.GetSessionId()); err != nil {
+		t.Fatalf("smoke session id = %q, want UUID: %v", req.GetSessionId(), err)
 	}
 }
 

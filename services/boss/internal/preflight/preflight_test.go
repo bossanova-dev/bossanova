@@ -1,6 +1,7 @@
 package preflight
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,6 +112,15 @@ func TestCheckAgentResolvable_SkipsUnsupportedLoginShell(t *testing.T) {
 	}
 	if called {
 		t.Fatal("runner was invoked for an unsupported login shell")
+	}
+}
+
+func TestDaemonIssueRemediationUsesStaticDaemonCommands(t *testing.T) {
+	issue := DaemonIssue(errors.New("dial unix: connection refused"))
+	for _, want := range []string{"boss daemon restart", "boss daemon status", "boss daemon install", "bossd"} {
+		if !strings.Contains(issue.Detail, want) {
+			t.Fatalf("DaemonIssue detail missing %q: %s", want, issue.Detail)
+		}
 	}
 }
 

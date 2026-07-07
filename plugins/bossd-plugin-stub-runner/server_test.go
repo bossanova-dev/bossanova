@@ -51,6 +51,20 @@ func TestDetectUsageLimitAlwaysUnlimited(t *testing.T) {
 	}
 }
 
+func TestProbeRateLimitAlwaysUnsupported(t *testing.T) {
+	s := newServer(zerolog.Nop())
+	resp, err := s.ProbeRateLimit(context.Background(), &bossanovav1.ProbeRateLimitRequest{})
+	if err != nil {
+		t.Fatalf("ProbeRateLimit: %v", err)
+	}
+	if got := resp.GetStatus().GetStatus(); got != bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_UNSUPPORTED {
+		t.Errorf("Status = %v, want UNSUPPORTED for stub (queries no provider)", got)
+	}
+	if resp.GetStatus().GetLimited() {
+		t.Error("Limited = true, want false for stub")
+	}
+}
+
 func TestAgentRunnerServiceDescIncludesRemoveAgentRunHook(t *testing.T) {
 	for _, method := range agentRunnerServiceDesc.Methods {
 		if method.MethodName == "RemoveAgentRunHook" {

@@ -34,6 +34,10 @@ func (getOnlyAccountStore) RecordTestResult(context.Context, string, *time.Time,
 	panic("unexpected RecordTestResult")
 }
 
+func (getOnlyAccountStore) RecordUsageProbe(context.Context, string, models.UsageSnapshot) error {
+	panic("unexpected RecordUsageProbe")
+}
+
 // TestAccountRegistryAdapter_FailedHealthMapsToFailed verifies the registry
 // projection maps a models.AccountHealthFailed account to AccountFailed, so the
 // switch rejects it (mirroring session creation's checkAccountEligible).
@@ -70,6 +74,28 @@ func TestAccountRegistryAdapter_OKHealthActive(t *testing.T) {
 	}
 	if sa.Status != AccountActive {
 		t.Errorf("Status = %v, want AccountActive", sa.Status)
+	}
+}
+
+func TestSessionAccountBinding_SystemDefaultPersistsPresentEmpty(t *testing.T) {
+	sessions := newMockSessionStore()
+	sessions.sessions["sess-1"] = &models.Session{ID: "sess-1"}
+	binding := sessionAccountBinding{sessions: sessions}
+
+	if err := binding.BindSessionAccount(context.Background(), "sess-1", ""); err != nil {
+		t.Fatalf("BindSessionAccount system default: %v", err)
+	}
+	got := sessions.sessions["sess-1"].AccountID
+	if got == nil || *got != "" {
+		t.Fatalf("session AccountID = %v, want present-empty system default", got)
+	}
+
+	current, err := binding.SessionAccount(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("SessionAccount: %v", err)
+	}
+	if current != "" {
+		t.Fatalf("SessionAccount = %q, want empty system default", current)
 	}
 }
 

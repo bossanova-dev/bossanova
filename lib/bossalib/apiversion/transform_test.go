@@ -1228,3 +1228,28 @@ func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
 		t.Errorf("ProductionChanges did not down-convert LIMITED for V20260705: got %v", got)
 	}
 }
+
+func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	if got := reg.Current(); got != apiversion.V20260706 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260706)
+	}
+	msg := &pb.ProxyListAccountsResponse{
+		Accounts: []*pb.Account{{
+			Id: "acct-usage",
+			Usage: &pb.UsageSnapshot{
+				Util_5H:  0.2,
+				Util_7D:  0.8,
+				Status:   "warning",
+				PlanTier: "max",
+			},
+		}},
+	}
+
+	apiversion.ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, msg, apiversion.Baseline)
+	if got := msg.GetAccounts()[0].GetUsage(); got == nil {
+		t.Fatal("ProductionChanges stripped Account.usage; additive field should not require down-convert")
+	} else if got.GetStatus() != "warning" || got.GetPlanTier() != "max" {
+		t.Fatalf("ProductionChanges changed Account.usage = %#v", got)
+	}
+}

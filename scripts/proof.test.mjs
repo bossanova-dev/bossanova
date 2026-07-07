@@ -3,18 +3,26 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import {
+  __resetTuiAgentBridgeCache,
   agentSurface,
+  buildTuiAgentBridge,
+  defaultBinFresh,
   evaluateRunPreflight,
   isDocsOnlyChange,
+  newestSourceMtime,
   prefixStillFileNames,
+  resolvePrebuiltTuiBins,
   resolveSurfacePlan,
   shouldPostDocsBuildCheck,
   shouldCleanupRunDir,
   tuiAgentBridgeEnv,
   tuiAgentUsable,
 } from './proof.mjs'
+
+const repoRootForTest = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 import { planSurfaceBudget, selectRecipes } from './proof-lib.mjs'
 import { surfaceBudget } from './proof-surfaces.mjs'
 import { aggregateExitCode, classifySurfaceOutcomes } from './proof-finalize-outcome.mjs'
@@ -317,6 +325,240 @@ test('tuiAgentBridgeEnv uses the temp boss binary when no caller binary exists',
       BOSS_PROOF_BOSS_BIN: '/tmp/boss-e2e',
     },
   )
+})
+
+// ── resolvePrebuiltTuiBins precedence (BOS-215) ───────────────────────────────
+
+test('resolvePrebuiltTuiBins: env vars win when the files exist', () => {
+  const got = resolvePrebuiltTuiBins({
+    repoRoot: '/repo',
+    env: { BOSS_PROOF_TUI_BRIDGE_BIN: '/x/bridge', BOSS_PROOF_BOSS_BIN: '/x/boss' },
+    fileExists: (p) => p === '/x/bridge' || p === '/x/boss',
+  })
+  assert.deepEqual(got, { bridgeBin: '/x/bridge', bossBin: '/x/boss' })
+})
+
+test('resolvePrebuiltTuiBins: env var set but file missing falls back to null', () => {
+  const got = resolvePrebuiltTuiBins({
+    repoRoot: '/repo',
+    env: { BOSS_PROOF_TUI_BRIDGE_BIN: '/gone/bridge' },
+    fileExists: () => false,
+  })
+  assert.deepEqual(got, { bridgeBin: null, bossBin: null })
+})
+
+test('resolvePrebuiltTuiBins: default ./bin location used when both binaries exist', () => {
+  const got = resolvePrebuiltTuiBins({
+    repoRoot: '/repo',
+    env: {},
+    fileExists: (p) => p === '/repo/bin/proof-tui-bridge' || p === '/repo/bin/boss-e2e',
+  })
+  assert.deepEqual(got, {
+    bridgeBin: '/repo/bin/proof-tui-bridge',
+    bossBin: '/repo/bin/boss-e2e',
+  })
+})
+
+test('resolvePrebuiltTuiBins: only one default binary present ⇒ that one resolves, other is null', () => {
+  const got = resolvePrebuiltTuiBins({
+    repoRoot: '/repo',
+    env: {},
+    fileExists: (p) => p === '/repo/bin/proof-tui-bridge',
+  })
+  assert.deepEqual(got, { bridgeBin: '/repo/bin/proof-tui-bridge', bossBin: null })
+})
+
+test('resolvePrebuiltTuiBins: stale default binaries fall back to null so the driver rebuilds', () => {
+  const got = resolvePrebuiltTuiBins({
+    repoRoot: '/repo',
+    env: {},
+    fileExists: () => true,
+    binFresh: () => false,
+  })
+  assert.deepEqual(got, { bridgeBin: null, bossBin: null })
+})
+
+test('resolvePrebuiltTuiBins: fresh default binaries are reused', () => {
+  const got = resolvePrebuiltTuiBins({
+    repoRoot: '/repo',
+    env: {},
+    fileExists: () => true,
+    binFresh: () => true,
+  })
+  assert.deepEqual(got, {
+    bridgeBin: '/repo/bin/proof-tui-bridge',
+    bossBin: '/repo/bin/boss-e2e',
+  })
+})
+
+test('resolvePrebuiltTuiBins: env overrides bypass the freshness gate', () => {
+  let freshChecks = 0
+  const got = resolvePrebuiltTuiBins({
+    repoRoot: '/repo',
+    env: { BOSS_PROOF_TUI_BRIDGE_BIN: '/x/bridge', BOSS_PROOF_BOSS_BIN: '/x/boss' },
+    fileExists: (p) => p === '/x/bridge' || p === '/x/boss',
+    binFresh: () => {
+      freshChecks += 1
+      return false
+    },
+  })
+  assert.deepEqual(got, { bridgeBin: '/x/bridge', bossBin: '/x/boss' })
+  assert.equal(freshChecks, 0)
+})
+
+// ── defaultBinFresh / newestSourceMtime build-input scan (BOS-215) ────────────
+
+// Build an injectable fake fs from a { dirs, mtimes } spec. `dirs` maps a
+// directory path to its child entries ({ name, dir }); `mtimes` maps a file path
+// to its mtimeMs. Unknown dirs/files throw, mirroring ENOENT on the real fs.
+function fakeFs({ dirs = {}, mtimes = {} } = {}) {
+  return {
+    readdir: (dir) => {
+      const entries = dirs[dir]
+      if (!entries) throw new Error(`ENOENT: ${dir}`)
+      return entries.map((e) => ({ name: e.name, isDirectory: () => Boolean(e.dir) }))
+    },
+    statSync: (p) => {
+      if (!(p in mtimes)) throw new Error(`ENOENT: ${p}`)
+      return { mtimeMs: mtimes[p] }
+    },
+  }
+}
+
+test('newestSourceMtime: embedded non-.go payloads count toward the newest mtime', () => {
+  const { readdir, statSync } = fakeFs({
+    dirs: {
+      '/r/services/boss': [{ name: 'main.go' }, { name: 'skills', dir: true }],
+      '/r/services/boss/skills': [{ name: 'boss-review.md' }],
+    },
+    mtimes: {
+      '/r/services/boss/main.go': 100,
+      '/r/services/boss/skills/boss-review.md': 300,
+    },
+  })
+  // The .md payload (300) must win over the .go source (100); the old extension
+  // allowlist would have ignored it and returned 100.
+  assert.equal(newestSourceMtime(['/r/services/boss'], { statSync, readdir }), 300)
+})
+
+test('defaultBinFresh: a newer embedded skill payload marks the default bin stale', () => {
+  const { readdir, statSync } = fakeFs({
+    dirs: {
+      '/r/services/boss': [{ name: 'skills', dir: true }],
+      '/r/services/boss/skills': [{ name: 'boss-review.md' }],
+      '/r/lib/bossalib': [],
+    },
+    mtimes: {
+      '/r/bin/boss-e2e': 100,
+      '/r/services/boss/skills/boss-review.md': 200,
+    },
+  })
+  // bin mtime 100 < embedded payload mtime 200 ⇒ stale ⇒ rebuild.
+  assert.equal(defaultBinFresh('/r/bin/boss-e2e', { root: '/r', statSync, readdir }), false)
+})
+
+test('defaultBinFresh: bin newer than every build input is fresh', () => {
+  const { readdir, statSync } = fakeFs({
+    dirs: {
+      '/r/services/boss': [{ name: 'main.go' }, { name: 'skills', dir: true }],
+      '/r/services/boss/skills': [{ name: 'boss-review.md' }],
+      '/r/lib/bossalib': [],
+    },
+    mtimes: {
+      '/r/bin/boss-e2e': 500,
+      '/r/services/boss/main.go': 100,
+      '/r/services/boss/skills/boss-review.md': 200,
+    },
+  })
+  assert.equal(defaultBinFresh('/r/bin/boss-e2e', { root: '/r', statSync, readdir }), true)
+})
+
+test('defaultBinFresh: a source deletion bumps the directory mtime and marks the bin stale', () => {
+  // Every surviving file is older than the bin, but a deleted/renamed source
+  // bumped the containing directory's mtime past the bin's ⇒ must rebuild.
+  const { readdir, statSync } = fakeFs({
+    dirs: {
+      '/r/services/boss': [{ name: 'main.go' }],
+      '/r/lib/bossalib': [],
+    },
+    mtimes: {
+      '/r/bin/boss-e2e': 500,
+      '/r/services/boss': 600,
+      '/r/services/boss/main.go': 100,
+    },
+  })
+  assert.equal(defaultBinFresh('/r/bin/boss-e2e', { root: '/r', statSync, readdir }), false)
+})
+
+test('defaultBinFresh: a newer repo-root go.work marks the default bin stale', () => {
+  // A workspace-only change (go.work) touches no file under the source roots but
+  // still alters the built binary, so it must force a rebuild.
+  const { readdir, statSync } = fakeFs({
+    dirs: {
+      '/r/services/boss': [{ name: 'main.go' }],
+      '/r/lib/bossalib': [],
+    },
+    mtimes: {
+      '/r/bin/boss-e2e': 500,
+      '/r/services/boss/main.go': 100,
+      '/r/go.work': 700,
+    },
+  })
+  assert.equal(defaultBinFresh('/r/bin/boss-e2e', { root: '/r', statSync, readdir }), false)
+})
+
+test('defaultBinFresh: deleting a repo-root go.work bumps the repo-root mtime and marks the bin stale', () => {
+  // The workspace file is gone (absent from mtimes ⇒ statSync throws), and every
+  // surviving source file is older than the bin. Only the repo-root directory
+  // mtime — bumped by unlinking go.work — is newer, so the bin must rebuild
+  // instead of reusing one built under the old (go.work-present) workspace.
+  const { readdir, statSync } = fakeFs({
+    dirs: {
+      '/r/services/boss': [{ name: 'main.go' }],
+      '/r/lib/bossalib': [],
+    },
+    mtimes: {
+      '/r/bin/boss-e2e': 500,
+      '/r/services/boss/main.go': 100,
+      // go.work / go.work.sum deleted — not present. Repo root mtime bumped past
+      // the bin by the deletion.
+      '/r': 700,
+    },
+  })
+  assert.equal(defaultBinFresh('/r/bin/boss-e2e', { root: '/r', statSync, readdir }), false)
+})
+
+// ── buildTuiAgentBridge prebuilt short-circuit (BOS-215) ──────────────────────
+
+test('buildTuiAgentBridge: both overrides ⇒ zero spawns, no tmp dir, returns overrides', () => {
+  __resetTuiAgentBridgeCache()
+  let spawnCalls = 0
+  const got = buildTuiAgentBridge({
+    bridgeBinOverride: '/pre/bridge',
+    bossBinOverride: '/pre/boss',
+    spawn: () => {
+      spawnCalls += 1
+      return { status: 0 }
+    },
+  })
+  __resetTuiAgentBridgeCache()
+  assert.equal(spawnCalls, 0)
+  assert.equal(got.bridgeBin, '/pre/bridge')
+  assert.equal(got.bossBin, '/pre/boss')
+  assert.equal(got.dir, null)
+})
+
+// ── make proof-tui-prebuild target wiring (BOS-215) ───────────────────────────
+
+test('Makefile proof-tui-prebuild target builds both bins into ./bin', () => {
+  const mk = fs.readFileSync(path.join(repoRootForTest, 'Makefile'), 'utf8')
+  assert.match(mk, /^proof-tui-prebuild:/m)
+  assert.match(
+    mk,
+    /go build -tags e2e -o \$\(BIN_DIR\)\/proof-tui-bridge \.\/services\/boss\/cmd\/proof-tui-agent/,
+  )
+  assert.match(mk, /go build -tags e2e -o \$\(BIN_DIR\)\/boss-e2e \.\/services\/boss\/cmd/)
+  assert.match(mk, /^\.PHONY:[\s\S]*proof-tui-prebuild/m)
 })
 
 test('prefixStillFileNames prefixes recipeId onto each fileName', () => {

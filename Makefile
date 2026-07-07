@@ -3,7 +3,7 @@
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
 	debt-knip \
-	plugins plugins-all proof proof-plan proof-test readme-gifs release release-codex-check \
+	plugins plugins-all proof proof-plan proof-test proof-tui-prebuild readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-affected test-full test-profile test-race test-smoke \
 	test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
 	test-no-inline-stop-hooks test-public-mirror test-readme test-scripts \
@@ -244,6 +244,17 @@ setup-worktree:
 			|| echo "playwright install chromium failed — proof web/recipe capture unavailable (non-fatal)"; \
 	else \
 		echo "pnpm or services/web/node_modules missing — skipping Playwright Chromium install (non-fatal)"; \
+	fi
+	@# Prebuild the TUI-proof bridge + boss-e2e binaries so a proof run in this
+	@# worktree reuses them instead of building inside the capture budget (BOS-215).
+	@# Best-effort: guarded on `go` and NEVER fatal — a worktree that can't build
+	@# still provisions; the proof dispatch falls back to an in-budget build.
+	@if command -v go >/dev/null 2>&1; then \
+		echo "==> Prebuilding TUI-proof binaries (bs-proof, best-effort)"; \
+		( cd "$$WORKTREE_DIR" && $(MAKE) proof-tui-prebuild ) \
+			|| echo "proof-tui-prebuild failed — TUI proof will build in-budget (non-fatal)"; \
+	else \
+		echo "go not found on PATH — skipping TUI-proof prebuild (non-fatal)"; \
 	fi
 	@# Allow direnv only when this repo actually uses it; a missing .envrc would
 	@# otherwise make `direnv allow` exit non-zero and flag setup as failed.
@@ -550,6 +561,14 @@ proof-plan:
 
 proof-test:
 	node --test scripts/proof-lib.test.mjs scripts/proof-playwright-runner.test.mjs scripts/proof-video.test.mjs scripts/proof-video-intro.test.mjs scripts/proof-poster.test.mjs
+
+## proof-tui-prebuild: Build the TUI-proof bridge + boss-e2e binaries into ./bin so a
+## proof run reuses them instead of building inside the capture budget (BOS-215).
+## Always rebuilds — the binary paths are authoritative once written; the proof
+## dispatch only checks existence, so re-running this target owns freshness.
+proof-tui-prebuild:
+	go build -tags e2e -o $(BIN_DIR)/proof-tui-bridge ./services/boss/cmd/proof-tui-agent
+	go build -tags e2e -o $(BIN_DIR)/boss-e2e ./services/boss/cmd
 
 test-scripts:
 	$(MAKE) -C scripts test

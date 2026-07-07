@@ -127,6 +127,138 @@ func TestDecideOrdering(t *testing.T) {
 	}
 }
 
+func TestDecideUtilizationAwareSelection(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+	devops := mkAcct("devops", 0, ok, active, nil, tp(0))
+	yuki := mkAcct("yuki", 1, ok, active, nil, tp(-1*time.Hour))
+	near := mkAcct("near", 2, ok, active, nil, tp(-2*time.Hour))
+	exhausted := mkAcct("exhausted", 3, ok, active, nil, tp(-3*time.Hour))
+	store := newFakeStore(devops, near, exhausted, yuki)
+	eng := newEngineForTest(store)
+
+	out, err := eng.Decide(context.Background(), Signal{
+		Provider:        claude,
+		CappedAccountID: "devops",
+		Kind:            UsageLimited,
+		ResetAt:         tp(90 * time.Minute),
+		RotationCapable: true,
+		Utilization: map[string]float64{
+			"near":      0.72,
+			"exhausted": 1,
+			"yuki":      0.08,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Decide error: %v", err)
+	}
+	if out.Kind != OutcomeRotate {
+		t.Fatalf("Kind = %v, want OutcomeRotate", out.Kind)
+	}
+	if out.NextAccount == nil || out.NextAccount.ID != "yuki" {
+		t.Fatalf("NextAccount = %v, want yuki (lowest healthy utilization)", out.NextAccount)
+	}
+}
+
+func TestDecideUtilizationSkipsUnprobedCandidates(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+	devops := mkAcct("devops", 0, ok, active, nil, tp(0))
+	unknown := mkAcct("unknown", 1, ok, active, nil, tp(-1*time.Hour))
+	exhausted := mkAcct("exhausted", 2, ok, active, nil, tp(-2*time.Hour))
+	store := newFakeStore(devops, unknown, exhausted)
+	eng := newEngineForTest(store)
+
+	out, err := eng.Decide(context.Background(), Signal{
+		Provider:        claude,
+		CappedAccountID: "devops",
+		Kind:            UsageLimited,
+		ResetAt:         tp(90 * time.Minute),
+		RotationCapable: true,
+		Utilization: map[string]float64{
+			"exhausted": 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Decide error: %v", err)
+	}
+	if out.Kind != OutcomeAllExhausted {
+		t.Fatalf("Kind = %v, want OutcomeAllExhausted", out.Kind)
+	}
+	if out.NextAccount != nil {
+		t.Fatalf("NextAccount = %v, want nil because unknown candidate was not probed", out.NextAccount)
+	}
+}
+
+func TestDecideEmptyUtilizationPreservesLegacyUnlessProbeRequired(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+
+	t.Run("legacy empty map", func(t *testing.T) {
+		devops := mkAcct("devops", 0, ok, active, nil, tp(0))
+		yuki := mkAcct("yuki", 1, ok, active, nil, tp(-1*time.Hour))
+		store := newFakeStore(devops, yuki)
+		eng := newEngineForTest(store)
+
+		out, err := eng.Decide(context.Background(), Signal{
+			Provider:        claude,
+			CappedAccountID: "devops",
+			Kind:            UsageLimited,
+			ResetAt:         tp(90 * time.Minute),
+			RotationCapable: true,
+			Utilization:     map[string]float64{},
+		})
+		if err != nil {
+			t.Fatalf("Decide error: %v", err)
+		}
+		if out.Kind != OutcomeRotate || out.NextAccount == nil || out.NextAccount.ID != "yuki" {
+			t.Fatalf("out = %#v, want legacy rotate to yuki", out)
+		}
+	})
+
+	t.Run("candidate probe required", func(t *testing.T) {
+		devops := mkAcct("devops", 0, ok, active, nil, tp(0))
+		yuki := mkAcct("yuki", 1, ok, active, nil, tp(-1*time.Hour))
+		store := newFakeStore(devops, yuki)
+		eng := newEngineForTest(store)
+
+		out, err := eng.Decide(context.Background(), Signal{
+			Provider:               claude,
+			CappedAccountID:        "devops",
+			Kind:                   UsageLimited,
+			ResetAt:                tp(90 * time.Minute),
+			RotationCapable:        true,
+			Utilization:            map[string]float64{},
+			CandidateProbeRequired: true,
+		})
+		if err != nil {
+			t.Fatalf("Decide error: %v", err)
+		}
+		if out.Kind != OutcomeAllExhausted {
+			t.Fatalf("Kind = %v, want OutcomeAllExhausted", out.Kind)
+		}
+		if out.NextAccount != nil {
+			t.Fatalf("NextAccount = %v, want nil because candidate probe was required", out.NextAccount)
+		}
+	})
+}
+
+func TestUsageSnapshotConfirmsLimitedExactStatus(t *testing.T) {
+	fetched := base
+	if !UsageSnapshotConfirmsLimited(models.UsageSnapshot{
+		Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
+		FetchedAt: &fetched,
+	}) {
+		t.Fatal("RATE_LIMIT_PLAN_STATUS_RATE_LIMITED should confirm limited")
+	}
+	if UsageSnapshotConfirmsLimited(models.UsageSnapshot{
+		Status:    "NOT_RATE_LIMITED",
+		FetchedAt: &fetched,
+	}) {
+		t.Fatal("NOT_RATE_LIMITED must not confirm limited by substring")
+	}
+}
+
 func TestDecideCooldownDuration(t *testing.T) {
 	ok := models.AccountHealthOK
 	active := models.AccountStatusActive

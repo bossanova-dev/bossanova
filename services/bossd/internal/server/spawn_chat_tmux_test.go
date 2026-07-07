@@ -580,6 +580,58 @@ func TestSpawnChatTmux_PassesSessionEnv(t *testing.T) {
 	}
 }
 
+func TestSpawnChatTmux_SessionEnvFuncDeferredUntilSpawn(t *testing.T) {
+	t.Run("already live skips env func", func(t *testing.T) {
+		calls := 0
+		_, err := spawnChatTmux(context.Background(), spawnDeps{
+			Tmux:        &fakeTmuxClient{available: true, hasSession: true},
+			Transcripts: &fakeTranscriptOracle{exists: true},
+			Argv:        claudeArgvBuilder(),
+		}, spawnInput{
+			Chat:         newTestChat(t),
+			WorktreePath: t.TempDir(),
+			TmuxName:     "boss-agent-session-1",
+			SessionEnvFunc: func() map[string]string {
+				calls++
+				return map[string]string{"ANTHROPIC_API_KEY": "sk-default"}
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if calls != 0 {
+			t.Fatalf("SessionEnvFunc calls = %d, want 0 for already-live chat", calls)
+		}
+	})
+
+	t.Run("fresh spawn uses env func", func(t *testing.T) {
+		tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+		calls := 0
+		_, err := spawnChatTmux(context.Background(), spawnDeps{
+			Tmux:        tmuxer,
+			Transcripts: &fakeTranscriptOracle{exists: true},
+			Argv:        claudeArgvBuilder(),
+		}, spawnInput{
+			Chat:         newTestChat(t),
+			WorktreePath: t.TempDir(),
+			TmuxName:     "boss-agent-session-1",
+			SessionEnvFunc: func() map[string]string {
+				calls++
+				return map[string]string{"ANTHROPIC_API_KEY": "sk-default"}
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("SessionEnvFunc calls = %d, want 1", calls)
+		}
+		if tmuxer.lastEnv["ANTHROPIC_API_KEY"] != "sk-default" {
+			t.Fatalf("tmux spawn env = %+v, want materialized account env", tmuxer.lastEnv)
+		}
+	})
+}
+
 // TestSpawnChatTmux_NoSessionEnvLeak pins the non-cron case: a nil SessionEnv
 // must reach the spawner unchanged (no BOSS_* vars leak into plain sessions).
 func TestSpawnChatTmux_NoSessionEnvLeak(t *testing.T) {

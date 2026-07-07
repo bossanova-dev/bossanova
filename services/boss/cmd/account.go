@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/table"
 	"connectrpc.com/connect"
@@ -24,26 +25,33 @@ import (
 // RFC3339 strings, empty when the underlying timestamp is nil/zero. There is
 // NO credential field — the secret blob never crosses this boundary.
 type accountJSON struct {
-	ID            string   `json:"id"`
-	Provider      string   `json:"provider"`
-	Label         string   `json:"label"`
-	Email         string   `json:"email"`
-	Status        string   `json:"status"`
-	Priority      int32    `json:"priority"`
-	Health        string   `json:"health"`
-	Tier          string   `json:"tier"`
-	AllowedModels []string `json:"allowed_models"`
-	CooldownUntil string   `json:"cooldown_until"`
-	LastUsedAt    string   `json:"last_used_at"`
-	LastTestOkAt  string   `json:"last_test_ok_at"`
-	LastTestError string   `json:"last_test_error"`
-	CreatedAt     string   `json:"created_at"`
-	UpdatedAt     string   `json:"updated_at"`
+	ID             string   `json:"id"`
+	Provider       string   `json:"provider"`
+	Label          string   `json:"label"`
+	Email          string   `json:"email"`
+	Status         string   `json:"status"`
+	Priority       int32    `json:"priority"`
+	Health         string   `json:"health"`
+	Tier           string   `json:"tier"`
+	AllowedModels  []string `json:"allowed_models"`
+	CooldownUntil  string   `json:"cooldown_until"`
+	LastUsedAt     string   `json:"last_used_at"`
+	LastTestOkAt   string   `json:"last_test_ok_at"`
+	LastTestError  string   `json:"last_test_error"`
+	CreatedAt      string   `json:"created_at"`
+	UpdatedAt      string   `json:"updated_at"`
+	Util5h         float64  `json:"util_5h"`
+	Reset5h        string   `json:"reset_5h"`
+	Util7d         float64  `json:"util_7d"`
+	Reset7d        string   `json:"reset_7d"`
+	UsageStatus    string   `json:"usage_status"`
+	PlanTier       string   `json:"plan_tier"`
+	UsageFetchedAt string   `json:"usage_fetched_at"`
 }
 
 // accountToJSON maps a proto Account to the stable JSON schema.
 func accountToJSON(a *pb.Account) accountJSON {
-	return accountJSON{
+	out := accountJSON{
 		ID:            a.GetId(),
 		Provider:      a.GetProvider(),
 		Label:         a.GetLabel(),
@@ -60,6 +68,16 @@ func accountToJSON(a *pb.Account) accountJSON {
 		CreatedAt:     rfc3339OrEmpty(a.GetCreatedAt()),
 		UpdatedAt:     rfc3339OrEmpty(a.GetUpdatedAt()),
 	}
+	if u := a.GetUsage(); u != nil {
+		out.Util5h = u.GetUtil_5H()
+		out.Reset5h = rfc3339OrEmpty(u.GetReset_5H())
+		out.Util7d = u.GetUtil_7D()
+		out.Reset7d = rfc3339OrEmpty(u.GetReset_7D())
+		out.UsageStatus = u.GetStatus()
+		out.PlanTier = u.GetPlanTier()
+		out.UsageFetchedAt = rfc3339OrEmpty(u.GetFetchedAt())
+	}
+	return out
 }
 
 // validAccountProviders is the set of providers `boss account add` accepts. It
@@ -71,10 +89,19 @@ func runAccountLS(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	return accountLS(cmd, c)
+}
+
+type accountLister interface {
+	ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error)
+}
+
+func accountLS(cmd *cobra.Command, c accountLister) error {
 	ctx := cmd.Context()
 
 	provider, _ := cmd.Flags().GetString("provider")
-	accounts, err := c.ListAccounts(ctx, provider)
+	refresh, _ := cmd.Flags().GetBool("refresh")
+	accounts, err := c.ListAccounts(ctx, provider, refresh)
 	if err != nil {
 		return fmt.Errorf("list accounts: %w", err)
 	}
@@ -105,6 +132,10 @@ func runAccountLS(cmd *cobra.Command) error {
 	statuses := make([]string, len(accounts))
 	priorities := make([]string, len(accounts))
 	healths := make([]string, len(accounts))
+	util5hs := make([]string, len(accounts))
+	util7ds := make([]string, len(accounts))
+	usageStatuses := make([]string, len(accounts))
+	usageAges := make([]string, len(accounts))
 	cooldowns := make([]string, len(accounts))
 	for i, a := range accounts {
 		ids[i] = a.GetId()
@@ -114,6 +145,10 @@ func runAccountLS(cmd *cobra.Command) error {
 		statuses[i] = orDash(a.GetStatus())
 		priorities[i] = strconv.FormatInt(int64(a.GetPriority()), 10)
 		healths[i] = orDash(a.GetHealth())
+		util5hs[i] = fmtUsagePct(a.GetUsage(), func(u *pb.UsageSnapshot) float64 { return u.GetUtil_5H() })
+		util7ds[i] = fmtUsagePct(a.GetUsage(), func(u *pb.UsageSnapshot) float64 { return u.GetUtil_7D() })
+		usageStatuses[i] = orDash(a.GetUsage().GetStatus())
+		usageAges[i] = fmtUsageAge(a.GetUsage())
 		cooldowns[i] = orDash(rfc3339OrEmpty(a.GetCooldownUntil()))
 	}
 
@@ -125,16 +160,62 @@ func runAccountLS(cmd *cobra.Command) error {
 		{Title: "STATUS", Width: views.MaxColWidth("STATUS", statuses, 10)},
 		{Title: "PRIORITY", Width: views.MaxColWidth("PRIORITY", priorities, 8)},
 		{Title: "HEALTH", Width: views.MaxColWidth("HEALTH", healths, 8)},
+		{Title: "UTIL5H", Width: views.MaxColWidth("UTIL5H", util5hs, 6)},
+		{Title: "UTIL7D", Width: views.MaxColWidth("UTIL7D", util7ds, 6)},
+		{Title: "USAGE", Width: views.MaxColWidth("USAGE", usageStatuses, 12)},
+		{Title: "AGE", Width: views.MaxColWidth("AGE", usageAges, 6)},
 		{Title: "COOLDOWN", Width: views.MaxColWidth("COOLDOWN", cooldowns, 20)},
 	}
 
 	rows := make([]table.Row, len(accounts))
 	for i := range accounts {
-		rows[i] = table.Row{ids[i], providers[i], labels[i], emails[i], statuses[i], priorities[i], healths[i], cooldowns[i]}
+		rows[i] = table.Row{ids[i], providers[i], labels[i], emails[i], statuses[i], priorities[i], healths[i], util5hs[i], util7ds[i], usageStatuses[i], usageAges[i], cooldowns[i]}
 	}
 
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), views.RenderCLITable(cols, rows))
 	return nil
+}
+
+func fmtUsagePct(u *pb.UsageSnapshot, value func(*pb.UsageSnapshot) float64) string {
+	if u == nil || u.GetFetchedAt() == nil || usageSnapshotUnsupported(u.GetStatus()) {
+		return "-"
+	}
+	return fmt.Sprintf("%.0f%%", value(u)*100)
+}
+
+// usageSnapshotUnsupported reports whether a probe could not authoritatively
+// determine utilization, so the CLI should render "-" instead of a fabricated
+// number. It mirrors rotation.UsageSnapshotProbeUnavailable (which this package
+// cannot import across the module boundary): both UNSUPPORTED and UNSPECIFIED
+// mean "no usable signal".
+func usageSnapshotUnsupported(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "unsupported", "rate_limit_plan_status_unsupported",
+		"unspecified", "rate_limit_plan_status_unspecified":
+		return true
+	default:
+		return false
+	}
+}
+
+func fmtUsageAge(u *pb.UsageSnapshot) string {
+	if u == nil || u.GetFetchedAt() == nil {
+		return "-"
+	}
+	d := time.Since(u.GetFetchedAt().AsTime())
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 // resolveAddProvider resolves the account provider from the positional arg

@@ -118,7 +118,8 @@ export const bossSessionOperationMap = {
   // Documented boss MCP tools the choreography uses but that are not part of the
   // required capability set: record_chat + send_chat_message implement the
   // dispatchRepair fresh-chat mechanism (Phase 3c); get_session_statuses is the
-  // optional extra `claude` signal.
+  // settled-chat signal that gates greens (Phase 3b/3c) — best-effort, so an
+  // unreadable status (BOS-244 restart window) is treated as not-settled, not merged.
   recordChat: {
     tool: 'record_chat',
     args: ['session_id', 'agent_session_id', 'agent_name', 'title'],

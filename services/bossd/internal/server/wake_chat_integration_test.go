@@ -143,6 +143,10 @@ func (*codexTUITestClient) DetectUsageLimit(context.Context, *pb.DetectUsageLimi
 	return &pb.DetectUsageLimitResponse{}, nil
 }
 
+func (*codexTUITestClient) ProbeRateLimit(context.Context, *pb.ProbeRateLimitRequest) (*pb.ProbeRateLimitResponse, error) {
+	return &pb.ProbeRateLimitResponse{}, nil
+}
+
 func (*codexTUITestClient) HasWorkingIndicator(context.Context, *pb.HasWorkingIndicatorRequest) (*pb.HasWorkingIndicatorResponse, error) {
 	return &pb.HasWorkingIndicatorResponse{}, nil
 }
@@ -293,6 +297,10 @@ func (*claudeIntegrationClient) HasQuestionPrompt(context.Context, *pb.HasQuesti
 
 func (*claudeIntegrationClient) DetectUsageLimit(context.Context, *pb.DetectUsageLimitRequest) (*pb.DetectUsageLimitResponse, error) {
 	return &pb.DetectUsageLimitResponse{}, nil
+}
+
+func (*claudeIntegrationClient) ProbeRateLimit(context.Context, *pb.ProbeRateLimitRequest) (*pb.ProbeRateLimitResponse, error) {
+	return &pb.ProbeRateLimitResponse{}, nil
 }
 
 func (*claudeIntegrationClient) HasWorkingIndicator(context.Context, *pb.HasWorkingIndicatorRequest) (*pb.HasWorkingIndicatorResponse, error) {

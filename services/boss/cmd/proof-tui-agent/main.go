@@ -3,6 +3,16 @@
 // one JSON response per output line. It is the long-lived Go driver process a
 // Node brain (BOS-70) drives to operate the TUI in "agent mode", and can
 // optionally capture an asciinema .cast of the session.
+//
+// The "key" op's key names resolve through tuidriver.KeyBytes, which accepts
+// single characters, "ctrl+<a-z>", enter/return, esc/escape, the arrows
+// (up/down/right/left), tab and shift+tab, pgup/pgdn, home/end, backspace and
+// delete, and f1-f12 (case-insensitive) — enough to drive list- and form-shaped
+// views. One caveat: the "key" op writes a list's keys back-to-back with no
+// delimiter, so a leading "esc" immediately followed by another key in the SAME
+// list decodes as alt+<key> (a bare ESC acts as a meta prefix, per ultraviolet's
+// input parser). Send "esc" alone — its own "key" op or the standalone "esc" op
+// — to cancel/back out.
 package main
 
 import (

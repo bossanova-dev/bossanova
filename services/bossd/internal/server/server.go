@@ -92,7 +92,9 @@ type Server struct {
 	resolver           *account.Resolver
 	rotationConfig     func() (config.RotationConfig, error)
 	accountCreds       AccountCredentialStore
+	addAccountMu       sync.Mutex
 	accountSmoke       AccountSmokeRunner
+	usageProbe         UsageProbeRecorder
 	checkSnapshots     db.CheckSnapshotStore
 	rotationEvents     db.RotationEventStore
 	cronScheduler      *cron.Scheduler
@@ -168,7 +170,10 @@ type Config struct {
 	// when nil, TestAccount records live_smoke_ran=false with an unavailable
 	// detail.
 	AccountSmokeRunner AccountSmokeRunner
-	CheckSnapshots     db.CheckSnapshotStore
+	// UsageProbe refreshes cached account usage metadata for list refreshes.
+	// Optional, may be nil; refresh then falls back to cached values.
+	UsageProbe     UsageProbeRecorder
+	CheckSnapshots db.CheckSnapshotStore
 	// RotationEvents is the rotation audit store hydrated onto
 	// Session.rotation_events for TUI/web history (BOS-176). Nil-safe.
 	RotationEvents     db.RotationEventStore
@@ -238,6 +243,12 @@ type AccountSmokeRunner interface {
 	Smoke(ctx context.Context, accountID, provider string, blob []byte) error
 }
 
+// UsageProbeRecorder probes and caches usage metadata for one account. It is
+// fail-soft at call sites: refresh errors never make ListAccounts fail.
+type UsageProbeRecorder interface {
+	RecordUsageProbe(ctx context.Context, accountID string) error
+}
+
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
 func New(cfg Config) *Server {
 	return &Server{
@@ -254,6 +265,7 @@ func New(cfg Config) *Server {
 		rotationConfig: cfg.RotationConfig,
 		accountCreds:   cfg.AccountCredentials,
 		accountSmoke:   cfg.AccountSmokeRunner,
+		usageProbe:     cfg.UsageProbe,
 		checkSnapshots: cfg.CheckSnapshots,
 		rotationEvents: cfg.RotationEvents,
 		cronScheduler:  cfg.CronScheduler,
@@ -1105,13 +1117,15 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	// (account 0, opting out of the policy), or — when the field is absent — apply
 	// the default-account policy. Pass the raw optional pointer so presence is
 	// preserved: msg.GetAccountId() would collapse absent and explicit-empty. An
-	// empty result leaves AccountID nil (account 0). A resolver error never fails
-	// creation — only an invalid explicit account_id does.
+	// explicit empty result leaves AccountID present-empty (account 0) so later
+	// chat backfill can distinguish explicit opt-out from legacy nil rows. A
+	// resolver error never fails creation — only an invalid explicit account_id
+	// does.
 	accountID, err := s.resolveSessionAccount(ctx, msg.AccountId, agentName)
 	if err != nil {
 		return err
 	}
-	if accountID != "" {
+	if accountID != "" || msg.AccountId != nil {
 		createParams.AccountID = &accountID
 	}
 
@@ -2371,30 +2385,41 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		}
 	}
 	mcpConfigPath := session.SessionMcpConfigPath(sess, chat.AgentSessionID, chat.AgentName)
-	// Merge the bound account's spawn env UNDER the managed session env so a
-	// persisted account_id gets its credentials materialized on the attach path,
-	// mirroring the lifecycle/host spawn paths. Managed BOSS_* keys always win on
-	// conflict; a nil resolver or account 0 leaves SessionEnv byte-identical to
-	// the ambient-login behavior. Values are never logged. The account is
-	// resolved for the CHAT's agent (spawnChatTmux launches chat.AgentName), not
-	// the parent session's, so a cross-agent chat never receives another
-	// provider's account env.
-	sessionEnv := mergeManagedOverAccount(
-		session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
-		s.resolveChatAccountEnv(ctx, sess, chat),
-	)
+	defaultAccountID := ""
+	sessionEnvFunc := func() map[string]string {
+		defaultAccountID = s.defaultAccountIDForChat(ctx, sess, chat)
+		// Merge the bound account's spawn env UNDER the managed session env so a
+		// persisted account_id gets its credentials materialized on the attach path,
+		// mirroring the lifecycle/host spawn paths. Managed BOSS_* keys always win on
+		// conflict; a nil resolver or account 0 leaves SessionEnv byte-identical to
+		// the ambient-login behavior. Values are never logged. The account is
+		// resolved for the CHAT's agent (spawnChatTmux launches chat.AgentName), not
+		// the parent session's, so a cross-agent chat never receives another
+		// provider's account env. This closure runs only after spawnChatTmux has
+		// proved a new tmux session is needed, avoiding account last-used updates on
+		// already-live attaches.
+		return mergeManagedOverAccount(
+			session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
+			s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID),
+		)
+	}
 	result, err := spawnChatTmux(ctx, deps, spawnInput{
 		Chat:               chat,
 		WorktreePath:       sess.WorktreePath,
 		TmuxName:           tmuxName,
 		ForceFresh:         !resume,
 		AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath),
-		SessionEnv:         dotenv.Overlay(sessionEnv, sess.WorktreePath),
-		Model:              modelForChatAgent(sess, chat.AgentName),
-		McpConfigPath:      mcpConfigPath,
+		SessionEnvFunc: func() map[string]string {
+			return dotenv.Overlay(sessionEnvFunc(), sess.WorktreePath)
+		},
+		Model:         modelForChatAgent(sess, chat.AgentName),
+		McpConfigPath: mcpConfigPath,
 	})
 	if err != nil {
 		return err
+	}
+	if result.Outcome != OutcomeAlreadyLive {
+		s.persistDefaultAccountForChat(ctx, sess, chat, defaultAccountID)
 	}
 
 	if result.Outcome == OutcomeFreshFallback && !result.LaunchedAt.IsZero() && result.ProviderSessionID == "" {

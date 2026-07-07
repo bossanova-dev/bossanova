@@ -193,6 +193,45 @@ func TestE2E_SettleOnAsyncList(t *testing.T) {
 	s.do(map[string]any{"id": 99, "op": "quit"})
 }
 
+// TestE2E_ArrowNav proves the `key` op's new arrow vocabulary moves the home
+// selection: a bare `enter` opens the FIRST session (sess-aaa-111 / "Add dark
+// mode"), whose chat picker shows "Initial implementation"; sending
+// `["down","enter"]` instead opens the SECOND session (sess-bbb-222 / "Fix
+// login bug"), whose chat picker does NOT show "Initial implementation". This
+// exercises the full path NDJSON -> key op -> KeyBytes("down") -> PTY ->
+// bubbletea -> vt and observes a deterministic, arrow-driven screen change.
+func TestE2E_ArrowNav(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e in -short")
+	}
+	_, boss := buildBinaries(t)
+	s := startAgent(t, "demo", boss, "")
+
+	if !strings.Contains(screenOf(s.do(map[string]any{"id": 1, "op": "observe"})), "Add dark mode") {
+		t.Fatal("home not ready")
+	}
+	// Move selection down one row, then open that session's chat picker. The
+	// "[n]ew chat" action bar is unique to the chat-picker view (home shows a
+	// different bar), so it confirms enter opened a session rather than staying
+	// on home.
+	s.do(map[string]any{"id": 2, "op": "key", "keys": []string{"down", "enter"}})
+	wr := s.do(map[string]any{"id": 3, "op": "wait", "text": "[n]ew chat", "timeoutMs": 10000})
+	if !okResp(wr) {
+		t.Fatalf("arrow-down + enter did not open a session chat picker; screen:\n%s", screenOf(wr))
+	}
+	screen := screenOf(wr)
+	// The arrow moved selection to the SECOND session ("Fix login bug", which has
+	// no chats) — so its header shows and the FIRST session's only distinctive
+	// chat title ("Initial implementation") must be absent.
+	if !strings.Contains(screen, "Fix login bug") {
+		t.Fatalf("expected the second session (\"Fix login bug\") header; screen:\n%s", screen)
+	}
+	if strings.Contains(screen, "Initial implementation") {
+		t.Fatalf("arrow-down should have selected a DIFFERENT session, but screen shows the first session's chat; screen:\n%s", screen)
+	}
+	s.do(map[string]any{"id": 99, "op": "quit"})
+}
+
 // TestE2E_AddRepoReachable drives the #812 add-repo flow: 'r' (repos) -> 'a'
 // (add) -> Open project -> type a path -> confirm, asserting the wizard reaches
 // the input phase and then the repo details ("Merge strategy" / "Setup command").

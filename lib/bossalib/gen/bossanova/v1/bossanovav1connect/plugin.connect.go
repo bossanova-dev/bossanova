@@ -136,6 +136,9 @@ const (
 	// AgentRunnerServiceDetectUsageLimitProcedure is the fully-qualified name of the
 	// AgentRunnerService's DetectUsageLimit RPC.
 	AgentRunnerServiceDetectUsageLimitProcedure = "/bossanova.v1.AgentRunnerService/DetectUsageLimit"
+	// AgentRunnerServiceProbeRateLimitProcedure is the fully-qualified name of the AgentRunnerService's
+	// ProbeRateLimit RPC.
+	AgentRunnerServiceProbeRateLimitProcedure = "/bossanova.v1.AgentRunnerService/ProbeRateLimit"
 	// AgentRunnerServiceTranscriptExistsProcedure is the fully-qualified name of the
 	// AgentRunnerService's TranscriptExists RPC.
 	AgentRunnerServiceTranscriptExistsProcedure = "/bossanova.v1.AgentRunnerService/TranscriptExists"
@@ -847,6 +850,14 @@ type AgentRunnerServiceClient interface {
 	// transition and reset-time plumbing. Fail-safe: no status-region match =>
 	// limited=false. reset_at is absent when no reset time is parseable.
 	DetectUsageLimit(context.Context, *connect.Request[v1.DetectUsageLimitRequest]) (*connect.Response[v1.DetectUsageLimitResponse], error)
+	// ProbeRateLimit authoritatively reports the target account's usage-cap
+	// posture by querying the provider directly (claude: GET /api/oauth/usage;
+	// codex: the rollout JSONL under CODEX_HOME) rather than scraping the TUI.
+	// credential_env carries that account's materialized env overlay so bossd can
+	// probe ANY account on demand; it is secret-bearing and NEVER logged.
+	// Providers without a probe return status=RATE_LIMIT_PLAN_STATUS_UNSUPPORTED,
+	// limited=false (fail-safe).
+	ProbeRateLimit(context.Context, *connect.Request[v1.ProbeRateLimitRequest]) (*connect.Response[v1.ProbeRateLimitResponse], error)
 	// TranscriptExists reports whether a non-empty transcript file is present
 	// on disk for (work_dir, agent_session_id). Used by wake-up logic to
 	// choose between resume and fresh-start argv.
@@ -986,6 +997,12 @@ func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(agentRunnerServiceMethods.ByName("DetectUsageLimit")),
 			connect.WithClientOptions(opts...),
 		),
+		probeRateLimit: connect.NewClient[v1.ProbeRateLimitRequest, v1.ProbeRateLimitResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceProbeRateLimitProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("ProbeRateLimit")),
+			connect.WithClientOptions(opts...),
+		),
 		transcriptExists: connect.NewClient[v1.TranscriptExistsRequest, v1.TranscriptExistsResponse](
 			httpClient,
 			baseURL+AgentRunnerServiceTranscriptExistsProcedure,
@@ -1031,6 +1048,7 @@ type agentRunnerServiceClient struct {
 	hasWorkingIndicator         *connect.Client[v1.HasWorkingIndicatorRequest, v1.HasWorkingIndicatorResponse]
 	lastTurnIsUser              *connect.Client[v1.LastTurnIsUserRequest, v1.LastTurnIsUserResponse]
 	detectUsageLimit            *connect.Client[v1.DetectUsageLimitRequest, v1.DetectUsageLimitResponse]
+	probeRateLimit              *connect.Client[v1.ProbeRateLimitRequest, v1.ProbeRateLimitResponse]
 	transcriptExists            *connect.Client[v1.TranscriptExistsRequest, v1.TranscriptExistsResponse]
 	readTranscript              *connect.Client[v1.ReadTranscriptRequest, v1.ReadTranscriptResponse]
 	rotationCapability          *connect.Client[v1.RotationCapabilityRequest, v1.RotationCapabilityResponse]
@@ -1115,6 +1133,11 @@ func (c *agentRunnerServiceClient) LastTurnIsUser(ctx context.Context, req *conn
 // DetectUsageLimit calls bossanova.v1.AgentRunnerService.DetectUsageLimit.
 func (c *agentRunnerServiceClient) DetectUsageLimit(ctx context.Context, req *connect.Request[v1.DetectUsageLimitRequest]) (*connect.Response[v1.DetectUsageLimitResponse], error) {
 	return c.detectUsageLimit.CallUnary(ctx, req)
+}
+
+// ProbeRateLimit calls bossanova.v1.AgentRunnerService.ProbeRateLimit.
+func (c *agentRunnerServiceClient) ProbeRateLimit(ctx context.Context, req *connect.Request[v1.ProbeRateLimitRequest]) (*connect.Response[v1.ProbeRateLimitResponse], error) {
+	return c.probeRateLimit.CallUnary(ctx, req)
 }
 
 // TranscriptExists calls bossanova.v1.AgentRunnerService.TranscriptExists.
@@ -1208,6 +1231,14 @@ type AgentRunnerServiceHandler interface {
 	// transition and reset-time plumbing. Fail-safe: no status-region match =>
 	// limited=false. reset_at is absent when no reset time is parseable.
 	DetectUsageLimit(context.Context, *connect.Request[v1.DetectUsageLimitRequest]) (*connect.Response[v1.DetectUsageLimitResponse], error)
+	// ProbeRateLimit authoritatively reports the target account's usage-cap
+	// posture by querying the provider directly (claude: GET /api/oauth/usage;
+	// codex: the rollout JSONL under CODEX_HOME) rather than scraping the TUI.
+	// credential_env carries that account's materialized env overlay so bossd can
+	// probe ANY account on demand; it is secret-bearing and NEVER logged.
+	// Providers without a probe return status=RATE_LIMIT_PLAN_STATUS_UNSUPPORTED,
+	// limited=false (fail-safe).
+	ProbeRateLimit(context.Context, *connect.Request[v1.ProbeRateLimitRequest]) (*connect.Response[v1.ProbeRateLimitResponse], error)
 	// TranscriptExists reports whether a non-empty transcript file is present
 	// on disk for (work_dir, agent_session_id). Used by wake-up logic to
 	// choose between resume and fresh-start argv.
@@ -1343,6 +1374,12 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 		connect.WithSchema(agentRunnerServiceMethods.ByName("DetectUsageLimit")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentRunnerServiceProbeRateLimitHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceProbeRateLimitProcedure,
+		svc.ProbeRateLimit,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("ProbeRateLimit")),
+		connect.WithHandlerOptions(opts...),
+	)
 	agentRunnerServiceTranscriptExistsHandler := connect.NewUnaryHandler(
 		AgentRunnerServiceTranscriptExistsProcedure,
 		svc.TranscriptExists,
@@ -1401,6 +1438,8 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 			agentRunnerServiceLastTurnIsUserHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceDetectUsageLimitProcedure:
 			agentRunnerServiceDetectUsageLimitHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceProbeRateLimitProcedure:
+			agentRunnerServiceProbeRateLimitHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceTranscriptExistsProcedure:
 			agentRunnerServiceTranscriptExistsHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceReadTranscriptProcedure:
@@ -1480,6 +1519,10 @@ func (UnimplementedAgentRunnerServiceHandler) LastTurnIsUser(context.Context, *c
 
 func (UnimplementedAgentRunnerServiceHandler) DetectUsageLimit(context.Context, *connect.Request[v1.DetectUsageLimitRequest]) (*connect.Response[v1.DetectUsageLimitResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.DetectUsageLimit is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) ProbeRateLimit(context.Context, *connect.Request[v1.ProbeRateLimitRequest]) (*connect.Response[v1.ProbeRateLimitResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.ProbeRateLimit is not implemented"))
 }
 
 func (UnimplementedAgentRunnerServiceHandler) TranscriptExists(context.Context, *connect.Request[v1.TranscriptExistsRequest]) (*connect.Response[v1.TranscriptExistsResponse], error) {

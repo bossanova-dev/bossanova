@@ -270,6 +270,23 @@ func accountToProto(a *models.Account) *pb.Account {
 	if a.LastTestOkAt != nil {
 		p.LastTestOkAt = timestamppb.New(*a.LastTestOkAt)
 	}
+	if a.Usage != nil {
+		p.Usage = &pb.UsageSnapshot{
+			Util_5H:  a.Usage.Util5h,
+			Util_7D:  a.Usage.Util7d,
+			Status:   a.Usage.Status,
+			PlanTier: a.Usage.PlanTier,
+		}
+		if a.Usage.Reset5h != nil {
+			p.Usage.Reset_5H = timestamppb.New(*a.Usage.Reset5h)
+		}
+		if a.Usage.Reset7d != nil {
+			p.Usage.Reset_7D = timestamppb.New(*a.Usage.Reset7d)
+		}
+		if a.Usage.FetchedAt != nil {
+			p.Usage.FetchedAt = timestamppb.New(*a.Usage.FetchedAt)
+		}
+	}
 	return p
 }
 

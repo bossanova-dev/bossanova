@@ -1,0 +1,2 @@
+{"timestamp":"2026-05-08T07:45:47Z","type":"session_meta","payload":{"id":"probe-near","cwd":"/tmp/bossanova","originator":"codex_exec","cli_version":"test"}}
+{"timestamp":"2026-05-08T07:46:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":1000}},"rate_limits":{"limit_id":"test","limit_name":null,"primary":{"used_percent":95,"window_minutes":300,"resets_at":1893456000},"secondary":{"used_percent":88,"window_minutes":10080,"resets_at":1894060800},"credits":null,"plan_type":"plus","rate_limit_reached_type":null}}}

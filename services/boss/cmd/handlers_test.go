@@ -213,6 +213,102 @@ func TestRunDaemonStopAllStandaloneUsesBroadProcessSignaling(t *testing.T) {
 	}
 }
 
+func TestRunDaemonStopInstalledCleansPluginProcesses(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	appDataDir := filepath.Join(dir, "data")
+	socketPath := filepath.Join(dir, "bossd.sock")
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true}, nil
+	}
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonStop = func() error { return nil }
+	waitForDaemonSocketGone = func(path string) bool {
+		if path != socketPath {
+			t.Fatalf("wait socket path = %q, want %q", path, socketPath)
+		}
+		return true
+	}
+	cleanupCalled := false
+	terminatePluginProcesses = func(daemonProfile) (int, error) {
+		cleanupCalled = true
+		return 3, nil
+	}
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStop(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonStop: %v", err)
+		}
+	})
+	if !cleanupCalled {
+		t.Fatal("terminatePluginProcesses was not called")
+	}
+	if !strings.Contains(out, "Daemon stopped.") || !strings.Contains(out, "Stopped 3 plugin process(es).") {
+		t.Fatalf("output = %q, want daemon stopped and plugin cleanup messages", out)
+	}
+}
+
+func TestRunDaemonRestartStopsPluginsBeforeStartingDaemon(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	appDataDir := filepath.Join(dir, "data")
+	socketPath := filepath.Join(dir, "bossd.sock")
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true}, nil
+	}
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonSocketReachable = func(path string) bool { return path == socketPath }
+	waitForDaemonSocketGone = func(path string) bool {
+		if path != socketPath {
+			t.Fatalf("wait socket path = %q, want %q", path, socketPath)
+		}
+		return true
+	}
+
+	var events []string
+	daemonStop = func() error {
+		events = append(events, "stop")
+		return nil
+	}
+	terminatePluginProcesses = func(daemonProfile) (int, error) {
+		events = append(events, "plugins")
+		return 2, nil
+	}
+	daemonEnsureRunning = func(path string) error {
+		events = append(events, "start")
+		if path != socketPath {
+			t.Fatalf("ensure path = %q, want %q", path, socketPath)
+		}
+		return nil
+	}
+
+	out := captureStdout(t, func() {
+		if err := runDaemonRestart(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonRestart: %v", err)
+		}
+	})
+	if !reflect.DeepEqual(events, []string{"stop", "plugins", "start"}) {
+		t.Fatalf("events = %v, want [stop plugins start]", events)
+	}
+	if !strings.Contains(out, "Stopped 2 plugin process(es).") || !strings.Contains(out, "Daemon restarted.") {
+		t.Fatalf("output = %q, want restart and plugin cleanup messages", out)
+	}
+}
+
 func TestRunLocalProviderStartupBeforeClientRestartsReachableDaemonAfterLoginShellChange(t *testing.T) {
 	oldRunProviderStartupIfNeeded := runProviderStartupIfNeeded
 	oldRestartDaemonAfterLoginShellCapture := restartDaemonAfterLoginShellCapture
@@ -678,6 +774,8 @@ func restoreDaemonCommandStubs(t *testing.T) {
 	oldDaemonEnsureRunning := daemonEnsureRunning
 	oldDaemonStop := daemonStop
 	oldTerminateAllBossdProcesses := terminateAllBossdProcesses
+	oldTerminatePluginProcesses := terminatePluginProcesses
+	oldTerminateAllPluginProcesses := terminateAllPluginProcesses
 	oldWaitForDaemonSocketGone := waitForDaemonSocketGone
 	t.Cleanup(func() {
 		defaultSocketPath = oldDefaultSocketPath
@@ -686,6 +784,8 @@ func restoreDaemonCommandStubs(t *testing.T) {
 		daemonEnsureRunning = oldDaemonEnsureRunning
 		daemonStop = oldDaemonStop
 		terminateAllBossdProcesses = oldTerminateAllBossdProcesses
+		terminatePluginProcesses = oldTerminatePluginProcesses
+		terminateAllPluginProcesses = oldTerminateAllPluginProcesses
 		waitForDaemonSocketGone = oldWaitForDaemonSocketGone
 	})
 }
@@ -751,6 +851,37 @@ func TestTerminateProfileBossdProcessSignalsMetadataPIDOnly(t *testing.T) {
 		if pid != 200 {
 			t.Fatalf("findProcess pid = %d, want metadata pid 200", pid)
 		}
+		return recordingProcess{pid: pid, signals: &signalled}, nil
+	})
+
+	if err != nil {
+		t.Fatalf("terminateProfileBossdProcess() returned error: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("terminateProfileBossdProcess() signalled %d processes, want 1", got)
+	}
+	if !reflect.DeepEqual(signalled, []int{200}) {
+		t.Fatalf("signalled PIDs = %v, want [200]", signalled)
+	}
+}
+
+func TestTerminateProfileBossdProcessMatchesExecutablePathWithSpaces(t *testing.T) {
+	dir := t.TempDir()
+	executable := "/Users/dev/Library/Application Support/bossanova/bin/bossd"
+	if err := daemonstate.Write(dir, daemonstate.Metadata{PID: 200, ExecutablePath: executable}); err != nil {
+		t.Fatalf("write daemon metadata: %v", err)
+	}
+	oldBossdProcessCommandLine := bossdProcessCommandLine
+	bossdProcessCommandLine = func(pid int) (string, error) {
+		if pid != 200 {
+			t.Fatalf("process command line pid = %d, want metadata pid 200", pid)
+		}
+		return executable + " --daemon", nil
+	}
+	t.Cleanup(func() { bossdProcessCommandLine = oldBossdProcessCommandLine })
+
+	var signalled []int
+	got, err := terminateProfileBossdProcess(dir, func(pid int) (processSignaler, error) {
 		return recordingProcess{pid: pid, signals: &signalled}, nil
 	})
 
@@ -855,6 +986,99 @@ func TestSignalBossdProcessesSurfacesFindFailures(t *testing.T) {
 	}
 	if !errors.Is(err, findErr) {
 		t.Fatalf("signalBossdProcesses error = %v, want %v", err, findErr)
+	}
+}
+
+func TestBossdPluginProcessMatcherScopesAllProfileCleanup(t *testing.T) {
+	matches := bossdPluginProcessMatcher([]config.PluginConfig{{
+		Name: "custom",
+		Path: "/tmp/custom/bossd-plugin-custom",
+	}, {
+		Name: "claude",
+		Path: "/Users/dev/Library/Application Support/bossanova/plugins/bossd-plugin-claude",
+	}}, false)
+	broadMatches := bossdPluginProcessMatcher([]config.PluginConfig{{
+		Name: "custom",
+		Path: "/tmp/custom/bossd-plugin-custom",
+	}}, true)
+
+	if !matches("/tmp/custom/bossd-plugin-custom --flag") {
+		t.Fatal("matcher rejected configured plugin path")
+	}
+	if !matches("/Users/dev/Library/Application Support/bossanova/plugins/bossd-plugin-claude --stdio") {
+		t.Fatal("matcher rejected configured plugin path containing spaces")
+	}
+	if matches("/tmp/profile-b/bossd-plugin-claude") {
+		t.Fatal("profile-scoped matcher accepted another profile's plugin path")
+	}
+	for _, commandLine := range []string{
+		"/tmp/custom/bossd-plugin-custom --flag",
+		"/opt/homebrew/Cellar/bossanova/2.1.197/libexec/plugins/bossd-plugin-claude",
+		"/tmp/profile-b/bossd-plugin-claude",
+		"/Users/dev/Library/Application Support/bossanova-profile-b/plugins/bossd-plugin-codex --stdio",
+	} {
+		if !broadMatches(commandLine) {
+			t.Fatalf("broad matcher rejected %q", commandLine)
+		}
+	}
+	for _, commandLine := range []string{
+		"/bin/sh -c /tmp/profile-b/bossd-plugin-claude",
+		"/bin/sh -c /Users/dev/Library/Application Support/bossanova-profile-b/plugins/bossd-plugin-codex",
+		"/bin/echo /Users/dev/Library/Application Support/bossanova-profile-b/plugins/bossd-plugin-codex",
+		"/usr/bin/vim /tmp/profile-b/bossd-plugin-claude",
+	} {
+		if broadMatches(commandLine) {
+			t.Fatalf("broad matcher accepted non-plugin executable %q", commandLine)
+		}
+	}
+	for _, commandLine := range []string{
+		"/tmp/custom/bossd-plugin-other",
+		"/Users/dev/Library/Application Support/bossanova/plugins/bossd-plugin-codex --stdio",
+		"/usr/local/bin/not-a-plugin",
+		"sh -c /tmp/profile-b/bossd-plugin-claude",
+		"",
+	} {
+		if !matches(commandLine) {
+			continue
+		}
+		t.Fatalf("matcher accepted %q", commandLine)
+	}
+}
+
+func TestSignalBossdPluginProcessesFiltersBeforeSignaling(t *testing.T) {
+	oldBossdProcessCommandLine := bossdProcessCommandLine
+	bossdProcessCommandLine = func(pid int) (string, error) {
+		switch pid {
+		case 100:
+			return "/tmp/custom/bossd-plugin-custom", nil
+		case 200:
+			return "/tmp/custom/bossd-plugin-other", nil
+		case 300:
+			return "/opt/homebrew/Cellar/bossanova/2.1.197/libexec/plugins/bossd-plugin-claude", nil
+		default:
+			t.Fatalf("unexpected pid %d", pid)
+			return "", nil
+		}
+	}
+	t.Cleanup(func() { bossdProcessCommandLine = oldBossdProcessCommandLine })
+
+	var signalled []int
+	matches := bossdPluginProcessMatcher([]config.PluginConfig{{
+		Name: "custom",
+		Path: "/tmp/custom/bossd-plugin-custom",
+	}}, false)
+	got, err := signalBossdPluginProcesses([]int{100, 200, 300}, matches, func(pid int) (processSignaler, error) {
+		return recordingProcess{pid: pid, signals: &signalled}, nil
+	})
+
+	if err != nil {
+		t.Fatalf("signalBossdPluginProcesses() returned error: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("signalBossdPluginProcesses signalled %d processes, want 1", got)
+	}
+	if !reflect.DeepEqual(signalled, []int{100}) {
+		t.Fatalf("signalled PIDs = %v, want [100]", signalled)
 	}
 }
 

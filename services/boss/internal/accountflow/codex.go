@@ -76,10 +76,9 @@ func RunCodexAdd(ctx context.Context, o CodexOptions) error {
 		return fmt.Errorf("codex auth.json is invalid; nothing stored: %w", err)
 	}
 
-	defEmail, _ := agentcred.EmailFromIDToken(auth.IDToken)
 	// Codex registration always runs against an interactive TTY (the device flow
 	// has no --token-stdin path), so identity prompting stays enabled.
-	label, email, err := promptIdentity(ctx, o.Prompter, o.Client, "codex", o.Label, o.Email, defEmail, false)
+	label, email, err := promptIdentity(ctx, o.Prompter, o.Client, "codex", o.Label, o.Email, "", false)
 	if err != nil {
 		return err
 	}

@@ -41,6 +41,17 @@ type Signal struct {
 	// RotationCapable reports whether the provider/session can actually rotate.
 	// When false the engine is status-only and performs no store access.
 	RotationCapable bool
+	// Utilization optionally supplies authoritative current usage per account,
+	// probed outside the transaction. nil/empty preserves repository order unless
+	// CandidateProbeRequired is true. When candidate probing is active,
+	// selectable probed accounts with util < 1.0 are preferred by lowest
+	// utilization, accounts with util >= 1.0 are skipped, and unprobed accounts
+	// are not selected.
+	Utilization map[string]float64
+	// CandidateProbeRequired means a UsageLimited dispatcher already relied on an
+	// authoritative probe for the capped account, so candidate selection must not
+	// fall back to an unprobed account when candidate probes are unavailable.
+	CandidateProbeRequired bool
 }
 
 // OutcomeKind classifies the engine's decision.
@@ -225,7 +236,7 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 			return fmt.Errorf("list accounts: %w", err)
 		}
 		accts = list
-		out.NextAccount = selectCandidate(accts, sig.CappedAccountID, now)
+		out.NextAccount = selectCandidate(accts, sig.CappedAccountID, now, sig.Utilization, sig.CandidateProbeRequired)
 		return nil
 	})
 	if err != nil {
@@ -256,20 +267,47 @@ func isSelectable(a *models.Account) bool {
 
 // selectCandidate returns the first account (list is pre-ordered) that is
 // active, healthy, not cooling, and not the capped account.
-func selectCandidate(accts []*models.Account, cappedID string, now time.Time) *models.Account {
+func selectCandidate(accts []*models.Account, cappedID string, now time.Time, utilization map[string]float64, probeRequired bool) *models.Account {
+	if probeRequired || len(utilization) > 0 {
+		var best *models.Account
+		var bestUtil float64
+		for _, a := range accts {
+			if !candidateSelectable(a, cappedID, now) {
+				continue
+			}
+			util, ok := utilization[a.ID]
+			if !ok {
+				continue
+			}
+			if util >= 1 {
+				continue
+			}
+			if best == nil || util < bestUtil {
+				best = a
+				bestUtil = util
+			}
+		}
+		if best != nil {
+			return best
+		}
+		return nil
+	}
 	for _, a := range accts {
-		if a.ID == cappedID {
-			continue
+		if candidateSelectable(a, cappedID, now) {
+			return a
 		}
-		if !isSelectable(a) {
-			continue
-		}
-		if a.CooldownUntil != nil && a.CooldownUntil.After(now) {
-			continue
-		}
-		return a
 	}
 	return nil
+}
+
+func candidateSelectable(a *models.Account, cappedID string, now time.Time) bool {
+	if a.ID == cappedID {
+		return false
+	}
+	if !isSelectable(a) {
+		return false
+	}
+	return a.CooldownUntil == nil || !a.CooldownUntil.After(now)
 }
 
 // minFutureCooldown returns the earliest cooldown_until strictly after now over

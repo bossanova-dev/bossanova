@@ -10,6 +10,7 @@ const KNOWN_EXTENSION_ROLES = new Set([
   'plan-reviewer',
   'agent-driver',
   'draft',
+  'methodology',
 ])
 
 // Minimal YAML-frontmatter reader. Supports the flat scalar keys and the single

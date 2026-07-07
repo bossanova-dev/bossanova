@@ -80,7 +80,13 @@ func rootCmd() *cobra.Command {
 		Short: "Bossanova — autonomous Claude coding sessions",
 		Long:  "Boss manages Claude coding sessions with automatic PR creation, CI fix loops, and code review handling.",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			if cmd.CommandPath() == "boss gen-skill" {
+			// gen-skill regenerates the embedded payload; the `skills` subtree is
+			// itself the explicit, no-prompt installer. Both must bypass the
+			// interactive startup installer/self-heal — otherwise `boss skills
+			// sync` would hit the [Y/n] prompt (interactive) or be pre-empted by
+			// selfHealSkills (non-TTY), reporting "up to date" instead of "updated".
+			path := cmd.CommandPath()
+			if path == "boss gen-skill" || path == "boss skills" || strings.HasPrefix(path, "boss skills ") {
 				return nil
 			}
 			return maybeInstallSkills()
@@ -122,6 +128,7 @@ func rootCmd() *cobra.Command {
 	addGrouped("trash", trashCmd())
 	addGrouped("daemon", daemonCmd())
 	addGrouped("mcp", mcpCmd())
+	addGrouped("skills", skillsCmd())
 	addGrouped("settings", settingsCmd(), configCmd(), loginCmd(), logoutCmd(), authStatusCmd())
 	addGrouped("diagnostics", repairCmd(), sessionCmd(), envCmd(), proofCmd())
 	addGrouped("plugins", pluginCmd())
@@ -450,6 +457,7 @@ func accountCmd() *cobra.Command {
 	}
 	ls.Flags().String("provider", "", "Filter by provider (claude|codex)")
 	ls.Flags().Bool("json", false, "Emit a stable JSON schema instead of a table")
+	ls.Flags().Bool("refresh", false, "Force a live usage probe of each account before listing")
 
 	add := &cobra.Command{
 		Use:   "add [provider]",
@@ -699,7 +707,12 @@ func maybeInstallSkills() error {
 		return nil
 	}
 	if !skillInstallIsTerminal() {
-		return nil
+		// Headless (daemon/tmux/cron) boss invocations previously bailed here,
+		// so a merged skill edit never reached live sessions. Instead of
+		// prompting, silently self-heal a stale-but-installed tree (update-only,
+		// never a fresh install into an empty dir) so the on-disk global skills
+		// track this binary's embedded payload.
+		return selfHealSkills()
 	}
 	manifest, err := libskillinstall.Manifest(skillinstall.SkillsFS)
 	if err != nil {
@@ -754,17 +767,8 @@ func maybeInstallSkills() error {
 			fmt.Fprintf(os.Stderr, "Warning: failed to install %s skills: %v\n", target.name, err)
 			continue
 		}
-		if rememberInstalledSkillManifest(&settings, agentName, manifest) {
+		if recordSkillInstall(&settings, target.agent, manifest) {
 			settingsChanged = true
-		}
-		if clearDeclinedSkillPrompt(&settings, agentName) {
-			settingsChanged = true
-		}
-		if target.agent == libskillinstall.AgentClaude {
-			if settings.SkillsDeclined {
-				settingsChanged = true
-			}
-			settings.SkillsDeclined = false
 		}
 		if installed {
 			fmt.Fprintf(os.Stderr, "Boss skills updated for %s.\n", target.name)
@@ -825,6 +829,83 @@ func clearDeclinedSkillPrompt(settings *config.Settings, agentName string) bool 
 		delete(settings.SkillsDeclinedManifestByAgent, agentName)
 	}
 	return changed
+}
+
+// recordSkillInstall applies the post-extract settings bookkeeping shared by the
+// interactive prompt, the non-interactive `boss skills` command, and the headless
+// self-heal: record the installed manifest, clear any declined-prompt state, and
+// clear the legacy Claude decline bit. Returns whether settings changed.
+func recordSkillInstall(settings *config.Settings, agent libskillinstall.Agent, manifest string) bool {
+	agentName := string(agent)
+	changed := rememberInstalledSkillManifest(settings, agentName, manifest)
+	if clearDeclinedSkillPrompt(settings, agentName) {
+		changed = true
+	}
+	if agent == libskillinstall.AgentClaude {
+		if settings.SkillsDeclined {
+			changed = true
+		}
+		settings.SkillsDeclined = false
+	}
+	return changed
+}
+
+// selfHealSkills refreshes stale-but-installed skill trees for each agent on PATH
+// without prompting. It never fresh-installs into an empty target (a headless
+// first run should not silently populate a user's global skills dir) and never
+// prints a [Y/n] prompt, so daemon/tmux/cron `boss` invocations keep the global
+// skills current instead of bailing. The caller has already honored
+// BOSS_SKIP_SKILLS and the non-TTY check.
+func selfHealSkills() error {
+	manifest, err := libskillinstall.Manifest(skillinstall.SkillsFS)
+	if err != nil {
+		return nil // non-fatal
+	}
+	// A malformed/unreadable settings.json makes config.Load return default
+	// settings alongside an error. Saving those defaults would silently replace
+	// the user's real file, so on a load error we still refresh the skill trees
+	// (the point of self-heal) but skip all manifest bookkeeping and the save.
+	settings, loadErr := config.Load()
+	if loadErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: skipping skill-manifest bookkeeping; failed to load settings: %v\n", loadErr)
+	}
+	settingsChanged := false
+	for _, target := range skillInstallAgents {
+		if _, err := skillInstallLookPath(target.command); err != nil {
+			continue
+		}
+		dir, err := libskillinstall.DirForAgent(target.agent)
+		if err != nil {
+			continue
+		}
+		// Honor a previously declined update for this exact manifest. An
+		// interactive `n` records the decline via rememberDeclinedSkillPrompt,
+		// and the interactive path skips the update through skillPromptDeclined.
+		// Silently refreshing here would reduce that opt-out to interactive
+		// sessions only — every headless daemon/tmux/cron `boss` invocation
+		// would overwrite the declined tree. Explicit `boss skills sync/install`
+		// remains the override. On a settings load error we cannot read the
+		// decline state, so we fall through and refresh (matching the
+		// bookkeeping skip above); default settings carry no declines anyway.
+		if loadErr == nil && skillPromptDeclined(settings, target.agent, true, manifest) {
+			continue
+		}
+		updated, err := libskillinstall.EnsureUpdated(dir, skillinstall.SkillsFS)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to refresh %s skills: %v\n", target.name, err)
+			continue
+		}
+		if !updated {
+			continue
+		}
+		if loadErr == nil && recordSkillInstall(&settings, target.agent, manifest) {
+			settingsChanged = true
+		}
+	}
+	if settingsChanged {
+		_ = config.Save(settings)
+	}
+	return nil
 }
 
 func trashCmd() *cobra.Command {

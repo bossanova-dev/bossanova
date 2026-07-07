@@ -205,6 +205,9 @@ func (c *claudeFakeClient) DetectUsageLimit(context.Context, *pb.DetectUsageLimi
 	}
 	return resp, nil
 }
+func (c *claudeFakeClient) ProbeRateLimit(context.Context, *pb.ProbeRateLimitRequest) (*pb.ProbeRateLimitResponse, error) {
+	return &pb.ProbeRateLimitResponse{}, nil
+}
 func (c *claudeFakeClient) HasWorkingIndicator(_ context.Context, req *pb.HasWorkingIndicatorRequest) (*pb.HasWorkingIndicatorResponse, error) {
 	c.workingCalls.Add(1)
 	return &pb.HasWorkingIndicatorResponse{IsWorking: statusdetect.HasWorkingIndicator(req.GetPaneContent())}, nil
@@ -259,6 +262,10 @@ func (c *codexRecordingClient) HasQuestionPrompt(context.Context, *pb.HasQuestio
 
 func (c *codexRecordingClient) DetectUsageLimit(context.Context, *pb.DetectUsageLimitRequest) (*pb.DetectUsageLimitResponse, error) {
 	return &pb.DetectUsageLimitResponse{}, nil
+}
+
+func (c *codexRecordingClient) ProbeRateLimit(context.Context, *pb.ProbeRateLimitRequest) (*pb.ProbeRateLimitResponse, error) {
+	return &pb.ProbeRateLimitResponse{}, nil
 }
 
 func (c *codexRecordingClient) LastTurnIsUser(_ context.Context, req *pb.LastTurnIsUserRequest) (*pb.LastTurnIsUserResponse, error) {
@@ -1709,6 +1716,9 @@ func (c *recordingAgentClient) HasQuestionPrompt(_ context.Context, _ *pb.HasQue
 }
 func (c *recordingAgentClient) DetectUsageLimit(context.Context, *pb.DetectUsageLimitRequest) (*pb.DetectUsageLimitResponse, error) {
 	return &pb.DetectUsageLimitResponse{}, nil
+}
+func (c *recordingAgentClient) ProbeRateLimit(context.Context, *pb.ProbeRateLimitRequest) (*pb.ProbeRateLimitResponse, error) {
+	return &pb.ProbeRateLimitResponse{}, nil
 }
 func (c *recordingAgentClient) HasWorkingIndicator(_ context.Context, _ *pb.HasWorkingIndicatorRequest) (*pb.HasWorkingIndicatorResponse, error) {
 	return &pb.HasWorkingIndicatorResponse{}, nil

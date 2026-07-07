@@ -2296,6 +2296,113 @@ func TestSendMessage_SubmitSingleLine_DeliversEntersAndVerifies(t *testing.T) {
 	}
 }
 
+// TestSendMessage_CodexSubmit_WaitsForReadyMarkerBeforeEnter is the BOS-285
+// sub-issue B regression guard: a codex single-line submit
+// (send_chat_message{submit:true}) must poll capture-pane for codex's "›"
+// composer-ready marker BEFORE it presses Enter, and — when the marker never
+// appears — must fail loud rather than silently no-op (the cold-boot race where
+// a premature Enter was absorbed as a newline). This locks the ordering that
+// closes the boot race so a refactor cannot reintroduce a blind Enter.
+func TestSendMessage_CodexSubmit_WaitsForReadyMarkerBeforeEnter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	const codexMarker = "›" // chatReadyMarker("codex"), spawn_chat_tmux.go
+
+	t.Run("gates on ready marker before enter", func(t *testing.T) {
+		fake := &sendPlanRecordingFactory{
+			// Marker absent on the first poll (cold boot), present on the second,
+			// then a cleared prompt for the post-Enter submit verifier.
+			capturePaneOutputs: []string{
+				"codex booting…\n",
+				"codex ready\n›\n",
+				"codex ready\n›\n",
+			},
+		}
+		c := NewClient(WithCommandFactory(fake.factory))
+
+		if err := c.SendMessage(context.Background(), "boss-test-sess", "run the thing", true, codexMarker); err != nil {
+			t.Fatalf("SendMessage: unexpected error: %v", err)
+		}
+
+		calls := fake.callsCopy()
+		firstCaptureIdx, literalIdx, enterIdx := -1, -1, -1
+		for i, call := range calls {
+			switch {
+			case call.subcommand == "capture-pane" && firstCaptureIdx == -1:
+				firstCaptureIdx = i
+			case call.subcommand == "send-keys" && len(call.args) >= 3 && call.args[2] == "-l":
+				literalIdx = i
+			case call.subcommand == "send-keys" && len(call.args) > 0 && call.args[len(call.args)-1] == "Enter":
+				if enterIdx == -1 {
+					enterIdx = i
+				}
+			}
+		}
+		if firstCaptureIdx == -1 {
+			t.Fatalf("expected a capture-pane ready poll, calls = %+v", calls)
+		}
+		if enterIdx == -1 {
+			t.Fatalf("expected an Enter send-keys (submit), calls = %+v", calls)
+		}
+		if literalIdx == -1 {
+			t.Fatalf("expected a literal send-keys delivery, calls = %+v", calls)
+		}
+		// The ready-marker poll and the literal delivery must both precede Enter.
+		if firstCaptureIdx >= enterIdx {
+			t.Errorf("ready-marker capture-pane (idx %d) must precede Enter (idx %d)", firstCaptureIdx, enterIdx)
+		}
+		if literalIdx >= enterIdx {
+			t.Errorf("literal delivery (idx %d) must precede Enter (idx %d)", literalIdx, enterIdx)
+		}
+		// At least two capture-pane polls happened before Enter (cold boot then
+		// ready), proving Enter did not fire until the marker was observed.
+		polls := 0
+		for i := 0; i < enterIdx; i++ {
+			if calls[i].subcommand == "capture-pane" {
+				polls++
+			}
+		}
+		if polls < 2 {
+			t.Errorf("expected ≥2 ready-marker polls before Enter, got %d (calls %+v)", polls, calls)
+		}
+	})
+
+	t.Run("cannot silently no-op when never ready", func(t *testing.T) {
+		fake := &sendPlanRecordingFactory{
+			// Marker never appears — the composer never became ready.
+			capturePaneOutputs: []string{"codex booting…\n"},
+		}
+		c := NewClient(WithCommandFactory(fake.factory))
+
+		// sendLine is the path SendMessage routes a single-line submit through;
+		// call it directly with a short deadline so the never-ready case fails
+		// fast instead of waiting the full production budget.
+		err := c.sendLine(context.Background(), "boss-test-sess", "run the thing", sendPlanOpts{
+			deadline:     20 * time.Millisecond,
+			pollInterval: 2 * time.Millisecond,
+			readyMarker:  codexMarker,
+		})
+		if err == nil {
+			t.Fatal("expected an error when the codex ready marker never appears, got nil")
+		}
+		if !strings.Contains(err.Error(), "ready marker") {
+			t.Fatalf("expected a ready-marker error, got %v", err)
+		}
+		// The gate must not have delivered or submitted anything — no literal
+		// send-keys and no Enter — so a never-ready composer is a loud failure,
+		// never a silent no-op that drops the message.
+		for _, call := range fake.callsCopy() {
+			if call.subcommand == "send-keys" {
+				t.Fatalf("no send-keys must occur before the marker is ready, saw %+v", call)
+			}
+			if call.subcommand == "load-buffer" || call.subcommand == "paste-buffer" {
+				t.Fatalf("no delivery must occur before the marker is ready, saw %+v", call)
+			}
+		}
+	})
+}
+
 // TestSendMessage_SubmitMultiLine_PastesNoEnter verifies that a multi-line
 // payload is pasted into the composer with NO Enter even when submit=true — the
 // swallowed-Enter failure mode makes auto-submitting multi-line unsafe.

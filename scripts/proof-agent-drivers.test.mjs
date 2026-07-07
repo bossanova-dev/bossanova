@@ -11,6 +11,7 @@ import {
 const stubDeps = {
   tuiAgentUsable: () => true,
   buildTuiAgentBridge: () => ({ bridgeBin: '/tmp/b', bossBin: '/tmp/boss' }),
+  resolvePrebuiltTuiBins: () => ({ bridgeBin: null, bossBin: null }),
   tuiAgentBridgeEnv: () => ({
     BOSS_PROOF_TUI_BRIDGE_BIN: '/tmp/b',
     BOSS_PROOF_BOSS_BIN: '/tmp/boss',
@@ -35,6 +36,54 @@ test('builtinAgentDrivers: tui/web reference drivers with the driver interface',
   const web = driverForSurface(drivers, 'web')
   assert.equal(typeof tui.prebuild, 'function')
   assert.equal(web.prebuild, undefined)
+})
+
+test('tui driver prebuild: prefers prebuilt bins and skips the in-budget build (BOS-215)', () => {
+  const calls = []
+  const deps = {
+    ...stubDeps,
+    resolvePrebuiltTuiBins: ({ repoRoot, env }) => {
+      calls.push(['resolve', repoRoot, env.BOSS_PROOF_BOSS_BIN])
+      return { bridgeBin: '/pre/bridge', bossBin: '/pre/boss' }
+    },
+    buildTuiAgentBridge: (opts) => {
+      calls.push(['build', opts])
+      return { bridgeBin: opts.bridgeBinOverride, bossBin: opts.bossBinOverride }
+    },
+    tuiAgentBridgeEnv: ({ bridgeBin, bossBin }) => ({
+      BOSS_PROOF_TUI_BRIDGE_BIN: bridgeBin,
+      BOSS_PROOF_BOSS_BIN: bossBin,
+    }),
+  }
+  const tui = driverForSurface(builtinAgentDrivers(deps), 'tui')
+  const env = {}
+  tui.prebuild({ repoRoot: '/repo', env })
+  // Prebuilt pair resolved → buildTuiAgentBridge is handed both overrides so it
+  // spawns nothing, and the resolved paths land on the env for the bridge.
+  assert.deepEqual(calls[0], ['resolve', '/repo', undefined])
+  assert.deepEqual(calls[1], [
+    'build',
+    { bridgeBinOverride: '/pre/bridge', bossBinOverride: '/pre/boss' },
+  ])
+  assert.equal(env.BOSS_PROOF_TUI_BRIDGE_BIN, '/pre/bridge')
+  assert.equal(env.BOSS_PROOF_BOSS_BIN, '/pre/boss')
+})
+
+test('tui driver prebuild: no prebuilt bins → in-budget build fallback (BOS-215)', () => {
+  const calls = []
+  const deps = {
+    ...stubDeps,
+    resolvePrebuiltTuiBins: () => ({ bridgeBin: null, bossBin: null }),
+    buildTuiAgentBridge: (opts) => {
+      calls.push(opts)
+      return { bridgeBin: '/tmp/bridge', bossBin: '/tmp/boss' }
+    },
+  }
+  const tui = driverForSurface(builtinAgentDrivers(deps), 'tui')
+  tui.prebuild({ repoRoot: '/repo', env: {} })
+  // No override → buildTuiAgentBridge builds the old way (bridgeBinOverride undefined).
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].bridgeBinOverride, undefined)
 })
 
 test('discoverAgentDrivers: no extensions → only built-ins', async () => {

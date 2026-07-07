@@ -48,7 +48,13 @@ test('size ratchet', () => {
   // scheduler dag-scheduler.mjs, resolveTrackerAdapter, resolveSessionRunnerAdapter)
   // and routes assembly/state/progress + session choreography + sub-skill
   // dispatch (subSkills.implement/repair) through them — the core deliverable.
-  const RATCHET = 27648
+  // Bumped 27648 → 28672 for the settled-green merge gate: Phase 3b/3c now require
+  // the child session to have SETTLED (chat IDLE + stale last_agent_activity_at,
+  // or STOPPED + stale/missing last_agent_activity_at) before a Passing green is merge-eligible, fixing
+  // premature merges of still-working children whose own boss-implement review +
+  // comment resolution had not finished (recurser/bossanova#1174). This makes the
+  // classified greens actually match nextToMerge's "passed-review" contract.
+  const RATCHET = 28672
   const bytes = Buffer.byteLength(CLAUDE, 'utf8')
   assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
 })
@@ -75,6 +81,47 @@ test('contract tokens present in the canonical skill', () => {
       assert.ok(body.includes(token), `missing token: ${token}`)
     }
   }
+})
+
+test('passing greens require settled child chat before merge eligibility', () => {
+  assert.match(
+    CLAUDE,
+    /GREEN_DRAFT or READY_FOR_REVIEW \+ DisplayStatus Passing \+ chat SETTLED/,
+    'passing greens must require a settled child chat',
+  )
+  assert.match(
+    CLAUDE,
+    /Passing but chat still WORKING\/QUESTION\/LIMITED[^\n]*hold/i,
+    'unsettled passing children must be held, not merged or repaired',
+  )
+  assert.match(
+    CLAUDE,
+    /treat the\s+child as \*\*not settled\*\* and re-poll; never assume settled on an unreadable status/,
+    'unreadable chat status must block merge eligibility',
+  )
+  assert.match(
+    CLAUDE,
+    /STOPPED \+\s+missing `last_agent_activity_at` = settled/,
+    'stopped chats with no activity timestamp must not be held until wall-clock failure',
+  )
+  assert.doesNotMatch(
+    CLAUDE,
+    /GREEN_DRAFT or READY_FOR_REVIEW \+ DisplayStatus Passing\*\*?[^+\n]*→ add to the\s+\*\*greens\*\*/,
+    'the old Passing-only green transition must not return',
+  )
+})
+
+test('non-claude runners never fall back to merging without settlement', () => {
+  assert.doesNotMatch(
+    CLAUDE,
+    /still schedules\/merges greens/,
+    'runner fallback must not claim it can merge greens without chat settlement',
+  )
+  assert.match(
+    CLAUDE,
+    /runner without\s+readable chat status must\s+hold or fail-isolate/i,
+    'non-claude fallback must preserve the settled-green gate',
+  )
 })
 
 test('default agent is claude', () => {

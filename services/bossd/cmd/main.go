@@ -97,6 +97,123 @@ type streamAccountLabeler interface {
 	Label(context.Context, string) (string, error)
 }
 
+type usageSnapshotProber interface {
+	ProbeUsageSnapshot(context.Context, string) (models.UsageSnapshot, error)
+}
+
+type usageSnapshotRecorder interface {
+	RecordUsageProbe(context.Context, string, models.UsageSnapshot) error
+}
+
+func probeUsageSnapshotForRotation(
+	ctx context.Context,
+	logger zerolog.Logger,
+	prober any,
+	recorder usageSnapshotRecorder,
+	accountID string,
+) (models.UsageSnapshot, bool) {
+	if accountID == "" || recorder == nil {
+		return models.UsageSnapshot{}, false
+	}
+	usageProbe, ok := prober.(usageSnapshotProber)
+	if !ok {
+		return models.UsageSnapshot{}, false
+	}
+	snap, err := usageProbe.ProbeUsageSnapshot(ctx, accountID)
+	if err != nil {
+		logger.Warn().Err(err).Str("account_id", accountID).
+			Msg("auto-rotate: usage probe failed")
+		return models.UsageSnapshot{}, false
+	}
+	if snap.FetchedAt == nil {
+		return models.UsageSnapshot{}, false
+	}
+	if err := recorder.RecordUsageProbe(ctx, accountID, snap); err != nil {
+		logger.Warn().Err(err).Str("account_id", accountID).
+			Msg("auto-rotate: usage probe cache write failed")
+	}
+	return snap, true
+}
+
+func cacheUsageProbeForRotationSignal(
+	ctx context.Context,
+	logger zerolog.Logger,
+	prober any,
+	recorder usageSnapshotRecorder,
+	sig rotation.Signal,
+) rotation.Signal {
+	if sig.Kind != rotation.UsageLimited {
+		return sig
+	}
+	sig.CandidateProbeRequired = true
+	sig.Utilization = probeCandidateUtilizationForRotationSignal(ctx, logger, prober, recorder, sig)
+	return sig
+}
+
+type accountListStore interface {
+	List(context.Context) ([]*models.Account, error)
+}
+
+func probeCandidateUtilizationForRotationSignal(
+	ctx context.Context,
+	logger zerolog.Logger,
+	prober any,
+	recorder usageSnapshotRecorder,
+	sig rotation.Signal,
+) map[string]float64 {
+	if sig.Provider == "" {
+		return nil
+	}
+	store, ok := recorder.(accountListStore)
+	if !ok {
+		return nil
+	}
+	accounts, err := store.List(ctx)
+	if err != nil {
+		logger.Warn().Err(err).Str("provider", sig.Provider).
+			Msg("auto-rotate: candidate account list failed")
+		return nil
+	}
+	now := time.Now()
+	utilization := map[string]float64{}
+	sawCandidate := false
+	for _, acct := range accounts {
+		if acct == nil || string(acct.Provider) != sig.Provider || acct.ID == sig.CappedAccountID {
+			continue
+		}
+		if acct.Status != models.AccountStatusActive || acct.Health != models.AccountHealthOK {
+			continue
+		}
+		if acct.CooldownUntil != nil && acct.CooldownUntil.After(now) {
+			continue
+		}
+		sawCandidate = true
+		snap, ok := probeUsageSnapshotForRotation(ctx, logger, prober, recorder, acct.ID)
+		if !ok {
+			continue
+		}
+		if rotation.UsageSnapshotProbeUnavailable(snap) {
+			continue
+		}
+		utilization[acct.ID] = usageSnapshotUtilization(snap)
+	}
+	if !sawCandidate {
+		return nil
+	}
+	return utilization
+}
+
+func usageSnapshotUtilization(snap models.UsageSnapshot) float64 {
+	util := snap.Util5h
+	if snap.Util7d > util {
+		util = snap.Util7d
+	}
+	if rotation.UsageSnapshotRateLimited(snap) && util < 1 {
+		return 1
+	}
+	return util
+}
+
 type streamSessionHydrator struct {
 	agentChats        db.AgentChatStore
 	rawSessions       db.SessionStore
@@ -850,6 +967,7 @@ func run(opts runOpts) error {
 	// rotation all collapse to account 0 (no per-account env). Wired into the
 	// server (creation-time default policy) and both spawn seams below.
 	accountMaterializer := accountwiring.NewMaterializer(agentClients, accounts, accountCreds, log.Logger)
+	accountUsageProbe, _ := accountMaterializer.(server.UsageProbeRecorder)
 	accountResolver := account.NewResolver(
 		accountwiring.NewRegistry(accounts),
 		accountMaterializer,
@@ -901,6 +1019,13 @@ func run(opts runOpts) error {
 	// swap through the BOS-171 SwitchAccount primitive (Auto path). All seams are
 	// fail-safe — any error leaves the chat LIMITED. Config is re-read live so the
 	// opt-out applies without a daemon restart.
+	rateLimitProbe := func(ctx context.Context, accountID string) (models.UsageSnapshot, error) {
+		snap, ok := probeUsageSnapshotForRotation(ctx, log.Logger, accountMaterializer, accounts, accountID)
+		if !ok {
+			return models.UsageSnapshot{}, nil
+		}
+		return snap, nil
+	}
 	chatRotator = rotation.NewChatRotator(rotation.ChatRotatorDeps{
 		Logger:   log.Logger,
 		Recorder: rotationRecorder,
@@ -923,7 +1048,11 @@ func run(opts runOpts) error {
 			if err != nil {
 				return rotation.ChatContext{}, err
 			}
-			return rotation.ChatContext{SessionID: sess.ID, RepoID: sess.RepoID, Provider: sess.AgentName}, nil
+			accountID := ""
+			if sess.AccountID != nil {
+				accountID = *sess.AccountID
+			}
+			return rotation.ChatContext{SessionID: sess.ID, RepoID: sess.RepoID, Provider: sess.AgentName, AccountID: accountID}, nil
 		},
 		CurrentStatus: func(agentSessionID string) bossanovav1.ChatStatus {
 			if e := chatStatusTracker.Get(agentSessionID); e != nil {
@@ -931,34 +1060,29 @@ func run(opts runOpts) error {
 			}
 			return bossanovav1.ChatStatus_CHAT_STATUS_UNSPECIFIED
 		},
+		RateLimitProbe: rateLimitProbe,
 		// Decide adapter: build the BOS-173 engine's real Signal (the currently
 		// bound account is the "capped" account; capability is probed live via the
 		// provider plugin) and map its Outcome onto rotation.Decision.
 		Decide: func(ctx context.Context, req rotation.DecideRequest) (rotation.Decision, error) {
-			sess, err := sessions.Get(ctx, req.SessionID)
-			if err != nil {
-				return rotation.Decision{}, err
-			}
-			capped := ""
-			if sess.AccountID != nil {
-				capped = *sess.AccountID
-			}
 			capable, err := accountMaterializer.SupportsRotation(ctx, req.Provider)
 			if err != nil {
 				return rotation.Decision{}, err
 			}
-			var resetPtr *time.Time
-			if !req.ResetAt.IsZero() {
-				r := req.ResetAt
-				resetPtr = &r
-			}
-			out, err := rotationEngine.Decide(ctx, rotation.Signal{
+			sig := cacheUsageProbeForRotationSignal(ctx, log.Logger, accountMaterializer, accounts, rotation.Signal{
 				Provider:        req.Provider,
-				CappedAccountID: capped,
+				CappedAccountID: req.AccountID,
 				Kind:            rotation.UsageLimited,
-				ResetAt:         resetPtr,
+				ResetAt: func() *time.Time {
+					if req.ResetAt.IsZero() {
+						return nil
+					}
+					r := req.ResetAt
+					return &r
+				}(),
 				RotationCapable: capable,
 			})
+			out, err := rotationEngine.Decide(ctx, sig)
 			if err != nil {
 				return rotation.Decision{}, err
 			}
@@ -1053,7 +1177,10 @@ func run(opts runOpts) error {
 	}
 	lifecycle.SetRotationConfig(settings.Rotation)
 	lifecycle.SetRotationConfigLoader(rotationConfigLoader)
-	lifecycle.SetRotationDecider(rotationEngine.Decide)
+	lifecycle.SetRateLimitProbe(rateLimitProbe)
+	lifecycle.SetRotationDecider(func(ctx context.Context, sig rotation.Signal) (rotation.Outcome, error) {
+		return rotationEngine.Decide(ctx, cacheUsageProbeForRotationSignal(ctx, log.Logger, accountMaterializer, accounts, sig))
+	})
 	lifecycle.SetRotationRecorder(rotationRecorder)
 	lifecycle.SetAccountMaterializer(accountwiring.NewLifecycleMaterializer(accountMaterializer))
 	lifecycle.SetRotationBinding(accountwiring.NewRotationBindingResolver(accountwiring.NewRegistry(accounts), accountMaterializer))
@@ -1145,12 +1272,18 @@ func run(opts runOpts) error {
 				return fmt.Errorf("marshal repair settings: %w", err)
 			}
 			log.Info().Str("plugin_name", infoResp.Name).Msg("auto-starting repair plugin")
-			if _, err := svc.StartWorkflow(ctx, &bossanovav1.StartWorkflowRequest{
+			startReq := &bossanovav1.StartWorkflowRequest{
 				ConfigJson: string(repairCfgJSON),
-			}); err != nil {
+			}
+			if _, err := svc.StartWorkflow(ctx, startReq); err != nil {
 				cancel()
 				return fmt.Errorf("auto-start repair plugin: %w", err)
 			}
+			// Record the request so the plugin host can replay StartWorkflow if
+			// the health loop respawns this plugin's subprocess — otherwise a
+			// reborn repair plugin boots with its workflow stopped and silently
+			// drops every NotifyStatusChange until the daemon restarts.
+			pluginHost.RegisterWorkflowStart(infoResp.Name, startReq)
 			log.Info().
 				Str("plugin_name", infoResp.Name).
 				Int("cooldown_minutes", settings.Repair.CooldownMinutes).
@@ -1670,6 +1803,7 @@ func run(opts runOpts) error {
 		RotationConfig:     rotationConfigLoader,
 		AccountCredentials: accountCreds,
 		AccountSmokeRunner: accountSmoke,
+		UsageProbe:         accountUsageProbe,
 		CheckSnapshots:     checkSnapshots,
 		RotationEvents:     rotationEvents,
 		CronScheduler:      cronScheduler,

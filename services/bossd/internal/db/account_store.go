@@ -197,9 +197,58 @@ func (s *SQLiteAccountStore) RecordTestResult(ctx context.Context, id string, ok
 	return nil
 }
 
+// RecordUsageProbe overwrites only the cached usage-snapshot metadata columns
+// for a row. It never stores credential material. Returns sql.ErrNoRows when
+// the row does not exist.
+func (s *SQLiteAccountStore) RecordUsageProbe(ctx context.Context, id string, snap models.UsageSnapshot) error {
+	now := sqlutil.TimeNow()
+	fetchedAt := snap.FetchedAt
+	if fetchedAt == nil {
+		t := sqlutil.ParseTime(now)
+		fetchedAt = &t
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE accounts
+		 SET usage_util_5h = ?,
+		     usage_util_7d = ?,
+		     usage_reset_5h = ?,
+		     usage_reset_7d = ?,
+		     usage_status = ?,
+		     usage_plan_tier = ?,
+		     usage_fetched_at = ?,
+		     updated_at = ?
+		 WHERE id = ?`,
+		snap.Util5h,
+		snap.Util7d,
+		formatNullableTime(snap.Reset5h),
+		formatNullableTime(snap.Reset7d),
+		snap.Status,
+		snap.PlanTier,
+		fetchedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
+		now,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("record account usage probe: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func formatNullableTime(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
 const accountSelectSQL = `SELECT id, provider, label, account_email, status, priority, health,
 	cooldown_until, last_used_at, tier, allowed_models,
 	last_test_ok_at, last_test_error,
+	usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d,
+	usage_status, usage_plan_tier, usage_fetched_at,
 	created_at, updated_at
 	FROM accounts`
 
@@ -220,11 +269,16 @@ func scanAccount(s sqlutil.Scanner) (*models.Account, error) {
 	var a models.Account
 	var providerStr, statusStr, healthStr, allowedModelsStr string
 	var cooldownUntil, lastUsedAt, lastTestOkAt sql.NullString
+	var usageReset5h, usageReset7d, usageFetchedAt sql.NullString
+	var usageStatus, usagePlanTier string
+	var usageUtil5h, usageUtil7d float64
 	var createdAt, updatedAt string
 	err := s.Scan(
 		&a.ID, &providerStr, &a.Label, &a.AccountEmail, &statusStr, &a.Priority, &healthStr,
 		&cooldownUntil, &lastUsedAt, &a.Tier, &allowedModelsStr,
 		&lastTestOkAt, &a.LastTestError,
+		&usageUtil5h, &usageUtil7d, &usageReset5h, &usageReset7d,
+		&usageStatus, &usagePlanTier, &usageFetchedAt,
 		&createdAt, &updatedAt,
 	)
 	if err != nil {
@@ -250,6 +304,31 @@ func scanAccount(s sqlutil.Scanner) (*models.Account, error) {
 		t := sqlutil.ParseTime(lastTestOkAt.String)
 		if !t.IsZero() {
 			a.LastTestOkAt = &t
+		}
+	}
+	if usageFetchedAt.Valid {
+		fetchedAt := sqlutil.ParseTime(usageFetchedAt.String)
+		if !fetchedAt.IsZero() {
+			usage := &models.UsageSnapshot{
+				Util5h:    usageUtil5h,
+				Util7d:    usageUtil7d,
+				Status:    usageStatus,
+				PlanTier:  usagePlanTier,
+				FetchedAt: &fetchedAt,
+			}
+			if usageReset5h.Valid {
+				t := sqlutil.ParseTime(usageReset5h.String)
+				if !t.IsZero() {
+					usage.Reset5h = &t
+				}
+			}
+			if usageReset7d.Valid {
+				t := sqlutil.ParseTime(usageReset7d.String)
+				if !t.IsZero() {
+					usage.Reset7d = &t
+				}
+			}
+			a.Usage = usage
 		}
 	}
 	a.CreatedAt = sqlutil.ParseTime(createdAt)

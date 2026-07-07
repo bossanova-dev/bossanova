@@ -2,8 +2,6 @@ package accountwiring
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/agenterr"
@@ -134,10 +133,7 @@ func (r *SmokeRunner) Smoke(ctx context.Context, accountID, provider string, _ [
 	}
 	defer func() { _ = os.RemoveAll(logDir) }()
 
-	sessionID, err := smokeSessionID()
-	if err != nil {
-		return err
-	}
+	sessionID := smokeSessionID()
 	logPath := filepath.Join(logDir, sessionID+".log")
 	if _, err := client.StartRun(ctx, &bossanovav1.StartAgentRunRequest{
 		WorkDir:   workDir,
@@ -258,12 +254,8 @@ func smokeDiagnostic(logPath string) string {
 	return diag
 }
 
-func smokeSessionID() (string, error) {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("generate smoke session id: %w", err)
-	}
-	return "account-smoke-" + hex.EncodeToString(b[:]), nil
+func smokeSessionID() string {
+	return uuid.NewString()
 }
 
 type credentialStoreAdapter struct {

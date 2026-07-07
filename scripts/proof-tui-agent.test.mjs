@@ -184,6 +184,36 @@ test('SYSTEM_PROMPT: requires a narration sentence alongside each action (captio
   assert.match(mod.SYSTEM_PROMPT, /never call those tools without a leading narration/i)
 })
 
+test('doc-drift: TUI_CONTEXT_BLOCK and send_keys enumerate the full navigation key vocabulary (BOS-213)', async () => {
+  const mod = await import('./proof-tui-agent.mjs')
+  // The Go bridge (tuidriver.KeyBytes) accepts these names; the model only
+  // knows to use them if the context block and tool description name them.
+  const keyNames = [
+    'up',
+    'down',
+    'left',
+    'right',
+    'tab',
+    'shift+tab',
+    'pgup',
+    'pgdn',
+    'home',
+    'end',
+    'f1',
+  ]
+  for (const key of keyNames) {
+    assert.ok(mod.TUI_CONTEXT_BLOCK.includes(key), `TUI_CONTEXT_BLOCK should mention key "${key}"`)
+  }
+  const sendKeys = mod.TOOL_DEFS.find((t) => t.name === 'send_keys')
+  assert.ok(sendKeys, 'send_keys tool must exist')
+  for (const key of keyNames) {
+    assert.ok(
+      sendKeys.description.includes(key),
+      `send_keys description should mention key "${key}"`,
+    )
+  }
+})
+
 test('loadAnthropic: missing SDK rejects with install hint', async () => {
   const { loadAnthropic } = await import('./proof-tui-agent.mjs')
 
@@ -1092,6 +1122,44 @@ test('bridgeSpawnArgs: forwards boss binary when bossBin is set', async () => {
     '--boss-bin',
     '/tmp/boss-e2e',
   ])
+})
+
+test('settleExtra: forwards valid integer settle overrides', async () => {
+  const { settleExtra } = await import('./proof-tui-agent.mjs')
+  assert.deepEqual(settleExtra({ settleMs: 120, hardCapMs: 900 }), {
+    settleMs: 120,
+    hardCapMs: 900,
+  })
+})
+
+test('settleExtra: absent overrides ⇒ empty object (default behavior)', async () => {
+  const { settleExtra } = await import('./proof-tui-agent.mjs')
+  assert.deepEqual(settleExtra(), {})
+  assert.deepEqual(settleExtra({}), {})
+})
+
+test('settleExtra: drops fractional overrides (json.Unmarshal into int64 would fail)', async () => {
+  const { settleExtra } = await import('./proof-tui-agent.mjs')
+  assert.deepEqual(settleExtra({ settleMs: 10.5, hardCapMs: 900.25 }), {})
+  // A valid sibling still passes while the fractional one is dropped.
+  assert.deepEqual(settleExtra({ settleMs: 10.5, hardCapMs: 900 }), { hardCapMs: 900 })
+})
+
+test('settleExtra: drops oversized integers that overflow int64', async () => {
+  const { settleExtra } = await import('./proof-tui-agent.mjs')
+  // Number.isInteger(1e30) is true, but 1e30 overflows int64 and would fail
+  // json.Unmarshal on the Go bridge before resolveSettle could clamp it.
+  assert.deepEqual(settleExtra({ settleMs: 1e30, hardCapMs: 1e30 }), {})
+  assert.deepEqual(settleExtra({ settleMs: Number.MAX_VALUE }), {})
+  // Just past the safe-integer ceiling is also dropped; the valid sibling stays.
+  assert.deepEqual(settleExtra({ settleMs: Number.MAX_SAFE_INTEGER + 1, hardCapMs: 900 }), {
+    hardCapMs: 900,
+  })
+})
+
+test('settleExtra: drops non-finite overrides', async () => {
+  const { settleExtra } = await import('./proof-tui-agent.mjs')
+  assert.deepEqual(settleExtra({ settleMs: Infinity, hardCapMs: Number.NaN }), {})
 })
 
 // Write a tiny fake-bridge executable once; all bridge tests share it.

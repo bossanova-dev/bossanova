@@ -351,11 +351,12 @@ func (s *Server) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgn
 }
 
 func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) { //nolint:unparam // interface implementation
-	title, explicit := chatTitle(req.WorkDir, req.SessionId)
 	return &bossanovav1.GetChatTitleResponse{
 		Supported: true,
-		Title:     title,
-		Explicit:  explicit,
+		Title:     chatTitle(req.WorkDir, req.SessionId),
+		// Codex session_index.jsonl records auto-generated names and user
+		// renames the same way, so index-derived titles are not authoritative.
+		Explicit: false,
 	}, nil
 }
 

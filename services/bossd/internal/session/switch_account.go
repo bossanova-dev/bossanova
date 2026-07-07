@@ -405,7 +405,7 @@ func coolingUntilText(until *time.Time) string {
 // sessionAccountBinding adapts db.SessionStore to the accountBinding seam:
 // SessionAccount reads Session.AccountID; BindSessionAccount persists the
 // rebind via UpdateSessionParams.AccountID (nullable-string double pointer,
-// *nil ⇒ system-default account 0).
+// present-empty ⇒ system-default account 0).
 type sessionAccountBinding struct {
 	sessions db.SessionStore
 }
@@ -422,10 +422,7 @@ func (b sessionAccountBinding) SessionAccount(ctx context.Context, sessionID str
 }
 
 func (b sessionAccountBinding) BindSessionAccount(ctx context.Context, sessionID, accountID string) error {
-	var acctPtr *string
-	if accountID != "" {
-		acctPtr = &accountID
-	}
+	acctPtr := &accountID
 	_, err := b.sessions.Update(ctx, sessionID, db.UpdateSessionParams{AccountID: &acctPtr})
 	return err
 }

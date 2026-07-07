@@ -1046,7 +1046,7 @@ func (m ChatPickerModel) loadSwitchAccounts(provider string) tea.Cmd {
 	c := m.client
 	ctx := m.ctx
 	return func() tea.Msg {
-		accounts, err := c.ListAccounts(ctx, provider)
+		accounts, err := c.ListAccounts(ctx, provider, false)
 		return switchAccountsLoadedMsg{accounts: accounts, err: err}
 	}
 }

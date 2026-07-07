@@ -3902,8 +3902,12 @@ type GetChatTranscriptResponse struct {
 	Messages           []*ChatMessage         `protobuf:"bytes,1,rep,name=messages,proto3" json:"messages,omitempty"`
 	FinalAssistantText string                 `protobuf:"bytes,2,opt,name=final_assistant_text,json=finalAssistantText,proto3" json:"final_assistant_text,omitempty"`
 	Exists             bool                   `protobuf:"varint,3,opt,name=exists,proto3" json:"exists,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// reason explains a miss (exists=false): why the transcript could not be
+	// read (e.g. codex rollout not yet discovered, or not found on disk). Empty
+	// on a hit. Never a bare {} on a genuine miss.
+	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetChatTranscriptResponse) Reset() {
@@ -3955,6 +3959,13 @@ func (x *GetChatTranscriptResponse) GetExists() bool {
 		return x.Exists
 	}
 	return false
+}
+
+func (x *GetChatTranscriptResponse) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
 }
 
 type SendChatMessageRequest struct {
@@ -5360,7 +5371,9 @@ func (x *RunCronJobNowResponse) GetSkippedReason() string {
 type ListAccountsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Optional provider filter ("claude" | "codex"). Empty returns all accounts.
-	Provider      *string `protobuf:"bytes,1,opt,name=provider,proto3,oneof" json:"provider,omitempty"`
+	Provider *string `protobuf:"bytes,1,opt,name=provider,proto3,oneof" json:"provider,omitempty"`
+	// Force a live usage probe of each returned account before responding.
+	Refresh       *bool `protobuf:"varint,2,opt,name=refresh,proto3,oneof" json:"refresh,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5400,6 +5413,13 @@ func (x *ListAccountsRequest) GetProvider() string {
 		return *x.Provider
 	}
 	return ""
+}
+
+func (x *ListAccountsRequest) GetRefresh() bool {
+	if x != nil && x.Refresh != nil {
+		return *x.Refresh
+	}
+	return false
 }
 
 type ListAccountsResponse struct {
@@ -6997,11 +7017,12 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12!\n" +
-	"\fmax_messages\x18\x03 \x01(\x05R\vmaxMessages\"\x9c\x01\n" +
+	"\fmax_messages\x18\x03 \x01(\x05R\vmaxMessages\"\xb4\x01\n" +
 	"\x19GetChatTranscriptResponse\x125\n" +
 	"\bmessages\x18\x01 \x03(\v2\x19.bossanova.v1.ChatMessageR\bmessages\x120\n" +
 	"\x14final_assistant_text\x18\x02 \x01(\tR\x12finalAssistantText\x12\x16\n" +
-	"\x06exists\x18\x03 \x01(\bR\x06exists\"\x9a\x01\n" +
+	"\x06exists\x18\x03 \x01(\bR\x06exists\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\"\x9a\x01\n" +
 	"\x16SendChatMessageRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12$\n" +
@@ -7102,10 +7123,13 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\asession\x18\x01 \x01(\v2\x15.bossanova.v1.SessionH\x00R\asession\x88\x01\x01\x12%\n" +
 	"\x0eskipped_reason\x18\x02 \x01(\tR\rskippedReasonB\n" +
 	"\n" +
-	"\b_session\"C\n" +
+	"\b_session\"n\n" +
 	"\x13ListAccountsRequest\x12\x1f\n" +
-	"\bprovider\x18\x01 \x01(\tH\x00R\bprovider\x88\x01\x01B\v\n" +
-	"\t_provider\"I\n" +
+	"\bprovider\x18\x01 \x01(\tH\x00R\bprovider\x88\x01\x01\x12\x1d\n" +
+	"\arefresh\x18\x02 \x01(\bH\x01R\arefresh\x88\x01\x01B\v\n" +
+	"\t_providerB\n" +
+	"\n" +
+	"\b_refresh\"I\n" +
 	"\x14ListAccountsResponse\x121\n" +
 	"\baccounts\x18\x01 \x03(\v2\x15.bossanova.v1.AccountR\baccounts\"\x97\x01\n" +
 	"\x11AddAccountRequest\x12\x1a\n" +

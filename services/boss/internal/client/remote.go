@@ -294,6 +294,7 @@ func (c *RemoteClient) GetChatTranscript(ctx context.Context, req *pb.GetChatTra
 		Messages:           resp.Msg.GetMessages(),
 		FinalAssistantText: resp.Msg.GetFinalAssistantText(),
 		Exists:             resp.Msg.GetExists(),
+		Reason:             resp.Msg.GetReason(),
 	}, nil
 }
 
@@ -425,7 +426,7 @@ func (c *RemoteClient) RunCronJobNow(_ context.Context, _ string) (*pb.RunCronJo
 
 // --- Accounts (local only) ---
 
-func (c *RemoteClient) ListAccounts(_ context.Context, _ string) ([]*pb.Account, error) {
+func (c *RemoteClient) ListAccounts(_ context.Context, _ string, _ bool) ([]*pb.Account, error) {
 	return nil, errLocalOnly("ListAccounts")
 }
 

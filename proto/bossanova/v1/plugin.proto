@@ -469,6 +469,15 @@ service AgentRunnerService {
   // limited=false. reset_at is absent when no reset time is parseable.
   rpc DetectUsageLimit(DetectUsageLimitRequest) returns (DetectUsageLimitResponse);
 
+  // ProbeRateLimit authoritatively reports the target account's usage-cap
+  // posture by querying the provider directly (claude: GET /api/oauth/usage;
+  // codex: the rollout JSONL under CODEX_HOME) rather than scraping the TUI.
+  // credential_env carries that account's materialized env overlay so bossd can
+  // probe ANY account on demand; it is secret-bearing and NEVER logged.
+  // Providers without a probe return status=RATE_LIMIT_PLAN_STATUS_UNSUPPORTED,
+  // limited=false (fail-safe).
+  rpc ProbeRateLimit(ProbeRateLimitRequest) returns (ProbeRateLimitResponse);
+
   // TranscriptExists reports whether a non-empty transcript file is present
   // on disk for (work_dir, agent_session_id). Used by wake-up logic to
   // choose between resume and fresh-start argv.
@@ -681,6 +690,39 @@ message DetectUsageLimitRequest {
 message DetectUsageLimitResponse {
   bool limited = 1;
   optional google.protobuf.Timestamp reset_at = 2;
+}
+
+// RateLimitPlanStatus is the normalized usage-cap posture for one account,
+// derived by the owning plugin's probe. UNSUPPORTED means the provider exposes
+// no probe (fail-safe default for agents without ProbeRateLimit logic).
+enum RateLimitPlanStatus {
+  RATE_LIMIT_PLAN_STATUS_UNSPECIFIED = 0;
+  RATE_LIMIT_PLAN_STATUS_UNSUPPORTED = 1;
+  RATE_LIMIT_PLAN_STATUS_ACTIVE = 2;
+  RATE_LIMIT_PLAN_STATUS_WARNING = 3;
+  RATE_LIMIT_PLAN_STATUS_RATE_LIMITED = 4;
+}
+
+message ProbeRateLimitRequest {
+  // Materialized credential env overlay for the TARGET account (e.g.
+  // CLAUDE_CODE_OAUTH_TOKEN=<token> for claude, CODEX_HOME=<dir> for codex).
+  // Secret-bearing; NEVER logged.
+  map<string, string> credential_env = 1;
+}
+
+// RateLimitStatus is the normalized probe result, reused by B/C/D.
+message RateLimitStatus {
+  bool limited = 1;
+  RateLimitPlanStatus status = 2;
+  double util_5h = 3; // fraction 0..1 of the 5-hour window consumed
+  optional google.protobuf.Timestamp reset_5h = 4;
+  double util_7d = 5; // fraction 0..1 of the 7-day window consumed
+  optional google.protobuf.Timestamp reset_7d = 6;
+  string plan_tier = 7;
+}
+
+message ProbeRateLimitResponse {
+  RateLimitStatus status = 1;
 }
 
 message HasWorkingIndicatorRequest {

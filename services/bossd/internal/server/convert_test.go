@@ -94,6 +94,75 @@ func TestSuppressStaleConflictAttention(t *testing.T) {
 	}
 }
 
+func TestAccountToProto_UsageSnapshotRoundTrip(t *testing.T) {
+	reset5h := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Millisecond)
+	reset7d := time.Now().Add(7 * 24 * time.Hour).UTC().Truncate(time.Millisecond)
+	fetchedAt := time.Now().UTC().Truncate(time.Millisecond)
+	account := &models.Account{
+		ID:            "acct-usage",
+		Provider:      models.AccountProviderClaude,
+		Label:         "work",
+		Status:        models.AccountStatusActive,
+		Health:        models.AccountHealthOK,
+		CreatedAt:     fetchedAt,
+		UpdatedAt:     fetchedAt,
+		LastTestError: "",
+		Usage: &models.UsageSnapshot{
+			Util5h:    0.25,
+			Util7d:    0.75,
+			Reset5h:   &reset5h,
+			Reset7d:   &reset7d,
+			Status:    "warning",
+			PlanTier:  "max",
+			FetchedAt: &fetchedAt,
+		},
+	}
+
+	got := accountToProto(account)
+	if got.Usage == nil {
+		t.Fatal("Usage = nil, want populated")
+	}
+	wire, err := goproto.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.Account
+	if err := goproto.Unmarshal(wire, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.GetUsage().GetUtil_5H() != account.Usage.Util5h || decoded.GetUsage().GetUtil_7D() != account.Usage.Util7d {
+		t.Errorf("utils = %v/%v, want %v/%v", decoded.GetUsage().GetUtil_5H(), decoded.GetUsage().GetUtil_7D(), account.Usage.Util5h, account.Usage.Util7d)
+	}
+	if decoded.GetUsage().GetStatus() != account.Usage.Status || decoded.GetUsage().GetPlanTier() != account.Usage.PlanTier {
+		t.Errorf("status/plan = %q/%q, want %q/%q", decoded.GetUsage().GetStatus(), decoded.GetUsage().GetPlanTier(), account.Usage.Status, account.Usage.PlanTier)
+	}
+	if !decoded.GetUsage().GetReset_5H().AsTime().Equal(reset5h) {
+		t.Errorf("reset_5h = %v, want %v", decoded.GetUsage().GetReset_5H().AsTime(), reset5h)
+	}
+	if !decoded.GetUsage().GetReset_7D().AsTime().Equal(reset7d) {
+		t.Errorf("reset_7d = %v, want %v", decoded.GetUsage().GetReset_7D().AsTime(), reset7d)
+	}
+	if !decoded.GetUsage().GetFetchedAt().AsTime().Equal(fetchedAt) {
+		t.Errorf("fetched_at = %v, want %v", decoded.GetUsage().GetFetchedAt().AsTime(), fetchedAt)
+	}
+}
+
+func TestAccountToProto_UsageSnapshotNilSafe(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	got := accountToProto(&models.Account{
+		ID:        "acct-no-usage",
+		Provider:  models.AccountProviderCodex,
+		Label:     "work",
+		Status:    models.AccountStatusActive,
+		Health:    models.AccountHealthOK,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if got.Usage != nil {
+		t.Fatalf("Usage = %#v, want nil", got.Usage)
+	}
+}
+
 func TestSuppressStaleConflictAttentionKeepsCurrentConflict(t *testing.T) {
 	p := &pb.Session{
 		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CONFLICT,

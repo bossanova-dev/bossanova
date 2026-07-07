@@ -120,6 +120,10 @@ func (f *repairFakeAgentClient) DetectUsageLimit(context.Context, *bossanovav1.D
 	return &bossanovav1.DetectUsageLimitResponse{}, nil
 }
 
+func (f *repairFakeAgentClient) ProbeRateLimit(context.Context, *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) {
+	return &bossanovav1.ProbeRateLimitResponse{}, nil
+}
+
 func (f *repairFakeAgentClient) HasWorkingIndicator(context.Context, *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
 	return &bossanovav1.HasWorkingIndicatorResponse{}, nil
 }
@@ -316,6 +320,10 @@ func (f *wrappedRepairFakeAgentClient) HasQuestionPrompt(ctx context.Context, re
 
 func (f *wrappedRepairFakeAgentClient) DetectUsageLimit(ctx context.Context, req *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) {
 	return f.inner.DetectUsageLimit(ctx, req)
+}
+
+func (f *wrappedRepairFakeAgentClient) ProbeRateLimit(ctx context.Context, req *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) {
+	return f.inner.ProbeRateLimit(ctx, req)
 }
 
 func (f *wrappedRepairFakeAgentClient) HasWorkingIndicator(ctx context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {

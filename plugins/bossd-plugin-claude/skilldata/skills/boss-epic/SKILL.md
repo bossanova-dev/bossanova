@@ -51,10 +51,10 @@ Workspace facts (do not re-discover):
   name: `Todo` (eligible queue), `In Review`, `Done`, `Canceled`.
 - boss MCP tools used: `create_session` (with `tmux_unattended`+`model` — the
   durable tmux-hosted run path), `get_session`, `list_sessions`,
-  `list_check_snapshots`, `merge_session`, `resolve_context`, `list_agents`,
-  and for repair rounds `record_chat` + `send_chat_message` (start a fresh
-  chat in the ticket's own session — see Phase 3c). `get_session_statuses` is
-  optional extra signal on `claude` sessions.
+  `list_check_snapshots`, `get_chat_statuses`, `merge_session`,
+  `resolve_context`, `list_agents`, and for repair rounds `record_chat` +
+  `send_chat_message` (start a fresh chat in the ticket's own session — see
+  Phase 3c). `get_session_statuses` is session-aggregate only.
 - Session-title convention (the resume anchor): `boss-epic BOS-NN: <ticket title>`.
 
 ## Adapter seams (the pluggable boundary)
@@ -172,9 +172,10 @@ assumeCleared, assumeClearedAndMerge}`.
    attach-safe); repair runs in a fresh chat inside the ticket's session
    (Phase 3c). QUESTION stalls largely disappear: an unattended
    `/boss-implement` self-decides under `BOSS_CRON` and, if truly stuck, ends
-   BLOCKED (fail-isolated). Non-`claude` agents work the same way; chat
-   introspection is thinner for codex-exec, so lean on `get_session` +
-   `list_check_snapshots`.
+   BLOCKED (fail-isolated). Non-`claude` agents work the same way, but the
+   settled-green gate still applies: a runner without readable chat status must
+   hold or fail-isolate, never merge from `get_session` + `list_check_snapshots`
+   alone.
 
 `AskUserQuestion` is permitted **only** in Phase 0 and only when
 `BOSS_CRON` is unset (a manual invocation) — e.g. to confirm an ambiguous
@@ -322,21 +323,32 @@ per-ticket wall clock.
 
 ### 3b. Poll
 
-Every 2–5 minutes, for each in-flight ticket read `get_session` (session state —
-IMPLEMENTING / GREEN_DRAFT / READY_FOR_REVIEW / BLOCKED / MERGED; plus
-`last_agent_activity_at` — fresh = a live turn, stale = a hang — and an
-`AGENT_AUTH_FAILED` reason flagging login-death) and `list_check_snapshots`
-(DisplayStatus: Passing / Failing / Conflict / Rejected / Pending). This is a
-**poll-only** loop: the run finalizes its own PR, so the driver reads terminal
-state, not a live chat. (`get_session_statuses` = extra `claude` signal.)
+Every 2–5 minutes, for each in-flight ticket read `get_session` (state,
+`last_agent_activity_at`, `AGENT_AUTH_FAILED`), `list_check_snapshots`
+(DisplayStatus), and `get_chat_statuses {session_id}` for the entry whose
+`agent_session_id` equals the ticket's recorded `chat_id`. A green is trustworthy
+only once that tracked chat has **settled**: `IDLE` + stale
+`last_agent_activity_at`, or `STOPPED` + stale/missing activity.
+STOPPED + missing `last_agent_activity_at` = settled. `WORKING`/`QUESTION` =
+still running, and `LIMITED` = not merge-settled. If unreadable, treat the child as **not settled** and re-poll; never assume settled on an unreadable status.
+
+`get_session_statuses` is a session-level `get_session_statuses` aggregate across
+all chats; display/diagnostic only. Never gate green/settled on it: an older
+implementation chat can stay QUESTION/LIMITED while tracked repair chat is
+IDLE/STOPPED + passing.
 
 ### 3c. Transitions
 
-- **GREEN_DRAFT or READY_FOR_REVIEW + DisplayStatus Passing** → add to the
-  **greens** (merge queue). BOS-179 makes the daemon Block an empty/no-op run
-  (a bootstrap-only branch is **not** surfaced as green), so a green here
+- **GREEN_DRAFT or READY_FOR_REVIEW + DisplayStatus Passing + chat SETTLED**
+  (tracked `chat_id` is `IDLE` stale, or `STOPPED` stale/missing) → add to the
+  **greens** (merge queue). Do not add a ticket to `greens` while that chat is
+  WORKING, QUESTION, or LIMITED. BOS-179 makes the daemon Block an empty/no-op
+  run (a bootstrap-only branch is **not** surfaced as green), so a green here
   genuinely means real work landed — safe to merge.
-- **BLOCKED, or IDLE/STOPPED + Failing / Conflict / Rejected** → **repair
+- **Passing but chat still WORKING/QUESTION/LIMITED** → **hold**: neither green
+  nor repair; re-poll while the tracked `chat_id` finalizes review/comments.
+- **BLOCKED, or tracked `chat_id` status IDLE/STOPPED + Failing / Conflict /
+  Rejected** → **repair
   round**. First read `get_session` `repair_active` (BOS-234): if a repairer
   holds the lease (the auto-repair plugin is engaged), do **not** dispatch a
   second chat — two repairers on one worktree collide; count it as a round and
@@ -498,8 +510,9 @@ State and honor these explicitly:
 - Empty/no-op run → the daemon Blocks it (BOS-179), so the driver sees BLOCKED
   and fail-isolates — it never merges an empty PR.
 - Non-`claude` agent → runs unattended the same way (tmux-hosted run + repair in
-  a fresh chat); only live chat introspection is thinner, so lean on
-  `get_session` state + `list_check_snapshots`. It still schedules/merges greens.
+  a fresh chat), but the settled-green gate is mandatory. A runner without
+  readable chat status must hold or fail-isolate; it must not merge from
+  `get_session` state + `list_check_snapshots` alone.
 
 ## Setup (one-time, outside this skill)
 

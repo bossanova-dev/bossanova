@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/auth"
+	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/boss/internal/upgrade"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -1474,6 +1475,75 @@ func TestHomeUpgradeBannerRenders(t *testing.T) {
 	}
 }
 
+func TestHomeUpgradeKeyShowsBusySpinnerAndHidesActions(t *testing.T) {
+	oldRunUpgradeCmd := runUpgradeCmd
+	defer func() { runUpgradeCmd = oldRunUpgradeCmd }()
+
+	runUpgradeCmd = func(string) tea.Cmd {
+		return func() tea.Msg { return upgradeRunMsg{} }
+	}
+
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 100
+	h.loading = false
+	h.repoCount = 1
+	h.upgradeAvailable = true
+	h.upgradeCurrent = "v1.2.3"
+	h.upgradeLatest = "v1.2.4"
+
+	model, cmd := h.Update(tea.KeyPressMsg{Code: 'u', Text: "u"})
+	if cmd == nil {
+		t.Fatal("upgrade key returned nil command")
+	}
+	h = model.(HomeModel)
+
+	content := h.View().Content
+	if !strings.Contains(content, "Upgrading") {
+		t.Fatalf("expected upgrading spinner state, got: %s", content)
+	}
+	for _, hidden := range []string{"[u]pgrade [d]ismiss", "[n]ew session", "[q]uit"} {
+		if strings.Contains(content, hidden) {
+			t.Fatalf("expected %q hidden while upgrading, got: %s", hidden, content)
+		}
+	}
+
+	model, _ = h.Update(upgradeRunMsg{})
+	h = model.(HomeModel)
+	if h.upgrading {
+		t.Fatal("upgrading flag not cleared after upgrade result")
+	}
+}
+
+func TestHomeQuitAllowedWhileBusy(t *testing.T) {
+	tests := []struct {
+		name       string
+		upgrading  bool
+		restarting bool
+	}{
+		{name: "upgrading", upgrading: true},
+		{name: "restarting", restarting: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewHomeModel(nil, context.Background(), nil)
+			h.width = 100
+			h.loading = false
+			h.repoCount = 1
+			h.upgrading = tt.upgrading
+			h.restarting = tt.restarting
+
+			_, cmd := h.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+			if cmd == nil {
+				t.Fatal("q returned nil command while busy")
+			}
+			msg := cmd()
+			if _, ok := msg.(tea.QuitMsg); !ok {
+				t.Fatalf("q returned %T, want tea.QuitMsg", msg)
+			}
+		})
+	}
+}
+
 func TestHomeUpgradeAndCloudPromptsRenderAfterActionBar(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.SetCloudSubscription(&fakeHomeCloudAccessClient{}, "bossanova://billing/return", "bossanova://billing/cancel")
@@ -1542,6 +1612,276 @@ func TestHomeUpgradeAfterRestartTellsUserToRelaunch(t *testing.T) {
 	}
 }
 
+func TestHomeRestartKeyShowsBusySpinnerAndHidesActions(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 100
+	h.loading = false
+	h.repoCount = 1
+	h.restartPrompt = true
+
+	model, cmd := h.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	if cmd == nil {
+		t.Fatal("restart key returned nil command")
+	}
+	h = model.(HomeModel)
+
+	content := h.View().Content
+	if !strings.Contains(content, "Restarting daemon") {
+		t.Fatalf("expected restarting spinner state, got: %s", content)
+	}
+	for _, hidden := range []string{"[r]estart [esc] later", "[n]ew session", "[q]uit"} {
+		if strings.Contains(content, hidden) {
+			t.Fatalf("expected %q hidden while restarting, got: %s", hidden, content)
+		}
+	}
+
+	model, _ = h.Update(daemonRestartMsg{})
+	h = model.(HomeModel)
+	if h.restarting {
+		t.Fatal("restarting flag not cleared after restart result")
+	}
+}
+
+func TestHomeRestartIgnoresPollFailuresUntilSuccess(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 100
+	h.loading = false
+	h.repoCount = 1
+	h.sessions = []*pb.Session{{Id: "s1", Title: "work"}}
+	h.pollFailures = pollFailureThreshold - 1
+	h.restarting = true
+	h.buildTableRows()
+
+	for i := 0; i < pollFailureThreshold; i++ {
+		model, _ := h.Update(sessionListMsg{err: errors.New("dial unix: connection refused")})
+		h = model.(HomeModel)
+	}
+	if h.pollFailures != pollFailureThreshold-1 {
+		t.Fatalf("pollFailures = %d, want unchanged while restarting", h.pollFailures)
+	}
+	if h.err != nil {
+		t.Fatalf("err = %v, want nil while restarting", h.err)
+	}
+	if strings.Contains(h.View().Content, "Cannot connect to daemon") {
+		t.Fatal("daemon error screen shown while restarting")
+	}
+
+	model, _ := h.Update(daemonRestartMsg{})
+	h = model.(HomeModel)
+
+	if h.restarting {
+		t.Fatal("restarting flag not cleared after restart result")
+	}
+	if h.pollFailures != 0 {
+		t.Fatalf("pollFailures = %d, want 0 after successful restart", h.pollFailures)
+	}
+	if h.err != nil {
+		t.Fatalf("err not cleared after successful restart: %v", h.err)
+	}
+	if h.daemonRemediation != "" {
+		t.Fatalf("daemonRemediation = %q, want empty after successful restart", h.daemonRemediation)
+	}
+	if strings.Contains(h.View().Content, "Cannot connect to daemon") {
+		t.Fatal("daemon error screen still shown after successful restart")
+	}
+}
+
+func TestRestartDaemonCmdWaitsForSocketReachable(t *testing.T) {
+	oldRestartDaemon := restartDaemon
+	oldRunBossDaemonRestart := runBossDaemonRestart
+	oldDefaultSocketPath := defaultSocketPath
+	oldSocketReachable := daemonSocketReachable
+	oldDaemonGetStatus := daemonGetStatus
+	oldPollInterval := restartPollInterval
+	oldWaitTimeout := restartWaitTimeout
+	defer func() {
+		restartDaemon = oldRestartDaemon
+		runBossDaemonRestart = oldRunBossDaemonRestart
+		defaultSocketPath = oldDefaultSocketPath
+		daemonSocketReachable = oldSocketReachable
+		daemonGetStatus = oldDaemonGetStatus
+		restartPollInterval = oldPollInterval
+		restartWaitTimeout = oldWaitTimeout
+	}()
+
+	restartDaemon = func() error { return nil }
+	runBossDaemonRestart = func() error {
+		t.Fatal("runBossDaemonRestart called for installed daemon")
+		return nil
+	}
+	daemonGetStatus = func() (*daemon.Status, error) { return &daemon.Status{Installed: true}, nil }
+	defaultSocketPath = func() (string, error) { return "/tmp/bossd.sock", nil }
+	restartPollInterval = time.Nanosecond
+	restartWaitTimeout = time.Second
+	attempts := 0
+	daemonSocketReachable = func(path string) bool {
+		if path != "/tmp/bossd.sock" {
+			t.Fatalf("socket path = %q, want /tmp/bossd.sock", path)
+		}
+		attempts++
+		return attempts >= 3
+	}
+
+	msg, ok := restartDaemonCmd()().(daemonRestartMsg)
+	if !ok {
+		t.Fatalf("restartDaemonCmd returned %T, want daemonRestartMsg", msg)
+	}
+	if msg.err != nil {
+		t.Fatalf("restartDaemonCmd error = %v, want nil", msg.err)
+	}
+	if attempts != 3 {
+		t.Fatalf("socket probe attempts = %d, want 3", attempts)
+	}
+}
+
+func TestRestartDaemonCmdWaitsForOldSocketToStopBeforeReachable(t *testing.T) {
+	oldRestartDaemon := restartDaemon
+	oldRunBossDaemonRestart := runBossDaemonRestart
+	oldDefaultSocketPath := defaultSocketPath
+	oldSocketReachable := daemonSocketReachable
+	oldDaemonGetStatus := daemonGetStatus
+	oldPollInterval := restartPollInterval
+	oldWaitTimeout := restartWaitTimeout
+	defer func() {
+		restartDaemon = oldRestartDaemon
+		runBossDaemonRestart = oldRunBossDaemonRestart
+		defaultSocketPath = oldDefaultSocketPath
+		daemonSocketReachable = oldSocketReachable
+		daemonGetStatus = oldDaemonGetStatus
+		restartPollInterval = oldPollInterval
+		restartWaitTimeout = oldWaitTimeout
+	}()
+
+	restartDaemon = func() error { return nil }
+	runBossDaemonRestart = func() error {
+		t.Fatal("runBossDaemonRestart called for installed daemon")
+		return nil
+	}
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: 1234}, nil
+	}
+	defaultSocketPath = func() (string, error) { return "/tmp/bossd.sock", nil }
+	restartPollInterval = time.Nanosecond
+	restartWaitTimeout = time.Second
+	attempts := 0
+	daemonSocketReachable = func(path string) bool {
+		if path != "/tmp/bossd.sock" {
+			t.Fatalf("socket path = %q, want /tmp/bossd.sock", path)
+		}
+		attempts++
+		switch attempts {
+		case 1:
+			return true // pre-restart socket was reachable
+		case 2, 3:
+			return true // old bossd still accepting after restartDaemon returns
+		case 4:
+			return false
+		default:
+			return true
+		}
+	}
+
+	msg, ok := restartDaemonCmd()().(daemonRestartMsg)
+	if !ok {
+		t.Fatalf("restartDaemonCmd returned %T, want daemonRestartMsg", msg)
+	}
+	if msg.err != nil {
+		t.Fatalf("restartDaemonCmd error = %v, want nil", msg.err)
+	}
+	if attempts != 5 {
+		t.Fatalf("socket probe attempts = %d, want 5", attempts)
+	}
+}
+
+func TestRestartDaemonCmdUsesCLIPathForStandaloneDaemon(t *testing.T) {
+	oldRestartDaemon := restartDaemon
+	oldRunBossDaemonRestart := runBossDaemonRestart
+	oldDefaultSocketPath := defaultSocketPath
+	oldSocketReachable := daemonSocketReachable
+	oldDaemonGetStatus := daemonGetStatus
+	oldPollInterval := restartPollInterval
+	oldWaitTimeout := restartWaitTimeout
+	defer func() {
+		restartDaemon = oldRestartDaemon
+		runBossDaemonRestart = oldRunBossDaemonRestart
+		defaultSocketPath = oldDefaultSocketPath
+		daemonSocketReachable = oldSocketReachable
+		daemonGetStatus = oldDaemonGetStatus
+		restartPollInterval = oldPollInterval
+		restartWaitTimeout = oldWaitTimeout
+	}()
+
+	platformRestartCalled := false
+	restartDaemon = func() error {
+		platformRestartCalled = true
+		return nil
+	}
+	cliRestartCalled := false
+	runBossDaemonRestart = func() error {
+		cliRestartCalled = true
+		return nil
+	}
+	daemonGetStatus = func() (*daemon.Status, error) { return &daemon.Status{Installed: false}, nil }
+	defaultSocketPath = func() (string, error) { return "/tmp/bossd.sock", nil }
+	daemonSocketReachable = func(path string) bool {
+		if path != "/tmp/bossd.sock" {
+			t.Fatalf("socket path = %q, want /tmp/bossd.sock", path)
+		}
+		return cliRestartCalled
+	}
+	restartPollInterval = time.Nanosecond
+	restartWaitTimeout = time.Second
+
+	msg := restartDaemonCmd()().(daemonRestartMsg)
+	if msg.err != nil {
+		t.Fatalf("restartDaemonCmd error = %v, want nil", msg.err)
+	}
+	if !cliRestartCalled {
+		t.Fatal("runBossDaemonRestart was not called for standalone daemon")
+	}
+	if platformRestartCalled {
+		t.Fatal("restartDaemon called for standalone daemon")
+	}
+}
+
+func TestRestartDaemonCmdTimesOutWithStatusHint(t *testing.T) {
+	oldRestartDaemon := restartDaemon
+	oldRunBossDaemonRestart := runBossDaemonRestart
+	oldDefaultSocketPath := defaultSocketPath
+	oldSocketReachable := daemonSocketReachable
+	oldDaemonGetStatus := daemonGetStatus
+	oldPollInterval := restartPollInterval
+	oldWaitTimeout := restartWaitTimeout
+	defer func() {
+		restartDaemon = oldRestartDaemon
+		runBossDaemonRestart = oldRunBossDaemonRestart
+		defaultSocketPath = oldDefaultSocketPath
+		daemonSocketReachable = oldSocketReachable
+		daemonGetStatus = oldDaemonGetStatus
+		restartPollInterval = oldPollInterval
+		restartWaitTimeout = oldWaitTimeout
+	}()
+
+	restartDaemon = func() error { return nil }
+	runBossDaemonRestart = func() error {
+		t.Fatal("runBossDaemonRestart called for installed daemon")
+		return nil
+	}
+	daemonGetStatus = func() (*daemon.Status, error) { return &daemon.Status{Installed: true}, nil }
+	defaultSocketPath = func() (string, error) { return "/tmp/bossd.sock", nil }
+	daemonSocketReachable = func(string) bool { return false }
+	restartPollInterval = time.Nanosecond
+	restartWaitTimeout = time.Nanosecond
+
+	msg := restartDaemonCmd()().(daemonRestartMsg)
+	if msg.err == nil {
+		t.Fatal("restartDaemonCmd error = nil, want timeout")
+	}
+	if !strings.Contains(msg.err.Error(), "boss daemon status") {
+		t.Fatalf("timeout error missing status hint: %v", msg.err)
+	}
+}
+
 func TestHomeUpgradeFailureRendersError(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.width = 100
@@ -1606,6 +1946,22 @@ func TestHomePollFailureDebounce(t *testing.T) {
 	}
 	if strings.Contains(h.View().Content, "Cannot connect to daemon") {
 		t.Fatal("error screen still shown after successful poll")
+	}
+}
+
+func TestHomeDaemonDownRemediationUsesStaticDaemonCommands(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 100
+	for h.pollFailures < pollFailureThreshold {
+		model, _ := h.Update(sessionListMsg{err: errors.New("dial unix: connection refused")})
+		h = model.(HomeModel)
+	}
+
+	content := h.View().Content
+	for _, want := range []string{"boss daemon restart", "boss daemon status", "boss daemon install", "bossd"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("daemon-down remediation missing %q: %s", want, content)
+		}
 	}
 }
 

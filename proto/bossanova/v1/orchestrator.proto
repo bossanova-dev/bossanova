@@ -371,6 +371,8 @@ message ProxyGetChatTranscriptResponse {
   repeated ChatMessage messages = 1;
   string final_assistant_text = 2;
   bool exists = 3;
+  // reason mirrors GetChatTranscriptResponse.reason: why a miss occurred.
+  string reason = 4;
 }
 
 // ProxySendChatMessageRequest carries only agent_session_id (the MCP send tool

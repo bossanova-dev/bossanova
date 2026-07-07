@@ -4,13 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/rs/zerolog"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/account"
+	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/tmux"
@@ -163,5 +167,51 @@ func TestRecordChat_TmuxSpawnFailureReturnsInternal(t *testing.T) {
 	}
 	if got := connect.CodeOf(err); got != connect.CodeInternal {
 		t.Fatalf("expected CodeInternal, got %v", got)
+	}
+}
+
+func TestEnsureChatTmuxSession_DoesNotBackfillDefaultAccountWhenAlreadyLive(t *testing.T) {
+	srv, accts := newAccountServer(t, newFakeCredStore(), nil)
+	mustAddClaude(t, srv, "work", []byte("blob"))
+	materializer := &fakeMaterializer{supports: true, env: map[string]string{"ANTHROPIC_API_KEY": "sk-default"}}
+	srv.resolver = account.NewResolver(
+		accountwiring.NewRegistry(accts),
+		materializer,
+		zerolog.Nop(),
+	)
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "claude"}
+	sessionStore := &lifecycleSessionStoreFake{session: sess}
+	chat := &models.AgentChat{SessionID: sess.ID, AgentSessionID: "agent-live", AgentName: "claude"}
+	srv.sessions = sessionStore
+	srv.agentChats = &chatStoreFake{chat: chat}
+	var tmuxCalls []string
+	srv.tmux = tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		tmuxCalls = append(tmuxCalls, strings.Join(args, " "))
+		switch {
+		case len(args) > 0 && args[0] == "-V":
+			return exec.CommandContext(ctx, "true")
+		case len(args) > 0 && args[0] == "has-session":
+			return exec.CommandContext(ctx, "true")
+		default:
+			return exec.CommandContext(ctx, "false")
+		}
+	}))
+
+	if err := srv.ensureChatTmuxSession(context.Background(), chat, true); err != nil {
+		t.Fatalf("ensureChatTmuxSession: %v", err)
+	}
+	if sessionStore.updateCalls != 0 {
+		t.Fatalf("session Update calls = %d, want 0 for already-live chat", sessionStore.updateCalls)
+	}
+	if materializer.calls != 0 {
+		t.Fatalf("materializer calls = %d, want 0 for already-live chat", materializer.calls)
+	}
+	if sess.AccountID != nil {
+		t.Fatalf("session AccountID = %q, want nil legacy binding unchanged", *sess.AccountID)
+	}
+	for _, call := range tmuxCalls {
+		if strings.HasPrefix(call, "new-session ") {
+			t.Fatalf("tmux calls = %v, want no new-session for already-live chat", tmuxCalls)
+		}
 	}
 }

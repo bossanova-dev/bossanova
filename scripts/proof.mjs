@@ -65,45 +65,210 @@ const catalogPath = resolveCatalogPath(repoRoot, process.env.BOSS_PROOF_CATALOG)
 // crashes, instead of dying with a bare message and no PR feedback.
 let activeRunContext = null
 let cachedTuiAgentBridge = null
-function buildTuiAgentBridge({ bossBinOverride } = {}) {
+
+// Build-input roots that feed BOTH prebuilt TUI-proof binaries: proof-tui-bridge
+// (./services/boss/cmd/proof-tui-agent) and boss-e2e (./services/boss/cmd) are
+// built from services/boss and import lib/bossalib, and boss-e2e also embeds
+// skill payloads from services/boss (see newestSourceMtime). A default ./bin
+// binary is only trustworthy while it is newer than every file below; the shared
+// set is intentionally broad because over-rebuilding just falls back to the
+// pre-BOS-215 in-budget build, while under-rebuilding proves against stale code.
+const TUI_PROOF_SOURCE_ROOTS = ['services/boss', 'lib/bossalib']
+
+// Repo-root Go workspace files that ALSO feed the build. The TUI build commands
+// run from services/boss, where `go env GOWORK` resolves to the repo-root
+// go.work, so a workspace replace/sync change alters the produced binary without
+// touching any file under TUI_PROOF_SOURCE_ROOTS. Scan them explicitly (as file
+// roots) so a go.work-only change still marks a prebuilt default bin stale.
+const TUI_PROOF_SOURCE_FILES = ['go.work', 'go.work.sum']
+
+// Newest mtime (ms) among EVERY regular file AND directory reachable from
+// `roots`, or null when nothing is scannable (missing/unreadable paths). Each
+// root may be a directory (walked with readdirSync) or an individual file (e.g.
+// the go.work workspace files). Skips .git/node_modules. Lets a stale default
+// bin be detected without building.
+//
+// Every file counts, not just .go/go.mod/go.sum: the boss binary embeds skill
+// payloads via `//go:embed all:skills` (services/boss/internal/skillinstall/
+// embed.go), so a change touching only those non-Go files still alters the built
+// binary. An extension allowlist would miss them and reuse a stale bin. Counting
+// all files also covers any future go:embed payload for free, and over-counting
+// is the safe direction — it just forces the pre-BOS-215 in-budget rebuild.
+//
+// Directory mtimes count too, which is what makes a pure DELETION or RENAME of a
+// source file / embedded payload force a rebuild: unlinking an entry bumps its
+// parent directory's mtime even when every surviving file stays older than the
+// bin, so a mtime-of-files-only scan would wrongly reuse a bin that still holds
+// the deleted code.
+export function newestSourceMtime(
+  roots,
+  { statSync = fs.statSync, readdir = fs.readdirSync } = {},
+) {
+  let newest = null
+  const consider = (p) => {
+    try {
+      const { mtimeMs } = statSync(p)
+      if (newest === null || mtimeMs > newest) newest = mtimeMs
+    } catch {
+      // missing/unreadable — ignore, it can't make the bin fresher
+    }
+  }
+  const visit = (p) => {
+    let entries
+    try {
+      entries = readdir(p, { withFileTypes: true })
+    } catch {
+      // Not a readable directory: treat p as an individual file input (e.g. the
+      // repo-root go.work / go.work.sum). consider() no-ops if it is missing.
+      // Also count the file's PARENT directory mtime, so a DELETION or RENAME of
+      // the file is still detected: unlinking it bumps the parent dir's mtime
+      // even though the file itself can no longer be stat'd. Without this a PR
+      // that removes go.work / go.work.sum could reuse a bin built under the old
+      // workspace config — the file-root path skips the directory-walk deletion
+      // detection below, so the parent mtime is the only surviving signal.
+      consider(p)
+      consider(path.dirname(p))
+      return
+    }
+    // Count the directory's own mtime (deletion/rename detection, see above).
+    consider(p)
+    for (const entry of entries) {
+      const full = path.join(p, entry.name)
+      if (entry.isDirectory()) {
+        if (entry.name === '.git' || entry.name === 'node_modules') continue
+        visit(full)
+      } else {
+        consider(full)
+      }
+    }
+  }
+  for (const dir of roots) visit(dir)
+  return newest
+}
+
+// Freshness gate for a DEFAULT ./bin prebuilt binary: trust it only while it is
+// at least as new as its sources. Fails safe toward "fresh" (return true) when
+// the bin can't be stat'd or no sources are scannable, so the fileExists-only
+// decision — and every existing unit test that fakes fileExists — is preserved.
+export function defaultBinFresh(
+  binPath,
+  { root, statSync = fs.statSync, readdir = fs.readdirSync } = {},
+) {
+  let binMtime
+  try {
+    binMtime = statSync(binPath).mtimeMs
+  } catch {
+    return true
+  }
+  const inputs = [...TUI_PROOF_SOURCE_ROOTS, ...TUI_PROOF_SOURCE_FILES].map((s) =>
+    path.join(root, s),
+  )
+  const newest = newestSourceMtime(inputs, { statSync, readdir })
+  if (newest === null) return true
+  return binMtime >= newest
+}
+
+/**
+ * Resolve prebuilt TUI-proof binaries WITHOUT building (BOS-215). Per binary,
+ * prefer an env-var path that exists, then the stable ./bin/ default; a
+ * set-but-missing env var falls back to null (build the old way) rather than
+ * throwing, so the no-prebuilt path stays byte-identical. An env-var override is
+ * an explicit "I built this, trust it" signal and is used on existence alone,
+ * but a DEFAULT ./bin binary is only reused while it is newer than its build
+ * inputs (`binFresh`, which counts Go sources AND embedded skill payloads):
+ * setup-worktree prebuilds these gitignored bins once, so a later edit under
+ * services/boss or lib/bossalib in the same worktree — including changes to only
+ * embedded files — must force an in-budget rebuild instead of proving against
+ * stale executables. The
+ * only side effects are the injectable fileExists / binFresh probes. The BOS-223
+ * budget rework builds on this seam, so it must stay exported and build-free.
+ * @returns {{ bridgeBin: string|null, bossBin: string|null }}
+ */
+export function resolvePrebuiltTuiBins({
+  repoRoot: root = repoRoot,
+  env = process.env,
+  fileExists = fs.existsSync,
+  binFresh = defaultBinFresh,
+} = {}) {
+  const pick = (envVal, defaultPath) => {
+    if (envVal) return fileExists(envVal) ? envVal : null
+    if (!fileExists(defaultPath)) return null
+    return binFresh(defaultPath, { root }) ? defaultPath : null
+  }
+  return {
+    bridgeBin: pick(env.BOSS_PROOF_TUI_BRIDGE_BIN, path.join(root, 'bin', 'proof-tui-bridge')),
+    bossBin: pick(env.BOSS_PROOF_BOSS_BIN, path.join(root, 'bin', 'boss-e2e')),
+  }
+}
+
+/**
+ * Build (or reuse prebuilt) the TUI-proof bridge + boss-e2e binaries. When
+ * `bridgeBinOverride` is set the bridge is not built; when `bossBinOverride` is
+ * set boss-e2e is not built. With BOTH overrides set no tmp dir is created and
+ * nothing is spawned (BOS-215) — the fast prebuilt path. The `spawn` seam is
+ * injectable for tests; the no-override fallback is byte-identical to before.
+ */
+export function buildTuiAgentBridge({
+  bossBinOverride,
+  bridgeBinOverride,
+  spawn = spawnSync,
+} = {}) {
   if (cachedTuiAgentBridge) {
     return cachedTuiAgentBridge
   }
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-agent-'))
-  const bridgeBin = path.join(dir, 'proof-tui-bridge')
+  const needBridgeBuild = !bridgeBinOverride
+  const needBossBuild = !bossBinOverride
+  // Only create a tmp dir when something actually has to be built into it.
+  const dir =
+    needBridgeBuild || needBossBuild
+      ? fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-agent-'))
+      : null
+  const bridgeBin = bridgeBinOverride || path.join(dir, 'proof-tui-bridge')
   const bossBin = bossBinOverride || path.join(dir, 'boss-e2e')
-  const builds = [{ out: bridgeBin, command: tuiAgentBridgeBuildCommand({ outBin: bridgeBin }) }]
-  if (!bossBinOverride) {
+  const builds = []
+  if (needBridgeBuild) {
+    builds.push({ out: bridgeBin, command: tuiAgentBridgeBuildCommand({ outBin: bridgeBin }) })
+  }
+  if (needBossBuild) {
     builds.push({ out: bossBin, command: bossE2eBuildCommand({ outBin: bossBin }) })
   }
   try {
     for (const { out, command } of builds) {
       const [bin, args, opts = {}] = command
-      const result = spawnSync(bin, args, {
+      const result = spawn(bin, args, {
         cwd: opts.cwd ? path.join(repoRoot, opts.cwd) : repoRoot,
         stdio: ['ignore', 'ignore', 'pipe'],
         encoding: 'utf8',
       })
       if (result.status !== 0 || result.error) {
         if (result.stderr) process.stderr.write(result.stderr)
-        fs.rmSync(dir, { recursive: true, force: true })
+        if (dir) fs.rmSync(dir, { recursive: true, force: true })
         const detail = result.error ? `: ${result.error.message}` : ''
         throw new Error(`go build failed for ${out}${detail}`)
       }
     }
   } catch (error) {
-    fs.rmSync(dir, { recursive: true, force: true })
+    if (dir) fs.rmSync(dir, { recursive: true, force: true })
     throw error
   }
   cachedTuiAgentBridge = { dir, bridgeBin, bossBin }
   return cachedTuiAgentBridge
 }
 
+// Test hook: clear the module-level build cache between cases so one test's
+// result does not leak into the next.
+export function __resetTuiAgentBridgeCache() {
+  cachedTuiAgentBridge = null
+}
+
 function cleanupTuiAgentBridge() {
   if (!cachedTuiAgentBridge) {
     return
   }
-  fs.rmSync(cachedTuiAgentBridge.dir, { recursive: true, force: true })
+  // A fully-prebuilt run creates no tmp dir (dir === null) — nothing to remove.
+  if (cachedTuiAgentBridge.dir) {
+    fs.rmSync(cachedTuiAgentBridge.dir, { recursive: true, force: true })
+  }
   cachedTuiAgentBridge = null
 }
 
@@ -943,6 +1108,7 @@ async function runAgentSurfaces({ plan, changedFiles, args }) {
     deps: {
       tuiAgentUsable,
       buildTuiAgentBridge,
+      resolvePrebuiltTuiBins,
       tuiAgentBridgeEnv,
       agentModeAvailable,
       webUiSurfacePresent,

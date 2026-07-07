@@ -204,55 +204,32 @@ func claudeWalkthrough(ctx context.Context, o ClaudeOptions) (string, error) {
 
 // --- shared identity + store phases (reused by the codex flow) -------------
 
-// promptIdentity resolves the label + email for a new account. A non-empty
-// flagLabel/flagEmail (supplied via --label/--email) is used verbatim without
-// prompting, so pre-seeded invocations (e.g. `--token-stdin --label x --email y`)
-// stay fully non-interactive. Empty values are prompted, defaulting the email
-// to defaultEmail (e.g. a codex id_token claim) and the label to
-// "<provider>-<n+1>". A duplicate email always forces a distinct label.
-//
-// When nonInteractive is set (the --token-stdin claude path), empty values
-// resolve to their defaults WITHOUT prompting: stdin has already been consumed
-// by the piped token, so an intentionally empty email must not trigger an Ask
-// that would fail on EOF. A duplicate email that --label does not already
-// disambiguate cannot be resolved without a prompt and is a hard error.
-func promptIdentity(ctx context.Context, p Prompter, c AccountClient, provider, flagLabel, flagEmail, defaultEmail string, nonInteractive bool) (string, string, error) {
-	existing, err := c.ListAccounts(ctx, provider)
+// promptIdentity resolves the label + optional email metadata for a new
+// account. A non-empty flagLabel/flagEmail (supplied via --label/--email) is
+// used verbatim without prompting. Empty label defaults to "<provider>-<n+1>" in
+// non-interactive mode or prompts in interactive mode. Email is Boss metadata
+// only: never prompted, never auto-derived, and never used for collisions.
+func promptIdentity(ctx context.Context, p Prompter, c AccountClient, provider, flagLabel, flagEmail, _ string, nonInteractive bool) (string, string, error) {
+	existing, err := c.ListAccounts(ctx, provider, false)
 	if err != nil {
 		return "", "", fmt.Errorf("could not list existing %s accounts: %w", provider, err)
 	}
 
-	email := flagEmail
-	if email == "" {
-		if nonInteractive {
-			email = defaultEmail
-		} else if email, err = p.Ask(fmt.Sprintf("Email for this %s account (optional)", provider), defaultEmail); err != nil {
-			return "", "", err
-		}
-	}
+	defaultLabel := nextDefaultLabel(provider, existing)
+	label, err := resolveLabel(p, flagLabel, defaultLabel, nonInteractive)
+	return label, flagEmail, err
+}
 
-	defaultLabel := fmt.Sprintf("%s-%d", provider, len(existing)+1)
-	collision := findEmailCollision(existing, email)
-	if collision == nil {
-		return resolveLabel(p, flagLabel, defaultLabel, email, nonInteractive)
+func nextDefaultLabel(provider string, existing []*pb.Account) string {
+	used := make(map[string]struct{}, len(existing))
+	for _, acct := range existing {
+		used[acct.GetLabel()] = struct{}{}
 	}
-
-	p.Say("Email %s is already registered to account %q; choose a distinct label.", email, collision.GetLabel())
-	if flagLabel != "" && flagLabel != collision.GetLabel() {
-		return flagLabel, email, nil
-	}
-	if nonInteractive {
-		return "", "", fmt.Errorf("email %s is already registered to account %q; pass a distinct --label to register another %s account with --token-stdin", email, collision.GetLabel(), provider)
-	}
-	for {
-		label, aerr := p.Ask("Label for this account", defaultLabel)
-		if aerr != nil {
-			return "", "", aerr
+	for i := 1; ; i++ {
+		label := fmt.Sprintf("%s-%d", provider, i)
+		if _, ok := used[label]; !ok {
+			return label
 		}
-		if label != "" && label != collision.GetLabel() {
-			return label, email, nil
-		}
-		p.Say("Label %q is already in use; enter a different label.", label)
 	}
 }
 
@@ -260,18 +237,18 @@ func promptIdentity(ctx context.Context, p Prompter, c AccountClient, provider, 
 // defaultLabel. It is the no-collision path of promptIdentity. When
 // nonInteractive is set, an empty flagLabel resolves to defaultLabel without
 // prompting a stdin that the piped token already consumed.
-func resolveLabel(p Prompter, flagLabel, defaultLabel, email string, nonInteractive bool) (string, string, error) {
+func resolveLabel(p Prompter, flagLabel, defaultLabel string, nonInteractive bool) (string, error) {
 	if flagLabel != "" {
-		return flagLabel, email, nil
+		return flagLabel, nil
 	}
 	if nonInteractive {
-		return defaultLabel, email, nil
+		return defaultLabel, nil
 	}
 	label, err := p.Ask("Label for this account", defaultLabel)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	return label, email, nil
+	return label, nil
 }
 
 // storeAndTest adds the credential through the daemon then verifies it,
@@ -329,18 +306,6 @@ func keepOrRemove(ctx context.Context, p Prompter, c AccountClient, id, label, r
 }
 
 // --- small helpers ---------------------------------------------------------
-
-func findEmailCollision(accounts []*pb.Account, email string) *pb.Account {
-	if email == "" {
-		return nil
-	}
-	for _, a := range accounts {
-		if a.GetEmail() == email {
-			return a
-		}
-	}
-	return nil
-}
 
 // testOutcome classifies a TestAccount result.
 type testOutcome int

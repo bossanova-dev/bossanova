@@ -335,6 +335,10 @@ func (f *fakeAgentClient) DetectUsageLimit(_ context.Context, _ *bossanovav1.Det
 	return &bossanovav1.DetectUsageLimitResponse{}, nil
 }
 
+func (f *fakeAgentClient) ProbeRateLimit(_ context.Context, _ *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) {
+	return &bossanovav1.ProbeRateLimitResponse{}, nil
+}
+
 func (f *fakeAgentClient) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
 	return &bossanovav1.HasWorkingIndicatorResponse{}, nil
 }

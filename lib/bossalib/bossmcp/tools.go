@@ -330,10 +330,10 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "list_accounts",
-		Description: "List registry accounts (agent credentials), optionally filtered by provider. Credentials are never returned.",
+		Description: "List registry accounts and cached usage metadata, optionally filtered by provider. Credentials are never returned. Set refresh to force a live usage probe before returning.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListAccountsArgs) (*mcp.CallToolResult, any, error) {
-		out, err := backend.ListAccounts(ctx, args.Provider)
+		out, err := backend.ListAccounts(ctx, args.Provider, args.Refresh)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
@@ -345,6 +345,7 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 // ListAccountsArgs is the typed argument struct for list_accounts.
 type ListAccountsArgs struct {
 	Provider string `json:"provider,omitempty" jsonschema:"optional provider filter (claude|codex); empty returns all"`
+	Refresh  bool   `json:"refresh,omitempty" jsonschema:"force a live usage probe of each account before returning (default: cached values plus age)"`
 }
 
 // ListSessionsArgs is the typed argument struct for list_sessions.

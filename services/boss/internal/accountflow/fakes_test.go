@@ -181,7 +181,7 @@ type fakeAccountClient struct {
 	removedIDs    []string
 }
 
-func (c *fakeAccountClient) ListAccounts(_ context.Context, provider string) ([]*pb.Account, error) {
+func (c *fakeAccountClient) ListAccounts(_ context.Context, provider string, _ bool) ([]*pb.Account, error) {
 	c.listProviders = append(c.listProviders, provider)
 	return c.listResult, c.listErr
 }

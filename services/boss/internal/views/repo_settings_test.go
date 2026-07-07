@@ -670,7 +670,7 @@ func (s *stubRepoClient) DeleteCronJob(context.Context, string) error { panic("u
 func (s *stubRepoClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) ListAccounts(context.Context, string) ([]*pb.Account, error) {
+func (s *stubRepoClient) ListAccounts(context.Context, string, bool) ([]*pb.Account, error) {
 	panic("unused")
 }
 func (s *stubRepoClient) AddAccount(context.Context, *pb.AddAccountRequest) (*pb.Account, error) {

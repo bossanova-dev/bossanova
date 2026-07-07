@@ -5,7 +5,7 @@ not part of a run). Register this **gate command** on the job (scheduler UI, `Ga
 PR #870) so the run only fires when there is a candidate, spending **zero** agent tokens otherwise:
 
 ```
-node .claude/skills/boss-implement/gate/gate.mjs
+node scripts/cron-gates/boss-implement.mjs
 ```
 
 It exits `0` (run) iff at least one Linear issue is in the **`Todo`** state, carries the

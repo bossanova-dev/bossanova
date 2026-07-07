@@ -9,6 +9,7 @@ import test from 'node:test'
 import {
   fileHasInlineStopHook,
   findInlineStopHookCopies,
+  findInlineStopHookCopiesInRepo,
   isInvokedDirectly,
 } from './check-no-inline-stop-hooks.mjs'
 
@@ -48,6 +49,70 @@ test('findInlineStopHookCopies returns offending SKILL.md paths', () => {
     assert.match(offenders[0], /bad\/SKILL\.md$/)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('repo scan includes canonical and plugin skill roots', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-repo-'))
+  try {
+    for (const root of [
+      path.join(repoRoot, '.claude', 'skills', 'ok'),
+      path.join(repoRoot, '.codex', 'skills', 'ok'),
+      path.join(repoRoot, 'plugins', 'bossd-plugin-claude', 'skilldata', 'skills', 'plugin-bad'),
+      path.join(
+        repoRoot,
+        'services',
+        'boss',
+        'internal',
+        'skillinstall',
+        'skills',
+        'canonical-bad',
+      ),
+    ]) {
+      fs.mkdirSync(root, { recursive: true })
+      fs.writeFileSync(path.join(root, 'SKILL.md'), MIGRATED)
+    }
+
+    const pluginSkill = path.join(
+      repoRoot,
+      'plugins',
+      'bossd-plugin-claude',
+      'skilldata',
+      'skills',
+      'plugin-bad',
+      'SKILL.md',
+    )
+    const canonicalSkill = path.join(
+      repoRoot,
+      'services',
+      'boss',
+      'internal',
+      'skillinstall',
+      'skills',
+      'canonical-bad',
+      'SKILL.md',
+    )
+    fs.writeFileSync(pluginSkill, INLINE)
+    fs.writeFileSync(canonicalSkill, INLINE)
+
+    const offenders = findInlineStopHookCopiesInRepo(repoRoot).map((file) =>
+      path.relative(repoRoot, file),
+    )
+
+    assert.deepEqual(offenders.sort(), [
+      path.join('plugins', 'bossd-plugin-claude', 'skilldata', 'skills', 'plugin-bad', 'SKILL.md'),
+      path.join(
+        'services',
+        'boss',
+        'internal',
+        'skillinstall',
+        'skills',
+        'canonical-bad',
+        'SKILL.md',
+      ),
+    ])
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
   }
 })
 

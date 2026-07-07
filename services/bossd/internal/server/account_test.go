@@ -3,11 +3,13 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/rs/zerolog"
@@ -21,12 +23,16 @@ type fakeCredStore struct {
 	blobs     map[string][]byte
 	loadErr   error // when non-nil, Load returns this (simulates locked keyring)
 	deleteErr error
+	saveHook  func(id string, blob []byte)
 }
 
 func newFakeCredStore() *fakeCredStore { return &fakeCredStore{blobs: map[string][]byte{}} }
 
 func (f *fakeCredStore) Save(id string, blob []byte) error {
 	f.blobs[id] = append([]byte(nil), blob...)
+	if f.saveHook != nil {
+		f.saveHook(id, append([]byte(nil), blob...))
+	}
 	return nil
 }
 
@@ -58,13 +64,15 @@ type fakeSmoke struct {
 	called    bool
 	accountID string
 	provider  string
+	blob      []byte
 	err       error
 }
 
-func (f *fakeSmoke) Smoke(_ context.Context, accountID, provider string, _ []byte) error {
+func (f *fakeSmoke) Smoke(_ context.Context, accountID, provider string, blob []byte) error {
 	f.called = true
 	f.accountID = accountID
 	f.provider = provider
+	f.blob = append([]byte(nil), blob...)
 	return f.err
 }
 
@@ -162,6 +170,8 @@ func TestAddAccountValidation(t *testing.T) {
 		{"unknown provider", &pb.AddAccountRequest{Provider: "gemini", Label: "l", Credential: []byte("c")}},
 		{"empty label", &pb.AddAccountRequest{Provider: "claude", Credential: []byte("c")}},
 		{"empty credential", &pb.AddAccountRequest{Provider: "claude", Label: "l"}},
+		{"reserved label", &pb.AddAccountRequest{Provider: "claude", Label: "Unmanaged local credentials", Credential: []byte("c")}},
+		{"reserved label case-insensitive", &pb.AddAccountRequest{Provider: "claude", Label: "  unmanaged LOCAL credentials  ", Credential: []byte("c")}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -200,6 +210,24 @@ func TestAddAccountDuplicateLabel(t *testing.T) {
 	}
 }
 
+// TestUpdateAccountReservedLabelRejected proves renaming an account to the
+// reserved system-default label (case-insensitively) is a client error, so no
+// real account can ever take the "Unmanaged local credentials" label the
+// apiversion V20260706 switch down-convert keys on.
+func TestUpdateAccountReservedLabelRejected(t *testing.T) {
+	srv, _ := newAccountServer(t, newFakeCredStore(), nil)
+	acct := mustAddClaude(t, srv, "work", []byte("setup-token"))
+
+	reserved := "Unmanaged Local Credentials"
+	_, err := srv.UpdateAccount(context.Background(), connect.NewRequest(&pb.UpdateAccountRequest{
+		Id:    acct.Id,
+		Label: &reserved,
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("code = %v, want InvalidArgument (err=%v)", got, err)
+	}
+}
+
 // TestAddAccountResponseHasNoCredential proves the credential bytes never appear
 // in the AddAccount response wire form.
 func TestAddAccountResponseHasNoCredential(t *testing.T) {
@@ -235,6 +263,426 @@ func TestAccountNotFound(t *testing.T) {
 	}
 	if _, err := srv.TestAccount(ctx, connect.NewRequest(&pb.TestAccountRequest{Id: "nope"})); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Errorf("test: code = %v, want NotFound", connect.CodeOf(err))
+	}
+}
+
+func TestRefreshAccountReplacesCredentialAndReturnsMetadataOnly(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, _ := newAccountServer(t, creds, nil)
+	secret := []byte("replacement-secret-token")
+	acct := mustAddClaude(t, srv, "refresh", []byte("old-token"))
+
+	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:         acct.Id,
+		Credential: secret,
+	}))
+	if err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+	if got := string(creds.blobs[acct.Id]); got != string(secret) {
+		t.Fatalf("stored credential = %q, want replacement", got)
+	}
+	if resp.Msg.Account.GetId() != acct.Id {
+		t.Fatalf("account id = %q, want %q", resp.Msg.Account.GetId(), acct.Id)
+	}
+	if resp.Msg.GetLiveSmokeRan() {
+		t.Fatalf("live_smoke_ran = true, want false without test_after_save")
+	}
+	if resp.Msg.GetDetail() == "" {
+		t.Fatalf("detail empty, want success detail")
+	}
+	raw, err := proto.Marshal(resp.Msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(raw, secret) {
+		t.Fatalf("RefreshAccount response wire form leaked the credential")
+	}
+}
+
+func TestRefreshAccountRestoresFailedHealth(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, accts := newAccountServer(t, creds, nil)
+	acct := mustAddClaude(t, srv, "refresh-health", []byte("old-token"))
+	failed := models.AccountHealthFailed
+	if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAccountParams{Health: &failed}); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+
+	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:         acct.Id,
+		Credential: []byte("new-token"),
+	}))
+	if err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+	if got := resp.Msg.Account.GetHealth(); got != string(models.AccountHealthOK) {
+		t.Fatalf("response health = %q, want %q", got, models.AccountHealthOK)
+	}
+	got, err := accts.Get(context.Background(), acct.Id)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if got.Health != models.AccountHealthOK {
+		t.Fatalf("stored health = %q, want %q", got.Health, models.AccountHealthOK)
+	}
+}
+
+func TestRefreshAccountWithFailedTestPreservesFailedHealth(t *testing.T) {
+	creds := newFakeCredStore()
+	smoke := &fakeSmoke{err: errors.New("provider rejected token")}
+	srv, accts := newAccountServer(t, creds, smoke)
+	acct := mustAddClaude(t, srv, "refresh-health-test-fails", []byte("old-token"))
+	failed := models.AccountHealthFailed
+	if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAccountParams{Health: &failed}); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+
+	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:            acct.Id,
+		Credential:    []byte("new-token"),
+		TestAfterSave: true,
+	}))
+	if err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+	if !resp.Msg.GetLiveSmokeRan() {
+		t.Fatalf("live_smoke_ran = false, want true")
+	}
+	if got := resp.Msg.Account.GetHealth(); got != string(models.AccountHealthFailed) {
+		t.Fatalf("response health = %q, want %q", got, models.AccountHealthFailed)
+	}
+	if resp.Msg.Account.GetLastTestError() == "" {
+		t.Fatalf("last_test_error empty, want smoke failure detail")
+	}
+	got, err := accts.Get(context.Background(), acct.Id)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if got.Health != models.AccountHealthFailed {
+		t.Fatalf("stored health = %q, want %q", got.Health, models.AccountHealthFailed)
+	}
+}
+
+func TestRefreshAccountWithFailedTestFailsHealthyAccount(t *testing.T) {
+	creds := newFakeCredStore()
+	smoke := &fakeSmoke{err: errors.New("provider rejected token")}
+	srv, accts := newAccountServer(t, creds, smoke)
+	acct := mustAddClaude(t, srv, "refresh-healthy-test-fails", []byte("old-token"))
+
+	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:            acct.Id,
+		Credential:    []byte("new-token"),
+		TestAfterSave: true,
+	}))
+	if err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+	if !resp.Msg.GetLiveSmokeRan() {
+		t.Fatalf("live_smoke_ran = false, want true")
+	}
+	if got := resp.Msg.Account.GetHealth(); got != string(models.AccountHealthFailed) {
+		t.Fatalf("response health = %q, want %q", got, models.AccountHealthFailed)
+	}
+	if resp.Msg.Account.GetLastTestError() == "" {
+		t.Fatalf("last_test_error empty, want smoke failure detail")
+	}
+	got, err := accts.Get(context.Background(), acct.Id)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if got.Health != models.AccountHealthFailed {
+		t.Fatalf("stored health = %q, want %q", got.Health, models.AccountHealthFailed)
+	}
+}
+
+func TestRefreshAccountWithUnavailableSmokeDoesNotFailHealth(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, accts := newAccountServer(t, creds, nil)
+	acct := mustAddClaude(t, srv, "refresh-no-smoke", []byte("old-token"))
+
+	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:            acct.Id,
+		Credential:    []byte("new-token"),
+		TestAfterSave: true,
+	}))
+	if err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+	if resp.Msg.GetLiveSmokeRan() {
+		t.Fatalf("live_smoke_ran = true, want false")
+	}
+	if got := resp.Msg.GetDetail(); got != liveSmokeUnavailableDetail {
+		t.Fatalf("detail = %q, want %q", got, liveSmokeUnavailableDetail)
+	}
+	if got := resp.Msg.Account.GetHealth(); got != string(models.AccountHealthOK) {
+		t.Fatalf("response health = %q, want %q", got, models.AccountHealthOK)
+	}
+	if got := resp.Msg.Account.GetLastTestError(); got != liveSmokeUnavailableDetail {
+		t.Fatalf("last_test_error = %q, want %q", got, liveSmokeUnavailableDetail)
+	}
+	got, err := accts.Get(context.Background(), acct.Id)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if got.Health != models.AccountHealthOK {
+		t.Fatalf("stored health = %q, want %q", got.Health, models.AccountHealthOK)
+	}
+}
+
+func TestRefreshAccountWithUnavailableSmokeRestoresFailedHealth(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, accts := newAccountServer(t, creds, nil)
+	acct := mustAddClaude(t, srv, "refresh-no-smoke-failed", []byte("old-token"))
+	failed := models.AccountHealthFailed
+	if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAccountParams{Health: &failed}); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+
+	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:            acct.Id,
+		Credential:    []byte("new-token"),
+		TestAfterSave: true,
+	}))
+	if err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+	if resp.Msg.GetLiveSmokeRan() {
+		t.Fatalf("live_smoke_ran = true, want false")
+	}
+	if got := resp.Msg.GetDetail(); got != liveSmokeUnavailableDetail {
+		t.Fatalf("detail = %q, want %q", got, liveSmokeUnavailableDetail)
+	}
+	if got := resp.Msg.Account.GetHealth(); got != string(models.AccountHealthOK) {
+		t.Fatalf("response health = %q, want %q", got, models.AccountHealthOK)
+	}
+	if got := resp.Msg.Account.GetLastTestError(); got != liveSmokeUnavailableDetail {
+		t.Fatalf("last_test_error = %q, want %q", got, liveSmokeUnavailableDetail)
+	}
+	got, err := accts.Get(context.Background(), acct.Id)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if got.Health != models.AccountHealthOK {
+		t.Fatalf("stored health = %q, want %q", got.Health, models.AccountHealthOK)
+	}
+}
+
+func TestRefreshAccountWithValidationFailureFailsHealthyAccount(t *testing.T) {
+	creds := newFakeCredStore()
+	smoke := &fakeSmoke{}
+	srv, accts := newAccountServer(t, creds, smoke)
+	resp, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+		Provider:   "codex",
+		Label:      "refresh-invalid-codex",
+		Credential: []byte(`{"access":"a","refresh":"r","id_token":"i"}`),
+	}))
+	if err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+	id := resp.Msg.Account.GetId()
+
+	refreshResp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:            id,
+		Credential:    []byte("not-json"),
+		TestAfterSave: true,
+	}))
+	if err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+	if refreshResp.Msg.GetLiveSmokeRan() {
+		t.Fatalf("live_smoke_ran = true, want false")
+	}
+	if smoke.called {
+		t.Fatalf("smoke runner ran on invalid credential")
+	}
+	if got := refreshResp.Msg.Account.GetHealth(); got != string(models.AccountHealthFailed) {
+		t.Fatalf("response health = %q, want %q", got, models.AccountHealthFailed)
+	}
+	if refreshResp.Msg.Account.GetLastTestError() == "" {
+		t.Fatalf("last_test_error empty, want validation failure detail")
+	}
+	got, err := accts.Get(context.Background(), id)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if got.Health != models.AccountHealthFailed {
+		t.Fatalf("stored health = %q, want %q", got.Health, models.AccountHealthFailed)
+	}
+}
+
+func TestRefreshAccountCodexAuthJSONWithTestAfterSaveNormalizesCredential(t *testing.T) {
+	creds := newFakeCredStore()
+	smoke := &fakeSmoke{}
+	srv, _ := newAccountServer(t, creds, smoke)
+	resp, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+		Provider:   "codex",
+		Label:      "refresh-codex-auth-json",
+		Credential: []byte(`{"access":"old-access","refresh":"old-refresh","id_token":"old-id"}`),
+	}))
+	if err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+	id := resp.Msg.Account.GetId()
+
+	refreshResp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id: id,
+		Credential: []byte(`{"tokens":{` +
+			`"access_token":"new-access",` +
+			`"refresh_token":"new-refresh",` +
+			`"id_token":"new-id"` +
+			`}}`),
+		TestAfterSave: true,
+	}))
+	if err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+	if got := refreshResp.Msg.Account.GetHealth(); got != string(models.AccountHealthOK) {
+		t.Fatalf("response health = %q, want %q", got, models.AccountHealthOK)
+	}
+	if refreshResp.Msg.Account.GetLastTestError() != "" {
+		t.Fatalf("last_test_error = %q, want empty", refreshResp.Msg.Account.GetLastTestError())
+	}
+	if !refreshResp.Msg.GetLiveSmokeRan() {
+		t.Fatalf("live_smoke_ran = false, want true")
+	}
+	if !smoke.called || smoke.provider != "codex" || smoke.accountID != id {
+		t.Fatalf("smoke called with account=%q provider=%q", smoke.accountID, smoke.provider)
+	}
+
+	assertCodexCredentialFields(t, creds.blobs[id])
+	assertCodexCredentialFields(t, smoke.blob)
+}
+
+func assertCodexCredentialFields(t *testing.T, blob []byte) {
+	t.Helper()
+	var payload struct {
+		Access  string `json:"access"`
+		Refresh string `json:"refresh"`
+		IDToken string `json:"id_token"`
+		Tokens  struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			IDToken      string `json:"id_token"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(blob, &payload); err != nil {
+		t.Fatalf("credential is not valid JSON: %v", err)
+	}
+	if payload.Access != "new-access" || payload.Refresh != "new-refresh" || payload.IDToken != "new-id" {
+		t.Fatalf("top-level credential fields = (%q,%q,%q), want refreshed tokens",
+			payload.Access, payload.Refresh, payload.IDToken)
+	}
+	if payload.Tokens.AccessToken != "new-access" ||
+		payload.Tokens.RefreshToken != "new-refresh" ||
+		payload.Tokens.IDToken != "new-id" {
+		t.Fatalf("tokens fields = (%q,%q,%q), want refreshed tokens",
+			payload.Tokens.AccessToken, payload.Tokens.RefreshToken, payload.Tokens.IDToken)
+	}
+}
+
+func TestRefreshAccountMissingAccountNotFound(t *testing.T) {
+	srv, _ := newAccountServer(t, newFakeCredStore(), nil)
+
+	_, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:         "missing",
+		Credential: []byte("new-token"),
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeNotFound {
+		t.Fatalf("code = %v, want NotFound (err=%v)", got, err)
+	}
+}
+
+func TestRefreshAccountCleansUpCredentialWhenAccountDisappearsAfterSave(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, accts := newAccountServer(t, creds, nil)
+	acct := mustAddClaude(t, srv, "refresh-removed", []byte("old-token"))
+	creds.saveHook = func(id string, _ []byte) {
+		if err := accts.Delete(context.Background(), id); err != nil {
+			t.Fatalf("delete account during refresh save: %v", err)
+		}
+	}
+
+	_, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:         acct.Id,
+		Credential: []byte("new-token"),
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeNotFound {
+		t.Fatalf("code = %v, want NotFound (err=%v)", got, err)
+	}
+	if _, ok := creds.blobs[acct.Id]; ok {
+		t.Fatalf("credential left behind for removed account")
+	}
+}
+
+func TestRefreshAccountWithTestAfterSaveCleansUpCredentialWhenAccountDisappearsAfterSave(t *testing.T) {
+	creds := newFakeCredStore()
+	smoke := &fakeSmoke{}
+	srv, accts := newAccountServer(t, creds, smoke)
+	acct := mustAddClaude(t, srv, "refresh-test-removed", []byte("old-token"))
+	creds.saveHook = func(id string, _ []byte) {
+		if err := accts.Delete(context.Background(), id); err != nil {
+			t.Fatalf("delete account during refresh save: %v", err)
+		}
+	}
+
+	_, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:            acct.Id,
+		Credential:    []byte("new-token"),
+		TestAfterSave: true,
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeNotFound {
+		t.Fatalf("code = %v, want NotFound (err=%v)", got, err)
+	}
+	if _, ok := creds.blobs[acct.Id]; ok {
+		t.Fatalf("credential left behind for removed account")
+	}
+	if smoke.called {
+		t.Fatalf("smoke ran after account disappeared")
+	}
+}
+
+func TestRefreshAccountRejectsEmptyCredential(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, _ := newAccountServer(t, creds, nil)
+	acct := mustAddClaude(t, srv, "empty", []byte("old-token"))
+
+	_, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id: acct.Id,
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("code = %v, want InvalidArgument (err=%v)", got, err)
+	}
+	if got := string(creds.blobs[acct.Id]); got != "old-token" {
+		t.Fatalf("credential changed on invalid refresh: %q", got)
+	}
+}
+
+func TestRefreshAccountWithTestAfterSaveRunsSmoke(t *testing.T) {
+	creds := newFakeCredStore()
+	smoke := &fakeSmoke{}
+	srv, _ := newAccountServer(t, creds, smoke)
+	acct := mustAddClaude(t, srv, "refresh-live", []byte("old-token"))
+
+	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:            acct.Id,
+		Credential:    []byte("new-token"),
+		TestAfterSave: true,
+	}))
+	if err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+	if !resp.Msg.GetLiveSmokeRan() {
+		t.Fatalf("live_smoke_ran = false, want true")
+	}
+	if !smoke.called || smoke.accountID != acct.Id || smoke.provider != "claude" {
+		t.Fatalf("smoke called with account=%q provider=%q", smoke.accountID, smoke.provider)
+	}
+	if got := string(smoke.blob); got != "new-token" {
+		t.Fatalf("smoke credential = %q, want refreshed credential", got)
+	}
+	if resp.Msg.GetDetail() != "credential test passed" {
+		t.Fatalf("detail = %q, want credential test passed", resp.Msg.GetDetail())
 	}
 }
 
@@ -302,7 +750,7 @@ func TestTestAccountNilRunnerDegrades(t *testing.T) {
 		t.Errorf("last_test_error = %q, want %q", resp.Msg.Account.LastTestError, liveSmokeUnavailableDetail)
 	}
 	if resp.Msg.Account.LastTestOkAt != nil {
-		t.Errorf("last_test_ok_at set, want nil when live smoke unavailable")
+		t.Errorf("last_test_ok_at set, want nil when provider verification is unavailable")
 	}
 }
 

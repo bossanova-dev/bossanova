@@ -141,6 +141,7 @@ type claudeFakeClient struct {
 	workingCalls   atomic.Int64
 	lastTurnCalls  atomic.Int64
 	title          string
+	titleExplicit  bool
 	titleCalls     atomic.Int64
 	lastTitleReq   *pb.GetChatTitleRequest
 	// limited, when true, makes DetectUsageLimit report a usage-cap banner.
@@ -190,7 +191,7 @@ func (c *claudeFakeClient) GetChatTitle(_ context.Context, req *pb.GetChatTitleR
 		WorkDir:   req.GetWorkDir(),
 		SessionId: req.GetSessionId(),
 	}
-	return &pb.GetChatTitleResponse{Supported: true, Title: c.title}, nil
+	return &pb.GetChatTitleResponse{Supported: true, Title: c.title, Explicit: c.titleExplicit}, nil
 }
 func (c *claudeFakeClient) HasQuestionPrompt(_ context.Context, req *pb.HasQuestionPromptRequest) (*pb.HasQuestionPromptResponse, error) {
 	c.hasPromptCalls.Add(1)
@@ -935,9 +936,89 @@ func TestTmuxStatusPoller_RefreshesPlaceholderChatTitle(t *testing.T) {
 	}
 }
 
-// TestTmuxStatusPoller_DoesNotOverwriteCustomChatTitle ensures we only
-// refresh placeholder titles — once a real title is set (either by an
-// earlier refresh or a user rename), the plugin must not be asked again.
+func TestRefreshChatTitle(t *testing.T) {
+	tests := []struct {
+		name           string
+		currentTitle   string
+		pluginTitle    string
+		pluginExplicit bool
+		wantTitle      string
+		wantCalls      int64
+	}{
+		{
+			name:         "placeholder backfilled by non-explicit title",
+			currentTitle: "New chat",
+			pluginTitle:  "First user prompt",
+			wantTitle:    "First user prompt",
+			wantCalls:    1,
+		},
+		{
+			name:           "explicit rename overwrites non-placeholder title",
+			currentTitle:   "Manual investigation",
+			pluginTitle:    "the new name",
+			pluginExplicit: true,
+			wantTitle:      "the new name",
+			wantCalls:      1,
+		},
+		{
+			name:         "non-explicit title does not clobber non-placeholder title",
+			currentTitle: "Manual investigation",
+			pluginTitle:  "First user prompt",
+			wantTitle:    "Manual investigation",
+			wantCalls:    1,
+		},
+		{
+			name:         "empty title preserves placeholder",
+			currentTitle: "New chat",
+			pluginTitle:  "",
+			wantTitle:    "New chat",
+			wantCalls:    1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agentSessionID := "agent-session"
+			chatStore := &mockChatStore{
+				chats: map[string]*models.AgentChat{
+					agentSessionID: {
+						SessionID:      "sess-1",
+						AgentSessionID: agentSessionID,
+						AgentName:      "claude",
+						Title:          tt.currentTitle,
+					},
+				},
+			}
+			sessionStore := &mockSessionStore{
+				sessions: map[string]*models.Session{
+					"sess-1": {ID: "sess-1", WorktreePath: "/tmp/title-worktree"},
+				},
+			}
+			client := &claudeFakeClient{title: tt.pluginTitle, titleExplicit: tt.pluginExplicit}
+			poller := NewTmuxStatusPoller(
+				NewTracker(),
+				chatStore,
+				sessionStore,
+				nil,
+				map[string]agent.AgentRunnerClient{"claude": client},
+				zerolog.Nop(),
+			)
+
+			poller.refreshChatTitle(context.Background(), chatStore.chats[agentSessionID])
+
+			if got := chatStore.chats[agentSessionID].Title; got != tt.wantTitle {
+				t.Fatalf("chat title = %q, want %q", got, tt.wantTitle)
+			}
+			if got := client.titleCalls.Load(); got != tt.wantCalls {
+				t.Fatalf("GetChatTitle calls = %d, want %d", got, tt.wantCalls)
+			}
+		})
+	}
+}
+
+// TestTmuxStatusPoller_DoesNotOverwriteCustomChatTitle ensures first-message
+// title heuristics cannot overwrite a real title. The plugin is still asked so
+// explicit agent rename lines can be discovered later.
 func TestTmuxStatusPoller_DoesNotOverwriteCustomChatTitle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
@@ -981,8 +1062,8 @@ func TestTmuxStatusPoller_DoesNotOverwriteCustomChatTitle(t *testing.T) {
 	if got := chatStore.chats[agentSessionID].Title; got != "Manual investigation" {
 		t.Fatalf("chat title = %q, want custom title preserved", got)
 	}
-	if client.titleCalls.Load() != 0 {
-		t.Fatalf("GetChatTitle calls = %d, want 0", client.titleCalls.Load())
+	if client.titleCalls.Load() != 1 {
+		t.Fatalf("GetChatTitle calls = %d, want 1", client.titleCalls.Load())
 	}
 }
 

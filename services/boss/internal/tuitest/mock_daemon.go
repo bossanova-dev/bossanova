@@ -1081,6 +1081,31 @@ func (m *MockDaemon) AddAccount(_ context.Context, req *connect.Request[pb.AddAc
 	return connect.NewResponse(&pb.AddAccountResponse{Account: proto.Clone(acct).(*pb.Account)}), nil
 }
 
+func (m *MockDaemon) RefreshAccount(_ context.Context, req *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acct, ok := m.accounts[req.Msg.Id]
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account %q not found", req.Msg.Id))
+	}
+	if len(req.Msg.Credential) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("credential is required"))
+	}
+	m.accountCredentials[req.Msg.Id] = append([]byte(nil), req.Msg.Credential...)
+	acct.UpdatedAt = timestamppb.Now()
+	resp := &pb.RefreshAccountResponse{
+		Account: proto.Clone(acct).(*pb.Account),
+		Detail:  "credential refreshed",
+	}
+	if req.Msg.TestAfterSave {
+		acct.LastTestOkAt = timestamppb.Now()
+		acct.LastTestError = ""
+		resp.Account = proto.Clone(acct).(*pb.Account)
+		resp.Detail = "credential validated (provider verification unavailable in mock)"
+	}
+	return connect.NewResponse(resp), nil
+}
+
 func (m *MockDaemon) UpdateAccount(_ context.Context, req *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1129,15 +1154,16 @@ func (m *MockDaemon) TestAccount(_ context.Context, req *connect.Request[pb.Test
 	if !ok {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account %q not found", req.Msg.Id))
 	}
-	// No live smoke runner in the mock: validate presence of a credential and
-	// report live_smoke_ran=false, mirroring the daemon's nil-runner degrade.
+	// No provider verification runner in the mock: validate presence of a
+	// credential and report live_smoke_ran=false, mirroring the daemon's
+	// nil-runner degrade.
 	acct.LastTestOkAt = timestamppb.Now()
 	acct.LastTestError = ""
 	acct.UpdatedAt = timestamppb.Now()
 	return connect.NewResponse(&pb.TestAccountResponse{
 		Account:      proto.Clone(acct).(*pb.Account),
 		LiveSmokeRan: false,
-		Detail:       "credential validated (live smoke unavailable in mock)",
+		Detail:       "credential validated (provider verification unavailable in mock)",
 	}), nil
 }
 

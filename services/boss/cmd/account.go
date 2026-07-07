@@ -107,7 +107,7 @@ func runAccountLS(cmd *cobra.Command) error {
 	healths := make([]string, len(accounts))
 	cooldowns := make([]string, len(accounts))
 	for i, a := range accounts {
-		ids[i] = shortID(a.GetId())
+		ids[i] = a.GetId()
 		providers[i] = orDash(a.GetProvider())
 		labels[i] = orDash(a.GetLabel())
 		emails[i] = orDash(a.GetEmail())
@@ -118,7 +118,7 @@ func runAccountLS(cmd *cobra.Command) error {
 	}
 
 	cols := []table.Column{
-		{Title: "ID", Width: views.MaxColWidth("ID", ids, 8)},
+		{Title: "ID", Width: views.MaxColWidth("ID", ids, 0)},
 		{Title: "PROVIDER", Width: views.MaxColWidth("PROVIDER", providers, 8)},
 		{Title: "LABEL", Width: views.MaxColWidth("LABEL", labels, 24)},
 		{Title: "EMAIL", Width: views.MaxColWidth("EMAIL", emails, 28)},
@@ -133,15 +133,7 @@ func runAccountLS(cmd *cobra.Command) error {
 		rows[i] = table.Row{ids[i], providers[i], labels[i], emails[i], statuses[i], priorities[i], healths[i], cooldowns[i]}
 	}
 
-	t := table.New(
-		table.WithColumns(cols),
-		table.WithRows(rows),
-		table.WithHeight(len(rows)+1),
-		table.WithWidth(views.CLIColumnsWidth(cols)),
-		table.WithStyles(views.CLITableStyles()),
-		table.WithFocused(false),
-	)
-	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), views.RenderCLITable(cols, rows))
 	return nil
 }
 
@@ -218,6 +210,65 @@ func runAccountAdd(cmd *cobra.Command, provider string) error {
 	}
 	// Never echo the credential — only the server-assigned metadata id.
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Added account %s\n", account.GetId())
+	return nil
+}
+
+// accountRefresher is the narrow client surface `boss account refresh` needs.
+// The real client satisfies it; tests inject a fake.
+type accountRefresher interface {
+	RefreshAccount(ctx context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error)
+}
+
+func runAccountRefresh(cmd *cobra.Command, id string) error {
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+	refresher, ok := c.(accountRefresher)
+	if !ok {
+		return fmt.Errorf("refresh account: client does not support account refresh")
+	}
+	return accountRefresh(cmd, refresher, id)
+}
+
+func accountRefresh(cmd *cobra.Command, c accountRefresher, id string) error {
+	credential, err := readCredentialFlag(cmd)
+	if err != nil {
+		return err
+	}
+	testAfterSave, _ := cmd.Flags().GetBool("test")
+	resp, err := c.RefreshAccount(cmd.Context(), &pb.RefreshAccountRequest{
+		Id:            id,
+		Credential:    credential,
+		TestAfterSave: testAfterSave,
+	})
+	if err != nil {
+		return fmt.Errorf("refresh account: %w", err)
+	}
+
+	asJSON, _ := cmd.Flags().GetBool("json")
+	if asJSON {
+		out := struct {
+			Account      accountJSON `json:"account"`
+			LiveSmokeRan bool        `json:"live_smoke_ran"`
+			Detail       string      `json:"detail"`
+		}{
+			Account:      accountToJSON(resp.GetAccount()),
+			LiveSmokeRan: resp.GetLiveSmokeRan(),
+			Detail:       resp.GetDetail(),
+		}
+		b, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal refresh result: %w", err)
+		}
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(b))
+		return nil
+	}
+
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Refreshed account %s\n", id)
+	if testAfterSave && resp.GetDetail() != "" {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Detail: %s\n", resp.GetDetail())
+	}
 	return nil
 }
 
@@ -376,7 +427,7 @@ func runAccountTest(cmd *cobra.Command, id string) error {
 	}
 	out := cmd.OutOrStdout()
 	_, _ = fmt.Fprintf(out, "Account %s: %s\n", id, result)
-	_, _ = fmt.Fprintf(out, "Live smoke ran: %s\n", boolLabel(resp.GetLiveSmokeRan()))
+	_, _ = fmt.Fprintf(out, "Provider check ran: %s\n", boolLabel(resp.GetLiveSmokeRan()))
 	if detail := resp.GetDetail(); detail != "" {
 		_, _ = fmt.Fprintf(out, "Detail: %s\n", detail)
 	}

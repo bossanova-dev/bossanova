@@ -40,6 +40,52 @@ func TestParseCodexDeviceAuthPrompt(t *testing.T) {
 	}
 }
 
+func TestParseCodexDeviceAuthDisabled(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			name:   "real disabled line",
+			output: "device code login is not enabled for this Codex server. Use the browser login or verify the server URL.",
+			want:   true,
+		},
+		{
+			name:   "ansi styled",
+			output: "\x1b[31mdevice code login is not enabled\x1b[0m for this Codex server.",
+			want:   true,
+		},
+		{
+			name:   "trailing url variant",
+			output: "Error: device code login is not enabled. See https://chatgpt.com/#settings",
+			want:   true,
+		},
+		{
+			name:   "success prompt",
+			output: "Open https://auth.openai.com/codex/device in your browser and enter code ABCD-EFGHI",
+			want:   false,
+		},
+		{
+			name:   "timeout line",
+			output: "device auth timed out after 15 minutes",
+			want:   false,
+		},
+		{
+			name:   "generic chatter",
+			output: "connecting to codex login server",
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseCodexDeviceAuthDisabled(tt.output); got != tt.want {
+				t.Fatalf("ParseCodexDeviceAuthDisabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func authJSON(t *testing.T, tokens map[string]any) []byte {
 	t.Helper()
 	b, err := json.Marshal(map[string]any{"tokens": tokens, "last_refresh": "2026-07-03T00:00:00Z"})

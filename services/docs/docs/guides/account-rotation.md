@@ -156,3 +156,9 @@ under your Claude or Codex provider's terms of service is **your
 responsibility**. Bossanova does not register or import any account you have not
 explicitly added, and it **never shares accounts between users**: every
 registered credential stays in your own OS keyring on your own machine.
+
+## Verifying your setup
+
+After registering accounts, follow
+[Verifying Account Rotation](./account-rotation-verification.md) for an
+end-to-end local checklist and the optional smoke script.

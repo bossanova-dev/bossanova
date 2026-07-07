@@ -8,7 +8,70 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/db"
 )
+
+// getOnlyAccountStore is a minimal db.AccountStore that serves a single account
+// from Get; the other methods are unused by accountRegistryAdapter and panic if
+// called so an accidental new dependency is caught loudly.
+type getOnlyAccountStore struct{ acct *models.Account }
+
+func (s getOnlyAccountStore) Get(_ context.Context, _ string) (*models.Account, error) {
+	return s.acct, nil
+}
+func (getOnlyAccountStore) Create(context.Context, db.CreateAccountParams) (*models.Account, error) {
+	panic("unexpected Create")
+}
+func (getOnlyAccountStore) List(context.Context) ([]*models.Account, error) { panic("unexpected List") }
+func (getOnlyAccountStore) ListByProvider(context.Context, models.AccountProvider) ([]*models.Account, error) {
+	panic("unexpected ListByProvider")
+}
+func (getOnlyAccountStore) Update(context.Context, string, db.UpdateAccountParams) (*models.Account, error) {
+	panic("unexpected Update")
+}
+func (getOnlyAccountStore) Delete(context.Context, string) error { panic("unexpected Delete") }
+func (getOnlyAccountStore) RecordTestResult(context.Context, string, *time.Time, string) error {
+	panic("unexpected RecordTestResult")
+}
+
+// TestAccountRegistryAdapter_FailedHealthMapsToFailed verifies the registry
+// projection maps a models.AccountHealthFailed account to AccountFailed, so the
+// switch rejects it (mirroring session creation's checkAccountEligible).
+func TestAccountRegistryAdapter_FailedHealthMapsToFailed(t *testing.T) {
+	adapter := accountRegistryAdapter{store: getOnlyAccountStore{acct: &models.Account{
+		ID:       "acct-9",
+		Provider: models.AccountProviderClaude,
+		Label:    "Sick",
+		Status:   models.AccountStatusActive,
+		Health:   models.AccountHealthFailed,
+	}}}
+	sa, err := adapter.Account(context.Background(), "acct-9")
+	if err != nil {
+		t.Fatalf("Account: %v", err)
+	}
+	if sa.Status != AccountFailed {
+		t.Errorf("Status = %v, want AccountFailed", sa.Status)
+	}
+}
+
+// TestAccountRegistryAdapter_OKHealthActive verifies a healthy active account
+// projects to AccountActive (the switchable case).
+func TestAccountRegistryAdapter_OKHealthActive(t *testing.T) {
+	adapter := accountRegistryAdapter{store: getOnlyAccountStore{acct: &models.Account{
+		ID:       "acct-ok",
+		Provider: models.AccountProviderClaude,
+		Label:    "Fine",
+		Status:   models.AccountStatusActive,
+		Health:   models.AccountHealthOK,
+	}}}
+	sa, err := adapter.Account(context.Background(), "acct-ok")
+	if err != nil {
+		t.Fatalf("Account: %v", err)
+	}
+	if sa.Status != AccountActive {
+		t.Errorf("Status = %v, want AccountActive", sa.Status)
+	}
+}
 
 // --- switch-account stubs ---
 
@@ -408,6 +471,30 @@ func TestSwitchAccount_DisabledTargetRefused(t *testing.T) {
 	}
 	if h.findCall("kill-session") != nil {
 		t.Error("disabled refusal must not kill the pane")
+	}
+}
+
+// TestSwitchAccount_FailedHealthTargetRefused: a target whose last health check
+// failed is refused server-side before any stop/rebind, mirroring session
+// creation's checkAccountEligible gate so an MCP/API caller (or a health change
+// after the picker listed accounts) cannot bind a sidelined account.
+func TestSwitchAccount_FailedHealthTargetRefused(t *testing.T) {
+	h := newSwitchHarness(t)
+	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
+		ID: "acct-2", Provider: "claude", Label: "Sick", Status: AccountFailed,
+	}}
+
+	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+	})
+	if !errors.Is(err, ErrAccountFailed) {
+		t.Fatalf("err = %v, want ErrAccountFailed", err)
+	}
+	if h.findCall("kill-session") != nil {
+		t.Error("failed-health refusal must not kill the pane")
+	}
+	if got := h.sessions.sessions["sess-1"].AccountID; got != nil {
+		t.Errorf("session AccountID = %v, want nil (no rebind)", got)
 	}
 }
 

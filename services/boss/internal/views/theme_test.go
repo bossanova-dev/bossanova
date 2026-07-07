@@ -109,6 +109,33 @@ func TestCLIColumnsWidth(t *testing.T) {
 	}
 }
 
+func TestMaxColWidth_Uncapped(t *testing.T) {
+	values := []string{"8078890d6b0affc7"}
+	if got, want := MaxColWidth("ID", values, 0), len(values[0]); got != want {
+		t.Errorf("MaxColWidth uncapped = %d, want %d", got, want)
+	}
+}
+
+func TestRenderCLITable(t *testing.T) {
+	cols := []table.Column{
+		{Title: "ID", Width: 16},
+		{Title: "LABEL", Width: 13},
+		{Title: "EMAIL", Width: 19},
+	}
+	rows := []table.Row{
+		{"8078890d6b0affc7", "agent.yuki", "agent.yuki@kamik.ai"},
+		{"6aaff35db711eee5", "dave@kamik.ai", "dave@kamik.ai"},
+	}
+	want := strings.Join([]string{
+		"ID                LABEL          EMAIL              ",
+		"8078890d6b0affc7  agent.yuki     agent.yuki@kamik.ai",
+		"6aaff35db711eee5  dave@kamik.ai  dave@kamik.ai      ",
+	}, "\n")
+	if got := RenderCLITable(cols, rows); got != want {
+		t.Errorf("RenderCLITable() =\n%q\nwant\n%q", got, want)
+	}
+}
+
 // TestBannerOverhead ties the layout constants to reality: renderBanner must
 // emit exactly bannerHeight lines (the padded two-line banner), and the
 // bannerOverhead used by every table-height calculation (chatpicker, home,
@@ -192,8 +219,8 @@ func TestRenderBannerBranches(t *testing.T) {
 
 		unboundSess := &pb.Session{Title: "Work"}
 		unbound := renderBanner(ViewChatPicker, bannerOpts{session: unboundSess})
-		if !strings.Contains(unbound, "System default") {
-			t.Fatalf("unbound banner missing System default account label: %q", unbound)
+		if !strings.Contains(unbound, UnmanagedLocalCredentialsShortLabel) {
+			t.Fatalf("unbound banner missing unmanaged account label: %q", unbound)
 		}
 	})
 

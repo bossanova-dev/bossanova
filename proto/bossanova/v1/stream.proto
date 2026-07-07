@@ -372,6 +372,10 @@ message CreateSessionCommand {
   bool detach = 14;
   optional string model = 15;
   bool tmux_unattended = 16;
+  optional string account_id = 17;
+  // Mirror CreateSessionRequest.force_branch so reverse-stream hosted creates
+  // preserve the local socket path's branch replacement behavior.
+  bool force_branch = 18;
 }
 
 // WakeChatCommand asks the daemon to bring a chat's tmux+claude back to

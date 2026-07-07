@@ -531,6 +531,14 @@ func (c *LocalClient) AddAccount(ctx context.Context, req *pb.AddAccountRequest)
 	return resp.Msg.Account, nil
 }
 
+func (c *LocalClient) RefreshAccount(ctx context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+	resp, err := c.rpc.RefreshAccount(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (c *LocalClient) UpdateAccount(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error) {
 	resp, err := c.rpc.UpdateAccount(ctx, connect.NewRequest(req))
 	if err != nil {

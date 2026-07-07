@@ -13,11 +13,14 @@ import {
 
 // Skill bodies live one level up from skills-toolbox/.
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
-const PLAN_SKILL = read('.claude/skills/boss-plan/SKILL.md')
-const BRIEF = read('.claude/skills/boss-plan/references/headless-drafting-brief.md')
+// boss-plan and boss-implement are published cores: their canonical committed home
+// is the skillinstall payload (BOS-271), no longer .claude/skills. bs-sweep-plan
+// stays a repo-local .claude skill.
+const CORE = 'services/boss/internal/skillinstall/skills'
+const PLAN_SKILL = read(`${CORE}/boss-plan/SKILL.md`)
+const BRIEF = read(`${CORE}/boss-plan/references/headless-drafting-brief.md`)
 const SWEEP = read('.claude/skills/bs-sweep-plan/SKILL.md')
-// boss-implement's SKILL.md is CONSTRUCTED from the tmpl; the tmpl is the edited source of truth.
-const IMPLEMENT = read('.claude/skills/boss-implement/SKILL.md.tmpl')
+const IMPLEMENT = read(`${CORE}/boss-implement/SKILL.md`)
 
 const HEADINGS = planSections(DEFAULT_CONFIG).map((s) => s.heading)
 

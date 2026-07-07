@@ -2188,8 +2188,12 @@ type CreateSessionCommand struct {
 	Detach         bool    `protobuf:"varint,14,opt,name=detach,proto3" json:"detach,omitempty"`
 	Model          *string `protobuf:"bytes,15,opt,name=model,proto3,oneof" json:"model,omitempty"`
 	TmuxUnattended bool    `protobuf:"varint,16,opt,name=tmux_unattended,json=tmuxUnattended,proto3" json:"tmux_unattended,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	AccountId      *string `protobuf:"bytes,17,opt,name=account_id,json=accountId,proto3,oneof" json:"account_id,omitempty"`
+	// Mirror CreateSessionRequest.force_branch so reverse-stream hosted creates
+	// preserve the local socket path's branch replacement behavior.
+	ForceBranch   bool `protobuf:"varint,18,opt,name=force_branch,json=forceBranch,proto3" json:"force_branch,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateSessionCommand) Reset() {
@@ -2330,6 +2334,20 @@ func (x *CreateSessionCommand) GetModel() string {
 func (x *CreateSessionCommand) GetTmuxUnattended() bool {
 	if x != nil {
 		return x.TmuxUnattended
+	}
+	return false
+}
+
+func (x *CreateSessionCommand) GetAccountId() string {
+	if x != nil && x.AccountId != nil {
+		return *x.AccountId
+	}
+	return ""
+}
+
+func (x *CreateSessionCommand) GetForceBranch() bool {
+	if x != nil {
+		return x.ForceBranch
 	}
 	return false
 }
@@ -4211,7 +4229,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"5\n" +
 	"\x14AttachSessionCommand\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\x9a\x05\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xf0\x05\n" +
 	"\x14CreateSessionCommand\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
@@ -4235,7 +4253,10 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x05force\x18\r \x01(\bR\x05force\x12\x16\n" +
 	"\x06detach\x18\x0e \x01(\bR\x06detach\x12\x19\n" +
 	"\x05model\x18\x0f \x01(\tH\x06R\x05model\x88\x01\x01\x12'\n" +
-	"\x0ftmux_unattended\x18\x10 \x01(\bR\x0etmuxUnattendedB\f\n" +
+	"\x0ftmux_unattended\x18\x10 \x01(\bR\x0etmuxUnattended\x12\"\n" +
+	"\n" +
+	"account_id\x18\x11 \x01(\tH\aR\taccountId\x88\x01\x01\x12!\n" +
+	"\fforce_branch\x18\x12 \x01(\bR\vforceBranchB\f\n" +
 	"\n" +
 	"_pr_numberB\x0e\n" +
 	"\f_branch_nameB\r\n" +
@@ -4243,7 +4264,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\f_tracker_urlB\x10\n" +
 	"\x0e_tracker_issueB\x11\n" +
 	"\x0f_tracker_sourceB\b\n" +
-	"\x06_model\"\\\n" +
+	"\x06_modelB\r\n" +
+	"\v_account_id\"\\\n" +
 	"\x0fWakeChatCommand\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x1f\n" +
 	"\vforce_fresh\x18\x02 \x01(\bR\n" +

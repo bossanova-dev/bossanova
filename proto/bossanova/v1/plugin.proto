@@ -642,6 +642,9 @@ message GetChatTitleRequest {
 message GetChatTitleResponse {
   bool supported = 1;
   string title = 2;
+  // explicit is true when title came from an agent-side rename signal rather
+  // than the first-user-message fallback.
+  bool explicit = 3;
 }
 
 message SuggestPRTitleRequest {

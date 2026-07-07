@@ -99,7 +99,7 @@ test('discoverExtensions finds prefixed skills, orders by (order, name), filters
   assert.ok(skipped.some((s) => s.name === 'bs-review-foreign' && /extends/.test(s.reason)))
 })
 
-test('discoverExtensions rejects a wrong-role extension into skipped when role is supplied', () => {
+test('discoverExtensions omits known cross-role siblings when role is supplied', () => {
   const root = scratchRoot()
   writeSkill(root, 'bs-plan-house-style', [
     'name: bs-plan-house-style',
@@ -122,7 +122,50 @@ test('discoverExtensions rejects a wrong-role extension into skipped when role i
     extensions.map((e) => e.name),
     ['bs-plan-house-style'],
   )
-  assert.ok(skipped.some((s) => s.name === 'bs-plan-mislabeled' && /role/.test(s.reason)))
+  assert.deepEqual(skipped, [])
+})
+
+test('discoverExtensions rejects an unknown wrong-role extension into skipped', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'bs-plan-house-style', [
+    'name: bs-plan-house-style',
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: plan-reviewer',
+  ])
+  writeSkill(root, 'bs-plan-typo', [
+    'name: bs-plan-typo',
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: plan-reviwer',
+  ])
+  const { extensions, skipped } = discoverExtensions({
+    core: 'bs-plan',
+    root,
+    role: 'plan-reviewer',
+  })
+  assert.deepEqual(
+    extensions.map((e) => e.name),
+    ['bs-plan-house-style'],
+  )
+  assert.ok(skipped.some((s) => s.name === 'bs-plan-typo' && /role/.test(s.reason)))
+})
+
+test('discoverExtensions ignores boss-plan draft sibling during plan-review discovery', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'boss-plan-draft', [
+    'name: boss-plan-draft',
+    'x-boss-extension:',
+    '  extends: boss-plan',
+    '  role: draft',
+  ])
+  const { extensions, skipped } = discoverExtensions({
+    core: 'boss-plan',
+    root,
+    role: 'plan-reviewer',
+  })
+  assert.deepEqual(extensions, [])
+  assert.deepEqual(skipped, [])
 })
 
 test('discoverExtensions returns every marker-matched role when role is omitted', () => {
@@ -167,6 +210,28 @@ test('validateResult accepts a well-formed lens envelope', () => {
     items: [{ severity: 'Warning', file: 'a.go', line: 3, title: 't', detail: 'd' }],
   }
   assert.deepEqual(validateResult(envelope, 'lens'), { ok: true, errors: [] })
+})
+
+test('validateResult accepts a well-formed round envelope', () => {
+  const envelope = {
+    ok: true,
+    extension: 'boss-review-requesting',
+    role: 'round',
+    items: [{ severity: 'Warning', file: 'a.go', line: 3, title: 't', detail: 'd' }],
+  }
+  assert.deepEqual(validateResult(envelope, 'round'), { ok: true, errors: [] })
+})
+
+test('validateResult rejects a round envelope missing a findings key', () => {
+  const envelope = {
+    ok: true,
+    extension: 'boss-review-requesting',
+    role: 'round',
+    items: [{ severity: 'Warning', file: 'a.go', line: 3, title: 't' }],
+  }
+  const result = validateResult(envelope, 'round')
+  assert.equal(result.ok, false)
+  assert.ok(result.errors.some((e) => /missing "detail"/.test(e)))
 })
 
 test('validateResult accepts a well-formed surface envelope', () => {
@@ -230,8 +295,17 @@ test('validateResult never throws on a non-object envelope', () => {
   assert.equal(result.ok, false)
 })
 
-test('ROLE_SCHEMAS enumerates the three consumer roles', () => {
-  assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), ['lens', 'plan-reviewer', 'surface'])
+test('ROLE_SCHEMAS enumerates the consumer roles', () => {
+  assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), ['lens', 'plan-reviewer', 'round', 'surface'])
+  assert.deepEqual(ROLE_SCHEMAS.round, ROLE_SCHEMAS.lens)
+})
+
+test('extension contract documents draft as a plan-writing exception', () => {
+  const contract = fs.readFileSync('docs/skills/extension-contract.md', 'utf8')
+  assert.match(contract, /`draft` → `\{ mode, planPath, ticket, designDoc\? \}`/)
+  assert.match(contract, /`draft` is the behavior-writing exception/)
+  assert.match(contract, /does not use `ROLE_SCHEMAS`, `items\[\]`, or `validate --role draft`/)
+  assert.match(contract, /may write only `context\.planPath` and `outPath`/)
 })
 
 test('CLI discover --json prints extensions and exits 0 with none', () => {
@@ -265,7 +339,7 @@ test('CLI discover --json lists a discovered extension', () => {
   assert.equal(parsed.extensions[0].role, 'plan-reviewer')
 })
 
-test('CLI discover --role filters a wrong-role extension into skipped', () => {
+test('CLI discover --role omits known cross-role siblings', () => {
   const root = scratchRoot()
   writeSkill(root, 'bs-plan-house-style', [
     'name: bs-plan-house-style',
@@ -299,7 +373,7 @@ test('CLI discover --role filters a wrong-role extension into skipped', () => {
     parsed.extensions.map((e) => e.name),
     ['bs-plan-house-style'],
   )
-  assert.ok(parsed.skipped.some((s) => s.name === 'bs-plan-mislabeled' && /role/.test(s.reason)))
+  assert.deepEqual(parsed.skipped, [])
 })
 
 test('CLI discover exits 2 when --core has no value', () => {

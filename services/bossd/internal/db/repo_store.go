@@ -31,6 +31,10 @@ func NewRepoStore(db *sql.DB) *SQLiteRepoStore {
 }
 
 func (s *SQLiteRepoStore) Create(ctx context.Context, params CreateRepoParams) (*models.Repo, error) {
+	if err := s.ensureUniqueCanonicalOrigin(ctx, params.OriginURL, ""); err != nil {
+		return nil, err
+	}
+
 	id, err := sqlutil.NewID()
 	if err != nil {
 		return nil, fmt.Errorf("new repo id: %w", err)
@@ -67,15 +71,15 @@ func (s *SQLiteRepoStore) GetByOrigin(ctx context.Context, originURL string) (*m
 		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
 		 FROM repos WHERE origin_url = ?`, originURL)
 	repo, err := scanRepo(row)
-	if err == nil {
-		return repo, nil
-	}
-	if err != sql.ErrNoRows {
+	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
 
-	_, targetWebURL, ok := vcs.RepoWebLink(originURL)
-	if !ok {
+	targetWebURL := vcs.NormalizeRepoURL(originURL)
+	if targetWebURL == "" {
+		if err == nil {
+			return repo, nil
+		}
 		return nil, sql.ErrNoRows
 	}
 
@@ -85,8 +89,8 @@ func (s *SQLiteRepoStore) GetByOrigin(ctx context.Context, originURL string) (*m
 	}
 	var match *models.Repo
 	for _, repo := range repos {
-		_, repoWebURL, ok := vcs.RepoWebLink(repo.OriginURL)
-		if !ok || repoWebURL != targetWebURL {
+		repoWebURL := vcs.NormalizeRepoURL(repo.OriginURL)
+		if repoWebURL == "" || repoWebURL != targetWebURL {
 			continue
 		}
 		if match != nil {
@@ -95,6 +99,9 @@ func (s *SQLiteRepoStore) GetByOrigin(ctx context.Context, originURL string) (*m
 		match = repo
 	}
 	if match == nil {
+		if repo != nil {
+			return repo, nil
+		}
 		return nil, sql.ErrNoRows
 	}
 	return match, nil
@@ -121,6 +128,12 @@ func (s *SQLiteRepoStore) List(ctx context.Context) ([]*models.Repo, error) {
 }
 
 func (s *SQLiteRepoStore) Update(ctx context.Context, id string, params UpdateRepoParams) (*models.Repo, error) {
+	if params.OriginURL != nil {
+		if err := s.ensureUniqueCanonicalOrigin(ctx, *params.OriginURL, id); err != nil {
+			return nil, err
+		}
+	}
+
 	now := sqlutil.TimeNow()
 	sets := []string{"updated_at = ?"}
 	args := []any{now}
@@ -187,6 +200,29 @@ func (s *SQLiteRepoStore) Update(ctx context.Context, id string, params UpdateRe
 		return nil, sql.ErrNoRows
 	}
 	return s.Get(ctx, id)
+}
+
+func (s *SQLiteRepoStore) ensureUniqueCanonicalOrigin(ctx context.Context, originURL string, excludeID string) error {
+	targetWebURL := vcs.NormalizeRepoURL(originURL)
+	if targetWebURL == "" {
+		return nil
+	}
+
+	repos, err := s.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, repo := range repos {
+		if repo.ID == excludeID {
+			continue
+		}
+		repoWebURL := vcs.NormalizeRepoURL(repo.OriginURL)
+		if repoWebURL == "" || repoWebURL != targetWebURL {
+			continue
+		}
+		return fmt.Errorf("%w: %q", ErrAmbiguousOrigin, targetWebURL)
+	}
+	return nil
 }
 
 func (s *SQLiteRepoStore) Delete(ctx context.Context, id string) error {

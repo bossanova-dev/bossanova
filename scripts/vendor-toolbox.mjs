@@ -1,6 +1,6 @@
 // scripts/vendor-toolbox.mjs — copy the canonical skills-toolbox/ helpers into
 // each consuming skill's toolbox/ subdir, or verify no drift (--check).
-// Mirrors the sync-codex-skills / construct-skills drift-gate idiom. Node builtins only.
+// Mirrors the sync-codex-skills drift-gate idiom. Node builtins only.
 import { mkdirSync, readFileSync, writeFileSync, statSync, chmodSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -41,21 +41,35 @@ export const VENDOR_MAP = {
   'bs-sweep-security': ['bs-run-sentinel.mjs'],
 }
 
-export function vendorToolbox({ sourceRoot, skillsRoot, check }) {
-  // Public-mirror checkouts strip .claude/skills entirely (mirror-public.yml), so
-  // --check would flag every vendored destination as missing and break `make test`
-  // there. Skip when the skills root is absent, mirroring codex-skills-check's skip
-  // when its source root has been stripped. Only relevant to --check: `make
-  // vendor-toolbox` (write mode) runs in a full checkout where the root exists.
-  if (check && !existsSync(skillsRoot)) {
-    return { changed: false, differences: [], skipped: true }
-  }
+// The published core skills whose canonical committed home is the embedded
+// skillinstall payload (BOS-271), not .claude/skills. Their toolbox/ vendors into
+// services/boss/internal/skillinstall/skills/<s>/toolbox/; every other VENDOR_MAP
+// entry (the repo-local bs-sweep-*) still vendors into .claude/skills/<s>/toolbox/.
+export const PUBLISHED_SKILLS = new Set(['boss-review', 'boss-implement', 'boss-epic', 'boss-plan'])
+
+export function vendorToolbox({ sourceRoot, skillsRoot, publishedRoot, check }) {
+  // Each skill resolves to its own destination root: a published core → publishedRoot
+  // (the skillinstall payload), everything else → skillsRoot (.claude/skills). When
+  // publishedRoot is omitted every skill falls back to skillsRoot, preserving the
+  // single-root unit-test contract.
+  const rootFor = (skill) =>
+    PUBLISHED_SKILLS.has(skill) && publishedRoot ? publishedRoot : skillsRoot
   const differences = []
   let changed = false
+  let anyChecked = false
   for (const [skill, files] of Object.entries(VENDOR_MAP)) {
+    const destRoot = rootFor(skill)
+    // Public-mirror checkouts strip .claude/skills entirely (mirror-public.yml) but
+    // keep the skillinstall payload, so --check skips only the skills whose own
+    // destination root is absent rather than bailing on the whole run — a public
+    // checkout still verifies the skillinstall-homed cores while skipping the
+    // stripped .claude-local skills. Only relevant to --check: write mode runs in a
+    // full checkout where both roots exist.
+    if (check && !existsSync(destRoot)) continue
+    anyChecked = true
     for (const file of files) {
       const src = join(sourceRoot, file)
-      const dest = join(skillsRoot, skill, 'toolbox', file)
+      const dest = join(destRoot, skill, 'toolbox', file)
       const srcBuf = readFileSync(src)
       const srcMode = statSync(src).mode & 0o777
       let destBuf = null
@@ -94,6 +108,11 @@ export function vendorToolbox({ sourceRoot, skillsRoot, check }) {
       chmodSync(dest, srcMode) // preserve the +x bit on worktree-lock.sh
     }
   }
+  // Nothing verified (every destination root stripped, e.g. a public mirror missing
+  // both .claude/skills and the skillinstall payload): report a skip, not success.
+  if (check && !anyChecked) {
+    return { changed: false, differences: [], skipped: true }
+  }
   return { changed, differences }
 }
 
@@ -101,14 +120,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const check = process.argv.includes('--check')
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
   const skillsRoot = join(repoRoot, '.claude', 'skills')
+  const publishedRoot = join(repoRoot, 'services', 'boss', 'internal', 'skillinstall', 'skills')
   const res = vendorToolbox({
     sourceRoot: join(repoRoot, 'skills-toolbox'),
     skillsRoot,
+    publishedRoot,
     check,
   })
   if (res.skipped) {
     process.stdout.write(
-      `Skipped vendored toolbox check: ${skillsRoot} is absent (skills stripped)\n`,
+      `Skipped vendored toolbox check: ${skillsRoot} and ${publishedRoot} are absent (skills stripped)\n`,
     )
   } else if (check && res.changed) {
     process.stderr.write('Vendored skill toolboxes are stale. Run `make vendor-toolbox`.\n')

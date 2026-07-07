@@ -13,13 +13,14 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/db"
 )
 
 // liveSmokeUnavailableDetail is recorded as last_test_error and returned as the
 // TestAccount detail when no AccountSmokeRunner is wired.
-const liveSmokeUnavailableDetail = "live smoke runner unavailable"
+const liveSmokeUnavailableDetail = "provider verification unavailable"
 
 // ListAccounts returns registry accounts, optionally filtered by provider.
 // Metadata only — credential blobs never cross the wire.
@@ -64,6 +65,10 @@ func (s *Server) AddAccount(ctx context.Context, req *connect.Request[pb.AddAcco
 	if label == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("label is required"))
 	}
+	if isReservedAccountLabel(label) {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("label %q is reserved for the system-default account", account.UnmanagedLocalCredentialsLabel))
+	}
 	if len(msg.Credential) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("credential is required"))
 	}
@@ -85,7 +90,8 @@ func (s *Server) AddAccount(ctx context.Context, req *connect.Request[pb.AddAcco
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create account: %w", err))
 	}
 
-	if err := s.accountCreds.Save(account.ID, msg.Credential); err != nil {
+	credential := normalizeCredentialBlobForSave(provider, msg.Credential)
+	if err := s.accountCreds.Save(account.ID, credential); err != nil {
 		// Roll back so we never keep metadata for an account whose credential
 		// never landed in the keyring.
 		if delErr := s.accounts.Delete(ctx, account.ID); delErr != nil {
@@ -96,6 +102,104 @@ func (s *Server) AddAccount(ctx context.Context, req *connect.Request[pb.AddAcco
 	}
 
 	return connect.NewResponse(&pb.AddAccountResponse{Account: accountToProto(account)}), nil
+}
+
+// RefreshAccount replaces an existing account's stored credential in place.
+// The credential is inbound-only and never appears in the response.
+func (s *Server) RefreshAccount(ctx context.Context, req *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error) {
+	msg := req.Msg
+	id := strings.TrimSpace(msg.GetId())
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	}
+	if len(msg.GetCredential()) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("credential is required"))
+	}
+	account, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get account: %w", err))
+	}
+	if s.accountCreds == nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("account credential store not configured"))
+	}
+	credential := normalizeCredentialBlobForSave(string(account.Provider), msg.GetCredential())
+	if err := s.accountCreds.Save(id, credential); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save account credential: %w", err))
+	}
+	if msg.GetTestAfterSave() {
+		testResp, err := s.TestAccount(ctx, connect.NewRequest(&pb.TestAccountRequest{Id: id}))
+		if err != nil {
+			s.deleteRefreshedCredentialOnNotFound(id, err)
+			return nil, err
+		}
+		smokeUnavailable := !testResp.Msg.GetLiveSmokeRan() && testResp.Msg.GetDetail() == liveSmokeUnavailableDetail
+		if testResp.Msg.GetAccount().GetLastTestError() == "" || smokeUnavailable {
+			account, err := s.restoreAccountHealth(ctx, id)
+			if err != nil {
+				s.deleteRefreshedCredentialOnNotFound(id, err)
+				return nil, err
+			}
+			testResp.Msg.Account = accountToProto(account)
+		} else if testResp.Msg.GetLiveSmokeRan() || testResp.Msg.GetDetail() != liveSmokeUnavailableDetail {
+			account, err := s.failAccountHealth(ctx, id)
+			if err != nil {
+				s.deleteRefreshedCredentialOnNotFound(id, err)
+				return nil, err
+			}
+			testResp.Msg.Account = accountToProto(account)
+		}
+		return connect.NewResponse(&pb.RefreshAccountResponse{
+			Account:      testResp.Msg.GetAccount(),
+			LiveSmokeRan: testResp.Msg.GetLiveSmokeRan(),
+			Detail:       testResp.Msg.GetDetail(),
+		}), nil
+	}
+	account, err = s.restoreAccountHealth(ctx, id)
+	if err != nil {
+		s.deleteRefreshedCredentialOnNotFound(id, err)
+		return nil, err
+	}
+	return connect.NewResponse(&pb.RefreshAccountResponse{
+		Account: accountToProto(account),
+		Detail:  "credential refreshed",
+	}), nil
+}
+
+func (s *Server) deleteRefreshedCredentialOnNotFound(id string, err error) {
+	if connect.CodeOf(err) != connect.CodeNotFound || s.accountCreds == nil {
+		return
+	}
+	if delErr := s.accountCreds.Delete(id); delErr != nil && !errors.Is(delErr, accountcred.ErrCredentialNotFound) {
+		s.logger.Warn().Err(delErr).Str("account_id", id).
+			Msg("RefreshAccount: credential cleanup failed after account disappeared")
+	}
+}
+
+func (s *Server) restoreAccountHealth(ctx context.Context, id string) (*models.Account, error) {
+	healthy := models.AccountHealthOK
+	account, err := s.accounts.Update(ctx, id, db.UpdateAccountParams{Health: &healthy})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("restore account health: %w", err))
+	}
+	return account, nil
+}
+
+func (s *Server) failAccountHealth(ctx context.Context, id string) (*models.Account, error) {
+	failed := models.AccountHealthFailed
+	account, err := s.accounts.Update(ctx, id, db.UpdateAccountParams{Health: &failed})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("fail account health: %w", err))
+	}
+	return account, nil
 }
 
 // UpdateAccount mutates account metadata. A field is only updated when the
@@ -111,6 +215,10 @@ func (s *Server) UpdateAccount(ctx context.Context, req *connect.Request[pb.Upda
 		v := strings.TrimSpace(*msg.Label)
 		if v == "" {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("label cannot be empty"))
+		}
+		if isReservedAccountLabel(v) {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("label %q is reserved for the system-default account", account.UnmanagedLocalCredentialsLabel))
 		}
 		params.Label = &v
 	}
@@ -178,12 +286,12 @@ func (s *Server) RemoveAccount(ctx context.Context, req *connect.Request[pb.Remo
 	return connect.NewResponse(&pb.RemoveAccountResponse{}), nil
 }
 
-// TestAccount validates the account's stored credential and, when a live smoke
-// runner is wired, runs a trivial provider invocation. It records the outcome
-// (last_test_ok_at / last_test_error) and never mutates a running session. A
-// malformed or missing credential records last_test_error and returns an OK
-// result — it does NOT error the RPC. A locked/unreadable keyring is surfaced
-// as CodeInternal.
+// TestAccount validates the account's stored credential and, when a provider
+// verification runner is wired, runs a trivial provider invocation. It records
+// the outcome (last_test_ok_at / last_test_error) and never mutates a running
+// session. A malformed or missing credential records last_test_error and
+// returns an OK result — it does NOT error the RPC. A locked/unreadable keyring
+// is surfaced as CodeInternal.
 func (s *Server) TestAccount(ctx context.Context, req *connect.Request[pb.TestAccountRequest]) (*connect.Response[pb.TestAccountResponse], error) {
 	id := strings.TrimSpace(req.Msg.Id)
 	if id == "" {
@@ -216,8 +324,9 @@ func (s *Server) TestAccount(ctx context.Context, req *connect.Request[pb.TestAc
 		return s.recordAndRespond(ctx, id, false, err.Error())
 	}
 
-	// Credential is well-formed. Run the live smoke when a runner is wired;
-	// otherwise degrade cleanly and report that the live exec is deferred.
+	// Credential is well-formed. Run provider verification when a runner is
+	// wired; otherwise degrade cleanly and report that verification is
+	// unavailable.
 	if s.accountSmoke == nil {
 		return s.recordAndRespond(ctx, id, false, liveSmokeUnavailableDetail)
 	}
@@ -228,7 +337,7 @@ func (s *Server) TestAccount(ctx context.Context, req *connect.Request[pb.TestAc
 }
 
 // recordAndRespond persists a TestAccount outcome and builds the response.
-// detail == "" with liveSmokeRan means the smoke passed (records
+// detail == "" with liveSmokeRan means verification passed (records
 // last_test_ok_at); a non-empty detail records last_test_error and clears
 // last_test_ok_at. The account metadata is re-read so the response reflects the
 // recorded result.
@@ -246,6 +355,9 @@ func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan b
 	}
 	account, err := s.accounts.Get(ctx, id)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
+		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get account: %w", err))
 	}
 	respDetail := detail
@@ -260,7 +372,7 @@ func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan b
 }
 
 // validateCredentialBlob checks a stored credential is well-formed for its
-// provider before the live smoke runner spends a provider invocation on it.
+// provider before provider verification spends an invocation on it.
 // claude: a non-empty setup-token string. codex: JSON carrying
 // access/refresh/id_token keys.
 func validateCredentialBlob(provider string, blob []byte) error {
@@ -271,6 +383,7 @@ func validateCredentialBlob(provider string, blob []byte) error {
 		}
 		return nil
 	case models.AccountProviderCodex:
+		blob = normalizeCredentialBlobForSave(provider, blob)
 		var payload map[string]json.RawMessage
 		if err := json.Unmarshal(blob, &payload); err != nil {
 			return fmt.Errorf("codex credential is not valid JSON")
@@ -284,6 +397,50 @@ func validateCredentialBlob(provider string, blob []byte) error {
 	default:
 		return fmt.Errorf("unknown provider: %s", provider)
 	}
+}
+
+func normalizeCredentialBlobForSave(provider string, blob []byte) []byte {
+	if models.AccountProvider(provider) != models.AccountProviderCodex {
+		return blob
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &payload); err != nil || payload == nil {
+		return blob
+	}
+	var tokens map[string]json.RawMessage
+	if err := json.Unmarshal(payload["tokens"], &tokens); err != nil || tokens == nil {
+		return blob
+	}
+	for _, field := range []struct {
+		token string
+		top   string
+	}{
+		{token: "access_token", top: "access"},
+		{token: "refresh_token", top: "refresh"},
+		{token: "id_token", top: "id_token"},
+	} {
+		raw, ok := tokens[field.token]
+		if !ok || len(bytes.TrimSpace(raw)) == 0 {
+			continue
+		}
+		payload[field.top] = append(json.RawMessage(nil), raw...)
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return blob
+	}
+	return out
+}
+
+// isReservedAccountLabel reports whether label collides (case-insensitively)
+// with the reserved system-default "account 0" label. Reserving it at
+// create/update time guarantees no real rotation account can ever take the
+// "Unmanaged local credentials" label, which keeps the apiversion V20260706
+// down-convert (keyed on that literal for the switch response, which carries no
+// account id) unambiguous — a pinned client only ever sees "System default"
+// restored for the genuine unbound target.
+func isReservedAccountLabel(label string) bool {
+	return strings.EqualFold(strings.TrimSpace(label), account.UnmanagedLocalCredentialsLabel)
 }
 
 func validAccountProvider(p string) bool {

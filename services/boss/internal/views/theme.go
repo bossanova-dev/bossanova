@@ -131,7 +131,7 @@ func maxColWidth(header string, values []string, cap int) int {
 			w = vw
 		}
 	}
-	if w > cap {
+	if cap > 0 && w > cap {
 		return cap
 	}
 	return w
@@ -174,7 +174,60 @@ func CLIColumnsWidth(cols []table.Column) int {
 	return w
 }
 
+// RenderCLITable renders non-interactive CLI tables with compact, deterministic
+// spacing. Bubble table adds per-cell padding that can make adjacent text-heavy
+// columns look separated by a variable gap.
+func RenderCLITable(cols []table.Column, rows []table.Row) string {
+	var b strings.Builder
+	headers := make(table.Row, len(cols))
+	for i, col := range cols {
+		headers[i] = col.Title
+	}
+	writeCLITableRow(&b, cols, headers)
+	for _, row := range rows {
+		b.WriteByte('\n')
+		writeCLITableRow(&b, cols, row)
+	}
+	return b.String()
+}
+
+func writeCLITableRow(b *strings.Builder, cols []table.Column, cells table.Row) {
+	for i, col := range cols {
+		if i > 0 {
+			b.WriteString("  ")
+		}
+		cell := ""
+		if i < len(cells) {
+			cell = truncateDisplay(cells[i], col.Width)
+		}
+		b.WriteString(cell)
+		if pad := col.Width - lipgloss.Width(cell); pad > 0 {
+			b.WriteString(strings.Repeat(" ", pad))
+		}
+	}
+}
+
+func truncateDisplay(s string, maxWidth int) string {
+	if maxWidth <= 0 || lipgloss.Width(s) <= maxWidth {
+		return s
+	}
+	if maxWidth <= 3 {
+		return strings.Repeat(".", maxWidth)
+	}
+	var b strings.Builder
+	for _, r := range s {
+		next := b.String() + string(r)
+		if lipgloss.Width(next) > maxWidth-3 {
+			break
+		}
+		b.WriteRune(r)
+	}
+	b.WriteString("...")
+	return b.String()
+}
+
 // MaxColWidth is the exported version of maxColWidth for use by cmd/ package.
+// A non-positive cap leaves the width uncapped.
 func MaxColWidth(header string, values []string, cap int) int {
 	return maxColWidth(header, values, cap)
 }
@@ -229,10 +282,10 @@ type bannerOpts struct {
 // accountBannerLabel renders the bound-account label shown beside the worktree
 // line in the session banner. The Session message carries only the account id
 // today (no server-provided label), so we surface that id verbatim and fall
-// back to "System default" for an unbound session. Best-effort — never panics.
+// back to "Unmanaged" for an unbound session. Best-effort — never panics.
 func accountBannerLabel(accountID string) string {
 	if accountID == "" {
-		return "System default"
+		return UnmanagedLocalCredentialsShortLabel
 	}
 	return accountID
 }
@@ -280,7 +333,7 @@ func renderBanner(active View, opts bannerOpts) string {
 		line1 = title
 
 		// Worktree root path, followed by the bound account label (best-effort;
-		// "System default" when the session is unbound).
+		// "Unmanaged" when the session is unbound).
 		wt := opts.session.GetWorktreePath()
 		if home, err := os.UserHomeDir(); err == nil {
 			wt = strings.Replace(wt, home, "~", 1)

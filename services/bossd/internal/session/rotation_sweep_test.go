@@ -122,9 +122,10 @@ func TestSweepParkedRotations_SurvivesDaemonRestart(t *testing.T) {
 		logger:      zerolog.Nop(),
 	}
 	fresh.SetProofEnvResolver(fakeProofEnvResolver{env: map[string]string{}})
-	fresh.SetRotationDecider(&fakeRotationDecider{
+	freshDecider := &fakeRotationDecider{
 		outcome: rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "acct-next"}},
-	})
+	}
+	fresh.SetRotationDecider(freshDecider.Decide)
 	fresh.SetRotationBinding(&fakeRotationBinding{
 		binding: RotationBinding{CappedAccountID: "acct-capped", Provider: "claude", RotationCapable: true},
 		bound:   true,
@@ -192,5 +193,29 @@ func TestSweepParkedRotations_KillSwitchDisables(t *testing.T) {
 	}
 	if f.sessions.sessions[f.sessionID].State != machine.Blocked {
 		t.Errorf("state changed while kill switch engaged")
+	}
+}
+
+func TestSweepParkedRotations_LiveKillSwitchDisables(t *testing.T) {
+	past := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	f := newParkedRotationFixture(t, past)
+	enabled := true
+	disabled := false
+	f.lc.SetRotationConfig(config.RotationConfig{Enabled: &enabled})
+	f.lc.SetRotationConfigLoader(func() (config.RotationConfig, error) {
+		return config.RotationConfig{Enabled: &disabled}, nil
+	})
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "x"}}
+	f.lc.SetClockForTest(fixedClock(past.Add(time.Hour)))
+
+	n := f.lc.SweepParkedRotations(context.Background())
+	if n != 0 {
+		t.Fatalf("redispatched = %d, want 0 (live kill switch)", n)
+	}
+	if f.decider.calls != 0 {
+		t.Errorf("decider must not run with the live kill switch engaged")
+	}
+	if f.sessions.sessions[f.sessionID].State != machine.Blocked {
+		t.Errorf("state changed while live kill switch engaged")
 	}
 }

@@ -81,6 +81,7 @@ type Backend interface {
 	// credential blob straight into the keyring; no method ever returns it.
 	ListAccounts(ctx context.Context, provider string) ([]*pb.Account, error)
 	AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error)
+	RefreshAccount(ctx context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error)
 	UpdateAccount(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error)
 	RemoveAccount(ctx context.Context, id string) error
 	TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error)

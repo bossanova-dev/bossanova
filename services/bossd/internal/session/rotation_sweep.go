@@ -36,7 +36,8 @@ func (l *Lifecycle) SetClockForTest(fn func() time.Time) { l.clock = fn }
 // The kill switch (RotationEnabled) also disables the sweep. Returns the number
 // of sessions re-dispatched this pass.
 func (l *Lifecycle) SweepParkedRotations(ctx context.Context) (redispatched int) {
-	if !l.rotationConfig.RotationEnabled() {
+	rotationConfig, ok := l.currentRotationConfig()
+	if !ok || !rotationConfig.RotationEnabled() {
 		return 0
 	}
 	if l.sessions == nil {
@@ -73,9 +74,8 @@ func (l *Lifecycle) SweepParkedRotations(ctx context.Context) (redispatched int)
 // rotating outcome leaves the session parked for the next sweep. Returns true
 // only when the session was actually re-dispatched.
 func (l *Lifecycle) redispatchParkedRotation(ctx context.Context, session *models.Session) bool {
-	// Every seam must be wired; until BOS-170 supplies the live binding +
-	// materializer these are nil in production and parked runs simply stay
-	// parked (fail-safe — a human unblocks).
+	// Every seam must be wired; nil test/legacy wiring leaves parked runs in
+	// place (fail-safe — a human unblocks).
 	if l.rotationBinding == nil || l.rotationDecider == nil || l.accountMaterializer == nil {
 		return false
 	}
@@ -94,7 +94,7 @@ func (l *Lifecycle) redispatchParkedRotation(ctx context.Context, session *model
 
 	// No ResetAt at resume time: the banner that carried it is long gone; the
 	// engine decides purely on current account cooldown state.
-	outcome, err := l.rotationDecider.Decide(ctx, rotation.Signal{
+	outcome, err := l.rotationDecider(ctx, rotation.Signal{
 		Provider:        b.Provider,
 		CappedAccountID: b.CappedAccountID,
 		Kind:            rotation.UsageLimited,

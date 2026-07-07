@@ -332,8 +332,8 @@ message Session {
   // system-default account 0 (no injected env, D9).
   optional string account_id = 57;
 
-  // account_label is the server-resolved human label for account_id ("System
-  // default" when unbound); read-only, non-secret.
+  // account_label is the server-resolved human label for account_id ("Unmanaged
+  // local credentials" when unbound); read-only, non-secret.
   optional string account_label = 58;
 
   // Recent rotation audit events (newest first, capped server-side at 10),

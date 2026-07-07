@@ -12,8 +12,8 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// expectedTools is the complete set of 50 bossanova MCP tool names:
-// 18 read-only + 22 mutating + 10 destructive.
+// expectedTools is the complete set of 51 bossanova MCP tool names:
+// 18 read-only + 23 mutating + 10 destructive.
 var expectedTools = []string{
 	// read-only (18)
 	"list_sessions",
@@ -53,6 +53,7 @@ var expectedTools = []string{
 	"update_cron_job",
 	"run_cron_job_now",
 	"add_account",
+	"refresh_account",
 	"update_account",
 	"test_account",
 	"send_chat_message",

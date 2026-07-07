@@ -210,18 +210,17 @@ test('CLI exits non-zero on an unknown subcommand', () => {
 // byte-identical in the boss-review skill that documents them.
 // ---------------------------------------------------------------------------
 
-// Public-mirror checkouts strip .claude/skills (mirror-public.yml) while keeping
-// skills-toolbox/, so this cross-file assertion would ENOENT there. Skip it when
-// the skill source is absent — the sentinel-contract tests above still run.
+// boss-review is a published core: its canonical committed home is the skillinstall
+// payload (BOS-271), which the public mirror keeps (only .claude/.codex are stripped),
+// so this cross-file assertion normally runs everywhere. The existsSync skip stays as a
+// defensive guard against an unexpectedly absent source rather than ENOENT-ing.
 const bsReviewSkillPath = fileURLToPath(
-  new URL('../.claude/skills/boss-review/SKILL.md', import.meta.url),
+  new URL('../services/boss/internal/skillinstall/skills/boss-review/SKILL.md', import.meta.url),
 )
 test(
   'boss-review SKILL.md still carries the byte-identical sentinels',
   {
-    skip:
-      !existsSync(bsReviewSkillPath) &&
-      'boss-review SKILL.md absent (public mirror strips .claude/skills)',
+    skip: !existsSync(bsReviewSkillPath) && 'boss-review SKILL.md absent',
   },
   () => {
     const skill = readFileSync(bsReviewSkillPath, 'utf8')

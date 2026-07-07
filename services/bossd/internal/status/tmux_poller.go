@@ -224,19 +224,17 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 	}
 }
 
-// refreshChatTitle asks the chat's AgentRunner plugin to extract a chat
-// title from the on-disk transcript and persists it whenever the stored
-// title is still a placeholder ("" or "New chat"). Run from every poll
-// tick on the active chat set: the plugin call is cheap (a JSONL scan over
-// the first ~50 lines) and idempotent (shouldRefreshChatTitle gates the
-// path so chats with real titles never hit the plugin again).
+// refreshChatTitle asks the chat's AgentRunner plugin to extract a chat title
+// from the on-disk transcript. Placeholder titles ("" or "New chat") may be
+// backfilled from first-user-message heuristics; non-placeholder titles are
+// overwritten only when the plugin reports an explicit agent rename.
 //
 // This is the daemon-side counterpart to the TUI's best-effort title
 // backfill — it's what makes Codex chats render with their first user
 // message instead of "New chat" in the web UI (which only reads
 // chat.Title from the database, with no filesystem fallback).
 func (p *TmuxStatusPoller) refreshChatTitle(ctx context.Context, chat *models.AgentChat) {
-	if chat == nil || !shouldRefreshChatTitle(chat.Title) || p.sessions == nil {
+	if chat == nil || p.sessions == nil {
 		return
 	}
 	client, ok := p.agentClients[chat.AgentName]
@@ -257,6 +255,9 @@ func (p *TmuxStatusPoller) refreshChatTitle(ctx context.Context, chat *models.Ag
 	}
 	title := strings.TrimSpace(resp.GetTitle())
 	if title == "" || title == strings.TrimSpace(chat.Title) {
+		return
+	}
+	if !resp.GetExplicit() && !shouldRefreshChatTitle(chat.Title) {
 		return
 	}
 	if err := p.chats.UpdateTitleByAgentSessionID(ctx, chat.AgentSessionID, title); err != nil {

@@ -1202,6 +1202,8 @@ func TestDisplayPollerReconcilesBlockedSessionOnMergedPR(t *testing.T) {
 	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: "sha-merged"}
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	notifier := &mockCompletionNotifier{}
+	poller.SetCompletionNotifier(notifier)
 	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
 		t.Fatalf("RefreshPR returned error: %v", err)
 	}
@@ -1218,6 +1220,15 @@ func TestDisplayPollerReconcilesBlockedSessionOnMergedPR(t *testing.T) {
 	}
 	if sess.LastAttemptHeadSHA != nil {
 		t.Fatalf("LastAttemptHeadSHA = %q, want nil (cleared)", *sess.LastAttemptHeadSHA)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 notifier call, got %d", len(notifier.calls))
+	}
+	if notifier.calls[0].sessionID != "sess-1" {
+		t.Errorf("notified session = %q, want sess-1", notifier.calls[0].sessionID)
+	}
+	if notifier.calls[0].outcome != models.TaskMappingStatusCompleted {
+		t.Errorf("notified outcome = %v, want Completed", notifier.calls[0].outcome)
 	}
 	if !strings.Contains(logs.String(), "reconciled") {
 		t.Fatalf("log output missing reconcile line: %s", logs.String())
@@ -1249,6 +1260,8 @@ func TestDisplayPollerReconcilesBlockedSessionOnClosedPR(t *testing.T) {
 	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateClosed, HeadSHA: "sha-closed"}
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	notifier := &mockCompletionNotifier{}
+	poller.SetCompletionNotifier(notifier)
 	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
 		t.Fatalf("RefreshPR returned error: %v", err)
 	}
@@ -1260,13 +1273,21 @@ func TestDisplayPollerReconcilesBlockedSessionOnClosedPR(t *testing.T) {
 	if sess.BlockedReason != nil {
 		t.Fatalf("BlockedReason = %q, want nil (cleared)", *sess.BlockedReason)
 	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 notifier call, got %d", len(notifier.calls))
+	}
+	if notifier.calls[0].sessionID != "sess-1" {
+		t.Errorf("notified session = %q, want sess-1", notifier.calls[0].sessionID)
+	}
+	if notifier.calls[0].outcome != models.TaskMappingStatusFailed {
+		t.Errorf("notified outcome = %v, want Failed", notifier.calls[0].outcome)
+	}
 }
 
-// TestDisplayPollerLeavesNonBlockedSessionUntouchedOnMerge guards against
-// over-reach: the reconcile fires only from Blocked, so a non-Blocked session
-// whose PR merges keeps its machine state (it is advanced by the dispatcher /
-// webhook path, not by this display-poller backstop).
-func TestDisplayPollerLeavesNonBlockedSessionUntouchedOnMerge(t *testing.T) {
+// TestDisplayPollerReconcilesNonTerminalSessionOnMergedPR covers the missed
+// webhook fallback: if a linked PR is already merged, polling terminal truth must
+// advance stale non-terminal session state too.
+func TestDisplayPollerReconcilesNonTerminalSessionOnMergedPR(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
@@ -1279,19 +1300,30 @@ func TestDisplayPollerLeavesNonBlockedSessionUntouchedOnMerge(t *testing.T) {
 		ID:       "sess-1",
 		RepoID:   "repo-1",
 		PRNumber: intPtr(42),
-		State:    machine.ReadyForReview,
+		State:    machine.ImplementingPlan,
 	}
 
 	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: "sha-merged"}
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	notifier := &mockCompletionNotifier{}
+	poller.SetCompletionNotifier(notifier)
 	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
 		t.Fatalf("RefreshPR returned error: %v", err)
 	}
 
 	sess := sessions.sessions["sess-1"]
-	if sess.State != machine.ReadyForReview {
-		t.Fatalf("state = %v, want ReadyForReview (non-Blocked session must be untouched)", sess.State)
+	if sess.State != machine.Merged {
+		t.Fatalf("state = %v, want Merged (reconciled)", sess.State)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 notifier call, got %d", len(notifier.calls))
+	}
+	if notifier.calls[0].sessionID != "sess-1" {
+		t.Errorf("notified session = %q, want sess-1", notifier.calls[0].sessionID)
+	}
+	if notifier.calls[0].outcome != models.TaskMappingStatusCompleted {
+		t.Errorf("notified outcome = %v, want Completed", notifier.calls[0].outcome)
 	}
 }
 
@@ -1325,6 +1357,8 @@ func TestDisplayPollerClearsStaleBlockReasonOnAlreadyTerminalSession(t *testing.
 	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateClosed, HeadSHA: "sha-closed"}
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	notifier := &mockCompletionNotifier{}
+	poller.SetCompletionNotifier(notifier)
 	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
 		t.Fatalf("RefreshPR returned error: %v", err)
 	}
@@ -1335,6 +1369,9 @@ func TestDisplayPollerClearsStaleBlockReasonOnAlreadyTerminalSession(t *testing.
 	}
 	if sess.BlockedReason != nil {
 		t.Fatalf("BlockedReason = %q, want nil (cleared on terminal row)", *sess.BlockedReason)
+	}
+	if len(notifier.calls) != 0 {
+		t.Fatalf("expected no notifier calls for already-terminal cleanup, got %d", len(notifier.calls))
 	}
 	if sess.AttemptCount != 0 {
 		t.Fatalf("AttemptCount = %d, want 0 (cleared)", sess.AttemptCount)
@@ -1383,6 +1420,8 @@ func TestDisplayPollerRetriesTerminalReconcileAfterStoreError(t *testing.T) {
 	}
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	notifier := &mockCompletionNotifier{}
+	poller.SetCompletionNotifier(notifier)
 
 	// First refresh: reconcile Update fails → tracker must NOT be marked terminal.
 	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
@@ -1393,6 +1432,9 @@ func TestDisplayPollerRetriesTerminalReconcileAfterStoreError(t *testing.T) {
 	}
 	if sessions.sessions["sess-1"].State != machine.Blocked {
 		t.Fatalf("state = %v, want still Blocked after failed reconcile", sessions.sessions["sess-1"].State)
+	}
+	if len(notifier.calls) != 0 {
+		t.Fatalf("expected no notifier call after failed reconcile, got %d", len(notifier.calls))
 	}
 
 	// Second refresh: Update now succeeds → session reconciles to Merged + cleared.
@@ -1405,6 +1447,9 @@ func TestDisplayPollerRetriesTerminalReconcileAfterStoreError(t *testing.T) {
 	}
 	if sess.BlockedReason != nil {
 		t.Fatalf("BlockedReason = %q, want nil after retry", *sess.BlockedReason)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 notifier call after successful retry, got %d", len(notifier.calls))
 	}
 }
 

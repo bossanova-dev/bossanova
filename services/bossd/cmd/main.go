@@ -93,44 +93,81 @@ func (f protoSessionListerFunc) ListSessions(ctx context.Context) ([]*bossanovav
 	return f(ctx)
 }
 
+type streamAccountLabeler interface {
+	Label(context.Context, string) (string, error)
+}
+
+type streamSessionHydrator struct {
+	agentChats        db.AgentChatStore
+	rawSessions       db.SessionStore
+	repos             db.RepoStore
+	chatStatusTracker *status.Tracker
+	rotationEvents    db.RotationEventStore
+	accountLabeler    streamAccountLabeler
+	logger            zerolog.Logger
+}
+
+func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1.Session) {
+	if h == nil || pbSess == nil {
+		return
+	}
+	// Compute base attention before the auth overlay, and hydrate the
+	// stream-only fields that local GetSession/ListSessions also provide.
+	if h.rawSessions != nil {
+		if row, err := h.rawSessions.Get(ctx, pbSess.Id); err == nil && row != nil {
+			if h.repos != nil {
+				if repo, err := h.repos.Get(ctx, row.RepoID); err == nil && repo != nil {
+					server.HydrateBaseAttention(pbSess, row, repo)
+				}
+			}
+			if h.accountLabeler != nil {
+				accountID := ""
+				if row.AccountID != nil {
+					accountID = *row.AccountID
+				}
+				label, _ := h.accountLabeler.Label(ctx, accountID)
+				pbSess.AccountLabel = &label
+			}
+		}
+	}
+	server.HydrateRotationEvents(ctx, h.rotationEvents, h.logger, pbSess, pbSess.Id)
+	if h.agentChats == nil {
+		return
+	}
+	chats, err := h.agentChats.ListBySession(ctx, pbSess.Id)
+	if err != nil {
+		return
+	}
+	server.HydrateAgentObservability(h.chatStatusTracker, pbSess, chats)
+}
+
 func publishAuthFailedSessionDelta(
 	ctx context.Context,
 	agentSessionID string,
-	agentChats db.AgentChatStore,
-	rawSessions db.SessionStore,
-	repos db.RepoStore,
-	chatStatusTracker *status.Tracker,
+	hydrator *streamSessionHydrator,
 	streamBus *upstream.StreamBus,
 	logger zerolog.Logger,
 ) {
-	if agentChats == nil || rawSessions == nil || chatStatusTracker == nil || streamBus == nil {
+	if hydrator == nil || hydrator.agentChats == nil || hydrator.rawSessions == nil || streamBus == nil {
 		return
 	}
-	chat, err := agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	chat, err := hydrator.agentChats.GetByAgentSessionID(ctx, agentSessionID)
 	if err != nil || chat == nil {
 		return
 	}
-	row, err := rawSessions.Get(ctx, chat.SessionID)
+	row, err := hydrator.rawSessions.Get(ctx, chat.SessionID)
 	if err != nil {
 		logger.Debug().Err(err).Str("session_id", chat.SessionID).Msg("auth-change: session lookup failed")
 		return
 	}
 	pbSess := server.SessionToProto(row)
-	if row.RepoID != "" && repos != nil {
-		if r, err := repos.Get(ctx, row.RepoID); err == nil && r != nil {
+	if row.RepoID != "" && hydrator.repos != nil {
+		if r, err := hydrator.repos.Get(ctx, row.RepoID); err == nil && r != nil {
 			pbSess.RepoDisplayName = r.DisplayName
 			pbSess.RepoOriginUrl = server.CanonicalRepoOriginURL(r.OriginURL)
-			// Compute the base attention before the auth overlay so a session that
-			// is already Blocked/Orphaned keeps its real blocked_reason instead of
-			// being clobbered by the low-priority AGENT_AUTH_FAILED overlay below.
-			server.HydrateBaseAttention(pbSess, row, r)
 		}
 	}
-	chats, err := agentChats.ListBySession(ctx, pbSess.Id)
-	if err != nil {
-		return
-	}
-	server.HydrateAgentObservability(chatStatusTracker, pbSess, chats)
+	hydrator.Hydrate(ctx, pbSess)
 	streamBus.Publish(upstream.StreamEvent{
 		Session: &upstream.SessionEvent{
 			Kind:    bossanovav1.SessionDelta_KIND_UPDATED,
@@ -272,6 +309,10 @@ type runOpts struct {
 	// would keep the previous daemon's stale hook URL.
 	onHookPortSet    func()
 	onBootstrapStart func()
+
+	// onRotationSeamsWired, if non-nil, fires synchronously immediately after the
+	// lifecycle's rotation binding and account materializer are installed.
+	onRotationSeamsWired func(live bool)
 }
 
 func run(opts runOpts) error {
@@ -379,6 +420,13 @@ func run(opts runOpts) error {
 	// Credential blobs for account rotation live in the OS keyring, never in
 	// SQLite (decision D3). accountcred links keyring/dbus and is daemon-only.
 	accountCreds := accountcred.New()
+	// Rotation audit trail (BOS-176): one store, shared by the Recorder (which
+	// every rotation decision path writes through), the gRPC server (which
+	// hydrates Session.rotation_events for local reads), and the reverse stream
+	// hydrator (which publishes full Session replacements to bosso).
+	// Auditing never fails a rotation — the Recorder swallows insert errors.
+	rotationEvents := db.NewRotationEventStore(database)
+	rotationRecorder := rotation.NewRecorder(db.NewRotationAuditStore(rotationEvents), log.Logger)
 
 	// The display-status computer needs to read the bare stores; wrap them
 	// after construction so the computer's own writes don't recurse through
@@ -415,50 +463,27 @@ func run(opts runOpts) error {
 	// so the stream overlay never hard-fails.
 	accountLabeler := account.NewResolver(accountwiring.NewRegistry(accounts), nil, log.Logger)
 
+	streamHydrator := &streamSessionHydrator{
+		agentChats:        agentChats,
+		rawSessions:       rawSessions,
+		repos:             repos,
+		chatStatusTracker: chatStatusTracker,
+		rotationEvents:    rotationEvents,
+		accountLabeler:    accountLabeler,
+		logger:            log.Logger,
+	}
+
 	// hydrateSessionForStream applies the same last_agent_activity_at +
-	// AGENT_AUTH_FAILED observability overlay that the local GetSession/
-	// ListSessions RPCs add, to a Session proto bound for the reverse stream.
+	// AGENT_AUTH_FAILED observability overlay, account label, and rotation-event
+	// history that the local GetSession/ListSessions RPCs add, to a Session proto
+	// bound for the reverse stream.
 	// bosso applies session deltas as FULL replacements, so EVERY session
 	// UPDATED delta (and the DaemonSnapshot) must carry this overlay
 	// consistently — otherwise a display recompute that omits it would clobber a
 	// live AGENT_AUTH_FAILED attention back off in the cloud/web read model.
 	// Fails toward NOT flagging on any lookup error (the overlay is best-effort
 	// enrichment, never a hard dependency of the delta).
-	hydrateSessionForStream := func(ctx context.Context, pbSess *bossanovav1.Session) {
-		if pbSess == nil || agentChats == nil {
-			return
-		}
-		// Compute the base attention (blocked/orphaned/…) BEFORE the auth overlay,
-		// exactly as the local GetSession/ListSessions RPCs do. Reverse-stream
-		// protos come straight from SessionToProto, which carries blocked_reason
-		// but no attention_status, and HydrateAgentObservability only overlays
-		// AGENT_AUTH_FAILED where attention_status is nil — so without this a
-		// blocked/orphaned session with an auth-failed chat would have its real
-		// blocked_reason clobbered by the low-priority auth overlay. Best-effort:
-		// skip on any lookup error.
-		if row, err := rawSessions.Get(ctx, pbSess.Id); err == nil && row != nil {
-			if repo, err := repos.Get(ctx, row.RepoID); err == nil && repo != nil {
-				server.HydrateBaseAttention(pbSess, row, repo)
-			}
-			// Populate account_label so cloud/multi-instance web SessionDetail shows
-			// the friendly account name instead of the raw account_id. The local
-			// GetSession/ListSessions RPCs add this via the server's withAccountLabel;
-			// the reverse-stream path must do the same on EVERY delta (bosso applies
-			// deltas as full replacements, so a delta that omits it would blank a
-			// previously-set label). Best-effort: Label never hard-fails.
-			accountID := ""
-			if row.AccountID != nil {
-				accountID = *row.AccountID
-			}
-			label, _ := accountLabeler.Label(ctx, accountID)
-			pbSess.AccountLabel = &label
-		}
-		chats, err := agentChats.ListBySession(ctx, pbSess.Id)
-		if err != nil {
-			return
-		}
-		server.HydrateAgentObservability(chatStatusTracker, pbSess, chats)
-	}
+	hydrateSessionForStream := streamHydrator.Hydrate
 
 	// Wire the chat-status tracker similarly. It is keyed by claude_id, so
 	// resolve to a session before calling Recompute. In addition to the
@@ -680,13 +705,6 @@ func run(opts runOpts) error {
 	checkSnapshots := db.NewCheckSnapshotStore(database)
 	displayPoller.SetSnapshotStore(checkSnapshots)
 
-	// Rotation audit trail (BOS-176): one store, shared by the Recorder (which
-	// every rotation decision path writes through) and the gRPC server below
-	// (which hydrates Session.rotation_events for the TUI/web history). Auditing
-	// never fails a rotation — the Recorder swallows insert errors.
-	rotationEvents := db.NewRotationEventStore(database)
-	rotationRecorder := rotation.NewRecorder(db.NewRotationAuditStore(rotationEvents), log.Logger)
-
 	// --- Plugin Host ---
 
 	pluginBus := eventbus.New(log.Logger)
@@ -841,7 +859,7 @@ func run(opts runOpts) error {
 	pluginHost.SetAccountEnvResolver(accountSpawnEnv)
 	accountSmoke, err := accountwiring.NewSmokeRunner(agentClients, accountCreds, log.Logger)
 	if err != nil {
-		log.Warn().Err(err).Msg("account smoke runner unavailable; account test will validate credential shape only")
+		log.Warn().Err(err).Msg("account provider verification unavailable; account test will validate credential shape only")
 	}
 
 	lifecycle := session.NewLifecycle(sessions, repos, agentChats, cronJobs, worktrees, agentRunner, tmuxClient, ghProvider, log.Logger)
@@ -1018,19 +1036,25 @@ func run(opts runOpts) error {
 	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, agentChats, agentForSession, tmuxClient)
 	lifecycle.SetSessionLiveness(livenessChecker)
 
-	// Auto-rotation wiring (BOS-174). Install the policy knobs (kill switch,
-	// max rotations, sweep interval) and the real rotation.Engine as the
-	// decision port. rotationBinding (session→account binding) and
-	// accountMaterializer (keyring blob → MaterializeAccount RPC overlay) are
-	// deliberately left UNSET here: BOS-170 supplies the live binding + a
-	// materializer adapter, and rotation activates automatically once they are
-	// wired. Until then every seam-gated path (attemptUsageLimitRotation and
-	// SweepParkedRotations) degrades to today's Block on the nil binding, so the
-	// feature is dormant and fail-safe in production.
+	// Auto-rotation wiring. Install policy knobs, the real rotation.Engine, and
+	// the live session→account binding/materializer adapters. Existing gates
+	// still apply: rotation.enabled, ImplementingPlan, per-repo CanAutoRotate,
+	// account-0/unbound sessions, and Block-on-error degradation.
 	lifecycle.SetRotationConfig(settings.Rotation)
-	lifecycle.SetRotationConfigLoader(config.Load)
-	lifecycle.SetRotationDecider(rotationEngine)
+	lifecycle.SetRotationConfigLoader(func() (config.RotationConfig, error) {
+		loaded, err := config.Load()
+		if err != nil {
+			return config.RotationConfig{}, err
+		}
+		return loaded.Rotation, nil
+	})
+	lifecycle.SetRotationDecider(rotationEngine.Decide)
 	lifecycle.SetRotationRecorder(rotationRecorder)
+	lifecycle.SetAccountMaterializer(accountwiring.NewLifecycleMaterializer(accountMaterializer))
+	lifecycle.SetRotationBinding(accountwiring.NewRotationBindingResolver(accountwiring.NewRegistry(accounts), accountMaterializer))
+	if opts.onRotationSeamsWired != nil {
+		opts.onRotationSeamsWired(lifecycle.HasLiveRotationSeams())
+	}
 
 	// Recover sessions left in Finalizing from a previous daemon crash.
 	// They can't be safely re-driven (we don't know whether EnsurePR ran
@@ -1183,8 +1207,9 @@ func run(opts runOpts) error {
 	// likely right after a restart that lands near a scheduled tick.
 
 	// Wire the orchestrator as the completion notifier for the dispatcher
-	// and server so that terminal session states unblock the per-repo task queue.
+	// display poller, and server so terminal session states unblock the per-repo task queue.
 	dispatcher.SetCompletionNotifier(orchestrator)
+	displayPoller.SetCompletionNotifier(orchestrator)
 
 	// --- Tmux Status Poller ---
 
@@ -1260,7 +1285,7 @@ func run(opts runOpts) error {
 	chatStatusTracker.SetOnAuthChange(func(agentSessionID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		publishAuthFailedSessionDelta(ctx, agentSessionID, agentChats, rawSessions, repos, chatStatusTracker, streamBus, log.Logger)
+		publishAuthFailedSessionDelta(ctx, agentSessionID, streamHydrator, streamBus, log.Logger)
 	})
 
 	var streamClient *upstream.StreamClient

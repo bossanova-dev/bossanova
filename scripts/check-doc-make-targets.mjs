@@ -4,10 +4,11 @@
 // resolve to a target the Makefile actually defines. The Makefile is a churn
 // hotspot; without this check a target rename or removal silently breaks the
 // `make` commands documented for contributors and AI agents in CLAUDE.md,
-// AGENTS.md, README.md, and the checked-in agent skills under .claude/skills
-// (whose SKILL.md files tell agents to run targets like `make codex-skills-check`
-// and `make mutate-survivors`). Generated Codex skill copies under .codex are
-// excluded: they are derived from .claude/skills by scripts/sync-codex-skills.mjs.
+// AGENTS.md, README.md, and the checked-in agent skills under the source skill
+// roots (whose SKILL.md files tell agents to run targets like `make
+// codex-skills-check` and `make mutate-survivors`). Generated Codex skill copies
+// under .codex are excluded: they are derived from .claude/skills by
+// scripts/sync-codex-skills.mjs.
 //
 // Exercised by scripts/check-doc-make-targets.test.mjs and runnable via
 // `node scripts/check-doc-make-targets.mjs`.
@@ -18,6 +19,11 @@ import { fileURLToPath } from 'node:url'
 
 // Docs whose `make` commands must stay valid.
 const DOC_FILES = ['CLAUDE.md', 'AGENTS.md', 'README.md']
+const SKILL_DOC_ROOTS = [
+  '.claude/skills',
+  'plugins/bossd-plugin-claude/skilldata/skills',
+  'services/boss/internal/skillinstall/skills',
+]
 
 // The Makefile generates per-plugin targets via `$(call define-plugin-<verb>)`
 // foreach loops. Map each macro to the prefix of the target it instantiates so
@@ -314,14 +320,11 @@ export function discoverModuleShortNames(repoRoot) {
   return [...shortNames]
 }
 
-// Find every checked-in agent skill doc (.claude/skills/**/SKILL.md). These are
-// agent-facing instructions, so their `make` commands must stay runnable just
-// like the root docs. Returns absolute paths in stable (sorted) order. The
-// .codex tree is intentionally not walked: those skills are generated copies.
+// Find every checked-in source skill doc. These are agent-facing instructions,
+// so their `make` commands must stay runnable just like the root docs. Returns
+// absolute paths in stable (sorted) order. The .codex tree is intentionally not
+// walked: those skills are generated copies.
 export function discoverSkillDocs(repoRoot) {
-  const skillsDir = path.join(repoRoot, '.claude', 'skills')
-  if (!fs.existsSync(skillsDir)) return []
-
   const docs = []
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -333,7 +336,9 @@ export function discoverSkillDocs(repoRoot) {
       }
     }
   }
-  walk(skillsDir)
+  for (const root of SKILL_DOC_ROOTS.map((skillRoot) => path.join(repoRoot, skillRoot))) {
+    if (fs.existsSync(root)) walk(root)
+  }
 
   return docs.sort()
 }

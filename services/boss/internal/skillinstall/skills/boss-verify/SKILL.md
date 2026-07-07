@@ -68,8 +68,8 @@ Discover this repo's commands from project instructions, CI, and command files (
 
 ```bash
 # Examples only; use the commands discovered for this repo
-make check
-make format && make test
+make lint
+make test
 pnpm lint && pnpm test
 go test ./...
 ```
@@ -251,15 +251,15 @@ Post-flight checks are complete. Return control to the calling skill or the user
 
 ## Anti-Patterns
 
-| Anti-Pattern             | Problem                        | Fix                                               |
-| ------------------------ | ------------------------------ | ------------------------------------------------- |
+| Anti-Pattern               | Problem                        | Fix                                               |
+| -------------------------- | ------------------------------ | ------------------------------------------------- |
 | Only running regular tests | Misses spec-level verification | Plan tests from the spec, not just the test suite |
-| Single-pass testing      | Leaves failures unfixed        | Fix-and-retry loop until passing                  |
-| Testing everything       | Wastes time on unchanged code  | Focus on what the flight leg built                |
-| Skipping the spec        | Tests don't match requirements | Always read the plan first                        |
-| Infinite retry loop      | Gets stuck on one failure      | Cap at 3 attempts, document and move on           |
-| Silent failures          | Issues hidden from handoff     | Always declare confidence and note limitations    |
-| Writing the handoff      | Not this skill's job           | Return control — the caller decides what's next   |
+| Single-pass testing        | Leaves failures unfixed        | Fix-and-retry loop until passing                  |
+| Testing everything         | Wastes time on unchanged code  | Focus on what the flight leg built                |
+| Skipping the spec          | Tests don't match requirements | Always read the plan first                        |
+| Infinite retry loop        | Gets stuck on one failure      | Cap at 3 attempts, document and move on           |
+| Silent failures            | Issues hidden from handoff     | Always declare confidence and note limitations    |
+| Writing the handoff        | Not this skill's job           | Return control — the caller decides what's next   |
 
 ---
 

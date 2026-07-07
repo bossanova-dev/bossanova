@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/tmux"
 )
 
@@ -67,13 +68,22 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("tmux not available"))
 	}
 
+	// Rewrite an installed custom skill command ("/boss-repair watch",
+	// "/api-review") to the chat agent's command prefix before delivery,
+	// mirroring the plan-launch render path: a raw "/boss-repair" reaches codex
+	// verbatim and its CLI rejects it as unrecognized (codex custom commands use
+	// "$"). The rewrite is scoped to installed skill names, so a codex user's
+	// native built-in ("/model", "/status"), free text, and multi-line input all
+	// pass through unchanged.
+	message := session.RenderBossCommandPrefix(req.Msg.GetMessage(), chatCommandPrefix(chat.AgentName), sess.WorktreePath)
+
 	// submit routes the delivery: true submits a single-line message (Enter +
 	// BOS-228 verifier) and pastes-only a multi-line one; false (default)
 	// prefills the composer. The verifier fails toward "still pending", so a
 	// swallowed Enter surfaces as an error here rather than a silent false
 	// "submitted". The ready marker is resolved from the chat's agent so the
 	// submit path waits for the correct composer glyph (claude "❯", codex "›").
-	if err := spawner.SendMessage(ctx, tmuxName, req.Msg.GetMessage(), req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName)); err != nil {
+	if err := spawner.SendMessage(ctx, tmuxName, message, req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send message: %w", err))
 	}
 

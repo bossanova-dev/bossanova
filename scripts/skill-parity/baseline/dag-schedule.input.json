@@ -1,0 +1,12 @@
+{
+  "nodes": [
+    { "id": "A", "blockedBy": [], "priority": 2, "createdAt": "2026-01-01T00:00:00Z" },
+    { "id": "B", "blockedBy": ["A"], "priority": 1, "createdAt": "2026-01-02T00:00:00Z" },
+    { "id": "C", "blockedBy": ["A"], "priority": 3, "createdAt": "2026-01-03T00:00:00Z" },
+    { "id": "D", "blockedBy": ["EXT-1"], "priority": 2, "createdAt": "2026-01-01T12:00:00Z" }
+  ],
+  "merged": [],
+  "failed": [],
+  "inFlight": [],
+  "externallyCleared": ["EXT-1"]
+}

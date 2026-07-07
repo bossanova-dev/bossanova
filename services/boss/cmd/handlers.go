@@ -1875,14 +1875,14 @@ func resolveArchivedSessionID(c client.BossClient, ctx context.Context, prefix s
 // accountShowLabel renders the bound-account line for `boss show`. It prefers
 // the server-computed account_label (one source of truth, matching the web
 // SessionDetail badge); when the daemon has not populated a label it falls back
-// to the raw account id, and to "System default" for an unbound session (empty
+// to the raw account id, and to the unmanaged label for an unbound session (empty
 // account id = the daemon's default-account policy applied).
 func accountShowLabel(accountID, accountLabel string) string {
 	if accountLabel != "" {
 		return accountLabel
 	}
 	if accountID == "" {
-		return "System default"
+		return views.UnmanagedLocalCredentialsLabel
 	}
 	return accountID
 }

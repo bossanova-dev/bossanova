@@ -1,9 +1,8 @@
 # Interactive mode (read only on the interactive `boss-plan` path)
 
 This reference holds the **interactive-exclusive** prose that the resident SKILL.md body points at:
-the Phase 1 confirmation loop, the Phase 3 design-doc seed, the Phase 4 `plan-eng-review`
-invocation, and the Phase 5 interactive drafting direction. A headless (`BOSS_CRON=true`) run never
-reads this file — headless dispatches the drafting subagent instead
+the Phase 1 confirmation loop, the Phase 3 design-doc seed, and interactive draft resolution. A
+headless (`BOSS_CRON=true`) run never reads this file — headless dispatches the drafting subagent instead
 (`references/headless-drafting-brief.md`). The directives below are preserved **verbatim** from the
 pre-split skill; a negative content assertion in `scripts/boss-plan-skill.test.mjs` pins them so
 interactive behaviour cannot silently drift.
@@ -79,25 +78,35 @@ interactive-only):
    <description or "(none provided)">
    ```
 
-## Phase 4 — Run the plan-eng-review (interactive only)
+## Phase 4 — Resolve the draft/review step (interactive only)
 
-Invoke `plan-eng-review` via the **Skill** tool and run it end-to-end (the seeded design doc makes
-it skip the office-hours offer and use the title/description as input). Let it conduct the full
-interactive interview: scope challenge, architecture, code quality, tests, performance, codex
-outside-voice, and its review report. Carry every decision forward — these become the substance of
-the plan.
+Run `node scripts/skill-extensions.mjs discover --core boss-plan --role draft --json` and read
+both `extensions` and `skipped`; record every skip in the autonomous decisions.
+If the helper is missing in an installed public skill payload, treat discovery as
+`{"extensions":[],"skipped":[]}` so the portable fallback tiers still run.
+
+- **Tier 1:** if one or more extensions are returned, load each discovered extension by its returned
+  descriptor `name` via the Skill tool on the main thread, passing
+  `{ role: "draft", core: "boss-plan", context: { mode: "interactive", planPath, ticket, designDoc },
+runTmp, outPath }`. The extension owns the interview and writes the plan. Tiers 2 and 3 do not run.
+- **Tier 2:** if no extension exists and the host exposes a native drafting command, such as
+  Claude Code plan mode, delegate to it, then normalize the output to the planContract sections
+  from `references/headless-drafting-brief.md` **Step 7**.
+- **Tier 3:** if no extension and no host built-in exists, run the inline drafting prompt in
+  Phase 5: work the review dimensions, follow the shared Step 5/Step 7 sections, and write a
+  planContract-compliant plan with no external skill dependency.
 
 If the ticket is TRIVIAL, keep your interview answers and follow-ups proportionate; do not
 manufacture complexity.
 
-## Phase 5 — Write the polished plan (interactive orchestrator drafts inline)
+## Phase 5 — Tier 3 inline drafting prompt
 
-Invoke `superpowers:writing-plans` via the **Skill** tool to produce the implementation plan from
-the fleshed-out decisions, following the resident **## Phase 3 — Plan requirements** section in
-SKILL.md plus the shared drafting details in `references/headless-drafting-brief.md` **Step 5** and
-**Step 7** (plan-body requirements and the description summary template). Direct it to write to
-`.linear-plans/<ISSUE-ID>-<slug>.md` and **stop after saving the plan file** — do NOT continue into
-subagent-driven-development or executing-plans. We only want the plan document here.
+Use only when Phase 4 reaches Tier 3. Work these review dimensions yourself and carry each decision
+into the plan: scope challenge, architecture, code quality, tests, performance, and outside-voice.
+Follow the resident **## Phase 3 — Plan requirements** section in SKILL.md plus the shared drafting
+details in `references/headless-drafting-brief.md` **Step 5** and **Step 7** (plan-body requirements
+and the description summary template). Write to `.linear-plans/<ISSUE-ID>-<slug>.md` and stop after
+saving the plan file. Do not continue into subagent-driven-development or executing-plans.
 
 ## Interactive cleanup
 

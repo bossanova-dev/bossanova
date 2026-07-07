@@ -208,10 +208,11 @@ func (s *Server) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgn
 }
 
 func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) { //nolint:unparam // interface implementation
-	title := chatTitle(req.WorkDir, req.SessionId)
+	title, explicit := chatTitle(req.WorkDir, req.SessionId)
 	return &bossanovav1.GetChatTitleResponse{
 		Supported: true,
 		Title:     title,
+		Explicit:  explicit,
 	}, nil
 }
 

@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -293,6 +295,131 @@ func TestSendChatMessage_CodexChat_UsesCodexMarker(t *testing.T) {
 	}
 	if msgs[0].readyMarker != "›" {
 		t.Errorf("readyMarker = %q, want codex marker %q", msgs[0].readyMarker, "›")
+	}
+}
+
+// TestSendChatMessage_CodexChat_RewritesCommandPrefix is the regression guard for
+// the codex slash-command rejection: a caller dispatches an agent-neutral
+// "/boss-repair watch", and a codex chat must receive it with codex's "$" prefix
+// ("$boss-repair watch"), since codex reserves "/" for its own built-ins and
+// rejects "/boss-repair" as unrecognized. Mirrors the plan-launch render path.
+func TestSendChatMessage_CodexChat_RewritesCommandPrefix(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "codex"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "codex"}
+	writeSendChatTestSkill(t, filepath.Join(sess.WorktreePath, ".codex", "skills", "bossanova", "boss-repair"))
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+	s := newSendMessageTestServer(t, chat, sess, tmuxer)
+
+	if _, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "/boss-repair watch",
+		Submit:         true,
+	})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tmuxer.mu.Lock()
+	msgs := append([]sentMessage(nil), tmuxer.sentMessages...)
+	tmuxer.mu.Unlock()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(msgs))
+	}
+	if msgs[0].text != "$boss-repair watch" {
+		t.Errorf("SendMessage text = %q, want codex-prefixed %q", msgs[0].text, "$boss-repair watch")
+	}
+}
+
+func TestSendChatMessage_CodexChat_RewritesProjectCustomCommandPrefix(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "codex"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "codex"}
+	writeSendChatTestSkill(t, filepath.Join(sess.WorktreePath, ".codex", "skills", "api-review"))
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+	s := newSendMessageTestServer(t, chat, sess, tmuxer)
+
+	if _, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "/api-review services/bossd/internal/session/tmux_chat.go",
+		Submit:         true,
+	})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tmuxer.mu.Lock()
+	msgs := append([]sentMessage(nil), tmuxer.sentMessages...)
+	tmuxer.mu.Unlock()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(msgs))
+	}
+	if msgs[0].text != "$api-review services/bossd/internal/session/tmux_chat.go" {
+		t.Errorf("SendMessage text = %q, want codex-prefixed custom skill", msgs[0].text)
+	}
+}
+
+// TestSendChatMessage_CodexChat_PreservesNativeSlashCommand guards the scope of
+// the prefix rewrite: a codex user's native built-in ("/status", "/model") must
+// reach codex verbatim, not be rewritten to an invalid "$status". Only installed
+// custom skills are re-prefixed.
+func TestSendChatMessage_CodexChat_PreservesNativeSlashCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "codex"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "codex"}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+	s := newSendMessageTestServer(t, chat, sess, tmuxer)
+
+	if _, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "/status",
+		Submit:         true,
+	})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tmuxer.mu.Lock()
+	msgs := append([]sentMessage(nil), tmuxer.sentMessages...)
+	tmuxer.mu.Unlock()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(msgs))
+	}
+	if msgs[0].text != "/status" {
+		t.Errorf("SendMessage text = %q, want native command %q unchanged", msgs[0].text, "/status")
+	}
+}
+
+func writeSendChatTestSkill(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: test\n---\n"), 0o644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+}
+
+// TestSendChatMessage_ClaudeChat_PreservesSlashCommand verifies the mirror case:
+// a claude chat keeps the "/" prefix, and free text is never mistaken for a
+// command.
+func TestSendChatMessage_ClaudeChat_PreservesSlashCommand(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+	s := newSendMessageTestServer(t, chat, sess, tmuxer)
+
+	if _, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "/boss-repair watch",
+		Submit:         true,
+	})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tmuxer.mu.Lock()
+	msgs := append([]sentMessage(nil), tmuxer.sentMessages...)
+	tmuxer.mu.Unlock()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(msgs))
+	}
+	if msgs[0].text != "/boss-repair watch" {
+		t.Errorf("SendMessage text = %q, want claude-prefixed %q", msgs[0].text, "/boss-repair watch")
 	}
 }
 

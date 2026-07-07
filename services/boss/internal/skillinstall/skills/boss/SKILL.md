@@ -310,6 +310,17 @@ List accounts
 - `--json` — Emit a stable JSON schema instead of a table
 - `--provider` — Filter by provider (claude|codex)
 
+### `boss account refresh <account-id> [flags]`
+
+Replace an account's stored credential
+
+**Flags:**
+
+- `--credential-file` — Read the credential from a file (or '-' for stdin); preferred over --token
+- `--json` — Emit a stable JSON schema instead of text
+- `--test` — Validate the refreshed credential after saving
+- `--token` — Credential token (prefer --credential-file - or stdin to keep it out of shell history)
+
 ### `boss account remove <account-id>`
 
 Remove an account and its stored credential

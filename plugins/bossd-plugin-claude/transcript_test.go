@@ -42,6 +42,46 @@ func TestGetChatTitle_FromJSONL(t *testing.T) {
 	if resp.Title != "Fix the bug in foo.go" {
 		t.Errorf("Title = %q, want %q", resp.Title, "Fix the bug in foo.go")
 	}
+	if resp.Explicit {
+		t.Error("Explicit = true, want false for first user message")
+	}
+}
+
+func TestGetChatTitle_FromRenameSummary(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	worktree := "/Users/dave/Code/myproj"
+	claudeID := "abcd-rename"
+
+	projectKey := strings.NewReplacer("/", "-", ".", "-").Replace(worktree)
+	projectDir := filepath.Join(tmpHome, ".claude", "projects", projectKey)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	jsonl := strings.Join([]string{
+		`{"type":"user","message":{"role":"user","content":"Initial prompt"}}`,
+		`{"type":"summary","summary":"old name"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":"ok"}}`,
+		`{"type":"summary","summary":"the new name"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(projectDir, claudeID+".jsonl"), []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{logger: zerolog.Nop()}
+	resp, err := srv.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{
+		WorkDir: worktree, SessionId: claudeID,
+	})
+	if err != nil {
+		t.Fatalf("GetChatTitle: %v", err)
+	}
+	if resp.Title != "the new name" {
+		t.Errorf("Title = %q, want last summary", resp.Title)
+	}
+	if !resp.Explicit {
+		t.Error("Explicit = false, want true for rename summary")
+	}
 }
 
 func TestGetChatTitle_MissingFile(t *testing.T) {
@@ -250,6 +290,44 @@ func TestHasUserTextBlock(t *testing.T) {
 				t.Errorf("hasUserTextBlock(%s) = %v, want %v", tt.raw, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseSessionMeta_LastSummaryWins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	jsonl := strings.Join([]string{
+		`{"type":"user","message":{"role":"user","content":"First prompt"}}`,
+		`{"type":"summary","summary":"first rename"}`,
+		`{"type":"summary","summary":"second rename"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, explicit := parseSessionMeta(path)
+	if summary != "second rename" {
+		t.Fatalf("summary = %q, want last summary", summary)
+	}
+	if !explicit {
+		t.Fatal("explicit = false, want true")
+	}
+}
+
+func TestParseSessionMeta_FirstMessageWhenNoSummary(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	jsonl := `{"type":"user","message":{"role":"user","content":"First prompt"}}` + "\n"
+	if err := os.WriteFile(path, []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, explicit := parseSessionMeta(path)
+	if summary != "First prompt" {
+		t.Fatalf("summary = %q, want first user message", summary)
+	}
+	if explicit {
+		t.Fatal("explicit = true, want false")
 	}
 }
 

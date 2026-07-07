@@ -355,6 +355,9 @@ func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRe
 	return &bossanovav1.GetChatTitleResponse{
 		Supported: true,
 		Title:     title,
+		// Codex has no confirmed rename marker yet. Keep first-prompt titles
+		// non-explicit so bossd never clobbers a curated title with them.
+		Explicit: false,
 	}, nil
 }
 

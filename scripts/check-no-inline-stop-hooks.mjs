@@ -9,6 +9,12 @@ import { fileURLToPath } from 'node:url'
 // signature matches the executable filter line, not prose that merely mentions
 // the hooks or names the shared script.
 const INLINE_SIGNATURE = /startsWith\s*\(\s*(['"])bossd-agent-run-\1\s*\)/
+const SKILL_ROOTS = [
+  '.claude/skills',
+  '.codex/skills',
+  'plugins/bossd-plugin-claude/skilldata/skills',
+  'services/boss/internal/skillinstall/skills',
+]
 
 export function fileHasInlineStopHook(contents) {
   return INLINE_SIGNATURE.test(contents)
@@ -35,12 +41,16 @@ export function findInlineStopHookCopies(skillRoot, deps = {}) {
   )
 }
 
+export function findInlineStopHookCopiesInRepo(repoRoot, deps = {}) {
+  const fsImpl = deps.fs || fs
+  return SKILL_ROOTS.map((d) => path.join(repoRoot, d))
+    .filter((d) => fsImpl.existsSync(d))
+    .flatMap((root) => findInlineStopHookCopies(root, deps))
+}
+
 function main() {
   const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
-  const roots = ['.claude/skills', '.codex/skills']
-    .map((d) => path.join(repoRoot, d))
-    .filter((d) => fs.existsSync(d))
-  const offenders = roots.flatMap((root) => findInlineStopHookCopies(root))
+  const offenders = findInlineStopHookCopiesInRepo(repoRoot)
   if (offenders.length > 0) {
     console.error(
       'Inline bossd Stop-hook filter found — call scripts/remove-bossd-stop-hooks.mjs instead:',

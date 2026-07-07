@@ -469,6 +469,19 @@ func accountCmd() *cobra.Command {
 	add.Flags().Bool("token-stdin", false, "claude only: read the setup token from stdin instead of running the walkthrough")
 	add.Flags().Duration("timeout", 10*time.Minute, "Deadline for an interactive registration walkthrough")
 
+	refresh := &cobra.Command{
+		Use:   "refresh <account-id>",
+		Short: "Replace an account's stored credential",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAccountRefresh(cmd, args[0])
+		},
+	}
+	refresh.Flags().String("token", "", "Credential token (prefer --credential-file - or stdin to keep it out of shell history)")
+	refresh.Flags().String("credential-file", "", "Read the credential from a file (or '-' for stdin); preferred over --token")
+	refresh.Flags().Bool("test", false, "Validate the refreshed credential after saving")
+	refresh.Flags().Bool("json", false, "Emit a stable JSON schema instead of text")
+
 	update := &cobra.Command{
 		Use:   "update <account-id>",
 		Short: "Update account metadata",
@@ -486,6 +499,7 @@ func accountCmd() *cobra.Command {
 	account.AddCommand(
 		ls,
 		add,
+		refresh,
 		update,
 		&cobra.Command{
 			Use:   "remove <account-id>",

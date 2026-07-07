@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/credmaterialize"
@@ -19,11 +22,14 @@ import (
 const (
 	defaultSmokeTimeout      = 2 * time.Minute
 	defaultSmokePollInterval = 500 * time.Millisecond
+	smokeDiagnosticTailBytes = 8 * 1024
+	smokeDiagnosticMaxLines  = 6
+	smokeDiagnosticMaxChars  = 1200
 	smokePrompt              = "Reply with exactly: OK"
 )
 
 // SmokeCredentialStore is the credential store surface needed to materialize
-// account credentials for a live smoke run and persist Codex refreshes back.
+// account credentials for provider verification and persist Codex refreshes back.
 type SmokeCredentialStore interface {
 	Load(accountID string) ([]byte, error)
 	Save(accountID string, blob []byte) error
@@ -44,7 +50,7 @@ func WithSmokeBaseDir(dir string) SmokeRunnerOption {
 	return func(c *smokeRunnerConfig) { c.baseDir = dir }
 }
 
-// WithSmokeTimeout overrides the live smoke timeout.
+// WithSmokeTimeout overrides the provider verification timeout.
 func WithSmokeTimeout(d time.Duration) SmokeRunnerOption {
 	return func(c *smokeRunnerConfig) { c.timeout = d }
 }
@@ -64,7 +70,7 @@ type SmokeRunner struct {
 	logger       zerolog.Logger
 }
 
-// NewSmokeRunner builds a live account smoke runner. It materializes credentials
+// NewSmokeRunner builds an account provider verification runner. It materializes credentials
 // using the same on-disk executor that spawn paths use for Codex CODEX_HOME.
 func NewSmokeRunner(
 	clients map[string]agent.AgentRunnerClient,
@@ -105,11 +111,11 @@ func NewSmokeRunner(
 // materializer reloads the current keyring value by account id.
 func (r *SmokeRunner) Smoke(ctx context.Context, accountID, provider string, _ []byte) error {
 	if r == nil {
-		return fmt.Errorf("account smoke runner not configured")
+		return fmt.Errorf("credential verification runner not configured")
 	}
 	client := r.clients[provider]
 	if client == nil {
-		return fmt.Errorf("account smoke: no agent plugin client for provider %q", provider)
+		return fmt.Errorf("credential verification unavailable: no agent plugin client for provider %q", provider)
 	}
 
 	env, persist, err := r.materialize(ctx, accountID, provider)
@@ -132,23 +138,24 @@ func (r *SmokeRunner) Smoke(ctx context.Context, accountID, provider string, _ [
 	if err != nil {
 		return err
 	}
+	logPath := filepath.Join(logDir, sessionID+".log")
 	if _, err := client.StartRun(ctx, &bossanovav1.StartAgentRunRequest{
 		WorkDir:   workDir,
 		Plan:      smokePrompt,
 		SessionId: sessionID,
-		LogPath:   filepath.Join(logDir, sessionID+".log"),
+		LogPath:   logPath,
 		ExtraEnv:  env,
 	}); err != nil {
-		return fmt.Errorf("account smoke start: %w", err)
+		return fmt.Errorf("credential verification start: %w", err)
 	}
 
 	if err := r.waitClean(ctx, client, sessionID); err != nil {
 		_, _ = client.StopRun(context.Background(), &bossanovav1.StopAgentRunRequest{SessionId: sessionID})
-		return err
+		return appendSmokeDiagnostic(err, logPath)
 	}
 	if persist != nil {
 		if err := persist(ctx); err != nil {
-			return fmt.Errorf("account smoke persist refreshed credential: %w", err)
+			return fmt.Errorf("credential verification persist refreshed credential: %w", err)
 		}
 	}
 	return nil
@@ -169,7 +176,7 @@ func (r *SmokeRunner) materialize(ctx context.Context, accountID, provider strin
 		}
 		return mat.Env, persist, nil
 	default:
-		return nil, nil, fmt.Errorf("account smoke: unknown provider %q", provider)
+		return nil, nil, fmt.Errorf("credential verification unavailable: unknown provider %q", provider)
 	}
 }
 
@@ -182,20 +189,72 @@ func (r *SmokeRunner) waitClean(ctx context.Context, client agent.AgentRunnerCli
 	for {
 		resp, err := client.ExitStatus(wctx, &bossanovav1.AgentExitStatusRequest{SessionId: sessionID})
 		if err != nil {
-			return fmt.Errorf("account smoke exit status: %w", err)
+			return fmt.Errorf("credential verification status: %w", err)
 		}
 		if resp.GetIsComplete() {
 			if resp.GetExitError() != "" {
-				return fmt.Errorf("account smoke failed: %s", resp.GetExitError())
+				return fmt.Errorf("credential verification failed: %s", resp.GetExitError())
 			}
 			return nil
 		}
 		select {
 		case <-wctx.Done():
-			return fmt.Errorf("account smoke timed out: %w", wctx.Err())
+			return fmt.Errorf("credential verification timed out: %w", wctx.Err())
 		case <-ticker.C:
 		}
 	}
+}
+
+func appendSmokeDiagnostic(err error, logPath string) error {
+	diag := smokeDiagnostic(logPath)
+	if diag == "" {
+		return err
+	}
+	return fmt.Errorf("%w; diagnostic: %s", err, diag)
+}
+
+func smokeDiagnostic(logPath string) string {
+	data, err := os.ReadFile(logPath)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	if len(data) > smokeDiagnosticTailBytes {
+		data = data[len(data)-smokeDiagnosticTailBytes:]
+		if i := strings.IndexByte(string(data), '\n'); i >= 0 && i+1 < len(data) {
+			data = data[i+1:]
+		}
+	}
+	lines := strings.Split(string(data), "\n")
+	texts := make([]string, 0, smokeDiagnosticMaxLines)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry struct {
+			Text string `json:"text"`
+		}
+		text := line
+		if err := json.Unmarshal([]byte(line), &entry); err == nil && strings.TrimSpace(entry.Text) != "" {
+			text = entry.Text
+		}
+		text = strings.TrimSpace(string(agenterr.Redact([]byte(text))))
+		if text == "" {
+			continue
+		}
+		texts = append(texts, text)
+		if len(texts) > smokeDiagnosticMaxLines {
+			texts = texts[1:]
+		}
+	}
+	diag := strings.Join(texts, " | ")
+	if len(diag) > smokeDiagnosticMaxChars {
+		diag = diag[len(diag)-smokeDiagnosticMaxChars:]
+		if i := strings.IndexByte(diag, ' '); i >= 0 && i+1 < len(diag) {
+			diag = diag[i+1:]
+		}
+	}
+	return diag
 }
 
 func smokeSessionID() (string, error) {

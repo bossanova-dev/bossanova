@@ -176,14 +176,16 @@ func (r *ChatRotator) rotate(agentSessionID string, resetAt time.Time) {
 	cfg, err := r.deps.LoadConfig()
 	if err != nil {
 		log.Warn().Err(err).Msg("auto-rotate: config load failed; leaving chat limited")
+		r.forgetAttempt(agentSessionID)
 		return
 	}
 	cc, err := r.deps.ChatContext(ctx, agentSessionID)
 	if err != nil {
 		log.Warn().Err(err).Msg("auto-rotate: chat context lookup failed")
+		r.forgetAttempt(agentSessionID)
 		return
 	}
-	if !cfg.AutoRotateChatsEnabled(cc.RepoID) {
+	if !cfg.RotationEnabled() || !cfg.AutoRotateChatsEnabled(cc.RepoID) {
 		log.Debug().Str("repo_id", cc.RepoID).Msg("auto-rotate: opted out; leaving chat limited")
 		var disabledReset *time.Time
 		if !resetAt.IsZero() {
@@ -279,6 +281,12 @@ func (r *ChatRotator) rotate(agentSessionID string, resetAt time.Time) {
 		log.Warn().Int("kind", int(decision.Kind)).
 			Msg("auto-rotate: unknown decision kind; leaving chat limited")
 	}
+}
+
+func (r *ChatRotator) forgetAttempt(agentSessionID string) {
+	r.mu.Lock()
+	delete(r.lastAttempt, agentSessionID)
+	r.mu.Unlock()
 }
 
 // idleForTest reports whether no rotation goroutine is active. Test-only.

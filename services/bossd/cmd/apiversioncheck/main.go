@@ -4,8 +4,8 @@
 //
 // It sends a single UNAUTHENTICATED, side-effect-free probe: a ReportBug unary
 // (the one auth-exempt OrchestratorService method) carrying a deliberately
-// out-of-range future Bossanova-Version header. The server's version interceptor
-// rejects it before the handler runs and names its supported range; the check
+// malformed Bossanova-Version header. The server's version interceptor rejects
+// it before the handler runs and names its supported range; the check
 // fails the release if the advertised supported-max is older than the built
 // Current. That is exactly the BOS-241 skew — production deployed behind the
 // versions its own main-built clients send — surfaced as a hard gate instead of

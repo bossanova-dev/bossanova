@@ -12,20 +12,23 @@
 //   * the no-interactive-questions-after-preflight rule,
 //   * frontmatter identity + default agent,
 //   * a size-ratchet keeping SKILL.md below the committed baseline rounded up,
-//   * codex-mirror parity (exact rewrite of the claude source),
 //   * a NEGATIVE assertion against stub/placeholder prose.
+//
+// BOS-271 collapsed the published cores onto the boss-repair single-source
+// topology: the canonical committed home is the embedded skillinstall payload
+// (services/boss/internal/skillinstall/skills/boss-epic/), with no .claude/.codex
+// committed copy. This test reads that canonical home; there is no codex-mirror
+// copy of the four published cores to compare against anymore.
 //
 // Node built-ins only — cron worktrees are dependency-free.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
 
-const CLAUDE = read('../.claude/skills/boss-epic/SKILL.md')
-const CODEX = read('../.codex/skills/boss-epic/SKILL.md')
+const CLAUDE = read('../services/boss/internal/skillinstall/skills/boss-epic/SKILL.md')
 
 test('size ratchet', () => {
   // Ratchet = committed size rounded up to the next KiB. Never raise this
@@ -54,16 +57,8 @@ test('frontmatter identifies the skill', () => {
   assert.match(CLAUDE, /^---\r?\nname: boss-epic\r?\n/, 'frontmatter must declare name: boss-epic')
 })
 
-test('codex mirror is exactly the rewrite of the claude source', () => {
-  assert.equal(
-    CODEX,
-    rewriteClaudeSkillMarkdown(CLAUDE, '.claude/skills/boss-epic/SKILL.md'),
-    'codex SKILL.md mirror must equal the generated rewrite of the claude skill',
-  )
-})
-
-test('contract tokens present in both mirrors', () => {
-  for (const body of [CLAUDE, CODEX]) {
+test('contract tokens present in the canonical skill', () => {
+  for (const body of [CLAUDE]) {
     for (const token of [
       'bs-epic-lib.mjs',
       'merge_session',
@@ -82,8 +77,8 @@ test('contract tokens present in both mirrors', () => {
   }
 })
 
-test('default agent is claude in both mirrors', () => {
-  for (const body of [CLAUDE, CODEX]) {
+test('default agent is claude', () => {
+  for (const body of [CLAUDE]) {
     assert.ok(body.includes('--agent claude'), 'missing default `--agent claude`')
   }
 })

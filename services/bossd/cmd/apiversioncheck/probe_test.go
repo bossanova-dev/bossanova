@@ -21,7 +21,7 @@ func TestSupportedMaxFromError(t *testing.T) {
 	}{
 		{
 			name:    "canonical interceptor error",
-			errText: `invalid_argument: unsupported API version "9999-12-31"; supported range: 2026-06-29 to 2026-07-04`,
+			errText: `invalid_argument: unsupported API version "not-a-date": must be YYYY-MM-DD; supported range: 2026-06-29 to 2026-07-04`,
 			want:    "2026-07-04",
 			wantOK:  true,
 		},
@@ -75,10 +75,10 @@ func (f fakeReporter) ReportBug(context.Context, *connect.Request[pb.ReportBugRe
 }
 
 // rangeErr builds the exact InvalidArgument error the version interceptor returns
-// for an out-of-range probe, so the test drives the real error surface.
+// for the malformed probe, so the test drives the real error surface.
 func rangeErr(min, max apiversion.Version) error {
 	return connect.NewError(connect.CodeInvalidArgument,
-		fmt.Errorf("unsupported API version %q; supported range: %s to %s", probeVersion, min, max))
+		fmt.Errorf("unsupported API version %q: must be YYYY-MM-DD; supported range: %s to %s", probeVersion, min, max))
 }
 
 func TestCheckCurrentSupported(t *testing.T) {
@@ -121,10 +121,10 @@ func TestCheckCurrentSupported(t *testing.T) {
 	})
 
 	t.Run("accepted probe version fails closed", func(t *testing.T) {
-		// No error means no version interceptor rejected the impossible version.
+		// No error means no version interceptor rejected the malformed version.
 		err := checkCurrentSupported(context.Background(), fakeReporter{err: nil}, current)
 		if err == nil {
-			t.Fatal("expected failure when the out-of-range probe is accepted")
+			t.Fatal("expected failure when the malformed probe is accepted")
 		}
 	})
 }

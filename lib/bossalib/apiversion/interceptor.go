@@ -30,7 +30,9 @@ func withResolvedVersion(ctx context.Context, v Version) context.Context {
 // Interceptor returns a server connect.Interceptor that:
 //   - reads the Bossanova-Version request header
 //   - resolves it against reg (absent/empty → reg.Default())
-//   - returns CodeInvalidArgument for unknown or malformed versions
+//   - resolves parseable versions at/above the registry min to the newest
+//     supported version not newer than the client version
+//   - returns CodeInvalidArgument for malformed or older-than-min versions
 //   - stores the resolved version in the request context
 //   - on a successful unary response, applies changes (if non-nil) to
 //     down-convert the response for older-version clients
@@ -48,25 +50,34 @@ type versionInterceptor struct {
 	changes *Changes
 }
 
-// resolve validates raw and returns the resolved Version. Empty → Default.
+// resolve validates raw and returns the resolved Version. Empty → Default. A
+// parsed date at/above the registry minimum resolves to the newest supported
+// version not newer than the client date, so locally newer clients get the
+// latest behavior this server can provide while in-range gaps stay conservative.
 func (vi *versionInterceptor) resolve(raw string) (Version, error) {
 	if raw == "" {
 		return vi.reg.Default(), nil
 	}
+	all := vi.reg.All()
 	v, err := Parse(raw)
 	if err != nil {
-		all := vi.reg.All()
 		return "", connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("unsupported API version %q: must be YYYY-MM-DD; supported range: %s to %s",
 				raw, all[0], all[len(all)-1]))
 	}
-	if !vi.reg.IsSupported(v) {
-		all := vi.reg.All()
+	if string(v) < string(all[0]) {
 		return "", connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("unsupported API version %q; supported range: %s to %s",
 				raw, all[0], all[len(all)-1]))
 	}
-	return v, nil
+	resolved := all[0]
+	for _, supported := range all[1:] {
+		if string(supported) > string(v) {
+			break
+		}
+		resolved = supported
+	}
+	return resolved, nil
 }
 
 func (vi *versionInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
@@ -81,10 +92,6 @@ func (vi *versionInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFun
 			return nil, err
 		}
 		// Apply response transforms for older-version clients (newest→resolved order).
-		// Per-message streaming transforms are intentionally out of scope here:
-		// bidi/streaming protocol evolution is handled by additive proto fields
-		// (buf-enforced wire compatibility), not by this layer. See the streaming-risk
-		// note in docs/plans/BOS-10-version-the-orchestrator-apis.md.
 		if vi.changes != nil {
 			vi.changes.Apply(req.Spec().Procedure, resp.Any(), v)
 		}
@@ -105,8 +112,28 @@ func (vi *versionInterceptor) WrapStreamingHandler(next connect.StreamingHandler
 		}
 		ctx = withResolvedVersion(ctx, v)
 		conn.ResponseHeader().Set(HeaderName, v.String())
+		if vi.changes != nil {
+			conn = &transformingStreamingHandlerConn{
+				StreamingHandlerConn: conn,
+				changes:              vi.changes,
+				procedure:            conn.Spec().Procedure,
+				resolved:             v,
+			}
+		}
 		return next(ctx, conn)
 	}
+}
+
+type transformingStreamingHandlerConn struct {
+	connect.StreamingHandlerConn
+	changes   *Changes
+	procedure string
+	resolved  Version
+}
+
+func (c *transformingStreamingHandlerConn) Send(msg any) error {
+	c.changes.Apply(c.procedure, msg, c.resolved)
+	return c.StreamingHandlerConn.Send(msg)
 }
 
 // ClientInterceptor returns a connect.Interceptor for use in first-party

@@ -1063,6 +1063,14 @@ func TestRepoStore_GetByOrigin(t *testing.T) {
 			},
 		},
 		{
+			name:         "self hosted ssh git remote",
+			storedOrigin: "git@ghe.example:owner/repo.git",
+			lookupOrigins: []string{
+				"git@ghe.example:owner/repo.git",
+				"https://ghe.example/owner/repo",
+			},
+		},
+		{
 			name:         "html url",
 			storedOrigin: "https://github.com/owner/repo",
 			lookupOrigins: []string{
@@ -1113,37 +1121,124 @@ func TestRepoStore_GetByOrigin(t *testing.T) {
 	})
 
 	t.Run("ambiguous canonical match fails loud", func(t *testing.T) {
-		// Two local checkouts of the same GitHub repo registered with
+		// Two local checkouts of the same self-hosted repo registered with
 		// different remote forms must not silently route a webhook to one
 		// of them — webhook PR refresh would update the wrong session.
 		db := setupTestDB(t)
 		store := NewRepoStore(db)
 		ctx := context.Background()
 
-		if _, err := store.Create(ctx, CreateRepoParams{
-			DisplayName:       "https checkout",
-			LocalPath:         "/tmp/repo-https",
-			OriginURL:         "https://github.com/owner/repo.git",
-			DefaultBaseBranch: "main",
-			WorktreeBaseDir:   "/tmp/wt-https",
-		}); err != nil {
-			t.Fatalf("create https repo: %v", err)
-		}
-		if _, err := store.Create(ctx, CreateRepoParams{
-			DisplayName:       "ssh checkout",
-			LocalPath:         "/tmp/repo-ssh",
-			OriginURL:         "git@github.com:owner/repo.git",
-			DefaultBaseBranch: "main",
-			WorktreeBaseDir:   "/tmp/wt-ssh",
-		}); err != nil {
-			t.Fatalf("create ssh repo: %v", err)
+		// Seed legacy/corrupt data directly: public create/update APIs reject
+		// this now, but older DBs can still contain duplicate canonical origins.
+		for _, seed := range []struct {
+			id        string
+			name      string
+			localPath string
+			origin    string
+			wt        string
+		}{
+			{"repo-https", "https checkout", "/tmp/repo-https", "https://ghe.example/owner/repo.git", "/tmp/wt-https"},
+			{"repo-ssh", "ssh checkout", "/tmp/repo-ssh", "git@ghe.example:owner/repo.git", "/tmp/wt-ssh"},
+		} {
+			if _, err := db.ExecContext(ctx, `INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir) VALUES (?, ?, ?, ?, 'main', ?)`,
+				seed.id, seed.name, seed.localPath, seed.origin, seed.wt); err != nil {
+				t.Fatalf("seed repo %q: %v", seed.id, err)
+			}
 		}
 
 		// Webhook arrives with the html_url form — neither stored origin
 		// matches exactly, so the canonical fallback runs and finds two.
-		_, err := store.GetByOrigin(ctx, "https://github.com/owner/repo")
+		_, err := store.GetByOrigin(ctx, "https://ghe.example/owner/repo")
 		if !errors.Is(err, ErrAmbiguousOrigin) {
 			t.Fatalf("ambiguous origin err = %v, want ErrAmbiguousOrigin", err)
+		}
+	})
+
+	t.Run("ambiguous canonical exact origin fails loud", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewRepoStore(db)
+		ctx := context.Background()
+
+		// Seed legacy/corrupt data directly: one row already stores the
+		// webhook canonical form, while another stores the SSH remote form.
+		for _, seed := range []struct {
+			id        string
+			name      string
+			localPath string
+			origin    string
+			wt        string
+		}{
+			{"repo-html", "html checkout", "/tmp/repo-html", "https://ghe.example/owner/repo", "/tmp/wt-html"},
+			{"repo-ssh", "ssh checkout", "/tmp/repo-ssh", "git@ghe.example:owner/repo.git", "/tmp/wt-ssh"},
+		} {
+			if _, err := db.ExecContext(ctx, `INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir) VALUES (?, ?, ?, ?, 'main', ?)`,
+				seed.id, seed.name, seed.localPath, seed.origin, seed.wt); err != nil {
+				t.Fatalf("seed repo %q: %v", seed.id, err)
+			}
+		}
+
+		_, err := store.GetByOrigin(ctx, "https://ghe.example/owner/repo")
+		if !errors.Is(err, ErrAmbiguousOrigin) {
+			t.Fatalf("ambiguous exact origin err = %v, want ErrAmbiguousOrigin", err)
+		}
+	})
+
+	t.Run("create rejects duplicate canonical origin", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewRepoStore(db)
+		ctx := context.Background()
+
+		if _, err := store.Create(ctx, CreateRepoParams{
+			DisplayName:       "primary checkout",
+			LocalPath:         "/tmp/repo-primary",
+			OriginURL:         "git@ghe.example:owner/repo.git",
+			DefaultBaseBranch: "main",
+			WorktreeBaseDir:   "/tmp/wt-primary",
+		}); err != nil {
+			t.Fatalf("create primary repo: %v", err)
+		}
+
+		_, err := store.Create(ctx, CreateRepoParams{
+			DisplayName:       "worktree checkout",
+			LocalPath:         "/tmp/repo-worktree",
+			OriginURL:         "https://ghe.example/owner/repo",
+			DefaultBaseBranch: "main",
+			WorktreeBaseDir:   "/tmp/wt-worktree",
+		})
+		if !errors.Is(err, ErrAmbiguousOrigin) {
+			t.Fatalf("duplicate canonical origin err = %v, want ErrAmbiguousOrigin", err)
+		}
+	})
+
+	t.Run("update rejects duplicate canonical origin", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewRepoStore(db)
+		ctx := context.Background()
+
+		if _, err := store.Create(ctx, CreateRepoParams{
+			DisplayName:       "primary checkout",
+			LocalPath:         "/tmp/repo-primary",
+			OriginURL:         "git@ghe.example:owner/repo.git",
+			DefaultBaseBranch: "main",
+			WorktreeBaseDir:   "/tmp/wt-primary",
+		}); err != nil {
+			t.Fatalf("create primary repo: %v", err)
+		}
+		secondary, err := store.Create(ctx, CreateRepoParams{
+			DisplayName:       "secondary checkout",
+			LocalPath:         "/tmp/repo-secondary",
+			OriginURL:         "git@github.com:owner/other.git",
+			DefaultBaseBranch: "main",
+			WorktreeBaseDir:   "/tmp/wt-secondary",
+		})
+		if err != nil {
+			t.Fatalf("create secondary repo: %v", err)
+		}
+
+		duplicate := "https://ghe.example/owner/repo"
+		_, err = store.Update(ctx, secondary.ID, UpdateRepoParams{OriginURL: &duplicate})
+		if !errors.Is(err, ErrAmbiguousOrigin) {
+			t.Fatalf("duplicate canonical origin update err = %v, want ErrAmbiguousOrigin", err)
 		}
 	})
 }

@@ -160,7 +160,7 @@ type Config struct {
 	// in Accounts; secrets never touch SQLite. Optional, may be nil (account
 	// RPCs then fail closed with a clear error).
 	AccountCredentials AccountCredentialStore
-	// AccountSmokeRunner runs the live TestAccount smoke. Optional, may be nil;
+	// AccountSmokeRunner runs TestAccount provider verification. Optional, may be nil;
 	// when nil, TestAccount records live_smoke_ran=false with an unavailable
 	// detail.
 	AccountSmokeRunner AccountSmokeRunner
@@ -2184,7 +2184,7 @@ func (s *Server) SwitchSessionAccount(ctx context.Context, req *connect.Request[
 				fmt.Errorf("chat is mid-turn; confirm the switch (force) to interrupt it: %w", err))
 		case errors.Is(err, session.ErrCrossAgentSwitchUnsupported):
 			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
-		case errors.Is(err, session.ErrAccountCooling), errors.Is(err, session.ErrAccountDisabled):
+		case errors.Is(err, session.ErrAccountCooling), errors.Is(err, session.ErrAccountDisabled), errors.Is(err, session.ErrAccountFailed):
 			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 		case errors.Is(err, sql.ErrNoRows):
 			return nil, connect.NewError(connect.CodeNotFound, err)

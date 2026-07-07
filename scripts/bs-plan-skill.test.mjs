@@ -12,25 +12,36 @@
 //   * the bulk-output-discipline block,
 //   * a NEGATIVE assertion that the interactive-mode directives survive verbatim in
 //     references/interactive-mode.md (interactive behaviour did not drift),
-//   * a size-ratchet keeping the resident body below the pre-split baseline,
-//   * codex-mirror parity + reference mirror-safety.
+//   * a size-ratchet keeping the resident body below the pre-split baseline.
+//
+// BOS-271 collapsed the published cores onto the boss-repair single-source
+// topology: the canonical committed home is the embedded skillinstall payload
+// (services/boss/internal/skillinstall/skills/boss-plan/), with no .claude/.codex
+// committed copy — so this test reads the skillinstall home and no longer asserts
+// codex-mirror parity for the core. The repo-local boss-plan-draft extension stays
+// under .claude/skills.
 //
 // Node built-ins only — cron worktrees are dependency-free.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
-import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
+import { discoverExtensions } from './skill-extensions.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
+const readIfExists = (rel) => {
+  const url = new URL(rel, import.meta.url)
+  return existsSync(url) ? readFileSync(url, 'utf8') : ''
+}
 
-const SKILL = read('../.claude/skills/boss-plan/SKILL.md')
-const CODEX = read('../.codex/skills/boss-plan/SKILL.md')
-const INTERACTIVE = read('../.claude/skills/boss-plan/references/interactive-mode.md')
-const BRIEF = read('../.claude/skills/boss-plan/references/headless-drafting-brief.md')
-const CODEX_INTERACTIVE = read('../.codex/skills/boss-plan/references/interactive-mode.md')
-const CODEX_BRIEF = read('../.codex/skills/boss-plan/references/headless-drafting-brief.md')
+const CORE = '../services/boss/internal/skillinstall/skills/boss-plan'
+const SKILL = read(`${CORE}/SKILL.md`)
+const INTERACTIVE = read(`${CORE}/references/interactive-mode.md`)
+const BRIEF = read(`${CORE}/references/headless-drafting-brief.md`)
+const DRAFT = readIfExists('../.claude/skills/boss-plan-draft/SKILL.md')
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 const count = (body, needle) => body.split(needle).length - 1
 
@@ -60,37 +71,6 @@ const PHASE_4_SECTION = sectionBetween(
   '\n## Phase 5',
 )
 
-function rewriteCopiedMarkdownForTest(body) {
-  return body
-    .replace(/~\/\.claude\/skills\//g, '~/.codex/skills/')
-    .replace(/\bnode \.claude\/skills\//g, 'node .codex/skills/')
-    .replace(/~\/\.claude\/skills\/bossanova\//g, '~/.codex/skills/bossanova/')
-    .replace(/\bCLAUDE\.md\b/g, 'AGENTS.md')
-    .replace(/\bClaude Code\b/g, 'Codex')
-    .replace(/\bClaude agents\b/g, 'Codex agents')
-    .replace(/\bClaude agent\b/g, 'Codex agent')
-    .replace(/\bClaude\b/g, 'Codex')
-    .replace(/\bTodoWrite\b/g, 'update_plan')
-    .replace(/\bRead tool\b/g, 'file-reading tool')
-    .replace(/`Read`/g, '`file-reading tool`')
-    .replace(/\bEdit tool\b/g, 'apply_patch')
-    .replace(/`Edit`/g, '`apply_patch`')
-    .replace(/\bWrite tool\b/g, 'apply_patch')
-    .replace(/`Write`/g, '`apply_patch`')
-    .replace(/\bBash tool\b/g, 'shell command tool')
-    .replace(/`Bash`/g, '`shell`')
-    .replace(/`Grep`/g, '`search`')
-    .replace(/`Glob`/g, '`file search`')
-    .replace(/\bWebFetch\b/g, 'web fetch')
-    .replace(/\bPlaywright MCP server\b/g, 'Codex browser automation')
-    .replace(/\bPlaywright MCP\b/g, 'Codex browser automation')
-    .replace(/\bAGENTS\.md`, `AGENTS\.md\b/g, 'AGENTS.md`, `CLAUDE.md')
-    .replace(
-      /`apply_patch`\/`apply_patch` "modified since read"/g,
-      '`write`/`apply_patch` "modified since read"',
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Headless dispatch directive — ONE awaited general-purpose subagent, tier: opus.
 // ---------------------------------------------------------------------------
@@ -107,7 +87,7 @@ test('the headless path dispatches a general-purpose subagent', () => {
   )
   assert.match(
     HEADLESS_SECTION,
-    /recon.*writing-plans|writing-plans.*recon/is,
+    /recon.*draft|draft.*recon/is,
     'the same headless subagent must own both codebase recon and plan drafting',
   )
 })
@@ -285,11 +265,80 @@ test('the interactive confirm-loop options survive verbatim in references/intera
   }
 })
 
-test('the interactive plan-eng-review invocation survives verbatim in the reference', () => {
+test('the interactive draft step resolves through discovery and the Fallback contract', () => {
   assert.ok(
-    INTERACTIVE.includes('Invoke `plan-eng-review` via the **Skill** tool'),
-    'interactive-mode.md must preserve the plan-eng-review invocation sentence verbatim',
+    INTERACTIVE.includes('discover --core boss-plan --role draft'),
+    'interactive-mode.md must discover draft extensions before drafting',
   )
+  assert.match(
+    `${INTERACTIVE}\n${BRIEF}`,
+    /helper is missing[\s\S]*"extensions":\[\][\s\S]*portable fallback tiers still run/,
+    'draft discovery must treat a missing public helper as no extensions',
+  )
+  assert.match(
+    `${INTERACTIVE}\n${BRIEF}`,
+    /discovered extension by its returned descriptor\s+`name`/i,
+    'draft dispatch must use the discovered extension descriptor name',
+  )
+  for (const marker of ['Tier 1', 'Tier 2', 'Tier 3']) {
+    assert.ok(INTERACTIVE.includes(marker), `interactive-mode.md must document ${marker}`)
+  }
+  assert.doesNotMatch(
+    `${SKILL}\n${INTERACTIVE}\n${BRIEF}`,
+    /Invoke `(?:plan-eng-review|superpowers:writing-plans)`/g,
+    'boss-plan core and references must not directly invoke plan-eng-review or superpowers:writing-plans',
+  )
+})
+
+test('the resident body states the draft Fallback contract', () => {
+  assert.match(SKILL, /Fallback contract/, 'SKILL.md must name the Fallback contract')
+  assert.match(
+    SKILL,
+    /extension.*host built-in.*inline prompt/is,
+    'SKILL.md must state the extension -> host built-in -> inline prompt order',
+  )
+  assert.match(
+    SKILL,
+    /tiers 2\/3 suppressed when an extension exists/i,
+    'SKILL.md must state that lower fallback tiers are suppressed when an extension exists',
+  )
+})
+
+test('the boss-plan-draft extension is authored and discoverable', () => {
+  assert.match(
+    DRAFT,
+    /x-boss-extension:\s*\n\s+extends: boss-plan\s*\n\s+role: draft\s*\n\s+order: 40/,
+    'boss-plan-draft must declare the draft extension marker',
+  )
+  const { extensions, skipped } = discoverExtensions({
+    core: 'boss-plan',
+    role: 'draft',
+    root: REPO_ROOT,
+  })
+  assert.deepEqual(
+    extensions.map((e) => e.name),
+    ['boss-plan-draft'],
+    'boss-plan draft discovery must return exactly boss-plan-draft',
+  )
+  assert.deepEqual(skipped, [], 'boss-plan draft discovery must have zero skips')
+})
+
+test('the boss-plan-draft extension points at the core drafting brief', () => {
+  assert.match(
+    DRAFT,
+    /\.\.\/boss-plan\/references\/headless-drafting-brief\.md` Step 5/,
+    'boss-plan-draft must reference the sibling core drafting brief',
+  )
+})
+
+test('plan-reviewer discovery ignores the boss-plan-draft sibling', () => {
+  const { extensions, skipped } = discoverExtensions({
+    core: 'boss-plan',
+    role: 'plan-reviewer',
+    root: REPO_ROOT,
+  })
+  assert.deepEqual(extensions, [], 'no plan-reviewer extensions are installed by default')
+  assert.deepEqual(skipped, [], 'draft siblings must not be reported as plan-reviewer skips')
 })
 
 // ---------------------------------------------------------------------------
@@ -343,7 +392,6 @@ test('the shared drafting spec (plan-body requirements + template) lives in the 
 
 test('the resident body does not duplicate the full drafting spec', () => {
   for (const marker of [
-    'Invoke `superpowers:writing-plans` via the Skill tool to produce the implementation plan',
     'A first development step: **"Copy this plan to `docs/plans/<ISSUE-ID>-<slug>.md`',
     '## Step 7 — Compose the description summary',
     '<2-3 sentences: what & why>',
@@ -372,46 +420,5 @@ test('the resident SKILL.md body stays under the ratchet, below the pre-split ba
   assert.ok(
     bytes <= RATCHET,
     `resident SKILL.md is ${bytes} bytes; must stay <= ${RATCHET} (below the ${PRE_SPLIT_BASELINE} baseline)`,
-  )
-})
-
-// ---------------------------------------------------------------------------
-// Codex mirror — same dispatch/sentinel tokens; references stay mirror-safe.
-// ---------------------------------------------------------------------------
-
-test('the .codex mirror is regenerated from the full .claude skill body', () => {
-  assert.equal(
-    CODEX,
-    rewriteClaudeSkillMarkdown(SKILL, '.claude/skills/boss-plan/SKILL.md'),
-    'codex SKILL.md mirror must equal the generated rewrite of the full claude skill',
-  )
-})
-
-test('the reference prose is mirror-safe (references get only COMMON_REWRITES)', () => {
-  // References are copied with rewriteCopiedMarkdown (no `/command` -> `$command` rewrite),
-  // so a backticked `/command` token (backtick, slash, letter) would survive un-rewritten in
-  // .codex and confuse a Codex run. Code-span/slash boundaries like `Todo`/`In Progress` are
-  // fine — the hazard is specifically a slash immediately opening a lowercase command name.
-  const commandToken = /`\/[a-z]/g
-  for (const [name, body] of [
-    ['interactive-mode.md', INTERACTIVE],
-    ['headless-drafting-brief.md', BRIEF],
-  ]) {
-    assert.equal(
-      (body.match(commandToken) || []).length,
-      0,
-      `${name} must not contain backticked /command tokens (mirror-unsafe)`,
-    )
-  }
-  // And the interactive directives the negative assertion pins survive into the mirror too.
-  assert.equal(
-    CODEX_INTERACTIVE,
-    rewriteCopiedMarkdownForTest(INTERACTIVE),
-    'codex interactive-mode mirror must equal the generated copied-markdown rewrite',
-  )
-  assert.equal(
-    CODEX_BRIEF,
-    rewriteCopiedMarkdownForTest(BRIEF),
-    'codex headless-drafting-brief mirror must equal the generated copied-markdown rewrite',
   )
 })

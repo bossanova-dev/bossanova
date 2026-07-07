@@ -77,6 +77,50 @@ func TestCLI_Account_Ls(t *testing.T) {
 	}
 }
 
+func TestCLI_Account_Ls_FullIDAndAlignedColumns(t *testing.T) {
+	accounts := []*pb.Account{
+		{
+			Id:       "8078890d6b0affc7",
+			Provider: "claude",
+			Label:    "agent.yuki",
+			Email:    "agent.yuki@kamik.ai",
+			Status:   "active",
+			Health:   "ok",
+		},
+		{
+			Id:       "6aaff35db711eee5",
+			Provider: "codex",
+			Label:    "dave@kamik.ai",
+			Email:    "dave@kamik.ai",
+			Status:   "active",
+			Health:   "ok",
+		},
+	}
+	h := clitest.New(t, clitest.WithAccounts(accounts...))
+	res := h.Run("account", "ls")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	lines := strings.Split(strings.TrimSpace(res.Stdout), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected header plus 2 account rows, got %d lines:\n%s", len(lines), res.Stdout)
+	}
+	var yukiRow string
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "8078890d6b0affc7" {
+			yukiRow = line
+		}
+	}
+	if yukiRow == "" {
+		t.Fatalf("full account id not found; stdout:\n%s", res.Stdout)
+	}
+	if !strings.Contains(yukiRow, "agent.yuki     agent.yuki@kamik.ai") {
+		t.Fatalf("agent.yuki row is not aligned compactly:\n%s", res.Stdout)
+	}
+}
+
 func TestCLI_Account_Ls_Empty(t *testing.T) {
 	h := clitest.New(t)
 	res := h.Run("account", "ls")
@@ -446,7 +490,7 @@ func TestCLI_Account_Test(t *testing.T) {
 	if h.Daemon.TestAccountCallCount() != 1 {
 		t.Errorf("expected 1 test call, got %d", h.Daemon.TestAccountCallCount())
 	}
-	for _, want := range []string{"acct-aaa", "ok", "Live smoke ran"} {
+	for _, want := range []string{"acct-aaa", "ok", "Provider check ran"} {
 		if !strings.Contains(res.Stdout, want) {
 			t.Errorf("stdout missing %q\n%s", want, res.Stdout)
 		}

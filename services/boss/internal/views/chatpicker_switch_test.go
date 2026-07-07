@@ -4,10 +4,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // drivePickCAccount presses "c" on the seeded chat and resolves the async
@@ -25,6 +27,45 @@ func drivePickCAccount(t *testing.T, m ChatPickerModel) ChatPickerModel {
 		t.Fatal("expected pickingAccount=true after the account-load resolves")
 	}
 	return m
+}
+
+func TestChatPicker_SwitchAccount_HidesUnmanagedWhenRegisteredAccountsExist(t *testing.T) {
+	stub := &chatPickerStub{
+		accounts: []*pb.Account{
+			{Id: "acct-work", Label: "Work Claude", Provider: "claude", Status: "active", Health: "ok"},
+		},
+	}
+	m := seedChatPicker(stub, statusStopped)
+	accountID := "acct-work"
+	m.session = &pb.Session{Id: "session-1", AccountId: &accountID}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	m = drivePickCAccount(t, m)
+	picker := stripANSI(m.View().Content)
+
+	if strings.Contains(picker, UnmanagedLocalCredentialsLabel) {
+		t.Fatalf("switch picker should hide unmanaged default when registered accounts exist; view:\n%s", picker)
+	}
+	if !strings.Contains(picker, "Work Claude") {
+		t.Fatalf("switch picker missing registered account; view:\n%s", picker)
+	}
+}
+
+func TestChatPicker_SwitchAccount_ShowsUnmanagedWhenNoRegisteredAccountsExist(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusStopped)
+	accountID := "acct-work"
+	m.session = &pb.Session{Id: "session-1", AccountId: &accountID}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	m = drivePickCAccount(t, m)
+	picker := stripANSI(m.View().Content)
+
+	if !strings.Contains(picker, UnmanagedLocalCredentialsLabel) {
+		t.Fatalf("switch picker should keep unmanaged fallback when no registered accounts exist; view:\n%s", picker)
+	}
 }
 
 // TestChatPicker_SwitchAccount_WorkingChat_ConfirmForcesSwitch drives the full
@@ -49,10 +90,10 @@ func TestChatPicker_SwitchAccount_WorkingChat_ConfirmForcesSwitch(t *testing.T) 
 
 	m = drivePickCAccount(t, m)
 
-	// The account picker must render the System default row and the account.
+	// The account picker must render the unmanaged row and the account.
 	picker := stripANSI(m.View().Content)
-	if !strings.Contains(picker, "System default") {
-		t.Errorf("account picker missing System default row:\n%s", picker)
+	if !strings.Contains(picker, "Unmanaged local credentials") {
+		t.Errorf("account picker missing unmanaged row:\n%s", picker)
 	}
 	if !strings.Contains(picker, "Work") {
 		t.Errorf("account picker missing the 'Work' account:\n%s", picker)
@@ -121,7 +162,7 @@ func TestChatPicker_SwitchAccount_WorkingChat_ConfirmForcesSwitch(t *testing.T) 
 }
 
 // TestChatPicker_SwitchAccount_StoppedChat_SystemDefault_NoConfirm drives the
-// switch flow for a non-mid-turn chat selecting the System default row: no
+// switch flow for a non-mid-turn chat selecting the unmanaged row: no
 // confirm dialog, the RPC fires immediately with Force=false and an empty
 // AccountId, and the "started fresh" notice renders.
 func TestChatPicker_SwitchAccount_StoppedChat_SystemDefault_NoConfirm(t *testing.T) {
@@ -131,8 +172,8 @@ func TestChatPicker_SwitchAccount_StoppedChat_SystemDefault_NoConfirm(t *testing
 		},
 		switchResp: &pb.SwitchSessionAccountResponse{
 			Resumed:     false,
-			TargetLabel: "System default",
-			NoticeText:  "switched to System default — started fresh (no transcript)",
+			TargetLabel: UnmanagedLocalCredentialsLabel,
+			NoticeText:  "switched to Unmanaged local credentials — started fresh (no transcript)",
 		},
 	}
 	m := seedChatPicker(stub, statusStopped)
@@ -141,7 +182,7 @@ func TestChatPicker_SwitchAccount_StoppedChat_SystemDefault_NoConfirm(t *testing
 
 	m = drivePickCAccount(t, m)
 
-	// Cursor defaults to row 0 (System default). Confirm immediately.
+	// Cursor defaults to row 0 (unmanaged local credentials). Confirm immediately.
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(ChatPickerModel)
 	if m.confirm != confirmNone {
@@ -164,14 +205,88 @@ func TestChatPicker_SwitchAccount_StoppedChat_SystemDefault_NoConfirm(t *testing
 		t.Error("expected Force=false for a non-mid-turn switch (no confirm)")
 	}
 	if got.GetAccountId() != "" {
-		t.Errorf("AccountId = %q, want empty (System default)", got.GetAccountId())
+		t.Errorf("AccountId = %q, want empty (unmanaged local credentials)", got.GetAccountId())
 	}
 
 	updated, _ = m.Update(result)
 	m = updated.(ChatPickerModel)
 	rendered := stripANSI(m.View().Content)
-	if !strings.Contains(rendered, "switched to System default — started fresh") {
+	if !strings.Contains(rendered, "switched to Unmanaged local credentials — started fresh") {
 		t.Errorf("view missing started-fresh notice line:\n%s", rendered)
+	}
+}
+
+// TestChatPicker_SwitchAccount_DisabledRowsDoNotCallRPC verifies failed and
+// cooling accounts are annotated in the picker and blocked locally before the
+// switch RPC or mid-turn confirm can run.
+func TestChatPicker_SwitchAccount_DisabledRowsDoNotCallRPC(t *testing.T) {
+	stub := &chatPickerStub{
+		accounts: []*pb.Account{
+			{Id: "acct-failed", Label: "Failed Work", Provider: "claude", Status: "active", Health: "failed", Email: "failed@example.test"},
+			{Id: "acct-cool", Label: "Cooling Work", Provider: "claude", Status: "active", Health: "ok", Email: "cool@example.test", CooldownUntil: timestamppb.New(time.Now().Add(15 * time.Minute))},
+			{Id: "acct-ok", Label: "Ready Work", Provider: "claude", Status: "active", Health: "ok", Email: "ready@example.test"},
+		},
+	}
+	m := seedChatPicker(stub, statusWorking)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	m = drivePickCAccount(t, m)
+
+	picker := stripANSI(m.View().Content)
+	for _, token := range []string{"Unmanaged local credentials", "failed", "cooling", "failed@example.test", "cool@example.test"} {
+		if !strings.Contains(picker, token) {
+			t.Fatalf("picker missing %q:\n%s", token, picker)
+		}
+	}
+
+	// Row 1 is the failed account. It must not trigger the mid-turn confirm or RPC.
+	updated, _ = m.Update(keyPress('j'))
+	m = updated.(ChatPickerModel)
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(ChatPickerModel)
+	if cmd != nil {
+		t.Fatalf("failed account selection returned cmd %T, want nil", cmd)
+	}
+	if m.confirm != confirmNone {
+		t.Fatalf("failed account selection opened confirm=%d, want confirmNone", m.confirm)
+	}
+	if len(stub.switchCallsSnapshot()) != 0 {
+		t.Fatalf("failed account selection dispatched %d switch calls, want 0", len(stub.switchCallsSnapshot()))
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "can't switch to it right now") {
+		t.Errorf("failed account selection did not render explanatory message:\n%s", stripANSI(m.View().Content))
+	}
+
+	// Row 2 is the cooling account. It is also blocked locally.
+	updated, _ = m.Update(keyPress('j'))
+	m = updated.(ChatPickerModel)
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(ChatPickerModel)
+	if cmd != nil {
+		t.Fatalf("cooling account selection returned cmd %T, want nil", cmd)
+	}
+	if len(stub.switchCallsSnapshot()) != 0 {
+		t.Fatalf("cooling account selection dispatched %d switch calls, want 0", len(stub.switchCallsSnapshot()))
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "can't switch to it right now") {
+		t.Errorf("cooling account selection did not render explanatory message:\n%s", stripANSI(m.View().Content))
+	}
+
+	// Row 3 is valid; on a WORKING chat it still routes through the mid-turn confirm.
+	updated, _ = m.Update(keyPress('j'))
+	m = updated.(ChatPickerModel)
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(ChatPickerModel)
+	if cmd != nil {
+		t.Fatalf("valid account on WORKING chat must not fire RPC before confirm, got cmd %T", cmd)
+	}
+	if m.confirm != confirmSwitch {
+		t.Fatalf("valid account on WORKING chat confirm=%d, want confirmSwitch", m.confirm)
+	}
+	dialog := stripANSI(m.View().Content)
+	if !strings.Contains(dialog, "mid-turn") || !strings.Contains(dialog, "[y/enter] confirm") {
+		t.Errorf("valid account did not render mid-turn confirm:\n%s", dialog)
 	}
 }
 
@@ -179,7 +294,7 @@ func TestChatPicker_SwitchAccount_StoppedChat_SystemDefault_NoConfirm(t *testing
 // rendered on the same notice line as a human-readable message.
 func TestChatPicker_SwitchAccount_ErrorSurfaced(t *testing.T) {
 	stub := &chatPickerStub{
-		accounts:  []*pb.Account{{Id: "acct-1", Label: "Work", Provider: "claude", Status: "cooling"}},
+		accounts:  []*pb.Account{{Id: "acct-1", Label: "Work", Provider: "claude", Status: "active"}},
 		switchErr: errors.New("account is cooling down; try again later"),
 	}
 	m := seedChatPicker(stub, statusStopped)
@@ -188,6 +303,8 @@ func TestChatPicker_SwitchAccount_ErrorSurfaced(t *testing.T) {
 
 	m = drivePickCAccount(t, m)
 
+	updated, _ = m.Update(keyPress('j'))
+	m = updated.(ChatPickerModel)
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(ChatPickerModel)
 	if cmd == nil {

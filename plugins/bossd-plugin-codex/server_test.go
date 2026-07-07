@@ -859,6 +859,9 @@ func TestGetChatTitleSupportedEvenWithoutTranscript(t *testing.T) {
 	if resp.Title != "" {
 		t.Errorf("Title = %q, want empty for missing transcript", resp.Title)
 	}
+	if resp.Explicit {
+		t.Error("Explicit = true, want false until codex has a confirmed rename representation")
+	}
 }
 
 // TestListIgnoredDirtyFilesReturnsEmptySlice asserts the codex plugin's

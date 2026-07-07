@@ -1,6 +1,6 @@
 ---
 name: boss-plan
-description: Plan a Linear backlog ticket. Grabs the next Unplanned issue by priority (or a ticket ID you provide), runs a full plan-eng-review interview plus superpowers:writing-plans, hosts the plan on proof.bossanova.dev, then writes a summary, labels, Fibonacci estimate, priority, and a plan link back to the issue and moves it Unplanned -> Todo. Internal Bossanova project skill. Interactive by default; runs fully headless when BOSS_CRON=true.
+description: Plan a Linear backlog ticket. Grabs the next Unplanned issue by priority (or a ticket ID you provide), resolves drafting through boss-plan draft extensions or portable fallbacks, hosts the plan on proof.bossanova.dev, then writes a summary, labels, Fibonacci estimate, priority, and a plan link back to the issue and moves it Unplanned -> Todo. Internal Bossanova project skill. Interactive by default; runs fully headless when BOSS_CRON=true.
 ---
 
 # BS Plan
@@ -9,8 +9,8 @@ Turn a vague, one-line Linear ticket into a fully-planned **Todo** with an
 implementation-ready plan attached. Use when asked to "plan a linear ticket",
 "plan the next ticket", "boss-plan", or given a ticket ID like `BOS-12`.
 
-This skill is **interactive by default** — it drives `AskUserQuestion` through the full
-`plan-eng-review`. Under `BOSS_CRON=true` it runs **fully headless**, dispatching a single awaited
+This skill is **interactive by default** — it may drive `AskUserQuestion` through a discovered
+draft extension. Under `BOSS_CRON=true` it runs **fully headless**, dispatching a single awaited
 subagent for recon + drafting (Phase 2), so it is safe to schedule unattended.
 
 - **Leave no local artifacts.** At every terminal state, discard the scratch you created (gitignored dirs, seeded design docs, `mktemp` files) so the worktree is clean — in all modes, headless (`BOSS_CRON=true`) especially.
@@ -28,7 +28,7 @@ Mode-exclusive prose lives in `references/*.md`, loaded **only** on the path tha
 
 | Reference                               | Read it when…                                                                             |
 | --------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `references/interactive-mode.md`        | Interactive `/boss-plan` only — Phase 1 confirm loop, design-doc seed, `plan-eng-review`  |
+| `references/interactive-mode.md`        | Interactive `/boss-plan` only — Phase 1 confirm loop, design-doc seed, draft resolution   |
 | `references/headless-drafting-brief.md` | Passed (by **path**) to the Phase 2 drafting subagent — never read by the orchestrator    |
 | `references/extension-reviewers.md`     | Phase 3.5 — repo-local `boss-plan-*` extension plan-reviewers (additive; no-op when none) |
 
@@ -96,15 +96,20 @@ The plan itself — codebase recon, the review dimensions, and the polished writ
 per the **Phase 3 plan requirements** (the shared contract for what a plan must contain). The two
 modes differ only in **who drafts**:
 
+## Draft-resolution (shared Fallback contract)
+
+Resolve drafting by the BOS-274 Fallback contract: discovered `boss-plan-*` `role: draft`
+extension → host built-in → inline prompt; tiers 2/3 suppressed when an extension exists.
+
 ### Interactive (default `/boss-plan`)
 
-Triage triviality, seed the design doc, run `plan-eng-review`, then invoke
-`superpowers:writing-plans` inline — all in `references/interactive-mode.md`. Carry every interview
-decision into the plan. Then continue to Phase 4 (upload + write back).
+Resolve the draft/review step via the BOS-274 Fallback contract; the interactive
+resolution and tier-3 inline drafting prompt live in `references/interactive-mode.md`. Then
+continue to Phase 3.5 → Phase 4.
 
 ### Headless (`BOSS_CRON=true`) — dispatch ONE awaited drafting subagent
 
-Do **not** draft inline. Recon + `superpowers:writing-plans` + the self-review dimensions are bulk
+Do **not** draft inline. Recon, drafting, and the self-review dimensions are bulk
 context; keeping them on the main thread is exactly the cost this mode avoids. Instead:
 
 **Bulk-output discipline (no raw bulk in the orchestrator).** The drafting dispatch keeps its bulk
@@ -119,7 +124,9 @@ for the Phase 4 secret gate.
    the module constant in `bs-run-sentinel.mjs`:
 
    ```bash
-   RUN_SENTINEL="$(git rev-parse --show-toplevel)/.claude/skills/boss-plan/toolbox/bs-run-sentinel.mjs"
+   BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
+   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
+   RUN_SENTINEL="$BOSS_PLAN_TOOLBOX/bs-run-sentinel.mjs"
    test -f "$RUN_SENTINEL" || { echo "BLOCKED: bs-run-sentinel.mjs missing" >&2; exit 1; }
    DISPATCH_FAILURE="dispatch-failure"
    PLAN_PATH=".linear-plans/<ISSUE-ID>-<slug>.md"   # compute the slug with plan-upload.mjs issueSlug
@@ -173,8 +180,8 @@ for the Phase 4 secret gate.
 
 ## Phase 3 — Plan requirements (shared drafting spec)
 
-Whoever drafts — the interactive orchestrator (via `superpowers:writing-plans`) or the headless
-subagent (per `references/headless-drafting-brief.md`) — produces a plan file at
+Whoever drafts — the interactive path or the headless subagent (per
+`references/headless-drafting-brief.md`) — produces a plan file at
 `.linear-plans/<ISSUE-ID>-<slug>.md` (gitignored scratch; the slug is the issue id + hyphenated
 title, e.g. `BOS-5-add-an-unsubscribe-mechanism`; compute it with
 `node -e "import('./scripts/plan-upload.mjs').then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))" <ISSUE-ID> "<title>"`).
@@ -360,7 +367,7 @@ the job (scheduler UI, `GateCommand` — see PR #870) so the run only fires when
 has something to plan, spending **zero** agent tokens otherwise:
 
 ```
-node .claude/skills/boss-plan/gate/gate.mjs
+node scripts/cron-gates/boss-plan.mjs
 ```
 
 It exits `0` (run) iff at least one Linear issue is in the **`Unplanned`** state — the

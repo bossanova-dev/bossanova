@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -30,7 +31,7 @@ type ClaudeOptions struct {
 }
 
 // RunClaudeAdd registers an additional Claude account via `claude setup-token`
-// (or a pasted token), then stores and live-tests it through the daemon.
+// (or a pasted token), then stores and verifies it through the daemon.
 func RunClaudeAdd(ctx context.Context, o ClaudeOptions) error {
 	if o.ClaudeBin == "" {
 		o.ClaudeBin = "claude"
@@ -101,6 +102,57 @@ type claudeResult struct {
 	last []string
 }
 
+type claudeRelayFilter struct {
+	lastEmitted string
+	seen        map[string]bool
+}
+
+var claudeANSIEscapeRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+
+var claudeRelayMilestones = []struct {
+	key       string
+	prefix    string
+	milestone string
+}{
+	{key: "welcome", prefix: "welcome to claude code", milestone: "Starting Claude sign-in..."},
+	{key: "opening-browser", prefix: "opening browser to sign in", milestone: "Opening browser for Claude sign-in..."},
+}
+
+func (f *claudeRelayFilter) push(line string) (string, bool) {
+	normalized := claudeANSIEscapeRE.ReplaceAllString(line, "")
+	normalized = strings.ReplaceAll(normalized, "\r", "")
+	normalized = strings.TrimSpace(normalized)
+	if normalized == "" {
+		return "", false
+	}
+
+	lower := strings.ToLower(normalized)
+	for _, m := range claudeRelayMilestones {
+		if !strings.HasPrefix(lower, m.prefix) {
+			continue
+		}
+		if f.seen == nil {
+			f.seen = make(map[string]bool)
+		}
+		if f.seen[m.key] {
+			return "", false
+		}
+		f.seen[m.key] = true
+		if m.milestone == f.lastEmitted {
+			return "", false
+		}
+		f.lastEmitted = m.milestone
+		return m.milestone, true
+	}
+
+	masked := maskLine(normalized)
+	if masked == f.lastEmitted {
+		return "", false
+	}
+	f.lastEmitted = masked
+	return masked, true
+}
+
 // claudeWalkthrough runs `claude setup-token`, tees masked output to the user,
 // and parses the token from the accumulated output after exit.
 func claudeWalkthrough(ctx context.Context, o ClaudeOptions) (string, error) {
@@ -122,11 +174,14 @@ func claudeWalkthrough(ctx context.Context, o ClaudeOptions) (string, error) {
 	go func() {
 		var buf strings.Builder
 		var all []string
+		var filter claudeRelayFilter
 		for line := range proc.Lines() {
 			buf.WriteString(line)
 			buf.WriteByte('\n')
 			all = append(all, line)
-			o.Prompter.Say("%s", maskLine(line))
+			if msg, ok := filter.push(line); ok {
+				o.Prompter.Say("%s", msg)
+			}
 		}
 		done <- claudeResult{err: proc.Wait(), buf: buf.String(), last: all}
 	}()
@@ -219,8 +274,8 @@ func resolveLabel(p Prompter, flagLabel, defaultLabel, email string, nonInteract
 	return label, email, nil
 }
 
-// storeAndTest adds the credential through the daemon then live-tests it,
-// offering keep-or-remove when the live test fails.
+// storeAndTest adds the credential through the daemon then verifies it,
+// offering keep-or-remove when verification fails.
 func storeAndTest(ctx context.Context, p Prompter, c AccountClient, provider, label, email string, priority int32, blob []byte, display string) error {
 	acct, err := c.AddAccount(ctx, &pb.AddAccountRequest{
 		Provider:   provider,
@@ -253,16 +308,15 @@ func storeAndTest(ctx context.Context, p Prompter, c AccountClient, provider, la
 	return nil
 }
 
-// keepOrRemove handles a failed live test: a transport error or a live smoke
-// that actually ran and reported an error. It offers keep-or-remove for the
-// just-registered account and removes it when the operator declines.
+// keepOrRemove handles failed account verification. It offers keep-or-remove
+// for the just-registered account and removes it when the operator declines.
 func keepOrRemove(ctx context.Context, p Prompter, c AccountClient, id, label, reason string, testErr error) error {
-	keep, cerr := p.Confirm(fmt.Sprintf("Live test failed (%s). Keep the account anyway?", reason), false)
+	keep, cerr := p.Confirm(fmt.Sprintf("Account verification failed (%s). Keep the account anyway?", reason), false)
 	if cerr != nil {
 		return cerr
 	}
 	if keep {
-		p.Say("Account %q stored unverified; rotation will retry the live test later.", label)
+		p.Say("Account %q stored without verification; rotation will retry verification later.", label)
 		return nil
 	}
 	if rerr := c.RemoveAccount(ctx, id); rerr != nil {
@@ -271,7 +325,7 @@ func keepOrRemove(ctx context.Context, p Prompter, c AccountClient, id, label, r
 	if testErr != nil {
 		return testErr
 	}
-	return fmt.Errorf("live test failed: %s", reason)
+	return fmt.Errorf("account verification failed: %s", reason)
 }
 
 // --- small helpers ---------------------------------------------------------
@@ -292,11 +346,10 @@ func findEmailCollision(accounts []*pb.Account, email string) *pb.Account {
 type testOutcome int
 
 const (
-	// testVerified: the credential is stored and the live smoke passed (or
+	// testVerified: the credential is stored and verification passed (or
 	// there is simply nothing to report).
 	testVerified testOutcome = iota
-	// testFailed: a transport error, or a live smoke that ran and reported an
-	// error.
+	// testFailed: a transport error, or credential verification reported an error.
 	testFailed
 )
 

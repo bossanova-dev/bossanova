@@ -435,8 +435,8 @@ func TestProductionChanges_EachSupportedVersionRoundTrips(t *testing.T) {
 		// OrphanedStateChange is introduced at V20260704, so it applies only to
 		// versions strictly older than V20260704 (Baseline) and is a no-op at
 		// V20260704 and newer. Baseline therefore gets the prior shape
-		// (IMPLEMENTING_PLAN); V20260704 and Current (V20260705) get the newest
-		// shape (ORPHANED).
+		// (IMPLEMENTING_PLAN); V20260704 and every newer version up to Current
+		// (V20260706) get the newest shape (ORPHANED).
 		want := pb.SessionState_SESSION_STATE_ORPHANED
 		if reg.Newer(apiversion.V20260704, v) {
 			want = pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN
@@ -552,7 +552,7 @@ func TestAgentAuthFailedChange_NoOpAtCurrent(t *testing.T) {
 	for _, tc := range authFailedResponseCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			msg := tc.build()
-			// Resolved to Current (V20260705) → change is NOT newer → not applied.
+			// Resolved to Current (V20260706) → change (V20260705) is NOT newer → not applied.
 			changes.Apply(tc.method, msg, reg.Current())
 			sess := tc.get(msg)
 			if sess.GetAttentionStatus().GetReason() != pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED {
@@ -638,5 +638,568 @@ func TestProductionChanges_IncludesAuthFailedTransform(t *testing.T) {
 	changes.Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, apiversion.Baseline)
 	if msg.GetSession().GetAttentionStatus() != nil {
 		t.Errorf("ProductionChanges did not neutralize AGENT_AUTH_FAILED for Baseline: %v", msg.GetSession().GetAttentionStatus())
+	}
+}
+
+// --- UnmanagedLabelChange (V20260706) ---
+
+// currentUnmanagedLabel is the CURRENT (V20260706+) account label for an
+// unbound session; priorUnmanagedLabel is what older clients were built to see.
+// They mirror account.UnmanagedLocalCredentialsLabel and the prior "System
+// default" literal (lib tests must not import services/bossd).
+const (
+	currentUnmanagedLabel = "Unmanaged local credentials"
+	priorUnmanagedLabel   = "System default"
+)
+
+// unmanagedSession builds an UNBOUND Session (empty account_id) carrying the
+// current "Unmanaged local credentials" account_label, mirroring what bossd
+// hydrates via withAccountLabel for the system-default account 0.
+func unmanagedSession() *pb.Session {
+	accountID := ""
+	label := currentUnmanagedLabel
+	return &pb.Session{
+		AccountId:    &accountID,
+		AccountLabel: &label,
+	}
+}
+
+// unmanagedLabelResponseCases enumerates every Session-bearing OrchestratorService
+// response type, each carrying a single unbound-unmanaged Session plus a reader.
+func unmanagedLabelResponseCases() []struct {
+	name   string
+	method string
+	build  func() any
+	get    func(any) *pb.Session
+} {
+	return []struct {
+		name   string
+		method string
+		build  func() any
+		get    func(any) *pb.Session
+	}{
+		{"ProxyListSessions", bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure,
+			func() any { return &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{unmanagedSession()}} },
+			func(m any) *pb.Session { return m.(*pb.ProxyListSessionsResponse).GetSessions()[0] }},
+		{"ProxyGetSession", bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure,
+			func() any { return &pb.ProxyGetSessionResponse{Session: unmanagedSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyGetSessionResponse).GetSession() }},
+		{"ProxyStopSession", bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure,
+			func() any { return &pb.ProxyStopSessionResponse{Session: unmanagedSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyStopSessionResponse).GetSession() }},
+		{"ProxyPauseSession", bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure,
+			func() any { return &pb.ProxyPauseSessionResponse{Session: unmanagedSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyPauseSessionResponse).GetSession() }},
+		{"ProxyResumeSession", bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure,
+			func() any { return &pb.ProxyResumeSessionResponse{Session: unmanagedSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyResumeSessionResponse).GetSession() }},
+		{"ProxyMergeSession", bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure,
+			func() any { return &pb.ProxyMergeSessionResponse{Session: unmanagedSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyMergeSessionResponse).GetSession() }},
+		{"ProxyArchiveSession", bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure,
+			func() any { return &pb.ProxyArchiveSessionResponse{Session: unmanagedSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyArchiveSessionResponse).GetSession() }},
+		{"TransferSession", bossanovav1connect.OrchestratorServiceTransferSessionProcedure,
+			func() any { return &pb.TransferSessionResponse{Session: unmanagedSession()} },
+			func(m any) *pb.Session { return m.(*pb.TransferSessionResponse).GetSession() }},
+	}
+}
+
+func TestUnmanagedLabelChange_Version(t *testing.T) {
+	if got := (apiversion.UnmanagedLabelChange{}).Version(); got != apiversion.V20260706 {
+		t.Errorf("UnmanagedLabelChange.Version() = %q, want %q", got, apiversion.V20260706)
+	}
+}
+
+func TestUnmanagedLabelChange_DownConvertsForBaseline(t *testing.T) {
+	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.UnmanagedLabelChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	for _, tc := range unmanagedLabelResponseCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := tc.build()
+			// Resolved to Baseline → change at V20260706 is newer → applied.
+			changes.Apply(tc.method, msg, apiversion.Baseline)
+			if got := tc.get(msg).GetAccountLabel(); got != priorUnmanagedLabel {
+				t.Errorf("%s: account_label = %q, want %q (restored)", tc.name, got, priorUnmanagedLabel)
+			}
+		})
+	}
+}
+
+func TestUnmanagedLabelChange_NoOpAtCurrent(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	changes, err := apiversion.NewChanges(reg, apiversion.UnmanagedLabelChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	for _, tc := range unmanagedLabelResponseCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := tc.build()
+			// Resolved to Current (V20260706) → change is NOT newer → not applied.
+			changes.Apply(tc.method, msg, reg.Current())
+			if got := tc.get(msg).GetAccountLabel(); got != currentUnmanagedLabel {
+				t.Errorf("%s: account_label = %q, want %q (unchanged at Current)", tc.name, got, currentUnmanagedLabel)
+			}
+		})
+	}
+}
+
+func TestUnmanagedLabelChange_LeavesBoundAccountsUntouched(t *testing.T) {
+	uc := apiversion.UnmanagedLabelChange{}
+	// A session BOUND to a real account (non-empty account_id) must be left
+	// exactly as-is even for Baseline callers — even in the unlikely event its
+	// label happens to read "Unmanaged local credentials".
+	accountID := "acct_real"
+	label := currentUnmanagedLabel
+	msg := &pb.ProxyGetSessionResponse{Session: &pb.Session{AccountId: &accountID, AccountLabel: &label}}
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg)
+	if got := msg.GetSession().GetAccountLabel(); got != currentUnmanagedLabel {
+		t.Errorf("bound account label mutated: got %q, want %q", got, currentUnmanagedLabel)
+	}
+}
+
+func TestUnmanagedLabelChange_LeavesOtherLabelsUntouched(t *testing.T) {
+	uc := apiversion.UnmanagedLabelChange{}
+	// An unbound session whose label is NOT the unmanaged literal (e.g. a short-id
+	// fallback) must be left as-is.
+	accountID := ""
+	label := "acct1234"
+	msg := &pb.ProxyGetSessionResponse{Session: &pb.Session{AccountId: &accountID, AccountLabel: &label}}
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg)
+	if got := msg.GetSession().GetAccountLabel(); got != "acct1234" {
+		t.Errorf("unrelated label mutated: got %q, want %q", got, "acct1234")
+	}
+}
+
+func TestUnmanagedLabelChange_DoesNotMutateSharedSession(t *testing.T) {
+	uc := apiversion.UnmanagedLabelChange{}
+
+	shared := unmanagedSession()
+	listMsg := &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{shared}}
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, listMsg)
+	if shared.GetAccountLabel() != currentUnmanagedLabel {
+		t.Fatalf("shared session mutated in place: label = %q, want %q", shared.GetAccountLabel(), currentUnmanagedLabel)
+	}
+	if listMsg.GetSessions()[0] == shared {
+		t.Fatal("response session must be a clone, not the shared pointer")
+	}
+	if got := listMsg.GetSessions()[0].GetAccountLabel(); got != priorUnmanagedLabel {
+		t.Fatalf("response session not down-converted: label = %q, want %q", got, priorUnmanagedLabel)
+	}
+}
+
+func TestUnmanagedLabelChange_SwitchResponse_DownConvertsForBaseline(t *testing.T) {
+	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.UnmanagedLabelChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	msg := &pb.ProxySwitchSessionAccountResponse{
+		Resumed:     true,
+		TargetLabel: currentUnmanagedLabel,
+		NoticeText:  "switched to " + currentUnmanagedLabel + " — resumed",
+	}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure, msg, apiversion.Baseline)
+	if msg.GetTargetLabel() != priorUnmanagedLabel {
+		t.Errorf("target_label = %q, want %q", msg.GetTargetLabel(), priorUnmanagedLabel)
+	}
+	want := "switched to " + priorUnmanagedLabel + " — resumed"
+	if msg.GetNoticeText() != want {
+		t.Errorf("notice_text = %q, want %q", msg.GetNoticeText(), want)
+	}
+}
+
+func TestUnmanagedLabelChange_SwitchResponse_NoOpAtCurrent(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	changes, err := apiversion.NewChanges(reg, apiversion.UnmanagedLabelChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	notice := "switched to " + currentUnmanagedLabel + " — resumed"
+	msg := &pb.ProxySwitchSessionAccountResponse{TargetLabel: currentUnmanagedLabel, NoticeText: notice}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure, msg, reg.Current())
+	if msg.GetTargetLabel() != currentUnmanagedLabel || msg.GetNoticeText() != notice {
+		t.Errorf("switch response mutated at Current: target=%q notice=%q", msg.GetTargetLabel(), msg.GetNoticeText())
+	}
+}
+
+func TestUnmanagedLabelChange_SwitchResponse_OtherTargetUntouched(t *testing.T) {
+	uc := apiversion.UnmanagedLabelChange{}
+	// A switch to a real, named account must be left as-is.
+	msg := &pb.ProxySwitchSessionAccountResponse{
+		TargetLabel: "work@example.com",
+		NoticeText:  "switched to work@example.com — resumed",
+	}
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure, msg)
+	if msg.GetTargetLabel() != "work@example.com" {
+		t.Errorf("target_label mutated: got %q", msg.GetTargetLabel())
+	}
+	if msg.GetNoticeText() != "switched to work@example.com — resumed" {
+		t.Errorf("notice_text mutated: got %q", msg.GetNoticeText())
+	}
+}
+
+func TestUnmanagedLabelChange_NonTargetedMethod_NoOp(t *testing.T) {
+	uc := apiversion.UnmanagedLabelChange{}
+	msg := &pb.ProxyGetSessionResponse{Session: unmanagedSession()}
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceListDaemonsProcedure, msg)
+	if msg.GetSession().GetAccountLabel() != currentUnmanagedLabel {
+		t.Error("untargeted method rewrote account_label")
+	}
+}
+
+func TestUnmanagedLabelChange_WrongType_NoOp(t *testing.T) {
+	uc := apiversion.UnmanagedLabelChange{}
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, "not a response")
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, &pb.ProxyGetSessionResponse{})
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure, &pb.ProxyGetSessionResponse{})
+}
+
+func TestUnmanagedLabelChange_NilSession_NoPanic(t *testing.T) {
+	uc := apiversion.UnmanagedLabelChange{}
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, &pb.ProxyGetSessionResponse{})
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, &pb.ProxyListSessionsResponse{})
+}
+
+// unmanagedRotationEvent builds a rotation event recorded by a switch to the
+// unbound account: to_account carries the exact unmanaged label and detail
+// embeds it, mirroring switch_account.go's SwitchAccount audit population.
+func unmanagedRotationEvent() *pb.RotationEvent {
+	return &pb.RotationEvent{
+		Id:          "evt-1",
+		ToAccount:   currentUnmanagedLabel,
+		FromAccount: "acct_prev",
+		Detail:      "switched to " + currentUnmanagedLabel + " — resumed",
+	}
+}
+
+func TestUnmanagedLabelChange_RotationEvents_DownConvertsForBaseline(t *testing.T) {
+	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.UnmanagedLabelChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	// A session BOUND to a real account (non-empty account_id) can still carry a
+	// historical rotation event from a prior switch to the unbound account. The
+	// rotation-event rewrite is independent of the top-level account_id predicate.
+	accountID := "acct_real"
+	realLabel := "work@example.com"
+	msg := &pb.ProxyGetSessionResponse{Session: &pb.Session{
+		AccountId:      &accountID,
+		AccountLabel:   &realLabel,
+		RotationEvents: []*pb.RotationEvent{unmanagedRotationEvent()},
+	}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, apiversion.Baseline)
+
+	got := msg.GetSession().GetRotationEvents()[0]
+	if got.GetToAccount() != priorUnmanagedLabel {
+		t.Errorf("to_account = %q, want %q (restored)", got.GetToAccount(), priorUnmanagedLabel)
+	}
+	wantDetail := "switched to " + priorUnmanagedLabel + " — resumed"
+	if got.GetDetail() != wantDetail {
+		t.Errorf("detail = %q, want %q (restored)", got.GetDetail(), wantDetail)
+	}
+	// The bound account's own label is a real account and must be left untouched.
+	if lbl := msg.GetSession().GetAccountLabel(); lbl != realLabel {
+		t.Errorf("bound account_label mutated: got %q, want %q", lbl, realLabel)
+	}
+}
+
+func TestUnmanagedLabelChange_RotationEvents_NoOpAtCurrent(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	changes, err := apiversion.NewChanges(reg, apiversion.UnmanagedLabelChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	msg := &pb.ProxyGetSessionResponse{Session: &pb.Session{
+		RotationEvents: []*pb.RotationEvent{unmanagedRotationEvent()},
+	}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, reg.Current())
+	if got := msg.GetSession().GetRotationEvents()[0].GetToAccount(); got != currentUnmanagedLabel {
+		t.Errorf("to_account = %q, want %q (unchanged at Current)", got, currentUnmanagedLabel)
+	}
+}
+
+func TestUnmanagedLabelChange_RotationEvents_DoesNotMutateShared(t *testing.T) {
+	uc := apiversion.UnmanagedLabelChange{}
+	shared := &pb.Session{RotationEvents: []*pb.RotationEvent{unmanagedRotationEvent()}}
+	listMsg := &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{shared}}
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, listMsg)
+
+	if shared.GetRotationEvents()[0].GetToAccount() != currentUnmanagedLabel {
+		t.Fatalf("shared rotation event mutated in place: to_account = %q", shared.GetRotationEvents()[0].GetToAccount())
+	}
+	if listMsg.GetSessions()[0] == shared {
+		t.Fatal("response session must be a clone, not the shared pointer")
+	}
+	if got := listMsg.GetSessions()[0].GetRotationEvents()[0].GetToAccount(); got != priorUnmanagedLabel {
+		t.Fatalf("response rotation event not down-converted: to_account = %q, want %q", got, priorUnmanagedLabel)
+	}
+}
+
+func TestUnmanagedLabelChange_RotationEvents_UnrelatedUntouched(t *testing.T) {
+	uc := apiversion.UnmanagedLabelChange{}
+	ev := &pb.RotationEvent{Id: "evt-2", ToAccount: "work@example.com", Detail: "resets 15:00"}
+	// Unbound session (empty account_id, unmanaged label) so the top-level label is
+	// rewritten, but the unrelated rotation event must be left exactly as-is.
+	msg := &pb.ProxyGetSessionResponse{Session: func() *pb.Session {
+		s := unmanagedSession()
+		s.RotationEvents = []*pb.RotationEvent{ev}
+		return s
+	}()}
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg)
+	got := msg.GetSession().GetRotationEvents()[0]
+	if got.GetToAccount() != "work@example.com" || got.GetDetail() != "resets 15:00" {
+		t.Errorf("unrelated rotation event mutated: to_account=%q detail=%q", got.GetToAccount(), got.GetDetail())
+	}
+}
+
+func TestUnmanagedLabelChange_RotationEvents_RealLabelContainingUnmanagedPhraseUntouched(t *testing.T) {
+	uc := apiversion.UnmanagedLabelChange{}
+	realLabel := "Team " + currentUnmanagedLabel
+	detail := "switched to " + realLabel + " — resumed"
+	msg := &pb.ProxyGetSessionResponse{Session: &pb.Session{
+		RotationEvents: []*pb.RotationEvent{{
+			Id:        "evt-real-label",
+			ToAccount: realLabel,
+			Detail:    detail,
+		}},
+	}}
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg)
+	got := msg.GetSession().GetRotationEvents()[0]
+	if got.GetToAccount() != realLabel {
+		t.Errorf("real to_account mutated: got %q, want %q", got.GetToAccount(), realLabel)
+	}
+	if got.GetDetail() != detail {
+		t.Errorf("real-label detail rewritten: got %q, want %q", got.GetDetail(), detail)
+	}
+}
+
+// TestUnmanagedLabelChange_SwitchResponse_NoticeGatedOnTarget proves the
+// notice_text rewrite is keyed on the target being the unbound account (target_label
+// == unmanaged), NOT on the text merely containing the phrase. A switch to a REAL
+// account whose notice happens to mention the phrase must be left untouched — the
+// safety property backing Finding #3 (the reserved label makes the literal key safe).
+func TestUnmanagedLabelChange_SwitchResponse_NoticeGatedOnTarget(t *testing.T) {
+	uc := apiversion.UnmanagedLabelChange{}
+	notice := "switched to work — was on " + currentUnmanagedLabel
+	msg := &pb.ProxySwitchSessionAccountResponse{
+		TargetLabel: "work@example.com",
+		NoticeText:  notice,
+	}
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure, msg)
+	if msg.GetTargetLabel() != "work@example.com" {
+		t.Errorf("target_label mutated: got %q", msg.GetTargetLabel())
+	}
+	if msg.GetNoticeText() != notice {
+		t.Errorf("notice_text rewritten despite non-unbound target: got %q, want %q", msg.GetNoticeText(), notice)
+	}
+}
+
+func TestProductionChanges_IncludesUnmanagedLabelTransform(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	// Header-less (Baseline) traffic must have the unmanaged label restored.
+	msg := &pb.ProxyGetSessionResponse{Session: unmanagedSession()}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, apiversion.Baseline)
+	if got := msg.GetSession().GetAccountLabel(); got != priorUnmanagedLabel {
+		t.Errorf("ProductionChanges did not restore %q for Baseline: got %q", priorUnmanagedLabel, got)
+	}
+	// And the switch response path too.
+	sw := &pb.ProxySwitchSessionAccountResponse{TargetLabel: currentUnmanagedLabel, NoticeText: "already on " + currentUnmanagedLabel}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure, sw, apiversion.Baseline)
+	if sw.GetTargetLabel() != priorUnmanagedLabel {
+		t.Errorf("ProductionChanges did not restore switch target_label for Baseline: got %q", sw.GetTargetLabel())
+	}
+	if sw.GetNoticeText() != "already on "+priorUnmanagedLabel {
+		t.Errorf("ProductionChanges did not rewrite switch notice_text for Baseline: got %q", sw.GetNoticeText())
+	}
+}
+
+// --- LimitedChatStatusChange (V20260706) ---
+
+func limitedSession() *pb.Session {
+	return &pb.Session{
+		DisplayLabel:   "usage-limited (resets ~15:00)",
+		DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+		DisplaySpinner: false,
+	}
+}
+
+func limitedResponseCases() []struct {
+	name   string
+	method string
+	build  func() any
+	get    func(any) *pb.Session
+} {
+	return []struct {
+		name   string
+		method string
+		build  func() any
+		get    func(any) *pb.Session
+	}{
+		{"ProxyListSessions", bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure,
+			func() any { return &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{limitedSession()}} },
+			func(m any) *pb.Session { return m.(*pb.ProxyListSessionsResponse).GetSessions()[0] }},
+		{"ProxyGetSession", bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure,
+			func() any { return &pb.ProxyGetSessionResponse{Session: limitedSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyGetSessionResponse).GetSession() }},
+		{"ProxyStopSession", bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure,
+			func() any { return &pb.ProxyStopSessionResponse{Session: limitedSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyStopSessionResponse).GetSession() }},
+		{"ProxyPauseSession", bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure,
+			func() any { return &pb.ProxyPauseSessionResponse{Session: limitedSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyPauseSessionResponse).GetSession() }},
+		{"ProxyResumeSession", bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure,
+			func() any { return &pb.ProxyResumeSessionResponse{Session: limitedSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyResumeSessionResponse).GetSession() }},
+		{"ProxyMergeSession", bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure,
+			func() any { return &pb.ProxyMergeSessionResponse{Session: limitedSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyMergeSessionResponse).GetSession() }},
+		{"ProxyArchiveSession", bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure,
+			func() any { return &pb.ProxyArchiveSessionResponse{Session: limitedSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyArchiveSessionResponse).GetSession() }},
+		{"TransferSession", bossanovav1connect.OrchestratorServiceTransferSessionProcedure,
+			func() any { return &pb.TransferSessionResponse{Session: limitedSession()} },
+			func(m any) *pb.Session { return m.(*pb.TransferSessionResponse).GetSession() }},
+	}
+}
+
+func TestLimitedChatStatusChange_Version(t *testing.T) {
+	if got := (apiversion.LimitedChatStatusChange{}).Version(); got != apiversion.V20260706 {
+		t.Errorf("LimitedChatStatusChange.Version() = %q, want %q", got, apiversion.V20260706)
+	}
+}
+
+func TestLimitedChatStatusChange_DownConvertsSessionDisplayForOlderVersions(t *testing.T) {
+	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.LimitedChatStatusChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	for _, version := range []apiversion.Version{apiversion.Baseline, apiversion.V20260704, apiversion.V20260705} {
+		for _, tc := range limitedResponseCases() {
+			t.Run(string(version)+"/"+tc.name, func(t *testing.T) {
+				msg := tc.build()
+				changes.Apply(tc.method, msg, version)
+				sess := tc.get(msg)
+				if got := sess.GetDisplayLabel(); got != "idle" {
+					t.Errorf("%s: display_label = %q, want idle", tc.name, got)
+				}
+				if got := sess.GetDisplayIntent(); got != pb.DisplayIntent_DISPLAY_INTENT_WARNING {
+					t.Errorf("%s: display_intent = %v, want WARNING", tc.name, got)
+				}
+				if sess.GetDisplaySpinner() {
+					t.Errorf("%s: display_spinner = true, want false", tc.name)
+				}
+			})
+		}
+	}
+}
+
+func TestLimitedChatStatusChange_DownConvertsStatusResponsesForOlderVersions(t *testing.T) {
+	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.LimitedChatStatusChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+
+	chatMsg := &pb.GetChatStatusesResponse{Statuses: []*pb.ChatStatusEntry{{
+		AgentSessionId: "agent-1",
+		Status:         pb.ChatStatus_CHAT_STATUS_LIMITED,
+	}}}
+	changes.Apply(bossanovav1connect.DaemonServiceGetChatStatusesProcedure, chatMsg, apiversion.V20260705)
+	if got := chatMsg.GetStatuses()[0].GetStatus(); got != pb.ChatStatus_CHAT_STATUS_IDLE {
+		t.Fatalf("chat status = %v, want IDLE", got)
+	}
+
+	sessionMsg := &pb.GetSessionStatusesResponse{Statuses: []*pb.SessionStatusEntry{{
+		SessionId: "sess-1",
+		Status:    pb.ChatStatus_CHAT_STATUS_LIMITED,
+	}}}
+	changes.Apply(bossanovav1connect.DaemonServiceGetSessionStatusesProcedure, sessionMsg, apiversion.V20260705)
+	if got := sessionMsg.GetStatuses()[0].GetStatus(); got != pb.ChatStatus_CHAT_STATUS_IDLE {
+		t.Fatalf("session status = %v, want IDLE", got)
+	}
+
+	streamSnapshot := &pb.ProxyChatListEvent{Event: &pb.ProxyChatListEvent_Snapshot{Snapshot: &pb.ProxyChatListSnapshot{
+		Statuses: []*pb.ChatStatusEntry{{
+			AgentSessionId: "agent-1",
+			Status:         pb.ChatStatus_CHAT_STATUS_LIMITED,
+		}},
+	}}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyStreamChatsProcedure, streamSnapshot, apiversion.V20260705)
+	if got := streamSnapshot.GetSnapshot().GetStatuses()[0].GetStatus(); got != pb.ChatStatus_CHAT_STATUS_IDLE {
+		t.Fatalf("stream snapshot status = %v, want IDLE", got)
+	}
+
+	streamDelta := &pb.ProxyChatListEvent{Event: &pb.ProxyChatListEvent_StatusDelta{StatusDelta: &pb.ChatStatusDelta{
+		SessionId:      "sess-1",
+		AgentSessionId: "agent-1",
+		Status:         pb.ChatStatus_CHAT_STATUS_LIMITED,
+	}}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyStreamChatsProcedure, streamDelta, apiversion.V20260705)
+	if got := streamDelta.GetStatusDelta().GetStatus(); got != pb.ChatStatus_CHAT_STATUS_IDLE {
+		t.Fatalf("stream delta status = %v, want IDLE", got)
+	}
+}
+
+func TestLimitedChatStatusChange_NoOpAtCurrent(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	changes, err := apiversion.NewChanges(reg, apiversion.LimitedChatStatusChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+
+	msg := &pb.GetChatStatusesResponse{Statuses: []*pb.ChatStatusEntry{{
+		AgentSessionId: "agent-1",
+		Status:         pb.ChatStatus_CHAT_STATUS_LIMITED,
+	}}}
+	changes.Apply(bossanovav1connect.DaemonServiceGetChatStatusesProcedure, msg, reg.Current())
+	if got := msg.GetStatuses()[0].GetStatus(); got != pb.ChatStatus_CHAT_STATUS_LIMITED {
+		t.Fatalf("current status = %v, want LIMITED", got)
+	}
+}
+
+func TestLimitedChatStatusChange_DoesNotMutateSharedPointers(t *testing.T) {
+	lc := apiversion.LimitedChatStatusChange{}
+
+	sharedSession := limitedSession()
+	listMsg := &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{sharedSession}}
+	lc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, listMsg)
+	if sharedSession.GetDisplayLabel() != "usage-limited (resets ~15:00)" {
+		t.Fatalf("shared session mutated in place: display_label = %q", sharedSession.GetDisplayLabel())
+	}
+	if listMsg.GetSessions()[0] == sharedSession {
+		t.Fatal("response session must be a clone, not the shared pointer")
+	}
+
+	sharedStatus := &pb.ChatStatusEntry{AgentSessionId: "agent-1", Status: pb.ChatStatus_CHAT_STATUS_LIMITED}
+	statusMsg := &pb.GetChatStatusesResponse{Statuses: []*pb.ChatStatusEntry{sharedStatus}}
+	lc.TransformResponse(bossanovav1connect.DaemonServiceGetChatStatusesProcedure, statusMsg)
+	if sharedStatus.GetStatus() != pb.ChatStatus_CHAT_STATUS_LIMITED {
+		t.Fatalf("shared status mutated in place: status = %v", sharedStatus.GetStatus())
+	}
+	if statusMsg.GetStatuses()[0] == sharedStatus {
+		t.Fatal("response status must be a clone, not the shared pointer")
+	}
+
+	sharedDelta := &pb.ChatStatusDelta{AgentSessionId: "agent-1", Status: pb.ChatStatus_CHAT_STATUS_LIMITED}
+	streamMsg := &pb.ProxyChatListEvent{Event: &pb.ProxyChatListEvent_StatusDelta{StatusDelta: sharedDelta}}
+	lc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyStreamChatsProcedure, streamMsg)
+	if sharedDelta.GetStatus() != pb.ChatStatus_CHAT_STATUS_LIMITED {
+		t.Fatalf("shared delta mutated in place: status = %v", sharedDelta.GetStatus())
+	}
+	if streamMsg.GetStatusDelta() == sharedDelta {
+		t.Fatal("response status delta must be a clone, not the shared pointer")
+	}
+}
+
+func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	msg := &pb.GetSessionStatusesResponse{Statuses: []*pb.SessionStatusEntry{{
+		SessionId: "sess-1",
+		Status:    pb.ChatStatus_CHAT_STATUS_LIMITED,
+	}}}
+	changes.Apply(bossanovav1connect.DaemonServiceGetSessionStatusesProcedure, msg, apiversion.V20260705)
+	if got := msg.GetStatuses()[0].GetStatus(); got != pb.ChatStatus_CHAT_STATUS_IDLE {
+		t.Errorf("ProductionChanges did not down-convert LIMITED for V20260705: got %v", got)
 	}
 }

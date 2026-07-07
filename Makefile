@@ -1,4 +1,4 @@
-.PHONY: all build build-all build-docs clean codex-skills codex-skills-check construct-skills construct-skills-check copy-skills copy-public-skills copy-public-skills-check deps format format-affected generate gen-skill kill kill-all lint vendor-toolbox vendor-toolbox-check \
+.PHONY: all build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format format-affected generate gen-skill kill kill-all lint vendor-toolbox vendor-toolbox-check \
 	lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
@@ -95,14 +95,6 @@ codex-skills:
 
 codex-skills-check:
 	node scripts/sync-codex-skills.mjs --root . --check
-
-## construct-skills: Generate constructed SKILL.md files from templates + the installed superpowers plugin
-construct-skills:
-	node scripts/construct-skills.mjs --root .
-
-## construct-skills-check: Fail if any constructed SKILL.md is out of date (skips where superpowers is not installed)
-construct-skills-check:
-	node scripts/construct-skills.mjs --root . --check
 
 ## vendor-toolbox: Copy the canonical skills-toolbox/ helpers into each skill's toolbox/.
 vendor-toolbox:
@@ -271,17 +263,6 @@ $(WEB_DEPS_STAMP): services/web/package.json pnpm-lock.yaml
 copy-skills:
 	@rsync -a --delete "$(SKILLS_SRC_DIR)/" "$(SKILLS_PLUGIN_DIR)/"
 
-## copy-public-skills: Package the constructed boss-* dev skills into the embedded
-## skillinstall payload (minus build inputs), then mirror to the plugin copy so the
-## boss binary ships them to end users alongside boss-repair/boss-finalize.
-copy-public-skills:
-	node scripts/copy-public-skills.mjs --root .
-	$(MAKE) copy-skills
-
-## copy-public-skills-check: Fail if the embedded boss-* payload has drifted from .claude/skills.
-copy-public-skills-check:
-	node scripts/copy-public-skills.mjs --root . --check
-
 ## gen-skill: Regenerate the /boss skill command reference from the CLI, then mirror it.
 ## The reference region of services/boss/internal/skillinstall/skills/boss/SKILL.md is
 ## generated from the cobra command tree; TestSkillMatchesGenerated fails if it drifts.
@@ -350,7 +331,7 @@ $(BIN_DIR)/bossd-plugin-%: $(GEN_STAMP)
 $(BIN_DIR)/bossd-plugin-claude: copy-skills
 
 ## test: Run tests across all modules (generates protos first if needed)
-test: $(GEN_STAMP) copy-skills codex-skills-check construct-skills-check copy-public-skills-check vendor-toolbox-check
+test: $(GEN_STAMP) copy-skills codex-skills-check vendor-toolbox-check
 	$(MAKE) test-scripts
 	$(MAKE) test-readme
 	$(MAKE) test-no-inline-stop-hooks
@@ -368,7 +349,7 @@ test-full:
 	$(MAKE) test
 
 ## test-smoke: Fast agent loop. No coverage, no race, no forced cache bypass.
-test-smoke: $(GEN_STAMP) copy-skills codex-skills-check construct-skills-check copy-public-skills-check vendor-toolbox-check
+test-smoke: $(GEN_STAMP) copy-skills codex-skills-check vendor-toolbox-check
 	node --test scripts/bs-*-skill.test.mjs
 	$(MAKE) -C lib/bossalib test-fast GO_TEST_PACKAGES="./config ./cronutil ./displaystatus ./sessionreason ./statusdetect"
 	$(MAKE) -C services/boss test-fast GO_TEST_PACKAGES="./internal/agent ./internal/auth ./internal/client ./internal/preflight"

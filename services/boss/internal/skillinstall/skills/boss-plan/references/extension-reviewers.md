@@ -22,7 +22,8 @@ dispatched as an awaited subagent (no human gating).
    Pass `--role plan-reviewer` so a same-prefix extension that extends `boss-plan` but declares the
    wrong marker role (e.g. `role: lens`, or a typo) is rejected into `skipped` rather than returned
    for dispatch — dispatching a wrong-role add-on under the `plan-reviewer` envelope would run the
-   wrong extension. For every entry in `skipped`, record `extension <name>: skipped (<reason>)` — a
+   wrong extension. The valid `boss-plan-draft` sibling is ignored here because Phase 2 owns draft
+   discovery. For every entry in `skipped`, record `extension <name>: skipped (<reason>)` — a
    same-prefix directory that fails discovery (no `x-boss-extension` marker, wrong `extends`, wrong
    `role`, or missing `SKILL.md`) is a misinstalled extension the degradation contract requires you
    to surface, not silently ignore. **Only when _both_ `extensions` and `skipped` are empty** is this a true no-op:

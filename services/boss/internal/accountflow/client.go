@@ -9,7 +9,7 @@ import (
 
 // AccountClient is the narrow subset of client.BossClient the registration
 // flows depend on: list existing accounts (duplicate detection), add a new
-// account, live-test it, and remove it when a live test is rejected.
+// account, verify it, and remove it when verification is rejected.
 type AccountClient interface {
 	ListAccounts(ctx context.Context, provider string) ([]*pb.Account, error)
 	AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error)

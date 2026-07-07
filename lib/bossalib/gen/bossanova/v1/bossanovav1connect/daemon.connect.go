@@ -5,12 +5,13 @@
 package bossanovav1connect
 
 import (
-	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	v1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	http "net/http"
 	strings "strings"
+
+	connect "connectrpc.com/connect"
+	v1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // This is a compile-time assertion to ensure that this generated file and the connect package are
@@ -171,6 +172,9 @@ const (
 	// DaemonServiceAddAccountProcedure is the fully-qualified name of the DaemonService's AddAccount
 	// RPC.
 	DaemonServiceAddAccountProcedure = "/bossanova.v1.DaemonService/AddAccount"
+	// DaemonServiceRefreshAccountProcedure is the fully-qualified name of the DaemonService's
+	// RefreshAccount RPC.
+	DaemonServiceRefreshAccountProcedure = "/bossanova.v1.DaemonService/RefreshAccount"
 	// DaemonServiceUpdateAccountProcedure is the fully-qualified name of the DaemonService's
 	// UpdateAccount RPC.
 	DaemonServiceUpdateAccountProcedure = "/bossanova.v1.DaemonService/UpdateAccount"
@@ -282,13 +286,16 @@ type DaemonServiceClient interface {
 	// AddAccount registers a new provider login. The credential blob travels
 	// inbound only and is stored in the keyring; it is never echoed back.
 	AddAccount(context.Context, *connect.Request[v1.AddAccountRequest]) (*connect.Response[v1.AddAccountResponse], error)
+	// RefreshAccount replaces the stored credential blob for an existing account.
+	// The credential travels inbound only and is stored in the keyring; it is never echoed back.
+	RefreshAccount(context.Context, *connect.Request[v1.RefreshAccountRequest]) (*connect.Response[v1.RefreshAccountResponse], error)
 	// UpdateAccount mutates account metadata. Mutable fields are optional
 	// (present-only update semantics).
 	UpdateAccount(context.Context, *connect.Request[v1.UpdateAccountRequest]) (*connect.Response[v1.UpdateAccountResponse], error)
 	// RemoveAccount deletes the account row and purges its keyring credential.
 	RemoveAccount(context.Context, *connect.Request[v1.RemoveAccountRequest]) (*connect.Response[v1.RemoveAccountResponse], error)
-	// TestAccount validates the account's stored credential and, when a live
-	// smoke runner is wired, runs a trivial CLI invocation. It records the
+	// TestAccount validates the account's stored credential and, when provider
+	// verification is available, runs a trivial CLI invocation. It records the
 	// outcome (last_test_ok_at / last_test_error) and never tears down a session.
 	TestAccount(context.Context, *connect.Request[v1.TestAccountRequest]) (*connect.Response[v1.TestAccountResponse], error)
 	// RepairDoctor returns a structured health report for the auto-repair
@@ -607,6 +614,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("AddAccount")),
 			connect.WithClientOptions(opts...),
 		),
+		refreshAccount: connect.NewClient[v1.RefreshAccountRequest, v1.RefreshAccountResponse](
+			httpClient,
+			baseURL+DaemonServiceRefreshAccountProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("RefreshAccount")),
+			connect.WithClientOptions(opts...),
+		),
 		updateAccount: connect.NewClient[v1.UpdateAccountRequest, v1.UpdateAccountResponse](
 			httpClient,
 			baseURL+DaemonServiceUpdateAccountProcedure,
@@ -701,6 +714,7 @@ type daemonServiceClient struct {
 	runCronJobNow        *connect.Client[v1.RunCronJobNowRequest, v1.RunCronJobNowResponse]
 	listAccounts         *connect.Client[v1.ListAccountsRequest, v1.ListAccountsResponse]
 	addAccount           *connect.Client[v1.AddAccountRequest, v1.AddAccountResponse]
+	refreshAccount       *connect.Client[v1.RefreshAccountRequest, v1.RefreshAccountResponse]
 	updateAccount        *connect.Client[v1.UpdateAccountRequest, v1.UpdateAccountResponse]
 	removeAccount        *connect.Client[v1.RemoveAccountRequest, v1.RemoveAccountResponse]
 	testAccount          *connect.Client[v1.TestAccountRequest, v1.TestAccountResponse]
@@ -945,6 +959,11 @@ func (c *daemonServiceClient) AddAccount(ctx context.Context, req *connect.Reque
 	return c.addAccount.CallUnary(ctx, req)
 }
 
+// RefreshAccount calls bossanova.v1.DaemonService.RefreshAccount.
+func (c *daemonServiceClient) RefreshAccount(ctx context.Context, req *connect.Request[v1.RefreshAccountRequest]) (*connect.Response[v1.RefreshAccountResponse], error) {
+	return c.refreshAccount.CallUnary(ctx, req)
+}
+
 // UpdateAccount calls bossanova.v1.DaemonService.UpdateAccount.
 func (c *daemonServiceClient) UpdateAccount(ctx context.Context, req *connect.Request[v1.UpdateAccountRequest]) (*connect.Response[v1.UpdateAccountResponse], error) {
 	return c.updateAccount.CallUnary(ctx, req)
@@ -1068,13 +1087,16 @@ type DaemonServiceHandler interface {
 	// AddAccount registers a new provider login. The credential blob travels
 	// inbound only and is stored in the keyring; it is never echoed back.
 	AddAccount(context.Context, *connect.Request[v1.AddAccountRequest]) (*connect.Response[v1.AddAccountResponse], error)
+	// RefreshAccount replaces the stored credential blob for an existing account.
+	// The credential travels inbound only and is stored in the keyring; it is never echoed back.
+	RefreshAccount(context.Context, *connect.Request[v1.RefreshAccountRequest]) (*connect.Response[v1.RefreshAccountResponse], error)
 	// UpdateAccount mutates account metadata. Mutable fields are optional
 	// (present-only update semantics).
 	UpdateAccount(context.Context, *connect.Request[v1.UpdateAccountRequest]) (*connect.Response[v1.UpdateAccountResponse], error)
 	// RemoveAccount deletes the account row and purges its keyring credential.
 	RemoveAccount(context.Context, *connect.Request[v1.RemoveAccountRequest]) (*connect.Response[v1.RemoveAccountResponse], error)
-	// TestAccount validates the account's stored credential and, when a live
-	// smoke runner is wired, runs a trivial CLI invocation. It records the
+	// TestAccount validates the account's stored credential and, when provider
+	// verification is available, runs a trivial CLI invocation. It records the
 	// outcome (last_test_ok_at / last_test_error) and never tears down a session.
 	TestAccount(context.Context, *connect.Request[v1.TestAccountRequest]) (*connect.Response[v1.TestAccountResponse], error)
 	// RepairDoctor returns a structured health report for the auto-repair
@@ -1389,6 +1411,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("AddAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceRefreshAccountHandler := connect.NewUnaryHandler(
+		DaemonServiceRefreshAccountProcedure,
+		svc.RefreshAccount,
+		connect.WithSchema(daemonServiceMethods.ByName("RefreshAccount")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceUpdateAccountHandler := connect.NewUnaryHandler(
 		DaemonServiceUpdateAccountProcedure,
 		svc.UpdateAccount,
@@ -1527,6 +1555,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceListAccountsHandler.ServeHTTP(w, r)
 		case DaemonServiceAddAccountProcedure:
 			daemonServiceAddAccountHandler.ServeHTTP(w, r)
+		case DaemonServiceRefreshAccountProcedure:
+			daemonServiceRefreshAccountHandler.ServeHTTP(w, r)
 		case DaemonServiceUpdateAccountProcedure:
 			daemonServiceUpdateAccountHandler.ServeHTTP(w, r)
 		case DaemonServiceRemoveAccountProcedure:
@@ -1736,6 +1766,10 @@ func (UnimplementedDaemonServiceHandler) ListAccounts(context.Context, *connect.
 
 func (UnimplementedDaemonServiceHandler) AddAccount(context.Context, *connect.Request[v1.AddAccountRequest]) (*connect.Response[v1.AddAccountResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.AddAccount is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) RefreshAccount(context.Context, *connect.Request[v1.RefreshAccountRequest]) (*connect.Response[v1.RefreshAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RefreshAccount is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) UpdateAccount(context.Context, *connect.Request[v1.UpdateAccountRequest]) (*connect.Response[v1.UpdateAccountResponse], error) {

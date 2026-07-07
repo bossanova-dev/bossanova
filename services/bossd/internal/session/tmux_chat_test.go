@@ -60,6 +60,63 @@ func TestChatInputRenderPromptPreservesRawText(t *testing.T) {
 	}
 }
 
+func TestRenderBossCommandPrefix(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	worktree := t.TempDir()
+	writeTestSkill(t, filepath.Join(home, ".codex", "skills", "bossanova", "boss-repair"))
+	writeTestSkill(t, filepath.Join(home, ".codex", "skills", "bossanova", "bs-sweep-mutation"))
+	writeTestSkill(t, filepath.Join(home, ".codex", "skills", "bs-sweep-debt"))
+	writeTestSkill(t, filepath.Join(home, ".claude", "skills", "bossanova", "boss-repair"))
+	writeTestSkill(t, filepath.Join(worktree, ".codex", "skills", "api-review"))
+	writeTestSkill(t, filepath.Join(worktree, ".codex", "skills", "tui-qa"))
+
+	cases := []struct {
+		name     string
+		message  string
+		prefix   string
+		worktree string
+		want     string
+	}{
+		{"codex boss command gets dollar prefix", "/boss-repair watch", "$", worktree, "$boss-repair watch"},
+		{"claude boss command keeps slash prefix", "/boss-repair watch", "/", worktree, "/boss-repair watch"},
+		{"empty prefix defaults to slash", "/boss-repair watch", "", worktree, "/boss-repair watch"},
+		{"dollar boss command normalized to agent prefix", "$boss-repair watch", "/", worktree, "/boss-repair watch"},
+		{"surrounding whitespace trimmed for boss command", "  /boss-repair watch  ", "$", worktree, "$boss-repair watch"},
+		// Non-boss custom skills are custom commands too and must be rewritten.
+		{"codex project custom command gets dollar prefix", "/api-review services/bossd", "$", worktree, "$api-review services/bossd"},
+		{"codex project tui command gets dollar prefix", "/tui-qa", "$", worktree, "$tui-qa"},
+		// bs-* sweep skills are Bossanova commands too and must be rewritten.
+		{"codex bs sweep command gets dollar prefix", "/bs-sweep-mutation", "$", worktree, "$bs-sweep-mutation"},
+		{"codex bs sweep command with args", "/bs-sweep-debt --dry-run", "$", worktree, "$bs-sweep-debt --dry-run"},
+		// Native agent built-ins are NOT custom skills: never rewrite them, or a
+		// codex "/status" becomes an invalid "$status".
+		{"codex native slash command passes through", "/status", "$", worktree, "/status"},
+		{"codex native command with args passes through", "/model gpt-5", "$", worktree, "/model gpt-5"},
+		{"claude native slash command passes through", "/status", "/", worktree, "/status"},
+		{"non-custom dollar token passes through", "$HOME/path", "$", worktree, "$HOME/path"},
+		{"free text passes through unchanged", "please fix the flaky test", "$", worktree, "please fix the flaky test"},
+		{"multi-line passes through unchanged", "/boss-repair watch\nsecond line", "$", worktree, "/boss-repair watch\nsecond line"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RenderBossCommandPrefix(tc.message, tc.prefix, tc.worktree); got != tc.want {
+				t.Fatalf("RenderBossCommandPrefix(%q, %q, %q) = %q, want %q", tc.message, tc.prefix, tc.worktree, got, tc.want)
+			}
+		})
+	}
+}
+
+func writeTestSkill(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: test\n---\n"), 0o644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+}
+
 func TestChatInputMechanicsFromPromptConvertsLeadingSlashCommand(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")

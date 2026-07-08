@@ -126,14 +126,33 @@ test('buildPrompt includes version, PR titles, and ticket context', () => {
   assert.match(prompt, /1\.56\.0/)
   assert.match(prompt, /faster startup/)
   assert.match(prompt, /Speed up startup/)
-  assert.match(prompt, /high-level|user-friendly|synthesiz/i)
+  assert.match(prompt, /product-focused/i)
+  assert.match(prompt, /Translate implementation details into outcomes/i)
 })
 
-test('buildPrompt enforces the calm, no-Highlights, no-em-dash voice', () => {
+test('buildPrompt targets nontechnical product outcomes in a Conductor-like voice', () => {
+  const prompt = buildPrompt({ version: '1.67.0', prs: [], tickets: [], commits: [] })
+  assert.match(prompt, /zero technical background/i)
+  assert.match(prompt, /superficial\s+knowledge/i)
+  assert.match(prompt, /outcomes? a user can\s+see, do, or feel/i)
+  assert.match(prompt, /Conductor/i)
+  assert.match(prompt, /You can now/i)
+  assert.match(prompt, /Fixed an issue where/i)
+  assert.match(prompt, /avoid.*(RPC|daemon|endpoint|JSONL|read model|bridge|implementation)/is)
+})
+
+test('buildPrompt tells the model to skip trivial copy-only changes', () => {
+  const prompt = buildPrompt({ version: '1.67.0', prs: [], tickets: [], commits: [] })
+  assert.match(prompt, /trivial copy/i)
+  assert.match(prompt, /not news/i)
+  assert.match(prompt, /Merging PR/i)
+  assert.match(prompt, /esc to return to list/i)
+})
+
+test('buildPrompt enforces the friendly, no-Highlights, no-em-dash voice', () => {
   const prompt = buildPrompt({ version: '1.56.0', prs: [], tickets: [], commits: [] })
-  // The "Highlights" lead paragraph was removed; the prompt must forbid it.
+  assert.match(prompt, /Friendly, clear, and matter-of-fact/)
   assert.match(prompt, /Highlights/)
-  assert.match(prompt, /Begin directly with the first/)
   // Em dashes are banned in generated copy.
   assert.match(prompt, /em dash/i)
   // No marketing hype.

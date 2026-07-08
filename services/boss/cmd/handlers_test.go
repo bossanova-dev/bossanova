@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -58,6 +59,49 @@ func TestRestartSocketPath(t *testing.T) {
 			t.Fatal("restartSocketPath returned nil error for empty path")
 		}
 	})
+}
+
+func TestWaitForSocketGoneWaitsForDelayedDaemonShutdown(t *testing.T) {
+	// This test intentionally blocks ~3.5s waiting on a delayed socket close;
+	// run it in parallel so it overlaps other slow tests instead of adding its
+	// wall time serially.
+	t.Parallel()
+	sockPath := filepath.Join("/tmp", "boss-wait-gone-"+strconv.Itoa(os.Getpid())+"-"+strconv.FormatInt(time.Now().UnixNano(), 10)+".sock")
+	if err := os.Remove(sockPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove stale socket: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	if !daemon.IsSocketReachable(sockPath) {
+		t.Fatalf("socket %q did not become reachable", sockPath)
+	}
+
+	time.AfterFunc(3500*time.Millisecond, func() {
+		_ = ln.Close()
+		_ = os.Remove(sockPath)
+	})
+	start := time.Now()
+	if !waitForSocketGone(sockPath) {
+		t.Fatal("waitForSocketGone returned false before delayed shutdown completed")
+	}
+	if elapsed := time.Since(start); elapsed < 3*time.Second {
+		t.Fatalf("waitForSocketGone returned after %v, want it to wait past old 3s timeout", elapsed)
+	}
 }
 
 func TestCurrentDaemonProfileUsesConfiguredAppDataAndSocketPath(t *testing.T) {
@@ -306,6 +350,42 @@ func TestRunDaemonRestartStopsPluginsBeforeStartingDaemon(t *testing.T) {
 	}
 	if !strings.Contains(out, "Stopped 2 plugin process(es).") || !strings.Contains(out, "Daemon restarted.") {
 		t.Fatalf("output = %q, want restart and plugin cleanup messages", out)
+	}
+}
+
+func TestRunDaemonRestartReportsWhenSocketNeverBecomesReachable(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	appDataDir := filepath.Join(dir, "data")
+	socketPath := filepath.Join(dir, "bossd.sock")
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true}, nil
+	}
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	// The new daemon never starts accepting connections, so the readiness loop
+	// must exhaust its deadline and return an error.
+	daemonSocketReachable = func(string) bool { return false }
+	waitForDaemonSocketGone = func(string) bool { return true }
+	daemonStop = func() error { return nil }
+	terminatePluginProcesses = func(daemonProfile) (int, error) { return 0, nil }
+	daemonEnsureRunning = func(string) error { return nil }
+	// Keep the readiness loop fast so the failure path doesn't wait 30s.
+	daemonRestartReadyTimeout = 20 * time.Millisecond
+	daemonRestartPollInterval = time.Millisecond
+
+	err := runDaemonRestart(&cobra.Command{})
+	if err == nil {
+		t.Fatal("runDaemonRestart returned nil, want a not-reachable error")
+	}
+	if !strings.Contains(err.Error(), "did not become reachable") {
+		t.Fatalf("error = %v, want it to mention socket not reachable", err)
 	}
 }
 
@@ -777,6 +857,8 @@ func restoreDaemonCommandStubs(t *testing.T) {
 	oldTerminatePluginProcesses := terminatePluginProcesses
 	oldTerminateAllPluginProcesses := terminateAllPluginProcesses
 	oldWaitForDaemonSocketGone := waitForDaemonSocketGone
+	oldDaemonRestartReadyTimeout := daemonRestartReadyTimeout
+	oldDaemonRestartPollInterval := daemonRestartPollInterval
 	t.Cleanup(func() {
 		defaultSocketPath = oldDefaultSocketPath
 		daemonSocketReachable = oldDaemonSocketReachable
@@ -787,6 +869,8 @@ func restoreDaemonCommandStubs(t *testing.T) {
 		terminatePluginProcesses = oldTerminatePluginProcesses
 		terminateAllPluginProcesses = oldTerminateAllPluginProcesses
 		waitForDaemonSocketGone = oldWaitForDaemonSocketGone
+		daemonRestartReadyTimeout = oldDaemonRestartReadyTimeout
+		daemonRestartPollInterval = oldDaemonRestartPollInterval
 	})
 }
 

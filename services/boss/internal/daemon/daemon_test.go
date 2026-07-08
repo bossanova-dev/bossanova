@@ -100,6 +100,63 @@ func TestWaitForSocket(t *testing.T) {
 	}
 }
 
+func TestWaitForSocketReturnsTrueWhenSocketBecomesReachable(t *testing.T) {
+	// Short socket path: macOS limits sun_path to ~104 bytes.
+	sockPath := filepath.Join("/tmp", "bs-wait-ok-"+strconv.Itoa(os.Getpid())+".sock")
+	if err := os.Remove(sockPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove stale socket: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	if !waitForSocket(sockPath, 2*time.Second) {
+		t.Fatalf("expected waitForSocket to observe reachable socket %q", sockPath)
+	}
+}
+
+func TestLifecycleWaitTimeoutsCoverDaemonStartupAndShutdown(t *testing.T) {
+	// bossd's graceful shutdown removes the socket only after draining the cron
+	// scheduler (bounded ~10s) and shutting down the gRPC server (~5s). The
+	// shutdown wait must comfortably cover that worst case so a slow drain does
+	// not produce a false "timed out waiting for socket to stop" error. Keep
+	// this coupled to bossd's shutdown budget (services/bossd/cmd/main.go): if
+	// those timeouts grow, this floor should grow with them.
+	const bossdShutdownBudget = 15 * time.Second
+	if LifecycleShutdownTimeout < bossdShutdownBudget {
+		t.Fatalf("LifecycleShutdownTimeout = %v, want >= %v to cover bossd graceful shutdown", LifecycleShutdownTimeout, bossdShutdownBudget)
+	}
+
+	// Startup can involve plugin launch and initial work before the socket
+	// accepts connections; give it at least as long as shutdown.
+	if LifecycleStartupTimeout < LifecycleShutdownTimeout {
+		t.Fatalf("LifecycleStartupTimeout = %v, want >= LifecycleShutdownTimeout = %v", LifecycleStartupTimeout, LifecycleShutdownTimeout)
+	}
+
+	// The poll interval must be small relative to the timeouts so waits resolve
+	// promptly once the socket flips state, and it must be positive.
+	if LifecyclePollInterval <= 0 {
+		t.Fatalf("LifecyclePollInterval = %v, want > 0", LifecyclePollInterval)
+	}
+	if LifecyclePollInterval*10 > LifecycleShutdownTimeout {
+		t.Fatalf("LifecyclePollInterval = %v is too coarse relative to LifecycleShutdownTimeout = %v", LifecyclePollInterval, LifecycleShutdownTimeout)
+	}
+}
+
 func TestRestartSkipsServiceManagerWhenEnvSet(t *testing.T) {
 	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
 	if err := Restart(); err != nil {

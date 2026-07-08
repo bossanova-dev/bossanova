@@ -39,6 +39,10 @@ function parseArgs(argv) {
   return out
 }
 
+function isPrereleaseVersion(version) {
+  return /^v?\d+\.\d+\.\d+-/.test(version)
+}
+
 function previousTag(tag) {
   // The list-tags API order is not documented as semver-sorted, so derive the
   // predecessor by semver precedence (ignoring prereleases) rather than by the
@@ -94,7 +98,7 @@ async function fetchTickets(prs) {
 }
 
 async function synthesize(version, prs, tickets, commits) {
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY.trim() })
   const prompt = buildPrompt({ version, prs, tickets, commits })
   const msg = await anthropic.messages.create({
     model: MODEL,
@@ -110,8 +114,16 @@ async function synthesize(version, prs, tickets, commits) {
 async function generateOne(version) {
   const tag = version.startsWith('v') ? version : `v${version}`
   const outPath = resolve(OUT_DIR, entryFilename(version))
+  if (isPrereleaseVersion(version)) {
+    console.warn(`[changelog] skipped: prerelease ${version.replace(/^v/, '')} (non-blocking)`)
+    return
+  }
   if (existsSync(outPath)) {
     console.log(`[changelog] ${entryFilename(version)} already exists, skipping`)
+    return
+  }
+  if (!process.env.ANTHROPIC_API_KEY?.trim()) {
+    console.warn('[changelog] skipped: no ANTHROPIC_API_KEY (non-blocking)')
     return
   }
   // Defense-in-depth: the GitHub Release may not exist yet at changelog time

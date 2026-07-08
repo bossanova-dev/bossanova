@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strings"
 	"text/template"
-	"time"
 )
 
 var validUsernameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
@@ -441,7 +440,7 @@ func platformEnsureRunning(socketPath string) error {
 	st, err := platformGetStatus()
 	if err == nil && st.Installed && !st.Running {
 		if cmd := exec.Command("systemctl", "--user", "start", ServiceName); cmd.Run() == nil {
-			if waitForSocket(socketPath, 3*time.Second) {
+			if waitForSocket(socketPath, LifecycleStartupTimeout) {
 				return nil
 			}
 		}
@@ -468,8 +467,8 @@ func platformEnsureRunning(socketPath string) error {
 	// Release the child process so it runs independently.
 	_ = cmd.Process.Release()
 
-	if !waitForSocket(socketPath, 3*time.Second) {
-		return fmt.Errorf("daemon started but socket not ready at %s", socketPath)
+	if !waitForSocket(socketPath, LifecycleStartupTimeout) {
+		return fmt.Errorf("daemon started but socket not ready after %s at %s", LifecycleStartupTimeout, socketPath)
 	}
 
 	return nil

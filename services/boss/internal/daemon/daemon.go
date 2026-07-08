@@ -13,6 +13,18 @@ import (
 	"time"
 )
 
+const (
+	// LifecycleStartupTimeout bounds waits for bossd to finish startup work and
+	// begin accepting socket connections.
+	LifecycleStartupTimeout = 30 * time.Second
+	// LifecycleShutdownTimeout covers bossd's graceful shutdown path, including
+	// cron drain and server shutdown, before the socket is removed.
+	LifecycleShutdownTimeout = 20 * time.Second
+	// LifecyclePollInterval is the shared cadence for daemon socket lifecycle
+	// probes.
+	LifecyclePollInterval = 100 * time.Millisecond
+)
+
 // Status represents the daemon's current state.
 type Status struct {
 	Installed   bool   // Whether daemon is registered with the system
@@ -102,7 +114,7 @@ func McpGetStatus() (*Status, error) {
 }
 
 // EnsureRunning checks if the daemon socket is reachable. If not, it attempts
-// to start bossd. It waits up to 3 seconds for the socket to become available.
+// to start bossd and waits for the socket to become available.
 func EnsureRunning(socketPath string) error {
 	// Try to connect to the existing socket.
 	if isSocketReachable(socketPath) {
@@ -180,7 +192,7 @@ func waitForSocket(socketPath string, timeout time.Duration) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(LifecyclePollInterval)
 	defer ticker.Stop()
 
 	for {

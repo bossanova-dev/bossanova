@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
-	"time"
 )
 
 const (
@@ -536,7 +535,7 @@ func platformEnsureRunning(socketPath string) error {
 	if err == nil && st.Installed && !st.Running {
 		plistPath, _ := platformServicePath()
 		if cmd := exec.Command("launchctl", "load", plistPath); cmd.Run() == nil {
-			if waitForSocket(socketPath, 3*time.Second) {
+			if waitForSocket(socketPath, LifecycleStartupTimeout) {
 				return nil
 			}
 		}
@@ -565,8 +564,8 @@ func platformEnsureRunning(socketPath string) error {
 	// Release the child process so it runs independently.
 	_ = cmd.Process.Release()
 
-	if !waitForSocket(socketPath, 3*time.Second) {
-		return fmt.Errorf("daemon started but socket not ready at %s", socketPath)
+	if !waitForSocket(socketPath, LifecycleStartupTimeout) {
+		return fmt.Errorf("daemon started but socket not ready after %s at %s", LifecycleStartupTimeout, socketPath)
 	}
 
 	return nil

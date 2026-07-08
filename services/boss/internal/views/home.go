@@ -553,9 +553,13 @@ var daemonSocketReachable = daemon.IsSocketReachable
 
 var daemonGetStatus = daemon.GetStatus
 
-var restartPollInterval = 100 * time.Millisecond
+var restartPollInterval = daemon.LifecyclePollInterval
 
-var restartWaitTimeout = 5 * time.Second
+// restartWaitTimeout bounds the whole restart loop, which first waits for the
+// old socket to go away (graceful shutdown) and then for the new socket to
+// become reachable (startup). It therefore spans both lifecycle budgets so a
+// slow cron drain no longer produces a false "timed out" error.
+var restartWaitTimeout = daemon.LifecycleShutdownTimeout + daemon.LifecycleStartupTimeout
 
 type daemonRestartReadiness struct {
 	waitForSocketGone bool

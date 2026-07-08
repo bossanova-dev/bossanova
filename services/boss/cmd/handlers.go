@@ -426,7 +426,7 @@ func restartReachableDaemonForSettingsReloadWith(
 			return fmt.Errorf("restart standalone bossd failed: %w", err)
 		}
 		if n > 0 && socketPath != "" && !waitSocketGone(socketPath) {
-			return fmt.Errorf("timed out waiting for standalone bossd to stop")
+			return fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout)
 		}
 		if err := ensureRunning(socketPath); err != nil {
 			if !st.Installed {
@@ -440,7 +440,7 @@ func restartReachableDaemonForSettingsReloadWith(
 		return fmt.Errorf("stop daemon failed: %w", err)
 	}
 	if socketPath != "" && !waitSocketGone(socketPath) {
-		return fmt.Errorf("timed out waiting for daemon socket to stop")
+		return fmt.Errorf("timed out waiting for daemon socket to stop after %s", daemon.LifecycleShutdownTimeout)
 	}
 	if err := ensureRunning(socketPath); err != nil {
 		return fmt.Errorf("restart daemon failed: %w", err)
@@ -508,6 +508,14 @@ var terminatePluginProcesses = terminateBossdPluginProcesses
 var terminateAllPluginProcesses = terminateAllBossdPluginProcesses
 
 var waitForDaemonSocketGone = waitForSocketGone
+
+// daemonRestartReadyTimeout and daemonRestartPollInterval bound the wait for a
+// freshly-restarted bossd to start accepting connections. They default to the
+// shared daemon lifecycle budgets and are overridable in tests.
+var (
+	daemonRestartReadyTimeout = daemon.LifecycleStartupTimeout
+	daemonRestartPollInterval = daemon.LifecyclePollInterval
+)
 
 var loadSettings = config.Load
 
@@ -1541,7 +1549,7 @@ func runDaemonStop(cmd *cobra.Command) error {
 			return nil
 		}
 		if n > 0 && !waitForDaemonSocketGone(profile.SocketPath) {
-			return fmt.Errorf("timed out waiting for daemon socket to stop")
+			return fmt.Errorf("timed out waiting for daemon socket to stop after %s", daemon.LifecycleShutdownTimeout)
 		}
 		if n > 0 {
 			fmt.Printf("Stopped %d bossd process(es) across all profiles.\n", n)
@@ -1566,7 +1574,7 @@ func runDaemonStop(cmd *cobra.Command) error {
 			return nil
 		}
 		if n > 0 && !waitForDaemonSocketGone(profile.SocketPath) {
-			return fmt.Errorf("timed out waiting for standalone bossd to stop")
+			return fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout)
 		}
 		if n > 0 {
 			fmt.Println("Stopped standalone bossd for current profile.")
@@ -1587,7 +1595,7 @@ func runDaemonStop(cmd *cobra.Command) error {
 		}
 		if n > 0 {
 			if !waitForDaemonSocketGone(profile.SocketPath) {
-				return fmt.Errorf("timed out waiting for standalone bossd to stop")
+				return fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout)
 			}
 			fmt.Println("Stopped standalone bossd for current profile.")
 			printPluginCleanup(pluginCount)
@@ -1606,7 +1614,7 @@ func runDaemonStop(cmd *cobra.Command) error {
 	// process has fully exited on busy systems, so polling avoids misleading
 	// "stopped" output while the old bossd is still draining.
 	if !waitForDaemonSocketGone(profile.SocketPath) {
-		return fmt.Errorf("timed out waiting for daemon socket to stop")
+		return fmt.Errorf("timed out waiting for daemon socket to stop after %s", daemon.LifecycleShutdownTimeout)
 	}
 	pluginCount, err := terminatePluginProcesses(profile)
 	if err != nil {
@@ -1640,7 +1648,7 @@ func runDaemonRestart(_ *cobra.Command) error {
 			return fmt.Errorf("stop plugin processes failed: %w", err)
 		}
 		if n > 0 && !waitForDaemonSocketGone(socketPath) {
-			return fmt.Errorf("timed out waiting for standalone bossd to stop")
+			return fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout)
 		}
 		if err := daemonEnsureRunning(socketPath); err != nil {
 			return fmt.Errorf("restart standalone bossd failed: %w", err)
@@ -1658,7 +1666,7 @@ func runDaemonRestart(_ *cobra.Command) error {
 			return fmt.Errorf("stop daemon failed: %w", err)
 		}
 		if !waitForDaemonSocketGone(socketPath) {
-			return fmt.Errorf("timed out waiting for daemon socket to stop")
+			return fmt.Errorf("timed out waiting for daemon socket to stop after %s", daemon.LifecycleShutdownTimeout)
 		}
 	}
 	pluginCount, err := terminatePluginProcesses(profile)
@@ -1670,15 +1678,15 @@ func runDaemonRestart(_ *cobra.Command) error {
 	}
 	printPluginCleanup(pluginCount)
 	// Wait for the new bossd to come up so the next command doesn't race.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(daemonRestartReadyTimeout)
 	for time.Now().Before(deadline) {
 		if daemonSocketReachable(socketPath) {
 			fmt.Println("Daemon restarted.")
 			return nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(daemonRestartPollInterval)
 	}
-	return fmt.Errorf("daemon restarted but socket did not become reachable; check 'boss daemon status'")
+	return fmt.Errorf("daemon restarted but socket did not become reachable after %s; check 'boss daemon status'", daemonRestartReadyTimeout)
 }
 
 func restartSocketPath(socketPath string, err error) (string, error) {
@@ -1695,12 +1703,18 @@ func restartSocketPath(socketPath string, err error) (string, error) {
 // connections or the timeout elapses. Used after stop/restart so we don't
 // print "stopped" while the old bossd is still draining.
 func waitForSocketGone(path string) bool {
-	deadline := time.Now().Add(3 * time.Second)
+	// Let the user know we may block: bossd drains cron and shuts down its
+	// server before removing the socket, which can take several seconds, and
+	// silence for that long reads like a hang.
+	if daemon.IsSocketReachable(path) {
+		fmt.Println("Waiting for bossd to shut down…")
+	}
+	deadline := time.Now().Add(daemon.LifecycleShutdownTimeout)
 	for time.Now().Before(deadline) {
 		if !daemon.IsSocketReachable(path) {
 			return true
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(daemon.LifecyclePollInterval)
 	}
 	return false
 }

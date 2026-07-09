@@ -33,11 +33,11 @@ func (l *Lifecycle) SetClockForTest(fn func() time.Time) { l.clock = fn }
 // a fresh Lifecycle over the same store resumes them on its next tick (mirrors
 // RecoverStrandedCronSessions).
 //
-// The kill switch (RotationEnabled) also disables the sweep. Returns the number
+// The kill switch (ManagedAccountsEnabled) also disables the sweep. Returns the number
 // of sessions re-dispatched this pass.
 func (l *Lifecycle) SweepParkedRotations(ctx context.Context) (redispatched int) {
 	rotationConfig, ok := l.currentRotationConfig()
-	if !ok || !rotationConfig.RotationEnabled() {
+	if !ok || !rotationConfig.ManagedAccountsEnabled() {
 		return 0
 	}
 	if l.sessions == nil {

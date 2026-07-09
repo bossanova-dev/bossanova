@@ -126,7 +126,9 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		var legacyAmbiguousReason string
 		if !forceFresh && chat.AgentName == "codex" && chat.ProviderSessionID == nil && !chat.CreatedAt.IsZero() && deps.Resolver != nil {
 			legacyLaunchedAfter := chat.CreatedAt.Add(-5 * time.Minute)
-			resolution, err := deps.Resolver.ResolveInteractiveSessionID(ctx, chat.AgentName, sess.WorktreePath, chat.AgentSessionID, legacyLaunchedAfter, chat.CreatedAt, true)
+			// Legacy backfill has no live pane pid (it runs before/without a
+			// fresh spawn), so it uses the time-window scan (panePID 0).
+			resolution, err := deps.Resolver.ResolveInteractiveSessionID(ctx, chat.AgentName, sess.WorktreePath, chat.AgentSessionID, legacyLaunchedAfter, chat.CreatedAt, true, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -142,18 +144,46 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		}
 
 		mcpConfigPath := session.SessionMcpConfigPath(sess, chat.AgentSessionID, chat.AgentName)
+		defaultAccountID := ""
+		sessionEnvFunc := func() map[string]string {
+			defaultAccountID = s.defaultAccountIDForChat(ctx, sess, chat)
+			// Merge the bound account's spawn env UNDER the managed session env so a
+			// persisted account_id gets its credentials materialized on the wake
+			// path, mirroring the attach path (ensureChatTmuxSession). The account
+			// is resolved for the CHAT's agent so cross-agent chats receive their
+			// own provider's default account env; a nil resolver or account 0
+			// leaves SessionEnv byte-identical to the ambient-login behavior. This
+			// closure runs only after spawnChatTmux has proved a new tmux session
+			// is needed, avoiding account last-used updates on already-live wakes.
+			return mergeManagedOverAccount(
+				session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
+				s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID),
+			)
+		}
 		result, err := spawnChatTmux(ctx, deps, spawnInput{
 			Chat:               chat,
 			WorktreePath:       sess.WorktreePath,
 			TmuxName:           tmuxName,
 			ForceFresh:         forceFresh,
 			AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath),
-			SessionEnv:         dotenv.Overlay(session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName), sess.WorktreePath),
-			Model:              modelForChatAgent(sess, chat.AgentName),
-			McpConfigPath:      mcpConfigPath,
+			SessionEnvFunc: func() map[string]string {
+				// Fill the repo's stored LINEAR_API_KEY / SENTRY_* secrets beneath
+				// the worktree .env so the woken chat authenticates to its own
+				// repo's Linear workspace, not the daemon's ambient one. Fetched
+				// lazily here because this closure runs only when a fresh tmux is
+				// actually needed; a missing/failed repo lookup is non-fatal
+				// (OverlayWithRepo still guarantees LINEAR_API_KEY is present).
+				repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "wake chat", s.logger)
+				return dotenv.OverlayWithRepo(sessionEnvFunc(), sess.WorktreePath, repo)
+			},
+			Model:         modelForChatAgent(sess, chat.AgentName),
+			McpConfigPath: mcpConfigPath,
 		})
 		if err != nil {
 			return nil, err
+		}
+		if result.Outcome != OutcomeAlreadyLive {
+			s.persistDefaultAccountForChat(ctx, sess, chat, defaultAccountID)
 		}
 		outcome := result.Outcome
 		reason := result.FallbackReason
@@ -186,7 +216,12 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			}
 			ev.Msg("wake chat fresh fallback")
 		}
-		if result.ProviderSessionID != "" && (chat.ProviderSessionID == nil || *chat.ProviderSessionID != result.ProviderSessionID) {
+		// Only write a provider session id when none is stored. Never overwrite
+		// a non-nil id with a re-resolution result: codex ids are guessed from
+		// disk, and overwriting on difference is exactly what stamped a sibling
+		// chat's id over the correct one (BOS-290). Once bound (via fd
+		// resolution or backfill), a chat's id is authoritative.
+		if result.ProviderSessionID != "" && chat.ProviderSessionID == nil {
 			providerID := result.ProviderSessionID
 			if err := s.agentChats.UpdateProviderSessionID(ctx, chat.AgentSessionID, &providerID); err != nil {
 				return nil, fmt.Errorf("persist provider session id: %w", err)

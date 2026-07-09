@@ -1073,7 +1073,6 @@ func (m *ChatPickerModel) buildSwitchAccountTable() {
 	}
 	labels := make([]string, rowCount)
 	providers := make([]string, rowCount)
-	emails := make([]string, rowCount)
 	statuses := make([]string, rowCount)
 	healths := make([]string, rowCount)
 	cooldowns := make([]string, rowCount)
@@ -1089,7 +1088,6 @@ func (m *ChatPickerModel) buildSwitchAccountTable() {
 		labels[row] = accountRowLabel(a)
 		providers[row] = a.GetProvider()
 		statuses[row] = a.GetStatus()
-		emails[row] = a.GetEmail()
 		healths[row] = accountHealthLabel(a)
 		cooldowns[row] = switchAccountCooldownLabel(a, now)
 		if reason := switchAccountDisabledReason(a, now); reason != "" {
@@ -1105,7 +1103,6 @@ func (m *ChatPickerModel) buildSwitchAccountTable() {
 		cursorColumn,
 		{Title: "ACCOUNT", Width: maxColWidth("ACCOUNT", labels, 30) + tableColumnSep},
 		{Title: "PROVIDER", Width: maxColWidth("PROVIDER", providers, 12) + tableColumnSep},
-		{Title: "EMAIL", Width: maxColWidth("EMAIL", emails, 24) + tableColumnSep},
 		{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 12) + tableColumnSep},
 		{Title: "HEALTH", Width: maxColWidth("HEALTH", healths, 10) + tableColumnSep},
 		{Title: "COOLDOWN", Width: maxColWidth("COOLDOWN", cooldowns, 14) + tableColumnSep},
@@ -1122,7 +1119,6 @@ func (m *ChatPickerModel) buildSwitchAccountTable() {
 				indicator,
 				styleSubtle.Render(labels[i]),
 				styleSubtle.Render(providers[i]),
-				styleSubtle.Render(emails[i]),
 				styleSubtle.Render(statuses[i]),
 				styleSubtle.Render(healths[i]),
 				styleSubtle.Render(cooldowns[i]),
@@ -1133,7 +1129,6 @@ func (m *ChatPickerModel) buildSwitchAccountTable() {
 			indicator,
 			labels[i],
 			providers[i],
-			emails[i],
 			styleSubtle.Render(statuses[i]),
 			styleSubtle.Render(healths[i]),
 			styleSubtle.Render(cooldowns[i]),
@@ -1332,7 +1327,7 @@ func (m ChatPickerModel) rotationHistoryHeight() int {
 // renders. There is no blank line above: the header banner already renders
 // one below the worktree-path line.
 func (m ChatPickerModel) warningBlockHeight() int {
-	block := selectedSessionWarningBlock(m.session, m.table.Width())
+	block := selectedSessionWarningBlock(m.session, m.chats, m.table.Width())
 	if block == "" {
 		return 0
 	}
@@ -1418,7 +1413,7 @@ func (m ChatPickerModel) View() tea.View {
 	// above the chat list. The header banner already renders one blank line
 	// below the worktree-path line, so we add none above here; the trailing
 	// "\n\n" yields the single blank line below, before the chat list.
-	if block := selectedSessionWarningBlock(m.session, m.table.Width()); block != "" {
+	if block := selectedSessionWarningBlock(m.session, m.chats, m.table.Width()); block != "" {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(block))
 		b.WriteString("\n\n")
 	}

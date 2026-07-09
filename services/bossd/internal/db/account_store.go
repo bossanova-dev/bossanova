@@ -59,9 +59,9 @@ func (s *SQLiteAccountStore) Create(ctx context.Context, params CreateAccountPar
 	// rather than relying on DB defaults — matches the store convention of not
 	// depending on column DEFAULTs. cooldown_until and last_used_at are left NULL.
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO accounts (id, provider, label, account_email, status, priority, health, tier, allowed_models, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, string(params.Provider), params.Label, params.AccountEmail,
+		`INSERT INTO accounts (id, provider, label, status, priority, health, tier, allowed_models, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, string(params.Provider), params.Label,
 		string(models.AccountStatusActive), params.Priority, string(models.AccountHealthOK),
 		params.Tier, encodeAllowedModels(params.AllowedModels), now, now,
 	)
@@ -105,10 +105,6 @@ func (s *SQLiteAccountStore) Update(ctx context.Context, id string, params Updat
 	if params.Label != nil {
 		sets = append(sets, "label = ?")
 		args = append(args, *params.Label)
-	}
-	if params.AccountEmail != nil {
-		sets = append(sets, "account_email = ?")
-		args = append(args, *params.AccountEmail)
 	}
 	if params.Status != nil {
 		sets = append(sets, "status = ?")
@@ -244,7 +240,7 @@ func formatNullableTime(t *time.Time) any {
 	return t.UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
-const accountSelectSQL = `SELECT id, provider, label, account_email, status, priority, health,
+const accountSelectSQL = `SELECT id, provider, label, status, priority, health,
 	cooldown_until, last_used_at, tier, allowed_models,
 	last_test_ok_at, last_test_error,
 	usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d,
@@ -274,7 +270,7 @@ func scanAccount(s sqlutil.Scanner) (*models.Account, error) {
 	var usageUtil5h, usageUtil7d float64
 	var createdAt, updatedAt string
 	err := s.Scan(
-		&a.ID, &providerStr, &a.Label, &a.AccountEmail, &statusStr, &a.Priority, &healthStr,
+		&a.ID, &providerStr, &a.Label, &statusStr, &a.Priority, &healthStr,
 		&cooldownUntil, &lastUsedAt, &a.Tier, &allowedModelsStr,
 		&lastTestOkAt, &a.LastTestError,
 		&usageUtil5h, &usageUtil7d, &usageReset5h, &usageReset7d,

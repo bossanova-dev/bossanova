@@ -457,3 +457,95 @@ func TestAttach_EscDismissesMissingSessionError(t *testing.T) {
 	}
 	_ = cmd
 }
+
+// TestAttachTmuxEnvNormalizesTerm verifies attachTmuxEnv delegates to
+// termnorm to produce a resolvable TERM for the `tmux attach` child, and
+// that the returned effective TERM matches what's actually in the env.
+func TestAttachTmuxEnvNormalizesTerm(t *testing.T) {
+	base := []string{"PATH=/bin", "TERM=xterm-ghostty"}
+	// force fallback by pointing probe through termnorm's seam is out of scope
+	// here; assert the helper delegates to termnorm by checking TERM is present
+	// and non-empty (integration correctness is covered by termnorm's own tests).
+	env, eff := attachTmuxEnv(base)
+	if eff == "" {
+		t.Fatal("effective TERM empty")
+	}
+	got := ""
+	for _, e := range env {
+		if strings.HasPrefix(e, "TERM=") {
+			got = strings.TrimPrefix(e, "TERM=")
+		}
+	}
+	if got != eff {
+		t.Fatalf("env TERM %q != effective %q", got, eff)
+	}
+}
+
+// TestRenderTmuxAttachDiagnostic verifies the diagnostic includes a
+// copy-pasteable `TERM=<eff> tmux attach -t <name>` reproduction command
+// plus the captured tmux startup output (e.g. a missing-terminfo error).
+func TestRenderTmuxAttachDiagnostic(t *testing.T) {
+	out := renderTmuxAttachDiagnostic(
+		"boss-abc-123",
+		"xterm-256color",
+		"missing or unsuitable terminal: xterm-ghostty\n",
+	)
+	for _, want := range []string{
+		"tmux attach -t boss-abc-123",
+		"TERM=xterm-256color",
+		"missing or unsuitable terminal: xterm-ghostty",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("diagnostic missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// TestRenderTmuxAttachDiagnosticEmptyWhenNoSignal verifies the diagnostic
+// renders blank when there's no tmux session name to reproduce with.
+func TestRenderTmuxAttachDiagnosticEmptyWhenNoSignal(t *testing.T) {
+	if got := renderTmuxAttachDiagnostic("", "", ""); got != "" {
+		t.Fatalf("want empty diagnostic, got %q", got)
+	}
+}
+
+// TestSanitizeTmuxTail verifies that the captured PTY tail is stripped of ANSI
+// escape sequences and stray C0 control bytes (so it can't scramble the error
+// frame) while plain text, newlines, and tabs survive.
+func TestSanitizeTmuxTail(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain text passes through", "missing or unsuitable terminal: xterm-ghostty", "missing or unsuitable terminal: xterm-ghostty"},
+		{"newlines and tabs kept", "line1\n\tline2", "line1\n\tline2"},
+		{"CSI color sequence stripped", "\x1b[31mred error\x1b[0m", "red error"},
+		{"cursor-move sequence stripped", "\x1b[2J\x1b[Hcleared", "cleared"},
+		{"stray control bytes removed", "err\x07\x08\rmsg", "errmsg"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeTmuxTail(tc.in); got != tc.want {
+				t.Fatalf("sanitizeTmuxTail(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenderTmuxAttachDiagnosticSanitizesTail verifies escape sequences in the
+// captured tail don't reach the rendered diagnostic while the human-readable
+// error text still does.
+func TestRenderTmuxAttachDiagnosticSanitizesTail(t *testing.T) {
+	out := renderTmuxAttachDiagnostic(
+		"boss-abc-123",
+		"xterm-256color",
+		"\x1b[2J\x1b[31mmissing or unsuitable terminal: xterm-ghostty\x1b[0m\n",
+	)
+	if !strings.Contains(out, "missing or unsuitable terminal: xterm-ghostty") {
+		t.Fatalf("diagnostic dropped the error text; got:\n%s", out)
+	}
+	if strings.Contains(out, "\x1b[2J") || strings.Contains(out, "\x1b[31m") {
+		t.Fatalf("diagnostic leaked raw escape sequences; got:\n%q", out)
+	}
+}

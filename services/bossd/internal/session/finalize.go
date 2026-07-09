@@ -554,6 +554,16 @@ func (l *Lifecycle) attachBranchPRAfterEnsurePRError(ctx context.Context, sessio
 	return l.attachOpenPRForBranch(ctx, session.ID, cur, repo)
 }
 
+// isPlanningOnlyNoChangeSession reports whether a session is an explicit
+// planning-only quick chat (BOS-322). Such sessions open no worktree/branch/PR
+// and are expected to make no repository changes, so finalize must treat their
+// no-change result as a benign success rather than a failed implementation run.
+// Keyed on the persisted QuickChat flag — never on title/prompt text, which are
+// user-editable and would make the gate fragile.
+func isPlanningOnlyNoChangeSession(session *models.Session) bool {
+	return session != nil && session.QuickChat
+}
+
 // attachExistingPRIfCleanBranchHasOne attaches a pre-existing open PR for a
 // clean branch when one can be found. Initial lookup errors are non-fatal, but
 // attachment/update/persistence errors after a PR match are pr_failed outcomes.
@@ -611,6 +621,21 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 				Str("branch", session.BranchName).
 				Msg("finalize: real-commit check failed for clean branch with PR; treating as real work")
 		} else if !hasReal {
+			// Planning-only sessions (quick chats: recon, plan review, visible
+			// /boss-plan) are expected to produce no repository changes, so a
+			// no-real-commits result is a benign success — not a failed
+			// implementation run. Divert them to the deleted_no_changes cleanup
+			// path instead of pr_no_changes/Blocked (BOS-322). Real quick chats
+			// skip finalize entirely; this is the defensive backstop for any that
+			// reach it. True empty /boss-implement runs (QuickChat false) still
+			// fall through to pr_no_changes and Block.
+			if isPlanningOnlyNoChangeSession(session) {
+				l.logger.Info().
+					Str("session", session.ID).
+					Str("branch", session.BranchName).
+					Msg("finalize: planning-only no-change session completed without implementation output")
+				return l.finalizeNoChanges(ctx, session)
+			}
 			l.logger.Info().
 				Str("session", session.ID).
 				Str("branch", session.BranchName).

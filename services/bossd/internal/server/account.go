@@ -15,6 +15,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountcred"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 )
 
@@ -100,10 +101,9 @@ func (s *Server) AddAccount(ctx context.Context, req *connect.Request[pb.AddAcco
 	}
 
 	account, err := s.accounts.Create(ctx, db.CreateAccountParams{
-		Provider:     models.AccountProvider(provider),
-		Label:        label,
-		AccountEmail: strings.TrimSpace(msg.Email),
-		Priority:     int(msg.Priority),
+		Provider: models.AccountProvider(provider),
+		Label:    label,
+		Priority: int(msg.Priority),
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrAccountExists) {
@@ -274,10 +274,6 @@ func (s *Server) UpdateAccount(ctx context.Context, req *connect.Request[pb.Upda
 		}
 		params.Label = &v
 	}
-	if msg.Email != nil {
-		v := strings.TrimSpace(*msg.Email)
-		params.AccountEmail = &v
-	}
 	if msg.Priority != nil {
 		v := int(*msg.Priority)
 		params.Priority = &v
@@ -383,6 +379,14 @@ func (s *Server) TestAccount(ctx context.Context, req *connect.Request[pb.TestAc
 		return s.recordAndRespond(ctx, id, false, liveSmokeUnavailableDetail)
 	}
 	if err := s.accountSmoke.Smoke(ctx, id, provider, blob); err != nil {
+		if errors.Is(err, agent.ErrAgentRunnerNotLoaded) {
+			// Verification couldn't run (no agent plugin loaded to execute the
+			// smoke check) — not a credential failure. Degrade to the same
+			// "unavailable" outcome as a missing smoke runner (see the
+			// s.accountSmoke == nil branch above) so the account isn't flagged
+			// failed and the registration UX stays calm.
+			return s.recordAndRespond(ctx, id, false, liveSmokeUnavailableDetail)
+		}
 		return s.recordAndRespond(ctx, id, true, err.Error())
 	}
 	return s.recordAndRespond(ctx, id, true, "")

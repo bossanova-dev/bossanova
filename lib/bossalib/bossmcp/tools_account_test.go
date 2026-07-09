@@ -36,9 +36,9 @@ func TestAccountTools(t *testing.T) {
 		},
 		{
 			tool: "add_account",
-			args: map[string]any{"provider": "claude", "label": "primary", "email": "a@b.co", "priority": 5},
+			args: map[string]any{"provider": "claude", "label": "primary", "priority": 5},
 			backend: &fakeBackend{addAccount: func(_ context.Context, req *pb.AddAccountRequest) (*pb.Account, error) {
-				if req.GetProvider() != "claude" || req.GetLabel() != "primary" || req.GetEmail() != "a@b.co" || req.GetPriority() != 5 {
+				if req.GetProvider() != "claude" || req.GetLabel() != "primary" || req.GetPriority() != 5 {
 					t.Errorf("add_account args not forwarded: %+v", req)
 				}
 				return &pb.Account{Id: "acct-aa"}, nil

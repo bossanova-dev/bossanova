@@ -615,6 +615,13 @@ message SendChatMessageRequest {
 message SendChatMessageResponse {
   string tmux_session_name = 1;
   bool delivered = 2;
+  // notice_text carries a user-facing outcome summary for a message that bossd
+  // handled mechanically instead of delivering to the agent — today, a
+  // single-line "/boss switch" account switch intercepted before the tmux paste
+  // (credit-free manual switch). On that path delivered is false and no LLM call
+  // is made, so callers keying on delivered to mean "handled" MUST also read
+  // notice_text. Empty for an ordinary delivered message.
+  string notice_text = 3;
 }
 
 // --- Chat Status (cross-client heartbeat sharing) ---
@@ -770,7 +777,9 @@ message ListAccountsResponse {
 message AddAccountRequest {
   string provider   = 1;   // "claude" | "codex"
   string label      = 2;
-  string email      = 3;   // optional informational account email
+  // Field 3 / "email" was optional informational account email metadata.
+  reserved 3;
+  reserved "email";
   int32  priority   = 4;   // sort order; lower = preferred
   // Credential blob (Claude setup-token string; Codex auth.json bytes).
   // Inbound only — consumed straight into the keyring, NEVER echoed back.
@@ -799,7 +808,9 @@ message RefreshAccountResponse {
 message UpdateAccountRequest {
   string id = 1;
   optional string label    = 2;
-  optional string email    = 3;
+  // Field 3 / "email" was optional informational account email metadata.
+  reserved 3;
+  reserved "email";
   optional int32  priority = 4;
   optional string status   = 5;   // "active" | "disabled"
   repeated string allowed_models = 6; // replaces the set when present

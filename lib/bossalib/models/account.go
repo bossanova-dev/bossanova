@@ -52,7 +52,6 @@ type Account struct {
 	ID            string
 	Provider      AccountProvider
 	Label         string
-	AccountEmail  string
 	Status        AccountStatus
 	Priority      int // sort order; lower = preferred
 	Health        AccountHealth

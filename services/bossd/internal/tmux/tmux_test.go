@@ -84,6 +84,7 @@ func TestNewSession_Args(t *testing.T) {
 			expected: []string{
 				"tmux", "new-session", "-d", "-s", "test-session",
 				"-c", "/tmp/workdir", "-x", "200", "-y", "50",
+				"-e", "TERM=xterm-256color",
 				"claude", "--session-id", "abc123",
 			},
 		},
@@ -99,12 +100,16 @@ func TestNewSession_Args(t *testing.T) {
 			expected: []string{
 				"tmux", "new-session", "-d", "-s", "custom-dims",
 				"-c", "/var/work", "-x", "120", "-y", "30",
+				"-e", "TERM=xterm-256color",
 				"sh", "-c", "echo hello",
 			},
 		},
 		{
 			// Env vars are emitted as sorted `-e KEY=VALUE` flags before the
 			// command so the launched process (e.g. a cron agent) inherits them.
+			// A normalized TERM is appended last (termnorm falls back to
+			// xterm-256color when the env carries no TERM) so tmux always has a
+			// resolvable terminal.
 			name: "session environment",
 			opts: NewSessionOpts{
 				Name:    "cron-sess",
@@ -119,6 +124,7 @@ func TestNewSession_Args(t *testing.T) {
 				"tmux", "new-session", "-d", "-s", "cron-sess",
 				"-c", "/tmp/wt", "-x", "200", "-y", "50",
 				"-e", "BOSS_CRON=true", "-e", "BOSS_CRON_NAME=Nightly triage",
+				"-e", "TERM=xterm-256color",
 				"claude",
 			},
 		},
@@ -1016,6 +1022,50 @@ func TestCapturePane_Error(t *testing.T) {
 	}
 	if out != "" {
 		t.Errorf("CapturePane: expected empty output on error, got %q", out)
+	}
+}
+
+func TestPanePID_ReturnsFirstPanePID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	mock := &captureOutputFactory{output: "97664\n99277\n"}
+	c := NewClient(WithCommandFactory(mock.factory))
+
+	pid, err := c.PanePID(context.Background(), "boss-3db0b79b-3e22ae16")
+	if err != nil {
+		t.Fatalf("PanePID: %v", err)
+	}
+	if pid != 97664 {
+		t.Errorf("PanePID = %d, want first pane pid 97664", pid)
+	}
+	last := mock.calls[len(mock.calls)-1]
+	want := []string{"tmux", "list-panes", "-t", "boss-3db0b79b-3e22ae16", "-F", "#{pane_pid}"}
+	if !equalSlices(last, want) {
+		t.Errorf("PanePID argv = %v, want %v", last, want)
+	}
+}
+
+func TestPanePID_ErrorOnCommandFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "false")
+	}))
+	if _, err := c.PanePID(context.Background(), "missing"); err == nil {
+		t.Fatal("PanePID: expected error on command failure, got nil")
+	}
+}
+
+func TestPanePID_ErrorOnEmptyOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	mock := &captureOutputFactory{output: ""}
+	c := NewClient(WithCommandFactory(mock.factory))
+	if _, err := c.PanePID(context.Background(), "boss-empty"); err == nil {
+		t.Fatal("PanePID: expected error on empty output, got nil")
 	}
 }
 

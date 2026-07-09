@@ -1,8 +1,10 @@
 package rotation
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,16 +33,22 @@ type fakeDeps struct {
 	switchErr   error
 
 	status   bossanovav1.ChatStatus // what the re-check sees
-	cfg      config.RotationConfig
+	cfg      config.ManagedAccountsConfig
 	repoID   string
 	provider string
+
+	// Auth-path (BOS-316) knobs, read by the authRotator seams.
+	authFailed     bool  // what CurrentAuthFailed reports at dispatch time
+	authConfirmed  bool  // what AuthProbe reports (true = typed 401 confirmed)
+	authProbeErr   error // AuthProbe error (probe failed)
+	authProbeCalls int
 }
 
 func (f *fakeDeps) rotator(now *time.Time) *ChatRotator {
 	f.repoID, f.provider = "repo-1", "claude"
 	return NewChatRotator(ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
-		LoadConfig: func() (config.RotationConfig, error) { return f.cfg, nil },
+		LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, nil },
 		ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
 			return ChatContext{SessionID: "sess-1", RepoID: f.repoID, Provider: f.provider, AccountID: "acct-capped"}, nil
 		},
@@ -80,6 +88,61 @@ func (f *fakeDeps) rotator(now *time.Time) *ChatRotator {
 		},
 		Now: func() time.Time { return *now },
 	})
+}
+
+// authRotator builds a ChatRotator wired for the auth-invalidation path
+// (BOS-316). store may be nil when the test asserts only on switch/decide calls.
+func (f *fakeDeps) authRotator(now *time.Time, store AuditStore) *ChatRotator {
+	f.repoID, f.provider = "repo-1", "claude"
+	var rec *Recorder
+	if store != nil {
+		rec = NewRecorder(store, zerolog.Nop())
+	}
+	return NewChatRotator(ChatRotatorDeps{
+		Logger:     zerolog.Nop(),
+		Recorder:   rec,
+		LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, nil },
+		ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
+			return ChatContext{SessionID: "sess-1", RepoID: f.repoID, Provider: f.provider, AccountID: "acct-capped"}, nil
+		},
+		CurrentStatus: func(_ string) bossanovav1.ChatStatus {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			return f.status
+		},
+		CurrentAuthFailed: func(_ string) bool {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			return f.authFailed
+		},
+		AuthProbe: func(_ context.Context, _ string) (bool, error) {
+			f.mu.Lock()
+			f.authProbeCalls++
+			confirmed, err := f.authConfirmed, f.authProbeErr
+			f.mu.Unlock()
+			return confirmed, err
+		},
+		Decide: func(_ context.Context, req DecideRequest) (Decision, error) {
+			f.mu.Lock()
+			f.decideCalls++
+			f.lastDecide = req
+			f.mu.Unlock()
+			return f.decision, f.decideErr
+		},
+		Switch: func(_ context.Context, req SwitchRequest) (SwitchResult, error) {
+			f.mu.Lock()
+			f.switchCalls = append(f.switchCalls, req)
+			f.mu.Unlock()
+			return SwitchResult{SwitchedToLabel: "acct-b"}, f.switchErr
+		},
+		Now: func() time.Time { return *now },
+	})
+}
+
+func (f *fakeDeps) authProbes() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.authProbeCalls
 }
 
 func (f *fakeDeps) switched() []SwitchRequest {
@@ -199,7 +262,7 @@ func TestChatRotator_ProbeGate(t *testing.T) {
 			}
 			r := NewChatRotator(ChatRotatorDeps{
 				Logger:     zerolog.Nop(),
-				LoadConfig: func() (config.RotationConfig, error) { return f.cfg, nil },
+				LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, nil },
 				ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
 					return ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-capped"}, nil
 				},
@@ -291,7 +354,7 @@ func TestChatRotator_ContextLookupFailureDoesNotConsumeRateLimit(t *testing.T) {
 
 	r := NewChatRotator(ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
-		LoadConfig: func() (config.RotationConfig, error) { return config.RotationConfig{}, nil },
+		LoadConfig: func() (config.ManagedAccountsConfig, error) { return config.ManagedAccountsConfig{}, nil },
 		ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -339,7 +402,7 @@ func TestChatRotator_OptOutHonored(t *testing.T) {
 
 	t.Run("rotation enabled false kills chat rotation", func(t *testing.T) {
 		f := &fakeDeps{status: chatStatusLimited(), decision: Decision{Kind: DecisionSwitch, AccountID: "x"},
-			cfg: config.RotationConfig{
+			cfg: config.ManagedAccountsConfig{
 				Enabled:                      boolPtr(false),
 				AutoRotateChats:              boolPtr(true),
 				AutoRotateChatsPerRepo:       map[string]bool{"repo-1": true},
@@ -354,7 +417,7 @@ func TestChatRotator_OptOutHonored(t *testing.T) {
 	})
 	t.Run("global off", func(t *testing.T) {
 		f := &fakeDeps{status: chatStatusLimited(), decision: Decision{Kind: DecisionSwitch, AccountID: "x"},
-			cfg: config.RotationConfig{AutoRotateChats: boolPtr(false)}}
+			cfg: config.ManagedAccountsConfig{AutoRotateChats: boolPtr(false)}}
 		r := f.rotator(&now)
 		r.OnChatStatus(testChatID, chatStatusLimited(), time.Time{})
 		waitIdle(t, r)
@@ -364,7 +427,7 @@ func TestChatRotator_OptOutHonored(t *testing.T) {
 	})
 	t.Run("per-repo off overrides default-on", func(t *testing.T) {
 		f := &fakeDeps{status: chatStatusLimited(), decision: Decision{Kind: DecisionSwitch, AccountID: "x"},
-			cfg: config.RotationConfig{AutoRotateChatsPerRepo: map[string]bool{"repo-1": false}}}
+			cfg: config.ManagedAccountsConfig{AutoRotateChatsPerRepo: map[string]bool{"repo-1": false}}}
 		r := f.rotator(&now)
 		r.OnChatStatus(testChatID, chatStatusLimited(), time.Time{})
 		waitIdle(t, r)
@@ -468,6 +531,58 @@ func TestChatRotator_ConcurrentSignalsSingleAttempt(t *testing.T) {
 	}
 }
 
+// TestRotate_UnboundSession_TrustsBannerAndSwitches pins the unbound-session
+// path (BOS-320): a LIMITED chat with no bound account (AccountID=="") has no
+// account to probe, so the rotator trusts the detected banner and rotates onto
+// an eligible managed account via the Auto switch path — even with no
+// RateLimitProbe wired.
+func TestRotate_UnboundSession_TrustsBannerAndSwitches(t *testing.T) {
+	now := time.Now()
+	reset := now.Add(90 * time.Minute)
+	var mu sync.Mutex
+	var switchCalls []SwitchRequest
+
+	r := NewChatRotator(ChatRotatorDeps{
+		Logger:     zerolog.Nop(),
+		LoadConfig: func() (config.ManagedAccountsConfig, error) { return config.ManagedAccountsConfig{}, nil },
+		ChatContext: func(context.Context, string) (ChatContext, error) {
+			return ChatContext{SessionID: "s1", RepoID: "r1", Provider: "claude", AccountID: ""}, nil // unbound
+		},
+		CurrentStatus: func(string) bossanovav1.ChatStatus { return chatStatusLimited() },
+		Decide: func(_ context.Context, req DecideRequest) (Decision, error) {
+			// An unbound session passes AccountID=="" through as CappedAccountID.
+			if req.AccountID != "" {
+				t.Errorf("Decide AccountID = %q, want empty for unbound session", req.AccountID)
+			}
+			return Decision{Kind: DecisionSwitch, AccountID: "b", Label: "acct-b"}, nil
+		},
+		Switch: func(_ context.Context, req SwitchRequest) (SwitchResult, error) {
+			mu.Lock()
+			switchCalls = append(switchCalls, req)
+			mu.Unlock()
+			return SwitchResult{SwitchedToLabel: "acct-b"}, nil
+		},
+		RateLimitProbe: nil, // no bound account to probe — must not block the unbound path
+		Now:            func() time.Time { return now },
+	})
+
+	r.OnChatStatus("chat-1", chatStatusLimited(), reset)
+	waitIdle(t, r)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(switchCalls) != 1 {
+		t.Fatalf("switch calls = %d, want 1 Auto switch for the unbound LIMITED chat", len(switchCalls))
+	}
+	c := switchCalls[0]
+	if !c.Auto || c.AccountID != "b" {
+		t.Errorf("Switch req = %+v, want Auto to acct b", c)
+	}
+	if !c.PreviousResetAt.Equal(reset) {
+		t.Errorf("Switch PreviousResetAt = %v, want banner reset %v", c.PreviousResetAt, reset)
+	}
+}
+
 // chatStatusLimited returns the LIMITED enum value added by BOS-166.
 func chatStatusLimited() bossanovav1.ChatStatus {
 	return bossanovav1.ChatStatus_CHAT_STATUS_LIMITED
@@ -501,12 +616,22 @@ func (s *lockedAuditStore) outcomes() []string {
 	return out
 }
 
+func (s *lockedAuditStore) triggers() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.inserted))
+	for i, ev := range s.inserted {
+		out[i] = ev.Trigger
+	}
+	return out
+}
+
 func rotatorWithRecorder(f *fakeDeps, now *time.Time, store AuditStore) *ChatRotator {
 	f.repoID, f.provider = "repo-1", "claude"
 	return NewChatRotator(ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
 		Recorder:   NewRecorder(store, zerolog.Nop()),
-		LoadConfig: func() (config.RotationConfig, error) { return f.cfg, nil },
+		LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, nil },
 		ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
 			return ChatContext{SessionID: "sess-1", RepoID: f.repoID, Provider: f.provider, AccountID: "acct-capped"}, nil
 		},
@@ -594,8 +719,8 @@ func TestChatRotator_RecordsProbeGateAudit(t *testing.T) {
 			r := NewChatRotator(ChatRotatorDeps{
 				Logger:   zerolog.Nop(),
 				Recorder: NewRecorder(store, zerolog.Nop()),
-				LoadConfig: func() (config.RotationConfig, error) {
-					return config.RotationConfig{}, nil
+				LoadConfig: func() (config.ManagedAccountsConfig, error) {
+					return config.ManagedAccountsConfig{}, nil
 				},
 				ChatContext: func(context.Context, string) (ChatContext, error) {
 					return ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-capped"}, nil
@@ -624,12 +749,109 @@ func TestChatRotator_RecordsProbeGateAudit(t *testing.T) {
 	}
 }
 
+// TestChatRotator_RecordsRecoveredWhenChatRecovered pins that the "chat no
+// longer limited; aborting" early-return records exactly one recovered audit
+// row (BOS-315: previously silent).
+func TestChatRotator_RecordsRecoveredWhenChatRecovered(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{status: bossanovav1.ChatStatus_CHAT_STATUS_WORKING, decision: Decision{Kind: DecisionSwitch, AccountID: "x"}}
+	store := &lockedAuditStore{}
+	r := rotatorWithRecorder(f, &now, store)
+	r.OnChatStatus(testChatID, chatStatusLimited(), now.Add(2*time.Hour))
+	waitIdle(t, r)
+	if f.decides() != 0 || len(f.switched()) != 0 {
+		t.Fatal("recovered chat was rotated")
+	}
+	got := store.outcomes()
+	if len(got) != 1 || got[0] != "ROTATION_OUTCOME_STATUS_ONLY_RECOVERED" {
+		t.Fatalf("want one STATUS_ONLY_RECOVERED audit event, got %v", got)
+	}
+}
+
+// TestChatRotator_RecordsFailedWhenDecideErrors pins that the engine-Decide
+// failure early-return records exactly one FAILED audit row (BOS-315).
+func TestChatRotator_RecordsFailedWhenDecideErrors(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{status: chatStatusLimited(), decideErr: errors.New("engine unavailable")}
+	store := &lockedAuditStore{}
+	r := rotatorWithRecorder(f, &now, store)
+	r.OnChatStatus(testChatID, chatStatusLimited(), now.Add(2*time.Hour))
+	waitIdle(t, r)
+	if len(f.switched()) != 0 {
+		t.Fatal("decide-failed path must not switch")
+	}
+	got := store.outcomes()
+	if len(got) != 1 || got[0] != "ROTATION_OUTCOME_FAILED" {
+		t.Fatalf("want one FAILED audit event, got %v", got)
+	}
+}
+
+// TestChatRotator_RecordsFailedOnUnknownDecisionKind pins that the default
+// unknown-decision-kind case records exactly one FAILED audit row (BOS-315).
+func TestChatRotator_RecordsFailedOnUnknownDecisionKind(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{status: chatStatusLimited(), decision: Decision{Kind: DecisionKind(0)}}
+	store := &lockedAuditStore{}
+	r := rotatorWithRecorder(f, &now, store)
+	r.OnChatStatus(testChatID, chatStatusLimited(), now.Add(2*time.Hour))
+	waitIdle(t, r)
+	if len(f.switched()) != 0 {
+		t.Fatal("unknown-decision-kind path must not switch")
+	}
+	got := store.outcomes()
+	if len(got) != 1 || got[0] != "ROTATION_OUTCOME_FAILED" {
+		t.Fatalf("want one FAILED audit event, got %v", got)
+	}
+}
+
+// TestChatRotator_ProbeDisagreementLogsWarn pins that the probe-disagreement
+// path (banner tripped LIMITED but the authoritative probe disagrees) surfaces
+// at warn level and still records exactly one PROBE_UNCONFIRMED audit row
+// (BOS-315).
+func TestChatRotator_ProbeDisagreementLogsWarn(t *testing.T) {
+	now := time.Now()
+	var buf bytes.Buffer
+	store := &lockedAuditStore{}
+	healthy := models.UsageSnapshot{
+		Util5h:    0.08,
+		Status:    "RATE_LIMIT_PLAN_STATUS_ACTIVE",
+		FetchedAt: &now,
+	}
+	r := NewChatRotator(ChatRotatorDeps{
+		Logger:     zerolog.New(&buf),
+		Recorder:   NewRecorder(store, zerolog.Nop()),
+		LoadConfig: func() (config.ManagedAccountsConfig, error) { return config.ManagedAccountsConfig{}, nil },
+		ChatContext: func(context.Context, string) (ChatContext, error) {
+			return ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-capped"}, nil
+		},
+		CurrentStatus:  func(string) bossanovav1.ChatStatus { return chatStatusLimited() },
+		RateLimitProbe: func(context.Context, string) (models.UsageSnapshot, error) { return healthy, nil },
+		Decide: func(context.Context, DecideRequest) (Decision, error) {
+			t.Fatal("Decide must not be called when probe disagrees")
+			return Decision{}, nil
+		},
+		Switch: func(context.Context, SwitchRequest) (SwitchResult, error) { return SwitchResult{}, nil },
+		Now:    func() time.Time { return now },
+	})
+	r.OnChatStatus(testChatID, chatStatusLimited(), now.Add(time.Hour))
+	waitIdle(t, r)
+
+	logOut := buf.String()
+	if !strings.Contains(logOut, `"level":"warn"`) || !strings.Contains(logOut, "usage probe says account is not limited") {
+		t.Fatalf("probe-disagreement line not at warn level: %s", logOut)
+	}
+	got := store.outcomes()
+	if len(got) != 1 || got[0] != "ROTATION_OUTCOME_STATUS_ONLY_PROBE_UNCONFIRMED" {
+		t.Fatalf("want one PROBE_UNCONFIRMED audit event, got %v", got)
+	}
+}
+
 // TestChatRotator_RecordsDisabledWhenOptedOut pins the STATUS_ONLY_DISABLED
 // audit event on the opt-out (kill-switch) path (BOS-176).
 func TestChatRotator_RecordsDisabledWhenOptedOut(t *testing.T) {
 	now := time.Now()
 	off := false
-	f := &fakeDeps{status: chatStatusLimited(), cfg: config.RotationConfig{AutoRotateChats: &off}}
+	f := &fakeDeps{status: chatStatusLimited(), cfg: config.ManagedAccountsConfig{AutoRotateChats: &off}}
 	store := &lockedAuditStore{}
 	r := rotatorWithRecorder(f, &now, store)
 	r.OnChatStatus(testChatID, chatStatusLimited(), now.Add(2*time.Hour))
@@ -640,5 +862,244 @@ func TestChatRotator_RecordsDisabledWhenOptedOut(t *testing.T) {
 	}
 	if f.decides() != 0 {
 		t.Fatalf("opted-out rotator must not call Decide, got %d", f.decides())
+	}
+}
+
+// --- Auth-invalidation path (BOS-316) ---
+
+// TestChatRotator_AuthFailedConfirmedRotates pins the happy path: a pane that is
+// still auth-failed and whose probe confirms a typed 401 rotates exactly once via
+// the Auto switch path, with the audit stamped
+// ROTATION_TRIGGER_AUTH_INVALIDATED / ROTATION_OUTCOME_ROTATED and the engine
+// driven with the AuthInvalidated signal kind.
+func TestChatRotator_AuthFailedConfirmedRotates(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{
+		authFailed:    true,
+		authConfirmed: true,
+		decision:      Decision{Kind: DecisionSwitch, AccountID: "acct-b-id", Label: "acct-b"},
+	}
+	store := &lockedAuditStore{}
+	r := f.authRotator(&now, store)
+
+	r.OnAuthFailed(testChatID)
+	waitIdle(t, r)
+
+	calls := f.switched()
+	if len(calls) != 1 {
+		t.Fatalf("switch calls = %d, want 1", len(calls))
+	}
+	c := calls[0]
+	if c.SessionID != "sess-1" || c.AgentSessionID != testChatID || c.AccountID != "acct-b-id" || !c.Auto {
+		t.Fatalf("unexpected switch request: %+v", c)
+	}
+	if got := f.lastDecideRequest().Kind; got != AuthInvalidated {
+		t.Fatalf("Decide Kind = %v, want AuthInvalidated", got)
+	}
+	trig := store.triggers()
+	if len(trig) != 1 || trig[0] != "ROTATION_TRIGGER_AUTH_INVALIDATED" {
+		t.Fatalf("audit triggers = %v, want one ROTATION_TRIGGER_AUTH_INVALIDATED", trig)
+	}
+	if out := store.outcomes(); len(out) != 1 || out[0] != "ROTATION_OUTCOME_ROTATED" {
+		t.Fatalf("audit outcomes = %v, want one ROTATION_OUTCOME_ROTATED", out)
+	}
+	// Surface the audit trigger in -v output as the auto-rotate-on-401 proof token.
+	t.Logf("auth-rotation audit trigger = %s", trig[0])
+}
+
+// TestChatRotator_AuthProbeGate pins the fail-safe gate: the auth path proceeds
+// to Decide/Switch ONLY when the probe authoritatively confirms a typed 401. A
+// healthy probe, a probe error, or a pane that recovered before dispatch all
+// leave the chat as-is with no Switch and no false-positive Decide.
+func TestChatRotator_AuthProbeGate(t *testing.T) {
+	tests := []struct {
+		name          string
+		authFailed    bool
+		authConfirmed bool
+		authProbeErr  error
+		wantProbe     bool
+		wantDecide    bool
+	}{
+		{
+			name:          "healthy probe no-ops without decide",
+			authFailed:    true,
+			authConfirmed: false,
+			wantProbe:     true,
+			wantDecide:    false,
+		},
+		{
+			name:         "probe error suppresses rotation",
+			authFailed:   true,
+			authProbeErr: status.Error(codes.Unauthenticated, "probe transport failed"),
+			wantProbe:    true,
+			wantDecide:   false,
+		},
+		{
+			name:       "pane recovered before dispatch aborts",
+			authFailed: false,
+			wantProbe:  false,
+			wantDecide: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now()
+			f := &fakeDeps{
+				authFailed:    tt.authFailed,
+				authConfirmed: tt.authConfirmed,
+				authProbeErr:  tt.authProbeErr,
+				decision:      Decision{Kind: DecisionSwitch, AccountID: "acct-b-id"},
+			}
+			r := f.authRotator(&now, nil)
+
+			r.OnAuthFailed(testChatID)
+			waitIdle(t, r)
+
+			if got := len(f.switched()); got != 0 {
+				t.Fatalf("switch calls = %d, want 0", got)
+			}
+			if got := f.decides(); (got > 0) != tt.wantDecide {
+				t.Fatalf("decides = %d, want wantDecide=%v", got, tt.wantDecide)
+			}
+			if got := f.authProbes() > 0; got != tt.wantProbe {
+				t.Fatalf("authProbe called = %v, want %v", got, tt.wantProbe)
+			}
+		})
+	}
+}
+
+// TestChatRotator_AuthProbeGateRecordsAudit pins that the auth probe-gate
+// no-op branches (probe says healthy, probe errored) still record exactly one
+// audit row stamped ROTATION_TRIGGER_AUTH_INVALIDATED with the
+// STATUS_ONLY_PROBE_UNCONFIRMED outcome — the acceptance-criterion invariant
+// that EVERY audit event on the auth path carries the auth trigger, on the
+// paths TestChatRotator_AuthProbeGate exercises with a nil store.
+func TestChatRotator_AuthProbeGateRecordsAudit(t *testing.T) {
+	tests := []struct {
+		name          string
+		authConfirmed bool
+		authProbeErr  error
+	}{
+		{name: "healthy probe records probe-unconfirmed", authConfirmed: false},
+		{name: "probe error records probe-unconfirmed", authProbeErr: status.Error(codes.Unauthenticated, "probe transport failed")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now()
+			f := &fakeDeps{
+				authFailed:    true,
+				authConfirmed: tt.authConfirmed,
+				authProbeErr:  tt.authProbeErr,
+				decision:      Decision{Kind: DecisionSwitch, AccountID: "acct-b-id"},
+			}
+			store := &lockedAuditStore{}
+			r := f.authRotator(&now, store)
+
+			r.OnAuthFailed(testChatID)
+			waitIdle(t, r)
+
+			if len(f.switched()) != 0 {
+				t.Fatal("probe-gate no-op must not switch")
+			}
+			if f.decides() != 0 {
+				t.Fatalf("probe-gate no-op must not call Decide, got %d", f.decides())
+			}
+			if out := store.outcomes(); len(out) != 1 || out[0] != "ROTATION_OUTCOME_STATUS_ONLY_PROBE_UNCONFIRMED" {
+				t.Fatalf("audit outcomes = %v, want one STATUS_ONLY_PROBE_UNCONFIRMED", out)
+			}
+			if trig := store.triggers(); len(trig) != 1 || trig[0] != "ROTATION_TRIGGER_AUTH_INVALIDATED" {
+				t.Fatalf("audit triggers = %v, want ROTATION_TRIGGER_AUTH_INVALIDATED", trig)
+			}
+		})
+	}
+}
+
+// TestChatRotator_AuthAllFailedParksWithoutLoop pins the no-rotate-loop
+// safeguard: with every candidate account failed the engine returns
+// DecisionStatusOnly, so the confirmed-401 pane records a status-only audit and
+// does NOT switch — and an immediate repeat OnAuthFailed for the same chat is
+// suppressed by the shared inFlight/rate limiter (one attempt, then park).
+func TestChatRotator_AuthAllFailedParksWithoutLoop(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{
+		authFailed:    true,
+		authConfirmed: true,
+		decision:      Decision{Kind: DecisionStatusOnly},
+	}
+	store := &lockedAuditStore{}
+	r := f.authRotator(&now, store)
+
+	r.OnAuthFailed(testChatID)
+	waitIdle(t, r)
+	if len(f.switched()) != 0 {
+		t.Fatal("all-failed status-only must not switch")
+	}
+	if f.decides() != 1 {
+		t.Fatalf("decides = %d, want 1", f.decides())
+	}
+	if out := store.outcomes(); len(out) != 1 || out[0] != "ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY" {
+		t.Fatalf("audit outcomes = %v, want one status-only event", out)
+	}
+	if trig := store.triggers(); len(trig) != 1 || trig[0] != "ROTATION_TRIGGER_AUTH_INVALIDATED" {
+		t.Fatalf("audit triggers = %v, want ROTATION_TRIGGER_AUTH_INVALIDATED", trig)
+	}
+
+	// Immediate redelivery inside the rate-limit window must not loop.
+	now = now.Add(1 * time.Minute)
+	r.OnAuthFailed(testChatID)
+	waitIdle(t, r)
+	if f.decides() != 1 {
+		t.Fatalf("auth path looped: decides = %d, want 1", f.decides())
+	}
+	if len(f.switched()) != 0 {
+		t.Fatal("auth path looped into a switch")
+	}
+}
+
+// TestChatRotator_AuthExhaustedRecordsExhausted pins the DecisionAllExhausted
+// outcome maps to a ROTATION_OUTCOME_EXHAUSTED audit on the auth trigger.
+func TestChatRotator_AuthExhaustedRecordsExhausted(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{
+		authFailed:    true,
+		authConfirmed: true,
+		decision:      Decision{Kind: DecisionAllExhausted, ResumeAt: now.Add(2 * time.Hour)},
+	}
+	store := &lockedAuditStore{}
+	r := f.authRotator(&now, store)
+
+	r.OnAuthFailed(testChatID)
+	waitIdle(t, r)
+	if len(f.switched()) != 0 {
+		t.Fatal("all-exhausted must not switch")
+	}
+	if out := store.outcomes(); len(out) != 1 || out[0] != "ROTATION_OUTCOME_EXHAUSTED" {
+		t.Fatalf("audit outcomes = %v, want one ROTATION_OUTCOME_EXHAUSTED", out)
+	}
+	if trig := store.triggers(); len(trig) != 1 || trig[0] != "ROTATION_TRIGGER_AUTH_INVALIDATED" {
+		t.Fatalf("audit triggers = %v, want ROTATION_TRIGGER_AUTH_INVALIDATED", trig)
+	}
+}
+
+// TestChatRotator_AuthConcurrentSignalsSingleAttempt is the -race gate for the
+// auth path: N concurrent OnAuthFailed calls for one chat produce at most one
+// switch (shared inFlight guard with the LIMITED path).
+func TestChatRotator_AuthConcurrentSignalsSingleAttempt(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{authFailed: true, authConfirmed: true, decision: Decision{Kind: DecisionSwitch, AccountID: "x"}}
+	r := f.authRotator(&now, nil)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.OnAuthFailed(testChatID)
+		}()
+	}
+	wg.Wait()
+	waitIdle(t, r)
+	if got := len(f.switched()); got != 1 {
+		t.Fatalf("concurrent auth signals produced %d switches, want 1", got)
 	}
 }

@@ -198,20 +198,17 @@ func TestRunClaudeAdd(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate_email_does_not_force_distinct_label", func(t *testing.T) {
+	t.Run("supplied_label_is_used_verbatim", func(t *testing.T) {
 		tok := claudeToken()
 		pr := &fakePrompter{answers: []string{tok}}
-		cl := &fakeAccountClient{listResult: []*pb.Account{{Id: "a1", Provider: "claude", Label: "existing", Email: "dup@example.com"}}}
+		cl := &fakeAccountClient{listResult: []*pb.Account{{Id: "a1", Provider: "claude", Label: "existing"}}}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
-			Prompter: pr, Client: cl, PasteMode: true, Label: "claude-1", Email: "dup@example.com",
+			Prompter: pr, Client: cl, PasteMode: true, Label: "claude-1",
 		}); err != nil {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
-		if len(cl.addReqs) != 1 || cl.addReqs[0].GetLabel() != "claude-1" || cl.addReqs[0].GetEmail() != "dup@example.com" {
-			t.Fatalf("AddAccount = %+v, want duplicate email accepted with supplied label", cl.addReqs)
-		}
-		if strings.Contains(pr.transcript(), "already registered") {
-			t.Fatalf("duplicate email warning should not be shown:\n%s", pr.transcript())
+		if len(cl.addReqs) != 1 || cl.addReqs[0].GetLabel() != "claude-1" {
+			t.Fatalf("AddAccount = %+v, want supplied label", cl.addReqs)
 		}
 	})
 
@@ -239,15 +236,15 @@ func TestRunClaudeAdd(t *testing.T) {
 		}
 	})
 
-	t.Run("preseeded_label_email_skip_prompts", func(t *testing.T) {
-		// --token-stdin --label --email should be fully non-interactive: only the
-		// token is read, and no email/label prompt is shown (a real piped stdin
-		// would EOF on any further Ask).
+	t.Run("preseeded_label_skips_prompt", func(t *testing.T) {
+		// --token-stdin --label should be fully non-interactive: only the token is
+		// read, and no label prompt is shown (a real piped stdin would EOF on any
+		// further Ask).
 		tok := claudeToken()
 		pr := &fakePrompter{answers: []string{tok}}
 		cl := &fakeAccountClient{}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
-			Prompter: pr, Client: cl, PasteMode: true, Label: "my-label", Email: "me@example.com", Priority: 7,
+			Prompter: pr, Client: cl, PasteMode: true, Label: "my-label", Priority: 7,
 		}); err != nil {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
@@ -255,26 +252,23 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("want 1 AddAccount, got %d", len(cl.addReqs))
 		}
 		req := cl.addReqs[0]
-		if req.GetLabel() != "my-label" || req.GetEmail() != "me@example.com" {
-			t.Fatalf("label/email = %q/%q, want provided values", req.GetLabel(), req.GetEmail())
+		if req.GetLabel() != "my-label" {
+			t.Fatalf("label = %q, want provided value", req.GetLabel())
 		}
 		if req.GetPriority() != 7 {
 			t.Fatalf("priority = %d, want 7 (--priority must reach AddAccount)", req.GetPriority())
 		}
 		for _, asked := range pr.asked {
-			if strings.HasPrefix(asked, "Email for this") || asked == "Label for this account" {
-				t.Fatalf("interactive prompt %q shown despite --label/--email", asked)
+			if asked == "Label for this account" {
+				t.Fatalf("interactive prompt %q shown despite --label", asked)
 			}
 		}
 	})
 
-	t.Run("token_stdin_no_email_headless", func(t *testing.T) {
+	t.Run("token_stdin_label_headless", func(t *testing.T) {
 		// Regression: `boss account add claude --token-stdin --label piped` piped
-		// from a stdin that carries ONLY the token (no email). This uses the real
-		// ioPrompter so a second read genuinely hits io.EOF, exactly like a closed
-		// pipe. Before the fix promptIdentity still called Ask for the (empty)
-		// email, which EOF'd and failed the registration; with PasteMode the email
-		// must resolve to its empty default without prompting.
+		// from a stdin that carries ONLY the token. This uses the real ioPrompter
+		// so a second read genuinely hits io.EOF, exactly like a closed pipe.
 		tok := claudeToken()
 		pr := NewIOPrompter(strings.NewReader(tok+"\n"), io.Discard)
 		cl := &fakeAccountClient{}
@@ -286,15 +280,15 @@ func TestRunClaudeAdd(t *testing.T) {
 		if len(cl.addReqs) != 1 {
 			t.Fatalf("want 1 AddAccount, got %d", len(cl.addReqs))
 		}
-		if req := cl.addReqs[0]; req.GetEmail() != "" || req.GetLabel() != "piped" {
-			t.Fatalf("email/label = %q/%q, want \"\"/\"piped\"", req.GetEmail(), req.GetLabel())
+		if req := cl.addReqs[0]; req.GetLabel() != "piped" {
+			t.Fatalf("label = %q, want piped", req.GetLabel())
 		}
 	})
 
-	t.Run("token_stdin_no_label_no_email_uses_defaults", func(t *testing.T) {
-		// Fully bare headless registration: only the token on stdin, neither
-		// --label nor --email. Both identity values must resolve to their defaults
-		// (empty email, "claude-1" label) without prompting the exhausted stdin.
+	t.Run("token_stdin_no_label_uses_default", func(t *testing.T) {
+		// Fully bare headless registration: only the token on stdin and no
+		// --label. Label must resolve to its default without prompting exhausted
+		// stdin.
 		tok := claudeToken()
 		pr := NewIOPrompter(strings.NewReader(tok+"\n"), io.Discard)
 		cl := &fakeAccountClient{}
@@ -306,27 +300,27 @@ func TestRunClaudeAdd(t *testing.T) {
 		if len(cl.addReqs) != 1 {
 			t.Fatalf("want 1 AddAccount, got %d", len(cl.addReqs))
 		}
-		if req := cl.addReqs[0]; req.GetEmail() != "" || req.GetLabel() != "claude-1" {
-			t.Fatalf("email/label = %q/%q, want \"\"/\"claude-1\"", req.GetEmail(), req.GetLabel())
+		if req := cl.addReqs[0]; req.GetLabel() != "claude-1" {
+			t.Fatalf("label = %q, want claude-1", req.GetLabel())
 		}
 	})
 
-	t.Run("token_stdin_duplicate_email_uses_default_label", func(t *testing.T) {
+	t.Run("token_stdin_existing_label_uses_next_default", func(t *testing.T) {
 		tok := claudeToken()
 		pr := NewIOPrompter(strings.NewReader(tok+"\n"), io.Discard)
 		cl := &fakeAccountClient{listResult: []*pb.Account{
-			{Id: "a1", Provider: "claude", Label: "claude-1", Email: "dup@example.com"},
+			{Id: "a1", Provider: "claude", Label: "claude-1"},
 		}}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
-			Prompter: pr, Client: cl, PasteMode: true, Email: "dup@example.com",
+			Prompter: pr, Client: cl, PasteMode: true,
 		}); err != nil {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
 		if len(cl.addReqs) != 1 {
 			t.Fatalf("want AddAccount, got %d", len(cl.addReqs))
 		}
-		if req := cl.addReqs[0]; req.GetEmail() != "dup@example.com" || req.GetLabel() != "claude-2" {
-			t.Fatalf("email/label = %q/%q, want duplicate email with default label claude-2", req.GetEmail(), req.GetLabel())
+		if req := cl.addReqs[0]; req.GetLabel() != "claude-2" {
+			t.Fatalf("label = %q, want default label claude-2", req.GetLabel())
 		}
 	})
 
@@ -364,28 +358,26 @@ func TestRunClaudeAdd(t *testing.T) {
 		}
 	})
 
-	t.Run("livesmoke_unavailable_prompts_keep_or_remove", func(t *testing.T) {
-		// If the daemon cannot run provider verification, the account is not verified. The
-		// CLI must not present this as a successful deferred registration.
+	t.Run("livesmoke_unavailable_keeps_silently", func(t *testing.T) {
+		// When provider verification simply couldn't run (no agent plugin loaded),
+		// the daemon reports live_smoke_ran=false with the "unavailable" sentinel
+		// detail. The credential is fine, so the CLI keeps it silently — no
+		// keep/remove prompt, no removal — and prints a calm note.
 		tok := claudeToken()
-		pr := &fakePrompter{answers: []string{tok, "", ""}, confirms: []bool{false}}
+		pr := &fakePrompter{answers: []string{tok, "", ""}} // no confirms — no keep/remove prompt expected
 		cl := &fakeAccountClient{testResult: &pb.TestAccountResponse{
 			Account:      &pb.Account{Id: "acc-new", LastTestError: "provider verification unavailable"},
 			LiveSmokeRan: false,
+			Detail:       "provider verification unavailable",
 		}}
-		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Prompter: pr, Client: cl, PasteMode: true}); err == nil {
-			t.Fatalf("want error when unavailable verification is rejected")
+		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Prompter: pr, Client: cl, PasteMode: true}); err != nil {
+			t.Fatalf("unavailable verification must keep the account, got err: %v", err)
 		}
-		if len(cl.removedIDs) != 1 {
-			t.Fatalf("account should be removed when unavailable verification is rejected: %v", cl.removedIDs)
+		if len(cl.removedIDs) != 0 {
+			t.Fatalf("account must not be removed when verification is merely unavailable: %v", cl.removedIDs)
 		}
-		if strings.Contains(pr.transcript(), "deferred") ||
-			strings.Contains(pr.transcript(), "credential materialization pending") ||
-			strings.Contains(pr.transcript(), "Rotation will run the live test") {
-			t.Fatalf("stale deferred copy leaked into transcript:\n%s", pr.transcript())
-		}
-		if !strings.Contains(pr.transcript(), "Account verification failed") {
-			t.Fatalf("keep/remove prompt must be shown:\n%s", pr.transcript())
+		if strings.Contains(pr.transcript(), "Account verification failed") {
+			t.Fatalf("must not show the failure/keep-remove prompt:\n%s", pr.transcript())
 		}
 	})
 
@@ -427,4 +419,94 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("keep/remove prompt must be shown for a validation failure:\n%s", pr.transcript())
 		}
 	})
+}
+
+// TestClassifyTest exercises the pure classifier directly, covering every
+// outcome branch. The load-bearing subtlety is that live_smoke_ran=false is NOT
+// on its own enough to mean "unavailable": only the exact sentinel detail routes
+// to testUnavailable, and a genuine credential-validation failure (also
+// live_smoke_ran=false) must still route to testFailed.
+func TestClassifyTest(t *testing.T) {
+	tests := []struct {
+		name       string
+		resp       *pb.TestAccountResponse
+		err        error
+		wantOut    testOutcome
+		wantReason string
+	}{
+		{
+			name:       "transport_error_is_failure",
+			err:        errors.New("connection refused"),
+			wantOut:    testFailed,
+			wantReason: "connection refused",
+		},
+		{
+			name: "unavailable_sentinel_keeps_silently",
+			// The real daemon shape: live_smoke_ran=false, the sentinel echoed in
+			// BOTH Detail and last_test_error. The sentinel check must win over the
+			// last_test_error branch.
+			resp: &pb.TestAccountResponse{
+				Account:      &pb.Account{Id: "a", LastTestError: liveSmokeUnavailableDetail},
+				LiveSmokeRan: false,
+				Detail:       liveSmokeUnavailableDetail,
+			},
+			wantOut:    testUnavailable,
+			wantReason: liveSmokeUnavailableDetail,
+		},
+		{
+			name: "validation_failure_smoke_not_run_is_failure",
+			// live_smoke_ran=false with a NON-sentinel detail (malformed credential)
+			// must NOT be mistaken for unavailable.
+			resp: &pb.TestAccountResponse{
+				Account:      &pb.Account{Id: "a", LastTestError: `codex credential missing "access" field`},
+				LiveSmokeRan: false,
+				Detail:       `codex credential missing "access" field`,
+			},
+			wantOut:    testFailed,
+			wantReason: `codex credential missing "access" field`,
+		},
+		{
+			name: "smoke_ran_and_failed_is_failure",
+			resp: &pb.TestAccountResponse{
+				Account:      &pb.Account{Id: "a", LastTestError: "credential verification failed: 401"},
+				LiveSmokeRan: true,
+				Detail:       "credential verification failed: 401",
+			},
+			wantOut:    testFailed,
+			wantReason: "credential verification failed: 401",
+		},
+		{
+			name: "verified_when_no_error",
+			resp: &pb.TestAccountResponse{
+				Account:      &pb.Account{Id: "a"},
+				LiveSmokeRan: true,
+			},
+			wantOut:    testVerified,
+			wantReason: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotOut, gotReason := classifyTest(tc.resp, tc.err)
+			if gotOut != tc.wantOut {
+				t.Fatalf("outcome = %d, want %d", gotOut, tc.wantOut)
+			}
+			if gotReason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", gotReason, tc.wantReason)
+			}
+		})
+	}
+}
+
+// TestLiveSmokeUnavailableDetailContract pins the exact sentinel bytes. This
+// literal is duplicated (by module-boundary convention) in bossd at
+// services/bossd/internal/server/account.go; the "keep silently" behavior works
+// only while the two copies stay byte-identical. If you change this string you
+// MUST change the bossd copy (and its matching contract test) in lockstep, or
+// the CLI silently reverts to the keep/remove prompt for the unavailable case.
+func TestLiveSmokeUnavailableDetailContract(t *testing.T) {
+	const want = "provider verification unavailable"
+	if liveSmokeUnavailableDetail != want {
+		t.Fatalf("liveSmokeUnavailableDetail = %q, want %q (must match the bossd sentinel)", liveSmokeUnavailableDetail, want)
+	}
 }

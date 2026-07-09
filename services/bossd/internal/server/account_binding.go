@@ -14,8 +14,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-var legacyAccountBindingCutoff = time.Date(2026, time.July, 4, 12, 0, 0, 0, time.UTC)
-
 // resolveSessionAccount decides which registry account a new session binds to.
 // account_id is an optional proto field, so its presence is meaningful and the
 // three cases are distinct:
@@ -66,9 +64,6 @@ func (s *Server) resolveSessionAccount(ctx context.Context, requested *string, a
 	}
 
 	if s.resolver == nil {
-		return "", nil
-	}
-	if !s.defaultAccountBindingEnabled() {
 		return "", nil
 	}
 	id, err := s.resolver.DefaultAccountID(ctx, agentName, time.Now())
@@ -170,25 +165,23 @@ func (s *Server) resolveAccountEnv(ctx context.Context, sess *models.Session) ma
 	return env
 }
 
-// resolveChatAccountEnv returns the per-account spawn env for a chat's tmux
-// spawn. A chat can run a different agent than its parent session (cross-agent
-// chats, e.g. a codex chat inside a claude-bound session), and spawnChatTmux
-// launches chat.AgentName — so the account is resolved for the CHAT's provider,
-// never the session's:
+// resolveChatAccountEnvForSpawn returns the per-account spawn env for a chat's
+// tmux spawn. A chat can run a different agent than its parent session
+// (cross-agent chats, e.g. a codex chat inside a claude-bound session), and
+// spawnChatTmux launches chat.AgentName — so the account is resolved for the
+// CHAT's provider, never the session's:
 //   - an explicit chat-level binding (chat.AccountID) wins;
 //   - otherwise, when the chat runs the session's own agent, the session's
 //     binding applies (the common same-provider case — preserves attach-path
 //     account injection);
-//   - otherwise (a cross-agent chat with no binding of its own) it falls back to
-//     account 0, so another provider's credentials are never injected.
+//   - otherwise, cross-agent chats use the chat provider's default account
+//     (defaultAccountID, as computed by defaultAccountIDForChat). The
+//     provider-scoped resolver guarantees another provider's credentials are
+//     never injected.
 //
 // Like resolveAccountEnv, a resolver error never blocks a spawn: it logs and
 // returns nil so the agent falls back to the ambient CLI login. Env values are
 // never logged.
-func (s *Server) resolveChatAccountEnv(ctx context.Context, sess *models.Session, chat *models.AgentChat) map[string]string {
-	return s.resolveChatAccountEnvForSpawn(ctx, sess, chat, "")
-}
-
 func (s *Server) resolveChatAccountEnvForSpawn(ctx context.Context, sess *models.Session, chat *models.AgentChat, defaultAccountID string) map[string]string {
 	if s.resolver == nil || chat == nil {
 		return nil
@@ -203,12 +196,21 @@ func (s *Server) resolveChatAccountEnvForSpawn(ctx context.Context, sess *models
 		} else {
 			accountID = defaultAccountID
 		}
+	default:
+		accountID = defaultAccountID
 	}
 	env, err := s.resolver.ResolveSpawnEnv(ctx, accountID, chat.AgentName, time.Now())
 	if err != nil {
 		s.logger.Warn().Err(err).Str("agent", chat.AgentName).
 			Msg("account: resolve chat spawn env failed; using system default")
 		return nil
+	}
+	if sameAgentSessionChat(sess, chat) && chat.AccountID == nil && sess != nil && sess.AccountID != nil {
+		proxySess := *sess
+		proxySess.AccountID = &accountID
+		env = s.lifecycle.ApplyFailoverProxyEnv(&proxySess, env)
+	} else {
+		env = s.lifecycle.ApplyFailoverProxyEnvForChat(sess, chat, accountID, env)
 	}
 	return env
 }
@@ -217,20 +219,20 @@ func (s *Server) defaultAccountIDForChat(ctx context.Context, sess *models.Sessi
 	if s.resolver == nil || sess == nil || chat == nil {
 		return ""
 	}
-	if sess.AccountID != nil && *sess.AccountID != "" {
-		return ""
-	}
 	if chat.AccountID != nil {
 		return ""
 	}
-	if !sameAgentSessionChat(sess, chat) {
-		return ""
-	}
-	if !legacyNilAccountBinding(sess) {
-		return ""
-	}
-	if !s.defaultAccountBindingEnabled() {
-		return ""
+	// Same-agent chats defer to the parent session's binding: a bound account —
+	// including an explicit account-0/unmanaged opt-out (a non-nil pointer to
+	// "") — is honored and left alone. Only a never-bound (nil) session is
+	// upgraded to the provider's managed default, regardless of when it was
+	// created. Cross-agent chats deliberately skip this: the parent session's
+	// account belongs to a different provider, so the chat gets its own
+	// provider's managed default just like a new session of that provider.
+	if sameAgentSessionChat(sess, chat) {
+		if sess.AccountID != nil {
+			return ""
+		}
 	}
 
 	accountID, err := s.resolver.DefaultAccountID(ctx, accountAgentName(chat.AgentName), time.Now())
@@ -242,45 +244,38 @@ func (s *Server) defaultAccountIDForChat(ctx context.Context, sess *models.Sessi
 	return accountID
 }
 
-func (s *Server) defaultAccountBindingEnabled() bool {
-	if s.rotationConfig == nil {
-		return true
-	}
-	cfg, err := s.rotationConfig()
-	if err != nil {
-		s.logger.Warn().Err(err).
-			Msg("account: rotation config load failed; using system default")
-		return false
-	}
-	return cfg.RotationEnabled()
-}
-
-// legacyNilAccountBinding is the only nil Session.AccountID shape we can safely
-// upgrade to a managed default. After the accounts migration, nil may also mean
-// an older build persisted an explicit account-0/system-default choice as NULL.
-func legacyNilAccountBinding(sess *models.Session) bool {
-	return sess != nil &&
-		sess.AccountID == nil &&
-		!sess.CreatedAt.IsZero() &&
-		sess.CreatedAt.Before(legacyAccountBindingCutoff) &&
-		(sess.UpdatedAt.IsZero() || sess.UpdatedAt.Before(legacyAccountBindingCutoff))
-}
-
 func (s *Server) persistDefaultAccountForChat(ctx context.Context, sess *models.Session, chat *models.AgentChat, accountID string) {
-	if s.sessions == nil || sess == nil || chat == nil || accountID == "" {
+	if sess == nil || chat == nil || accountID == "" {
 		return
 	}
-	if sess.AccountID != nil || chat.AccountID != nil || !sameAgentSessionChat(sess, chat) {
+	if chat.AccountID != nil {
 		return
 	}
 
+	if !sameAgentSessionChat(sess, chat) {
+		if s.agentChats == nil {
+			return
+		}
+		accountIDPtr := &accountID
+		if err := s.agentChats.UpdateAccountIDByAgentSessionID(ctx, chat.AgentSessionID, accountIDPtr); err != nil {
+			s.logger.Warn().Err(err).Str("session", sess.ID).Str("agent", accountAgentName(chat.AgentName)).
+				Msg("account: failed to persist default account for cross-agent chat spawn")
+			return
+		}
+		chat.AccountID = accountIDPtr
+		return
+	}
+
+	if s.sessions == nil || sess.AccountID != nil {
+		return
+	}
 	accountIDPtr := &accountID
 	if _, err := s.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{AccountID: &accountIDPtr}); err != nil {
 		s.logger.Warn().Err(err).Str("session", sess.ID).Str("agent", accountAgentName(chat.AgentName)).
 			Msg("account: failed to persist default account for chat spawn; using system default")
 		return
 	}
-	sess.AccountID = &accountID
+	sess.AccountID = accountIDPtr
 }
 
 func sameAgentSessionChat(sess *models.Session, chat *models.AgentChat) bool {

@@ -193,6 +193,17 @@ func (s *SQLiteAgentChatStore) UpdateProviderSessionID(ctx context.Context, agen
 	return nil
 }
 
+func (s *SQLiteAgentChatStore) UpdateAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE agent_chats SET account_id = ? WHERE agent_session_id = ?`,
+		accountID, agentSessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("update agent_chat account_id: %w", err)
+	}
+	return nil
+}
+
 // MarkStartFailed stamps a short reason on the row and clears
 // tmux_session_name in a single statement, used by StartTmuxChat's
 // failure paths. Mirrors UpdateTmuxSessionName(..., nil) for the

@@ -476,6 +476,63 @@ func TestSessionTmuxUnattendedRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSessionQuickChatRoundTrip pins the persistence contract for the
+// quick_chat column added in BOS-322: it defaults false on creation, an
+// explicit Update sets it, and a nil-valued Update (the "don't touch this
+// field" convention used throughout UpdateSessionParams) leaves the
+// previously-set value unchanged. This is the persisted planning-only signal
+// the finalize backstop keys on.
+func TestSessionQuickChatRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Quick chat round trip",
+		WorktreePath: "/tmp/wt/quick-chat",
+		BranchName:   "feat/quick-chat",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if sess.QuickChat {
+		t.Fatalf("QuickChat = true on creation, want false (default)")
+	}
+
+	quickChat := true
+	if _, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{
+		QuickChat: &quickChat,
+	}); err != nil {
+		t.Fatalf("update session quick_chat: %v", err)
+	}
+	gotSess, err := sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if !gotSess.QuickChat {
+		t.Fatalf("QuickChat = false after Update(true), want true")
+	}
+
+	// An Update with a nil QuickChat pointer must not touch the column.
+	renamedTitle := "Quick chat round trip (renamed)"
+	if _, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{
+		Title: &renamedTitle,
+	}); err != nil {
+		t.Fatalf("update session title: %v", err)
+	}
+	gotSess, err = sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get session after unrelated update: %v", err)
+	}
+	if !gotSess.QuickChat {
+		t.Fatalf("QuickChat = false after unrelated Update, want true (unchanged)")
+	}
+}
+
 func TestUpdateRepairDiagnostics_RoundTripsAttemptIdentity(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

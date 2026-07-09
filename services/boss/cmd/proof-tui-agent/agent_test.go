@@ -10,7 +10,80 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
+
+// fakeDaemon is a programmable daemonMutator for protocol tests. The zero value
+// is a valid no-op mutator (non-daemon tests pass &fakeDaemon{}).
+type fakeDaemon struct {
+	repos    []*pb.Repo
+	sessions []*pb.Session
+	chats    []*pb.ClaudeChat
+	crons    []*pb.CronJob
+	prs      map[string][]*pb.PRSummary
+	issues   map[string][]*pb.TrackerIssue
+
+	// attached reports SessionAttached; nil ⇒ every session reads as not attached.
+	attached map[string]bool
+	// pushErr, when set, is returned by every TryPush* — simulating a full/undrained
+	// channel so a pusher errors without hanging the loop.
+	pushErr error
+
+	outputs      []pushedOutput
+	stateChanges []pushedStateChange
+	ended        []pushedEnded
+}
+
+type pushedOutput struct {
+	sessionID, text string
+}
+type pushedStateChange struct {
+	sessionID  string
+	prev, next pb.SessionState
+}
+type pushedEnded struct {
+	sessionID string
+	final     pb.SessionState
+}
+
+func (d *fakeDaemon) AddRepo(r *pb.Repo)       { d.repos = append(d.repos, r) }
+func (d *fakeDaemon) AddSession(s *pb.Session) { d.sessions = append(d.sessions, s) }
+func (d *fakeDaemon) AddChat(c *pb.ClaudeChat) { d.chats = append(d.chats, c) }
+func (d *fakeDaemon) AddCronJob(j *pb.CronJob) { d.crons = append(d.crons, j) }
+func (d *fakeDaemon) AddPRs(repoID string, prs []*pb.PRSummary) {
+	if d.prs == nil {
+		d.prs = map[string][]*pb.PRSummary{}
+	}
+	d.prs[repoID] = append(d.prs[repoID], prs...)
+}
+func (d *fakeDaemon) AddTrackerIssues(repoID string, issues []*pb.TrackerIssue) {
+	if d.issues == nil {
+		d.issues = map[string][]*pb.TrackerIssue{}
+	}
+	d.issues[repoID] = append(d.issues[repoID], issues...)
+}
+func (d *fakeDaemon) SessionAttached(id string) bool { return d.attached[id] }
+func (d *fakeDaemon) TryPushOutputLine(id, text string, _ time.Duration) error {
+	if d.pushErr != nil {
+		return d.pushErr
+	}
+	d.outputs = append(d.outputs, pushedOutput{id, text})
+	return nil
+}
+func (d *fakeDaemon) TryPushStateChange(id string, prev, next pb.SessionState, _ time.Duration) error {
+	if d.pushErr != nil {
+		return d.pushErr
+	}
+	d.stateChanges = append(d.stateChanges, pushedStateChange{id, prev, next})
+	return nil
+}
+func (d *fakeDaemon) TryPushSessionEnded(id string, final pb.SessionState, _ time.Duration) error {
+	if d.pushErr != nil {
+		return d.pushErr
+	}
+	d.ended = append(d.ended, pushedEnded{id, final})
+	return nil
+}
 
 // fakeTUI is a programmable tui for protocol tests.
 type fakeTUI struct {
@@ -80,7 +153,7 @@ func TestServeMalformedThenValid(t *testing.T) {
 	f := &fakeTUI{screen: "ready"}
 	in := strings.NewReader("{not json\n" + `{"id":2,"op":"observe"}` + "\n")
 	var out strings.Builder
-	if err := serve(f, in, &out, fastSettle()); err != nil {
+	if err := serve(f, &fakeDaemon{}, in, &out, fastSettle()); err != nil {
 		t.Fatalf("serve: %v", err)
 	}
 	resps := decodeResponses(t, out.String())
@@ -108,7 +181,7 @@ func TestServeWaitTimeout(t *testing.T) {
 	in := strings.NewReader(`{"id":7,"op":"wait","text":"never","timeoutMs":30}` + "\n")
 	var out strings.Builder
 	start := time.Now()
-	if err := serve(f, in, &out, fastSettle()); err != nil {
+	if err := serve(f, &fakeDaemon{}, in, &out, fastSettle()); err != nil {
 		t.Fatalf("serve: %v", err)
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
@@ -247,7 +320,7 @@ func TestServeObserveWithSettleOverride(t *testing.T) {
 	f := &fakeTUI{screen: "ready"}
 	in := strings.NewReader(`{"id":5,"op":"observe","settleMs":10,"hardCapMs":50}` + "\n")
 	var out strings.Builder
-	if err := serve(f, in, &out, fastSettle()); err != nil {
+	if err := serve(f, &fakeDaemon{}, in, &out, fastSettle()); err != nil {
 		t.Fatalf("serve: %v", err)
 	}
 	resps := decodeResponses(t, out.String())
@@ -261,7 +334,7 @@ func TestServeQuit(t *testing.T) {
 	f := &fakeTUI{screen: "ready"}
 	in := strings.NewReader(`{"id":9,"op":"quit"}` + "\n")
 	var out strings.Builder
-	err := serve(f, in, &out, fastSettle())
+	err := serve(f, &fakeDaemon{}, in, &out, fastSettle())
 	if err != errQuit {
 		t.Fatalf("serve returned %v, want errQuit", err)
 	}
@@ -283,7 +356,7 @@ func TestServeUnknownOp(t *testing.T) {
 	f := &fakeTUI{screen: "ready"}
 	in := strings.NewReader(`{"id":3,"op":"frobnicate"}` + "\n")
 	var out strings.Builder
-	if err := serve(f, in, &out, fastSettle()); err != nil {
+	if err := serve(f, &fakeDaemon{}, in, &out, fastSettle()); err != nil {
 		t.Fatalf("serve: %v", err)
 	}
 	resps := decodeResponses(t, out.String())
@@ -296,4 +369,290 @@ func TestServeUnknownOp(t *testing.T) {
 	if msg, _ := resps[0]["error"].(string); !strings.Contains(msg, "unknown op") {
 		t.Fatalf("unknown op error = %v", resps[0]["error"])
 	}
+}
+
+// --- BOS-217 daemon + capabilities op tests ---
+
+// runDaemonReqs feeds the given NDJSON request lines through serve against d and
+// returns the decoded responses.
+func runDaemonReqs(t *testing.T, d *fakeDaemon, lines ...string) []map[string]any {
+	t.Helper()
+	f := &fakeTUI{screen: "home"}
+	in := strings.NewReader(strings.Join(lines, "\n") + "\n")
+	var out strings.Builder
+	if err := serve(f, d, in, &out, fastSettle()); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	return decodeResponses(t, out.String())
+}
+
+func mustBeOK(t *testing.T, resp map[string]any) {
+	t.Helper()
+	if ok, _ := resp["ok"].(bool); !ok {
+		t.Fatalf("want ok:true, got %v", resp)
+	}
+}
+
+func mustBeErr(t *testing.T, resp map[string]any, wantSubstr string) {
+	t.Helper()
+	if ok, _ := resp["ok"].(bool); ok {
+		t.Fatalf("want error response, got ok:true: %v", resp)
+	}
+	msg, _ := resp["error"].(string)
+	if wantSubstr != "" && !strings.Contains(msg, wantSubstr) {
+		t.Fatalf("error %q missing %q", msg, wantSubstr)
+	}
+}
+
+// TestDaemonMutatorsHappyPath drives all six mutator actions and asserts each
+// entity is recorded on the fake with the mapped fields.
+func TestDaemonMutatorsHappyPath(t *testing.T) {
+	d := &fakeDaemon{}
+	resps := runDaemonReqs(t, d,
+		`{"id":1,"op":"daemon","action":"add_repo","repo":{"id":"repo-9","displayName":"Widgets"}}`,
+		`{"id":2,"op":"daemon","action":"add_session","session":{"id":"sess-9","title":"Do the thing","state":"READY_FOR_REVIEW"}}`,
+		`{"id":3,"op":"daemon","action":"add_chat","chat":{"id":"chat-9","sessionId":"sess-9","title":"A chat"}}`,
+		`{"id":4,"op":"daemon","action":"add_cron_job","cronJob":{"id":"cron-9","name":"Nightly"}}`,
+		`{"id":5,"op":"daemon","action":"add_prs","prs":{"repoId":"repo-9","prs":[{"number":42,"title":"Fix bug"}]}}`,
+		`{"id":6,"op":"daemon","action":"add_tracker_issues","trackerIssues":{"repoId":"repo-9","issues":[{"externalId":"BOS-1","title":"Ticket"}]}}`,
+	)
+	if len(resps) != 6 {
+		t.Fatalf("want 6 responses, got %d: %v", len(resps), resps)
+	}
+	for _, r := range resps {
+		mustBeOK(t, r)
+		if _, ok := r["screen"]; !ok {
+			t.Fatalf("mutator response should carry a settled screen: %v", r)
+		}
+	}
+	if len(d.repos) != 1 || d.repos[0].Id != "repo-9" || d.repos[0].DisplayName != "Widgets" {
+		t.Fatalf("repo not recorded: %+v", d.repos)
+	}
+	if len(d.sessions) != 1 || d.sessions[0].Id != "sess-9" ||
+		d.sessions[0].State != pb.SessionState_SESSION_STATE_READY_FOR_REVIEW {
+		t.Fatalf("session not recorded/mapped: %+v", d.sessions)
+	}
+	if len(d.chats) != 1 || d.chats[0].SessionId != "sess-9" {
+		t.Fatalf("chat not recorded: %+v", d.chats)
+	}
+	if len(d.crons) != 1 || d.crons[0].Name != "Nightly" {
+		t.Fatalf("cron not recorded: %+v", d.crons)
+	}
+	if len(d.prs["repo-9"]) != 1 || d.prs["repo-9"][0].Number != 42 {
+		t.Fatalf("prs not recorded: %+v", d.prs)
+	}
+	if len(d.issues["repo-9"]) != 1 || d.issues["repo-9"][0].ExternalId != "BOS-1" {
+		t.Fatalf("issues not recorded: %+v", d.issues)
+	}
+}
+
+// TestDaemonPushersHappyPath drives the three pushers against an attached
+// session and asserts the fake recorded each push with the mapped states.
+func TestDaemonPushersHappyPath(t *testing.T) {
+	d := &fakeDaemon{attached: map[string]bool{"sess-x": true}}
+	resps := runDaemonReqs(t, d,
+		`{"id":1,"op":"daemon","action":"push_output","sessionId":"sess-x","text":"hello"}`,
+		`{"id":2,"op":"daemon","action":"state_change","sessionId":"sess-x","previousState":"IMPLEMENTING_PLAN","newState":"READY_FOR_REVIEW"}`,
+		`{"id":3,"op":"daemon","action":"session_ended","sessionId":"sess-x","finalState":"MERGED"}`,
+	)
+	if len(resps) != 3 {
+		t.Fatalf("want 3 responses, got %d: %v", len(resps), resps)
+	}
+	for _, r := range resps {
+		mustBeOK(t, r)
+	}
+	if len(d.outputs) != 1 || d.outputs[0].text != "hello" {
+		t.Fatalf("output not pushed: %+v", d.outputs)
+	}
+	if len(d.stateChanges) != 1 ||
+		d.stateChanges[0].prev != pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN ||
+		d.stateChanges[0].next != pb.SessionState_SESSION_STATE_READY_FOR_REVIEW {
+		t.Fatalf("state change not pushed/mapped: %+v", d.stateChanges)
+	}
+	if len(d.ended) != 1 || d.ended[0].final != pb.SessionState_SESSION_STATE_MERGED {
+		t.Fatalf("session_ended not pushed: %+v", d.ended)
+	}
+}
+
+// TestDaemonUnknownActionListsValid asserts an unknown action errors listing
+// every valid action, sorted.
+func TestDaemonUnknownActionListsValid(t *testing.T) {
+	resps := runDaemonReqs(t, &fakeDaemon{},
+		`{"id":1,"op":"daemon","action":"frobnicate"}`)
+	if len(resps) != 1 {
+		t.Fatalf("want 1 response, got %d", len(resps))
+	}
+	mustBeErr(t, resps[0], "unknown daemon action")
+	msg, _ := resps[0]["error"].(string)
+	for _, a := range []string{"add_session", "add_repo", "add_chat", "add_cron_job",
+		"add_prs", "add_tracker_issues", "push_output", "state_change", "session_ended"} {
+		if !strings.Contains(msg, a) {
+			t.Fatalf("unknown-action error should list %q; got %q", a, msg)
+		}
+	}
+}
+
+// TestDaemonMutatorsMissingPayload asserts each mutator names its missing field.
+func TestDaemonMutatorsMissingPayload(t *testing.T) {
+	cases := map[string]string{
+		"add_session":        "session",
+		"add_repo":           "repo",
+		"add_chat":           "chat",
+		"add_cron_job":       "cronJob",
+		"add_prs":            "prs",
+		"add_tracker_issues": "trackerIssues",
+	}
+	for action, field := range cases {
+		d := &fakeDaemon{}
+		resps := runDaemonReqs(t, d,
+			`{"id":1,"op":"daemon","action":"`+action+`"}`)
+		mustBeErr(t, resps[0], field)
+	}
+}
+
+// TestDaemonEntityRejectsUnknownField asserts the daemon op strict-decodes each
+// nested entity payload (plan decision #8): an unknown field fails loudly naming
+// it, never silently dropped, and the entity is not recorded.
+func TestDaemonEntityRejectsUnknownField(t *testing.T) {
+	cases := []struct{ action, line string }{
+		{"add_session", `{"id":1,"op":"daemon","action":"add_session","session":{"id":"s","title":"t","bogusField":1}}`},
+		{"add_repo", `{"id":1,"op":"daemon","action":"add_repo","repo":{"id":"r","displayName":"D","bogusField":1}}`},
+		{"add_cron_job", `{"id":1,"op":"daemon","action":"add_cron_job","cronJob":{"id":"j","name":"n","bogusField":1}}`},
+		{"add_prs", `{"id":1,"op":"daemon","action":"add_prs","prs":{"repoId":"r","bogusField":1}}`},
+	}
+	for _, tc := range cases {
+		d := &fakeDaemon{}
+		resps := runDaemonReqs(t, d, tc.line)
+		mustBeErr(t, resps[0], "bogusField")
+		if len(d.sessions)+len(d.repos)+len(d.crons)+len(d.prs) != 0 {
+			t.Fatalf("%s with an unknown field must not record an entity", tc.action)
+		}
+	}
+}
+
+// TestDaemonMutatorNullPayload asserts an explicit JSON null payload is treated
+// as missing (not a nil-deref), naming the field.
+func TestDaemonMutatorNullPayload(t *testing.T) {
+	resps := runDaemonReqs(t, &fakeDaemon{},
+		`{"id":1,"op":"daemon","action":"add_session","session":null}`)
+	mustBeErr(t, resps[0], "session")
+}
+
+// TestDaemonPushersRequireSessionID asserts each pusher errors on an empty
+// sessionId and records no push.
+func TestDaemonPushersRequireSessionID(t *testing.T) {
+	for _, action := range []string{"push_output", "state_change", "session_ended"} {
+		d := &fakeDaemon{}
+		resps := runDaemonReqs(t, d,
+			`{"id":1,"op":"daemon","action":"`+action+`"}`)
+		mustBeErr(t, resps[0], "sessionId is required")
+		if len(d.outputs)+len(d.stateChanges)+len(d.ended) != 0 {
+			t.Fatalf("%s with empty sessionId should not push", action)
+		}
+	}
+}
+
+// TestDaemonBadStateNameSameError asserts state_change reuses the overlay
+// state-name mapping: a bad name yields the same pointerful "unknown state"
+// error, and validation happens before the attach check.
+func TestDaemonBadStateNameSameError(t *testing.T) {
+	d := &fakeDaemon{attached: map[string]bool{"sess-x": true}}
+	resps := runDaemonReqs(t, d,
+		`{"id":1,"op":"daemon","action":"state_change","sessionId":"sess-x","previousState":"NONSENSE","newState":"MERGED"}`)
+	mustBeErr(t, resps[0], "unknown state")
+	if len(d.stateChanges) != 0 {
+		t.Fatalf("bad state name should not push: %+v", d.stateChanges)
+	}
+}
+
+// TestDaemonPusherNotAttached asserts a pusher against a non-attached session
+// errors with an actionable message and records no push (never a silent no-op).
+func TestDaemonPusherNotAttached(t *testing.T) {
+	d := &fakeDaemon{} // attached is nil ⇒ SessionAttached is always false
+	resps := runDaemonReqs(t, d,
+		`{"id":1,"op":"daemon","action":"state_change","sessionId":"sess-x","previousState":"IMPLEMENTING_PLAN","newState":"MERGED"}`)
+	mustBeErr(t, resps[0], "not attached")
+	if len(d.stateChanges) != 0 {
+		t.Fatalf("push to non-attached session should be refused: %+v", d.stateChanges)
+	}
+}
+
+// TestDaemonPusherTimeoutKeepsLoopAlive proves a pusher whose TryPush* returns a
+// timeout error (simulating a full/undrained channel) yields an error response
+// AND the serve loop still processes a subsequent request — it never hangs.
+func TestDaemonPusherTimeoutKeepsLoopAlive(t *testing.T) {
+	d := &fakeDaemon{
+		attached: map[string]bool{"sess-x": true},
+		pushErr:  errors.New("attach channel full; TUI not draining"),
+	}
+	resps := runDaemonReqs(t, d,
+		`{"id":1,"op":"daemon","action":"push_output","sessionId":"sess-x","text":"hi"}`,
+		`{"id":2,"op":"observe"}`,
+	)
+	if len(resps) != 2 {
+		t.Fatalf("want 2 responses (error + live observe), got %d: %v", len(resps), resps)
+	}
+	mustBeErr(t, resps[0], "not draining")
+	// The loop is proven alive by the second request being answered.
+	if resps[1]["id"] != float64(2) || resps[1]["screen"] != "home" {
+		t.Fatalf("serve loop did not survive the push timeout: %v", resps[1])
+	}
+}
+
+// TestCapabilitiesOp asserts capabilities returns the sorted op and action lists,
+// including the daemon op and every daemon action.
+func TestCapabilitiesOp(t *testing.T) {
+	resps := runDaemonReqs(t, &fakeDaemon{}, `{"id":1,"op":"capabilities"}`)
+	if len(resps) != 1 {
+		t.Fatalf("want 1 response, got %d", len(resps))
+	}
+	mustBeOK(t, resps[0])
+	ops := toStringSlice(t, resps[0]["ops"])
+	if !sortedContains(ops, "daemon") || !sortedContains(ops, "capabilities") || !sortedContains(ops, "observe") {
+		t.Fatalf("ops missing expected entries: %v", ops)
+	}
+	if !isSorted(ops) {
+		t.Fatalf("ops not sorted: %v", ops)
+	}
+	actions := toStringSlice(t, resps[0]["daemonActions"])
+	if len(actions) != 9 || !isSorted(actions) {
+		t.Fatalf("want 9 sorted daemon actions, got %v", actions)
+	}
+	for _, a := range []string{"add_session", "add_repo", "add_chat", "add_cron_job",
+		"add_prs", "add_tracker_issues", "push_output", "state_change", "session_ended"} {
+		if !sortedContains(actions, a) {
+			t.Fatalf("daemonActions missing %q: %v", a, actions)
+		}
+	}
+}
+
+func toStringSlice(t *testing.T, v any) []string {
+	t.Helper()
+	raw, ok := v.([]any)
+	if !ok {
+		t.Fatalf("value is not a JSON array: %T %v", v, v)
+	}
+	out := make([]string, len(raw))
+	for i, e := range raw {
+		out[i], _ = e.(string)
+	}
+	return out
+}
+
+func sortedContains(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
+
+func isSorted(xs []string) bool {
+	for i := 1; i < len(xs); i++ {
+		if xs[i-1] > xs[i] {
+			return false
+		}
+	}
+	return true
 }

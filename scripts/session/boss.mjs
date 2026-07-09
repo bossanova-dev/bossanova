@@ -38,6 +38,28 @@ export const bossSessionOperationMap = {
     ],
     response: ['id', 'agent_session_id'],
   },
+  createPlanningChat: {
+    tool: 'create_session',
+    // BOS-322: visible planning-only work (recon, plan review, an intentionally
+    // human-visible `/boss-plan` chat) — NOT implementation fan-out. `quick_chat:
+    // true` opens a no-worktree, no-branch, no-PR, no-finalize chat, so a planning
+    // subtask can never be surfaced as a failed implementation session with
+    // `pr_no_changes`. Deliberately omits `tmux_unattended`, `model`, `pr_number`,
+    // and `branch_name` so it cannot collapse back into the PR-backed
+    // `createSession` path. Unattended planning fan-out should stay inside the
+    // driver as a subagent; use this only when a visible Boss chat is wanted.
+    args: [
+      'repo_id',
+      'quick_chat',
+      'prompt',
+      'title',
+      'agent',
+      'tracker_id',
+      'tracker_source',
+      'tracker_url',
+    ],
+    response: ['id', 'agent_session_id'],
+  },
   getSession: {
     tool: 'get_session',
     args: ['id'],

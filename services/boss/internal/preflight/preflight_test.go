@@ -133,3 +133,35 @@ func TestRunShellWithTimeoutReturnsErrorForHangingShell(t *testing.T) {
 		t.Fatalf("timeout error should be explicit, got: %v", err)
 	}
 }
+
+// TestCheckTerminalOKWhenTermResolves verifies the common case: $TERM has a
+// terminfo entry, so no issue is reported.
+func TestCheckTerminalOKWhenTermResolves(t *testing.T) {
+	if got := checkTerminal("xterm-ghostty", func(term string) bool { return true }); got != nil {
+		t.Fatalf("want nil issue, got %+v", got)
+	}
+}
+
+// TestCheckTerminalOKWhenFallbackResolves covers the common ghostty-missing
+// case: $TERM has no terminfo entry, but xterm-256color does, so the CLI's
+// auto-fallback (Task 2) covers it and this must not block.
+func TestCheckTerminalOKWhenFallbackResolves(t *testing.T) {
+	// ghostty missing but xterm-256color present → auto-fallback covers it → no block.
+	probe := func(term string) bool { return term == "xterm-256color" }
+	if got := checkTerminal("xterm-ghostty", probe); got != nil {
+		t.Fatalf("want nil issue (fallback available), got %+v", got)
+	}
+}
+
+// TestCheckTerminalIssueWhenNothingResolves covers the rare truly-broken box
+// where neither $TERM nor the xterm-256color fallback resolves.
+func TestCheckTerminalIssueWhenNothingResolves(t *testing.T) {
+	probe := func(term string) bool { return false }
+	got := checkTerminal("xterm-ghostty", probe)
+	if got == nil {
+		t.Fatal("want an Issue when no terminal resolves")
+	}
+	if !strings.Contains(got.Detail, "xterm-256color") {
+		t.Fatalf("Issue.Detail should mention the fallback remediation; got %q", got.Detail)
+	}
+}

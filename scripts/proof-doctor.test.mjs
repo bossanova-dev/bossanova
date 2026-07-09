@@ -78,6 +78,26 @@ test('requiredIdsForSurface: tui needs the agent key + agg + ffmpeg + go, web ne
   assert.ok(!web.includes('agg'))
 })
 
+test('requiredIdsForSurface: tui hard-requires agg+ffmpeg and does NOT require chromium/web-node-modules (BOS-216)', () => {
+  // BOS-216 moves TUI stills onto ffmpeg-extracted frames from the agg-rendered
+  // mp4 — so agg+ffmpeg stay hard doctor prereqs, while Chromium and the web
+  // node_modules must remain OFF the TUI required-set (caption strips degrade
+  // soft). This pins the doctor half of the "hard prereq" contract.
+  const tui = requiredIdsForSurface('tui')
+  assert.ok(tui.includes('agg'), 'agg is TUI-required (asciinema→video)')
+  assert.ok(tui.includes('ffmpeg'), 'ffmpeg is TUI-required (still extraction + video)')
+  assert.ok(!tui.includes('chromium'), 'chromium must NOT be required for the TUI surface')
+  assert.ok(
+    !tui.includes('web-node-modules'),
+    'services/web/node_modules must NOT be required for the TUI surface',
+  )
+  // And a TUI run with chromium + web-node-modules absent still passes the doctor.
+  const present = new Set(ALL_IDS)
+  present.delete('chromium')
+  present.delete('web-node-modules')
+  assert.equal(doctorReport({ surface: 'tui', lookups: lookupsWith(present) }).ok, true)
+})
+
 test('requiredIdsForSurface: recipe needs no agent key; docs needs only push creds', () => {
   const recipe = requiredIdsForSurface('recipe')
   assert.ok(!recipe.includes('PROOF_ANTHROPIC_API_KEY'))

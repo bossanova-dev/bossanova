@@ -7,12 +7,13 @@
 package bossanovav1
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -3649,8 +3650,17 @@ type ResolveInteractiveSessionIDRequest struct {
 	LaunchedAfter       *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=launched_after,json=launchedAfter,proto3" json:"launched_after,omitempty"`
 	ChatCreatedAt       *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=chat_created_at,json=chatCreatedAt,proto3" json:"chat_created_at,omitempty"`
 	AllowLegacyBackfill bool                   `protobuf:"varint,5,opt,name=allow_legacy_backfill,json=allowLegacyBackfill,proto3" json:"allow_legacy_backfill,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// pane_pid is the tmux pane PID (the login shell) hosting this chat's agent
+	// process. When > 0 and allow_legacy_backfill is false, the codex plugin
+	// resolves the rollout by inspecting the open file descriptors of the codex
+	// process running under this pane (process-fd resolution), which binds each
+	// sibling chat to its OWN rollout deterministically. On a miss (process not
+	// up yet, fd inspection unavailable, no rollout open) the plugin falls back
+	// to the (work_dir, launched_after) time-window scan. Additive request-side
+	// field: no apiversion bump (apiversion is response-side/unary-only).
+	PanePid       int32 `protobuf:"varint,6,opt,name=pane_pid,json=panePid,proto3" json:"pane_pid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ResolveInteractiveSessionIDRequest) Reset() {
@@ -3716,6 +3726,13 @@ func (x *ResolveInteractiveSessionIDRequest) GetAllowLegacyBackfill() bool {
 		return x.AllowLegacyBackfill
 	}
 	return false
+}
+
+func (x *ResolveInteractiveSessionIDRequest) GetPanePid() int32 {
+	if x != nil {
+		return x.PanePid
+	}
+	return 0
 }
 
 type ResolveInteractiveSessionIDResponse struct {
@@ -5487,13 +5504,14 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x04argv\x18\x01 \x03(\tR\x04argv\x12!\n" +
 	"\fready_marker\x18\x02 \x01(\tR\vreadyMarker\x12%\n" +
 	"\x0ecommand_prefix\x18\x03 \x01(\tR\rcommandPrefix\x124\n" +
-	"\x16consumes_initial_input\x18\x04 \x01(\bR\x14consumesInitialInput\"\xac\x02\n" +
+	"\x16consumes_initial_input\x18\x04 \x01(\bR\x14consumesInitialInput\"\xc7\x02\n" +
 	"\"ResolveInteractiveSessionIDRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x120\n" +
 	"\x14requested_session_id\x18\x02 \x01(\tR\x12requestedSessionId\x12A\n" +
 	"\x0elaunched_after\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\rlaunchedAfter\x12B\n" +
 	"\x0fchat_created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\rchatCreatedAt\x122\n" +
-	"\x15allow_legacy_backfill\x18\x05 \x01(\bR\x13allowLegacyBackfill\"\xb9\x01\n" +
+	"\x15allow_legacy_backfill\x18\x05 \x01(\bR\x13allowLegacyBackfill\x12\x19\n" +
+	"\bpane_pid\x18\x06 \x01(\x05R\apanePid\"\xb9\x01\n" +
 	"#ResolveInteractiveSessionIDResponse\x12\x14\n" +
 	"\x05found\x18\x01 \x01(\bR\x05found\x12\x1d\n" +
 	"\n" +

@@ -146,6 +146,9 @@ type UpdateSessionParams struct {
 	// bind to that account id.
 	AccountID      **string
 	TmuxUnattended *bool
+	// QuickChat marks a visible no-worktree/branch/PR planning chat (BOS-322).
+	// nil = don't touch; mirrors TmuxUnattended (set via Update after create).
+	QuickChat *bool
 
 	// Composite display fields, updated by the DisplayStatusComputer (Step 2).
 	// Pointer-typed so a nil value means "don't touch" and a zero value means
@@ -242,6 +245,7 @@ type AgentChatStore interface {
 	UpdateTitleByAgentSessionID(ctx context.Context, agentSessionID string, title string) error
 	UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error
 	UpdateProviderSessionID(ctx context.Context, agentSessionID string, providerSessionID *string) error
+	UpdateAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error
 	// MarkStartFailed records a short human-readable reason that the
 	// agent never came up for this chat, AND clears tmux_session_name
 	// in the same statement so the chat is no longer treated as
@@ -361,7 +365,6 @@ type UpdateCronJobLastRunParams struct {
 type CreateAccountParams struct {
 	Provider      models.AccountProvider
 	Label         string
-	AccountEmail  string
 	Priority      int
 	Tier          string
 	AllowedModels []string
@@ -371,7 +374,6 @@ type CreateAccountParams struct {
 // updated. Double-pointer fields clear to NULL when *field == nil.
 type UpdateAccountParams struct {
 	Label         *string
-	AccountEmail  *string
 	Status        *models.AccountStatus
 	Priority      *int
 	Health        *models.AccountHealth

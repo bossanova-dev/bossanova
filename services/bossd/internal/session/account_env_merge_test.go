@@ -5,6 +5,9 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/rs/zerolog"
+
+	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
 )
 
@@ -21,6 +24,173 @@ func (f *fakeAccountEnvResolver) Resolve(_ context.Context, sess *models.Session
 	f.calls++
 	f.gotSess = sess
 	return f.env
+}
+
+// newTestLifecycleWithProxy builds a bare Lifecycle wired for proxyBaseURL
+// tests: the given rotation config, a live proxy port, and a registrar
+// returning a fixed token — mirroring the newLC() setup in
+// TestResolveAccountEnv_InjectsProxyBaseURL.
+func newTestLifecycleWithProxy(t *testing.T, cfg config.ManagedAccountsConfig) *Lifecycle {
+	t.Helper()
+	lc := &Lifecycle{logger: zerolog.Nop()}
+	lc.SetRotationConfig(cfg)
+	lc.SetProxyPort(5555)
+	lc.SetProxyRegistrar(stubRegistrar{token: "path-tok"})
+	return lc
+}
+
+// TestProxyBaseURL_RequiresManagedAccountsEnabled proves proxyBaseURL is
+// gated on BOTH flags: managed_accounts.enabled AND failover_proxy. Task 1
+// wired FailoverProxyEnabled() alone; this proves the conjunction, matching
+// the config.go doc comment that injection "also requires
+// ManagedAccountsEnabled() (gated by the caller)".
+func TestProxyBaseURL_RequiresManagedAccountsEnabled(t *testing.T) {
+	no, yes := false, true
+	// managed disabled, failover enabled → no injection.
+	l := newTestLifecycleWithProxy(t, config.ManagedAccountsConfig{
+		Enabled:       &no,
+		FailoverProxy: &yes,
+	})
+	acctID := "acct-1"
+	sess := &models.Session{ID: "s1", AgentName: "claude", AccountID: &acctID}
+	if got := l.proxyBaseURL(sess); got != "" {
+		t.Errorf("proxyBaseURL = %q, want \"\" when managed_accounts disabled", got)
+	}
+	// both enabled → injection.
+	l2 := newTestLifecycleWithProxy(t, config.ManagedAccountsConfig{
+		Enabled:       &yes,
+		FailoverProxy: &yes,
+	})
+	if got := l2.proxyBaseURL(sess); got == "" {
+		t.Error("proxyBaseURL = \"\", want a URL when both flags on")
+	}
+}
+
+// TestResolveAccountEnv_InjectsProxyBaseURL proves the S7 failover proxy env
+// wiring: when the opt-in flag is on and the proxy is live, resolveAccountEnv
+// folds ANTHROPIC_BASE_URL into the account overlay for a Claude session (and
+// leaves the account creds intact); with the flag off it injects nothing.
+func TestResolveAccountEnv_InjectsProxyBaseURL(t *testing.T) {
+	newLC := func() *Lifecycle {
+		accEnv := &fakeAccountEnvResolver{env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "acct-bearer"}}
+		lc := &Lifecycle{logger: zerolog.Nop()}
+		lc.SetAccountEnvResolver(accEnv)
+		lc.SetProxyPort(5555)
+		lc.SetProxyRegistrar(stubRegistrar{token: "path-tok"})
+		return lc
+	}
+	acctID := "acct-1"
+	claude := &models.Session{ID: "s1", AgentName: "claude", AccountID: &acctID}
+
+	t.Run("flag on + live: injects loopback base URL, drops subprocess OAuth token", func(t *testing.T) {
+		lc := newLC()
+		enableFailoverProxy(lc)
+		got := lc.resolveAccountEnv(context.Background(), claude)
+		if got["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:5555/s/path-tok" {
+			t.Fatalf("ANTHROPIC_BASE_URL = %q, want the loopback proxy URL", got["ANTHROPIC_BASE_URL"])
+		}
+		// BOS-326: with the proxy live the sentinel is planted and the account
+		// bearer is resolved server-side (CurrentBearer), so the subprocess must
+		// NOT also carry CLAUDE_CODE_OAUTH_TOKEN — that combination trips Claude
+		// Code's "both set" warning and mislabels billing.
+		if _, ok := got["CLAUDE_CODE_OAUTH_TOKEN"]; ok {
+			t.Fatalf("CLAUDE_CODE_OAUTH_TOKEN must be stripped when proxied: %v", got)
+		}
+	})
+
+	t.Run("flag off: no ANTHROPIC_BASE_URL, creds unchanged", func(t *testing.T) {
+		lc := newLC()
+		off := false
+		lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &off})
+		got := lc.resolveAccountEnv(context.Background(), claude)
+		if _, ok := got["ANTHROPIC_BASE_URL"]; ok {
+			t.Fatalf("ANTHROPIC_BASE_URL must not be injected when the flag is off: %v", got)
+		}
+		if got["CLAUDE_CODE_OAUTH_TOKEN"] != "acct-bearer" {
+			t.Fatalf("account creds changed with proxy off: %v", got)
+		}
+	})
+}
+
+// TestResolveAccountEnv_InjectsSentinelWithBaseURL proves the BOS-326 sentinel:
+// when the proxy overlay is active, resolveAccountEnv folds in
+// ANTHROPIC_API_KEY=SentinelAPIKey exactly alongside ANTHROPIC_BASE_URL (the
+// interactive REPL honours the api key, not the injected OAuth token), and never
+// injects it when the proxy is off.
+func TestResolveAccountEnv_InjectsSentinelWithBaseURL(t *testing.T) {
+	yes := true
+	l := newTestLifecycleWithProxy(t, config.ManagedAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
+	l.SetAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{claudeOAuthTokenEnvKey: "acct-bearer"}})
+	acctID := "acct-1"
+	sess := &models.Session{ID: "s1", AgentName: "claude", AccountID: &acctID}
+	env := l.resolveAccountEnv(context.Background(), sess)
+	if env["ANTHROPIC_BASE_URL"] == "" {
+		t.Fatal("precondition: ANTHROPIC_BASE_URL should be injected")
+	}
+	if env["ANTHROPIC_API_KEY"] != SentinelAPIKey {
+		t.Errorf("ANTHROPIC_API_KEY = %q, want sentinel %q", env["ANTHROPIC_API_KEY"], SentinelAPIKey)
+	}
+}
+
+func TestResolveAccountEnv_NoProxyOrSentinelForUnmanagedAccount(t *testing.T) {
+	yes := true
+	l := newTestLifecycleWithProxy(t, config.ManagedAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
+	emptyAccountID := ""
+
+	for name, sess := range map[string]*models.Session{
+		"nil-account":   {ID: "s1", AgentName: "claude"},
+		"empty-account": {ID: "s2", AgentName: "claude", AccountID: &emptyAccountID},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := l.resolveAccountEnv(context.Background(), sess)
+			if _, ok := env["ANTHROPIC_BASE_URL"]; ok {
+				t.Fatalf("ANTHROPIC_BASE_URL must not be injected for unmanaged account: %v", env)
+			}
+			if _, ok := env["ANTHROPIC_API_KEY"]; ok {
+				t.Fatalf("ANTHROPIC_API_KEY must not be injected for unmanaged account: %v", env)
+			}
+		})
+	}
+}
+
+func TestResolveAccountEnv_NoProxyOrSentinelWithoutMaterializedBearer(t *testing.T) {
+	yes := true
+	l := newTestLifecycleWithProxy(t, config.ManagedAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
+	l.SetAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{"CODEX_HOME": "/synthetic/home"}})
+	acctID := "acct-1"
+	sess := &models.Session{ID: "s1", AgentName: "claude", AccountID: &acctID}
+
+	env := l.resolveAccountEnv(context.Background(), sess)
+	if env["CODEX_HOME"] != "/synthetic/home" {
+		t.Fatalf("resolver overlay changed: %v", env)
+	}
+	if _, ok := env["ANTHROPIC_BASE_URL"]; ok {
+		t.Fatalf("ANTHROPIC_BASE_URL must not be injected without materialized bearer: %v", env)
+	}
+	if _, ok := env["ANTHROPIC_API_KEY"]; ok {
+		t.Fatalf("ANTHROPIC_API_KEY must not be injected without materialized bearer: %v", env)
+	}
+}
+
+func TestResolveAccountEnv_NoSentinelWhenProxyOff(t *testing.T) {
+	no := false
+	l := newTestLifecycleWithProxy(t, config.ManagedAccountsConfig{Enabled: &no})
+	sess := &models.Session{ID: "s1", AgentName: "claude"}
+	if _, ok := l.resolveAccountEnv(context.Background(), sess)["ANTHROPIC_API_KEY"]; ok {
+		t.Error("sentinel ANTHROPIC_API_KEY must not be injected when the proxy is off")
+	}
+}
+
+// TestSentinelApprovalSuffix pins the approval suffix to the sentinel's last 20
+// chars — the exact value seeded into ~/.claude.json's approved list.
+func TestSentinelApprovalSuffix(t *testing.T) {
+	suffix := SentinelApprovalSuffix()
+	if len(suffix) != 20 {
+		t.Fatalf("approval suffix len = %d, want 20", len(suffix))
+	}
+	if suffix != SentinelAPIKey[len(SentinelAPIKey)-20:] {
+		t.Errorf("suffix %q is not the last 20 chars of the sentinel key", suffix)
+	}
 }
 
 // TestMergeSessionEnv_Precedence proves managed > account > proof: managed

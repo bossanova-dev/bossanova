@@ -18,6 +18,9 @@ type fakeChatOrchestrator struct {
 	bossanovav1connect.UnimplementedOrchestratorServiceHandler
 	transcriptReq *pb.ProxyGetChatTranscriptRequest
 	sendReq       *pb.ProxySendChatMessageRequest
+	// sendResp, when set, is returned by ProxySendChatMessage instead of the
+	// default canned response — lets a test drive the notice_text unwrap.
+	sendResp *pb.ProxySendChatMessageResponse
 }
 
 func (f *fakeChatOrchestrator) ProxyGetChatTranscript(_ context.Context, req *connect.Request[pb.ProxyGetChatTranscriptRequest]) (*connect.Response[pb.ProxyGetChatTranscriptResponse], error) {
@@ -32,6 +35,9 @@ func (f *fakeChatOrchestrator) ProxyGetChatTranscript(_ context.Context, req *co
 
 func (f *fakeChatOrchestrator) ProxySendChatMessage(_ context.Context, req *connect.Request[pb.ProxySendChatMessageRequest]) (*connect.Response[pb.ProxySendChatMessageResponse], error) {
 	f.sendReq = req.Msg
+	if f.sendResp != nil {
+		return connect.NewResponse(f.sendResp), nil
+	}
 	return connect.NewResponse(&pb.ProxySendChatMessageResponse{TmuxSessionName: "tmux-x", Delivered: true}), nil
 }
 
@@ -90,6 +96,29 @@ func TestRemoteClient_SendChatMessage(t *testing.T) {
 	got := fake.sendReq
 	if got.GetAgentSessionId() != "agent-9" || got.GetMessage() != "hello" || !got.GetWakeIfAsleep() {
 		t.Fatalf("fields not forwarded: %+v", got)
+	}
+}
+
+// TestRemoteClient_SendChatMessage_ThreadsNoticeText asserts the BOS-317
+// mechanical "/boss switch" outcome (notice_text with delivered=false) survives
+// the ProxySendChatMessageResponse → SendChatMessageResponse unwrap.
+func TestRemoteClient_SendChatMessage_ThreadsNoticeText(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+	fake.sendResp = &pb.ProxySendChatMessageResponse{Delivered: false, NoticeText: "switched to work — resumed"}
+
+	resp, err := c.SendChatMessage(context.Background(), &pb.SendChatMessageRequest{
+		AgentSessionId: "agent-9",
+		Message:        "/boss switch work",
+	})
+	if err != nil {
+		t.Fatalf("SendChatMessage: %v", err)
+	}
+	if resp.GetDelivered() {
+		t.Error("Delivered = true, want false for an intercepted switch")
+	}
+	if resp.GetNoticeText() != "switched to work — resumed" {
+		t.Errorf("NoticeText = %q, want the notice threaded from the proxy response", resp.GetNoticeText())
 	}
 }
 

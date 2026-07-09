@@ -294,6 +294,10 @@ $(GEN_STAMP): $(GEN_DEPS)
 ifneq ($(shell command -v buf 2>/dev/null),)
 	rm -rf lib/bossalib/gen
 	buf generate
+	@changed_go=$$(git diff --name-only -- lib/bossalib/gen | grep '\.go$$' || true); \
+	if [ -n "$$changed_go" ]; then \
+		printf '%s\n' "$$changed_go" | xargs go run golang.org/x/tools/cmd/goimports@v0.45.0 -w; \
+	fi
 endif
 	@touch $(GEN_STAMP)
 

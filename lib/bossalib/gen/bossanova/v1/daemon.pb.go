@@ -4040,8 +4040,15 @@ type SendChatMessageResponse struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	TmuxSessionName string                 `protobuf:"bytes,1,opt,name=tmux_session_name,json=tmuxSessionName,proto3" json:"tmux_session_name,omitempty"`
 	Delivered       bool                   `protobuf:"varint,2,opt,name=delivered,proto3" json:"delivered,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// notice_text carries a user-facing outcome summary for a message that bossd
+	// handled mechanically instead of delivering to the agent — today, a
+	// single-line "/boss switch" account switch intercepted before the tmux paste
+	// (credit-free manual switch). On that path delivered is false and no LLM call
+	// is made, so callers keying on delivered to mean "handled" MUST also read
+	// notice_text. Empty for an ordinary delivered message.
+	NoticeText    string `protobuf:"bytes,3,opt,name=notice_text,json=noticeText,proto3" json:"notice_text,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SendChatMessageResponse) Reset() {
@@ -4086,6 +4093,13 @@ func (x *SendChatMessageResponse) GetDelivered() bool {
 		return x.Delivered
 	}
 	return false
+}
+
+func (x *SendChatMessageResponse) GetNoticeText() string {
+	if x != nil {
+		return x.NoticeText
+	}
+	return ""
 }
 
 // ChatStatusReport is a single heartbeat from an owning client.
@@ -5470,7 +5484,6 @@ type AddAccountRequest struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Provider string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"` // "claude" | "codex"
 	Label    string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
-	Email    string                 `protobuf:"bytes,3,opt,name=email,proto3" json:"email,omitempty"`        // optional informational account email
 	Priority int32                  `protobuf:"varint,4,opt,name=priority,proto3" json:"priority,omitempty"` // sort order; lower = preferred
 	// Credential blob (Claude setup-token string; Codex auth.json bytes).
 	// Inbound only — consumed straight into the keyring, NEVER echoed back.
@@ -5519,13 +5532,6 @@ func (x *AddAccountRequest) GetProvider() string {
 func (x *AddAccountRequest) GetLabel() string {
 	if x != nil {
 		return x.Label
-	}
-	return ""
-}
-
-func (x *AddAccountRequest) GetEmail() string {
-	if x != nil {
-		return x.Email
 	}
 	return ""
 }
@@ -5715,7 +5721,6 @@ type UpdateAccountRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Label         *string                `protobuf:"bytes,2,opt,name=label,proto3,oneof" json:"label,omitempty"`
-	Email         *string                `protobuf:"bytes,3,opt,name=email,proto3,oneof" json:"email,omitempty"`
 	Priority      *int32                 `protobuf:"varint,4,opt,name=priority,proto3,oneof" json:"priority,omitempty"`
 	Status        *string                `protobuf:"bytes,5,opt,name=status,proto3,oneof" json:"status,omitempty"`                              // "active" | "disabled"
 	AllowedModels []string               `protobuf:"bytes,6,rep,name=allowed_models,json=allowedModels,proto3" json:"allowed_models,omitempty"` // replaces the set when present
@@ -5763,13 +5768,6 @@ func (x *UpdateAccountRequest) GetId() string {
 func (x *UpdateAccountRequest) GetLabel() string {
 	if x != nil && x.Label != nil {
 		return *x.Label
-	}
-	return ""
-}
-
-func (x *UpdateAccountRequest) GetEmail() string {
-	if x != nil && x.Email != nil {
-		return *x.Email
 	}
 	return ""
 }
@@ -7027,10 +7025,12 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12$\n" +
 	"\x0ewake_if_asleep\x18\x03 \x01(\bR\fwakeIfAsleep\x12\x16\n" +
-	"\x06submit\x18\x04 \x01(\bR\x06submit\"c\n" +
+	"\x06submit\x18\x04 \x01(\bR\x06submit\"\x84\x01\n" +
 	"\x17SendChatMessageResponse\x12*\n" +
 	"\x11tmux_session_name\x18\x01 \x01(\tR\x0ftmuxSessionName\x12\x1c\n" +
-	"\tdelivered\x18\x02 \x01(\bR\tdelivered\"\xb0\x01\n" +
+	"\tdelivered\x18\x02 \x01(\bR\tdelivered\x12\x1f\n" +
+	"\vnotice_text\x18\x03 \x01(\tR\n" +
+	"noticeText\"\xb0\x01\n" +
 	"\x10ChatStatusReport\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x120\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x18.bossanova.v1.ChatStatusR\x06status\x12@\n" +
@@ -7131,15 +7131,14 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\n" +
 	"\b_refresh\"I\n" +
 	"\x14ListAccountsResponse\x121\n" +
-	"\baccounts\x18\x01 \x03(\v2\x15.bossanova.v1.AccountR\baccounts\"\x97\x01\n" +
+	"\baccounts\x18\x01 \x03(\v2\x15.bossanova.v1.AccountR\baccounts\"\x8e\x01\n" +
 	"\x11AddAccountRequest\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
-	"\x05label\x18\x02 \x01(\tR\x05label\x12\x14\n" +
-	"\x05email\x18\x03 \x01(\tR\x05email\x12\x1a\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\x12\x1a\n" +
 	"\bpriority\x18\x04 \x01(\x05R\bpriority\x12\x1e\n" +
 	"\n" +
 	"credential\x18\x05 \x01(\fR\n" +
-	"credential\"E\n" +
+	"credentialJ\x04\b\x03\x10\x04R\x05email\"E\n" +
 	"\x12AddAccountResponse\x12/\n" +
 	"\aaccount\x18\x01 \x01(\v2\x15.bossanova.v1.AccountR\aaccount\"o\n" +
 	"\x15RefreshAccountRequest\x12\x0e\n" +
@@ -7151,18 +7150,16 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x16RefreshAccountResponse\x12/\n" +
 	"\aaccount\x18\x01 \x01(\v2\x15.bossanova.v1.AccountR\aaccount\x12$\n" +
 	"\x0elive_smoke_ran\x18\x02 \x01(\bR\fliveSmokeRan\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xed\x01\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xd5\x01\n" +
 	"\x14UpdateAccountRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
-	"\x05label\x18\x02 \x01(\tH\x00R\x05label\x88\x01\x01\x12\x19\n" +
-	"\x05email\x18\x03 \x01(\tH\x01R\x05email\x88\x01\x01\x12\x1f\n" +
-	"\bpriority\x18\x04 \x01(\x05H\x02R\bpriority\x88\x01\x01\x12\x1b\n" +
-	"\x06status\x18\x05 \x01(\tH\x03R\x06status\x88\x01\x01\x12%\n" +
+	"\x05label\x18\x02 \x01(\tH\x00R\x05label\x88\x01\x01\x12\x1f\n" +
+	"\bpriority\x18\x04 \x01(\x05H\x01R\bpriority\x88\x01\x01\x12\x1b\n" +
+	"\x06status\x18\x05 \x01(\tH\x02R\x06status\x88\x01\x01\x12%\n" +
 	"\x0eallowed_models\x18\x06 \x03(\tR\rallowedModelsB\b\n" +
-	"\x06_labelB\b\n" +
-	"\x06_emailB\v\n" +
+	"\x06_labelB\v\n" +
 	"\t_priorityB\t\n" +
-	"\a_status\"H\n" +
+	"\a_statusJ\x04\b\x03\x10\x04R\x05email\"H\n" +
 	"\x15UpdateAccountResponse\x12/\n" +
 	"\aaccount\x18\x01 \x01(\v2\x15.bossanova.v1.AccountR\aaccount\"&\n" +
 	"\x14RemoveAccountRequest\x12\x0e\n" +

@@ -157,6 +157,49 @@ func newCodexAccount() *models.Account {
 	}
 }
 
+func TestToMetaPlumbsUsage(t *testing.T) {
+	fetched := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	reset5h := fetched.Add(3 * time.Hour)
+	reset7d := fetched.Add(48 * time.Hour)
+	acct := &models.Account{
+		ID:       "a1",
+		Provider: models.AccountProvider("claude"),
+		Status:   models.AccountStatusActive,
+		Health:   models.AccountHealthOK,
+		Priority: 2,
+		Usage: &models.UsageSnapshot{
+			Util5h:    0.4,
+			Util7d:    0.9,
+			Reset5h:   &reset5h,
+			Reset7d:   &reset7d,
+			FetchedAt: &fetched,
+		},
+	}
+	m := toMeta(acct)
+	if m.Util5h != 0.4 || m.Util7d != 0.9 {
+		t.Errorf("util: got (%v,%v), want (0.4,0.9)", m.Util5h, m.Util7d)
+	}
+	if m.UsageFetchedAt == nil || !m.UsageFetchedAt.Equal(fetched) {
+		t.Errorf("UsageFetchedAt: got %v, want %v", m.UsageFetchedAt, fetched)
+	}
+	if m.Reset5h == nil || !m.Reset5h.Equal(reset5h) {
+		t.Errorf("Reset5h: got %v, want %v", m.Reset5h, reset5h)
+	}
+	if m.Reset7d == nil || !m.Reset7d.Equal(reset7d) {
+		t.Errorf("Reset7d: got %v, want %v", m.Reset7d, reset7d)
+	}
+}
+
+func TestToMetaNilUsageYieldsZeroFields(t *testing.T) {
+	m := toMeta(newClaudeAccount()) // no Usage
+	if m.Util5h != 0 || m.Util7d != 0 {
+		t.Errorf("util: got (%v,%v), want (0,0)", m.Util5h, m.Util7d)
+	}
+	if m.UsageFetchedAt != nil || m.Reset5h != nil || m.Reset7d != nil {
+		t.Errorf("nil Usage must yield nil pointers, got %v/%v/%v", m.UsageFetchedAt, m.Reset5h, m.Reset7d)
+	}
+}
+
 func newResolver(store *spyStore, client *fakeRotationClient, creds CredentialLoader) *account.Resolver {
 	clients := map[string]agent.AgentRunnerClient{}
 	if client != nil {

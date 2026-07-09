@@ -400,6 +400,7 @@ type mockAgentChatStore struct {
 	mu                     sync.Mutex
 	createCalls            []db.CreateAgentChatParams
 	tmuxNameUpdates        []tmuxNameUpdate
+	accountIDUpdates       []accountIDUpdate
 	deletedAgentSessionIDs []string
 	markStartFailedCalls   []markStartFailedCall
 	chatsBySession         map[string][]*models.AgentChat // returned by ListBySession when set
@@ -418,6 +419,11 @@ type markStartFailedCall struct {
 type tmuxNameUpdate struct {
 	agentSessionID string
 	name           *string
+}
+
+type accountIDUpdate struct {
+	agentSessionID string
+	accountID      *string
 }
 
 func (m *mockAgentChatStore) Create(_ context.Context, params db.CreateAgentChatParams) (*models.AgentChat, error) {
@@ -507,6 +513,25 @@ func (m *mockAgentChatStore) UpdateTmuxSessionName(_ context.Context, agentSessi
 }
 
 func (m *mockAgentChatStore) UpdateProviderSessionID(_ context.Context, _ string, _ *string) error {
+	return nil
+}
+
+func (m *mockAgentChatStore) UpdateAccountIDByAgentSessionID(_ context.Context, agentSessionID string, accountID *string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.accountIDUpdates = append(m.accountIDUpdates, accountIDUpdate{agentSessionID: agentSessionID, accountID: accountID})
+	for _, chats := range m.chatsBySession {
+		for _, chat := range chats {
+			if chat.AgentSessionID == agentSessionID {
+				chat.AccountID = accountID
+			}
+		}
+	}
+	for _, chat := range m.chatsWithTmux {
+		if chat.AgentSessionID == agentSessionID {
+			chat.AccountID = accountID
+		}
+	}
 	return nil
 }
 

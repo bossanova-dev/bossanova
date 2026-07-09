@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/recurser/bossalib/config"
 	"github.com/rs/zerolog"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -25,7 +24,6 @@ func mustAddCodex(t *testing.T, srv *Server, label string, cred []byte) *pb.Acco
 	resp, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
 		Provider:   "codex",
 		Label:      label,
-		Email:      "dev@example.com",
 		Priority:   3,
 		Credential: cred,
 	}))
@@ -256,21 +254,22 @@ func TestResolveSessionAccount_DefaultPolicy(t *testing.T) {
 	}
 }
 
-func TestResolveSessionAccount_DefaultPolicyHonorsRotationKillSwitch(t *testing.T) {
+// TestResolveSessionAccount_DefaultPolicyBindsRegardlessOfRotationFlag proves
+// creation-time binding is decoupled from the rotation kill-switch (BOS-305):
+// the absent-account_id path binds the resolved managed account rather than
+// collapsing to account 0. resolveSessionAccount no longer reads any rotation
+// config, so binding is unconditional on the rotation flag.
+func TestResolveSessionAccount_DefaultPolicyBindsRegardlessOfRotationFlag(t *testing.T) {
 	s, accts := newAccountServer(t, newFakeCredStore(), nil)
 	acct := mustAddClaude(t, s, "work", []byte("blob"))
 	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), nil, zerolog.Nop())
-	disabled := false
-	s.rotationConfig = func() (config.RotationConfig, error) {
-		return config.RotationConfig{Enabled: &disabled}, nil
-	}
 
 	id, err := s.resolveSessionAccount(context.Background(), nil, "claude")
 	if err != nil {
 		t.Fatalf("rotation disabled default policy: unexpected err %v", err)
 	}
-	if id != "" {
-		t.Errorf("rotation disabled default policy id = %q, want account 0", id)
+	if id != acct.Id {
+		t.Errorf("rotation disabled default policy id = %q, want %q bound even with rotation off", id, acct.Id)
 	}
 
 	got, err := s.resolveSessionAccount(context.Background(), strptr(acct.Id), "claude")

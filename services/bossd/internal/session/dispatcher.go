@@ -398,38 +398,11 @@ func (d *Dispatcher) handleReviewSubmitted(ctx context.Context, sm *machine.Mach
 }
 
 func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
-	wasBlocked := sess.State == machine.Blocked
 	if err := sm.FireCtx(ctx, machine.PRMerged); err != nil {
 		return fmt.Errorf("fire pr_merged: %w", err)
 	}
 
-	// Push the terminal display status into the tracker before the DB Update
-	// below, so the recompute that Update triggers already sees "merged"
-	// instead of the stale last-polled status. Otherwise the STATUS column
-	// lingers on e.g. "passing" until the display poller's next cycle.
-	if d.displayStatus != nil {
-		d.displayStatus.Set(sess.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusMerged})
-	}
-
-	mergedState := int(machine.Merged)
-	params := db.UpdateSessionParams{State: &mergedState}
-	// A Blocked session advancing to a terminal state runs OnExit(actionClearBlocked)
-	// in the machine, clearing BlockedReason + AttemptCount there. Persist the same
-	// cleared fields (mirroring reconcileTerminalPRForBlockedSession) so a stale,
-	// non-gating "finalize failed" hint does not linger on the merged row: this
-	// handler seeds the tracker with a terminal status, so the display poller skips
-	// the session and nothing else would clear it (BOS-246).
-	if wasBlocked {
-		clearBlockMetadata(&params)
-	}
-	if _, err := d.sessions.Update(ctx, sess.ID, params); err != nil {
-		return fmt.Errorf("update session: %w", err)
-	}
-
-	d.logger.Info().Str("session", sess.ID).Msg("PR merged")
-
-	d.notifyCompletion(ctx, sess.ID, models.TaskMappingStatusCompleted)
-	return nil
+	return d.persistTerminalPRState(ctx, sess, machine.Merged, vcs.DisplayStatusMerged, "PR merged", models.TaskMappingStatusCompleted)
 }
 
 // clearBlockMetadata sets the UpdateSessionParams fields that OnExit(actionClearBlocked)
@@ -446,31 +419,45 @@ func clearBlockMetadata(params *db.UpdateSessionParams) {
 }
 
 func (d *Dispatcher) handlePRClosed(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
-	wasBlocked := sess.State == machine.Blocked
 	if err := sm.FireCtx(ctx, machine.PRClosed); err != nil {
 		return fmt.Errorf("fire pr_closed: %w", err)
 	}
 
-	// See handlePRMerged: set the tracker before the DB Update so the STATUS
-	// column reflects "closed" immediately rather than on the next poll cycle.
+	return d.persistTerminalPRState(ctx, sess, machine.Closed, vcs.DisplayStatusClosed, "PR closed", models.TaskMappingStatusFailed)
+}
+
+func (d *Dispatcher) persistTerminalPRState(
+	ctx context.Context,
+	sess *models.Session,
+	state machine.State,
+	displayStatus vcs.DisplayStatus,
+	logMessage string,
+	outcome models.TaskMappingStatus,
+) error {
+	// Push the terminal display status into the tracker before the DB Update
+	// below, so the recompute that Update triggers already sees the terminal
+	// state instead of the stale last-polled status. Otherwise the STATUS column
+	// lingers on e.g. "passing" until the display poller's next cycle.
 	if d.displayStatus != nil {
-		d.displayStatus.Set(sess.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusClosed})
+		d.displayStatus.Set(sess.ID, vcs.DisplayInfo{Status: displayStatus})
 	}
 
-	closedState := int(machine.Closed)
-	params := db.UpdateSessionParams{State: &closedState}
-	// See handlePRMerged: a Blocked session going terminal must persist the block
-	// metadata that OnExit(actionClearBlocked) cleared in the machine, or the stale
-	// hint lingers on the closed row.
-	if wasBlocked {
+	nextState := int(state)
+	params := db.UpdateSessionParams{State: &nextState}
+	// A Blocked session advancing to a terminal state runs OnExit(actionClearBlocked)
+	// in the machine, clearing BlockedReason + AttemptCount there. Persist the same
+	// cleared fields (mirroring reconcileTerminalPRForBlockedSession) so a stale,
+	// non-gating "finalize failed" hint does not linger on the terminal row: this
+	// handler seeds the tracker with a terminal status, so the display poller skips
+	// the session and nothing else would clear it (BOS-246).
+	if sess.State == machine.Blocked {
 		clearBlockMetadata(&params)
 	}
 	if _, err := d.sessions.Update(ctx, sess.ID, params); err != nil {
 		return fmt.Errorf("update session: %w", err)
 	}
 
-	d.logger.Info().Str("session", sess.ID).Msg("PR closed")
-
-	d.notifyCompletion(ctx, sess.ID, models.TaskMappingStatusFailed)
+	d.logger.Info().Str("session", sess.ID).Msg(logMessage)
+	d.notifyCompletion(ctx, sess.ID, outcome)
 	return nil
 }

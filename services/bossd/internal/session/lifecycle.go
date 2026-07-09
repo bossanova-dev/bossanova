@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -130,6 +131,16 @@ type Lifecycle struct {
 	// points at no listener.
 	hookPort int
 
+	// proxyPort is the loopback TCP port of the S7 failover reverse proxy
+	// (BOS-320), stamped via SetProxyPort once that server has bound. Zero
+	// means "not bound" — the ANTHROPIC_BASE_URL overlay is then never injected
+	// and sessions talk to api.anthropic.com directly (the liveness gate).
+	proxyPort int
+	// proxyRegistrar mints/registers the per-session proxy path token used in
+	// the injected ANTHROPIC_BASE_URL. Nil (default) disables injection, so the
+	// proxy is strictly additive and opt-in. Never logs the token.
+	proxyRegistrar proxyTokenRegistrar
+
 	// agents maps an agent plugin name (matching session.AgentName) to its
 	// AgentRunnerClient — used for ConfigureFinalizeHook,
 	// BuildInteractiveCommand, and other RPCs that aren't on AgentRunner.
@@ -201,7 +212,7 @@ type Lifecycle struct {
 	// rotationConfig holds the auto-rotation policy knobs (kill switch, max
 	// rotations). The zero value enables rotation with default caps, so an
 	// unset config is a safe production default. Injected via SetRotationConfig.
-	rotationConfig config.RotationConfig
+	rotationConfig config.ManagedAccountsConfig
 
 	// rotationDecider, accountMaterializer, and rotationBinding are the narrow
 	// injected seams the usage-limit rotation intercept consumes. Any nil seam
@@ -213,6 +224,13 @@ type Lifecycle struct {
 	rotationBinding     rotationBinding
 	rateLimitProbe      rateLimitProbe
 
+	// accountGetter resolves a *models.Account by id, so CurrentBearer can turn
+	// the binding's CappedAccountID into an account the materializer accepts
+	// (CurrentBinding returns only the id). Nil ⇒ CurrentBearer degrades to ""
+	// (fail-safe: the proxy forwards the client's own header). Production wires
+	// the db account store's Get; tests inject a fake.
+	accountGetter func(ctx context.Context, id string) (*models.Account, error)
+
 	// rotationRecorder audits every rotation decision outcome (BOS-176). Nil is
 	// safe: the Recorder's methods no-op on a nil receiver, so an unwired daemon
 	// simply records nothing. Injected via SetRotationRecorder.
@@ -222,7 +240,7 @@ type Lifecycle struct {
 	// sweeps so policy changes take effect without a daemon restart (BOS-176).
 	// Nil ⇒ fall back to the config injected via SetRotationConfig (the cached
 	// value used by unit tests). Production wires a config.Load-backed adapter.
-	rotationConfigLoader func() (config.RotationConfig, error)
+	rotationConfigLoader func() (config.ManagedAccountsConfig, error)
 
 	// clock is the time source for the resume-at-T parked-rotation sweep. It is
 	// nil in production (now() falls back to time.Now); tests inject a fake via
@@ -276,13 +294,77 @@ type accountEnvResolver interface {
 func (l *Lifecycle) SetAccountEnvResolver(r accountEnvResolver) { l.accountEnv = r }
 
 // resolveAccountEnv returns the account env overlay for sess, or nil when no
-// resolver is wired (older/test wiring) or the session is unbound. Never logs
-// values.
+// resolver is wired (older/test wiring) or the session is unbound. When the S7
+// failover proxy is enabled and live, it also folds in the ANTHROPIC_BASE_URL
+// overlay that points the Claude subprocess at the loopback proxy (BOS-320),
+// but only when the bound account resolver produced a Claude OAuth bearer the
+// proxy can substitute for the BOS-326 sentinel. Never logs values (the proxy
+// token is a secret).
 func (l *Lifecycle) resolveAccountEnv(ctx context.Context, sess *models.Session) map[string]string {
-	if l.accountEnv == nil {
-		return nil
+	var base map[string]string
+	if l.accountEnv != nil {
+		base = l.accountEnv.Resolve(ctx, sess)
 	}
-	return l.accountEnv.Resolve(ctx, sess)
+	return l.ApplyFailoverProxyEnv(sess, base)
+}
+
+// ApplyFailoverProxyEnv folds the BOS-320/326 Claude proxy overlay into an
+// already-materialized account env. It is shared by Lifecycle-owned spawns and
+// server-driven attach/wake spawns. A nil/empty bearer means the proxy could not
+// translate the sentinel, so the overlay is skipped and the caller keeps the
+// direct/ambient auth behavior.
+func (l *Lifecycle) ApplyFailoverProxyEnv(sess *models.Session, base map[string]string) map[string]string {
+	if l == nil {
+		return base
+	}
+	proxyURL := l.proxyBaseURL(sess)
+	if proxyURL == "" {
+		return base
+	}
+	return applyFailoverProxyOverlay(proxyURL, base)
+}
+
+// ApplyFailoverProxyEnvForChat folds the proxy overlay into a cross-agent Claude
+// chat spawn whose account binding lives on agent_chats instead of sessions.
+func (l *Lifecycle) ApplyFailoverProxyEnvForChat(sess *models.Session, chat *models.AgentChat, accountID string, base map[string]string) map[string]string {
+	if l == nil {
+		return base
+	}
+	proxyURL := l.proxyBaseURLForChat(sess, chat, accountID)
+	if proxyURL == "" {
+		return base
+	}
+	return applyFailoverProxyOverlay(proxyURL, base)
+}
+
+func applyFailoverProxyOverlay(proxyURL string, base map[string]string) map[string]string {
+	if base[claudeOAuthTokenEnvKey] == "" {
+		return base
+	}
+	// Fold ANTHROPIC_BASE_URL into the account overlay so it inherits the same
+	// merge precedence (account > proof, below managed BOSS_*) at every spawn
+	// site without touching them individually.
+	overlay := make(map[string]string, len(base)+2)
+	maps.Copy(overlay, base)
+	overlay["ANTHROPIC_BASE_URL"] = proxyURL
+	// The interactive Claude REPL ignores the injected CLAUDE_CODE_OAUTH_TOKEN and
+	// authenticates from the keychain; a sentinel ANTHROPIC_API_KEY overrides that
+	// and routes requests through the proxy as x-api-key (BOS-326). The proxy
+	// strips the sentinel and substitutes the bound account's OAuth bearer.
+	overlay["ANTHROPIC_API_KEY"] = SentinelAPIKey
+	// Drop the account's OAuth bearer from the SUBPROCESS env once the sentinel is
+	// in place: the proxy resolves the bound account's bearer server-side
+	// (Failover.CurrentBearer, keyed on session/chat id — never read back from
+	// this env), so the token here is dead weight. Worse, leaving it alongside the
+	// sentinel trips Claude Code's "both CLAUDE_CODE_OAUTH_TOKEN and
+	// ANTHROPIC_API_KEY set · auth may not work as expected" warning and mislabels
+	// the session as "API Usage Billing" even though billing stays on the
+	// subscription via the proxy swap. When the proxy is DOWN this overlay is never
+	// applied (proxyURL == "" upstream), so base — token present, no sentinel — is
+	// used for direct auth; the token is only ever redundant here, never load-
+	// bearing. See the proxy first-leg auth in server.ProxyServer.handleProxy.
+	delete(overlay, claudeOAuthTokenEnvKey)
+	return overlay
 }
 
 // mergeEnv overlays extra onto base, returning a new map. base wins on key
@@ -1175,8 +1257,11 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		headlessRun = true
 		// Account env sits above proof (disjoint keys today; account wins by
 		// convention, mirroring the interactive tmux precedence account > proof).
-		// There is no managed BOSS_* layer on the headless path.
-		headlessEnv := dotenv.Overlay(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), result.WorktreePath)
+		// There is no managed BOSS_* layer on the headless path. The repo's
+		// stored LINEAR_API_KEY / SENTRY_* secrets are filled beneath the
+		// worktree .env (OverlayWithRepo) so the run authenticates to its own
+		// repo's Linear workspace, not the daemon's ambient one.
+		headlessEnv := dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), result.WorktreePath, repo)
 		claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, headlessEnv)
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
@@ -2219,8 +2304,11 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 	}
 
 	// Account env sits above proof (disjoint keys today; account wins by
-	// convention). No managed BOSS_* layer on the resume path.
-	resumeEnv := dotenv.Overlay(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), session.WorktreePath)
+	// convention). No managed BOSS_* layer on the resume path. The repo's
+	// stored LINEAR_API_KEY / SENTRY_* secrets are filled beneath the worktree
+	// .env (OverlayWithRepo) so the resumed run keeps its own repo's Linear
+	// workspace, not the daemon's ambient one.
+	resumeEnv := dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), session.WorktreePath, repo)
 	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, session.AgentName, session.WorktreePath, session.Plan, resume, "", session.Model, resumeEnv)
 	if err != nil {
 		return fmt.Errorf("start claude: %w", err)

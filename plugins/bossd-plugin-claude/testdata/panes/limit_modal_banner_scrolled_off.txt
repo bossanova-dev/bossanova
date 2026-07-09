@@ -1,0 +1,11 @@
+  Ran 1 shell command
+
+⏺ Zigzagging through the plan while I still can.
+
+What do you want to do?
+
+❯ 1. Stop and wait for limit to reset
+  2. Switch to usage credits
+  3. Upgrade your plan
+
+Enter to confirm · Esc to cancel

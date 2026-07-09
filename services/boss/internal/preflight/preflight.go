@@ -6,6 +6,7 @@ package preflight
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/loginshell"
+	"github.com/recurser/bossalib/termnorm"
 )
 
 const agentResolveTimeout = 5 * time.Second
@@ -199,6 +201,40 @@ func shellToolsInstallHint(missing []string) string {
 			fmt.Sprintf("  sudo pacman -S %s          # Arch", strings.Join(archPkgs, " "))
 	default:
 		return fmt.Sprintf("  Install the missing tools (%s) for %s.", strings.Join(missing, ", "), runtime.GOOS)
+	}
+}
+
+// CheckTerminal verifies that a usable terminal type resolves for the attach
+// PTY. Boss auto-falls-back to xterm-256color when $TERM has no terminfo entry,
+// so this only blocks the rare box where neither $TERM nor xterm-256color
+// resolves — otherwise tmux would exit with "missing or unsuitable terminal".
+func CheckTerminal() *Issue {
+	return checkTerminal(os.Getenv("TERM"), termnorm.Resolvable)
+}
+
+// checkTerminal is the testable body of CheckTerminal; resolvable is
+// injected for testability, mirroring checkAgentResolvable's run seam.
+// Production passes termnorm.Resolvable.
+func checkTerminal(term string, resolvable func(string) bool) *Issue {
+	if term != "" && resolvable(term) {
+		return nil
+	}
+	if resolvable(termnorm.FallbackTERM) {
+		return nil // auto-fallback will cover it; not a blocking failure.
+	}
+	shown := term
+	if shown == "" {
+		shown = "(unset)"
+	}
+	return &Issue{
+		Title: "no usable terminal type is available",
+		Detail: fmt.Sprintf(
+			"tmux needs a terminfo entry to host agent sessions, but neither your "+
+				"terminal (TERM=%s) nor the %s fallback resolves on this "+
+				"host. Install a terminfo database (macOS ships one with ncurses; on "+
+				"Linux install `ncurses-term`) or set a resolvable TERM:\n\n"+
+				"  export TERM=%s",
+			shown, termnorm.FallbackTERM, termnorm.FallbackTERM),
 	}
 }
 

@@ -251,7 +251,6 @@ func accountToProto(a *models.Account) *pb.Account {
 		Id:            a.ID,
 		Provider:      string(a.Provider),
 		Label:         a.Label,
-		Email:         a.AccountEmail,
 		Status:        string(a.Status),
 		Priority:      int32(a.Priority),
 		Health:        string(a.Health),

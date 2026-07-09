@@ -1130,12 +1130,18 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 	// Use context.Background, NOT the gRPC handler's ctx: passing ctx would
 	// tie the spawned process's lifetime to this RPC call, which returns
 	// immediately. The agent plugin has its own Stop / shutdown path.
+	// Fill the repo's stored LINEAR_API_KEY / SENTRY_* secrets beneath the
+	// worktree .env (OverlayWithRepo) so the repair run authenticates to its own
+	// repo's Linear workspace, not the daemon's ambient one. A missing/failed
+	// repo lookup is non-fatal: OverlayWithRepo(nil) still guarantees
+	// LINEAR_API_KEY is present so the daemon's ambient value cannot leak.
+	repo := session.RepoForSessionEnv(ctx, s.repoStore, sess.RepoID, sess.ID, "repair run", log.Logger)
 	startReq := &bossanovav1.StartAgentRunRequest{
 		WorkDir:  sess.WorktreePath,
 		Plan:     req.GetPrompt(),
 		LogPath:  filepath.Join(s.agentLogsDir, "repair-"+sessionID+".log"),
 		Model:    sess.Model,
-		ExtraEnv: dotenv.Overlay(mergeAccountOverProof(s.resolveProofEnv(), s.resolveAccountEnv(ctx, sess)), sess.WorktreePath),
+		ExtraEnv: dotenv.OverlayWithRepo(mergeAccountOverProof(s.resolveProofEnv(), s.resolveAccountEnv(ctx, sess)), sess.WorktreePath, repo),
 	}
 	startResp, err := client.StartRun(context.Background(), startReq)
 	if err != nil {

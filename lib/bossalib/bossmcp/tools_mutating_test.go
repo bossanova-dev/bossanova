@@ -610,6 +610,42 @@ func TestCreateSessionToolAttachedExisting(t *testing.T) {
 	})
 }
 
+func TestCreateSessionToolDescriptionWarnsPlanningOnlyCallers(t *testing.T) {
+	cs := newConnectedClient(t, &fakeBackend{}, Options{})
+	res, err := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+
+	var desc string
+	for _, tool := range res.Tools {
+		if tool.Name == "create_session" {
+			desc = tool.Description
+			break
+		}
+	}
+	if desc == "" {
+		t.Fatal("create_session tool not registered")
+	}
+	lowerDesc := strings.ToLower(desc)
+	for _, want := range []string{
+		"planning-only",
+		"subagent",
+	} {
+		if !strings.Contains(lowerDesc, want) {
+			t.Fatalf("create_session description missing %q: %s", want, desc)
+		}
+	}
+	for _, want := range []string{
+		"quick_chat",
+		"tmux_unattended",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("create_session description missing %q: %s", want, desc)
+		}
+	}
+}
+
 func TestDeriveSessionTitle(t *testing.T) {
 	long := strings.Repeat("a", 100)
 	cases := []struct {

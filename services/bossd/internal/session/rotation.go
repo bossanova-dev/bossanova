@@ -70,6 +70,14 @@ func (l *Lifecycle) SetRotationBinding(b rotationBinding) { l.rotationBinding = 
 // SetRateLimitProbe injects the authoritative confirm-before-cool probe.
 func (l *Lifecycle) SetRateLimitProbe(p rateLimitProbe) { l.rateLimitProbe = p }
 
+// SetAccountGetter injects the account-by-id resolver used by CurrentBearer to
+// materialize the bound account's bearer for first-leg proxy translation
+// (BOS-326). Safe to leave unset (nil ⇒ CurrentBearer returns "", so the proxy
+// forwards the client's own header).
+func (l *Lifecycle) SetAccountGetter(g func(ctx context.Context, id string) (*models.Account, error)) {
+	l.accountGetter = g
+}
+
 // HasLiveRotationSeams reports whether the lifecycle has both live seams needed
 // for headless/session-lifecycle auto-rotation.
 func (l *Lifecycle) HasLiveRotationSeams() bool {
@@ -77,9 +85,9 @@ func (l *Lifecycle) HasLiveRotationSeams() bool {
 }
 
 // SetRotationConfig installs the rotation policy knobs (kill switch, max
-// rotations). The zero value enables rotation (RotationEnabled()==true) with the
+// rotations). The zero value enables rotation (ManagedAccountsEnabled()==true) with the
 // default max, so leaving it unset is a safe production default.
-func (l *Lifecycle) SetRotationConfig(c config.RotationConfig) { l.rotationConfig = c }
+func (l *Lifecycle) SetRotationConfig(c config.ManagedAccountsConfig) { l.rotationConfig = c }
 
 // SetRotationRecorder injects the rotation audit recorder (BOS-176). Safe to
 // leave unset: the Recorder's methods are nil-receiver no-ops, so an unwired
@@ -90,14 +98,14 @@ func (l *Lifecycle) SetRotationRecorder(r *rotation.Recorder) { l.rotationRecord
 // rotation decisions and parked sweeps (BOS-176). Production wires a
 // config.Load-backed adapter; leaving it unset falls back to the cached config
 // from SetRotationConfig.
-func (l *Lifecycle) SetRotationConfigLoader(load func() (config.RotationConfig, error)) {
+func (l *Lifecycle) SetRotationConfigLoader(load func() (config.ManagedAccountsConfig, error)) {
 	l.rotationConfigLoader = load
 }
 
 // currentRotationConfig returns the live rotation policy when a loader is wired,
 // otherwise the cached config injected at startup. It fails safe: a load error
 // disables automatic rotation for that decision.
-func (l *Lifecycle) currentRotationConfig() (config.RotationConfig, bool) {
+func (l *Lifecycle) currentRotationConfig() (config.ManagedAccountsConfig, bool) {
 	if l.rotationConfigLoader == nil {
 		return l.rotationConfig, true
 	}
@@ -105,7 +113,7 @@ func (l *Lifecycle) currentRotationConfig() (config.RotationConfig, bool) {
 	if err != nil {
 		l.logger.Warn().Err(err).
 			Msg("rotation gate: settings load failed; treating rotation as disabled")
-		return config.RotationConfig{}, false
+		return config.ManagedAccountsConfig{}, false
 	}
 	return cfg, true
 }
@@ -116,7 +124,7 @@ func (l *Lifecycle) currentRotationConfig() (config.RotationConfig, bool) {
 // automatic rotation. With no loader it uses the cached injected config.
 func (l *Lifecycle) autoRotateAllowed() bool {
 	cfg, ok := l.currentRotationConfig()
-	return ok && cfg.RotationEnabled()
+	return ok && cfg.ManagedAccountsEnabled()
 }
 
 // recordRotation is the headless-intercept audit helper. It builds an
@@ -185,7 +193,7 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 	// a disabled flip records a STATUS_ONLY_DISABLED audit event and falls back
 	// to today's Block path (no swap).
 	rotationConfig, ok := l.currentRotationConfig()
-	if !ok || !rotationConfig.RotationEnabled() {
+	if !ok || !rotationConfig.ManagedAccountsEnabled() {
 		l.rotationRecorder.Record(ctx, rotation.AuditEvent{
 			SessionID: sessionID, Provider: session.AgentName,
 			Trigger: "ROTATION_TRIGGER_USAGE_LIMITED",
@@ -325,8 +333,12 @@ func (l *Lifecycle) rotateAndRestart(ctx context.Context, session *models.Sessio
 
 	// Precedence managed>account>proof (managed is nil here), then wrap with the
 	// worktree dotenv overlay exactly as the resurrect spawn does — the account
-	// overlay wins over proof, proof wins over the worktree .env. Never logged.
-	mergedEnv := dotenv.Overlay(mergeSessionEnv(nil, envOverlay, l.resolveProofEnv()), session.WorktreePath)
+	// overlay wins over proof, proof wins over the worktree .env, and the repo's
+	// stored LINEAR_API_KEY / SENTRY_* secrets fill beneath the .env so the
+	// rotated run keeps its own repo's Linear workspace. A repo lookup failure
+	// is non-fatal (OverlayWithRepo still guarantees LINEAR_API_KEY). Never logged.
+	repo := RepoForSessionEnv(ctx, l.repos, session.RepoID, session.ID, "usage-limit rotation", l.logger)
+	mergedEnv := dotenv.OverlayWithRepo(mergeSessionEnv(nil, envOverlay, l.resolveProofEnv()), session.WorktreePath, repo)
 
 	resumedPrompt := steeringNotice + "\n\n" + session.Plan
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -60,6 +61,40 @@ func SeedFirstRunSettings(home, socketPath string) error {
 	})
 }
 
+// ProofEnvWhitelist is the set of env key prefixes a proof scenario may forward
+// into the boss subprocess. Security boundary: scenario files are agent-authored,
+// so only these harness-managed E2E families are permitted — never arbitrary
+// developer env. The families intentionally mirror the prefixes BaseHarnessEnv
+// strips (BOSS_CLOUD_ACCESS_E2E_*, BOSS_GITHUB_APP_E2E_*, BOSS_AUTH_E2E_*): the
+// harness strips them from the ambient environ, then the bridge re-adds only the
+// validated, scenario-requested subset.
+var ProofEnvWhitelist = []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_"}
+
+// FilterProofEnv splits a requested env map into allowed (keys that prefix-match
+// ProofEnvWhitelist) and rejected (keys that don't). Env validation lives ONLY
+// in Go — the Node side forwards raw — so there is a single source of truth (the
+// PathToProjectKey Go/TS duplication drift is the documented anti-pattern this
+// avoids). rejected is sorted so a boot-abort error message is deterministic.
+func FilterProofEnv(requested map[string]string) (allowed map[string]string, rejected []string) {
+	allowed = make(map[string]string, len(requested))
+	for k, v := range requested {
+		ok := false
+		for _, prefix := range ProofEnvWhitelist {
+			if strings.HasPrefix(k, prefix) {
+				ok = true
+				break
+			}
+		}
+		if ok {
+			allowed[k] = v
+		} else {
+			rejected = append(rejected, k)
+		}
+	}
+	sort.Strings(rejected)
+	return allowed, rejected
+}
+
 // BaseHarnessEnv strips harness-managed env vars from environ, returning a
 // filtered copy. This prevents developer environment variables from leaking
 // into the boss subprocess under test.
@@ -67,6 +102,12 @@ func BaseHarnessEnv(environ []string) []string {
 	var env []string
 	for _, e := range environ {
 		if strings.HasPrefix(e, "BOSS_SOCKET=") ||
+			// BOSS_PROOF_TUI_SEED_ENV is the proof bridge's RAW scenario-env carrier
+			// (read + validated by the bridge in Go). Strip it so the unvalidated
+			// JSON blob never reaches the boss subprocess — only the whitelisted
+			// subset the bridge re-adds does (the "append only the allowed subset"
+			// security boundary).
+			strings.HasPrefix(e, "BOSS_PROOF_TUI_SEED_ENV=") ||
 			strings.HasPrefix(e, "BOSS_SETTINGS_PATH=") ||
 			strings.HasPrefix(e, "BOSS_SKIP_SKILLS=") ||
 			strings.HasPrefix(e, "BOSS_AUTH_E2E_EMAIL=") ||

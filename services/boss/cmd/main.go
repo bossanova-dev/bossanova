@@ -467,7 +467,6 @@ func accountCmd() *cobra.Command {
 	}
 	add.Flags().String("provider", "", "Account provider ("+trimmedProviderList()+") (or pass as a positional arg)")
 	add.Flags().String("label", "", "Human label, unique per provider (required for the non-interactive flag path)")
-	add.Flags().String("email", "", "Informational account email")
 	add.Flags().Int32("priority", 0, "Sort order; lower = preferred")
 	// Credential hygiene: prefer stdin/env over --token so the secret does not
 	// land in shell history.
@@ -499,7 +498,6 @@ func accountCmd() *cobra.Command {
 		},
 	}
 	update.Flags().String("label", "", "Set the label")
-	update.Flags().String("email", "", "Set the account email")
 	update.Flags().Int32("priority", 0, "Set the priority (lower = preferred)")
 	update.Flags().String("status", "", "Set the status (active|disabled)")
 	update.Flags().StringSlice("allowed-models", nil, "Replace the allowed-models set (comma-separated)")
@@ -651,8 +649,13 @@ func settingsCmd() *cobra.Command {
 	}
 	cmd.Flags().Bool("skip-permissions", false, "Enable Claude --dangerously-skip-permissions")
 	cmd.Flags().Bool("no-skip-permissions", false, "Disable Claude --dangerously-skip-permissions")
-	cmd.Flags().Bool("rotation", false, "Enable automatic account rotation")
-	cmd.Flags().Bool("no-rotation", false, "Disable automatic account rotation (global kill-switch; manual switching still works)")
+	cmd.Flags().Bool("managed-accounts", false, "Enable managed accounts (bossd credential rotation)")
+	cmd.Flags().Bool("no-managed-accounts", false, "Disable managed accounts (use the terminal's own login)")
+	// Back-compat hidden aliases.
+	cmd.Flags().Bool("rotation", false, "Deprecated alias for --managed-accounts")
+	cmd.Flags().Bool("no-rotation", false, "Deprecated alias for --no-managed-accounts")
+	_ = cmd.Flags().MarkHidden("rotation")
+	_ = cmd.Flags().MarkHidden("no-rotation")
 	cmd.Flags().String("worktree-dir", "", "Set worktree base directory")
 	cmd.Flags().String("default-agent", "", "Set the default agent plugin (e.g. claude, opencode)")
 	cmd.Flags().Int("poll-interval", 0, "Set poll interval in seconds (0 = default)")

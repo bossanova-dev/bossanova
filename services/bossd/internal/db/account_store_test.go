@@ -20,7 +20,6 @@ func TestAccountStore_CreateGetDefaults(t *testing.T) {
 	acct, err := store.Create(ctx, CreateAccountParams{
 		Provider:      models.AccountProviderClaude,
 		Label:         "work",
-		AccountEmail:  "dev@example.com",
 		Priority:      5,
 		Tier:          "max",
 		AllowedModels: []string{"claude-opus-4-8", "claude-sonnet-5"},
@@ -51,8 +50,8 @@ func TestAccountStore_CreateGetDefaults(t *testing.T) {
 	if got.Provider != models.AccountProviderClaude {
 		t.Errorf("provider = %q, want claude", got.Provider)
 	}
-	if got.Label != "work" || got.AccountEmail != "dev@example.com" {
-		t.Errorf("label/email = %q/%q", got.Label, got.AccountEmail)
+	if got.Label != "work" {
+		t.Errorf("label = %q, want work", got.Label)
 	}
 	if got.Priority != 5 || got.Tier != "max" {
 		t.Errorf("priority/tier = %d/%q", got.Priority, got.Tier)
@@ -98,7 +97,6 @@ func TestAccountStore_UpdateFields(t *testing.T) {
 	}
 
 	newLabel := "renamed"
-	newEmail := "new@example.com"
 	newStatus := models.AccountStatusDisabled
 	newPriority := 9
 	newHealth := models.AccountHealthFailed
@@ -109,7 +107,6 @@ func TestAccountStore_UpdateFields(t *testing.T) {
 
 	updated, err := store.Update(ctx, acct.ID, UpdateAccountParams{
 		Label:         &newLabel,
-		AccountEmail:  &newEmail,
 		Status:        &newStatus,
 		Priority:      &newPriority,
 		Health:        &newHealth,
@@ -121,8 +118,8 @@ func TestAccountStore_UpdateFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if updated.Label != newLabel || updated.AccountEmail != newEmail {
-		t.Errorf("label/email = %q/%q", updated.Label, updated.AccountEmail)
+	if updated.Label != newLabel {
+		t.Errorf("label = %q, want %q", updated.Label, newLabel)
 	}
 	if updated.Status != newStatus || updated.Health != newHealth {
 		t.Errorf("status/health = %q/%q", updated.Status, updated.Health)

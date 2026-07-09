@@ -31,7 +31,7 @@ func TestChatRotator_TrackerTransitionDrivesRotation(t *testing.T) {
 	var switches []rotation.SwitchRequest
 	rotator := rotation.NewChatRotator(rotation.ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
-		LoadConfig: func() (config.RotationConfig, error) { return config.RotationConfig{}, nil },
+		LoadConfig: func() (config.ManagedAccountsConfig, error) { return config.ManagedAccountsConfig{}, nil },
 		ChatContext: func(_ context.Context, _ string) (rotation.ChatContext, error) {
 			return rotation.ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-capped"}, nil
 		},

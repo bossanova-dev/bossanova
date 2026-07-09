@@ -57,6 +57,10 @@ func (f *switchChatStoreFake) UpdateProviderSessionID(context.Context, string, *
 	return nil
 }
 
+func (f *switchChatStoreFake) UpdateAccountIDByAgentSessionID(context.Context, string, *string) error {
+	return nil
+}
+
 func (f *switchChatStoreFake) MarkStartFailed(context.Context, string, string) error { return nil }
 
 func (f *switchChatStoreFake) DeleteByAgentSessionID(context.Context, string) error { return nil }

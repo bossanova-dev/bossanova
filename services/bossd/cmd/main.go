@@ -33,6 +33,8 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/bossalib/safego"
@@ -135,6 +137,59 @@ func probeUsageSnapshotForRotation(
 	return snap, true
 }
 
+// refreshActiveAccountUsage probes and persists a fresh usage snapshot for every
+// active, non-cooling account, so the util-aware default-account selector
+// (account.Resolver.selectDefault via freshCapped/isFresh) always has fresh data
+// to sideline capped accounts. Without a periodic refresh, snapshots only update
+// on a rotation event, go stale past the staleness window, and selection
+// degrades to priority/LRU — which can bind a brand-new session to a fully-capped
+// account (the "new chats pick an exhausted account" symptom, BOS-320). Cooling
+// accounts are skipped: their unavailability is already known and time-bounded,
+// and they are excluded from tier-1 selection regardless. Fail-soft — a list or
+// per-account probe error is logged and skipped, never fatal. Returns the number
+// of accounts refreshed.
+func refreshActiveAccountUsage(
+	ctx context.Context,
+	logger zerolog.Logger,
+	prober any,
+	recorder usageSnapshotRecorder,
+) int {
+	store, ok := recorder.(accountListStore)
+	if !ok {
+		return 0
+	}
+	accounts, err := store.List(ctx)
+	if err != nil {
+		logger.Warn().Err(err).Msg("usage-refresh: account list failed")
+		return 0
+	}
+	now := time.Now()
+	refreshed := 0
+	for _, acct := range accounts {
+		if acct == nil || acct.Status != models.AccountStatusActive {
+			continue
+		}
+		if acct.CooldownUntil != nil && acct.CooldownUntil.After(now) {
+			continue
+		}
+		if _, ok := probeUsageSnapshotForRotation(ctx, logger, prober, recorder, acct.ID); ok {
+			refreshed++
+		}
+	}
+	return refreshed
+}
+
+// authProbeConfirmsInvalidation reports whether a usage-probe error is a typed
+// 401 / auth invalidation. The claude plugin's probe returns
+// codes.Unauthenticated (agenterr.KindAuthInvalidated) on HTTP 401; the host
+// wraps it once via fmt.Errorf(... %w), and grpcstatus.Code unwraps the %w chain,
+// so classification is robust against the wrapping and never relies on the error
+// string. A nil error (healthy / usage-limited snapshot) or any non-Unauthenticated
+// error is NOT an auth invalidation.
+func authProbeConfirmsInvalidation(err error) bool {
+	return err != nil && grpcstatus.Code(err) == codes.Unauthenticated
+}
+
 func cacheUsageProbeForRotationSignal(
 	ctx context.Context,
 	logger zerolog.Logger,
@@ -195,23 +250,12 @@ func probeCandidateUtilizationForRotationSignal(
 		if rotation.UsageSnapshotProbeUnavailable(snap) {
 			continue
 		}
-		utilization[acct.ID] = usageSnapshotUtilization(snap)
+		utilization[acct.ID] = rotation.UsageUtil(snap)
 	}
 	if !sawCandidate {
 		return nil
 	}
 	return utilization
-}
-
-func usageSnapshotUtilization(snap models.UsageSnapshot) float64 {
-	util := snap.Util5h
-	if snap.Util7d > util {
-		util = snap.Util7d
-	}
-	if rotation.UsageSnapshotRateLimited(snap) && util < 1 {
-		return 1
-	}
-	return util
 }
 
 type streamSessionHydrator struct {
@@ -432,6 +476,32 @@ type runOpts struct {
 	onRotationSeamsWired func(live bool)
 }
 
+// logRotationLaneAvailability emits the single operator-facing startup
+// diagnostic describing whether the auto-rotation lane can actually fire
+// (BOS-315). The message literally contains the HasLiveRotationSeams token so
+// the line is greppable. Fail-soft: on a repo-list error it still logs the
+// seams + kill-switch fields with zero counts and never blocks startup.
+func logRotationLaneAvailability(logger zerolog.Logger, hasSeams, rotationEnabled bool, repos []*models.Repo, listErr error) {
+	ev := logger.Info().
+		Bool("has_live_rotation_seams", hasSeams).
+		Bool("rotation_enabled", rotationEnabled)
+	autoRotate, optedOut := 0, 0
+	if listErr != nil {
+		ev = ev.AnErr("repo_count_error", listErr)
+	} else {
+		for _, repo := range repos {
+			if repo.CanAutoRotate {
+				autoRotate++
+			} else {
+				optedOut++
+			}
+		}
+	}
+	ev.Int("auto_rotate_repos", autoRotate).
+		Int("opted_out_repos", optedOut).
+		Msg("rotation lane availability (HasLiveRotationSeams)")
+}
+
 func run(opts runOpts) error {
 	// Human-friendly console logging plus rotated file at $XDG_STATE_HOME/bossanova/logs/bossd.log.
 	logCloser := bossalog.Setup("bossd")
@@ -533,7 +603,7 @@ func run(opts runOpts) error {
 	// Account-rotation policy engine (BOS-173). Held on the daemon for the
 	// headless/interactive auto-rotate consumers (BOS-174/175) to call; no cap
 	// signal invokes it yet.
-	rotationEngine := rotation.NewEngine(accounts, rotation.WithDefaultCooldown(settings.Rotation.DefaultCooldown()))
+	rotationEngine := rotation.NewEngine(accounts, rotation.WithDefaultCooldown(settings.ManagedAccounts.DefaultCooldown()))
 	// Credential blobs for account rotation live in the OS keyring, never in
 	// SQLite (decision D3). accountcred links keyring/dbus and is daemon-only.
 	accountCreds := accountcred.New()
@@ -871,12 +941,26 @@ func run(opts runOpts) error {
 			}
 		}
 	} else if opts.plugins == nil {
-		// The config already lists plugins, but a freshly-built plugin binary
-		// (e.g. a new bossd-plugin-* that isn't in settings.json yet — or whose
-		// entry a clobbering save stripped) wouldn't otherwise load. Merge any
-		// discovered-but-unregistered plugins so new plugins appear without a
-		// hand-edit. Existing entries are preserved untouched.
-		if merged, added := config.MergeDiscoveredPlugins(pluginCfgs, config.DiscoverPlugins()); len(added) > 0 {
+		// Reconcile the persisted plugin list against a fresh discovery scan so two
+		// drift modes self-heal without a hand-edit: (1) a configured entry whose
+		// stored path no longer resolves — e.g. a Homebrew upgrade moved the
+		// binaries — is repaired to the discovered binary (HealPluginPaths), rather
+		// than being rejected and leaving the daemon with zero agents; (2) a
+		// freshly-built plugin not yet in settings.json is appended
+		// (MergeDiscoveredPlugins). Both preserve existing entries' enabled/config.
+		discovered := config.DiscoverPlugins()
+		if healed, names := config.HealPluginPaths(pluginCfgs, discovered); len(names) > 0 {
+			log.Warn().Strs("healed", names).
+				Msg("repaired plugin paths that no longer resolve (a package upgrade may have moved the binaries)")
+			pluginCfgs = healed
+			settings.Plugins = healed
+			if err := config.Save(settings); err != nil {
+				log.Warn().Err(err).Msg("failed to persist healed plugin list to settings")
+			} else {
+				log.Info().Msg("persisted healed plugin list to settings")
+			}
+		}
+		if merged, added := config.MergeDiscoveredPlugins(pluginCfgs, discovered); len(added) > 0 {
 			log.Info().Strs("added", added).Msg("merged newly-discovered plugins into config")
 			pluginCfgs = merged
 			settings.Plugins = merged
@@ -972,6 +1056,7 @@ func run(opts runOpts) error {
 		accountwiring.NewRegistry(accounts),
 		accountMaterializer,
 		log.Logger,
+		account.WithUsageStalenessWindow(settings.ManagedAccounts.UsageStalenessWindow()),
 	)
 	accountSpawnEnv := accountwiring.NewSpawnEnvResolver(accountResolver, log.Logger)
 	pluginHost.SetAccountEnvResolver(accountSpawnEnv)
@@ -1029,12 +1114,12 @@ func run(opts runOpts) error {
 	chatRotator = rotation.NewChatRotator(rotation.ChatRotatorDeps{
 		Logger:   log.Logger,
 		Recorder: rotationRecorder,
-		LoadConfig: func() (config.RotationConfig, error) {
+		LoadConfig: func() (config.ManagedAccountsConfig, error) {
 			loaded, err := config.Load()
 			if err != nil {
-				return config.RotationConfig{}, err
+				return config.ManagedAccountsConfig{}, err
 			}
-			return loaded.Rotation, nil
+			return loaded.ManagedAccounts, nil
 		},
 		ChatContext: func(ctx context.Context, agentSessionID string) (rotation.ChatContext, error) {
 			chat, err := agentChats.GetByAgentSessionID(ctx, agentSessionID)
@@ -1061,6 +1146,31 @@ func run(opts runOpts) error {
 			return bossanovav1.ChatStatus_CHAT_STATUS_UNSPECIFIED
 		},
 		RateLimitProbe: rateLimitProbe,
+		// Auth-invalidation path (BOS-316): CurrentAuthFailed re-checks the pane is
+		// still login-required at dispatch time; AuthProbe confirms a typed 401 on the
+		// bound account before any rotation. AuthProbe reuses the same
+		// ProbeUsageSnapshot seam as the LIMITED path but classifies its error rather
+		// than its snapshot: only a codes.Unauthenticated failure confirms the 401. A
+		// healthy/limited snapshot, an unsupported probe, or any non-auth error yields
+		// confirmed=false (non-auth errors are logged, never surfaced as rotation), so
+		// the path proceeds only on a real auth invalidation.
+		CurrentAuthFailed: chatStatusTracker.AuthFailed,
+		AuthProbe: func(ctx context.Context, accountID string) (bool, error) {
+			prober, ok := accountMaterializer.(usageSnapshotProber)
+			if !ok || accountID == "" {
+				return false, nil
+			}
+			_, err := prober.ProbeUsageSnapshot(ctx, accountID)
+			if err == nil {
+				return false, nil
+			}
+			if authProbeConfirmsInvalidation(err) {
+				return true, nil
+			}
+			log.Warn().Err(err).Str("account_id", accountID).
+				Msg("auto-rotate(auth): probe returned non-auth error; not rotating")
+			return false, nil
+		},
 		// Decide adapter: build the BOS-173 engine's real Signal (the currently
 		// bound account is the "capped" account; capability is probed live via the
 		// provider plugin) and map its Outcome onto rotation.Decision.
@@ -1072,7 +1182,7 @@ func run(opts runOpts) error {
 			sig := cacheUsageProbeForRotationSignal(ctx, log.Logger, accountMaterializer, accounts, rotation.Signal{
 				Provider:        req.Provider,
 				CappedAccountID: req.AccountID,
-				Kind:            rotation.UsageLimited,
+				Kind:            req.Kind,
 				ResetAt: func() *time.Time {
 					if req.ResetAt.IsZero() {
 						return nil
@@ -1115,6 +1225,44 @@ func run(opts runOpts) error {
 				return rotation.SwitchResult{}, err
 			}
 			return rotation.SwitchResult{SwitchedToLabel: res.TargetLabel, Fresh: !res.Resumed}, nil
+		},
+		// Proactive pre-cap sweep seams (BOS-318). LiveChatStatuses surfaces the
+		// non-stale live panes; ProactiveCandidate probes candidate utilization and
+		// picks the idlest eligible account WITHOUT cooling the bound account.
+		LiveChatStatuses: func() map[string]bossanovav1.ChatStatus {
+			snap := chatStatusTracker.Snapshot()
+			out := make(map[string]bossanovav1.ChatStatus, len(snap))
+			for id, e := range snap {
+				out[id] = e.Status
+			}
+			return out
+		},
+		ProactiveCandidate: func(ctx context.Context, req rotation.ProactiveDecideRequest) (rotation.ProactiveDecision, error) {
+			capable, err := accountMaterializer.SupportsRotation(ctx, req.Provider)
+			if err != nil {
+				return rotation.ProactiveDecision{}, err
+			}
+			if !capable {
+				return rotation.ProactiveDecision{Kind: rotation.ProactiveNone}, nil
+			}
+			util := probeCandidateUtilizationForRotationSignal(ctx, log.Logger, accountMaterializer, accounts, rotation.Signal{
+				Provider:        req.Provider,
+				CappedAccountID: req.BoundAccountID, // excluded from candidates
+				Kind:            rotation.UsageLimited,
+			})
+			cand, err := rotationEngine.SelectProactiveCandidate(ctx, req.Provider, req.BoundAccountID, util)
+			if err != nil {
+				return rotation.ProactiveDecision{}, err
+			}
+			if cand == nil {
+				return rotation.ProactiveDecision{Kind: rotation.ProactiveNone}, nil
+			}
+			return rotation.ProactiveDecision{
+				Kind:          rotation.ProactiveSwitch,
+				AccountID:     cand.ID,
+				Label:         cand.Label,
+				CandidateUtil: util[cand.ID],
+			}, nil
 		},
 	})
 	cronGate := session.NewCronCompletionGate(session.CronCompletionGateDeps{
@@ -1165,17 +1313,16 @@ func run(opts runOpts) error {
 	// still apply: rotation.enabled, ImplementingPlan, per-repo CanAutoRotate,
 	// account-0/unbound sessions, and Block-on-error degradation.
 	// Live re-read of the rotation kill-switch, shared by the lifecycle
-	// auto-rotation loader, the task/cron session creator, and the interactive
-	// server's creation-time binding gate. Each caller sees the current on-disk
-	// value rather than the boot-time snapshot.
-	rotationConfigLoader := func() (config.RotationConfig, error) {
+	// auto-rotation loader and the task/cron session creator. Each caller sees
+	// the current on-disk value rather than the boot-time snapshot.
+	rotationConfigLoader := func() (config.ManagedAccountsConfig, error) {
 		loaded, err := config.Load()
 		if err != nil {
-			return config.RotationConfig{}, err
+			return config.ManagedAccountsConfig{}, err
 		}
-		return loaded.Rotation, nil
+		return loaded.ManagedAccounts, nil
 	}
-	lifecycle.SetRotationConfig(settings.Rotation)
+	lifecycle.SetRotationConfig(settings.ManagedAccounts)
 	lifecycle.SetRotationConfigLoader(rotationConfigLoader)
 	lifecycle.SetRateLimitProbe(rateLimitProbe)
 	lifecycle.SetRotationDecider(func(ctx context.Context, sig rotation.Signal) (rotation.Outcome, error) {
@@ -1184,9 +1331,18 @@ func run(opts runOpts) error {
 	lifecycle.SetRotationRecorder(rotationRecorder)
 	lifecycle.SetAccountMaterializer(accountwiring.NewLifecycleMaterializer(accountMaterializer))
 	lifecycle.SetRotationBinding(accountwiring.NewRotationBindingResolver(accountwiring.NewRegistry(accounts), accountMaterializer))
+	// Account-by-id getter for CurrentBearer's first-leg sentinel→bearer
+	// translation (BOS-326): resolves the bound account the materializer needs.
+	lifecycle.SetAccountGetter(accounts.Get)
 	if opts.onRotationSeamsWired != nil {
 		opts.onRotationSeamsWired(lifecycle.HasLiveRotationSeams())
 	}
+	// Operator-facing startup diagnostic (BOS-315): report whether the
+	// auto-rotation lane can actually fire — the wired seams, the boot-time
+	// kill-switch snapshot (re-read live per decision), and the per-repo
+	// CanAutoRotate opt-in counts. Fail-soft: a repo-list error never blocks boot.
+	allRepos, repoListErr := repos.List(context.Background())
+	logRotationLaneAvailability(log.Logger, lifecycle.HasLiveRotationSeams(), settings.ManagedAccounts.ManagedAccountsEnabled(), allRepos, repoListErr)
 
 	// Recover sessions left in Finalizing from a previous daemon crash.
 	// They can't be safely re-driven (we don't know whether EnsurePR ran
@@ -1322,7 +1478,7 @@ func run(opts runOpts) error {
 				Session: &bossanovav1.Session{Id: sessionID},
 			},
 		})
-	}, accountResolver, rotationConfigLoader, log.Logger)
+	}, accountResolver, log.Logger)
 	orchestrator := taskorchestrator.New(
 		pluginHost, repos, taskMappings, sessionCreator, ghProvider,
 		worktrees, livenessChecker, taskorchestrator.DefaultPollInterval, log.Logger,
@@ -1424,6 +1580,18 @@ func run(opts runOpts) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		publishAuthFailedSessionDelta(ctx, agentSessionID, streamHydrator, streamBus, log.Logger)
+		// BOS-316: on an auth-failed SET transition, dispatch the auto-rotator so a
+		// typed 401 pane rotates to a healthy account with zero LLM turns. This hook
+		// also fires on the CLEAR (recovery) transition, on which there is nothing to
+		// rotate — gate on the post-set AuthFailed state (the hook runs after the
+		// tracker's map update, so AuthFailed reflects the new state) so a normal
+		// re-login does not dispatch a no-op rotation that records a spurious
+		// "recovered" audit row and burns the per-chat rate-limit slot. Non-blocking
+		// and fail-safe (the rotator confirms via probe and self-throttles); nil-guarded
+		// because a daemon without a rotation-capable plugin leaves chatRotator unset.
+		if chatRotator != nil && chatStatusTracker.AuthFailed(agentSessionID) {
+			chatRotator.OnAuthFailed(agentSessionID)
+		}
 	})
 
 	var streamClient *upstream.StreamClient
@@ -1800,7 +1968,6 @@ func run(opts runOpts) error {
 		Accounts:           accounts,
 		RotationEngine:     rotationEngine,
 		Resolver:           accountResolver,
-		RotationConfig:     rotationConfigLoader,
 		AccountCredentials: accountCreds,
 		AccountSmokeRunner: accountSmoke,
 		UsageProbe:         accountUsageProbe,
@@ -1930,6 +2097,47 @@ func run(opts runOpts) error {
 	log.Info().Int("port", hookSrv.Port()).Msg("hook server listening on 127.0.0.1")
 	if opts.onHookPortSet != nil {
 		opts.onHookPortSet()
+	}
+
+	// S7 failover reverse proxy (BOS-320): a loopback server the Claude
+	// subprocess is pointed at via ANTHROPIC_BASE_URL when the default-on
+	// managed_accounts.enabled + managed_accounts.failover_proxy_enabled gate
+	// is satisfied. Bind it next to the hook server so the flags can be flipped
+	// live; ANTHROPIC_BASE_URL injection stays gated on both flags + liveness
+	// (Lifecycle.proxyBaseURL), so an always-bound listener is harmless when the
+	// feature is turned off.
+	//
+	// Binding is NON-FATAL (the plan's liveness gate): a construction/bind
+	// failure must never take down bossd for a default-on feature. On failure
+	// leave the proxy unbound — proxyPort stays 0 and no registrar is wired, so
+	// injection is disabled and every session falls back to the direct
+	// api.anthropic.com path.
+	var proxySrv *server.ProxyServer
+	if ps, perr := server.NewProxyServer(server.ProxyServerConfig{
+		Failover: lifecycle,
+		Logger:   log.Logger,
+	}); perr != nil {
+		log.Warn().Err(perr).Msg("failover proxy server construction failed; proxy unbound, sessions use the direct path")
+	} else if lerr := ps.Listen(); lerr != nil {
+		log.Warn().Err(lerr).Msg("failover proxy server listen failed; proxy unbound, sessions use the direct path")
+	} else {
+		proxySrv = ps
+		lifecycle.SetProxyPort(ps.Port())
+		lifecycle.SetProxyRegistrar(ps)
+		log.Info().Int("port", ps.Port()).
+			Msg("failover proxy listening on 127.0.0.1 (injection gated on managed_accounts.enabled + managed_accounts.failover_proxy_enabled, both default true)")
+	}
+
+	// Pre-seed the interactive REPL's one-time approval for the sentinel
+	// ANTHROPIC_API_KEY (BOS-326) so proxied Claude sessions never block on the
+	// api-key approval prompt. Gated on the same flags that arm the proxy;
+	// fail-soft (a seed failure only means the first session may prompt once).
+	if settings.ManagedAccounts.ManagedAccountsEnabled() && settings.ManagedAccounts.FailoverProxyEnabled() {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			if serr := session.SeedAPIKeyApproval(filepath.Join(home, ".claude.json"), session.SentinelApprovalSuffix()); serr != nil {
+				log.Warn().Err(serr).Msg("failover proxy: could not pre-seed API-key approval; interactive sessions may prompt once")
+			}
+		}
 	}
 
 	// Start the cron scheduler now that the hook port is set, so cron-spawned
@@ -2071,11 +2279,11 @@ func run(opts runOpts) error {
 	// Periodically re-dispatch headless runs parked mid-rotation once their
 	// resume-at stamp comes due (BOS-174). Level-triggered off persisted
 	// rotation_resume_at, so it re-arms every parked run across a daemon restart
-	// (no in-memory timer). The kill switch (RotationEnabled) short-circuits the
+	// (no in-memory timer). The kill switch (ManagedAccountsEnabled) short-circuits the
 	// sweep, and until BOS-170 wires the binding/materializer every candidate
 	// stays parked. Cadence comes from the rotation config (defaulted when unset).
 	trackedGo(func() {
-		ticker := time.NewTicker(settings.Rotation.ParkSweepInterval())
+		ticker := time.NewTicker(settings.ManagedAccounts.ParkSweepInterval())
 		defer ticker.Stop()
 		for {
 			select {
@@ -2088,6 +2296,50 @@ func run(opts runOpts) error {
 			}
 		}
 	})
+
+	// Proactive pre-cap rotation sweep (BOS-318). Periodically pre-empts a cap:
+	// rotates IDLE chats off soon-to-cap accounts onto materially-idler ones.
+	// Default OFF — SweepProactive is a no-op unless ProactiveRotation is set.
+	trackedGo(func() {
+		ticker := time.NewTicker(settings.ManagedAccounts.ProactiveSweepInterval())
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pollerCtx.Done():
+				return
+			case <-ticker.C:
+				if n := chatRotator.SweepProactive(pollerCtx); n > 0 {
+					log.Info().Int("count", n).Msg("proactive pre-cap sweep: rotated idle chats")
+				}
+			}
+		}
+	})
+
+	// Periodic usage refresh (BOS-320 hardening). Keeps active accounts' cached
+	// usage snapshots inside the staleness window so the util-aware
+	// default-account selector sidelines capped accounts instead of degrading to
+	// LRU and binding a new session to an exhausted account. Benign vs the
+	// proactive sweep — it only re-probes and caches usage, never mutating a
+	// session — so it runs whenever rotation is not the explicit kill switch,
+	// with an immediate pass at boot (snapshots are otherwise stale until the
+	// first rotation event, e.g. after a daemon restart).
+	if settings.ManagedAccounts.ManagedAccountsEnabled() {
+		trackedGo(func() {
+			if n := refreshActiveAccountUsage(pollerCtx, log.Logger, accountMaterializer, accounts); n > 0 {
+				log.Info().Int("count", n).Msg("usage-refresh: seeded account usage at boot")
+			}
+			ticker := time.NewTicker(settings.ManagedAccounts.UsageRefreshInterval())
+			defer ticker.Stop()
+			for {
+				select {
+				case <-pollerCtx.Done():
+					return
+				case <-ticker.C:
+					refreshActiveAccountUsage(pollerCtx, log.Logger, accountMaterializer, accounts)
+				}
+			}
+		})
+	}
 
 	// Bind the socket and initialize the http.Server synchronously so
 	// Shutdown below cannot race with the serving goroutine's write to
@@ -2110,6 +2362,13 @@ func run(opts runOpts) error {
 			log.Error().Err(err).Msg("hook server exited unexpectedly")
 		}
 	})
+	if proxySrv != nil {
+		trackedGo(func() {
+			if err := proxySrv.Serve(); err != nil && err != http.ErrServerClosed {
+				log.Error().Err(err).Msg("failover proxy exited unexpectedly")
+			}
+		})
+	}
 
 	// Start the upstream StreamClient (no-op in local-only mode).
 	// streamCtx is separate from pollerCtx so we can stop the stream
@@ -2193,6 +2452,11 @@ func run(opts runOpts) error {
 	// Shut down the hook server and remove its port file.
 	if err := hookSrv.Shutdown(ctx); err != nil {
 		log.Warn().Err(err).Msg("hook server shutdown error")
+	}
+	if proxySrv != nil {
+		if err := proxySrv.Shutdown(ctx); err != nil {
+			log.Warn().Err(err).Msg("failover proxy shutdown error")
+		}
 	}
 
 	// Clean up socket file.

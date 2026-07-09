@@ -318,6 +318,68 @@ func TestFinalizeSession_HeadlessNonCronEmptyRun_BlocksNoChanges(t *testing.T) {
 	}
 }
 
+// TestFinalizeSession_PlanningOnlyNoChanges_DoesNotBlockAsImplementationFailure
+// pins the BOS-322 planning-only escape: a session explicitly marked QuickChat
+// (a visible planning/recon/plan-review chat) whose branch made no real changes
+// must NOT be surfaced as a failed implementation run with pr_no_changes/Blocked.
+// It is expected to produce no repository output, so finalize diverts it to the
+// benign deleted_no_changes cleanup path. Same no-real-commits setup as the
+// empty-implementation test above — only QuickChat differs, proving the persisted
+// flag (not the branch state) is what flips the classification.
+func TestFinalizeSession_PlanningOnlyNoChanges_DoesNotBlockAsImplementationFailure(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:      "",
+		commitSubjects: []string{draftPRPlaceholderCommitSubject},
+	}
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 88, HeadBranch: "bos-322-planning", State: vcs.PRStateOpen},
+	}
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "bos-322-planning",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		QuickChat:    true,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	}
+	// A planning-only no-change run is benign cleanup, never a failed
+	// implementation run: no PR marked ready, no tags injected, not Blocked.
+	if len(vp.markReadyCalls) != 0 {
+		t.Fatalf("planning-only run must not mark any PR ready, got %v", vp.markReadyCalls)
+	}
+	if len(wt.injectPRNumbersCalls) != 0 {
+		t.Fatalf("planning-only run must not inject PR tags, got %d", len(wt.injectPRNumbersCalls))
+	}
+	if sess := sessions.sessions["sess-1"]; sess != nil && sess.State == machine.Blocked {
+		t.Fatalf("planning-only no-change session must not be blocked as a failed implementation run")
+	}
+}
+
 // TestFinalizeSession_HeadlessNonCronRealWork_CreatesPR is the companion: a
 // non-cron session that committed real work (a non-placeholder commit) still
 // finalizes to a green ready-for-review PR — the gate must not block legitimate

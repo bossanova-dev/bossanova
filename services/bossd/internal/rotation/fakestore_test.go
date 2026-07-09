@@ -17,11 +17,12 @@ import (
 // is simulated. A write counter records cooldown/health changes so tests can
 // assert idempotency ("exactly one cooldown write").
 type fakeStore struct {
-	mu       sync.Mutex
-	accounts []*models.Account
-	writes   int  // number of cooldown/health writes actually applied+committed
-	txCalls  int  // number of DecideTx invocations (for the capability test)
-	crash    bool // when true, DecideTx runs fn then rolls back with an error
+	mu            sync.Mutex
+	accounts      []*models.Account
+	writes        int  // number of cooldown/health writes actually applied+committed
+	txCalls       int  // number of DecideTx invocations (for the capability test)
+	cooldownCalls int  // number of SetCooldownIfNotCooling invocations (empty-capped guard test)
+	crash         bool // when true, DecideTx runs fn then rolls back with an error
 }
 
 func newFakeStore(accts ...*models.Account) *fakeStore {
@@ -105,6 +106,7 @@ func (tx *fakeTx) ListByProvider(ctx context.Context) ([]*models.Account, error)
 }
 
 func (tx *fakeTx) SetCooldownIfNotCooling(ctx context.Context, accountID string, until, now time.Time) (bool, error) {
+	tx.store.cooldownCalls++
 	a := tx.find(accountID)
 	if a == nil {
 		return false, fmt.Errorf("account %q not found", accountID)

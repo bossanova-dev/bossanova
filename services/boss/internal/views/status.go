@@ -110,7 +110,61 @@ func sessionWarningHints(sess *pb.Session) []string {
 	if hint := rotationExhaustedHint(sess, time.Now()); hint != "" {
 		hints = append(hints, hint)
 	}
+	if hint := setupErrorHint(sess); hint != "" {
+		hints = append(hints, hint)
+	}
 	return hints
+}
+
+// setupErrorHint returns a short "setup script failed: <reason>" hint when
+// the repo's configured setup script failed during worktree creation
+// (Session.SetupError, populated server-side — see the field's proto
+// comment). A setup-script failure is non-fatal, so the session still
+// starts; this surfaces the degraded state in the same danger-styled
+// warning block as repair/attention/rotation hints instead of leaving it
+// visible only via `boss show`. The reason is truncated to its first line
+// so a verbose setup-script failure (e.g. a full npm stack trace) can't
+// blow out the warning block.
+func setupErrorHint(sess *pb.Session) string {
+	if sess == nil {
+		return ""
+	}
+	se := sess.GetSetupError()
+	if se == "" {
+		return ""
+	}
+	return "setup script failed: " + firstLine(se)
+}
+
+// firstLine returns the portion of s before its first newline, or s
+// unchanged if it contains none. Used to keep long, multi-line daemon
+// error strings from blowing out single-line warning hints.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// chatStartErrorHint returns a short "chat failed to start: <reason>" hint
+// for the first chat in chats whose StartError is non-empty — a tmux launch
+// failure stamped by the daemon (ClaudeChat.StartError; see
+// renderChatStartFailed for the per-row badge this mirrors at the session
+// level). Empty when chats is nil/empty or no chat has a StartError. Mirrors
+// setupErrorHint's firstLine truncation so a verbose tmux/daemon error
+// string can't blow out the warning block. Deliberately NOT folded into
+// sessionWarningHints: that function is shared with the home-list call
+// sites, which have no chats slice to inspect — see selectedSessionWarningBlock.
+func chatStartErrorHint(chats []*pb.ClaudeChat) string {
+	for _, chat := range chats {
+		if chat == nil {
+			continue
+		}
+		if se := chat.GetStartError(); se != "" {
+			return "chat failed to start: " + firstLine(se)
+		}
+	}
+	return ""
 }
 
 // rotationExhaustedHint returns "all accounts limited, resumes in ~Xm" when the
@@ -319,18 +373,26 @@ func shortDuration(d time.Duration) string {
 
 // selectedSessionWarningBlock returns a full-width, danger-styled block
 // containing all warning hints for the given session, joined by newlines.
+// chats supplies the session's chats so a per-chat StartError (tmux launch
+// failure) can be surfaced alongside the session-level hints — the session
+// proto has no chats slice of its own, and sessionWarningHints is shared
+// with chats-less home-list callers, so that iteration lives here instead.
 // Returns "" when the session has no hints, so callers can skip rendering
 // entirely (no empty block, no layout shift).
-func selectedSessionWarningBlock(sess *pb.Session, width int) string {
+func selectedSessionWarningBlock(sess *pb.Session, chats []*pb.ClaudeChat, width int) string {
 	hints := sessionWarningHints(sess)
+	if hint := chatStartErrorHint(chats); hint != "" {
+		hints = append(hints, hint)
+	}
 	if len(hints) == 0 {
 		return ""
 	}
 	// Dim a resolved session's residual warning so it no longer alarms; mirrors
 	// the merged/closed hint fade in the home table (BOS-246).
 	style := styleStatusDanger
-	if sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED ||
-		sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CLOSED {
+	if sess != nil &&
+		(sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED ||
+			sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CLOSED) {
 		style = styleStatusDangerFaded
 	}
 	return style.Width(width).Render(strings.Join(hints, "\n"))

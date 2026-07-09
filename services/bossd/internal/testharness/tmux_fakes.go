@@ -38,6 +38,13 @@ type CronReadyTmuxFake struct {
 	// from this fake's perspective. new-session adds; kill-session removes.
 	// has-session consults this map.
 	liveSessions map[string]bool
+
+	// FailNewSession, when non-empty, makes every `tmux new-session` exit
+	// non-zero writing this string to stderr — reproducing a real tmux launch
+	// failure (e.g. "missing or unsuitable terminal: xterm-ghostty") so tests
+	// can exercise the daemon's StartError-stamping path. The session is NOT
+	// marked live when this fires, matching a failed spawn.
+	FailNewSession string
 }
 
 // NewCronReadyTmuxFake returns a fresh fake configured for cron-happy-path
@@ -117,6 +124,14 @@ func (f *CronReadyTmuxFake) cmd(ctx context.Context, name string, args ...string
 
 	switch subcommand {
 	case "new-session":
+		// Simulate a tmux launch failure: exit non-zero with FailNewSession on
+		// stderr and leave the session absent from liveSessions. Passing the
+		// message as $1 to `sh -c` avoids any shell quoting of its contents.
+		if f.FailNewSession != "" {
+			f.mu.Unlock()
+			return exec.CommandContext(ctx, "sh", "-c",
+				`printf '%s' "$1" >&2; exit 1`, "sh", f.FailNewSession)
+		}
 		// Extract -s <name> so we can mark the session live. tmux's
 		// new-session takes -s NAME; scan args for it.
 		if sessName := scanFlagValue(args[1:], "-s"); sessName != "" {

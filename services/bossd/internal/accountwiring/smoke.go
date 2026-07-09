@@ -114,7 +114,7 @@ func (r *SmokeRunner) Smoke(ctx context.Context, accountID, provider string, _ [
 	}
 	client := r.clients[provider]
 	if client == nil {
-		return fmt.Errorf("credential verification unavailable: no agent plugin client for provider %q", provider)
+		return fmt.Errorf("credential verification unavailable: %w", agent.AgentRunnerNotLoaded(provider, r.clients))
 	}
 
 	env, persist, err := r.materialize(ctx, accountID, provider)

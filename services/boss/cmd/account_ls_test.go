@@ -48,6 +48,94 @@ func TestAccountLSCommandShape(t *testing.T) {
 	}
 }
 
+func TestFmtUsageStatusMapsEnumToShortToken(t *testing.T) {
+	cases := map[string]string{
+		"RATE_LIMIT_PLAN_STATUS_RATE_LIMITED": "limited",
+		"RATE_LIMIT_PLAN_STATUS_WARNING":      "warn",
+		"RATE_LIMIT_PLAN_STATUS_ACTIVE":       "ok",
+		"RATE_LIMIT_PLAN_STATUS_UNSUPPORTED":  "-",
+		"RATE_LIMIT_PLAN_STATUS_UNSPECIFIED":  "-",
+		"limited":                             "limited",
+		"ok":                                  "ok",
+	}
+	for in, want := range cases {
+		u := &pb.UsageSnapshot{Status: in, FetchedAt: timestamppb.Now()}
+		if got := fmtUsageStatus(u); got != want {
+			t.Errorf("fmtUsageStatus(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := fmtUsageStatus(nil); got != "-" {
+		t.Errorf("fmtUsageStatus(nil) = %q, want -", got)
+	}
+	if got := fmtUsageStatus(&pb.UsageSnapshot{Status: "ok"}); got != "-" {
+		t.Errorf("never-probed (nil FetchedAt) = %q, want -", got)
+	}
+}
+
+func TestFmtDurationShortBuckets(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{30 * time.Second, "30s"},
+		{5 * time.Minute, "5m"},
+		{3 * time.Hour, "3h"},
+		{50 * time.Hour, "2d"},
+		{-time.Second, "0s"},
+	}
+	for _, c := range cases {
+		if got := fmtDurationShort(c.d); got != c.want {
+			t.Errorf("fmtDurationShort(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
+
+func TestFmtCooldownRelative(t *testing.T) {
+	if got := fmtCooldown(nil); got != "-" {
+		t.Errorf("fmtCooldown(nil) = %q, want -", got)
+	}
+	past := timestamppb.New(time.Now().Add(-time.Hour))
+	if got := fmtCooldown(past); got != "-" {
+		t.Errorf("fmtCooldown(past) = %q, want - (already recovered)", got)
+	}
+	future := timestamppb.New(time.Now().Add(47 * time.Minute))
+	got := fmtCooldown(future)
+	if !strings.HasPrefix(got, "in ") || strings.Contains(got, "T") {
+		t.Errorf("fmtCooldown(future) = %q, want relative like \"in 46m\" (no RFC3339)", got)
+	}
+}
+
+func TestFmtUtilMergesResetCountdown(t *testing.T) {
+	reset := timestamppb.New(time.Now().Add(3 * time.Hour))
+	u := &pb.UsageSnapshot{Util_5H: 0.93, Status: "ok", FetchedAt: timestamppb.Now(), Reset_5H: reset}
+	got := fmtUtil(u, u.GetUtil_5H(), u.GetReset_5H())
+	if got != "93% (3h)" && got != "93% (2h)" {
+		t.Fatalf("fmtUtil with reset = %q, want ~\"93%% (3h)\"", got)
+	}
+	u2 := &pb.UsageSnapshot{Util_7D: 0.5, Status: "ok", FetchedAt: timestamppb.Now()}
+	if got := fmtUtil(u2, u2.GetUtil_7D(), u2.GetReset_7D()); got != "50%" {
+		t.Fatalf("fmtUtil without reset = %q, want \"50%%\"", got)
+	}
+	if got := fmtUtil(nil, 0, nil); got != "-" {
+		t.Fatalf("fmtUtil(nil) = %q, want -", got)
+	}
+}
+
+func TestAccountLSTableOmitsPriorityColumn(t *testing.T) {
+	ls := findLSSubcommand(t)
+	var out bytes.Buffer
+	ls.SetOut(&out)
+	stub := &accountLSStub{accounts: []*pb.Account{
+		{Id: "acct-1", Provider: "claude", Label: "work", Priority: 0},
+	}}
+	if err := accountLS(ls, stub); err != nil {
+		t.Fatalf("accountLS: %v", err)
+	}
+	if strings.Contains(out.String(), "PRIORITY") {
+		t.Fatalf("PRIORITY column should be gone from the table:\n%s", out.String())
+	}
+}
+
 func TestAccountLSJSONIncludesUsageAndForwardsRefresh(t *testing.T) {
 	ls := findLSSubcommand(t)
 	var out bytes.Buffer

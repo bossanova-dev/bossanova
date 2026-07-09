@@ -49,7 +49,7 @@ import {
   normalizeScenes,
   validateBrief,
 } from './proof-brief.mjs'
-import { mapSourceToOutputMs } from './proof-video.mjs'
+import { mapSourceToOutputMs, retimedDurationMs } from './proof-video.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -183,6 +183,7 @@ function defaultDeps() {
     generateBriefFromDiff: defaultGenerateBriefFromDiff,
     renderStill: defaultRenderStill,
     castToVideo: defaultCastToVideo,
+    extractStill: defaultExtractStill,
   }
 }
 
@@ -359,12 +360,14 @@ function defaultRenderCaptionStrip({ text, width, output }) {
  * The cast-relative time (ms) of the LAST event in an asciinema v2 `.cast`
  * recording — the live "now" on the clock that becomes the video. Each event
  * line is `[seconds, type, data]`; the header (line 0) is a JSON object, not an
- * array, so it is skipped. Returns 0 for an empty/unreadable/header-only cast so
- * a missing recording degrades to startMs:0 rather than throwing. Pure + exported
- * for unit tests; the file read is in readCastTailMs.
+ * array, so it is skipped. Returns `null` (BOS-216) — NOT `0` — for an
+ * empty/unreadable/header-only/no-event cast so callers can distinguish "no
+ * cast" from a genuine t=0 event. A real event still returns the rounded,
+ * non-negative ms. Pure + exported for unit tests; the file read is in
+ * readCastTailMs.
  */
 export function parseCastTailMs(castText) {
-  if (typeof castText !== 'string' || castText.length === 0) return 0
+  if (typeof castText !== 'string' || castText.length === 0) return null
   const lines = castText.split('\n')
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i].trim()
@@ -376,27 +379,34 @@ export function parseCastTailMs(castText) {
       // not a well-formed event line — keep scanning upward
     }
   }
-  return 0
+  return null
 }
 
-/** Read the cast tail time (ms) from a live `.cast` file; 0 if absent/unreadable. */
+/** Read the cast tail time (ms) from a live `.cast` file; `null` (BOS-216) when
+ * absent/unreadable so a missing recording is diagnosable, not a silent t=0. */
 function readCastTailMs(castPath) {
   try {
     return parseCastTailMs(fs.readFileSync(castPath, 'utf8'))
   } catch {
-    return 0
+    return null
   }
 }
 
 /**
  * Turn the recorded asciinema `.cast` into an mp4 + poster via agg. Degrades
- * gracefully: a missing cast or missing agg returns null (stills-only proof)
- * with an install hint — the same skip-don't-fail semantics the agent applies
- * when a capture step degrades. The shared
- * finishVideo pipeline adds the intro card, timer, idle speedup, and poster.
- * The returned `timeline` (BOS-140/P3b, null on the plain-mp4 fallback path)
- * is what `mapSourceToOutputMs` needs to place scene markers on the mp4 clock.
- * @returns {{mp4Path: string, posterPath?: string, timeline: object|null}|null}
+ * gracefully: a missing cast, missing agg, or failed conversion returns a
+ * structured `{ degraded: { reason, detail } }` marker (BOS-216) — NOT bare null
+ * — carrying a machine-readable reason (`cast-missing` | `agg-missing` |
+ * `agg-conversion-failed` | `finish-video-failed` | `mp4-missing`) and a
+ * doctor-style loud warning naming the missing prereq + install hint. The caller
+ * still reads null-media semantics (no `mp4Path`), so the stills-only /
+ * exit-code invariant is unchanged; the marker only makes the degrade
+ * diagnosable. The shared finishVideo pipeline adds the intro card, timer, idle
+ * speedup, and poster. The returned `timeline` (BOS-140/P3b, null on the
+ * plain-mp4 fallback path) is what `mapSourceToOutputMs` needs to place scene
+ * markers on the mp4 clock.
+ * @returns {{mp4Path: string, posterPath?: string, timeline: object|null}
+ *   | {degraded: {reason: string, detail: string}}}
  */
 export function defaultCastToVideo({
   castPath,
@@ -409,21 +419,35 @@ export function defaultCastToVideo({
   captionTimings,
 }) {
   if (!castPath || !fs.existsSync(castPath)) {
-    console.warn('[proof-tui-agent] cast file missing — stills-only proof')
-    return null
+    console.warn('[proof-tui-agent] DEGRADED (cast-missing): cast file missing — stills-only proof')
+    return {
+      degraded: { reason: 'cast-missing', detail: `cast file missing: ${castPath ?? '(none)'}` },
+    }
   }
   const aggOk = spawnSync('agg', ['--version'], { stdio: 'ignore' }).status === 0
   if (!aggOk) {
     console.warn(
-      '[proof-tui-agent] agg not installed — stills-only proof (install: cargo install --git https://github.com/asciinema/agg)',
+      '[proof-tui-agent] DEGRADED (agg-missing): agg not installed — stills-only proof (install: cargo install --git https://github.com/asciinema/agg)',
     )
-    return null
+    return {
+      degraded: {
+        reason: 'agg-missing',
+        detail: 'agg not on PATH (install: cargo install --git https://github.com/asciinema/agg)',
+      },
+    }
   }
   const webmPath = path.join(captureDir, `${captureId}.webm`)
   const aggRes = spawnSync('agg', [castPath, webmPath], { stdio: 'inherit' })
   if (aggRes.status !== 0 || !fs.existsSync(webmPath)) {
-    console.warn('[proof-tui-agent] agg conversion failed — stills-only proof')
-    return null
+    console.warn(
+      '[proof-tui-agent] DEGRADED (agg-conversion-failed): agg conversion failed — stills-only proof',
+    )
+    return {
+      degraded: {
+        reason: 'agg-conversion-failed',
+        detail: `agg exited ${aggRes.status} converting the cast`,
+      },
+    }
   }
 
   // Poster base: prefer the final settled-screen frame; fall back to the agg
@@ -476,17 +500,158 @@ export function defaultCastToVideo({
       renderCaptionStrip: defaultRenderCaptionStrip,
     })
   } catch (err) {
-    console.warn(`[proof-tui-agent] finishVideo failed — stills-only proof: ${err.message}`)
-    return null
+    console.warn(
+      `[proof-tui-agent] DEGRADED (finish-video-failed): finishVideo failed — stills-only proof: ${err.message}`,
+    )
+    return { degraded: { reason: 'finish-video-failed', detail: err.message } }
   }
 
   const mp4Path = path.join(captureDir, `${captureId}.mp4`)
-  if (!fs.existsSync(mp4Path)) return null
+  if (!fs.existsSync(mp4Path)) {
+    console.warn(
+      '[proof-tui-agent] DEGRADED (mp4-missing): finishVideo produced no mp4 — stills-only proof',
+    )
+    return { degraded: { reason: 'mp4-missing', detail: `expected mp4 not written: ${mp4Path}` } }
+  }
   return {
     mp4Path,
     posterPath: fs.existsSync(posterPath) ? posterPath : undefined,
     timeline: finished.timeline,
   }
+}
+
+// ── ffmpeg-extracted stills (BOS-216) ──────────────────────────────────────────
+
+/**
+ * Total output-clock duration (ms) of a finished video, derived from its
+ * timeline (`introMs` + the retimed segment duration). Returns null for a
+ * null/absent timeline (the plain-mp4 fallback path), in which case still
+ * extraction skips duration-clamping. Pure.
+ * @param {{introMs?:number, segments?:Array<{startMs:number,endMs:number,speed:number}>}|null} timeline
+ * @returns {number|null}
+ */
+export function timelineDurationMs(timeline) {
+  if (!timeline) return null
+  const { introMs = 0, segments = [] } = timeline
+  return Math.round(introMs + retimedDurationMs(segments))
+}
+
+/**
+ * Pure arg-builder for extracting a single still frame from the rendered mp4 at
+ * an output-clock timestamp. Mirrors the poster extraction (`-vframes 1` at
+ * defaultCastToVideo) but selects an exact frame with `-frames:v 1`. `outputMs`
+ * is clamped to `[0, videoDurationMs]` so a marker past the trimmed end still
+ * yields the final frame rather than an empty file; a non-finite `outputMs`
+ * (a null cast read → mapSourceToOutputMs returned null) falls back to the clamp
+ * ceiling (last frame) when a duration is known, else 0. Exported + pure (no
+ * spawn) so the clamp is unit-testable.
+ * @param {{mp4Path:string, output:string, outputMs:number|null, videoDurationMs:number|null}} opts
+ * @returns {string[]}
+ */
+export function buildStillExtractArgs({ mp4Path, output, outputMs, videoDurationMs }) {
+  const hasDur = Number.isFinite(videoDurationMs) && videoDurationMs >= 0
+  let ms
+  if (Number.isFinite(outputMs)) {
+    ms = Math.max(0, outputMs)
+    if (hasDur) ms = Math.min(ms, videoDurationMs)
+  } else {
+    ms = hasDur ? videoDurationMs : 0
+  }
+  const ss = (ms / 1000).toFixed(3)
+  return [
+    '-y',
+    '-loglevel',
+    'error',
+    '-ss',
+    ss,
+    '-i',
+    mp4Path,
+    '-frames:v',
+    '1',
+    '-update',
+    '1',
+    output,
+  ]
+}
+
+/**
+ * Extract one color-faithful still PNG from the mp4 at an output-clock ms (thin
+ * spawn wrapper over buildStillExtractArgs). Returns true when the PNG was
+ * written. If an at/near-end seek yields no frame, retries once with `-sseof` so
+ * the final frame is always captured. Injected as `deps.extractStill`; unit
+ * tests stub it so no real ffmpeg runs.
+ * @returns {boolean}
+ */
+function defaultExtractStill({ mp4Path, output, outputMs, videoDurationMs }) {
+  spawnSync('ffmpeg', buildStillExtractArgs({ mp4Path, output, outputMs, videoDurationMs }), {
+    stdio: 'inherit',
+  })
+  if (fs.existsSync(output)) return true
+  spawnSync(
+    'ffmpeg',
+    [
+      '-y',
+      '-loglevel',
+      'error',
+      '-sseof',
+      '-0.1',
+      '-i',
+      mp4Path,
+      '-frames:v',
+      '1',
+      '-update',
+      '1',
+      output,
+    ],
+    { stdio: 'inherit' },
+  )
+  return fs.existsSync(output)
+}
+
+/**
+ * PRIMARY stills path (BOS-216): extract one color-faithful still per settled
+ * screen from the already-rendered mp4, placing each on the output mp4 clock via
+ * `mapSourceToOutputMs(timeline, screen.castMs)`. Preserves renderFrames' gallery
+ * shape byte-for-byte (`scene-SS-frame-NN.png`, `label`, `sceneId`) so the
+ * downstream gallery/comment code is unaffected — and, unlike renderFrames, never
+ * launches Chromium. Returns the stills array (possibly empty → the caller falls
+ * back to the Chromium text-scrape renderFrames path).
+ * @param {{screens:Array<{seq:number,castMs:number|null}>, sceneForScreen?:Record<number,string>,
+ *   timeline:object|null, mp4Path:string, captureDir:string, extractStill?:Function}} opts
+ * @returns {Promise<Array<{fileName:string,label:string,sceneId:string}>>}
+ */
+export async function extractStillsFromVideo({
+  screens,
+  sceneForScreen = {},
+  timeline,
+  mp4Path,
+  captureDir,
+  extractStill = defaultExtractStill,
+}) {
+  const videoDurationMs = timelineDurationMs(timeline ?? null)
+  const stills = []
+  for (const s of screens ?? []) {
+    const n = String(s.seq).padStart(2, '0')
+    const sceneId = sceneForScreen[s.seq] ?? sceneForScreen[String(s.seq)] ?? 'scene-01'
+    const ss = sceneOrdinal(sceneId)
+    const output = path.join(captureDir, `scene-${ss}-frame-${n}.png`)
+    const outputMs = mapSourceToOutputMs(timeline ?? null, s.castMs)
+    let ok = false
+    try {
+      // eslint-disable-next-line no-await-in-loop -- frames extract sequentially
+      ok = await extractStill({ mp4Path, output, outputMs, videoDurationMs })
+    } catch (err) {
+      console.warn(`[proof-tui-agent] still extraction failed for screen-${n}: ${err.message}`)
+    }
+    if (ok && fs.existsSync(output)) {
+      stills.push({
+        fileName: `${CAPTURE_ID}/scene-${ss}-frame-${n}.png`,
+        label: `scene ${ss} frame ${n}`,
+        sceneId,
+      })
+    }
+  }
+  return stills
 }
 
 // ── Evidence gate ─────────────────────────────────────────────────────────────
@@ -569,7 +734,7 @@ export async function runTuiAgentProof({
     `${JSON.stringify(brief, null, 2)}\n`,
   )
 
-  // ── Step 2 + 3 (bridge region): loop → frames → zero-frame fallback ───────
+  // ── Step 2 (bridge region): agent loop → timings → zero-screen raw backstop ─
   const captureDir = path.join(localDir, CAPTURE_ID)
   fs.mkdirSync(captureDir, { recursive: true })
 
@@ -583,6 +748,9 @@ export async function runTuiAgentProof({
   // Populated by the try block below; read afterwards (Step 4) to map each
   // scene's cast-clock start onto the finished mp4's clock (BOS-140/P3b).
   let sceneTimings = []
+  // BOS-216: true when any scene-marker / settled-screen cast read returned null
+  // (unreadable/empty cast) — surfaced as a loud degraded marker below.
+  let nullCastRead = false
   const scenes = normalizeScenes(brief)
 
   try {
@@ -593,6 +761,7 @@ export async function runTuiAgentProof({
     screens = loop.screens ?? []
     sceneForScreen = loop.sceneForScreen ?? {}
     sceneTimings = loop.sceneTimings ?? []
+    nullCastRead = Boolean(loop.nullCastRead)
     // Persist the per-step caption timings (raw/caption-timings.json) — the
     // single source the video step reads to burn captions onto the mp4 (BOS-121).
     fs.writeFileSync(
@@ -607,35 +776,20 @@ export async function runTuiAgentProof({
       `${JSON.stringify(sceneTimings, null, 2)}\n`,
     )
 
-    // Render each captured settled screen → scene-SS-frame-NN.png for the gallery.
-    stills = await renderFrames({
-      rawDir,
-      captureDir,
-      title: brief.title,
-      renderStill: d.renderStill,
-      sceneForScreen,
-    })
-
-    // Zero-frame fallback: an image-only reviewer must always get one still.
-    if (stills.length === 0) {
+    // Zero-screen RAW backstop (BOS-216): when the loop captured no settled
+    // screen, grab one now while the bridge is still alive so a raw/screen-01.txt
+    // always exists for the stills step (mp4 extraction or the Chromium
+    // fallback) to turn into the mandatory single still. Kept HERE, not after
+    // quit, because the bridge is gone post-quit; it deliberately does NOT push
+    // to `screens`, so the evidence gate stays byte-identical to today's
+    // zero-frame fallback.
+    if (screens.length === 0) {
       try {
         const { screen } = await bridge.observe()
         finalScreen = screen || finalScreen
-        const screenPath = path.join(rawDir, 'screen-01.txt')
-        fs.writeFileSync(screenPath, screen ?? '')
-        const framePath = path.join(captureDir, 'scene-01-frame-01.png')
-        await d.renderStill({ input: screenPath, output: framePath, title: brief.title })
-        if (fs.existsSync(framePath)) {
-          stills = [
-            {
-              fileName: `${CAPTURE_ID}/scene-01-frame-01.png`,
-              label: 'scene 01 frame 01',
-              sceneId: 'scene-01',
-            },
-          ]
-        }
+        fs.writeFileSync(path.join(rawDir, 'screen-01.txt'), screen ?? '')
       } catch (err) {
-        console.warn(`[proof-tui-agent] zero-frame fallback failed: ${err.message}`)
+        console.warn(`[proof-tui-agent] zero-frame backstop observe failed: ${err.message}`)
       }
     }
   } finally {
@@ -646,20 +800,23 @@ export async function runTuiAgentProof({
     }
   }
 
-  // ── Step 3 (video): .cast → agg → mp4 + poster (graceful stills-only) ─────
+  // ── Step 3 (video): .cast → agg → mp4 + poster (structured stills-only) ────
+  // The video is now rendered BEFORE the stills (BOS-216) so the stills can be
+  // extracted color-faithfully from the mp4. Poster base is null here: no
+  // pre-rendered still exists yet, so defaultCastToVideo's agg-webm last-frame
+  // fallback owns the (color-faithful) poster pixels.
   const castPath = path.join(rawDir, 'session.cast')
   let mp4Exists = false
+  let mp4Path = null
   let posterFileName = null
   let castResult = null
-  const posterBasePng =
-    stills.length > 0 ? path.join(localDir, stills[stills.length - 1].fileName) : null
   const { label, cardTitle } = tuiIntroIdentity(brief.title, prNumber)
   try {
     castResult = await d.castToVideo({
       castPath,
       captureDir,
       captureId: CAPTURE_ID,
-      posterBasePng,
+      posterBasePng: null,
       label,
       cardTitle,
       keepWebm: !shouldUpload,
@@ -674,6 +831,7 @@ export async function runTuiAgentProof({
     if (path.resolve(castResult.mp4Path) !== path.resolve(dest)) {
       fs.copyFileSync(castResult.mp4Path, dest)
     }
+    mp4Path = dest
     mp4Exists = true
     if (castResult.posterPath && fs.existsSync(castResult.posterPath)) {
       const posterDest = path.join(captureDir, `${CAPTURE_ID}.png`)
@@ -682,6 +840,78 @@ export async function runTuiAgentProof({
       }
       posterFileName = `${CAPTURE_ID}/${CAPTURE_ID}.png`
     }
+  }
+
+  // ── Step 3b: stills — extract from the mp4 (primary) or Chromium fallback ───
+  // PRIMARY (BOS-216): with a rendered mp4 AND its output-clock timeline, pull
+  // one color-faithful still per settled screen from the video via ffmpeg —
+  // Chromium, @playwright/test, and services/web/node_modules are entirely off
+  // this path. FALLBACK: no mp4 (agg/ffmpeg/cast missing) OR a present mp4 with a
+  // null timeline (the plain-mp4 fallback path, finishVideo `post.ok === false`)
+  // → the existing Chromium text-scrape renderFrames path. Without a timeline
+  // every screen's castMs maps to a null output ms and would extract the first
+  // frame for every still; renderFrames instead places one correct per-screen
+  // still exactly as `main` does today (Epic-1 exit-code invariant). renderFrames
+  // preserves the identical gallery shape either way (scene-SS-frame-NN.png,
+  // label, sceneId).
+  if (mp4Exists && castResult.timeline) {
+    stills = await extractStillsFromVideo({
+      screens,
+      sceneForScreen,
+      timeline: castResult.timeline,
+      mp4Path,
+      captureDir,
+      extractStill: d.extractStill,
+    })
+  }
+  // Single Chromium recovery path: reached when there is no mp4, when the mp4 has
+  // a null timeline (the plain-mp4 fallback), OR when mp4 extraction produced
+  // nothing (no settled screens). renderFrames text-scrapes whatever raw screens
+  // exist so a still is always produced with the identical gallery shape — the
+  // stills-only degraded proof behaves exactly as today (Epic-1 exit-code
+  // invariant).
+  if (stills.length === 0) {
+    stills = await renderFrames({
+      rawDir,
+      captureDir,
+      title: brief.title,
+      renderStill: d.renderStill,
+      sceneForScreen,
+    })
+  }
+
+  // ── Step 3c: loud, structured degraded marker + acknowledgment env (BOS-216)
+  // Epic-1-safe: this NEVER changes status/hasFailure — it only makes a
+  // stills-only degrade (missing agg/ffmpeg/cast) or an unreadable cast clock
+  // (null scene/screen read → unlinked chapters) diagnosable in the manifest and
+  // loud in the logs. BOSS_PROOF_TUI_ALLOW_STILLS_ONLY is the Epic-1
+  // acknowledgment flag that Epic 4 (BOS-226) will turn into the hard-fail gate;
+  // today it only softens the log wording and MUST NOT touch the exit code.
+  let degraded = null
+  if (castResult?.degraded) {
+    degraded = castResult.degraded
+  } else if (!mp4Exists) {
+    degraded = {
+      reason: 'video-unavailable',
+      detail: 'cast→video produced no mp4 — stills-only proof',
+    }
+  }
+  if (nullCastRead) {
+    const detail = 'a scene/screen cast-clock read was null — affected chapters render unlinked'
+    degraded = degraded
+      ? { reason: degraded.reason, detail: `${degraded.detail}; ${detail}` }
+      : { reason: 'cast-unreadable', detail }
+  }
+  if (degraded) {
+    const allowStillsOnly = ['1', 'true', 'yes'].includes(
+      String(process.env.BOSS_PROOF_TUI_ALLOW_STILLS_ONLY ?? '').toLowerCase(),
+    )
+    const base = `[proof-tui-agent] DEGRADED (${degraded.reason}): ${degraded.detail}`
+    console.warn(
+      allowStillsOnly
+        ? `${base} — acknowledged via BOSS_PROOF_TUI_ALLOW_STILLS_ONLY (warn-only today; Epic 4/BOS-226 keeps the surface passing only with this ack set)`
+        : `${base} — set BOSS_PROOF_TUI_ALLOW_STILLS_ONLY to acknowledge; Epic 4 (BOS-226) will make the absence of this env fail the TUI surface`,
+    )
   }
 
   // ── Step 4: journey-wide per-scene evidence gate (P3c, BOS-140) ────────────
@@ -740,6 +970,7 @@ export async function runTuiAgentProof({
     ...(mp4Exists ? { mediaType: 'mp4', fileName: `${CAPTURE_ID}/${CAPTURE_ID}.mp4` } : {}),
     ...(posterFileName ? { posterFileName } : {}),
     ...(stills.length > 0 ? { stills } : {}),
+    ...(degraded ? { degraded } : {}),
     ...(error ? { error } : {}),
   }
   const recipeFloorCaptures = hasFailure
@@ -815,7 +1046,7 @@ function captureFallbackRecipeFloor({ fallbackRecipeCaptures, localDir, keepWebm
  * Scene 1 is auto-opened at startMs 0. The model marks later scene boundaries
  * via the `begin_scene` tool; each settled screen is attributed to whichever
  * scene is active when it is captured (`sceneForScreen`).
- * @returns {Promise<{ agentResult: object, finalScreen: string, captionTimings: Array<{seq?:number,caption:string,startMs:number}>, sceneTimings: Array<{id:string,title:string,startMs:number}>, sceneForScreen: Record<number,string>, screens: Array<{seq:number,text:string}> }>}
+ * @returns {Promise<{ agentResult: object, finalScreen: string, captionTimings: Array<{seq?:number,caption:string,startMs:number|null}>, sceneTimings: Array<{id:string,title:string,startMs:number|null}>, sceneForScreen: Record<number,string>, screens: Array<{seq:number,text:string,castMs:number|null}>, nullCastRead: boolean }>}
  */
 export async function runAgentLoop({
   brief,
@@ -866,6 +1097,9 @@ export async function runAgentLoop({
   let finalScreen = ''
   let finalText = ''
   let bridgeError = null
+  // BOS-216: set when any scene-marker / settled-screen cast read is null (the
+  // null-vs-0 contract) so the caller can surface a loud degraded marker.
+  let nullCastRead = false
   const captionTimings = []
   const screens = []
   const sceneForScreen = {}
@@ -935,6 +1169,7 @@ export async function runAgentLoop({
           const n = activeSceneIndex + 1
           const scene = scenes[activeSceneIndex]
           const markerMs = readCastMs()
+          if (markerMs === null) nullCastRead = true
           sceneTimings.push({ id: scene.id, title: scene.title, startMs: markerMs })
           // Burn a default scene-change caption only when no narration already
           // precedes this marker — the marker's own caption+cast-timestamp is
@@ -978,10 +1213,13 @@ export async function runAgentLoop({
           // Record the cast-relative time of THIS settled screen so the caption
           // can be burned into the video for the window that starts here (BOS-121).
           const screenMs = readCastMs()
+          if (screenMs === null) nullCastRead = true
           if (!pendingCaptionTimed) {
             captionTimings.push({ seq: screenN, caption: pendingCaption, startMs: screenMs })
           }
-          screens.push({ seq: screenN, text: screen })
+          // BOS-216: carry the screen's cast-clock ms so the stills step can
+          // place each extracted still on the mp4 clock via mapSourceToOutputMs.
+          screens.push({ seq: screenN, text: screen, castMs: screenMs })
           sceneForScreen[screenN] = scenes[activeSceneIndex]?.id
           pendingCaption = ''
           pendingCaptionTimed = false
@@ -1013,7 +1251,15 @@ export async function runAgentLoop({
     evidence: done.evidence,
     steps,
   }
-  return { agentResult, finalScreen, captionTimings, sceneTimings, sceneForScreen, screens }
+  return {
+    agentResult,
+    finalScreen,
+    captionTimings,
+    sceneTimings,
+    sceneForScreen,
+    screens,
+    nullCastRead,
+  }
 }
 
 // ── Capture helpers ────────────────────────────────────────────────────────────
@@ -1226,7 +1472,7 @@ export const settleExtra = (opts = {}) => {
   return extra
 }
 
-export function makeStdioBridge({ localDir, rawDir }) {
+export function makeStdioBridge({ localDir, rawDir, fixture, seedPath, seedEnv } = {}) {
   const bridgeBin = process.env.BOSS_PROOF_TUI_BRIDGE_BIN
   if (!bridgeBin || !fs.existsSync(bridgeBin)) {
     throw new Error(
@@ -1236,17 +1482,23 @@ export function makeStdioBridge({ localDir, rawDir }) {
   }
   const castPath = path.join(rawDir, 'session.cast')
   // Flags match the BOS-69 bridge (services/boss/cmd/proof-tui-agent): -cast writes
-  // the asciinema session; -boss-bin is forwarded when dispatch prebuilds one.
+  // the asciinema session; -boss-bin is forwarded when dispatch prebuilds one;
+  // -fixture / -seed are forwarded only when a scenario requests them.
   // The bridge has no output-dir flag; stills are rendered Node-side from screens.
   const child = spawn(
     bridgeBin,
-    bridgeSpawnArgs({ castPath, bossBin: process.env.BOSS_PROOF_BOSS_BIN }),
+    bridgeSpawnArgs({ castPath, bossBin: process.env.BOSS_PROOF_BOSS_BIN, fixture, seedPath }),
     {
       cwd: repoRoot,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
         BOSS_CLOUD_ACCESS_E2E_SEQUENCE: process.env.BOSS_CLOUD_ACCESS_E2E_SEQUENCE ?? 'active',
+        // Scenario env is forwarded RAW as a single JSON var; the bridge (Go) is
+        // the SOLE validator against its whitelist (no Node-side filtering, so no
+        // Go/TS whitelist to drift). Spread nothing when unset → byte-identical
+        // default env.
+        ...(seedEnv ? { BOSS_PROOF_TUI_SEED_ENV: JSON.stringify(seedEnv) } : {}),
       },
     },
   )
@@ -1357,8 +1609,18 @@ export function makeStdioBridge({ localDir, rawDir }) {
   }
 }
 
-export function bridgeSpawnArgs({ castPath, bossBin }) {
-  return ['--cast', castPath, ...(bossBin ? ['--boss-bin', bossBin] : [])]
+export function bridgeSpawnArgs({ castPath, bossBin, fixture, seedPath } = {}) {
+  // Existing param order is preserved (cast, then boss-bin); fixture/seed are
+  // appended ONLY when provided, so the default (nothing requested) output stays
+  // byte-identical to the pre-BOS-217 bridge. The bridge (Go) owns all fixture
+  // and env validation — Node forwards raw.
+  return [
+    '--cast',
+    castPath,
+    ...(bossBin ? ['--boss-bin', bossBin] : []),
+    ...(fixture ? ['--fixture', fixture] : []),
+    ...(seedPath ? ['--seed', seedPath] : []),
+  ]
 }
 
 // ── Env helpers (mirrored from proof-agent.mjs) ────────────────────────────────

@@ -23,7 +23,6 @@ type CodexOptions struct {
 	HomeDir  func() (string, error) // default: 0700 os.MkdirTemp CODEX_HOME
 	Timeout  time.Duration          // device-flow deadline, default 10m
 	Label    string
-	Email    string
 	Priority int32 // account ordering, from --priority (default 0)
 }
 
@@ -78,7 +77,7 @@ func RunCodexAdd(ctx context.Context, o CodexOptions) error {
 
 	// Codex registration always runs against an interactive TTY (the device flow
 	// has no --token-stdin path), so identity prompting stays enabled.
-	label, email, err := promptIdentity(ctx, o.Prompter, o.Client, "codex", o.Label, o.Email, "", false)
+	label, err := promptIdentity(ctx, o.Prompter, o.Client, "codex", o.Label, false)
 	if err != nil {
 		return err
 	}
@@ -90,7 +89,7 @@ func RunCodexAdd(ctx context.Context, o CodexOptions) error {
 	if err != nil {
 		return fmt.Errorf("could not encode codex credential for storage; nothing stored: %w", err)
 	}
-	return storeAndTest(ctx, o.Prompter, o.Client, "codex", label, email, o.Priority, stored, "")
+	return storeAndTest(ctx, o.Prompter, o.Client, "codex", label, o.Priority, stored, "")
 }
 
 type codexResult struct {

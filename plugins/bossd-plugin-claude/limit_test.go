@@ -49,6 +49,34 @@ func TestDetectUsageLimitIgnoresProseAbovePrompt(t *testing.T) {
 	}
 }
 
+// TestDetectUsageLimitFiresOnLiveBannerRenderings asserts the real
+// claudeLimitPatterns detect the two states a user actually gets stuck in with
+// the current Claude Code CLI: the cap notice rendered inline above the input
+// box, the interactive decision modal, and the modal when the banner text has
+// scrolled off (only the "Stop and wait for limit to reset" option is visible).
+func TestDetectUsageLimitFiresOnLiveBannerRenderings(t *testing.T) {
+	for _, fixture := range []string{
+		"testdata/panes/limit_inline_banner.txt",
+		"testdata/panes/limit_decision_modal.txt",
+		"testdata/panes/limit_modal_banner_scrolled_off.txt",
+	} {
+		t.Run(fixture, func(t *testing.T) {
+			data, err := os.ReadFile(fixture)
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+			s := &Server{logger: zerolog.Nop()}
+			resp, err := s.DetectUsageLimit(context.Background(), &bossanovav1.DetectUsageLimitRequest{PaneContent: data})
+			if err != nil {
+				t.Fatalf("DetectUsageLimit: %v", err)
+			}
+			if !resp.GetLimited() {
+				t.Fatalf("expected limited=true for %s", fixture)
+			}
+		})
+	}
+}
+
 // TestDetectUsageLimitIgnoresWorkingPane confirms an ordinary working pane with
 // no status-region banner is not limited (fail-safe: ambiguity never limits).
 func TestDetectUsageLimitIgnoresWorkingPane(t *testing.T) {

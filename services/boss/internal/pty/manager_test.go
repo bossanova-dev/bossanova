@@ -3,6 +3,7 @@ package pty
 import (
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -110,4 +111,32 @@ func TestManagerGetDeletesExitedEntry(t *testing.T) {
 	case <-time.After(2 * time.Second):
 	}
 	m.Cleanup(id)
+}
+
+// TestManagerRecentOutputAfterExit locks in that RecentOutput can still read
+// a process's buffered PTY tail after the process has exited, as long as it
+// has not yet been evicted (unlike Get, which evicts done processes). This
+// is what lets an attach-failure handler read tmux's startup error after the
+// `tmux attach` child has already died.
+func TestManagerRecentOutputAfterExit(t *testing.T) {
+	m := NewManager()
+	// `printf` writes then exits immediately, giving us a done process.
+	cmd := exec.Command("printf", "missing or unsuitable terminal: xterm-ghostty")
+	p, err := m.GetOrStart("sess-1", cmd)
+	if err != nil {
+		t.Fatalf("GetOrStart: %v", err)
+	}
+	// Wait for exit via p.Done() rather than polling IsRunning/Get: Get
+	// evicts a done process from the map as a side effect (that's exactly
+	// the behavior RecentOutput must avoid), so polling through it here
+	// would race the entry out from under the assertion below.
+	select {
+	case <-p.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("process did not exit in time")
+	}
+	got := string(m.RecentOutput("sess-1", 4096))
+	if !strings.Contains(got, "missing or unsuitable terminal") {
+		t.Fatalf("RecentOutput after exit = %q, want the tmux error text", got)
+	}
 }

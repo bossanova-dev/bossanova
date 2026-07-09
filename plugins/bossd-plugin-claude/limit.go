@@ -27,6 +27,12 @@ var claudeLimitPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)hit your .{0,40}limit`),
 	regexp.MustCompile(`(?i)credits? exhausted`),
 	regexp.MustCompile(`(?i)out of credits`),
+	// The interactive usage-limit decision modal's first option. It lets the
+	// modal be detected even when the "hit your … limit" banner above it has
+	// scrolled off the visible pane; statusdetect only scans the whole screen
+	// for these once it has confirmed the blocking modal is up (isDecisionModal),
+	// so this cannot fire on ordinary prose.
+	regexp.MustCompile(`(?i)stop and wait for .{0,30}limit`),
 }
 
 // DetectUsageLimit reports whether the supplied tmux pane bytes show Claude's

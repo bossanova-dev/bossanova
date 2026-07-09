@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/accountcred"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/proto"
@@ -155,7 +157,6 @@ func mustAddClaude(t *testing.T, srv *Server, label string, cred []byte) *pb.Acc
 	resp, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
 		Provider:   "claude",
 		Label:      label,
-		Email:      "dev@example.com",
 		Priority:   3,
 		Credential: cred,
 	}))
@@ -976,6 +977,44 @@ func TestTestAccountNilRunnerDegrades(t *testing.T) {
 	}
 	if resp.Msg.Account.LastTestOkAt != nil {
 		t.Errorf("last_test_ok_at set, want nil when provider verification is unavailable")
+	}
+}
+
+func TestTestAccountNoRunnerLoadedDegradesToUnavailable(t *testing.T) {
+	creds := newFakeCredStore()
+	// The smoke runner reports that no agent plugin is loaded to run verification.
+	smoke := &fakeSmoke{err: fmt.Errorf("credential verification unavailable: %w", agent.ErrAgentRunnerNotLoaded)}
+	srv, _ := newAccountServer(t, creds, smoke)
+	acct := mustAddClaude(t, srv, "norunner", []byte("setup-token"))
+
+	resp, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id}))
+	if err != nil {
+		t.Fatalf("TestAccount: %v", err)
+	}
+	if resp.Msg.GetLiveSmokeRan() {
+		t.Fatal("no-runner case must not report live_smoke_ran=true")
+	}
+	if resp.Msg.GetDetail() != liveSmokeUnavailableDetail {
+		t.Fatalf("detail=%q, want the unavailable sentinel", resp.Msg.GetDetail())
+	}
+	if resp.Msg.Account.GetLastTestError() != liveSmokeUnavailableDetail {
+		t.Fatalf("last_test_error=%q, want the unavailable sentinel", resp.Msg.Account.GetLastTestError())
+	}
+	if resp.Msg.Account.GetLastTestOkAt() != nil {
+		t.Fatal("last_test_ok_at set, want nil when verification could not run")
+	}
+}
+
+// TestLiveSmokeUnavailableDetailContract pins the exact sentinel bytes. The boss
+// CLI (services/boss/internal/accountflow/claude.go) duplicates this literal (by
+// module-boundary convention) and routes on an exact string match to keep an
+// account silently when verification could not run. If you change this string
+// you MUST change the CLI copy (and its matching contract test) in lockstep, or
+// the CLI silently reverts to the keep/remove prompt for the unavailable case.
+func TestLiveSmokeUnavailableDetailContract(t *testing.T) {
+	const want = "provider verification unavailable"
+	if liveSmokeUnavailableDetail != want {
+		t.Fatalf("liveSmokeUnavailableDetail = %q, want %q (must match the boss CLI sentinel)", liveSmokeUnavailableDetail, want)
 	}
 }
 

@@ -142,6 +142,22 @@ func (m *Manager) Get(id string) (*Process, bool) {
 	}
 }
 
+// RecentOutput returns up to the last n bytes of PTY output for the given
+// agent session, even if the process has already exited (as long as it has
+// not yet been evicted). Returns nil when no process is tracked. Unlike Get
+// it does not evict a done process, so an attach failure handler can still
+// read tmux's startup error (e.g. "missing or unsuitable terminal:
+// xterm-ghostty").
+func (m *Manager) RecentOutput(agentSessionID string, n int) []byte {
+	m.mu.Lock()
+	p, ok := m.processes[agentSessionID]
+	m.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	return p.RecentOutput(n)
+}
+
 // IsRunning reports whether a process for the given ID is still alive.
 func (m *Manager) IsRunning(id string) bool {
 	_, ok := m.Get(id)

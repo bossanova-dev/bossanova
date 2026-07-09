@@ -17,6 +17,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/termnorm"
 	"github.com/recurser/bossalib/vcs"
 )
 
@@ -32,7 +33,7 @@ const recentRepairLogsLimit = 10
 const claudeVersionTimeout = 5 * time.Second
 
 // RepairDoctor returns a structured health report for the auto-repair
-// pipeline. The seven checks intentionally each fail independently — the
+// pipeline. The checks intentionally each fail independently — the
 // CLI renders the full list so the operator sees what's healthy alongside
 // what's broken, instead of a single "FAIL" with no context.
 func (s *Server) RepairDoctor(ctx context.Context, _ *connect.Request[bossanovav1.RepairDoctorRequest]) (*connect.Response[bossanovav1.RepairDoctorResponse], error) {
@@ -124,7 +125,14 @@ func (s *Server) RepairDoctor(ctx context.Context, _ *connect.Request[bossanovav
 	// Check 8: gh auth can update workflow files?
 	resp.Checks = append(resp.Checks, githubWorkflowScopeCheck(ctx))
 
-	// Check 9: recent repair logs (seeded into the response so the CLI
+	// Check 9: daemon's TERM resolves a terminfo entry?
+	resp.Checks = append(resp.Checks, terminalCheck(os.Getenv("TERM"), termnorm.Resolvable))
+
+	// Check 10: duplicate codex provider_session_ids? Self-healing: clears
+	// colliding sibling chats so they re-resolve via process fd (BOS-290).
+	resp.Checks = append(resp.Checks, s.duplicateCodexProviderSessionCheck(ctx))
+
+	// Recent repair logs (seeded into the response so the CLI
 	// can render the file list independent of the pass/fail check).
 	if logsDir != "" {
 		resp.RecentLogs = recentRepairLogs(logsDir)
@@ -227,6 +235,32 @@ func claudeVersionCheck(ctx context.Context) *bossanovav1.RepairDoctorCheck {
 		Name:   "claude on PATH",
 		Ok:     true,
 		Detail: fmt.Sprintf("%s — %s", resolved, strings.TrimSpace(string(out))),
+	}
+}
+
+// terminalCheck reports whether the daemon's TERM resolves a terminfo entry.
+// A missing entry (e.g. TERM=xterm-ghostty inherited from the launching
+// shell) makes `tmux new-session`/attach exit with "missing or unsuitable
+// terminal". The check is purely informational: it never fails the doctor
+// run, it only surfaces a copy-able remediation.
+func terminalCheck(term string, resolvable func(string) bool) *bossanovav1.RepairDoctorCheck {
+	if term == "" {
+		term = "(unset)"
+	}
+	if term != "(unset)" && resolvable(term) {
+		return &bossanovav1.RepairDoctorCheck{
+			Name:   "terminal",
+			Ok:     true,
+			Detail: "TERM=" + term + " resolves",
+		}
+	}
+	return &bossanovav1.RepairDoctorCheck{
+		Name: "terminal",
+		Ok:   false,
+		Detail: "TERM=" + term + " has no terminfo entry on this host; tmux will fall " +
+			"back to " + termnorm.FallbackTERM + ". To use your real terminal, install its terminfo:\n" +
+			"  " + termnorm.InstallHint + "\n" +
+			"or set: export TERM=" + termnorm.FallbackTERM,
 	}
 }
 

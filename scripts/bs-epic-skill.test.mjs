@@ -54,7 +54,14 @@ test('size ratchet', () => {
   // premature merges of still-working children whose own boss-implement review +
   // comment resolution had not finished (recurser/bossanova#1174). This makes the
   // classified greens actually match nextToMerge's "passed-review" contract.
-  const RATCHET = 28672
+  // Bumped 28672 → 29696 for BOS-322, the "planning-only epic work must not
+  // spawn PR-backed sessions or surface false pr_no_changes" ticket: the
+  // Operating Contract now carries a concrete three-case routing contract naming
+  // the session-runner capabilities (implementation → `createSession` +
+  // `tmux_unattended`; unattended planning → subagent; visible planning →
+  // `createPlanningChat` / `quick_chat: true`) and Phase 3a states the
+  // `createSession` block is implementation-only — the core deliverable.
+  const RATCHET = 29696
   const bytes = Buffer.byteLength(CLAUDE, 'utf8')
   assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
 })
@@ -108,6 +115,53 @@ test('passing greens require settled child chat before merge eligibility', () =>
     CLAUDE,
     /GREEN_DRAFT or READY_FOR_REVIEW \+ DisplayStatus Passing\*\*?[^+\n]*→ add to the\s+\*\*greens\*\*/,
     'the old Passing-only green transition must not return',
+  )
+})
+
+test('planning-only work is routed away from PR-backed sessions', () => {
+  assert.match(CLAUDE, /planning-only/i, 'skill must explicitly classify planning-only work')
+  assert.match(
+    CLAUDE,
+    /subagent/i,
+    'unattended planning fan-out should be routed to subagents, not sessions',
+  )
+  assert.match(
+    CLAUDE,
+    /quick_chat:\s*true/,
+    'visible planning conversations should use quick_chat:true',
+  )
+  assert.match(
+    CLAUDE,
+    /must not use\s+`?create_session`?.*tmux_unattended/i,
+    'planning-only work must not use PR-backed tmux_unattended sessions',
+  )
+})
+
+test('planning-only routing names concrete capability boundaries', () => {
+  // BOS-322: the three routing cases must be concrete and name the session-runner
+  // adapter capabilities (createSession vs createPlanningChat), not prose-only
+  // advice — so a planning subtask can never regress into the PR-backed
+  // implementation path. Each case must live on a single line (capability + its
+  // discriminating field co-located).
+  assert.match(
+    CLAUDE,
+    /implementation work uses[^\n]*createSession[^\n]*tmux_unattended/i,
+    'implementation work must name the createSession capability + tmux_unattended',
+  )
+  assert.match(
+    CLAUDE,
+    /unattended[^\n]*planning[^\n]*subagent/i,
+    'unattended planning fan-out must route to a subagent',
+  )
+  assert.match(
+    CLAUDE,
+    /visible planning chat uses[^\n]*createPlanningChat/i,
+    'visible planning chat must name the createPlanningChat capability',
+  )
+  assert.doesNotMatch(
+    CLAUDE,
+    /planning[- ]only[^\n]*(?:use|via|route|through)[^\n]*create_session[^\n]*tmux_unattended/i,
+    'planning-only work must never be routed to create_session + tmux_unattended',
   )
 })
 

@@ -180,7 +180,7 @@ func TestSweepParkedRotations_KillSwitchDisables(t *testing.T) {
 	past := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	f := newParkedRotationFixture(t, past)
 	disabled := false
-	f.lc.SetRotationConfig(config.RotationConfig{Enabled: &disabled})
+	f.lc.SetRotationConfig(config.ManagedAccountsConfig{Enabled: &disabled})
 	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "x"}}
 	f.lc.SetClockForTest(fixedClock(past.Add(time.Hour)))
 
@@ -201,9 +201,9 @@ func TestSweepParkedRotations_LiveKillSwitchDisables(t *testing.T) {
 	f := newParkedRotationFixture(t, past)
 	enabled := true
 	disabled := false
-	f.lc.SetRotationConfig(config.RotationConfig{Enabled: &enabled})
-	f.lc.SetRotationConfigLoader(func() (config.RotationConfig, error) {
-		return config.RotationConfig{Enabled: &disabled}, nil
+	f.lc.SetRotationConfig(config.ManagedAccountsConfig{Enabled: &enabled})
+	f.lc.SetRotationConfigLoader(func() (config.ManagedAccountsConfig, error) {
+		return config.ManagedAccountsConfig{Enabled: &disabled}, nil
 	})
 	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "x"}}
 	f.lc.SetClockForTest(fixedClock(past.Add(time.Hour)))

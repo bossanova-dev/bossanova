@@ -135,6 +135,7 @@ function withEnv(overrides, fn) {
     'BOSS_PROOF_PUBLIC_BASE_URL',
     'BOSS_PROOF_MODEL',
     'BOSS_PROOF_AGENT_TIMEOUT_MS',
+    'BOSS_PROOF_TUI_ALLOW_STILLS_ONLY',
   ]
   const saved = {}
   for (const k of keys) saved[k] = process.env[k]
@@ -659,7 +660,25 @@ test('runTuiAgentProof: castToVideo returns mp4 → capture mediaType mp4', asyn
             const posterPath = path.join(captureDir, `${captureId}.png`)
             fs.writeFileSync(mp4Path, 'fake-mp4')
             fs.writeFileSync(posterPath, 'fake-poster')
-            return { mp4Path, posterPath }
+            // A real render returns an output-clock timeline; the primary
+            // ffmpeg-extraction path requires it (a null timeline is the
+            // plain-mp4 fallback, covered by its own test below).
+            return {
+              mp4Path,
+              posterPath,
+              timeline: {
+                trimMs: 0,
+                segments: [{ startMs: 0, endMs: 5000, speed: 1 }],
+                introMs: 1000,
+              },
+            }
+          }
+          // BOS-216: with an mp4 present, stills come from the video via the
+          // extractStill seam (no Chromium). renderStill must never be called.
+          const renderStill = fakeRenderStill()
+          const extractStill = async ({ output }) => {
+            fs.writeFileSync(output, 'fake-extracted-png')
+            return true
           }
           try {
             const { manifest } = await runTuiAgentProof({
@@ -673,7 +692,8 @@ test('runTuiAgentProof: castToVideo returns mp4 → capture mediaType mp4', asyn
                   toolUse('observe', {}),
                   toolUse('done', { summary: 'done', passed: true }),
                 ]),
-                renderStill: fakeRenderStill(),
+                renderStill,
+                extractStill,
                 castToVideo,
               },
             })
@@ -681,10 +701,15 @@ test('runTuiAgentProof: castToVideo returns mp4 → capture mediaType mp4', asyn
             assert.equal(cap.mediaType, 'mp4')
             assert.equal(cap.status, 'passed')
             assert.ok(cap.videoUrl, 'video capture must expose a videoUrl')
+            assert.ok(cap.stills.length >= 1, 'stills extracted from the mp4')
             assert.equal(
-              castArgs.posterBasePng,
-              path.join(castArgs.captureDir, 'scene-01-frame-01.png'),
+              renderStill.calls.length,
+              0,
+              'Chromium text-scrape renderer must be OFF the happy (mp4-present) path',
             )
+            // Poster base is null now — the video (webm last frame) owns the
+            // poster pixels, so no pre-rendered still is threaded into castToVideo.
+            assert.equal(castArgs.posterBasePng, null)
             assert.equal(castArgs.keepWebm, true)
             assert.equal(castArgs.label, 'bossanova#123')
             assert.equal(castArgs.cardTitle, 'Targeted PR title')
@@ -747,25 +772,488 @@ test('runTuiAgentProof: castToVideo returns null → stills-only run still succe
   }
 })
 
-test('defaultCastToVideo: returns null (stills-only) when the cast file is absent', async () => {
+test('defaultCastToVideo: returns a structured degraded marker (no mp4) when the cast file is absent (BOS-216)', async () => {
   const { defaultCastToVideo } = await import('./proof-tui-agent.mjs')
   const warnings = []
   const originalWarn = console.warn
   console.warn = (message) => warnings.push(String(message))
+  let out
   try {
-    const out = defaultCastToVideo({
+    out = defaultCastToVideo({
       castPath: '/nonexistent/session.cast',
       captureDir: '/tmp',
       captureId: 'tui-agent',
     })
-    assert.equal(out, null)
   } finally {
     console.warn = originalWarn
   }
+  // BOS-216: null-media semantics for the caller (no mp4Path) but a
+  // machine-readable reason so the degrade is diagnosable, not silent.
+  assert.equal(out.mp4Path, undefined, 'no mp4 on the degraded path')
+  assert.equal(out.degraded.reason, 'cast-missing')
+  assert.ok(typeof out.degraded.detail === 'string' && out.degraded.detail.length > 0)
   assert.ok(
-    warnings.some((message) => /cast/i.test(message) && /stills-only/i.test(message)),
-    'missing cast should warn that the proof is falling back to stills-only',
+    warnings.some(
+      (message) =>
+        /DEGRADED/.test(message) && /cast/i.test(message) && /stills-only/i.test(message),
+    ),
+    'missing cast should warn loudly that the proof is falling back to stills-only',
   )
+})
+
+// ── BOS-216: ffmpeg-extracted stills, degraded marker, stills-only ack env ────
+
+test('buildStillExtractArgs: -ss carries the output-clock ms, clamped to [0, videoDurationMs]', async () => {
+  const { buildStillExtractArgs } = await import('./proof-tui-agent.mjs')
+  // In-range value: exact-frame selection (`-frames:v 1`), -ss in seconds@ms.
+  assert.deepEqual(
+    buildStillExtractArgs({
+      mp4Path: '/v.mp4',
+      output: '/o.png',
+      outputMs: 2000,
+      videoDurationMs: 5000,
+    }),
+    [
+      '-y',
+      '-loglevel',
+      'error',
+      '-ss',
+      '2.000',
+      '-i',
+      '/v.mp4',
+      '-frames:v',
+      '1',
+      '-update',
+      '1',
+      '/o.png',
+    ],
+  )
+  const ss = (args) => args[args.indexOf('-ss') + 1]
+  // Past the trimmed end → clamps to the duration (never an empty PNG).
+  assert.equal(
+    ss(
+      buildStillExtractArgs({
+        mp4Path: '/v',
+        output: '/o',
+        outputMs: 99999,
+        videoDurationMs: 5000,
+      }),
+    ),
+    '5.000',
+  )
+  // Negative floors to 0.
+  assert.equal(
+    ss(
+      buildStillExtractArgs({ mp4Path: '/v', output: '/o', outputMs: -10, videoDurationMs: 5000 }),
+    ),
+    '0.000',
+  )
+  // Non-finite (null cast read → mapSourceToOutputMs returned null) falls back to
+  // the ceiling (last frame) when a duration is known, else 0.
+  assert.equal(
+    ss(
+      buildStillExtractArgs({ mp4Path: '/v', output: '/o', outputMs: null, videoDurationMs: 5000 }),
+    ),
+    '5.000',
+  )
+  assert.equal(
+    ss(
+      buildStillExtractArgs({ mp4Path: '/v', output: '/o', outputMs: null, videoDurationMs: null }),
+    ),
+    '0.000',
+  )
+})
+
+test('buildStillExtractArgs -ss equals mapSourceToOutputMs(timeline, castMs)/1000 (acceptance)', async () => {
+  const { buildStillExtractArgs, timelineDurationMs } = await import('./proof-tui-agent.mjs')
+  const { mapSourceToOutputMs } = await import('./proof-video.mjs')
+  const timeline = { trimMs: 500, segments: [{ startMs: 0, endMs: 5000, speed: 1 }], introMs: 2000 }
+  const castMs = 1500 // max(0,1500-500)=1000 through identity segment + introMs 2000 = 3000
+  const outputMs = mapSourceToOutputMs(timeline, castMs)
+  assert.equal(outputMs, 3000)
+  const videoDurationMs = timelineDurationMs(timeline) // 2000 intro + 5000 retimed = 7000
+  assert.equal(videoDurationMs, 7000)
+  const args = buildStillExtractArgs({
+    mp4Path: '/v.mp4',
+    output: '/o.png',
+    outputMs,
+    videoDurationMs,
+  })
+  assert.equal(args[args.indexOf('-ss') + 1], (outputMs / 1000).toFixed(3))
+})
+
+test('extractStillsFromVideo: mirrors the renderFrames gallery shape and maps each screen through the timeline', async () => {
+  const { extractStillsFromVideo } = await import('./proof-tui-agent.mjs')
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-extract-'))
+  try {
+    const seen = []
+    const extractStill = async ({ output, outputMs }) => {
+      seen.push({ output: path.basename(output), outputMs })
+      fs.writeFileSync(output, 'png')
+      return true
+    }
+    const timeline = {
+      trimMs: 0,
+      segments: [{ startMs: 0, endMs: 10000, speed: 1 }],
+      introMs: 1000,
+    }
+    const stills = await extractStillsFromVideo({
+      screens: [
+        { seq: 1, castMs: 0 },
+        { seq: 2, castMs: 4000 },
+      ],
+      sceneForScreen: { 1: 'scene-01', 2: 'scene-02' },
+      timeline,
+      mp4Path: '/v.mp4',
+      captureDir,
+      extractStill,
+    })
+    assert.deepEqual(stills, [
+      {
+        fileName: 'tui-agent/scene-01-frame-01.png',
+        label: 'scene 01 frame 01',
+        sceneId: 'scene-01',
+      },
+      {
+        fileName: 'tui-agent/scene-02-frame-02.png',
+        label: 'scene 02 frame 02',
+        sceneId: 'scene-02',
+      },
+    ])
+    // Each still extracted at its screen's mapped output-clock ms (introMs + castMs).
+    assert.deepEqual(seen, [
+      { output: 'scene-01-frame-01.png', outputMs: 1000 },
+      { output: 'scene-02-frame-02.png', outputMs: 5000 },
+    ])
+  } finally {
+    fs.rmSync(captureDir, { recursive: true, force: true })
+  }
+})
+
+test('runTuiAgentProof: mp4 absent → Chromium renderFrames fallback runs, extractStill never does (seam) (BOS-216)', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  const brief = {
+    title: 'Fallback',
+    description: 'No video available',
+    expectedEvidence: ['Ready'],
+  }
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        BASE_ENV({ BOSS_PROOF_BRIEF: briefPath, BOSS_PROOF_RUN_ID: 'tui-fallback-seam' }),
+        async () => {
+          const renderStill = fakeRenderStill()
+          let extractCalls = 0
+          const extractStill = async ({ output }) => {
+            extractCalls += 1
+            fs.writeFileSync(output, 'png')
+            return true
+          }
+          const { manifest } = await runTuiAgentProof({
+            prNumber: 'tuifallbackseam',
+            commit: 'abc1234',
+            changedFiles: [],
+            dryRun: true,
+            deps: {
+              bridge: scriptedBridge({ screens: ['Ready to go'] }),
+              model: scriptedModel([
+                toolUse('observe', {}),
+                toolUse('done', { summary: 'done', passed: true }),
+              ]),
+              renderStill,
+              extractStill,
+              castToVideo: async () => null, // mp4 absent → fallback path
+            },
+          })
+          const cap = manifest.captures[0]
+          assert.equal(extractCalls, 0, 'no mp4 → still extraction must NOT run')
+          assert.ok(
+            renderStill.calls.length >= 1,
+            'fallback must use the Chromium text-scrape renderer',
+          )
+          assert.equal(
+            cap.status,
+            'passed',
+            'stills-only fallback still passes (exit-code invariant)',
+          )
+          assert.ok(cap.stills.length >= 1)
+        },
+      ),
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuifallbackseam')
+  }
+})
+
+test('runTuiAgentProof: mp4 present but null timeline (plain-mp4 fallback) → Chromium renderFrames, extractStill never runs (BOS-216)', async () => {
+  // Guards against extracting every still at the first frame: without a timeline
+  // each screen's castMs maps to a null output ms, so the ffmpeg-extraction path
+  // must be skipped in favour of the per-screen Chromium renderer (as `main`
+  // does). Exit-code invariant: status stays `passed`.
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  const brief = {
+    title: 'Plain mp4',
+    description: 'Video without a timeline',
+    expectedEvidence: ['Ready'],
+  }
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        BASE_ENV({ BOSS_PROOF_BRIEF: briefPath, BOSS_PROOF_RUN_ID: 'tui-plain-mp4' }),
+        async () => {
+          const renderStill = fakeRenderStill()
+          let extractCalls = 0
+          const extractStill = async ({ output }) => {
+            extractCalls += 1
+            fs.writeFileSync(output, 'png')
+            return true
+          }
+          const castToVideo = async ({ captureDir, captureId }) => {
+            const mp4Path = path.join(captureDir, `${captureId}.mp4`)
+            fs.writeFileSync(mp4Path, 'fake-mp4')
+            // Plain-mp4 fallback: an mp4 exists but post-processing produced no
+            // timeline (finishVideo `post.ok === false`).
+            return { mp4Path, timeline: null }
+          }
+          const { manifest } = await runTuiAgentProof({
+            prNumber: 'tuiplainmp4',
+            commit: 'abc1234',
+            changedFiles: [],
+            dryRun: true,
+            deps: {
+              bridge: scriptedBridge({ screens: ['Ready to go'] }),
+              model: scriptedModel([
+                toolUse('observe', {}),
+                toolUse('done', { summary: 'done', passed: true }),
+              ]),
+              renderStill,
+              extractStill,
+              castToVideo,
+            },
+          })
+          const cap = manifest.captures[0]
+          assert.equal(extractCalls, 0, 'null timeline → ffmpeg still extraction must NOT run')
+          assert.ok(
+            renderStill.calls.length >= 1,
+            'null-timeline plain mp4 must fall back to the per-screen Chromium renderer',
+          )
+          assert.equal(cap.mediaType, 'mp4', 'the plain mp4 is still surfaced as media')
+          assert.equal(
+            cap.status,
+            'passed',
+            'plain-mp4 fallback still passes (exit-code invariant)',
+          )
+          assert.ok(cap.stills.length >= 1)
+        },
+      ),
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuiplainmp4')
+  }
+})
+
+/**
+ * Drive a degraded run and return the resulting capture + captured warnings.
+ * `castToVideo` supplies the degraded/mp4 behavior under test. Pins the Epic-1
+ * invariant: status/hasFailure must never flip on a degraded path.
+ */
+async function runDegraded({ runId, prNumber, castToVideo, env = {} }) {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const brief = { title: 'Degraded', description: 'Degraded path', expectedEvidence: ['Ready'] }
+  const warnings = []
+  const originalWarn = console.warn
+  console.warn = (message) => warnings.push(String(message))
+  let manifest
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        BASE_ENV({ BOSS_PROOF_BRIEF: briefPath, BOSS_PROOF_RUN_ID: runId, ...env }),
+        async () => {
+          ;({ manifest } = await runTuiAgentProof({
+            prNumber,
+            commit: 'abc1234',
+            changedFiles: [],
+            dryRun: true,
+            deps: {
+              bridge: scriptedBridge({ screens: ['Ready to go'] }),
+              model: scriptedModel([
+                toolUse('observe', {}),
+                toolUse('done', { summary: 'done', passed: true }),
+              ]),
+              renderStill: fakeRenderStill(),
+              castToVideo,
+            },
+          }))
+        },
+      ),
+    )
+  } finally {
+    console.warn = originalWarn
+  }
+  return { cap: manifest.captures[0], verdict: manifest.verdict, warnings }
+}
+
+test('runTuiAgentProof: missing-agg degrade → loud marker, status/verdict unchanged from main (BOS-216)', async () => {
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  try {
+    const { cap, verdict, warnings } = await runDegraded({
+      runId: 'tui-degraded-agg',
+      prNumber: 'tuidegradedagg',
+      castToVideo: async () => ({ degraded: { reason: 'agg-missing', detail: 'agg not on PATH' } }),
+    })
+    // Warn-only through Epic 3: a missing agg must NOT fail the run.
+    assert.equal(cap.status, 'passed')
+    assert.equal(verdict, 'passed')
+    assert.equal(cap.degraded.reason, 'agg-missing')
+    assert.match(cap.degraded.detail, /agg not on PATH/)
+    assert.ok(
+      warnings.some((w) => /DEGRADED \(agg-missing\)/.test(w)),
+      'a loud doctor-style degraded warning must name the missing prereq',
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuidegradedagg')
+  }
+})
+
+test('runTuiAgentProof: missing-cast degrade → cast-missing marker, status unchanged (BOS-216)', async () => {
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  try {
+    const { cap, verdict } = await runDegraded({
+      runId: 'tui-degraded-cast',
+      prNumber: 'tuidegradedcast',
+      castToVideo: async () => ({
+        degraded: { reason: 'cast-missing', detail: 'cast file missing' },
+      }),
+    })
+    assert.equal(cap.status, 'passed')
+    assert.equal(verdict, 'passed')
+    assert.equal(cap.degraded.reason, 'cast-missing')
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuidegradedcast')
+  }
+})
+
+test('runTuiAgentProof: null cast read → cast-unreadable marker + unlinked later chapter, scene-1 baseline unaffected, status unchanged (BOS-216)', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  const brief = {
+    title: 'Two scenes',
+    description: 'prove it',
+    scenes: [
+      { id: 'scene-01', title: 'Home', expectedEvidence: ['Home'] },
+      { id: 'scene-02', title: 'Settings', expectedEvidence: ['Settings'] },
+    ],
+  }
+  const warnings = []
+  const originalWarn = console.warn
+  console.warn = (message) => warnings.push(String(message))
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        BASE_ENV({ BOSS_PROOF_BRIEF: briefPath, BOSS_PROOF_RUN_ID: 'tui-nullcast' }),
+        async () => {
+          // mp4 + timeline present, but no session.cast on disk → every readCastMs
+          // returns null (nullCastRead). Scene-1's baseline startMs 0 is hardcoded,
+          // not a cast read, so it stays linked; scene-2's null marker → unlinked.
+          const castToVideo = async ({ captureDir, captureId }) => {
+            const mp4Path = path.join(captureDir, `${captureId}.mp4`)
+            fs.writeFileSync(mp4Path, 'fake-mp4')
+            return {
+              mp4Path,
+              timeline: {
+                trimMs: 0,
+                segments: [{ startMs: 0, endMs: 5000, speed: 1 }],
+                introMs: 2000,
+              },
+            }
+          }
+          const secondTurn = {
+            stop_reason: 'tool_use',
+            usage: { input_tokens: 10, output_tokens: 5 },
+            content: [
+              { type: 'tool_use', id: 'bs', name: 'begin_scene', input: { id: 'scene-02' } },
+              { type: 'tool_use', id: 'sk', name: 'send_keys', input: { keys: ['s'] } },
+            ],
+          }
+          const { manifest } = await runTuiAgentProof({
+            prNumber: 'tuinullcast',
+            commit: 'abc1234',
+            changedFiles: [],
+            dryRun: true,
+            deps: {
+              bridge: scriptedBridge({ screens: ['Home screen', 'Settings screen'] }),
+              model: scriptedModel([
+                toolUse('observe', {}),
+                secondTurn,
+                toolUse('done', { summary: 'done', passed: true }),
+              ]),
+              renderStill: fakeRenderStill(),
+              extractStill: async ({ output }) => {
+                fs.writeFileSync(output, 'png')
+                return true
+              },
+              castToVideo,
+            },
+          })
+          const cap = manifest.captures[0]
+          assert.equal(cap.status, 'passed', 'a null cast read must NOT fail the run')
+          assert.equal(cap.degraded.reason, 'cast-unreadable')
+          // Scene-1 baseline (startMs 0, hardcoded) stays linked at introMs; the
+          // scene-2 marker read null → chapter renders explicitly unlinked.
+          assert.equal(cap.scenes[0].outputMs, 2000)
+          assert.equal(cap.scenes[1].outputMs, null)
+          assert.ok(warnings.some((w) => /DEGRADED \(cast-unreadable\)/.test(w)))
+        },
+      ),
+    )
+  } finally {
+    console.warn = originalWarn
+    process.exitCode = originalExitCode
+    cleanupPr('tuinullcast')
+  }
+})
+
+test('runTuiAgentProof: BOSS_PROOF_TUI_ALLOW_STILLS_ONLY changes only the note, never the exit code (BOS-216)', async () => {
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  const degrade = async () => ({ degraded: { reason: 'agg-missing', detail: 'agg not on PATH' } })
+  try {
+    const unset = await runDegraded({
+      runId: 'tui-ack-unset',
+      prNumber: 'tuiackunset',
+      castToVideo: degrade,
+    })
+    const set = await runDegraded({
+      runId: 'tui-ack-set',
+      prNumber: 'tuiackset',
+      castToVideo: degrade,
+      env: { BOSS_PROOF_TUI_ALLOW_STILLS_ONLY: '1' },
+    })
+    // Exit code (status/verdict) identical with and without the ack.
+    assert.equal(unset.cap.status, set.cap.status)
+    assert.equal(unset.verdict, set.verdict)
+    assert.equal(set.cap.status, 'passed')
+    // The ack softens only the log wording.
+    assert.ok(
+      unset.warnings.some((w) => /set BOSS_PROOF_TUI_ALLOW_STILLS_ONLY to acknowledge/.test(w)),
+    )
+    assert.ok(set.warnings.some((w) => /acknowledged via BOSS_PROOF_TUI_ALLOW_STILLS_ONLY/.test(w)))
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuiackunset')
+    cleanupPr('tuiackset')
+  }
 })
 
 // ── 6. T1 evidence gate ───────────────────────────────────────────────────────
@@ -1121,6 +1609,43 @@ test('bridgeSpawnArgs: forwards boss binary when bossBin is set', async () => {
     '/tmp/session.cast',
     '--boss-bin',
     '/tmp/boss-e2e',
+  ])
+})
+
+test('bridgeSpawnArgs: appends fixture and seed only when provided', async () => {
+  const { bridgeSpawnArgs } = await import('./proof-tui-agent.mjs')
+  // fixture + seed forwarded after the existing cast/boss-bin args.
+  assert.deepEqual(
+    bridgeSpawnArgs({
+      castPath: '/tmp/session.cast',
+      bossBin: '/tmp/boss-e2e',
+      fixture: 'busy',
+      seedPath: '/tmp/seed.json',
+    }),
+    [
+      '--cast',
+      '/tmp/session.cast',
+      '--boss-bin',
+      '/tmp/boss-e2e',
+      '--fixture',
+      'busy',
+      '--seed',
+      '/tmp/seed.json',
+    ],
+  )
+  // fixture without seed: only --fixture appended.
+  assert.deepEqual(bridgeSpawnArgs({ castPath: '/tmp/session.cast', fixture: 'empty' }), [
+    '--cast',
+    '/tmp/session.cast',
+    '--fixture',
+    'empty',
+  ])
+  // seed without fixture: only --seed appended.
+  assert.deepEqual(bridgeSpawnArgs({ castPath: '/tmp/session.cast', seedPath: '/tmp/s.json' }), [
+    '--cast',
+    '/tmp/session.cast',
+    '--seed',
+    '/tmp/s.json',
   ])
 })
 
@@ -1771,12 +2296,16 @@ test('parseCastTailMs: ignores trailing blank lines and partial last lines', asy
   assert.equal(parseCastTailMs(cast), 2500)
 })
 
-test('parseCastTailMs: empty / header-only / non-string → 0 (graceful degrade)', async () => {
+test('parseCastTailMs: empty / header-only / non-string → null (no-cast contract, BOS-216)', async () => {
   const { parseCastTailMs } = await import('./proof-tui-agent.mjs')
-  assert.equal(parseCastTailMs(''), 0)
-  assert.equal(parseCastTailMs('{"version":2,"width":80}'), 0)
-  assert.equal(parseCastTailMs(undefined), 0)
-  assert.equal(parseCastTailMs(null), 0)
+  // BOS-216: null (not 0) distinguishes "no cast" from a genuine t=0 event so an
+  // unreadable cast surfaces a loud degraded marker instead of a silent startMs:0.
+  assert.equal(parseCastTailMs(''), null)
+  assert.equal(parseCastTailMs('{"version":2,"width":80}'), null)
+  assert.equal(parseCastTailMs(undefined), null)
+  assert.equal(parseCastTailMs(null), null)
+  // A genuine t=0 event still returns 0 (round-trippable, not null).
+  assert.equal(parseCastTailMs('{"v":2}\n[0, "o", "boot"]'), 0)
 })
 
 test('parseCastTailMs: rounds to the nearest ms and never goes negative', async () => {
@@ -1827,7 +2356,7 @@ test('runAgentLoop: records per-step caption timings from the injected cast cloc
   }
 })
 
-test('runAgentLoop: default cast clock degrades to startMs 0 when no .cast exists', async () => {
+test('runAgentLoop: default cast clock degrades to startMs null when no .cast exists (BOS-216)', async () => {
   const { runAgentLoop } = await import('./proof-tui-agent.mjs')
   const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
   try {
@@ -1836,8 +2365,8 @@ test('runAgentLoop: default cast clock degrades to startMs 0 when no .cast exist
       toolUse('done', { passed: true, summary: 'done', evidence: [] }),
     ])
     const bridge = scriptedBridge({ screens: ['HOME'] })
-    // No readCastMs injected and no session.cast on disk → reader returns 0.
-    const { captionTimings } = await runAgentLoop({
+    // No readCastMs injected and no session.cast on disk → reader returns null.
+    const result = await runAgentLoop({
       brief: {
         description: 'prove it',
         budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
@@ -1847,9 +2376,13 @@ test('runAgentLoop: default cast clock degrades to startMs 0 when no .cast exist
       bridge,
       rawDir,
     })
-    assert.deepEqual(captionTimings, [
-      { seq: 1, caption: 'Looking at the home screen', startMs: 0 },
+    // BOS-216: no session.cast on disk → reader returns null (not 0). planCaptionWindows
+    // drops non-finite startMs so caption burning stays safe; the null is surfaced as a
+    // loud degraded marker at the run level.
+    assert.deepEqual(result.captionTimings, [
+      { seq: 1, caption: 'Looking at the home screen', startMs: null },
     ])
+    assert.equal(result.nullCastRead, true, 'a null cast read is reported for the degraded marker')
   } finally {
     fs.rmSync(rawDir, { recursive: true, force: true })
   }

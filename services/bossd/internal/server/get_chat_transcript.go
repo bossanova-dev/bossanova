@@ -7,6 +7,7 @@ import (
 	"connectrpc.com/connect"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/agent"
 )
 
 // GetChatTranscript reads a chat's conversation by routing to the owning agent
@@ -63,7 +64,7 @@ func (s *Server) GetChatTranscript(ctx context.Context, req *connect.Request[pb.
 	}
 	client, ok := s.agentClients[agentName]
 	if !ok {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("agent runner not loaded for agent %q", agentName))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, agent.AgentRunnerNotLoaded(agentName, s.agentClients))
 	}
 
 	pluginResp, err := client.ReadTranscript(ctx, &pb.ReadTranscriptRequest{

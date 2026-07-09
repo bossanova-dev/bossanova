@@ -109,7 +109,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "create_session",
-		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session (its agent_session_id is the primary chat id — no sqlite read needed). DEDUP: if an active session already owns the target branch or PR (via pr_number/branch_name), the daemon ATTACHES to that existing session instead of creating one — the result then has attached_existing=true and the supplied prompt is NOT run; deliver it yourself via send_chat_message with the returned agent_session_id (force does NOT bypass this branch/PR attach — two active sessions cannot share one branch). If instead an active session already owns the same tracker_id with no branch collision, the create fails with AlreadyExists; pass force:true to create a second session for that tracker. Supports running the initial agent pass headlessly (detach) or in a durable tmux-hosted pane that survives a daemon restart (tmux_unattended, used by /boss-epic) under a chosen model (model), under a specific rotation account (account, an account id or label; empty = system default), attaching to an existing PR (pr_number), quick chats (quick_chat), explicit base/branch names, and linking an external tracker issue (tracker_id/tracker_url/tracker_source). The composite tracker_issue field is web-only and not exposed here.",
+		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session (its agent_session_id is the primary chat id — no sqlite read needed). DEDUP: if an active session already owns the target branch or PR (via pr_number/branch_name), the daemon ATTACHES to that existing session instead of creating one — the result then has attached_existing=true and the supplied prompt is NOT run; deliver it yourself via send_chat_message with the returned agent_session_id (force does NOT bypass this branch/PR attach — two active sessions cannot share one branch). If instead an active session already owns the same tracker_id with no branch collision, the create fails with AlreadyExists; pass force:true to create a second session for that tracker. Supports running the initial agent pass headlessly (detach) or in a durable tmux-hosted pane that survives a daemon restart (tmux_unattended, used by /boss-epic) under a chosen model (model), under a specific rotation account (account, an account id or label; empty = system default), attaching to an existing PR (pr_number), quick chats (quick_chat), explicit base/branch names, and linking an external tracker issue (tracker_id/tracker_url/tracker_source). Planning-only work should use a subagent; use quick_chat for a visible no-worktree/no-PR conversation, not tmux_unattended. The composite tracker_issue field is web-only and not exposed here.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args CreateSessionArgs) (*mcp.CallToolResult, any, error) {
 		req := &pb.CreateSessionRequest{
@@ -338,7 +338,6 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		req := &pb.AddAccountRequest{
 			Provider:   args.Provider,
 			Label:      args.Label,
-			Email:      args.Email,
 			Priority:   args.Priority,
 			Credential: []byte(args.Credential),
 		}
@@ -377,7 +376,6 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			Id: args.ID,
 			// Optional fields map straight through; nil stays unset (present-only).
 			Label:         args.Label,
-			Email:         args.Email,
 			Priority:      args.Priority,
 			Status:        args.Status,
 			AllowedModels: args.AllowedModels,
@@ -630,7 +628,6 @@ type UpdateCronJobArgs struct {
 type AddAccountArgs struct {
 	Provider   string `json:"provider" jsonschema:"account provider (claude|codex)"`
 	Label      string `json:"label" jsonschema:"human label, unique per provider"`
-	Email      string `json:"email,omitempty" jsonschema:"optional informational account email"`
 	Priority   int32  `json:"priority,omitempty" jsonschema:"sort order; lower = preferred"`
 	Credential string `json:"credential,omitempty" jsonschema:"credential blob (Claude setup-token string or Codex auth.json contents); stored in the keyring, never returned"`
 }
@@ -650,7 +647,6 @@ type RefreshAccountArgs struct {
 type UpdateAccountArgs struct {
 	ID            string   `json:"id" jsonschema:"the account id"`
 	Label         *string  `json:"label,omitempty" jsonschema:"new label"`
-	Email         *string  `json:"email,omitempty" jsonschema:"new account email"`
 	Priority      *int32   `json:"priority,omitempty" jsonschema:"new priority (lower = preferred)"`
 	Status        *string  `json:"status,omitempty" jsonschema:"new status (active|disabled)"`
 	AllowedModels []string `json:"allowed_models,omitempty" jsonschema:"replace the allowed-models set when non-empty"`

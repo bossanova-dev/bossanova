@@ -81,6 +81,11 @@ type tmuxSpawner interface {
 	// 1); readyMarker is the agent's input-box prompt glyph the submit path waits
 	// for before delivering.
 	SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string) error
+	// PanePID returns the login-shell PID of the named session's first pane, so
+	// the codex provider-session resolver can bind a chat to the rollout its own
+	// process holds open (BOS-290). Errors are non-fatal to the caller, which
+	// then resolves with pane pid 0 (time-window fallback).
+	PanePID(ctx context.Context, sessionName string) (int, error)
 }
 
 // chatReadyMarker returns the input-box prompt glyph the given agent's TUI
@@ -133,7 +138,7 @@ type interactiveSessionResolution struct {
 }
 
 type interactiveSessionResolver interface {
-	ResolveInteractiveSessionID(ctx context.Context, agentName, workDir, requestedSessionID string, launchedAfter, chatCreatedAt time.Time, allowLegacyBackfill bool) (interactiveSessionResolution, error)
+	ResolveInteractiveSessionID(ctx context.Context, agentName, workDir, requestedSessionID string, launchedAfter, chatCreatedAt time.Time, allowLegacyBackfill bool, panePID int) (interactiveSessionResolution, error)
 }
 
 // spawnDeps groups the abstractions spawnChatTmux needs.
@@ -267,9 +272,20 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (spawnRes
 	}
 
 	if deps.Resolver != nil {
+		// Resolve the pane pid once (stable for the session's life) so the
+		// resolver can bind this chat to the rollout its own codex process holds
+		// open. Best-effort: a tmux failure leaves panePID 0 and the resolver
+		// falls back to the (worktree, time-window) scan. The poll loop below is
+		// the fd-availability wait — the fd appears shortly after codex starts.
+		panePID := 0
+		if deps.Tmux != nil {
+			if pid, pidErr := deps.Tmux.PanePID(ctx, in.TmuxName); pidErr == nil {
+				panePID = pid
+			}
+		}
 		deadline := time.Now().Add(interactiveProviderIDForegroundDiscoveryTimeout)
 		for time.Now().Before(deadline) {
-			resolution, err := deps.Resolver.ResolveInteractiveSessionID(ctx, in.Chat.AgentName, in.WorktreePath, in.Chat.AgentSessionID, launchedAt, time.Time{}, false)
+			resolution, err := deps.Resolver.ResolveInteractiveSessionID(ctx, in.Chat.AgentName, in.WorktreePath, in.Chat.AgentSessionID, launchedAt, time.Time{}, false, panePID)
 			if err != nil {
 				return spawnResult{}, err
 			}
@@ -320,11 +336,16 @@ func (l liveTmuxSpawner) SendMessage(ctx context.Context, sessionName, text stri
 	return l.c.SendMessage(ctx, sessionName, text, submit, readyMarker)
 }
 
+// PanePID returns the first pane's login-shell pid for the named session.
+func (l liveTmuxSpawner) PanePID(ctx context.Context, sessionName string) (int, error) {
+	return l.c.PanePID(ctx, sessionName)
+}
+
 type liveInteractiveSessionResolver struct {
 	clients map[string]agent.AgentRunnerClient
 }
 
-func (r liveInteractiveSessionResolver) ResolveInteractiveSessionID(ctx context.Context, agentName, workDir, requestedSessionID string, launchedAfter, chatCreatedAt time.Time, allowLegacyBackfill bool) (interactiveSessionResolution, error) {
+func (r liveInteractiveSessionResolver) ResolveInteractiveSessionID(ctx context.Context, agentName, workDir, requestedSessionID string, launchedAfter, chatCreatedAt time.Time, allowLegacyBackfill bool, panePID int) (interactiveSessionResolution, error) {
 	name := agentName
 	if name == "" {
 		name = defaultLegacyAgent
@@ -340,6 +361,9 @@ func (r liveInteractiveSessionResolver) ResolveInteractiveSessionID(ctx context.
 		WorkDir:             workDir,
 		RequestedSessionId:  requestedSessionID,
 		AllowLegacyBackfill: allowLegacyBackfill,
+	}
+	if panePID > 0 {
+		req.PanePid = int32(panePID)
 	}
 	if !launchedAfter.IsZero() {
 		req.LaunchedAfter = timestamppb.New(launchedAfter)
@@ -422,7 +446,7 @@ func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentS
 	}
 	client, ok := b.clients[name]
 	if !ok {
-		return nil, fmt.Errorf("agent runner not loaded for agent %q", name)
+		return nil, agent.AgentRunnerNotLoaded(name, b.clients)
 	}
 	resp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:          agentSessionID,

@@ -60,6 +60,10 @@ func (f *deleteChatStoreFake) UpdateProviderSessionID(context.Context, string, *
 	return nil
 }
 
+func (f *deleteChatStoreFake) UpdateAccountIDByAgentSessionID(context.Context, string, *string) error {
+	return nil
+}
+
 func (f *deleteChatStoreFake) MarkStartFailed(context.Context, string, string) error {
 	return nil
 }

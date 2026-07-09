@@ -186,6 +186,62 @@ func TestDetectUsageLimit(t *testing.T) {
 	}
 }
 
+// TestDetectUsageLimitLiveBannerRendering covers how the real Claude Code CLI
+// (2.1.x) surfaces a usage cap: NOT as a footer below the input box, but as
+// (1) inline transcript output — the cap notice is the last turn's output,
+// sitting directly above the live input box (the steady state after the user
+// dismisses the modal), and (2) an interactive "What do you want to do?"
+// decision modal whose selection cursor ❯ is itself a prompt marker. Both are
+// reconstructed from the states a user actually gets stuck in. The pre-existing
+// D13 / false-positive corpus in TestDetectUsageLimit must stay false; these
+// must flip true.
+func TestDetectUsageLimitLiveBannerRendering(t *testing.T) {
+	// Image #2: cap notice rendered inline as the last turn's output, with the
+	// live input box below it and the CLI statusline below that.
+	inlineBanner := "> /boss what server am i using\n" +
+		"  You've hit your weekly limit · resets 9pm (Asia/Tokyo)\n" +
+		"* Baked for 1s\n" +
+		"\n" +
+		"> /boss switch\n" +
+		"  You've hit your weekly limit · resets 9pm (Asia/Tokyo)\n" +
+		"  /upgrade or /usage-credits to finish what you're working on.\n" +
+		"* Brewed for 0s\n" +
+		"\n" +
+		"❯ \n" +
+		"  Opus 4.8 | Context: 87% remaining | worktree (branch)\n" +
+		"  ⏵⏵ bypass permissions on · PR #1214"
+
+	// Image #1: the interactive decision modal. The bottom-most prompt marker is
+	// the menu cursor on option 1, so the banner above it falls outside the old
+	// "region below the prompt".
+	decisionModal := "> /boss what server am i using\n" +
+		"  You've hit your weekly limit · resets 9pm (Asia/Tokyo)\n" +
+		"* Baked for 1s\n" +
+		"\n" +
+		"What do you want to do?\n" +
+		"\n" +
+		"❯ 1. Stop and wait for limit to reset\n" +
+		"  2. Switch to usage credits\n" +
+		"  3. Upgrade your plan\n" +
+		"\n" +
+		"Enter to confirm · Esc to cancel"
+
+	for _, tt := range []struct {
+		name string
+		pane string
+	}{
+		{"live inline banner above the input box (Image #2)", inlineBanner},
+		{"interactive usage-limit decision modal (Image #1)", decisionModal},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			limited, _, _ := DetectUsageLimit([]byte(tt.pane), testLimitPatterns, agenterr.ParseResetTime)
+			if !limited {
+				t.Fatalf("DetectUsageLimit() limited = false, want true for %s", tt.name)
+			}
+		})
+	}
+}
+
 // TestDetectUsageLimitStubReset verifies the injected parseReset is honored via
 // a stub, independent of agenterr's grammar.
 func TestDetectUsageLimitStubReset(t *testing.T) {

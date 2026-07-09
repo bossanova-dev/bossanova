@@ -33,6 +33,11 @@ type fakeTmuxClient struct {
 	lastEnv        map[string]string
 	sentMessages   []sentMessage
 	sendMessageErr error
+	// panePID / panePIDByName / panePIDErr model tmux list-panes for the
+	// codex provider-session fd resolver (BOS-290).
+	panePID       int
+	panePIDByName map[string]int
+	panePIDErr    error
 }
 
 type sentMessage struct {
@@ -74,6 +79,21 @@ func (f *fakeTmuxClient) SendMessage(_ context.Context, sessionName, text string
 	return nil
 }
 
+// PanePID returns a configured per-session pane pid (panePIDByName), else the
+// default panePID, so tests can model distinct sibling panes. panePIDErr, when
+// set, simulates a tmux failure (caller falls back to pane pid 0).
+func (f *fakeTmuxClient) PanePID(_ context.Context, sessionName string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.panePIDErr != nil {
+		return 0, f.panePIDErr
+	}
+	if pid, ok := f.panePIDByName[sessionName]; ok {
+		return pid, nil
+	}
+	return f.panePID, nil
+}
+
 // fakeTranscriptOracle controls TranscriptExists for tests.
 type fakeTranscriptOracle struct {
 	exists    bool
@@ -104,6 +124,10 @@ type fakeInteractiveSessionResolver struct {
 	legacyReason      string
 	cancelOnFreshCall func()
 	calls             []resolverCall
+	// byPanePID maps a pane pid to the session id fd resolution returns for it,
+	// modeling each sibling chat's process holding its OWN rollout open
+	// (BOS-290). When a call's panePID matches, it wins over sessionID.
+	byPanePID map[int]string
 }
 
 type resolverCall struct {
@@ -113,9 +137,10 @@ type resolverCall struct {
 	launchedAfter       time.Time
 	chatCreatedAt       time.Time
 	allowLegacyBackfill bool
+	panePID             int
 }
 
-func (f *fakeInteractiveSessionResolver) ResolveInteractiveSessionID(_ context.Context, agentName, workDir, requestedSessionID string, launchedAfter, chatCreatedAt time.Time, allowLegacyBackfill bool) (interactiveSessionResolution, error) {
+func (f *fakeInteractiveSessionResolver) ResolveInteractiveSessionID(_ context.Context, agentName, workDir, requestedSessionID string, launchedAfter, chatCreatedAt time.Time, allowLegacyBackfill bool, panePID int) (interactiveSessionResolution, error) {
 	f.calls = append(f.calls, resolverCall{
 		agentName:           agentName,
 		workDir:             workDir,
@@ -123,7 +148,16 @@ func (f *fakeInteractiveSessionResolver) ResolveInteractiveSessionID(_ context.C
 		launchedAfter:       launchedAfter,
 		chatCreatedAt:       chatCreatedAt,
 		allowLegacyBackfill: allowLegacyBackfill,
+		panePID:             panePID,
 	})
+	if !allowLegacyBackfill && panePID > 0 {
+		if id, ok := f.byPanePID[panePID]; ok {
+			if f.cancelOnFreshCall != nil {
+				f.cancelOnFreshCall()
+			}
+			return interactiveSessionResolution{SessionID: id}, nil
+		}
+	}
 	sessionID := f.sessionID
 	if allowLegacyBackfill && f.legacySessionID != "" {
 		sessionID = f.legacySessionID
@@ -795,6 +829,81 @@ func TestSpawnChatTmux_RoutesArgvByAgentName(t *testing.T) {
 	}
 }
 
+// TestSpawnChatTmux_SiblingCodexChatsResolveDistinctProviderIDs is the BOS-290
+// regression: two codex chats in the SAME worktree, launched back-to-back, must
+// bind to DISTINCT provider ids. Each chat's own tmux pane has its own pid, and
+// process-fd resolution maps each pane pid to the rollout that pane's process
+// holds open. The fake resolver models this via byPanePID; the fake tmux client
+// reports a distinct pane pid per session name. Before the pane-pid threading,
+// both spawns fed the resolver no discriminator and collided on one id.
+func TestSpawnChatTmux_SiblingCodexChatsResolveDistinctProviderIDs(t *testing.T) {
+	wd := t.TempDir()
+	builder := &fakeArgvBuilder{
+		fresh:  map[string][]string{"codex": {"codex"}},
+		resume: map[string][]string{"codex": {"codex", "resume"}},
+	}
+	resolver := &fakeInteractiveSessionResolver{
+		byPanePID: map[int]string{
+			97741: "rollout-aaa",
+			99402: "rollout-bbb",
+		},
+	}
+
+	spawnOne := func(agentSessionID, tmuxName string, panePID int) spawnResult {
+		tmuxer := &fakeTmuxClient{
+			available:     true,
+			hasSession:    false,
+			panePIDByName: map[string]int{tmuxName: panePID},
+		}
+		chat := &models.AgentChat{
+			ID:             "chat-" + agentSessionID,
+			SessionID:      "sess-id",
+			AgentSessionID: agentSessionID,
+			AgentName:      "codex",
+		}
+		got, err := spawnChatTmux(context.Background(), spawnDeps{
+			Tmux:        tmuxer,
+			Transcripts: &fakeTranscriptOracle{exists: false},
+			Argv:        builder,
+			Resolver:    resolver,
+		}, spawnInput{
+			Chat:         chat,
+			WorktreePath: wd,
+			TmuxName:     tmuxName,
+		})
+		if err != nil {
+			t.Fatalf("spawn %s: %v", agentSessionID, err)
+		}
+		return got
+	}
+
+	a := spawnOne("chatA", "boss-repo-chatA", 97741)
+	b := spawnOne("chatB", "boss-repo-chatB", 99402)
+
+	if a.ProviderSessionID != "rollout-aaa" {
+		t.Errorf("chat A ProviderSessionID = %q, want rollout-aaa", a.ProviderSessionID)
+	}
+	if b.ProviderSessionID != "rollout-bbb" {
+		t.Errorf("chat B ProviderSessionID = %q, want rollout-bbb", b.ProviderSessionID)
+	}
+	if a.ProviderSessionID == b.ProviderSessionID {
+		t.Fatalf("sibling codex chats collided on provider id %q (BOS-290 regression)", a.ProviderSessionID)
+	}
+	// The resolver must have received each chat's own pane pid.
+	var sawA, sawB bool
+	for _, c := range resolver.calls {
+		if c.panePID == 97741 {
+			sawA = true
+		}
+		if c.panePID == 99402 {
+			sawB = true
+		}
+	}
+	if !sawA || !sawB {
+		t.Errorf("resolver did not receive both pane pids: sawA=%v sawB=%v calls=%+v", sawA, sawB, resolver.calls)
+	}
+}
+
 // TestSpawnChatTmux_LegacyEmptyAgentNameDefaultsToClaude pins the migration
 // guarantee: chats persisted before the agent_name column existed surface
 // as "" on the model and must continue to launch claude. The argvBuilder
@@ -874,7 +983,7 @@ func TestLiveInteractiveSessionResolver(t *testing.T) {
 		// agentName "" must fall through to defaultLegacyAgent ("claude"); a
 		// non-nil registry and a non-nil response must each be carried past
 		// their guard clauses so the resolved SessionID survives.
-		got, err := r.ResolveInteractiveSessionID(context.Background(), "", "/work", "", time.Time{}, time.Time{}, false)
+		got, err := r.ResolveInteractiveSessionID(context.Background(), "", "/work", "", time.Time{}, time.Time{}, false, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -893,7 +1002,7 @@ func TestLiveInteractiveSessionResolver(t *testing.T) {
 				resolveResp: &bossanovav1.ResolveInteractiveSessionIDResponse{Ambiguous: true, Reason: "two matches"},
 			},
 		}}
-		got, err := r.ResolveInteractiveSessionID(context.Background(), "claude", "/work", "", time.Time{}, time.Time{}, false)
+		got, err := r.ResolveInteractiveSessionID(context.Background(), "claude", "/work", "", time.Time{}, time.Time{}, false, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -907,7 +1016,7 @@ func TestLiveInteractiveSessionResolver(t *testing.T) {
 		r := liveInteractiveSessionResolver{clients: map[string]agent.AgentRunnerClient{
 			"claude": stubResolverAgentClient{resolveErr: errors.New("boom")},
 		}}
-		got, err := r.ResolveInteractiveSessionID(context.Background(), "claude", "/work", "", time.Time{}, time.Time{}, false)
+		got, err := r.ResolveInteractiveSessionID(context.Background(), "claude", "/work", "", time.Time{}, time.Time{}, false, 0)
 		if err == nil {
 			t.Fatalf("expected error, got resolution %+v", got)
 		}
@@ -919,7 +1028,7 @@ func TestLiveInteractiveSessionResolver(t *testing.T) {
 	t.Run("nil registry returns an empty resolution", func(t *testing.T) {
 		t.Parallel()
 		var r liveInteractiveSessionResolver
-		got, err := r.ResolveInteractiveSessionID(context.Background(), "claude", "/work", "", time.Time{}, time.Time{}, false)
+		got, err := r.ResolveInteractiveSessionID(context.Background(), "claude", "/work", "", time.Time{}, time.Time{}, false, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -935,7 +1044,7 @@ func TestLiveInteractiveSessionResolver(t *testing.T) {
 				resolveResp: &bossanovav1.ResolveInteractiveSessionIDResponse{Found: true, SessionId: "sess-1"},
 			},
 		}}
-		got, err := r.ResolveInteractiveSessionID(context.Background(), "codex", "/work", "", time.Time{}, time.Time{}, false)
+		got, err := r.ResolveInteractiveSessionID(context.Background(), "codex", "/work", "", time.Time{}, time.Time{}, false, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

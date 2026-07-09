@@ -82,8 +82,14 @@ func ptrTime(t time.Time) *time.Time { return &t }
 
 func TestDefaultAccountID(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
-	past := now.Add(-time.Hour)
+	past := now.Add(-time.Hour) // 1h old ⇒ stale (default window is 30m)
 	future := now.Add(time.Hour)
+	recent := now.Add(-5 * time.Minute) // within the 30m window ⇒ fresh
+	edgeFresh := now.Add(-30 * time.Minute)
+	edgeStale := now.Add(-30*time.Minute - time.Second)
+	soon := now.Add(2 * time.Hour)
+	mid := now.Add(3 * time.Hour)
+	later := now.Add(5 * time.Hour)
 
 	tests := []struct {
 		name     string
@@ -108,13 +114,22 @@ func TestDefaultAccountID(t *testing.T) {
 			want:     "a",
 		},
 		{
-			name: "only cooling or disabled yields empty",
+			name: "tier-1 healthy non-cooling beats a lower-priority cooling account",
+			accounts: []AccountMeta{
+				{ID: "cool", Provider: "claude", Status: "active", Health: "ok", Priority: 1, CoolingUntil: ptrTime(future)},
+				{ID: "hot", Provider: "claude", Status: "active", Health: "ok", Priority: 9},
+			},
+			provider: "claude",
+			want:     "hot",
+		},
+		{
+			name: "cooling active binds via tier-2 fallback (disabled ignored)",
 			accounts: []AccountMeta{
 				{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 5, CoolingUntil: ptrTime(future)},
 				{ID: "b", Provider: "claude", Status: "disabled", Health: "ok", Priority: 9},
 			},
 			provider: "claude",
-			want:     "",
+			want:     "a",
 		},
 		{
 			name: "past cooling is eligible again",
@@ -142,12 +157,12 @@ func TestDefaultAccountID(t *testing.T) {
 			want:     "b",
 		},
 		{
-			name: "only failed-health accounts yields empty",
+			name: "only failed-health active account binds via tier-2 fallback",
 			accounts: []AccountMeta{
 				{ID: "a", Provider: "claude", Status: "active", Health: "failed", Priority: 1},
 			},
 			provider: "claude",
-			want:     "",
+			want:     "a",
 		},
 		{
 			name: "tie-break prefers least-recently used (LRU)",
@@ -176,6 +191,125 @@ func TestDefaultAccountID(t *testing.T) {
 			provider: "claude",
 			want:     "a",
 		},
+		{
+			// yuki is priority-preferred (lower Priority) but fresh-capped at 100%
+			// of its 7d window; dave is fresh at 5%. Util must override priority.
+			name: "fresh-capped-vs-fresh-idle→picks-idle",
+			accounts: []AccountMeta{
+				{ID: "yuki", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(recent), Util7d: 1.0},
+				{ID: "dave", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(recent), Util5h: 0.05},
+			},
+			provider: "claude",
+			want:     "dave",
+		},
+		{
+			// Both snapshots are older than the 30m window: capped readings are
+			// ignored and selection is byte-identical to today's moreEligible
+			// (priority 1 wins over priority 5).
+			name: "both-stale→identical",
+			accounts: []AccountMeta{
+				{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(past), Util5h: 1.0},
+				{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(past), Util5h: 0.05},
+			},
+			provider: "claude",
+			want:     "a",
+		},
+		{
+			// A fresh low-util account outranks a higher-priority stale account.
+			name: "fresh-idle-beats-stale",
+			accounts: []AccountMeta{
+				{ID: "stale", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(past)},
+				{ID: "fresh", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(recent), Util5h: 0.1},
+			},
+			provider: "claude",
+			want:     "fresh",
+		},
+		{
+			// UsageFetchedAt nil on all ⇒ unknown ⇒ today's priority/LRU ordering.
+			name: "unknown-usage→priority-LRU",
+			accounts: []AccountMeta{
+				{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
+				{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 1},
+			},
+			provider: "claude",
+			want:     "b",
+		},
+		{
+			// Every fresh candidate is capped ⇒ tier-1 empty ⇒ tier-2 returns the
+			// soonest reset. capB (Reset7d=soon) beats capA (Reset5h=later) even
+			// though capA has the lower priority.
+			name: "all-capped→soonest-reset",
+			accounts: []AccountMeta{
+				{ID: "capA", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(recent), Util5h: 1.0, Reset5h: ptrTime(later)},
+				{ID: "capB", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(recent), Util7d: 1.0, Reset7d: ptrTime(soon)},
+			},
+			provider: "claude",
+			want:     "capB",
+		},
+		{
+			// "both" is capped on BOTH windows (Util5h>=1 AND Util7d>=1) with both
+			// resets set: earliestReset must pick the earlier of the two
+			// (Reset7d=soon < Reset5h=later), so "both" recovers at soon and beats
+			// "other2" (recovers at mid) in tier-2 — exercising the dual-capped
+			// min-within-account branch even though other2 has the lower priority.
+			name: "all-capped: dual-capped account ranked by its earliest reset",
+			accounts: []AccountMeta{
+				{ID: "both", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(recent), Util5h: 1.0, Util7d: 1.0, Reset5h: ptrTime(later), Reset7d: ptrTime(soon)},
+				{ID: "other2", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(recent), Util7d: 1.0, Reset7d: ptrTime(mid)},
+			},
+			provider: "claude",
+			want:     "both",
+		},
+		{
+			// Both fresh candidates are capped ⇒ tier-2. capKnown has a known
+			// soonest reset; capUnknown is capped with no reset time at all. A
+			// known recovery instant must beat an unknown one, so capKnown wins
+			// even though capUnknown has the lower (preferred) priority.
+			name: "all-capped: known-reset beats unknown-reset",
+			accounts: []AccountMeta{
+				{ID: "capUnknown", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(recent), Util5h: 1.0},
+				{ID: "capKnown", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(recent), Util7d: 1.0, Reset7d: ptrTime(soon)},
+			},
+			provider: "claude",
+			want:     "capKnown",
+		},
+		{
+			// A snapshot stamped in the future (clock skew / corrupt data) is not
+			// trustworthy: its capped reading is ignored, so the future account
+			// stays selectable and its priority 1 wins over the unknown account.
+			name: "future fetched-at is not fresh (capped reading ignored)",
+			accounts: []AccountMeta{
+				{ID: "future", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(future), Util5h: 1.0},
+				{ID: "other", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
+			},
+			provider: "claude",
+			want:     "future",
+		},
+		{
+			// Snapshot exactly at the window edge counts as fresh, so the capped
+			// edge account is excluded from tier-1 and the unknown-usage account
+			// wins despite its lower priority. (other has unknown usage so the
+			// only differentiator is edge's freshness.)
+			name: "staleness boundary: edge is fresh (capped excluded)",
+			accounts: []AccountMeta{
+				{ID: "edge", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(edgeFresh), Util5h: 1.0},
+				{ID: "other", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
+			},
+			provider: "claude",
+			want:     "other",
+		},
+		{
+			// One second past the window ⇒ stale ⇒ capped reading ignored ⇒ edge
+			// stays selectable and its priority 1 wins today's ordering over the
+			// unknown-usage account.
+			name: "staleness boundary: one second past is stale",
+			accounts: []AccountMeta{
+				{ID: "edge", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(edgeStale), Util5h: 1.0},
+				{ID: "other", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
+			},
+			provider: "claude",
+			want:     "edge",
+		},
 	}
 
 	for _, tc := range tests {
@@ -191,6 +325,197 @@ func TestDefaultAccountID(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDefaultAccountID_NeverProbes proves the selection path is cache-only: it
+// reads the registry once (List) and never touches the materializer (no probe,
+// no MaterializeAccount) nor per-account Get.
+func TestDefaultAccountID_NeverProbes(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	recent := now.Add(-5 * time.Minute)
+	reg := &stubRegistry{accounts: []AccountMeta{
+		{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(recent), Util7d: 1.0},
+		{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(recent), Util5h: 0.05},
+	}}
+	mat := &panicMaterializer{t: t}
+	r := NewResolver(reg, mat, zerolog.Nop())
+	got, err := r.DefaultAccountID(context.Background(), "claude", now)
+	if err != nil {
+		t.Fatalf("DefaultAccountID: %v", err)
+	}
+	if got != "b" {
+		t.Fatalf("want b (fresh low-util), got %q", got)
+	}
+	if reg.listCalls != 1 {
+		t.Errorf("List calls = %d, want 1", reg.listCalls)
+	}
+	if reg.getCalls != 0 {
+		t.Errorf("Get calls = %d, want 0 (selection is List-only)", reg.getCalls)
+	}
+}
+
+// panicMaterializer fails the test if any materializer method is called, proving
+// DefaultAccountID performs no live/billable probe on the selection path.
+type panicMaterializer struct{ t *testing.T }
+
+func (m *panicMaterializer) SupportsRotation(context.Context, string) (bool, error) {
+	m.t.Fatalf("SupportsRotation must not be called on the selection path")
+	return false, nil
+}
+
+func (m *panicMaterializer) MaterializeAccount(context.Context, string) (map[string]string, error) {
+	m.t.Fatalf("MaterializeAccount must not be called on the selection path")
+	return nil, nil
+}
+
+func TestDefaultAccountID_FallsBackToCoolingActiveAccount(t *testing.T) {
+	now := time.Now()
+	cooling := now.Add(30 * time.Minute)
+	reg := &stubRegistry{accounts: []AccountMeta{
+		{ID: "a1", Provider: "claude", Status: "active", Health: "ok", Priority: 0, CoolingUntil: &cooling},
+	}}
+	r := NewResolver(reg, nil, zerolog.Nop())
+	got, err := r.DefaultAccountID(context.Background(), "claude", now)
+	if err != nil {
+		t.Fatalf("DefaultAccountID: %v", err)
+	}
+	if got != "a1" {
+		t.Fatalf("want a1 (cooling but active => managed, never unmanaged), got %q", got)
+	}
+}
+
+func TestDefaultAccountID_PrefersHealthyOverFailedInFallback(t *testing.T) {
+	now := time.Now()
+	cooling := now.Add(time.Hour)
+	reg := &stubRegistry{accounts: []AccountMeta{
+		{ID: "bad", Provider: "claude", Status: "active", Health: "failed", Priority: 0},
+		{ID: "cool", Provider: "claude", Status: "active", Health: "ok", Priority: 5, CoolingUntil: &cooling},
+	}}
+	r := NewResolver(reg, nil, zerolog.Nop())
+	got, _ := r.DefaultAccountID(context.Background(), "claude", now)
+	if got != "cool" {
+		t.Fatalf("want cool (healthy-cooling beats failed), got %q", got)
+	}
+}
+
+func TestDefaultAccountID_FallbackPrefersSoonestCooldown(t *testing.T) {
+	now := time.Now()
+	soon := now.Add(30 * time.Minute)
+	late := now.Add(2 * time.Hour)
+	// Same health tier (both healthy) and equal Priority so only the cooldown
+	// discriminator can decide. IDs are chosen so the priority/LRU/id tie-break
+	// (moreEligible) would pick "a-late": if the soonest-cooldown branch were
+	// dropped, this test would bind "a-late" and fail.
+	reg := &stubRegistry{accounts: []AccountMeta{
+		{ID: "a-late", Provider: "claude", Status: "active", Health: "ok", Priority: 5, CoolingUntil: &late},
+		{ID: "z-soon", Provider: "claude", Status: "active", Health: "ok", Priority: 5, CoolingUntil: &soon},
+	}}
+	r := NewResolver(reg, nil, zerolog.Nop())
+	got, err := r.DefaultAccountID(context.Background(), "claude", now)
+	if err != nil {
+		t.Fatalf("DefaultAccountID: %v", err)
+	}
+	if got != "z-soon" {
+		t.Fatalf("want z-soon (soonest cooldown wins in tier-2), got %q", got)
+	}
+}
+
+func TestDefaultAccountID_FallbackSoonestCooldownAmongFailed(t *testing.T) {
+	now := time.Now()
+	soon := now.Add(15 * time.Minute)
+	late := now.Add(3 * time.Hour)
+	// Both failed-health (same health tier) with equal Priority; the soonest
+	// cooldown must still decide even in the failed tier. Lexical id would pick
+	// "a-late", so binding "z-soon" proves the cooldown branch governs.
+	reg := &stubRegistry{accounts: []AccountMeta{
+		{ID: "a-late", Provider: "claude", Status: "active", Health: "failed", Priority: 5, CoolingUntil: &late},
+		{ID: "z-soon", Provider: "claude", Status: "active", Health: "failed", Priority: 5, CoolingUntil: &soon},
+	}}
+	r := NewResolver(reg, nil, zerolog.Nop())
+	got, err := r.DefaultAccountID(context.Background(), "claude", now)
+	if err != nil {
+		t.Fatalf("DefaultAccountID: %v", err)
+	}
+	if got != "z-soon" {
+		t.Fatalf("want z-soon (soonest cooldown wins among failed), got %q", got)
+	}
+}
+
+func TestDefaultAccountID_AllDisabledFallsBackToUnmanaged(t *testing.T) {
+	reg := &stubRegistry{accounts: []AccountMeta{
+		{ID: "d1", Provider: "claude", Status: "disabled", Health: "ok"},
+	}}
+	r := NewResolver(reg, nil, zerolog.Nop())
+	got, _ := r.DefaultAccountID(context.Background(), "claude", time.Now())
+	if got != "" {
+		t.Fatalf("want unmanaged for disabled-only provider, got %q", got)
+	}
+}
+
+func TestDefaultAccountIDExcluding(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+
+	t.Run("excludes-current", func(t *testing.T) {
+		accounts := []AccountMeta{
+			{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 1},
+			{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
+		}
+		reg := &stubRegistry{accounts: accounts}
+		r := NewResolver(reg, &stubMaterializer{}, zerolog.Nop())
+
+		winner, err := r.DefaultAccountID(context.Background(), "claude", now)
+		if err != nil {
+			t.Fatalf("DefaultAccountID: %v", err)
+		}
+		if winner != "a" {
+			t.Fatalf("DefaultAccountID = %q, want a", winner)
+		}
+
+		other, err := r.DefaultAccountIDExcluding(context.Background(), "claude", winner, now)
+		if err != nil {
+			t.Fatalf("DefaultAccountIDExcluding: %v", err)
+		}
+		if other != "b" {
+			t.Fatalf("DefaultAccountIDExcluding(exclude=%q) = %q, want b", winner, other)
+		}
+	})
+
+	t.Run("only-account-excluded-returns-system-default", func(t *testing.T) {
+		reg := &stubRegistry{accounts: []AccountMeta{
+			{ID: "x", Provider: "claude", Status: "active", Health: "ok", Priority: 1},
+		}}
+		r := NewResolver(reg, &stubMaterializer{}, zerolog.Nop())
+
+		got, err := r.DefaultAccountIDExcluding(context.Background(), "claude", "x", now)
+		if err != nil {
+			t.Fatalf("DefaultAccountIDExcluding: %v", err)
+		}
+		if got != SystemDefaultAccountID {
+			t.Fatalf("DefaultAccountIDExcluding(only account excluded) = %q, want SystemDefaultAccountID (%q)", got, SystemDefaultAccountID)
+		}
+	})
+
+	t.Run("empty-exclude-equivalent-to-DefaultAccountID", func(t *testing.T) {
+		accounts := []AccountMeta{
+			{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
+			{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 1},
+			{ID: "c", Provider: "claude", Status: "active", Health: "ok", Priority: 3},
+		}
+		reg := &stubRegistry{accounts: accounts}
+		r := NewResolver(reg, &stubMaterializer{}, zerolog.Nop())
+
+		want, err := r.DefaultAccountID(context.Background(), "claude", now)
+		if err != nil {
+			t.Fatalf("DefaultAccountID: %v", err)
+		}
+		got, err := r.DefaultAccountIDExcluding(context.Background(), "claude", "", now)
+		if err != nil {
+			t.Fatalf("DefaultAccountIDExcluding: %v", err)
+		}
+		if got != want {
+			t.Fatalf("DefaultAccountIDExcluding(exclude=\"\") = %q, want %q (== DefaultAccountID)", got, want)
+		}
+	})
 }
 
 func TestDefaultAccountIDNilRegistry(t *testing.T) {

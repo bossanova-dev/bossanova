@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -46,11 +47,39 @@ func TestIsSocketReachable(t *testing.T) {
 	}
 }
 
+func TestIsSocketReachableUsesHalfSecondDialTimeout(t *testing.T) {
+	originalDial := dialUnixSocket
+	t.Cleanup(func() { dialUnixSocket = originalDial })
+
+	var gotNetwork, gotAddress string
+	var gotTimeout time.Duration
+	dialUnixSocket = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		gotNetwork = network
+		gotAddress = address
+		gotTimeout = timeout
+		return nil, errors.New("stop after capturing dial arguments")
+	}
+
+	socketPath := "/tmp/boss-test.sock"
+	if isSocketReachable(socketPath) {
+		t.Fatal("isSocketReachable() = true, want false when dial fails")
+	}
+	if gotNetwork != "unix" {
+		t.Fatalf("dial network = %q, want unix", gotNetwork)
+	}
+	if gotAddress != socketPath {
+		t.Fatalf("dial address = %q, want %q", gotAddress, socketPath)
+	}
+	if gotTimeout != 500*time.Millisecond {
+		t.Fatalf("dial timeout = %v, want %v", gotTimeout, 500*time.Millisecond)
+	}
+}
+
 // TestIsSocketReachable_LiveSocket verifies that isSocketReachable returns
 // true for a real, accepting Unix socket. This exercises the dial-timeout
-// arithmetic on daemon.go:110 (`500*time.Millisecond`).
+// arithmetic on daemon.go:175 (`500*time.Millisecond`).
 //
-// Catches daemon.go:110 ARITHMETIC_BASE: if the `*` is swapped to `-`, the
+// Catches daemon.go:175 ARITHMETIC_BASE: if the `*` is swapped to `-`, the
 // expression becomes `500-time.Millisecond`, a *negative* duration. A
 // negative timeout makes net.DialTimeout fail immediately (deadline already
 // expired) even against a live, accepting socket — so isSocketReachable
@@ -227,6 +256,40 @@ func TestResolveMcpPath_FindsBossMcpOnPath(t *testing.T) {
 	}
 	if !filepath.IsAbs(got) {
 		t.Fatalf("ResolveMcpPath() = %q, want absolute path", got)
+	}
+}
+
+// TestResolveMcpPath_PrefersExecutableDir verifies that ResolveMcpPath checks
+// next to the running executable before falling back to PATH.
+//
+// Catches daemon.go:157 CONDITIONALS_NEGATION (`err == nil` -> `err != nil`):
+// mutated code skips the executable-dir branch and returns the PATH binary.
+func TestResolveMcpPath_PrefersExecutableDir(t *testing.T) {
+	exeDir := t.TempDir()
+	originalExecutablePath := executablePath
+	executablePath = func() (string, error) {
+		return filepath.Join(exeDir, "boss"), nil
+	}
+	t.Cleanup(func() { executablePath = originalExecutablePath })
+
+	candidate := filepath.Join(exeDir, "boss-mcp")
+
+	if err := os.WriteFile(candidate, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("create executable-dir boss-mcp: %v", err)
+	}
+
+	pathDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pathDir, "boss-mcp"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("create PATH boss-mcp: %v", err)
+	}
+	t.Setenv("PATH", pathDir)
+
+	got, err := ResolveMcpPath()
+	if err != nil {
+		t.Fatalf("ResolveMcpPath: %v", err)
+	}
+	if got != candidate {
+		t.Fatalf("ResolveMcpPath() = %q, want %q (executable-dir boss-mcp should win over PATH)", got, candidate)
 	}
 }
 

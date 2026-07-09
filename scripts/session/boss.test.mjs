@@ -27,6 +27,25 @@ test('createSession records the headless tmux fan-out args', () => {
   }
 })
 
+test('planning-only dispatch does not use PR-backed tmux sessions', () => {
+  // BOS-322: planning-only epic work (recon, plan review, visible /boss-plan
+  // chat) must route through a distinct create_session capability that never
+  // opens a worktree/branch/PR/finalize path. `quick_chat: true` is the visible
+  // no-PR chat; `tmux_unattended`/`pr_number`/`branch_name` are the PR-backed
+  // implementation fields it MUST NOT carry, so planning fan-out can never
+  // collapse back into the implementation `createSession` path.
+  const planning = bossSessionOperationMap.createPlanningChat
+  assert.ok(planning, 'missing createPlanningChat capability')
+  assert.equal(planning.tool, 'create_session')
+  assert.ok(planning.args.includes('quick_chat'), 'planning chat must be quick_chat-backed')
+  assert.ok(planning.args.includes('prompt'), 'planning chat still needs a prompt')
+  assert.ok(planning.args.includes('title'), 'planning chat still needs a visible title')
+  assert.equal(planning.args.includes('tmux_unattended'), false)
+  assert.equal(planning.args.includes('pr_number'), false)
+  assert.equal(planning.args.includes('branch_name'), false)
+  assert.deepEqual(planning.response, ['id', 'agent_session_id'])
+})
+
 test('the operation map names the real MCP arg/response fields', () => {
   // create_session flattens the Session, so the identifiers are `id` +
   // `agent_session_id` — NOT `session_id`/`chat_id`, which do not exist on the

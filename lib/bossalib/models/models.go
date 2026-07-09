@@ -88,8 +88,15 @@ type Session struct {
 	// system-default account 0 (no injected env, D9).
 	AccountID      *string
 	TmuxUnattended bool
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// QuickChat marks a session created via `create_session {quick_chat: true}`:
+	// a visible, no-worktree/branch/PR chat (planning, recon, plan-review). Such
+	// sessions have no implementation output by design, so finalize must not
+	// surface their expected no-change result as a failed implementation run
+	// (BOS-322). Real quick chats skip finalize entirely; this persisted flag is
+	// the defensive backstop for any path that reaches FinalizeSession.
+	QuickChat bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 
 	// Composite display fields, persisted so every client renders the same
 	// label/intent/spinner verbatim. Populated by the DisplayStatusComputer in

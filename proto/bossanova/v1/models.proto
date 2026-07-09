@@ -630,7 +630,9 @@ message Account {
   string id       = 1;
   string provider = 2;   // "claude" | "codex"
   string label    = 3;
-  string email    = 4;   // account email (informational)
+  // Field 4 / "email" was informational account email metadata.
+  reserved 4;
+  reserved "email";
   string status   = 5;   // "active" | "disabled"
   int32  priority = 6;    // sort order; lower = preferred
   google.protobuf.Timestamp cooldown_until = 7;

@@ -28,13 +28,18 @@ type Server struct {
 	host   hostclient.Client
 	logger zerolog.Logger
 	runner *Runner
+	// inspector resolves a chat's rollout from the open file descriptors of
+	// the codex process running under its tmux pane. Defaults to the real
+	// process inspector; unit tests inject a fake.
+	inspector processInspector
 }
 
 func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...Option) *Server {
 	return &Server{
-		host:   host,
-		logger: logger,
-		runner: NewRunner(logger, runnerOpts...),
+		host:      host,
+		logger:    logger,
+		runner:    NewRunner(logger, runnerOpts...),
+		inspector: defaultProcessInspector,
 	}
 }
 
@@ -322,6 +327,44 @@ func tomlString(s string) string {
 func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation
 	var id, path, reason string
 	var ambiguous bool
+	// Process-fd resolution is the authoritative path: bind this chat to the
+	// rollout its own codex process (under the given tmux pane) holds open. It
+	// is deterministic and race-free, so siblings in one worktree never collide.
+	// Only attempted for the live spawn path (not legacy backfill, which has no
+	// pane pid); a miss falls through to the time-window scan below unchanged.
+	//
+	// NOTE: this relies on codex keeping the rollout fd open for the process
+	// lifetime (verified in the BOS-290 spike). If a future codex stops doing
+	// so, resolution silently regresses to the time-window fallback — no worse
+	// than before this change.
+	if !req.GetAllowLegacyBackfill() && req.GetPanePid() > 0 {
+		fdID, fdPath, ok, treeVisible := resolveInteractiveSessionIDByPID(s.inspector, req.WorkDir, int(req.GetPanePid()))
+		if ok {
+			return &bossanovav1.ResolveInteractiveSessionIDResponse{
+				Found:          true,
+				SessionId:      fdID,
+				TranscriptPath: fdPath,
+			}, nil
+		}
+		// fd missed but the pane's process tree is visible: this chat's codex
+		// simply hasn't opened its rollout yet. Report not-found so the daemon
+		// keeps polling for THIS chat's OWN fd rather than accepting the racy
+		// time-window scan below, which — with its -2s window slack — could bind
+		// a sibling chat's already-written rollout in the same worktree
+		// (BOS-290). Only when the tree is NOT visible (fd inspection genuinely
+		// unavailable on this host) do we fall through to the time-window scan.
+		//
+		// Trade-off: on a host where `ps` works but open-file reads never do
+		// (e.g. Linux hidepid where /proc/<pid>/fd is denied), treeVisible stays
+		// true and this path never time-window-falls-back during the live
+		// session. That is acceptable because bossd spawns codex as the same
+		// user (same-user /proc/<pid>/fd is readable by default), and the
+		// wake-time legacy backfill (pane_pid 0) still uses the time-window scan,
+		// so an id is bound on first wake — the pre-fix result, merely deferred.
+		if treeVisible {
+			return &bossanovav1.ResolveInteractiveSessionIDResponse{Found: false}, nil
+		}
+	}
 	if req.GetAllowLegacyBackfill() {
 		chatCreatedAt := time.Time{}
 		if req.GetChatCreatedAt() != nil {

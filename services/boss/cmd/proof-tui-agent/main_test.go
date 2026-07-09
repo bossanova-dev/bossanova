@@ -78,11 +78,19 @@ type agentSession struct {
 }
 
 func startAgent(t *testing.T, fixture, bossBin, castPath string) *agentSession {
+	return startAgentSeed(t, fixture, bossBin, castPath, "")
+}
+
+// startAgentSeed is startAgent plus an optional -seed overlay file.
+func startAgentSeed(t *testing.T, fixture, bossBin, castPath, seedPath string) *agentSession {
 	t.Helper()
 	agent, _ := buildBinaries(t)
 	args := []string{"--fixture", fixture, "--boss-bin", bossBin, "--width", "140", "--height", "36"}
 	if castPath != "" {
 		args = append(args, "--cast", castPath)
+	}
+	if seedPath != "" {
+		args = append(args, "--seed", seedPath)
 	}
 	cmd := exec.Command(agent, args...)
 	stdin, err := cmd.StdinPipe()
@@ -312,4 +320,147 @@ func TestE2E_CastWritten(t *testing.T) {
 func okResp(resp map[string]any) bool {
 	ok, _ := resp["ok"].(bool)
 	return ok
+}
+
+// TestE2E_DaemonAddSessionAndProtocol exercises the BOS-217 daemon + capabilities
+// ops against the REAL bridge:
+//
+//   - add_session (home-poll-refreshed): a session pushed mid-run becomes visible
+//     on the home board within the poll+settle window (home re-polls ListSessions
+//     every 2s).
+//   - state_change protocol path: the boss TUI's attach flow uses RecordChat+tmux,
+//     NOT the mock's AttachSession stream, so no session is ever attached in the
+//     proof stack. A state_change therefore proves the daemon op + attach
+//     validation end-to-end via the actionable "not attached" error rather than a
+//     rendered live-view change (documented reduction — see the task notes).
+//   - capabilities: the old-bridge-detection surface answers ok with the op lists.
+func TestE2E_DaemonAddSessionAndProtocol(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e in -short")
+	}
+	_, boss := buildBinaries(t)
+	s := startAgent(t, "demo", boss, "")
+
+	if !strings.Contains(screenOf(s.do(map[string]any{"id": 1, "op": "observe"})), "Add dark mode") {
+		t.Fatal("home not ready")
+	}
+
+	// Mutator: add a session mid-run.
+	addResp := s.do(map[string]any{
+		"id": 2, "op": "daemon", "action": "add_session",
+		"session": map[string]any{
+			"id":              "sess-daemon-1",
+			"repoId":          "repo-1",
+			"repoDisplayName": "my-app",
+			"title":           "Daemon-added session",
+			"state":           "READY_FOR_REVIEW",
+		},
+	})
+	if !okResp(addResp) {
+		t.Fatalf("add_session failed: %v", addResp)
+	}
+	// The home poll (2s) surfaces the new session; wait up to 10s.
+	wr := s.do(map[string]any{"id": 3, "op": "wait", "text": "Daemon-added session", "timeoutMs": 10000})
+	if !okResp(wr) {
+		t.Fatalf("daemon add_session not visible on home; screen:\n%s", screenOf(wr))
+	}
+
+	// Pusher protocol path: no session is attached, so state_change must error with
+	// the actionable "not attached" message (never a silent no-op).
+	scResp := s.do(map[string]any{
+		"id": 4, "op": "daemon", "action": "state_change",
+		"sessionId":     "sess-daemon-1",
+		"previousState": "IMPLEMENTING_PLAN",
+		"newState":      "MERGED",
+	})
+	if okResp(scResp) {
+		t.Fatalf("state_change to a non-attached session should error; got %v", scResp)
+	}
+	if msg, _ := scResp["error"].(string); !strings.Contains(msg, "not attached") {
+		t.Fatalf("state_change error should name the attach precondition; got %v", scResp["error"])
+	}
+
+	// capabilities: old-bridge detection surface.
+	capResp := s.do(map[string]any{"id": 5, "op": "capabilities"})
+	if !okResp(capResp) {
+		t.Fatalf("capabilities failed: %v", capResp)
+	}
+	if _, ok := capResp["daemonActions"]; !ok {
+		t.Fatalf("capabilities missing daemonActions: %v", capResp)
+	}
+
+	s.do(map[string]any{"id": 99, "op": "quit"})
+}
+
+// runAgentExpectFail runs the agent binary once with the given args and env, and
+// returns its combined stdout+stderr. It fails the test if the process exits 0
+// (a rejected -seed/-env must abort boot). Used by the negative-path tests; the
+// abort happens before the boss build, so boss-bin is never exec'd.
+func runAgentExpectFail(t *testing.T, extraEnv []string, args ...string) string {
+	t.Helper()
+	agent, boss := buildBinaries(t)
+	full := append([]string{"--fixture", "demo", "--boss-bin", boss}, args...)
+	cmd := exec.Command(agent, full...)
+	cmd.Env = append(os.Environ(), extraEnv...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit; output:\n%s", out)
+	}
+	return string(out)
+}
+
+// TestE2E_SeedOverlayAddsSession boots the demo TUI with a -seed overlay adding a
+// session, and asserts the seeded title renders on the home board — proving the
+// overlay applies via MockDaemon.Add* on top of the preset world.
+func TestE2E_SeedOverlayAddsSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e in -short")
+	}
+	_, boss := buildBinaries(t)
+	seed := filepath.Join(t.TempDir(), "seed.json")
+	body := `{"sessions":[{"id":"sess-seed-1","repoId":"repo-1","repoDisplayName":"my-app",` +
+		`"title":"Seeded overlay session","state":"READY_FOR_REVIEW","createdOffsetMins":-15}]}`
+	if err := os.WriteFile(seed, []byte(body), 0o644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	s := startAgentSeed(t, "demo", boss, "", seed)
+
+	screen := screenOf(s.do(map[string]any{"id": 1, "op": "observe"}))
+	if !strings.Contains(screen, "Seeded overlay session") {
+		t.Fatalf("home missing seeded overlay session; screen:\n%s", screen)
+	}
+	s.do(map[string]any{"id": 99, "op": "quit"})
+}
+
+// TestE2E_SeedOverlayRejectsUnknownField proves a typo'd overlay field aborts
+// boot naming the offending field (DisallowUnknownFields).
+func TestE2E_SeedOverlayRejectsUnknownField(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e in -short")
+	}
+	seed := filepath.Join(t.TempDir(), "bad-seed.json")
+	if err := os.WriteFile(seed, []byte(`{"sessions":[{"id":"x","title":"y","bogusField":1}]}`), 0o644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	out := runAgentExpectFail(t, nil, "--seed", seed)
+	if !strings.Contains(out, "bogusField") {
+		t.Fatalf("abort error should name the unknown field; output:\n%s", out)
+	}
+}
+
+// TestE2E_SeedEnvRejectsNonWhitelisted proves a non-whitelisted forwarded env
+// key aborts boot listing the rejected key, while a whitelisted key in the same
+// map is not flagged.
+func TestE2E_SeedEnvRejectsNonWhitelisted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e in -short")
+	}
+	envJSON := `{"EVIL_KEY":"1","BOSS_CLOUD_ACCESS_E2E_SEQUENCE":"active"}`
+	out := runAgentExpectFail(t, []string{"BOSS_PROOF_TUI_SEED_ENV=" + envJSON})
+	if !strings.Contains(out, "EVIL_KEY") {
+		t.Fatalf("abort error should name the rejected env key; output:\n%s", out)
+	}
+	if strings.Contains(out, "BOSS_CLOUD_ACCESS_E2E_SEQUENCE") {
+		t.Fatalf("whitelisted key should not be listed as rejected; output:\n%s", out)
+	}
 }

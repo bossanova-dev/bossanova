@@ -7,12 +7,13 @@
 package bossanovav1
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -2412,8 +2413,14 @@ type ProxySendChatMessageResponse struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	TmuxSessionName string                 `protobuf:"bytes,1,opt,name=tmux_session_name,json=tmuxSessionName,proto3" json:"tmux_session_name,omitempty"`
 	Delivered       bool                   `protobuf:"varint,2,opt,name=delivered,proto3" json:"delivered,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// notice_text mirrors SendChatMessageResponse.notice_text: the user-facing
+	// outcome of a message bossd handled mechanically (a "/boss switch" account
+	// switch intercepted before delivery) instead of forwarding to the agent. On
+	// that path delivered is false; callers must read notice_text. Additive,
+	// backward-compatible response field. Empty for an ordinary delivered message.
+	NoticeText    string `protobuf:"bytes,3,opt,name=notice_text,json=noticeText,proto3" json:"notice_text,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProxySendChatMessageResponse) Reset() {
@@ -2458,6 +2465,13 @@ func (x *ProxySendChatMessageResponse) GetDelivered() bool {
 		return x.Delivered
 	}
 	return false
+}
+
+func (x *ProxySendChatMessageResponse) GetNoticeText() string {
+	if x != nil {
+		return x.NoticeText
+	}
+	return ""
 }
 
 // AggregatedRepo is one logical repo (deduped by origin URL) plus a ref for
@@ -5330,10 +5344,12 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12$\n" +
 	"\x0ewake_if_asleep\x18\x03 \x01(\bR\fwakeIfAsleep\x12\x1b\n" +
 	"\x06submit\x18\x04 \x01(\bH\x00R\x06submit\x88\x01\x01B\t\n" +
-	"\a_submit\"h\n" +
+	"\a_submit\"\x89\x01\n" +
 	"\x1cProxySendChatMessageResponse\x12*\n" +
 	"\x11tmux_session_name\x18\x01 \x01(\tR\x0ftmuxSessionName\x12\x1c\n" +
-	"\tdelivered\x18\x02 \x01(\bR\tdelivered\"\xb9\x01\n" +
+	"\tdelivered\x18\x02 \x01(\bR\tdelivered\x12\x1f\n" +
+	"\vnotice_text\x18\x03 \x01(\tR\n" +
+	"noticeText\"\xb9\x01\n" +
 	"\x0eAggregatedRepo\x12\x1d\n" +
 	"\n" +
 	"origin_url\x18\x01 \x01(\tR\toriginUrl\x12!\n" +

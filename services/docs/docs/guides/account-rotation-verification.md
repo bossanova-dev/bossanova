@@ -46,7 +46,6 @@ boss account add codex --label codex-backup --priority 10
 Useful flags:
 
 - `--label` sets a unique human label for the provider.
-- `--email` stores an informational email in local metadata.
 - `--priority` sets selection order; lower values are preferred.
 - `--token-stdin` is Claude-only and reads the setup token from stdin instead of
   running the walkthrough.
@@ -77,9 +76,11 @@ boss account ls --provider codex --json
 
 A healthy registered account has the expected `provider`, `status: active`,
 priority, and health metadata. The JSON schema includes `id`, `provider`,
-`label`, `email`, `status`, `priority`, `health`, `tier`, `allowed_models`,
+`label`, `status`, `priority`, `health`, `tier`, `allowed_models`,
 `cooldown_until`, `last_used_at`, `last_test_ok_at`, `last_test_error`,
-`created_at`, and `updated_at`. It does not include a credential field.
+`util_5h`, `util_7d`, `reset_5h`, `reset_7d`, `usage_status`,
+`plan_tier`, `usage_fetched_at`, `created_at`, and
+`updated_at`. It does not include a credential field.
 
 ## 3. Test Each Credential
 
@@ -192,16 +193,17 @@ accounts with `boss account add` before expecting rotation.
 Disable automatic rotation globally:
 
 ```bash
-boss settings --no-rotation
+boss settings --no-managed-accounts
 ```
 
 Re-enable it:
 
 ```bash
-boss settings --rotation
+boss settings --managed-accounts
 ```
 
-Manual switching still works while automatic rotation is disabled.
+(`--no-rotation` / `--rotation` still work as deprecated aliases.) Manual
+switching still works while automatic rotation is disabled.
 
 ## Optional Smoke Script
 
@@ -236,5 +238,5 @@ BOSS_BIN=/path/to/boss node scripts/account-rotation-smoke.mjs --test
 ```
 
 The script prints provider counts and non-secret metadata only: account id,
-provider, status, priority, health, and cooldown. It does not print email,
-label, raw JSON, or credentials. It does not trigger usage-limit rotation.
+provider, status, priority, health, and cooldown. It does not print label, raw
+JSON, or credentials. It does not trigger usage-limit rotation.

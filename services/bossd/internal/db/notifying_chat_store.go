@@ -100,6 +100,14 @@ func (s *NotifyingAgentChatStore) UpdateProviderSessionID(ctx context.Context, a
 	return nil
 }
 
+func (s *NotifyingAgentChatStore) UpdateAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error {
+	if err := s.inner.UpdateAccountIDByAgentSessionID(ctx, agentSessionID, accountID); err != nil {
+		return err
+	}
+	s.notifyAfterUpdate(ctx, agentSessionID)
+	return nil
+}
+
 func (s *NotifyingAgentChatStore) MarkStartFailed(ctx context.Context, agentSessionID, reason string) error {
 	if err := s.inner.MarkStartFailed(ctx, agentSessionID, reason); err != nil {
 		return err

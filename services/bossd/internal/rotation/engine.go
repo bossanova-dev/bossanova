@@ -206,6 +206,30 @@ func (e *Engine) Decide(ctx context.Context, sig Signal) (Outcome, error) {
 	return r.(Outcome), nil
 }
 
+// SelectProactiveCandidate returns the lowest-utilization account eligible to
+// receive a proactive pre-cap rotation off boundAccountID, or nil when none
+// qualifies. Unlike Decide it is READ-ONLY: the bound account is not exhausted,
+// so no cooldown or health change is ever written. Selection reuses the same
+// util-aware predicate as reactive rotation (probed util < 1.0, active, healthy,
+// not cooling, not the bound account); an empty utilization map yields nil
+// because a proactive switch must never target an unprobed account. (BOS-318)
+func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, boundAccountID string, utilization map[string]float64) (*models.Account, error) {
+	now := e.clock()
+	var chosen *models.Account
+	err := e.accounts.DecideTx(ctx, provider, func(tx TxAccountView) error {
+		accts, err := tx.ListByProvider(ctx)
+		if err != nil {
+			return fmt.Errorf("list accounts: %w", err)
+		}
+		chosen = selectCandidate(accts, boundAccountID, now, utilization, true)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("proactive select tx: %w", err)
+	}
+	return chosen, nil
+}
+
 // decide runs the transactional core of a rotation decision.
 func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 	now := e.clock()
@@ -220,15 +244,21 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 			}
 			out.CooldownApplied = false
 		default: // UsageLimited
-			until := now.Add(e.defaultCooldown)
-			if sig.ResetAt != nil {
-				until = *sig.ResetAt
+			if sig.CappedAccountID == "" {
+				// Unbound cap (BOS-320): an unbound session has no bound account to
+				// cool — select a rotation target only, write no cooldown.
+				out.CooldownApplied = false
+			} else {
+				until := now.Add(e.defaultCooldown)
+				if sig.ResetAt != nil {
+					until = *sig.ResetAt
+				}
+				applied, err := tx.SetCooldownIfNotCooling(ctx, sig.CappedAccountID, until, now)
+				if err != nil {
+					return fmt.Errorf("set cooldown: %w", err)
+				}
+				out.CooldownApplied = applied
 			}
-			applied, err := tx.SetCooldownIfNotCooling(ctx, sig.CappedAccountID, until, now)
-			if err != nil {
-				return fmt.Errorf("set cooldown: %w", err)
-			}
-			out.CooldownApplied = applied
 		}
 
 		list, err := tx.ListByProvider(ctx)
@@ -279,10 +309,10 @@ func selectCandidate(accts []*models.Account, cappedID string, now time.Time, ut
 			if !ok {
 				continue
 			}
-			if util >= 1 {
+			if UtilizationCapped(util) {
 				continue
 			}
-			if best == nil || util < bestUtil {
+			if best == nil || LowerUtilization(util, bestUtil) {
 				best = a
 				bestUtil = util
 			}

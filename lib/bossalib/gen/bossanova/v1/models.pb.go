@@ -7,12 +7,13 @@
 package bossanovav1
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -3607,7 +3608,6 @@ type Account struct {
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Provider      string                 `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"` // "claude" | "codex"
 	Label         string                 `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
-	Email         string                 `protobuf:"bytes,4,opt,name=email,proto3" json:"email,omitempty"`        // account email (informational)
 	Status        string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`      // "active" | "disabled"
 	Priority      int32                  `protobuf:"varint,6,opt,name=priority,proto3" json:"priority,omitempty"` // sort order; lower = preferred
 	CooldownUntil *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=cooldown_until,json=cooldownUntil,proto3" json:"cooldown_until,omitempty"`
@@ -3673,13 +3673,6 @@ func (x *Account) GetProvider() string {
 func (x *Account) GetLabel() string {
 	if x != nil {
 		return x.Label
-	}
-	return ""
-}
-
-func (x *Account) GetEmail() string {
-	if x != nil {
-		return x.Email
 	}
 	return ""
 }
@@ -4222,12 +4215,11 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"agent_name\x18\x0f \x01(\tR\tagentName\x12\x14\n" +
 	"\x05model\x18\x10 \x01(\tR\x05model\x12!\n" +
 	"\fgate_command\x18\x11 \x01(\tR\vgateCommand\x12*\n" +
-	"\x11run_setup_command\x18\x12 \x01(\bR\x0frunSetupCommand\"\xfd\x04\n" +
+	"\x11run_setup_command\x18\x12 \x01(\bR\x0frunSetupCommand\"\xf4\x04\n" +
 	"\aAccount\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
-	"\x05label\x18\x03 \x01(\tR\x05label\x12\x14\n" +
-	"\x05email\x18\x04 \x01(\tR\x05email\x12\x16\n" +
+	"\x05label\x18\x03 \x01(\tR\x05label\x12\x16\n" +
 	"\x06status\x18\x05 \x01(\tR\x06status\x12\x1a\n" +
 	"\bpriority\x18\x06 \x01(\x05R\bpriority\x12A\n" +
 	"\x0ecooldown_until\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\rcooldownUntil\x12<\n" +
@@ -4243,7 +4235,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"created_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x121\n" +
-	"\x05usage\x18\x10 \x01(\v2\x1b.bossanova.v1.UsageSnapshotR\x05usage\"\x9f\x02\n" +
+	"\x05usage\x18\x10 \x01(\v2\x1b.bossanova.v1.UsageSnapshotR\x05usageJ\x04\b\x04\x10\x05R\x05email\"\x9f\x02\n" +
 	"\rUsageSnapshot\x12\x17\n" +
 	"\autil_5h\x18\x01 \x01(\x01R\x06util5h\x12\x17\n" +
 	"\autil_7d\x18\x02 \x01(\x01R\x06util7d\x125\n" +

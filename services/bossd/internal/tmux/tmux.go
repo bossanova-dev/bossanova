@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/recurser/bossalib/termnorm"
 )
 
 // sortedKeys returns the keys of m in sorted order, so callers that emit
@@ -123,9 +125,18 @@ func (c *Client) NewSession(ctx context.Context, opts NewSessionOpts) error {
 		"-y", strconv.Itoa(height), // Height
 	)
 	// Set session-environment variables before the command. Keys are sorted
-	// so the argv is deterministic (stable logs and tests).
+	// so the argv is deterministic (stable logs and tests). TERM is normalized
+	// last: bossd under launchd may have no TERM, and a stray host-specific
+	// TERM (e.g. xterm-ghostty) whose terminfo entry is missing on this box
+	// would make tmux exit with "missing or unsuitable terminal". termnorm
+	// keeps a resolvable TERM and otherwise falls back to xterm-256color. It
+	// returns a copy, so the caller's Env map is never mutated.
+	sessionEnv := make([]string, 0, len(opts.Env)+1)
 	for _, k := range sortedKeys(opts.Env) {
-		args = append(args, "-e", k+"="+opts.Env[k])
+		sessionEnv = append(sessionEnv, k+"="+opts.Env[k])
+	}
+	for _, kv := range termnorm.Normalize(sessionEnv) {
+		args = append(args, "-e", kv)
 	}
 	args = append(args, opts.Command...)
 
@@ -230,6 +241,31 @@ func (c *Client) HasSessionStatus(ctx context.Context, name string) (bool, error
 		return false, fmt.Errorf("tmux has-session %q: %w (stderr: %s)", name, err, msg)
 	}
 	return true, nil
+}
+
+// PanePID returns the PID of the first pane in the named tmux session (the
+// login shell tmux launched the session's command under). Used by the codex
+// provider-session resolver to walk the pane's process tree to the codex
+// process and bind the chat to the rollout that process holds open. Returns an
+// error when the session is missing, tmux fails, or no pane pid is reported.
+func (c *Client) PanePID(ctx context.Context, sessionName string) (int, error) {
+	cmd := c.cmdFunc(ctx, "tmux", "list-panes", "-t", sessionName, "-F", "#{pane_pid}")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("list panes %q: %w", sessionName, err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(line)
+		if err != nil {
+			return 0, fmt.Errorf("parse pane pid %q for session %q: %w", line, sessionName, err)
+		}
+		return pid, nil
+	}
+	return 0, fmt.Errorf("no pane pid for session %q", sessionName)
 }
 
 // KillSession kills a tmux session.

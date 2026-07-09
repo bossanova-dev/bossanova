@@ -82,6 +82,15 @@ func runChatSend(cmd *cobra.Command, chatID, message string) error {
 		return fmt.Errorf("send message: %w", err)
 	}
 
+	// A non-empty notice means bossd handled the message mechanically instead of
+	// delivering it — today, a "/boss switch" account switch intercepted before
+	// the pane (Delivered is false on that path). Surface the outcome verbatim so
+	// the CLI user sees "switched to <label>" rather than a bare "not delivered".
+	if notice := resp.GetNoticeText(); notice != "" {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), notice)
+		return nil
+	}
+
 	if resp.Delivered {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "delivered (tmux: %s)\n", resp.TmuxSessionName)
 	} else {

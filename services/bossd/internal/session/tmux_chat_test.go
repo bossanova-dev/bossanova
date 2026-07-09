@@ -746,7 +746,9 @@ func TestStartTmuxChat_AgentRunnerNotLoaded(t *testing.T) {
 }
 
 // TestStartTmuxChat_NewSessionFails verifies that a tmux NewSession failure
-// returns an error before any agent_chats row is created.
+// returns an error AND stamps a "(failed to start)" agent_chats row so the
+// failure is visible to boss show / the TUI / external clients rather than only
+// logged. The row is created here because the normal Step-7 creation never runs.
 func TestStartTmuxChat_NewSessionFails(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
@@ -759,8 +761,16 @@ func TestStartTmuxChat_NewSessionFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when tmux new-session fails")
 	}
-	if len(h.chats.createCalls) != 0 {
-		t.Errorf("expected 0 agentChats.Create calls when new-session fails, got %d", len(h.chats.createCalls))
+	// A failed-start row is created and stamped so the tmux launch failure is
+	// not silently invisible.
+	if len(h.chats.createCalls) != 1 {
+		t.Fatalf("expected 1 agentChats.Create call to record the failed-start row, got %d", len(h.chats.createCalls))
+	}
+	if len(h.chats.markStartFailedCalls) != 1 {
+		t.Fatalf("expected 1 MarkStartFailed call, got %d", len(h.chats.markStartFailedCalls))
+	}
+	if reason := h.chats.markStartFailedCalls[0].reason; !strings.Contains(reason, "tmux launch failed") {
+		t.Errorf("MarkStartFailed reason = %q, want it to mention the tmux launch failure", reason)
 	}
 	// new-session was attempted but kill-session was NOT — there's no orphan
 	// to clean up because the spawn never succeeded.

@@ -391,6 +391,12 @@ message ProxySendChatMessageRequest {
 message ProxySendChatMessageResponse {
   string tmux_session_name = 1;
   bool delivered = 2;
+  // notice_text mirrors SendChatMessageResponse.notice_text: the user-facing
+  // outcome of a message bossd handled mechanically (a "/boss switch" account
+  // switch intercepted before delivery) instead of forwarding to the agent. On
+  // that path delivered is false; callers must read notice_text. Additive,
+  // backward-compatible response field. Empty for an ordinary delivered message.
+  string notice_text = 3;
 }
 
 // AggregatedRepo is one logical repo (deduped by origin URL) plus a ref for

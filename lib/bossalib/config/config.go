@@ -144,8 +144,8 @@ func (c RepairConfig) SkillName() string {
 	return "boss-repair"
 }
 
-// RotationConfig holds account-rotation policy knobs.
-type RotationConfig struct {
+// ManagedAccountsConfig holds account-rotation policy knobs.
+type ManagedAccountsConfig struct {
 	DefaultCooldownMinutes int `json:"default_cooldown_minutes,omitempty"`
 	// Enabled gates auto-rotation of headless runs. nil = unset = enabled;
 	// unlike the int-based knobs below, a default-true bool can't use the
@@ -165,12 +165,31 @@ type RotationConfig struct {
 	// ChatRotateMinIntervalMinutes rate-limits automatic rotation attempts per
 	// chat (belt-and-braces against banner-flap loops). 0 = default (10m).
 	ChatRotateMinIntervalMinutes int `json:"chat_rotate_min_interval_minutes,omitempty"`
+	// UsageStalenessWindowMinutes bounds how old a cached usage snapshot may be
+	// to influence default-account selection at bind time. 0 = default (30m).
+	UsageStalenessWindowMinutes int `json:"usage_staleness_window_minutes,omitempty"`
+
+	// ProactiveRotation gates the proactive pre-cap sweep (BOS-318). Unlike the
+	// other rotation bools it defaults OFF (nil ⇒ false): the sweep must be an
+	// explicit opt-in, never on by default.
+	ProactiveRotation *bool `json:"proactive_rotation_enabled,omitempty"`
+	// ProactiveSweepIntervalSeconds is the cadence of the proactive pre-cap sweep.
+	// 0 ⇒ default (300s / 5m).
+	ProactiveSweepIntervalSeconds int `json:"proactive_sweep_interval_seconds,omitempty"`
+
+	// FailoverProxy gates the S7 local failover reverse proxy (BOS-320): a
+	// loopback server injected as ANTHROPIC_BASE_URL that transparently swaps
+	// accounts on a 429/401 upstream response without respawning the tmux pane.
+	// Defaults ON (nil ⇒ true) as of the managed-accounts change: with account
+	// management enabled, the proxy is injected unless explicitly disabled. Opt
+	// out with failover_proxy_enabled:false or managed_accounts.enabled:false.
+	FailoverProxy *bool `json:"failover_proxy_enabled,omitempty"`
 }
 
 // AutoRotateChatsEnabled resolves the interactive-chat auto-rotate scope for a
 // repo: per-repo override → global → default ON (decision D4). It does not apply
-// the global RotationEnabled kill switch; callers gate that separately.
-func (c RotationConfig) AutoRotateChatsEnabled(repoID string) bool {
+// the global ManagedAccountsEnabled kill switch; callers gate that separately.
+func (c ManagedAccountsConfig) AutoRotateChatsEnabled(repoID string) bool {
 	if v, ok := c.AutoRotateChatsPerRepo[repoID]; ok {
 		return v
 	}
@@ -182,26 +201,47 @@ func (c RotationConfig) AutoRotateChatsEnabled(repoID string) bool {
 
 // ChatRotateMinInterval returns the per-chat automatic-rotation rate limit, or
 // the default of 10 minutes when unset.
-func (c RotationConfig) ChatRotateMinInterval() time.Duration {
+func (c ManagedAccountsConfig) ChatRotateMinInterval() time.Duration {
 	if c.ChatRotateMinIntervalMinutes > 0 {
 		return time.Duration(c.ChatRotateMinIntervalMinutes) * time.Minute
 	}
 	return 10 * time.Minute
 }
 
+// UsageStalenessWindow returns the max age a cached usage snapshot may have to
+// influence default-account selection, or 30 minutes when unset.
+func (c ManagedAccountsConfig) UsageStalenessWindow() time.Duration {
+	if c.UsageStalenessWindowMinutes > 0 {
+		return time.Duration(c.UsageStalenessWindowMinutes) * time.Minute
+	}
+	return 30 * time.Minute
+}
+
+// UsageRefreshInterval returns how often the daemon proactively re-probes active
+// accounts' usage so selectDefault always has a snapshot inside the staleness
+// window. It is half the staleness window (so a refreshed snapshot never ages
+// out before the next refresh), floored at 5 minutes to avoid over-probing.
+func (c ManagedAccountsConfig) UsageRefreshInterval() time.Duration {
+	interval := c.UsageStalenessWindow() / 2
+	if interval < 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return interval
+}
+
 // DefaultCooldown returns the configured default cooldown applied to a
 // usage-limited account when the signal carries no reset time, or 60 minutes
 // when unset.
-func (c RotationConfig) DefaultCooldown() time.Duration {
+func (c ManagedAccountsConfig) DefaultCooldown() time.Duration {
 	if c.DefaultCooldownMinutes > 0 {
 		return time.Duration(c.DefaultCooldownMinutes) * time.Minute
 	}
 	return 60 * time.Minute
 }
 
-// RotationEnabled returns whether auto-rotation is enabled. Unset (nil)
+// ManagedAccountsEnabled returns whether auto-rotation is enabled. Unset (nil)
 // defaults to true.
-func (c RotationConfig) RotationEnabled() bool {
+func (c ManagedAccountsConfig) ManagedAccountsEnabled() bool {
 	if c.Enabled == nil {
 		return true
 	}
@@ -210,7 +250,7 @@ func (c RotationConfig) RotationEnabled() bool {
 
 // MaxRotations returns the configured cap on rotations per headless run, or
 // the default of 3 when unset.
-func (c RotationConfig) MaxRotations() int {
+func (c ManagedAccountsConfig) MaxRotations() int {
 	if c.MaxRotationsPerRun > 0 {
 		return c.MaxRotationsPerRun
 	}
@@ -219,11 +259,36 @@ func (c RotationConfig) MaxRotations() int {
 
 // ParkSweepInterval returns the configured interval between sweeps of parked
 // sessions awaiting rotation, or the default of 60 seconds when unset.
-func (c RotationConfig) ParkSweepInterval() time.Duration {
+func (c ManagedAccountsConfig) ParkSweepInterval() time.Duration {
 	if c.ParkSweepIntervalSeconds > 0 {
 		return time.Duration(c.ParkSweepIntervalSeconds) * time.Second
 	}
 	return 60 * time.Second
+}
+
+// ProactiveRotationEnabled reports whether the proactive pre-cap sweep is on.
+// It defaults OFF (nil ⇒ false); the sweep is opt-in only (BOS-318).
+func (c ManagedAccountsConfig) ProactiveRotationEnabled() bool {
+	return c.ProactiveRotation != nil && *c.ProactiveRotation
+}
+
+// FailoverProxyEnabled reports whether the S7 local failover reverse proxy is
+// on. Default-ON (nil ⇒ true) as of the managed-accounts change: with account
+// management enabled, the proxy is injected as ANTHROPIC_BASE_URL for Claude
+// sessions unless explicitly disabled. Injection also requires
+// ManagedAccountsEnabled() (gated by the caller). Opt out with
+// managed_accounts.failover_proxy_enabled:false or managed_accounts.enabled:false.
+func (c ManagedAccountsConfig) FailoverProxyEnabled() bool {
+	return c.FailoverProxy == nil || *c.FailoverProxy
+}
+
+// ProactiveSweepInterval returns the cadence of the proactive pre-cap sweep,
+// or the default of 5 minutes when unset.
+func (c ManagedAccountsConfig) ProactiveSweepInterval() time.Duration {
+	if c.ProactiveSweepIntervalSeconds > 0 {
+		return time.Duration(c.ProactiveSweepIntervalSeconds) * time.Second
+	}
+	return 5 * time.Minute
 }
 
 const pluginPrefix = "bossd-plugin-"
@@ -612,31 +677,54 @@ func loadWithoutSideEffects() (Settings, error) {
 
 // Settings holds global Bossanova configuration.
 type Settings struct {
-	WorktreeBaseDir                string            `json:"worktree_base_dir"`
-	AppDataDir                     string            `json:"app_data_dir,omitempty"`
-	SocketPath                     string            `json:"socket_path,omitempty"`
-	DefaultAgent                   string            `json:"default_agent,omitempty"`
-	InstalledAt                    time.Time         `json:"installed_at,omitzero"`
-	BossCloudGuestOfferHidden      bool              `json:"boss_cloud_guest_offer_hidden,omitempty"`
-	BossCloudValueDeliveredAt      time.Time         `json:"boss_cloud_value_delivered_at,omitzero"`
-	SkillsDeclined                 bool              `json:"skills_declined,omitempty"`
-	SkillsDeclinedByAgent          map[string]bool   `json:"skills_declined_by_agent,omitempty"`
-	SkillsDeclinedManifestByAgent  map[string]string `json:"skills_declined_manifest_by_agent,omitempty"`
-	SkillsInstalledManifestByAgent map[string]string `json:"skills_installed_manifest_by_agent,omitempty"`
-	PollIntervalSeconds            int               `json:"poll_interval_seconds,omitempty"`
-	EventTracingEnabled            bool              `json:"event_tracing_enabled,omitempty"`
-	ErrorTrackingEnabled           bool              `json:"error_tracking_enabled,omitempty"`
-	PostHogProjectToken            string            `json:"posthog_project_token,omitempty"`
-	PostHogHost                    string            `json:"posthog_host,omitempty"`
-	Plugins                        []PluginConfig    `json:"plugins,omitempty"`
-	Repair                         RepairConfig      `json:"repair,omitzero"`
-	Rotation                       RotationConfig    `json:"rotation,omitzero"`
-	ProvidersAcknowledged          bool              `json:"providers_acknowledged,omitempty"`
-	KnownAgentProviders            []string          `json:"known_agent_providers,omitempty"`
+	WorktreeBaseDir                string                `json:"worktree_base_dir"`
+	AppDataDir                     string                `json:"app_data_dir,omitempty"`
+	SocketPath                     string                `json:"socket_path,omitempty"`
+	DefaultAgent                   string                `json:"default_agent,omitempty"`
+	InstalledAt                    time.Time             `json:"installed_at,omitzero"`
+	BossCloudGuestOfferHidden      bool                  `json:"boss_cloud_guest_offer_hidden,omitempty"`
+	BossCloudValueDeliveredAt      time.Time             `json:"boss_cloud_value_delivered_at,omitzero"`
+	SkillsDeclined                 bool                  `json:"skills_declined,omitempty"`
+	SkillsDeclinedByAgent          map[string]bool       `json:"skills_declined_by_agent,omitempty"`
+	SkillsDeclinedManifestByAgent  map[string]string     `json:"skills_declined_manifest_by_agent,omitempty"`
+	SkillsInstalledManifestByAgent map[string]string     `json:"skills_installed_manifest_by_agent,omitempty"`
+	PollIntervalSeconds            int                   `json:"poll_interval_seconds,omitempty"`
+	EventTracingEnabled            bool                  `json:"event_tracing_enabled,omitempty"`
+	ErrorTrackingEnabled           bool                  `json:"error_tracking_enabled,omitempty"`
+	PostHogProjectToken            string                `json:"posthog_project_token,omitempty"`
+	PostHogHost                    string                `json:"posthog_host,omitempty"`
+	Plugins                        []PluginConfig        `json:"plugins,omitempty"`
+	Repair                         RepairConfig          `json:"repair,omitzero"`
+	ManagedAccounts                ManagedAccountsConfig `json:"managed_accounts,omitzero"`
+	ProvidersAcknowledged          bool                  `json:"providers_acknowledged,omitempty"`
+	KnownAgentProviders            []string              `json:"known_agent_providers,omitempty"`
 	// LoginShell is the user's interactive shell ($SHELL), captured by the TUI
 	// (which runs in that shell) so the launchd daemon — which has no $SHELL —
 	// can launch agents through it for per-project tool resolution.
 	LoginShell string `json:"login_shell,omitempty"`
+}
+
+// UnmarshalJSON accepts the managed_accounts block and, for backward
+// compatibility, the legacy top-level "rotation" key that predates the rename.
+// managed_accounts wins when both are present; otherwise the legacy rotation
+// block populates ManagedAccounts. All other fields decode normally.
+func (s *Settings) UnmarshalJSON(data []byte) error {
+	type alias Settings // avoid infinite recursion
+	aux := &struct {
+		Managed *ManagedAccountsConfig `json:"managed_accounts"`
+		Legacy  *ManagedAccountsConfig `json:"rotation"`
+		*alias
+	}{alias: (*alias)(s)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	switch {
+	case aux.Managed != nil:
+		s.ManagedAccounts = *aux.Managed
+	case aux.Legacy != nil:
+		s.ManagedAccounts = *aux.Legacy
+	}
+	return nil
 }
 
 // PluginConfigBool reads a boolean-valued entry from a named plugin's

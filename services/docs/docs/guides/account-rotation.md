@@ -56,7 +56,6 @@ boss account add codex
 Useful flags (see `boss account add --help`):
 
 - `--label` — a human label for the account (unique per provider).
-- `--email` — an informational account email.
 - `--priority` — sort order; lower is preferred.
 - `--token-stdin` — **claude only**: read the setup token from stdin instead of
   running the walkthrough. Codex has no stdin path (its device flow needs an
@@ -67,7 +66,7 @@ Manage the registry with the sibling commands:
 ```bash
 boss account ls                     # list accounts (add --json for scripts)
 boss account test <account-id>      # validate a credential and record the result
-boss account update <account-id>    # change label, email, priority, or status
+boss account update <account-id>    # change label, priority, status, or allowed models
 boss account remove <account-id>    # remove an account and its stored credential
 ```
 
@@ -111,17 +110,31 @@ versa. Above every per-repo setting sits the global kill-switch.
 
 ## Kill-switch
 
-Setting `rotation.enabled=false` is the global kill-switch. It halts **all**
-automatic rotation instantly — the daemon re-reads the flag on every rotation
-decision, so no restart is needed:
+Setting `managed_accounts.enabled=false` is the global kill-switch. It halts
+**all** automatic rotation instantly — the daemon re-reads the flag on every
+rotation decision, so no restart is needed:
 
 ```bash
-boss settings --no-rotation   # halt automatic rotation
-boss settings --rotation      # re-enable it
+boss settings --no-managed-accounts   # halt automatic rotation
+boss settings --managed-accounts      # re-enable it
 ```
 
+(`--no-rotation` / `--rotation` are deprecated hidden aliases for the same
+two flags, kept for back-compat scripts.)
+
 You can also flip the same toggle from the TUI Settings view. `boss settings`
-with no flags prints the current value (`Rotation enabled: true|false`).
+with no flags prints the current values on two lines:
+
+```
+Managed accounts: true|false
+Failover proxy:   true|false
+```
+
+Turning off managed accounts also turns off the local failover proxy (see
+[Privacy: Local failover proxy](../reference/privacy.md#local-failover-proxy-on-by-default)),
+since the proxy depends on account management being enabled. To keep
+rotation on but turn off only the proxy, set
+`managed_accounts.failover_proxy_enabled=false` instead.
 
 The kill-switch only disables **automatic** rotation. Manual
 `boss account switch` keeps working while rotation is off — you remain in full

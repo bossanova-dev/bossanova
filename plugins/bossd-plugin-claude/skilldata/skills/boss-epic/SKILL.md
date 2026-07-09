@@ -44,6 +44,11 @@ schedules and merges.
   enumerated child tickets to `Done`; it never closes or restates the parent.
 - **Empty eligible set is success.** A parent whose children are all already
   done / not yet planned is a clean no-op, not an error.
+- **Planning-only work is not implementation fan-out.** Route by intent; never send `/boss-plan`, plan-review, or recon through the implementation path:
+  - Implementation work uses the session-runner `createSession` capability with `tmux_unattended: true` — the durable PR-backed run (Phase 3a).
+  - Unattended planning, recon, or plan-review stays inside the driver as a subagent — no session at all.
+  - Visible planning chat uses the session-runner `createPlanningChat` capability (`create_session` with `quick_chat: true`, no worktree/branch/PR).
+  - It must not use `create_session` with `tmux_unattended`; that path is for PR-backed implementation runs only.
 
 Workspace facts (do not re-discover):
 
@@ -286,6 +291,11 @@ Compute the ready set via `readyTickets` and launch up to
 #   // re-filter — it is the single authority.
 #   process.stdout.write(JSON.stringify(ready.map((t) => t.id)))
 ```
+
+The `readyTickets` set is drawn only from the eligible `Todo` implementation
+tickets classified in Phase 1, so this `createSession` block is for
+implementation fan-out **only** — never for planning/recon/plan-review subtasks
+(route those per the Operating Contract: subagent, or `createPlanningChat`).
 
 For each ready id, up to the concurrency headroom (highest-priority first — the
 array is already sorted), dispatch **one tmux-hosted unattended run** (the

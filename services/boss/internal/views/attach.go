@@ -5,18 +5,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/google/uuid"
 	"github.com/recurser/boss/internal/agent"
 	"github.com/recurser/boss/internal/client"
 	bosspty "github.com/recurser/boss/internal/pty"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/termnorm"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -37,6 +40,22 @@ var errChatSessionGone = errors.New(
 // startExecMsg fires once the minLaunchingDisplay budget has elapsed.
 // It triggers the deferred tea.Exec that attaches to tmux.
 type startExecMsg struct{}
+
+// attachTmuxEnv returns the environment for the `tmux attach` child with a
+// resolvable TERM (falling back to xterm-256color when the user's TERM has no
+// terminfo entry on this host) plus the effective TERM string for diagnostics.
+// effectiveTERM is read back from the normalized env itself (rather than
+// re-deriving it from os.Getenv) so the two never disagree, even when base
+// isn't the current process environment (e.g. in tests).
+func attachTmuxEnv(base []string) (env []string, effectiveTERM string) {
+	env = termnorm.Normalize(base)
+	for _, e := range env {
+		if strings.HasPrefix(e, "TERM=") {
+			return env, strings.TrimPrefix(e, "TERM=")
+		}
+	}
+	return env, ""
+}
 
 // pendingExec carries the prepared exec across the launching delay.
 // Populated in the attachReadyMsg handler, consumed in startExecMsg.
@@ -112,6 +131,19 @@ type AttachModel struct {
 	// pendingExec is set in the attachReadyMsg handler and consumed by
 	// the startExecMsg handler once the launching-display delay elapses.
 	pendingExec *pendingExec
+
+	effectiveTERM string // TERM actually handed to `tmux attach`, for diagnostics
+
+	// tmuxName is the tmux session name this attach targets, stashed as soon
+	// as it's known so the error screen can offer a reproduction command even
+	// though pendingExec (which also carries it) is cleared before the pane
+	// exits.
+	tmuxName string
+	// tmuxTail is tmux's own startup output (e.g. a missing-terminfo error),
+	// captured via Manager.RecentOutput on a failed attach — before the
+	// process can be evicted — so the error screen can show the real reason
+	// instead of a bare "exit status 1".
+	tmuxTail string
 }
 
 // SetTelemetry installs a telemetry client for successful attach actions.
@@ -195,6 +227,10 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("daemon did not return a tmux session name; check that tmux is installed")
 			return m, nil
 		}
+		// Stash on the model (not just pendingExec) so it survives to the
+		// agentFinishedMsg handler, which fires after pendingExec has already
+		// been cleared.
+		m.tmuxName = tmuxName
 		// Resume-attach guard: the chat record can outlive its tmux session
 		// (interrupted setup, daemon restart, external teardown). If we'd be
 		// resuming a session that no longer exists, don't hand the terminal
@@ -224,6 +260,9 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the user's Ctrl+X intercept has somewhere to land.
 		agentCmd := exec.Command("tmux", "attach", "-t", tmuxName)
 		agentCmd.Dir = msg.session.GetWorktreePath()
+		env, effTERM := attachTmuxEnv(os.Environ())
+		agentCmd.Env = env
+		m.effectiveTERM = effTERM
 		m.manager.RegisterSession(m.agentSessionID, m.sessionID)
 		ptycmd := bosspty.NewPTYCommand(m.manager, m.agentSessionID, agentCmd)
 
@@ -298,6 +337,10 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.detach = true
 		}
 		if msg.err != nil {
+			// Capture tmux's own startup output (e.g. a missing-terminfo error)
+			// before the process is evicted, so the error screen can show the
+			// real reason instead of a bare "exit status 1".
+			m.tmuxTail = string(m.manager.RecentOutput(m.agentSessionID, 2048))
 			// The pane died on launch — ask the daemon what command it ran so
 			// the error screen can show a copy-pasteable reproduction.
 			// Do this before title cleanup because unused chats have no JSONL
@@ -549,6 +592,61 @@ func renderLaunchDiagnostic(info *pb.DescribeChatLaunchResponse, agentLabel stri
 	return b.String()
 }
 
+// renderTmuxAttachDiagnostic formats a copy-pasteable local `tmux attach`
+// reproduction plus the captured tmux startup output, shown under the bare exit
+// error so a user can see (and reproduce) the underlying tmux failure — most
+// commonly a missing terminfo entry for their TERM. Returns "" when there is no
+// session name to reproduce with.
+func renderTmuxAttachDiagnostic(tmuxName, effectiveTERM, capturedTail string) string {
+	if tmuxName == "" {
+		return ""
+	}
+	prose := lipgloss.NewStyle().Padding(0, 2)
+	code := lipgloss.NewStyle().Padding(0, 4)
+
+	repro := "tmux attach -t " + tmuxName
+	if effectiveTERM != "" {
+		repro = "TERM=" + effectiveTERM + " " + repro
+	}
+
+	var b strings.Builder
+	b.WriteString(prose.Render("boss attached with:"))
+	b.WriteString("\n\n")
+	b.WriteString(code.Render(repro))
+	b.WriteString("\n\n")
+	// capturedTail is raw PTY output: sanitize it before rendering so a tmux
+	// failure whose tail carries ANSI/cursor sequences or stray control bytes
+	// can't scramble the boss error frame the view is meant to keep control of.
+	if tail := strings.TrimSpace(sanitizeTmuxTail(capturedTail)); tail != "" {
+		b.WriteString(prose.Render("tmux reported:"))
+		b.WriteString("\n\n")
+		b.WriteString(code.Render(tail))
+		b.WriteString("\n\n")
+	}
+	b.WriteString(prose.Render(
+		"If this is a missing-terminfo error, install the entry on this host\n" +
+			"(" + termnorm.InstallHint + ") or run: export TERM=" + termnorm.FallbackTERM))
+	return b.String()
+}
+
+// sanitizeTmuxTail strips ANSI/CSI escape sequences and any remaining C0
+// control bytes (keeping newlines and tabs) from captured PTY output, so a
+// tmux startup-failure tail is safe to render inside the boss error frame. The
+// common missing-terminfo error is plain stderr text and passes through
+// unchanged.
+func sanitizeTmuxTail(s string) string {
+	s = ansi.Strip(s)
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // shellJoin renders argv as a single copy-pasteable shell command, quoting any
 // argument that contains whitespace or shell-significant characters.
 func shellJoin(argv []string) string {
@@ -611,6 +709,10 @@ func (m AttachModel) View() tea.View {
 		if m.agentErr != nil {
 			b.WriteString(renderError(fmt.Sprintf("%s exited with error: %v", agentLabel, m.agentErr), m.width))
 			if diag := renderLaunchDiagnostic(m.launchInfo, agentLabel); diag != "" {
+				b.WriteString("\n")
+				b.WriteString(diag)
+			}
+			if diag := renderTmuxAttachDiagnostic(m.tmuxName, m.effectiveTERM, m.tmuxTail); diag != "" {
 				b.WriteString("\n")
 				b.WriteString(diag)
 			}

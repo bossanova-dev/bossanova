@@ -19,6 +19,21 @@ func TestDefaultSettings(t *testing.T) {
 	}
 }
 
+func TestUsageStalenessWindow(t *testing.T) {
+	var c ManagedAccountsConfig
+	if got := c.UsageStalenessWindow(); got != 30*time.Minute {
+		t.Errorf("UsageStalenessWindow default: got %v, want %v", got, 30*time.Minute)
+	}
+	c.UsageStalenessWindowMinutes = 45
+	if got := c.UsageStalenessWindow(); got != 45*time.Minute {
+		t.Errorf("UsageStalenessWindow set: got %v, want %v", got, 45*time.Minute)
+	}
+	c.UsageStalenessWindowMinutes = -5
+	if got := c.UsageStalenessWindow(); got != 30*time.Minute {
+		t.Errorf("UsageStalenessWindow negative: got %v, want %v (default)", got, 30*time.Minute)
+	}
+}
+
 func TestDefaultAgent_Default(t *testing.T) {
 	s := DefaultSettings()
 	if s.DefaultAgent != "claude" {
@@ -1037,23 +1052,23 @@ func TestRepairConfig_CooldownDuration(t *testing.T) {
 	})
 }
 
-func TestRotationConfig_DefaultCooldown(t *testing.T) {
+func TestManagedAccountsConfig_DefaultCooldown(t *testing.T) {
 	t.Run("returns default when unset", func(t *testing.T) {
-		c := RotationConfig{}
+		c := ManagedAccountsConfig{}
 		got := c.DefaultCooldown()
 		if got != 60*time.Minute {
 			t.Errorf("DefaultCooldown() = %v, want %v", got, 60*time.Minute)
 		}
 	})
 	t.Run("returns configured value when set", func(t *testing.T) {
-		c := RotationConfig{DefaultCooldownMinutes: 5}
+		c := ManagedAccountsConfig{DefaultCooldownMinutes: 5}
 		got := c.DefaultCooldown()
 		if got != 5*time.Minute {
 			t.Errorf("DefaultCooldown() = %v, want %v", got, 5*time.Minute)
 		}
 	})
 	t.Run("zero falls back to default", func(t *testing.T) {
-		c := RotationConfig{DefaultCooldownMinutes: 0}
+		c := ManagedAccountsConfig{DefaultCooldownMinutes: 0}
 		got := c.DefaultCooldown()
 		if got != 60*time.Minute {
 			t.Errorf("DefaultCooldown() = %v, want %v", got, 60*time.Minute)
@@ -1061,42 +1076,42 @@ func TestRotationConfig_DefaultCooldown(t *testing.T) {
 	})
 }
 
-func TestRotationConfig_RotationEnabled(t *testing.T) {
+func TestManagedAccountsConfig_ManagedAccountsEnabled(t *testing.T) {
 	t.Run("nil defaults to true", func(t *testing.T) {
-		c := RotationConfig{}
-		if !c.RotationEnabled() {
-			t.Error("RotationEnabled() = false, want true when Enabled is nil")
+		c := ManagedAccountsConfig{}
+		if !c.ManagedAccountsEnabled() {
+			t.Error("ManagedAccountsEnabled() = false, want true when Enabled is nil")
 		}
 	})
 	t.Run("explicit false", func(t *testing.T) {
 		f := false
-		c := RotationConfig{Enabled: &f}
-		if c.RotationEnabled() {
-			t.Error("RotationEnabled() = true, want false when Enabled = &false")
+		c := ManagedAccountsConfig{Enabled: &f}
+		if c.ManagedAccountsEnabled() {
+			t.Error("ManagedAccountsEnabled() = true, want false when Enabled = &false")
 		}
 	})
 	t.Run("explicit true", func(t *testing.T) {
 		tr := true
-		c := RotationConfig{Enabled: &tr}
-		if !c.RotationEnabled() {
-			t.Error("RotationEnabled() = false, want true when Enabled = &true")
+		c := ManagedAccountsConfig{Enabled: &tr}
+		if !c.ManagedAccountsEnabled() {
+			t.Error("ManagedAccountsEnabled() = false, want true when Enabled = &true")
 		}
 	})
 }
 
-// TestRotationConfig_KillSwitchRoundTrip pins the global kill-switch (BOS-176)
+// TestManagedAccountsConfig_KillSwitchRoundTrip pins the global kill-switch (BOS-176)
 // through Save/Load: an absent `rotation.enabled` key reads as ON (default-ON per
 // D4), while an explicit false persists and reloads as OFF; DefaultSettings is ON.
-func TestRotationConfig_KillSwitchRoundTrip(t *testing.T) {
-	if !DefaultSettings().Rotation.RotationEnabled() {
-		t.Error("DefaultSettings().Rotation.RotationEnabled() = false, want true (default-ON)")
+func TestManagedAccountsConfig_KillSwitchRoundTrip(t *testing.T) {
+	if !DefaultSettings().ManagedAccounts.ManagedAccountsEnabled() {
+		t.Error("DefaultSettings().ManagedAccounts.ManagedAccountsEnabled() = false, want true (default-ON)")
 	}
 
 	t.Run("explicit false persists as disabled", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "settings.json")
 		s := DefaultSettings()
 		f := false
-		s.Rotation.Enabled = &f
+		s.ManagedAccounts.Enabled = &f
 		if err := SaveTo(path, s); err != nil {
 			t.Fatalf("SaveTo: %v", err)
 		}
@@ -1104,8 +1119,8 @@ func TestRotationConfig_KillSwitchRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadFrom: %v", err)
 		}
-		if loaded.Rotation.RotationEnabled() {
-			t.Error("reloaded RotationEnabled() = true, want false after saving enabled=false")
+		if loaded.ManagedAccounts.ManagedAccountsEnabled() {
+			t.Error("reloaded ManagedAccountsEnabled() = true, want false after saving enabled=false")
 		}
 	})
 
@@ -1118,38 +1133,93 @@ func TestRotationConfig_KillSwitchRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadFrom: %v", err)
 		}
-		if !loaded.Rotation.RotationEnabled() {
-			t.Error("reloaded RotationEnabled() = false, want true when key absent")
+		if !loaded.ManagedAccounts.ManagedAccountsEnabled() {
+			t.Error("reloaded ManagedAccountsEnabled() = false, want true when key absent")
 		}
 	})
 }
 
-func TestRotationConfig_MaxRotations(t *testing.T) {
+func TestManagedAccountsConfig_MaxRotations(t *testing.T) {
 	t.Run("zero falls back to default", func(t *testing.T) {
-		c := RotationConfig{}
+		c := ManagedAccountsConfig{}
 		if got := c.MaxRotations(); got != 3 {
 			t.Errorf("MaxRotations() = %d, want 3", got)
 		}
 	})
 	t.Run("returns configured value when set", func(t *testing.T) {
-		c := RotationConfig{MaxRotationsPerRun: 5}
+		c := ManagedAccountsConfig{MaxRotationsPerRun: 5}
 		if got := c.MaxRotations(); got != 5 {
 			t.Errorf("MaxRotations() = %d, want 5", got)
 		}
 	})
 }
 
-func TestRotationConfig_ParkSweepInterval(t *testing.T) {
+func TestManagedAccountsConfig_ParkSweepInterval(t *testing.T) {
 	t.Run("zero falls back to default", func(t *testing.T) {
-		c := RotationConfig{}
+		c := ManagedAccountsConfig{}
 		if got := c.ParkSweepInterval(); got != 60*time.Second {
 			t.Errorf("ParkSweepInterval() = %v, want %v", got, 60*time.Second)
 		}
 	})
 	t.Run("returns configured value when set", func(t *testing.T) {
-		c := RotationConfig{ParkSweepIntervalSeconds: 30}
+		c := ManagedAccountsConfig{ParkSweepIntervalSeconds: 30}
 		if got := c.ParkSweepInterval(); got != 30*time.Second {
 			t.Errorf("ParkSweepInterval() = %v, want %v", got, 30*time.Second)
+		}
+	})
+}
+
+func TestManagedAccountsConfig_ProactiveDefaults(t *testing.T) {
+	t.Run("zero value: disabled and 5m interval", func(t *testing.T) {
+		c := ManagedAccountsConfig{}
+		if c.ProactiveRotationEnabled() {
+			t.Error("ProactiveRotationEnabled() = true, want false for zero value")
+		}
+		if got := c.ProactiveSweepInterval(); got != 5*time.Minute {
+			t.Errorf("ProactiveSweepInterval() = %v, want %v", got, 5*time.Minute)
+		}
+	})
+	t.Run("true pointer enables", func(t *testing.T) {
+		enabled := true
+		c := ManagedAccountsConfig{ProactiveRotation: &enabled}
+		if !c.ProactiveRotationEnabled() {
+			t.Error("ProactiveRotationEnabled() = false, want true when pointer is true")
+		}
+	})
+	t.Run("false pointer disables", func(t *testing.T) {
+		disabled := false
+		c := ManagedAccountsConfig{ProactiveRotation: &disabled}
+		if c.ProactiveRotationEnabled() {
+			t.Error("ProactiveRotationEnabled() = true, want false when pointer is false")
+		}
+	})
+	t.Run("configured interval overrides default", func(t *testing.T) {
+		c := ManagedAccountsConfig{ProactiveSweepIntervalSeconds: 30}
+		if got := c.ProactiveSweepInterval(); got != 30*time.Second {
+			t.Errorf("ProactiveSweepInterval() = %v, want %v", got, 30*time.Second)
+		}
+	})
+}
+
+func TestManagedAccountsConfig_FailoverProxyEnabled(t *testing.T) {
+	t.Run("zero value: enabled (default-ON)", func(t *testing.T) {
+		c := ManagedAccountsConfig{}
+		if !c.FailoverProxyEnabled() {
+			t.Error("FailoverProxyEnabled() = false, want true for zero value")
+		}
+	})
+	t.Run("true pointer enables", func(t *testing.T) {
+		enabled := true
+		c := ManagedAccountsConfig{FailoverProxy: &enabled}
+		if !c.FailoverProxyEnabled() {
+			t.Error("FailoverProxyEnabled() = false, want true when pointer is true")
+		}
+	})
+	t.Run("false pointer disables", func(t *testing.T) {
+		disabled := false
+		c := ManagedAccountsConfig{FailoverProxy: &disabled}
+		if c.FailoverProxyEnabled() {
+			t.Error("FailoverProxyEnabled() = true, want false when pointer is false")
 		}
 	})
 }
@@ -1834,25 +1904,25 @@ func TestScanForPluginsDevSkipsChecksum(t *testing.T) {
 	}
 }
 
-func TestRotationConfig_AutoRotateChatsEnabled(t *testing.T) {
+func TestManagedAccountsConfig_AutoRotateChatsEnabled(t *testing.T) {
 	boolPtr := func(b bool) *bool { return &b }
 	cases := []struct {
 		name   string
-		cfg    RotationConfig
+		cfg    ManagedAccountsConfig
 		repoID string
 		want   bool
 	}{
-		{"default is ON (D4)", RotationConfig{}, "r1", true},
-		{"global false disables", RotationConfig{AutoRotateChats: boolPtr(false)}, "r1", false},
-		{"global true enables", RotationConfig{AutoRotateChats: boolPtr(true)}, "r1", true},
-		{"per-repo false overrides global default", RotationConfig{
+		{"default is ON (D4)", ManagedAccountsConfig{}, "r1", true},
+		{"global false disables", ManagedAccountsConfig{AutoRotateChats: boolPtr(false)}, "r1", false},
+		{"global true enables", ManagedAccountsConfig{AutoRotateChats: boolPtr(true)}, "r1", true},
+		{"per-repo false overrides global default", ManagedAccountsConfig{
 			AutoRotateChatsPerRepo: map[string]bool{"r1": false},
 		}, "r1", false},
-		{"per-repo true overrides global false", RotationConfig{
+		{"per-repo true overrides global false", ManagedAccountsConfig{
 			AutoRotateChats:        boolPtr(false),
 			AutoRotateChatsPerRepo: map[string]bool{"r1": true},
 		}, "r1", true},
-		{"other repo unaffected by per-repo entry", RotationConfig{
+		{"other repo unaffected by per-repo entry", ManagedAccountsConfig{
 			AutoRotateChatsPerRepo: map[string]bool{"r1": false},
 		}, "r2", true},
 	}
@@ -1865,11 +1935,78 @@ func TestRotationConfig_AutoRotateChatsEnabled(t *testing.T) {
 	}
 }
 
-func TestRotationConfig_ChatRotateMinInterval(t *testing.T) {
-	if got := (RotationConfig{}).ChatRotateMinInterval(); got != 10*time.Minute {
+func TestManagedAccountsConfig_ChatRotateMinInterval(t *testing.T) {
+	if got := (ManagedAccountsConfig{}).ChatRotateMinInterval(); got != 10*time.Minute {
 		t.Fatalf("default interval = %v, want 10m", got)
 	}
-	if got := (RotationConfig{ChatRotateMinIntervalMinutes: 3}).ChatRotateMinInterval(); got != 3*time.Minute {
+	if got := (ManagedAccountsConfig{ChatRotateMinIntervalMinutes: 3}).ChatRotateMinInterval(); got != 3*time.Minute {
 		t.Fatalf("configured interval = %v, want 3m", got)
+	}
+}
+
+func TestManagedAccountsDefaults(t *testing.T) {
+	var c ManagedAccountsConfig // zero value: both *bool nil
+	if !c.ManagedAccountsEnabled() {
+		t.Errorf("ManagedAccountsEnabled() = false, want true (nil ⇒ on)")
+	}
+	if !c.FailoverProxyEnabled() {
+		t.Errorf("FailoverProxyEnabled() = false, want true (nil ⇒ on, flipped)")
+	}
+}
+
+func TestManagedAccountsExplicitFalse(t *testing.T) {
+	no := false
+	c := ManagedAccountsConfig{Enabled: &no, FailoverProxy: &no}
+	if c.ManagedAccountsEnabled() {
+		t.Error("ManagedAccountsEnabled() = true, want false")
+	}
+	if c.FailoverProxyEnabled() {
+		t.Error("FailoverProxyEnabled() = true, want false")
+	}
+}
+
+func TestSettingsManagedAccountsKey(t *testing.T) {
+	var s Settings
+	if err := json.Unmarshal([]byte(`{"managed_accounts":{"enabled":false}}`), &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if s.ManagedAccounts.ManagedAccountsEnabled() {
+		t.Error("managed_accounts.enabled:false did not disable")
+	}
+}
+
+func TestSettingsLegacyRotationKey(t *testing.T) {
+	var s Settings
+	if err := json.Unmarshal([]byte(`{"rotation":{"enabled":false}}`), &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if s.ManagedAccounts.ManagedAccountsEnabled() {
+		t.Error("legacy rotation.enabled:false was not honored via back-compat")
+	}
+}
+
+func TestSettingsManagedAccountsWinsOverLegacy(t *testing.T) {
+	var s Settings
+	raw := `{"rotation":{"enabled":false},"managed_accounts":{"enabled":true}}`
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !s.ManagedAccounts.ManagedAccountsEnabled() {
+		t.Error("managed_accounts should win over legacy rotation")
+	}
+}
+
+func TestSettingsSerializesManagedAccountsKey(t *testing.T) {
+	no := false
+	s := Settings{ManagedAccounts: ManagedAccountsConfig{Enabled: &no}}
+	out, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"managed_accounts"`) {
+		t.Errorf("serialized settings missing managed_accounts key: %s", out)
+	}
+	if strings.Contains(string(out), `"rotation"`) {
+		t.Errorf("serialized settings should not emit legacy rotation key: %s", out)
 	}
 }

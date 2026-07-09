@@ -47,12 +47,14 @@ func (f *fakeAccountMaterializer) Materialize(_ context.Context, account *models
 }
 
 type fakeRotationBinding struct {
-	binding RotationBinding
-	bound   bool
-	err     error
+	binding     RotationBinding
+	bound       bool
+	err         error
+	lastSession *models.Session
 }
 
-func (f *fakeRotationBinding) CurrentBinding(_ context.Context, _ *models.Session) (RotationBinding, bool, error) {
+func (f *fakeRotationBinding) CurrentBinding(_ context.Context, sess *models.Session) (RotationBinding, bool, error) {
+	f.lastSession = sess
 	return f.binding, f.bound, f.err
 }
 
@@ -473,9 +475,9 @@ func TestAttemptUsageLimitRotation_BoundedExhaustionRequiresConfirmedProbe(t *te
 func TestAttemptUsageLimitRotation_UsesLiveMaxRotations(t *testing.T) {
 	f := newRotationFixture(t)
 	enabled := true
-	f.lc.SetRotationConfig(config.RotationConfig{MaxRotationsPerRun: 1})
-	f.lc.SetRotationConfigLoader(func() (config.RotationConfig, error) {
-		return config.RotationConfig{
+	f.lc.SetRotationConfig(config.ManagedAccountsConfig{MaxRotationsPerRun: 1})
+	f.lc.SetRotationConfigLoader(func() (config.ManagedAccountsConfig, error) {
+		return config.ManagedAccountsConfig{
 			Enabled:            &enabled,
 			MaxRotationsPerRun: 5,
 		}, nil
@@ -540,7 +542,7 @@ func TestAttemptUsageLimitRotation_AllCoolingPark(t *testing.T) {
 func TestAttemptUsageLimitRotation_KillSwitch(t *testing.T) {
 	f := newRotationFixture(t)
 	disabled := false
-	f.lc.SetRotationConfig(config.RotationConfig{Enabled: &disabled})
+	f.lc.SetRotationConfig(config.ManagedAccountsConfig{Enabled: &disabled})
 	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "x"}, CooldownApplied: true}
 
 	if f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "usage_limit_reached") {

@@ -10,7 +10,6 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
@@ -151,7 +150,7 @@ func TestCreateSession_BindsDefaultAccount(t *testing.T) {
 	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
 
 	creator := NewSessionCreatorWithAccountResolver(store, starter, func() string { return "claude" }, nil, nil,
-		fakeAccountResolver{id: "acct-42"}, nil, zerolog.Nop())
+		fakeAccountResolver{id: "acct-42"}, zerolog.Nop())
 
 	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "t", BaseBranch: "main"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -177,7 +176,7 @@ func TestCreateSession_ResolverErrorDoesNotFail(t *testing.T) {
 	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
 
 	creator := NewSessionCreatorWithAccountResolver(store, starter, func() string { return "claude" }, nil, nil,
-		fakeAccountResolver{err: errors.New("registry down")}, nil, zerolog.Nop())
+		fakeAccountResolver{err: errors.New("registry down")}, zerolog.Nop())
 
 	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "t", BaseBranch: "main"}); err != nil {
 		t.Fatalf("CreateSession must not fail on resolver error: %v", err)
@@ -187,30 +186,31 @@ func TestCreateSession_ResolverErrorDoesNotFail(t *testing.T) {
 	}
 }
 
-func TestCreateSession_RotationDisabledLeavesDefaultAccountUnbound(t *testing.T) {
+// TestCreateSession_BindsDefaultAccountRegardlessOfRotationFlag proves
+// creation-time binding is decoupled from the rotation kill-switch (BOS-305):
+// the task-orchestrator path binds the resolved account even though the caller
+// no longer supplies (and the creator no longer consults) any rotation config.
+func TestCreateSession_BindsDefaultAccountRegardlessOfRotationFlag(t *testing.T) {
 	var capturedParams db.CreateSessionParams
 	store := &mockSessionStore{
 		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
 			capturedParams = params
-			return &models.Session{ID: "sess-unbound", RepoID: params.RepoID}, nil
+			return &models.Session{ID: "sess-bound", RepoID: params.RepoID}, nil
 		},
 		getFn: func(_ context.Context, id string) (*models.Session, error) {
 			return &models.Session{ID: id, RepoID: "repo-1"}, nil
 		},
 	}
 	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
-	disabled := false
 
 	creator := NewSessionCreatorWithAccountResolver(store, starter, func() string { return "claude" }, nil, nil,
-		fakeAccountResolver{id: "acct-42"}, func() (config.RotationConfig, error) {
-			return config.RotationConfig{Enabled: &disabled}, nil
-		}, zerolog.Nop())
+		fakeAccountResolver{id: "acct-42"}, zerolog.Nop())
 
 	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "t", BaseBranch: "main"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	if capturedParams.AccountID != nil {
-		t.Errorf("AccountID = %v, want nil when rotation disabled", capturedParams.AccountID)
+	if capturedParams.AccountID == nil || *capturedParams.AccountID != "acct-42" {
+		t.Errorf("AccountID = %v, want acct-42 bound regardless of rotation state", capturedParams.AccountID)
 	}
 }
 

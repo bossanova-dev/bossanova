@@ -1726,3 +1726,46 @@ func TestHasWorkingIndicator_CurrentScreenMarker(t *testing.T) {
 		t.Error("current-screen working marker must report working")
 	}
 }
+
+// TestHasWorkingIndicator_CompletedTurnFooterNotLive reproduces a real stuck
+// pane: a headless run finished, its background shells (leftover polling tasks)
+// completed, and Claude went idle at its prompt. Each completed turn left a
+// "N shell still running" summary footer frozen in the transcript, and because
+// the run went idle right after, those footers survive inside the current-screen
+// window — but a response marker (⏺ "Background command … completed") renders
+// after them, proving the shell has since finished. Such a footer must NOT pin
+// the chat WORKING; the pane is idle.
+func TestHasWorkingIndicator_CompletedTurnFooterNotLive(t *testing.T) {
+	pane := "" +
+		"⏺ The run is complete: BOS-216 reached REVIEW_READY.\n" +
+		"\n" +
+		"✻ Baked for 3s · 1 shell still running\n" +
+		"\n" +
+		"⏺ Background command \"Wait and poll proof completion\" completed (exit code 0)\n" +
+		"\n" +
+		"⏺ The last leftover polling task has finished — no action needed.\n" +
+		"\n" +
+		"✻ Cogitated for 5s\n" +
+		"※ recap: BOS-216 done; PR #1194 open, green, ready for review.\n" +
+		"╭──────────────────────────────────────╮\n" +
+		"│ ❯                                    │\n" +
+		"╰──────────────────────────────────────╯\n"
+	if HasWorkingIndicator([]byte(pane)) {
+		t.Error("a completed-turn shell footer followed by later ⏺ output must not report working")
+	}
+}
+
+// TestHasWorkingIndicator_LiveShellFooterBelowResponse guards the positive path
+// for the same signal: while a background shell is genuinely running, the
+// "N shell still running" footer is the bottom-most agent status line — no ⏺
+// response marker follows it — so it must still report working even though an
+// earlier ⏺ response sits above it.
+func TestHasWorkingIndicator_LiveShellFooterBelowResponse(t *testing.T) {
+	pane := "" +
+		"⏺ Kicked off the proof run in the background.\n" +
+		"\n" +
+		"✻ Cooked for 48s · 1 shell still running\n"
+	if !HasWorkingIndicator([]byte(pane)) {
+		t.Error("a live shell footer with no later ⏺ output must report working")
+	}
+}

@@ -14,6 +14,8 @@ import (
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/account"
+	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/tmux"
@@ -33,6 +35,8 @@ type chatStoreFake struct {
 	updateNameCall     int
 	updateProvider     *string
 	updateProviderCall int
+	updateAccount      *string
+	updateAccountCall  int
 }
 
 func (f *chatStoreFake) GetByAgentSessionID(_ context.Context, _ string) (*models.AgentChat, error) {
@@ -62,6 +66,17 @@ func (f *chatStoreFake) UpdateProviderSessionID(_ context.Context, _ string, pro
 	f.updateProviderCall++
 	if f.chat != nil {
 		f.chat.ProviderSessionID = providerSessionID
+	}
+	return nil
+}
+
+func (f *chatStoreFake) UpdateAccountIDByAgentSessionID(_ context.Context, _ string, accountID *string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.updateAccount = accountID
+	f.updateAccountCall++
+	if f.chat != nil {
+		f.chat.AccountID = accountID
 	}
 	return nil
 }
@@ -173,6 +188,52 @@ func TestWakeChat_FreshFallback_NoTranscript(t *testing.T) {
 	}
 	if !contains(tmuxer.captured, "--session-id") {
 		t.Fatalf("expected --session-id, got %v", tmuxer.captured)
+	}
+}
+
+// TestWakeChat_NeverOverwritesNonNilProviderSessionID pins the BOS-290 guard:
+// once a codex chat has a provider_session_id, a wake-time re-resolution that
+// returns a DIFFERENT id must NOT overwrite the stored value. Overwriting on
+// difference is exactly what stamped a sibling chat's id over the correct one.
+func TestWakeChat_NeverOverwritesNonNilProviderSessionID(t *testing.T) {
+	correct := "correct-rollout-id"
+	chat := &models.AgentChat{
+		ID:                "c1",
+		AgentSessionID:    "agent-1",
+		SessionID:         "s1",
+		AgentName:         "codex",
+		ProviderSessionID: &correct,
+		CreatedAt:         time.Now(),
+	}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	store := &chatStoreFake{chat: chat}
+	s := &Server{
+		agentChats: store,
+		sessions:   &sessionStoreFake{sess: sess},
+		wakeHook: wakeHook{
+			spawner:     tmuxer,
+			transcripts: &fakeTranscriptOracle{exists: false},
+			argv:        &fakeArgvBuilder{fresh: map[string][]string{"codex": {"codex"}}},
+			// The resolver would (wrongly) return a different id; the guard must
+			// prevent it from ever being written.
+			resolver: &fakeInteractiveSessionResolver{sessionID: "different-sibling-id"},
+		},
+	}
+
+	if _, err := s.WakeChat(context.Background(), connect.NewRequest(&pb.WakeChatRequest{
+		AgentSessionId: "agent-1",
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.updateProviderCall != 0 {
+		t.Errorf("UpdateProviderSessionID called %d time(s), want 0 (must never overwrite a non-nil id)", store.updateProviderCall)
+	}
+	if chat.ProviderSessionID == nil || *chat.ProviderSessionID != correct {
+		t.Errorf("ProviderSessionID = %v, want unchanged %q", chat.ProviderSessionID, correct)
 	}
 }
 
@@ -321,6 +382,58 @@ func TestWakeChat_RoutesArgvByAgentName(t *testing.T) {
 	}
 	if len(tmuxer.captured) == 0 || tmuxer.captured[0] != "codex" {
 		t.Fatalf("WakeChat for codex-typed chat must spawn codex, got cmd=%v", tmuxer.captured)
+	}
+}
+
+// TestWakeChat_CrossAgentBindsAndPersistsDefaultAccount is the wake-side mirror
+// of the attach-path account binding: waking a cross-agent chat (a codex chat
+// living in a claude-bound session) with no chat-level account binding must
+// materialize the CHAT provider's default account into the spawn env and
+// persist that binding on the chat row, so restarts and subsequent wakes keep
+// using the same provider account rather than falling back to the ambient CLI
+// login.
+func TestWakeChat_CrossAgentBindsAndPersistsDefaultAccount(t *testing.T) {
+	s, accts := newAccountServer(t, newFakeCredStore(), nil)
+	mustAddClaude(t, s, "claude-work", []byte("blob"))
+	codexAcct := mustAddCodex(t, s, "codex-work", []byte("blob"))
+	mat := &fakeMaterializer{supports: true, env: map[string]string{"CODEX_TOKEN": "sk-codex-default"}}
+	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), mat, zerolog.Nop())
+
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "codex"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "claude"}
+	chats := &chatStoreFake{chat: chat}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	s.agentChats = chats
+	s.sessions = &sessionStoreFake{sess: sess}
+	s.wakeHook = wakeHook{
+		spawner:     tmuxer,
+		transcripts: &fakeTranscriptOracle{exists: false},
+		argv: &fakeArgvBuilder{
+			fresh:  map[string][]string{"claude": {"claude"}, "codex": {"codex"}},
+			resume: map[string][]string{"claude": {"claude", "--resume"}, "codex": {"codex", "resume"}},
+		},
+	}
+
+	if _, err := s.WakeChat(context.Background(), connect.NewRequest(&pb.WakeChatRequest{
+		AgentSessionId: "agent-1",
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	// The codex provider's default account env is injected into the spawn.
+	if got := tmuxer.lastEnv["CODEX_TOKEN"]; got != "sk-codex-default" {
+		t.Fatalf("wake spawn env CODEX_TOKEN = %q, want sk-codex-default (env=%v)", got, tmuxer.lastEnv)
+	}
+	// It's the codex account that was materialized, never the parent claude one.
+	if len(mat.materialize) == 0 || mat.materialize[len(mat.materialize)-1] != codexAcct.Id {
+		t.Fatalf("materialized account = %v, want codex account %q", mat.materialize, codexAcct.Id)
+	}
+	// The binding is persisted on the chat row for future wakes/restarts.
+	if chats.updateAccountCall != 1 {
+		t.Fatalf("UpdateAccountIDByAgentSessionID calls = %d, want 1", chats.updateAccountCall)
+	}
+	if chats.updateAccount == nil || *chats.updateAccount != codexAcct.Id {
+		t.Fatalf("persisted chat account_id = %v, want %s", chats.updateAccount, codexAcct.Id)
 	}
 }
 

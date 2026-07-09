@@ -16,6 +16,11 @@ import (
 // defaultFlowTimeout bounds an interactive registration walkthrough.
 const defaultFlowTimeout = 10 * time.Minute
 
+// liveSmokeUnavailableDetail mirrors the bossd sentinel (services/bossd/internal/server,
+// account.go) returned when provider verification could not run. Different Go
+// module, so the string is duplicated rather than imported (module-boundary convention).
+const liveSmokeUnavailableDetail = "provider verification unavailable"
+
 // ClaudeOptions configures the `boss account add claude` registration flow.
 type ClaudeOptions struct {
 	Exec       Exec
@@ -26,7 +31,6 @@ type ClaudeOptions struct {
 	Timeout    time.Duration          // whole-walkthrough deadline, default 10m
 	PasteMode  bool                   // skip the CLI walkthrough, paste a token
 	Label      string                 // preseeded from --label; prompted when empty
-	Email      string                 // preseeded from --email; prompted when empty
 	Priority   int32                  // account ordering, from --priority (default 0)
 }
 
@@ -54,11 +58,11 @@ func RunClaudeAdd(ctx context.Context, o ClaudeOptions) error {
 	// PasteMode is the --token-stdin escape hatch: stdin is consumed by the token
 	// and there is no interactive terminal, so identity prompts must resolve to
 	// their defaults instead of reading a closed stdin.
-	label, email, err := promptIdentity(ctx, o.Prompter, o.Client, "claude", o.Label, o.Email, "", o.PasteMode)
+	label, err := promptIdentity(ctx, o.Prompter, o.Client, "claude", o.Label, o.PasteMode)
 	if err != nil {
 		return err
 	}
-	return storeAndTest(ctx, o.Prompter, o.Client, "claude", label, email, o.Priority, []byte(token), agentcred.MaskToken(token))
+	return storeAndTest(ctx, o.Prompter, o.Client, "claude", label, o.Priority, []byte(token), agentcred.MaskToken(token))
 }
 
 // claudeCaptureToken obtains a setup token, either by pasting or by driving the
@@ -204,20 +208,18 @@ func claudeWalkthrough(ctx context.Context, o ClaudeOptions) (string, error) {
 
 // --- shared identity + store phases (reused by the codex flow) -------------
 
-// promptIdentity resolves the label + optional email metadata for a new
-// account. A non-empty flagLabel/flagEmail (supplied via --label/--email) is
-// used verbatim without prompting. Empty label defaults to "<provider>-<n+1>" in
-// non-interactive mode or prompts in interactive mode. Email is Boss metadata
-// only: never prompted, never auto-derived, and never used for collisions.
-func promptIdentity(ctx context.Context, p Prompter, c AccountClient, provider, flagLabel, flagEmail, _ string, nonInteractive bool) (string, string, error) {
+// promptIdentity resolves the label for a new account. A non-empty flagLabel
+// (supplied via --label) is used verbatim without prompting. Empty label
+// defaults to "<provider>-<n+1>" in non-interactive mode or prompts in
+// interactive mode.
+func promptIdentity(ctx context.Context, p Prompter, c AccountClient, provider, flagLabel string, nonInteractive bool) (string, error) {
 	existing, err := c.ListAccounts(ctx, provider, false)
 	if err != nil {
-		return "", "", fmt.Errorf("could not list existing %s accounts: %w", provider, err)
+		return "", fmt.Errorf("could not list existing %s accounts: %w", provider, err)
 	}
 
 	defaultLabel := nextDefaultLabel(provider, existing)
-	label, err := resolveLabel(p, flagLabel, defaultLabel, nonInteractive)
-	return label, flagEmail, err
+	return resolveLabel(p, flagLabel, defaultLabel, nonInteractive)
 }
 
 func nextDefaultLabel(provider string, existing []*pb.Account) string {
@@ -253,11 +255,10 @@ func resolveLabel(p Prompter, flagLabel, defaultLabel string, nonInteractive boo
 
 // storeAndTest adds the credential through the daemon then verifies it,
 // offering keep-or-remove when verification fails.
-func storeAndTest(ctx context.Context, p Prompter, c AccountClient, provider, label, email string, priority int32, blob []byte, display string) error {
+func storeAndTest(ctx context.Context, p Prompter, c AccountClient, provider, label string, priority int32, blob []byte, display string) error {
 	acct, err := c.AddAccount(ctx, &pb.AddAccountRequest{
 		Provider:   provider,
 		Label:      label,
-		Email:      email,
 		Priority:   priority,
 		Credential: blob,
 	})
@@ -278,6 +279,9 @@ func storeAndTest(ctx context.Context, p Prompter, c AccountClient, provider, la
 		} else {
 			p.Say("Account %q registered and verified.", label)
 		}
+		return nil
+	case testUnavailable:
+		p.Say("Account %q registered. Verification couldn't run right now (%s); it will run on first use or the next rotation.", label, reason)
 		return nil
 	case testFailed:
 		return keepOrRemove(ctx, p, c, id, label, reason, testErr)
@@ -316,6 +320,9 @@ const (
 	testVerified testOutcome = iota
 	// testFailed: a transport error, or credential verification reported an error.
 	testFailed
+	// testUnavailable: verification could not run (no agent plugin loaded, or no
+	// smoke runner wired). Not a credential failure — keep the account silently.
+	testUnavailable
 )
 
 // classifyTest maps a TestAccount response (and any transport error) to an
@@ -325,6 +332,15 @@ const (
 func classifyTest(resp *pb.TestAccountResponse, err error) (testOutcome, string) {
 	if err != nil {
 		return testFailed, err.Error()
+	}
+	// Verification that could not run (no agent plugin loaded, or no smoke runner
+	// wired) is reported as live_smoke_ran=false with the sentinel detail. It is
+	// not a credential failure — keep the account and let rotation verify later.
+	// Note: live_smoke_ran=false alone is NOT enough; a malformed-credential
+	// validation failure is also live_smoke_ran=false but carries a different
+	// detail and must still route to testFailed.
+	if !resp.GetLiveSmokeRan() && resp.GetDetail() == liveSmokeUnavailableDetail {
+		return testUnavailable, resp.GetDetail()
 	}
 	detail := resp.GetAccount().GetLastTestError()
 	if detail == "" {

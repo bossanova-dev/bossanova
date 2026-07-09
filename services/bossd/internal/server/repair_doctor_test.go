@@ -387,6 +387,23 @@ func TestClaudeVersionCheck(t *testing.T) {
 	})
 }
 
+func TestTerminalCheckReportsMissingTerminfo(t *testing.T) {
+	c := terminalCheck("xterm-ghostty", func(term string) bool { return term == "xterm-256color" })
+	if c.GetOk() {
+		t.Fatal("want Ok=false when the real TERM's terminfo is missing")
+	}
+	if !strings.Contains(c.GetDetail(), "xterm-256color") {
+		t.Fatalf("Detail should name the fallback/remediation; got %q", c.GetDetail())
+	}
+}
+
+func TestTerminalCheckOKWhenResolves(t *testing.T) {
+	c := terminalCheck("xterm-256color", func(term string) bool { return true })
+	if !c.GetOk() {
+		t.Fatalf("want Ok=true; got Detail %q", c.GetDetail())
+	}
+}
+
 func TestShortID(t *testing.T) {
 	t.Run("truncates long id to 8", func(t *testing.T) {
 		if got := shortID("1234567890"); got != "12345678" {

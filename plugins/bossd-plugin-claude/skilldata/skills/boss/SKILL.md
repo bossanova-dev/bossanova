@@ -293,7 +293,6 @@ Register an agent account
 **Flags:**
 
 - `--credential-file` — Read the credential from a file (or '-' for stdin); preferred over --token
-- `--email` — Informational account email
 - `--label` — Human label, unique per provider (required for the non-interactive flag path)
 - `--priority` — Sort order; lower = preferred (default: 0)
 - `--provider` — Account provider (claude|codex) (or pass as a positional arg)
@@ -350,7 +349,6 @@ Update account metadata
 **Flags:**
 
 - `--allowed-models` — Replace the allowed-models set (comma-separated)
-- `--email` — Set the account email
 - `--label` — Set the label
 - `--priority` — Set the priority (lower = preferred) (default: 0)
 - `--status` — Set the status (active|disabled)
@@ -607,10 +605,10 @@ View or update global settings
 **Flags:**
 
 - `--default-agent` — Set the default agent plugin (e.g. claude, opencode)
-- `--no-rotation` — Disable automatic account rotation (global kill-switch; manual switching still works)
+- `--managed-accounts` — Enable managed accounts (bossd credential rotation)
+- `--no-managed-accounts` — Disable managed accounts (use the terminal's own login)
 - `--no-skip-permissions` — Disable Claude --dangerously-skip-permissions
 - `--poll-interval` — Set poll interval in seconds (0 = default) (default: 0)
-- `--rotation` — Enable automatic account rotation
 - `--skip-permissions` — Enable Claude --dangerously-skip-permissions
 - `--worktree-dir` — Set worktree base directory
 

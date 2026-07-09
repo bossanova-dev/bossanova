@@ -316,6 +316,9 @@ func (c *RemoteClient) SendChatMessage(ctx context.Context, req *pb.SendChatMess
 	return &pb.SendChatMessageResponse{
 		TmuxSessionName: resp.Msg.GetTmuxSessionName(),
 		Delivered:       resp.Msg.GetDelivered(),
+		// Thread the mechanical-outcome notice (e.g. an intercepted
+		// "/boss switch") from the proxy response back to the local caller.
+		NoticeText: resp.Msg.GetNoticeText(),
 	}, nil
 }
 

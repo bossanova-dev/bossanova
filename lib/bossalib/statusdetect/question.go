@@ -579,13 +579,26 @@ func HasQuestionPrompt(data []byte) bool {
 	return false
 }
 
-// claudeWorkingRe matches Claude Code footers that mean the session is actively
-// working even when the visible pane text is otherwise static:
-//   - "N shell still running" / "N shells still running" — a background shell
-//     is running (e.g. "✻ Cooked for 48s · 1 shell still running").
-//   - "esc to interrupt" — Claude's active thinking/working spinner footer
-//     (e.g. "✻ Thinking… (esc to interrupt)", "· Working (3s · esc to interrupt)").
-var claudeWorkingRe = regexp.MustCompile(`[0-9]+ shells? still running|esc to interrupt`)
+// escToInterruptRe matches Claude's active thinking/working spinner footer
+// (e.g. "✻ Thinking… (esc to interrupt)", "· Working (3s · esc to interrupt)").
+// Claude drops "(esc to interrupt)" the instant a turn ends and re-renders the
+// spinner line in place, so it never lingers as stale transcript history — a
+// match anywhere in the current screen is a live signal.
+var escToInterruptRe = regexp.MustCompile(`esc to interrupt`)
+
+// shellsRunningRe matches Claude's "N shell still running" / "N shells still
+// running" background-shell footer (e.g. "✻ Cooked for 48s · 1 shell still
+// running"). Unlike the spinner, Claude prints this as each completed turn's
+// summary line, so a finished turn leaves the footer frozen in the transcript.
+// A bare match is therefore NOT proof a shell is running now — see
+// HasWorkingIndicator for the freshness check.
+var shellsRunningRe = regexp.MustCompile(`[0-9]+ shells? still running`)
+
+// responseMarkerRe matches a Claude response / tool-result marker (⏺, U+23FA) at
+// the start of a line. When one renders after a "shells still running" footer,
+// the shell has since finished (Claude printed e.g. `⏺ Background command "…"
+// completed`) and the footer is stale history, not a live signal.
+var responseMarkerRe = regexp.MustCompile(`(?m)^[^\S\n]*\x{23FA}`)
 
 // HasWorkingIndicator reports whether the pane shows an affirmative "the agent
 // is busy" marker. Unlike working/idle inference from content-change timing,
@@ -612,7 +625,25 @@ func HasWorkingIndicator(data []byte) bool {
 	// pane shows now. A genuine marker always renders at the visible-pane
 	// bottom, so it stays inside the window.
 	tail := LastNLines(StripANSI(data), workingTailLines)
-	return claudeWorkingRe.Match(tail)
+
+	// The active spinner is unambiguously live (it never lingers), so a match
+	// anywhere in the current screen means WORKING.
+	if escToInterruptRe.Match(tail) {
+		return true
+	}
+
+	// The background-shell footer also renders as a completed-turn summary that
+	// lingers in the transcript — even inside the current-screen window when the
+	// run goes idle right after (the 30-line scope alone does not evict it). It
+	// is live only when it is the bottom-most agent status line: a response
+	// marker (⏺) rendered after the last such footer proves the shell finished
+	// and Claude redrew, so the footer is stale.
+	shellMatches := shellsRunningRe.FindAllIndex(tail, -1)
+	if len(shellMatches) == 0 {
+		return false
+	}
+	lastFooterEnd := shellMatches[len(shellMatches)-1][1]
+	return !responseMarkerRe.Match(tail[lastFooterEnd:])
 }
 
 // workingTailLines bounds HasWorkingIndicator to the current screen. It matches

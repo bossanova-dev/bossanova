@@ -905,6 +905,37 @@ func captureStdout(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
+// TestListRenderersEmitFullIDs is the regression guard for the ID-truncation
+// bug: CLI list/detail renderers must print the full, untruncated resource ID
+// so the displayed value round-trips back into the exact-match commands
+// (repo/cron/account removal accept only the full 16-char id). printChatsTable
+// exercises the shared table path (MaxColWidth("ID", ids, 0) + table.New) used
+// by the session/repo/trash/cron list tables; printSessionShowHeader covers the
+// `boss show` printf path.
+func TestListRenderersEmitFullIDs(t *testing.T) {
+	const fullSessionID = "ae347e386b61682c"                   // 16-hex sqlutil.NewID form
+	const fullAgentID = "550e8400-e29b-41d4-a716-446655440000" // full agent-session UUID
+
+	t.Run("chats table shows full agent-session id", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		printChatsTable(cmd, []*pb.ClaudeChat{{AgentSessionId: fullAgentID}})
+		if !strings.Contains(buf.String(), fullAgentID) {
+			t.Fatalf("chats table truncated the id; got:\n%s", buf.String())
+		}
+	})
+
+	t.Run("show header shows full session id", func(t *testing.T) {
+		out := captureStdout(t, func() {
+			printSessionShowHeader(&pb.Session{Id: fullSessionID})
+		})
+		if !strings.Contains(out, fullSessionID) {
+			t.Fatalf("show header truncated the id; got:\n%s", out)
+		}
+	})
+}
+
 type recordingProcess struct {
 	pid     int
 	signals *[]int

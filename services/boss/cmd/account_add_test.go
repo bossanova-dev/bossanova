@@ -29,7 +29,7 @@ func TestAccountAddCommandShape(t *testing.T) {
 		}
 	}
 	// The BOS-160 non-interactive flags are preserved.
-	for _, name := range []string{"provider", "label", "email", "priority", "token", "credential-file"} {
+	for _, name := range []string{"provider", "label", "priority", "token", "credential-file"} {
 		if add.Flags().Lookup(name) == nil {
 			t.Errorf("expected --%s flag to be preserved on `account add`", name)
 		}

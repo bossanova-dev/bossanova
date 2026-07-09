@@ -11,7 +11,6 @@ import (
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/rotation"
 )
 
 // AccountStatus is the switch-relevant state of a target account, mapped from
@@ -266,14 +265,61 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 		return SwitchAccountResult{}, fmt.Errorf("stop chat before switch: %w", err)
 	}
 
-	// 6. REBIND the session to the target account. StartTmuxChat below resolves
-	// the new account's env overlay from this freshly-persisted binding.
-	if err := binding.BindSessionAccount(ctx, p.SessionID, p.TargetAccountID); err != nil {
-		l.stampSwitchStartError(ctx, p.AgentSessionID, "rebind account failed: "+err.Error())
-		return SwitchAccountResult{}, fmt.Errorf("rebind session %s to account %q: %w", p.SessionID, p.TargetAccountID, err)
+	// 6. Build the outcome notice. Never resend the interrupted prompt. Computed
+	// before the rebind so the manual path can pass it as the audit Detail
+	// through the shared RebindAndAudit helper.
+	notice := "switched to " + target.Label + " — resumed"
+	if !resumable {
+		notice = "switched to " + target.Label + " — started fresh (could not resume this conversation cross-account)"
+	}
+	// The automatic rotation path (BOS-175) uses the D4 notice wording, which
+	// carries the previous account's reset time; the fresh-start caveat is still
+	// appended when cross-account resume was not feasible.
+	if p.Auto {
+		notice = AutoRotateNotice(target.Label, p.PreviousResetAt)
+		if !resumable {
+			notice += " (started fresh)"
+		}
 	}
 
-	// 7. RESPAWN the chat under the new account. Resume reuses the prior id
+	// 7. REBIND the session to the target account. StartTmuxChat below resolves
+	// the new account's env overlay from this freshly-persisted binding. The
+	// operator-driven path binds AND audits in one step via the shared
+	// RebindAndAudit helper (also called by the S7 failover proxy, BOS-320), so
+	// the binding write and AuditEvent shape have a single source of truth. The
+	// automatic path (Auto) binds only: the ChatRotator already recorded the
+	// audit at its decision point, so auditing here would double-record. The
+	// manual audit is recorded here (on the rebind) rather than after the
+	// respawn; a respawn failure below still leaves the session bound to the
+	// target, so auditing the rebind reflects what actually happened.
+	if p.Auto {
+		if err := binding.BindSessionAccount(ctx, p.SessionID, p.TargetAccountID); err != nil {
+			l.stampSwitchStartError(ctx, p.AgentSessionID, "rebind account failed: "+err.Error())
+			return SwitchAccountResult{}, fmt.Errorf("rebind session %s to account %q: %w", p.SessionID, p.TargetAccountID, err)
+		}
+	} else if err := l.RebindAndAudit(ctx, binding, RebindAndAuditParams{
+		SessionID:     p.SessionID,
+		ChatID:        p.AgentSessionID,
+		Provider:      provider,
+		Trigger:       "ROTATION_TRIGGER_MANUAL",
+		FromAccount:   current,
+		BindAccountID: p.TargetAccountID,
+		ToAccount:     target.Label,
+		Outcome:       "ROTATION_OUTCOME_ROTATED",
+		Detail:        notice,
+	}); err != nil {
+		l.stampSwitchStartError(ctx, p.AgentSessionID, "rebind account failed: "+err.Error())
+		return SwitchAccountResult{}, err
+	}
+
+	// A switch respawns the pane under the target account's fresh creds, so any
+	// sticky failover bearer the proxy cached for a PRIOR auto-failover must be
+	// dropped — otherwise the proxy would keep forwarding the old swapped bearer
+	// and silently override this explicit switch (desyncing the forwarded account
+	// from the just-persisted account_id). No-op when the proxy is disabled.
+	l.forgetProxyBearer(p.SessionID)
+
+	// 8. RESPAWN the chat under the new account. Resume reuses the prior id
 	// (StartTmuxChat adds --resume); a fresh switch mints a new id. Never a
 	// prompt/command — the interrupted prompt is not resent (D12), so the zero
 	// DeliveryPrefillOnly intent is correct.
@@ -291,36 +337,6 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	if _, err := l.StartTmuxChat(ctx, p.SessionID, respawn, chat.Title, HookOpts{AllowSiblingChat: true}); err != nil {
 		l.stampSwitchStartError(ctx, p.AgentSessionID, "respawn after switch failed: "+err.Error())
 		return SwitchAccountResult{}, fmt.Errorf("respawn chat after switch: %w", err)
-	}
-
-	// 8. Build the outcome notice. Never resend the interrupted prompt.
-	notice := "switched to " + target.Label + " — resumed"
-	if !resumable {
-		notice = "switched to " + target.Label + " — started fresh (could not resume this conversation cross-account)"
-	}
-	// The automatic rotation path (BOS-175) uses the D4 notice wording, which
-	// carries the previous account's reset time; the fresh-start caveat is still
-	// appended when cross-account resume was not feasible.
-	if p.Auto {
-		notice = AutoRotateNotice(target.Label, p.PreviousResetAt)
-		if !resumable {
-			notice += " (started fresh)"
-		}
-	}
-	// Audit the operator-driven switch (BOS-176). The automatic path (Auto) is
-	// already recorded by the ChatRotator at its decision point, so record only
-	// the manual/operator path here to avoid a double event.
-	if !p.Auto {
-		l.rotationRecorder.Record(ctx, rotation.AuditEvent{
-			SessionID:   p.SessionID,
-			ChatID:      p.AgentSessionID,
-			Provider:    provider,
-			Trigger:     "ROTATION_TRIGGER_MANUAL",
-			FromAccount: current,
-			ToAccount:   target.Label,
-			Outcome:     "ROTATION_OUTCOME_ROTATED",
-			Detail:      notice,
-		})
 	}
 
 	return SwitchAccountResult{

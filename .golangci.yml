@@ -89,6 +89,14 @@ linters:
         text: "SA5011"
         linters:
           - staticcheck
+      # G704 SSRF false positive: socketIsServing dials the local daemon's own
+      # controlled Unix socket path, not user input — a "unix" network dial
+      # cannot SSRF. gosec's whole-package taint pass only surfaces it when an
+      # unrelated env read exists elsewhere in the package.
+      - path: services/bossd/internal/server/singleton\.go
+        text: "G704"
+        linters:
+          - gosec
 
 formatters:
   enable:

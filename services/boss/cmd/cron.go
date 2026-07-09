@@ -109,9 +109,9 @@ func runCronLS(cmd *cobra.Command) error {
 	agents := make([]string, len(jobs))
 	enabled := make([]string, len(jobs))
 	for i, j := range jobs {
-		ids[i] = shortID(j.GetId())
+		ids[i] = j.GetId()
 		names[i] = j.GetName()
-		repos[i] = shortID(j.GetRepoId())
+		repos[i] = j.GetRepoId()
 		schedules[i] = j.GetSchedule()
 		tzs[i] = orDash(j.GetTimezone())
 		agents[i] = orDash(j.GetAgentName())
@@ -119,9 +119,9 @@ func runCronLS(cmd *cobra.Command) error {
 	}
 
 	cols := []table.Column{
-		{Title: "ID", Width: views.MaxColWidth("ID", ids, 8)},
+		{Title: "ID", Width: views.MaxColWidth("ID", ids, 0)},
 		{Title: "NAME", Width: views.MaxColWidth("NAME", names, 30)},
-		{Title: "REPO", Width: views.MaxColWidth("REPO", repos, 8)},
+		{Title: "REPO", Width: views.MaxColWidth("REPO", repos, 0)},
 		{Title: "SCHEDULE", Width: views.MaxColWidth("SCHEDULE", schedules, 20)},
 		{Title: "TZ", Width: views.MaxColWidth("TZ", tzs, 20)},
 		{Title: "AGENT", Width: views.MaxColWidth("AGENT", agents, 12)},
@@ -395,14 +395,6 @@ func readPromptFlag(cmd *cobra.Command, required bool) (string, bool, error) {
 		return "", false, fmt.Errorf("read prompt file: %w", err)
 	}
 	return string(b), true, nil
-}
-
-// shortID truncates an id to its first 8 chars for table display.
-func shortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
-	}
-	return id
 }
 
 // orDash returns "-" for an empty string, else the string itself.

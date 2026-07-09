@@ -52,6 +52,8 @@ func skipLaunchctl() bool {
 	return os.Getenv("BOSS_DAEMON_SKIP_LAUNCHCTL") != ""
 }
 
+var executablePath = os.Executable
+
 // validatePath checks that a path is safe to use in service templates.
 // Prevents template injection via newlines or other control characters.
 func validatePath(p string) error {
@@ -129,7 +131,7 @@ func EnsureRunning(socketPath string) error {
 // 2. In $PATH
 func ResolveBossdPath() (string, error) {
 	// Check next to the current executable.
-	exe, err := os.Executable()
+	exe, err := executablePath()
 	if err == nil {
 		exeDir := filepath.Dir(exe)
 		candidate := filepath.Join(exeDir, "bossd")
@@ -151,7 +153,7 @@ func ResolveBossdPath() (string, error) {
 // "boss-mcp" over the local-dev name "mcp". It checks next to the current
 // executable first, then $PATH.
 func ResolveMcpPath() (string, error) {
-	exe, err := os.Executable()
+	exe, err := executablePath()
 	if err == nil {
 		for _, name := range []string{"boss-mcp", "mcp"} {
 			candidate := filepath.Join(filepath.Dir(exe), name)
@@ -171,8 +173,10 @@ func ResolveMcpPath() (string, error) {
 }
 
 // isSocketReachable checks if a Unix socket is connectable.
+var dialUnixSocket = net.DialTimeout
+
 func isSocketReachable(socketPath string) bool {
-	conn, err := net.DialTimeout("unix", socketPath, 500*time.Millisecond)
+	conn, err := dialUnixSocket("unix", socketPath, 500*time.Millisecond)
 	if err != nil {
 		return false
 	}

@@ -222,9 +222,9 @@ func TestChatPicker_SwitchAccount_StoppedChat_SystemDefault_NoConfirm(t *testing
 func TestChatPicker_SwitchAccount_DisabledRowsDoNotCallRPC(t *testing.T) {
 	stub := &chatPickerStub{
 		accounts: []*pb.Account{
-			{Id: "acct-failed", Label: "Failed Work", Provider: "claude", Status: "active", Health: "failed", Email: "failed@example.test"},
-			{Id: "acct-cool", Label: "Cooling Work", Provider: "claude", Status: "active", Health: "ok", Email: "cool@example.test", CooldownUntil: timestamppb.New(time.Now().Add(15 * time.Minute))},
-			{Id: "acct-ok", Label: "Ready Work", Provider: "claude", Status: "active", Health: "ok", Email: "ready@example.test"},
+			{Id: "acct-failed", Label: "Failed Work", Provider: "claude", Status: "active", Health: "failed"},
+			{Id: "acct-cool", Label: "Cooling Work", Provider: "claude", Status: "active", Health: "ok", CooldownUntil: timestamppb.New(time.Now().Add(15 * time.Minute))},
+			{Id: "acct-ok", Label: "Ready Work", Provider: "claude", Status: "active", Health: "ok"},
 		},
 	}
 	m := seedChatPicker(stub, statusWorking)
@@ -234,7 +234,7 @@ func TestChatPicker_SwitchAccount_DisabledRowsDoNotCallRPC(t *testing.T) {
 	m = drivePickCAccount(t, m)
 
 	picker := stripANSI(m.View().Content)
-	for _, token := range []string{"Unmanaged local credentials", "failed", "cooling", "failed@example.test", "cool@example.test"} {
+	for _, token := range []string{"Unmanaged local credentials", "failed", "cooling", "Failed Work", "Cooling Work"} {
 		if !strings.Contains(picker, token) {
 			t.Fatalf("picker missing %q:\n%s", token, picker)
 		}

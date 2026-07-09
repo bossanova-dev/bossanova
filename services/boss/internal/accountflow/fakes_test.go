@@ -194,7 +194,7 @@ func (c *fakeAccountClient) AddAccount(_ context.Context, req *pb.AddAccountRequ
 	if c.addResult != nil {
 		return c.addResult, nil
 	}
-	return &pb.Account{Id: "acc-new", Provider: req.GetProvider(), Label: req.GetLabel(), Email: req.GetEmail()}, nil
+	return &pb.Account{Id: "acc-new", Provider: req.GetProvider(), Label: req.GetLabel()}, nil
 }
 
 func (c *fakeAccountClient) TestAccount(_ context.Context, id string) (*pb.TestAccountResponse, error) {

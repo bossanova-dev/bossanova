@@ -59,6 +59,13 @@ type MockDaemon struct {
 	attachEvents map[string]chan *pb.AttachSessionResponse
 	attachCalls  []*pb.AttachSessionRequest
 
+	// attachActive counts live AttachSession streams per session ID. Incremented
+	// at RPC entry, decremented on return (see AttachSession). SessionAttached
+	// reports whether any stream is live so the BOS-217 daemon-op pushers can
+	// refuse to push to a session nobody is watching (an actionable error rather
+	// than a silent buffer). Guarded by mu.
+	attachActive map[string]int
+
 	// validateRepoPathResp, when non-nil, overrides the default ValidateRepoPath
 	// response (IsValid=true). Lets tests exercise RepoAddView's error-path.
 	validateRepoPathResp *pb.ValidateRepoPathResponse
@@ -141,6 +148,7 @@ func StartMockDaemon(socketPath string) (*MockDaemon, func() error, error) {
 		prs:                make(map[string][]*pb.PRSummary),
 		trackerIssues:      make(map[string][]*pb.TrackerIssue),
 		attachEvents:       make(map[string]chan *pb.AttachSessionResponse),
+		attachActive:       make(map[string]int),
 	}
 	mux := http.NewServeMux()
 	path, handler := bossanovav1connect.NewDaemonServiceHandler(m)
@@ -693,7 +701,16 @@ func (m *MockDaemon) CreateSession(_ context.Context, req *connect.Request[pb.Cr
 func (m *MockDaemon) AttachSession(ctx context.Context, req *connect.Request[pb.AttachSessionRequest], stream *connect.ServerStream[pb.AttachSessionResponse]) error {
 	m.mu.Lock()
 	m.attachCalls = append(m.attachCalls, req.Msg)
+	m.attachActive[req.Msg.Id]++
 	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.attachActive[req.Msg.Id]--
+		if m.attachActive[req.Msg.Id] <= 0 {
+			delete(m.attachActive, req.Msg.Id)
+		}
+		m.mu.Unlock()
+	}()
 
 	ch := m.ensureAttachChannel(req.Msg.Id)
 	for {
@@ -758,6 +775,62 @@ func (m *MockDaemon) PushSessionEnded(sessionID string, finalState pb.SessionSta
 				FinalState: finalState,
 			},
 		},
+	}
+}
+
+// SessionAttached reports whether at least one AttachSession stream is currently
+// live for sessionID. The BOS-217 daemon-op pushers use this to refuse a push to
+// a session no client is watching (an actionable error, never a silent buffer).
+func (m *MockDaemon) SessionAttached(sessionID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.attachActive[sessionID] > 0
+}
+
+// TryPushOutputLine is the NON-BLOCKING sibling of PushOutputLine: it enqueues an
+// OutputLine event but gives up after timeout with an error instead of blocking
+// when the 64-event buffer is full. The BOS-217 daemon op uses it so a stalled or
+// undrained TUI can never freeze the bridge's single-threaded serve loop. The
+// blocking Push* variants are untouched for the existing tuitest suites.
+func (m *MockDaemon) TryPushOutputLine(sessionID, text string, timeout time.Duration) error {
+	return m.tryPush(sessionID, &pb.AttachSessionResponse{
+		Event: &pb.AttachSessionResponse_OutputLine{
+			OutputLine: &pb.OutputLine{Text: text, Timestamp: timestamppb.Now()},
+		},
+	}, timeout)
+}
+
+// TryPushStateChange is the non-blocking sibling of PushStateChange.
+func (m *MockDaemon) TryPushStateChange(sessionID string, previous, next pb.SessionState, timeout time.Duration) error {
+	return m.tryPush(sessionID, &pb.AttachSessionResponse{
+		Event: &pb.AttachSessionResponse_StateChange{
+			StateChange: &pb.StateChange{PreviousState: previous, NewState: next},
+		},
+	}, timeout)
+}
+
+// TryPushSessionEnded is the non-blocking sibling of PushSessionEnded.
+func (m *MockDaemon) TryPushSessionEnded(sessionID string, finalState pb.SessionState, timeout time.Duration) error {
+	return m.tryPush(sessionID, &pb.AttachSessionResponse{
+		Event: &pb.AttachSessionResponse_SessionEnded{
+			SessionEnded: &pb.SessionEnded{FinalState: finalState},
+		},
+	}, timeout)
+}
+
+// tryPush sends ev on the session's attach channel, returning an error if the
+// buffer stays full for timeout. Shared by the three TryPush* wrappers.
+func (m *MockDaemon) tryPush(sessionID string, ev *pb.AttachSessionResponse, timeout time.Duration) error {
+	ch := m.ensureAttachChannel(sessionID)
+	// NewTimer + Stop (rather than time.After) so the timer is released on the
+	// common success path instead of lingering until it fires.
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case ch <- ev:
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("attach channel for session %q full after %s; TUI not draining", sessionID, timeout)
 	}
 }
 
@@ -1066,7 +1139,6 @@ func (m *MockDaemon) AddAccount(_ context.Context, req *connect.Request[pb.AddAc
 		Id:        fmt.Sprintf("acct-%d", m.accountCounter),
 		Provider:  req.Msg.Provider,
 		Label:     req.Msg.Label,
-		Email:     req.Msg.Email,
 		Priority:  req.Msg.Priority,
 		Status:    "active",
 		Health:    "ok",
@@ -1116,9 +1188,6 @@ func (m *MockDaemon) UpdateAccount(_ context.Context, req *connect.Request[pb.Up
 	}
 	if req.Msg.Label != nil {
 		acct.Label = *req.Msg.Label
-	}
-	if req.Msg.Email != nil {
-		acct.Email = *req.Msg.Email
 	}
 	if req.Msg.Priority != nil {
 		acct.Priority = *req.Msg.Priority

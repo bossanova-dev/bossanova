@@ -141,6 +141,57 @@ func TestAgentChatStore_AccountIDRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAgentChatStore_UpdateAccountIDByAgentSessionID(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	chatStore := NewAgentChatStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Chat account update test",
+		WorktreePath: "/tmp/wt/chat-acct-update",
+		BranchName:   "feat/chat-acct-update",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID:      sess.ID,
+		AgentSessionID: "agent-acct-update",
+		Title:          "account update",
+	}); err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+
+	accountID := "acct-123"
+	if err := chatStore.UpdateAccountIDByAgentSessionID(ctx, "agent-acct-update", &accountID); err != nil {
+		t.Fatalf("update account id: %v", err)
+	}
+	got, err := chatStore.GetByAgentSessionID(ctx, "agent-acct-update")
+	if err != nil {
+		t.Fatalf("get updated chat: %v", err)
+	}
+	if got.AccountID == nil || *got.AccountID != accountID {
+		t.Fatalf("updated account_id = %v, want %q", got.AccountID, accountID)
+	}
+
+	accountZero := ""
+	if err := chatStore.UpdateAccountIDByAgentSessionID(ctx, "agent-acct-update", &accountZero); err != nil {
+		t.Fatalf("set account zero: %v", err)
+	}
+	got, err = chatStore.GetByAgentSessionID(ctx, "agent-acct-update")
+	if err != nil {
+		t.Fatalf("get account-zero chat: %v", err)
+	}
+	if got.AccountID == nil || *got.AccountID != "" {
+		t.Fatalf("account-zero account_id = %v, want present-empty", got.AccountID)
+	}
+}
+
 func TestAgentChatStore_MarkStartFailedSanitizesInvalidUTF8(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

@@ -96,7 +96,6 @@ func runAccountAddClaude(cmd *cobra.Command) error {
 		return err
 	}
 	label, _ := cmd.Flags().GetString("label")
-	email, _ := cmd.Flags().GetString("email")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	priority, _ := cmd.Flags().GetInt32("priority")
 	return accountflow.RunClaudeAdd(cmd.Context(), accountflow.ClaudeOptions{
@@ -106,7 +105,6 @@ func runAccountAddClaude(cmd *cobra.Command) error {
 		Timeout:   timeout,
 		PasteMode: tokenStdin,
 		Label:     label,
-		Email:     email,
 		Priority:  priority,
 	})
 }
@@ -129,7 +127,6 @@ func runAccountAddCodex(cmd *cobra.Command) error {
 		return err
 	}
 	label, _ := cmd.Flags().GetString("label")
-	email, _ := cmd.Flags().GetString("email")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	priority, _ := cmd.Flags().GetInt32("priority")
 	return accountflow.RunCodexAdd(cmd.Context(), accountflow.CodexOptions{
@@ -138,7 +135,6 @@ func runAccountAddCodex(cmd *cobra.Command) error {
 		Client:   c,
 		Timeout:  timeout,
 		Label:    label,
-		Email:    email,
 		Priority: priority,
 	})
 }
@@ -184,6 +180,9 @@ type launchTUIOptions struct {
 
 func launchTUIWithOptions(cmd *cobra.Command, opts launchTUIOptions) error {
 	if issue := preflight.CheckTmux(); issue != nil {
+		return views.RunPreflight(*issue)
+	}
+	if issue := preflight.CheckTerminal(); issue != nil {
 		return views.RunPreflight(*issue)
 	}
 	if needsLocalDaemonStartup(cmd) {
@@ -945,11 +944,7 @@ func runLS(cmd *cobra.Command) error {
 	branchStrs := make([]string, len(sessions))
 	prStrs := make([]string, len(sessions))
 	for i, sess := range sessions {
-		id := sess.Id
-		if len(id) > 8 {
-			id = id[:8]
-		}
-		ids[i] = id
+		ids[i] = sess.Id
 		t := sess.Title
 		t = truncateString(t, 30)
 		titles[i] = t
@@ -968,7 +963,7 @@ func runLS(cmd *cobra.Command) error {
 	}
 
 	cols := []table.Column{
-		{Title: "ID", Width: views.MaxColWidth("ID", ids, 8)},
+		{Title: "ID", Width: views.MaxColWidth("ID", ids, 0)},
 		{Title: "TITLE", Width: views.MaxColWidth("TITLE", titles, 30)},
 		{Title: "STATE", Width: views.MaxColWidth("STATE", stateStrs2, 14)},
 		{Title: "BRANCH", Width: views.MaxColWidth("BRANCH", branchStrs, 40)},
@@ -1170,11 +1165,7 @@ func runRepoLS(cmd *cobra.Command) error {
 	branches := make([]string, len(repos))
 	setups := make([]string, len(repos))
 	for i, repo := range repos {
-		id := repo.Id
-		if len(id) > 8 {
-			id = id[:8]
-		}
-		ids[i] = id
+		ids[i] = repo.Id
 		names[i] = repo.DisplayName
 		paths[i] = repo.LocalPath
 		branches[i] = repo.DefaultBaseBranch
@@ -1186,7 +1177,7 @@ func runRepoLS(cmd *cobra.Command) error {
 	}
 
 	cols := []table.Column{
-		{Title: "ID", Width: views.MaxColWidth("ID", ids, 8)},
+		{Title: "ID", Width: views.MaxColWidth("ID", ids, 0)},
 		{Title: "NAME", Width: views.MaxColWidth("NAME", names, 30)},
 		{Title: "PATH", Width: views.MaxColWidth("PATH", paths, 60)},
 		{Title: "BRANCH", Width: views.MaxColWidth("BRANCH", branches, 30)},
@@ -2099,11 +2090,7 @@ func accountShowLabel(accountID, accountLabel string) string {
 // stdout. Kept separate from runShow so its formatting (including the Account
 // line) is unit-testable without a live daemon client.
 func printSessionShowHeader(sess *pb.Session) {
-	id := sess.Id
-	if len(id) > 8 {
-		id = id[:8]
-	}
-	fmt.Printf("  ID:       %s\n", id)
+	fmt.Printf("  ID:       %s\n", sess.Id)
 	fmt.Printf("  Title:    %s\n", sess.Title)
 	fmt.Printf("  Repo:     %s\n", sess.RepoDisplayName)
 	fmt.Printf("  Branch:   %s\n", sess.BranchName)
@@ -2213,11 +2200,7 @@ func printChatsTable(cmd *cobra.Command, chats []*pb.ClaudeChat) {
 	titles := make([]string, len(chats))
 	createds := make([]string, len(chats))
 	for i, chat := range chats {
-		id := chat.AgentSessionId
-		if len(id) > 8 {
-			id = id[:8]
-		}
-		ids[i] = id
+		ids[i] = chat.AgentSessionId
 		t := chat.Title
 		if t == "" {
 			t = "New chat"
@@ -2232,7 +2215,7 @@ func printChatsTable(cmd *cobra.Command, chats []*pb.ClaudeChat) {
 	}
 
 	cols := []table.Column{
-		{Title: "ID", Width: views.MaxColWidth("ID", ids, 8)},
+		{Title: "ID", Width: views.MaxColWidth("ID", ids, 0)},
 		{Title: "TITLE", Width: views.MaxColWidth("TITLE", titles, 50)},
 		{Title: "CREATED", Width: views.MaxColWidth("CREATED", createds, 12)},
 	}
@@ -2320,11 +2303,7 @@ func runTrashLS(cmd *cobra.Command) error {
 	prStrs := make([]string, len(archived))
 	archiveds := make([]string, len(archived))
 	for i, sess := range archived {
-		id := sess.Id
-		if len(id) > 8 {
-			id = id[:8]
-		}
-		ids[i] = id
+		ids[i] = sess.Id
 		t := sess.Title
 		t = truncateString(t, 30)
 		titles[i] = t
@@ -2338,7 +2317,7 @@ func runTrashLS(cmd *cobra.Command) error {
 	}
 
 	cols := []table.Column{
-		{Title: "ID", Width: views.MaxColWidth("ID", ids, 8)},
+		{Title: "ID", Width: views.MaxColWidth("ID", ids, 0)},
 		{Title: "TITLE", Width: views.MaxColWidth("TITLE", titles, 30)},
 		{Title: "REPO", Width: views.MaxColWidth("REPO", repos, 20)},
 		{Title: "PR", Width: views.MaxColWidth("PR", prStrs, 8)},
@@ -2376,11 +2355,7 @@ func runTrashDelete(cmd *cobra.Command, sessionID string) error {
 
 	yes, _ := cmd.Flags().GetBool("yes")
 	if !yes {
-		id := sessionID
-		if len(id) > 8 {
-			id = id[:8]
-		}
-		fmt.Printf("Permanently delete session %s? [y/N] ", id)
+		fmt.Printf("Permanently delete session %s? [y/N] ", sessionID)
 		var answer string
 		if _, err := fmt.Scanln(&answer); err != nil || (answer != "y" && answer != "Y") {
 			fmt.Println("Cancelled.")
@@ -2486,6 +2461,8 @@ func runSettings(cmd *cobra.Command) error {
 	// If no flags provided, display current settings.
 	anyChanged := cmd.Flags().Changed("skip-permissions") ||
 		cmd.Flags().Changed("no-skip-permissions") ||
+		cmd.Flags().Changed("managed-accounts") ||
+		cmd.Flags().Changed("no-managed-accounts") ||
 		cmd.Flags().Changed("rotation") ||
 		cmd.Flags().Changed("no-rotation") ||
 		cmd.Flags().Changed("worktree-dir") ||
@@ -2494,7 +2471,8 @@ func runSettings(cmd *cobra.Command) error {
 
 	if !anyChanged {
 		fmt.Printf("  Skip permissions: %v\n", config.PluginConfigBool(&s, "claude", "dangerously_skip_permissions"))
-		fmt.Printf("  Rotation enabled: %v\n", s.Rotation.RotationEnabled())
+		fmt.Printf("  Managed accounts: %v\n", s.ManagedAccounts.ManagedAccountsEnabled())
+		fmt.Printf("  Failover proxy:   %v\n", s.ManagedAccounts.FailoverProxyEnabled())
 		fmt.Printf("  Worktree dir:     %s\n", s.WorktreeBaseDir)
 		fmt.Printf("  Default agent:    %s\n", s.DefaultAgent)
 		interval := "30 (default)"
@@ -2515,16 +2493,18 @@ func runSettings(cmd *cobra.Command) error {
 	if cmd.Flags().Changed("no-skip-permissions") {
 		config.SetPluginConfigBool(&s, "claude", "dangerously_skip_permissions", false)
 	}
-	if cmd.Flags().Changed("rotation") && cmd.Flags().Changed("no-rotation") {
-		return fmt.Errorf("cannot use both --rotation and --no-rotation")
+	enableFlag := cmd.Flags().Changed("managed-accounts") || cmd.Flags().Changed("rotation")
+	disableFlag := cmd.Flags().Changed("no-managed-accounts") || cmd.Flags().Changed("no-rotation")
+	if enableFlag && disableFlag {
+		return fmt.Errorf("cannot both enable and disable managed accounts")
 	}
-	if cmd.Flags().Changed("rotation") {
+	if enableFlag {
 		v := true
-		s.Rotation.Enabled = &v
+		s.ManagedAccounts.Enabled = &v
 	}
-	if cmd.Flags().Changed("no-rotation") {
+	if disableFlag {
 		v := false
-		s.Rotation.Enabled = &v
+		s.ManagedAccounts.Enabled = &v
 	}
 	if cmd.Flags().Changed("worktree-dir") {
 		v, _ := cmd.Flags().GetString("worktree-dir")

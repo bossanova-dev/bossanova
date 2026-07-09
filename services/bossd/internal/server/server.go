@@ -80,29 +80,33 @@ func DefaultSocketPathForSettings(settings config.Settings) (string, error) {
 
 // Server wraps the ConnectRPC DaemonService handler and a Unix socket listener.
 type Server struct {
-	repos              db.RepoStore
-	sessions           db.SessionStore
-	attempts           db.AttemptStore
-	agentChats         db.AgentChatStore
-	workflows          db.WorkflowStore
-	taskMappings       db.TaskMappingStore
-	cronJobs           db.CronJobStore
-	accounts           db.AccountStore
-	rotationEngine     *rotation.Engine
-	resolver           *account.Resolver
-	rotationConfig     func() (config.RotationConfig, error)
-	accountCreds       AccountCredentialStore
-	addAccountMu       sync.Mutex
-	accountSmoke       AccountSmokeRunner
-	usageProbe         UsageProbeRecorder
-	checkSnapshots     db.CheckSnapshotStore
-	rotationEvents     db.RotationEventStore
-	cronScheduler      *cron.Scheduler
-	chatStatus         *status.Tracker
-	displayTracker     *status.DisplayTracker
-	repairLease        *status.RepairLeaseManager
-	tmuxPoller         *status.TmuxStatusPoller
-	lifecycle          *session.Lifecycle
+	repos          db.RepoStore
+	sessions       db.SessionStore
+	attempts       db.AttemptStore
+	agentChats     db.AgentChatStore
+	workflows      db.WorkflowStore
+	taskMappings   db.TaskMappingStore
+	cronJobs       db.CronJobStore
+	accounts       db.AccountStore
+	rotationEngine *rotation.Engine
+	resolver       *account.Resolver
+	accountCreds   AccountCredentialStore
+	addAccountMu   sync.Mutex
+	accountSmoke   AccountSmokeRunner
+	usageProbe     UsageProbeRecorder
+	checkSnapshots db.CheckSnapshotStore
+	rotationEvents db.RotationEventStore
+	cronScheduler  *cron.Scheduler
+	chatStatus     *status.Tracker
+	displayTracker *status.DisplayTracker
+	repairLease    *status.RepairLeaseManager
+	tmuxPoller     *status.TmuxStatusPoller
+	lifecycle      *session.Lifecycle
+	// switchAccountFn is the account-switch seam shared by the SwitchSessionAccount
+	// RPC and the SendChatMessage "/boss switch" interception. It defaults to
+	// lifecycle.SwitchAccount (see executeAccountSwitch); tests inject a spy so the
+	// interception can be exercised without a real Lifecycle.
+	switchAccountFn    func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error)
 	agent              agent.AgentRunner
 	agentClients       map[string]agent.AgentRunnerClient
 	worktrees          gitpkg.WorktreeManager
@@ -158,9 +162,6 @@ type Config struct {
 	// account a new session binds to when the client omits account_id).
 	// Optional, may be nil (older/test wiring then leaves sessions on account 0).
 	Resolver *account.Resolver
-	// RotationConfig re-reads the live rotation policy for creation-time default
-	// binding. Nil means rotation is enabled, preserving legacy/test behavior.
-	RotationConfig func() (config.RotationConfig, error)
 	// AccountCredentials is the keyring-backed credential-blob plane for
 	// accounts (satisfied by accountcred.Store on the daemon). Metadata lives
 	// in Accounts; secrets never touch SQLite. Optional, may be nil (account
@@ -262,7 +263,6 @@ func New(cfg Config) *Server {
 		accounts:       cfg.Accounts,
 		rotationEngine: cfg.RotationEngine,
 		resolver:       cfg.Resolver,
-		rotationConfig: cfg.RotationConfig,
 		accountCreds:   cfg.AccountCredentials,
 		accountSmoke:   cfg.AccountSmokeRunner,
 		usageProbe:     cfg.UsageProbe,
@@ -1140,6 +1140,19 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	// Quick chat sessions skip worktree/branch/PR creation entirely.
 	var startErr error
 	if msg.QuickChat {
+		// Persist the planning-only signal (BOS-322). Quick chats have no
+		// worktree/branch/PR and skip finalize by design; the flag is the
+		// defensive backstop so any path that does reach FinalizeSession treats
+		// the expected no-change result as benign rather than a failed
+		// implementation run. Mirrors how tmux_unattended is set post-create.
+		quickChat := true
+		if _, updErr := s.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{QuickChat: &quickChat}); updErr != nil {
+			// Match the other post-Create early returns in this function: a
+			// persisted-but-never-started session row must be cleaned up rather
+			// than left orphaned in CreatingWorktree.
+			s.cleanupFailedCreateSession(context.WithoutCancel(ctx), sess.ID)
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("persist quick_chat flag: %w", updErr))
+		}
 		startErr = s.lifecycle.StartQuickChatSession(ctx, sess.ID)
 	} else {
 		// Create a pipe to stream setup script output to the client.
@@ -2190,25 +2203,52 @@ func (s *Server) SwitchSessionAccount(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	res, err := s.lifecycle.SwitchAccount(ctx, session.SwitchAccountParams{
-		SessionID:       msg.SessionId,
+	res, err := s.executeAccountSwitch(ctx, msg.SessionId, agentSessionID, targetAccountID, msg.Force)
+	if err != nil {
+		return nil, err
+	}
+
+	return connect.NewResponse(&pb.SwitchSessionAccountResponse{
+		Resumed:     res.Resumed,
+		TargetLabel: res.TargetLabel,
+		NoticeText:  res.NoticeText,
+	}), nil
+}
+
+// executeAccountSwitch runs the manual (Auto:false) account switch primitive for
+// an already-resolved target account id and publishes the rebound session. It is
+// the shared body of the SwitchSessionAccount RPC and the SendChatMessage
+// "/boss switch" interception, so both behave identically: same typed-error →
+// connect-code mapping and same best-effort stream publish. Callers own account
+// resolution (resolveSessionAccount / DefaultAccountIDExcluding) and the outer
+// response shape; targetAccountID is "" for the system-default (account 0).
+//
+// The returned error is already a connect error with the right code; callers
+// return it verbatim.
+func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessionID, targetAccountID string, force bool) (session.SwitchAccountResult, error) {
+	switchFn := s.switchAccountFn
+	if switchFn == nil {
+		switchFn = s.lifecycle.SwitchAccount
+	}
+	res, err := switchFn(ctx, session.SwitchAccountParams{
+		SessionID:       sessionID,
 		AgentSessionID:  agentSessionID,
 		TargetAccountID: targetAccountID,
-		Force:           msg.Force,
+		Force:           force,
 	})
 	if err != nil {
 		switch {
 		case errors.Is(err, session.ErrChatMidTurn):
-			return nil, connect.NewError(connect.CodeFailedPrecondition,
+			return session.SwitchAccountResult{}, connect.NewError(connect.CodeFailedPrecondition,
 				fmt.Errorf("chat is mid-turn; confirm the switch (force) to interrupt it: %w", err))
 		case errors.Is(err, session.ErrCrossAgentSwitchUnsupported):
-			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+			return session.SwitchAccountResult{}, connect.NewError(connect.CodeFailedPrecondition, err)
 		case errors.Is(err, session.ErrAccountCooling), errors.Is(err, session.ErrAccountDisabled), errors.Is(err, session.ErrAccountFailed):
-			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+			return session.SwitchAccountResult{}, connect.NewError(connect.CodeFailedPrecondition, err)
 		case errors.Is(err, sql.ErrNoRows):
-			return nil, connect.NewError(connect.CodeNotFound, err)
+			return session.SwitchAccountResult{}, connect.NewError(connect.CodeNotFound, err)
 		default:
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("switch session account: %w", err))
+			return session.SwitchAccountResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("switch session account: %w", err))
 		}
 	}
 
@@ -2219,7 +2259,7 @@ func (s *Server) SwitchSessionAccount(ctx context.Context, req *connect.Request[
 	// daemon snapshot. Best-effort: the switch already succeeded, so a load/publish
 	// failure must not fail the RPC.
 	if s.onSessionUpdated != nil {
-		if sess, gerr := s.sessions.Get(ctx, msg.SessionId); gerr == nil {
+		if sess, gerr := s.sessions.Get(ctx, sessionID); gerr == nil {
 			p := s.sessionProtoWithRepo(ctx, sess)
 			// Hydrate the non-secret account label so the streamed delta matches
 			// the Get/List read paths; otherwise the web AccountBadge shows the
@@ -2228,16 +2268,12 @@ func (s *Server) SwitchSessionAccount(ctx context.Context, req *connect.Request[
 			s.withRotationEvents(ctx, p, sess)
 			s.onSessionUpdated(ctx, p)
 		} else {
-			s.logger.Warn().Err(gerr).Str("session", msg.SessionId).
+			s.logger.Warn().Err(gerr).Str("session", sessionID).
 				Msg("switch account: failed to load session for stream update")
 		}
 	}
 
-	return connect.NewResponse(&pb.SwitchSessionAccountResponse{
-		Resumed:     res.Resumed,
-		TargetLabel: res.TargetLabel,
-		NoticeText:  res.NoticeText,
-	}), nil
+	return res, nil
 }
 
 // resolvePrimaryLiveChat returns the agent_session_id of the session's primary
@@ -2394,10 +2430,10 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		// conflict; a nil resolver or account 0 leaves SessionEnv byte-identical to
 		// the ambient-login behavior. Values are never logged. The account is
 		// resolved for the CHAT's agent (spawnChatTmux launches chat.AgentName), not
-		// the parent session's, so a cross-agent chat never receives another
-		// provider's account env. This closure runs only after spawnChatTmux has
-		// proved a new tmux session is needed, avoiding account last-used updates on
-		// already-live attaches.
+		// the parent session's, so cross-agent chats transparently receive their own
+		// provider's default account env. This closure runs only after spawnChatTmux
+		// has proved a new tmux session is needed, avoiding account last-used updates
+		// on already-live attaches.
 		return mergeManagedOverAccount(
 			session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
 			s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID),
@@ -2410,7 +2446,14 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		ForceFresh:         !resume,
 		AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath),
 		SessionEnvFunc: func() map[string]string {
-			return dotenv.Overlay(sessionEnvFunc(), sess.WorktreePath)
+			// Fill the repo's stored LINEAR_API_KEY / SENTRY_* secrets beneath the
+			// worktree .env so the attached chat authenticates to its own repo's
+			// Linear workspace, not the daemon's ambient one. Fetched lazily here
+			// because this closure runs only when a fresh tmux is actually needed;
+			// a missing/failed repo lookup is non-fatal (OverlayWithRepo still
+			// guarantees LINEAR_API_KEY is present).
+			repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "attach chat", s.logger)
+			return dotenv.OverlayWithRepo(sessionEnvFunc(), sess.WorktreePath, repo)
 		},
 		Model:         modelForChatAgent(sess, chat.AgentName),
 		McpConfigPath: mcpConfigPath,
@@ -2434,10 +2477,14 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		}
 		ev.Msg("interactive provider session id not discovered after launch")
 		if deps.Resolver != nil && !result.DiscoveryAmbiguous {
-			s.discoverProviderSessionIDInBackground(chat, sess.WorktreePath, result.LaunchedAt, deps.Resolver)
+			s.discoverProviderSessionIDInBackground(chat, sess.WorktreePath, tmuxName, result.LaunchedAt, deps.Resolver)
 		}
 	}
-	if result.ProviderSessionID != "" && (chat.ProviderSessionID == nil || *chat.ProviderSessionID != result.ProviderSessionID) {
+	// Only write a provider session id when none is stored. A codex id is
+	// guessed from disk (fd resolution or time-window scan); overwriting a
+	// non-nil id on difference is exactly what stamped a sibling chat's id over
+	// the correct one (BOS-290). Once bound, a chat's id is authoritative.
+	if result.ProviderSessionID != "" && chat.ProviderSessionID == nil {
 		providerID := result.ProviderSessionID
 		if err := s.agentChats.UpdateProviderSessionID(ctx, chat.AgentSessionID, &providerID); err != nil {
 			return fmt.Errorf("persist provider session id: %w", err)
@@ -2458,7 +2505,8 @@ func (s *Server) backfillCodexProviderSessionID(ctx context.Context, chat *model
 		return false, "", nil
 	}
 	legacyLaunchedAfter := chat.CreatedAt.Add(-5 * time.Minute)
-	resolution, err := resolver.ResolveInteractiveSessionID(ctx, chat.AgentName, worktreePath, chat.AgentSessionID, legacyLaunchedAfter, chat.CreatedAt, true)
+	// Legacy backfill runs without a live pane pid → time-window scan (panePID 0).
+	resolution, err := resolver.ResolveInteractiveSessionID(ctx, chat.AgentName, worktreePath, chat.AgentSessionID, legacyLaunchedAfter, chat.CreatedAt, true, 0)
 	if err != nil {
 		return false, "", err
 	}
@@ -2476,7 +2524,7 @@ func (s *Server) backfillCodexProviderSessionID(ctx context.Context, chat *model
 	return true, "", nil
 }
 
-func (s *Server) discoverProviderSessionIDInBackground(chat *models.AgentChat, worktreePath string, launchedAt time.Time, resolver interactiveSessionResolver) {
+func (s *Server) discoverProviderSessionIDInBackground(chat *models.AgentChat, worktreePath, tmuxName string, launchedAt time.Time, resolver interactiveSessionResolver) {
 	if chat == nil || resolver == nil || launchedAt.IsZero() {
 		return
 	}
@@ -2495,11 +2543,25 @@ func (s *Server) discoverProviderSessionIDInBackground(chat *models.AgentChat, w
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
+		// The foreground fd resolution missed only because codex was slow to
+		// open its rollout — the pane and its process tree still exist. So keep
+		// resolving with THIS chat's pane pid: fd binding stays authoritative
+		// across the full background window, which is exactly the slow-startup
+		// case most prone to the sibling-collision race (BOS-290). A tmux
+		// failure or empty name leaves panePID 0 and falls back to the
+		// time-window scan, as before.
+		panePID := 0
+		if s.tmux != nil && tmuxName != "" {
+			if pid, err := s.tmux.PanePID(ctx, tmuxName); err == nil {
+				panePID = pid
+			}
+		}
+
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
 		for {
-			resolution, err := resolver.ResolveInteractiveSessionID(ctx, agentName, worktreePath, agentSessionID, launchedAt, time.Time{}, false)
+			resolution, err := resolver.ResolveInteractiveSessionID(ctx, agentName, worktreePath, agentSessionID, launchedAt, time.Time{}, false, panePID)
 			if err != nil {
 				if ctx.Err() == nil {
 					s.logger.Warn().Err(err).
@@ -2510,6 +2572,16 @@ func (s *Server) discoverProviderSessionIDInBackground(chat *models.AgentChat, w
 				return
 			}
 			if resolution.SessionID != "" {
+				// Never overwrite a non-nil id that another path (foreground fd
+				// resolution, wake, backfill) may have bound while this
+				// goroutine polled — the same BOS-290 invariant the synchronous
+				// write sites enforce. Re-read current state from the store
+				// rather than the captured chat pointer, whose ProviderSessionID
+				// is mutated by the spawn path under no shared lock (data race).
+				if current, getErr := s.agentChats.GetByAgentSessionID(ctx, agentSessionID); getErr == nil &&
+					current != nil && current.ProviderSessionID != nil && *current.ProviderSessionID != "" {
+					return
+				}
 				providerID := resolution.SessionID
 				if err := s.agentChats.UpdateProviderSessionID(ctx, agentSessionID, &providerID); err != nil {
 					s.logger.Warn().Err(err).

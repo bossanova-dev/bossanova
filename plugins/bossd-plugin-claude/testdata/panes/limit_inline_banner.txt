@@ -1,0 +1,12 @@
+⏺ Sure — let me check which server this session is using.
+
+> /boss what server am i using
+  You've hit your weekly limit · resets 9pm (Asia/Tokyo)
+
+> /boss switch
+  You've hit your weekly limit · resets 9pm (Asia/Tokyo)
+  /upgrade or /usage-credits to finish what you're working on.
+
+❯
+  Opus 4.8 | Context: 87% remaining | ~/code/bossanova (main)
+  ⏵⏵ bypass permissions on · PR #1214

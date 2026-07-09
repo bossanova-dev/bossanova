@@ -102,7 +102,7 @@ func (a *registryAdapter) TouchLastUsed(ctx context.Context, id string, at time.
 }
 
 func toMeta(a *models.Account) account.AccountMeta {
-	return account.AccountMeta{
+	m := account.AccountMeta{
 		ID:           a.ID,
 		Provider:     string(a.Provider),
 		Label:        a.Label,
@@ -112,6 +112,14 @@ func toMeta(a *models.Account) account.AccountMeta {
 		CoolingUntil: a.CooldownUntil,
 		LastUsedAt:   a.LastUsedAt,
 	}
+	if u := a.Usage; u != nil {
+		m.Util5h = u.Util5h
+		m.Util7d = u.Util7d
+		m.UsageFetchedAt = u.FetchedAt
+		m.Reset5h = u.Reset5h
+		m.Reset7d = u.Reset7d
+	}
+	return m
 }
 
 // --- Materializer adapter -------------------------------------------------

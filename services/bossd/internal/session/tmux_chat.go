@@ -413,13 +413,26 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// worktree's repo-local .env is overlaid beneath everything
 	// (dotenv.Overlay: absent .env is a no-op) so ${VAR} expansions in the
 	// worktree's .mcp.json resolve like they would in a developer's direnv
-	// shell.
+	// shell, and the repo's stored LINEAR_API_KEY / SENTRY_* secrets are filled
+	// beneath the .env (dotenv.OverlayWithRepo) so a session authenticates to
+	// its own repo's Linear workspace instead of the daemon's ambient one.
+	//
+	// A repo lookup failure is non-fatal: OverlayWithRepo(nil) still guarantees
+	// LINEAR_API_KEY is present so the daemon's ambient value can never leak.
+	repo := RepoForSessionEnv(ctx, l.repos, sess.RepoID, sess.ID, "start tmux chat", l.logger)
 	if err := l.tmux.NewSession(ctx, tmux.NewSessionOpts{
 		Name:    tmuxName,
 		WorkDir: sess.WorktreePath,
 		Command: cmdResp.Argv,
-		Env:     dotenv.Overlay(mergeSessionEnv(ManagedSessionEnv(sess, agentSessionID, sess.AgentName), l.resolveAccountEnv(ctx, sess), l.resolveProofEnv()), sess.WorktreePath),
+		Env:     dotenv.OverlayWithRepo(mergeSessionEnv(ManagedSessionEnv(sess, agentSessionID, sess.AgentName), l.resolveAccountEnv(ctx, sess), l.resolveProofEnv()), sess.WorktreePath, repo),
 	}); err != nil {
+		// tmux's error carries its own stderr (e.g. a missing-terminfo
+		// "missing or unsuitable terminal" failure). The normal agent_chats row
+		// (Step 7) does not exist yet, so create-and-stamp a "(failed to start)"
+		// row here best-effort — that surfaces the real reason to boss show, the
+		// TUI badge, and external clients instead of only logging it.
+		l.recordFailedStartChat(ctx, sessionID, agentSessionID, sess.AgentName, title,
+			fmt.Sprintf("tmux launch failed: %v", err))
 		return "", fmt.Errorf("create tmux session %q: %w", tmuxName, err)
 	}
 
@@ -652,6 +665,49 @@ func (l *Lifecycle) failStartBestEffort(ctx context.Context, sessionID, agentSes
 			Str("agentSessionID", agentSessionID).
 			Str("reason", reason).
 			Msg("failed to mark agent_chat row as start-failed; row may still show as live")
+	}
+}
+
+// recordFailedStartChat ensures an agent_chats row exists for a StartTmuxChat
+// spawn whose tmux launch failed BEFORE the normal Step-7 row creation, and
+// stamps its StartError so the failure surfaces as a "(failed to start)" chat
+// entry (boss show / the TUI / external clients) instead of only being logged.
+// A resume reuses an existing row (still present at the failure point), so we
+// stamp that in place rather than inserting a duplicate; a fresh launch has no
+// row yet, so we create one first via the same store method the happy path
+// uses. Best-effort: store errors are logged, never returned — the caller
+// already carries the primary tmux error.
+func (l *Lifecycle) recordFailedStartChat(ctx context.Context, sessionID, agentSessionID, agentName, title, reason string) {
+	existing, err := l.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	switch {
+	case err == nil && existing != nil:
+		// Row already exists (resume path); stamp it in place below.
+	case errors.Is(err, db.ErrAgentChatNotFound):
+		if _, createErr := l.agentChats.Create(ctx, db.CreateAgentChatParams{
+			SessionID:      sessionID,
+			AgentSessionID: agentSessionID,
+			AgentName:      agentName,
+			Title:          title,
+		}); createErr != nil {
+			l.logger.Warn().Err(createErr).
+				Str("session", sessionID).
+				Str("agentSessionID", agentSessionID).
+				Msg("record failed-start chat: create row failed; tmux launch failure will be invisible")
+			return
+		}
+	default:
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Str("agentSessionID", agentSessionID).
+			Msg("record failed-start chat: lookup failed; tmux launch failure will be invisible")
+		return
+	}
+	if markErr := l.agentChats.MarkStartFailed(ctx, agentSessionID, reason); markErr != nil {
+		l.logger.Warn().Err(markErr).
+			Str("session", sessionID).
+			Str("agentSessionID", agentSessionID).
+			Str("reason", reason).
+			Msg("record failed-start chat: mark start-failed failed; row may not show the failure reason")
 	}
 }
 

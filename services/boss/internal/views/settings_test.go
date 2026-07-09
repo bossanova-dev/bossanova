@@ -114,13 +114,13 @@ func TestSettings_RotationToggleFlipsRenderedValue(t *testing.T) {
 	}
 	m.cursor = idx
 
-	if !m.settings.Rotation.RotationEnabled() {
+	if !m.settings.ManagedAccounts.ManagedAccountsEnabled() {
 		t.Fatalf("precondition: rotation should default to enabled (nil)")
 	}
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	sm := updated.(SettingsModel)
-	if sm.settings.Rotation.RotationEnabled() {
+	if sm.settings.ManagedAccounts.ManagedAccountsEnabled() {
 		t.Errorf("rotation did not flip to disabled after Enter")
 	}
 	if !strings.Contains(sm.View().Content, "[ ] Enable automatic account rotation") {
@@ -129,7 +129,7 @@ func TestSettings_RotationToggleFlipsRenderedValue(t *testing.T) {
 
 	updated, _ = sm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	sm = updated.(SettingsModel)
-	if !sm.settings.Rotation.RotationEnabled() {
+	if !sm.settings.ManagedAccounts.ManagedAccountsEnabled() {
 		t.Errorf("rotation did not flip back to enabled")
 	}
 	if !strings.Contains(sm.View().Content, "[x] Enable automatic account rotation") {

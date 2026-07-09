@@ -610,8 +610,8 @@ func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 			m.err = err
 		}
 	case settingsRowKindRotation:
-		next := !m.settings.Rotation.RotationEnabled()
-		m.settings.Rotation.Enabled = &next
+		next := !m.settings.ManagedAccounts.ManagedAccountsEnabled()
+		m.settings.ManagedAccounts.Enabled = &next
 		if err := config.Save(m.settings); err != nil {
 			m.err = err
 		} else {
@@ -926,7 +926,7 @@ func (m SettingsModel) renderRow(b *strings.Builder, i int, row settingsRow, edi
 		line = fmt.Sprintf("%s%s: %s", cursor, row.Label, val)
 	case settingsRowKindRotation:
 		check := " "
-		if m.settings.Rotation.RotationEnabled() {
+		if m.settings.ManagedAccounts.ManagedAccountsEnabled() {
 			check = "x"
 		}
 		line = fmt.Sprintf("%s[%s] %s", cursor, check, row.Label)

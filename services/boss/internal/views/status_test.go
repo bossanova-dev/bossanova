@@ -506,6 +506,87 @@ func TestAttentionWarningHint_NoEmojiAdded(t *testing.T) {
 	}
 }
 
+// TestSessionWarningHintsIncludesSetupError verifies that a non-empty
+// SetupError on the session surfaces a "setup script failed" hint (BOS-…
+// tmux launch/attach failure capture, Task 7). SetupError is a plain
+// proto3 string field (not a pointer), so it is set directly rather than
+// via proto.String.
+func TestSessionWarningHintsIncludesSetupError(t *testing.T) {
+	sess := &pb.Session{SetupError: "npm install failed: ENOENT"}
+	hints := sessionWarningHints(sess)
+	joined := strings.Join(hints, "\n")
+	if !strings.Contains(joined, "setup script failed") {
+		t.Fatalf("hints missing setup-error surface; got %q", joined)
+	}
+	if !strings.Contains(joined, "npm install failed: ENOENT") {
+		t.Fatalf("hints missing setup-error detail; got %q", joined)
+	}
+}
+
+// TestSessionWarningHintsIncludesSetupError_FirstLineOnly verifies a
+// multi-line SetupError is truncated to its first line so a verbose
+// setup-script failure can't blow out the warning block.
+func TestSessionWarningHintsIncludesSetupError_FirstLineOnly(t *testing.T) {
+	sess := &pb.Session{SetupError: "npm install failed: ENOENT\nfull stack trace here\nmore detail"}
+	hints := sessionWarningHints(sess)
+	joined := strings.Join(hints, "\n")
+	if !strings.Contains(joined, "setup script failed: npm install failed: ENOENT") {
+		t.Fatalf("hints missing truncated setup-error; got %q", joined)
+	}
+	if strings.Contains(joined, "full stack trace") {
+		t.Fatalf("hints should not contain lines after the first; got %q", joined)
+	}
+}
+
+// TestChatStartErrorHintFromChats verifies that a chat with a non-empty
+// StartError (a tmux launch failure stamped by the daemon) surfaces a
+// "chat failed to start" hint truncated to the error's first line.
+// ClaudeChat.StartError is a plain proto3 string field (not a pointer), so
+// it is set directly via a struct literal rather than via proto.String.
+func TestChatStartErrorHintFromChats(t *testing.T) {
+	chats := []*pb.ClaudeChat{
+		{StartError: "missing or unsuitable terminal: xterm-ghostty\nfull tmux stderr here"},
+	}
+	got := chatStartErrorHint(chats)
+	if !strings.Contains(got, "failed to start") {
+		t.Fatalf("chatStartErrorHint missing 'failed to start'; got %q", got)
+	}
+	if !strings.Contains(got, "missing or unsuitable terminal: xterm-ghostty") {
+		t.Fatalf("chatStartErrorHint missing StartError first line; got %q", got)
+	}
+	if strings.Contains(got, "full tmux stderr") {
+		t.Fatalf("chatStartErrorHint should not contain lines after the first; got %q", got)
+	}
+}
+
+// TestChatStartErrorHintEmptyWhenNoStartError verifies that chats with no
+// StartError set (the common case), a nil chats slice, and a nil entry in
+// the slice all yield an empty hint — no false positive, no panic.
+func TestChatStartErrorHintEmptyWhenNoStartError(t *testing.T) {
+	if got := chatStartErrorHint(nil); got != "" {
+		t.Errorf("chatStartErrorHint(nil) = %q, want empty", got)
+	}
+	chats := []*pb.ClaudeChat{nil, {AgentSessionId: "sess-1"}}
+	if got := chatStartErrorHint(chats); got != "" {
+		t.Errorf("chatStartErrorHint = %q, want empty for chats with no StartError", got)
+	}
+}
+
+// TestSelectedSessionWarningBlock_ChatStartError verifies that a chat-level
+// StartError renders in the selected-session warning block alongside
+// session-level hints such as SetupError.
+func TestSelectedSessionWarningBlock_ChatStartError(t *testing.T) {
+	sess := &pb.Session{SetupError: "npm install failed: ENOENT"}
+	chats := []*pb.ClaudeChat{{StartError: "missing or unsuitable terminal: xterm-ghostty"}}
+	got := selectedSessionWarningBlock(sess, chats, 80)
+	if !strings.Contains(got, "setup script failed") {
+		t.Errorf("block missing setup-error hint: %q", got)
+	}
+	if !strings.Contains(got, "chat failed to start: missing or unsuitable terminal: xterm-ghostty") {
+		t.Errorf("block missing chat start-error hint: %q", got)
+	}
+}
+
 // TestSessionWarningHints_Aggregates verifies that sessionWarningHints returns
 // repair hint first, then attention hint, and that both are present.
 func TestSessionWarningHints_Aggregates(t *testing.T) {
@@ -536,7 +617,7 @@ func TestSelectedSessionWarningBlock_WithHints(t *testing.T) {
 		LastRepairAttemptCount: 1,
 		LastRepairExitError:    "exit status 1",
 	}
-	got := selectedSessionWarningBlock(sess, 80)
+	got := selectedSessionWarningBlock(sess, nil, 80)
 	if got == "" {
 		t.Fatal("selectedSessionWarningBlock returned empty for session with hints")
 	}
@@ -559,7 +640,7 @@ func TestSelectedSessionWarningBlock_MultipleHints(t *testing.T) {
 			Summary:        "finalize failed: branch diverged",
 		},
 	}
-	got := selectedSessionWarningBlock(sess, 80)
+	got := selectedSessionWarningBlock(sess, nil, 80)
 	if !strings.Contains(got, "repair failed") {
 		t.Errorf("block missing repair hint: %q", got)
 	}
@@ -574,7 +655,7 @@ func TestSelectedSessionWarningBlock_NoHints(t *testing.T) {
 	sess := &pb.Session{
 		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING,
 	}
-	if got := selectedSessionWarningBlock(sess, 80); got != "" {
+	if got := selectedSessionWarningBlock(sess, nil, 80); got != "" {
 		t.Errorf("selectedSessionWarningBlock = %q, want empty for no-hint session", got)
 	}
 }
@@ -582,8 +663,20 @@ func TestSelectedSessionWarningBlock_NoHints(t *testing.T) {
 // TestSelectedSessionWarningBlock_NilSession verifies that a nil session
 // returns an empty block (no panic).
 func TestSelectedSessionWarningBlock_NilSession(t *testing.T) {
-	if got := selectedSessionWarningBlock(nil, 80); got != "" {
+	if got := selectedSessionWarningBlock(nil, nil, 80); got != "" {
 		t.Errorf("selectedSessionWarningBlock = %q, want empty for nil session", got)
+	}
+}
+
+// TestSelectedSessionWarningBlock_NilSessionWithChatStartError guards the
+// DisplayStatus dereference: chatStartErrorHint is session-independent, so a
+// nil session paired with a chat-level StartError produces a non-empty hint
+// set that reaches the styling branch — which must not dereference nil.
+func TestSelectedSessionWarningBlock_NilSessionWithChatStartError(t *testing.T) {
+	chats := []*pb.ClaudeChat{{StartError: "missing or unsuitable terminal: xterm-ghostty"}}
+	got := selectedSessionWarningBlock(nil, chats, 80)
+	if !strings.Contains(got, "chat failed to start: missing or unsuitable terminal: xterm-ghostty") {
+		t.Errorf("block missing chat start-error hint for nil session: %q", got)
 	}
 }
 
@@ -660,7 +753,7 @@ func TestRotationExhaustedHint_WiredIntoWarnings(t *testing.T) {
 		Outcome: pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED,
 		ResetAt: timestamppb.New(time.Now().Add(45 * time.Minute)),
 	})
-	got := selectedSessionWarningBlock(sess, 80)
+	got := selectedSessionWarningBlock(sess, nil, 80)
 	if !strings.Contains(got, "all accounts limited, resumes in ~") {
 		t.Errorf("warning block missing exhausted hint: %q", got)
 	}

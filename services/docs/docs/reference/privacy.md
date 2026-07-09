@@ -157,13 +157,17 @@ not sync to the cloud.
 
 ## Third parties
 
-Bossanova doesn't proxy any third-party traffic. The agent and plugins
-talk to their respective services directly:
+By default Bossanova doesn't proxy most third-party traffic (the one
+exception is the local failover proxy described below, which is **on**
+by default for Claude sessions). The agent and plugins talk to their
+respective services directly:
 
 - **Anthropic** (Claude Code): every chat message sent to the agent
   goes from your local `claude` process to `api.anthropic.com`. Boss
   Cloud is not in that path. See Anthropic's privacy policy for what
-  they do with the prompts.
+  they do with the prompts. (By default, this traffic first passes
+  through a loopback proxy on your own machine — see below — unless
+  you've disabled the local failover proxy or managed accounts entirely.)
 - **OpenAI** (Codex CLI): every chat message sent to a Codex session
   goes from your local `codex` process to OpenAI. Boss Cloud is not in
   that path. See OpenAI's privacy policy for how they handle prompts.
@@ -182,6 +186,102 @@ talk to their respective services directly:
   refreshes.
 
 If you uninstall a plugin, its third-party calls stop with it.
+
+## Local failover proxy (on by default)
+
+Bossanova can transparently switch a Claude session to another of your
+accounts when Anthropic returns a rate-limit (`429`) or auth (`401`)
+response, without visibly restarting the session. This is powered by a
+local reverse proxy (config key `managed_accounts.failover_proxy_enabled`,
+**default on**). It runs entirely on your own machine, bound to
+`127.0.0.1` only — Boss Cloud is never in the path, and no traffic leaves
+your machine that wouldn't already go to `api.anthropic.com`.
+
+It is on whenever `managed_accounts.enabled` is true (itself the default):
+`bossd` points the `claude` subprocess at the loopback proxy via
+`ANTHROPIC_BASE_URL` — **overriding any custom `ANTHROPIC_BASE_URL` you set
+yourself for Claude sessions** — and the proxy forwards to
+`api.anthropic.com`. If you point Claude at a custom endpoint (a corporate
+gateway or Bedrock), turn the proxy off (see below); left on, it would
+redirect that traffic to `api.anthropic.com` instead. The proxy forwards
+your requests over TLS; on a `429`/`401` it swaps the `Authorization`
+bearer to your next account and replays the request.
+
+**Interactive sessions and the sentinel API key.** The interactive Claude
+REPL authenticates only from your login keychain — it ignores the account
+credential `bossd` injects — so managed accounts and rotation would
+otherwise never take effect for an interactive chat. To make an interactive
+chat actually run on the account `bossd` bound it to, `bossd` injects a
+**fixed, non-secret sentinel** `ANTHROPIC_API_KEY` for proxied Claude
+sessions. That key overrides the keychain and routes every request through
+the loopback proxy as an `x-api-key` request; the proxy **strips the
+sentinel key** and substitutes the bound account's OAuth bearer before
+forwarding — the sentinel key never reaches `api.anthropic.com`. Because the
+credential upstream receives is the OAuth bearer, **billing follows your
+subscription**, not pay-per-use API/console billing. `bossd` also pre-seeds
+a one-time approval for that key in `~/.claude.json`
+(`customApiKeyResponses.approved`, merged non-destructively) so sessions
+don't prompt to approve it. Because the proxy resolves the bound account's
+OAuth bearer server-side, `bossd` does **not** also inject
+`CLAUDE_CODE_OAUTH_TOKEN` into a proxied subprocess — that would be dead
+weight and would trip Claude Code's "Both `CLAUDE_CODE_OAUTH_TOKEN` and
+`ANTHROPIC_API_KEY` set" warning without changing the auth actually used.
+
+The status header labelled **"API Usage Billing"** is **cosmetic**: it
+reflects the client's belief about `ANTHROPIC_API_KEY`, not the auth actually
+used. The real billing is your subscription, via the OAuth bearer the proxy
+substitutes. (If the machine also has a `claude.ai` keychain login, Claude
+Code may still show a "Both claude.ai and `ANTHROPIC_API_KEY` set" warning;
+that too is cosmetic — the proxy resolves the auth.)
+
+To opt out of the sentinel-key behavior, disable
+`managed_accounts.failover_proxy_enabled` or `managed_accounts.enabled`
+(below); interactive Claude then runs under your keychain login exactly as
+before.
+
+**How to opt out:**
+
+- `managed_accounts.failover_proxy_enabled: false` turns the proxy off
+  while leaving account rotation itself on — a capped session still moves
+  to another account, it just does so by respawning rather than by a
+  transparent mid-request swap.
+- `managed_accounts.enabled: false` turns off all managed-account
+  behavior — rotation and the proxy both — and Claude sessions run under
+  your terminal's own login exactly as before this feature existed.
+
+Because it's on by default, it's worth understanding the trade-off it
+introduces: a deliberate auth-MITM on your own credentials, and a single
+point of failure in the request path.
+
+- **Auth-MITM.** The proxy terminates your own Claude auth traffic
+  in-process and re-signs it with a different account's OAuth bearer. That
+  is a deliberate machine-in-the-middle on your own credentials. Tokens are
+  held only in memory for the duration of a request and are never written
+  to logs, but the proxy does see every request your `claude` process makes.
+- **Single point of failure.** The proxy sits in the hot request path, so a
+  bug or crash in it can degrade or break Claude requests for the session.
+  Injection is gated on both `managed_accounts.enabled` and
+  `failover_proxy_enabled`, and on top of that it's liveness-gated (the
+  `ANTHROPIC_BASE_URL` override is only injected once the proxy has actually
+  bound its loopback port); a construction/bind failure is non-fatal to
+  `bossd` and just leaves every session on the direct `api.anthropic.com`
+  path. But once a session's subprocess has picked up the override, the
+  proxy is a new dependency in that path for the life of the session.
+  Known limitation: the proxy binds an ephemeral loopback port that is baked
+  into the running `claude` subprocess at spawn. If `bossd` restarts (or the
+  proxy dies) mid-session, an already-running subprocess still points at the
+  old port and its requests fail until the session is restarted — it does not
+  transparently re-home to a new port or to the direct path on its own.
+  Restarting the session (or opting out via the flags above, which drops the
+  override) restores the direct `api.anthropic.com` path. Relatedly, after a
+  failover the swapped account's bearer is held in memory for the rest of the
+  session; if that token later expires it surfaces as an auth (`401`)
+  failover rather than a silent token refresh, which rotates the session to a
+  further account.
+
+With the proxy off (or managed accounts off entirely), Claude talks to
+`api.anthropic.com` directly exactly as described above and none of this
+applies.
 
 ## Retention
 

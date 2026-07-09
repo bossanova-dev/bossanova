@@ -258,6 +258,10 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "tmux_unattended = ?")
 		args = append(args, sqlutil.BoolToInt(*params.TmuxUnattended))
 	}
+	if params.QuickChat != nil {
+		sets = append(sets, "quick_chat = ?")
+		args = append(args, sqlutil.BoolToInt(*params.QuickChat))
+	}
 	if params.DisplayLabel != nil {
 		sets = append(sets, "display_label = ?")
 		args = append(args, *params.DisplayLabel)
@@ -471,7 +475,7 @@ func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string,
 
 const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
-	s.last_check_state, s.last_observed_review_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.tmux_unattended, s.created_at, s.updated_at,
+	s.last_check_state, s.last_observed_review_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.tmux_unattended, s.quick_chat, s.created_at, s.updated_at,
 	s.display_label, s.display_intent, s.display_spinner, s.agent_name, s.model,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
@@ -485,7 +489,7 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 // still appears with an empty display name.
 const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
-	s.last_check_state, s.last_observed_review_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.tmux_unattended, s.created_at, s.updated_at,
+	s.last_check_state, s.last_observed_review_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.tmux_unattended, s.quick_chat, s.created_at, s.updated_at,
 	s.display_label, s.display_intent, s.display_spinner, s.agent_name, s.model,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
@@ -511,7 +515,7 @@ func collectSessionsWithRepo(rows *sql.Rows) ([]*SessionWithRepo, error) {
 
 func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, error) {
 	var sess models.Session
-	var state, lastCheckState, lastObservedReviewState, automationEnabled, tmuxUnattended int
+	var state, lastCheckState, lastObservedReviewState, automationEnabled, tmuxUnattended, quickChat int
 	var archivedAt, createdAt, updatedAt *string
 	var displayIntent int
 	var displaySpinner int
@@ -524,7 +528,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
 		&lastCheckState, &lastObservedReviewState, &automationEnabled, &sess.AttemptCount,
-		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &tmuxUnattended, &createdAt, &updatedAt,
+		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &tmuxUnattended, &quickChat, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
@@ -539,6 +543,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 	sess.LastObservedReviewState = lastObservedReviewState
 	sess.AutomationEnabled = automationEnabled != 0
 	sess.TmuxUnattended = tmuxUnattended != 0
+	sess.QuickChat = quickChat != 0
 	sess.DisplayIntent = int32(displayIntent)
 	sess.DisplaySpinner = displaySpinner != 0
 	if archivedAt != nil {
@@ -564,7 +569,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 
 func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var sess models.Session
-	var state, lastCheckState, lastObservedReviewState, automationEnabled, tmuxUnattended int
+	var state, lastCheckState, lastObservedReviewState, automationEnabled, tmuxUnattended, quickChat int
 	var archivedAt, createdAt, updatedAt *string
 	var displayIntent int
 	var displaySpinner int
@@ -576,7 +581,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
 		&lastCheckState, &lastObservedReviewState, &automationEnabled, &sess.AttemptCount,
-		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &tmuxUnattended, &createdAt, &updatedAt,
+		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &tmuxUnattended, &quickChat, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
@@ -591,6 +596,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	sess.LastObservedReviewState = lastObservedReviewState
 	sess.AutomationEnabled = automationEnabled != 0
 	sess.TmuxUnattended = tmuxUnattended != 0
+	sess.QuickChat = quickChat != 0
 	sess.DisplayIntent = int32(displayIntent)
 	sess.DisplaySpinner = displaySpinner != 0
 	if archivedAt != nil {

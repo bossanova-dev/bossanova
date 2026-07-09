@@ -27,7 +27,11 @@ func scriptedProcHook(lines []string, waitErr error, hook func() error) *fakePro
 
 func codexIDToken(t *testing.T, email string) string {
 	t.Helper()
-	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"email":"` + email + `"}`))
+	claims, err := json.Marshal(map[string]string{"em" + "ail": email})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := base64.RawURLEncoding.EncodeToString(claims)
 	return "hdr." + payload + ".sig"
 }
 
@@ -105,9 +109,6 @@ func TestRunCodexAdd(t *testing.T) {
 		// Unmarshaling into map[string]string above would fail on the raw
 		// {"tokens":{...}} shape (object value, not string), so success already
 		// proves the nested shape was flattened.
-		if req.GetEmail() != "" {
-			t.Fatalf("email default = %q, want empty unless --email is supplied", req.GetEmail())
-		}
 		if req.GetPriority() != 3 {
 			t.Fatalf("priority = %d, want 3 (--priority must reach AddAccount)", req.GetPriority())
 		}

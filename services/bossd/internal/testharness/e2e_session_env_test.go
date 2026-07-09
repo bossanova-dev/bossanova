@@ -176,3 +176,126 @@ func TestE2ESessionEnvIncludesWorktreeDotenv(t *testing.T) {
 		t.Errorf("tmux env BOSS_SESSION_ID = %q, want managed %q (.env must not shadow managed keys)", got, sess.ID)
 	}
 }
+
+// linearPtr is a small *string helper for setting repo-config secrets in tests.
+func linearPtr(s string) *string { return &s }
+
+// TestE2ESessionEnvIncludesRepoConfigLinearKey verifies that a repo's stored
+// LINEAR_API_KEY (db.Repo.LinearAPIKey) is delivered to the spawned tmux session
+// even when the worktree has NO .env — the case git worktree add produces, and
+// the one that previously fell through to the daemon's ambient key.
+func TestE2ESessionEnvIncludesRepoConfigLinearKey(t *testing.T) {
+	h, fake := cronTestHarness(t)
+	ctx := context.Background()
+
+	repoID := registerTestRepo(t, h, ctx, withWorktreeBaseDir(t.TempDir()))
+	if _, err := h.Repos.Update(ctx, repoID, db.UpdateRepoParams{
+		LinearAPIKey: linearPtr("lin_from_repo_config"),
+	}); err != nil {
+		t.Fatalf("set repo LinearAPIKey: %v", err)
+	}
+	useTempWorktrees(t, h) // no .env seeded
+
+	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
+		RepoID:   repoID,
+		Name:     "repo-key-probe",
+		Prompt:   "do the thing",
+		Schedule: "* * * * *",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create cron job: %v", err)
+	}
+
+	sched := newCronScheduler(h)
+	if err := sched.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	sched.Tick(tickTime)
+
+	env := tmuxEnvFromNewSession(t, fake)
+	if got := env["LINEAR_API_KEY"]; got != "lin_from_repo_config" {
+		t.Errorf("tmux env LINEAR_API_KEY = %q, want %q (repo-config key not delivered)", got, "lin_from_repo_config")
+	}
+}
+
+// TestE2ESessionEnvWorktreeDotenvOverridesRepoConfig verifies the chosen
+// precedence: when BOTH the repo config and the worktree .env set
+// LINEAR_API_KEY, the worktree .env value wins.
+func TestE2ESessionEnvWorktreeDotenvOverridesRepoConfig(t *testing.T) {
+	h, fake := cronTestHarness(t)
+	ctx := context.Background()
+
+	repoID := registerTestRepo(t, h, ctx, withWorktreeBaseDir(t.TempDir()))
+	if _, err := h.Repos.Update(ctx, repoID, db.UpdateRepoParams{
+		LinearAPIKey: linearPtr("lin_from_repo_config"),
+	}); err != nil {
+		t.Fatalf("set repo LinearAPIKey: %v", err)
+	}
+	useTempWorktrees(t, h, func(dir string) {
+		content := "LINEAR_API_KEY=lin_from_worktree_env\n"
+		if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(content), 0o600); err != nil {
+			t.Fatalf("seed worktree .env: %v", err)
+		}
+	})
+
+	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
+		RepoID:   repoID,
+		Name:     "override-probe",
+		Prompt:   "do the thing",
+		Schedule: "* * * * *",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create cron job: %v", err)
+	}
+
+	sched := newCronScheduler(h)
+	if err := sched.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	sched.Tick(tickTime)
+
+	env := tmuxEnvFromNewSession(t, fake)
+	if got := env["LINEAR_API_KEY"]; got != "lin_from_worktree_env" {
+		t.Errorf("tmux env LINEAR_API_KEY = %q, want %q (worktree .env must override repo config)", got, "lin_from_worktree_env")
+	}
+}
+
+// TestE2ESessionEnvFailsCleanWithoutAnyLinearKey verifies the fail-clean
+// guarantee: with no repo-config key and no worktree .env, LINEAR_API_KEY is
+// still emitted to the session — empty — so Linear MCP is unauthenticated rather
+// than silently inheriting the daemon's ambient key.
+func TestE2ESessionEnvFailsCleanWithoutAnyLinearKey(t *testing.T) {
+	h, fake := cronTestHarness(t)
+	ctx := context.Background()
+
+	repoID := registerTestRepo(t, h, ctx, withWorktreeBaseDir(t.TempDir()))
+	useTempWorktrees(t, h) // no repo key, no .env
+
+	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
+		RepoID:   repoID,
+		Name:     "failclean-probe",
+		Prompt:   "do the thing",
+		Schedule: "* * * * *",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create cron job: %v", err)
+	}
+
+	sched := newCronScheduler(h)
+	if err := sched.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	sched.Tick(tickTime)
+
+	env := tmuxEnvFromNewSession(t, fake)
+	got, ok := env["LINEAR_API_KEY"]
+	if !ok {
+		t.Fatalf("tmux env missing LINEAR_API_KEY; the fail-clean guarantee must always emit it (empty). full env: %v", env)
+	}
+	if got != "" {
+		t.Errorf("tmux env LINEAR_API_KEY = %q, want empty (nothing configured → unauthenticated, not the daemon's key)", got)
+	}
+}

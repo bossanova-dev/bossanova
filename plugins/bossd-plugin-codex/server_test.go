@@ -795,6 +795,117 @@ func TestTranscriptExistsRPCMatchesDiskState(t *testing.T) {
 	}
 }
 
+func TestResolveInteractiveSessionIDRPCPrefersPaneFDResolution(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
+	workDir := t.TempDir()
+	root := filepath.Join(tmpHome, codexSessionsDir)
+
+	// Two sibling codex chats in the SAME worktree launched in the same
+	// window. The time-window scan is ambiguous (two codex-tui rollouts), but
+	// fd resolution binds THIS chat's pane to its OWN rollout.
+	launchedAfter := time.Now().Add(-2 * time.Second)
+	own := writeSessionMetaRollout(t, root, uuidA, workDir, "codex-tui", launchedAfter.Add(time.Second))
+	_ = writeSessionMetaRollout(t, root, uuidB, workDir, "codex-tui", launchedAfter.Add(time.Second))
+
+	s := newTestServer(t)
+	s.inspector = fakeProcessInspector{
+		descendants: map[int][]int{4242: {4242, 5252}},
+		openFiles:   map[int][]string{5252: {own}},
+	}
+	resp, err := s.ResolveInteractiveSessionID(context.Background(), &bossanovav1.ResolveInteractiveSessionIDRequest{
+		WorkDir:       workDir,
+		LaunchedAfter: timestamppb.New(launchedAfter),
+		PanePid:       4242,
+	})
+	if err != nil {
+		t.Fatalf("ResolveInteractiveSessionID: %v", err)
+	}
+	if !resp.Found {
+		t.Fatal("Found = false, want true")
+	}
+	if resp.SessionId != uuidA {
+		t.Errorf("SessionId = %q, want fd-resolved %q", resp.SessionId, uuidA)
+	}
+	if resp.Ambiguous {
+		t.Error("Ambiguous = true, want false (fd resolution is unambiguous)")
+	}
+}
+
+func TestResolveInteractiveSessionIDRPCFallsBackWhenFDInspectionUnavailable(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
+	workDir := t.TempDir()
+	root := filepath.Join(tmpHome, codexSessionsDir)
+
+	launchedAfter := time.Now().Add(-2 * time.Second)
+	path := writeSessionMetaRollout(t, root, uuidA, workDir, "codex-tui", launchedAfter.Add(time.Second))
+
+	s := newTestServer(t)
+	// The process tree can't be enumerated at all (empty descendants ⇒ `ps`
+	// failed / pane gone ⇒ fd inspection unavailable on this host). ONLY then do
+	// we fall back to the time-window scan, which resolves the single match.
+	s.inspector = fakeProcessInspector{
+		descendants: map[int][]int{},
+		openFiles:   map[int][]string{},
+	}
+	resp, err := s.ResolveInteractiveSessionID(context.Background(), &bossanovav1.ResolveInteractiveSessionIDRequest{
+		WorkDir:       workDir,
+		LaunchedAfter: timestamppb.New(launchedAfter),
+		PanePid:       4242,
+	})
+	if err != nil {
+		t.Fatalf("ResolveInteractiveSessionID: %v", err)
+	}
+	if !resp.Found || resp.SessionId != uuidA {
+		t.Fatalf("Found=%v SessionId=%q, want true/%q via time-window fallback", resp.Found, resp.SessionId, uuidA)
+	}
+	if resp.TranscriptPath != path {
+		t.Errorf("TranscriptPath = %q, want %q", resp.TranscriptPath, path)
+	}
+}
+
+// TestResolveInteractiveSessionIDRPCWaitsForOwnFDWhenTreeVisible is the direct
+// BOS-290 regression for the eager-fallback hole: when a chat's pane process
+// tree IS visible but its own codex hasn't opened its rollout yet, the plugin
+// must report Found=false so the daemon keeps polling for THIS chat's own fd —
+// it must NOT fall through to the time-window scan and bind a sibling chat's
+// already-written rollout (which the -2s window slack would otherwise surface as
+// the single unambiguous match).
+func TestResolveInteractiveSessionIDRPCWaitsForOwnFDWhenTreeVisible(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
+	workDir := t.TempDir()
+	root := filepath.Join(tmpHome, codexSessionsDir)
+
+	// A sibling chat's rollout already exists in this worktree and sits inside
+	// the target chat's time-window (the collision the eager fallback caused).
+	launchedAfter := time.Now().Add(-2 * time.Second)
+	_ = writeSessionMetaRollout(t, root, uuidB, workDir, "codex-tui", launchedAfter.Add(time.Second))
+
+	s := newTestServer(t)
+	// The target chat's pane tree is visible (ps enumerated it) but its codex
+	// holds no rollout open yet.
+	s.inspector = fakeProcessInspector{
+		descendants: map[int][]int{4242: {4242, 5252}},
+		openFiles:   map[int][]string{5252: {}},
+	}
+	resp, err := s.ResolveInteractiveSessionID(context.Background(), &bossanovav1.ResolveInteractiveSessionIDRequest{
+		WorkDir:       workDir,
+		LaunchedAfter: timestamppb.New(launchedAfter),
+		PanePid:       4242,
+	})
+	if err != nil {
+		t.Fatalf("ResolveInteractiveSessionID: %v", err)
+	}
+	if resp.Found {
+		t.Fatalf("Found=true SessionId=%q — must NOT bind the sibling's rollout; keep polling for the chat's own fd (BOS-290)", resp.SessionId)
+	}
+}
+
 func TestResolveInteractiveSessionIDRPCUsesRolloutMetadata(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

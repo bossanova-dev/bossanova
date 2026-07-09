@@ -127,6 +127,111 @@ func TestDecideOrdering(t *testing.T) {
 	}
 }
 
+// TestDecide_EmptyCappedAccount_RotatesWithoutCooling pins the unbound-session
+// contract (BOS-320): a UsageLimited signal with no CappedAccountID (an unbound
+// session has no bound account to cool) still selects an eligible rotation
+// target but writes no cooldown.
+func TestDecide_EmptyCappedAccount_RotatesWithoutCooling(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+	// Two eligible claude accounts, no capped account (unbound session).
+	a := mkAcct("a", 0, ok, active, nil, tp(-1*time.Hour))
+	b := mkAcct("b", 1, ok, active, nil, tp(-2*time.Hour))
+	store := newFakeStore(a, b)
+	eng := newEngineForTest(store)
+
+	out, err := eng.Decide(context.Background(), Signal{
+		Provider:        claude,
+		CappedAccountID: "", // unbound
+		Kind:            UsageLimited,
+		RotationCapable: true,
+	})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if out.Kind != OutcomeRotate || out.NextAccount == nil {
+		t.Fatalf("Kind=%v NextAccount=%v, want OutcomeRotate with a target", out.Kind, out.NextAccount)
+	}
+	if out.CooldownApplied {
+		t.Errorf("CooldownApplied = true, want false for empty capped account")
+	}
+	if store.cooldownCalls != 0 {
+		t.Errorf("SetCooldownIfNotCooling called %d times, want 0 for empty capped account", store.cooldownCalls)
+	}
+	if store.writes != 0 {
+		t.Errorf("store.writes = %d, want 0 (nothing to cool)", store.writes)
+	}
+}
+
+func TestSelectProactiveCandidate_WritesNoCooldown(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+	// Bound account A is nearing its cap (0.85) but NOT exhausted; candidates
+	// B (0.2) and C (0.9). B is the idlest selectable candidate.
+	a := mkAcct("A", 0, ok, active, nil, tp(0))
+	b := mkAcct("B", 1, ok, active, nil, tp(-1*time.Hour))
+	c := mkAcct("C", 2, ok, active, nil, tp(-2*time.Hour))
+	store := newFakeStore(a, b, c)
+	eng := newEngineForTest(store)
+
+	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "A",
+		map[string]float64{"A": 0.85, "B": 0.2, "C": 0.9})
+	if err != nil {
+		t.Fatalf("SelectProactiveCandidate error: %v", err)
+	}
+	if chosen == nil || chosen.ID != "B" {
+		got := "<nil>"
+		if chosen != nil {
+			got = chosen.ID
+		}
+		t.Fatalf("chosen = %s, want B (lowest util)", got)
+	}
+	// The bound account must NOT be cooled by the read-only proactive path.
+	if a.CooldownUntil != nil {
+		t.Errorf("bound account A.CooldownUntil = %v, want nil (proactive path writes no cooldown)", *a.CooldownUntil)
+	}
+	if store.writes != 0 {
+		t.Errorf("store.writes = %d, want 0 (proactive selection is read-only)", store.writes)
+	}
+}
+
+func TestSelectProactiveCandidate_EmptyUtilizationYieldsNil(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+	a := mkAcct("A", 0, ok, active, nil, tp(0))
+	b := mkAcct("B", 1, ok, active, nil, tp(-1*time.Hour))
+	store := newFakeStore(a, b)
+	eng := newEngineForTest(store)
+
+	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "A", nil)
+	if err != nil {
+		t.Fatalf("SelectProactiveCandidate error: %v", err)
+	}
+	if chosen != nil {
+		t.Errorf("chosen = %s, want nil (a proactive switch must never target an unprobed account)", chosen.ID)
+	}
+}
+
+func TestSelectProactiveCandidate_OnlyCoolingOrFailedYieldsNil(t *testing.T) {
+	ok := models.AccountHealthOK
+	failed := models.AccountHealthFailed
+	active := models.AccountStatusActive
+	a := mkAcct("A", 0, ok, active, nil, tp(0))
+	cooling := mkAcct("cooling", 1, ok, active, tp(2*time.Hour), tp(-1*time.Hour))
+	broken := mkAcct("broken", 2, failed, active, nil, tp(-2*time.Hour))
+	store := newFakeStore(a, cooling, broken)
+	eng := newEngineForTest(store)
+
+	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "A",
+		map[string]float64{"A": 0.85, "cooling": 0.1, "broken": 0.1})
+	if err != nil {
+		t.Fatalf("SelectProactiveCandidate error: %v", err)
+	}
+	if chosen != nil {
+		t.Errorf("chosen = %s, want nil (only cooling/failed candidates exist)", chosen.ID)
+	}
+}
+
 func TestDecideUtilizationAwareSelection(t *testing.T) {
 	ok := models.AccountHealthOK
 	active := models.AccountStatusActive

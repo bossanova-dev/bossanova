@@ -17,7 +17,6 @@ func testAccounts() []*pb.Account {
 			Id:            "acct-aaa",
 			Provider:      "claude",
 			Label:         "primary",
-			Email:         "primary@example.com",
 			Status:        "active",
 			Priority:      1,
 			Health:        "ok",
@@ -46,7 +45,6 @@ type accountJSONSchema struct {
 	ID            string   `json:"id"`
 	Provider      string   `json:"provider"`
 	Label         string   `json:"label"`
-	Email         string   `json:"email"`
 	Status        string   `json:"status"`
 	Priority      int32    `json:"priority"`
 	Health        string   `json:"health"`
@@ -83,7 +81,6 @@ func TestCLI_Account_Ls_FullIDAndAlignedColumns(t *testing.T) {
 			Id:       "8078890d6b0affc7",
 			Provider: "claude",
 			Label:    "agent.yuki",
-			Email:    "agent.yuki@kamik.ai",
 			Status:   "active",
 			Health:   "ok",
 		},
@@ -91,7 +88,6 @@ func TestCLI_Account_Ls_FullIDAndAlignedColumns(t *testing.T) {
 			Id:       "6aaff35db711eee5",
 			Provider: "codex",
 			Label:    "dave@kamik.ai",
-			Email:    "dave@kamik.ai",
 			Status:   "active",
 			Health:   "ok",
 		},
@@ -116,8 +112,8 @@ func TestCLI_Account_Ls_FullIDAndAlignedColumns(t *testing.T) {
 	if yukiRow == "" {
 		t.Fatalf("full account id not found; stdout:\n%s", res.Stdout)
 	}
-	if !strings.Contains(yukiRow, "agent.yuki     agent.yuki@kamik.ai") {
-		t.Fatalf("agent.yuki row is not aligned compactly:\n%s", res.Stdout)
+	if !strings.Contains(yukiRow, "agent.yuki     active") {
+		t.Fatalf("agent.yuki row does not align label before status:\n%s", res.Stdout)
 	}
 }
 
@@ -171,7 +167,7 @@ func TestCLI_Account_Ls_JSON(t *testing.T) {
 	if first.ID != "acct-aaa" {
 		t.Fatalf("acct-aaa not present in JSON")
 	}
-	if first.Provider != "claude" || first.Label != "primary" || first.Email != "primary@example.com" {
+	if first.Provider != "claude" || first.Label != "primary" {
 		t.Errorf("unexpected core fields: %+v", first)
 	}
 	if first.Status != "active" || first.Priority != 1 || first.Health != "ok" || first.Tier != "max" {
@@ -195,7 +191,6 @@ func TestCLI_Account_Add_Token(t *testing.T) {
 	res := h.Run("account", "add",
 		"--provider", "claude",
 		"--label", "my-account",
-		"--email", "me@example.com",
 		"--priority", "3",
 		"--token", "secret-token-xyz",
 	)
@@ -208,7 +203,7 @@ func TestCLI_Account_Add_Token(t *testing.T) {
 		t.Fatalf("expected 1 add call, got %d", len(calls))
 	}
 	req := calls[0]
-	if req.Provider != "claude" || req.Label != "my-account" || req.Email != "me@example.com" || req.Priority != 3 {
+	if req.Provider != "claude" || req.Label != "my-account" || req.Priority != 3 {
 		t.Errorf("unexpected fields: %+v", req)
 	}
 	if string(req.Credential) != "secret-token-xyz" {
@@ -378,13 +373,13 @@ func TestCLI_Account_Add_CodexTokenStdinRejected(t *testing.T) {
 }
 
 func TestCLI_Account_Add_ClaudeTokenStdinHeadless(t *testing.T) {
-	// `--token-stdin --label --email` must be fully non-interactive: the token is
-	// read from the piped stdin and the email/label prompts are skipped (a real
-	// piped stdin would EOF on any further prompt), so the account is stored.
+	// `--token-stdin --label` must be fully non-interactive: the token is read
+	// from the piped stdin and the label prompt is skipped (a real piped stdin
+	// would EOF on any further prompt), so the account is stored.
 	tok := "sk-ant-oat01-" + strings.Repeat("a", 40)
 	h := clitest.New(t)
 	res := h.RunWithStdin(tok+"\n", "account", "add", "claude",
-		"--token-stdin", "--label", "hl", "--email", "hl@example.com",
+		"--token-stdin", "--label", "hl",
 	)
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q stdout=%q", res.ExitCode, res.Stderr, res.Stdout)
@@ -393,7 +388,7 @@ func TestCLI_Account_Add_ClaudeTokenStdinHeadless(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 add call, got %d", len(calls))
 	}
-	if calls[0].Provider != "claude" || calls[0].Label != "hl" || calls[0].Email != "hl@example.com" {
+	if calls[0].Provider != "claude" || calls[0].Label != "hl" {
 		t.Errorf("unexpected fields: %+v", calls[0])
 	}
 	if string(calls[0].Credential) != tok {
@@ -449,10 +444,6 @@ func TestCLI_Account_Update(t *testing.T) {
 	}
 	if len(req.AllowedModels) != 2 || req.AllowedModels[0] != "opus" || req.AllowedModels[1] != "haiku" {
 		t.Errorf("expected allowed_models set, got %v", req.AllowedModels)
-	}
-	// Untouched field stays nil.
-	if req.Email != nil {
-		t.Errorf("expected Email nil, got %v", req.Email)
 	}
 }
 

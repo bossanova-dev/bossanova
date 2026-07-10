@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "title": "Unknown top-level field",
+  "bogus": true,
+  "scenes": [
+    {
+      "title": "Scene",
+      "steps": [{ "expect": "x" }]
+    }
+  ]
+}

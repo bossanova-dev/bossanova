@@ -591,9 +591,6 @@ func VerifyConfiguredPlugins(cfgs []PluginConfig) ([]PluginConfig, []PluginRejec
 }
 
 func verifyConfiguredPlugins(cfgs []PluginConfig, policy discoveryPolicy) ([]PluginConfig, []PluginRejection) {
-	if !policy.verifyChecksums {
-		return cfgs, nil
-	}
 	// Each plugin directory carries its own plugins.sum; load each at most once.
 	type manifest struct {
 		sums map[string]string
@@ -603,13 +600,22 @@ func verifyConfiguredPlugins(cfgs []PluginConfig, policy discoveryPolicy) ([]Plu
 	accepted := make([]PluginConfig, 0, len(cfgs))
 	var rejections []PluginRejection
 	for _, c := range cfgs {
+		dir := filepath.Dir(c.Path)
 		if policy.requireSafePerms {
+			if ok, reason := isTrustedPath(dir); !ok {
+				rejections = append(rejections, PluginRejection{Name: c.Name, Path: c.Path,
+					Reason: "untrusted plugin directory: " + reason})
+				continue
+			}
 			if ok, reason := isTrustedPath(c.Path); !ok {
 				rejections = append(rejections, PluginRejection{Name: c.Name, Path: c.Path, Reason: reason})
 				continue
 			}
 		}
-		dir := filepath.Dir(c.Path)
+		if !policy.verifyChecksums {
+			accepted = append(accepted, c)
+			continue
+		}
 		m, ok := manifests[dir]
 		if !ok {
 			m.sums, m.err = loadPluginSums(dir)

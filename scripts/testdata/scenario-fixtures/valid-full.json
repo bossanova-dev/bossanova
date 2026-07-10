@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "title": "Session settings: archive-delay field",
+  "fixture": {
+    "preset": "demo",
+    "seed": { "sessions": [] },
+    "env": { "BOSS_X": "1" }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "Open session settings",
+      "steps": [
+        { "key": "down", "caption": "Move to the session" },
+        { "key": "enter" },
+        { "waitFor": "Session settings", "timeoutMs": 10000 },
+        { "type": "45" },
+        { "waitMs": 500 },
+        { "daemon": { "action": "push_output", "sessionId": "sess-aaa-111" } },
+        {
+          "expect": [
+            "Archive delay",
+            { "text": "Archive delay", "match": "literal" },
+            { "text": "45 minutes", "match": "normalized" },
+            { "text": "Archive delay:\\s+\\d+m", "match": "regex", "label": "delay shows minutes" },
+            { "anyOf": ["45m", "45 minutes"], "label": "delay rendered" }
+          ],
+          "caption": "Field reflects the typed value"
+        }
+      ]
+    }
+  ]
+}

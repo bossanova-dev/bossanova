@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "title": "Scene without a title",
+  "scenes": [
+    {
+      "steps": [{ "expect": "x" }]
+    }
+  ]
+}

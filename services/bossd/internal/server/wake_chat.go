@@ -176,8 +176,9 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 				repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "wake chat", s.logger)
 				return dotenv.OverlayWithRepo(sessionEnvFunc(), sess.WorktreePath, repo)
 			},
-			Model:         modelForChatAgent(sess, chat.AgentName),
-			McpConfigPath: mcpConfigPath,
+			Model:           modelForChatAgent(sess, chat.AgentName),
+			McpConfigPath:   mcpConfigPath,
+			StrictMcpConfig: session.StrictMcpConfigForSession(sess),
 		})
 		if err != nil {
 			return nil, err

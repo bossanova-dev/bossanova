@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "title": "Too many scenes",
+  "scenes": [
+    { "title": "One", "steps": [{ "expect": "a" }] },
+    { "title": "Two", "steps": [{ "expect": "b" }] },
+    { "title": "Three", "steps": [{ "expect": "c" }] },
+    { "title": "Four", "steps": [{ "expect": "d" }] },
+    { "title": "Five", "steps": [{ "expect": "e" }] }
+  ]
+}

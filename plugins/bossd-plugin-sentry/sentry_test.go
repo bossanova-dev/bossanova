@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -82,6 +83,17 @@ func newStubClient(t *testing.T, stub *stubSentry) *sentryClient {
 	c := newSentryClient("test-token", "acme")
 	c.baseURL = srv.URL
 	return c
+}
+
+type errReadCloser struct{}
+
+func (errReadCloser) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+func (errReadCloser) Close() error             { return nil }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 
 const oneIssueBody = `[
@@ -249,6 +261,25 @@ func TestListIssues_MapsHTTPErrors(t *testing.T) {
 				t.Errorf("error %q does not mention %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestGet_ReturnsResponseBodyReadError(t *testing.T) {
+	c := newSentryClient("test-token", "acme")
+	c.http = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       errReadCloser{},
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	_, err := c.get(context.Background(), "https://sentry.example.invalid/api/0/test")
+	if err == nil {
+		t.Fatal("expected response body read error")
+	}
+	if !strings.Contains(err.Error(), "read Sentry response") {
+		t.Fatalf("error = %q, want read Sentry response context", err.Error())
 	}
 }
 

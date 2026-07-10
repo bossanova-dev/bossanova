@@ -365,15 +365,16 @@ func TestAppChatPickerArchiveAfterMergeReturnsHome(t *testing.T) {
 	}
 }
 
-// TestEscWhileArchivingCarriesOptimisticID guards that pressing ESC while an
-// archive is in flight sets archivingOptimisticID on the rebuilt HomeModel.
-func TestEscWhileArchivingCarriesOptimisticID(t *testing.T) {
+// TestEscWhileArchivingUnionsOverrides guards that returning from another
+// in-flight archive does not replace the first optimistic archive state.
+func TestEscWhileArchivingUnionsOverrides(t *testing.T) {
 	a := NewApp(nil, nil)
+	a.home.markArchiving("s1")
 	a.activeView = ViewChatPicker
 	// Archive in flight (no pre-set cancel) so the real ESC key path through
 	// chatpicker.Update sets cancel=true, exercising the actual keyboard route
 	// rather than a synthetic flag.
-	a.chatPicker = ChatPickerModel{archiving: true, sessionID: "s1"}
+	a.chatPicker = ChatPickerModel{archiving: true, sessionID: "s2"}
 
 	model, _ := a.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	got := model.(App)
@@ -381,26 +382,56 @@ func TestEscWhileArchivingCarriesOptimisticID(t *testing.T) {
 	if got.activeView != ViewHome {
 		t.Fatalf("activeView = %v after esc-while-archiving, want ViewHome", got.activeView)
 	}
-	if got.home.archivingOptimisticID != "s1" {
-		t.Fatalf("archivingOptimisticID = %q, want %q", got.home.archivingOptimisticID, "s1")
-	}
-	if !got.home.archiveInFlight {
-		t.Fatalf("expected archiveInFlight true after esc-while-archiving carry, got false")
+	for _, id := range []string{"s1", "s2"} {
+		if !got.home.isArchiving(id) || !got.home.archiveInFlight(id) {
+			t.Fatalf("expected %s to remain archiving and in flight after ESC carry", id)
+		}
 	}
 }
 
 // TestArchiveFailureClearsOverride guards that a failed archiveResultMsg
-// delivered to the App clears the home archivingOptimisticID, even when
+// delivered to the App clears only its matching home override, even when
 // the user has already navigated away from the chatpicker (ViewHome).
 func TestArchiveFailureClearsOverride(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.home.archivingOptimisticID = "s1"
+	a.home.markArchiving("s1")
+	a.home.markArchiving("s2")
 
 	model, _ := a.Update(archiveResultMsg{sessionID: "s1", err: errors.New("boom")})
 	got := model.(App)
 
-	if got.home.archivingOptimisticID != "" {
-		t.Fatalf("expected archivingOptimisticID cleared on archive failure, got %q", got.home.archivingOptimisticID)
+	if got.home.isArchiving("s1") || got.home.archiveInFlight("s1") {
+		t.Fatal("expected failed s1 archive override cleared")
+	}
+	if !got.home.isArchiving("s2") || !got.home.archiveInFlight("s2") {
+		t.Fatal("expected concurrent s2 archive state retained")
+	}
+}
+
+// TestArchiveFailureRebuildsHomeRows ensures a failed archive immediately
+// replaces the cached optimistic table status instead of waiting for a spinner
+// tick or the next session poll.
+func TestArchiveFailureRebuildsHomeRows(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.sessions = []*pb.Session{{
+		Id:            "s1",
+		DisplayLabel:  "passing",
+		DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+	}}
+	a.home.markArchiving("s1")
+	a.home.buildTableRows()
+	if !strings.Contains(a.home.table.Rows()[0][5], "archiving") {
+		t.Fatal("precondition: expected cached row to render archiving")
+	}
+
+	model, _ := a.Update(archiveResultMsg{sessionID: "s1", err: errors.New("boom")})
+	got := model.(App)
+
+	if strings.Contains(got.home.table.Rows()[0][5], "archiving") {
+		t.Fatal("failed archive left cached row rendering archiving")
+	}
+	if !strings.Contains(got.home.table.Rows()[0][5], "passing") {
+		t.Fatalf("failed archive row status = %q, want real status", got.home.table.Rows()[0][5])
 	}
 }
 
@@ -411,19 +442,22 @@ func TestArchiveFailureClearsOverride(t *testing.T) {
 // flickering back to the real status before it disappears.
 func TestArchiveSuccessKeepsOverrideAtAppLevel(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.home.archivingOptimisticID = "s1"
-	a.home.archiveInFlight = true
+	a.home.markArchiving("s1")
+	a.home.markArchiving("s2")
 
 	model, _ := a.Update(archiveResultMsg{sessionID: "s1", err: nil})
 	got := model.(App)
 
-	if got.home.archivingOptimisticID != "s1" {
-		t.Fatalf("expected override retained on archive success at app level, got %q", got.home.archivingOptimisticID)
+	if !got.home.isArchiving("s1") {
+		t.Fatal("expected successful s1 override retained at app level")
 	}
 	// The archive resolved, so it is no longer in flight even though the
 	// override lingers for rendering until the row leaves the list.
-	if got.home.archiveInFlight {
-		t.Fatalf("expected archiveInFlight cleared on archive success, got true")
+	if got.home.archiveInFlight("s1") {
+		t.Fatal("expected s1 in-flight state cleared on archive success")
+	}
+	if !got.home.isArchiving("s2") || !got.home.archiveInFlight("s2") {
+		t.Fatal("expected concurrent s2 archive state retained")
 	}
 }
 
@@ -432,8 +466,7 @@ func TestArchiveSuccessKeepsOverrideAtAppLevel(t *testing.T) {
 // ChatPickerModel with archiving=true so the banner shows the override.
 func TestReEnterArchivingSessionSeedsArchiving(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.home.archivingOptimisticID = "s1"
-	a.home.archiveInFlight = true
+	a.home.markArchiving("s1")
 
 	model, _ := a.Update(switchViewMsg{view: ViewChatPicker, sessionID: "s1"})
 	got := model.(App)
@@ -454,8 +487,8 @@ func TestReEnterArchivingSessionSeedsArchiving(t *testing.T) {
 // ever arriving for the freshly created model.
 func TestReEnterAfterArchiveSuccessDoesNotSeedArchiving(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.home.archivingOptimisticID = "s1"
-	a.home.archiveInFlight = false
+	a.home.markArchiving("s1")
+	a.home.resolveArchive("s1", nil)
 
 	model, _ := a.Update(switchViewMsg{view: ViewChatPicker, sessionID: "s1"})
 	got := model.(App)
@@ -466,10 +499,10 @@ func TestReEnterAfterArchiveSuccessDoesNotSeedArchiving(t *testing.T) {
 }
 
 // TestReEnterNonArchivingSessionNoSeed guards that other sessions are NOT
-// seeded with archiving=true when archivingOptimisticID refers to a different session.
+// seeded with archiving=true when a different session is still in flight.
 func TestReEnterNonArchivingSessionNoSeed(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.home.archivingOptimisticID = "s1"
+	a.home.markArchiving("s1")
 
 	model, _ := a.Update(switchViewMsg{view: ViewChatPicker, sessionID: "s2"})
 	got := model.(App)
@@ -484,36 +517,38 @@ func TestReEnterNonArchivingSessionNoSeed(t *testing.T) {
 // archive override whose RPC is still outstanding, so the row keeps rendering
 // "archiving" and re-entry stays in-flight instead of reverting to the real
 // status.
-func TestNewHomeModelPreservesInFlightArchiveOverride(t *testing.T) {
+func TestNewHomeModelCopiesArchiveStateWithoutAliasing(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.home.archivingOptimisticID = "s1"
-	a.home.archiveInFlight = true
+	a.home.markArchiving("s1")
+	a.home.markArchiving("s2")
+	a.home.markArchiving("s3")
+	a.home.resolveArchive("s3", nil)
 
 	rebuilt := a.newHomeModel()
 
-	if rebuilt.archivingOptimisticID != "s1" {
-		t.Fatalf("archivingOptimisticID = %q after rebuild, want %q", rebuilt.archivingOptimisticID, "s1")
+	if !rebuilt.isArchiving("s1") || !rebuilt.isArchiving("s2") || !rebuilt.isArchiving("s3") || !rebuilt.archiveInFlight("s1") || !rebuilt.archiveInFlight("s2") || rebuilt.archiveInFlight("s3") {
+		t.Fatal("rebuilt Home did not preserve per-session archive state")
 	}
-	if !rebuilt.archiveInFlight {
-		t.Fatalf("archiveInFlight = false after rebuild, want true (in-flight override must survive Home rebuild)")
+	rebuilt.resolveArchive("s1", errors.New("boom"))
+	if !a.home.isArchiving("s1") || !a.home.archiveInFlight("s1") {
+		t.Fatal("rebuilt Home aliases archive state from prior Home")
 	}
 }
 
-// TestNewHomeModelDropsResolvedArchiveOverride guards that a resolved archive's
-// lingering render override (archiveInFlight=false) is NOT carried across a
-// deliberate Home rebuild; the fresh poll reconciles the row instead.
-func TestNewHomeModelDropsResolvedArchiveOverride(t *testing.T) {
+// TestNewHomeModelPreservesResolvedArchiveOverride guards that a resolved
+// archive's render override continues until the next poll removes its row.
+func TestNewHomeModelPreservesResolvedArchiveOverride(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.home.archivingOptimisticID = "s1"
-	a.home.archiveInFlight = false
+	a.home.markArchiving("s1")
+	a.home.resolveArchive("s1", nil)
 
 	rebuilt := a.newHomeModel()
 
-	if rebuilt.archivingOptimisticID != "" {
-		t.Fatalf("archivingOptimisticID = %q after rebuild, want empty (resolved override should not carry)", rebuilt.archivingOptimisticID)
+	if !rebuilt.isArchiving("s1") {
+		t.Fatal("resolved override should survive a Home rebuild until the row leaves")
 	}
-	if rebuilt.archiveInFlight {
-		t.Fatalf("archiveInFlight = true after rebuild, want false")
+	if rebuilt.archiveInFlight("s1") {
+		t.Fatal("resolved archive should not be in flight after Home rebuild")
 	}
 }
 
@@ -524,8 +559,7 @@ func TestNewHomeModelDropsResolvedArchiveOverride(t *testing.T) {
 func TestReturnToHomeFromOtherSessionKeepsArchiveOverride(t *testing.T) {
 	a := NewApp(nil, nil)
 	// s1's archive is in flight; its override rides on Home.
-	a.home.archivingOptimisticID = "s1"
-	a.home.archiveInFlight = true
+	a.home.markArchiving("s1")
 	// The user is viewing a different, non-archiving session s2. Real ESC drives
 	// the cancel path so the App rebuilds Home through newHomeModel.
 	a.activeView = ViewChatPicker
@@ -537,11 +571,11 @@ func TestReturnToHomeFromOtherSessionKeepsArchiveOverride(t *testing.T) {
 	if got.activeView != ViewHome {
 		t.Fatalf("activeView = %v, want ViewHome", got.activeView)
 	}
-	if got.home.archivingOptimisticID != "s1" {
-		t.Fatalf("archivingOptimisticID = %q after returning from s2, want %q", got.home.archivingOptimisticID, "s1")
+	if !got.home.isArchiving("s1") {
+		t.Fatal("s1 override missing after returning from s2")
 	}
-	if !got.home.archiveInFlight {
-		t.Fatalf("archiveInFlight = false after returning from s2, want true")
+	if !got.home.archiveInFlight("s1") {
+		t.Fatal("s1 archive no longer in flight after returning from s2")
 	}
 }
 

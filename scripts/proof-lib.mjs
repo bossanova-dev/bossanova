@@ -956,6 +956,9 @@ function escapeMarkdown(value) {
     .replaceAll('\n', ' ')
 }
 
+export const SCENARIO_USAGE =
+  'usage: scenario validate <file> | scenario run <file> [--dry-run] [--pr <n>]'
+
 export function parseProofArgs(argv) {
   const [firstArg, ...tail] = argv
   // A completely empty invocation prints usage rather than silently running a
@@ -970,6 +973,13 @@ export function parseProofArgs(argv) {
     changedFiles: [],
     dryRun: false,
     json: false,
+  }
+
+  // BOS-219: ONLY the `scenario` command accepts a subcommand token + one
+  // positional file path (plus --dry-run/--pr). Every other command parses
+  // exactly as before (regression-pinned), so this branch is fully isolated.
+  if (command === 'scenario') {
+    return parseScenarioArgs(parsed, rest)
   }
 
   for (let i = 0; i < rest.length; i += 1) {
@@ -1004,6 +1014,49 @@ function requireValue(args, index, flag) {
     throw new Error(`${flag} requires a value`)
   }
   return value
+}
+
+/**
+ * Parses the `scenario` subcommand tail: one subcommand token (`validate`|`run`)
+ * and one positional file path, in any order relative to the flags `--dry-run`
+ * and `--pr <n>`. Adds `{sub, file, pr}` to the parsed object. Throws with the
+ * usage string on an unknown/missing subcommand, a missing file, an unknown flag,
+ * or an extra positional. Gated behind `command === 'scenario'` so no other
+ * command's parse is affected.
+ */
+function parseScenarioArgs(parsed, rest) {
+  parsed.sub = null
+  parsed.file = null
+  parsed.pr = null
+  const positionals = []
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i]
+    if (arg === '--dry-run') {
+      parsed.dryRun = true
+      continue
+    }
+    if (arg === '--pr') {
+      parsed.pr = requireValue(rest, i, arg)
+      i += 1
+      continue
+    }
+    if (arg.startsWith('--')) {
+      throw new Error(`unknown proof argument: ${arg}`)
+    }
+    positionals.push(arg)
+  }
+  parsed.sub = positionals[0] ?? null
+  parsed.file = positionals[1] ?? null
+  if (parsed.sub !== 'validate' && parsed.sub !== 'run') {
+    throw new Error(`unknown scenario subcommand: ${parsed.sub ?? '(none)'}\n${SCENARIO_USAGE}`)
+  }
+  if (!parsed.file) {
+    throw new Error(`scenario ${parsed.sub} requires a file argument\n${SCENARIO_USAGE}`)
+  }
+  if (positionals.length > 2) {
+    throw new Error(`unexpected extra argument: ${positionals[2]}\n${SCENARIO_USAGE}`)
+  }
+  return parsed
 }
 
 /**

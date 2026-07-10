@@ -22,6 +22,7 @@ type stubClient struct {
 	reposErr          error
 	created           *pb.Session
 	createErr         error
+	createCronCalls   int
 	createReq         *pb.CreateSessionRequest // captures the last CreateSession request
 	createCalls       int
 	prs               []*pb.PRSummary
@@ -214,6 +215,7 @@ func (s *stubClient) SendChatMessage(context.Context, *pb.SendChatMessageRequest
 func (s *stubClient) NotifyAuthChange(context.Context, string) error { return nil }
 
 func (s *stubClient) CreateCronJob(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+	s.createCronCalls++
 	s.createdCronReq = req
 	return &pb.CronJob{Id: "cron-1"}, nil
 }

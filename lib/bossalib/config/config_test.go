@@ -1881,13 +1881,41 @@ func TestVerifyConfiguredPluginsMissingManifestFailsClosed(t *testing.T) {
 	}
 }
 
-func TestVerifyConfiguredPluginsDevPassesThrough(t *testing.T) {
+func TestVerifyConfiguredPluginsDevSkipsChecksumButEnforcesTrust(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("perms hardening no-op on Windows")
+	}
 	dir := t.TempDir()
 	binPath, _ := writeBin(t, dir, "bossd-plugin-claude", []byte("real"))
 	cfgs := []PluginConfig{{Name: "claude", Path: binPath, Enabled: true}}
 	got, rej := verifyConfiguredPlugins(cfgs, discoveryPolicy{requireSafePerms: true, verifyChecksums: false})
 	if len(got) != 1 || len(rej) != 0 {
-		t.Fatalf("dev build must pass configured plugins through unchecked: got=%d rej=%d", len(got), len(rej))
+		t.Fatalf("dev build must accept trusted configured plugin without manifest: got=%d rej=%d", len(got), len(rej))
+	}
+
+	if err := os.Chmod(binPath, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	got, rej = verifyConfiguredPlugins(cfgs, discoveryPolicy{requireSafePerms: true, verifyChecksums: false})
+	if len(got) != 0 || len(rej) != 1 {
+		t.Fatalf("dev build must reject untrusted configured plugin file: got=%d rej=%d", len(got), len(rej))
+	}
+	if !strings.Contains(rej[0].Reason, "group/world-writable") {
+		t.Fatalf("rejection reason = %q, want group/world-writable", rej[0].Reason)
+	}
+
+	if err := os.Chmod(binPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	got, rej = verifyConfiguredPlugins(cfgs, discoveryPolicy{requireSafePerms: true, verifyChecksums: false})
+	if len(got) != 0 || len(rej) != 1 {
+		t.Fatalf("dev build must reject untrusted configured plugin directory: got=%d rej=%d", len(got), len(rej))
+	}
+	if !strings.Contains(rej[0].Reason, "untrusted plugin directory") {
+		t.Fatalf("rejection reason = %q, want untrusted plugin directory", rej[0].Reason)
 	}
 }
 

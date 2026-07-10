@@ -185,11 +185,91 @@ test('SYSTEM_PROMPT: requires a narration sentence alongside each action (captio
   assert.match(mod.SYSTEM_PROMPT, /never call those tools without a leading narration/i)
 })
 
-test('doc-drift: TUI_CONTEXT_BLOCK and send_keys enumerate the full navigation key vocabulary (BOS-213)', async () => {
+test('doc-drift: send_keys documents the full KeyBytes vocabulary via golden (BOS-282)', async () => {
   const mod = await import('./proof-tui-agent.mjs')
-  // The Go bridge (tuidriver.KeyBytes) accepts these names; the model only
-  // knows to use them if the context block and tool description name them.
-  const keyNames = [
+  // The accepted key vocabulary is owned by the Go parser (tuidriver.namedKeys)
+  // and pinned into key-vocab.json by TestKeyVocabGolden. Read it back rather
+  // than hardcoding a subset copy (the drift bug BOS-213 left behind): a new
+  // named key added to namedKeys is auto-derived into the golden, and this guard
+  // then fails until send_keys documents it. Families are parametric key kinds
+  // KeyBytes recognizes structurally (not map keys), so generateKeyVocab lists
+  // them by hand — a new one only reaches the golden when a maintainer edits that
+  // list, at which point the else-branch below fails loud until this guard learns
+  // to check it.
+  const golden = JSON.parse(
+    fs.readFileSync(
+      path.join(REPO_ROOT, 'services/boss/internal/tuidriver/testdata/key-vocab.json'),
+      'utf8',
+    ),
+  )
+  const sendKeys = mod.TOOL_DEFS.find((t) => t.name === 'send_keys')
+  assert.ok(sendKeys, 'send_keys tool must exist')
+
+  // Every parser-accepted named key must appear verbatim in the tool
+  // description so the model knows it is a legal keystroke. Match the QUOTED
+  // token (`"esc"`), not a bare substring: short names like "esc", "tab", "up",
+  // "f1" are substrings of longer tokens ("escape", "shifttab", "pgup", "f10")
+  // and a bare `includes(name)` would silently pass even if the key's own
+  // standalone mention were dropped from the prose — defeating the drift guard.
+  // The description quotes every alias, so the quoted form is exact.
+  for (const name of golden.named) {
+    assert.ok(
+      sendKeys.description.includes(`"${name}"`),
+      `send_keys description should mention key "${name}" as a quoted token`,
+    )
+  }
+
+  // Reverse drift (BOS-282): the forward loop only proves every CURRENT golden
+  // key is documented — it cannot catch a key that was removed or renamed in
+  // namedKeys (and dropped from the regenerated golden) but left behind in the
+  // prose, which would keep advertising a keystroke the Go parser now rejects.
+  // So walk every quoted token in the description and require each to be either a
+  // current golden named key OR a documented family example (a single printable
+  // char like "s", a "ctrl+<a-z>" chord like "ctrl+c", or the "ctrl+<a-z>"
+  // family label itself). Anything else is a stale documented key.
+  const namedSet = new Set(golden.named)
+  const isFamilyExample = (tok) =>
+    tok.length === 1 || // single-printable-char family (e.g. "s", "/")
+    /^ctrl\+[a-z]$/.test(tok) || // ctrl+<a-z> chord example (e.g. "ctrl+c")
+    tok === 'ctrl+<a-z>' // the ctrl+<a-z> family label itself
+  for (const [, tok] of sendKeys.description.matchAll(/"([^"]+)"/g)) {
+    assert.ok(
+      namedSet.has(tok) || isFamilyExample(tok),
+      `send_keys description quotes "${tok}", which is neither a current ` +
+        'parser-accepted named key (golden.named) nor a documented family example — ' +
+        'remove the stale key, or regenerate key-vocab.json if the parser still accepts it',
+    )
+  }
+
+  // Families are parametric key kinds (not fixed names). Map each known family
+  // to the substring/shape that documents it. An UNKNOWN family means KeyBytes
+  // grew a new kind the guard doesn't yet check — fail loud so the maintainer
+  // teaches this guard instead of letting the doc silently drift.
+  for (const family of golden.families) {
+    if (family === 'ctrl+<a-z>') {
+      assert.ok(
+        sendKeys.description.includes('ctrl+'),
+        'send_keys description must document the ctrl+<a-z> family',
+      )
+    } else if (family === 'single-printable-char') {
+      assert.ok(
+        /single(\s|-)?(printable\s)?char/i.test(sendKeys.description),
+        'send_keys description must document the single-printable-character family',
+      )
+    } else {
+      assert.fail(
+        `unknown key-vocab family "${family}"; teach this guard how to check it ` +
+          '(update the family switch in scripts/proof-tui-agent.test.mjs)',
+      )
+    }
+  }
+
+  // TUI_CONTEXT_BLOCK is app-semantic help, not the full parser alias list, so
+  // it deliberately advertises only the everyday navigation keys (OQ2). For
+  // those, assert BOTH that the golden accepts the key (the app help can never
+  // advertise a keystroke the Go parser would reject) AND that the context
+  // block still names it (BOS-213's guarantee, retained).
+  const appNavKeys = [
     'up',
     'down',
     'left',
@@ -200,17 +280,14 @@ test('doc-drift: TUI_CONTEXT_BLOCK and send_keys enumerate the full navigation k
     'pgdn',
     'home',
     'end',
-    'f1',
+    'backspace',
+    'delete',
   ]
-  for (const key of keyNames) {
-    assert.ok(mod.TUI_CONTEXT_BLOCK.includes(key), `TUI_CONTEXT_BLOCK should mention key "${key}"`)
-  }
-  const sendKeys = mod.TOOL_DEFS.find((t) => t.name === 'send_keys')
-  assert.ok(sendKeys, 'send_keys tool must exist')
-  for (const key of keyNames) {
+  for (const key of appNavKeys) {
+    assert.ok(golden.named.includes(key), `golden vocabulary must accept nav key "${key}"`)
     assert.ok(
-      sendKeys.description.includes(key),
-      `send_keys description should mention key "${key}"`,
+      mod.TUI_CONTEXT_BLOCK.includes(key),
+      `TUI_CONTEXT_BLOCK should mention nav key "${key}"`,
     )
   }
 })
@@ -1793,6 +1870,69 @@ test('makeStdioBridge: observe/sendKeys/typeText round-trip returns expected scr
   }
 })
 
+// Echo fake-bridge (BOS-219): reflects each received NDJSON request back in the
+// `screen` field so a serialization test can assert the exact op + params the JS
+// bridge emits for enter/esc/key/type/daemon/capabilities.
+const ECHO_BRIDGE_BIN = path.join(_fakeBridgeDir, 'echo-bridge.js')
+fs.writeFileSync(
+  ECHO_BRIDGE_BIN,
+  [
+    '#!/usr/bin/env node',
+    "'use strict';",
+    "const readline = require('node:readline');",
+    'const rl = readline.createInterface({ input: process.stdin, terminal: false });',
+    "rl.on('line', (line) => {",
+    '  const t = line.trim();',
+    '  if (!t) return;',
+    '  let msg;',
+    '  try { msg = JSON.parse(t); } catch { return; }',
+    "  process.stdout.write(JSON.stringify({ id: msg.id, ok: true, screen: t }) + '\\n');",
+    "  if (msg.op === 'quit') { process.exit(0); }",
+    '});',
+  ].join('\n'),
+)
+fs.chmodSync(ECHO_BRIDGE_BIN, 0o755)
+
+test('makeStdioBridge: enter/esc/key/type/daemon/capabilities emit the correct NDJSON ops', async () => {
+  const { makeStdioBridge } = await import('./proof-tui-agent.mjs')
+  const { localDir, rawDir, cleanup } = makeBridgeDirs('serialize')
+  try {
+    await withBridgeEnv({ BOSS_PROOF_TUI_BRIDGE_BIN: ECHO_BRIDGE_BIN }, async () => {
+      const bridge = makeStdioBridge({ localDir, rawDir })
+      // The returned object must expose the replay-loop op set.
+      for (const m of ['enter', 'esc', 'key', 'type', 'daemon', 'capabilities']) {
+        assert.equal(typeof bridge[m], 'function', `bridge.${m} must be a function`)
+      }
+      try {
+        const sent = async (p) => JSON.parse((await p).screen)
+        assert.equal((await sent(bridge.enter())).op, 'enter')
+        assert.equal((await sent(bridge.esc())).op, 'esc')
+        // key(name) → op 'key' with the single name wrapped as keys:[name].
+        const keyReq = await sent(bridge.key('down'))
+        assert.equal(keyReq.op, 'key')
+        assert.deepEqual(keyReq.keys, ['down'])
+        const typeReq = await sent(bridge.type('hi'))
+        assert.equal(typeReq.op, 'type')
+        assert.equal(typeReq.text, 'hi')
+        // daemon(params) → op 'daemon' with the scenario params forwarded verbatim.
+        const daemonReq = await sent(bridge.daemon({ action: 'add_session', sessionId: 's1' }))
+        assert.equal(daemonReq.op, 'daemon')
+        assert.equal(daemonReq.action, 'add_session')
+        assert.equal(daemonReq.sessionId, 's1')
+        assert.equal((await sent(bridge.capabilities())).op, 'capabilities')
+      } finally {
+        try {
+          await bridge.quit()
+        } catch {
+          // best-effort
+        }
+      }
+    })
+  } finally {
+    cleanup()
+  }
+})
+
 test('makeStdioBridge: multiple requests complete in order with correct id dispatch', async () => {
   const { makeStdioBridge } = await import('./proof-tui-agent.mjs')
   const { localDir, rawDir, cleanup } = makeBridgeDirs('ordering')
@@ -2878,5 +3018,177 @@ test('runTuiAgentProof: persists raw/scene-timings.json alongside caption-timing
   } finally {
     process.exitCode = originalExitCode
     cleanupPr('tuiscenetimings')
+  }
+})
+
+// ── BOS-219 seams: brief / loopRunner / evaluateEvidence ──────────────────────
+// These pin the byte-identical DEFAULT behavior (no options → resolveBrief +
+// runAgentLoop + evaluateSceneEvidence) and prove each seam swaps cleanly. The
+// brief seam is the D4 no-SDK guarantee at the orchestrator level.
+
+test('runTuiAgentProof: default seams call resolveBrief (generateBriefFromDiff) and runAgentLoop', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  try {
+    await withEnv(
+      BASE_ENV({ BOSS_PROOF_BRIEF: undefined, BOSS_PROOF_RUN_ID: 'tui-defaultseam' }),
+      async () => {
+        let genCalls = 0
+        const generateBriefFromDiff = async () => {
+          genCalls += 1
+          return { title: 'Gen', description: 'generated brief', expectedEvidence: ['Home'] }
+        }
+        const bridge = scriptedBridge({ screens: ['Home screen'] })
+        const model = scriptedModel([
+          toolUse('observe', {}),
+          toolUse('done', { summary: 'saw Home', passed: true }),
+        ])
+        const { manifest } = await runTuiAgentProof({
+          prNumber: 'tuidefaultseam',
+          commit: 'abc1234',
+          changedFiles: [],
+          dryRun: true,
+          deps: {
+            bridge,
+            model,
+            generateBriefFromDiff,
+            renderStill: fakeRenderStill(),
+            castToVideo: async () => null,
+          },
+        })
+        assert.equal(genCalls, 1, 'default path must call resolveBrief → generateBriefFromDiff')
+        assert.ok(model.calls >= 1, 'default path must drive runAgentLoop (model called)')
+        assert.equal(manifest.captures[0].surface, 'tui')
+      },
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuidefaultseam')
+  }
+})
+
+test('runTuiAgentProof: an injected brief skips resolveBrief (generateBriefFromDiff never called)', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const { synthesizeBrief } = await import('./proof-tui-replay.mjs')
+  const { loadScenario } = await import('./proof-scenario.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  try {
+    await withEnv(
+      BASE_ENV({ BOSS_PROOF_BRIEF: undefined, BOSS_PROOF_RUN_ID: 'tui-briefseam' }),
+      async () => {
+        const { scenario } = loadScenario(
+          path.join(REPO_ROOT, 'scripts/testdata/scenario-fixtures/valid-full.json'),
+        )
+        const brief = synthesizeBrief(scenario, 'valid-full.scenario.json')
+        let genCalls = 0
+        const generateBriefFromDiff = async () => {
+          genCalls += 1
+          return { title: 'Gen', description: 'should never be used' }
+        }
+        const bridge = scriptedBridge({ screens: ['Session settings'] })
+        const model = scriptedModel([
+          toolUse('observe', {}),
+          toolUse('done', { summary: 'done', passed: true }),
+        ])
+        await runTuiAgentProof({
+          prNumber: 'tuibriefseam',
+          commit: 'abc1234',
+          changedFiles: [],
+          dryRun: true,
+          brief,
+          deps: {
+            bridge,
+            model,
+            generateBriefFromDiff,
+            renderStill: fakeRenderStill(),
+            castToVideo: async () => null,
+          },
+        })
+        assert.equal(genCalls, 0, 'injected brief must skip resolveBrief entirely (no SDK path)')
+      },
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuibriefseam')
+  }
+})
+
+test('runTuiAgentProof: injected brief+loopRunner+evaluateEvidence flow replay artifacts with zero model calls', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const { synthesizeBrief, makeScenarioEvaluator } = await import('./proof-tui-replay.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  const scenario = {
+    version: 1,
+    title: 'Replay',
+    fixture: { preset: 'demo' },
+    scenes: [{ id: 'scene-01', title: 'S', steps: [{ key: 'a' }, { expect: ['REPO', 'STATUS'] }] }],
+  }
+  try {
+    await withEnv(
+      BASE_ENV({ BOSS_PROOF_BRIEF: undefined, BOSS_PROOF_RUN_ID: 'tui-replaypair' }),
+      async () => {
+        const brief = synthesizeBrief(scenario, 'replay.scenario.json')
+        let modelCalls = 0
+        const model = {
+          calls: 0,
+          async createMessage() {
+            modelCalls += 1
+            this.calls += 1
+            return { stop_reason: 'end_turn', content: [], usage: {} }
+          },
+        }
+        let genCalls = 0
+        const generateBriefFromDiff = async () => {
+          genCalls += 1
+          return { title: 'x', description: 'y' }
+        }
+        const loopRunner = async ({ rawDir }) => {
+          fs.writeFileSync(path.join(rawDir, 'screen-01.txt'), 'REPO STATUS ready')
+          return {
+            agentResult: {
+              passed: true,
+              summary: 'deterministic scenario replay of replay.scenario.json',
+              evidence: [],
+              steps: 1,
+            },
+            finalScreen: 'REPO STATUS ready',
+            captionTimings: [],
+            sceneTimings: [{ id: 'scene-01', title: 'S', startMs: 0 }],
+            sceneForScreen: { 1: 'scene-01' },
+            screens: [{ seq: 1, text: 'REPO STATUS ready', castMs: null }],
+          }
+        }
+        const evaluateEvidence = makeScenarioEvaluator(scenario)
+        const surfaceRun = await runTuiAgentProof({
+          prNumber: 'tuireplaypair',
+          commit: 'abc1234',
+          changedFiles: [],
+          dryRun: true,
+          brief,
+          loopRunner,
+          evaluateEvidence,
+          runContext: { collect: true, runId: 'tui-replaypair', token: 'tok-tui-test' },
+          deps: {
+            bridge: scriptedBridge({ screens: ['ignored'] }),
+            model,
+            generateBriefFromDiff,
+            renderStill: fakeRenderStill(),
+            castToVideo: async () => null,
+          },
+        })
+        assert.equal(genCalls, 0, 'brief injected → no brief generation')
+        assert.equal(modelCalls, 0, 'loopRunner replaces runAgentLoop → no model/SDK call')
+        const cap = surfaceRun.captureShapes[0]
+        assert.equal(cap.surface, 'tui')
+        assert.equal(cap.scenes[0].passed, true, 'evaluator gate result flows into captureShape')
+        assert.deepEqual(cap.scenes[0].missing, [])
+      },
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuireplaypair')
   }
 })

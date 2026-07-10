@@ -911,6 +911,12 @@ func run(opts runOpts) error {
 	})
 
 	pluginCfgs := settings.Plugins
+	logPluginRejections := func(rejected []config.PluginRejection) {
+		for _, r := range rejected {
+			log.Error().Str("plugin", r.Name).Str("path", r.Path).Str("reason", r.Reason).
+				Msg("SECURITY: refusing to load unverified plugin binary before exec")
+		}
+	}
 	if opts.plugins != nil {
 		pluginCfgs = opts.plugins
 	} else {
@@ -930,7 +936,9 @@ func run(opts runOpts) error {
 		}
 	}
 	if opts.plugins == nil && len(pluginCfgs) == 0 {
-		pluginCfgs = config.DiscoverPlugins()
+		var rejected []config.PluginRejection
+		pluginCfgs, rejected = config.DiscoverPluginsVerified()
+		logPluginRejections(rejected)
 		if len(pluginCfgs) > 0 {
 			log.Info().Int("count", len(pluginCfgs)).Msg("auto-discovered plugins")
 			settings.Plugins = pluginCfgs
@@ -948,7 +956,8 @@ func run(opts runOpts) error {
 		// than being rejected and leaving the daemon with zero agents; (2) a
 		// freshly-built plugin not yet in settings.json is appended
 		// (MergeDiscoveredPlugins). Both preserve existing entries' enabled/config.
-		discovered := config.DiscoverPlugins()
+		discovered, rejected := config.DiscoverPluginsVerified()
+		logPluginRejections(rejected)
 		if healed, names := config.HealPluginPaths(pluginCfgs, discovered); len(names) > 0 {
 			log.Warn().Strs("healed", names).
 				Msg("repaired plugin paths that no longer resolve (a package upgrade may have moved the binaries)")
@@ -997,10 +1006,7 @@ func run(opts runOpts) error {
 	// design, so it is exempt.
 	if opts.plugins == nil {
 		verified, rejected := config.VerifyConfiguredPlugins(pluginCfgs)
-		for _, r := range rejected {
-			log.Error().Str("plugin", r.Name).Str("path", r.Path).Str("reason", r.Reason).
-				Msg("rejected configured plugin failing checksum verification")
-		}
+		logPluginRejections(rejected)
 		pluginCfgs = verified
 	}
 
@@ -1936,6 +1942,11 @@ func run(opts runOpts) error {
 			tokenProvider: tokenProvider,
 			authState:     authState,
 			logger:        log.Logger,
+			// Proactive login-triggered register. Same closure the reactive
+			// Run-loop path uses, so both serialize on reRegisterMu and write
+			// the one shared sessionTokenHolder — login and auth-failure
+			// recovery can never double-register or fight each other.
+			reRegister: reRegister,
 		}
 
 		// TerminalStream is a sibling of DaemonStream — separate bidi
@@ -2736,16 +2747,29 @@ func buildSnapshotForPublish(ctx context.Context, stores upstream.StreamStores, 
 	return snap, nil
 }
 
+// streamReconnector is the subset of *upstream.StreamClient the auth
+// adapter needs on login: wake the Run loop so it re-opens the stream
+// immediately (with the freshly-registered session token). Narrowed to an
+// interface so the login path is unit-testable without a live stream.
+type streamReconnector interface {
+	Reconnect()
+}
+
 // streamAuthAdapter implements server.AuthNotifier by reloading
 // credentials from the keychain on login and signalling active streams on
 // logout. The shared AuthState is wired into both DaemonStream and
 // TerminalStream, so MarkNeedsLogin cancels any open bidi immediately and
 // the outer Run loops pause until NotifyLogin marks auth OK again.
 type streamAuthAdapter struct {
-	streamClient  *upstream.StreamClient
+	streamClient  streamReconnector
 	tokenProvider *upstream.KeychainTokenProvider
 	authState     *upstream.AuthState
 	logger        zerolog.Logger
+	// reRegister proactively (re-)registers the daemon with the
+	// orchestrator on login. It shares the reRegisterMu + sessionTokenHolder
+	// with the reactive tryReRegister path, so login and auth-failure
+	// recovery never double-register. Nil in local-only mode.
+	reRegister func(context.Context) (string, error)
 }
 
 // NotifyLogin reloads keychain credentials so the running stream picks
@@ -2756,13 +2780,44 @@ type streamAuthAdapter struct {
 // just wrote. The next reconnect (or the periodic refresher when the
 // current JWT nears expiry) propagates the new token to bosso.
 //
-// MarkOK clears the "needs re-login" flag set by the opener when WorkOS
-// rejected the previous refresh token as invalid_grant. The Run loops
-// are blocked on AuthState.Wait() in that case; clearing the flag wakes
-// them so they reconnect with the freshly-loaded keychain credentials.
-func (a *streamAuthAdapter) NotifyLogin(_ context.Context, _ []string) error {
+// It then proactively (re-)registers with the orchestrator, BEFORE clearing
+// the auth gate. Because you cannot log in before the daemon exists, every
+// first login lands on a running-daemon-with-no-registration state; without
+// this the daemon stays unregistered until a manual restart (the reactive
+// tryReRegister path can wedge on a never-populated session token). A single
+// re-register fires per login: on success we wake the stream so it re-opens
+// with the fresh token immediately. Ordering matters — a daemon parked on
+// NeedsLogin is woken by MarkOK() itself (not only by Reconnect()), so if
+// MarkOK ran first the Run loop could race into openStream and hit
+// CodeUnauthenticated with the still-stale token before this register
+// populated sessionTokenHolder, forcing a redundant reactive re-register.
+// Registering first means both park paths (the NeedsLogin Wait() and the
+// backoff select) re-open cleanly and the reactive path never sees
+// CodeUnauthenticated — the primary anti-storm guarantee; the shared
+// reRegisterMu + sessionTokenHolder keep login and the reactive path from
+// double-registering. Re-register is best-effort — a failure is logged and
+// MarkOK still runs so the reactive path remains the backstop, so login
+// never fails on it.
+//
+// MarkOK (called last) clears the "needs re-login" flag set by the opener
+// when WorkOS rejected the previous refresh token as invalid_grant. The Run
+// loops are blocked on AuthState.Wait() in that case; clearing the flag
+// wakes them so they reconnect with the freshly-loaded keychain credentials
+// and the now-populated session token. While the re-register runs (bounded
+// below), a NeedsLogin-parked loop simply stays parked — there is nothing to
+// dial without a token yet.
+func (a *streamAuthAdapter) NotifyLogin(ctx context.Context, _ []string) error {
 	if a.tokenProvider != nil {
 		a.tokenProvider.Reload()
+	}
+	if a.reRegister != nil {
+		regCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if _, err := a.reRegister(regCtx); err != nil {
+			a.logger.Warn().Err(err).Msg("login re-register failed; reactive path will retry")
+		} else if a.streamClient != nil {
+			a.streamClient.Reconnect()
+		}
 	}
 	if a.authState != nil {
 		a.authState.MarkOK()

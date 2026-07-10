@@ -458,8 +458,11 @@ func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// While submitting, ignore all input.
-	if m.submitting {
+	// While submitting or after a successful save, ignore all input. The App
+	// switches back to the cron list on cronFormDoneMsg, but a queued key can
+	// arrive before that message is handled. The completed huh form would
+	// otherwise submit the same job a second time.
+	if m.submitting || m.done {
 		return m, nil
 	}
 

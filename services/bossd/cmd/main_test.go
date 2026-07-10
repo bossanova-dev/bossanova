@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -210,5 +211,101 @@ func TestRunUsesSettingsPathProfileForDBAndSocket(t *testing.T) {
 	}
 	if _, err := daemonstate.Read(appDataDir); !os.IsNotExist(err) {
 		t.Fatalf("daemon metadata after shutdown error = %v, want not exist", err)
+	}
+}
+
+func TestRunLogsSecurityRejectionForUntrustedConfiguredPlugin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission hardening is a no-op on Windows")
+	}
+
+	baseDir, err := os.MkdirTemp("/tmp", "bossd-security-")
+	if err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanWD := filepath.Join(baseDir, "cwd")
+	if err := os.Mkdir(cleanWD, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cleanWD); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+
+	settingsPath := filepath.Join(baseDir, "settings.json")
+	appDataDir := filepath.Join(baseDir, "data")
+	socketPath := filepath.Join(baseDir, "bossd.sock")
+	stateDir := filepath.Join(baseDir, "state")
+	t.Setenv("HOME", baseDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(baseDir, ".config"))
+	t.Setenv("XDG_STATE_HOME", stateDir)
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	pluginDir := filepath.Join(baseDir, "plugins")
+	if err := os.Mkdir(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pluginPath := filepath.Join(pluginDir, "bossd-plugin-claude")
+	if err := os.WriteFile(pluginPath, []byte("#!/bin/sh\nexit 0\n"), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(pluginPath, 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	settings.SocketPath = socketPath
+	settings.Plugins = []config.PluginConfig{{Name: "claude", Path: pluginPath, Enabled: true}}
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo() returned error: %v", err)
+	}
+
+	stopSig := make(chan os.Signal, 1)
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- run(runOpts{
+			stopSig: stopSig,
+			onReady: func() { close(ready) },
+		})
+	}()
+
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("run exited before ready: %v", err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("daemon did not reach ready state within 15s")
+	}
+
+	stopSig <- syscall.SIGTERM
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("run did not return within 15s of SIGTERM")
+	}
+
+	logPath := filepath.Join(stateDir, "bossanova", "logs", "bossd.log")
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read bossd log: %v", err)
+	}
+	logText := string(body)
+	if !strings.Contains(logText, "SECURITY: refusing to load unverified plugin binary before exec") {
+		t.Fatalf("bossd log missing SECURITY rejection: %s", logText)
+	}
+	if !strings.Contains(logText, "group/world-writable") {
+		t.Fatalf("bossd log missing group/world-writable reason: %s", logText)
 	}
 }

@@ -163,6 +163,75 @@ func TestCronListRebuildTable_GatingAndGatedStatuses(t *testing.T) {
 	}
 }
 
+// TestCronListRebuildTable_DisabledStatusLabelsAreMuted guards the BOS-313 fix:
+// a disabled job's terminal STATUS label (gated/failed) must render in the muted
+// grey of the rest of the row, not its status color. rebuildTable pre-colors the
+// label and then mutes the whole row with muted.Render; lipgloss does not strip
+// the inner foreground, so a pre-colored label would keep its status color under
+// the outer muted span. cronStatusLabel therefore emits a plain label for
+// disabled jobs. Enabled jobs must keep their status color (no over-muting).
+//
+// Assertions track the theme constants: the status-colored sequence is built
+// from the same style the code uses, and the muted color is colorMuted's
+// truecolor code (theme.go: #626262 -> 38;2;98;98;98).
+func TestCronListRebuildTable_DisabledStatusLabelsAreMuted(t *testing.T) {
+	const mutedCode = "38;2;98;98;98" // colorMuted (#626262) truecolor foreground
+
+	cases := []struct {
+		name    string
+		status  pb.CronJobStatus
+		label   string
+		colored string // the status-colored render the enabled row must show
+	}{
+		{
+			name:    "gated",
+			status:  pb.CronJobStatus_CRON_JOB_STATUS_GATED,
+			label:   "gated",
+			colored: styleStatusWarning.Render("gated"), // orange #DBBD70
+		},
+		{
+			name:    "failed",
+			status:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+			label:   "failed",
+			colored: styleStatusDanger.Render("failed"), // red #FF6347
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run("disabled "+tc.name+" is muted", func(t *testing.T) {
+			m := newCronListForUpdate([]*pb.CronJob{
+				{Id: "x", Name: "Job", Schedule: "@daily", Enabled: false, LastRunStatus: tc.status},
+			})
+			m.width = 120
+			m.height = 40
+			view := m.View().Content
+
+			if strings.Contains(view, tc.colored) {
+				t.Errorf("disabled %s row kept its status color; View() must not contain %q:\n%s", tc.name, tc.colored, view)
+			}
+			if !strings.Contains(view, mutedCode) {
+				t.Errorf("disabled %s row is not muted; View() missing colorMuted code %q:\n%s", tc.name, mutedCode, view)
+			}
+			if !strings.Contains(view, tc.label) {
+				t.Errorf("disabled %s row missing the %q label text:\n%s", tc.name, tc.label, view)
+			}
+		})
+
+		t.Run("enabled "+tc.name+" keeps its color", func(t *testing.T) {
+			m := newCronListForUpdate([]*pb.CronJob{
+				{Id: "x", Name: "Job", Schedule: "@daily", Enabled: true, LastRunStatus: tc.status},
+			})
+			m.width = 120
+			m.height = 40
+			view := m.View().Content
+
+			if !strings.Contains(view, tc.colored) {
+				t.Errorf("enabled %s row lost its status color; View() must contain %q:\n%s", tc.name, tc.colored, view)
+			}
+		})
+	}
+}
+
 // TestReplaceJob covers the nil guard, the ID-match replacement, the no-match
 // passthrough, and that the input slice is not mutated in place.
 func TestReplaceJob(t *testing.T) {

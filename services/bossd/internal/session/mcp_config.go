@@ -10,31 +10,58 @@ import (
 	"strings"
 
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/models"
 )
+
+// StrictMcpConfigForSession reports whether the agent should load ONLY the
+// curated --mcp-config and ignore project .mcp.json / settings MCP servers
+// (Claude Code's --strict-mcp-config). Strictness and curation both derive from
+// the SAME cron signal (isCronSession) so the curated doc — which is the whole
+// surface under strict mode — always includes Linear for cron. Non-cron
+// (interactive) spawns return false, preserving the pre-existing merge behavior.
+func StrictMcpConfigForSession(sess *models.Session) bool { return isCronSession(sess) }
 
 // mcpServerSpec is one entry under "mcpServers" in the JSON config consumed by
 // the agent (e.g. Claude Code's --mcp-config). The "boss" key chosen by
 // WriteSessionMcpConfig drives the mcp__boss__* tool namespace the agent sees.
 type mcpServerSpec struct {
-	Command string   `json:"command"`
-	Args    []string `json:"args,omitempty"`
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Type    string            `json:"type,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 type mcpConfigDoc struct {
 	MCPServers map[string]mcpServerSpec `json:"mcpServers"`
 }
 
-// mcpConfigJSON renders the stdio MCP-server config that launches the trusted
-// `mcp` binary, which speaks Connect-RPC to bossd over the Unix socket. The
-// server is keyed "boss" so tools surface as mcp__boss__*.
-func mcpConfigJSON(mcpBin, socket string) ([]byte, error) {
+// mcpConfigJSON renders the MCP-server config the agent loads. The stdio "boss"
+// server launches the trusted `mcp` binary, which speaks Connect-RPC to bossd
+// over the Unix socket, keyed "boss" so tools surface as mcp__boss__*.
+//
+// When curated (cron/fleet spawns), the doc ALSO includes the "bossanova-linear"
+// HTTP server so a strict-mode agent (--strict-mcp-config) still reaches Linear;
+// its shape matches repo-root .mcp.json exactly, and the Authorization header
+// references ${LINEAR_API_KEY} by name — the literal is written verbatim and the
+// real key is NEVER read or inlined here. Non-curated (interactive) spawns emit
+// ONLY "boss", byte-identical to the pre-curation output.
+func mcpConfigJSON(mcpBin, socket string, curated bool) ([]byte, error) {
 	var args []string
 	if socket != "" {
 		args = []string{"--socket", socket}
 	}
-	doc := mcpConfigDoc{MCPServers: map[string]mcpServerSpec{
+	servers := map[string]mcpServerSpec{
 		"boss": {Command: mcpBin, Args: args},
-	}}
+	}
+	if curated {
+		servers["bossanova-linear"] = mcpServerSpec{
+			Type:    "http",
+			URL:     "https://mcp.linear.app/mcp",
+			Headers: map[string]string{"Authorization": "Bearer ${LINEAR_API_KEY}"},
+		}
+	}
+	doc := mcpConfigDoc{MCPServers: servers}
 	return json.MarshalIndent(doc, "", "  ")
 }
 
@@ -54,7 +81,7 @@ func WriteSessionMcpConfig(f SessionFacts) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create mcp-config dir: %w", err)
 	}
-	raw, err := mcpConfigJSON(f.McpBin, f.Socket)
+	raw, err := mcpConfigJSON(f.McpBin, f.Socket, f.IsCron)
 	if err != nil {
 		return "", fmt.Errorf("render mcp config: %w", err)
 	}

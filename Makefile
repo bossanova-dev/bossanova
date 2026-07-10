@@ -256,9 +256,12 @@ setup-worktree:
 	else \
 		echo "go not found on PATH — skipping TUI-proof prebuild (non-fatal)"; \
 	fi
-	@# Allow direnv only when this repo actually uses it; a missing .envrc would
-	@# otherwise make `direnv allow` exit non-zero and flag setup as failed.
-	@if command -v direnv >/dev/null 2>&1 && [ -f "$$WORKTREE_DIR/.envrc" ]; then \
+	@# Approve direnv for the worktree so a developer's interactive shell doesn't hit
+	@# a "blocked" prompt. Covers a bare .env too: direnv's global load_dotenv treats
+	@# .env as an rc file that must be allowed. Guarded on the file existing, and the
+	@# `|| echo` keeps it non-fatal if direnv finds no loadable rc (e.g. a dev without
+	@# load_dotenv), so setup never fails on this step.
+	@if command -v direnv >/dev/null 2>&1 && { [ -f "$$WORKTREE_DIR/.envrc" ] || [ -f "$$WORKTREE_DIR/.env" ]; }; then \
 		( cd "$$WORKTREE_DIR" && direnv allow ) || echo "direnv allow failed (non-fatal)"; \
 	fi
 

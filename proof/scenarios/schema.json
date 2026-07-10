@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bossanova.dev/schemas/proof-scenario.schema.json",
+  "title": "Bossanova Proof TUI Scenario",
+  "description": "Deterministic per-PR TUI proof scenario (BOS-218). Documented mirror of the hand-rolled validator in scripts/proof-scenario.mjs; the schema-agreement suite pins them together. Shape-only: step op vocabulary, daemon actions, and fixture preset/seed/env content are validated downstream (BOS-217/BOS-219), not here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "title", "scenes"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "fixture": { "$ref": "#/$defs/fixture" },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/scene" }
+    }
+  },
+  "$defs": {
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Shape-only passthrough (D7). preset defaults to \"demo\" in the loader; seed is opaque and env is a string->string map. BOS-217's loader owns content validation.",
+      "properties": {
+        "preset": { "type": "string", "minLength": 1 },
+        "seed": { "type": "object" },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "steps"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "title": { "type": "string", "minLength": 1 },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/step" }
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "description": "Exactly one op key per step (+ optional caption). oneOf enumerates the six op variants; the validator's STEP_OPS is the source of truth and the agreement suite pins this union to it.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key"],
+          "properties": {
+            "key": { "type": "string", "minLength": 1 },
+            "caption": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "type": "string", "minLength": 1 },
+            "caption": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["waitFor"],
+          "properties": {
+            "waitFor": { "$ref": "#/$defs/expectation" },
+            "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 60000 },
+            "caption": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["waitMs"],
+          "properties": {
+            "waitMs": { "type": "integer", "minimum": 1, "maximum": 10000 },
+            "caption": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["daemon"],
+          "properties": {
+            "daemon": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": ["action"],
+              "properties": {
+                "action": { "type": "string", "minLength": 1 }
+              }
+            },
+            "caption": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expect"],
+          "properties": {
+            "expect": {
+              "oneOf": [
+                { "$ref": "#/$defs/expectation" },
+                {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "$ref": "#/$defs/expectation" }
+                }
+              ]
+            },
+            "caption": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "expectation": {
+      "description": "Bare string (normalized shorthand), an object with text + match mode, or an anyOf object. The object form's match enum is the matcher's MATCH_MODES; the agreement suite pins oneOf[1].properties.match.enum to it.",
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["text"],
+          "properties": {
+            "text": { "type": "string", "minLength": 1 },
+            "match": { "enum": ["literal", "normalized", "normalized-ci", "regex"] },
+            "label": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["anyOf"],
+          "properties": {
+            "anyOf": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  { "type": "string", "minLength": 1 },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["text"],
+                    "properties": {
+                      "text": { "type": "string", "minLength": 1 },
+                      "match": { "enum": ["literal", "normalized", "normalized-ci", "regex"] }
+                    }
+                  }
+                ]
+              }
+            },
+            "label": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    }
+  }
+}

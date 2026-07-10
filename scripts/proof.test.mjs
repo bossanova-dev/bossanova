@@ -898,3 +898,280 @@ test('agent-driver registry: SurfaceRun validation happy + missing-key', () => {
   assert.equal(validateSurfaceRun(full, 'web').ok, true)
   assert.equal(validateSurfaceRun({ surface: 'web' }, 'web').ok, false)
 })
+
+// ── BOS-219: `scenario` dispatch (validate/run) via runScenarioCommand ────────
+// Drives the REAL CLI dispatch path (not runReplayLoop in isolation) with a fake
+// bridge, so no Go binary, agg, ffmpeg, or Anthropic SDK is ever touched.
+
+const SCENARIO_FIXTURE_DIR = path.join(repoRootForTest, 'scripts/testdata/scenario-fixtures')
+
+const DEMO_SCENARIO = {
+  version: 1,
+  title: 'Replay demo',
+  fixture: { preset: 'demo' },
+  scenes: [
+    {
+      id: 'scene-01',
+      title: 'Home',
+      steps: [{ key: 'down', caption: 'Move selection' }, { expect: ['REPO', 'STATUS'] }],
+    },
+  ],
+}
+
+/** Fake replay bridge exposing the real op set the replay loop drives. */
+function scenarioReplayBridge(screen) {
+  const ops = []
+  const bridge = {
+    ops,
+    quitCalled: false,
+    async observe() {
+      ops.push('observe')
+      return { screen }
+    },
+    async key(k) {
+      ops.push(['key', k])
+      return { screen }
+    },
+    async enter() {
+      ops.push('enter')
+      return { screen }
+    },
+    async esc() {
+      ops.push('esc')
+      return { screen }
+    },
+    async type(t) {
+      ops.push(['type', t])
+      return { screen }
+    },
+    async daemon(d) {
+      ops.push(['daemon', d])
+      return { screen }
+    },
+    async quit() {
+      bridge.quitCalled = true
+    },
+  }
+  return bridge
+}
+
+function scenarioRenderStill() {
+  return async ({ output }) => {
+    fs.writeFileSync(output, 'fake-png')
+  }
+}
+
+function withScenarioFile(obj, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scenario-cli-'))
+  const p = path.join(dir, 'demo.scenario.json')
+  fs.writeFileSync(p, JSON.stringify(obj))
+  return Promise.resolve()
+    .then(() => fn(p))
+    .finally(() => fs.rmSync(dir, { recursive: true, force: true }))
+}
+
+/** Save/restore the proof env keys a scenario run touches. */
+function withScenarioEnv(overrides, fn) {
+  const KEYS = [
+    'BOSS_PROOF_UPLOAD',
+    'BOSS_PROOF_RUN_ID',
+    'BOSS_PROOF_RUN_TOKEN',
+    'BOSS_PROOF_PUBLIC_BASE_URL',
+    'PROOF_ANTHROPIC_API_KEY',
+    'BOSS_PROOF_TUI_BRIDGE_BIN',
+    'BOSS_PROOF_BOSS_BIN',
+  ]
+  const saved = {}
+  for (const k of KEYS) saved[k] = process.env[k]
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      for (const k of KEYS) {
+        if (saved[k] === undefined) delete process.env[k]
+        else process.env[k] = saved[k]
+      }
+    })
+}
+
+test('runScenarioCommand validate: a valid scenario prints OK and never sets exit 1', async () => {
+  const { runScenarioCommand } = await import('./proof.mjs')
+  const logs = []
+  let exit = null
+  await runScenarioCommand(
+    { sub: 'validate', file: path.join(SCENARIO_FIXTURE_DIR, 'valid-minimal.json') },
+    { log: (m) => logs.push(m), errorLog: () => {}, setExitCode: (n) => (exit = n) },
+  )
+  assert.match(logs.join('\n'), /scenario valid/)
+  assert.equal(exit, null)
+})
+
+test('runScenarioCommand validate: an invalid scenario prints pointerful errors and sets exit 1', async () => {
+  const { runScenarioCommand } = await import('./proof.mjs')
+  const errors = []
+  let exit = null
+  await runScenarioCommand(
+    { sub: 'validate', file: path.join(SCENARIO_FIXTURE_DIR, 'invalid-no-title.json') },
+    { log: () => {}, errorLog: (m) => errors.push(m), setExitCode: (n) => (exit = n) },
+  )
+  assert.equal(exit, 1)
+  assert.match(errors.join('\n'), /title/)
+})
+
+test('runScenarioCommand run --dry-run: replays via the three seams with zero SDK calls', async () => {
+  const { runScenarioCommand } = await import('./proof.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  let genCalls = 0
+  try {
+    await withScenarioEnv(
+      {
+        BOSS_PROOF_UPLOAD: '0',
+        BOSS_PROOF_RUN_ID: 'scenario-dispatch',
+        BOSS_PROOF_RUN_TOKEN: 'tok-scenario',
+        BOSS_PROOF_PUBLIC_BASE_URL: 'https://proof.test.dev',
+        PROOF_ANTHROPIC_API_KEY: undefined,
+      },
+      async () => {
+        await withScenarioFile(DEMO_SCENARIO, async (file) => {
+          const bridge = scenarioReplayBridge('REPO list\nSTATUS: ok')
+          const result = await runScenarioCommand(
+            { sub: 'run', file, dryRun: true, pr: null },
+            {
+              prNumber: 'scenariorun',
+              commit: 'abc1234',
+              bridge,
+              proofDeps: {
+                renderStill: scenarioRenderStill(),
+                castToVideo: async () => null,
+                generateBriefFromDiff: async () => {
+                  genCalls += 1
+                  return { title: 'never', description: 'used' }
+                },
+              },
+              log: () => {},
+            },
+          )
+          assert.ok(result?.manifest, 'run returns a manifest')
+          // Brief seam (D4): resolveBrief → generateBriefFromDiff is never reached.
+          assert.equal(genCalls, 0, 'no brief generation → no Anthropic SDK path')
+          // Hermeticity tripwire: judge short-circuits on the deleted key.
+          assert.deepEqual(result.manifest.judge, { unjudged: true, reason: 'missing-key' })
+          const cap = result.manifest.captures[0]
+          assert.equal(cap.surface, 'tui')
+          assert.equal(cap.status, 'passed')
+          assert.equal(cap.scenes[0].passed, true, 'evaluator gate result flows to finalize')
+          assert.deepEqual(cap.scenes[0].missing, [])
+          assert.ok(bridge.quitCalled, 'bridge.quit() is always sent')
+        })
+      },
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    fs.rmSync(path.join(repoRootForTest, '.proof', 'pr-scenariorun'), {
+      recursive: true,
+      force: true,
+    })
+  }
+})
+
+// ── BOS-219 Task 4: full-run integration + end-to-end no-API-key guarantee ─────
+// Drives the WHOLE `scenario run --dry-run` CLI/dispatch path (not runReplayLoop
+// in isolation) with a fake bridge, asserting the captureShape handed to finalize
+// carries the keys finalizeAgentProof accepts today, that PROOF_ANTHROPIC_API_KEY
+// is deleted for the whole test with zero Anthropic SDK calls, and that local
+// artifacts are produced.
+
+const TWO_SCENE_SCENARIO = {
+  version: 1,
+  title: 'Two scene replay',
+  fixture: { preset: 'demo' },
+  scenes: [
+    {
+      id: 'repos',
+      title: 'Repos',
+      steps: [{ key: 'r', caption: 'Open repos' }, { expect: ['REPO'] }],
+    },
+    {
+      id: 'status',
+      title: 'Status',
+      steps: [{ key: 's', caption: 'Open status' }, { expect: ['STATUS'] }],
+    },
+  ],
+}
+
+test('scenario run --dry-run: full pipeline feeds finalize the right captureShape with no API key', async () => {
+  const { runScenarioCommand } = await import('./proof.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  let genCalls = 0
+  try {
+    await withScenarioEnv(
+      {
+        BOSS_PROOF_UPLOAD: '0',
+        BOSS_PROOF_RUN_ID: 'scenario-integ',
+        BOSS_PROOF_RUN_TOKEN: 'tok-scenario-integ',
+        BOSS_PROOF_PUBLIC_BASE_URL: 'https://proof.test.dev',
+        // Deleted for the WHOLE test: any SDK use (brief gen or judge) would trip.
+        PROOF_ANTHROPIC_API_KEY: undefined,
+      },
+      async () => {
+        await withScenarioFile(TWO_SCENE_SCENARIO, async (file) => {
+          const bridge = scenarioReplayBridge('REPO list — STATUS: ok')
+          const result = await runScenarioCommand(
+            { sub: 'run', file, dryRun: true, pr: null },
+            {
+              prNumber: 'scenariointeg',
+              commit: 'abc1234',
+              bridge,
+              proofDeps: {
+                renderStill: scenarioRenderStill(),
+                castToVideo: async () => null,
+                // Spy proving the brief seam keeps the SDK path unreachable.
+                generateBriefFromDiff: async () => {
+                  genCalls += 1
+                  return { title: 'never', description: 'used' }
+                },
+              },
+              log: () => {},
+            },
+          )
+
+          // (b) zero SDK calls: brief gen never reached + judge short-circuited.
+          assert.equal(genCalls, 0, 'brief seam keeps the Anthropic SDK path unreachable')
+          assert.deepEqual(result.manifest.judge, { unjudged: true, reason: 'missing-key' })
+          assert.equal(process.env.PROOF_ANTHROPIC_API_KEY, undefined, 'key stays unset all test')
+
+          // (a) captureShape keys finalizeAgentProof accepts today.
+          assert.equal(result.manifest.verdict, 'passed')
+          const cap = result.manifest.captures[0]
+          assert.equal(cap.surface, 'tui')
+          assert.equal(cap.status, 'passed')
+          assert.ok('mediaType' in cap, 'capture carries a mediaType')
+          assert.equal(cap.scenes.length, 2, 'both scenes flow through to finalize')
+          for (const scene of cap.scenes) {
+            assert.deepEqual(
+              Object.keys(scene).sort(),
+              ['id', 'missing', 'outputMs', 'passed', 'title'],
+              'each scene carries id/title/passed/missing/outputMs',
+            )
+            assert.equal(scene.passed, true)
+          }
+          // (c) local artifacts produced: fallback stills referencing the tui-agent dir.
+          assert.ok(Array.isArray(cap.stills) && cap.stills.length >= 1, 'stills produced')
+          assert.match(cap.stills[0].fileName, /tui-agent\//)
+          assert.ok(bridge.quitCalled)
+        })
+      },
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    fs.rmSync(path.join(repoRootForTest, '.proof', 'pr-scenariointeg'), {
+      recursive: true,
+      force: true,
+    })
+  }
+})

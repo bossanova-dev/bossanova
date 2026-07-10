@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "title": "Timeout out of bounds",
+  "scenes": [
+    {
+      "title": "Scene",
+      "steps": [{ "waitFor": "Ready", "timeoutMs": 999999 }]
+    }
+  ]
+}

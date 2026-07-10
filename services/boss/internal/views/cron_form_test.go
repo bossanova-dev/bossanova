@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
@@ -608,5 +609,51 @@ func TestCronForm_ConfirmFalse_Cancels(t *testing.T) {
 	}
 	if c.createdCronReq != nil || c.updatedCronReq != nil {
 		t.Error("expected no save RPC when user cancels via confirm button")
+	}
+}
+
+func TestCronForm_DoneIgnoresQueuedInput(t *testing.T) {
+	c := &stubClient{}
+	m := CronFormModel{
+		client:      c,
+		ctx:         context.Background(),
+		repos:       []*pb.Repo{{Id: "r1", DisplayName: "repo-1"}},
+		reposReady:  true,
+		agentsReady: true,
+		fd: &cronFormData{
+			name:     "Daily job",
+			repoID:   "r1",
+			prompt:   "Run daily.",
+			schedule: "@daily",
+			enabled:  true,
+			confirm:  true,
+		},
+	}
+	m.buildForm()
+	m.form.Init()
+	m.form.State = huh.StateCompleted
+
+	updated, saveCmd := m.Update(struct{}{})
+	m = updated.(CronFormModel)
+	if saveCmd == nil {
+		t.Fatal("completed form returned nil save command")
+	}
+
+	updated, doneCmd := m.Update(saveCmd())
+	m = updated.(CronFormModel)
+	if !m.Done() {
+		t.Fatal("form Done() = false after successful save")
+	}
+	if doneCmd == nil {
+		t.Fatal("successful save returned nil completion command")
+	}
+
+	updated, duplicateCmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(CronFormModel)
+	if duplicateCmd != nil {
+		t.Fatal("queued input after successful save returned a second save command")
+	}
+	if got, want := c.createCronCalls, 1; got != want {
+		t.Fatalf("CreateCronJob calls = %d, want %d", got, want)
 	}
 }

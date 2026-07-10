@@ -591,6 +591,122 @@ test('parseProofArgs rejects unknown arguments', () => {
   assert.throws(() => parseProofArgs(['run', '--unknown']), /unknown proof argument: --unknown/)
 })
 
+// ── BOS-219: scenario subcommand (subcommand token + positional file) ─────────
+
+test('parseProofArgs parses `scenario validate <file>`', () => {
+  assert.deepEqual(parseProofArgs(['scenario', 'validate', 'proof/scenarios/x.scenario.json']), {
+    command: 'scenario',
+    sub: 'validate',
+    file: 'proof/scenarios/x.scenario.json',
+    pr: null,
+    recipes: [],
+    changedFiles: [],
+    dryRun: false,
+    json: false,
+  })
+})
+
+test('parseProofArgs parses `scenario run <file> --dry-run --pr 7`', () => {
+  assert.deepEqual(
+    parseProofArgs([
+      'scenario',
+      'run',
+      'proof/scenarios/x.scenario.json',
+      '--dry-run',
+      '--pr',
+      '7',
+    ]),
+    {
+      command: 'scenario',
+      sub: 'run',
+      file: 'proof/scenarios/x.scenario.json',
+      pr: '7',
+      recipes: [],
+      changedFiles: [],
+      dryRun: true,
+      json: false,
+    },
+  )
+})
+
+test('parseProofArgs: scenario accepts the file before or after flags', () => {
+  const before = parseProofArgs(['scenario', 'run', 'f.json', '--pr', '9'])
+  const after = parseProofArgs(['scenario', 'run', '--pr', '9', 'f.json'])
+  assert.equal(before.file, 'f.json')
+  assert.equal(after.file, 'f.json')
+  assert.equal(before.pr, '9')
+  assert.equal(after.pr, '9')
+})
+
+test('parseProofArgs: scenario missing subcommand throws with usage', () => {
+  assert.throws(() => parseProofArgs(['scenario']), /scenario validate <file>/)
+})
+
+test('parseProofArgs: scenario unknown subcommand throws with usage', () => {
+  assert.throws(
+    () => parseProofArgs(['scenario', 'frobnicate', 'f.json']),
+    /unknown scenario subcommand/,
+  )
+})
+
+test('parseProofArgs: scenario missing file throws with usage', () => {
+  assert.throws(() => parseProofArgs(['scenario', 'validate']), /requires a file/)
+  assert.throws(() => parseProofArgs(['scenario', 'run', '--dry-run']), /requires a file/)
+})
+
+test('parseProofArgs: scenario --pr without a value throws', () => {
+  assert.throws(
+    () => parseProofArgs(['scenario', 'run', 'f.json', '--pr']),
+    /--pr requires a value/,
+  )
+})
+
+test('parseProofArgs: scenario rejects unknown flags and extra positionals', () => {
+  assert.throws(
+    () => parseProofArgs(['scenario', 'run', 'f.json', '--nope']),
+    /unknown proof argument: --nope/,
+  )
+  assert.throws(
+    () => parseProofArgs(['scenario', 'run', 'a.json', 'b.json']),
+    /unexpected extra argument: b\.json/,
+  )
+})
+
+test('parseProofArgs: every non-scenario command parses byte-identically (regression table)', () => {
+  const cases = [
+    [[], { command: 'help', recipes: [], changedFiles: [], dryRun: false, json: false }],
+    [['help'], { command: 'help', recipes: [], changedFiles: [], dryRun: false, json: false }],
+    [['doctor'], { command: 'doctor', recipes: [], changedFiles: [], dryRun: false, json: false }],
+    [
+      ['doctor', '--json'],
+      { command: 'doctor', recipes: [], changedFiles: [], dryRun: false, json: true },
+    ],
+    [['plan'], { command: 'plan', recipes: [], changedFiles: [], dryRun: false, json: false }],
+    [['run'], { command: 'run', recipes: [], changedFiles: [], dryRun: false, json: false }],
+    [
+      ['run', '--recipe', 'tui-home', '--dry-run'],
+      { command: 'run', recipes: ['tui-home'], changedFiles: [], dryRun: true, json: false },
+    ],
+    [
+      ['run', '--changed-file', 'services/web/src/App.tsx'],
+      {
+        command: 'run',
+        recipes: [],
+        changedFiles: ['services/web/src/App.tsx'],
+        dryRun: false,
+        json: false,
+      },
+    ],
+    [
+      ['--dry-run', '--json'],
+      { command: 'run', recipes: [], changedFiles: [], dryRun: true, json: true },
+    ],
+  ]
+  for (const [argv, expected] of cases) {
+    assert.deepEqual(parseProofArgs(argv), expected, `argv=${JSON.stringify(argv)}`)
+  }
+})
+
 test('terminalRenderCommand runs through services/web playwright dependency', () => {
   assert.deepEqual(
     terminalRenderCommand({

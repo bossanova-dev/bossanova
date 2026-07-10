@@ -260,6 +260,50 @@ test('survey loss check: every detector finding surfaces as a candidate (no drop
 })
 
 // ---------------------------------------------------------------------------
+// Tier→model wiring (BOS-323) — the cheap survey leg runs on Sonnet, guarded on
+// $BOSS_AGENT, in BOTH mirrors; the Opus fix/check-watch legs are unchanged.
+// ---------------------------------------------------------------------------
+
+// Split subagent-dispatch.md into its `## ` phase sections and return the one whose
+// heading text starts with `prefix` (e.g. "Phase 3", "Phase 6", "Phase 8").
+function dispatchSection(body, prefix) {
+  return body.split(/\n## /).find((section) => section.startsWith(prefix))
+}
+
+test('the cheap survey dispatch carries a provider-guarded sonnet model directive (both mirrors)', () => {
+  for (const dir of skillDirs) {
+    const dispatch = read(path.join(dir, 'references/subagent-dispatch.md'))
+    const survey = dispatchSection(dispatch, 'Phase 3')
+    assert.ok(survey, `${dir} must have a Phase 3 survey section`)
+    // A real provider-guarded model directive: model:, the sonnet alias, and a
+    // $BOSS_AGENT guard naming both the lowercase `claude` and `codex-omit` cases.
+    assert.match(survey, /model:/, `${dir} Phase 3 must carry a model: directive`)
+    assert.match(survey, /sonnet/, `${dir} Phase 3 survey must dispatch on the sonnet alias`)
+    assert.match(
+      survey,
+      /\$BOSS_AGENT/,
+      `${dir} Phase 3 model directive must be $BOSS_AGENT-guarded`,
+    )
+    assert.match(survey, /\bclaude\b/, `${dir} Phase 3 guard must reference lowercase claude`)
+    assert.match(survey, /\bcodex\b/, `${dir} Phase 3 guard must cover the codex-omit case`)
+
+    // The Opus legs (Phase 6 fix, Phase 8 check-watch) must NOT gain a sonnet directive.
+    const fix = dispatchSection(dispatch, 'Phase 6')
+    const checkWatch = dispatchSection(dispatch, 'Phase 8')
+    assert.ok(fix, `${dir} must have a Phase 6 fix section`)
+    assert.ok(checkWatch, `${dir} must have a Phase 8 check-watch section`)
+    assert.ok(
+      !fix.includes('sonnet'),
+      `${dir} Phase 6 fix (Opus) must not carry a sonnet directive`,
+    )
+    assert.ok(
+      !checkWatch.includes('sonnet'),
+      `${dir} Phase 8 check-watch (Opus) must not carry a sonnet directive`,
+    )
+  }
+})
+
+// ---------------------------------------------------------------------------
 // Ratchet — the always-resident body stays under the post-split ceiling.
 // ---------------------------------------------------------------------------
 

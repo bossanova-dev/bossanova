@@ -9,6 +9,11 @@ import (
 // byte sequences bubbletea v2's input parser (ultraviolet) decodes with
 // TERM=xterm-256color in normal (non-application) mode. The sequences are
 // grounded line-by-line in ultraviolet's key_table.go; do not invent bytes.
+//
+// namedKeys is the single source of truth for testdata/key-vocab.json: the
+// golden test (TestKeyVocabGolden) derives that file's `named` list from these
+// keys, and the proof send_keys doc-drift guard reads it back to assert the
+// tool description enumerates the full vocabulary.
 var namedKeys = map[string]string{
 	// enter / esc (pre-existing precedent, kept byte-for-byte).
 	"enter":  "\r",

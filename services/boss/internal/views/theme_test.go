@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"charm.land/bubbles/v2/table"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/bossalib/buildinfo"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -211,10 +212,27 @@ func TestRenderBannerBranches(t *testing.T) {
 
 	t.Run("account label beside worktree", func(t *testing.T) {
 		bound := "acct-work"
-		boundSess := &pb.Session{Title: "Work", AccountId: &bound}
+		// renderBanner collapses any occurrence of $HOME in the worktree path to
+		// "~". Pin $HOME to a sentinel that cannot appear in the hard-coded path
+		// below so the collapse leaves it verbatim regardless of the ambient
+		// $HOME (e.g. CI running with HOME=/tmp), letting us assert on the exact
+		// glue between the path and the "· label" separator.
+		t.Setenv("HOME", "/nonexistent-home-for-bos-321-test")
+		wt := filepath.Join("/tmp", "bos-321", "worktree")
+		boundSess := &pb.Session{Title: "Work", AccountId: &bound, WorktreePath: wt}
 		banner := renderBanner(ViewChatPicker, bannerOpts{session: boundSess})
 		if !strings.Contains(banner, "acct-work") {
 			t.Fatalf("bound banner missing account label acct-work: %q", banner)
+		}
+		// BOS-321: the worktree path must join the "· <label>" separator with exactly
+		// one space, not two. The path and the "· "+label are wrapped in separate
+		// styleSubtle.Render envelopes, so strip ANSI and assert on the plain glue.
+		plain := ansi.Strip(banner)
+		if !strings.Contains(plain, wt+" · acct-work") {
+			t.Fatalf("worktree line is not single-spaced before ·: %q", plain)
+		}
+		if strings.Contains(plain, wt+"  · ") {
+			t.Fatalf("worktree line reintroduced the double space before ·: %q", plain)
 		}
 
 		unboundSess := &pb.Session{Title: "Work"}

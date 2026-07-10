@@ -124,9 +124,18 @@ export const TOOL_DEFS = [
   {
     name: 'send_keys',
     description:
-      'Send one or more keystrokes to the TUI. Accepts single characters, "ctrl+<a-z>", "enter"/"esc", ' +
-      'the arrows "up"/"down"/"left"/"right", "tab"/"shift+tab", "pgup"/"pgdn", "home"/"end", ' +
-      '"backspace"/"delete", and "f1"–"f12" (e.g. ["s"], ["down","enter"], ["shift+tab"], ["pgdn"]). ' +
+      'Send one or more keystrokes to the TUI. Accepted key names (grouped; all names are case-insensitive):\n' +
+      '  • any single printable character (e.g. "s", "S", "/", "?");\n' +
+      '  • "ctrl+<a-z>" control chords (e.g. "ctrl+c", "ctrl+u");\n' +
+      '  • confirm/cancel: "enter" (alias "return"), "esc" (alias "escape");\n' +
+      '  • arrows: "up" (alias "uparrow"), "down" (alias "downarrow"), "left" (alias "leftarrow"), ' +
+      '"right" (alias "rightarrow");\n' +
+      '  • fields: "tab", "shift+tab" (aliases "shifttab", "backtab");\n' +
+      '  • paging: "pgup" (alias "pageup"), "pgdn" (alias "pagedown");\n' +
+      '  • jumps: "home", "end";\n' +
+      '  • text edit: "backspace" (alias "bs"), "delete" (alias "del");\n' +
+      '  • function keys: "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12".\n' +
+      'Examples: ["s"], ["down","enter"], ["shift+tab"], ["pgdn"], ["ctrl+c"]. ' +
       'Send "esc" as its own call — a leading "esc" chained before another key in the same array ' +
       'is read as alt+<key>, not a cancel. Returns the resulting settled screen.',
     input_schema: {
@@ -691,6 +700,16 @@ export async function runTuiAgentProof({
   deps,
   planRequiredProof,
   runContext,
+  // BOS-219 seams (warn-only epic — all default to today's behavior, so a call
+  // with none of these is BYTE-IDENTICAL to before):
+  //   - brief: a pre-resolved brief that SKIPS resolveBrief entirely (D4), which
+  //     is what makes deterministic replay structurally free of any Anthropic
+  //     SDK call (no PROOF_ANTHROPIC_API_KEY needed).
+  //   - loopRunner: replaces runAgentLoop (e.g. runReplayLoop) — same args + return.
+  //   - evaluateEvidence: replaces evaluateSceneEvidence (e.g. makeScenarioEvaluator).
+  brief: injectedBrief,
+  loopRunner,
+  evaluateEvidence,
 }) {
   const startedAt = Date.now()
   const d = { ...defaultDeps(), ...(deps ?? {}) }
@@ -712,12 +731,17 @@ export async function runTuiAgentProof({
   fs.mkdirSync(rawDir, { recursive: true })
 
   // ── Step 1: Resolve brief ─────────────────────────────────────────────────
-  const brief = await resolveBrief({
-    model,
-    changedFiles,
-    generateBriefFromDiff: d.generateBriefFromDiff,
-    planRequiredProof,
-  })
+  // BOS-219 (D4): a pre-resolved `brief` skips resolveBrief entirely — the
+  // deterministic replay path passes a synthesized brief so no Anthropic SDK
+  // call is ever made. Without it, behavior is byte-identical to today.
+  const brief =
+    injectedBrief ??
+    (await resolveBrief({
+      model,
+      changedFiles,
+      generateBriefFromDiff: d.generateBriefFromDiff,
+      planRequiredProof,
+    }))
   // Apply TUI default budgets, letting any brief-specified budget win.
   const rawBudgets = brief.rawBudgets ?? {}
   delete brief.rawBudgets
@@ -754,7 +778,14 @@ export async function runTuiAgentProof({
   const scenes = normalizeScenes(brief)
 
   try {
-    const loop = await runAgentLoop({ brief, scenes, model, modelDep: d.model, bridge, rawDir })
+    const loop = await (loopRunner ?? runAgentLoop)({
+      brief,
+      scenes,
+      model,
+      modelDep: d.model,
+      bridge,
+      rawDir,
+    })
     agentResult = loop.agentResult
     finalScreen = loop.finalScreen
     captionTimings = loop.captionTimings ?? []
@@ -933,7 +964,11 @@ export async function runTuiAgentProof({
   // Null-safe both ways — a marker-less run only has sceneTimings[0], and a
   // stills-only proof (no agg/video) has no timeline at all, so later scenes
   // and/or all scenes degrade to outputMs: null (chapters render unlinked).
-  const perScene = evaluateSceneEvidence({ scenes, screens, sceneForScreen }).map((scene, i) => ({
+  const perScene = (evaluateEvidence ?? evaluateSceneEvidence)({
+    scenes,
+    screens,
+    sceneForScreen,
+  }).map((scene, i) => ({
     ...scene,
     outputMs: mapSourceToOutputMs(castResult?.timeline ?? null, sceneTimings[i]?.startMs),
   }))
@@ -1593,6 +1628,18 @@ export function makeStdioBridge({ localDir, rawDir, fixture, seedPath, seedEnv }
     // NDJSON op names match the BOS-69 bridge: 'key' (keys[]) and 'type' (text).
     sendKeys: (keys, opts = {}) => request('key', { keys, ...settleExtra(opts) }),
     typeText: (text, opts = {}) => request('type', { text, ...settleExtra(opts) }),
+    // BOS-217/BOS-219 ops the deterministic replay loop drives. These are ADDITIVE
+    // — the agent loop keeps using observe/sendKeys/typeText above, byte-identical.
+    // `enter`/`esc` take no params (the Go bridge sends "\r"/ESC); `key` sends a
+    // single named key as the one-element keys[] the bridge expects; `daemon`
+    // forwards the scenario's {action,sessionId,...} verbatim; `capabilities` is
+    // op-discovery (an OLD bridge answers `unknown op "capabilities"`).
+    enter: (opts = {}) => request('enter', settleExtra(opts)),
+    esc: (opts = {}) => request('esc', settleExtra(opts)),
+    key: (k, opts = {}) => request('key', { keys: [k], ...settleExtra(opts) }),
+    type: (text, opts = {}) => request('type', { text, ...settleExtra(opts) }),
+    daemon: (params = {}, opts = {}) => request('daemon', { ...params, ...settleExtra(opts) }),
+    capabilities: () => request('capabilities'),
     quit: async () => {
       try {
         await request('quit')

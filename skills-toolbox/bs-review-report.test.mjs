@@ -254,7 +254,7 @@ test('must-fix items badge each disposition', () => {
 
 test('suggestions render a fence-guarded follow-up prompt', () => {
   const md = renderReport(cleanFixture())
-  assert.match(md, /Using the linear-bossanova MCP/)
+  assert.match(md, /Using the bossanova-linear MCP/)
   assert.match(md, /- Cover the isTTY CLI branch \(`scripts\/bs-review-detect\.mjs:44`\)/)
 })
 

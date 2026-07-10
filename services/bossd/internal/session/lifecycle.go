@@ -248,6 +248,15 @@ type Lifecycle struct {
 	// off the hot classify path (classifyUsageLimit still uses time.Now).
 	clock func() time.Time
 
+	// bearerRetry* bounds how long currentBearerForAccount retries a transient
+	// Materialize failure (typically the claude plugin subprocess restarting)
+	// before surfacing ErrBearerUnavailable. Zero/unset ⇒ production defaults;
+	// tests set them via SetBearerRetryForTest to keep retry/exhaustion instant.
+	bearerRetryConfigured bool
+	bearerRetryAttempts   int
+	bearerRetryBackoff    time.Duration
+	bearerRetryBudget     time.Duration
+
 	// Account-switch seams (BOS-171 manual switch). All are nil-safe:
 	// accountSwitchBinding defaults lazily from `sessions`; a nil registry
 	// makes SwitchAccount error (it can't validate the target); a nil working

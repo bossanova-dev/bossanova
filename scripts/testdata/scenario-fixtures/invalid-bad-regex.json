@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "title": "Uncompilable regex",
+  "scenes": [
+    {
+      "title": "Scene",
+      "steps": [{ "expect": { "text": "[", "match": "regex" } }]
+    }
+  ]
+}

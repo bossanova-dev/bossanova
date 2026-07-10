@@ -450,6 +450,46 @@ func TestCreateSessionQuickChatAllowsEmptyDefaultBaseBranch(t *testing.T) {
 	}
 }
 
+// TestCreateSessionEmptyWorktreeBaseDirReturnsInvalidArgument pins the BOS-286
+// guard: a worktree session against a repo with no worktree base directory
+// fails fast with InvalidArgument (naming the repo id) instead of failing
+// obscurely deep in worktree setup, while a QuickChat — which runs directly in
+// the repo base and never uses the worktree base — still succeeds.
+func TestCreateSessionEmptyWorktreeBaseDirReturnsInvalidArgument(t *testing.T) {
+	t.Parallel()
+
+	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, &setupStreamAgent{})
+	empty := ""
+	repo, err := h.repos.Update(context.Background(), h.repo.ID, db.UpdateRepoParams{
+		WorktreeBaseDir: &empty,
+	})
+	if err != nil {
+		t.Fatalf("update repo: %v", err)
+	}
+	h.repo = repo
+
+	if _, err := h.createSession(t, "needs worktree base"); err == nil {
+		t.Fatal("CreateSession error = nil, want InvalidArgument for empty worktree base dir")
+	} else {
+		if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+			t.Fatalf("CreateSession code = %v, want InvalidArgument", got)
+		}
+		if !strings.Contains(err.Error(), h.repo.ID) {
+			t.Fatalf("CreateSession error = %q, want it to name repo id %q", err.Error(), h.repo.ID)
+		}
+	}
+
+	// The guard is gated on !QuickChat: a QuickChat create still succeeds with
+	// the empty worktree base.
+	events, err := h.createQuickChat(t, "quick chat")
+	if err != nil {
+		t.Fatalf("CreateSession quick chat error = %v, want success despite empty worktree base", err)
+	}
+	if len(events) != 1 || events[0].GetSessionCreated() == nil {
+		t.Fatalf("quick chat events = %v, want a single SessionCreated", events)
+	}
+}
+
 // TestNewHookToken verifies the server's finalize-hook token minter (used for
 // tmux_unattended sessions): a 64-char hex string, unique per call.
 func TestNewHookToken(t *testing.T) {

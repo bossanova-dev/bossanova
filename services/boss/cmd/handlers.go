@@ -1055,6 +1055,33 @@ func newDetachRequest(repoID, prompt, title, agentName, model string, account *s
 	return req
 }
 
+// deriveSessionTitle builds a session title from the prompt for the
+// non-interactive `boss new` path, mirroring the interactive TUI which always
+// supplies a client-side title (newsession.go). It takes the first non-empty
+// line, collapses internal whitespace runs, and caps the length on a rune
+// boundary. A whitespace-only prompt falls back to a stable default so the
+// server's "title is required" invariant is always satisfied.
+func deriveSessionTitle(prompt string) string {
+	const maxTitleRunes = 72
+	const fallback = "New session"
+	var line string
+	for _, l := range strings.Split(prompt, "\n") {
+		if strings.TrimSpace(l) != "" {
+			line = l
+			break
+		}
+	}
+	line = strings.Join(strings.Fields(line), " ")
+	if line == "" {
+		return fallback
+	}
+	runes := []rune(line)
+	if len(runes) > maxTitleRunes {
+		return strings.TrimSpace(string(runes[:maxTitleRunes])) + "…"
+	}
+	return line
+}
+
 func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName, model string, account *string, _ bool) error {
 	c, err := newClient(cmd)
 	if err != nil {
@@ -1071,6 +1098,12 @@ func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName, model s
 	repoID, err := resolveRepoArg(repoArg, repos)
 	if err != nil {
 		return err
+	}
+
+	// The server requires a non-empty title. Mirror the interactive TUI and
+	// derive one client-side from the prompt when --title is absent.
+	if strings.TrimSpace(title) == "" {
+		title = deriveSessionTitle(prompt)
 	}
 
 	req := newDetachRequest(repoID, prompt, title, agentName, model, account)
@@ -1104,26 +1137,71 @@ func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName, model s
 	return nil
 }
 
-// resolveRepoArg resolves a --repo argument (id, display name, or local path)
-// to a repo_id. Returns an error with registration guidance when no match.
+// resolveRepoArg resolves a --repo argument (id, unique id prefix, display
+// name, or local path) to a repo_id. Precedence favors EXACT matches over the
+// non-exact id prefix so a value that unambiguously identifies a repo is never
+// shadowed by a coincidental prefix collision: exact full id wins first (a full
+// id is never treated as a prefix of itself), then an exact display name, then
+// an exact local path, and only then a unique id prefix (making the id printed
+// by `boss repo ls` directly usable). Ordering the prefix last matters because
+// ids are hex: a pure-hex display name like "cafe" could otherwise be a prefix
+// of an unrelated repo's id and silently resolve to the wrong repo — exactly the
+// silent-mispick this ticket removes. A duplicated display name or an ambiguous
+// id prefix returns an error listing the candidates instead of picking one.
 func resolveRepoArg(arg string, repos []*pb.Repo) (string, error) {
-	// Match by id first (exact), then display name, then local path.
+	// Exact id wins first — a full id must never be treated as an ambiguous prefix.
 	for _, r := range repos {
 		if r.Id == arg {
 			return r.Id, nil
 		}
 	}
+	// Exact display name — error on duplicates (the "silently picks a broken
+	// duplicate" bug). Checked before the id prefix so an exactly-named repo is
+	// never shadowed by another repo whose id merely starts with the same chars.
+	var nameMatches []*pb.Repo
 	for _, r := range repos {
 		if r.DisplayName == arg {
-			return r.Id, nil
+			nameMatches = append(nameMatches, r)
 		}
 	}
+	if len(nameMatches) == 1 {
+		return nameMatches[0].Id, nil
+	}
+	if len(nameMatches) > 1 {
+		return "", fmt.Errorf("repo name %q is ambiguous; matches: %s; pass the full id", arg, repoCandidates(nameMatches))
+	}
+	// Exact local path (also before the id prefix, for the same reason — though a
+	// path starts with '/' and can never collide with a hex id prefix).
 	for _, r := range repos {
 		if r.LocalPath == arg {
 			return r.Id, nil
 		}
 	}
+	// Unique id prefix (this is what makes the printed short id usable).
+	var idMatches []*pb.Repo
+	for _, r := range repos {
+		if strings.HasPrefix(r.Id, arg) {
+			idMatches = append(idMatches, r)
+		}
+	}
+	if len(idMatches) == 1 {
+		return idMatches[0].Id, nil
+	}
+	if len(idMatches) > 1 {
+		return "", fmt.Errorf("repo %q is an ambiguous id prefix; matches: %s; pass the full id", arg, repoCandidates(idMatches))
+	}
 	return "", fmt.Errorf("repo %q not found; register it first with 'boss repo add'", arg)
+}
+
+// repoCandidates renders a repo disambiguation list, one candidate per entry as
+// "<full-id> (<name>, <path>)". IDs are never truncated — surfacing a usable
+// identifier is the whole point.
+func repoCandidates(repos []*pb.Repo) string {
+	parts := make([]string, len(repos))
+	for i, r := range repos {
+		parts[i] = fmt.Sprintf("%s (%s, %s)", r.Id, r.DisplayName, r.LocalPath)
+	}
+	return strings.Join(parts, "; ")
 }
 
 func runAttach(cmd *cobra.Command, sessionID string) error {

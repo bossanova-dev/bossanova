@@ -380,6 +380,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		AppendSystemPrompt: AppendSystemPromptFor(sess, agentSessionID, sess.AgentName, mcpConfigPath),
 		Model:              sess.Model,
 		McpConfigPath:      mcpConfigPath,
+		StrictMcpConfig:    isCronSession(sess),
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sessionID, err)
@@ -544,14 +545,15 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 	}
 	mcpConfigPath := l.writeSessionMcpConfig(sess, agentSessionID, sess.ID)
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:      resumeSessionID,
-		Resume:         true,
-		WorktreePath:   sess.WorktreePath,
-		LogPath:        l.agentLogPathFor(agentSessionID),
-		InitialPrompt:  input.Prompt,
-		InitialCommand: input.Command,
-		Model:          sess.Model,
-		McpConfigPath:  mcpConfigPath,
+		SessionId:       resumeSessionID,
+		Resume:          true,
+		WorktreePath:    sess.WorktreePath,
+		LogPath:         l.agentLogPathFor(agentSessionID),
+		InitialPrompt:   input.Prompt,
+		InitialCommand:  input.Command,
+		Model:           sess.Model,
+		McpConfigPath:   mcpConfigPath,
+		StrictMcpConfig: isCronSession(sess),
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sess.ID, err)

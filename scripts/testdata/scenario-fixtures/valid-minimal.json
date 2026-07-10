@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "title": "Minimal scenario",
+  "scenes": [
+    {
+      "title": "Only scene",
+      "steps": [{ "expect": "something on screen" }]
+    }
+  ]
+}

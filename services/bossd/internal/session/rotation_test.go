@@ -34,15 +34,27 @@ func (f *fakeRotationDecider) Decide(_ context.Context, sig rotation.Signal) (ro
 }
 
 type fakeAccountMaterializer struct {
-	env         map[string]string
-	err         error
-	calls       int
-	lastAccount *models.Account
+	env               map[string]string
+	err               error
+	failUntil         int // return err for the first failUntil calls, then succeed (0 ⇒ honor err on every call)
+	blockUntilContext bool
+	calls             int
+	lastAccount       *models.Account
 }
 
-func (f *fakeAccountMaterializer) Materialize(_ context.Context, account *models.Account) (map[string]string, error) {
+func (f *fakeAccountMaterializer) Materialize(ctx context.Context, account *models.Account) (map[string]string, error) {
 	f.calls++
 	f.lastAccount = account
+	if f.blockUntilContext {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if f.failUntil > 0 && f.calls <= f.failUntil {
+		return nil, f.err
+	}
+	if f.failUntil > 0 {
+		return f.env, nil
+	}
 	return f.env, f.err
 }
 

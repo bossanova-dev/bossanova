@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "title": "Multiple ops in one step",
+  "scenes": [
+    {
+      "title": "Scene",
+      "steps": [
+        { "key": "down", "type": "45" },
+        { "waitFor": "Ready", "waitMs": 500 }
+      ]
+    }
+  ]
+}

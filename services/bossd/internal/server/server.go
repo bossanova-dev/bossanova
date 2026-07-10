@@ -990,6 +990,12 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		return connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
 	}
 
+	if !msg.QuickChat && strings.TrimSpace(repo.WorktreeBaseDir) == "" {
+		return connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("repo %s (%s) has no worktree base directory configured; set one with 'boss repo update %s' before creating a session",
+				repo.ID, repo.DisplayName, repo.ID))
+	}
+
 	baseBranch := msg.BaseBranch
 	if baseBranch == "" {
 		baseBranch = repo.DefaultBaseBranch
@@ -2455,8 +2461,9 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 			repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "attach chat", s.logger)
 			return dotenv.OverlayWithRepo(sessionEnvFunc(), sess.WorktreePath, repo)
 		},
-		Model:         modelForChatAgent(sess, chat.AgentName),
-		McpConfigPath: mcpConfigPath,
+		Model:           modelForChatAgent(sess, chat.AgentName),
+		McpConfigPath:   mcpConfigPath,
+		StrictMcpConfig: session.StrictMcpConfigForSession(sess),
 	})
 	if err != nil {
 		return err

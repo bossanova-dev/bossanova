@@ -1,7 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createBossSessionRunnerAdapter, bossSessionOperationMap } from './boss.mjs'
+import {
+  createBossSessionRunnerAdapter,
+  bossSessionOperationMap,
+  requiredBossToolsForEpic,
+  bossEpicToolPreflight,
+} from './boss.mjs'
 import { assertConforms, SESSION_RUNNER_CAPABILITIES } from './adapter.mjs'
 
 test('names the exact boss MCP tools for each choreography capability', () => {
@@ -94,11 +99,15 @@ test('nested/collection response fields name the real JSON path', () => {
 })
 
 test('the repair-round + optional-signal boss MCP tools are documented', () => {
-  // record_chat + send_chat_message are how dispatchRepair opens a fresh chat
-  // in the ticket's own session; get_session_statuses is the optional claude
-  // signal. Documented in the map but not part of the required capability set.
+  // record_chat + send_chat_message are how dispatchRepair opens a fresh chat in
+  // the ticket's own session; get_chat_statuses is the per-chat green/settled
+  // gate the poll invokes (Phase 3b), and get_session_statuses is the
+  // session-aggregate display-only signal. All documented in the map but not
+  // part of the required conformance-capability set.
   assert.equal(bossSessionOperationMap.recordChat.tool, 'record_chat')
   assert.equal(bossSessionOperationMap.sendChatMessage.tool, 'send_chat_message')
+  assert.equal(bossSessionOperationMap.getChatStatuses.tool, 'get_chat_statuses')
+  assert.deepEqual(bossSessionOperationMap.getChatStatuses.args, ['session_id'])
   assert.equal(bossSessionOperationMap.getSessionStatuses.tool, 'get_session_statuses')
 })
 
@@ -125,4 +134,56 @@ test('the boss adapter conforms to the interface', () => {
   const adapter = createBossSessionRunnerAdapter()
   assert.equal(adapter.runner, 'boss')
   assert.doesNotThrow(() => assertConforms(adapter))
+})
+
+test('requiredBossToolsForEpic derives the epic discovery-preflight tool set from the map', () => {
+  const tools = requiredBossToolsForEpic()
+  // Every returned tool is some capability's `.tool` in the source-of-truth map
+  // (derived, not duplicated), and every `.tool` in the map is covered — so the
+  // preflight list can never silently drift from the choreography it gates.
+  const mapTools = new Set(
+    Object.values(bossSessionOperationMap)
+      .map((op) => op.tool)
+      .filter((t) => typeof t === 'string'),
+  )
+  assert.deepEqual(new Set(tools), mapTools)
+  // Sorted + de-duplicated (create_session backs createSession + createPlanningChat).
+  assert.deepEqual(tools, [...tools].sort())
+  assert.equal(new Set(tools).size, tools.length)
+})
+
+test('the epic preflight tool set pins the tools whose late discovery stalls a run', () => {
+  const required = requiredBossToolsForEpic()
+  // list_check_snapshots was the tool that only surfaced after a targeted boss
+  // search in a Wondercanvas run — it must always be in the preflight set.
+  assert.ok(required.includes('list_check_snapshots'))
+  // get_chat_statuses is the per-chat green/settled gate the poll invokes every
+  // 2–5 min (SKILL Phase 3b); if the runtime cannot see it the run stalls at the
+  // merge gate — the exact BOS-301 failure class — so it MUST be pinned too. (It
+  // is distinct from the session-aggregate display-only get_session_statuses.)
+  assert.ok(required.includes('get_chat_statuses'))
+  assert.ok(required.includes('get_session_statuses'))
+})
+
+test('bossEpicToolPreflight passes when every required tool is present', () => {
+  const { ok, missing } = bossEpicToolPreflight(requiredBossToolsForEpic())
+  assert.equal(ok, true)
+  assert.deepEqual(missing, [])
+  // Extra unrelated tools do not affect the verdict.
+  assert.equal(bossEpicToolPreflight([...requiredBossToolsForEpic(), 'some_other_tool']).ok, true)
+})
+
+test('bossEpicToolPreflight names the absent tools in a concise sorted list', () => {
+  const full = requiredBossToolsForEpic()
+  // Drop list_check_snapshots specifically — the historically-missed tool.
+  const without = full.filter((t) => t !== 'list_check_snapshots')
+  const one = bossEpicToolPreflight(without)
+  assert.equal(one.ok, false)
+  assert.deepEqual(one.missing, ['list_check_snapshots'])
+  // Multiple missing tools come back sorted (stable diagnostic).
+  const two = bossEpicToolPreflight(without.filter((t) => t !== 'merge_session'))
+  assert.equal(two.ok, false)
+  assert.deepEqual(two.missing, ['list_check_snapshots', 'merge_session'])
+  // Empty runtime → every required tool reported missing.
+  assert.deepEqual(bossEpicToolPreflight([]).missing, full)
 })

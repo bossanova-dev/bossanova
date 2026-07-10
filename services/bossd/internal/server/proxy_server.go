@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -317,6 +318,25 @@ func (p *ProxyServer) sessionForToken(token string) (string, bool) {
 	return "", false
 }
 
+// isManagedSentinel reports whether a request is the interactive REPL's managed
+// shape: only the BOS-326 sentinel x-api-key, with no Authorization of its own.
+// Such a request depends on the proxy to translate the sentinel into the bound
+// account's bearer, so it must never be forwarded upstream unresolved — doing so
+// is a guaranteed 401. A request carrying its own Authorization/x-api-key is
+// self-authenticating and is forwarded unchanged.
+func isManagedSentinel(r *http.Request) bool {
+	return r.Header.Get("x-api-key") == session.SentinelAPIKey &&
+		r.Header.Get("Authorization") == ""
+}
+
+func hasClientAuth(r *http.Request) bool {
+	if r.Header.Get("Authorization") != "" {
+		return true
+	}
+	apiKey := r.Header.Get("x-api-key")
+	return apiKey != "" && apiKey != session.SentinelAPIKey
+}
+
 // handleProxy is the single catch-all handler. It authenticates the per-session
 // path token, buffers the request, forwards to the upstream, and — only when
 // the status line is a 429/401 — attempts a transparent account swap + replay
@@ -358,17 +378,37 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	//   3. "" ⇒ forward the client's own header unchanged (fail-safe / today's
 	//      direct behavior for headless runs whose env bearer already works).
 	initialAuth := p.bearerForSession(sessionID)
-	if initialAuth == "" {
-		if b, berr := p.failover.CurrentBearer(r.Context(), sessionID); berr != nil {
+	if initialAuth == "" && !hasClientAuth(r) {
+		b, berr := p.failover.CurrentBearer(r.Context(), sessionID)
+		switch {
+		case errors.Is(berr, session.ErrBearerUnavailable):
+			// The bound account's bearer is transiently unresolvable (typically the
+			// claude plugin subprocess restarting, so MaterializeAccount is briefly
+			// unreachable). For a session relying on us to translate its sentinel
+			// x-api-key, forwarding now guarantees an upstream 401 that kills the
+			// session — and the credentialless-sentinel failover suppression below
+			// would pass that 401 straight through. Fail CLOSED with a retryable 503
+			// so the CLI retries once the plugin recovers; never cool/rotate the
+			// bound account for a self-inflicted 401. A client presenting its OWN
+			// credential is forwarded unchanged (its header still works).
 			// Redaction-safe: CurrentBearer's error never carries the token.
-			p.logger.Warn().Err(berr).Str("session", sessionID).Msg("failover proxy: current bearer resolve failed; forwarding client header")
-		} else {
+			if isManagedSentinel(r) {
+				p.logger.Warn().Err(berr).Str("session", sessionID).
+					Msg("failover proxy: bound bearer unavailable; returning retryable 503")
+				w.Header().Set("Retry-After", "1")
+				http.Error(w, "bound account bearer temporarily unavailable; retry", http.StatusServiceUnavailable)
+				return
+			}
+			p.logger.Warn().Err(berr).Str("session", sessionID).
+				Msg("failover proxy: current bearer resolve failed; forwarding client header")
+		case berr != nil:
+			p.logger.Warn().Err(berr).Str("session", sessionID).
+				Msg("failover proxy: current bearer resolve failed; forwarding client header")
+		default:
 			initialAuth = b
 		}
 	}
-	credentiallessManagedSentinel := initialAuth == "" &&
-		r.Header.Get("x-api-key") == session.SentinelAPIKey &&
-		r.Header.Get("Authorization") == ""
+	credentiallessManagedSentinel := initialAuth == "" && isManagedSentinel(r)
 	resp, err := p.forward(r, upstreamPath, initialBody, initialAuth)
 	if err != nil {
 		p.logger.Warn().Err(err).Str("session", sessionID).Msg("failover proxy: upstream request failed")

@@ -510,6 +510,15 @@ type StreamClient struct {
 	refreshInterval  time.Duration
 	refreshThreshold time.Duration
 
+	// reconnectCh is a coalesced wake signal for the Run loop. Reconnect()
+	// does a non-blocking send here; the loop's backoff select drains it to
+	// skip the remaining sleep and re-open immediately. Buffered size 1 so a
+	// signal arriving while the loop is mid-open is not lost, and repeated
+	// signals coalesce into one pending wake. Used by the login path
+	// (streamAuthAdapter.NotifyLogin) after a proactive re-register so the
+	// stream re-opens with the fresh token without waiting out the backoff.
+	reconnectCh chan struct{}
+
 	// connected flips to true once Send(snapshot) succeeds on a stream.
 	// Reset across reconnects so the backoff resets only on a fresh
 	// successful handshake, not on dial-level flakes.
@@ -627,6 +636,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 	}
 	return &StreamClient{
 		opener:           opener,
+		reconnectCh:      make(chan struct{}, 1),
 		stores:           cfg.Stores,
 		events:           cfg.Events,
 		tokenProvider:    cfg.TokenProvider,
@@ -763,6 +773,12 @@ func (c *StreamClient) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-c.reconnectCh:
+			// A proactive re-register (login) asked us to re-open now.
+			// Reset the backoff and skip the exponential ramp below so the
+			// reconnect happens immediately with the fresh token.
+			backoff = streamInitialBackoff
+			continue
 		case <-c.clock.After(backoff):
 		}
 
@@ -920,6 +936,26 @@ func (c *StreamClient) handleCommand(ctx context.Context, cmd *pb.OrchestratorCo
 	select {
 	case outbound <- result:
 	case <-ctx.Done():
+	}
+}
+
+// Reconnect wakes the Run loop out of its backoff sleep so it re-opens the
+// stream immediately instead of waiting out the remaining delay. It is
+// non-blocking and coalesced: the signal lands in a single-slot buffer, so
+// repeated calls collapse into one pending wake and a call made while the
+// loop is not currently sleeping is remembered until it next reaches the
+// backoff select. Nil-safe — a nil receiver (local-only mode never builds a
+// StreamClient) is a no-op so callers need not nil-check.
+//
+// The login path calls this after a proactive re-register obtains a fresh
+// session token, so the stream re-authenticates without a restart.
+func (c *StreamClient) Reconnect() {
+	if c == nil {
+		return
+	}
+	select {
+	case c.reconnectCh <- struct{}{}:
+	default:
 	}
 }
 

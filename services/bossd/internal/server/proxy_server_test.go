@@ -296,11 +296,48 @@ func TestProxy_firstLegNoBearerForwardsClientHeader(t *testing.T) {
 	if len(reqs) != 1 || reqs[0].auth != "Bearer second-token" {
 		t.Fatalf("client Authorization not preserved: %+v", reqs)
 	}
+	if f.currentBearerCall != 0 {
+		t.Fatalf("CurrentBearer calls=%d, want 0 for self-authenticated request", f.currentBearerCall)
+	}
 }
 
-func TestProxy_firstLegNoBearerStripsSentinelAPIKey(t *testing.T) {
+func TestProxy_firstLegNonSentinelAPIKeyDoesNotResolveBoundBearer(t *testing.T) {
 	up, srv := newFakeUpstream(t)
-	f := &fakeFailover{currentBearerErr: fmt.Errorf("keychain unavailable")}
+	f := &fakeFailover{currentBearerErr: fmt.Errorf("materializer should not be called")}
+	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	req, err := http.NewRequest(http.MethodPost, base+"/s/"+tok+"/v1/messages", strings.NewReader(`{"prompt":"hi"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("x-api-key", "sk-ant-client-owned")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if f.currentBearerCall != 0 {
+		t.Fatalf("CurrentBearer calls=%d, want 0 for client x-api-key", f.currentBearerCall)
+	}
+	reqs := up.all()
+	if len(reqs) != 1 || reqs[0].apiKey != "sk-ant-client-owned" {
+		t.Fatalf("client x-api-key not preserved: %+v", reqs)
+	}
+}
+
+// TestProxy_firstLegBearerUnavailableReturns503 proves the transient-dependency
+// fix: when CurrentBearer ERRORS because the bound account's OAuth bearer cannot
+// be resolved (e.g. the claude plugin subprocess is briefly restarting, so
+// MaterializeAccount is unreachable), the proxy must NOT forward the managed
+// sentinel — that is a guaranteed upstream 401 that kills the interactive
+// session. It fails closed with a RETRYABLE 503 (+ Retry-After) so the CLI
+// retries once the plugin recovers, never touching upstream and never burning a
+// rotation on a self-inflicted 401.
+func TestProxy_firstLegBearerUnavailableReturns503(t *testing.T) {
+	up, srv := newFakeUpstream(t)
+	f := &fakeFailover{currentBearerErr: fmt.Errorf("plugin MaterializeAccount: %w", session.ErrBearerUnavailable)}
 	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
 	tok := ps.TokenForSession("sess-1")
 
@@ -314,8 +351,40 @@ func TestProxy_firstLegNoBearerStripsSentinelAPIKey(t *testing.T) {
 		t.Fatalf("do request: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want 503 (retryable; a doomed sentinel request must not be forwarded)", resp.StatusCode)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("missing Retry-After header on 503")
+	}
+	if got := len(up.all()); got != 0 {
+		t.Fatalf("upstream saw %d requests, want 0 (must not forward a guaranteed-401 sentinel request)", got)
+	}
+	if f.prepareCalls != 0 {
+		t.Fatalf("PrepareFailover calls=%d, want 0 (transient resolve failure must not cool/rotate the bound account)", f.prepareCalls)
+	}
+}
+
+func TestProxy_firstLegNonBearerErrorPassesThrough(t *testing.T) {
+	up, srv := newFakeUpstream(t)
+	f := &fakeFailover{currentBearerErr: fmt.Errorf("session store unavailable")}
+	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	req, err := http.NewRequest(http.MethodPost, base+"/s/"+tok+"/v1/messages", strings.NewReader(`{"prompt":"hi"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("x-api-key", session.SentinelAPIKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
 	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status=%d, want 401 (no fallback credential)", resp.StatusCode)
+		t.Fatalf("status=%d, want 401 (non-materializer errors are not retryable bearer unavailability)", resp.StatusCode)
 	}
 	reqs := up.all()
 	if len(reqs) != 1 {
@@ -325,7 +394,44 @@ func TestProxy_firstLegNoBearerStripsSentinelAPIKey(t *testing.T) {
 		t.Fatalf("sentinel x-api-key leaked upstream: %q", reqs[0].apiKey)
 	}
 	if f.prepareCalls != 0 {
-		t.Fatalf("PrepareFailover calls=%d, want 0 (credentialless sentinel 401 must not cool the bound account)", f.prepareCalls)
+		t.Fatalf("PrepareFailover calls=%d, want 0", f.prepareCalls)
+	}
+}
+
+// TestProxy_firstLegUnboundSentinelPassesThrough preserves the credentialless
+// contract: when CurrentBearer returns "" with NO error (the session is
+// genuinely unbound — there is no managed account to translate to), the sentinel
+// is stripped and the resulting upstream 401 passes through WITHOUT triggering
+// failover. Only a transient resolve ERROR (above) yields a retryable 503.
+func TestProxy_firstLegUnboundSentinelPassesThrough(t *testing.T) {
+	up, srv := newFakeUpstream(t)
+	f := &fakeFailover{currentBearer: ""} // unbound, no error
+	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	req, err := http.NewRequest(http.MethodPost, base+"/s/"+tok+"/v1/messages", strings.NewReader(`{"prompt":"hi"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("x-api-key", session.SentinelAPIKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want 401 (unbound sentinel passes through, no failover)", resp.StatusCode)
+	}
+	reqs := up.all()
+	if len(reqs) != 1 {
+		t.Fatalf("upstream saw %d requests, want 1", len(reqs))
+	}
+	if reqs[0].apiKey != "" {
+		t.Fatalf("sentinel x-api-key leaked upstream: %q", reqs[0].apiKey)
+	}
+	if f.prepareCalls != 0 {
+		t.Fatalf("PrepareFailover calls=%d, want 0", f.prepareCalls)
 	}
 }
 

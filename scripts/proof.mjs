@@ -295,20 +295,33 @@ const PROOF_USAGE = `Usage: node scripts/proof.mjs <command> [options]
 Commands:
   plan                 Print the selected recipes for the current diff (read-only)
   run                  Capture, upload, and comment proof on the PR
+  scenario validate <file>          Validate a committed proof scenario file
+  scenario run <file> [--dry-run] [--pr <n>]
+                       Deterministically replay a scenario into a TUI proof (no LLM)
 
 Options:
   --recipe <id>        Capture a specific recipe (repeatable)
   --changed-file <p>   Override changed-file detection (repeatable)
   --dry-run            Capture locally without uploading or commenting
+  --pr <n>             (scenario run) PR number when not on a PR branch
 
 Examples:
   node scripts/proof.mjs plan
-  node scripts/proof.mjs run --dry-run --recipe tui-home`
+  node scripts/proof.mjs run --dry-run --recipe tui-home
+  node scripts/proof.mjs scenario validate proof/scenarios/demo.scenario.json
+  node scripts/proof.mjs scenario run proof/scenarios/demo.scenario.json --dry-run`
 
 async function main() {
   const args = parseProofArgs(process.argv.slice(2))
   if (args.command === 'help') {
     console.log(PROOF_USAGE)
+    return
+  }
+  // BOS-219: deterministic scenario replay CLI. Handled BEFORE the catalog read
+  // and the `run`-only guard — it needs neither recipe catalog nor changed-file
+  // detection. This is the ONLY new dispatch branch (no change to run defaults).
+  if (args.command === 'scenario') {
+    await runScenarioCommand(args)
     return
   }
   const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'))
@@ -575,6 +588,120 @@ async function main() {
       }
     }
   }
+}
+
+/**
+ * BOS-219 `scenario` command: deterministic replay of a committed scenario into
+ * a real TUI proof with ZERO LLM involvement (no PROOF_ANTHROPIC_API_KEY needed).
+ *
+ * `validate` loads + shape-validates the scenario, printing OK or the collected
+ * pointerful errors (exit 1 on invalid — a CLI tooling failure, NOT a change to
+ * the proof-outcome exit-code contract).
+ *
+ * `run` synthesizes a brief from the scenario (skipping resolveBrief / the SDK
+ * via the D4 `brief` seam) and drives the UNCHANGED runTuiAgentProof capture tail
+ * through three injections: `brief`, a `loopRunner` adapting `runReplayLoop`, and
+ * `evaluateEvidence: makeScenarioEvaluator`. `--dry-run` skips upload/comment and
+ * prints local artifacts; a non-dry run on a PR finalizes through the shared
+ * pipeline. The bridge factory is injectable (`overrides.bridge`) so tests drive
+ * the full CLI path with a fake bridge and never spawn the Go binary.
+ *
+ * @param {{ sub: string, file: string, dryRun: boolean, pr: string|null }} args
+ * @param {{
+ *   loadScenario?: Function, runReplayLoop?: Function, synthesizeBrief?: Function,
+ *   makeScenarioEvaluator?: Function, runTuiAgentProof?: Function,
+ *   bridge?: object, proofDeps?: object, prNumber?: string, commit?: string,
+ *   log?: Function, errorLog?: Function, setExitCode?: Function,
+ * }} [overrides]
+ */
+export async function runScenarioCommand(args, overrides = {}) {
+  const log = overrides.log ?? console.log
+  const errorLog = overrides.errorLog ?? console.error
+  const setExitCode = overrides.setExitCode ?? ((n) => (process.exitCode = n))
+
+  const { loadScenario } =
+    overrides.loadScenario != null
+      ? { loadScenario: overrides.loadScenario }
+      : await import('./proof-scenario.mjs')
+
+  if (args.sub === 'validate') {
+    try {
+      loadScenario(args.file)
+      log(`scenario valid: ${args.file}`)
+    } catch (err) {
+      errorLog(err instanceof Error ? err.message : String(err))
+      setExitCode(1)
+    }
+    return
+  }
+
+  // ── run ────────────────────────────────────────────────────────────────────
+  const { scenario } = loadScenario(args.file)
+  const replay =
+    overrides.runReplayLoop != null
+      ? {
+          runReplayLoop: overrides.runReplayLoop,
+          synthesizeBrief: overrides.synthesizeBrief,
+          makeScenarioEvaluator: overrides.makeScenarioEvaluator,
+        }
+      : await import('./proof-tui-replay.mjs')
+  const runReplayLoop = overrides.runReplayLoop ?? replay.runReplayLoop
+  const synthesizeBrief = overrides.synthesizeBrief ?? replay.synthesizeBrief
+  const makeScenarioEvaluator = overrides.makeScenarioEvaluator ?? replay.makeScenarioEvaluator
+  const runTuiAgentProof =
+    overrides.runTuiAgentProof ?? (await import('./proof-tui-agent.mjs')).runTuiAgentProof
+
+  const basename = path.basename(args.file)
+  const brief = synthesizeBrief(scenario, basename)
+  const prNumber = overrides.prNumber ?? (args.pr != null ? String(args.pr) : currentPrNumber())
+  const commit = overrides.commit ?? shortHeadCommit()
+
+  // Bridge: an injected fake (tests) OR the real prebuilt/spawned Go bridge. When
+  // neither is supplied, resolve/build the bridge binaries and export the env so
+  // runTuiAgentProof's makeStdioBridge can spawn the real bridge (honoring an
+  // existing BOSS_PROOF_TUI_BRIDGE_BIN via resolvePrebuiltTuiBins).
+  const proofDeps = { ...(overrides.proofDeps ?? {}) }
+  if (overrides.bridge) {
+    proofDeps.bridge = overrides.bridge
+  } else if (!proofDeps.bridge) {
+    const { bridgeBin, bossBin } = resolvePrebuiltTuiBins()
+    const built = buildTuiAgentBridge({
+      bridgeBinOverride: bridgeBin ?? undefined,
+      bossBinOverride: bossBin ?? undefined,
+    })
+    const env = tuiAgentBridgeEnv({
+      bridgeBin: built.bridgeBin,
+      bossBin: built.bossBin,
+      existingBossBin: process.env.BOSS_PROOF_BOSS_BIN,
+    })
+    process.env.BOSS_PROOF_TUI_BRIDGE_BIN = env.BOSS_PROOF_TUI_BRIDGE_BIN
+    process.env.BOSS_PROOF_BOSS_BIN = env.BOSS_PROOF_BOSS_BIN
+  }
+
+  activeRunContext = { prNumber, commit, dryRun: args.dryRun }
+
+  const result = await runTuiAgentProof({
+    prNumber,
+    commit,
+    changedFiles: [],
+    dryRun: args.dryRun,
+    // The three BOS-219 seams: the pre-resolved brief SKIPS resolveBrief (no SDK
+    // call), loopRunner adapts runReplayLoop to runTuiAgentProof's call shape, and
+    // evaluateEvidence swaps the gate for the scenario's structured matcher.
+    brief,
+    loopRunner: ({ bridge, rawDir }) =>
+      runReplayLoop({ scenario, bridge, rawDir, fileBasename: basename }),
+    evaluateEvidence: makeScenarioEvaluator(scenario),
+    deps: proofDeps,
+  })
+
+  if (result?.manifest) {
+    // Dry-run + full-run both surface the manifest (its captures list the local
+    // artifact fileNames: cast-derived mp4/stills + scenes). Honest, no upload on
+    // dry-run (shouldUpload:false threads through the shared finalize).
+    log(JSON.stringify(result.manifest, null, 2))
+  }
+  return result
 }
 
 function captureRecipe({

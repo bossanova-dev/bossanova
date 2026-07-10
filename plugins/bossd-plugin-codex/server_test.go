@@ -110,6 +110,43 @@ func TestBuildInteractiveCommand_WiresMcpViaConfigOverride(t *testing.T) {
 	}
 }
 
+// TestBuildInteractiveCommand_CuratedLinearIgnored pins that the curated cron
+// config's HTTP "bossanova-linear" server never becomes a codex `-c
+// mcp_servers.*` override: codex has no --strict-mcp-config, codexMcpOverrideArgs
+// reads ONLY the stdio "boss" server, and a command-less HTTP entry is inert.
+// Codex behavior is therefore byte-identical whether or not Linear is present.
+func TestBuildInteractiveCommand_CuratedLinearIgnored(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	worktree := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "s1.json")
+	// The curated (cron) config shape: boss stdio + bossanova-linear HTTP.
+	cfg := `{"mcpServers":{"boss":{"command":"/trusted/mcp","args":["--socket","/run/bossd.sock"]},"bossanova-linear":{"type":"http","url":"https://mcp.linear.app/mcp","headers":{"Authorization":"Bearer ${LINEAR_API_KEY}"}}}}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write mcp config: %v", err)
+	}
+
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:     "s1",
+		McpConfigPath: cfgPath,
+		WorktreePath:  worktree,
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	joined := strings.Join(resp.GetArgv(), "\x00")
+	// boss override still present (unchanged).
+	if !strings.Contains(joined, "-c\x00mcp_servers.boss.command=\"/trusted/mcp\"") {
+		t.Fatalf("argv missing codex mcp boss override: %v", resp.GetArgv())
+	}
+	// Linear HTTP entry must NEVER surface as an override or leak the key, and
+	// codex must never emit --strict-mcp-config (it has no such flag).
+	if strings.Contains(joined, "bossanova-linear") || strings.Contains(joined, "mcp.linear.app") ||
+		strings.Contains(joined, "LINEAR_API_KEY") || strings.Contains(joined, "--strict-mcp-config") {
+		t.Fatalf("codex argv must not reference the Linear HTTP server or strict flag: %v", resp.GetArgv())
+	}
+}
+
 func TestBuildInteractiveCommand_McpOverridePrecedesResumeSubcommand(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	worktree := t.TempDir()

@@ -188,6 +188,14 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	// worktree) and passes the absolute path; empty means no boss MCP wiring.
 	if mcpCfg := req.GetMcpConfigPath(); mcpCfg != "" {
 		args = append(args, "--mcp-config", mcpCfg)
+		// --strict-mcp-config makes the curated --mcp-config the WHOLE surface:
+		// the agent ignores project .mcp.json / settings MCP servers. bossd sets
+		// StrictMcpConfig only for cron/fleet spawns, whose config includes both
+		// boss and Linear. Guarded by a non-empty config path — strict with no
+		// config would strip the boss server too.
+		if req.GetStrictMcpConfig() {
+			args = append(args, "--strict-mcp-config")
+		}
 	}
 	loginShell := ""
 	if s.runner != nil {

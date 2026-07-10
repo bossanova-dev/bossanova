@@ -52,6 +52,9 @@ func TestMaskToken(t *testing.T) {
 	if got != want {
 		t.Fatalf("MaskToken = %q, want %q", got, want)
 	}
+	if edge := MaskToken("12345678wxyz"); edge != "sk-ant-…wxyz" {
+		t.Fatalf("MaskToken(12-byte token) = %q, want %q", edge, "sk-ant-…wxyz")
+	}
 	if short := MaskToken("abc"); short != "…" {
 		t.Fatalf("MaskToken(short) = %q, want …", short)
 	}

@@ -6,10 +6,35 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/rotation"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
+)
+
+// ErrBearerUnavailable marks a TRANSIENT failure to resolve the bound account's
+// OAuth bearer — the account is bound, but its bearer could not be materialized
+// right now (e.g. the claude plugin subprocess is restarting, so its
+// MaterializeAccount RPC is briefly unreachable). CurrentBearer returns it,
+// wrapped, only after exhausting a short retry; the failover proxy maps it to a
+// retryable 5xx so the request survives the blip instead of forwarding the
+// sentinel x-api-key (a guaranteed upstream 401 that would kill the session).
+// It is distinct from CurrentBearer's ("", nil) "genuinely unbound" result,
+// whose sentinel 401 legitimately passes through. Never carries the token.
+var ErrBearerUnavailable = errors.New("bound account bearer temporarily unavailable")
+
+// Bounded retry for a transient Materialize failure in currentBearerForAccount.
+// 1 initial attempt + 3 retries at 700ms, all inside a short total budget, gives
+// in-proxy smoothing before surfacing ErrBearerUnavailable; a longer plugin
+// outage then relies on the CLI's own 5xx backoff. Overridable in tests via
+// SetBearerRetryForTest.
+const (
+	defaultBearerRetryAttempts = 4
+	defaultBearerRetryBackoff  = 700 * time.Millisecond
+	defaultBearerRetryBudget   = 3 * time.Second
 )
 
 // claudeOAuthTokenEnvKey is the env var the credential materializer returns for
@@ -226,18 +251,95 @@ func (l *Lifecycle) currentBearerForAccount(ctx context.Context, logID, accountI
 	if acct == nil {
 		return "", nil
 	}
-	envOverlay, err := l.accountMaterializer.Materialize(ctx, acct)
-	if err != nil {
-		// Materialize failure ⇒ fail-safe: return "" so the proxy forwards the
-		// client's own header. For an interactive REPL that header is the sentinel
-		// x-api-key, which upstream rejects (401) → the proxy's 429/401 failover
-		// path then rotates to a healthy account. Self-healing, no mis-billing
-		// (the sentinel authorizes nothing upstream); never blocks on this account.
-		l.logger.Warn().Err(err).Str("session", logID).Str("bound_account_id", accountID).
-			Msg("failover proxy: materialize bound account failed; forwarding client header")
-		return "", nil
+	// Retry a transient Materialize failure a few times before giving up: the
+	// common cause is the claude plugin subprocess restarting, so its
+	// MaterializeAccount RPC is unreachable for a few seconds. Swallowing the
+	// error to ("", nil) — the old behavior — made the proxy forward the sentinel
+	// x-api-key, which upstream rejects (401); and because the proxy suppresses
+	// failover for that credentialless-sentinel 401, the 401 was passed straight
+	// through and killed the session. Instead we surface ErrBearerUnavailable so
+	// the proxy returns a retryable 5xx. Rotating would not help here: the plugin
+	// is down pool-wide, so the NEXT account's bearer is equally unmaterializable.
+	attempts := l.bearerRetryAttempts
+	backoff := l.bearerRetryBackoff
+	budget := l.bearerRetryBudget
+	if !l.bearerRetryConfigured {
+		attempts = defaultBearerRetryAttempts
+		backoff = defaultBearerRetryBackoff
+		budget = defaultBearerRetryBudget
 	}
-	return envOverlay[claudeOAuthTokenEnvKey], nil
+	if attempts <= 0 {
+		attempts = 1
+	}
+	if backoff < 0 {
+		backoff = 0
+	}
+	retryCtx := ctx
+	var cancelRetry context.CancelFunc
+	if budget > 0 {
+		retryCtx, cancelRetry = context.WithTimeout(ctx, budget)
+		defer cancelRetry()
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-retryCtx.Done():
+				return "", currentBearerUnavailableError(accountID, retryCtx.Err())
+			case <-time.After(backoff):
+			}
+		}
+		envOverlay, err := l.accountMaterializer.Materialize(retryCtx, acct)
+		if err == nil {
+			return envOverlay[claudeOAuthTokenEnvKey], nil
+		}
+		if !isTransientMaterializeError(err) {
+			return "", fmt.Errorf("current bearer: materialize account %s: %w", accountID, err)
+		}
+		lastErr = err
+		if retryCtx.Err() != nil {
+			return "", currentBearerUnavailableError(accountID, retryCtx.Err())
+		}
+	}
+	// Never logs the token; lastErr is a redaction-safe transport/RPC error.
+	l.logger.Warn().Err(lastErr).Str("session", logID).Str("bound_account_id", accountID).Int("attempts", attempts).
+		Msg("failover proxy: materialize bound account bearer unavailable after retries; returning retryable error")
+	return "", currentBearerUnavailableError(accountID, lastErr)
+}
+
+func isTransientMaterializeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	switch grpcstatus.Code(err) {
+	case codes.DeadlineExceeded, codes.Unavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+func currentBearerUnavailableError(accountID string, cause error) error {
+	if cause == nil {
+		cause = ErrBearerUnavailable
+	}
+	return fmt.Errorf("current bearer: materialize account %s: %w: %w", accountID, ErrBearerUnavailable, cause)
+}
+
+// SetBearerRetryForTest overrides currentBearerForAccount's transient-Materialize
+// retry schedule so tests exercise the retry/exhaustion path without real
+// backoff sleeps. Optional budget bounds blocking Materialize calls. Test-only;
+// production uses the default schedule.
+func (l *Lifecycle) SetBearerRetryForTest(attempts int, backoff time.Duration, budget ...time.Duration) {
+	l.bearerRetryConfigured = true
+	l.bearerRetryAttempts = attempts
+	l.bearerRetryBackoff = backoff
+	if len(budget) > 0 {
+		l.bearerRetryBudget = budget[0]
+	}
 }
 
 // RebindAndAuditParams gathers the inputs for RebindAndAudit.

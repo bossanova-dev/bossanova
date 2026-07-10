@@ -34,7 +34,7 @@ Mode-exclusive prose lives in `references/*.md`, loaded **only** on the path tha
 
 Workspace facts (do not re-discover):
 
-- Linear MCP server: `linear-bossanova`. Team **Bossanova** (key `BOS`). `bossanova-dev` is the workspace, NOT a project — never pass a `project` filter.
+- Linear MCP server: `bossanova-linear`. Team **Bossanova** (key `BOS`). `bossanova-dev` is the workspace, NOT a project — never pass a `project` filter.
 - Statuses by name: `Unplanned` (start) and `Todo` (end).
 - Existing labels: `agent-friendly`, `needs-human`, `agent-plan`, `agent-question`, `docs`, `bug`, `improvement`, `feature`. Never create labels. `agent-friendly` and `needs-human` are mutually exclusive (every plan gets exactly one).
 - Linear priority numeric: `1=Urgent, 2=High, 3=Medium, 4=Low, 0=None`.

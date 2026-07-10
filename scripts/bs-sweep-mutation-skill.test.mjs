@@ -78,6 +78,42 @@ test('every dispatch is tier-annotated as mechanical or judgment with a reason',
   )
 })
 
+// Return the `### ` step section whose heading starts with `prefix` (e.g. '2. Run Mutation Tests').
+function stepSection(skill, prefix) {
+  return skill.split(/\n### /).find((section) => section.startsWith(prefix))
+}
+
+test('the mechanical run leg carries a provider-guarded sonnet model directive (both mirrors) (BOS-323)', () => {
+  for (const [label, skill] of [
+    ['.claude', SKILL],
+    ['.codex', CODEX],
+  ]) {
+    const run = stepSection(skill, '2. Run Mutation Tests')
+    assert.ok(run, `${label} must have a Run Mutation Tests section`)
+    // A real provider-guarded model directive: model:, the sonnet alias, and a $BOSS_AGENT
+    // guard naming both the lowercase `claude` and the `codex`-omit cases.
+    assert.match(run, /model:/, `${label} run leg must carry a model: directive`)
+    assert.match(run, /sonnet/, `${label} run leg must dispatch on the sonnet alias`)
+    assert.match(
+      run,
+      /\$BOSS_AGENT/,
+      `${label} run leg model directive must be $BOSS_AGENT-guarded`,
+    )
+    assert.match(run, /\bclaude\b/, `${label} run leg guard must reference lowercase claude`)
+    assert.match(run, /\bcodex\b/, `${label} run leg guard must cover the codex-omit case`)
+
+    // The tier: judgment legs (Phase A, Phase B, completion watch) stay on Opus — no sonnet.
+    for (const prefix of ['3. Phase A', '4. Phase B', '8. Create a Ready Green PR']) {
+      const section = stepSection(skill, prefix)
+      assert.ok(section, `${label} must have a ${prefix} section`)
+      assert.ok(
+        !section.includes('sonnet'),
+        `${label} ${prefix} (judgment/Opus) must not carry a sonnet directive`,
+      )
+    }
+  }
+})
+
 test('dispatches are awaited, never backgrounded', () => {
   assert.ok(SKILL.includes('run_in_background'), 'the never-background rule must be stated')
   assert.match(

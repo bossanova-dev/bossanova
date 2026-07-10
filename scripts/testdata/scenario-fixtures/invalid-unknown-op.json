@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "title": "Unknown step op",
+  "scenes": [
+    {
+      "title": "Scene",
+      "steps": [{ "clickk": "somewhere" }]
+    }
+  ]
+}

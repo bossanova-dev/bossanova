@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "title": "Daemon step without an action",
+  "scenes": [
+    {
+      "title": "Scene",
+      "steps": [{ "daemon": { "sessionId": "sess-aaa-111" } }]
+    }
+  ]
+}

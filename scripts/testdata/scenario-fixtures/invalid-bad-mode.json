@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "title": "Bad match mode",
+  "scenes": [
+    {
+      "title": "Scene",
+      "steps": [{ "expect": { "text": "hi", "match": "fuzzy" } }]
+    }
+  ]
+}

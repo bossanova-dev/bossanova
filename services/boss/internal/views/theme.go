@@ -271,7 +271,7 @@ type bannerOpts struct {
 
 	// archiving, when true, overrides the session's PR display status with the
 	// animated "archiving" label. Set when the user re-enters a session whose
-	// archive is still in flight (archivingOptimisticID matches).
+	// archive is still in flight (the HomeModel tracks that session's ID).
 	archiving bool
 
 	// Screen-specific overrides (used when session/repo are nil).
@@ -339,7 +339,7 @@ func renderBanner(active View, opts bannerOpts) string {
 			wt = strings.Replace(wt, home, "~", 1)
 		}
 		line2 = styleSubtle.Render(wt)
-		line2 += "  " + styleSubtle.Render("· "+accountBannerLabel(opts.session.GetAccountId()))
+		line2 += " " + styleSubtle.Render("· "+accountBannerLabel(opts.session.GetAccountId()))
 
 	case opts.repo != nil:
 		line1 = opts.repo.DisplayName

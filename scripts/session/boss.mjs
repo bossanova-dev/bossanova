@@ -139,9 +139,11 @@ export const bossSessionOperationMap = {
   },
   // Documented boss MCP tools the choreography uses but that are not part of the
   // required capability set: record_chat + send_chat_message implement the
-  // dispatchRepair fresh-chat mechanism (Phase 3c); get_session_statuses is the
-  // settled-chat signal that gates greens (Phase 3b/3c) — best-effort, so an
-  // unreadable status (BOS-244 restart window) is treated as not-settled, not merged.
+  // dispatchRepair fresh-chat mechanism (Phase 3c); get_chat_statuses is the
+  // per-chat settled-chat signal that gates greens (Phase 3b/3c) — best-effort,
+  // so an unreadable status (BOS-244 restart window) is treated as not-settled,
+  // not merged; get_session_statuses is the session-aggregate display/diagnostic
+  // signal only (never gate green/settled on it — SKILL Phase 3b).
   recordChat: {
     tool: 'record_chat',
     args: ['session_id', 'agent_session_id', 'agent_name', 'title'],
@@ -152,13 +154,72 @@ export const bossSessionOperationMap = {
     args: ['agent_session_id', 'wake_if_asleep', 'submit', 'message'],
     response: [],
   },
+  getChatStatuses: {
+    tool: 'get_chat_statuses',
+    // get_chat_statuses keys on a single `session_id` (GetChatStatusesRequest);
+    // the `statuses` array holds one ChatStatusEntry per chat (agent_session_id
+    // + status). Phase 3b reads the entry whose agent_session_id == the ticket's
+    // tracked chat to gate green-on-settled — this is the tool the run actually
+    // invokes every poll, so it MUST be a mapped capability (and thus land in the
+    // discovery-preflight set). Its earlier omission from the map was itself the
+    // BOS-301 late-discovery failure class for the merge gate.
+    args: ['session_id'],
+    response: ['statuses'],
+  },
   getSessionStatuses: {
     tool: 'get_session_statuses',
     // get_session_statuses takes a plural `session_ids` list (SessionIDsArgs),
-    // not a single `id`.
+    // not a single `id`. Session-aggregate, display/diagnostic only — NOT the
+    // green/settled gate (that is get_chat_statuses above).
     args: ['session_ids'],
     response: ['statuses'],
   },
+}
+
+/**
+ * The distinct boss MCP tool names an epic run can invoke, derived from
+ * bossSessionOperationMap (the single source of truth) instead of a hand-kept
+ * duplicate list. This is boss-epic's deterministic *discovery-preflight* set
+ * (BOS-301): a long unattended run must be able to SEE every one of these tools
+ * before it schedules any session, so a tool that only surfaces after a targeted
+ * search — the observed `list_check_snapshots` gap — fails the run early with a
+ * concise diagnostic instead of stalling mid-run.
+ *
+ * Derived = every capability in the map that names a `.tool` (the sub-skill
+ * dispatch capabilities carry `.subSkill`, not a tool, so they are excluded),
+ * de-duplicated (create_session backs both createSession and createPlanningChat)
+ * and sorted for a stable, diffable diagnostic. This deliberately covers MORE
+ * than SESSION_RUNNER_CAPABILITIES: it also includes the repair-round tools
+ * (record_chat / send_chat_message), the per-chat green/settled gate
+ * (get_chat_statuses, invoked every poll in SKILL Phase 3b) and the
+ * session-aggregate display signal (get_session_statuses), because an epic run
+ * invokes them too — discovery must cover the WHOLE run, not just the
+ * conformance-capability subset.
+ * @returns {string[]} sorted, de-duplicated boss MCP tool names
+ */
+export function requiredBossToolsForEpic() {
+  const tools = new Set()
+  for (const op of Object.values(bossSessionOperationMap)) {
+    if (typeof op.tool === 'string') tools.add(op.tool)
+  }
+  return [...tools].sort()
+}
+
+/**
+ * Deterministic boss-epic tool-discovery preflight (BOS-301). Given the boss MCP
+ * tool names the runtime actually exposes (`availableTools` — however the host
+ * enumerates them), return which required tools are absent. The caller fails
+ * fast on a non-empty `missing` and prints it so a human sees exactly which
+ * tools to restore before the epic schedules anything. `ok` is true iff every
+ * required tool is present; `missing` preserves requiredBossToolsForEpic()'s
+ * sorted order.
+ * @param {Iterable<string>} availableTools
+ * @returns {{ ok: boolean, missing: string[] }}
+ */
+export function bossEpicToolPreflight(availableTools) {
+  const available = new Set(availableTools)
+  const missing = requiredBossToolsForEpic().filter((tool) => !available.has(tool))
+  return { ok: missing.length === 0, missing }
 }
 
 /**

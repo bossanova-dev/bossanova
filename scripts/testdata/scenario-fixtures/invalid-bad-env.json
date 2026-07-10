@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "title": "Non-string env value",
+  "fixture": {
+    "env": { "BOSS_X": 1 }
+  },
+  "scenes": [
+    {
+      "title": "Scene",
+      "steps": [{ "expect": "x" }]
+    }
+  ]
+}

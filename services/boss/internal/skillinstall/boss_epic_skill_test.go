@@ -17,6 +17,34 @@ func TestBossEpicSkillGatesGreensOnTrackedChatStatus(t *testing.T) {
 	assertContains(t, skill, "implementation chat")
 }
 
+func TestBossEpicSkillDefinesZeroLaunchNoReadyBranch(t *testing.T) {
+	// BOS-302: a no-ready/no-inflight run spawns zero sessions and must follow a
+	// single explicit branch — upsert exactly one progress comment carrying
+	// "no sessions spawned", stop success, never create-then-edit two comments.
+	skill := readEmbeddedBossEpicSkill(t)
+
+	assertContains(t, skill, "zero-launch")
+	assertContains(t, skill, "no sessions spawned")
+	assertContains(t, skill, "upsert exactly one")
+	assertContains(t, skill, "stop success")
+	// Resume idempotence for the zero-launch comment still keys off the marker.
+	assertContains(t, skill, "<!-- boss-epic-progress -->")
+
+	// The zero-launch branch lives in Phase 1's empty-eligible step, before any
+	// scheduling — not buried in the daemon-blocks-empty-PR edge case.
+	start := strings.Index(skill, "## Phase 1 — Assemble the epic set")
+	if start == -1 {
+		t.Fatalf("heading %q not found", "## Phase 1 — Assemble the epic set")
+	}
+	end := strings.Index(skill, "## Phase 2 — Resume reconstruction")
+	if end == -1 {
+		t.Fatalf("heading %q not found", "## Phase 2 — Resume reconstruction")
+	}
+	phase1 := skill[start:end]
+	assertContains(t, phase1, "zero-launch")
+	assertContains(t, phase1, "no sessions spawned")
+}
+
 func TestBossEpicEmbeddedSkillCopiesStayIdentical(t *testing.T) {
 	serviceSkill := readEmbeddedBossEpicSkill(t)
 

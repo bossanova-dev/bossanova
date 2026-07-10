@@ -1301,6 +1301,17 @@ findTarget:
 	return count
 }
 
+func lineBeforeMarkerIsBlank(content, marker string) bool {
+	plain := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(content, "")
+	lines := strings.Split(plain, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, marker) {
+			return i > 0 && strings.TrimSpace(lines[i-1]) == ""
+		}
+	}
+	return false
+}
+
 func TestHomeViewDoesNotOfferHistoryAction(t *testing.T) {
 	h := HomeModel{
 		ctx:       context.Background(),
@@ -1377,41 +1388,117 @@ func TestApplyMergedOptimisticOverride(t *testing.T) {
 }
 
 func TestArchivingOverrideClearedWhenSessionGone(t *testing.T) {
-	// Build a HomeModel with archivingOptimisticID "s1" and feed it a
-	// sessionListMsg that only contains "s2" — s1 has been archived (gone).
-	h := HomeModel{
-		archivingOptimisticID: "s1",
-		spinner:               newStatusSpinner(),
-	}
+	// A successful archive stays overridden until its own row disappears.
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.markArchiving("s1")
+	h.markArchiving("s2")
+	h.resolveArchive("s1", nil)
 
 	model, _ := h.Update(sessionListMsg{
 		sessions: []*pb.Session{{Id: "s2"}},
 	})
 	got := model.(HomeModel)
 
-	if got.archivingOptimisticID != "" {
-		t.Fatalf("expected archivingOptimisticID cleared when s1 absent, got %q", got.archivingOptimisticID)
+	if got.isArchiving("s1") || got.archiveInFlight("s1") {
+		t.Fatal("expected s1 archive state cleared when s1 is absent")
+	}
+	if !got.isArchiving("s2") || !got.archiveInFlight("s2") {
+		t.Fatal("expected s2 archive state retained when s2 remains")
 	}
 }
 
-func TestRenderSessionStatusArchivingOverride(t *testing.T) {
-	h := HomeModel{archivingOptimisticID: "s1", spinner: newStatusSpinner()}
+func TestRenderSessionStatusConcurrentArchivingOverrides(t *testing.T) {
+	h := HomeModel{
+		archivingOverrideIDs: map[string]struct{}{"s1": {}, "s2": {}},
+		spinner:              newStatusSpinner(),
+	}
 
-	// Session matching archivingOptimisticID should render as archiving.
-	got := h.renderSessionStatus(&pb.Session{Id: "s1", DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING})
-	if !strings.Contains(got, "archiving") {
-		t.Fatalf("renderSessionStatus for archiving session = %q, want to contain %q", got, "archiving")
+	for _, id := range []string{"s1", "s2"} {
+		got := h.renderSessionStatus(&pb.Session{Id: id, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING})
+		if !strings.Contains(got, "archiving") {
+			t.Fatalf("renderSessionStatus for archiving session %s = %q, want to contain %q", id, got, "archiving")
+		}
 	}
 
 	// Other sessions should pass through to renderDisplayStatus.
 	other := &pb.Session{
-		Id:            "s2",
+		Id:            "s3",
 		DisplayLabel:  "✓ passing",
 		DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
 	}
 	want := renderDisplayStatus(other, h.spinner)
 	if got2 := h.renderSessionStatus(other); got2 != want {
 		t.Fatalf("renderSessionStatus for non-archiving session = %q, want passthrough %q", got2, want)
+	}
+}
+
+func TestArchiveStateTransitionsPreserveInFlightSubset(t *testing.T) {
+	tests := []struct {
+		name             string
+		transitions      []func(*HomeModel)
+		wantArchiving    []string
+		wantNotArchiving []string
+		wantInFlight     []string
+	}{
+		{
+			name: "multiple archives start independently",
+			transitions: []func(*HomeModel){
+				func(h *HomeModel) { h.markArchiving("s1") },
+				func(h *HomeModel) { h.markArchiving("s2") },
+			},
+			wantArchiving: []string{"s1", "s2"},
+			wantInFlight:  []string{"s1", "s2"},
+		},
+		{
+			name: "successful archive retains only rendering override",
+			transitions: []func(*HomeModel){
+				func(h *HomeModel) { h.markArchiving("s1") },
+				func(h *HomeModel) { h.markArchiving("s2") },
+				func(h *HomeModel) { h.resolveArchive("s1", nil) },
+			},
+			wantArchiving: []string{"s1", "s2"},
+			wantInFlight:  []string{"s2"},
+		},
+		{
+			name: "failed archive drops only its own state",
+			transitions: []func(*HomeModel){
+				func(h *HomeModel) { h.markArchiving("s1") },
+				func(h *HomeModel) { h.markArchiving("s2") },
+				func(h *HomeModel) { h.resolveArchive("s1", errors.New("boom")) },
+			},
+			wantArchiving:    []string{"s2"},
+			wantNotArchiving: []string{"s1"},
+			wantInFlight:     []string{"s2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewHomeModel(nil, context.Background(), nil)
+			for _, transition := range tt.transitions {
+				transition(&h)
+				for id := range h.archiveInFlightIDs {
+					if !h.isArchiving(id) {
+						t.Fatalf("archiveInFlightIDs contains %q outside archivingOverrideIDs", id)
+					}
+				}
+			}
+			for _, id := range tt.wantArchiving {
+				if !h.isArchiving(id) {
+					t.Fatalf("isArchiving(%q) = false, want true", id)
+				}
+			}
+			for _, id := range tt.wantNotArchiving {
+				if h.isArchiving(id) {
+					t.Fatalf("isArchiving(%q) = true, want false", id)
+				}
+			}
+			for _, id := range tt.wantInFlight {
+				if !h.archiveInFlight(id) {
+					t.Fatalf("archiveInFlight(%q) = false, want true", id)
+				}
+			}
+		})
 	}
 }
 
@@ -1500,6 +1587,9 @@ func TestHomeUpgradeKeyShowsBusySpinnerAndHidesActions(t *testing.T) {
 	content := h.View().Content
 	if !strings.Contains(content, "Upgrading") {
 		t.Fatalf("expected upgrading spinner state, got: %s", content)
+	}
+	if !lineBeforeMarkerIsBlank(content, "Upgrading") {
+		t.Fatalf("expected blank line immediately above upgrading spinner, got: %s", content)
 	}
 	for _, hidden := range []string{"[u]pgrade [d]ismiss", "[n]ew session", "[q]uit"} {
 		if strings.Contains(content, hidden) {
@@ -1628,6 +1718,9 @@ func TestHomeRestartKeyShowsBusySpinnerAndHidesActions(t *testing.T) {
 	content := h.View().Content
 	if !strings.Contains(content, "Restarting daemon") {
 		t.Fatalf("expected restarting spinner state, got: %s", content)
+	}
+	if !lineBeforeMarkerIsBlank(content, "Restarting daemon") {
+		t.Fatalf("expected blank line immediately above restarting spinner, got: %s", content)
 	}
 	for _, hidden := range []string{"[r]estart [esc] later", "[n]ew session", "[q]uit"} {
 		if strings.Contains(content, hidden) {

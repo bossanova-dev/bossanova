@@ -158,7 +158,7 @@ function renderSuggestions(suggestions = []) {
     .map((s) => `- ${s.title}${loc(s)}${s.detail ? ` — ${s.detail}` : ''}`)
     .join('\n')
   const prompt = [
-    'Using the linear-bossanova MCP, create one Bossanova issue per item below (priority None,',
+    'Using the bossanova-linear MCP, create one Bossanova issue per item below (priority None,',
     'no project filter). Title = the item title; description = the detail + originating file:line.',
     'Do not create duplicates of existing Todo/In Progress issues.',
     '',

@@ -355,16 +355,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// switch to the per-view dispatch below (not a Go `fallthrough`), so
 		// the chatpicker (if still active) also processes the message and flips
 		// its own archiving=false / statusMsg field.
-		if msg.sessionID == a.home.archivingOptimisticID {
+		if a.home.isArchiving(msg.sessionID) {
 			// The archive RPC resolved. On failure, drop the override entirely so
 			// the real status is shown again. On success the override is retained
 			// for rendering until the row leaves the list, but the archive is no
 			// longer in flight, so re-entering the session must not seed a stuck
 			// archiving picker.
+			a.home.resolveArchive(msg.sessionID, msg.err)
 			if msg.err != nil {
-				a.home.archivingOptimisticID = ""
+				// The table rows cache rendered status text. Rebuild immediately so
+				// a failed archive stops showing its optimistic label before the next
+				// spinner tick or session poll.
+				a.home.buildTableRows()
 			}
-			a.home.archiveInFlight = false
 		}
 
 	case switchViewMsg:
@@ -385,7 +388,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// archiveResultMsg is outstanding for a freshly created picker, so
 			// seeding archiving=true here would leave it stuck on "Archiving
 			// session..." swallowing every key but Esc.
-			if a.home.archiveInFlight && msg.sessionID == a.home.archivingOptimisticID {
+			if a.home.archiveInFlight(msg.sessionID) {
 				a.chatPicker.archiving = true
 			}
 			return a, a.chatPicker.Init()
@@ -537,8 +540,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.home.mergedOptimisticID = sessionID
 			}
 			if archivingID := a.chatPicker.ArchivingSessionID(); archivingID != "" {
-				a.home.archivingOptimisticID = archivingID
-				a.home.archiveInFlight = true
+				a.home.markArchiving(archivingID)
 			}
 			return a, a.home.Init()
 		}
@@ -792,18 +794,11 @@ func (a *App) newHomeModel() HomeModel {
 	home.SetCloudSubscription(a.cloudAccess, a.checkoutReturnURL, a.checkoutCancelURL)
 	home.width = a.width
 	home.height = a.height
-	// Preserve an in-flight archive override across the rebuild. If a session's
-	// archive RPC is still outstanding, its optimistic "archiving" status must
-	// survive navigating away from and back to Home — opening a different
-	// session or another Home subview rebuilds the model, and without this carry
-	// the row would revert to its real PR status (and re-entry would lose the
-	// in-flight state) even though the archive is still running. The override is
-	// only carried while genuinely in flight; a resolved archive's lingering
-	// render override is intentionally left to the fresh poll.
-	if a.home.archiveInFlight && a.home.archivingOptimisticID != "" {
-		home.archivingOptimisticID = a.home.archivingOptimisticID
-		home.archiveInFlight = true
-	}
+	// Preserve all optimistic archive state across rebuilds without sharing map
+	// storage with the prior model. Both lingering success overrides and active
+	// RPCs must survive until the next poll or result reconciles each session.
+	home.archivingOverrideIDs = cloneSessionIDSet(a.home.archivingOverrideIDs)
+	home.archiveInFlightIDs = cloneSessionIDSet(a.home.archiveInFlightIDs)
 	return home
 }
 

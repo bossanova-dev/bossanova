@@ -163,9 +163,30 @@ assumeCleared, assumeClearedAndMerge}`.
 2. **Verify Linear MCP** with a cheap read (`list_issue_statuses team=Bossanova`).
    Unreachable → stop `BLOCKED: Linear MCP unreachable`.
 
-3. **Verify boss MCP** with `list_agents`. The chosen `--agent` runner **must**
-   appear in the list; if the daemon is down or the runner is not loaded, stop
-   `BLOCKED: boss daemon unreachable or agent '<name>' not loaded`.
+3. **Verify boss MCP + discover every required tool (deterministic preflight).**
+   Call `list_agents`: the chosen `--agent` runner **must** appear; if the daemon
+   is down or the runner is not loaded, stop
+   `BLOCKED: boss daemon unreachable or agent '<name>' not loaded`. Then prove
+   **every** boss MCP tool this run can invoke is discoverable _before scheduling_
+   — the BOS-301 failure was `list_check_snapshots` surfacing only after a
+   targeted search mid-run. The required set is derived from the session-adapter
+   source of truth, never hand-listed here:
+
+   ```bash
+   REPO_ROOT="$(git rev-parse --show-toplevel)"; export REPO_ROOT
+   node --input-type=module -e '
+     const { requiredBossToolsForEpic } = await import(`${process.env.REPO_ROOT}/scripts/session/boss.mjs`)
+     process.stdout.write(requiredBossToolsForEpic().join("\n") + "\n")
+   '  # → the authoritative checklist (create_session … list_check_snapshots … send_chat_message)
+   ```
+
+   Enumerate the boss MCP tools this runtime actually exposes (host-specific — do
+   not overfit to one host) and diff them against the checklist via
+   `bossEpicToolPreflight(availableTools)` → `{ ok, missing }`. If `missing` is
+   non-empty, stop
+   `BLOCKED: boss MCP missing required tools: <comma-separated missing>` naming
+   the absent tools (e.g. `list_check_snapshots`). When all are present the
+   preflight is a no-op — scheduling and merge behaviour are unchanged.
 
 4. **Resolve `repo_id`** from `$BOSS_REPO_ID` (set in boss-managed chats) if
    present, else `resolve_context {working_dir: <cwd>}`. No repo → stop BLOCKED.
@@ -202,11 +223,24 @@ assumeCleared, assumeClearedAndMerge}`.
    - `skipped`: everything else, each with a `{ticket, reason}` (Unplanned, In
      Progress, In Review, missing plan, `needs-human`, …).
 
-   Immediately print the classification table in the driver chat **and** post the
-   initial progress comment on the parent issue (see Reporting) — before any
-   session spawns, so a human watching sees the plan up front.
+   Immediately print the classification table in the driver chat. **When the
+   eligible set is non-empty** (sessions will spawn), also post the initial
+   progress comment on the parent issue (see Reporting) before any session spawns,
+   so a human watching sees the plan up front. When it is empty, skip the initial
+   post — the zero-launch branch (step 3) owns the single comment so the run never
+   create-then-edits.
 
-3. **Empty eligible set → stop** with a success report (nothing to do).
+3. **Empty eligible set → zero-launch success (explicit branch).** No `eligible`
+   tickets means no session will launch. Run Phase 2 reconstruction; if it adopts
+   **no** in-flight session either, this is a **zero-launch** (no-ready /
+   no-inflight) run that spawns **zero** sessions. Do not create an initial comment
+   and then immediately edit a final one — **upsert exactly one** progress comment
+   (edit the existing `<!-- boss-epic-progress -->` comment in place if the marker
+   is present, else create it once) whose body **is** the final summary: the
+   classification table plus a line stating **`no sessions spawned`**. Print the
+   same in the driver chat and **stop success** (a clean no-op, not an error),
+   skipping Phases 3–4. A resume that adopts an in-flight session is **not**
+   zero-launch — it continues to Phase 3.
 
 4. **Build the dependency graph.** _Critical wiring contract:_ feed `buildGraph`
    the **`classifyTickets(...).eligible`** list **plus** fold every `done`
@@ -482,7 +516,9 @@ per epic ticket) plus a one-line legend explaining the state vocabulary
 mode (no parent issue), post the progress comment on the first ticket in the
 list and note that anchor in the driver chat. **Never** post per-event comments —
 the single edited comment is the whole audit trail, and its marker is what makes
-resume idempotent.
+resume idempotent. On a **zero-launch** run (no-ready / no-inflight — Phase 1
+step 3) this same single comment is upserted exactly once as the final summary
+carrying `no sessions spawned`; there is no separate initial-then-final edit.
 
 ## Safety rails
 
@@ -507,9 +543,12 @@ State and honor these explicitly:
 
 ## Edge cases
 
-- Parent with zero planned children → empty eligible set → clean no-op (Phase 1).
+- Parent with zero planned children → empty eligible set → **zero-launch branch**
+  (Phase 1 step 3): one progress comment upserted with `no sessions spawned`,
+  stop success.
 - All children already Done → empty eligible set (`done` bucket →
-  `externallyCleared`); clean stop, "already complete".
+  `externallyCleared`) → same **zero-launch branch**: one comment upserted with
+  `no sessions spawned` (noting "already complete"), stop success.
 - External blocker never clears → its dependents stay parked and are skipped;
   the final report names the uncleared external ticket.
 - Dependency cycle inside the epic → `readyTickets` never marks the cycle

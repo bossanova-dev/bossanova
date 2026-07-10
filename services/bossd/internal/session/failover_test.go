@@ -3,11 +3,15 @@ package session
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
@@ -195,16 +199,19 @@ func TestCurrentBearer(t *testing.T) {
 	acct := &models.Account{ID: "acct-capped", Provider: models.AccountProviderClaude, Label: "bound"}
 
 	cases := []struct {
-		name        string
-		enabled     bool
-		bound       bool
-		wireGetter  bool
-		getterAcct  *models.Account
-		getterErr   bool
-		materialize map[string]string
-		matErr      bool
-		wantToken   string
-		wantErr     bool
+		name                  string
+		enabled               bool
+		bound                 bool
+		wireGetter            bool
+		getterAcct            *models.Account
+		getterErr             bool
+		materialize           map[string]string
+		matErr                error
+		failUntil             int
+		wantToken             string
+		wantErr               bool
+		wantBearerUnavailable bool
+		wantMaterializeCalls  int
 	}{
 		{
 			name: "bound account → its materialized bearer", enabled: true, bound: true,
@@ -236,9 +243,22 @@ func TestCurrentBearer(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "materialize failure → empty (fail-safe)", enabled: true, bound: true,
-			wireGetter: true, getterAcct: acct, matErr: true,
-			wantToken: "",
+			name: "materialize fails every retry → ErrBearerUnavailable", enabled: true, bound: true,
+			wireGetter: true, getterAcct: acct, matErr: context.DeadlineExceeded,
+			wantErr: true, wantBearerUnavailable: true,
+		},
+		{
+			name: "materialize fails then recovers on retry → bearer", enabled: true, bound: true,
+			wireGetter: true, getterAcct: acct, matErr: context.DeadlineExceeded, failUntil: 2,
+			materialize: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "bound-token"},
+			wantToken:   "bound-token",
+		},
+		{
+			name: "non-transient materialize failure → ordinary error", enabled: true, bound: true,
+			wireGetter: true, getterAcct: acct,
+			matErr:               grpcstatus.Error(codes.FailedPrecondition, "credential missing for account"),
+			wantErr:              true,
+			wantMaterializeCalls: 1,
 		},
 		{
 			name: "empty materialized token → empty", enabled: true, bound: true,
@@ -251,6 +271,9 @@ func TestCurrentBearer(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newRotationFixture(t)
+			// Instant, deterministic retry schedule (3 attempts, no backoff) so the
+			// transient-Materialize path exercises retry + exhaustion without sleeps.
+			f.lc.SetBearerRetryForTest(3, 0)
 			if tc.enabled {
 				enableFailoverProxy(f.lc)
 			} else {
@@ -258,9 +281,8 @@ func TestCurrentBearer(t *testing.T) {
 			}
 			f.binding.bound = tc.bound
 			f.materializer.env = tc.materialize
-			if tc.matErr {
-				f.materializer.err = context.DeadlineExceeded
-			}
+			f.materializer.failUntil = tc.failUntil
+			f.materializer.err = tc.matErr
 			if tc.wireGetter {
 				f.lc.SetAccountGetter(func(_ context.Context, id string) (*models.Account, error) {
 					if tc.getterErr {
@@ -278,6 +300,15 @@ func TestCurrentBearer(t *testing.T) {
 				if err == nil {
 					t.Fatalf("CurrentBearer: want error, got nil (token=%q)", got)
 				}
+				if tc.wantBearerUnavailable && !errors.Is(err, ErrBearerUnavailable) {
+					t.Fatalf("CurrentBearer error = %v, want wrapped ErrBearerUnavailable", err)
+				}
+				if !tc.wantBearerUnavailable && errors.Is(err, ErrBearerUnavailable) {
+					t.Fatalf("CurrentBearer error = %v, must not wrap ErrBearerUnavailable", err)
+				}
+				if tc.wantMaterializeCalls != 0 && f.materializer.calls != tc.wantMaterializeCalls {
+					t.Fatalf("Materialize calls=%d, want %d", f.materializer.calls, tc.wantMaterializeCalls)
+				}
 				return
 			}
 			if err != nil {
@@ -285,6 +316,9 @@ func TestCurrentBearer(t *testing.T) {
 			}
 			if got != tc.wantToken {
 				t.Fatalf("CurrentBearer = %q, want %q", got, tc.wantToken)
+			}
+			if tc.wantMaterializeCalls != 0 && f.materializer.calls != tc.wantMaterializeCalls {
+				t.Fatalf("Materialize calls=%d, want %d", f.materializer.calls, tc.wantMaterializeCalls)
 			}
 		})
 	}
@@ -340,6 +374,36 @@ func TestCurrentBearer_ChatTargetUsesChatAccount(t *testing.T) {
 				t.Fatalf("CurrentBearer = %q, want %q", got, tc.wantToken)
 			}
 		})
+	}
+}
+
+func TestCurrentBearer_BlockingMaterializeHonorsRetryBudget(t *testing.T) {
+	f := newRotationFixture(t)
+	f.lc.SetBearerRetryForTest(1, 0, 10*time.Millisecond)
+	enableFailoverProxy(f.lc)
+	f.binding.bound = true
+	f.materializer.blockUntilContext = true
+	f.lc.SetAccountGetter(func(_ context.Context, id string) (*models.Account, error) {
+		if id != "acct-capped" {
+			t.Fatalf("getter called with id=%q, want acct-capped", id)
+		}
+		return &models.Account{ID: "acct-capped", Provider: models.AccountProviderClaude, Label: "bound"}, nil
+	})
+
+	start := time.Now()
+	got, err := f.lc.CurrentBearer(context.Background(), f.sessionID)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("CurrentBearer: want error, got nil (token=%q)", got)
+	}
+	if !errors.Is(err, ErrBearerUnavailable) {
+		t.Fatalf("CurrentBearer error = %v, want wrapped ErrBearerUnavailable", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("CurrentBearer elapsed %s, want retry budget to cap blocking materialize promptly", elapsed)
+	}
+	if f.materializer.calls != 1 {
+		t.Fatalf("Materialize calls=%d, want 1", f.materializer.calls)
 	}
 }
 

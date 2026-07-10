@@ -61,7 +61,14 @@ test('size ratchet', () => {
   // `tmux_unattended`; unattended planning → subagent; visible planning →
   // `createPlanningChat` / `quick_chat: true`) and Phase 3a states the
   // `createSession` block is implementation-only — the core deliverable.
-  const RATCHET = 29696
+  // Bumped 29696 → 30720 for BOS-301: Phase 0 step 3 now runs a deterministic
+  // boss MCP tool-discovery preflight (requiredBossToolsForEpic source of truth)
+  // that fails fast naming absent tools before scheduling — the core deliverable.
+  // Bumped 30720 → 32768 for BOS-302: Phase 1 step 3 now defines an explicit
+  // zero-launch (no-ready/no-inflight) branch — one upserted progress comment
+  // carrying `no sessions spawned`, stop success, no create-then-edit — with
+  // matching Reporting + Edge-cases wording, the core deliverable.
+  const RATCHET = 32768
   const bytes = Buffer.byteLength(CLAUDE, 'utf8')
   assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
 })
@@ -88,6 +95,45 @@ test('contract tokens present in the canonical skill', () => {
       assert.ok(body.includes(token), `missing token: ${token}`)
     }
   }
+})
+
+test('zero-launch no-ready run has an explicit single-comment branch (BOS-302)', () => {
+  // A no-ready/no-inflight run spawns zero sessions. The skill must define one
+  // explicit branch: upsert exactly one progress comment carrying
+  // `no sessions spawned` and stop success — never create-then-edit two comments.
+  assert.match(
+    CLAUDE,
+    /zero-launch/,
+    'the empty-eligible path must be named as an explicit zero-launch branch',
+  )
+  assert.match(
+    CLAUDE,
+    /no sessions spawned/,
+    'the zero-launch branch must report `no sessions spawned`',
+  )
+  assert.match(
+    CLAUDE,
+    /upsert exactly one/i,
+    'the zero-launch branch must upsert exactly one progress comment',
+  )
+  assert.match(
+    CLAUDE,
+    /stop success/i,
+    'the zero-launch branch must stop successfully (clean no-op, not an error)',
+  )
+  // Resume idempotence for the zero-launch comment still keys off the marker.
+  assert.match(
+    CLAUDE,
+    /<!-- boss-epic-progress -->/,
+    'the zero-launch branch must reuse the boss-epic-progress marker on resume',
+  )
+  // The single-comment contract must forbid the old create-then-edit two-comment
+  // shape for the zero-launch case.
+  assert.match(
+    CLAUDE,
+    /never\s+create-then-edits|no separate initial-then-final edit/i,
+    'the zero-launch branch must forbid create-then-edit of two comments',
+  )
 })
 
 test('passing greens require settled child chat before merge eligibility', () => {
@@ -213,4 +259,22 @@ test('no stub or placeholder prose in the claude source', () => {
     /\bplaceholder\b/i,
     'CLAUDE SKILL.md must not contain placeholder prose',
   )
+})
+
+test('phase 0 runs a deterministic boss MCP tool-discovery preflight (BOS-301)', () => {
+  // Phase 0 must prove every required boss MCP tool is discoverable before
+  // scheduling, derived from the session-adapter source of truth, and fail fast
+  // naming the absent tools. list_check_snapshots (the historically missed tool)
+  // is reachable through that derived checklist.
+  assert.match(
+    CLAUDE,
+    /requiredBossToolsForEpic/,
+    'preflight must derive the required tool list from requiredBossToolsForEpic (source of truth)',
+  )
+  assert.match(
+    CLAUDE,
+    /missing required tools/i,
+    'missing tools must produce a concise diagnostic naming them',
+  )
+  assert.match(CLAUDE, /before scheduling/i, 'the tool-discovery preflight runs before scheduling')
 })

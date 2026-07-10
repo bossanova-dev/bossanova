@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "title": "Empty expectation text",
+  "scenes": [
+    {
+      "title": "Scene",
+      "steps": [{ "expect": "" }]
+    }
+  ]
+}

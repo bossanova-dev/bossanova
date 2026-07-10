@@ -407,9 +407,9 @@ func (m *CronListModel) rebuildTable() {
 		case job.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_GATING:
 			statuses[i] = m.spinner.View() + "gating"
 		case job.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_FAILED:
-			statuses[i] = styleStatusDanger.Render("failed")
+			statuses[i] = cronStatusLabel(job.Enabled, styleStatusDanger, "failed")
 		case job.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_GATED:
-			statuses[i] = styleStatusWarning.Render("gated")
+			statuses[i] = cronStatusLabel(job.Enabled, styleStatusWarning, "gated")
 		default:
 			statuses[i] = styleSubtle.Render("idle")
 		}
@@ -475,6 +475,19 @@ func (m *CronListModel) rebuildTable() {
 		newCursor = n - 1
 	}
 	m.table.SetCursor(newCursor)
+}
+
+// cronStatusLabel renders a terminal STATUS label with its status color only
+// when the job is enabled. For a disabled job it returns the plain label so the
+// row-level muting applied later (muted.Render in rebuildTable) is the only
+// foreground, keeping the whole row uniformly grey. Lipgloss does not strip an
+// inner foreground, so a pre-colored label would otherwise keep its status color
+// under the outer muted style (BOS-313).
+func cronStatusLabel(enabled bool, style lipgloss.Style, label string) string {
+	if enabled {
+		return style.Render(label)
+	}
+	return label
 }
 
 func cronDisplayAgentName(name string) string {

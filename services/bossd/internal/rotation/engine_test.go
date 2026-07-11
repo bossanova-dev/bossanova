@@ -526,7 +526,7 @@ func TestDecideTerminal(t *testing.T) {
 		}
 	})
 
-	t.Run("all permanently failed => StatusOnly", func(t *testing.T) {
+	t.Run("all permanently failed => NoEligibleAccount", func(t *testing.T) {
 		a := mkAcct("A", 0, ok, active, nil, tp(-1*time.Hour))
 		b := mkAcct("B", 1, failed, active, nil, tp(-2*time.Hour))
 		c := mkAcct("C", 2, failed, active, nil, tp(-3*time.Hour))
@@ -539,8 +539,37 @@ func TestDecideTerminal(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Decide error: %v", err)
 		}
-		if out.Kind != OutcomeStatusOnly {
-			t.Fatalf("Kind = %v, want OutcomeStatusOnly", out.Kind)
+		// No candidate and none recovering: the fall-through must report the
+		// no-eligible-account terminal state, distinct from the capability
+		// short-circuit's OutcomeStatusOnly (BOS-327).
+		if out.Kind != OutcomeNoEligibleAccount {
+			t.Fatalf("Kind = %v, want OutcomeNoEligibleAccount", out.Kind)
+		}
+		if !out.ResumeAt.IsZero() {
+			t.Fatalf("ResumeAt = %v, want zero", out.ResumeAt)
+		}
+	})
+
+	t.Run("all disabled => NoEligibleAccount", func(t *testing.T) {
+		// Every account (including the capped one) is disabled: no candidate, and
+		// none is a recovery candidate (a disabled account is not selectable even
+		// after a cooldown expires), so the usage-limited fall-through reports
+		// no-eligible rather than exhausted (BOS-327).
+		disabled := models.AccountStatusDisabled
+		a := mkAcct("A", 0, ok, disabled, nil, tp(-1*time.Hour))
+		b := mkAcct("B", 1, ok, disabled, nil, tp(-2*time.Hour))
+		c := mkAcct("C", 2, ok, disabled, nil, tp(-3*time.Hour))
+		store := newFakeStore(a, b, c)
+		eng := newEngineForTest(store)
+
+		out, err := eng.Decide(context.Background(), Signal{
+			Provider: claude, CappedAccountID: "A", Kind: UsageLimited, RotationCapable: true,
+		})
+		if err != nil {
+			t.Fatalf("Decide error: %v", err)
+		}
+		if out.Kind != OutcomeNoEligibleAccount {
+			t.Fatalf("Kind = %v, want OutcomeNoEligibleAccount", out.Kind)
 		}
 		if !out.ResumeAt.IsZero() {
 			t.Fatalf("ResumeAt = %v, want zero", out.ResumeAt)

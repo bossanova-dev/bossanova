@@ -627,6 +627,122 @@ func TestCron_EditRoundtrip(t *testing.T) {
 	}
 }
 
+// lineWithText returns the first screen line containing sub, or "" if none.
+func lineWithText(screen, sub string) string {
+	for _, line := range strings.Split(screen, "\n") {
+		if strings.Contains(line, sub) {
+			return line
+		}
+	}
+	return ""
+}
+
+// TestCron_EditHighlightsEditedRow verifies BOS-312: after editing and saving a
+// non-first cron job, the list returns with the caret/chevron on that same job's
+// row (identified by name), not the first row. Two jobs are seeded; the second
+// is edited. ListCronJobs sorts by id, so cron-1 renders first and cron-2 second.
+func TestCron_EditHighlightsEditedRow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
+	job1 := &pb.CronJob{
+		Id:        "cron-1",
+		RepoId:    "repo-1",
+		Name:      "Alpha job",
+		Prompt:    "Run alpha.",
+		Schedule:  "0 9 * * 1-5",
+		Enabled:   true,
+		CreatedAt: timestamppb.Now(),
+		UpdatedAt: timestamppb.Now(),
+	}
+	job2 := &pb.CronJob{
+		Id:        "cron-2",
+		RepoId:    "repo-1",
+		Name:      "Bravo job",
+		Prompt:    "Run bravo.",
+		Schedule:  "0 9 * * 1-5",
+		Enabled:   true,
+		CreatedAt: timestamppb.Now(),
+		UpdatedAt: timestamppb.Now(),
+	}
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithCronJobs(job1, job2),
+	)
+
+	navigateToCronList(t, h)
+
+	// Wait for both seeded rows to render.
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Alpha job") && strings.Contains(screen, "Bravo job")
+	}); err != nil {
+		t.Fatalf("expected both cron rows; screen:\n%s", h.Driver.Screen())
+	}
+
+	// Move the cursor down to the second row (Bravo job), then edit it.
+	if err := h.Driver.SendKey('j'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		// The chevron must be on the Bravo row before we open the edit form.
+		return strings.Contains(lineWithText(screen, "Bravo job"), "❯")
+	}); err != nil {
+		t.Fatalf("expected caret on Bravo row before edit; screen:\n%s", h.Driver.Screen())
+	}
+
+	if err := h.Driver.SendKey('e'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Edit Scheduled Job"); err != nil {
+		t.Fatalf("expected edit form; screen:\n%s", h.Driver.Screen())
+	}
+	// The form should be pre-populated with the second job's name.
+	if err := h.Driver.WaitForText(waitTimeout, "Bravo job"); err != nil {
+		t.Fatalf("expected pre-populated Bravo name; screen:\n%s", h.Driver.Screen())
+	}
+
+	// Change the name so the edited row is unambiguous, then advance through
+	// every field and save. Field order mirrors TestCron_EditRoundtrip.
+	if err := h.Driver.SendKey(0x01); err != nil { // ctrl+a — move to start
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey(0x0b); err != nil { // ctrl+k — kill to end
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendString("Bravo edited"); err != nil {
+		t.Fatal(err)
+	}
+	advanceCronFormField(t, h)  // Name
+	advanceCronFormField(t, h)  // Repo
+	advanceCronFormField(t, h)  // Model
+	advanceCronFormPrompt(t, h) // Prompt (text area — Tab)
+	advanceCronFormField(t, h)  // Schedule
+	advanceCronFormField(t, h)  // Timezone
+	advanceCronFormField(t, h)  // Gate command
+	advanceCronFormField(t, h)  // Run setup command
+	advanceCronFormField(t, h)  // Enabled toggle
+	advanceCronFormField(t, h)  // Save confirm — "Update Scheduled Job"
+
+	// Wait for the list to reappear with the renamed row.
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Bravo edited") &&
+			(strings.Contains(screen, "CRON") || strings.Contains(screen, "[n]ew"))
+	}); err != nil {
+		t.Fatalf("expected cron list with renamed row after edit; screen:\n%s", h.Driver.Screen())
+	}
+
+	// The caret must be on the edited (Bravo) row, not the first (Alpha) row.
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(lineWithText(screen, "Bravo edited"), "❯")
+	}); err != nil {
+		t.Fatalf("expected caret on edited Bravo row; screen:\n%s", h.Driver.Screen())
+	}
+	screen := h.Driver.Screen()
+	if strings.Contains(lineWithText(screen, "Alpha job"), "❯") {
+		t.Fatalf("caret should not be on the Alpha (first) row; screen:\n%s", screen)
+	}
+}
+
 // TestCron_ToggleEnabled verifies that pressing space toggles the enabled
 // field and calls UpdateCronJob once per press.
 func TestCron_ToggleEnabled(t *testing.T) {

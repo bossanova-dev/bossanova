@@ -59,6 +59,7 @@ func TestSessionRoundTrip(t *testing.T) {
 	prURL := "https://github.com/test/repo/pull/42"
 	blocked := "max attempts reached"
 	archived := time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC)
+	lastRepairBlocked := time.Date(2024, 7, 2, 3, 4, 5, 0, time.UTC)
 
 	orig := &Session{
 		ID:                          "sess-456",
@@ -78,6 +79,7 @@ func TestSessionRoundTrip(t *testing.T) {
 		AttemptCount:                3,
 		BlockedReason:               &blocked,
 		LastRepairReviewFingerprint: "review-fingerprint-123",
+		LastRepairBlockedAt:         &lastRepairBlocked,
 		ArchivedAt:                  &archived,
 		CreatedAt:                   time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt:                   time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC),
@@ -112,6 +114,9 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 	if back.ArchivedAt == nil || !back.ArchivedAt.Equal(*orig.ArchivedAt) {
 		t.Errorf("ArchivedAt = %v, want %v", back.ArchivedAt, orig.ArchivedAt)
+	}
+	if back.LastRepairBlockedAt == nil || !back.LastRepairBlockedAt.Equal(*orig.LastRepairBlockedAt) {
+		t.Errorf("LastRepairBlockedAt = %v, want %v", back.LastRepairBlockedAt, orig.LastRepairBlockedAt)
 	}
 	if back.AgentName != orig.AgentName {
 		t.Errorf("AgentName = %q, want %q", back.AgentName, orig.AgentName)

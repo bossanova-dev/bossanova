@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "title": "BOS-265 Settings → Accounts list",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "open the Accounts list from Settings",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        {
+          "expect": {
+            "text": "[a]ccounts",
+            "match": "normalized",
+            "label": "Settings action bar advertises [a]ccounts"
+          },
+          "caption": "Settings action bar shows the new [a]ccounts entry"
+        },
+        { "key": "a", "caption": "Press [a] to open the Accounts list (BOS-265)" },
+        {
+          "waitFor": {
+            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "label": "Accounts list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Accounts table settled"
+        },
+        {
+          "expect": [
+            { "text": "Accounts", "match": "normalized", "label": "Accounts screen title" },
+            {
+              "text": "LABEL PROVIDER STATUS HEALTH",
+              "match": "normalized",
+              "label": "Accounts column headers"
+            },
+            { "text": "codex", "match": "normalized", "label": "codex provider cell" },
+            { "text": "work-claude", "match": "normalized", "label": "claude account label" },
+            { "text": "personal-codex", "match": "normalized", "label": "codex account label" }
+          ],
+          "caption": "Populated Accounts list shows both providers with labels"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "return to Settings with esc",
+      "steps": [
+        { "key": "esc", "caption": "Press [esc] to return to Settings" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Back on the Settings screen"
+        },
+        {
+          "expect": {
+            "text": "[a]ccounts",
+            "match": "normalized",
+            "label": "Settings action bar still present after return"
+          },
+          "caption": "Returned cleanly to Settings"
+        }
+      ]
+    }
+  ]
+}

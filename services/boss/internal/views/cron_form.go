@@ -20,7 +20,10 @@ import (
 
 // cronFormDoneMsg is emitted by CronFormModel after a successful submit.
 // The App handles it by switching back to ViewCron and refreshing the list.
-type cronFormDoneMsg struct{}
+// jobID carries the id of the saved (created or edited) job so the recreated
+// list can highlight that row; it is empty when the saved job is unknown
+// (falls back to the top-row default).
+type cronFormDoneMsg struct{ jobID string }
 
 // cronFormSavedMsg carries the result of the Create/Update RPC.
 type cronFormSavedMsg struct {
@@ -446,7 +449,11 @@ func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.done = true
-		return m, func() tea.Msg { return cronFormDoneMsg{} }
+		jobID := ""
+		if msg.job != nil {
+			jobID = msg.job.Id
+		}
+		return m, func() tea.Msg { return cronFormDoneMsg{jobID: jobID} }
 	}
 
 	// ESC before form is ready — cancel immediately.

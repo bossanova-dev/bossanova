@@ -136,6 +136,91 @@ func TestAccountLSTableOmitsPriorityColumn(t *testing.T) {
 	}
 }
 
+// TestAccountLSHintWhenProviderHasNoEligibleAccount pins BOS-327: the table path
+// prints an actionable hint for any provider that has accounts but none eligible,
+// naming `boss account update <id> --status active`.
+func TestAccountLSHintWhenProviderHasNoEligibleAccount(t *testing.T) {
+	ls := findLSSubcommand(t)
+	var out bytes.Buffer
+	ls.SetOut(&out)
+	stub := &accountLSStub{accounts: []*pb.Account{
+		{Id: "acct-1", Provider: "claude", Label: "work", Status: "disabled"},
+		{Id: "acct-2", Provider: "claude", Label: "home", Status: "disabled"},
+	}}
+	if err := accountLS(ls, stub); err != nil {
+		t.Fatalf("accountLS: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"claude", "no eligible account", "boss account update", "--status active"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("hint missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestAccountLSHintWhenActiveAccountUnhealthy pins BOS-327: an account that is
+// active but health=="failed" is NOT eligible (rotation cannot switch onto it),
+// so the hint must still fire rather than staying silent on the nominal "active"
+// row. This is the exact case the neutral "no eligible account" wording exists to
+// diagnose accurately.
+func TestAccountLSHintWhenActiveAccountUnhealthy(t *testing.T) {
+	ls := findLSSubcommand(t)
+	var out bytes.Buffer
+	ls.SetOut(&out)
+	stub := &accountLSStub{accounts: []*pb.Account{
+		{Id: "acct-1", Provider: "claude", Label: "work", Status: "active", Health: "failed"},
+	}}
+	if err := accountLS(ls, stub); err != nil {
+		t.Fatalf("accountLS: %v", err)
+	}
+	if !strings.Contains(out.String(), "no eligible account") {
+		t.Fatalf("hint must fire for an active-but-unhealthy account:\n%s", out.String())
+	}
+}
+
+// TestAccountLSNoHintWhenProviderHasEligibleAccount pins that the hint is silent
+// when a provider has at least one eligible (active AND healthy) account.
+func TestAccountLSNoHintWhenProviderHasEligibleAccount(t *testing.T) {
+	ls := findLSSubcommand(t)
+	var out bytes.Buffer
+	ls.SetOut(&out)
+	stub := &accountLSStub{accounts: []*pb.Account{
+		{Id: "acct-1", Provider: "claude", Label: "work", Status: "disabled"},
+		{Id: "acct-2", Provider: "claude", Label: "home", Status: "active", Health: "ok"},
+	}}
+	if err := accountLS(ls, stub); err != nil {
+		t.Fatalf("accountLS: %v", err)
+	}
+	if strings.Contains(out.String(), "no eligible account") {
+		t.Fatalf("hint should be silent when a provider has an eligible account:\n%s", out.String())
+	}
+}
+
+// TestAccountLSJSONNeverPrintsHint pins that --json output stays a pure array —
+// the hint never appears there.
+func TestAccountLSJSONNeverPrintsHint(t *testing.T) {
+	ls := findLSSubcommand(t)
+	var out bytes.Buffer
+	ls.SetOut(&out)
+	if err := ls.Flags().Set("json", "true"); err != nil {
+		t.Fatal(err)
+	}
+	stub := &accountLSStub{accounts: []*pb.Account{
+		{Id: "acct-1", Provider: "claude", Label: "work", Status: "disabled"},
+	}}
+	if err := accountLS(ls, stub); err != nil {
+		t.Fatalf("accountLS: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "no eligible account") || strings.Contains(got, "Hint") {
+		t.Fatalf("--json output must not contain the hint:\n%s", got)
+	}
+	var arr []map[string]any
+	if err := json.Unmarshal([]byte(got), &arr); err != nil {
+		t.Fatalf("--json output is not a pure array: %v\n%s", err, got)
+	}
+}
+
 func TestAccountLSJSONIncludesUsageAndForwardsRefresh(t *testing.T) {
 	ls := findLSSubcommand(t)
 	var out bytes.Buffer

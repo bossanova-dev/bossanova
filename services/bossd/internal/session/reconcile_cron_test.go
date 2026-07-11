@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -120,14 +121,54 @@ func TestCronActivityChecker_RunActive_MissingLogFallsBackToSessionLiveness(t *t
 	}
 }
 
-func newSweepLifecycle(t *testing.T, logsDir string) (*Lifecycle, *mockSessionStore, *mockAgentRunner, *recordingCronCompletionNotifier) {
+// recordingReapFinalizer captures the (sessionID, expectedStates) each reap
+// routes through the broadened finalize entry, standing in for the real
+// finalizeSessionFrom so sweep-selection tests don't wire the full finalize
+// pipeline. It always reports a PR-created success.
+type recordingReapFinalizer struct {
+	mu    sync.Mutex
+	calls []reapFinalizeCall
+}
+
+type reapFinalizeCall struct {
+	sessionID      string
+	expectedStates []int
+}
+
+func (r *recordingReapFinalizer) finalize(_ context.Context, sessionID string, expectedStates []int) (*FinalizeResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, reapFinalizeCall{sessionID: sessionID, expectedStates: expectedStates})
+	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}, nil
+}
+
+func (r *recordingReapFinalizer) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.calls)
+}
+
+func (r *recordingReapFinalizer) ids() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.calls))
+	for i, c := range r.calls {
+		out[i] = c.sessionID
+	}
+	return out
+}
+
+func newSweepLifecycle(t *testing.T, logsDir string) (*Lifecycle, *mockSessionStore, *mockAgentRunner, *recordingReapFinalizer) {
 	t.Helper()
 	sessions := newMockSessionStore()
 	runner := newMockAgentRunner()
 	lc := newTestLifecycle(sessions, nil, &mockAgentChatStore{}, nil, nil, runner, nil, nil, zerolog.Nop())
 	lc.SetAgentLogsDir(logsDir)
-	rec := &recordingCronCompletionNotifier{}
-	lc.SetCronCompletionNotifier(rec)
+	// A wired notifier keeps the partial-wiring early-return satisfied; the
+	// sweep now routes reaps through reapFinalizer, not the notifier.
+	lc.SetCronCompletionNotifier(&recordingCronCompletionNotifier{})
+	rec := &recordingReapFinalizer{}
+	lc.reapFinalizer = rec.finalize
 	return lc, sessions, runner, rec
 }
 
@@ -155,9 +196,33 @@ func TestRecoverStrandedCronSessions_IdleRun_Routed(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("routed=%d, want 1", n)
 	}
-	if got := rec.callsCopy(); len(got) != 1 || got[0] != "s1" {
-		t.Fatalf("notifier=%v, want [s1]", got)
+	if got := rec.ids(); len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("reaped=%v, want [s1]", got)
 	}
+	// The reap must pass the broadened from-set to the finalize entry.
+	if got := rec.calls[0].expectedStates; !equalIntSet(got, strandedReapStateInts()) {
+		t.Fatalf("expectedStates=%v, want %v", got, strandedReapStateInts())
+	}
+}
+
+// equalIntSet reports set equality (order-independent) for two int slices.
+func equalIntSet(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	m := make(map[int]int, len(a))
+	for _, v := range a {
+		m[v]++
+	}
+	for _, v := range b {
+		m[v]--
+	}
+	for _, c := range m {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func TestRecoverStrandedCronSessions_RecentlyActive_Skipped(t *testing.T) {
@@ -228,8 +293,8 @@ func TestRecoverStrandedCronSessions_TmuxUnattended_Routed(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("routed=%d, want 1 (tmux_unattended is unattended)", n)
 	}
-	if got := rec.callsCopy(); len(got) != 1 || got[0] != "s1" {
-		t.Fatalf("notifier=%v, want [s1]", got)
+	if got := rec.ids(); len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("reaped=%v, want [s1]", got)
 	}
 }
 
@@ -249,8 +314,8 @@ func TestRecoverStrandedCronSessions_NoLog_LivenessDead_Routed(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("routed=%d, want 1", n)
 	}
-	if got := rec.callsCopy(); len(got) != 1 || got[0] != "s1" {
-		t.Fatalf("notifier=%v, want [s1]", got)
+	if got := rec.ids(); len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("reaped=%v, want [s1]", got)
 	}
 }
 
@@ -313,5 +378,161 @@ func TestRecoverStrandedCronSessions_NoNotifier_NoOp(t *testing.T) {
 	n, err := lc.RecoverStrandedCronSessions(context.Background())
 	if err != nil || n != 0 {
 		t.Fatalf("routed=%d err=%v, want 0/nil", n, err)
+	}
+}
+
+func TestStrandedRunIsDead(t *testing.T) {
+	dir := t.TempDir()
+
+	// Post-agent: defers to cronRunIsOver. Idle log + no liveness => over.
+	seedLog(t, dir, "over", cronAgentIdleThreshold+time.Minute)
+	seedLog(t, dir, "fresh", time.Minute)
+
+	cases := []struct {
+		name     string
+		sess     *models.Session
+		liveness sessionLiveness
+		wantDead bool
+	}{
+		{
+			name:     "post_agent_idle_log_is_dead",
+			sess:     &models.Session{ID: "s", State: machine.ImplementingPlan, AgentName: "claude", AgentSessionID: ptr("over")},
+			wantDead: true,
+		},
+		{
+			name:     "post_agent_fresh_log_not_dead",
+			sess:     &models.Session{ID: "s", State: machine.PushingBranch, AgentName: "claude", AgentSessionID: ptr("fresh")},
+			wantDead: false,
+		},
+		{
+			name:     "post_agent_fresh_log_liveness_dead_is_dead",
+			sess:     &models.Session{ID: "s", State: machine.OpeningDraftPR, AgentName: "claude", AgentSessionID: ptr("fresh")},
+			liveness: fakeSessionLiveness{running: map[string]bool{}},
+			wantDead: true,
+		},
+		{
+			name:     "pre_agent_nil_id_liveness_dead_is_dead",
+			sess:     &models.Session{ID: "s", State: machine.CreatingWorktree, AgentName: "claude"},
+			liveness: fakeSessionLiveness{running: map[string]bool{}},
+			wantDead: true,
+		},
+		{
+			name:     "pre_agent_nil_id_liveness_alive_not_dead",
+			sess:     &models.Session{ID: "s", State: machine.StartingAgent, AgentName: "claude"},
+			liveness: fakeSessionLiveness{running: map[string]bool{"s": true}},
+			wantDead: false,
+		},
+		{
+			name:     "pre_agent_nil_id_liveness_unwired_not_dead",
+			sess:     &models.Session{ID: "s", State: machine.CreatingWorktree, AgentName: "claude"},
+			liveness: nil,
+			wantDead: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lc := newTestLifecycle(newMockSessionStore(), nil, &mockAgentChatStore{}, nil, nil, newMockAgentRunner(), nil, nil, zerolog.Nop())
+			lc.SetAgentLogsDir(dir)
+			if tc.liveness != nil {
+				lc.SetSessionLiveness(tc.liveness)
+			}
+			if got := lc.strandedRunIsDead(tc.sess); got != tc.wantDead {
+				t.Fatalf("strandedRunIsDead=%v, want %v", got, tc.wantDead)
+			}
+		})
+	}
+}
+
+func TestRecoverStrandedCronSessions_PostAgentPushingBranch_Routed(t *testing.T) {
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	s := strandedCronSession("s1", "a1")
+	s.State = machine.PushingBranch
+	sessions.sessions["s1"] = s
+	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute) // idle -> run over
+
+	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("routed=%d, want 1", n)
+	}
+	if got := rec.ids(); len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("reaped=%v, want [s1]", got)
+	}
+}
+
+func TestRecoverStrandedCronSessions_PreAgentCreatingWorktree_LivenessDead_Routed(t *testing.T) {
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // nothing alive
+	s := &models.Session{
+		ID:        "s1",
+		State:     machine.CreatingWorktree,
+		AgentName: "claude",
+		CronJobID: ptr("cron-s1"), // no AgentSessionID (pre-agent)
+		UpdatedAt: time.Now().Add(-time.Hour),
+	}
+	sessions.sessions["s1"] = s
+
+	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("routed=%d, want 1", n)
+	}
+	if got := rec.ids(); len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("reaped=%v, want [s1]", got)
+	}
+}
+
+func TestRecoverStrandedCronSessions_Orphaned_NeverReaped(t *testing.T) {
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // agent gone
+	s := strandedCronSession("s1", "a1")
+	s.State = machine.Orphaned // terminal; must never be reaped
+	sessions.sessions["s1"] = s
+	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
+
+	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 || rec.count() != 0 {
+		t.Fatalf("routed=%d reaped=%d, want 0/0 (Orphaned excluded)", n, rec.count())
+	}
+	for _, c := range rec.calls {
+		if c.sessionID == "s1" {
+			t.Fatal("Orphaned session must never be finalized")
+		}
+	}
+}
+
+func TestRecoverStrandedCronSessions_LiveAndAttended_Untouched(t *testing.T) {
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	// A live cron run (fresh log, liveness alive).
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{"live": true}})
+	live := strandedCronSession("live", "a-live")
+	live.State = machine.PushingBranch
+	sessions.sessions["live"] = live
+	seedLog(t, dir, "a-live", time.Minute)
+	// An attended (non-unattended) session that is idle/dead — must be skipped.
+	attended := strandedCronSession("attended", "a-att")
+	attended.State = machine.PushingBranch
+	attended.CronJobID = nil
+	attended.TmuxUnattended = false
+	sessions.sessions["attended"] = attended
+	seedLog(t, dir, "a-att", cronAgentIdleThreshold+time.Minute)
+
+	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 || rec.count() != 0 {
+		t.Fatalf("routed=%d reaped=%d, want 0/0 (live + attended both skipped)", n, rec.count())
 	}
 }

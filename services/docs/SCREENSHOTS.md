@@ -13,6 +13,16 @@ you can see at a glance which slot still needs a real screenshot.
 
 (none yet)
 
+## Diagrams
+
+`how-it-works.md` no longer uses a screenshot placeholder for the
+architecture overview. It renders an inline **Mermaid** flowchart
+(`boss` ↔ `bossd` ↔ worktrees/plugins) via `@docusaurus/theme-mermaid`
+(`markdown.mermaid: true` + `themes: ['@docusaurus/theme-mermaid']` in
+`docusaurus.config.ts`). Mermaid's theme-aware palette keeps the diagram
+legible in both dark and light mode. Do not re-add a PNG placeholder for
+that slot — extend or edit the Mermaid source in the page instead.
+
 ## Navigation note (re-capture needed)
 
 The TUI navigation was reorganized: Repos, Cron, and Trash now live behind the
@@ -25,22 +35,16 @@ This applies to the `tour/*.cast` recordings and the GIFs hosted on
 
 ## Placeholders
 
-| File                                | Pages                        | Should depict                                                                              |
-| ----------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------ |
-| `tui-overview.png`                  | `intro.md`                   | Main TUI showing several active sessions across multiple repos.                            |
-| `tui-session-detail.png`            | `how-it-works.md`            | The session detail view for a single agent session, showing tmux pane and PR status.       |
-| `tui-settings.png`                  | `settings.md`                | The boss TUI settings view (`boss settings`) with `--skip-permissions` toggled visible.    |
-| `quick-start-add-repo.png`          | `quick-start.md`             | Repo Add wizard showing the Open project / Clone from URL choice.                          |
-| `tour/boss-repo-settings.cast`      | `quick-start.md`             | Repo settings flow with setup command, merge strategy, and automation toggles visible.     |
-| `quick-start-new-session.png`       | `quick-start.md`             | New-session wizard showing the session-type table (PR / Quick Chat / Linear).              |
-| `quick-start-chat.png`              | `quick-start.md`             | Agent chat pane mid-conversation with skills loaded and a streaming reply.                 |
-| `quick-start-review-diff.png`       | `quick-start.md`             | Terminal split showing the agent's commits and a git diff in the worktree.                 |
-| `quick-start-pr-open.png`           | `quick-start.md`             | Home view with a session showing a PR number and green CI status.                          |
-| `quick-start-archive.png`           | `quick-start.md`             | Home view after archiving; the row is gone and the worktree directory is cleaned up.       |
+The only remaining placeholder PNG is the Settings view. It is
+referenced by a live page and still awaits a real TUI capture (a
+diagram cannot convey a settings pane). It is intentionally kept as a
+labeled placeholder until a real screenshot is captured — do not delete
+it, or the build breaks (`onBrokenLinks`/`onBrokenMarkdownLinks` are
+`throw`).
 
-The repository root `README.md` also points at `tui-overview.png` for
-its hero image, so replacing that one file refreshes both the docs
-site and the GitHub README.
+| File               | Pages         | Should depict                                                                           |
+| ------------------ | ------------- | --------------------------------------------------------------------------------------- |
+| `tui-settings.png` | `settings.md` | The boss TUI settings view (`boss settings`) with `--skip-permissions` toggled visible. |
 
 ## How to replace a placeholder with a real screenshot
 
@@ -48,7 +52,7 @@ site and the GitHub README.
 2. Reach the state described in the "Should depict" column above.
 3. Capture the terminal as a 1200×800 (or larger; 16:10 ratio) PNG.
 4. Save **over** the placeholder at the same path under
-    `static/img/screenshots/`; the filename is the final filename.
+   `static/img/screenshots/`; the filename is the final filename.
 5. Move the row in this file from **Placeholders** to **Done**.
 6. Commit.
 

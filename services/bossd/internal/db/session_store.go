@@ -42,6 +42,38 @@ func (s *SQLiteSessionStore) UpdateStateConditional(ctx context.Context, id stri
 	return n == 1, nil
 }
 
+// UpdateStateConditionalFrom is the from-set variant of UpdateStateConditional:
+// it transitions the session to newState only when its current state is one of
+// expectedStates. It backs the broadened stranded-cron reap (BOS-333), whose
+// finalize entry must accept several interrupted states, while the Stop-hook
+// path keeps the single-state UpdateStateConditional. An empty expectedStates
+// slice is a no-op (returns false without querying) so the idempotency guard
+// degenerates safely.
+func (s *SQLiteSessionStore) UpdateStateConditionalFrom(ctx context.Context, id string, newState int, expectedStates []int) (bool, error) {
+	if len(expectedStates) == 0 {
+		return false, nil
+	}
+	placeholders := make([]string, len(expectedStates))
+	args := make([]any, 0, len(expectedStates)+3)
+	now := sqlutil.TimeNow()
+	args = append(args, newState, now, id)
+	for i, st := range expectedStates {
+		placeholders[i] = "?"
+		args = append(args, st)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET state = ?, updated_at = ? WHERE id = ? AND state IN (`+strings.Join(placeholders, ", ")+`)`,
+		args...)
+	if err != nil {
+		return false, fmt.Errorf("update state conditional from: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
 func (s *SQLiteSessionStore) Create(ctx context.Context, params CreateSessionParams) (*models.Session, error) {
 	id, err := sqlutil.NewID()
 	if err != nil {
@@ -87,6 +119,25 @@ func (s *SQLiteSessionStore) List(ctx context.Context, repoID string) ([]*models
 func (s *SQLiteSessionStore) ListByState(ctx context.Context, state int) ([]*models.Session, error) {
 	query := sessionSelectSQL + " WHERE s.state = ? ORDER BY s.updated_at DESC"
 	return s.querySessionList(ctx, query, state)
+}
+
+// ListByStates returns every session whose state is one of the given states,
+// regardless of repo or archived status. It is the multi-state variant of
+// ListByState used by the broadened stranded-cron reap (BOS-333) to find
+// unattended sessions interrupted mid-transition. An empty states slice
+// returns nil without querying.
+func (s *SQLiteSessionStore) ListByStates(ctx context.Context, states []int) ([]*models.Session, error) {
+	if len(states) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(states))
+	args := make([]any, len(states))
+	for i, st := range states {
+		placeholders[i] = "?"
+		args[i] = st
+	}
+	query := sessionSelectSQL + " WHERE s.state IN (" + strings.Join(placeholders, ", ") + ") ORDER BY s.updated_at DESC"
+	return s.querySessionList(ctx, query, args...)
 }
 
 func (s *SQLiteSessionStore) ListActive(ctx context.Context, repoID string) ([]*models.Session, error) {

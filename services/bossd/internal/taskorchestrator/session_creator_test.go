@@ -104,6 +104,12 @@ func (m *mockSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ ti
 func (m *mockSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
 	return nil, nil
 }
+func (m *mockSessionStore) ListByStates(_ context.Context, _ []int) ([]*models.Session, error) {
+	return nil, nil
+}
+func (m *mockSessionStore) UpdateStateConditionalFrom(_ context.Context, _ string, _ int, _ []int) (bool, error) {
+	return false, nil
+}
 
 // mockSessionStarter implements SessionStarter for testing.
 type mockSessionStarter struct {

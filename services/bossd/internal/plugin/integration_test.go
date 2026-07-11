@@ -64,6 +64,9 @@ func (p *testVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.PRSumm
 func (p *testVCSProvider) ListClosedPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {
 	return nil, nil
 }
+func (p *testVCSProvider) SearchPRsByTitleTag(_ context.Context, _, _ string) ([]vcs.PRSummary, error) {
+	return nil, nil
+}
 
 // MergePR records the call under mu so concurrent callers (the plugin
 // subprocess and the orchestrator goroutine) can't race on the slice.

@@ -72,6 +72,12 @@ func (m *mockVCSProvider) ListClosedPRs(_ context.Context, _ string) ([]vcs.PRSu
 	}
 	return nil, nil
 }
+func (m *mockVCSProvider) SearchPRsByTitleTag(_ context.Context, _, _ string) ([]vcs.PRSummary, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return nil, nil
+}
 func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error { return nil }
 func (m *mockVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {
 	return nil
@@ -1542,10 +1548,6 @@ type fakeChatLifecycle struct {
 		agentSessionID string
 		reason         string
 	}
-	// getAgentChatTitleFunc, when non-nil, provides the title the host reads
-	// to pick a displacement policy. Defaults to ("", nil) — a non-repair
-	// title — so IDLE-path tests need not set it.
-	getAgentChatTitleFunc func(ctx context.Context, agentSessionID string) (string, error)
 	// startFunc, when non-nil, takes precedence over startResp/startErr.
 	// Used by the AlreadyExists test to have the lifecycle return the
 	// existing agent_session_id alongside a typed gRPC error.
@@ -1607,16 +1609,6 @@ func (f *fakeChatLifecycle) ReplaceBlockingChatForRepair(ctx context.Context, se
 		return fn(ctx, sessionID, agentSessionID, reason)
 	}
 	return session.ReclaimRepairChatResult{}, nil
-}
-
-func (f *fakeChatLifecycle) GetAgentChatTitle(ctx context.Context, agentSessionID string) (string, error) {
-	f.mu.Lock()
-	fn := f.getAgentChatTitleFunc
-	f.mu.Unlock()
-	if fn != nil {
-		return fn(ctx, agentSessionID)
-	}
-	return "", nil
 }
 
 func (*dbWritingChatLifecycle) ReplaceBlockingChatForRepair(context.Context, string, string, string) (session.ReclaimRepairChatResult, error) {
@@ -1752,7 +1744,6 @@ func TestReplaceBlockingChatForRepair_TrackerGated(t *testing.T) {
 	now := time.Now()
 	cases := []struct {
 		name         string
-		title        string // GetAgentChatTitle result
 		status       bossanovav1.ChatStatus
 		hasEntry     bool
 		lastOutputAt time.Time
@@ -1796,7 +1787,6 @@ func TestReplaceBlockingChatForRepair_TrackerGated(t *testing.T) {
 			// Repair-owned chat stuck at a QUESTION past 15m → displaceable
 			// (no human will ever answer an unattended repair's question).
 			name:         "replace_repair_title_question_timeout",
-			title:        "Repair: fix",
 			status:       bossanovav1.ChatStatus_CHAT_STATUS_QUESTION,
 			hasEntry:     true,
 			lastOutputAt: now.Add(-20 * time.Minute),
@@ -1805,24 +1795,33 @@ func TestReplaceBlockingChatForRepair_TrackerGated(t *testing.T) {
 			wantCalls:    1,
 		},
 		{
-			// Non-repair chat at a QUESTION is never displaced, at any age.
-			name:         "replace_nonrepair_title_question_never",
-			title:        "New chat",
+			// BOS-347: a NON-repair chat parked at a QUESTION past the 15m
+			// window is a dead run on a repairable session — displaceable,
+			// same policy as repair-titled chats. (The observed-snapshot
+			// check still protects anyone actively answering.)
+			name:         "replace_nonrepair_title_question_timeout",
 			status:       bossanovav1.ChatStatus_CHAT_STATUS_QUESTION,
 			hasEntry:     true,
 			lastOutputAt: now.Add(-20 * time.Hour),
 			observed:     now.Add(-20 * time.Hour),
+			wantRefused:  false,
+			wantCalls:    1,
+		},
+		{
+			// Under the 15m window a QUESTION chat is still protected,
+			// regardless of title.
+			name:         "replace_question_under_window_refused",
+			status:       bossanovav1.ChatStatus_CHAT_STATUS_QUESTION,
+			hasEntry:     true,
+			lastOutputAt: now.Add(-5 * time.Minute),
+			observed:     now.Add(-5 * time.Minute),
 			wantRefused:  true,
 			wantCalls:    0,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			title := tc.title
 			lc := &fakeChatLifecycle{}
-			lc.getAgentChatTitleFunc = func(context.Context, string) (string, error) {
-				return title, nil
-			}
 			srv := NewHostServiceServer(&mockVCSProvider{})
 			srv.SetLifecycle(lc)
 			srv.chatTracker = status.NewTracker()

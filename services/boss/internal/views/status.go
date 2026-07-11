@@ -237,6 +237,8 @@ func rotationEventLabel(ev *pb.RotationEvent) string {
 		return "rotation disabled — status only"
 	case pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY:
 		return "agent cannot rotate — status only"
+	case pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT:
+		return "no eligible account — status only"
 	case pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED:
 		return "all accounts limited"
 	case pb.RotationOutcome_ROTATION_OUTCOME_FAILED:

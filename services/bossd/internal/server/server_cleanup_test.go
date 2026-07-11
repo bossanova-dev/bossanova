@@ -136,6 +136,12 @@ func (s *cleanupSessionStore) List(context.Context, string) ([]*models.Session, 
 func (s *cleanupSessionStore) ListByState(context.Context, int) ([]*models.Session, error) {
 	panic("not used")
 }
+func (s *cleanupSessionStore) ListByStates(context.Context, []int) ([]*models.Session, error) {
+	panic("not used")
+}
+func (s *cleanupSessionStore) UpdateStateConditionalFrom(context.Context, string, int, []int) (bool, error) {
+	panic("not used")
+}
 func (s *cleanupSessionStore) ListActive(context.Context, string) ([]*models.Session, error) {
 	panic("not used")
 }

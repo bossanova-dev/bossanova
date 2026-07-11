@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "title": "BOS-268 Safe disable/remove actions for TUI accounts",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "accounts list shows a disabled row and the new x/d actions",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        { "key": "a", "caption": "Press [a] to open the Accounts list" },
+        {
+          "waitFor": {
+            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "label": "Accounts list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Accounts table settled"
+        },
+        {
+          "expect": [
+            { "text": "work-claude", "match": "normalized", "label": "active claude account row" },
+            {
+              "text": "personal-codex",
+              "match": "normalized",
+              "label": "disabled codex account row"
+            },
+            {
+              "text": "disabled",
+              "match": "normalized",
+              "label": "disabled STATUS cell rendered for the codex account"
+            },
+            {
+              "text": "[x] disable/enable",
+              "match": "normalized",
+              "label": "action bar advertises the new [x] disable/enable toggle"
+            },
+            {
+              "text": "[d] remove",
+              "match": "normalized",
+              "label": "action bar advertises the new [d] remove action"
+            }
+          ],
+          "caption": "List shows a disabled row plus the BOS-268 disable/enable and remove actions"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "d opens the value-safe remove confirm dialog",
+      "steps": [
+        { "key": "d", "caption": "Press [d] to remove the highlighted account" },
+        {
+          "waitFor": { "text": "Remove account", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Remove confirm dialog opened"
+        },
+        {
+          "expect": [
+            {
+              "text": "Remove account",
+              "match": "normalized",
+              "label": "remove confirm prompt names the destructive action"
+            },
+            {
+              "text": "work-claude",
+              "match": "normalized",
+              "label": "prompt names the target account"
+            },
+            {
+              "text": "cannot be undone",
+              "match": "normalized",
+              "label": "prompt states removal is irreversible"
+            },
+            {
+              "text": "[y/enter] confirm",
+              "match": "normalized",
+              "label": "value-safe confirm action bar"
+            }
+          ],
+          "caption": "The remove confirm dialog is shown before any credential is purged"
+        },
+        { "key": "n", "caption": "Press [n] to dismiss without removing (no RPC fires)" },
+        {
+          "waitFor": { "text": "[d] remove", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Dismissed cleanly back to the accounts list"
+        }
+      ]
+    }
+  ]
+}

@@ -16,6 +16,8 @@ import {
   groupPrsByTicket,
   computeCloseable,
   computeRollups,
+  hasImplementationPlan,
+  computePlanningReconcile,
   parseTidyData,
   runTidy,
 } from './linear-tidy-lib.mjs'
@@ -780,4 +782,296 @@ test('runTidy: no Done workflow state escalates the close rather than guessing',
   })
   assert.deepEqual(result.closed, [])
   assert.ok(result.escalations.some((e) => e.kind === 'no-done-state'))
+})
+
+// --- Behaviour 3: planning-queue reconcile ----------------------------------
+
+const lbl = (name, id = `label-${name}`) => ({ id, name })
+const planAttachment = (id = 'BOS-1') => ({
+  title: `Implementation plan (${id})`,
+  url: `https://proof.bossanova.dev/plans/bossanova/${id}/abc.md`,
+})
+// Ticket shape as produced by parseTidyData (id/identifier/state/labels/attachments).
+const tk = (id, identifier, stateName, labels = [], attachments = []) => ({
+  id,
+  identifier,
+  state: st(stateName),
+  labels,
+  attachments,
+})
+
+const RECONCILE_IDS = {
+  agentPlanId: 'label-agent-plan',
+  agentFriendlyId: 'label-agent-friendly',
+  todoStateId: 's-todo',
+}
+
+test('hasImplementationPlan: true on the plan-title prefix or the proof host, false otherwise', () => {
+  assert.equal(
+    hasImplementationPlan([{ title: 'Implementation plan (BOS-7)', url: 'https://x' }]),
+    true,
+  )
+  assert.equal(
+    hasImplementationPlan([
+      { title: 'renamed', url: 'https://proof.bossanova.dev/plans/bossanova/BOS-7/a.md' },
+    ]),
+    true,
+  )
+  assert.equal(hasImplementationPlan([{ title: 'Design doc', url: 'https://example.com' }]), false)
+  assert.equal(hasImplementationPlan([]), false)
+  assert.equal(hasImplementationPlan(undefined), false)
+})
+
+test('computePlanningReconcile: agent-friendly + Unplanned + no plan → drop agent-friendly, add agent-plan', () => {
+  const tickets = [tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-friendly'), lbl('bug')])]
+  const r = computePlanningReconcile(tickets, RECONCILE_IDS)
+  assert.deepEqual(r.toTodo, [])
+  assert.deepEqual(
+    r.toAgentPlan.map((t) => t.identifier),
+    ['BOS-1'],
+  )
+  // Kept bug, dropped agent-friendly, added agent-plan (full replacement set).
+  assert.deepEqual(r.toAgentPlan[0].newLabelIds, ['label-bug', 'label-agent-plan'])
+  assert.deepEqual(r.escalate, [])
+})
+
+test('computePlanningReconcile: agent-friendly + Unplanned + plan attached → move to Todo, labels untouched', () => {
+  const tickets = [
+    tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-friendly')], [planAttachment('BOS-1')]),
+  ]
+  const r = computePlanningReconcile(tickets, RECONCILE_IDS)
+  assert.deepEqual(r.toAgentPlan, [])
+  assert.deepEqual(
+    r.toTodo.map((t) => t.identifier),
+    ['BOS-1'],
+  )
+})
+
+test('computePlanningReconcile: needs-human, already-agent-plan, non-Unplanned, epic parent, and non-agent-friendly are all skipped', () => {
+  const tickets = [
+    tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-friendly'), lbl('needs-human')]),
+    tk('i2', 'BOS-2', 'Unplanned', [lbl('agent-friendly'), lbl('agent-plan')]),
+    tk('i3', 'BOS-3', 'Todo', [lbl('agent-friendly')]),
+    tk('i4', 'BOS-4', 'Unplanned', [lbl('agent-friendly')]), // epic parent (blocked)
+    tk('i5', 'BOS-5', 'Unplanned', [lbl('bug')]), // no agent-friendly
+  ]
+  const r = computePlanningReconcile(tickets, {
+    ...RECONCILE_IDS,
+    blockedIdentifiers: new Set(['BOS-4']),
+  })
+  assert.deepEqual(r.toTodo, [])
+  assert.deepEqual(r.toAgentPlan, [])
+  assert.deepEqual(r.escalate, [])
+})
+
+test('computePlanningReconcile: absent agent-plan label id escalates a no-plan case (never guesses)', () => {
+  const tickets = [tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-friendly')])]
+  const r = computePlanningReconcile(tickets, { ...RECONCILE_IDS, agentPlanId: undefined })
+  assert.deepEqual(r.toAgentPlan, [])
+  assert.deepEqual(
+    r.escalate.map((e) => `${e.kind}:${e.identifier}`),
+    ['no-agent-plan-label:BOS-1'],
+  )
+})
+
+test('computePlanningReconcile: absent Todo state id escalates a has-plan case', () => {
+  const tickets = [
+    tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-friendly')], [planAttachment('BOS-1')]),
+  ]
+  const r = computePlanningReconcile(tickets, { ...RECONCILE_IDS, todoStateId: null })
+  assert.deepEqual(r.toTodo, [])
+  assert.deepEqual(
+    r.escalate.map((e) => `${e.kind}:${e.identifier}`),
+    ['no-todo-state:BOS-1'],
+  )
+})
+
+test('parseTidyData: extracts per-ticket labels/attachments, todoStateId, and label ids by name', () => {
+  const data = {
+    workflowStates: {
+      nodes: [
+        { id: 's-todo', name: 'Todo', type: 'unstarted' },
+        { id: 's-done', name: 'Done', type: 'completed' },
+      ],
+    },
+    issueLabels: {
+      nodes: [
+        { id: 'label-agent-plan', name: 'agent-plan' },
+        { id: 'label-agent-friendly', name: 'agent-friendly' },
+      ],
+    },
+    issues: {
+      nodes: [
+        {
+          id: 'i1',
+          identifier: 'BOS-1',
+          state: st('Unplanned'),
+          labels: { nodes: [{ id: 'label-agent-friendly', name: 'agent-friendly' }] },
+          attachments: {
+            nodes: [{ title: 'Implementation plan (BOS-1)', url: 'https://proof.bossanova.dev/x' }],
+          },
+          children: { nodes: [] },
+        },
+      ],
+      pageInfo: { hasNextPage: false },
+    },
+  }
+  const parsed = parseTidyData(data)
+  assert.equal(parsed.todoStateId, 's-todo')
+  assert.equal(parsed.labelIdsByName.get('agent-plan'), 'label-agent-plan')
+  assert.equal(parsed.labelIdsByName.get('agent-friendly'), 'label-agent-friendly')
+  assert.deepEqual(parsed.tickets[0].labels, [
+    { id: 'label-agent-friendly', name: 'agent-friendly' },
+  ])
+  assert.equal(parsed.tickets[0].attachments[0].title, 'Implementation plan (BOS-1)')
+})
+
+function reconcileData() {
+  return {
+    workflowStates: {
+      nodes: [
+        { id: 's-todo', name: 'Todo', type: 'unstarted' },
+        { id: 's-done', name: 'Done', type: 'completed' },
+      ],
+    },
+    issueLabels: {
+      nodes: [
+        { id: 'label-agent-plan', name: 'agent-plan' },
+        { id: 'label-agent-friendly', name: 'agent-friendly' },
+      ],
+    },
+    issues: {
+      nodes: [
+        // no plan → relabel to agent-plan
+        {
+          id: 'i-noplan',
+          identifier: 'BOS-1',
+          state: st('Unplanned'),
+          labels: {
+            nodes: [
+              { id: 'label-agent-friendly', name: 'agent-friendly' },
+              { id: 'label-bug', name: 'bug' },
+            ],
+          },
+          attachments: { nodes: [] },
+          children: { nodes: [] },
+        },
+        // has plan → move to Todo
+        {
+          id: 'i-planned',
+          identifier: 'BOS-2',
+          state: st('Unplanned'),
+          labels: { nodes: [{ id: 'label-agent-friendly', name: 'agent-friendly' }] },
+          attachments: {
+            nodes: [
+              {
+                title: 'Implementation plan (BOS-2)',
+                url: 'https://proof.bossanova.dev/plans/bossanova/BOS-2/a.md',
+              },
+            ],
+          },
+          children: { nodes: [] },
+        },
+      ],
+      pageInfo: { hasNextPage: false },
+    },
+  }
+}
+
+test('runTidy: reconcile applies — planned Unplanned → Todo, no-plan → agent-plan relabel', async () => {
+  const writes = []
+  const result = await runTidy({
+    apiKey: 'k',
+    dryRun: false,
+    readPullRequests: async () => [],
+    linearReadImpl: async () => reconcileData(),
+    linearWriteImpl: async ({ variables }) => {
+      writes.push(variables)
+      return { issueUpdate: { success: true } }
+    },
+  })
+  assert.deepEqual(
+    result.reclassified.toTodo.map((t) => `${t.identifier}->${t.to}`),
+    ['BOS-2->Todo'],
+  )
+  assert.deepEqual(
+    result.reclassified.toAgentPlan.map((t) => `${t.identifier}->${t.to}`),
+    ['BOS-1->agent-plan'],
+  )
+  // toTodo applies before toAgentPlan; the relabel sends the full replacement set.
+  assert.deepEqual(writes, [
+    { id: 'i-planned', stateId: 's-todo' },
+    { id: 'i-noplan', labelIds: ['label-bug', 'label-agent-plan'] },
+  ])
+  assert.equal(result.counts.writes, 2)
+  assert.deepEqual(result.escalations, [])
+})
+
+test('runTidy: --dry-run reconcile computes actions but writes nothing', async () => {
+  let writeCalls = 0
+  const result = await runTidy({
+    apiKey: 'k',
+    dryRun: true,
+    readPullRequests: async () => [],
+    linearReadImpl: async () => reconcileData(),
+    linearWriteImpl: async () => {
+      writeCalls += 1
+      return { issueUpdate: { success: true } }
+    },
+  })
+  assert.equal(writeCalls, 0)
+  assert.equal(result.counts.writes, 0)
+  assert.deepEqual(
+    result.reclassified.toAgentPlan.map((t) => t.identifier),
+    ['BOS-1'],
+  )
+  assert.deepEqual(
+    result.reclassified.toTodo.map((t) => t.identifier),
+    ['BOS-2'],
+  )
+})
+
+test('runTidy: reconcile idempotent — converted tickets yield no further actions', async () => {
+  const settled = reconcileData()
+  // BOS-1 now carries agent-plan instead of agent-friendly.
+  settled.issues.nodes[0].labels.nodes = [
+    { id: 'label-bug', name: 'bug' },
+    { id: 'label-agent-plan', name: 'agent-plan' },
+  ]
+  // BOS-2 now sits in Todo (no longer Unplanned).
+  settled.issues.nodes[1].state = st('Todo')
+  let writeCalls = 0
+  const result = await runTidy({
+    apiKey: 'k',
+    dryRun: false,
+    readPullRequests: async () => [],
+    linearReadImpl: async () => settled,
+    linearWriteImpl: async () => {
+      writeCalls += 1
+      return { issueUpdate: { success: true } }
+    },
+  })
+  assert.deepEqual(result.reclassified.toTodo, [])
+  assert.deepEqual(result.reclassified.toAgentPlan, [])
+  assert.equal(writeCalls, 0)
+})
+
+test('runTidy: reconcile escalates a no-plan ticket when the agent-plan label is absent (no write)', async () => {
+  const data = reconcileData()
+  data.issueLabels.nodes = data.issueLabels.nodes.filter((l) => l.name !== 'agent-plan')
+  data.issues.nodes = [data.issues.nodes[0]] // keep only the no-plan candidate
+  const writes = []
+  const result = await runTidy({
+    apiKey: 'k',
+    dryRun: false,
+    readPullRequests: async () => [],
+    linearReadImpl: async () => data,
+    linearWriteImpl: async ({ variables }) => {
+      writes.push(variables)
+      return { issueUpdate: { success: true } }
+    },
+  })
+  assert.deepEqual(result.reclassified.toAgentPlan, [])
+  assert.deepEqual(writes, [])
+  assert.ok(result.escalations.some((e) => e.kind === 'no-agent-plan-label'))
 })

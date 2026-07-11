@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "title": "BOS-269 Account health, cooldown & masked last-test detail",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "open the failed/cooling account detail from the Accounts list",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        { "key": "a", "caption": "Press [a] to open the Accounts list" },
+        {
+          "waitFor": {
+            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "label": "Accounts list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Accounts table settled"
+        },
+        {
+          "expect": [
+            {
+              "text": "personal-codex",
+              "match": "normalized",
+              "label": "cooling/failed codex account row"
+            },
+            { "text": "failed", "match": "normalized", "label": "failed HEALTH cell in the list" }
+          ],
+          "caption": "List shows the failed codex account"
+        },
+        { "key": "down", "caption": "Move the cursor to the failed/cooling codex row (index 1)" },
+        { "key": "enter", "caption": "Open the account detail screen" },
+        {
+          "waitFor": { "text": "Details", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Detail screen with the read-only breakdown is visible"
+        },
+        {
+          "expect": [
+            {
+              "text": "failed",
+              "match": "normalized",
+              "label": "failed health in the detail breakdown"
+            },
+            {
+              "text": "resets",
+              "match": "normalized",
+              "label": "cooldown reset time (cooling state)"
+            },
+            {
+              "text": "[REDACTED]",
+              "match": "normalized",
+              "label": "masked last-test error (redaction sentinel)"
+            }
+          ],
+          "caption": "Detail shows failed health, a cooldown reset time, and a masked last-test error"
+        }
+      ]
+    }
+  ]
+}

@@ -655,7 +655,14 @@ func (p *Provider) listPRsByState(ctx context.Context, repoPath, label, state st
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", label, err)
 	}
+	return decodePRList(out)
+}
 
+// decodePRList unmarshals `gh pr list --json number,title,headRefName,state,author`
+// output into vcs.PRSummary values. Shared by listPRsByState and
+// SearchPRsByTitleTag so the field set, the "parse PRs" error wrap, and the
+// PRSummary mapping have a single source of truth rather than drifting copies.
+func decodePRList(out string) ([]vcs.PRSummary, error) {
 	var raw []struct {
 		Number      int    `json:"number"`
 		Title       string `json:"title"`
@@ -677,6 +684,40 @@ func (p *Provider) listPRsByState(ctx context.Context, repoPath, label, state st
 			HeadBranch: r.HeadRefName,
 			State:      parsePRState(r.State),
 			Author:     r.Author.Login,
+		}
+	}
+
+	return prs, nil
+}
+
+// SearchPRsByTitleTag returns PRs across all states whose title carries the
+// bracketed tracker tag "[<tag>]". The tag argument is the bare identifier
+// (e.g. "BOS-289"); the server-side search uses the bareword in:title (GitHub
+// tokenizes bracket characters, so a "[BOS-289]" query would not narrow
+// reliably), and the exact bracket match is enforced in Go afterwards.
+func (p *Provider) SearchPRsByTitleTag(ctx context.Context, repoPath, tag string) ([]vcs.PRSummary, error) {
+	out, err := p.runGHWithTransientRetry(ctx, "search PRs by title tag",
+		"pr", "list",
+		"--repo", repoFlag(repoPath),
+		"--state", "all",
+		"--search", tag+" in:title",
+		"--json", "number,title,headRefName,state,author",
+		"--limit", "100",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("search PRs by title tag: %w", err)
+	}
+
+	all, err := decodePRList(out)
+	if err != nil {
+		return nil, err
+	}
+
+	bracketed := "[" + tag + "]"
+	prs := make([]vcs.PRSummary, 0, len(all))
+	for _, pr := range all {
+		if strings.Contains(pr.Title, bracketed) {
+			prs = append(prs, pr)
 		}
 	}
 

@@ -112,6 +112,13 @@ type Lifecycle struct {
 	// for lifecycle-owned cron sessions.
 	cronCompletionNotifier cronCompletionNotifier
 
+	// reapFinalizer is the finalize entry the stranded-cron sweep
+	// (RecoverStrandedCronSessions) routes dead strands through. nil means
+	// "use the real finalizeSessionFrom"; tests inject a fake to record the
+	// (sessionID, expectedStates) it is called with without exercising the
+	// full finalize pipeline.
+	reapFinalizer func(ctx context.Context, sessionID string, expectedStates []int) (*FinalizeResult, error)
+
 	// daemonCtx is retained for compatibility with older SetDaemonCtx wiring.
 	daemonCtx context.Context //nolint:containedctx // retained compatibility field
 

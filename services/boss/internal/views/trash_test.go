@@ -255,13 +255,14 @@ func TestTrashModel_FilteredDeleteAllDeletesOnlyMatchedSessions(t *testing.T) {
 		t.Fatalf("confirmation copy missing filtered scope: %q", got)
 	}
 
+	// Changing the filter after the confirm prompt is raised must not change the
+	// batch: the IDs were captured when [a] was pressed (the "docs" match).
 	m.filter.input.SetValue("payments")
 	m.buildTable()
 
 	model, cmd := m.Update(keyString("enter"))
 	m = model.(TrashModel)
-	msg := cmd().(allSessionsDeletedMsg)
-	m = updateTrashMsg(t, m, msg)
+	m = drainDeleteAll(t, m, cmd)
 
 	if client.emptyCalled {
 		t.Fatal("filtered delete all should not call EmptyTrash")
@@ -271,6 +272,107 @@ func TestTrashModel_FilteredDeleteAllDeletesOnlyMatchedSessions(t *testing.T) {
 	}
 	if got := trashSessionIDs(m.sessions); fmt.Sprint(got) != "[sess-1 sess-2]" {
 		t.Fatalf("remaining sessions = %v, want [sess-1 sess-2]", got)
+	}
+	if m.deletingAll {
+		t.Fatal("delete-all state should clear once the batch drains")
+	}
+}
+
+func TestTrashModel_DeleteAllShowsProgressCount(t *testing.T) {
+	client := &trashStubClient{stubClient: &stubClient{}, sessions: trashSharedRepoSessions()}
+	m := newLoadedTrashModelWithClient(client)
+
+	m = updateTrash(t, m, keyString("a"))
+	if !m.confirm.active {
+		t.Fatal("model should confirm delete all")
+	}
+
+	model, cmd := m.Update(keyString("enter"))
+	m = model.(TrashModel)
+	// Before any deletion completes the view reads as "currently deleting the
+	// first of three".
+	if m.deleteDone != 0 || m.deleteTotal != 3 {
+		t.Fatalf("initial batch counters = %d/%d, want 0/3", m.deleteDone, m.deleteTotal)
+	}
+	if got := m.View().Content; !strings.Contains(got, "Deleting 1/3…") {
+		t.Fatalf("initial progress frame missing counter: %q", got)
+	}
+
+	// First deletion completes; the counter advances to the second of three.
+	msg := cmd().(deleteProgressMsg)
+	model, cmd = m.Update(msg)
+	m = model.(TrashModel)
+	if m.deleteDone != 1 || m.deleteTotal != 3 {
+		t.Fatalf("post-first counters = %d/%d, want 1/3", m.deleteDone, m.deleteTotal)
+	}
+	if got := m.View().Content; !strings.Contains(got, "Deleting 2/3…") {
+		t.Fatalf("progress frame missing advanced counter: %q", got)
+	}
+
+	// Drain the remaining deletions; the trash ends up empty.
+	m = drainDeleteAll(t, m, cmd)
+	if m.deletingAll {
+		t.Fatal("delete-all state should clear once the batch drains")
+	}
+	if m.deleteTotal != 0 || m.deleteDone != 0 {
+		t.Fatalf("counters not reset after drain = %d/%d", m.deleteDone, m.deleteTotal)
+	}
+	if got := m.View().Content; !strings.Contains(got, "Trash is empty.") {
+		t.Fatalf("view should settle to empty state: %q", got)
+	}
+}
+
+func TestTrashModel_DeleteAllProgressStopsOnError(t *testing.T) {
+	client := &trashStubClient{
+		stubClient: &stubClient{},
+		sessions:   trashSharedRepoSessions(),
+		failOnID:   "sess-b",
+	}
+	m := newLoadedTrashModelWithClient(client)
+
+	m = updateTrash(t, m, keyString("a"))
+	model, cmd := m.Update(keyString("enter"))
+	m = model.(TrashModel)
+	m = drainDeleteAll(t, m, cmd)
+
+	if got := fmt.Sprint(client.removedIDs); got != "[sess-a]" {
+		t.Fatalf("removed IDs = %v, want [sess-a] (stops at first failure)", client.removedIDs)
+	}
+	if m.err == nil {
+		t.Fatal("model should surface the delete error")
+	}
+	if m.deletingAll {
+		t.Fatal("delete-all state should clear on error")
+	}
+	if got := trashSessionIDs(m.sessions); fmt.Sprint(got) != "[sess-b sess-c]" {
+		t.Fatalf("remaining sessions = %v, want [sess-b sess-c] (only succeeded pruned)", got)
+	}
+}
+
+func TestTrashModel_UnfilteredDeleteAllUsesRemoveSessionNotEmptyTrash(t *testing.T) {
+	client := &trashStubClient{stubClient: &stubClient{}, sessions: trashSharedRepoSessions()}
+	m := newLoadedTrashModelWithClient(client)
+
+	m = updateTrash(t, m, keyString("a"))
+	if !m.confirm.active {
+		t.Fatal("model should confirm unfiltered delete all")
+	}
+	if got := m.View().Content; !strings.Contains(got, "Permanently delete all 3 archived sessions?") {
+		t.Fatalf("confirmation copy missing unfiltered scope: %q", got)
+	}
+
+	model, cmd := m.Update(keyString("enter"))
+	m = model.(TrashModel)
+	m = drainDeleteAll(t, m, cmd)
+
+	if client.emptyCalled {
+		t.Fatal("unfiltered delete all should drive RemoveSession, not EmptyTrash")
+	}
+	if got := fmt.Sprint(client.removedIDs); got != "[sess-a sess-b sess-c]" {
+		t.Fatalf("removed IDs = %v, want [sess-a sess-b sess-c]", client.removedIDs)
+	}
+	if len(m.sessions) != 0 {
+		t.Fatalf("remaining sessions = %v, want none", trashSessionIDs(m.sessions))
 	}
 }
 
@@ -314,11 +416,7 @@ func TestTrashModel_FilteredDeleteAllPartialFailurePrunesOnlySucceeded(t *testin
 	m = updateTrash(t, m, keyString("a"))
 	model, cmd := m.Update(keyString("enter"))
 	m = model.(TrashModel)
-	msg := cmd().(allSessionsDeletedMsg)
-	if msg.err == nil {
-		t.Fatal("batch delete should report the mid-loop failure")
-	}
-	m = updateTrashMsg(t, m, msg)
+	m = drainDeleteAll(t, m, cmd)
 
 	if client.emptyCalled {
 		t.Fatal("filtered delete all should not call EmptyTrash")
@@ -328,6 +426,9 @@ func TestTrashModel_FilteredDeleteAllPartialFailurePrunesOnlySucceeded(t *testin
 	}
 	if m.err == nil {
 		t.Fatal("model should surface the delete error")
+	}
+	if m.deletingAll {
+		t.Fatal("delete-all state should clear on error")
 	}
 	if got := trashSessionIDs(m.sessions); fmt.Sprint(got) != "[sess-b sess-c]" {
 		t.Fatalf("remaining sessions = %v, want [sess-b sess-c] (only succeeded pruned)", got)
@@ -500,6 +601,24 @@ func updateTrashMsg(t *testing.T, m TrashModel, msg tea.Msg) TrashModel {
 		t.Fatalf("model type = %T, want TrashModel", model)
 	}
 	return got
+}
+
+// drainDeleteAll runs the delete-all command chain to completion: it executes
+// each returned command, feeds the resulting deleteProgressMsg back into the
+// model, and follows the next command until the chain ends (queue empty or a
+// mid-batch error clears it).
+func drainDeleteAll(t *testing.T, m TrashModel, cmd tea.Cmd) TrashModel {
+	t.Helper()
+	for cmd != nil {
+		msg, ok := cmd().(deleteProgressMsg)
+		if !ok {
+			t.Fatalf("expected deleteProgressMsg from delete-all chain")
+		}
+		model, next := m.Update(msg)
+		m = model.(TrashModel)
+		cmd = next
+	}
+	return m
 }
 
 func keyString(s string) tea.KeyMsg {

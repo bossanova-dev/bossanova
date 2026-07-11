@@ -579,6 +579,14 @@ func (c *LocalClient) RepairDoctor(ctx context.Context) (*pb.RepairDoctorRespons
 	return resp.Msg, nil
 }
 
+func (c *LocalClient) StartRepairWorkflow(ctx context.Context) (*pb.StartRepairWorkflowResponse, error) {
+	resp, err := c.rpc.StartRepairWorkflow(ctx, connect.NewRequest(&pb.StartRepairWorkflowRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (c *LocalClient) ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error) {
 	resp, err := c.rpc.ListCheckSnapshots(ctx, connect.NewRequest(&pb.ListCheckSnapshotsRequest{
 		SessionId: sessionID,

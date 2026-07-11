@@ -177,6 +177,10 @@ type SessionStore interface {
 	Get(ctx context.Context, id string) (*models.Session, error)
 	List(ctx context.Context, repoID string) ([]*models.Session, error)
 	ListByState(ctx context.Context, state int) ([]*models.Session, error)
+	// ListByStates returns every session whose state is one of the given
+	// states. Multi-state variant of ListByState used by the broadened
+	// stranded-cron reap (BOS-333); an empty slice returns nil.
+	ListByStates(ctx context.Context, states []int) ([]*models.Session, error)
 	ListActive(ctx context.Context, repoID string) ([]*models.Session, error)
 	ListActiveWithRepo(ctx context.Context, repoID string) ([]*SessionWithRepo, error)
 	ListWithRepo(ctx context.Context, repoID string) ([]*SessionWithRepo, error)
@@ -189,6 +193,11 @@ type SessionStore interface {
 	// exactly one row transitioned; false if the row was already past the
 	// expected state (duplicate event or stale transition).
 	UpdateStateConditional(ctx context.Context, id string, newState, expectedState int) (bool, error)
+	// UpdateStateConditionalFrom transitions the session to newState only when
+	// its current state is one of expectedStates. From-set variant of
+	// UpdateStateConditional backing the broadened stranded-cron reap
+	// (BOS-333); an empty expectedStates slice is a no-op returning false.
+	UpdateStateConditionalFrom(ctx context.Context, id string, newState int, expectedStates []int) (bool, error)
 	Archive(ctx context.Context, id string) error
 	Resurrect(ctx context.Context, id string) error
 	Delete(ctx context.Context, id string) error

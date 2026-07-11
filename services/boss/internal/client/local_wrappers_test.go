@@ -119,6 +119,12 @@ func (f *fakeDaemonRPC) RepairDoctor(_ context.Context, _ *connect.Request[pb.Re
 	})
 }
 
+func (f *fakeDaemonRPC) StartRepairWorkflow(_ context.Context, _ *connect.Request[pb.StartRepairWorkflowRequest]) (*connect.Response[pb.StartRepairWorkflowResponse], error) {
+	return sessionResp(f, func() *pb.StartRepairWorkflowResponse {
+		return &pb.StartRepairWorkflowResponse{AlreadyRunning: false, Detail: "re-armed (was CANCELLED)"}
+	})
+}
+
 func (f *fakeDaemonRPC) ListCheckSnapshots(_ context.Context, _ *connect.Request[pb.ListCheckSnapshotsRequest]) (*connect.Response[pb.ListCheckSnapshotsResponse], error) {
 	return sessionResp(f, func() *pb.ListCheckSnapshotsResponse {
 		return &pb.ListCheckSnapshotsResponse{Snapshots: []*pb.CheckSnapshot{{HeadSha: "sha-1"}}}
@@ -247,6 +253,10 @@ func TestLocalClientValueWrappers(t *testing.T) {
 		{"RepairDoctor", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.RepairDoctor(ctx)
 			return err == nil && len(got.GetChecks()) == 1 && got.GetChecks()[0].GetName() == "socket", got == nil, err
+		}},
+		{"StartRepairWorkflow", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
+			got, err := c.StartRepairWorkflow(ctx)
+			return err == nil && !got.GetAlreadyRunning() && got.GetDetail() == "re-armed (was CANCELLED)", got == nil, err
 		}},
 		{"ListCheckSnapshots", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.ListCheckSnapshots(ctx, "sess", 5)

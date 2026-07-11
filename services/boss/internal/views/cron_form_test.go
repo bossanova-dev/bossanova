@@ -612,6 +612,46 @@ func TestCronForm_ConfirmFalse_Cancels(t *testing.T) {
 	}
 }
 
+// TestCronForm_SavedMsgCarriesJobID verifies that a successful save emits a
+// cronFormDoneMsg carrying the saved job's Id, so the parent App can highlight
+// that row on return to the cron list (BOS-312). A nil job (defensive) yields an
+// empty id, preserving today's top-row behavior. Both create and edit reach this
+// same success branch, so one assertion covers both.
+func TestCronForm_SavedMsgCarriesJobID(t *testing.T) {
+	// Non-nil job → id is threaded through.
+	m := CronFormModel{ctx: context.Background()}
+	updated, cmd := m.Update(cronFormSavedMsg{job: &pb.CronJob{Id: "cron-42"}})
+	got := updated.(CronFormModel)
+	if !got.Done() {
+		t.Fatal("Done() = false after successful save")
+	}
+	if cmd == nil {
+		t.Fatal("successful save returned nil completion command")
+	}
+	done, ok := cmd().(cronFormDoneMsg)
+	if !ok {
+		t.Fatalf("save command produced %#v, want cronFormDoneMsg", cmd())
+	}
+	if got, want := done.jobID, "cron-42"; got != want {
+		t.Fatalf("cronFormDoneMsg.jobID = %q, want %q", got, want)
+	}
+
+	// Nil job → empty id (top-row fallback), no panic.
+	mNil := CronFormModel{ctx: context.Background()}
+	updatedNil, cmdNil := mNil.Update(cronFormSavedMsg{job: nil})
+	_ = updatedNil
+	if cmdNil == nil {
+		t.Fatal("nil-job save returned nil completion command")
+	}
+	doneNil, ok := cmdNil().(cronFormDoneMsg)
+	if !ok {
+		t.Fatalf("nil-job save command produced %#v, want cronFormDoneMsg", cmdNil())
+	}
+	if doneNil.jobID != "" {
+		t.Fatalf("cronFormDoneMsg.jobID = %q, want empty for nil job", doneNil.jobID)
+	}
+}
+
 func TestCronForm_DoneIgnoresQueuedInput(t *testing.T) {
 	c := &stubClient{}
 	m := CronFormModel{

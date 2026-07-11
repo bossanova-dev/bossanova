@@ -3,6 +3,8 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -609,6 +611,31 @@ func TestSyncDirReturnsOpenError(t *testing.T) {
 		t.Fatalf("syncDir() error = %v, want not-exist error", err)
 	}
 }
+
+func TestSyncDirectoryReturnsOnlyUnexpectedSyncError(t *testing.T) {
+	unexpected := io.ErrUnexpectedEOF
+	other := errors.New("sync failed")
+
+	for _, tt := range []struct {
+		name    string
+		syncErr error
+		wantErr error
+	}{
+		{name: "success"},
+		{name: "unexpected EOF", syncErr: unexpected},
+		{name: "other error", syncErr: other, wantErr: other},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := syncDirectory(syncFile{err: tt.syncErr}); !errors.Is(err, tt.wantErr) {
+				t.Fatalf("syncDirectory() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+type syncFile struct{ err error }
+
+func (f syncFile) Sync() error { return f.err }
 
 func TestPollIntervalOmittedFromJSON(t *testing.T) {
 	// When PollIntervalSeconds is 0, it should be omitted from JSON (omitempty).

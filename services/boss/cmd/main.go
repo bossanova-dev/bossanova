@@ -198,6 +198,13 @@ func repairCmd() *cobra.Command {
 			return runRepairDoctor(cmd)
 		},
 	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "start",
+		Short: "(Re-)arm the auto-repair workflow (e.g. after the repair plugin was stopped or restarted)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRepairStart(cmd)
+		},
+	})
 	return cmd
 }
 

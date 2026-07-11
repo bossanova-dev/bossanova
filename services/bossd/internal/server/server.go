@@ -881,6 +881,29 @@ func (s *Server) lockBranchStart(repoID, branch string) func() {
 	}
 }
 
+// activeSessionOwnsBranch reports whether an active session already owns branch
+// in repo. The BOS-289 already-shipped scan uses it to skip when the create is
+// an attach/resume to a live session (sendExistingSessionForBranch attaches
+// below with attached_existing=true) — the ticket's own open tagged PR must not
+// pre-empt that attach, mirroring the pr_number skip. A list error is treated as
+// "no owner" so a transient store hiccup never suppresses the dedup scan; a truly
+// broken store surfaces at sendExistingSessionForBranch regardless.
+func (s *Server) activeSessionOwnsBranch(ctx context.Context, repoID, branch string) bool {
+	if branch == "" {
+		return false
+	}
+	active, err := s.sessions.ListActive(ctx, repoID)
+	if err != nil {
+		return false
+	}
+	for _, sess := range active {
+		if sess.BranchName == branch {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branch string, emit createSessionSender) (bool, error) {
 	if branch == "" {
 		return false, nil
@@ -915,7 +938,7 @@ func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branc
 }
 
 func createSessionConnectError(err error) error {
-	if session.IsDuplicateActiveSessionError(err) {
+	if session.IsDuplicateActiveSessionError(err) || session.IsAlreadyShippedError(err) {
 		return connect.NewError(connect.CodeAlreadyExists, err)
 	}
 	return connect.NewError(connect.CodeInternal, err)
@@ -1027,6 +1050,35 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	}
 	if !msg.QuickChat && strings.TrimSpace(baseBranch) == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo %s has no default base branch; update repo settings before creating a session", repo.ID))
+	}
+
+	// BOS-289: guard against a ticket whose PR already merged (or is in flight on
+	// a sibling branch with no live session row). Scan GitHub for a PR carrying
+	// the tracker's "[<id>]" title tag in an open or merged state and short-
+	// circuit with CodeAlreadyExists. force / quick_chat / no-tracker skip the
+	// scan entirely. Two attach/resume cases also skip it, so the ticket's own
+	// open tagged PR never turns a documented attach into an AlreadyExists
+	// refusal: an explicit PrNumber (the Linear-ticket-with-open-PR TUI flow
+	// co-sets TrackerId and PrNumber), and a headBranch already owned by a live
+	// session (the branch_name attach that sendExistingSessionForBranch resolves
+	// below with attached_existing=true). A bare tracker_id create with a fresh
+	// branch has no such local owner and still scans — that is the sibling-branch
+	// duplicate-work case the guard exists to catch. Run before LockStartPath so
+	// a network round-trip never holds the process-global start mutex; the
+	// in-flight local dedup (BOS-236) still runs atomically under that lock
+	// below. Fail open on scan error so a transient GitHub outage cannot wedge
+	// the daemon's whole create path.
+	if !msg.Force && !msg.QuickChat && msg.PrNumber == nil && msg.TrackerId != nil && *msg.TrackerId != "" &&
+		repo.OriginURL != "" && !s.activeSessionOwnsBranch(ctx, msg.RepoId, headBranch) {
+		prs, scanErr := s.provider.SearchPRsByTitleTag(ctx, repo.OriginURL, *msg.TrackerId)
+		if scanErr != nil {
+			s.logger.Warn().Err(scanErr).
+				Str("tracker_id", *msg.TrackerId).
+				Str("repo", repo.ID).
+				Msg("already-shipped scan failed; proceeding with session creation (fail-open)")
+		} else if shipped, ok := session.AlreadyShippedTaggedPR(prs, *msg.TrackerId); ok {
+			return createSessionConnectError(shipped)
+		}
 	}
 
 	unlockStart := session.LockStartPath()

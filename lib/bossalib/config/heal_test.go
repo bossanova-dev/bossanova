@@ -147,6 +147,25 @@ func TestHealPluginPaths_SkipsNonExecutableDiscovery(t *testing.T) {
 	}
 }
 
+func TestHealPluginPaths_IncompleteCellarPathIsLeftUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	cellar := filepath.Join(dir, "Cellar")
+	if err := os.MkdirAll(cellar, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// This is a valid executable discovery path but not a complete
+	// Cellar/<formula>/<version>/... layout. It must not be rewritten or panic.
+	incomplete := filepath.Join(cellar, "bossanova")
+	if err := os.WriteFile(incomplete, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configured := []config.PluginConfig{{Name: "claude", Path: filepath.Join(dir, "gone", "bossd-plugin-claude"), Enabled: true}}
+	healed, names := config.HealPluginPaths(configured, []config.PluginConfig{{Name: "claude", Path: incomplete, Enabled: true}})
+	if len(names) != 1 || healed[0].Path != incomplete {
+		t.Fatalf("incomplete Cellar path must be retained; names=%v path=%q", names, healed[0].Path)
+	}
+}
+
 // TestHealPluginPaths_DoesNotMutateInput locks the copy-on-write contract: the
 // caller's configured slice (Path and Config) must survive a heal untouched.
 func TestHealPluginPaths_DoesNotMutateInput(t *testing.T) {

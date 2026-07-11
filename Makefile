@@ -480,10 +480,7 @@ lint-check-version:
 lint: lint-check-version $(GEN_STAMP)
 	buf lint
 	$(MAKE) lint-scripts
-	@for mod in $(MODULES); do \
-		echo "==> Linting $$mod"; \
-		(cd $$mod && golangci-lint run ./...); \
-	done
+	@node scripts/lint-affected.mjs
 	@if [ -d services/docs ]; then \
 		echo "==> Linting services/docs"; \
 		$(MAKE) -C services/docs lint; \
@@ -498,20 +495,20 @@ lint-proto:
 	buf lint
 
 lint-bossalib: lint-check-version
-	cd lib/bossalib && golangci-lint run ./...
+	node scripts/lint-affected.mjs --module lib/bossalib
 
 lint-boss: lint-check-version
-	cd services/boss && golangci-lint run ./...
+	node scripts/lint-affected.mjs --module services/boss
 
 lint-bossd: lint-check-version
-	cd services/bossd && golangci-lint run ./...
+	node scripts/lint-affected.mjs --module services/bossd
 
 lint-mcp: lint-check-version
-	cd services/mcp && golangci-lint run ./...
+	node scripts/lint-affected.mjs --module services/mcp
 
 ifneq ($(wildcard services/mcp-gateway/go.mod),)
 lint-mcp-gateway: lint-check-version
-	cd services/mcp-gateway && golangci-lint run ./...
+	node scripts/lint-affected.mjs --module services/mcp-gateway
 endif
 
 test-readme:
@@ -591,13 +588,13 @@ build-docs:
 
 ifneq ($(wildcard services/bosso/go.mod),)
 lint-bosso: lint-check-version
-	cd services/bosso && golangci-lint run ./...
+	node scripts/lint-affected.mjs --module services/bosso
 endif
 
 # Auto-generate per-plugin lint targets from detected modules
 define define-plugin-lint
 lint-$(2): lint-check-version
-	cd $(1) && golangci-lint run ./...
+	node scripts/lint-affected.mjs --module $(1)
 endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-lint,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))

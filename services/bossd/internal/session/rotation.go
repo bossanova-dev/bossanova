@@ -307,7 +307,21 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 		l.recordRotation(ctx, session, b, "ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY",
 			"", "agent cannot rotate", resetPtr)
 		return false
+	case rotation.OutcomeNoEligibleAccount:
+		// Rotation IS capable but no account is eligible to switch to and none will
+		// recover (all disabled/failed) ⇒ today's Block path. Record the distinct
+		// no-eligible outcome (not NO_CAPABILITY) so this headless usage-limit path
+		// steers operators to the real remedy, matching the chat-rotator paths
+		// (BOS-327). Detail is single-sourced with those paths.
+		l.recordRotation(ctx, session, b, "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT",
+			"", rotation.NoEligibleAccountDetail, resetPtr)
+		return false
 	default:
+		// An unhandled engine Outcome kind must not vanish silently — surface it so
+		// the next enum-consumer ripple shows up in logs instead of dropping the
+		// audit record (as OutcomeNoEligibleAccount did before BOS-327 wired it).
+		l.logger.Warn().Int("kind", int(outcome.Kind)).Str("session", sessionID).
+			Msg("usage-limit rotation: unhandled outcome kind; falling back to block")
 		return false
 	}
 }

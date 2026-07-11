@@ -26,9 +26,17 @@ type displacePolicy struct {
 	// IDLE chat to be displaceable.
 	MinIdle time.Duration
 	// QuestionIdle, when > 0, allows displacing a chat stuck at a
-	// QUESTION for at least this long. Unattended (repair-owned) runs
-	// have no human to answer, so an old question is a dead run there.
-	// 0 means QUESTION chats are never displaceable (human-facing chats).
+	// QUESTION for at least this long. An old question on a repairable
+	// session is a dead run — no one is going to answer it in time to
+	// save the session from auto-repair. 0 is the fail-closed default:
+	// any future policy that omits QuestionIdle leaves QUESTION chats
+	// undisplaceable. All repair displace paths now pass
+	// repairDisplaceQuestionIdle (15m) uniformly (BOS-347); this is a
+	// deliberate two-stage policy: the repair plugin's configurable
+	// idle_repair_threshold_minutes (default 5m) gates when repair may
+	// *attempt* a displacement, while this fixed 15m question window is
+	// the daemon-side safety floor for killing a chat parked at a
+	// prompt — intentionally separate knobs.
 	QuestionIdle time.Duration
 }
 

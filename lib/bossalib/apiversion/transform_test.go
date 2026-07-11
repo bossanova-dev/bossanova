@@ -1231,8 +1231,8 @@ func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
 
 func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20260706 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260706)
+	if got := reg.Current(); got != apiversion.V20260711 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260711)
 	}
 	msg := &pb.ProxyListAccountsResponse{
 		Accounts: []*pb.Account{{
@@ -1251,5 +1251,179 @@ func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) 
 		t.Fatal("ProductionChanges stripped Account.usage; additive field should not require down-convert")
 	} else if got.GetStatus() != "warning" || got.GetPlanTier() != "max" {
 		t.Fatalf("ProductionChanges changed Account.usage = %#v", got)
+	}
+}
+
+// --- NoEligibleAccountChange (V20260711) ---
+
+// noEligibleSession builds a Session carrying one rotation event with the given
+// outcome, mirroring what bossd hydrates onto Session.rotation_events.
+func noEligibleSession(outcome pb.RotationOutcome) *pb.Session {
+	return &pb.Session{
+		RotationEvents: []*pb.RotationEvent{{
+			Id:      "rot-1",
+			Outcome: outcome,
+		}},
+	}
+}
+
+// noEligibleResponseCases enumerates every OrchestratorService response type that
+// embeds one or more *pb.Session, paired with its Connect procedure path. Each
+// builder returns a response carrying a single Session whose sole rotation event
+// has the given outcome, plus a reader that extracts that outcome for assertions.
+func noEligibleResponseCases() []struct {
+	name    string
+	method  string
+	build   func(pb.RotationOutcome) any
+	outcome func(any) pb.RotationOutcome
+} {
+	first := func(s *pb.Session) pb.RotationOutcome { return s.GetRotationEvents()[0].GetOutcome() }
+	return []struct {
+		name    string
+		method  string
+		build   func(pb.RotationOutcome) any
+		outcome func(any) pb.RotationOutcome
+	}{
+		{"ProxyListSessions", bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure,
+			func(o pb.RotationOutcome) any {
+				return &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{noEligibleSession(o)}}
+			},
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyListSessionsResponse).GetSessions()[0]) }},
+		{"ProxyGetSession", bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.ProxyGetSessionResponse{Session: noEligibleSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyGetSessionResponse).GetSession()) }},
+		{"ProxyStopSession", bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.ProxyStopSessionResponse{Session: noEligibleSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyStopSessionResponse).GetSession()) }},
+		{"ProxyPauseSession", bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.ProxyPauseSessionResponse{Session: noEligibleSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyPauseSessionResponse).GetSession()) }},
+		{"ProxyResumeSession", bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.ProxyResumeSessionResponse{Session: noEligibleSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyResumeSessionResponse).GetSession()) }},
+		{"ProxyMergeSession", bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.ProxyMergeSessionResponse{Session: noEligibleSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyMergeSessionResponse).GetSession()) }},
+		{"ProxyArchiveSession", bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.ProxyArchiveSessionResponse{Session: noEligibleSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyArchiveSessionResponse).GetSession()) }},
+		{"TransferSession", bossanovav1connect.OrchestratorServiceTransferSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.TransferSessionResponse{Session: noEligibleSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.TransferSessionResponse).GetSession()) }},
+	}
+}
+
+// noEligibleProdRegistry builds a 2-version registry (Baseline + V20260711) so
+// the NoEligibleAccountChange (at V20260711) is valid in NewChanges.
+func noEligibleProdRegistry(t *testing.T) *apiversion.Registry {
+	t.Helper()
+	reg, err := apiversion.NewRegistry(
+		[]apiversion.Version{apiversion.Baseline, apiversion.V20260711},
+		apiversion.V20260711,
+		apiversion.Baseline,
+	)
+	if err != nil {
+		t.Fatalf("noEligibleProdRegistry: %v", err)
+	}
+	return reg
+}
+
+func TestNoEligibleAccountChange_Version(t *testing.T) {
+	if got := (apiversion.NoEligibleAccountChange{}).Version(); got != apiversion.V20260711 {
+		t.Errorf("NoEligibleAccountChange.Version() = %q, want %q", got, apiversion.V20260711)
+	}
+}
+
+func TestNoEligibleAccountChange_DownConvertsForBaseline(t *testing.T) {
+	reg := noEligibleProdRegistry(t)
+	changes, err := apiversion.NewChanges(reg, apiversion.NoEligibleAccountChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	for _, tc := range noEligibleResponseCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := tc.build(pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT)
+			changes.Apply(tc.method, msg, apiversion.Baseline)
+			if got := tc.outcome(msg); got != pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY {
+				t.Errorf("%s: outcome = %v, want STATUS_ONLY_NO_CAPABILITY", tc.name, got)
+			}
+		})
+	}
+}
+
+func TestNoEligibleAccountChange_NoOpAtCurrent(t *testing.T) {
+	reg := noEligibleProdRegistry(t)
+	changes, err := apiversion.NewChanges(reg, apiversion.NoEligibleAccountChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	for _, tc := range noEligibleResponseCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := tc.build(pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT)
+			changes.Apply(tc.method, msg, reg.Current())
+			if got := tc.outcome(msg); got != pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT {
+				t.Errorf("%s: outcome = %v, want NO_ELIGIBLE_ACCOUNT (unchanged at Current)", tc.name, got)
+			}
+		})
+	}
+}
+
+func TestNoEligibleAccountChange_LeavesOtherOutcomesUntouched(t *testing.T) {
+	nc := apiversion.NoEligibleAccountChange{}
+	// A different outcome must be left exactly as-is even for Baseline callers.
+	msg := &pb.ProxyGetSessionResponse{Session: noEligibleSession(pb.RotationOutcome_ROTATION_OUTCOME_ROTATED)}
+	nc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg)
+	if got := msg.GetSession().GetRotationEvents()[0].GetOutcome(); got != pb.RotationOutcome_ROTATION_OUTCOME_ROTATED {
+		t.Errorf("unrelated outcome mutated: got %v, want ROTATED", got)
+	}
+}
+
+// TestNoEligibleAccountChange_DoesNotMutateSharedSession pins that the
+// down-convert clones rather than mutating the caller's cached Session in place.
+func TestNoEligibleAccountChange_DoesNotMutateSharedSession(t *testing.T) {
+	nc := apiversion.NoEligibleAccountChange{}
+
+	shared := noEligibleSession(pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT)
+	listMsg := &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{shared}}
+	nc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, listMsg)
+	if got := shared.GetRotationEvents()[0].GetOutcome(); got != pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT {
+		t.Fatalf("shared session mutated in place: got %v, want NO_ELIGIBLE_ACCOUNT", got)
+	}
+	if got := listMsg.GetSessions()[0].GetRotationEvents()[0].GetOutcome(); got != pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY {
+		t.Fatalf("response session not down-converted: got %v, want NO_CAPABILITY", got)
+	}
+	if listMsg.GetSessions()[0] == shared {
+		t.Fatal("response session must be a clone, not the shared pointer")
+	}
+}
+
+func TestNoEligibleAccountChange_NonTargetedMethod_NoOp(t *testing.T) {
+	nc := apiversion.NoEligibleAccountChange{}
+	msg := &pb.ProxyGetSessionResponse{Session: noEligibleSession(pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT)}
+	nc.TransformResponse(bossanovav1connect.OrchestratorServiceListDaemonsProcedure, msg)
+	if got := msg.GetSession().GetRotationEvents()[0].GetOutcome(); got != pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT {
+		t.Errorf("untargeted method mutated payload: got %v, want NO_ELIGIBLE_ACCOUNT", got)
+	}
+}
+
+func TestNoEligibleAccountChange_WrongType_NoOp(t *testing.T) {
+	nc := apiversion.NoEligibleAccountChange{}
+	nc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, "not a response")
+	nc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, &pb.ProxyGetSessionResponse{})
+}
+
+func TestNoEligibleAccountChange_NilSession_NoPanic(t *testing.T) {
+	nc := apiversion.NoEligibleAccountChange{}
+	nc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, &pb.ProxyGetSessionResponse{})
+	nc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, &pb.ProxyListSessionsResponse{})
+}
+
+func TestProductionChanges_IncludesNoEligibleTransform(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	// Header-less (Baseline) traffic must be down-converted by the shipped chain.
+	msg := &pb.ProxyGetSessionResponse{Session: noEligibleSession(pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT)}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, apiversion.Baseline)
+	if got := msg.GetSession().GetRotationEvents()[0].GetOutcome(); got != pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY {
+		t.Errorf("ProductionChanges did not down-convert NO_ELIGIBLE_ACCOUNT for Baseline: got %v", got)
 	}
 }

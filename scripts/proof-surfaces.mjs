@@ -9,7 +9,7 @@
  * into discovered extension skills per the BOS-193 contract. Pure — no fs/env/Date.
  */
 
-import { matchesAnyPrefix, selectRecipes } from './proof-lib.mjs'
+import { matchesAnyPrefix, normalizeChangedFiles, selectRecipes } from './proof-lib.mjs'
 
 /**
  * Path prefixes that identify a TUI (boss) change. BOS-115 makes the TUI proof
@@ -253,6 +253,31 @@ export function classifyTuiSurface(changedFiles) {
  */
 export function webUiSurfacePresent(changedFiles) {
   return matchesAnyPrefix(changedFiles, WEB_UI_SURFACE_PREFIXES)
+}
+
+/**
+ * Matches a committed deterministic TUI-proof scenario file
+ * (`proof/scenarios/*.scenario.json`, BOS-219 schema). Anchored so only files
+ * under `proof/scenarios/` ending in `.scenario.json` count — never a bare
+ * `proof/scenarios/README.md` or a recipe.
+ * @type {RegExp}
+ */
+export const SCENARIO_FILE_RE = /^proof\/scenarios\/.+\.scenario\.json$/
+
+/**
+ * Pure predicate: true when the PR's changed-files list adds or modifies a
+ * committed `proof/scenarios/*.scenario.json`. BOS-220 gates the TUI proof
+ * surface on this — a TUI change that ships without a scenario gets a warn-only
+ * `scenario-missing` deferral (exit 0) nudging the author to commit one, so the
+ * deterministic TUI proof (BOS-219) actually gets authored. Modeled on
+ * webUiSurfacePresent (pure, array-in → bool-out); a suffix+dir match rather
+ * than a bare prefix because only `*.scenario.json` files count. Detection is
+ * changed-files-only — never a catalog or directory scan.
+ * @param {string[]|null|undefined} changedFiles
+ * @returns {boolean}
+ */
+export function committedScenarioPresent(changedFiles) {
+  return normalizeChangedFiles(changedFiles ?? []).some((f) => SCENARIO_FILE_RE.test(f))
 }
 
 /**

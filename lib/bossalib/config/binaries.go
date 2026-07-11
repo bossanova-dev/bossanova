@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 )
 
+var executablePath = os.Executable
+
 // ResolveTrustedExecutable returns the absolute path to a trusted executable
 // named name (e.g. "boss", "mcp"), or "" if none is found at a trusted path.
 //
@@ -16,7 +18,7 @@ import (
 // untrusted repo worktree from being selected and later exec'd by an agent.
 func ResolveTrustedExecutable(name string) string {
 	var candidates []string
-	if exe, err := os.Executable(); err == nil {
+	if exe, err := executablePath(); err == nil {
 		candidates = append(candidates, filepath.Join(filepath.Dir(exe), name))
 	}
 	if p, err := exec.LookPath(name); err == nil {

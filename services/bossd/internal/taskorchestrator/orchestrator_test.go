@@ -261,6 +261,9 @@ func (m *mockProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.PRSummary
 func (m *mockProvider) ListClosedPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {
 	return nil, nil
 }
+func (m *mockProvider) SearchPRsByTitleTag(_ context.Context, _, _ string) ([]vcs.PRSummary, error) {
+	return nil, nil
+}
 
 func (m *mockProvider) MergePR(ctx context.Context, repoPath string, prID int, strategy string) error {
 	if m.mergeFn != nil {

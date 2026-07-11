@@ -34,6 +34,14 @@ type Provider interface {
 	// ListClosedPRs returns recently-closed (not merged) pull/merge requests.
 	ListClosedPRs(ctx context.Context, repoPath string) ([]PRSummary, error)
 
+	// SearchPRsByTitleTag returns pull/merge requests across all states
+	// (open, closed, and merged) whose title carries the given tracker tag
+	// (e.g. "BOS-289", matched as the bracketed form "[BOS-289]"). It is used
+	// to detect a ticket that has already shipped or is in flight on a sibling
+	// branch that has no live session row. The caller is responsible for
+	// filtering by state (e.g. treating only open/merged PRs as blocking).
+	SearchPRsByTitleTag(ctx context.Context, repoPath, tag string) ([]PRSummary, error)
+
 	// MergePR merges a pull/merge request using the given strategy
 	// ("merge", "rebase", or "squash"). An empty strategy defaults to "merge".
 	MergePR(ctx context.Context, repoPath string, prID int, strategy string) error

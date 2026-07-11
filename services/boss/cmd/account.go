@@ -165,7 +165,67 @@ func accountLS(cmd *cobra.Command, c accountLister) error {
 	}
 
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), views.RenderCLITable(cols, rows))
+
+	// BOS-327: steer the operator to the real remedy when a provider has accounts
+	// but none ELIGIBLE — rotation cannot switch onto a disabled or unhealthy
+	// account, and the rotation history's "no eligible account — status only" line
+	// points here. The JSON path returns above, so this never pollutes the pure
+	// array.
+	if hints := noEligibleAccountHints(accounts); len(hints) > 0 {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout()) // blank line separates the hint from the table
+		for _, hint := range hints {
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), hint)
+		}
+	}
 	return nil
+}
+
+// noEligibleAccountHints returns one hint line per provider that has ≥1 account
+// but ZERO eligible to rotate to — where eligible means STATUS=="active" AND
+// HEALTH=="ok", mirroring the engine's isSelectable predicate
+// (services/bossd/internal/rotation/engine.go). Computed client-side from the
+// already-listed accounts (no daemon-config plumbing); providers are emitted in
+// first-seen order for deterministic output. Rotation cannot switch onto a
+// disabled or unhealthy account, so this surfaces the remedy where the operator
+// already looks (BOS-327).
+//
+// Gating on eligibility (not merely status) keeps the hint consistent with the
+// rotation audit: an account that is active but health=="failed" is NOT eligible,
+// so the engine still reports "no eligible account" — the hint must fire there
+// too rather than staying silent because a nominally-active row exists.
+//
+// The "active"/"ok" literals mirror lib/bossalib/models.AccountStatusActive and
+// AccountHealthOK, which this module cannot import across the boundary (same
+// mirror the TUI keeps in internal/views/account_actions.go); the daemon
+// validates the same values in services/bossd/internal/server/account.go.
+func noEligibleAccountHints(accounts []*pb.Account) []string {
+	const (
+		accountStatusActive = "active"
+		accountHealthOK     = "ok"
+	)
+	order := make([]string, 0, len(accounts))
+	hasEligible := make(map[string]bool)
+	seen := make(map[string]bool)
+	for _, a := range accounts {
+		p := a.GetProvider()
+		if !seen[p] {
+			seen[p] = true
+			order = append(order, p)
+		}
+		if a.GetStatus() == accountStatusActive && a.GetHealth() == accountHealthOK {
+			hasEligible[p] = true
+		}
+	}
+	hints := make([]string, 0, len(order))
+	for _, p := range order {
+		if hasEligible[p] {
+			continue
+		}
+		hints = append(hints, fmt.Sprintf(
+			"Hint: provider %q has no eligible account — rotation cannot switch. Enable or re-authenticate one, e.g. boss account update <id> --status active",
+			p))
+	}
+	return hints
 }
 
 // fmtDurationShort renders a non-negative duration as a single s/m/h/d bucket.

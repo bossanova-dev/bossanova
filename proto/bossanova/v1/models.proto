@@ -65,6 +65,7 @@ enum RotationOutcome {
   ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY = 3; // agent lacks rotation capability
   ROTATION_OUTCOME_EXHAUSTED = 4;                 // all accounts cooling: parked until reset_at
   ROTATION_OUTCOME_FAILED = 5;                    // swap attempted and failed
+  ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT = 6; // no eligible account to rotate to (enable/re-auth one)
 }
 
 // RotationEvent is one audit record of a rotation decision (BOS-176).

@@ -1769,3 +1769,16 @@ func TestHasWorkingIndicator_LiveShellFooterBelowResponse(t *testing.T) {
 		t.Error("a live shell footer with no later ⏺ output must report working")
 	}
 }
+
+// TestHasWorkingIndicator_UsesLatestShellFooter distinguishes the latest live
+// footer from an earlier, completed one. FindAllIndex must collect every match:
+// limiting it to one would inspect only the stale first footer and report idle.
+func TestHasWorkingIndicator_UsesLatestShellFooter(t *testing.T) {
+	pane := "" +
+		"✻ Cooked for 48s · 1 shell still running\n" +
+		"⏺ Background command completed (exit code 0)\n" +
+		"✻ Planning… · 2 shells still running\n"
+	if !HasWorkingIndicator([]byte(pane)) {
+		t.Error("a later live shell footer must override an earlier completed footer")
+	}
+}

@@ -166,6 +166,41 @@ func TestDriver_ReadLoopStaysAliveAfterRead(t *testing.T) {
 	}
 }
 
+// TestDriver_CloseAllowsGracefulInterruptCleanup verifies Close gives a
+// Ctrl-C-aware process time to run its shutdown handler before force-killing it.
+func TestDriver_CloseAllowsGracefulInterruptCleanup(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "graceful-shutdown")
+	d, err := tuidriver.New(tuidriver.Options{
+		Command: "sh",
+		Args: []string{
+			"-c",
+			`printf ready; trap 'sleep 0.2; printf graceful > "$1"; exit' INT; while :; do sleep 1; done`,
+			"sh",
+			marker,
+		},
+		Width:  80,
+		Height: 24,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := d.WaitForText(5*time.Second, "ready"); err != nil {
+		_ = d.Close()
+		t.Fatalf("wait for child readiness: %v", err)
+	}
+
+	if err := d.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	got, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read graceful-shutdown marker: %v", err)
+	}
+	if string(got) != "graceful" {
+		t.Errorf("graceful-shutdown marker = %q, want %q", got, "graceful")
+	}
+}
+
 func TestDriver_ScreenContains(t *testing.T) {
 	d, err := tuidriver.New(tuidriver.Options{
 		Command: "echo",

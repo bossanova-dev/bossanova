@@ -53,9 +53,23 @@ const (
 	// DecisionAllExhausted means no account is available now (at least one is
 	// cooling): the chat stays limited. ResumeAt is the earliest recovery time.
 	DecisionAllExhausted
-	// DecisionStatusOnly means the provider cannot rotate: do nothing.
+	// DecisionStatusOnly means the agent/provider cannot rotate at all
+	// (capability short-circuit): do nothing. Remedy is agent/plugin-side.
 	DecisionStatusOnly
+	// DecisionNoEligibleAccount means rotation is capable but no account is
+	// eligible to switch to and none will recover (all disabled/failed). Distinct
+	// from DecisionStatusOnly so the audit steers operators to the real remedy —
+	// enabling an account — rather than the agent's rotation capability (BOS-327).
+	DecisionNoEligibleAccount
 )
+
+// NoEligibleAccountDetail is the actionable audit detail recorded for the
+// no-eligible-account outcome. Exported and single-sourced so every rotation
+// consumer of the engine's OutcomeNoEligibleAccount — the ChatRotator's
+// usage-limited and auth-invalidated paths here AND the session Lifecycle's
+// headless usage-limit intercept in services/bossd/internal/session — records
+// the identical detail and cannot drift (BOS-327).
+const NoEligibleAccountDetail = "no eligible account to rotate to — enable or re-authenticate one (e.g. `boss account update <id> --status active`)"
 
 // Decision is the rotator-side view of the engine's Outcome, produced by the
 // main.go adapter from the real rotation.Outcome.
@@ -470,6 +484,12 @@ func (r *ChatRotator) rotate(agentSessionID string, resetAt time.Time) {
 		statusOnly.Outcome = "ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY"
 		statusOnly.Detail = "agent cannot rotate"
 		r.deps.Recorder.Record(ctx, statusOnly)
+	case DecisionNoEligibleAccount:
+		log.Debug().Msg("auto-rotate: no eligible account to rotate to; status only")
+		noEligible := auditBase
+		noEligible.Outcome = "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT"
+		noEligible.Detail = NoEligibleAccountDetail
+		r.deps.Recorder.Record(ctx, noEligible)
 	default:
 		log.Warn().Int("kind", int(decision.Kind)).
 			Msg("auto-rotate: unknown decision kind; leaving chat limited")
@@ -610,13 +630,21 @@ func (r *ChatRotator) rotateAuth(agentSessionID string) {
 		exhausted.Detail = "all accounts cooling until " + decision.ResumeAt.Format("15:04")
 		r.deps.Recorder.RecordExhausted(ctx, exhausted)
 	case DecisionStatusOnly:
-		// No rotation target exists and none will recover (every other account
-		// permanently failed/disabled, or the provider cannot rotate): park, no loop.
-		log.Debug().Msg("auto-rotate(auth): no rotation target; status only")
+		// The provider/agent cannot rotate at all (capability short-circuit): park,
+		// no loop. Remedy is agent/plugin-side, so keep the NO_CAPABILITY label.
+		log.Debug().Msg("auto-rotate(auth): no rotation capability; status only")
 		statusOnly := auditBase
 		statusOnly.Outcome = "ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY"
 		statusOnly.Detail = "no rotation target available"
 		r.deps.Recorder.Record(ctx, statusOnly)
+	case DecisionNoEligibleAccount:
+		// Rotation is capable but every other account is disabled/failed and none
+		// will recover: park, no loop. Steer the operator to the real remedy.
+		log.Debug().Msg("auto-rotate(auth): no eligible account to rotate to; status only")
+		noEligible := auditBase
+		noEligible.Outcome = "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT"
+		noEligible.Detail = NoEligibleAccountDetail
+		r.deps.Recorder.Record(ctx, noEligible)
 	default:
 		log.Warn().Int("kind", int(decision.Kind)).
 			Msg("auto-rotate(auth): unknown decision kind; leaving chat as-is")

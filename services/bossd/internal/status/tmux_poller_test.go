@@ -395,6 +395,12 @@ func (m *mockSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, er
 func (m *mockSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
 	return nil, nil
 }
+func (m *mockSessionStore) ListByStates(_ context.Context, _ []int) ([]*models.Session, error) {
+	return nil, nil
+}
+func (m *mockSessionStore) UpdateStateConditionalFrom(_ context.Context, _ string, _ int, _ []int) (bool, error) {
+	return false, nil
+}
 func (m *mockSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
 	return false, nil
 }

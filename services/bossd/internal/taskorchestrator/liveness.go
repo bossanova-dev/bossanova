@@ -87,8 +87,13 @@ func (c *defaultLivenessChecker) IsSessionAlive(ctx context.Context, sessionID s
 	}
 
 	// If neither process identifier is set, the session is still initializing
-	// (e.g. quick chat waiting for first user attach). Don't mark it as dead.
+	// (e.g. quick chat waiting for first user attach). Unattended sessions are
+	// the exception: a daemon restart cannot leave their pre-agent work running,
+	// so recovery must be able to reap them rather than treating them as live.
 	if !hasAgentID && !hasTmuxName {
+		if (sess.CronJobID != nil && *sess.CronJobID != "") || sess.TmuxUnattended {
+			return false
+		}
 		if c.chats != nil {
 			// Check if any chats exist with tmux names.
 			chats, chatErr := c.chats.ListBySession(ctx, sessionID)

@@ -232,6 +232,34 @@ test('buildJudgePrompt: includes every required-proof bullet', () => {
   assert.ok(text.includes('no console errors'))
 })
 
+test('buildJudgePrompt: matcher-object evidence renders to display text, never [object Object] (BOS-222)', () => {
+  const { content } = buildJudgePrompt(
+    baseArgs({
+      scenes: [
+        {
+          id: 'scene-01',
+          title: 'Save flow',
+          expectedEvidence: [
+            'plain token',
+            { anyOf: [{ text: 'Saved' }, { text: 'Updated' }], label: 'save confirmation' },
+            { text: 'v[0-9]+', match: 'regex' },
+          ],
+        },
+      ],
+      perSceneOutcomes: [{ id: 'scene-01', passed: true, missing: [], outputMs: 100 }],
+    }),
+  )
+  const text = content[0].text
+  assert.ok(
+    !text.includes('[object Object]'),
+    'matcher objects must not stringify to [object Object]',
+  )
+  assert.ok(text.includes('plain token'))
+  // {anyOf,label} renders as its label; {text,match:regex} renders as its text.
+  assert.ok(text.includes('save confirmation'))
+  assert.ok(text.includes('v[0-9]+'))
+})
+
 test('buildJudgePrompt: unscoped bullets are rendered once, not per surface', () => {
   const { content } = buildJudgePrompt(baseArgs())
   const text = content[0].text

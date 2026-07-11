@@ -131,6 +131,23 @@ test('aggregateExitCode: no-media / no-ui-surface / env-unavailable → 0', () =
   }
 })
 
+// BOS-220: `scenario-missing` is a warn-only TUI authoring deferral — neutral
+// (→ 0) exactly like the other gate-miss deferrals. Epic 4 (BOS-226) flips it
+// fatal; this ticket must NOT. Pin both the single-surface contribution and the
+// aggregate so the warn semantics can't silently regress to a failing exit here.
+test('aggregateExitCode: TUI scenario-missing → 0 (warn-only, BOS-220)', () => {
+  const perSurface = [{ surface: 'tui', outcome: 'deferred', reasonCode: 'scenario-missing' }]
+  assert.equal(aggregateExitCode(perSurface), 0)
+})
+
+test('aggregateExitCode: passed web + TUI scenario-missing → 0 (partial success neutral)', () => {
+  const perSurface = [
+    { surface: 'web', outcome: 'passed', reasonCode: null },
+    { surface: 'tui', outcome: 'deferred', reasonCode: 'scenario-missing' },
+  ]
+  assert.equal(aggregateExitCode(perSurface), 0)
+})
+
 test('aggregateExitCode: empty → 0', () => {
   assert.equal(aggregateExitCode([]), 0)
 })

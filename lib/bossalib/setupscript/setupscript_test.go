@@ -221,6 +221,39 @@ func TestExecute_LoginShell_WrapsButPreservesEnvAndCwd(t *testing.T) {
 	}
 }
 
+// TestExecute_LoginShell_InvokesSupportedWrapper proves Execute takes the
+// supported-shell branch at setupscript.go:206. A direct command can still
+// preserve argv, cwd, and environment, so it would not distinguish the
+// CONDITIONALS_NEGATION mutant there. Only the configured shell creates this
+// marker; direct execution cannot.
+func TestExecute_LoginShell_InvokesSupportedWrapper(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX login shell assumed")
+	}
+	wt := t.TempDir()
+	// A small executable named "bash" is sufficient for loginshell's supported
+	// shell check. It writes a marker only when Execute invokes it as the shell;
+	// the command below runs directly under the mutant and never reaches this
+	// executable.
+	bash := filepath.Join(t.TempDir(), "bash")
+	if err := os.WriteFile(bash, []byte("#!/bin/sh\nprintf wrapped > \"$WORKTREE_DIR/login-shell-marker\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	s := Spec{Type: TypeCommand, Argv: []string{"true"}}
+	if err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		LoginShell:   bash,
+		Timeout:      10 * time.Second,
+	}); err != nil {
+		t.Fatalf("Execute via login shell: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(wt, "login-shell-marker"))
+	if err != nil || string(got) != "wrapped" {
+		t.Fatalf("bashrc marker missing: got %q err %v", got, err)
+	}
+}
+
 func TestExecute_LoginShell_UnsupportedFallsBackToDirectExec(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX command assumed")

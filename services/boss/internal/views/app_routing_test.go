@@ -594,3 +594,136 @@ func TestBannerWithArchivingShowsArchivingLabel(t *testing.T) {
 		t.Fatalf("banner with archiving=true should contain 'archiving', got %q", got)
 	}
 }
+
+// TestAppSettingsA_OpensAccounts covers the Settings → [a] entry point: from
+// ViewSettings an 'a' keypress must emit switchViewMsg{view: ViewAccounts,
+// returnView: ViewSettings}. Guards the account-management epic entry point.
+func TestAppSettingsA_OpensAccounts(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewSettings
+	a.settings = NewSettingsModel(nil, a.ctx)
+
+	_, cmd := a.Update(keyPress('a'))
+	msg := runCmd(cmd)
+	svm, ok := msg.(switchViewMsg)
+	if !ok {
+		t.Fatalf("settings 'a' produced %T, want switchViewMsg", msg)
+	}
+	if svm.view != ViewAccounts || svm.returnView != ViewSettings {
+		t.Fatalf("settings 'a' routed to %v (return %v), want ViewAccounts/ViewSettings", svm.view, svm.returnView)
+	}
+}
+
+// TestAppAccountsCancelReturnsToSettings covers the reverse leg: an Accounts
+// view that reports Cancelled() routes the app back to its returnView
+// (ViewSettings), mirroring the cron-list return path.
+func TestAppAccountsCancelReturnsToSettings(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewAccounts
+	al := NewAccountsListModel(nil, a.ctx)
+	al.cancel = true
+	al.returnView = ViewSettings
+	a.accountsList = al
+
+	model, cmd := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	got := model.(App)
+	// switchToReturn(ViewSettings) emits a switchViewMsg the app must apply.
+	if msg := runCmd(cmd); msg != nil {
+		model, _ = got.Update(msg)
+		got = model.(App)
+	}
+	if got.activeView != ViewSettings {
+		t.Fatalf("accounts cancel routed to %v, want ViewSettings", got.activeView)
+	}
+}
+
+// TestAppAccountEditCancelReturnsToAccounts covers the BOS-266 return leg: the
+// edit form that reports Cancelled() with returnView=ViewAccounts must route
+// the app back to the accounts list (which re-fetches), NOT fall through to
+// Home. Regression guard: switchToReturn previously special-cased only
+// ViewSettings, silently dropping ViewAccounts to switchToHome().
+func TestAppAccountEditCancelReturnsToAccounts(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewAccountEdit
+	ad := NewAccountEditModel(nil, a.ctx, &pb.Account{Id: "acct-1", Label: "l", Status: "active"})
+	ad.cancel = true
+	ad.returnView = ViewAccounts
+	a.accountEdit = ad
+
+	model, cmd := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	got := model.(App)
+	// switchToReturn(ViewAccounts) emits a switchViewMsg the app must apply.
+	if msg := runCmd(cmd); msg != nil {
+		model, _ = got.Update(msg)
+		got = model.(App)
+	}
+	if got.activeView != ViewAccounts {
+		t.Fatalf("account-edit cancel routed to %v, want ViewAccounts", got.activeView)
+	}
+	// The rebuilt list must route its own esc back to Settings (its only entry).
+	if got.accountsList.returnView != ViewSettings {
+		t.Fatalf("rebuilt accounts list returnView = %v, want ViewSettings", got.accountsList.returnView)
+	}
+}
+
+// TestAppAccountsA_OpensRegister covers the BOS-267 launch: from ViewAccounts an
+// 'a' keypress must emit switchViewMsg{view: ViewAccountRegister, returnView:
+// ViewAccounts}, replacing the prior "coming soon" stub.
+func TestAppAccountsA_OpensRegister(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewAccounts
+	a.accountsList = NewAccountsListModel(nil, a.ctx)
+
+	_, cmd := a.Update(keyPress('a'))
+	msg := runCmd(cmd)
+	svm, ok := msg.(switchViewMsg)
+	if !ok {
+		t.Fatalf("accounts 'a' produced %T, want switchViewMsg", msg)
+	}
+	if svm.view != ViewAccountRegister || svm.returnView != ViewAccounts {
+		t.Fatalf("accounts 'a' routed to %v (return %v), want ViewAccountRegister/ViewAccounts", svm.view, svm.returnView)
+	}
+}
+
+// TestAppAccountRegisterDoneReturnsToRefreshedAccounts covers the completion
+// leg: a register flow reporting Done() must route the app back to a rebuilt
+// accounts list (so the new account appears) whose own esc returns to Settings.
+func TestAppAccountRegisterDoneReturnsToRefreshedAccounts(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewAccountRegister
+	ar := NewAccountRegisterModel(nil, a.ctx)
+	ar.done = true
+	ar.returnView = ViewAccounts
+	a.accountRegister = ar
+
+	model, _ := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	got := model.(App)
+	if got.activeView != ViewAccounts {
+		t.Fatalf("register done routed to %v, want ViewAccounts", got.activeView)
+	}
+	if got.accountsList.returnView != ViewSettings {
+		t.Fatalf("rebuilt accounts list returnView = %v, want ViewSettings", got.accountsList.returnView)
+	}
+}
+
+// TestAppAccountRegisterCancelReturnsToAccounts covers the cancel leg: a register
+// flow reporting Cancelled() with returnView=ViewAccounts routes back to the
+// accounts list rather than falling through to Home.
+func TestAppAccountRegisterCancelReturnsToAccounts(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewAccountRegister
+	ar := NewAccountRegisterModel(nil, a.ctx)
+	ar.cancelled = true
+	ar.returnView = ViewAccounts
+	a.accountRegister = ar
+
+	model, cmd := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	got := model.(App)
+	if msg := runCmd(cmd); msg != nil {
+		model, _ = got.Update(msg)
+		got = model.(App)
+	}
+	if got.activeView != ViewAccounts {
+		t.Fatalf("register cancel routed to %v, want ViewAccounts", got.activeView)
+	}
+}

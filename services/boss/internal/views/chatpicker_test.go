@@ -193,6 +193,10 @@ func (s *chatPickerStub) TestAccount(context.Context, string) (*pb.TestAccountRe
 func (s *chatPickerStub) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
 	panic("unused")
 }
+
+func (s *chatPickerStub) StartRepairWorkflow(context.Context) (*pb.StartRepairWorkflowResponse, error) {
+	panic("unused")
+}
 func (s *chatPickerStub) ListCheckSnapshots(context.Context, string, int32) (*pb.ListCheckSnapshotsResponse, error) {
 	panic("unused")
 }

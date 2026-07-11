@@ -364,6 +364,29 @@ func TestParseResetTime(t *testing.T) {
 	}
 }
 
+func TestParseResetTimeAcceptsClockRangeBoundaries(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	cases := []struct {
+		text string
+		want time.Time
+	}{
+		{"resets at 1:59am", time.Date(2026, 7, 9, 1, 59, 0, 0, time.UTC)},
+		{"resets at 12:59am", time.Date(2026, 7, 9, 0, 59, 0, 0, time.UTC)},
+		{"resets at 1:59pm", time.Date(2026, 7, 8, 13, 59, 0, 0, time.UTC)},
+		{"resets at 12:59pm", time.Date(2026, 7, 8, 12, 59, 0, 0, time.UTC)},
+		{"resets at 0:59", time.Date(2026, 7, 9, 0, 59, 0, 0, time.UTC)},
+		{"resets at 23:59", time.Date(2026, 7, 8, 23, 59, 0, 0, time.UTC)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.text, func(t *testing.T) {
+			got, ok := ParseResetTime(tc.text, now)
+			if !ok || !got.Equal(tc.want) {
+				t.Fatalf("ParseResetTime(%q) = (%v, %v), want (%v, true)", tc.text, got, ok, tc.want)
+			}
+		})
+	}
+}
+
 // TestParseResetTimeDSTBoundary verifies arithmetic is anchored on now's
 // location (never a hardcoded zone) across a DST transition, using a fixed
 // now in America/New_York around the 2026 spring-forward boundary

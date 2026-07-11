@@ -87,6 +87,10 @@ func guardRealDefaultWrite(path string, inProcessTest, sentinelSet bool, realDef
 	return nil
 }
 
+func refusesDefaultSettingsWrite() bool {
+	return os.Getenv(refuseDefaultEnv) == "1"
+}
+
 // PluginConfig describes a single plugin to load.
 type PluginConfig struct {
 	Name    string            `json:"name"`
@@ -1006,7 +1010,7 @@ func SaveTo(path string, s Settings) error {
 	if err := guardRealDefaultWrite(
 		path,
 		testing.Testing(),
-		os.Getenv(refuseDefaultEnv) == "1",
+		refusesDefaultSettingsWrite(),
 		realDefaultPath,
 		initEnvSettingsPath,
 	); err != nil {
@@ -1063,6 +1067,12 @@ func syncDir(dir string) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
+	return syncDirectory(f)
+}
+
+// syncDirectory preserves the one platform-specific directory-sync error that
+// is safe to ignore while returning every other failure to the caller.
+func syncDirectory(f interface{ Sync() error }) error {
 	if err := f.Sync(); err != nil && err != io.ErrUnexpectedEOF {
 		return err
 	}

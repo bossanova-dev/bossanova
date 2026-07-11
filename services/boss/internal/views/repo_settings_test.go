@@ -686,6 +686,10 @@ func (s *stubRepoClient) TestAccount(context.Context, string) (*pb.TestAccountRe
 func (s *stubRepoClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
 	panic("unused")
 }
+
+func (s *stubRepoClient) StartRepairWorkflow(context.Context) (*pb.StartRepairWorkflowResponse, error) {
+	panic("unused")
+}
 func (s *stubRepoClient) ListCheckSnapshots(context.Context, string, int32) (*pb.ListCheckSnapshotsResponse, error) {
 	panic("unused")
 }

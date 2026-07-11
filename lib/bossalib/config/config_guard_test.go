@@ -128,6 +128,25 @@ func TestSaveRefusesRealDefaultUnderTest(t *testing.T) {
 	}
 }
 
+func TestRefusesDefaultSettingsWrite(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "unset", want: false},
+		{name: "other value", value: "true", want: false},
+		{name: "sentinel", value: "1", want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(refuseDefaultEnv, tt.value)
+			if got := refusesDefaultSettingsWrite(); got != tt.want {
+				t.Fatalf("refusesDefaultSettingsWrite() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestExplicitSettingsPathRoundTrips confirms the normal isolated test pattern
 // (BOSS_SETTINGS_PATH pointed at a temp file) still reads and writes correctly,
 // and that reads (LoadFrom) are never blocked by the write guard.

@@ -31,7 +31,17 @@ const playButtonAsset = fileURLToPath(new URL('./assets/youtube-play-button.png'
 
 // Haiku is the default: it runs faster and dodges the proof key's sonnet ITPM
 // cap (image-heavy web agent runs 429 on sonnet). Override with BOSS_PROOF_MODEL.
-const DEFAULT_MODEL = 'claude-haiku-4-5'
+// This is WEB-ONLY: the text-only TUI leg defaults to Sonnet and honors its own
+// BOSS_PROOF_TUI_MODEL knob (see scripts/proof-tui-agent.mjs). The web leg must
+// NOT read BOSS_PROOF_TUI_MODEL — that would let a TUI-scoped override 429 the
+// image-heavy web agent.
+export const DEFAULT_MODEL = 'claude-haiku-4-5'
+
+// Resolve the model the web capture leg drives under. Deliberately reads only the
+// shared BOSS_PROOF_MODEL (not the TUI-scoped knob) so web keeps its Haiku default.
+export function resolveWebModel(env = process.env) {
+  return env.BOSS_PROOF_MODEL ?? DEFAULT_MODEL
+}
 
 // Headroom the outer SIGKILL backstop must leave above the inner agent budget so
 // the graceful shutdown (loop break → page.close → video.saveAs → stills write)
@@ -227,7 +237,7 @@ export async function runAgentProof({
   runContext,
 }) {
   const startedAt = Date.now()
-  const model = process.env.BOSS_PROOF_MODEL ?? DEFAULT_MODEL
+  const model = resolveWebModel()
   const shouldUpload = !dryRun && process.env.BOSS_PROOF_UPLOAD !== '0'
   const bucket = shouldUpload ? requiredProofBucket() : null
 
@@ -240,17 +250,23 @@ export async function runAgentProof({
   fs.mkdirSync(localDir, { recursive: true })
 
   // ── Step 1: Resolve brief ─────────────────────────────────────────────────
+  // The Playwright web harness only understands plain-string evidence (it joins
+  // expectedEvidence for the goal and audits with text.includes(sub)). The brief
+  // prompt keeps matcher objects out via the default surface:'web' framing, and
+  // validation is scoped with allowMatchers:false so a stray matcher (LLM slip or
+  // authored brief) fails loudly instead of stringifying to `[object Object]`
+  // (BOS-222).
   let brief
   const explicitBriefPath = process.env.BOSS_PROOF_BRIEF
   if (explicitBriefPath) {
     const raw = JSON.parse(fs.readFileSync(explicitBriefPath, 'utf8'))
-    const result = validateBrief(raw)
+    const result = validateBrief(raw, { allowMatchers: false })
     if (result.brief === null) {
       throw new Error(`Invalid BOSS_PROOF_BRIEF: ${result.errors.join(', ')}`)
     }
     brief = result.brief
   } else {
-    // Generate brief from the PR diff using Claude
+    // Generate brief from the PR diff using Claude (surface:'web' is the default).
     const diff = gatherDiff()
     const routes = gatherRouteMap()
     const fixtures = gatherFixturesSummary()
@@ -262,7 +278,7 @@ export async function runAgentProof({
       model,
       planRequiredProof,
     })
-    const result = validateBrief(rawBrief, { source: 'generated' })
+    const result = validateBrief(rawBrief, { source: 'generated', allowMatchers: false })
     if (result.brief === null) {
       throw new Error(`Generated brief failed validation: ${result.errors.join(', ')}`)
     }

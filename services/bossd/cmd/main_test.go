@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -110,6 +111,67 @@ func TestRun_GracefulShutdown_NoGoroutineLeak(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("run did not return within 15s of SIGTERM")
+	}
+}
+
+func TestRun_GracefulShutdown_CancelsStartupStrandedCronRecovery(t *testing.T) {
+	baseDir, err := os.MkdirTemp("/tmp", "bossdtest-")
+	if err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
+	t.Setenv("HOME", baseDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(baseDir, ".config"))
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(baseDir, "settings.json"))
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	stopSig := make(chan os.Signal, 1)
+	ready := make(chan struct{})
+	recoveryStarted := make(chan struct{})
+	recoveryStopped := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- run(runOpts{
+			stopSig:    stopSig,
+			dbPath:     filepath.Join(baseDir, "bossd.db"),
+			socketPath: filepath.Join(baseDir, "bossd.sock"),
+			plugins:    []config.PluginConfig{},
+			onReady:    func() { close(ready) },
+			startupStrandedCronRecovery: func(ctx context.Context) (int, error) {
+				close(recoveryStarted)
+				<-ctx.Done()
+				close(recoveryStopped)
+				return 0, ctx.Err()
+			},
+		})
+	}()
+
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("run exited before ready: %v", err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("daemon did not reach ready state")
+	}
+	select {
+	case <-recoveryStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startup stranded-cron recovery did not start")
+	}
+
+	stopSig <- syscall.SIGTERM
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("run did not return after SIGTERM")
+	}
+	select {
+	case <-recoveryStopped:
+	default:
+		t.Fatal("startup stranded-cron recovery was not cancelled before shutdown completed")
 	}
 }
 

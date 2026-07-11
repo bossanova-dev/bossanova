@@ -619,6 +619,46 @@ func TestAttemptUsageLimitRotation_StatusOnlyFallsThrough(t *testing.T) {
 	}
 }
 
+// capturingAuditStore records every inserted rotation audit event so a test can
+// assert what outcome the headless usage-limit path persisted.
+type capturingAuditStore struct{ inserted []rotation.AuditEvent }
+
+func (s *capturingAuditStore) Insert(_ context.Context, ev rotation.AuditEvent) error {
+	s.inserted = append(s.inserted, ev)
+	return nil
+}
+
+func (s *capturingAuditStore) RecentBySession(_ context.Context, _ string, _ int) ([]rotation.AuditEvent, error) {
+	return nil, nil
+}
+
+// TestAttemptUsageLimitRotation_NoEligibleAccountRecordsOutcome pins BOS-327: the
+// engine's OutcomeNoEligibleAccount (all disabled/failed) is a SECOND consumer of
+// the engine outcome beyond the chat rotator. It must fall through to Block AND
+// record the distinct ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT with the
+// single-sourced actionable detail — not silently drop into the default (which
+// would record nothing, the pre-fix regression).
+func TestAttemptUsageLimitRotation_NoEligibleAccountRecordsOutcome(t *testing.T) {
+	f := newRotationFixture(t)
+	store := &capturingAuditStore{}
+	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeNoEligibleAccount}
+
+	if f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "usage_limit_reached") {
+		t.Fatal("no-eligible-account must return handled=false (today's Block)")
+	}
+	if len(store.inserted) != 1 {
+		t.Fatalf("want exactly one audit event recorded, got %d", len(store.inserted))
+	}
+	ev := store.inserted[0]
+	if ev.Outcome != "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT" {
+		t.Fatalf("outcome = %q, want ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT", ev.Outcome)
+	}
+	if ev.Detail != rotation.NoEligibleAccountDetail {
+		t.Fatalf("detail = %q, want the single-sourced NoEligibleAccountDetail %q", ev.Detail, rotation.NoEligibleAccountDetail)
+	}
+}
+
 // --- Unbound session -> falls through ---
 
 func TestAttemptUsageLimitRotation_UnboundFallsThrough(t *testing.T) {

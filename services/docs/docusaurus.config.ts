@@ -30,10 +30,13 @@ const config: Config = {
   clientModules: ['./src/clientModule.ts'],
 
   markdown: {
+    mermaid: true,
     hooks: {
       onBrokenMarkdownLinks: 'throw',
     },
   },
+
+  themes: ['@docusaurus/theme-mermaid'],
 
   i18n: {
     defaultLocale: 'en',

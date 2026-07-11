@@ -5,12 +5,13 @@
 package bossanovav1connect
 
 import (
-	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	v1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	http "net/http"
 	strings "strings"
+
+	connect "connectrpc.com/connect"
+	v1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // This is a compile-time assertion to ensure that this generated file and the connect package are
@@ -186,6 +187,9 @@ const (
 	// DaemonServiceRepairDoctorProcedure is the fully-qualified name of the DaemonService's
 	// RepairDoctor RPC.
 	DaemonServiceRepairDoctorProcedure = "/bossanova.v1.DaemonService/RepairDoctor"
+	// DaemonServiceStartRepairWorkflowProcedure is the fully-qualified name of the DaemonService's
+	// StartRepairWorkflow RPC.
+	DaemonServiceStartRepairWorkflowProcedure = "/bossanova.v1.DaemonService/StartRepairWorkflow"
 	// DaemonServiceListCheckSnapshotsProcedure is the fully-qualified name of the DaemonService's
 	// ListCheckSnapshots RPC.
 	DaemonServiceListCheckSnapshotsProcedure = "/bossanova.v1.DaemonService/ListCheckSnapshots"
@@ -302,6 +306,14 @@ type DaemonServiceClient interface {
 	// whether `claude` is on the daemon's PATH, and a summary of recent
 	// repair attempts. Surfaced via `boss repair doctor`.
 	RepairDoctor(context.Context, *connect.Request[v1.RepairDoctorRequest]) (*connect.Response[v1.RepairDoctorResponse], error)
+	// StartRepairWorkflow (re-)arms the auto-repair workflow: it declares the
+	// repair plugin's desired-started state (from current daemon settings) and
+	// ensures the workflow is running. No-op when already RUNNING
+	// (already_running=true) — a running workflow is never restarted, because
+	// StartWorkflow re-entry cancels in-flight repairs. PAUSED is operator
+	// intent and is also left untouched (reported in detail). Surfaced via
+	// `boss repair start`.
+	StartRepairWorkflow(context.Context, *connect.Request[v1.StartRepairWorkflowRequest]) (*connect.Response[v1.StartRepairWorkflowResponse], error)
 	// ListCheckSnapshots returns the daemon's per-poll record of what it
 	// saw for a session's CI checks plus the DisplayStatus it computed.
 	// Surfaced via `boss session checks <id>` so the operator can answer
@@ -643,6 +655,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("RepairDoctor")),
 			connect.WithClientOptions(opts...),
 		),
+		startRepairWorkflow: connect.NewClient[v1.StartRepairWorkflowRequest, v1.StartRepairWorkflowResponse](
+			httpClient,
+			baseURL+DaemonServiceStartRepairWorkflowProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("StartRepairWorkflow")),
+			connect.WithClientOptions(opts...),
+		),
 		listCheckSnapshots: connect.NewClient[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse](
 			httpClient,
 			baseURL+DaemonServiceListCheckSnapshotsProcedure,
@@ -718,6 +736,7 @@ type daemonServiceClient struct {
 	removeAccount        *connect.Client[v1.RemoveAccountRequest, v1.RemoveAccountResponse]
 	testAccount          *connect.Client[v1.TestAccountRequest, v1.TestAccountResponse]
 	repairDoctor         *connect.Client[v1.RepairDoctorRequest, v1.RepairDoctorResponse]
+	startRepairWorkflow  *connect.Client[v1.StartRepairWorkflowRequest, v1.StartRepairWorkflowResponse]
 	listCheckSnapshots   *connect.Client[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse]
 	listAgents           *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
 	listPlugins          *connect.Client[v1.ListPluginsRequest, v1.ListPluginsResponse]
@@ -983,6 +1002,11 @@ func (c *daemonServiceClient) RepairDoctor(ctx context.Context, req *connect.Req
 	return c.repairDoctor.CallUnary(ctx, req)
 }
 
+// StartRepairWorkflow calls bossanova.v1.DaemonService.StartRepairWorkflow.
+func (c *daemonServiceClient) StartRepairWorkflow(ctx context.Context, req *connect.Request[v1.StartRepairWorkflowRequest]) (*connect.Response[v1.StartRepairWorkflowResponse], error) {
+	return c.startRepairWorkflow.CallUnary(ctx, req)
+}
+
 // ListCheckSnapshots calls bossanova.v1.DaemonService.ListCheckSnapshots.
 func (c *daemonServiceClient) ListCheckSnapshots(ctx context.Context, req *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error) {
 	return c.listCheckSnapshots.CallUnary(ctx, req)
@@ -1103,6 +1127,14 @@ type DaemonServiceHandler interface {
 	// whether `claude` is on the daemon's PATH, and a summary of recent
 	// repair attempts. Surfaced via `boss repair doctor`.
 	RepairDoctor(context.Context, *connect.Request[v1.RepairDoctorRequest]) (*connect.Response[v1.RepairDoctorResponse], error)
+	// StartRepairWorkflow (re-)arms the auto-repair workflow: it declares the
+	// repair plugin's desired-started state (from current daemon settings) and
+	// ensures the workflow is running. No-op when already RUNNING
+	// (already_running=true) — a running workflow is never restarted, because
+	// StartWorkflow re-entry cancels in-flight repairs. PAUSED is operator
+	// intent and is also left untouched (reported in detail). Surfaced via
+	// `boss repair start`.
+	StartRepairWorkflow(context.Context, *connect.Request[v1.StartRepairWorkflowRequest]) (*connect.Response[v1.StartRepairWorkflowResponse], error)
 	// ListCheckSnapshots returns the daemon's per-poll record of what it
 	// saw for a session's CI checks plus the DisplayStatus it computed.
 	// Surfaced via `boss session checks <id>` so the operator can answer
@@ -1440,6 +1472,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("RepairDoctor")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceStartRepairWorkflowHandler := connect.NewUnaryHandler(
+		DaemonServiceStartRepairWorkflowProcedure,
+		svc.StartRepairWorkflow,
+		connect.WithSchema(daemonServiceMethods.ByName("StartRepairWorkflow")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceListCheckSnapshotsHandler := connect.NewUnaryHandler(
 		DaemonServiceListCheckSnapshotsProcedure,
 		svc.ListCheckSnapshots,
@@ -1564,6 +1602,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceTestAccountHandler.ServeHTTP(w, r)
 		case DaemonServiceRepairDoctorProcedure:
 			daemonServiceRepairDoctorHandler.ServeHTTP(w, r)
+		case DaemonServiceStartRepairWorkflowProcedure:
+			daemonServiceStartRepairWorkflowHandler.ServeHTTP(w, r)
 		case DaemonServiceListCheckSnapshotsProcedure:
 			daemonServiceListCheckSnapshotsHandler.ServeHTTP(w, r)
 		case DaemonServiceListAgentsProcedure:
@@ -1785,6 +1825,10 @@ func (UnimplementedDaemonServiceHandler) TestAccount(context.Context, *connect.R
 
 func (UnimplementedDaemonServiceHandler) RepairDoctor(context.Context, *connect.Request[v1.RepairDoctorRequest]) (*connect.Response[v1.RepairDoctorResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RepairDoctor is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) StartRepairWorkflow(context.Context, *connect.Request[v1.StartRepairWorkflowRequest]) (*connect.Response[v1.StartRepairWorkflowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.StartRepairWorkflow is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ListCheckSnapshots(context.Context, *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error) {

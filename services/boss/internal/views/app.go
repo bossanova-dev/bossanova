@@ -34,6 +34,17 @@ const (
 	ViewCron
 	ViewCronForm
 	ViewOnboarding
+	// ViewAccounts is appended at the END of the const block so existing iota
+	// values do not shift (BOS-265).
+	ViewAccounts
+	// ViewAccountEdit is the per-account inline-edit form (label/status/priority)
+	// reached from the accounts list (BOS-266). Appended after ViewAccounts to
+	// preserve existing iota values.
+	ViewAccountEdit
+	// ViewAccountRegister is the native add-account flow for Claude and Codex
+	// (BOS-267), launched by [a] from the accounts list. Appended at the END of
+	// the const block so existing iota values do not shift.
+	ViewAccountRegister
 )
 
 // App is the root Bubbletea model that manages view routing and shared state.
@@ -66,6 +77,9 @@ type App struct {
 	bugReport         BugReportModel
 	cronList          CronListModel
 	cronForm          CronFormModel
+	accountsList      AccountsListModel
+	accountEdit       AccountEditModel
+	accountRegister   AccountRegisterModel
 	onboarding        OnboardingModel
 	// toast is a single-slot, non-blocking notice line rendered under the
 	// banner (currently: automatic account rotations, BOS-176).
@@ -220,11 +234,12 @@ func (a App) Init() tea.Cmd {
 // switchViewMsg requests the app to switch to a different view.
 type switchViewMsg struct {
 	view       View
-	sessionID  string // used for ViewAttach and ViewChatPicker
-	resumeID   string // Claude Code session UUID to resume (ViewAttach only)
-	agentName  string // optional per-chat agent override (ViewAttach only); empty = inherit session
-	returnView View   // optional view to return to when the target view is cancelled
-	firstRepo  bool   // true when add-repo was opened from the zero-repo home empty state (return home on cancel)
+	sessionID  string      // used for ViewAttach and ViewChatPicker
+	resumeID   string      // Claude Code session UUID to resume (ViewAttach only)
+	agentName  string      // optional per-chat agent override (ViewAttach only); empty = inherit session
+	returnView View        // optional view to return to when the target view is cancelled
+	firstRepo  bool        // true when add-repo was opened from the zero-repo home empty state (return home on cancel)
+	account    *pb.Account // selected account carrier for ViewAccountEdit (BOS-266)
 }
 
 type repoAddCompletedMsg struct {
@@ -288,6 +303,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.cronList.height = msg.Height
 		a.cronForm.width = msg.Width
 		a.cronForm.height = msg.Height
+		a.accountsList.width = msg.Width
+		a.accountsList.height = msg.Height
+		a.accountEdit.width = msg.Width
+		a.accountEdit.height = msg.Height
+		a.accountRegister.width = msg.Width
+		a.accountRegister.height = msg.Height
 		a.onboarding.width = msg.Width
 
 	case tea.KeyMsg:
@@ -459,6 +480,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.cronForm.width = a.width
 			a.cronForm.height = a.height
 			return a, a.cronForm.Init()
+		case ViewAccounts:
+			a.accountsList = NewAccountsListModel(a.client, a.ctx)
+			a.accountsList.returnView = msg.returnView
+			a.accountsList.width = a.width
+			a.accountsList.height = a.height
+			return a, a.accountsList.Init()
+		case ViewAccountEdit:
+			a.accountEdit = NewAccountEditModel(a.client, a.ctx, msg.account)
+			a.accountEdit.returnView = msg.returnView
+			a.accountEdit.width = a.width
+			a.accountEdit.height = a.height
+			return a, a.accountEdit.Init()
+		case ViewAccountRegister:
+			a.accountRegister = NewAccountRegisterModel(a.client, a.ctx)
+			a.accountRegister.returnView = msg.returnView
+			a.accountRegister.width = a.width
+			a.accountRegister.height = a.height
+			return a, a.accountRegister.Init()
 		}
 		return a, nil
 	case startSubscriptionFlowMsg:
@@ -704,14 +743,50 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// cronFormDoneMsg is emitted by CronFormModel as a Cmd; when it
 		// arrives here as a message we return to the cron list and refresh.
-		if _, ok := msg.(cronFormDoneMsg); ok {
+		if doneMsg, ok := msg.(cronFormDoneMsg); ok {
 			returnView := a.cronList.returnView
 			a.activeView = ViewCron
 			a.cronList = NewCronListModel(a.client, a.ctx)
 			a.cronList.returnView = returnView
 			a.cronList.width = a.width
 			a.cronList.height = a.height
+			// Keep the just-saved (edited or created) job highlighted once the
+			// recreated list loads its jobs. Empty jobID falls back to row 0.
+			a.cronList.highlightJobID = doneMsg.jobID
 			return a, a.cronList.Init()
+		}
+		return a, cmd
+	case ViewAccounts:
+		updated, cmd := a.accountsList.Update(msg)
+		a.accountsList = updated.(AccountsListModel)
+		if a.accountsList.Cancelled() {
+			return a, a.switchToReturn(a.accountsList.returnView)
+		}
+		return a, cmd
+	case ViewAccountEdit:
+		updated, cmd := a.accountEdit.Update(msg)
+		a.accountEdit = updated.(AccountEditModel)
+		if a.accountEdit.Cancelled() {
+			return a, a.switchToReturn(a.accountEdit.returnView)
+		}
+		return a, cmd
+	case ViewAccountRegister:
+		updated, cmd := a.accountRegister.Update(msg)
+		a.accountRegister = updated.(AccountRegisterModel)
+		if a.accountRegister.Cancelled() {
+			return a, a.switchToReturn(a.accountRegister.returnView)
+		}
+		if a.accountRegister.Done() {
+			// Registration succeeded: return to a rebuilt accounts list (its Init
+			// re-fetches via ListAccounts) so the new account appears, routing its
+			// own esc back to Settings (mirrors the ViewCronForm→refreshed-ViewCron
+			// return). ViewAccounts' only entry point is Settings.
+			a.activeView = ViewAccounts
+			a.accountsList = NewAccountsListModel(a.client, a.ctx)
+			a.accountsList.returnView = ViewSettings
+			a.accountsList.width = a.width
+			a.accountsList.height = a.height
+			return a, a.accountsList.Init()
 		}
 		return a, cmd
 	}
@@ -781,10 +856,17 @@ func (a *App) switchToHome() tea.Cmd {
 // (the zero value) uses the full switchToHome rebuild; ViewSettings re-enters
 // Settings via the normal init path. Any other value falls back to Home.
 func (a *App) switchToReturn(v View) tea.Cmd {
-	if v == ViewSettings {
+	switch v {
+	case ViewSettings:
 		return func() tea.Msg { return switchViewMsg{view: ViewSettings} }
+	case ViewAccounts:
+		// Rebuild the accounts list (its Init re-fetches via ListAccounts) so an
+		// edit made in the account-edit form is reflected on return, and route
+		// the rebuilt list's own esc back to Settings (its only entry point).
+		return func() tea.Msg { return switchViewMsg{view: ViewAccounts, returnView: ViewSettings} }
+	default:
+		return a.switchToHome()
 	}
-	return a.switchToHome()
 }
 
 func (a *App) newHomeModel() HomeModel {
@@ -853,6 +935,12 @@ func (a App) View() tea.View {
 		v = a.cronList.View()
 	case ViewCronForm:
 		v = a.cronForm.View()
+	case ViewAccounts:
+		v = a.accountsList.View()
+	case ViewAccountEdit:
+		v = a.accountEdit.View()
+	case ViewAccountRegister:
+		v = a.accountRegister.View()
 	default:
 		v = tea.NewView("Unknown view")
 	}
@@ -886,6 +974,12 @@ func (a App) View() tea.View {
 			opts.line1 = "Report a bug"
 		case ViewCron:
 			opts.line1 = "Scheduled Jobs"
+		case ViewAccounts:
+			opts.line1 = "Accounts"
+		case ViewAccountEdit:
+			opts.line1 = "Edit Account"
+		case ViewAccountRegister:
+			opts.line1 = "Add Account"
 		case ViewOnboarding:
 			opts.line1 = "Welcome to Bossanova"
 		}

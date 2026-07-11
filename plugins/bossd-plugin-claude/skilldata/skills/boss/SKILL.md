@@ -454,7 +454,7 @@ boss daemon status
 
 Stop the bossd daemon
 
-Stops the bossd daemon for the current profile via the platform service manager or profile metadata. Idempotent — quietly succeeds if the daemon is already stopped or not installed. Use `--all-standalone` only for explicit cleanup of every user-owned standalone bossd process across profiles.
+Stops the bossd daemon for the current profile via the platform service manager or profile metadata. Idempotent — quietly succeeds if the daemon is already stopped or not installed. Normal stops leave plugin processes alone — bossd reaps its own children. Use `--all-standalone` only for explicit cleanup of every user-owned standalone bossd process and its `bossd-plugin-*` children across profiles.
 
 **Flags:**
 
@@ -652,6 +652,16 @@ Health-checks the auto-repair pipeline. Calls the daemon's `RepairDoctor` RPC an
 
 ```bash
 boss repair doctor
+```
+
+### `boss repair start`
+
+(Re-)arm the auto-repair workflow (e.g. after the repair plugin was stopped or restarted)
+
+(Re-)arms the auto-repair workflow. Calls the daemon's `StartRepairWorkflow` RPC, which declares the repair plugin's desired-started state from current settings and ensures the workflow is running. A RUNNING workflow is left untouched (never restarted); a PAUSED one is left for the operator to resume. Use after the repair plugin was stopped or restarted and auto-repair is sitting disarmed — no bossd restart needed.
+
+```bash
+boss repair start
 ```
 
 ### `boss session`

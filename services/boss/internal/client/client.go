@@ -119,6 +119,10 @@ type BossClient interface {
 	// Repair diagnostics — surfaced via `boss repair doctor`.
 	RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, error)
 
+	// StartRepairWorkflow (re-)arms the auto-repair workflow — surfaced via
+	// `boss repair start`.
+	StartRepairWorkflow(ctx context.Context) (*pb.StartRepairWorkflowResponse, error)
+
 	// ListCheckSnapshots — surfaced via `boss session checks <id>`.
 	ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error)
 

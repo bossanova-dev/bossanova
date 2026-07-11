@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "title": "BOS-224 TUI navigation fallback replay",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "open repos list",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        { "key": "r", "caption": "Open the Repos list" },
+        { "waitFor": "PATH", "timeoutMs": 10000, "caption": "Repo table loaded" },
+        { "key": "down", "caption": "Arrow-navigate down the repo table (BOS-213 key)" },
+        { "key": "up", "caption": "Arrow-navigate back up the repo table (BOS-213 key)" },
+        {
+          "expect": [
+            {
+              "text": "NAME PATH STATUS",
+              "match": "normalized",
+              "label": "repo-list column headers"
+            }
+          ],
+          "caption": "Column headers visible"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "open repo settings",
+      "steps": [
+        { "key": "enter", "caption": "Open the selected repo's settings screen" },
+        {
+          "waitFor": {
+            "anyOf": ["Settings", { "text": "settings", "match": "normalized-ci" }],
+            "label": "settings screen"
+          },
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        { "expect": "Settings", "caption": "Settings text present" }
+      ]
+    }
+  ]
+}

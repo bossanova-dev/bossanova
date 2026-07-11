@@ -63,6 +63,9 @@ func (p *mergeGateProvider) ListOpenPRs(context.Context, string) ([]vcs.PRSummar
 func (p *mergeGateProvider) ListClosedPRs(context.Context, string) ([]vcs.PRSummary, error) {
 	return nil, nil
 }
+func (p *mergeGateProvider) SearchPRsByTitleTag(context.Context, string, string) ([]vcs.PRSummary, error) {
+	return nil, nil
+}
 func (p *mergeGateProvider) UpdatePRTitle(context.Context, string, int, string) error { return nil }
 func (p *mergeGateProvider) GetPRMergeCommit(context.Context, string, int) (string, error) {
 	return "", vcs.ErrPRNotMerged

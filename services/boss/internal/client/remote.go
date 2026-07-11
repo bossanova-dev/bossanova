@@ -481,6 +481,10 @@ func (c *RemoteClient) RepairDoctor(_ context.Context) (*pb.RepairDoctorResponse
 	return nil, errLocalOnly("RepairDoctor")
 }
 
+func (c *RemoteClient) StartRepairWorkflow(_ context.Context) (*pb.StartRepairWorkflowResponse, error) {
+	return nil, errLocalOnly("StartRepairWorkflow")
+}
+
 func (c *RemoteClient) ListCheckSnapshots(_ context.Context, _ string, _ int32) (*pb.ListCheckSnapshotsResponse, error) {
 	return nil, errLocalOnly("ListCheckSnapshots")
 }

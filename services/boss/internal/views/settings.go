@@ -446,6 +446,8 @@ func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg { return switchViewMsg{view: ViewCron, returnView: ViewSettings} }
 		case "t":
 			return m, func() tea.Msg { return switchViewMsg{view: ViewTrash, returnView: ViewSettings} }
+		case "a":
+			return m, func() tea.Msg { return switchViewMsg{view: ViewAccounts, returnView: ViewSettings} }
 		case "up", "k":
 			m.moveCursor(-1)
 		case "down", "j":
@@ -820,12 +822,12 @@ func (m SettingsModel) View() tea.View {
 		b.WriteString(actionBar([]string{"[enter] save", "[esc] cancel"}))
 	case m.cloudAccess != nil:
 		b.WriteString(actionBar(
-			[]string{"[enter/space] toggle/edit", "[r]epos", "[c]ron", "[t]rash", "[b]illing"},
+			[]string{"[enter/space] toggle/edit", "[a]ccounts", "[b]illing", "[c]ron", "[r]epos", "[t]rash"},
 			[]string{"[esc] back"},
 		))
 	default:
 		b.WriteString(actionBar(
-			[]string{"[enter/space] toggle/edit", "[r]epos", "[c]ron", "[t]rash"},
+			[]string{"[enter/space] toggle/edit", "[a]ccounts", "[c]ron", "[r]epos", "[t]rash"},
 			[]string{"[esc] back"},
 		))
 	}

@@ -63,9 +63,21 @@ const (
 	// OutcomeAllExhausted means no account is currently available but at least
 	// one is merely cooling; ResumeAt holds the earliest future recovery time.
 	OutcomeAllExhausted
-	// OutcomeStatusOnly means no swap target exists and none will recover
-	// (capability absent, or every other account permanently failed/disabled).
+	// OutcomeStatusOnly means the agent/provider cannot rotate at all: the
+	// capability short-circuit fired (!sig.RotationCapable), so no store access
+	// happened and no swap target was even considered. The remedy is agent/plugin
+	// side, not account side. Contrast OutcomeNoEligibleAccount below.
 	OutcomeStatusOnly
+	// OutcomeNoEligibleAccount means rotation IS capable and the store was
+	// consulted, but no account is eligible to switch to now and none will recover
+	// by cooling. The dominant cause is that every other account is disabled or
+	// permanently failed; on the probe-required path it can also mean no other
+	// account has a usable (probeable, under-cap) candidate slot. Distinct from
+	// OutcomeStatusOnly so operators are steered to the account-side remedy —
+	// typically enabling or re-authenticating an account (`boss account update
+	// <id> --status active`) — rather than the agent's rotation capability
+	// (BOS-327).
+	OutcomeNoEligibleAccount
 )
 
 // Outcome is the engine's decision for a single Signal.
@@ -283,7 +295,10 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 		out.ResumeAt = resumeAt
 		return out, nil
 	}
-	out.Kind = OutcomeStatusOnly
+	// No candidate and none recovering: rotation was capable and the store was
+	// consulted, so this is "no eligible account" (all disabled/failed), NOT the
+	// capability short-circuit's OutcomeStatusOnly (BOS-327).
+	out.Kind = OutcomeNoEligibleAccount
 	return out, nil
 }
 

@@ -33,9 +33,9 @@ type sessionDeletedMsg struct {
 	err error
 }
 
-// allSessionsDeletedMsg carries the result of emptying the entire trash.
-type allSessionsDeletedMsg struct {
-	ids []string
+// deleteProgressMsg carries the result of deleting one session in a delete-all batch.
+type deleteProgressMsg struct {
+	id  string
 	err error
 }
 
@@ -62,6 +62,15 @@ type TrashModel struct {
 	deletingAll      bool
 	restoring        bool
 	restoredID       string
+
+	// Delete-all batch progress. pendingDeleteIDs holds the IDs resolved when
+	// [a] is pressed (so a later filter change cannot alter the batch). Once
+	// confirmed they move into deleteQueue and are drained one session at a
+	// time so the view can render a live Deleting N/M count.
+	pendingDeleteIDs []string
+	deleteQueue      []string // session IDs still to delete in the active batch
+	deleteTotal      int      // total sessions in the active batch (denominator)
+	deleteDone       int      // sessions deleted so far (numerator)
 
 	// Layout
 	width  int
@@ -200,6 +209,31 @@ func (m TrashModel) filteredSessionIDs() []string {
 	return ids
 }
 
+// allSessionIDs returns the IDs of every archived session the view holds,
+// mirroring filteredSessionIDs for the unfiltered delete-all batch.
+func (m TrashModel) allSessionIDs() []string {
+	ids := make([]string, 0, len(m.sessions))
+	for _, sess := range m.sessions {
+		ids = append(ids, sess.Id)
+	}
+	return ids
+}
+
+// deleteNext returns a command that deletes the session at the head of the
+// delete-all queue and reports the outcome as a deleteProgressMsg. It returns
+// nil when the queue is empty so the chain terminates.
+func (m TrashModel) deleteNext() tea.Cmd {
+	if len(m.deleteQueue) == 0 {
+		return nil
+	}
+	id := m.deleteQueue[0]
+	c, ctx := m.client, m.ctx
+	return func() tea.Msg {
+		err := c.RemoveSession(ctx, id)
+		return deleteProgressMsg{id: id, err: err}
+	}
+}
+
 func (m TrashModel) trashFilterHaystack(sess *pb.Session) string {
 	return strings.Join([]string{
 		sess.RepoDisplayName,
@@ -287,37 +321,31 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.removeSession(msg.id)
 		return m, nil
 
-	case allSessionsDeletedMsg:
-		m.deleting = false
-		m.deletingAll = false
-		m.restoring = false
-		if len(msg.ids) == 0 {
-			// EmptyTrash path: clear everything, but only on success. An empty
-			// id set with an error is a batch delete that failed on its first
-			// session, so there is nothing to prune.
-			if msg.err == nil {
-				m.sessions = nil
-			}
-		} else {
-			// Batch delete: prune the sessions that were actually removed. On a
-			// partial failure this is only the prefix that succeeded.
-			deleted := make(map[string]struct{}, len(msg.ids))
-			for _, id := range msg.ids {
-				deleted[id] = struct{}{}
-			}
-			kept := m.sessions[:0]
-			for _, sess := range m.sessions {
-				if _, ok := deleted[sess.Id]; !ok {
-					kept = append(kept, sess)
-				}
-			}
-			m.sessions = kept
-		}
-		m.buildTable()
+	case deleteProgressMsg:
 		if msg.err != nil {
+			// Stop the batch on the first failure. Sessions deleted before this
+			// one stay pruned (they were removed as their progress messages
+			// arrived), matching the previous partial-failure semantics.
 			m.err = msg.err
+			m.deletingAll = false
+			m.deleteQueue = nil
+			m.deleteTotal = 0
+			m.deleteDone = 0
+			m.buildTable()
+			return m, nil
 		}
-		return m, nil
+		m.removeSession(msg.id)
+		m.deleteDone++
+		if len(m.deleteQueue) > 0 {
+			m.deleteQueue = m.deleteQueue[1:]
+		}
+		if len(m.deleteQueue) == 0 {
+			m.deletingAll = false
+			m.deleteTotal = 0
+			m.deleteDone = 0
+			return m, nil
+		}
+		return m, m.deleteNext()
 
 	case tea.PasteMsg:
 		if m.filter.Active() {
@@ -342,12 +370,20 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.confirm.active {
 				m.confirmDeleteAll = false
 			}
+			if confirmed && deleteAll {
+				// Drive delete-all client-side, one session at a time, so the
+				// view can render a live Deleting N/M count. The batch was
+				// captured when [a] was pressed.
+				m.deletingAll = true
+				m.deleteQueue = m.pendingDeleteIDs
+				m.deleteTotal = len(m.deleteQueue)
+				m.deleteDone = 0
+				m.pendingDeleteIDs = nil
+				m.table.SetHeight(m.tableHeight())
+				return m, m.deleteNext()
+			}
 			if cmd != nil && confirmed {
-				if deleteAll {
-					m.deletingAll = true
-				} else {
-					m.deleting = true
-				}
+				m.deleting = true
 			}
 			m.table.SetHeight(m.tableHeight())
 			return m, cmd
@@ -420,32 +456,20 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "a":
 			if len(m.filteredSessions) > 0 && !m.deletingAll {
-				var ids []string
+				// Resolve the batch now, at [a]-time, so a later filter change
+				// cannot alter what the confirm deletes. The unfiltered path
+				// deletes every archived session the view already holds via
+				// RemoveSession (client-side, one at a time) rather than the
+				// blocking EmptyTrash RPC, so the delete can report progress.
+				ids := m.allSessionIDs()
 				prompt := fmt.Sprintf("Permanently delete all %d archived sessions?", len(m.sessions))
 				if m.filter.Engaged() {
 					ids = m.filteredSessionIDs()
 					prompt = fmt.Sprintf("Permanently delete %d filtered archived sessions?", len(ids))
 				}
-				c := m.client
-				ctx := m.ctx
-				ids = append([]string(nil), ids...)
+				m.pendingDeleteIDs = ids
 				m.confirmDeleteAll = true
-				m.confirm = newConfirmPrompt(prompt, func() tea.Msg {
-					if len(ids) > 0 {
-						// Track what actually succeeded so a mid-batch failure
-						// only prunes the sessions that were really deleted.
-						deleted := make([]string, 0, len(ids))
-						for _, id := range ids {
-							if err := c.RemoveSession(ctx, id); err != nil {
-								return allSessionsDeletedMsg{ids: deleted, err: err}
-							}
-							deleted = append(deleted, id)
-						}
-						return allSessionsDeletedMsg{ids: deleted}
-					}
-					_, err := c.EmptyTrash(ctx, &pb.EmptyTrashRequest{})
-					return allSessionsDeletedMsg{err: err}
-				})
+				m.confirm = newConfirmPrompt(prompt, nil)
 				m.table.SetHeight(m.tableHeight())
 			}
 			return m, nil
@@ -515,8 +539,10 @@ func (m TrashModel) View() tea.View {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
 			m.spinner.View() + "Deleting..."))
 	} else if m.deletingAll {
+		// deleteDone+1 (capped at the total) reads as "currently deleting item
+		// N of M" while the Nth RemoveSession is in flight.
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
-			m.spinner.View() + "Deleting all..."))
+			m.spinner.View() + fmt.Sprintf("Deleting %d/%d…", min(m.deleteDone+1, m.deleteTotal), m.deleteTotal)))
 	} else if m.restoring {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
 			m.spinner.View() + "Restoring..."))

@@ -26,6 +26,7 @@ type World struct {
 	Sessions []*pb.Session
 	Chats    []*pb.ClaudeChat
 	CronJobs []*pb.CronJob
+	Accounts []*pb.Account
 }
 
 // Repos returns the registered repositories. The first entry (repo-1 / my-app)
@@ -157,6 +158,54 @@ func CronJobs() []*pb.CronJob {
 	}
 }
 
+// Accounts returns the managed rotation accounts so the Settings → Accounts
+// list (BOS-265) is non-empty. Two entries exercise both providers and both
+// health/status states: an active/ok "claude" account and a disabled/failed
+// "codex" account that is cooling down and carries a last-test error. Fields
+// are display-safe metadata only — the Account proto has no credential field —
+// and all timestamps derive from the pinned clock so captures stay byte-stable.
+func Accounts() []*pb.Account {
+	return []*pb.Account{
+		{
+			Id:           "acct-claude-1",
+			Provider:     "claude",
+			Label:        "work-claude",
+			Status:       "active",
+			Priority:     0,
+			Health:       "ok",
+			Tier:         "max",
+			LastUsedAt:   ts(-30 * time.Minute),
+			LastTestOkAt: ts(-2 * time.Hour),
+			CreatedAt:    ts(-720 * time.Hour),
+			UpdatedAt:    ts(-30 * time.Minute),
+		},
+		{
+			Id:       "acct-codex-1",
+			Provider: "codex",
+			Label:    "personal-codex",
+			Status:   "disabled",
+			Priority: 1,
+			Health:   "failed",
+			Tier:     "plus",
+			// CooldownUntil must render as a FUTURE "cooling · resets …" state in
+			// proof captures. The TUI's cooldown cells use the real wall clock
+			// (time.Now), but every fixture ts() derives from fixedNow (pinned in
+			// the past for byte-stable screens), so a small offset like +45m would
+			// already be elapsed at capture time and render "active". A large
+			// offset keeps the cooling state well into the future for any realistic
+			// capture run (BOS-269).
+			CooldownUntil: ts(500 * 24 * time.Hour),
+			// SYNTHETIC secret-shaped error so masking (maskTestError →
+			// agenterr.Redact) is demonstrable in captures: the raw token must be
+			// redacted to [REDACTED] on screen. This is a FAKE token, never a real
+			// credential.
+			LastTestError: "401 invalid_grant: token=sk-FAKE0123456789abcdef rejected",
+			CreatedAt:     ts(-480 * time.Hour),
+			UpdatedAt:     ts(-3 * time.Hour),
+		},
+	}
+}
+
 // DemoWorld assembles the full deterministic dataset. Sessions are ordered
 // active-first (index 0 is the default-selected home-screen entry, sess-aaa-111)
 // with archived sessions appended; downstream proof navigation depends on this.
@@ -166,5 +215,6 @@ func DemoWorld() World {
 		Sessions: append(ActiveSessions(), ArchivedSessions()...),
 		Chats:    Chats(),
 		CronJobs: CronJobs(),
+		Accounts: Accounts(),
 	}
 }

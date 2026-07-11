@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -93,11 +94,22 @@ func TestRestartPluginAbandonsLaunchOnCancel(t *testing.T) {
 }
 
 // stubWorkflowService records StartWorkflow calls so a test can assert the host
-// replayed the startup request after a respawn. Only StartWorkflow/GetInfo are
-// exercised; the rest satisfy the WorkflowService interface.
+// replayed the startup request after a respawn. It also models a reported
+// workflow status (for EnsureWorkflowRunning / watchdog tests): GetWorkflowStatus
+// returns `status`/`statusErr`, and StartWorkflow flips `status` to RUNNING so a
+// re-probe by a losing single-flight caller observes the started workflow. All
+// fields are mutex-guarded so the concurrency tests are race-clean.
 type stubWorkflowService struct {
+	mu         sync.Mutex
 	startCalls int
 	lastReq    *bossanovav1.StartWorkflowRequest
+
+	status      bossanovav1.WorkflowStatus
+	statusErr   error
+	statusCalls int
+	// statusGate, when non-nil, blocks GetWorkflowStatus until it is closed.
+	// The single-flight test uses it to pin concurrent callers at the probe.
+	statusGate chan struct{}
 }
 
 func (s *stubWorkflowService) GetInfo(context.Context) (*bossanovav1.PluginInfo, error) {
@@ -105,8 +117,13 @@ func (s *stubWorkflowService) GetInfo(context.Context) (*bossanovav1.PluginInfo,
 }
 
 func (s *stubWorkflowService) StartWorkflow(_ context.Context, req *bossanovav1.StartWorkflowRequest) (*bossanovav1.StartWorkflowResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.startCalls++
 	s.lastReq = req
+	// Starting a workflow makes it RUNNING: a subsequent probe (e.g. a losing
+	// single-flight caller re-checking under the lock) must see RUNNING.
+	s.status = bossanovav1.WorkflowStatus_WORKFLOW_STATUS_RUNNING
 	return &bossanovav1.StartWorkflowResponse{}, nil
 }
 
@@ -122,8 +139,38 @@ func (s *stubWorkflowService) CancelWorkflow(context.Context, string) (*bossanov
 	return &bossanovav1.WorkflowStatusInfo{}, nil
 }
 
-func (s *stubWorkflowService) GetWorkflowStatus(context.Context, string) (*bossanovav1.WorkflowStatusInfo, error) {
-	return &bossanovav1.WorkflowStatusInfo{}, nil
+func (s *stubWorkflowService) GetWorkflowStatus(ctx context.Context, _ string) (*bossanovav1.WorkflowStatusInfo, error) {
+	s.mu.Lock()
+	gate := s.statusGate
+	s.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.statusCalls++
+	if s.statusErr != nil {
+		return nil, s.statusErr
+	}
+	return &bossanovav1.WorkflowStatusInfo{Status: s.status}, nil
+}
+
+// setStatus updates the reported status under the lock (test helper).
+func (s *stubWorkflowService) setStatus(st bossanovav1.WorkflowStatus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status = st
+}
+
+// starts returns the recorded StartWorkflow call count under the lock.
+func (s *stubWorkflowService) starts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startCalls
 }
 
 func (s *stubWorkflowService) NotifyStatusChange(context.Context, string, bossanovav1.DisplayStatus, bool) error {
@@ -142,7 +189,7 @@ func TestRestartPluginReplaysWorkflowStart(t *testing.T) {
 	h := newHostForTest([]managedPlugin{{cfg: config.PluginConfig{Name: name}}})
 
 	req := &bossanovav1.StartWorkflowRequest{ConfigJson: `{"cooldown_minutes":5}`}
-	h.RegisterWorkflowStart(name, req)
+	h.SetWorkflowDesired(name, req)
 
 	ws := &stubWorkflowService{}
 	h.launchPluginFn = func(_ context.Context, cfg config.PluginConfig) (managedPlugin, error) {

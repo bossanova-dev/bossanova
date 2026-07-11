@@ -248,24 +248,127 @@ export function computeRollups(parents) {
   return { move, escalate }
 }
 
+// --- Behaviour 3: planning-queue reconcile ---------------------------------
+
+// Label names that drive the reconcile. `agent-friendly` marks the working set;
+// `needs-human` (mutually exclusive with agent-friendly) and an already-present
+// `agent-plan` exclude a ticket; `agent-plan` is what a no-plan ticket gains.
+export const AGENT_FRIENDLY_LABEL = 'agent-friendly'
+export const NEEDS_HUMAN_LABEL = 'needs-human'
+export const AGENT_PLAN_LABEL = 'agent-plan'
+const RECONCILE_STATE_NAME = 'Unplanned'
+
+// True when an issue carries a boss-plan implementation-plan attachment: boss-plan
+// attaches it as `links: [{ url, title: "Implementation plan (BOS-NN)" }]`, which
+// Linear surfaces as an Attachment. Match the canonical title prefix OR the public
+// proof host so a retitled-but-hosted plan still counts.
+export function hasImplementationPlan(attachments) {
+  return (Array.isArray(attachments) ? attachments : []).some((a) => {
+    const title = String(a?.title ?? '')
+    const url = String(a?.url ?? '')
+    return title.startsWith('Implementation plan (') || url.includes('proof.bossanova.dev/plans/')
+  })
+}
+
+const hasLabel = (ticket, name) =>
+  (Array.isArray(ticket?.labels) ? ticket.labels : []).some((l) => l?.name === name)
+
+// Decide the planning-queue reconcile for each Unplanned + `agent-friendly` ticket:
+//   has an implementation plan  → move Unplanned → Todo (anomaly recovery: boss-plan
+//                                 normally moves atomically, so this only fires on a
+//                                 partial-failure or a manual reopen).
+//   no plan                     → drop `agent-friendly`, add `agent-plan` so the
+//                                 bs-sweep-plan queue picks it up. `newLabelIds` is
+//                                 the full replacement set (current − agent-friendly
+//                                 + agent-plan).
+// Excludes `needs-human` (must never auto-plan), an already-`agent-plan` ticket
+// (no-op), and any identifier in `blockedIdentifiers` (an epic parent with children —
+// don't auto-plan an epic). Config gaps are escalated, never guessed: a no-plan case
+// with no resolvable `agentPlanId`, or a has-plan case with no `todoStateId`.
+export function computePlanningReconcile(
+  tickets,
+  { agentPlanId, agentFriendlyId, todoStateId, blockedIdentifiers } = {},
+) {
+  const toTodo = []
+  const toAgentPlan = []
+  const escalate = []
+  const blocked =
+    blockedIdentifiers instanceof Set ? blockedIdentifiers : new Set(blockedIdentifiers ?? [])
+
+  for (const ticket of Array.isArray(tickets) ? tickets : []) {
+    if (ticket?.state?.name !== RECONCILE_STATE_NAME) continue
+    if (!hasLabel(ticket, AGENT_FRIENDLY_LABEL)) continue
+    if (hasLabel(ticket, NEEDS_HUMAN_LABEL)) continue // never auto-plan a needs-human ticket
+    if (hasLabel(ticket, AGENT_PLAN_LABEL)) continue // already queued → no-op
+    if (blocked.has(ticket.identifier)) continue // epic parent → don't auto-plan an epic
+
+    if (hasImplementationPlan(ticket.attachments)) {
+      if (!todoStateId) {
+        escalate.push({
+          kind: 'no-todo-state',
+          identifier: ticket.identifier,
+          reason: 'planned Unplanned ticket but workspace exposes no Todo workflow state',
+        })
+        continue
+      }
+      toTodo.push({ id: ticket.id, identifier: ticket.identifier, from: ticket.state.name })
+      continue
+    }
+
+    if (!agentPlanId) {
+      escalate.push({
+        kind: 'no-agent-plan-label',
+        identifier: ticket.identifier,
+        reason: 'agent-friendly Unplanned ticket to queue but the agent-plan label does not exist',
+      })
+      continue
+    }
+    // Full replacement set: keep every current label except agent-friendly, add
+    // agent-plan (dedup in case it somehow co-exists). Drop null/undefined ids.
+    const currentIds = (Array.isArray(ticket.labels) ? ticket.labels : [])
+      .map((l) => l?.id)
+      .filter((id) => id != null)
+    const kept = currentIds.filter((id) => id !== agentFriendlyId && id !== agentPlanId)
+    toAgentPlan.push({
+      id: ticket.id,
+      identifier: ticket.identifier,
+      from: ticket.state.name,
+      newLabelIds: [...kept, agentPlanId],
+    })
+  }
+
+  return { toTodo, toAgentPlan, escalate }
+}
+
 // --- GraphQL read shape ----------------------------------------------------
 
-// One combined read covers both behaviours (verified live against the workspace):
-//   - workflowStates → name→id map (the Done target for auto-close)
+// One combined read covers all three behaviours (verified live against the workspace):
+//   - workflowStates → name→id map (the Done target for auto-close, the Todo target
+//     for the planning-queue reconcile)
 //   - non-terminal issues + their (bounded) children → close tickets AND rollup
 //     parents in a single query. children(first: 100) bounds the page explicitly
 //     (the linear-deps-lib.mjs lesson: an unstated size can paginate real nodes
 //     out and silently under-report).
+//   - each issue's labels + attachments → the planning-queue reconcile (behaviour 3)
+//     needs the label set (agent-friendly / needs-human / agent-plan) and whether an
+//     implementation-plan attachment is present. Bounded pages for the same reason.
+//   - issueLabels(agent-plan, agent-friendly) → the label ids the relabel mutation
+//     needs, resolved once per read rather than per issue.
 export const TIDY_READ_QUERY = `
   query TidyReads($first: Int!) {
     workflowStates(first: 100) {
       nodes { id name type }
+    }
+    issueLabels(first: 50, filter: { name: { in: ["agent-plan", "agent-friendly"] } }) {
+      nodes { id name }
     }
     issues(first: $first, filter: { state: { type: { in: ["backlog", "unstarted", "started"] } } }) {
       nodes {
         id
         identifier
         state { id name type }
+        labels(first: 20) { nodes { id name } }
+        attachments(first: 50) { nodes { title url } }
         children(first: 100) {
           nodes { id identifier state { id name type } }
           pageInfo { hasNextPage }
@@ -279,6 +382,16 @@ export const TIDY_READ_QUERY = `
 const MOVE_MUTATION = `
   mutation TidyMove($id: String!, $stateId: String!) {
     issueUpdate(id: $id, input: { stateId: $stateId }) { success }
+  }
+`
+
+// Full-set label replace for the planning-queue reconcile. Linear's issueUpdate
+// `labelIds` replaces the issue's entire label set, so the caller computes the new
+// set (drop agent-friendly, add agent-plan) and sends it whole — the same semantics
+// as the Linear MCP `save_issue labels`.
+const LABELS_MUTATION = `
+  mutation TidyRelabel($id: String!, $labelIds: [String!]!) {
+    issueUpdate(id: $id, input: { labelIds: $labelIds }) { success }
   }
 `
 
@@ -296,8 +409,20 @@ export function parseTidyData(data) {
   const statesByName = new Map(stateNodes.map((s) => [s.name, s]))
   const doneState = statesByName.get('Done') ?? stateNodes.find((s) => s?.type === 'completed')
 
+  const labelNodes = data?.issueLabels?.nodes ?? []
+  const labelIdsByName = new Map(labelNodes.map((l) => [l.name, l.id]))
+
   const issueNodes = data?.issues?.nodes ?? []
-  const tickets = issueNodes.map((n) => ({ id: n.id, identifier: n.identifier, state: n.state }))
+  // Tickets carry their labels + attachments so behaviour 3 (planning-queue
+  // reconcile) can read the label set and detect an implementation-plan attachment
+  // without a second read. Behaviours 1 & 2 ignore the extra fields.
+  const tickets = issueNodes.map((n) => ({
+    id: n.id,
+    identifier: n.identifier,
+    state: n.state,
+    labels: (n?.labels?.nodes ?? []).map((l) => ({ id: l.id, name: l.name })),
+    attachments: (n?.attachments?.nodes ?? []).map((a) => ({ title: a.title, url: a.url })),
+  }))
   const parents = issueNodes
     .filter((n) => (n?.children?.nodes?.length ?? 0) > 0)
     .map((n) => ({
@@ -318,6 +443,8 @@ export function parseTidyData(data) {
     parents,
     statesByName,
     doneStateId: doneState?.id ?? null,
+    todoStateId: statesByName.get('Todo')?.id ?? null,
+    labelIdsByName,
     hasNextPage: Boolean(data?.issues?.pageInfo?.hasNextPage),
   }
 }
@@ -355,7 +482,8 @@ export function defaultReadPullRequests({ execFileSync, limit = 800 } = {}) {
 // Contract honoured by the gate:
 //   - Reads happen BEFORE any write. A read/credential failure therefore mutates
 //     nothing (fail-closed with no partial mutation).
-//   - Returns { closed, rolledUp, escalations, counts:{prReads, linearReads, writes} }.
+//   - Returns { closed, rolledUp, reclassified:{toTodo,toAgentPlan}, escalations,
+//     counts:{prReads, linearReads, writes} }.
 export async function runTidy({
   apiKey,
   dryRun = false,
@@ -376,7 +504,8 @@ export async function runTidy({
 
   counts.linearReads += 1
   const data = await linearReadImpl({ query: TIDY_READ_QUERY, variables: { first } })
-  const { tickets, parents, doneStateId, hasNextPage } = parseTidyData(data)
+  const { tickets, parents, doneStateId, todoStateId, labelIdsByName, hasNextPage } =
+    parseTidyData(data)
 
   // --- Compute deltas ---
   const prsByTicket = groupPrsByTicket(prs)
@@ -400,7 +529,21 @@ export async function runTidy({
   })
   const { move, escalate: rollupEscalate } = computeRollups(parents)
 
-  const escalations = [...closeEscalate, ...rollupEscalate]
+  // Behaviour 3: reclassify Unplanned + agent-friendly tickets into the planning
+  // queue. An epic parent (already blocked from auto-close) must not be auto-planned
+  // either, so reuse blockedFromClose as the block set.
+  const {
+    toTodo,
+    toAgentPlan,
+    escalate: reconcileEscalate,
+  } = computePlanningReconcile(tickets, {
+    agentPlanId: labelIdsByName.get(AGENT_PLAN_LABEL),
+    agentFriendlyId: labelIdsByName.get(AGENT_FRIENDLY_LABEL),
+    todoStateId,
+    blockedIdentifiers: blockedFromClose,
+  })
+
+  const escalations = [...closeEscalate, ...rollupEscalate, ...reconcileEscalate]
 
   // The issue read is one bounded page. If the non-terminal issue set exceeds it,
   // the unread tail would silently under-tidy (tickets never close, parents never
@@ -430,6 +573,8 @@ export async function runTidy({
 
   const closed = []
   const rolledUp = []
+  const movedToTodo = []
+  const queuedForPlan = []
 
   // --- Apply (unless dry-run) ---
   if (!dryRun) {
@@ -453,12 +598,41 @@ export async function runTidy({
       if (res?.issueUpdate?.success === false) throw new Error(`failed to roll up ${m.identifier}`)
       rolledUp.push(m)
     }
+    // Behaviour 3 writes: planned-but-Unplanned → Todo; unplanned no-plan → agent-plan.
+    for (const t of toTodo) {
+      counts.writes += 1
+      const res = await linearWriteImpl({
+        query: MOVE_MUTATION,
+        variables: { id: t.id, stateId: todoStateId },
+      })
+      if (res?.issueUpdate?.success === false)
+        throw new Error(`failed to move ${t.identifier} to Todo`)
+      movedToTodo.push({ ...t, to: 'Todo' })
+    }
+    for (const t of toAgentPlan) {
+      counts.writes += 1
+      const res = await linearWriteImpl({
+        query: LABELS_MUTATION,
+        variables: { id: t.id, labelIds: t.newLabelIds },
+      })
+      if (res?.issueUpdate?.success === false)
+        throw new Error(`failed to queue ${t.identifier} for planning`)
+      queuedForPlan.push({ ...t, to: 'agent-plan' })
+    }
   } else {
     closed.push(...closeable.map((c) => ({ ...c, to: 'Done' })))
     rolledUp.push(...move)
+    movedToTodo.push(...toTodo.map((t) => ({ ...t, to: 'Todo' })))
+    queuedForPlan.push(...toAgentPlan.map((t) => ({ ...t, to: 'agent-plan' })))
   }
 
-  return { closed, rolledUp, escalations, counts }
+  return {
+    closed,
+    rolledUp,
+    reclassified: { toTodo: movedToTodo, toAgentPlan: queuedForPlan },
+    escalations,
+    counts,
+  }
 }
 
 // Real-network I/O defaults for the gate (thin wrappers over linearRequest).

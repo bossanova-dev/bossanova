@@ -524,6 +524,14 @@ type createSessionStreamHarness struct {
 
 func newCreateSessionStreamHarness(t *testing.T, worktrees *setupStreamWorktree, runner *setupStreamAgent) *createSessionStreamHarness {
 	t.Helper()
+	return newCreateSessionStreamHarnessWithProvider(t, worktrees, runner, setupStreamProvider{}, zerolog.Nop())
+}
+
+// newCreateSessionStreamHarnessWithProvider builds a harness with an explicit
+// vcs.Provider and logger, so guard tests can inject a search-configurable
+// provider (BOS-289) and capture the fail-open warning line.
+func newCreateSessionStreamHarnessWithProvider(t *testing.T, worktrees *setupStreamWorktree, runner *setupStreamAgent, provider vcs.Provider, logger zerolog.Logger) *createSessionStreamHarness {
+	t.Helper()
 
 	sqlDB := setupServerTestDB(t)
 	repos := db.NewRepoStore(sqlDB)
@@ -541,7 +549,6 @@ func newCreateSessionStreamHarness(t *testing.T, worktrees *setupStreamWorktree,
 		t.Fatalf("create repo: %v", err)
 	}
 
-	provider := setupStreamProvider{}
 	lifecycle := session.NewLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, provider, zerolog.Nop())
 	// createSession uses Detach=true (headless StartByAgent), which resolves the
 	// proof env overlay. Inject a keyring-free resolver so the test never opens
@@ -553,7 +560,7 @@ func newCreateSessionStreamHarness(t *testing.T, worktrees *setupStreamWorktree,
 		Worktrees: worktrees,
 		Provider:  provider,
 		Lifecycle: lifecycle,
-		Logger:    zerolog.Nop(),
+		Logger:    logger,
 	})
 
 	mux := http.NewServeMux()
@@ -783,6 +790,9 @@ func (setupStreamProvider) ListOpenPRs(context.Context, string) ([]vcs.PRSummary
 	return nil, nil
 }
 func (setupStreamProvider) ListClosedPRs(context.Context, string) ([]vcs.PRSummary, error) {
+	return nil, nil
+}
+func (setupStreamProvider) SearchPRsByTitleTag(context.Context, string, string) ([]vcs.PRSummary, error) {
 	return nil, nil
 }
 func (setupStreamProvider) MergePR(context.Context, string, int, string) error { return nil }

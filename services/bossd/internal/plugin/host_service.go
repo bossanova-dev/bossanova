@@ -80,11 +80,6 @@ type ChatLifecycle interface {
 	StartTmuxChat(ctx context.Context, sessionID string, input session.ChatInput, title string, hookOpts session.HookOpts) (string, error)
 	ReclaimRepairChat(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error)
 	ReplaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error)
-	// GetAgentChatTitle returns the chat-list title of the chat identified
-	// by agentSessionID (empty string + error when the row is missing). The
-	// host reads it to decide whether a blocking chat is repair-owned, which
-	// selects the QUESTION displacement policy in chatDisplaceable.
-	GetAgentChatTitle(ctx context.Context, agentSessionID string) (string, error)
 }
 
 // HostServiceServer implements the HostService gRPC server on the daemon
@@ -764,6 +759,15 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 							// cold/absent tracker entry is NOT displaceable
 							// here; the later Get(...) nil check below already
 							// drops such chats from the active tally.
+							//
+							// Deliberately repair-titled-only (BOS-347 kept it
+							// that way): the tally decides whether a session
+							// counts as having an active chat; widening the
+							// shortcut to all titles would change active-chat
+							// accounting everywhere. Uniform
+							// question-displacement lives in
+							// replaceBlockingChatForRepair, which is the gate
+							// that actually matters for repair.
 							if s.chatDisplaceable(chat.AgentSessionID, time.Time{}, displacePolicy{MinIdle: repairDisplaceMinIdle, QuestionIdle: repairDisplaceQuestionIdle}, time.Now()) == nil {
 								continue
 							}
@@ -1642,8 +1646,11 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 // evidence. The observed snapshot the repair plugin captured before the
 // call is still required — a zero/nil snapshot on the replace path is an
 // error — and is passed to chatDisplaceable so a chat that spoke after the
-// snapshot is refused. A repair-owned blocking chat (repair-titled) also
-// becomes displaceable after a long-stuck QUESTION; other titles never are.
+// snapshot is refused. ANY blocking chat at a QUESTION becomes displaceable
+// after repairDisplaceQuestionIdle of zero visible output (BOS-347): an
+// unanswered question that old on a repairable session is a dead run, and the
+// observed-snapshot check above still refuses a chat that spoke after the
+// repair plugin's idle snapshot.
 func (s *HostServiceServer) replaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string, observedLastActivityAt *timestamppb.Timestamp) error {
 	if reason == "" {
 		reason = "repair replacing existing chat"
@@ -1651,10 +1658,7 @@ func (s *HostServiceServer) replaceBlockingChatForRepair(ctx context.Context, se
 	if observedLastActivityAt == nil || observedLastActivityAt.AsTime().IsZero() {
 		return grpcstatus.Error(codes.FailedPrecondition, "replace blocking repair chat: observed last chat activity is required")
 	}
-	pol := displacePolicy{MinIdle: repairDisplaceMinIdle}
-	if title, err := s.lifecycle.GetAgentChatTitle(ctx, agentSessionID); err == nil && session.IsRepairChatTitle(title) {
-		pol.QuestionIdle = repairDisplaceQuestionIdle
-	}
+	pol := displacePolicy{MinIdle: repairDisplaceMinIdle, QuestionIdle: repairDisplaceQuestionIdle}
 	if err := s.chatDisplaceable(agentSessionID, observedLastActivityAt.AsTime(), pol, time.Now()); err != nil {
 		return err
 	}

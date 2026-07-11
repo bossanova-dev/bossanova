@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 )
 
@@ -806,4 +807,120 @@ func TestArchiveContract(t *testing.T) {
 			t.Error("ArchivedAt should be set after Archive, got nil")
 		}
 	})
+}
+
+// setSessionState forces a session row into a specific state, since Create
+// always starts in CreatingWorktree.
+func setSessionState(t *testing.T, store *SQLiteSessionStore, id string, state machine.State) {
+	t.Helper()
+	s := int(state)
+	if _, err := store.Update(context.Background(), id, UpdateSessionParams{State: &s}); err != nil {
+		t.Fatalf("set session %s state: %v", id, err)
+	}
+}
+
+func TestSessionStore_ListByStates(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewSessionStore(db)
+	ctx := context.Background()
+	repo := createTestRepo(t, repoStore)
+
+	mk := func(title string, state machine.State) string {
+		sess, err := store.Create(ctx, CreateSessionParams{
+			RepoID:       repo.ID,
+			Title:        title,
+			WorktreePath: "/tmp/wt/" + title,
+			BranchName:   "feat/" + title,
+			BaseBranch:   "main",
+		})
+		if err != nil {
+			t.Fatalf("create %s: %v", title, err)
+		}
+		setSessionState(t, store, sess.ID, state)
+		return sess.ID
+	}
+
+	pushing := mk("pushing", machine.PushingBranch)
+	implementing := mk("implementing", machine.ImplementingPlan)
+	_ = mk("orphaned", machine.Orphaned) // must NOT be returned when not requested
+
+	// Empty set: no query, nil result.
+	got, err := store.ListByStates(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListByStates(nil): %v", err)
+	}
+	if got != nil {
+		t.Fatalf("ListByStates(nil) = %v, want nil", got)
+	}
+
+	// Multi-state set returns matching sessions across states.
+	got, err = store.ListByStates(ctx, []int{int(machine.PushingBranch), int(machine.ImplementingPlan)})
+	if err != nil {
+		t.Fatalf("ListByStates: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, s := range got {
+		ids[s.ID] = true
+	}
+	if len(got) != 2 || !ids[pushing] || !ids[implementing] {
+		t.Fatalf("ListByStates returned %d sessions (%v), want [pushing implementing]", len(got), ids)
+	}
+}
+
+func TestSessionStore_UpdateStateConditionalFrom(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewSessionStore(db)
+	ctx := context.Background()
+	repo := createTestRepo(t, repoStore)
+
+	sess, err := store.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "conditional-from",
+		WorktreePath: "/tmp/wt/cond",
+		BranchName:   "feat/cond",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	setSessionState(t, store, sess.ID, machine.PushingBranch)
+
+	expected := []int{int(machine.ImplementingPlan), int(machine.PushingBranch), int(machine.OpeningDraftPR)}
+
+	// Empty expected set: no query, no-op false.
+	ok, err := store.UpdateStateConditionalFrom(ctx, sess.ID, int(machine.Finalizing), nil)
+	if err != nil {
+		t.Fatalf("UpdateStateConditionalFrom(empty): %v", err)
+	}
+	if ok {
+		t.Fatal("empty expected set should no-op (false)")
+	}
+
+	// Current state in the set: transitions, returns true.
+	ok, err = store.UpdateStateConditionalFrom(ctx, sess.ID, int(machine.Finalizing), expected)
+	if err != nil {
+		t.Fatalf("UpdateStateConditionalFrom(in-set): %v", err)
+	}
+	if !ok {
+		t.Fatal("state in set should transition (true)")
+	}
+	got, _ := store.Get(ctx, sess.ID)
+	if got.State != machine.Finalizing {
+		t.Fatalf("state = %v, want Finalizing", got.State)
+	}
+
+	// Current state (now Finalizing) not in the set: no-op false, unchanged.
+	ok, err = store.UpdateStateConditionalFrom(ctx, sess.ID, int(machine.Blocked), expected)
+	if err != nil {
+		t.Fatalf("UpdateStateConditionalFrom(not-in-set): %v", err)
+	}
+	if ok {
+		t.Fatal("state not in set should no-op (false)")
+	}
+	got, _ = store.Get(ctx, sess.ID)
+	if got.State != machine.Finalizing {
+		t.Fatalf("state = %v after no-op, want Finalizing unchanged", got.State)
+	}
 }

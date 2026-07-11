@@ -82,6 +82,14 @@ type Harness struct {
 	// exists); call DisplayTracker.Set with a non-passing status to block.
 	DisplayTracker *status.DisplayTracker
 
+	// ChatTracker is the sampled chat-status tracker the HostService consults
+	// for displaceability decisions (BOS-153/BOS-347). Exposed so integration
+	// tests can seed CHAT_STATUS_* + LastOutputAt evidence for a blocking chat:
+	// no tmux status poller is wired in the harness, so the tracker is otherwise
+	// empty and every displace/reclaim gate fails closed on "no tracker
+	// evidence". Seed via SeedChatStatus.
+	ChatTracker *status.Tracker
+
 	// Client is a ConnectRPC client connected to the test server.
 	Client bossanovav1connect.DaemonServiceClient
 
@@ -320,7 +328,8 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	// CompleteAgentRun call here clears the same IsRepairing flag the
 	// rest of the harness sees.
 	hostService := pluginpkg.NewHostServiceServer(vcsMock)
-	hostService.SetSessionDeps(repos, sessions, agentChats, display, status.NewTracker())
+	chatTracker := status.NewTracker()
+	hostService.SetSessionDeps(repos, sessions, agentChats, display, chatTracker)
 	hostService.SetRepairLease(repairLease)
 	// Wire the lifecycle so tests that exercise StartChatRun directly
 	// (Task 4) hit the same plumbing the daemon installs in cmd/main.go.
@@ -371,6 +380,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	h.Agent = agentMock
 	h.VCS = vcsMock
 	h.DisplayTracker = display
+	h.ChatTracker = chatTracker
 	h.Client = client
 	h.HookServer = hookSrv
 	h.HostService = hostService
@@ -451,6 +461,15 @@ func TempRepoDir(t *testing.T) string {
 // Ctx returns the harness daemon context used by the in-process realtime path.
 func (h *Harness) Ctx() context.Context {
 	return h.ctx
+}
+
+// SeedChatStatus records sampled chat-status evidence (status + LastOutputAt)
+// for agentSessionID in the HostService's chat tracker. It stands in for the
+// tmux status poller that populates the tracker in production but is not wired
+// in the harness, so integration tests can exercise the displace/reclaim gates
+// (chatDisplaceable) which fail closed without tracker evidence.
+func (h *Harness) SeedChatStatus(agentSessionID string, chatStatus pb.ChatStatus, lastOutputAt time.Time) {
+	h.ChatTracker.Update(agentSessionID, chatStatus, lastOutputAt)
 }
 
 // SeedRepo creates a repository row and returns its ID.

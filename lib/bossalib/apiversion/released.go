@@ -28,6 +28,7 @@ var ReleasedVersions = []Version{
 	"2026-07-04", // V20260704 — OrphanedStateChange (SESSION_STATE_ORPHANED).
 	"2026-07-05", // V20260705 — AgentAuthFailedChange (ATTENTION_REASON_AGENT_AUTH_FAILED).
 	"2026-07-06", // V20260706 — UnmanagedLabelChange + LimitedChatStatusChange.
+	"2026-07-11", // V20260711 — NoEligibleAccountChange (ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT).
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

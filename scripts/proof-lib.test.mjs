@@ -10,11 +10,14 @@ import {
   PROOF_MEDIA_TYPES,
   DEFAULT_TOTAL_PROOF_BUDGET_MS,
   LIVE_AGENT_EXTRA_MS,
+  TUI_REPLAY_EXTRA_MS,
   buildManifest,
   bossE2eBuildCommand,
   browserCaptureCommand,
   capturesAgentRunnerStubbed,
+  classifyTuiOutcome,
   deferredReasonMessage,
+  discoverChangedScenarios,
   deriveVerdictBlock,
   planSurfaceBudget,
   formatCaption,
@@ -31,6 +34,7 @@ import {
   normalizeRecipe,
   orderCapturesForReport,
   parseProofArgs,
+  planTuiLegs,
   proofAncestorDirs,
   proofCommentMarker,
   proofRunPaths,
@@ -54,6 +58,7 @@ import {
   validateRecipeId,
   verdictBlockLines,
 } from './proof-lib.mjs'
+import { committedScenarioPresent } from './proof-surfaces.mjs'
 
 const catalog = {
   version: 1,
@@ -2609,7 +2614,12 @@ test('renderDeferredComment agent-unavailable names the agent-mode remedies', ()
 // hang was historically posted as "environment limitation") this ticket kills;
 // only the genuinely env-bound 'agent-unavailable' class may still use it.
 test('degraded reason codes never claim an environment limitation (BOS-138)', () => {
-  for (const reasonCode of ['agent-incomplete', 'no-media', 'some-future-unhandled-code']) {
+  for (const reasonCode of [
+    'agent-incomplete',
+    'no-media',
+    'scenario-missing',
+    'some-future-unhandled-code',
+  ]) {
     const body = renderDeferredComment({
       marker: '<!-- bossanova-proof:pr-9 -->',
       manifest: { prNumber: 9, commit: 'abc1234', deferred: true },
@@ -3008,6 +3018,19 @@ test('deferredReasonMessage(budget-exceeded): honest, never "environment limitat
   assert.ok(/change itself is fine/.test(msg))
 })
 
+// BOS-220: `scenario-missing` is an AUTHORING nudge (a TUI PR shipped no committed
+// proof/scenarios/*.scenario.json), never an "environment limitation" — the fix is
+// in the author's hands. It points at the BOS-219 validate/run --dry-run loop.
+test('deferredReasonMessage(scenario-missing): author-facing nudge, never "environment limitation"', () => {
+  const msg = deferredReasonMessage('scenario-missing')
+  assert.ok(!msg.includes('environment limitation'))
+  assert.ok(/proof\/scenarios\/\*\.scenario\.json/.test(msg), 'names the scenario file to author')
+  assert.ok(/scenario validate/.test(msg), 'points at the validate loop')
+  assert.ok(/scenario run <file> --dry-run/.test(msg), 'points at the dry-run replay loop')
+  assert.ok(/commit it in this PR/.test(msg), 'tells the author to commit it')
+  assert.ok(/authoring gap/.test(msg), 'frames it as an authoring gap, not the change')
+})
+
 // ── renderConsolidatedComment: single marker, per-surface sections (BOS-139) ──
 
 test('renderConsolidatedComment: one marker, section per surface, no global ❌', () => {
@@ -3043,4 +3066,432 @@ test('renderConsolidatedComment: one marker, section per surface, no global ❌'
   assert.ok(body.includes('#### Web — ⏸ deferred (budget-exceeded)'))
   assert.ok(!body.includes('❌'), 'partial success carries no global red verdict')
   assert.ok(body.endsWith('\n'))
+})
+
+// ── BOS-223: replay-fallback disclosure line (renderer) ────────────────────
+
+// A hand-built passed section with the two BOS-223 disclosure signals. The
+// renderer emits ONE emphasized line, right after the `— ✅ proven` header.
+const DISCLOSURE_MANIFEST = {
+  commit: 'abc',
+  runId: 'R',
+  publicBaseUrl: 'https://x/pr',
+  genAiLive: false,
+  title: 'T',
+}
+const DISCLOSURE_MARKER = '<!-- bossanova-proof:pr-223 -->'
+
+test('renderConsolidatedComment: replay section (agent-failed) shows the disclosure line', () => {
+  const sections = [
+    {
+      label: 'TUI',
+      outcome: 'passed',
+      summary: 'replay ok',
+      captures: [{ fileName: 't.mp4' }],
+      genAi: false,
+      proofSource: 'replay',
+      fallbackReason: 'agent-failed',
+    },
+  ]
+  const body = renderConsolidatedComment({
+    marker: DISCLOSURE_MARKER,
+    manifest: DISCLOSURE_MANIFEST,
+    sections,
+  })
+  // Exact copy + position: emphasized line directly under the passed header.
+  assert.ok(
+    body.includes('#### TUI — ✅ proven\n\n_agent capture failed; scenario replay shown_\n'),
+    'agent-failed replay renders the emphasized disclosure right after the header',
+  )
+})
+
+test('renderConsolidatedComment: replay section (agent-unavailable) shows the keyless copy', () => {
+  const sections = [
+    {
+      label: 'TUI',
+      outcome: 'passed',
+      summary: 'replay ok',
+      captures: [{ fileName: 't.mp4' }],
+      genAi: false,
+      proofSource: 'replay',
+      fallbackReason: 'agent-unavailable',
+    },
+  ]
+  const body = renderConsolidatedComment({
+    marker: DISCLOSURE_MARKER,
+    manifest: DISCLOSURE_MANIFEST,
+    sections,
+  })
+  assert.ok(
+    body.includes('#### TUI — ✅ proven\n\n_agent unavailable; scenario replay shown_\n'),
+    'agent-unavailable replay renders the keyless disclosure copy',
+  )
+})
+
+test('renderConsolidatedComment: agent/web section carries NO disclosure line (byte-identical)', () => {
+  const base = {
+    label: 'TUI',
+    outcome: 'passed',
+    summary: 'agent ok',
+    captures: [{ fileName: 't.mp4' }],
+    genAi: false,
+  }
+  const render = (section) =>
+    renderConsolidatedComment({
+      marker: DISCLOSURE_MARKER,
+      manifest: DISCLOSURE_MANIFEST,
+      sections: [section],
+    })
+  const bare = render(base)
+  // An explicit agent proofSource must not change a single byte vs. absent.
+  assert.equal(
+    render({ ...base, proofSource: 'agent' }),
+    bare,
+    'agent proofSource is byte-identical',
+  )
+  assert.ok(!bare.includes('scenario replay shown'), 'no disclosure line on the agent/web path')
+})
+
+// BOS-350: a key-present agent-only TUI proof on a scenario-less diff renders a
+// non-fatal author nudge (one emphasized line under the passed header) — the section
+// stays ✅ proven; no replay disclosure. A section WITHOUT scenarioOwed is unchanged.
+test('renderConsolidatedComment: scenarioOwed agent section shows the commit-a-scenario nudge', () => {
+  const sections = [
+    {
+      label: 'TUI',
+      outcome: 'passed',
+      summary: 'agent ok',
+      captures: [{ fileName: 't.mp4' }],
+      genAi: false,
+      proofSource: 'agent',
+      scenarioOwed: true,
+    },
+  ]
+  const body = renderConsolidatedComment({
+    marker: DISCLOSURE_MARKER,
+    manifest: DISCLOSURE_MANIFEST,
+    sections,
+  })
+  assert.ok(
+    body.includes('#### TUI — ✅ proven'),
+    'the section is still proven (agent capture is the proof)',
+  )
+  assert.ok(
+    body.includes(
+      '#### TUI — ✅ proven\n\n_agent capture shown; commit a proof/scenarios/\\*.scenario.json for deterministic replay_\n',
+    ),
+    'the author nudge renders as the emphasized line right under the header',
+  )
+  assert.ok(!body.includes('scenario replay shown'), 'it is NOT the replay disclosure copy')
+})
+
+// ── BOS-223: TUI agent-first leg planning ──────────────────────────────────
+
+test('planTuiLegs: {agentUsable:T, scenarioPresent:T} → agent first, replay as fallback', () => {
+  assert.deepEqual(planTuiLegs({ agentUsable: true, scenarioPresent: true }), {
+    runAgent: true,
+    runReplay: true,
+  })
+})
+
+test('planTuiLegs: {agentUsable:T, scenarioPresent:F} → agent only', () => {
+  assert.deepEqual(planTuiLegs({ agentUsable: true, scenarioPresent: false }), {
+    runAgent: true,
+    runReplay: false,
+  })
+})
+
+test('planTuiLegs: {agentUsable:F, scenarioPresent:T} → replay only (keyless + scenario)', () => {
+  assert.deepEqual(planTuiLegs({ agentUsable: false, scenarioPresent: true }), {
+    runAgent: false,
+    runReplay: true,
+  })
+})
+
+test('planTuiLegs: {agentUsable:F, scenarioPresent:F} → defer agent-unavailable', () => {
+  assert.deepEqual(planTuiLegs({ agentUsable: false, scenarioPresent: false }), {
+    runAgent: false,
+    runReplay: false,
+    deferReason: 'agent-unavailable',
+  })
+})
+
+test('planTuiLegs: deferReason key is absent on every non-{F,F} row (deepEqual-strict)', () => {
+  for (const [agentUsable, scenarioPresent] of [
+    [true, true],
+    [true, false],
+    [false, true],
+  ]) {
+    const legs = planTuiLegs({ agentUsable, scenarioPresent })
+    assert.ok(!('deferReason' in legs), 'deferReason only on the {F,F} defer path')
+  }
+})
+
+// ── BOS-223: TUI outcome classification ────────────────────────────────────
+//
+// The classifier is driven purely by the two leg outcomes plus the failure-text
+// inputs the caller threads through:
+//   agentDetail     — the agent leg's gate-fail reason OR crash text
+//   replayDetail    — the replay leg's gate-fail reason OR crash text
+//   missingScenario — the conventional scenario path that was not committed,
+//                     surfaced when the replay leg was not attempted for lack of one
+// errorDetail string shapes (pinned here, consumed verbatim by Task 2):
+//   fallback disclosure detail  → the raw agentDetail (agent-fail reason / crash text)
+//   combined both-leg detail     → `agent: <a>; replay: <b>`
+//   missing-scenario detail      → `agent: <a>; replay: no committed scenario (<file>)`
+//   replay-only failure detail   → `replay: <b>`
+
+const A_GATE = 'evidence gate failed: missing token "Ready"'
+const A_CRASH = 'agent crashed: tmux bridge died'
+const R_GATE = 'replay evidence gate failed: still mismatch'
+const R_CRASH = 'replay crashed: cast conversion failed'
+const MISSING = 'proof/scenarios/tui/home.scenario.json'
+
+test('classifyTuiOutcome: agent passed → agent source, replay not run', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: true },
+      agentOutcome: 'passed',
+      replayOutcome: 'not-attempted',
+    }),
+    { proofSource: 'agent', reasonCode: null, errorDetail: null },
+  )
+})
+
+test('classifyTuiOutcome: agent gate-failed + replay passed → replay source, agent-fail disclosure detail', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: true },
+      agentOutcome: 'gate-failed',
+      replayOutcome: 'passed',
+      agentDetail: A_GATE,
+      replayDetail: null,
+    }),
+    { proofSource: 'replay', reasonCode: null, errorDetail: A_GATE },
+  )
+})
+
+test('classifyTuiOutcome: agent crashed + replay passed → replay source, crash noted in errorDetail (media exists ⇒ passed)', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: true },
+      agentOutcome: 'crashed',
+      replayOutcome: 'passed',
+      agentDetail: A_CRASH,
+    }),
+    { proofSource: 'replay', reasonCode: null, errorDetail: A_CRASH },
+  )
+})
+
+test('classifyTuiOutcome: agent gate-failed + replay gate-failed → agent-incomplete, combined two-leg detail', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: true },
+      agentOutcome: 'gate-failed',
+      replayOutcome: 'gate-failed',
+      agentDetail: A_GATE,
+      replayDetail: R_GATE,
+    }),
+    {
+      proofSource: null,
+      reasonCode: 'agent-incomplete',
+      errorDetail: `agent: ${A_GATE}; replay: ${R_GATE}`,
+    },
+  )
+})
+
+test('classifyTuiOutcome: agent gate-failed + replay not-attempted (no scenario) → agent-incomplete naming the missing scenario file', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: false },
+      agentOutcome: 'gate-failed',
+      replayOutcome: 'not-attempted',
+      agentDetail: A_GATE,
+      missingScenario: MISSING,
+    }),
+    {
+      proofSource: null,
+      reasonCode: 'agent-incomplete',
+      errorDetail: `agent: ${A_GATE}; replay: no committed scenario (${MISSING})`,
+    },
+  )
+})
+
+test('classifyTuiOutcome: agent gate-failed + replay not-attempted with no missingScenario → agent-incomplete, agent-only detail', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: false },
+      agentOutcome: 'gate-failed',
+      replayOutcome: 'not-attempted',
+      agentDetail: A_GATE,
+    }),
+    { proofSource: null, reasonCode: 'agent-incomplete', errorDetail: `agent: ${A_GATE}` },
+  )
+})
+
+test('classifyTuiOutcome: agent crashed + replay gate-failed → pipeline-error (no successful leg), crash text', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: true },
+      agentOutcome: 'crashed',
+      replayOutcome: 'gate-failed',
+      agentDetail: A_CRASH,
+      replayDetail: R_GATE,
+    }),
+    { proofSource: null, reasonCode: 'pipeline-error', errorDetail: A_CRASH },
+  )
+})
+
+test('classifyTuiOutcome: agent crashed + replay not-attempted → pipeline-error, crash text', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: false },
+      agentOutcome: 'crashed',
+      replayOutcome: 'not-attempted',
+      agentDetail: A_CRASH,
+    }),
+    { proofSource: null, reasonCode: 'pipeline-error', errorDetail: A_CRASH },
+  )
+})
+
+test('classifyTuiOutcome: agent gate-failed + replay crashed → pipeline-error, the crash text (replay)', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: true },
+      agentOutcome: 'gate-failed',
+      replayOutcome: 'crashed',
+      agentDetail: A_GATE,
+      replayDetail: R_CRASH,
+    }),
+    { proofSource: null, reasonCode: 'pipeline-error', errorDetail: R_CRASH },
+  )
+})
+
+test('classifyTuiOutcome: both legs crashed → pipeline-error, combined crash detail', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: true },
+      agentOutcome: 'crashed',
+      replayOutcome: 'crashed',
+      agentDetail: A_CRASH,
+      replayDetail: R_CRASH,
+    }),
+    {
+      proofSource: null,
+      reasonCode: 'pipeline-error',
+      errorDetail: `agent: ${A_CRASH}; replay: ${R_CRASH}`,
+    },
+  )
+})
+
+test('classifyTuiOutcome: replay-only (agent not-attempted) + replay passed → replay source, no errorDetail', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: false, runReplay: true },
+      agentOutcome: 'not-attempted',
+      replayOutcome: 'passed',
+    }),
+    { proofSource: 'replay', reasonCode: null, errorDetail: null },
+  )
+})
+
+test('classifyTuiOutcome: replay-only + replay gate-failed → agent-incomplete, replay-only detail', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: false, runReplay: true },
+      agentOutcome: 'not-attempted',
+      replayOutcome: 'gate-failed',
+      replayDetail: R_GATE,
+    }),
+    { proofSource: null, reasonCode: 'agent-incomplete', errorDetail: `replay: ${R_GATE}` },
+  )
+})
+
+test('classifyTuiOutcome: replay-only + replay crashed → pipeline-error, crash text', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: false, runReplay: true },
+      agentOutcome: 'not-attempted',
+      replayOutcome: 'crashed',
+      replayDetail: R_CRASH,
+    }),
+    { proofSource: null, reasonCode: 'pipeline-error', errorDetail: R_CRASH },
+  )
+})
+
+test('classifyTuiOutcome: neither leg attempted (degenerate {F,F} guard) → agent-incomplete, no detail', () => {
+  // Unreachable on the live path (planTuiLegs → deferReason handles {F,F} upstream,
+  // and the dispatcher never classifies a deferred surface). Kept neutral (exit 0).
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: false, runReplay: false },
+      agentOutcome: 'not-attempted',
+      replayOutcome: 'not-attempted',
+    }),
+    { proofSource: null, reasonCode: 'agent-incomplete', errorDetail: null },
+  )
+})
+
+// ── BOS-223: diff-only scenario discovery ──────────────────────────────────
+
+test('discoverChangedScenarios: returns only added/modified proof/scenarios/*.scenario.json', () => {
+  assert.deepEqual(
+    discoverChangedScenarios(['proof/scenarios/a.scenario.json', 'services/boss/x.go']),
+    ['proof/scenarios/a.scenario.json'],
+  )
+})
+
+test('discoverChangedScenarios: nested scenario paths at any depth match', () => {
+  assert.deepEqual(discoverChangedScenarios(['proof/scenarios/tui/home.scenario.json']), [
+    'proof/scenarios/tui/home.scenario.json',
+  ])
+})
+
+test('discoverChangedScenarios: non-scenario proof/scenarios files never match', () => {
+  assert.deepEqual(
+    discoverChangedScenarios([
+      'proof/scenarios/README.md',
+      'proof/scenarios/schema.json',
+      'proof/scenarios/a.scenario.json.bak',
+    ]),
+    [],
+  )
+})
+
+test('discoverChangedScenarios: zero matches → []', () => {
+  assert.deepEqual(discoverChangedScenarios(['services/web/src/App.tsx']), [])
+  assert.deepEqual(discoverChangedScenarios([]), [])
+})
+
+test('discoverChangedScenarios: normalizes (trims, ./ strip, backslashes) and dedupes preserving order', () => {
+  assert.deepEqual(
+    discoverChangedScenarios([
+      ' ./proof/scenarios/b.scenario.json ',
+      'proof\\scenarios\\a.scenario.json',
+      'proof/scenarios/b.scenario.json',
+      null,
+    ]),
+    ['proof/scenarios/b.scenario.json', 'proof/scenarios/a.scenario.json'],
+  )
+})
+
+test('discoverChangedScenarios: matches committedScenarioPresent (anti-drift with proof-surfaces SCENARIO_FILE_RE)', () => {
+  const cases = [
+    ['proof/scenarios/a.scenario.json'],
+    ['proof/scenarios/tui/home.scenario.json', 'services/boss/x.go'],
+    ['proof/scenarios/README.md'],
+    ['services/web/src/App.tsx'],
+    [],
+  ]
+  for (const files of cases) {
+    assert.equal(
+      discoverChangedScenarios(files).length > 0,
+      committedScenarioPresent(files),
+      `discovery/gate agree for ${JSON.stringify(files)}`,
+    )
+  }
+})
+
+test('TUI_REPLAY_EXTRA_MS constant is exported and equals 120 seconds', () => {
+  assert.equal(TUI_REPLAY_EXTRA_MS, 120 * 1000)
 })

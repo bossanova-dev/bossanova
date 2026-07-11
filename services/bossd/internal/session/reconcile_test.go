@@ -92,6 +92,9 @@ func (m *reconcileMockProvider) ListClosedPRs(_ context.Context, repoPath string
 }
 
 // Unused Provider methods — satisfy interface.
+func (m *reconcileMockProvider) SearchPRsByTitleTag(context.Context, string, string) ([]vcs.PRSummary, error) {
+	return nil, nil
+}
 func (m *reconcileMockProvider) CreateDraftPR(context.Context, vcs.CreatePROpts) (*vcs.PRInfo, error) {
 	return nil, nil
 }
@@ -272,6 +275,12 @@ func (m *reconcileMockSessionStore) UpdateStateConditional(_ context.Context, _ 
 }
 func (m *reconcileMockSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
 	return nil, nil
+}
+func (m *reconcileMockSessionStore) ListByStates(_ context.Context, _ []int) ([]*models.Session, error) {
+	return nil, nil
+}
+func (m *reconcileMockSessionStore) UpdateStateConditionalFrom(_ context.Context, _ string, _ int, _ []int) (bool, error) {
+	return false, nil
 }
 func (m *reconcileMockSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.UpdateRepairDiagnosticsParams) error {
 	return nil

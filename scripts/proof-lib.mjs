@@ -126,6 +126,17 @@ export const DEFAULT_TOTAL_PROOF_BUDGET_MS = 15 * 60 * 1000
 // ceiling against whatever `remaining` it is given.
 export const LIVE_AGENT_EXTRA_MS = 4 * 60 * 1000
 
+// Extra wall-clock granted to a TUI run that ships a committed scenario, so the
+// automatic agent→replay fallback (BOS-223) has room for BOTH legs without
+// squeezing the agent leg below its floor. Mirrors LIVE_AGENT_EXTRA_MS: the
+// CALLER (scripts/proof.mjs `runAgentSurfaces`) decides eligibility (a TUI
+// surface with a committed scenario in the diff) and bumps the shared
+// `totalBudgetMs` by this reserve before planning per-surface slices. The env
+// override (`Number(process.env.TUI_REPLAY_EXTRA_MS) || …`) happens at that call
+// site (BOS-223 Task 2), not here — this exported default stays a plain const so
+// every reader sees the same number.
+export const TUI_REPLAY_EXTRA_MS = 120 * 1000
+
 /**
  * Sequential shared-budget planner (BOS-139 / epic D5). Pure. `elapsedMs` is the
  * wall-clock already spent by earlier surface runs in THIS proof invocation.
@@ -155,6 +166,152 @@ export function planSurfaceBudget({
   const remaining = totalBudgetMs - elapsedMs
   if (!budget || remaining < budget.floorMs) return { run: false, reasonCode: 'budget-exceeded' }
   return { run: true, maxWallClockMs: Math.min(budget.defaultMs + extraMs, remaining) }
+}
+
+// Matches a committed deterministic TUI-proof scenario file
+// (`proof/scenarios/**/*.scenario.json`, any depth). Kept BYTE-IDENTICAL to
+// `SCENARIO_FILE_RE` in scripts/proof-surfaces.mjs (which cannot be imported here
+// without a proof-lib↔proof-surfaces module cycle); an anti-drift test in
+// proof-lib.test.mjs asserts discoverChangedScenarios and that module's
+// committedScenarioPresent classifier always agree. Keep the two in sync.
+const SCENARIO_FILE_RE = /^proof\/scenarios\/.+\.scenario\.json$/
+
+/**
+ * Diff-only scenario discovery (BOS-223, pure). Returns the subset of
+ * `changedFiles` that are added/modified `proof/scenarios/**\/*.scenario.json`
+ * paths, normalized (trim, `./`-strip, `\`→`/`) and de-duplicated in first-seen
+ * order. Deletions/renames are already excluded upstream — `changedFiles` is the
+ * PR's added/modified list — so this only filters by the path convention. Zero
+ * matches ⇒ `[]`. NEVER a directory or catalog scan (committed-but-untouched
+ * scenarios are history, not a catalog — standing project decision).
+ * @param {string[]|null|undefined} changedFiles
+ * @returns {string[]}
+ */
+export function discoverChangedScenarios(changedFiles) {
+  const matches = normalizeChangedFiles(changedFiles ?? []).filter((f) => SCENARIO_FILE_RE.test(f))
+  return [...new Set(matches)]
+}
+
+/**
+ * Plan which TUI proof legs run (BOS-223, pure). Agent capture is attempted
+ * first; the committed-scenario replay is the automatic fallback.
+ * - `{agentUsable:T, scenarioPresent:T}` ⇒ both legs (agent first, replay fallback).
+ * - `{agentUsable:T, scenarioPresent:F}` ⇒ agent only (no scenario to replay).
+ * - `{agentUsable:F, scenarioPresent:T}` ⇒ replay only (keyless / recipe mode + scenario).
+ * - `{agentUsable:F, scenarioPresent:F}` ⇒ neither; `deferReason:'agent-unavailable'`.
+ *
+ * The `deferReason` key is present ONLY on the `{F,F}` row (callers deep-equal the
+ * result). BOS-350 reordered the upstream BOS-220 gate: a scenario-less TUI diff is
+ * now deferred `scenario-missing` upstream ONLY when the agent is also unusable
+ * (keyless), so `{T,F}` (key-present scenario-less) IS live-reachable and drives the
+ * agent-only leg, while `{F,F}` (keyless scenario-less) is still deferred upstream and
+ * the dispatcher never reaches it — that row stays here for a total, self-contained
+ * decision table.
+ * @param {{ agentUsable: boolean, scenarioPresent: boolean }} opts
+ * @returns {{ runAgent: boolean, runReplay: boolean, deferReason?: 'agent-unavailable' }}
+ */
+export function planTuiLegs({ agentUsable, scenarioPresent }) {
+  const runAgent = Boolean(agentUsable)
+  const hasScenario = Boolean(scenarioPresent)
+  if (!runAgent && !hasScenario) {
+    return { runAgent: false, runReplay: false, deferReason: 'agent-unavailable' }
+  }
+  // Replay runs as the agent leg's fallback whenever a scenario exists, and is the
+  // sole leg when the agent is unusable (keyless / recipe mode) but a scenario is.
+  return { runAgent, runReplay: hasScenario }
+}
+
+/**
+ * Classify a two-leg TUI proof run into `{proofSource, reasonCode, errorDetail}`
+ * (BOS-223, pure, post-hoc). Driven solely by the two leg outcomes plus the
+ * failure-text inputs the caller threads through — `legs` (the planTuiLegs
+ * result) is accepted for caller symmetry/traceability but does not steer the
+ * mapping (the outcomes fully determine it).
+ *
+ * Each outcome is `'passed'|'gate-failed'|'crashed'|'not-attempted'`.
+ * `proofSource` is `'agent'|'replay'|null`.
+ *
+ * Decision table (exhaustive):
+ * - agent `passed` ⇒ `{agent, null, null}` (replay not run — best case).
+ * - a leg `passed` (media exists) with the OTHER leg failed/crashed ⇒ that leg's
+ *   source, `reasonCode:null`; a failed/crashed agent leg's text still rides
+ *   `errorDetail` so the fallback disclosure can render (agent gate-fail reason
+ *   or crash text). A keyless replay-only pass carries `errorDetail:null`.
+ * - NO leg passed + ANY leg crashed ⇒ `pipeline-error` (exit 1, unchanged
+ *   BOS-138), `errorDetail` = the crash text(s).
+ * - NO leg passed, NO crash ⇒ `agent-incomplete` (exit 0 until BOS-226) with a
+ *   combined per-leg `errorDetail`.
+ *
+ * `errorDetail` string shapes (consumed verbatim by Task 2):
+ * - fallback disclosure detail → the raw agent-fail reason / crash text.
+ * - combined both-leg detail → `agent: <a>; replay: <b>`.
+ * - missing-scenario detail → `agent: <a>; replay: no committed scenario (<file>)`.
+ * - replay-only failure detail → `replay: <b>`.
+ *
+ * @param {{
+ *   legs: { runAgent: boolean, runReplay: boolean, deferReason?: string },
+ *   agentOutcome: 'passed'|'gate-failed'|'crashed'|'not-attempted',
+ *   replayOutcome: 'passed'|'gate-failed'|'crashed'|'not-attempted',
+ *   agentDetail?: string|null,
+ *   replayDetail?: string|null,
+ *   missingScenario?: string|null,
+ * }} opts
+ * @returns {{ proofSource: 'agent'|'replay'|null, reasonCode: string|null, errorDetail: string|null }}
+ */
+export function classifyTuiOutcome({
+  legs,
+  agentOutcome,
+  replayOutcome,
+  agentDetail = null,
+  replayDetail = null,
+  missingScenario = null,
+}) {
+  void legs // accepted for caller symmetry; outcomes fully determine the mapping.
+  const agentFailed = agentOutcome === 'gate-failed' || agentOutcome === 'crashed'
+
+  // Best case: the agent leg produced proof — replay never runs.
+  if (agentOutcome === 'passed') {
+    return { proofSource: 'agent', reasonCode: null, errorDetail: null }
+  }
+
+  // Fallback success: media exists via replay. Surface the agent leg's failure
+  // text (gate-fail reason or crash text) so the disclosure line can render; a
+  // keyless replay-only pass has no agent leg and carries no errorDetail.
+  if (replayOutcome === 'passed') {
+    return {
+      proofSource: 'replay',
+      reasonCode: null,
+      errorDetail: agentFailed ? agentDetail : null,
+    }
+  }
+
+  // No leg produced media. A crash in any leg is a machinery failure ⇒
+  // pipeline-error (exit 1), reporting whichever leg(s) crashed.
+  const agentCrashed = agentOutcome === 'crashed'
+  const replayCrashed = replayOutcome === 'crashed'
+  if (agentCrashed || replayCrashed) {
+    let errorDetail
+    if (agentCrashed && replayCrashed)
+      errorDetail = `agent: ${agentDetail}; replay: ${replayDetail}`
+    else if (agentCrashed) errorDetail = agentDetail
+    else errorDetail = replayDetail
+    return { proofSource: null, reasonCode: 'pipeline-error', errorDetail }
+  }
+
+  // No pass, no crash ⇒ agent-incomplete (exit 0 until BOS-226), combining each
+  // attempted leg's gate-fail reason (naming the missing scenario when replay was
+  // skipped for lack of one).
+  const parts = []
+  if (agentOutcome === 'gate-failed') parts.push(`agent: ${agentDetail}`)
+  if (replayOutcome === 'gate-failed') parts.push(`replay: ${replayDetail}`)
+  else if (replayOutcome === 'not-attempted' && missingScenario) {
+    parts.push(`replay: no committed scenario (${missingScenario})`)
+  }
+  return {
+    proofSource: null,
+    reasonCode: 'agent-incomplete',
+    errorDetail: parts.length > 0 ? parts.join('; ') : null,
+  }
 }
 
 export function selectRecipes(catalog, changedFiles, explicitRecipeIds = []) {
@@ -551,6 +708,27 @@ function consolidatedHeaderLines({ marker, manifest }) {
 function surfaceSectionLines(section, judge) {
   if (section.outcome === 'passed') {
     const out = [`#### ${section.label} — ✅ proven`, '']
+    // BOS-223 D-Disclosure: a surface proven by the scenario-replay fallback
+    // (not the live agent) gets ONE emphasized disclosure line, right under the
+    // header. The two fallbackReasons render distinct copy. An agent/web section
+    // (proofSource 'agent' or absent) renders none — byte-identical to before.
+    if (section.proofSource === 'replay') {
+      const disclosure =
+        section.fallbackReason === 'agent-unavailable'
+          ? 'agent unavailable; scenario replay shown'
+          : 'agent capture failed; scenario replay shown'
+      out.push(`_${disclosure}_`, '')
+    } else if (section.scenarioOwed) {
+      // BOS-350: a key-present agent-only TUI proof on a scenario-less diff. The
+      // agent video IS the proof, but a committed proof/scenarios/*.scenario.json is
+      // still owed for deterministic keyless replay (and BOS-226 will make it fatal).
+      // Non-fatal author nudge, one emphasized line under the passed header — it does
+      // NOT change the section's ✅ verdict or any exit code.
+      out.push(
+        '_agent capture shown; commit a proof/scenarios/\\*.scenario.json for deterministic replay_',
+        '',
+      )
+    }
     if (section.summary) {
       out.push(
         '<details><summary>Agent summary</summary>',
@@ -710,6 +888,21 @@ export function deferredReasonMessage(reasonCode, { missing } = {}) {
       'The bs-proof run finished without producing any media to post. See the ' +
       'manifest below for details. This is a proof-run shortfall to investigate, ' +
       'not a confirmed problem with the change.'
+    )
+  }
+  if (reasonCode === 'scenario-missing') {
+    // BOS-220: a TUI change shipped without a committed
+    // proof/scenarios/*.scenario.json demonstrating it, so the deterministic TUI
+    // proof (BOS-219) had nothing to replay. This is an AUTHORING nudge, never an
+    // "environment limitation": the fix is in the author's hands (commit a
+    // scenario), not the environment's. Warn-only for now; Epic 4 flips it fatal.
+    return (
+      'This TUI change did not commit a `proof/scenarios/*.scenario.json` demonstrating ' +
+      'it, so the deterministic TUI proof had nothing to replay. Author one and iterate ' +
+      'to green with `node scripts/proof.mjs scenario validate <file>` then ' +
+      '`node scripts/proof.mjs scenario run <file> --dry-run`, and commit it in this PR. ' +
+      'Warn-only for now — a future change makes it required. This is an authoring gap, ' +
+      'not a problem with the change.'
     )
   }
   // Fallback for any unhandled reason code. It MUST NOT assert an "environment

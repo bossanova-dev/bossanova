@@ -40,3 +40,41 @@ For example, to copy an `.env` file into each new worktree:
 boss repo update my-repo \
   --setup-script 'cp "$REPO_DIR/.env" "$WORKTREE_DIR/.env" && npm install'
 ```
+
+## Automatic `.env` loading
+
+Once a worktree contains a `.env` file, Bossanova loads it into the
+environment of every agent session it starts in that worktree — you do
+**not** need to `source` it or run direnv yourself. This is why the setup
+script above copies `.env` into the worktree: the copy makes the file
+present, and Bossanova picks it up automatically from there.
+
+The daemon (`bossd`) runs under your OS service manager with no
+interactive shell, so a normal shell's direnv/`.env` machinery never runs
+for these sessions. To make repo-local variables available anyway,
+Bossanova reads `<worktree>/.env` and overlays it **beneath** the
+session's managed environment when it launches the agent. This applies to
+interactive chats, resumed/woken chats, scheduled (cron) sessions,
+headless runs, and automated repair runs alike.
+
+A common use is resolving `${VAR}` placeholders in a project's
+`.mcp.json`. For example, an MCP server configured with an
+`Authorization: Bearer ${LINEAR_API_KEY}` header only authenticates if
+`LINEAR_API_KEY` is present in the session environment — putting it in the
+worktree `.env` is enough. See the [MCP guide](./mcp.md).
+
+### Precedence and format
+
+- **Managed values win.** The overlay is lowest-precedence: Bossanova's
+  own `BOSS_*` variables and internal session values are never overridden
+  by a repo `.env`, even if it defines the same key.
+- **Missing is fine.** A worktree with no `.env` (or an empty/unreadable
+  one) is a no-op — nothing is loaded and the session starts normally.
+- **The parser is intentionally minimal.** Blank lines and `#` comment
+  lines are ignored; an optional leading `export ` is stripped; one pair
+  of surrounding quotes is removed from a value. There is **no** variable
+  interpolation, **no** multiline values, and **no** inline-comment
+  stripping (a value may legitimately contain `#`). Keep `.env` files to
+  simple `KEY=value` lines.
+
+> Values loaded from `.env` are treated as secrets and are never logged.

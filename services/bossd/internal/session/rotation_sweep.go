@@ -146,7 +146,10 @@ func (l *Lifecycle) redispatchParkedRotation(ctx context.Context, session *model
 		return false
 
 	default:
-		// OutcomeStatusOnly (not rotation-capable) — leave parked.
+		// OutcomeStatusOnly (not rotation-capable) and OutcomeNoEligibleAccount
+		// (capable but no eligible target) — nothing to redispatch onto, so leave
+		// parked. The initial usage-limit intercept (rotation.go) owns recording
+		// these outcomes; the sweep only retries when a target becomes available.
 		return false
 	}
 }

@@ -158,9 +158,11 @@ var Registry = map[string]Prose{
 	"boss daemon stop": {
 		Long: "Stops the bossd daemon for the current profile via the platform " +
 			"service manager or profile metadata. Idempotent — quietly succeeds " +
-			"if the daemon is already stopped or not installed. Use " +
+			"if the daemon is already stopped or not installed. Normal stops " +
+			"leave plugin processes alone — bossd reaps its own children. Use " +
 			"`--all-standalone` only for explicit cleanup of every user-owned " +
-			"standalone bossd process across profiles.",
+			"standalone bossd process and its `bossd-plugin-*` children across " +
+			"profiles.",
 		Examples: []Example{
 			{Command: "boss daemon stop"},
 			{Command: "boss daemon stop --all-standalone"},
@@ -235,6 +237,16 @@ var Registry = map[string]Prose{
 			"on PATH, recent log files, etc.) plus a recent-logs table — answers " +
 			"\"is auto-repair healthy?\" without having to grep daemon stderr.",
 		Examples: []Example{{Command: "boss repair doctor"}},
+	},
+	"boss repair start": {
+		Long: "(Re-)arms the auto-repair workflow. Calls the daemon's " +
+			"`StartRepairWorkflow` RPC, which declares the repair plugin's " +
+			"desired-started state from current settings and ensures the " +
+			"workflow is running. A RUNNING workflow is left untouched (never " +
+			"restarted); a PAUSED one is left for the operator to resume. Use " +
+			"after the repair plugin was stopped or restarted and auto-repair " +
+			"is sitting disarmed — no bossd restart needed.",
+		Examples: []Example{{Command: "boss repair start"}},
 	},
 	"boss session checks": {
 		Long: "Shows bossd's persisted view of a session's CI check snapshots, " +

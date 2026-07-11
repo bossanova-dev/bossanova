@@ -30,6 +30,7 @@ import {
   resolveCatalogPath,
   selectOutdatedProofCommentIds,
   selectRecipes,
+  TUI_REPLAY_EXTRA_MS,
   tuiAgentBridgeBuildCommand,
   validateBrowserRoute,
   validateRecipeId,
@@ -39,6 +40,7 @@ import {
   captureSurfaceDescriptor,
   classifySurfaces,
   classifyTuiSurface,
+  committedScenarioPresent,
   resolveSurfaceRegistry,
   surfaceBudget,
   webUiSurfacePresent,
@@ -1075,6 +1077,25 @@ export function tuiAgentUsable() {
 }
 
 /**
+ * Whether the TUI agent can ACTUALLY capture a proof on this invocation — an
+ * agent run must be both wanted (`tuiAgentUsable`) AND authenticable. The TUI
+ * agent leg builds its Anthropic client from `PROOF_ANTHROPIC_API_KEY`
+ * explicitly (proof-tui-agent.mjs), with no implicit `ANTHROPIC_API_KEY`
+ * fallback, so `BOSS_PROOF_MODE=agent` WITHOUT that key cannot drive the TUI
+ * agent — the agent leg would throw and, with no committed scenario to replay,
+ * surface as a `pipeline-error` (exit 1). This predicate is therefore stricter
+ * than `tuiAgentUsable()`, which trusts the mode=agent assertion (correct for
+ * `driver.usable`, where the key is daemon-injected in cron). The BOS-220
+ * scenario-missing gate uses THIS predicate so a scenario-less TUI diff with no
+ * real key defers the warn-only `scenario-missing` nudge (exit 0) rather than
+ * falling through to a doomed agent leg. Exported for unit-testing the gate.
+ * @returns {boolean}
+ */
+export function tuiAgentCanCapture() {
+  return tuiAgentUsable() && Boolean(process.env.PROOF_ANTHROPIC_API_KEY)
+}
+
+/**
  * Determines which proof surface to use for a run.
  * Returns 'tui' when any changed file lives under a TUI path prefix
  * (catalog-independent, via classifyTuiSurface — BOS-115); 'recipe' when every
@@ -1214,9 +1235,19 @@ async function runAgentSurfaces({ plan, changedFiles, args }) {
   const explicitTotalBudgetMs = Number(process.env.BOSS_PROOF_TOTAL_BUDGET_MS) || 0
   const liveAgentInRun =
     plan.order.includes('web') && requiresLiveAgent([...plan.scoped.web, ...plan.scoped.unscoped])
+  // BOS-223 (D-E): a TUI run that ships a committed scenario drives BOTH the agent
+  // leg AND the scenario-replay fallback under one slice. Extend the shared pool by
+  // TUI_REPLAY_EXTRA_MS (env-overridable at THIS call site, mirroring the
+  // LIVE_AGENT_EXTRA_MS precedent) so reserving replay headroom never squeezes the
+  // agent leg below its floor. An explicit BOSS_PROOF_TOTAL_BUDGET_MS stays a HARD
+  // ceiling (used verbatim, never widened).
+  const tuiReplayReserveMs = Number(process.env.TUI_REPLAY_EXTRA_MS) || TUI_REPLAY_EXTRA_MS
+  const tuiReplayInRun = plan.order.includes('tui') && committedScenarioPresent(changedFiles)
   const totalBudgetMs =
     explicitTotalBudgetMs ||
-    DEFAULT_TOTAL_PROOF_BUDGET_MS + (liveAgentInRun ? LIVE_AGENT_EXTRA_MS : 0)
+    DEFAULT_TOTAL_PROOF_BUDGET_MS +
+      (liveAgentInRun ? LIVE_AGENT_EXTRA_MS : 0) +
+      (tuiReplayInRun ? tuiReplayReserveMs : 0)
   // A required-proof bullet that named web FORCES it into the set even on a
   // path-miss diff (D16) — so the web pre-gate must not then skip it.
   const webForced = plan.scoped.web.length > 0
@@ -1228,8 +1259,13 @@ async function runAgentSurfaces({ plan, changedFiles, args }) {
   // extensions, discovered via the BOS-193 contract. The runners are still
   // dynamically imported here (cycle-break) and handed to the built-ins as deps.
   const { discoverAgentDrivers, driverForSurface } = await import('./proof-agent-drivers.mjs')
-  const runTuiAgentProof = (await import('./proof-tui-agent.mjs')).runTuiAgentProof
+  const { runTuiAgentProof, runTuiWithReplayFallback } = await import('./proof-tui-agent.mjs')
   const runAgentProof = (await import('./proof-agent.mjs')).runAgentProof
+  // BOS-223 replay seams (dynamic import breaks the proof.mjs ⇄ proof-tui-replay
+  // cycle) fed to the built-in TUI driver's agent→replay orchestration.
+  const { runReplayLoop, synthesizeBrief, makeScenarioEvaluator } =
+    await import('./proof-tui-replay.mjs')
+  const { loadScenario } = await import('./proof-scenario.mjs')
   const agentDrivers = await discoverAgentDrivers({
     repoRoot,
     deps: {
@@ -1242,6 +1278,13 @@ async function runAgentSurfaces({ plan, changedFiles, args }) {
       evaluateRunPreflight,
       runTuiAgentProof,
       runAgentProof,
+      // BOS-223 agent-first TUI dispatch with scenario-replay fallback.
+      runTuiWithReplayFallback,
+      runReplayLoop,
+      synthesizeBrief,
+      makeScenarioEvaluator,
+      loadScenario,
+      tuiReplayReserveMs,
     },
   })
 
@@ -1261,15 +1304,58 @@ async function runAgentSurfaces({ plan, changedFiles, args }) {
       continue
     }
 
+    // BOS-220 scenario gate (TUI only): a TUI change should commit a
+    // proof/scenarios/*.scenario.json demonstrating it. BOS-350: this gate now
+    // fires ONLY when the TUI agent cannot ACTUALLY capture the diff
+    // (`!tuiAgentCanCapture()` — recipe mode, or no real PROOF_ANTHROPIC_API_KEY,
+    // INCLUDING BOSS_PROOF_MODE=agent set without a key). The reasoning is that a
+    // scenario-less TUI diff has no leg to run in those states — replay needs a
+    // committed scenario and there is no authenticable agent — so
+    // `scenario-missing` is the honest, most-actionable authoring nudge (a keyless
+    // CI env sees it, not `agent-unavailable`), and the ~4-min agent run + bridge
+    // build is skipped. Critically it also avoids a doomed agent leg crashing to a
+    // `pipeline-error` (exit 1) under mode=agent-without-key, keeping this change
+    // exit-code-neutral. When a real key IS present, control falls through to the
+    // driver's agent-only leg (planTuiLegs {agentUsable:T, scenarioPresent:F} ⇒
+    // agent only) so the epic's agent-captured video is produced; the author is
+    // still nudged non-fatally that a committed scenario is owed (scenarioOwed,
+    // rendered by surfaceSectionLines). A committed scenario skips this gate
+    // entirely and proceeds normally. Warn-only for now; Epic 4 (BOS-226) flips
+    // the keyless case fatal.
+    if (surface === 'tui' && !committedScenarioPresent(changedFiles) && !tuiAgentCanCapture()) {
+      surfaceRuns.push(syntheticDeferredRun(surface, 'scenario-missing'))
+      continue
+    }
+
     // Per-surface hard preflight (BOS-138): a missing prereq defers THIS surface.
-    const missing = driver.preflightMissing({ shouldUpload, repoRoot })
+    // BOS-223 (D-C): a committed-scenario TUI can replay WITHOUT the agent key, so a
+    // keyless env must NOT defer here as env-unavailable — the driver's leg planning
+    // routes keyless→replay-only. Relax ONLY PROOF_ANTHROPIC_API_KEY (mirroring
+    // evaluateRunPreflight's BOSS_PROOF_MODE=agent filter); every other prereq
+    // (agg/ffmpeg/go-toolchain/upload creds) is still needed by the replay capture and
+    // stays hard. BOS-350: a TUI surface reaching this gate is either a committed-scenario
+    // diff (any key state) or a key-present scenario-less diff (the reordered
+    // scenario-missing gate above now only defers the KEYLESS scenario-less case). The
+    // key-relax stays scenario-gated: a key-present scenario-less run has the key present,
+    // so PROOF_ANTHROPIC_API_KEY is not in `missing` and no relax is needed for it.
+    let missing = driver.preflightMissing({ shouldUpload, repoRoot })
+    if (surface === 'tui' && committedScenarioPresent(changedFiles)) {
+      missing = missing.filter((id) => id !== 'PROOF_ANTHROPIC_API_KEY')
+    }
     if (missing.length > 0) {
       surfaceRuns.push(syntheticDeferredRun(surface, 'env-unavailable', { missing }))
       continue
     }
 
-    // Per-surface agent gate.
-    if (!driver.usable(process.env)) {
+    // Per-surface agent gate. BOS-223 (D-C): a keyless TUI must NOT blanket-defer
+    // as `agent-unavailable` here — a keyless TUI diff reaching this gate is
+    // guaranteed to have a committed scenario (the reordered BOS-220/BOS-350
+    // scenario-missing gate above defers a KEYLESS scenario-less TUI first), so a
+    // keyless TUI proceeds to the replay-only leg (the driver's leg planning routes
+    // keyless→replay-only). A key-present scenario-less TUI is `usable()` so it does
+    // not defer here either — it proceeds to the agent-only leg. The
+    // `agent-unavailable` synthetic stays for every non-TUI surface.
+    if (!driver.usable(process.env) && surface !== 'tui') {
       surfaceRuns.push(syntheticDeferredRun(surface, 'agent-unavailable'))
       continue
     }
@@ -1405,11 +1491,22 @@ function runCommand(commandTuple) {
 function changedFilesFromGit() {
   const baseRef = process.env.BASE_REF || 'origin/main'
   try {
-    const output = execFileSync('git', ['diff', '--name-only', `${baseRef}...HEAD`], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
+    // --diff-filter=d excludes deletions so a removed committed path never enters
+    // changedFiles. The scenario classifiers (committedScenarioPresent /
+    // discoverChangedScenarios) filter by path convention only and would otherwise
+    // treat a deleted proof/scenarios/*.scenario.json as present — relaxing the
+    // keyless env gate and then throwing ENOENT in loadScenario (a pipeline-error
+    // out of an authoring/no-scenario case). Fixing it here keeps both classifiers,
+    // which consume this same list, in agreement.
+    const output = execFileSync(
+      'git',
+      ['diff', '--name-only', '--diff-filter=d', `${baseRef}...HEAD`],
+      {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      },
+    )
     return output.split(/\r?\n/).filter(Boolean)
   } catch {
     return []

@@ -14,7 +14,16 @@ Sessions run in dedicated worktrees, allowing simultaneous work on
 multiple features without conflicts. Plugins listen for events like PR
 creation, CI failures, and merge conflicts, then take autonomous actions.
 
-![Session detail view](/img/screenshots/tui-session-detail.png)
+```mermaid
+flowchart TD
+    User([You]) -->|manages sessions| Boss["boss — Terminal UI"]
+    Boss <-->|gRPC: state, config| Bossd["bossd — daemon"]
+    Bossd -->|creates + removes| Worktrees["git worktrees<br/>(one per session)"]
+    Bossd <-->|gRPC events| Agent["Agent plugins<br/>claude · codex"]
+    Bossd <-->|gRPC events| Tasks["Task-source plugins<br/>linear · sentry"]
+    Bossd <-->|gRPC events| Automation["Automation plugins<br/>dependabot · repair"]
+    Agent -->|runs coding-agent CLI in| Worktrees
+```
 
 ## Components
 

@@ -40,6 +40,10 @@ func (s *stubProvider) ListOpenPRs(context.Context, string) ([]vcs.PRSummary, er
 func (s *stubProvider) ListClosedPRs(context.Context, string) ([]vcs.PRSummary, error) {
 	panic("unused")
 }
+
+func (s *stubProvider) SearchPRsByTitleTag(context.Context, string, string) ([]vcs.PRSummary, error) {
+	panic("unused")
+}
 func (s *stubProvider) MergePR(context.Context, string, int, string) error { panic("unused") }
 func (s *stubProvider) UpdatePRTitle(context.Context, string, int, string) error {
 	panic("unused")

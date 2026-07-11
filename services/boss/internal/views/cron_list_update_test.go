@@ -58,6 +58,63 @@ func TestCronListUpdate_JobsLoaded(t *testing.T) {
 	}
 }
 
+// TestCronListUpdate_HighlightJobID verifies that a pending highlightJobID
+// places the cursor (and chevron) on the matching row when jobs load, then
+// clears the field so it does not re-fire on the next poll. This mirrors the
+// highlightRepoID idiom in repo_list.go and is the core of BOS-312: after
+// editing/creating a cron job the list returns with the caret on that job.
+func TestCronListUpdate_HighlightJobID(t *testing.T) {
+	jobs := []*pb.CronJob{
+		{Id: "a", Name: "Job A", Schedule: "* * * * *", Enabled: true},
+		{Id: "b", Name: "Job B", Schedule: "0 * * * *", Enabled: true},
+		{Id: "c", Name: "Job C", Schedule: "0 0 * * *", Enabled: true},
+	}
+
+	m := newCronListForUpdate(nil)
+	m.highlightJobID = "b" // a non-first job
+	updated, _ := m.Update(cronJobsLoadedMsg{jobs: jobs})
+	got := updated.(CronListModel)
+
+	if got.table.Cursor() != 1 {
+		t.Fatalf("cursor = %d, want 1 (highlighted job's index)", got.table.Cursor())
+	}
+	if got.table.Rows()[1][0] != cursorChevron {
+		t.Fatalf("rows[1][0] = %q, want cursorChevron (caret followed highlight)", got.table.Rows()[1][0])
+	}
+	if got.table.Rows()[0][0] != "" {
+		t.Fatalf("rows[0][0] = %q, want empty (caret left the top row)", got.table.Rows()[0][0])
+	}
+	if got.highlightJobID != "" {
+		t.Fatalf("highlightJobID = %q, want cleared", got.highlightJobID)
+	}
+}
+
+// TestCronListUpdate_HighlightJobIDMissing verifies that a highlightJobID that
+// matches no delivered job leaves the cursor at the clamped default (0) and is
+// still cleared, so a since-deleted id does not linger and re-apply on the next
+// 2s poll.
+func TestCronListUpdate_HighlightJobIDMissing(t *testing.T) {
+	jobs := []*pb.CronJob{
+		{Id: "a", Name: "Job A", Schedule: "* * * * *", Enabled: true},
+		{Id: "b", Name: "Job B", Schedule: "0 * * * *", Enabled: true},
+	}
+
+	m := newCronListForUpdate(nil)
+	m.highlightJobID = "gone" // not present in the delivered list
+	updated, _ := m.Update(cronJobsLoadedMsg{jobs: jobs})
+	got := updated.(CronListModel)
+
+	if got.table.Cursor() != 0 {
+		t.Fatalf("cursor = %d, want 0 (default when highlight id is absent)", got.table.Cursor())
+	}
+	if got.table.Rows()[0][0] != cursorChevron {
+		t.Fatalf("rows[0][0] = %q, want cursorChevron (caret at default top row)", got.table.Rows()[0][0])
+	}
+	if got.highlightJobID != "" {
+		t.Fatalf("highlightJobID = %q, want cleared even when unmatched", got.highlightJobID)
+	}
+}
+
 // TestCronListUpdate_ReposLoaded covers the err==nil guard in the
 // cronReposLoadedMsg handler (cron_list.go:158): repos are indexed only on
 // success, and an error leaves the repo map empty.

@@ -80,7 +80,20 @@ export function builtinAgentDrivers(deps) {
       env.BOSS_PROOF_TUI_BRIDGE_BIN = bridgeEnv.BOSS_PROOF_TUI_BRIDGE_BIN
       env.BOSS_PROOF_BOSS_BIN = bridgeEnv.BOSS_PROOF_BOSS_BIN
     },
-    run: (ctx) => deps.runTuiAgentProof(ctx),
+    // BOS-223: agent-first dispatch with an automatic scenario-replay fallback.
+    // The orchestration runs the agent leg first, then replays each committed
+    // scenario (BOS-219 seams) on gate-fail / crash / keyless. tuiAgentUsable()
+    // is resolved HERE and passed as the leg-planning input.
+    run: (ctx) =>
+      deps.runTuiWithReplayFallback(ctx, {
+        runTuiAgentProof: deps.runTuiAgentProof,
+        agentUsable: deps.tuiAgentUsable(),
+        runReplayLoop: deps.runReplayLoop,
+        synthesizeBrief: deps.synthesizeBrief,
+        makeScenarioEvaluator: deps.makeScenarioEvaluator,
+        loadScenario: deps.loadScenario,
+        replayReserveMs: deps.tuiReplayReserveMs,
+      }),
   }
   const web = {
     surface: 'web',

@@ -13,6 +13,7 @@ import {
   isAgentSurface,
   classifyTuiSurface,
   webUiSurfacePresent,
+  committedScenarioPresent,
   classifySurfaces,
   TUI_SURFACE_PREFIXES,
   WEB_UI_SURFACE_PREFIXES,
@@ -158,6 +159,41 @@ test('webUiSurfacePresent is true when ANY changed file is a web UI path (mixed 
     webUiSurfacePresent(['scripts/proof.mjs', 'services/web/src/pages/SessionDetail.tsx']),
     true,
   )
+})
+
+// ── committedScenarioPresent: the BOS-220 TUI scenario-authoring gate ─────────
+
+test('committedScenarioPresent is true when a proof/scenarios/*.scenario.json is in the diff', () => {
+  assert.equal(committedScenarioPresent(['proof/scenarios/demo.scenario.json']), true)
+  // A subdirectory scenario still counts (permissive suffix+dir match).
+  assert.equal(committedScenarioPresent(['proof/scenarios/tui/home.scenario.json']), true)
+  // Present anywhere in a mixed diff counts.
+  assert.equal(
+    committedScenarioPresent([
+      'services/boss/internal/views/home.go',
+      'proof/scenarios/home.scenario.json',
+    ]),
+    true,
+  )
+})
+
+test('committedScenarioPresent is false for a TUI diff with no scenario file', () => {
+  // A TUI change that ships without a scenario — the exact case that defers.
+  assert.equal(committedScenarioPresent(['services/boss/internal/views/home.go']), false)
+  // Wrong directory (a recipe, not a scenario).
+  assert.equal(committedScenarioPresent(['proof/recipes/home.json']), false)
+  // Right directory, wrong extension / suffix.
+  assert.equal(committedScenarioPresent(['proof/scenarios/README.md']), false)
+  assert.equal(committedScenarioPresent(['proof/scenarios/home.json']), false)
+  // A scenario-shaped name outside proof/scenarios/ does not count.
+  assert.equal(committedScenarioPresent(['scripts/home.scenario.json']), false)
+  assert.equal(committedScenarioPresent([]), false)
+  assert.equal(committedScenarioPresent(null), false)
+})
+
+test('committedScenarioPresent normalizes leading ./ and backslashes', () => {
+  assert.equal(committedScenarioPresent(['./proof/scenarios/demo.scenario.json']), true)
+  assert.equal(committedScenarioPresent(['proof\\scenarios\\demo.scenario.json']), true)
 })
 
 // ── classifySurfaces: surface SET classifier (BOS-139 / D5) ──────────────────

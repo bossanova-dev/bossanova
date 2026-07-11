@@ -39,6 +39,46 @@ func TestResolveTrustedExecutableFindsTrustedOnPath(t *testing.T) {
 	}
 }
 
+func TestResolveTrustedExecutableDoesNotUseWorkingDirectoryWhenExecutableLookupFails(t *testing.T) {
+	root := t.TempDir()
+	const name = "resolver-working-directory-test"
+	if err := os.WriteFile(filepath.Join(root, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	previous := executablePath
+	executablePath = func() (string, error) { return "", os.ErrNotExist }
+	t.Cleanup(func() { executablePath = previous })
+	t.Chdir(root)
+	t.Setenv("PATH", t.TempDir())
+
+	if got := ResolveTrustedExecutable(name); got != "" {
+		t.Fatalf("ResolveTrustedExecutable(%q) = %q, want no working-directory fallback", name, got)
+	}
+}
+
+func TestResolveTrustedExecutableFindsSiblingOfRunningBinary(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skipf("os.Executable unavailable: %v", err)
+	}
+
+	const name = "resolver-test-sibling"
+	bin := filepath.Join(filepath.Dir(exe), name)
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("create sibling of test binary: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(bin) })
+	if ok, _ := isTrustedPath(bin); !ok {
+		t.Fatal("test-binary sibling is not trusted")
+	}
+
+	t.Setenv("PATH", t.TempDir())
+	if got := ResolveTrustedExecutable(name); got != bin {
+		t.Fatalf("ResolveTrustedExecutable(%q) = %q, want sibling %q", name, got, bin)
+	}
+}
+
 func TestResolveTrustedExecutableMissingIsEmpty(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if got := ResolveTrustedExecutable("definitely-not-a-real-binary-xyz"); got != "" {

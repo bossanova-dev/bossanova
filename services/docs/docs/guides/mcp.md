@@ -66,6 +66,13 @@ path of `bin/mcp` (run `realpath bin/mcp` after `make build-mcp`).
 
 **Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json`, same `mcpServers` block; restart Claude Desktop after saving. Verify with `/mcp` in Claude Code or the tools panel in Claude Desktop — the `bossanova` tools should appear.
 
+> **Environment variables in `.mcp.json`.** `${VAR}` placeholders in
+> `.mcp.json` (for example `Authorization: Bearer ${LINEAR_API_KEY}`) are
+> resolved from the agent session's environment. Bossanova automatically
+> loads a worktree's `.env` into that environment, so putting the value in
+> the worktree `.env` is enough for it to resolve — see
+> [Automatic `.env` loading](./setup-scripts.md#automatic-env-loading).
+
 ## Modes
 
 - **stdio** (default) — `bin/mcp` with no flags; the MCP host spawns it and talks over stdin/stdout.

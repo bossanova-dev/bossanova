@@ -809,6 +809,7 @@ func TestRotationEventLabel(t *testing.T) {
 		{pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, "acct-a → acct-b rotated"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_DISABLED, "rotation disabled — status only"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY, "agent cannot rotate — status only"},
+		{pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT, "no eligible account — status only"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED, "all accounts limited"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_FAILED, "switch to acct-b failed"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED, "rotation event"},

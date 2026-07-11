@@ -118,6 +118,10 @@ func (p *StubProvider) ListClosedPRs(context.Context, string) ([]vcs.PRSummary, 
 	return nil, fmt.Errorf("stub provider: ListClosedPRs not implemented")
 }
 
+func (p *StubProvider) SearchPRsByTitleTag(context.Context, string, string) ([]vcs.PRSummary, error) {
+	return nil, fmt.Errorf("stub provider: SearchPRsByTitleTag not implemented")
+}
+
 func (p *StubProvider) MergePR(context.Context, string, int, string) error {
 	return fmt.Errorf("stub provider: MergePR not implemented")
 }

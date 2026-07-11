@@ -283,6 +283,26 @@
       "route": "/guides/mcp",
       "selector": "article",
       "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-upgrade",
+      "surface": "docs",
+      "title": "Docs — Upgrade",
+      "description": "Rendered upgrade documentation page (services/docs/docs/upgrade.md).",
+      "privacy": "fixture",
+      "route": "/upgrade",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-setup-scripts-guide",
+      "surface": "docs",
+      "title": "Docs — Setup Scripts Guide",
+      "description": "Rendered Setup Scripts documentation guide page (services/docs/docs/guides/setup-scripts.md).",
+      "privacy": "fixture",
+      "route": "/guides/setup-scripts",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
     }
   ],
   "pathRules": [
@@ -322,6 +342,16 @@
       "name": "Docs MCP guide",
       "patterns": ["services/docs/docs/guides/mcp"],
       "recipeIds": ["docs-mcp-guide"]
+    },
+    {
+      "name": "Docs upgrade guide",
+      "patterns": ["services/docs/docs/upgrade"],
+      "recipeIds": ["docs-upgrade"]
+    },
+    {
+      "name": "Docs Setup Scripts guide",
+      "patterns": ["services/docs/docs/guides/setup-scripts"],
+      "recipeIds": ["docs-setup-scripts-guide"]
     }
   ]
 }

@@ -14,13 +14,14 @@ import (
 
 	"connectrpc.com/connect"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/testharness"
 	"github.com/recurser/bossd/internal/tmux"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type repairFakeAgentClient struct {
@@ -49,6 +50,18 @@ printf '❯'
 
 IFS= read -r data || true
 printf '%%s\n' "$data" > "$prompt_path"
+
+# Render an agent-activity marker (⏺) below the input box so the host's
+# submit-verifier (tmux waitForSubmission) sees the line leave the prompt and
+# confirms submission — a real agent shows activity the instant it accepts a
+# line; without this the fake would exit at the prompt and capture-pane would
+# race the pane's teardown ("verify command submission: ... exit status 1").
+# The bounded sleep keeps the pane alive through the 2s verify budget, then
+# self-cleans (a fresh repair chat's dynamic tmux name is not covered by any
+# t.Cleanup). Run completion is signalled by ExitStatus once the prompt file
+# exists above, independent of this sleep.
+printf '\n⏺ working\n'
+sleep 3
 `, mode, promptPath)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
@@ -162,7 +175,7 @@ func setupRepairE2E(t *testing.T, fake agent.AgentRunnerClient) (*testharness.Ha
 
 	ctx := context.Background()
 	repoDir := testharness.TempRepoDir(t)
-	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
+	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&bossanovav1.RegisterRepoRequest{
 		DisplayName:       "repair-e2e",
 		LocalPath:         repoDir,
 		DefaultBaseBranch: "main",
@@ -173,7 +186,7 @@ func setupRepairE2E(t *testing.T, fake agent.AgentRunnerClient) (*testharness.Ha
 	}
 
 	agentName := "codex"
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h.Client, ctx, &bossanovav1.CreateSessionRequest{
 		RepoId:    repoResp.Msg.Repo.Id,
 		Title:     "Repair E2E",
 		Plan:      "test repair e2e",
@@ -408,6 +421,10 @@ func TestRepairPluginReclaimsStaleRepairChatAfterRestart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = h.Tmux.KillSession(context.Background(), staleTmuxName) })
 	writeRepairE2ELogAt(t, h, staleAgentSessionID, time.Now().Add(-(31 * time.Minute)))
+	// BOS-153: displaceability now comes from the chat tracker, not the pane-log
+	// mtime. Report the stale repair chat idle 31m (matching the log above) so it
+	// clears repairDisplaceMinIdle (5m) and the reclaim gate lets it through.
+	h.SeedChatStatus(staleAgentSessionID, bossanovav1.ChatStatus_CHAT_STATUS_IDLE, time.Now().Add(-(31 * time.Minute)))
 
 	_, err := h.HostService.StartChatRun(ctx, &bossanovav1.StartChatRunHostRequest{
 		SessionId: sessionID,
@@ -496,6 +513,10 @@ func TestRepairPluginDoesNotReclaimRecentLiveRepairChat(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = h.Tmux.KillSession(context.Background(), activeTmuxName) })
 	writeRepairE2ELogAt(t, h, activeAgentSessionID, time.Now())
+	// BOS-153: the tracker is the displaceability authority. Report the repair
+	// chat as just-active (idle ~0, matching the fresh log above) so it stays
+	// under repairDisplaceMinIdle (5m) and the reclaim gate refuses it.
+	h.SeedChatStatus(activeAgentSessionID, bossanovav1.ChatStatus_CHAT_STATUS_IDLE, time.Now())
 
 	_, err := h.HostService.StartChatRun(ctx, &bossanovav1.StartChatRunHostRequest{
 		SessionId: sessionID,
@@ -527,4 +548,163 @@ func TestRepairPluginDoesNotReclaimRecentLiveRepairChat(t *testing.T) {
 	if activeChat.StartError != nil {
 		t.Fatalf("active chat start_error = %q, want nil", *activeChat.StartError)
 	}
+}
+
+// TestRepairDisplacesQuestionStuckNonRepairChat is the BOS-347 overnight-incident
+// recovery proof, end to end. A rejected/failing session whose only live chat is
+// a NON-repair chat parked at an unanswered QUESTION must never be permanently
+// blocked from auto-repair: once that chat has been silent past the 15m question
+// window, the repair replace path (StartChatRun with ReplaceExistingChat, via the
+// StartTmuxChat AlreadyExists route) displaces it and starts a repair chat — with
+// NO last_repair_blocked_reason accumulating, which was the overnight failure
+// signature (the daemon refused every sweep and the plugin re-recorded the block).
+// The under-window twin proves the window is real: the same chat idle only 5m is
+// still refused with "is at a question", and that refusal is recorded.
+func TestRepairDisplacesQuestionStuckNonRepairChat(t *testing.T) {
+	// arrange builds a repairable session whose sole live chat is a non-repair
+	// chat parked at a QUESTION whose last visible output was at lastOutputAt.
+	arrange := func(t *testing.T, lastOutputAt time.Time) (*testharness.Harness, context.Context, string, string, string) {
+		fake, _, _ := newRepairFakeAgentClient(t, "require-tty")
+		h, ctx, sessionID := setupRepairE2E(t, fake)
+
+		// Repairable session: a rejected PR display status. This is narrative
+		// fidelity — the daemon replace gate is display-status-agnostic; the
+		// repair plugin (not exercised here) is what consults display status to
+		// decide whether to attempt a repair at all.
+		h.DisplayTracker.Set(sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusRejected})
+
+		blockingAgentSessionID := "question-stuck-nonrepair-agent"
+		blockingTmuxName := "boss-test-question-nonrepair"
+		if _, err := h.AgentChats.Create(ctx, db.CreateAgentChatParams{
+			SessionID:      sessionID,
+			AgentSessionID: blockingAgentSessionID,
+			AgentName:      "codex",
+			Title:          "Investigate flaky integration test", // deliberately NOT a "Repair:" title
+		}); err != nil {
+			t.Fatalf("seed blocking chat: %v", err)
+		}
+		if err := h.AgentChats.UpdateTmuxSessionName(ctx, blockingAgentSessionID, &blockingTmuxName); err != nil {
+			t.Fatalf("seed blocking tmux name: %v", err)
+		}
+		if err := h.Tmux.NewSession(ctx, tmux.NewSessionOpts{
+			Name:    blockingTmuxName,
+			WorkDir: t.TempDir(),
+			Command: []string{"sleep", "30"},
+		}); err != nil {
+			t.Fatalf("seed blocking tmux session: %v", err)
+		}
+		t.Cleanup(func() { _ = h.Tmux.KillSession(context.Background(), blockingTmuxName) })
+
+		// The chat tracker is the sole displaceability authority (BOS-153): the
+		// blocking chat is at a QUESTION with its last visible output at
+		// lastOutputAt.
+		h.SeedChatStatus(blockingAgentSessionID, bossanovav1.ChatStatus_CHAT_STATUS_QUESTION, lastOutputAt)
+
+		return h, ctx, sessionID, blockingAgentSessionID, blockingTmuxName
+	}
+
+	// startRepairReplace issues the repair plugin's replacement StartChatRun. The
+	// observed snapshot equals the blocking chat's last output — the plugin saw no
+	// output since — so the observed-snapshot guard passes and only the question
+	// window decides displaceability.
+	startRepairReplace := func(ctx context.Context, h *testharness.Harness, sessionID string, observed time.Time) (*bossanovav1.StartChatRunHostResponse, error) {
+		return h.HostService.StartChatRun(ctx, &bossanovav1.StartChatRunHostRequest{
+			SessionId:             sessionID,
+			Command:               "boss-repair",
+			Title:                 "Repair: Repair E2E",
+			ReplaceExistingChat:   true,
+			ReplaceExistingReason: "auto-repair displacing question-stuck chat",
+			ReplaceExistingObservedLastChatActivityAt: timestamppb.New(observed),
+		})
+	}
+
+	t.Run("displaces_question_stuck_chat_past_window_and_repairs", func(t *testing.T) {
+		lastOutputAt := time.Now().Add(-20 * time.Minute)
+		h, ctx, sessionID, blockingAgentSessionID, blockingTmuxName := arrange(t, lastOutputAt)
+
+		resp, err := startRepairReplace(ctx, h, sessionID, lastOutputAt)
+		if err != nil {
+			t.Fatalf("StartChatRun (replace) unexpected error: %v", err)
+		}
+		freshID := resp.GetAgentSessionId()
+		if freshID == "" || freshID == blockingAgentSessionID {
+			t.Fatalf("fresh repair agent session id = %q (blocking = %q)", freshID, blockingAgentSessionID)
+		}
+
+		// The blocking chat's pane was displaced and its row cleared.
+		if h.Tmux.HasSession(ctx, blockingTmuxName) {
+			t.Fatalf("blocking tmux session %q still live; expected it displaced", blockingTmuxName)
+		}
+		blockingChat, err := h.AgentChats.GetByAgentSessionID(ctx, blockingAgentSessionID)
+		if err != nil {
+			t.Fatalf("get blocking chat: %v", err)
+		}
+		if blockingChat.TmuxSessionName != nil {
+			t.Fatalf("blocking chat tmux name = %q, want nil after displace", *blockingChat.TmuxSessionName)
+		}
+
+		// A repair chat took over.
+		freshChat, err := h.AgentChats.GetByAgentSessionID(ctx, freshID)
+		if err != nil {
+			t.Fatalf("get fresh repair chat: %v", err)
+		}
+		if !strings.HasPrefix(freshChat.Title, "Repair:") {
+			t.Fatalf("fresh chat title = %q, want Repair prefix", freshChat.Title)
+		}
+		if freshChat.TmuxSessionName == nil || *freshChat.TmuxSessionName == "" {
+			t.Fatal("fresh repair chat tmux session name not recorded")
+		}
+
+		// The overnight failure signature — last_repair_blocked_reason re-recorded
+		// every sweep — must be absent: the daemon accepted the displacement, so a
+		// repair sweep proceeds to run repair rather than record a block.
+		sess, err := h.Sessions.Get(ctx, sessionID)
+		if err != nil {
+			t.Fatalf("get session: %v", err)
+		}
+		if sess.LastRepairBlockedReason != "" || sess.LastRepairBlockedAt != nil {
+			t.Fatalf("blocked fields recorded on a successful displace: reason=%q at=%v",
+				sess.LastRepairBlockedReason, sess.LastRepairBlockedAt)
+		}
+	})
+
+	t.Run("refuses_question_stuck_chat_under_window_and_records_block", func(t *testing.T) {
+		lastOutputAt := time.Now().Add(-5 * time.Minute)
+		h, ctx, sessionID, _, blockingTmuxName := arrange(t, lastOutputAt)
+
+		_, err := startRepairReplace(ctx, h, sessionID, lastOutputAt)
+		if grpcstatus.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("StartChatRun (replace) code = %v, want FailedPrecondition (err=%v)", grpcstatus.Code(err), err)
+		}
+		if !strings.Contains(err.Error(), "is at a question") {
+			t.Fatalf("refusal = %q, want it to contain 'is at a question'", err.Error())
+		}
+
+		// Under the window the blocking chat's pane is untouched — someone may
+		// still answer the question.
+		if !h.Tmux.HasSession(ctx, blockingTmuxName) {
+			t.Fatalf("blocking tmux session %q was displaced inside the 15m window", blockingTmuxName)
+		}
+
+		// Model the repair plugin's blocked-lane bookkeeping: on a
+		// FailedPrecondition refusal it records the reason via RecordRepairOutcome.
+		// This is exactly the accumulation the fix eliminates once past the window.
+		if _, recErr := h.HostService.RecordRepairOutcome(ctx, &bossanovav1.RecordRepairOutcomeRequest{
+			SessionId:     sessionID,
+			BlockedReason: err.Error(),
+		}); recErr != nil {
+			t.Fatalf("RecordRepairOutcome (blocked lane): %v", recErr)
+		}
+		sess, getErr := h.Sessions.Get(ctx, sessionID)
+		if getErr != nil {
+			t.Fatalf("get session: %v", getErr)
+		}
+		if sess.LastRepairBlockedReason == "" || sess.LastRepairBlockedAt == nil {
+			t.Fatalf("blocked reason not recorded under window: reason=%q at=%v",
+				sess.LastRepairBlockedReason, sess.LastRepairBlockedAt)
+		}
+		if !strings.Contains(sess.LastRepairBlockedReason, "is at a question") {
+			t.Fatalf("recorded blocked reason = %q, want it to contain 'is at a question'", sess.LastRepairBlockedReason)
+		}
+	})
 }

@@ -62,6 +62,12 @@ func (m *mockSessionStoreLiveness) UpdateStateConditional(_ context.Context, _ s
 func (m *mockSessionStoreLiveness) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
 	return nil, nil
 }
+func (m *mockSessionStoreLiveness) ListByStates(_ context.Context, _ []int) ([]*models.Session, error) {
+	return nil, nil
+}
+func (m *mockSessionStoreLiveness) UpdateStateConditionalFrom(_ context.Context, _ string, _ int, _ []int) (bool, error) {
+	return false, nil
+}
 func (m *mockSessionStoreLiveness) UpdateRepairDiagnostics(_ context.Context, _ db.UpdateRepairDiagnosticsParams) error {
 	return nil
 }
@@ -161,6 +167,26 @@ func TestLivenessChecker_NoProcessIdentifiers(t *testing.T) {
 
 	if !checker.IsSessionAlive(context.Background(), "sess-2") {
 		t.Error("expected true when session has no process identifiers (still initializing)")
+	}
+}
+
+func TestLivenessChecker_UnattendedSessionWithoutProcessIdentifiersIsDead(t *testing.T) {
+	cronJobID := "cron-1"
+	checker := &defaultLivenessChecker{
+		sessions: &mockSessionStoreLiveness{
+			sessions: map[string]*models.Session{
+				"cron-session": {
+					ID:        "cron-session",
+					State:     machine.CreatingWorktree,
+					CronJobID: &cronJobID,
+				},
+			},
+		},
+		agentForSession: constAgent(&mockAgentRunnerLiveness{running: map[string]bool{}}),
+	}
+
+	if checker.IsSessionAlive(context.Background(), "cron-session") {
+		t.Error("expected unattended session without process identifiers to be dead")
 	}
 }
 

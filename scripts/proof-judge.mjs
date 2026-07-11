@@ -23,6 +23,7 @@ import { mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
 import { normalizeScenes, scopeRequiredProof } from './proof-brief.mjs'
+import { displayText, normalizeExpectation } from './proof-evidence-matcher.mjs'
 
 /** Hard total-still cap across all scenes/surfaces (ITPM guard beyond the ≤2/scene D10 cap). */
 export const MAX_JUDGE_STILLS = 12
@@ -195,13 +196,30 @@ function renderRequiredProofSection(requiredProof, surfaces) {
   return lines.join('\n')
 }
 
+// Render one expectedEvidence entry to a human-readable string for the judge
+// prompt. A plain string passes through; a matcher object ({text,match} /
+// {anyOf:[…]}) is rendered through the shared matcher's displayText so the judge
+// never sees `[object Object]` (BOS-222). Falls back to String() on any
+// malformed entry (the brief is validated before it reaches the judge, so this
+// is defensive only).
+function renderEvidenceEntry(e) {
+  if (typeof e === 'string') return e
+  try {
+    return displayText(normalizeExpectation(e))
+  } catch {
+    return String(e)
+  }
+}
+
 function renderScenesSection(scenes, perSceneOutcomes) {
   const lines = ['## Scenes']
   for (const scene of scenes ?? []) {
     const outcome = (perSceneOutcomes ?? []).find((o) => o?.id === scene.id)
     lines.push(`### ${scene.title} (${scene.id})`)
     const evidence = Array.isArray(scene.expectedEvidence) ? scene.expectedEvidence : []
-    lines.push(`Expected evidence: ${evidence.length ? evidence.join('; ') : '(none)'}`)
+    lines.push(
+      `Expected evidence: ${evidence.length ? evidence.map(renderEvidenceEntry).join('; ') : '(none)'}`,
+    )
     if (outcome) {
       lines.push(`Mechanical result: ${outcome.passed ? 'passed' : 'failed'}`)
       const missing = Array.isArray(outcome.missing) ? outcome.missing : []

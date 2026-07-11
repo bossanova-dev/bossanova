@@ -45,6 +45,24 @@ func TestDemoWorldShape(t *testing.T) {
 	if len(w.CronJobs) < 1 {
 		t.Errorf("want >=1 cron job so the Scheduled Jobs screen is non-empty, got %d", len(w.CronJobs))
 	}
+
+	// The Settings → Accounts list (BOS-265) needs >=2 accounts covering both
+	// providers so the populated-state proof shows a "codex" cell and a label.
+	if len(w.Accounts) < 2 {
+		t.Fatalf("want >=2 accounts for the Accounts list, got %d", len(w.Accounts))
+	}
+	providers := map[string]bool{}
+	for _, a := range w.Accounts {
+		providers[a.Provider] = true
+		if a.Label == "" {
+			t.Errorf("account %q has an empty label; the list uses label as the identity column", a.Id)
+		}
+	}
+	for _, want := range []string{"claude", "codex"} {
+		if !providers[want] {
+			t.Errorf("want an account with provider %q for the Accounts proof, got providers %v", want, providers)
+		}
+	}
 }
 
 func TestDemoWorldDeterministic(t *testing.T) {

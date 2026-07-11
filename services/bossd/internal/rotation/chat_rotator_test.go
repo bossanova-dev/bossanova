@@ -626,6 +626,16 @@ func (s *lockedAuditStore) triggers() []string {
 	return out
 }
 
+func (s *lockedAuditStore) details() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.inserted))
+	for i, ev := range s.inserted {
+		out[i] = ev.Detail
+	}
+	return out
+}
+
 func rotatorWithRecorder(f *fakeDeps, now *time.Time, store AuditStore) *ChatRotator {
 	f.repoID, f.provider = "repo-1", "claude"
 	return NewChatRotator(ChatRotatorDeps{
@@ -670,6 +680,7 @@ func TestChatRotator_RecordsAuditPerOutcome(t *testing.T) {
 		{"switch → rotated", Decision{Kind: DecisionSwitch, AccountID: "acct-b-id", Label: "acct-b"}, "ROTATION_OUTCOME_ROTATED"},
 		{"all cooling → exhausted", Decision{Kind: DecisionAllExhausted, ResumeAt: time.Now().Add(time.Hour)}, "ROTATION_OUTCOME_EXHAUSTED"},
 		{"no capability → status only", Decision{Kind: DecisionStatusOnly}, "ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY"},
+		{"no eligible account → status only", Decision{Kind: DecisionNoEligibleAccount}, "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -685,6 +696,58 @@ func TestChatRotator_RecordsAuditPerOutcome(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestChatRotator_RecordsNoEligibleAccount pins BOS-327: a DecisionNoEligibleAccount
+// records the distinct ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT outcome
+// with the actionable "boss account update ... --status active" detail, on BOTH
+// the usage-limited and auth-invalidated rotation paths (and never switches).
+func TestChatRotator_RecordsNoEligibleAccount(t *testing.T) {
+	const wantOutcome = "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT"
+	const wantDetail = "no eligible account to rotate to — enable or re-authenticate one (e.g. `boss account update <id> --status active`)"
+
+	t.Run("usage-limited path", func(t *testing.T) {
+		now := time.Now()
+		f := &fakeDeps{status: chatStatusLimited(), decision: Decision{Kind: DecisionNoEligibleAccount}}
+		store := &lockedAuditStore{}
+		r := rotatorWithRecorder(f, &now, store)
+		r.OnChatStatus(testChatID, chatStatusLimited(), now.Add(2*time.Hour))
+		waitIdle(t, r)
+		if len(f.switched()) != 0 {
+			t.Fatal("no-eligible path must not switch")
+		}
+		if out := store.outcomes(); len(out) != 1 || out[0] != wantOutcome {
+			t.Fatalf("outcomes = %v, want one %s", out, wantOutcome)
+		}
+		if det := store.details(); len(det) != 1 || det[0] != wantDetail {
+			t.Fatalf("details = %v, want one %q", det, wantDetail)
+		}
+	})
+
+	t.Run("auth-invalidated path", func(t *testing.T) {
+		now := time.Now()
+		f := &fakeDeps{
+			authFailed:    true,
+			authConfirmed: true,
+			decision:      Decision{Kind: DecisionNoEligibleAccount},
+		}
+		store := &lockedAuditStore{}
+		r := f.authRotator(&now, store)
+		r.OnAuthFailed(testChatID)
+		waitIdle(t, r)
+		if len(f.switched()) != 0 {
+			t.Fatal("no-eligible auth path must not switch")
+		}
+		if out := store.outcomes(); len(out) != 1 || out[0] != wantOutcome {
+			t.Fatalf("outcomes = %v, want one %s", out, wantOutcome)
+		}
+		if det := store.details(); len(det) != 1 || det[0] != wantDetail {
+			t.Fatalf("details = %v, want one %q", det, wantDetail)
+		}
+		if trig := store.triggers(); len(trig) != 1 || trig[0] != "ROTATION_TRIGGER_AUTH_INVALIDATED" {
+			t.Fatalf("triggers = %v, want ROTATION_TRIGGER_AUTH_INVALIDATED", trig)
+		}
+	})
 }
 
 func TestChatRotator_RecordsProbeGateAudit(t *testing.T) {

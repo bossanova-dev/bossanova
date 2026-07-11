@@ -183,19 +183,20 @@ func TestDefaultRegistry(t *testing.T) {
 	if reg == nil {
 		t.Fatal("DefaultRegistry() = nil")
 	}
-	// Production registry has four versions ordered oldest→newest:
-	// Baseline, V20260704, V20260705 and V20260706. Current is V20260706 (newest
-	// behavior) while Default stays Baseline (header-less callers pin to the
-	// oldest version). V20260701 is NOT a member (example/test use only).
-	if reg.Current() != apiversion.V20260706 {
-		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260706)
+	// Production registry has five versions ordered oldest→newest:
+	// Baseline, V20260704, V20260705, V20260706 and V20260711. Current is
+	// V20260711 (newest behavior) while Default stays Baseline (header-less
+	// callers pin to the oldest version). V20260701 is NOT a member (example/test
+	// use only).
+	if reg.Current() != apiversion.V20260711 {
+		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260711)
 	}
 	if reg.Default() != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().Default() = %q, want %q", reg.Default(), apiversion.Baseline)
 	}
 	all := reg.All()
-	if len(all) != 4 {
-		t.Errorf("DefaultRegistry().All() len = %d, want 4", len(all))
+	if len(all) != 5 {
+		t.Errorf("DefaultRegistry().All() len = %d, want 5", len(all))
 	}
 	if len(all) > 0 && all[0] != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().All()[0] = %q, want %q", all[0], apiversion.Baseline)
@@ -208,6 +209,9 @@ func TestDefaultRegistry(t *testing.T) {
 	}
 	if !reg.IsSupported(apiversion.V20260706) {
 		t.Errorf("DefaultRegistry().IsSupported(V20260706) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260711) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260711) = false, want true")
 	}
 	// V20260701 is an exported example const but must not be in the production registry.
 	if reg.IsSupported(apiversion.V20260701) {

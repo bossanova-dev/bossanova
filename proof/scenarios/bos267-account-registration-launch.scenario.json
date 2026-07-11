@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "title": "BOS-267 TUI account registration launch (Claude + Codex)",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "accounts list advertises the [a]dd action",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        { "key": "a", "caption": "Press [a] to open the Accounts list" },
+        {
+          "waitFor": {
+            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "label": "Accounts list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Accounts table settled"
+        },
+        {
+          "expect": [
+            {
+              "text": "[a]dd",
+              "match": "normalized",
+              "label": "action bar advertises the BOS-267 add-account action"
+            }
+          ],
+          "caption": "The accounts list offers the add-account entry point"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "a launches the native add-account provider chooser",
+      "steps": [
+        { "key": "a", "caption": "Press [a] to start adding an account" },
+        {
+          "waitFor": { "text": "Choose a provider", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Native add-account view opened in the TUI"
+        },
+        {
+          "expect": [
+            {
+              "text": "Add an account",
+              "match": "normalized",
+              "label": "add-account header rendered natively (no CLI drop-out)"
+            },
+            {
+              "text": "Choose a provider",
+              "match": "normalized",
+              "label": "provider chooser prompt shown"
+            },
+            {
+              "text": "claude",
+              "match": "normalized",
+              "label": "Claude is selectable entirely in the TUI"
+            },
+            {
+              "text": "codex",
+              "match": "normalized",
+              "label": "Codex is selectable entirely in the TUI"
+            },
+            {
+              "text": "[enter] choose",
+              "match": "normalized",
+              "label": "provider chooser action bar"
+            }
+          ],
+          "caption": "Both Claude and Codex registration can be started without leaving the TUI"
+        },
+        {
+          "key": "esc",
+          "caption": "Press [esc] to leave the add-account flow (no subprocess spawned)"
+        },
+        {
+          "waitFor": { "text": "[a]dd", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Returned cleanly to the accounts list"
+        }
+      ]
+    }
+  ]
+}

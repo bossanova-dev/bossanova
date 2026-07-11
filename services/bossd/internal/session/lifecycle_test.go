@@ -294,6 +294,44 @@ func (m *mockSessionStore) ListByState(_ context.Context, state int) ([]*models.
 	return result, nil
 }
 
+func (m *mockSessionStore) ListByStates(_ context.Context, states []int) ([]*models.Session, error) {
+	if len(states) == 0 {
+		return nil, nil
+	}
+	want := make(map[int]struct{}, len(states))
+	for _, st := range states {
+		want[st] = struct{}{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []*models.Session
+	for _, s := range m.sessions {
+		if _, ok := want[int(s.State)]; ok {
+			result = append(result, s)
+		}
+	}
+	return result, nil
+}
+
+func (m *mockSessionStore) UpdateStateConditionalFrom(_ context.Context, id string, newState int, expectedStates []int) (bool, error) {
+	if len(expectedStates) == 0 {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return false, nil
+	}
+	for _, st := range expectedStates {
+		if int(s.State) == st {
+			s.State = machine.State(newState)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *mockSessionStore) UpdateStateConditional(_ context.Context, id string, newState, expectedState int) (bool, error) {
 	// Mirror the SQL `UPDATE ... WHERE state = ?` atomic check-and-set so the
 	// FinalizeSession idempotency test (concurrent goroutines) sees the same
@@ -959,6 +997,9 @@ func (m *mockVCSProvider) ListOpenPRs(_ context.Context, repoPath string) ([]vcs
 }
 
 func (m *mockVCSProvider) ListClosedPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {
+	return nil, nil
+}
+func (m *mockVCSProvider) SearchPRsByTitleTag(_ context.Context, _, _ string) ([]vcs.PRSummary, error) {
 	return nil, nil
 }
 

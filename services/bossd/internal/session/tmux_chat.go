@@ -43,23 +43,6 @@ func IsRepairChatTitle(title string) bool {
 	return strings.HasPrefix(title, repairChatTitlePrefix)
 }
 
-// GetAgentChatTitle returns the chat-list title for agentSessionID. The host
-// layer reads it to decide whether a blocking chat is repair-owned when
-// selecting a displacement policy. A missing row is an error.
-func (l *Lifecycle) GetAgentChatTitle(ctx context.Context, agentSessionID string) (string, error) {
-	if l.agentChats == nil {
-		return "", fmt.Errorf("agent chat store not configured")
-	}
-	chat, err := l.agentChats.GetByAgentSessionID(ctx, agentSessionID)
-	if err != nil {
-		return "", err
-	}
-	if chat == nil {
-		return "", fmt.Errorf("agent chat not found for agent_session_id %q", agentSessionID)
-	}
-	return chat.Title, nil
-}
-
 // DeliveryIntent is how a ChatInput's payload is delivered to the tmux composer.
 type DeliveryIntent int
 

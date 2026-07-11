@@ -91,16 +91,32 @@ export function classifySurfaceOutcomes(surfaceRuns) {
 /**
  * Exit-code contribution of a single per-surface outcome. Encodes the epic
  * exit policy: a passed surface and every neutral deferral (no-media,
- * no-ui-surface, budget-exceeded, env-unavailable, agent-unavailable) → 0; a
- * pipeline crash → 1; an agent-incomplete → 1 for web but 0 for TUI (preserves
- * the Q6 non-fatal reset the old single-select TUI path applied).
+ * no-ui-surface, budget-exceeded, env-unavailable, agent-unavailable,
+ * scenario-missing) → 0; a pipeline crash → 1; an agent-incomplete → 1 for web
+ * but 0 for TUI (preserves the Q6 non-fatal reset the old single-select TUI path
+ * applied).
+ *
+ * `scenario-missing` (BOS-220) is a warn-only TUI authoring nudge: a TUI PR that
+ * shipped no committed proof/scenarios/*.scenario.json. It stays neutral (→ 0)
+ * here even though the default branch already returns 0 — the explicit branch
+ * makes the intent legible and makes Epic 4's (BOS-226) flip-to-fatal a one-line
+ * change. Do NOT flip it in this epic.
  * @param {{ surface: string, outcome: string, reasonCode: string|null }} entry
  * @returns {0|1}
  */
 function surfaceExitContribution({ surface, outcome, reasonCode }) {
   if (outcome === 'passed') return 0
   if (reasonCode === 'pipeline-error') return 1
+  // BOS-226 guidance (documented here, NOT changed in BOS-351): `agent-incomplete`
+  // (the agent ran and produced partial media) is already a DISTINCT reason code
+  // from `no-media`/`agent-unavailable` (the agent never ran) — see
+  // classifyRunOutcome. When BOS-226 flips TUI `agent-incomplete` to fatal, it
+  // should preserve this soft-vs-hard split: reserve exit 1 for "the agent ran and
+  // its captured evidence genuinely failed the judge," and keep "never ran / no
+  // media / env-unavailable / soft budget-truncation" neutral so a soft truncation
+  // does not brick unattended cron. BOS-351 leaves TUI `agent-incomplete` → 0.
   if (reasonCode === 'agent-incomplete') return surface === 'web' ? 1 : 0
+  if (reasonCode === 'scenario-missing') return 0
   return 0
 }
 

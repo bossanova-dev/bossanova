@@ -143,6 +143,15 @@ service DaemonService {
   // repair attempts. Surfaced via `boss repair doctor`.
   rpc RepairDoctor(RepairDoctorRequest) returns (RepairDoctorResponse);
 
+  // StartRepairWorkflow (re-)arms the auto-repair workflow: it declares the
+  // repair plugin's desired-started state (from current daemon settings) and
+  // ensures the workflow is running. No-op when already RUNNING
+  // (already_running=true) — a running workflow is never restarted, because
+  // StartWorkflow re-entry cancels in-flight repairs. PAUSED is operator
+  // intent and is also left untouched (reported in detail). Surfaced via
+  // `boss repair start`.
+  rpc StartRepairWorkflow(StartRepairWorkflowRequest) returns (StartRepairWorkflowResponse);
+
   // ListCheckSnapshots returns the daemon's per-poll record of what it
   // saw for a session's CI checks plus the DisplayStatus it computed.
   // Surfaced via `boss session checks <id>` so the operator can answer
@@ -848,6 +857,16 @@ message RepairDoctorCheck {
   string name = 1;
   bool ok = 2;
   string detail = 3;
+}
+
+message StartRepairWorkflowRequest {}
+
+message StartRepairWorkflowResponse {
+  // already_running is true when the workflow was RUNNING and StartWorkflow
+  // was deliberately NOT re-issued.
+  bool already_running = 1;
+  // detail is a one-line human-readable summary (prior status, action taken).
+  string detail = 2;
 }
 
 message RepairDoctorResponse {

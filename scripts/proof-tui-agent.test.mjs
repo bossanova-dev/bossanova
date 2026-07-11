@@ -134,6 +134,7 @@ function withEnv(overrides, fn) {
     'BOSS_PROOF_R2_BUCKET',
     'BOSS_PROOF_PUBLIC_BASE_URL',
     'BOSS_PROOF_MODEL',
+    'BOSS_PROOF_TUI_MODEL',
     'BOSS_PROOF_AGENT_TIMEOUT_MS',
     'BOSS_PROOF_TUI_ALLOW_STILLS_ONLY',
   ]
@@ -687,6 +688,164 @@ test('runTuiAgentProof: planRequiredProof steers the goal but never fails the ha
   } finally {
     process.exitCode = originalExitCode
     cleanupPr('tuiplansteer')
+  }
+})
+
+// ── 4c. BOS-221: generated path threads TUI framing + scenario anchors ─────────
+
+test('runTuiAgentProof: generated path passes surface:tui + excludeLowSignal + TUI context + scenario anchors to the generator', async () => {
+  const { runTuiAgentProof, TUI_CONTEXT_BLOCK } = await import('./proof-tui-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+
+  const planProse = 'Plan requires the settings screen'
+  const anchors = ['Open settings scenario', 'Settings', 'READY']
+
+  try {
+    // No BOSS_PROOF_BRIEF → resolveBrief takes the GENERATED path and calls the
+    // injected generator spy + the injected loadScenarioAnchors fake.
+    await withEnv(
+      BASE_ENV({ BOSS_PROOF_BRIEF: undefined, BOSS_PROOF_RUN_ID: 'tui-gen-anchors' }),
+      async () => {
+        let seen = null
+        const generateBriefFromDiff = async (args) => {
+          seen = args
+          return {
+            title: 'Generated',
+            description: 'A generated TUI brief',
+            targetRoutes: [],
+            stepsHints: [],
+            expectedEvidence: ['Settings'],
+          }
+        }
+        let anchorsChangedFiles = null
+        const loadScenarioAnchors = async (changedFiles) => {
+          anchorsChangedFiles = changedFiles
+          return anchors
+        }
+        const bridge = scriptedBridge({ screens: ['Settings panel open'] })
+        const model = scriptedModel([
+          toolUse('observe', {}),
+          toolUse('done', { summary: 'ok', passed: true }),
+        ])
+
+        await runTuiAgentProof({
+          prNumber: 'tuigenanchors',
+          commit: 'abc1234',
+          changedFiles: ['services/boss/foo.go', 'docs/plans/BOS-999.md'],
+          dryRun: true,
+          planRequiredProof: [planProse],
+          deps: {
+            bridge,
+            model,
+            renderStill: fakeRenderStill(),
+            castToVideo: async () => null,
+            generateBriefFromDiff,
+            loadScenarioAnchors,
+          },
+        })
+
+        assert.ok(seen, 'the generator must be invoked on the generated path')
+        assert.equal(seen.surface, 'tui', 'surface must be tui')
+        assert.equal(seen.excludeLowSignal, true, 'excludeLowSignal must be true on the TUI path')
+        assert.equal(seen.routes, TUI_CONTEXT_BLOCK, 'routes must be the TUI context block')
+        assert.equal(seen.fixtures, TUI_CONTEXT_BLOCK, 'fixtures must be the TUI context block')
+        assert.deepEqual(seen.planRequiredProof, [planProse], 'planRequiredProof must be forwarded')
+        assert.deepEqual(seen.scenarioAnchors, anchors, 'scenario anchors must be forwarded')
+        // The anchor seam is scoped by the PR's changed files.
+        assert.deepEqual(anchorsChangedFiles, ['services/boss/foo.go', 'docs/plans/BOS-999.md'])
+      },
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuigenanchors')
+  }
+})
+
+// ── defaultLoadScenarioAnchors: change-scoped anchor derivation (BOS-221) ──────
+//
+// The default seam anchors the brief on the scenario(s) THIS PR ships, keyed off
+// the normalized changed-files list (not a top-level directory scan). These
+// tests write real scenario files under REPO_ROOT/proof/scenarios/ (the loader
+// resolves relative to the module's repoRoot) in a unique temp subdir and clean
+// up in finally.
+
+function writeScenarioFile(relDir, name, scenario) {
+  const absDir = path.join(REPO_ROOT, relDir)
+  fs.mkdirSync(absDir, { recursive: true })
+  const abs = path.join(absDir, name)
+  fs.writeFileSync(abs, JSON.stringify(scenario, null, 2))
+  return `${relDir}/${name}`
+}
+
+test('defaultLoadScenarioAnchors: anchors a NESTED committed scenario (title + expectedEvidence)', async () => {
+  const { defaultLoadScenarioAnchors } = await import('./proof-tui-agent.mjs')
+  const uniq = 'proof/scenarios/__anchor_test_nested__'
+  try {
+    const rel = writeScenarioFile(uniq, 'home.scenario.json', {
+      version: 1,
+      title: 'Home view renders',
+      scenes: [
+        {
+          title: 'Open home',
+          steps: [{ key: 'enter' }, { expect: 'READY' }, { expect: 'Sessions' }],
+        },
+      ],
+    })
+    // The changed path is nested (proof/scenarios/<subdir>/…). A non-recursive
+    // readdir of proof/scenarios would have returned [] for this; the
+    // change-scoped loader must still derive anchors.
+    const anchors = defaultLoadScenarioAnchors([rel])
+    assert.deepEqual(anchors, ['Home view renders', 'READY', 'Sessions'])
+  } finally {
+    fs.rmSync(path.join(REPO_ROOT, uniq), { recursive: true, force: true })
+  }
+})
+
+test('defaultLoadScenarioAnchors: derives ONLY the changed scenario, never an unrelated sibling', async () => {
+  const { defaultLoadScenarioAnchors } = await import('./proof-tui-agent.mjs')
+  const uniq = 'proof/scenarios/__anchor_test_scoped__'
+  try {
+    const changedRel = writeScenarioFile(uniq, 'changed.scenario.json', {
+      version: 1,
+      title: 'Changed scenario',
+      scenes: [{ title: 'Scene', steps: [{ expect: 'ChangedEvidence' }] }],
+    })
+    // A sibling scenario that this PR did NOT touch — its title/evidence must
+    // never leak into the brief anchors.
+    writeScenarioFile(uniq, 'unrelated.scenario.json', {
+      version: 1,
+      title: 'Unrelated scenario',
+      scenes: [{ title: 'Scene', steps: [{ expect: 'UnrelatedEvidence' }] }],
+    })
+    const anchors = defaultLoadScenarioAnchors([changedRel, 'services/boss/foo.go'])
+    assert.deepEqual(anchors, ['Changed scenario', 'ChangedEvidence'])
+    assert.ok(!anchors.includes('Unrelated scenario'), 'unrelated title must not leak')
+    assert.ok(!anchors.includes('UnrelatedEvidence'), 'unrelated evidence must not leak')
+  } finally {
+    fs.rmSync(path.join(REPO_ROOT, uniq), { recursive: true, force: true })
+  }
+})
+
+test('defaultLoadScenarioAnchors: no committed scenario in the diff → [] (byte-identical brief)', async () => {
+  const { defaultLoadScenarioAnchors } = await import('./proof-tui-agent.mjs')
+  assert.deepEqual(defaultLoadScenarioAnchors([]), [])
+  assert.deepEqual(defaultLoadScenarioAnchors(['services/boss/foo.go', 'docs/plans/x.md']), [])
+  // A scenario-shaped path OUTSIDE proof/scenarios/ does not count.
+  assert.deepEqual(defaultLoadScenarioAnchors(['scripts/home.scenario.json']), [])
+})
+
+test('defaultLoadScenarioAnchors: an invalid changed scenario is skipped, not fatal', async () => {
+  const { defaultLoadScenarioAnchors } = await import('./proof-tui-agent.mjs')
+  const uniq = 'proof/scenarios/__anchor_test_invalid__'
+  try {
+    const absDir = path.join(REPO_ROOT, uniq)
+    fs.mkdirSync(absDir, { recursive: true })
+    fs.writeFileSync(path.join(absDir, 'broken.scenario.json'), '{ not valid json')
+    const anchors = defaultLoadScenarioAnchors([`${uniq}/broken.scenario.json`])
+    assert.deepEqual(anchors, [])
+  } finally {
+    fs.rmSync(path.join(REPO_ROOT, uniq), { recursive: true, force: true })
   }
 })
 
@@ -1388,7 +1547,9 @@ test('evaluateSceneEvidence: evidence on an EARLY screen of its scene passes', a
   ]
   const sceneForScreen = { 1: 'scene-01', 2: 'scene-01' }
   const result = evaluateSceneEvidence({ scenes, screens, sceneForScreen })
-  assert.deepEqual(result, [{ id: 'scene-01', title: 'Home', passed: true, missing: [] }])
+  assert.deepEqual(result, [
+    { id: 'scene-01', title: 'Home', passed: true, missing: [], missingContext: [] },
+  ])
 })
 
 test("evaluateSceneEvidence: evidence present only on a DIFFERENT scene's screen is missing (window isolation)", async () => {
@@ -1406,11 +1567,22 @@ test("evaluateSceneEvidence: evidence present only on a DIFFERENT scene's screen
   const sceneForScreen = { 1: 'scene-01', 2: 'scene-02' }
   const result = evaluateSceneEvidence({ scenes, screens, sceneForScreen })
   // scene-01's own evidence appears in its own window → passed.
-  assert.deepEqual(result[0], { id: 'scene-01', title: 'Home', passed: true, missing: [] })
+  assert.deepEqual(result[0], {
+    id: 'scene-01',
+    title: 'Home',
+    passed: true,
+    missing: [],
+    missingContext: [],
+  })
   // scene-02's evidence never appears in any screen attributed to scene-02 —
   // its presence on scene-01's screen does not count (window isolation).
   assert.equal(result[1].passed, false)
   assert.deepEqual(result[1].missing, ['Settings saved'])
+  // scene-02's window is screen 2 ("Settings open, not yet confirmed"), which is
+  // its final settled screen → the missing-context excerpt points at it.
+  assert.deepEqual(result[1].missingContext, [
+    { expectation: 'Settings saved', screen: 'Settings open, not yet confirmed' },
+  ])
 })
 
 test('evaluateSceneEvidence: one failed + one passed scene are evaluated independently', async () => {
@@ -1436,8 +1608,19 @@ test('evaluateSceneEvidence: a scene with zero captured screens fails with all e
   const screens = [{ seq: 1, text: 'Home ready' }]
   const sceneForScreen = { 1: 'scene-01' }
   const result = evaluateSceneEvidence({ scenes, screens, sceneForScreen })
+  // Zero captured screens for this scene → all evidence missing, and the
+  // screen-context is null (no settled screen to point at).
   assert.deepEqual(result, [
-    { id: 'scene-02', title: 'Settings', passed: false, missing: ['Saved', 'Settings'] },
+    {
+      id: 'scene-02',
+      title: 'Settings',
+      passed: false,
+      missing: ['Saved', 'Settings'],
+      missingContext: [
+        { expectation: 'Saved', screen: null },
+        { expectation: 'Settings', screen: null },
+      ],
+    },
   ])
 })
 
@@ -1445,7 +1628,125 @@ test('evaluateSceneEvidence: empty expectedEvidence passes trivially', async () 
   const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
   const scenes = [{ id: 'scene-01', title: 'Home', expectedEvidence: [] }]
   const result = evaluateSceneEvidence({ scenes, screens: [], sceneForScreen: {} })
-  assert.deepEqual(result, [{ id: 'scene-01', title: 'Home', passed: true, missing: [] }])
+  assert.deepEqual(result, [
+    { id: 'scene-01', title: 'Home', passed: true, missing: [], missingContext: [] },
+  ])
+})
+
+// ── 6b-bis. Shared-matcher adoption (BOS-222) ────────────────────────────────
+// The gate now delegates per-string matching to proof-evidence-matcher.mjs.
+// These pin the ADOPTION contract — defaults, opt-in modes, and the
+// failure-context plumbing — not the matcher's own semantics (owned by BOS-218).
+
+const evidenceScene = (expectedEvidence) => [{ id: 'scene-01', title: 'S', expectedEvidence }]
+const oneScreen = (text) => ({ screens: [{ seq: 1, text }], sceneForScreen: { 1: 'scene-01' } })
+
+test('evaluateSceneEvidence: plain-string default is normalized — collapses whitespace (pass)', async () => {
+  const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
+  const result = evaluateSceneEvidence({
+    scenes: evidenceScene(['Settings']),
+    ...oneScreen('  Settings  '),
+  })
+  assert.equal(result[0].passed, true)
+  assert.deepEqual(result[0].missing, [])
+})
+
+test('evaluateSceneEvidence: plain-string default is normalized — case-SENSITIVE (miss)', async () => {
+  const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
+  const result = evaluateSceneEvidence({
+    scenes: evidenceScene(['Settings']),
+    ...oneScreen('settings'),
+  })
+  assert.equal(result[0].passed, false)
+  assert.deepEqual(result[0].missing, ['Settings'])
+})
+
+test('evaluateSceneEvidence: normalized-ci opt-in matches case-insensitively (both directions)', async () => {
+  const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
+  const lower = evaluateSceneEvidence({
+    scenes: evidenceScene([{ text: 'settings', match: 'normalized-ci' }]),
+    ...oneScreen('Settings'),
+  })
+  assert.equal(lower[0].passed, true)
+  const upper = evaluateSceneEvidence({
+    scenes: evidenceScene([{ text: 'SETTINGS', match: 'normalized-ci' }]),
+    ...oneScreen('settings'),
+  })
+  assert.equal(upper[0].passed, true)
+})
+
+test('evaluateSceneEvidence: literal opt-in requires an exact byte match (whitespace/case mismatch fails)', async () => {
+  const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
+  const exact = evaluateSceneEvidence({
+    scenes: evidenceScene([{ text: 'Save now', match: 'literal' }]),
+    ...oneScreen('press: Save now, please'),
+  })
+  assert.equal(exact[0].passed, true)
+  const collapsed = evaluateSceneEvidence({
+    scenes: evidenceScene([{ text: 'Save now', match: 'literal' }]),
+    ...oneScreen('Save    now'),
+  })
+  assert.equal(collapsed[0].passed, false)
+  assert.deepEqual(collapsed[0].missing, ['Save now'])
+})
+
+test('evaluateSceneEvidence: regex expression passes and fails correctly', async () => {
+  const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
+  const hit = evaluateSceneEvidence({
+    scenes: evidenceScene([{ text: 'v[0-9]+\\.[0-9]+', match: 'regex' }]),
+    ...oneScreen('release v12.4 shipped'),
+  })
+  assert.equal(hit[0].passed, true)
+  const miss = evaluateSceneEvidence({
+    scenes: evidenceScene([{ text: 'v[0-9]+\\.[0-9]+', match: 'regex' }]),
+    ...oneScreen('release vNext shipped'),
+  })
+  assert.equal(miss[0].passed, false)
+})
+
+test('evaluateSceneEvidence: anyOf passes when any variant label is present and fails when none are', async () => {
+  const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
+  const exp = [{ anyOf: [{ text: 'Saved' }, { text: 'Updated' }], label: 'save confirmation' }]
+  const hit = evaluateSceneEvidence({ scenes: evidenceScene(exp), ...oneScreen('Changes Updated') })
+  assert.equal(hit[0].passed, true)
+  const miss = evaluateSceneEvidence({ scenes: evidenceScene(exp), ...oneScreen('Nothing here') })
+  assert.equal(miss[0].passed, false)
+  // The display text of an anyOf falls back to the label.
+  assert.deepEqual(miss[0].missing, ['save confirmation'])
+})
+
+test('evaluateSceneEvidence: literal-fails-but-normalized-passes regression (the false-negative shape)', async () => {
+  const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
+  // Wrapped/padded whitespace: the OLD t.includes(sub) literal loop failed this
+  // even though the agent reached the screen. The normalized default passes it.
+  const scenes = evidenceScene(['Session created'])
+  const screens = oneScreen('Session\n   created  ✓')
+  const normalized = evaluateSceneEvidence({ scenes, ...screens })
+  assert.equal(normalized[0].passed, true)
+  // Same expectation under an explicit literal opt-in still fails.
+  const literal = evaluateSceneEvidence({
+    scenes: evidenceScene([{ text: 'Session created', match: 'literal' }]),
+    ...screens,
+  })
+  assert.equal(literal[0].passed, false)
+})
+
+test('evaluateSceneEvidence: a failed scene carries missingContext with the settled-screen excerpt', async () => {
+  const { evaluateSceneEvidence } = await import('./proof-tui-agent.mjs')
+  const result = evaluateSceneEvidence({
+    scenes: evidenceScene(['Settings saved']),
+    screens: [
+      { seq: 1, text: 'Settings open' },
+      { seq: 2, text: 'Settings open, not yet confirmed' },
+    ],
+    sceneForScreen: { 1: 'scene-01', 2: 'scene-01' },
+  })
+  assert.equal(result[0].passed, false)
+  // The screen-context is the scene's FINAL settled screen (screen 2), not the
+  // first — deliberately the last-seen state for debuggability.
+  assert.deepEqual(result[0].missingContext, [
+    { expectation: 'Settings saved', screen: 'Settings open, not yet confirmed' },
+  ])
 })
 
 // This is the regression pin for the epic's limitation #5: under the OLD
@@ -1552,6 +1853,12 @@ test('runTuiAgentProof: scene-02 evidence never appears → captureShape.scenes[
           assert.deepEqual(cap.scenes[1].missing, ['Settings saved'])
           assert.match(cap.error, /evidence gate failed/)
           assert.match(cap.error, /scene-02 missing Settings saved/)
+          // BOS-222: the settled-screen excerpt rides into the error string and
+          // the serialized manifest (captureShape.scenes[].missingContext).
+          assert.match(cap.error, /screen showed: Settings open, unsaved/)
+          assert.deepEqual(cap.scenes[1].missingContext, [
+            { expectation: 'Settings saved', screen: 'Settings open, unsaved' },
+          ])
         },
       ),
     )
@@ -2031,17 +2338,6 @@ test('runTuiAgentProof: T1 gate — evidence ABSENT + done(passed) → verdict f
             commit: 'abc1234',
             changedFiles: [],
             dryRun: true,
-            fallbackRecipeCaptures: () => [
-              {
-                recipeId: 'tui-home',
-                title: 'Boss TUI Home',
-                surface: 'tui',
-                privacy: 'fixture',
-                status: 'passed',
-                mediaType: 'png',
-                fileName: 'tui-home/tui-home.png',
-              },
-            ],
             deps: {
               // Screen never shows the expected evidence substring.
               bridge: scriptedBridge({ screens: ['Some other screen'] }),
@@ -2060,10 +2356,13 @@ test('runTuiAgentProof: T1 gate — evidence ABSENT + done(passed) → verdict f
           )
           assert.equal(manifest.captures[0].status, 'failed')
           assert.match(manifest.captures[0].error, /evidence/i)
+          // BOS-223: the legacy recipe-floor hook is retired — a degraded agent run
+          // carries ONLY the agent's own captureShape, never a synthetic floor.
+          assert.equal(manifest.captures.length, 1, 'no recipe-floor captureShape is appended')
           assert.equal(
-            manifest.captures.some((c) => c.recipeId === 'tui-home' && c.status === 'passed'),
+            manifest.captures.every((c) => c.recipeId === 'tui-agent'),
             true,
-            'degraded TUI agent run must include recipe-floor capture evidence',
+            'the sole capture is the agent’s own, not a recipe floor',
           )
         },
       ),
@@ -2090,9 +2389,9 @@ test('runTuiAgentProof: no recipe floor — degraded agent defers with only agen
       withEnv(
         BASE_ENV({ BOSS_PROOF_BRIEF: briefPath, BOSS_PROOF_RUN_ID: 'tui-no-floor' }),
         async () => {
-          // No fallbackRecipeCaptures: the TUI surface never falls back to recipe
-          // media. A degraded agent run yields only the agent's own capture(s)
-          // and defers to a neutral comment.
+          // BOS-223: the recipe-floor hook is retired, so the TUI surface can no
+          // longer fall back to recipe media. A degraded agent run yields only the
+          // agent's own capture(s) and defers to a neutral comment.
           const { manifest } = await runTuiAgentProof({
             prNumber: 'tuinofloor',
             commit: 'abc1234',
@@ -2917,6 +3216,107 @@ test('runAgentLoop: multi-scene goal renders a numbered scene block instead of f
   }
 })
 
+test('runAgentLoop: a one-explicit-scene brief steers the agent from the scene evidence the gate uses (BOS-222)', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    // A brief with exactly ONE explicit scene normalizes to a single-element
+    // scenes array → the single-scene goal branch. Its steering must come from
+    // scenes[0].expectedEvidence (what evaluateSceneEvidence gates on), NOT the
+    // inert top-level brief.expectedEvidence — otherwise the agent is steered
+    // toward the wrong tokens and legitimate runs fail the gate spuriously.
+    const brief = {
+      description: 'prove it',
+      expectedEvidence: ['TOP LEVEL INERT'], // required by schema, ignored by the gate
+      scenes: [{ id: 'scene-01', title: 'Home', expectedEvidence: ['Scene token'] }],
+      budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    }
+    let capturedGoal = null
+    const model = {
+      async createMessage({ messages }) {
+        if (capturedGoal === null) capturedGoal = messages[0].content
+        return toolUse('done', { passed: true, summary: 'done', evidence: [] })
+      },
+    }
+    const bridge = scriptedBridge({ screens: ['Home screen'] })
+    await runAgentLoop({ brief, model: 'test-model', modelDep: model, bridge, rawDir })
+    assert.match(capturedGoal, /must see ALL of these on screen[^\n]*Scene token/)
+    assert.doesNotMatch(
+      capturedGoal,
+      /TOP LEVEL INERT/,
+      'goal must not steer on inert top-level evidence',
+    )
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('runAgentLoop: matcher-object evidence renders readably in the agent goal, never [object Object] (BOS-222)', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    // The gate now accepts regex/anyOf/normalized-ci matcher objects, and the
+    // brief prompt actively tells the model to emit them. The live agent must be
+    // steered with their DISPLAY text (label / alternatives / raw token), not a
+    // useless `[object Object]` — otherwise it is blinded to the very tokens it
+    // must surface, inflating false negatives on the new matcher forms.
+    const objectEvidence = [
+      'Home',
+      { text: 'v[0-9]+', match: 'regex' },
+      { anyOf: [{ text: 'Saved' }, { text: 'Updated' }], label: 'save confirmation' },
+    ]
+    let capturedGoal = null
+    const model = {
+      async createMessage({ messages }) {
+        if (capturedGoal === null) capturedGoal = messages[0].content
+        return toolUse('done', { passed: true, summary: 'done', evidence: [] })
+      },
+    }
+    const bridge = scriptedBridge({ screens: ['Home screen'] })
+
+    // Multi-scene branch.
+    await runAgentLoop({
+      brief: {
+        description: 'prove it',
+        scenes: [{ id: 'scene-01', title: 'Home', expectedEvidence: objectEvidence }],
+        budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+      },
+      scenes: [
+        { id: 'scene-01', title: 'Home', stepsHints: [], expectedEvidence: objectEvidence },
+        { id: 'scene-02', title: 'Two', stepsHints: [], expectedEvidence: ['x'] },
+      ],
+      model: 'test-model',
+      modelDep: model,
+      bridge,
+      rawDir,
+    })
+    assert.doesNotMatch(capturedGoal, /\[object Object\]/, 'multi-scene goal must not leak objects')
+    assert.match(capturedGoal, /must show: Home \| v\[0-9\]\+ \| save confirmation/)
+
+    // Single-scene branch (top-level expectedEvidence).
+    capturedGoal = null
+    await runAgentLoop({
+      brief: {
+        description: 'prove it',
+        expectedEvidence: objectEvidence,
+        budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+      },
+      model: 'test-model',
+      modelDep: model,
+      bridge,
+      rawDir,
+    })
+    assert.doesNotMatch(
+      capturedGoal,
+      /\[object Object\]/,
+      'single-scene goal must not leak objects',
+    )
+    assert.match(capturedGoal, /Home \| v\[0-9\]\+ \| save confirmation/)
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
 test('renderFrames: names outputs scene-SS-frame-NN.png and stamps sceneId from sceneForScreen', async () => {
   const { renderFrames } = await import('./proof-tui-agent.mjs')
   const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
@@ -3191,4 +3591,56 @@ test('runTuiAgentProof: injected brief+loopRunner+evaluateEvidence flow replay a
     process.exitCode = originalExitCode
     cleanupPr('tuireplaypair')
   }
+})
+
+// ── BOS-351: TUI model default + resolution seam + unchanged budgets ────────────
+
+test('resolveTuiModel: TUI default is claude-sonnet-4-6 with no env set', async () => {
+  const { resolveTuiModel, DEFAULT_MODEL } = await import('./proof-tui-agent.mjs')
+  assert.equal(DEFAULT_MODEL, 'claude-sonnet-4-6', 'exported TUI default model')
+  assert.equal(resolveTuiModel({}), 'claude-sonnet-4-6', 'no env override → Sonnet TUI default')
+})
+
+test('resolveTuiModel: BOSS_PROOF_TUI_MODEL takes precedence over BOSS_PROOF_MODEL', async () => {
+  const { resolveTuiModel } = await import('./proof-tui-agent.mjs')
+  assert.equal(
+    resolveTuiModel({
+      BOSS_PROOF_TUI_MODEL: 'claude-tui-override',
+      BOSS_PROOF_MODEL: 'claude-shared-override',
+    }),
+    'claude-tui-override',
+    'TUI-scoped knob wins over the shared knob',
+  )
+})
+
+test('resolveTuiModel: BOSS_PROOF_MODEL alone is still honored (back-compat)', async () => {
+  const { resolveTuiModel } = await import('./proof-tui-agent.mjs')
+  assert.equal(
+    resolveTuiModel({ BOSS_PROOF_MODEL: 'claude-shared-override' }),
+    'claude-shared-override',
+    'shared knob honored when TUI knob is unset',
+  )
+})
+
+test('proof-agent (web) default is unchanged at claude-haiku-4-5 and ignores TUI knob', async () => {
+  const { resolveWebModel, DEFAULT_MODEL } = await import('./proof-agent.mjs')
+  assert.equal(DEFAULT_MODEL, 'claude-haiku-4-5', 'web default model unchanged')
+  assert.equal(resolveWebModel({}), 'claude-haiku-4-5', 'no env override → Haiku web default')
+  assert.equal(
+    resolveWebModel({ BOSS_PROOF_TUI_MODEL: 'claude-sonnet-4-6' }),
+    'claude-haiku-4-5',
+    'web leg must NOT read the TUI-scoped knob',
+  )
+  assert.equal(
+    resolveWebModel({ BOSS_PROOF_MODEL: 'claude-shared-override' }),
+    'claude-shared-override',
+    'web leg still honors the shared BOSS_PROOF_MODEL',
+  )
+})
+
+test('TUI_BUDGETS: maxSteps raised to 40; wall-clock and tokens unchanged', async () => {
+  const { TUI_BUDGETS } = await import('./proof-tui-agent.mjs')
+  assert.equal(TUI_BUDGETS.maxSteps, 40, 'BOS-351 step-budget bump')
+  assert.equal(TUI_BUDGETS.maxWallClockMs, 4 * 60 * 1000, 'wall clock unchanged (4 min)')
+  assert.equal(TUI_BUDGETS.maxTokens, 200_000, 'token budget unchanged (200k)')
 })

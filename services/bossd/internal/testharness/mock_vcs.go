@@ -65,6 +65,16 @@ type MockVCSProvider struct {
 	// ClosedPRs is returned by ListClosedPRs.
 	ClosedPRs []vcs.PRSummary
 
+	// SearchPRs is returned by SearchPRsByTitleTag when SearchPRsFunc is nil.
+	SearchPRs []vcs.PRSummary
+
+	// SearchPRsFunc overrides the default SearchPRsByTitleTag behavior when set.
+	SearchPRsFunc func(ctx context.Context, repoPath, tag string) ([]vcs.PRSummary, error)
+
+	// SearchPRsCalls records the (repoPath, tag) of every SearchPRsByTitleTag
+	// invocation, mu-guarded so tests can assert whether the scan ran.
+	SearchPRsCalls []SearchPRsCall
+
 	// CreateDraftPRFunc overrides the default CreateDraftPR behavior when set.
 	CreateDraftPRFunc func(ctx context.Context, opts vcs.CreatePROpts) (*vcs.PRInfo, error)
 
@@ -97,6 +107,12 @@ type MockVCSProvider struct {
 	// createPRError is returned by the next CreateDraftPR call when set,
 	// then cleared.
 	createPRError error
+}
+
+// SearchPRsCall records a single SearchPRsByTitleTag invocation.
+type SearchPRsCall struct {
+	RepoPath string
+	Tag      string
 }
 
 type markReadyCall struct {
@@ -228,6 +244,18 @@ func (m *MockVCSProvider) ListOpenPRs(ctx context.Context, repoPath string) ([]v
 
 func (m *MockVCSProvider) ListClosedPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
 	return m.ClosedPRs, nil
+}
+
+func (m *MockVCSProvider) SearchPRsByTitleTag(ctx context.Context, repoPath, tag string) ([]vcs.PRSummary, error) {
+	m.mu.Lock()
+	m.SearchPRsCalls = append(m.SearchPRsCalls, SearchPRsCall{RepoPath: repoPath, Tag: tag})
+	fn := m.SearchPRsFunc
+	prs := m.SearchPRs
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, repoPath, tag)
+	}
+	return prs, nil
 }
 
 func (m *MockVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {

@@ -57,6 +57,12 @@ func (m *hookMockSessionStore) List(context.Context, string) ([]*models.Session,
 func (m *hookMockSessionStore) ListByState(context.Context, int) ([]*models.Session, error) {
 	panic("not used")
 }
+func (m *hookMockSessionStore) ListByStates(context.Context, []int) ([]*models.Session, error) {
+	panic("not used")
+}
+func (m *hookMockSessionStore) UpdateStateConditionalFrom(context.Context, string, int, []int) (bool, error) {
+	panic("not used")
+}
 func (m *hookMockSessionStore) ListActive(context.Context, string) ([]*models.Session, error) {
 	panic("not used")
 }

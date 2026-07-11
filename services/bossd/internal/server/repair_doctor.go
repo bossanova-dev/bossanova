@@ -75,7 +75,7 @@ func (s *Server) RepairDoctor(ctx context.Context, _ *connect.Request[bossanovav
 			resp.Checks = append(resp.Checks, &bossanovav1.RepairDoctorCheck{
 				Name:   "repair workflow running",
 				Ok:     false,
-				Detail: fmt.Sprintf("WorkflowStatus=%s — call StartWorkflow to enable repair", statusInfo.GetStatus()),
+				Detail: fmt.Sprintf("WorkflowStatus=%s — run `boss repair start` to re-arm auto-repair", statusInfo.GetStatus()),
 			})
 		}
 	} else {

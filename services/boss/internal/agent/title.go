@@ -81,9 +81,17 @@ func PathToProjectKey(path string) string {
 }
 
 // jsonlLine is a minimal representation of a JSONL line for parsing.
+//
+// NOTE: this struct and parseSessionMeta are duplicated in
+// plugins/bossd-plugin-claude/transcript.go — keep the two copies in sync
+// (same drift caveat as PathToProjectKey / pathToProjectKey).
 type jsonlLine struct {
 	Type    string   `json:"type"`
 	Message jsonlMsg `json:"message"`
+	// IsMeta flags Claude Code's synthetic messages (e.g. the
+	// <local-command-caveat> line injected when a session starts via a local
+	// command). Meta lines must not be chosen as the first-user-message title.
+	IsMeta bool `json:"isMeta"`
 }
 
 type jsonlMsg struct {
@@ -109,7 +117,7 @@ func parseSessionMeta(path string) (slug, summary string) {
 			continue
 		}
 
-		if line.Type == "user" && line.Message.Role == "user" && summary == "" {
+		if line.Type == "user" && line.Message.Role == "user" && !line.IsMeta && summary == "" {
 			summary = extractText(line.Message.Content)
 		}
 

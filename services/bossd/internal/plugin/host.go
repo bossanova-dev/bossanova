@@ -144,14 +144,32 @@ type Host struct {
 	// path's shutdown-cancellation behavior can be driven without spawning a
 	// real subprocess with a hung handshake.
 	launchPluginFn func(context.Context, config.PluginConfig) (managedPlugin, error)
-	// workflowStartRequests records the StartWorkflowRequest each workflow
-	// plugin was started with (keyed by plugin name), registered by the daemon
-	// after its startup StartWorkflow. A freshly respawned workflow plugin boots
-	// with its workflow stopped, so the health loop replays this request after a
-	// restart — without it a reborn repair plugin comes back alive but silently
-	// drops every NotifyStatusChange until a full daemon restart. Guarded by
-	// h.mu; niled by Stop.
-	workflowStartRequests map[string]*bossanovav1.StartWorkflowRequest
+	// desiredWorkflows declares, per workflow-plugin name, the StartWorkflow
+	// request that SHOULD be running — populated by the daemon at boot from
+	// config (before/independent of plugin discovery) and by the
+	// StartRepairWorkflow RPC. Boot, the restart replay, the health-tick
+	// watchdog, and the RPC all converge on EnsureWorkflowRunning, which
+	// reads this as the single source of truth. An entry here means
+	// "CANCELLED is never a legitimate steady state for this plugin";
+	// PAUSED is operator intent and is never overridden. Any future
+	// cancel/disable surface MUST delete the entry (add a removal method here)
+	// or the watchdog will re-arm within one health tick. Guarded by h.mu;
+	// niled by Stop.
+	desiredWorkflows map[string]*workflowDesire
+}
+
+// workflowDesire pairs the canonical start request with a per-plugin
+// single-flight lock. The lock serializes probe+start across boot, restart
+// replay, watchdog ticks, and the StartRepairWorkflow RPC — StartWorkflow
+// re-entry on a RUNNING workflow cancels in-flight repairs, so exactly one
+// starter may act at a time and each starter re-probes under the lock.
+type workflowDesire struct {
+	mu sync.Mutex
+	// req is guarded by the host's h.mu (NOT mu): SetWorkflowDesired writes it
+	// under h.mu and EnsureWorkflowRunning captures it under h.mu. Reading it
+	// under mu instead would split the field across two locks and reintroduce
+	// the BOS-346 data race — keep every req access under h.mu.
+	req *bossanovav1.StartWorkflowRequest
 }
 
 // hasEnabledPlugin reports whether any of the configs is marked Enabled.
@@ -243,11 +261,11 @@ func New(eventBus *eventbus.Bus, provider vcs.Provider, logger zerolog.Logger) *
 		hostService = NewHostServiceServer(provider)
 	}
 	return &Host{
-		eventBus:              eventBus,
-		hostService:           hostService,
-		logger:                logger.With().Str("component", "plugin-host").Logger(),
-		restartState:          make(map[string]*restartInfo),
-		workflowStartRequests: make(map[string]*bossanovav1.StartWorkflowRequest),
+		eventBus:         eventBus,
+		hostService:      hostService,
+		logger:           logger.With().Str("component", "plugin-host").Logger(),
+		restartState:     make(map[string]*restartInfo),
+		desiredWorkflows: make(map[string]*workflowDesire),
 	}
 }
 
@@ -330,22 +348,113 @@ func (h *Host) Start(ctx context.Context, cfgs []config.PluginConfig, settings c
 	return nil
 }
 
-// RegisterWorkflowStart records the request a workflow plugin was started with
-// so the health loop can replay StartWorkflow after respawning that plugin's
-// subprocess (a reborn workflow plugin boots with its workflow stopped). The
-// daemon calls this after a successful startup StartWorkflow. A nil req is a
-// no-op — only real starts are replayed.
-func (h *Host) RegisterWorkflowStart(name string, req *bossanovav1.StartWorkflowRequest) {
+// workflowStatusProbeTimeout bounds the GetWorkflowStatus probe and the
+// StartWorkflow re-arm inside EnsureWorkflowRunning so a hung plugin can't
+// wedge boot, the restart replay, the watchdog tick, or the RPC.
+const workflowStatusProbeTimeout = 5 * time.Second
+
+// SetWorkflowDesired declares that the workflow plugin `name` SHOULD be running
+// with `req`. It is the single source of truth read by EnsureWorkflowRunning
+// (boot, restart replay, health-tick watchdog, StartRepairWorkflow RPC). A nil
+// req is a no-op — only real requests are declared desired. Create-or-update
+// under h.mu; the per-name single-flight lock is preserved across updates.
+func (h *Host) SetWorkflowDesired(name string, req *bossanovav1.StartWorkflowRequest) {
 	if req == nil {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.workflowStartRequests == nil {
+	if h.desiredWorkflows == nil {
 		// Stop niled it; the daemon is shutting down.
 		return
 	}
-	h.workflowStartRequests[name] = req
+	if d := h.desiredWorkflows[name]; d != nil {
+		d.req = req
+		return
+	}
+	h.desiredWorkflows[name] = &workflowDesire{req: req}
+}
+
+// WorkflowDesire returns the declared StartWorkflow request for `name`, or nil
+// if the workflow is not desired-started.
+func (h *Host) WorkflowDesire(name string) *bossanovav1.StartWorkflowRequest {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if d := h.desiredWorkflows[name]; d != nil {
+		return d.req
+	}
+	return nil
+}
+
+// EnsureWorkflowRunning is the single-flight primitive every re-arm path shares
+// (boot, restart replay, health-tick watchdog, StartRepairWorkflow RPC). It
+// probes the plugin's current WorkflowStatus and, unless it is already RUNNING
+// or PAUSED, issues StartWorkflow with the declared desired request. The
+// per-plugin lock serializes probe+start so concurrent callers issue at most one
+// StartWorkflow (re-entry on a RUNNING workflow cancels in-flight repairs).
+//
+// Returns the observed status (the pre-start status when it did start one, so
+// callers/logs can report what was healed FROM), whether it started a workflow,
+// and an error when the workflow is not desired, no live plugin serves that
+// name, or the probe/start RPC fails.
+func (h *Host) EnsureWorkflowRunning(ctx context.Context, name string) (bossanovav1.WorkflowStatus, bool, error) {
+	h.mu.Lock()
+	desire := h.desiredWorkflows[name]
+	// Capture the desired request under h.mu — the same lock SetWorkflowDesired
+	// writes desire.req under. Reading it later only under desire.mu would leave
+	// the field guarded by two different mutexes (a data race a concurrent
+	// SetWorkflowDesired update would trip). A one-tick-stale req under a
+	// concurrent re-declare is harmless and idempotent; single-flight still
+	// re-probes status under desire.mu below.
+	var desiredReq *bossanovav1.StartWorkflowRequest
+	if desire != nil {
+		desiredReq = desire.req
+	}
+	var svc WorkflowService
+	for i := range h.plugins {
+		if h.plugins[i].cfg.Name == name && h.plugins[i].workflowService != nil {
+			if c := h.plugins[i].client; c == nil || !c.Exited() {
+				svc = h.plugins[i].workflowService
+			}
+			break
+		}
+	}
+	h.mu.Unlock()
+	if desire == nil {
+		return bossanovav1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED, false, fmt.Errorf("workflow %q is not desired-started", name)
+	}
+	if svc == nil {
+		return bossanovav1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED, false, fmt.Errorf("no live workflow plugin %q", name)
+	}
+
+	desire.mu.Lock() // single-flight: serialize probe+start per plugin
+	defer desire.mu.Unlock()
+
+	probeCtx, cancel := context.WithTimeout(ctx, workflowStatusProbeTimeout)
+	defer cancel()
+	info, err := svc.GetWorkflowStatus(probeCtx, "")
+	if err != nil {
+		return bossanovav1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED, false, fmt.Errorf("probe workflow status for %q: %w", name, err)
+	}
+	switch info.GetStatus() {
+	case bossanovav1.WorkflowStatus_WORKFLOW_STATUS_RUNNING,
+		bossanovav1.WorkflowStatus_WORKFLOW_STATUS_PAUSED:
+		// RUNNING is the steady state; PAUSED is operator intent. Neither is
+		// re-armed (StartWorkflow re-entry on RUNNING cancels in-flight repairs).
+		return info.GetStatus(), false, nil
+	default:
+		// UNSPECIFIED / PENDING / COMPLETED / FAILED / CANCELLED: the workflow
+		// is not actively serving, so re-arm it from the desired request.
+	}
+	startCtx, cancelStart := context.WithTimeout(ctx, workflowStatusProbeTimeout)
+	defer cancelStart()
+	if _, err := svc.StartWorkflow(startCtx, desiredReq); err != nil {
+		return info.GetStatus(), false, fmt.Errorf("start workflow %q: %w", name, err)
+	}
+	// Report the observed pre-start status (not the resulting RUNNING) so the
+	// watchdog log names what it healed FROM — the signal this feature exists
+	// to produce during an incident.
+	return info.GetStatus(), true, nil
 }
 
 // launchPlugin spawns a single plugin subprocess, performs the go-plugin
@@ -496,7 +605,7 @@ func (h *Host) Stop() error {
 	h.plugins = nil
 	h.misses = nil
 	h.restartState = nil
-	h.workflowStartRequests = nil
+	h.desiredWorkflows = nil
 
 	h.logger.Info().Msg("plugin host stopped")
 	return nil
@@ -832,6 +941,36 @@ func (h *Host) healthCheckLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			h.pingAll(ctx)
+			h.ensureDesiredWorkflowsRunning(ctx)
+		}
+	}
+}
+
+// ensureDesiredWorkflowsRunning probes every desired workflow on a live
+// plugin and re-arms any that report CANCELLED. This heals: zombie plugins
+// (alive process, stopped workflow — the BOS-346 incident), restart replays
+// that failed, and boot-time probe hiccups. It never touches PAUSED
+// (operator intent) or RUNNING (StartWorkflow re-entry cancels in-flight
+// repairs). Failures log at Error and retry naturally on the next tick —
+// deliberate loudness, no extra backoff. Runs after pingAll each tick, on the
+// single healthCheckLoop goroutine, so it never races itself.
+func (h *Host) ensureDesiredWorkflowsRunning(ctx context.Context) {
+	h.mu.Lock()
+	names := make([]string, 0, len(h.desiredWorkflows))
+	for name := range h.desiredWorkflows {
+		names = append(names, name)
+	}
+	h.mu.Unlock()
+	for _, name := range names {
+		status, started, err := h.EnsureWorkflowRunning(ctx, name)
+		switch {
+		case err != nil:
+			h.logger.Error().Err(err).Str("plugin", name).Msg("workflow watchdog: ensure failed; retrying next health tick")
+		case started:
+			// status is the observed pre-start status (CANCELLED in the incident,
+			// but UNSPECIFIED/FAILED/etc. are also re-armable) — log it verbatim
+			// rather than asserting CANCELLED.
+			h.logger.Error().Str("plugin", name).Str("was", status.String()).Msg("workflow watchdog: workflow was not running while desired-started; re-armed")
 		}
 	}
 }
@@ -1038,7 +1177,6 @@ func (h *Host) restartPlugin(ctx context.Context, dead managedPlugin) {
 			break
 		}
 	}
-	var workflowStart *bossanovav1.StartWorkflowRequest
 	if swapped {
 		if h.restartState != nil {
 			if info := h.restartState[name]; info != nil {
@@ -1046,7 +1184,6 @@ func (h *Host) restartPlugin(ctx context.Context, dead managedPlugin) {
 				info.nextRetryAt = time.Time{}
 			}
 		}
-		workflowStart = h.workflowStartRequests[name]
 	}
 	h.mu.Unlock()
 
@@ -1060,17 +1197,18 @@ func (h *Host) restartPlugin(ctx context.Context, dead managedPlugin) {
 
 	// A freshly spawned workflow plugin boots with its workflow stopped (the
 	// repair plugin rejects every NotifyStatusChange until StartWorkflow
-	// supplies its config), so replay the startup request the daemon registered
-	// for it — otherwise the plugin comes back alive but auto-repair stays
-	// silently disabled until a full daemon restart. Run outside h.mu
-	// (StartWorkflow is an RPC). Best-effort: the process is up regardless, and
-	// if the replay failed because the child just died, the next health tick
-	// relaunches it.
-	if workflowStart != nil && newMP.workflowService != nil {
-		if _, err := newMP.workflowService.StartWorkflow(ctx, workflowStart); err != nil {
-			h.logger.Error().Err(err).Str("plugin", name).Msg("failed to replay StartWorkflow after plugin restart; workflow stays stopped until the next restart")
-		} else {
-			h.logger.Info().Str("plugin", name).Msg("replayed StartWorkflow after plugin restart")
+	// supplies its config), so re-arm it from desired state via the shared
+	// single-flight primitive — otherwise the plugin comes back alive but
+	// auto-repair stays silently disabled until a full daemon restart. Only
+	// plugins with a registered desire are re-armed (non-workflow plugins have
+	// none, so this is a no-op for them). Run outside h.mu (StartWorkflow is an
+	// RPC). Best-effort: the process is up regardless, and the health-tick
+	// watchdog retries on the next tick if this fails.
+	if h.WorkflowDesire(name) != nil {
+		if _, started, err := h.EnsureWorkflowRunning(ctx, name); err != nil {
+			h.logger.Error().Err(err).Str("plugin", name).Msg("failed to re-arm workflow after plugin restart; the workflow watchdog retries on the next health tick")
+		} else if started {
+			h.logger.Info().Str("plugin", name).Msg("re-armed workflow after plugin restart")
 		}
 	}
 

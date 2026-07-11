@@ -75,6 +75,13 @@ type CronListModel struct {
 
 	returnView View
 
+	// highlightJobID, when non-empty, requests that the row for this job id be
+	// selected (caret placed on it) the next time jobs load. It is set by the
+	// parent App after a save so the just-edited/created job stays highlighted,
+	// and cleared after the first load attempt. Mirrors highlightRepoID in
+	// repo_list.go.
+	highlightJobID string
+
 	confirm confirmPrompt
 
 	// running tracks job IDs whose RunCronJobNow RPC is in flight, so the
@@ -151,6 +158,16 @@ func (m CronListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.jobs = msg.jobs
 			m.rebuildTable()
+			if m.highlightJobID != "" {
+				for i, job := range m.jobs {
+					if job.Id == m.highlightJobID {
+						m.table.SetCursor(i)
+						updateCursorColumn(&m.table)
+						break
+					}
+				}
+				m.highlightJobID = ""
+			}
 		}
 		return m, nil
 

@@ -261,12 +261,13 @@ func (RotationTrigger) EnumDescriptor() ([]byte, []int) {
 type RotationOutcome int32
 
 const (
-	RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED               RotationOutcome = 0
-	RotationOutcome_ROTATION_OUTCOME_ROTATED                   RotationOutcome = 1 // swapped to to_account and resumed
-	RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_DISABLED      RotationOutcome = 2 // kill-switch off: status set, no swap
-	RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY RotationOutcome = 3 // agent lacks rotation capability
-	RotationOutcome_ROTATION_OUTCOME_EXHAUSTED                 RotationOutcome = 4 // all accounts cooling: parked until reset_at
-	RotationOutcome_ROTATION_OUTCOME_FAILED                    RotationOutcome = 5 // swap attempted and failed
+	RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED                     RotationOutcome = 0
+	RotationOutcome_ROTATION_OUTCOME_ROTATED                         RotationOutcome = 1 // swapped to to_account and resumed
+	RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_DISABLED            RotationOutcome = 2 // kill-switch off: status set, no swap
+	RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY       RotationOutcome = 3 // agent lacks rotation capability
+	RotationOutcome_ROTATION_OUTCOME_EXHAUSTED                       RotationOutcome = 4 // all accounts cooling: parked until reset_at
+	RotationOutcome_ROTATION_OUTCOME_FAILED                          RotationOutcome = 5 // swap attempted and failed
+	RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT RotationOutcome = 6 // no eligible account to rotate to (enable/re-auth one)
 )
 
 // Enum value maps for RotationOutcome.
@@ -278,14 +279,16 @@ var (
 		3: "ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY",
 		4: "ROTATION_OUTCOME_EXHAUSTED",
 		5: "ROTATION_OUTCOME_FAILED",
+		6: "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT",
 	}
 	RotationOutcome_value = map[string]int32{
-		"ROTATION_OUTCOME_UNSPECIFIED":               0,
-		"ROTATION_OUTCOME_ROTATED":                   1,
-		"ROTATION_OUTCOME_STATUS_ONLY_DISABLED":      2,
-		"ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY": 3,
-		"ROTATION_OUTCOME_EXHAUSTED":                 4,
-		"ROTATION_OUTCOME_FAILED":                    5,
+		"ROTATION_OUTCOME_UNSPECIFIED":                     0,
+		"ROTATION_OUTCOME_ROTATED":                         1,
+		"ROTATION_OUTCOME_STATUS_ONLY_DISABLED":            2,
+		"ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY":       3,
+		"ROTATION_OUTCOME_EXHAUSTED":                       4,
+		"ROTATION_OUTCOME_FAILED":                          5,
+		"ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT": 6,
 	}
 )
 
@@ -4290,14 +4293,15 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x1cROTATION_TRIGGER_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eROTATION_TRIGGER_USAGE_LIMITED\x10\x01\x12%\n" +
 	"!ROTATION_TRIGGER_AUTH_INVALIDATED\x10\x02\x12\x1b\n" +
-	"\x17ROTATION_TRIGGER_MANUAL\x10\x03*\xe9\x01\n" +
+	"\x17ROTATION_TRIGGER_MANUAL\x10\x03*\x9f\x02\n" +
 	"\x0fRotationOutcome\x12 \n" +
 	"\x1cROTATION_OUTCOME_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18ROTATION_OUTCOME_ROTATED\x10\x01\x12)\n" +
 	"%ROTATION_OUTCOME_STATUS_ONLY_DISABLED\x10\x02\x12.\n" +
 	"*ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY\x10\x03\x12\x1e\n" +
 	"\x1aROTATION_OUTCOME_EXHAUSTED\x10\x04\x12\x1b\n" +
-	"\x17ROTATION_OUTCOME_FAILED\x10\x05*~\n" +
+	"\x17ROTATION_OUTCOME_FAILED\x10\x05\x124\n" +
+	"0ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT\x10\x06*~\n" +
 	"\vCheckStatus\x12\x1c\n" +
 	"\x18CHECK_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13CHECK_STATUS_QUEUED\x10\x01\x12\x1c\n" +

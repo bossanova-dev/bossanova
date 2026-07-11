@@ -42,8 +42,13 @@ type FinalizeResult struct {
 // pauses (e.g. the agent yielding while a background subagent runs) — so a Stop
 // is a per-turn hint, not a completion signal. Run-completion gating lives in
 // CronCompletionGate (cronRunIsOver); finalizing a still-working run opens a junk
-// PR and Blocks a live session. Both finalize-trigger paths (the Stop hook and
-// the RecoverStrandedCronSessions sweep) funnel through that gate by design.
+// PR and Blocks a live session. The Stop-hook path funnels through that gate and
+// this entry, which accepts only ImplementingPlan. The
+// RecoverStrandedCronSessions sweep does NOT go through the gate: it applies its
+// own liveness gate (strandedRunIsDead) and calls finalizeSessionFrom directly
+// with the broadened reap set, so it can advance a session interrupted in
+// PushingBranch/OpeningDraftPR/etc. — states this Stop-hook entry deliberately
+// still no-ops on.
 //
 // Cron runs are autonomous: there is no second "Finalize" chat. After the PR
 // is opened, bossd injects the PR number into the (tagless) commit subjects and
@@ -70,11 +75,25 @@ type FinalizeResult struct {
 // the UI — the Finalizing state itself is intentionally silent per
 // vcs/attention.go.
 func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*FinalizeResult, error) {
+	// The Stop-hook/gate path stays ImplementingPlan-only — a per-turn Stop is
+	// only meaningful there. The broadened reap set lives on the sweep's own
+	// entry (finalizeSessionFrom, via RecoverStrandedCronSessions).
+	return l.finalizeSessionFrom(ctx, sessionID, []int{int(machine.ImplementingPlan)})
+}
+
+// finalizeSessionFrom runs the finalize pipeline, advancing to Finalizing only
+// when the session's current state is one of expectedStates. It is the shared
+// body behind both finalize entries: FinalizeSession (the Stop-hook/gate path,
+// ImplementingPlan-only) and the RecoverStrandedCronSessions sweep (the
+// broadened reap set). Everything after step 1 — classify, record outcome,
+// clear token, block-on-failure — is identical regardless of the accepted
+// from-set.
+func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, expectedStates []int) (*FinalizeResult, error) {
 	// Step 1: conditional state transition. The rows_affected guard is the
 	// authoritative idempotency mechanism — a check-then-set Go path would
 	// race with concurrent Stop events.
-	advanced, err := l.sessions.UpdateStateConditional(
-		ctx, sessionID, int(machine.Finalizing), int(machine.ImplementingPlan),
+	advanced, err := l.sessions.UpdateStateConditionalFrom(
+		ctx, sessionID, int(machine.Finalizing), expectedStates,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("advance to finalizing: %w", err)

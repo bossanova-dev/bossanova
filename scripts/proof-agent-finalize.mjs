@@ -339,7 +339,28 @@ export async function finalizeAgentProof({
     capIdx += count
     return { ...run, captureShapes: enriched }
   })
-  const sections = buildSurfaceSections({ runs: enrichedRuns, perSurface })
+  const sections = buildSurfaceSections({ runs: enrichedRuns, perSurface }).map((section, i) => {
+    // BOS-223 D-Disclosure: thread the surfaceRun's replay-fallback signal onto
+    // the render section so surfaceSectionLines can emit the "scenario replay
+    // shown" disclosure line. Only a passed replay leg carries it; the agent/web
+    // path (proofSource 'agent'|null) leaves the section byte-identical.
+    const run = enrichedRuns[i]
+    if (run.proofSource === 'replay') {
+      return {
+        ...section,
+        proofSource: run.proofSource,
+        fallbackReason: run.fallbackReason ?? null,
+      }
+    }
+    // BOS-350: a key-present agent-only TUI proof on a scenario-less diff still owes
+    // a committed scenario. Thread the non-fatal `scenarioOwed` flag so
+    // surfaceSectionLines emits the author nudge. Only set when true, so every other
+    // agent/web section stays byte-identical.
+    if (run.scenarioOwed) {
+      return { ...section, scenarioOwed: true }
+    }
+    return section
+  })
   const commentBody = renderConsolidatedComment({ marker, manifest, sections })
   const commentPath = path.join(localDir, 'comment.md')
   fs.writeFileSync(commentPath, commentBody)

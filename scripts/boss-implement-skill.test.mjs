@@ -190,6 +190,54 @@ test('Step 11 names proof.mjs run as the single proof channel (BOS-138)', () => 
   }
 })
 
+test('Step 5 directs a TUI PR to author + commit a proof scenario before finalization (BOS-220)', () => {
+  // BOS-220: the deterministic TUI safety net only helps if it gets authored before
+  // Step 8 finalizes the PR. Keep the detailed workflow in proof-capture (byte-budget-safe),
+  // but pin the Step-5 requirement and pointer here. Deliberately avoid exact fixture-preset
+  // names, which are owned downstream (BOS-217).
+  for (const skillPath of RESIDENT_BODY_SKILLS) {
+    const skill = fs.readFileSync(path.join(rootDir, skillPath), 'utf8')
+    const step5 = skill.slice(skill.indexOf('## Step 5:'), skill.indexOf('## Step 6:'))
+    assert.match(
+      step5,
+      /proof\/scenarios\/\*\.scenario\.json/,
+      `${skillPath} Step 5 must name the proof/scenarios/*.scenario.json a TUI PR must commit`,
+    )
+    assert.match(
+      step5,
+      /references\/proof-capture\.md/,
+      `${skillPath} Step 5 must point TUI scenario authoring at proof-capture`,
+    )
+  }
+
+  for (const skillDir of [CORE]) {
+    const proofCapture = fs.readFileSync(
+      path.join(rootDir, skillDir, 'references/proof-capture.md'),
+      'utf8',
+    )
+    assert.match(
+      proofCapture,
+      /must commit a `proof\/scenarios\/\*\.scenario\.json`/,
+      `${skillDir}/references/proof-capture.md must mandate committing a scenario for a TUI PR`,
+    )
+    assert.match(
+      proofCapture,
+      /scenario validate/,
+      `${skillDir}/references/proof-capture.md must document the scenario validate authoring loop`,
+    )
+    assert.match(
+      proofCapture,
+      /scenario run [^\n]*--dry-run/,
+      `${skillDir}/references/proof-capture.md must document the scenario run --dry-run iterate loop`,
+    )
+    assert.match(
+      proofCapture,
+      /gates \*\*only its own PR\*\*|only its own PR/,
+      `${skillDir}/references/proof-capture.md must state a scenario gates only its own PR (no path rules)`,
+    )
+  }
+})
+
 test('runtime helper references are local to methodology extension mirrors', () => {
   // The support helper scripts are now referenced from the moved SDD/TDD references,
   // not the resident SKILL.md. They must still be reachable (and present) in both mirrors.

@@ -474,6 +474,10 @@ type runOpts struct {
 	// onRotationSeamsWired, if non-nil, fires synchronously immediately after the
 	// lifecycle's rotation binding and account materializer are installed.
 	onRotationSeamsWired func(live bool)
+
+	// startupStrandedCronRecovery overrides the startup stranded-cron sweep for
+	// shutdown-lifecycle tests. Nil uses Lifecycle.RecoverStrandedCronSessions.
+	startupStrandedCronRecovery func(context.Context) (int, error)
 }
 
 // logRotationLaneAvailability emits the single operator-facing startup
@@ -1205,7 +1209,11 @@ func run(opts runOpts) error {
 			switch out.Kind {
 			case rotation.OutcomeRotate:
 				if out.NextAccount == nil {
-					return rotation.Decision{Kind: rotation.DecisionStatusOnly}, nil
+					// Defensive: OutcomeRotate should always carry a target, but a nil
+					// NextAccount IS "no eligible account" — route it to the no-eligible
+					// decision (not the capability short-circuit's status-only) so the
+					// operator is steered to enable an account (BOS-327).
+					return rotation.Decision{Kind: rotation.DecisionNoEligibleAccount}, nil
 				}
 				return rotation.Decision{
 					Kind:      rotation.DecisionSwitch,
@@ -1214,7 +1222,11 @@ func run(opts runOpts) error {
 				}, nil
 			case rotation.OutcomeAllExhausted:
 				return rotation.Decision{Kind: rotation.DecisionAllExhausted, ResumeAt: out.ResumeAt}, nil
+			case rotation.OutcomeNoEligibleAccount:
+				return rotation.Decision{Kind: rotation.DecisionNoEligibleAccount}, nil
 			default:
+				// OutcomeStatusOnly (capability short-circuit) and any unknown kind
+				// map to status-only: the agent/provider cannot rotate.
 				return rotation.Decision{Kind: rotation.DecisionStatusOnly}, nil
 			}
 		},
@@ -1361,20 +1373,6 @@ func run(opts runOpts) error {
 		log.Info().Int("count", n).Msg("recovered sessions stuck in Finalizing from previous run")
 	}
 
-	// Recover cron sessions whose run finished but whose Stop-hook finalize
-	// signal never reached the daemon — e.g. the daemon restarted as the run
-	// ended, so the hook's baked-in loopback port was stale and the curl got
-	// connection-refused. Such sessions are stranded in ImplementingPlan with
-	// no completion trigger (RecoverFinalizingSessions only rescues Finalizing).
-	// Run once at startup (catches restart-stranded sessions) and periodically
-	// below (catches a lost hook on a daemon that stayed up). Must run after
-	// SetCronCompletionNotifier above so the gate is wired.
-	if n, err := lifecycle.RecoverStrandedCronSessions(context.Background()); err != nil {
-		log.Warn().Err(err).Msg("failed to recover stranded cron sessions")
-	} else if n > 0 {
-		log.Info().Int("count", n).Msg("recovered stranded cron sessions with lost finalize signal")
-	}
-
 	// shutdownWG tracks daemon goroutines so we can wait for them to exit cleanly.
 	// Subsystems that manage their own goroutines (poller, dispatcher, orchestrator,
 	// display poller, tmux poller) expose a Done() channel; goroutines spawned
@@ -1437,15 +1435,17 @@ func run(opts runOpts) error {
 			startReq := &bossanovav1.StartWorkflowRequest{
 				ConfigJson: string(repairCfgJSON),
 			}
-			if _, err := svc.StartWorkflow(ctx, startReq); err != nil {
+			// Declare desired state FIRST: even if the synchronous start below
+			// fails transiently, the health-tick watchdog now owns re-arming.
+			// cfg-name and GetInfo-name coincide for repair ("repair", from
+			// trimming bossd-plugin-); the desire map keys on cfg name.
+			pluginHost.SetWorkflowDesired("repair", startReq)
+			if _, started, err := pluginHost.EnsureWorkflowRunning(ctx, "repair"); err != nil {
 				cancel()
 				return fmt.Errorf("auto-start repair plugin: %w", err)
+			} else if started {
+				log.Info().Msg("repair plugin workflow armed")
 			}
-			// Record the request so the plugin host can replay StartWorkflow if
-			// the health loop respawns this plugin's subprocess — otherwise a
-			// reborn repair plugin boots with its workflow stopped and silently
-			// drops every NotifyStatusChange until the daemon restarts.
-			pluginHost.RegisterWorkflowStart(infoResp.Name, startReq)
 			log.Info().
 				Str("plugin_name", infoResp.Name).
 				Int("cooldown_minutes", settings.Repair.CooldownMinutes).
@@ -2066,6 +2066,22 @@ func run(opts runOpts) error {
 	trackDone(poller.Done())
 	dispatcherDone := safego.Go(log.Logger, func() { dispatcher.Run(pollerCtx, merged) })
 	trackDone(dispatcherDone)
+
+	// Recover cron sessions whose run finished but whose Stop-hook finalize
+	// signal never reached the daemon. Run in the tracked daemon lifecycle: a
+	// startup sweep can enter the full finalize pipeline, so shutdown must cancel
+	// it and wait for it to stop before tearing down the process.
+	startupRecovery := opts.startupStrandedCronRecovery
+	if startupRecovery == nil {
+		startupRecovery = lifecycle.RecoverStrandedCronSessions
+	}
+	trackedGo(func() {
+		if n, err := startupRecovery(pollerCtx); err != nil {
+			log.Warn().Err(err).Msg("failed to recover stranded cron sessions")
+		} else if n > 0 {
+			log.Info().Int("count", n).Msg("recovered stranded cron sessions with lost finalize signal")
+		}
+	})
 
 	// Start task orchestrator (polls plugin task sources).
 	orchestrator.Start(pollerCtx)

@@ -122,6 +122,83 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 	}
 }
 
+// TestFinalizeSessionFrom_AdvancesPushingBranch covers the broadened stranded-
+// cron reap entry (BOS-333): finalizeSessionFrom must advance a session
+// interrupted in PushingBranch — a state the ImplementingPlan-only Stop-hook
+// entry would no-op on — through the shared pipeline to a terminal disposition.
+func TestFinalizeSessionFrom_AdvancesPushingBranch(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: ""} // empty = no changes -> deleted_no_changes
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		State:        machine.PushingBranch,
+		CronJobID:    &cronJobID,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.finalizeSessionFrom(ctx, "sess-1", strandedReapStateInts())
+	if err != nil {
+		t.Fatalf("finalizeSessionFrom: %v", err)
+	}
+	if res.NoOp {
+		t.Fatal("PushingBranch is in the reap set; should have advanced, not no-op'd")
+	}
+	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	}
+	if _, ok := sessions.sessions["sess-1"]; ok {
+		t.Error("session row should have been deleted (terminal disposition reached)")
+	}
+}
+
+// TestFinalizeSession_NoOpOnPushingBranch guards the Stop-hook regression: the
+// ImplementingPlan-only FinalizeSession entry must still no-op on a session that
+// is NOT in ImplementingPlan, even though the sweep's finalizeSessionFrom entry
+// now accepts PushingBranch.
+func TestFinalizeSession_NoOpOnPushingBranch(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.PushingBranch,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+	if !res.NoOp {
+		t.Fatalf("Stop-hook entry must no-op on PushingBranch, got Outcome=%q", res.Outcome)
+	}
+	if sessions.sessions["sess-1"].State != machine.PushingBranch {
+		t.Fatalf("state changed to %s; want PushingBranch unchanged", sessions.sessions["sess-1"].State)
+	}
+}
+
 func TestFinalizeSession_DeletedNoChangesNotifiesSessionDeleted(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()

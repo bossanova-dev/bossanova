@@ -759,6 +759,10 @@ func (f *listSessionsVCSProviderFake) ListClosedPRs(_ context.Context, originURL
 	return nil, nil
 }
 
+func (f *listSessionsVCSProviderFake) SearchPRsByTitleTag(_ context.Context, _, _ string) ([]vcs.PRSummary, error) {
+	return nil, nil
+}
+
 func (f *listSessionsVCSProviderFake) listOpenCallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

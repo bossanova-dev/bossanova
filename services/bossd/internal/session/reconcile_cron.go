@@ -85,34 +85,82 @@ func (c *CronActivityChecker) RunActive(sess *models.Session) bool {
 	return idle < cronAgentIdleThreshold
 }
 
+// strandedReapStates is the set of interrupted states the stranded-cron sweep
+// reaps: ImplementingPlan (the historical case) plus the pre-implementation
+// transitions a daemon restart can freeze a run in. Orphaned is deliberately
+// EXCLUDED — it is a terminal state whose bootstrap-only PR must never be
+// auto-finalized into a green PR; recovery there is a deliberate human action
+// (machine.go). The post-implementation waiting states (AwaitingChecks,
+// FixingChecks, GreenDraft, ReadyForReview) are out of scope (BOS-332).
+var strandedReapStates = []machine.State{
+	machine.ImplementingPlan,
+	machine.CreatingWorktree,
+	machine.StartingAgent,
+	machine.PushingBranch,
+	machine.OpeningDraftPR,
+}
+
+// strandedReapStateInts returns strandedReapStates as ints for the store's
+// state-set queries (ListByStates / UpdateStateConditionalFrom).
+func strandedReapStateInts() []int {
+	out := make([]int, len(strandedReapStates))
+	for i, s := range strandedReapStates {
+		out[i] = int(s)
+	}
+	return out
+}
+
+// strandedRunIsDead reports whether a stranded unattended run is genuinely dead
+// and safe to reap. It mirrors cronRunIsOver's fail-safe posture: any ambiguity
+// leaves the session for the next sweep rather than risking a premature finalize
+// of a live run.
+//
+//   - Post-agent strands (ImplementingPlan/PushingBranch/OpeningDraftPR have an
+//     AgentSessionID) defer to cronRunIsOver unchanged — durable agent-log idle
+//     plus liveness — so the historical ImplementingPlan path is byte-identical.
+//   - Pre-agent strands (CreatingWorktree/StartingAgent have no agent log yet, so
+//     AgentSessionID is nil/empty) have no durable idle evidence. They are dead
+//     only when a wired liveness checker positively reports the session NOT alive;
+//     if liveness is unwired or reports alive, they are conservatively left.
+func (l *Lifecycle) strandedRunIsDead(sess *models.Session) bool {
+	if sess.AgentSessionID != nil && *sess.AgentSessionID != "" {
+		return l.cronRunIsOver(sess)
+	}
+	return l.liveness != nil && !l.liveness.IsSessionAlive(context.Background(), sess.ID)
+}
+
 // RecoverStrandedCronSessions finalizes unattended sessions — cron-scheduled or
 // tmux_unattended (e.g. /boss-epic) — whose agent run has ended but whose Stop-hook
 // finalize signal never reached the daemon — e.g. the daemon restarted as the run
 // finished, so the loopback hook server's ephemeral port (baked into the
 // worktree's settings.local.json at session start) was stale and the Stop-hook
-// curl got connection-refused. The session is then stranded in ImplementingPlan
-// with no completion trigger: RecoverFinalizingSessions only rescues sessions
-// already in Finalizing, and the hookless tmux-completion poll is both
-// Claude-disabled and lost on restart.
+// curl got connection-refused. The session is then stranded with no completion
+// trigger: RecoverFinalizingSessions only rescues sessions already in Finalizing,
+// and the hookless tmux-completion poll is both Claude-disabled and lost on restart.
 //
-// For each unattended session in ImplementingPlan whose agent log has gone quiet
-// and whose headless runner is not running, this routes the session
-// through the same completion gate the Stop hook and hookless poll use
-// (notifyCronCompletionIfUnattended → NotifyCronAgentStopped → FinalizeSession).
-// FinalizeSession is idempotent via its conditional ImplementingPlan→Finalizing
-// transition, so a late Stop hook racing the sweep is a safe no-op. The
-// isUnattendedSession eligibility here mirrors the completion gate exactly, so
-// the gate and sweep can never diverge on which sessions get recovered.
+// It reaps the set of interrupted states in strandedReapStates —
+// ImplementingPlan plus the pre-implementation transitions
+// (CreatingWorktree/StartingAgent/PushingBranch/OpeningDraftPR) a restart can
+// freeze a run in. Orphaned is EXCLUDED (see strandedReapStates), and the
+// post-implementation waiting states are out of scope (BOS-332).
 //
-// Conservative by construction: only unattended sessions with durable idle
-// evidence are touched; any ambiguity (missing log/id, running agent) leaves the
-// session for the next sweep rather than risking premature finalize of a live
-// run.
+// For each unattended session whose run strandedRunIsDead confirms is dead, this
+// routes the session through the broadened finalize entry directly
+// (finalizeSessionFrom with the reap set), NOT through the completion gate: the
+// gate re-checks cronRunIsOver and its FinalizeSession entry is ImplementingPlan-
+// only, so it could not advance a PushingBranch/etc. strand. The finalize is
+// idempotent via its conditional state-set→Finalizing transition, so a late Stop
+// hook racing the sweep is a safe no-op. The isUnattendedSession eligibility here
+// mirrors the completion gate exactly.
+//
+// Conservative by construction: only unattended sessions strandedRunIsDead
+// confirms are dead are touched; any ambiguity (missing log/id, running agent,
+// unwired liveness for a pre-agent state) leaves the session for the next sweep.
 //
 // Call once at daemon startup (alongside RecoverFinalizingSessions, after the
 // cron completion notifier is wired) and periodically thereafter. Returns the
-// number of sessions routed to finalization. Per-session errors are not
-// possible here — the gate dispatch is fire-and-forget — but a failure to list
+// number of sessions routed to finalization. A finalize error is logged at Warn
+// and the loop continues (the session still counts as routed); a failure to list
 // sessions aborts the sweep.
 func (l *Lifecycle) RecoverStrandedCronSessions(ctx context.Context) (int, error) {
 	if l.cronCompletionNotifier == nil {
@@ -120,9 +168,15 @@ func (l *Lifecycle) RecoverStrandedCronSessions(ctx context.Context) (int, error
 		return 0, nil
 	}
 
-	stranded, err := l.sessions.ListByState(ctx, int(machine.ImplementingPlan))
+	stranded, err := l.sessions.ListByStates(ctx, strandedReapStateInts())
 	if err != nil {
-		return 0, fmt.Errorf("list implementing_plan sessions: %w", err)
+		return 0, fmt.Errorf("list stranded unattended sessions: %w", err)
+	}
+
+	// nil reapFinalizer means use the real pipeline; tests inject a fake.
+	finalize := l.reapFinalizer
+	if finalize == nil {
+		finalize = l.finalizeSessionFrom
 	}
 
 	routed := 0
@@ -134,18 +188,29 @@ func (l *Lifecycle) RecoverStrandedCronSessions(ctx context.Context) (int, error
 		if !isUnattendedSession(sess) {
 			continue
 		}
-		if !l.cronRunIsOver(sess) {
+		if !l.strandedRunIsDead(sess) {
 			continue
 		}
 
 		evt := l.logger.Warn().
 			Str("session", sess.ID).
+			Str("state", sess.State.String()).
 			Bool("tmuxUnattended", sess.TmuxUnattended)
 		if sess.CronJobID != nil && *sess.CronJobID != "" {
 			evt = evt.Str("cronJob", *sess.CronJobID)
 		}
 		evt.Msg("recovering stranded unattended session: agent idle but finalize signal lost")
-		l.notifyCronCompletionIfUnattended(ctx, sess.ID)
+
+		// Route through the broadened finalize entry directly (not the gate),
+		// synchronously and bounded by a per-call timeout. cancel is called
+		// explicitly each iteration rather than deferred inside the loop.
+		fctx, cancel := context.WithTimeout(ctx, defaultCronFinalizeTimeout)
+		if _, ferr := finalize(fctx, sess.ID, strandedReapStateInts()); ferr != nil {
+			l.logger.Warn().Err(ferr).
+				Str("session", sess.ID).
+				Msg("stranded-cron reap: finalize failed")
+		}
+		cancel()
 		routed++
 	}
 

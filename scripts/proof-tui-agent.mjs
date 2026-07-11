@@ -40,6 +40,10 @@ import { finalizeAgentProof } from './proof-agent-finalize.mjs'
 import { finishVideo } from './proof-finish-video.mjs'
 import {
   captionStripRenderCommand,
+  classifyTuiOutcome,
+  discoverChangedScenarios,
+  normalizeChangedFiles,
+  planTuiLegs,
   proofRunPaths,
   terminalRenderCommand,
   terminalRenderManifestCommand,
@@ -49,15 +53,37 @@ import {
   normalizeScenes,
   validateBrief,
 } from './proof-brief.mjs'
+import { loadScenario } from './proof-scenario.mjs'
+import { SCENARIO_FILE_RE } from './proof-surfaces.mjs'
+import {
+  displayText,
+  evaluateExpectations,
+  normalizeExpectation,
+} from './proof-evidence-matcher.mjs'
 import { mapSourceToOutputMs, retimedDurationMs } from './proof-video.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-// Haiku is the default: the proof agent drive is text-only (no image input), so
-// haiku 4.5 fits comfortably, runs faster, and dodges the proof key's sonnet
-// ITPM cap. Override per-run with BOSS_PROOF_MODEL.
-const DEFAULT_MODEL = 'claude-haiku-4-5'
+// Sonnet is the TUI default (BOS-351): the proof agent drive is text-only (no
+// image input), so the Haiku-for-ITPM rationale that governs the image-heavy web
+// leg does NOT apply here. Multi-scene TUI briefs need Sonnet's competence to
+// advance scenes decisively instead of re-observing the same screen and burning
+// the step budget stuck in scene 1 (the BOS-266 failure mode). The ITPM/429
+// constraint that forces Haiku is WEB-ONLY — the image-heavy web agent 429s on
+// Sonnet (see scripts/proof-agent.mjs) — and is irrelevant to this text-only leg.
+// Override per-run with BOSS_PROOF_TUI_MODEL (TUI-only, takes precedence over the
+// shared BOSS_PROOF_MODEL — e.g. to force the TUI leg back to Haiku) or with the
+// shared BOSS_PROOF_MODEL.
+export const DEFAULT_MODEL = 'claude-sonnet-4-6'
 const CAPTURE_ID = 'tui-agent'
+
+// Resolve the model the TUI capture leg drives under. The TUI-scoped
+// BOSS_PROOF_TUI_MODEL wins so the TUI default can diverge from web's Haiku
+// default without touching the shared BOSS_PROOF_MODEL knob; BOSS_PROOF_MODEL
+// still works as a global override; DEFAULT_MODEL (Sonnet) is the floor.
+export function resolveTuiModel(env = process.env) {
+  return env.BOSS_PROOF_TUI_MODEL ?? env.BOSS_PROOF_MODEL ?? DEFAULT_MODEL
+}
 
 // BRIDGE_OP_TIMEOUT_MS bounds how long the Node side waits for a single NDJSON
 // op response from the Go proof-tui-agent bridge. It MUST stay above the Go
@@ -73,7 +99,7 @@ const BRIDGE_OP_TIMEOUT_MS = 45_000
 
 // P1 — TUI runs are short, keystroke-driven, and fixture-backed, so they get
 // tighter budgets than the generic web defaults. Still per-brief overridable.
-const TUI_BUDGETS = { maxSteps: 25, maxWallClockMs: 4 * 60 * 1000, maxTokens: 200_000 }
+export const TUI_BUDGETS = { maxSteps: 40, maxWallClockMs: 4 * 60 * 1000, maxTokens: 200_000 }
 
 // The fixed TUI key map + DemoWorld summary that anchors the brief. Passed as the
 // `routes` arg to generateBriefFromDiff (no proof-brief.mjs change needed).
@@ -190,9 +216,71 @@ function defaultDeps() {
   return {
     model: defaultModel(),
     generateBriefFromDiff: defaultGenerateBriefFromDiff,
+    loadScenarioAnchors: defaultLoadScenarioAnchors,
     renderStill: defaultRenderStill,
     castToVideo: defaultCastToVideo,
     extractStill: defaultExtractStill,
+  }
+}
+
+/** Cap on the number of soft scenario-anchor strings fed into the brief prompt. */
+const SCENARIO_ANCHOR_CAP = 12
+
+/**
+ * Default `loadScenarioAnchors` seam (BOS-221, consumes BOS-218): anchor the
+ * brief on the committed proof scenario(s) shipped with THIS PR. Filter the
+ * PR's normalized `changedFiles` to `proof/scenarios/**\/*.scenario.json`
+ * (the same `SCENARIO_FILE_RE` the BOS-220 gate uses — nested paths included),
+ * load+validate each via BOS-218's `loadScenario`/`deriveScenes`, and return
+ * SOFT brief anchors — `[scenario.title, ...scenes.flatMap(s =>
+ * s.expectedEvidence)]`, deduped and capped.
+ *
+ * Deriving anchors from the changed paths (rather than a top-level directory
+ * scan) fixes two bugs: a non-recursive `readdirSync` MISSED nested scenarios
+ * like `proof/scenarios/tui/home.scenario.json` (leaving anchors empty even
+ * though the gate accepted the PR), and an unfiltered scan INJECTED unrelated
+ * pre-existing top-level scenarios into a brief that should be steered only by
+ * the scenario this PR ships. When no committed scenario is in the diff, or
+ * every matched file fails to validate, returns `[]` (graceful no-op →
+ * byte-identical brief). All errors are swallowed; anchors are soft steering
+ * only, never the hard evidence gate.
+ * @param {string[]} changedFiles the PR's changed-files list; only
+ *   `proof/scenarios/**\/*.scenario.json` entries steer the brief
+ * @returns {string[]}
+ */
+export function defaultLoadScenarioAnchors(changedFiles = []) {
+  try {
+    // Only the scenario file(s) committed by THIS PR — deduped for a stable,
+    // path-ordered pass. A full-directory scan is deliberately avoided (see the
+    // JSDoc): it both missed nested scenarios and pulled in stale ones.
+    const scenarioFiles = [
+      ...new Set(normalizeChangedFiles(changedFiles ?? []).filter((f) => SCENARIO_FILE_RE.test(f))),
+    ].sort()
+    if (scenarioFiles.length === 0) return [] // no committed scenario in this diff
+    const anchors = []
+    const seen = new Set()
+    const push = (s) => {
+      const t = typeof s === 'string' ? s.trim() : ''
+      if (t && !seen.has(t)) {
+        seen.add(t)
+        anchors.push(t)
+      }
+    }
+    for (const rel of scenarioFiles) {
+      let loaded
+      try {
+        loaded = loadScenario(path.join(repoRoot, rel))
+      } catch {
+        continue // skip invalid or unreadable scenario files
+      }
+      push(loaded.scenario?.title)
+      for (const scene of loaded.scenes ?? []) {
+        for (const evidence of scene.expectedEvidence ?? []) push(evidence)
+      }
+    }
+    return anchors.slice(0, SCENARIO_ANCHOR_CAP)
+  } catch {
+    return []
   }
 }
 
@@ -666,29 +754,87 @@ export async function extractStillsFromVideo({
 // ── Evidence gate ─────────────────────────────────────────────────────────────
 
 /**
- * Journey-wide per-scene evidence gate (P3c — replaces the final-screen-only
- * T1 gate). An evidence substring passes when it appears in ANY settled screen
- * captured while its scene was active. Literal substring match (short
- * on-screen tokens), NOT fuzzy. A scene with zero captured screens fails with
- * all its evidence missing. Pure.
- * @param {{ scenes: Array<{id:string,title:string,expectedEvidence:string[]}>,
+ * Journey-wide per-scene evidence gate (P3c). An expectation passes when it
+ * matches ANY settled screen captured while its scene was active. Per-string
+ * matching is delegated to the shared BOS-218 matcher
+ * (`proof-evidence-matcher.mjs`) so the live-agent gate and the scenario replay
+ * judge evaluate evidence identically. Each raw `expectedEvidence` entry (a bare
+ * string, a `{text, match}` object, or an `{anyOf:[…]}` object) is canonicalized
+ * via `normalizeExpectation` first; a bare string defaults to `normalized` mode
+ * — whitespace-collapsed but CASE-SENSITIVE. `literal`, `normalized-ci`, and
+ * `regex` are per-expression opt-ins. A scene with zero captured screens fails
+ * with all its evidence missing (`evaluateExpectations` yields `passed:false`
+ * over empty `texts`). Pure.
+ *
+ * `missing` stays `string[]` (the matcher `displayText` of each unmet
+ * expectation) for back-compat with `renderSceneChapters`, the error builder,
+ * and BOS-223. `missingContext` is a NEW parallel field pairing each missing
+ * expectation's display text with the scene's final settled screen (`screen`,
+ * null when the scene captured none) so the failure comment can show what the
+ * screen actually said.
+ * @param {{ scenes: Array<{id:string,title:string,expectedEvidence:Array<string|object>}>,
  *           screens: Array<{ seq: number, text: string }>,
  *           sceneForScreen: Record<number, string> }} opts
- * @returns {Array<{ id: string, title: string, passed: boolean, missing: string[] }>}
+ * @returns {Array<{ id: string, title: string, passed: boolean, missing: string[],
+ *           missingContext: Array<{ expectation: string, screen: string|null }> }>}
  */
 export function evaluateSceneEvidence({ scenes, screens, sceneForScreen }) {
   return scenes.map((scene) => {
     const texts = screens.filter((s) => sceneForScreen[s.seq] === scene.id).map((s) => s.text)
-    const missing = (scene.expectedEvidence ?? []).filter(
-      (sub) => !texts.some((t) => t.includes(sub)),
-    )
-    return { id: scene.id, title: scene.title, passed: missing.length === 0, missing }
+    const expectations = (scene.expectedEvidence ?? []).map((e) => normalizeExpectation(e))
+    const { passed, missing, lastText } = evaluateExpectations({ expectations, texts })
+    return {
+      id: scene.id,
+      title: scene.title,
+      passed,
+      missing: missing.map((m) => m.displayText),
+      missingContext: missing.map((m) => ({
+        expectation: m.displayText,
+        screen: lastText ?? null,
+      })),
+    }
   })
 }
 
 /**
+ * Single-line, whitespace-collapsed excerpt of a settled screen for the failure
+ * comment/manifest. Pure.
+ * @param {string} text
+ * @param {number} [max=200]
+ * @returns {string}
+ */
+function truncate(text, max = 200) {
+  return String(text).replace(/\s+/g, ' ').trim().slice(0, max)
+}
+
+/**
+ * Human-readable ` | `-joined rendering of a scene's raw `expectedEvidence`
+ * (a mix of bare strings and matcher objects) for the live-agent steering goal.
+ * A bare string renders verbatim (byte-stable with the pre-matcher goal); a
+ * matcher object renders through the shared `displayText` (its `label`, its
+ * `anyOf` alternatives, or its `text`) so the agent never sees `[object
+ * Object]` for the very `regex`/`anyOf`/`normalized-ci` forms this gate now
+ * accepts. Soft steering only — a malformed entry (which validateBrief already
+ * rejects) degrades to its raw string / is dropped rather than throwing. Pure.
+ * @param {Array<string|object>} list
+ * @returns {string}
+ */
+function renderEvidenceGoal(list) {
+  return (list ?? [])
+    .map((e) => {
+      try {
+        return displayText(normalizeExpectation(e))
+      } catch {
+        return typeof e === 'string' ? e : ''
+      }
+    })
+    .filter(Boolean)
+    .join(' | ')
+}
+
+/**
  * Main TUI agent proof orchestrator.
- * @param {{ prNumber: string, commit: string, changedFiles: string[], dryRun: boolean, fallbackRecipeCaptures?: Function, deps?: object }} opts
+ * @param {{ prNumber: string, commit: string, changedFiles: string[], dryRun: boolean, deps?: object }} opts
  * @returns {Promise<{ manifest: object, commentBody: string }>}
  */
 export async function runTuiAgentProof({
@@ -696,7 +842,6 @@ export async function runTuiAgentProof({
   commit,
   changedFiles,
   dryRun,
-  fallbackRecipeCaptures,
   deps,
   planRequiredProof,
   runContext,
@@ -713,7 +858,7 @@ export async function runTuiAgentProof({
 }) {
   const startedAt = Date.now()
   const d = { ...defaultDeps(), ...(deps ?? {}) }
-  const model = process.env.BOSS_PROOF_MODEL ?? DEFAULT_MODEL
+  const model = resolveTuiModel()
   const shouldUpload = !dryRun && process.env.BOSS_PROOF_UPLOAD !== '0'
   const bucket = shouldUpload ? requiredProofBucket() : null
 
@@ -740,6 +885,7 @@ export async function runTuiAgentProof({
       model,
       changedFiles,
       generateBriefFromDiff: d.generateBriefFromDiff,
+      loadScenarioAnchors: d.loadScenarioAnchors,
       planRequiredProof,
     }))
   // Apply TUI default budgets, letting any brief-specified budget win.
@@ -989,7 +1135,11 @@ export async function runTuiAgentProof({
   } else if (!evidenceOK) {
     error = `evidence gate failed: ${perScene
       .filter((s) => !s.passed)
-      .map((s) => `${s.id} missing ${s.missing.join(', ')}`)
+      .map((s) => {
+        const screen = s.missingContext?.[0]?.screen
+        const excerpt = screen ? ` — screen showed: ${truncate(screen)}` : ''
+        return `${s.id} missing ${s.missing.join(', ')}${excerpt}`
+      })
       .join('; ')}`
   } else if (!hasMedia) {
     error = 'no media artifact captured'
@@ -1008,10 +1158,6 @@ export async function runTuiAgentProof({
     ...(degraded ? { degraded } : {}),
     ...(error ? { error } : {}),
   }
-  const recipeFloorCaptures = hasFailure
-    ? captureFallbackRecipeFloor({ fallbackRecipeCaptures, localDir, keepWebm: !shouldUpload })
-    : []
-
   const scanTexts = [finalScreen, brief.title, brief.description, agentResult.summary ?? '']
 
   // Collect mode (BOS-139): return a SurfaceRun for the consolidated finalize
@@ -1020,7 +1166,7 @@ export async function runTuiAgentProof({
   if (runContext?.collect) {
     return {
       surface: 'tui',
-      captureShapes: [captureShape, ...recipeFloorCaptures],
+      captureShapes: [captureShape],
       brief,
       agentResult,
       hasFailure,
@@ -1033,7 +1179,7 @@ export async function runTuiAgentProof({
 
   const publicBaseUrl = `${publicProofBaseUrl()}/${paths.publicPrefix}`
   return finalizeAgentProof({
-    captureShapes: [captureShape, ...recipeFloorCaptures],
+    captureShapes: [captureShape],
     brief,
     agentResult,
     hasFailure,
@@ -1052,13 +1198,275 @@ export async function runTuiAgentProof({
   })
 }
 
-function captureFallbackRecipeFloor({ fallbackRecipeCaptures, localDir, keepWebm }) {
-  if (typeof fallbackRecipeCaptures !== 'function') return []
-  try {
-    return fallbackRecipeCaptures({ localDir, keepWebm }) ?? []
-  } catch (err) {
-    console.warn(`[proof-tui-agent] recipe floor capture failed: ${err.message}`)
-    return []
+// ── BOS-223: agent-first TUI dispatch with automatic scenario-replay fallback ──
+
+// The agent leg is never squeezed below this floor when reserving replay headroom
+// (plan D-Budget: the 120s TUI-floor case still leaves the agent leg ≥ 60s).
+const AGENT_LEG_FLOOR_MS = 60 * 1000
+
+/** A leg's human-facing failure detail: its first errored captureShape, else the
+ *  agentResult summary. Threaded into classifyTuiOutcome's errorDetail strings. */
+function legFailDetail(run) {
+  const capErr = (run?.captureShapes ?? []).find((c) => c?.error)?.error
+  return capErr ?? run?.agentResult?.summary ?? 'gate failed'
+}
+
+function errMessage(err) {
+  return err instanceof Error ? err.message : String(err)
+}
+
+/** Additive: tag each captureShape with the leg that produced it (Task 3 renders
+ *  the disclosure from surfaceRun.proofSource; the per-capture copy is durable in
+ *  the flattened manifest). Clones so shared shapes are never mutated. */
+function stampProofSource(shapes, source) {
+  return (shapes ?? []).map((c) => ({ ...c, proofSource: source }))
+}
+
+/**
+ * Agent-first TUI dispatch with automatic scenario-replay fallback (BOS-223, D-B).
+ *
+ * Runs the AGENT leg first (today's `runTuiAgentProof` default path). On a returned
+ * gate-failure, a thrown crash, or when the agent is not attempted (keyless), it
+ * REPLAYS every committed scenario discovered in the diff (BOS-219 seams: a
+ * synthesized brief + `runReplayLoop` loopRunner + `makeScenarioEvaluator`), then
+ * classifies the two legs via `classifyTuiOutcome` into a collect-mode SurfaceRun.
+ *
+ * Disclosure fields (read by the Task-3 renderer): the returned SurfaceRun carries
+ * `proofSource` (`'agent'|'replay'|null`) and `fallbackReason`
+ * (`'agent-failed'|'agent-unavailable'|null`); each captureShape mirrors
+ * `proofSource`.
+ *
+ * Scenario selection: the replay leg captures into one per-surface bundle dir, so
+ * it replays the FIRST committed scenario (a >1 change logs a note); usually exactly
+ * one exists. The leg PASSES iff that scenario replays cleanly (no crash, no
+ * gate-fail); a crash dominates a gate-fail (machinery failure).
+ *
+ * Budget (D-E): `ctx.runContext.maxWallClockMs` is the surface slice; the agent
+ * leg is capped at `max(slice − reserve, 60000)` and the replay leg gets the
+ * `replayReserveMs` reserve, so an agent leg that exhausts its cap still leaves the
+ * replay leg its headroom.
+ *
+ * Crash surfacing (D-D): when the classified outcome is `pipeline-error`, this
+ * THROWS (message = the classified errorDetail) so proof.mjs's existing per-surface
+ * crash-catch builds the `pipelineError` record — `proof-finalize-outcome.mjs`
+ * stays untouched.
+ *
+ * @param {{ prNumber: string, commit: string, changedFiles: string[], dryRun: boolean,
+ *   planRequiredProof?: object[], runContext?: object }} ctx
+ * @param {{ runTuiAgentProof: Function, agentUsable: boolean, runReplayLoop: Function,
+ *   synthesizeBrief: Function, makeScenarioEvaluator: Function, loadScenario?: Function,
+ *   replayReserveMs?: number, repoRoot?: string }} deps
+ * @returns {Promise<object>} a collect-mode SurfaceRun (never a pipeline-error — that throws).
+ */
+export async function runTuiWithReplayFallback(ctx, deps) {
+  const {
+    runTuiAgentProof: runLeg,
+    agentUsable,
+    runReplayLoop,
+    synthesizeBrief,
+    makeScenarioEvaluator,
+    loadScenario: loadScn = loadScenario,
+    replayReserveMs = 0,
+    repoRoot: root = repoRoot,
+  } = deps
+
+  const changedFiles = ctx.changedFiles ?? []
+  const scenarios = discoverChangedScenarios(changedFiles)
+  const scenarioPresent = scenarios.length > 0
+  const legs = planTuiLegs({ agentUsable: Boolean(agentUsable), scenarioPresent })
+
+  // The replay leg captures into a single per-surface bundle dir (`localDir/tui-agent`,
+  // the constant CAPTURE_ID) with fixed media filenames, so replaying multiple
+  // committed scenarios into it would clobber all but the last on disk while emitting
+  // N captureShapes that all resolve to that one file — a corrupt gallery. Until
+  // per-scenario capture namespacing lands (follow-up), replay only the FIRST
+  // committed scenario; when a PR touches several, surface a note rather than fail
+  // silently. The single-scenario case (the documented norm) is unaffected.
+  const replayScenarios = scenarios.slice(0, 1)
+  if (scenarios.length > 1) {
+    console.warn(
+      `[proof-tui-agent] ${scenarios.length} committed scenarios changed; replaying only the first ` +
+        `(${replayScenarios[0]}). Per-scenario capture namespacing is a follow-up.`,
+    )
+  }
+
+  // Reserve replay headroom out of the surface slice (D-E). The agent leg cannot
+  // dip below AGENT_LEG_FLOOR_MS; the (single) replay leg gets the full reserve.
+  const slice = ctx.runContext?.maxWallClockMs ?? 0
+  const reserve = legs.runReplay ? replayReserveMs : 0
+  const agentMaxWallClockMs = legs.runReplay ? Math.max(slice - reserve, AGENT_LEG_FLOOR_MS) : slice
+
+  let elapsedMs = 0
+
+  // ── Agent leg (default path) ────────────────────────────────────────────────
+  let agentOutcome = 'not-attempted'
+  let agentDetail = null
+  let agentRun = null
+  if (legs.runAgent) {
+    try {
+      agentRun = await runLeg({
+        ...ctx,
+        runContext: { ...ctx.runContext, maxWallClockMs: agentMaxWallClockMs },
+      })
+      elapsedMs += agentRun.elapsedMs ?? 0
+      if (agentRun.hasFailure) {
+        agentOutcome = 'gate-failed'
+        agentDetail = legFailDetail(agentRun)
+      } else {
+        agentOutcome = 'passed'
+      }
+    } catch (err) {
+      agentOutcome = 'crashed'
+      agentDetail = errMessage(err)
+    }
+  }
+
+  // ── Replay leg (fallback) ────────────────────────────────────────────────────
+  // A single straight-line replay of the first committed scenario (see the scenario
+  // selection note above). When per-scenario capture namespacing lands this becomes
+  // a sequential loop again; today one scenario replays, so no N-leg accumulation.
+  let replayOutcome = 'not-attempted'
+  let replayDetail = null
+  let replayRun = null
+  if (legs.runReplay && agentOutcome !== 'passed') {
+    const [rel] = replayScenarios
+    try {
+      const { scenario } = loadScn(path.join(root, rel))
+      const fileBasename = path.basename(rel)
+      // Isolate replay artifacts from the just-failed agent leg. The replay reuses
+      // the shared runContext localDir, so runTuiAgentProof writes into the same
+      // `raw/` and `<CAPTURE_ID>/` dirs the agent leg already populated: renderFrames
+      // scans EVERY `raw/screen-*.txt` (so stale agent frames a shorter replay never
+      // overwrites would leak in as replay evidence), and the fixed-name capture media
+      // would collide (on a double failure both legs' captureShapes would resolve to
+      // the same overwritten files). The agent leg has already failed here
+      // (agentOutcome !== 'passed'), so its artifacts are never used as proof once the
+      // replay runs — clear them first. Gated on an explicit collect-mode localDir; the
+      // standalone/test path (which computes a fresh dir per call) is left untouched.
+      const replayLocalDir = ctx.runContext?.localDir
+      if (replayLocalDir) {
+        fs.rmSync(path.join(replayLocalDir, 'raw'), { recursive: true, force: true })
+        fs.rmSync(path.join(replayLocalDir, CAPTURE_ID), { recursive: true, force: true })
+      }
+      replayRun = await runLeg({
+        ...ctx,
+        brief: synthesizeBrief(scenario, fileBasename),
+        // runTuiAgentProof clamps brief.budgets.maxWallClockMs to the reserved slice,
+        // but the custom loopRunner args omit maxWallClockMs, so runReplayLoop would
+        // otherwise fall back to its 4-min default and blow the shared budget. Thread
+        // the clamped brief budget (== reserve) through so the reserve is enforced.
+        loopRunner: (args) =>
+          runReplayLoop({
+            ...args,
+            scenario,
+            fileBasename,
+            maxWallClockMs: args.brief?.budgets?.maxWallClockMs ?? reserve,
+          }),
+        evaluateEvidence: makeScenarioEvaluator(scenario),
+        runContext: {
+          ...ctx.runContext,
+          maxWallClockMs: reserve,
+          briefFileName: `brief-replay-${fileBasename}.json`,
+        },
+      })
+      elapsedMs += replayRun.elapsedMs ?? 0
+      // Pass rule: the replayed scenario must run cleanly (a gate-fail sinks it).
+      replayOutcome = replayRun.hasFailure ? 'gate-failed' : 'passed'
+      if (replayRun.hasFailure) replayDetail = legFailDetail(replayRun)
+    } catch (err) {
+      replayOutcome = 'crashed'
+      replayDetail = errMessage(err)
+    }
+  }
+
+  const outcome = classifyTuiOutcome({
+    legs,
+    agentOutcome,
+    replayOutcome,
+    agentDetail,
+    replayDetail,
+    // BOS-350: a scenario-less TUI diff now reaches here when the key is present
+    // (the reordered upstream gate only defers the keyless scenario-less case), and
+    // its sole leg is the agent — there is no scenario file to name as "missing", so
+    // this stays null. The keyless scenario-less case is still deferred upstream and
+    // never enters this fn. The pure fn names a missing file only when a replay leg
+    // was expected but absent.
+    missingScenario: null,
+  })
+
+  // D-D: a machinery crash with no good leg is surfaced as a thrown pipeline-error
+  // so proof.mjs's per-surface crash-catch builds the record (finalize untouched).
+  if (outcome.reasonCode === 'pipeline-error') {
+    throw new Error(outcome.errorDetail ?? 'tui proof pipeline error')
+  }
+
+  const replayShapes = replayRun?.captureShapes ?? []
+  const replayScanTexts = replayRun?.scanTexts ?? []
+
+  // Best case: the agent leg produced the proof.
+  if (outcome.proofSource === 'agent') {
+    return {
+      ...agentRun,
+      captureShapes: stampProofSource(agentRun.captureShapes, 'agent'),
+      hasFailure: false,
+      elapsedMs,
+      reasonCode: null,
+      proofSource: 'agent',
+      fallbackReason: null,
+      // BOS-350: when the agent proved a scenario-less TUI diff (key-present path,
+      // no committed scenario to replay), flag that a committed scenario is still
+      // owed. Non-fatal + exit-code-neutral: it only drives a render-time author
+      // nudge (surfaceSectionLines), never the reasonCode/verdict. False on the
+      // ordinary scenario-present agent path, so existing behaviour is unchanged.
+      scenarioOwed: !scenarioPresent,
+    }
+  }
+
+  // Fallback success: replay produced the proof. `fallbackReason` distinguishes the
+  // two disclosure copies (agent tried-and-failed vs agent never available/keyless).
+  if (outcome.proofSource === 'replay') {
+    const primary = replayRun ?? agentRun
+    return {
+      surface: 'tui',
+      captureShapes: stampProofSource(replayShapes, 'replay'),
+      brief: primary?.brief ?? {},
+      agentResult: primary?.agentResult ?? { passed: true, summary: '', evidence: [], steps: 0 },
+      hasFailure: false,
+      noSurface: false,
+      scanTexts: replayScanTexts,
+      elapsedMs,
+      reasonCode: null,
+      proofSource: 'replay',
+      fallbackReason: agentOutcome === 'not-attempted' ? 'agent-unavailable' : 'agent-failed',
+    }
+  }
+
+  // agent-incomplete: no leg produced media. reasonCode stays null so
+  // classifySurfaceOutcomes derives `agent-incomplete` from hasFailure; the first
+  // captureShape carries the combined two-leg errorDetail (firstCaptureError reads it).
+  const baseShapes = [...(agentRun?.captureShapes ?? []), ...replayShapes]
+  const shapes =
+    baseShapes.length > 0
+      ? baseShapes.map((c, i) => (i === 0 ? { ...c, error: outcome.errorDetail } : c))
+      : [{ surface: 'tui', status: 'failed', error: outcome.errorDetail }]
+  const primary = agentRun ?? replayRun
+  return {
+    surface: 'tui',
+    captureShapes: shapes,
+    brief: primary?.brief ?? {},
+    agentResult: primary?.agentResult ?? {
+      passed: false,
+      summary: outcome.errorDetail ?? 'agent did not pass',
+      evidence: [],
+      steps: 0,
+    },
+    hasFailure: true,
+    noSurface: false,
+    scanTexts: [...(agentRun?.scanTexts ?? []), ...replayScanTexts],
+    elapsedMs,
+    reasonCode: null,
+    proofSource: null,
+    fallbackReason: null,
   }
 }
 
@@ -1101,14 +1509,21 @@ export async function runAgentLoop({
             const parts = [`Scene ${i + 1} (${s.id}) — ${s.title}:`]
             if (s.stepsHints?.length) parts.push(`hints: ${s.stepsHints.join('; ')}`)
             if (s.expectedEvidence?.length)
-              parts.push(`must show: ${s.expectedEvidence.join(' | ')}`)
+              parts.push(`must show: ${renderEvidenceGoal(s.expectedEvidence)}`)
             return parts.join(' ')
           }),
         ].join('\n')
-      : [
-          brief.stepsHints?.length ? `Hints:\n- ${brief.stepsHints.join('\n- ')}` : '',
-          brief.expectedEvidence?.length
-            ? `You must see ALL of these on screen before done(passed=true): ${brief.expectedEvidence.join(' | ')}`
+      : // Steer the single scene from the SAME source the gate reads
+        // (`scenes[0]`, the normalizeScenes output), not top-level
+        // `brief.expectedEvidence`. For a scene-less brief the two are identical
+        // (normalizeScenes copies the top-level fields into the synthesized
+        // scene), so this is byte-stable for the common case; for a brief with
+        // exactly one EXPLICIT scene it aligns the agent's steering with
+        // evaluateSceneEvidence instead of the inert top-level array.
+        [
+          scenes[0]?.stepsHints?.length ? `Hints:\n- ${scenes[0].stepsHints.join('\n- ')}` : '',
+          scenes[0]?.expectedEvidence?.length
+            ? `You must see ALL of these on screen before done(passed=true): ${renderEvidenceGoal(scenes[0].expectedEvidence)}`
             : '',
         ]
           .filter(Boolean)
@@ -1417,6 +1832,7 @@ async function resolveBrief({
   model,
   changedFiles = [],
   generateBriefFromDiff = defaultGenerateBriefFromDiff,
+  loadScenarioAnchors = defaultLoadScenarioAnchors,
   planRequiredProof,
 }) {
   const explicitBriefPath = process.env.BOSS_PROOF_BRIEF
@@ -1425,6 +1841,9 @@ async function resolveBrief({
     raw = JSON.parse(fs.readFileSync(explicitBriefPath, 'utf8'))
   } else {
     const diff = gatherDiff()
+    // Soft scenario anchors (BOS-221) — a committed proof scenario's title +
+    // expected screens steer the generated brief; a no-op [] when none present.
+    const scenarioAnchors = (await loadScenarioAnchors(changedFiles)) ?? []
     try {
       raw = await generateBriefFromDiff({
         diff,
@@ -1433,6 +1852,9 @@ async function resolveBrief({
         fixtures: TUI_CONTEXT_BLOCK,
         model,
         planRequiredProof,
+        surface: 'tui',
+        excludeLowSignal: true,
+        scenarioAnchors,
       })
     } catch (err) {
       if (isMissingModuleError(err)) {

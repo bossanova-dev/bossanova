@@ -477,6 +477,53 @@ func TestListPRsByState_PassesStateAndLimitAndMaps(t *testing.T) {
 	}
 }
 
+func TestSearchPRsByTitleTag_QueriesAllStatesAndAppliesExactBracketFilter(t *testing.T) {
+	// The API returns matches for the bareword search; two carry the exact
+	// "[BOS-289]" tag (open + merged), one is a "[BOS-2890]" near-miss that the
+	// Go-side exact bracket filter must drop.
+	const prJSON = `[
+		{"number":1147,"title":"consolidate [BOS-289]","headRefName":"bos-289-a","state":"OPEN","author":{"login":"alice"}},
+		{"number":1146,"title":"consolidate [BOS-289]","headRefName":"bos-289-b","state":"MERGED","author":{"login":"bob"}},
+		{"number":42,"title":"unrelated [BOS-2890]","headRefName":"bos-2890","state":"MERGED","author":{"login":"carol"}}
+	]`
+
+	var gotArgs []string
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		gotArgs = append([]string(nil), args...)
+		return prJSON, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	prs, err := p.SearchPRsByTitleTag(context.Background(), "owner/repo", "BOS-289")
+	if err != nil {
+		t.Fatalf("SearchPRsByTitleTag: %v", err)
+	}
+
+	joined := strings.Join(gotArgs, " ")
+	if !strings.Contains(joined, "--state all") {
+		t.Errorf("args %q missing --state all", joined)
+	}
+	if !strings.Contains(joined, "--search BOS-289 in:title") {
+		t.Errorf("args %q missing --search BOS-289 in:title", joined)
+	}
+	if !strings.Contains(joined, "--limit 100") {
+		t.Errorf("args %q missing --limit 100", joined)
+	}
+
+	if len(prs) != 2 {
+		t.Fatalf("got %d PRs, want 2 (exact [BOS-289] matches only): %+v", len(prs), prs)
+	}
+	want := []vcs.PRSummary{
+		{Number: 1147, Title: "consolidate [BOS-289]", HeadBranch: "bos-289-a", State: vcs.PRStateOpen, Author: "alice"},
+		{Number: 1146, Title: "consolidate [BOS-289]", HeadBranch: "bos-289-b", State: vcs.PRStateMerged, Author: "bob"},
+	}
+	for i, w := range want {
+		if prs[i] != w {
+			t.Errorf("prs[%d] = %+v, want %+v", i, prs[i], w)
+		}
+	}
+}
+
 func TestGetPRStatus_ReviewRequiredDecisionDoesNotLookRejected(t *testing.T) {
 	var viewArgs []string
 	fakeGH := func(_ context.Context, args ...string) (string, error) {

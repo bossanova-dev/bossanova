@@ -503,7 +503,6 @@ var daemonStop = daemon.Stop
 
 var terminateAllBossdProcesses = terminateBossdProcesses
 
-var terminatePluginProcesses = terminateBossdPluginProcesses
 var terminateAllPluginProcesses = terminateAllBossdPluginProcesses
 
 var waitForDaemonSocketGone = waitForSocketGone
@@ -1609,6 +1608,14 @@ func runDaemonStop(cmd *cobra.Command) error {
 		if err != nil {
 			return fmt.Errorf("stop standalone bossd failed: %w", err)
 		}
+		// BOS-349: this --all-standalone branch is the ONLY CLI path allowed to
+		// signal plugin processes. It matches bossd-plugin-* by binary name/path
+		// across profiles BY DESIGN — the explicit crash-cleanup escape hatch for
+		// orphaned plugins. Normal stop/restart must never sweep: bossd's
+		// Host.Stop (services/bossd/internal/plugin/host.go) owns reaping its own
+		// children, and path-matching cannot attribute a plugin to a profile, so a
+		// second daemon sharing the same binaries would lose its live plugins
+		// (the BOS-349 mass-SIGTERM incident).
 		pluginCount, err := terminateAllPluginProcesses(profile)
 		if err != nil {
 			return fmt.Errorf("stop plugin processes failed: %w", err)
@@ -1634,21 +1641,14 @@ func runDaemonStop(cmd *cobra.Command) error {
 		if err != nil {
 			return fmt.Errorf("stop standalone bossd failed: %w", err)
 		}
-		pluginCount, err := terminatePluginProcesses(profile)
-		if err != nil {
-			return fmt.Errorf("stop plugin processes failed: %w", err)
-		}
-		if n == 0 && pluginCount == 0 {
+		if n == 0 {
 			fmt.Println("Daemon is not installed and no standalone bossd is running.")
 			return nil
 		}
-		if n > 0 && !waitForDaemonSocketGone(profile.SocketPath) {
+		if !waitForDaemonSocketGone(profile.SocketPath) {
 			return fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout)
 		}
-		if n > 0 {
-			fmt.Println("Stopped standalone bossd for current profile.")
-		}
-		printPluginCleanup(pluginCount)
+		fmt.Println("Stopped standalone bossd for current profile.")
 		return nil
 	}
 	if !st.Running {
@@ -1658,22 +1658,14 @@ func runDaemonStop(cmd *cobra.Command) error {
 		if err != nil {
 			return fmt.Errorf("stop standalone bossd failed: %w", err)
 		}
-		pluginCount, err := terminatePluginProcesses(profile)
-		if err != nil {
-			return fmt.Errorf("stop plugin processes failed: %w", err)
-		}
 		if n > 0 {
 			if !waitForDaemonSocketGone(profile.SocketPath) {
 				return fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout)
 			}
 			fmt.Println("Stopped standalone bossd for current profile.")
-			printPluginCleanup(pluginCount)
 			return nil
 		}
-		if pluginCount == 0 {
-			fmt.Println("Daemon is already stopped.")
-		}
-		printPluginCleanup(pluginCount)
+		fmt.Println("Daemon is already stopped.")
 		return nil
 	}
 	if err := daemonStop(); err != nil {
@@ -1685,12 +1677,7 @@ func runDaemonStop(cmd *cobra.Command) error {
 	if !waitForDaemonSocketGone(profile.SocketPath) {
 		return fmt.Errorf("timed out waiting for daemon socket to stop after %s", daemon.LifecycleShutdownTimeout)
 	}
-	pluginCount, err := terminatePluginProcesses(profile)
-	if err != nil {
-		return fmt.Errorf("stop plugin processes failed: %w", err)
-	}
 	fmt.Println("Daemon stopped.")
-	printPluginCleanup(pluginCount)
 	return nil
 }
 
@@ -1712,17 +1699,12 @@ func runDaemonRestart(_ *cobra.Command) error {
 		if err != nil {
 			return fmt.Errorf("restart standalone bossd failed: %w", err)
 		}
-		pluginCount, err := terminatePluginProcesses(profile)
-		if err != nil {
-			return fmt.Errorf("stop plugin processes failed: %w", err)
-		}
 		if n > 0 && !waitForDaemonSocketGone(socketPath) {
 			return fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout)
 		}
 		if err := daemonEnsureRunning(socketPath); err != nil {
 			return fmt.Errorf("restart standalone bossd failed: %w", err)
 		}
-		printPluginCleanup(pluginCount)
 		if n > 0 {
 			fmt.Println("Restarted standalone bossd for current profile.")
 		} else {
@@ -1738,14 +1720,9 @@ func runDaemonRestart(_ *cobra.Command) error {
 			return fmt.Errorf("timed out waiting for daemon socket to stop after %s", daemon.LifecycleShutdownTimeout)
 		}
 	}
-	pluginCount, err := terminatePluginProcesses(profile)
-	if err != nil {
-		return fmt.Errorf("stop plugin processes failed: %w", err)
-	}
 	if err := daemonEnsureRunning(socketPath); err != nil {
 		return fmt.Errorf("restart daemon failed: %w", err)
 	}
-	printPluginCleanup(pluginCount)
 	// Wait for the new bossd to come up so the next command doesn't race.
 	deadline := time.Now().Add(daemonRestartReadyTimeout)
 	for time.Now().Before(deadline) {
@@ -1908,15 +1885,12 @@ func signalBossdProcesses(pids []int, findProcess func(int) (processSignaler, er
 	return signalled, errors.Join(errs...)
 }
 
-func terminateBossdPluginProcesses(profile daemonProfile) (int, error) {
-	return terminateBossdPluginProcessesMatching(profile, false)
-}
-
+// terminateAllBossdPluginProcesses backs `boss daemon stop --all-standalone`,
+// the only CLI path allowed to signal plugin processes (BOS-349). It SIGTERMs
+// every bossd-plugin-* process this user owns, matched by binary name/path
+// across profiles — a deliberate broad sweep for crash-orphan cleanup, not a
+// per-profile scoped teardown.
 func terminateAllBossdPluginProcesses(profile daemonProfile) (int, error) {
-	return terminateBossdPluginProcessesMatching(profile, true)
-}
-
-func terminateBossdPluginProcessesMatching(profile daemonProfile, includeHomebrewFallback bool) (int, error) {
 	settings, err := config.LoadFrom(profile.SettingsPath)
 	if err != nil {
 		return 0, err
@@ -1925,7 +1899,7 @@ func terminateBossdPluginProcessesMatching(profile daemonProfile, includeHomebre
 	if err != nil {
 		return 0, err
 	}
-	matches := bossdPluginProcessMatcher(settings.Plugins, includeHomebrewFallback)
+	matches := bossdPluginProcessMatcher(settings.Plugins)
 	return signalBossdPluginProcesses(pids, matches, func(pid int) (processSignaler, error) {
 		return os.FindProcess(pid)
 	})
@@ -1954,7 +1928,11 @@ func bossdPluginPgrepArgs() []string {
 	return []string{"-u", strconv.Itoa(os.Geteuid()), "-f", "bossd-plugin-"}
 }
 
-func bossdPluginProcessMatcher(plugins []config.PluginConfig, matchAnyPluginExecutable bool) func(string) bool {
+// bossdPluginProcessMatcher builds the predicate used by the --all-standalone
+// broad sweep (BOS-349): it matches a process command line if it starts with a
+// configured plugin binary path, or — since the escape hatch cleans crash
+// orphans from any profile — if it starts with any bossd-plugin-* executable.
+func bossdPluginProcessMatcher(plugins []config.PluginConfig) func(string) bool {
 	configuredPaths := make(map[string]struct{}, len(plugins))
 	for _, plugin := range plugins {
 		if plugin.Path == "" {
@@ -1974,9 +1952,6 @@ func bossdPluginProcessMatcher(plugins []config.PluginConfig, matchAnyPluginExec
 			if commandLineStartsWithExecutable(commandLine, configuredPath) {
 				return true
 			}
-		}
-		if !matchAnyPluginExecutable {
-			return false
 		}
 		return commandLineStartsWithBossdPluginExecutable(commandLine)
 	}

@@ -45,16 +45,16 @@ Situational deep-dives live in `references/*.md` (relative to this skill's base 
 **only when their trigger fires** — the read-when-triggered pattern the situational references use. The
 body carries the decision skeleton; every moved instruction is still reachable here.
 
-| Reference                              | Read it when…                                                 |
-| -------------------------------------- | ------------------------------------------------------------- |
-| `references/core-spine.md`             | Orienting — the portable terminal-state/review/finalize spine |
-| `references/code-reviewer-template.md` | Step 6 — the reviewer prompt template                         |
-| `references/receiving-code-review.md`  | Step 6 — the fix discipline                                   |
-| `references/review-stack.md`           | Step 6 — full review protocol (6b/6c)                         |
-| `references/proof-capture.md`          | Step 11 (`REVIEW_READY`) — proof gate detail                  |
-| `references/cron-gate.md`              | Setup — registering the cron gate command                     |
-| `references/troubleshooting.md`        | Ambiguous state — rollback + red-flags                        |
-| `references/standalone-mode.md`        | Running with no bossd (`BOSSD_MANAGED=0`)                     |
+| Reference                              | Read it when…                                                                 |
+| -------------------------------------- | ----------------------------------------------------------------------------- |
+| `references/core-spine.md`             | Orienting — the portable terminal-state/review/finalize spine                 |
+| `references/code-reviewer-template.md` | Step 6 — the reviewer prompt template                                         |
+| `references/receiving-code-review.md`  | Step 6 — the fix discipline                                                   |
+| `references/review-stack.md`           | Step 6 — full review protocol (6b/6c)                                         |
+| `references/proof-capture.md`          | Step 5 for TUI scenario authoring; Step 11 (`REVIEW_READY`) proof gate detail |
+| `references/cron-gate.md`              | Setup — registering the cron gate command                                     |
+| `references/troubleshooting.md`        | Ambiguous state — rollback + red-flags                                        |
+| `references/standalone-mode.md`        | Running with no bossd (`BOSSD_MANAGED=0`)                                     |
 
 ## Hard rules
 
@@ -388,10 +388,17 @@ Resolve the implementation methodology by strict precedence:
    self-contained loop in **Inline TDD methodology (tier 3)** below. This is the portable last resort
    for a bare host and has no external skill dependency.
 
-When the ticket touches a UI surface (`services/web`, TUI components, marketing), the implementer adds
+When the ticket touches a web or marketing UI surface (`services/web`, marketing), the implementer adds
 the proof recipe (`proof/recipes/default.json`) plus any affordances proof needs — a stable route, a
 fixture, a `data-testid` — **as part of the task**, so "ships with the means to prove itself" passes
-through the same review (this is what lets Step 11 capture proof unattended).
+through the same review (this is what lets Step 11 capture proof unattended). TUI diffs use the
+scenario path below instead of a recipe.
+
+For a TUI diff, **before Step 6**, author and commit a
+`proof/scenarios/*.scenario.json` that demonstrates the specific change. Read the Scenario authoring
+section of [`references/proof-capture.md`](references/proof-capture.md), then iterate
+`node scripts/proof.mjs scenario validate` and `scenario run --dry-run` to green before committing.
+This scenario gates only its own PR; do not add path rules or edit another PR's scenario.
 
 ### Inline TDD methodology (tier 3)
 
@@ -660,9 +667,10 @@ hand-write skip prose or a "proof skipped: …" one-line note. When proof cannot
 missing prerequisite, pipeline bug), run `node scripts/proof.mjs run` anyway and let it post the honest
 `env-unavailable`/`pipeline-error` note (doctor output is embedded so a human can fix the env). The
 upload env is daemon-injected — do not source `.env`; run `node scripts/proof.mjs doctor` to see what
-is missing. **Read [`references/proof-capture.md`](references/proof-capture.md)** for the full
-surface/doctor gates, the outcome classes, and the non-fatal contract. Do not run the finalize sequence
-here (it already ran in Steps 8–9).
+is missing. A TUI diff lacking the scenario authored in Step 5 earns a warn-only `scenario-missing`
+note (exit 0). **Read [`references/proof-capture.md`](references/proof-capture.md)** for the full
+surface/doctor gates, outcome classes, and non-fatal contract. Do not run the finalize sequence here
+(it already ran in Steps 8–9).
 
 ## Step 12: Stop cleanly
 

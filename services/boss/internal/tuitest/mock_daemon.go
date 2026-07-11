@@ -1090,6 +1090,10 @@ func (m *MockDaemon) RepairDoctor(_ context.Context, _ *connect.Request[pb.Repai
 	return connect.NewResponse(&pb.RepairDoctorResponse{}), nil
 }
 
+func (m *MockDaemon) StartRepairWorkflow(_ context.Context, _ *connect.Request[pb.StartRepairWorkflowRequest]) (*connect.Response[pb.StartRepairWorkflowResponse], error) {
+	return connect.NewResponse(&pb.StartRepairWorkflowResponse{}), nil
+}
+
 func (m *MockDaemon) ListCheckSnapshots(_ context.Context, _ *connect.Request[pb.ListCheckSnapshotsRequest]) (*connect.Response[pb.ListCheckSnapshotsResponse], error) {
 	return connect.NewResponse(&pb.ListCheckSnapshotsResponse{}), nil
 }

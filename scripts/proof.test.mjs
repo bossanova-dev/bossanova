@@ -19,18 +19,26 @@ import {
   shouldPostDocsBuildCheck,
   shouldCleanupRunDir,
   tuiAgentBridgeEnv,
+  tuiAgentCanCapture,
   tuiAgentUsable,
 } from './proof.mjs'
 
 const repoRootForTest = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-import { planSurfaceBudget, selectRecipes } from './proof-lib.mjs'
-import { surfaceBudget } from './proof-surfaces.mjs'
+import {
+  DEFAULT_TOTAL_PROOF_BUDGET_MS,
+  TUI_REPLAY_EXTRA_MS,
+  planSurfaceBudget,
+  planTuiLegs,
+  selectRecipes,
+} from './proof-lib.mjs'
+import { classifyTuiSurface, committedScenarioPresent, surfaceBudget } from './proof-surfaces.mjs'
 import { aggregateExitCode, classifySurfaceOutcomes } from './proof-finalize-outcome.mjs'
 import {
   builtinAgentDrivers,
   driverForSurface,
   validateSurfaceRun,
 } from './proof-agent-drivers.mjs'
+import { runTuiWithReplayFallback } from './proof-tui-agent.mjs'
 
 // ── evaluateRunPreflight (BOS-138 hard preflight) ─────────────────────────────
 
@@ -235,6 +243,36 @@ test('agentSurface: web changed files → web', () => {
       'web',
     )
   })
+})
+
+// ── BOS-220 TUI scenario gate (runAgentSurfaces): committedScenarioPresent ────
+// The dispatcher gates the TUI surface on `committedScenarioPresent(changedFiles)`:
+// a TUI-classified diff with NO committed proof/scenarios/*.scenario.json defers
+// with a single warn-only `scenario-missing` run; a diff that commits one skips the
+// gate and proceeds. These pin the two real inputs the gate reads (the surface is
+// TUI via classifyTuiSurface, and the scenario predicate) so the gate decision can't
+// regress — e.g. the predicate matching a recipe, or the TUI surface losing its gate.
+test('TUI gate: a TUI diff with no committed scenario is the scenario-missing case', () => {
+  const changedFiles = ['services/boss/internal/views/home.go']
+  assert.equal(classifyTuiSurface(changedFiles), true, 'diff classifies as the TUI surface')
+  assert.equal(
+    committedScenarioPresent(changedFiles),
+    false,
+    'no scenario present ⇒ dispatcher defers with scenario-missing',
+  )
+})
+
+test('TUI gate: a TUI diff that commits a scenario skips the gate and proceeds', () => {
+  const changedFiles = [
+    'services/boss/internal/views/home.go',
+    'proof/scenarios/home.scenario.json',
+  ]
+  assert.equal(classifyTuiSurface(changedFiles), true, 'still classifies as the TUI surface')
+  assert.equal(
+    committedScenarioPresent(changedFiles),
+    true,
+    'committed scenario present ⇒ gate skipped, agent runs normally',
+  )
 })
 
 test('agentSurface: marketing changed files → recipe (deterministic capture, not the web agent)', () => {
@@ -897,6 +935,428 @@ test('agent-driver registry: SurfaceRun validation happy + missing-key', () => {
   }
   assert.equal(validateSurfaceRun(full, 'web').ok, true)
   assert.equal(validateSurfaceRun({ surface: 'web' }, 'web').ok, false)
+})
+
+// ── BOS-223: agent-first TUI dispatch with scenario-replay fallback ───────────
+// The orchestration helper (runTuiWithReplayFallback) runs the agent leg first
+// and, on gate-fail / crash / not-attempted, replays each committed scenario.
+// These stub the leg runner entirely (no bridge/agent/Anthropic) and assert the
+// two-leg dispatch, the surfaceRun proofSource/fallbackReason threading, the
+// budget reserve split, and web-dispatch isolation.
+
+/** A spy leg runner: records each call's args; `behaviors(args, i)` returns the
+ *  SurfaceRun to resolve with, or `{ __throw: msg }` to simulate a machinery crash. */
+function fakeTuiLeg(behaviors) {
+  const calls = []
+  const fn = async (args) => {
+    const b = behaviors(args, calls.length)
+    calls.push(args)
+    if (b && b.__throw) throw new Error(b.__throw)
+    return b
+  }
+  fn.calls = calls
+  return fn
+}
+
+/** A minimal collect-mode TUI SurfaceRun the leg runner resolves with. */
+function tuiLegRun({ hasFailure = false, error = null, elapsedMs = 1000 } = {}) {
+  const captureShapes = [
+    hasFailure
+      ? { surface: 'tui', status: 'failed', error: error ?? 'gate failed' }
+      : { surface: 'tui', status: 'passed', fileName: 'tui/tui.mp4' },
+  ]
+  return {
+    surface: 'tui',
+    captureShapes,
+    brief: { title: 'brief' },
+    agentResult: { passed: !hasFailure, summary: error ?? 'summary', evidence: [], steps: 1 },
+    hasFailure,
+    noSurface: false,
+    scanTexts: ['screen'],
+    elapsedMs,
+    reasonCode: null,
+  }
+}
+
+function tuiDispatchCtx(overrides = {}) {
+  return {
+    prNumber: '1',
+    commit: 'abc1234',
+    changedFiles: ['proof/scenarios/home.scenario.json'],
+    dryRun: true,
+    planRequiredProof: [],
+    runContext: { collect: true, runId: 'r', token: 't', maxWallClockMs: 600000 },
+    ...overrides,
+  }
+}
+
+/** Replay seams + reserve for the orchestration; the leg runner is stubbed so
+ *  runReplayLoop itself never executes — it is only wrapped into `loopRunner`. */
+function replayDeps(overrides = {}) {
+  return {
+    runReplayLoop: () => ({}),
+    synthesizeBrief: () => ({ title: 'replay-brief' }),
+    makeScenarioEvaluator: () => () => [],
+    loadScenario: () => ({ scenario: { title: 'scn' }, scenes: [] }),
+    replayReserveMs: 120000,
+    repoRoot: '/tmp',
+    ...overrides,
+  }
+}
+
+test('BOS-223 (a): agent pass ⇒ agent captureShape, replay leg NOT run, proofSource agent', async () => {
+  const leg = fakeTuiLeg(() => tuiLegRun({ hasFailure: false }))
+  const run = await runTuiWithReplayFallback(
+    tuiDispatchCtx(),
+    replayDeps({ runTuiAgentProof: leg, agentUsable: true }),
+  )
+  assert.equal(leg.calls.length, 1, 'only the agent leg ran')
+  assert.equal(leg.calls[0].brief, undefined, 'agent leg is the default path (no injected brief)')
+  assert.equal(leg.calls[0].loopRunner, undefined, 'agent leg has no replay loopRunner')
+  assert.equal(run.proofSource, 'agent')
+  assert.equal(run.fallbackReason, null)
+  assert.equal(run.hasFailure, false)
+  assert.equal(run.captureShapes[0].proofSource, 'agent')
+})
+
+test('BOS-223 (b): agent gate-fail + scenario ⇒ replay leg runs w/ BOS-219 injections, proofSource replay', async () => {
+  const leg = fakeTuiLeg((_args, i) => tuiLegRun({ hasFailure: i === 0 }))
+  const run = await runTuiWithReplayFallback(
+    tuiDispatchCtx(),
+    replayDeps({ runTuiAgentProof: leg, agentUsable: true }),
+  )
+  assert.equal(leg.calls.length, 2, 'agent leg then replay leg')
+  assert.equal(leg.calls[0].brief, undefined, 'first call is the bare agent leg')
+  assert.ok(leg.calls[1].brief, 'replay leg is handed a synthesized brief')
+  assert.equal(typeof leg.calls[1].loopRunner, 'function', 'replay leg gets loopRunner')
+  assert.equal(typeof leg.calls[1].evaluateEvidence, 'function', 'replay leg gets evaluateEvidence')
+  assert.equal(run.proofSource, 'replay')
+  assert.equal(run.fallbackReason, 'agent-failed')
+  assert.equal(run.hasFailure, false)
+  assert.equal(run.captureShapes[0].proofSource, 'replay')
+})
+
+test('BOS-223 (c): keyless (agent unusable) + scenario ⇒ agent leg NEVER invoked, replay proof', async () => {
+  const leg = fakeTuiLeg(() => tuiLegRun({ hasFailure: false }))
+  const drivers = builtinAgentDrivers({
+    ...driverStubDeps,
+    tuiAgentUsable: () => false,
+    runTuiAgentProof: leg,
+    runTuiWithReplayFallback,
+    runReplayLoop: () => ({}),
+    synthesizeBrief: () => ({ title: 'replay-brief' }),
+    makeScenarioEvaluator: () => () => [],
+    loadScenario: () => ({ scenario: { title: 'scn' }, scenes: [] }),
+    tuiReplayReserveMs: 120000,
+  })
+  const tui = driverForSurface(drivers, 'tui')
+  const run = await tui.run(tuiDispatchCtx())
+  assert.ok(leg.calls.length >= 1, 'the replay leg ran')
+  assert.ok(
+    leg.calls.every((c) => c.brief && typeof c.loopRunner === 'function'),
+    'every leg call is a replay call — the agent leg is never invoked when keyless',
+  )
+  assert.equal(run.proofSource, 'replay')
+  assert.equal(run.fallbackReason, 'agent-unavailable')
+  assert.equal(run.hasFailure, false)
+})
+
+test('BOS-223 (d): keyless + scenario-less is resolved by the BOS-220 scenario-missing gate upstream', () => {
+  // A KEYLESS scenario-less TUI diff never reaches the usable gate: the dispatcher
+  // defers it as `scenario-missing` first (BOS-220, reordered by BOS-350 to fire only
+  // when keyless). The pure {F,F} planTuiLegs row below therefore stays a
+  // self-contained decision the live path never exercises.
+  assert.equal(committedScenarioPresent(['services/boss/internal/views/home.go']), false)
+  assert.deepEqual(planTuiLegs({ agentUsable: false, scenarioPresent: false }), {
+    runAgent: false,
+    runReplay: false,
+    deferReason: 'agent-unavailable',
+  })
+})
+
+// ── BOS-350: TUI scenario-missing gate defers unless the agent can ACTUALLY capture ──
+// The dispatcher's TUI `scenario-missing` gate is
+//   `surface === 'tui' && !committedScenarioPresent(changedFiles) && !tuiAgentCanCapture()`.
+// `tuiAgentCanCapture()` is the load-bearing gate predicate (exported so these pin it
+// directly rather than reconstructing the boolean): it is `tuiAgentUsable()` AND a real
+// PROOF_ANTHROPIC_API_KEY, because the TUI agent leg hard-requires that key. These pin the
+// three env seams the gate composes (matching the BOS-223 (d) proxy style: runAgentSurfaces
+// is unexported/env-coupled), plus a driver-level run that exercises the agent-only leg the
+// key-present path now falls through to.
+test('BOS-350: key-present scenario-less TUI is NOT deferred scenario-missing (falls through to agent-only leg)', () => {
+  const changedFiles = ['services/boss/internal/views/home.go']
+  assert.equal(classifyTuiSurface(changedFiles), true, 'diff classifies as the TUI surface')
+  assert.equal(committedScenarioPresent(changedFiles), false, 'no committed scenario')
+  const prevKey = process.env.PROOF_ANTHROPIC_API_KEY
+  const prevMode = process.env.BOSS_PROOF_MODE
+  try {
+    delete process.env.BOSS_PROOF_MODE
+    process.env.PROOF_ANTHROPIC_API_KEY = 'sk-test'
+    assert.equal(tuiAgentCanCapture(), true, 'real key present ⇒ TUI agent can capture')
+    // The gate defers only when the scenario is absent AND the agent cannot capture.
+    const gateDefers = !committedScenarioPresent(changedFiles) && !tuiAgentCanCapture()
+    assert.equal(gateDefers, false, 'key present ⇒ gate does NOT defer; control falls through')
+    assert.deepEqual(
+      planTuiLegs({ agentUsable: true, scenarioPresent: false }),
+      { runAgent: true, runReplay: false },
+      'the fall-through path plans the agent-only leg',
+    )
+  } finally {
+    if (prevKey === undefined) delete process.env.PROOF_ANTHROPIC_API_KEY
+    else process.env.PROOF_ANTHROPIC_API_KEY = prevKey
+    if (prevMode === undefined) delete process.env.BOSS_PROOF_MODE
+    else process.env.BOSS_PROOF_MODE = prevMode
+  }
+})
+
+test('BOS-350: keyless scenario-less TUI still defers scenario-missing (gate holds)', () => {
+  const changedFiles = ['services/boss/internal/views/home.go']
+  const prevKey = process.env.PROOF_ANTHROPIC_API_KEY
+  const prevMode = process.env.BOSS_PROOF_MODE
+  try {
+    delete process.env.PROOF_ANTHROPIC_API_KEY
+    delete process.env.BOSS_PROOF_MODE
+    assert.equal(tuiAgentCanCapture(), false, 'keyless ⇒ TUI agent cannot capture')
+    const gateDefers = !committedScenarioPresent(changedFiles) && !tuiAgentCanCapture()
+    assert.equal(gateDefers, true, 'keyless + scenario-less ⇒ still deferred scenario-missing')
+  } finally {
+    if (prevKey === undefined) delete process.env.PROOF_ANTHROPIC_API_KEY
+    else process.env.PROOF_ANTHROPIC_API_KEY = prevKey
+    if (prevMode === undefined) delete process.env.BOSS_PROOF_MODE
+    else process.env.BOSS_PROOF_MODE = prevMode
+  }
+})
+
+// Regression pin: BOSS_PROOF_MODE=agent WITHOUT a real key is not a capturable agent.
+// tuiAgentUsable() trusts the mode assertion (returns true — correct for driver.usable,
+// where the key is daemon-injected in cron), but the TUI agent leg builds its Anthropic
+// client from PROOF_ANTHROPIC_API_KEY explicitly, so with no key it would throw and — with
+// no committed scenario to replay — surface as a `pipeline-error` (exit 1). The gate uses
+// tuiAgentCanCapture() so this doomed config keeps deferring the warn-only `scenario-missing`
+// nudge (exit 0), preserving the change's exit-code-neutral invariant.
+test('BOS-350: BOSS_PROOF_MODE=agent WITHOUT a key still defers scenario-missing (no exit-1 crash)', () => {
+  const changedFiles = ['services/boss/internal/views/home.go']
+  const prevKey = process.env.PROOF_ANTHROPIC_API_KEY
+  const prevMode = process.env.BOSS_PROOF_MODE
+  try {
+    delete process.env.PROOF_ANTHROPIC_API_KEY
+    process.env.BOSS_PROOF_MODE = 'agent'
+    assert.equal(tuiAgentUsable(), true, 'mode=agent ⇒ usable (trusts the mode assertion)')
+    assert.equal(
+      tuiAgentCanCapture(),
+      false,
+      'mode=agent but no real key ⇒ the TUI agent cannot actually capture',
+    )
+    const gateDefers = !committedScenarioPresent(changedFiles) && !tuiAgentCanCapture()
+    assert.equal(
+      gateDefers,
+      true,
+      'mode=agent without a key + scenario-less ⇒ defers scenario-missing, not a doomed agent leg',
+    )
+  } finally {
+    if (prevKey === undefined) delete process.env.PROOF_ANTHROPIC_API_KEY
+    else process.env.PROOF_ANTHROPIC_API_KEY = prevKey
+    if (prevMode === undefined) delete process.env.BOSS_PROOF_MODE
+    else process.env.BOSS_PROOF_MODE = prevMode
+  }
+})
+
+test('BOS-350: key-present scenario-less driver run ⇒ agent leg only, proofSource agent, scenarioOwed', async () => {
+  const leg = fakeTuiLeg(() => tuiLegRun({ hasFailure: false }))
+  const drivers = builtinAgentDrivers({
+    ...driverStubDeps,
+    tuiAgentUsable: () => true,
+    runTuiAgentProof: leg,
+    runTuiWithReplayFallback,
+    runReplayLoop: () => ({}),
+    synthesizeBrief: () => ({ title: 'replay-brief' }),
+    makeScenarioEvaluator: () => () => [],
+    loadScenario: () => ({ scenario: { title: 'scn' }, scenes: [] }),
+    tuiReplayReserveMs: 120000,
+  })
+  const tui = driverForSurface(drivers, 'tui')
+  // A scenario-less TUI diff: no proof/scenarios/*.scenario.json in changedFiles.
+  const run = await tui.run(
+    tuiDispatchCtx({ changedFiles: ['services/boss/internal/views/home.go'] }),
+  )
+  assert.equal(leg.calls.length, 1, 'only the agent leg ran (no replay — there is no scenario)')
+  assert.equal(leg.calls[0].brief, undefined, 'the single call is the bare agent leg')
+  assert.equal(run.proofSource, 'agent', 'proof came from the agent, not replay')
+  assert.equal(run.fallbackReason, null)
+  assert.equal(run.scenarioOwed, true, 'a committed scenario is still owed (author nudge)')
+})
+
+test('BOS-223 (e): both legs gate-fail ⇒ agent-incomplete with combined two-leg errorDetail', async () => {
+  const leg = fakeTuiLeg((_args, i) =>
+    tuiLegRun({ hasFailure: true, error: i === 0 ? 'agentERR' : 'replayERR' }),
+  )
+  const run = await runTuiWithReplayFallback(
+    tuiDispatchCtx(),
+    replayDeps({ runTuiAgentProof: leg, agentUsable: true }),
+  )
+  assert.equal(run.proofSource, null)
+  assert.equal(run.hasFailure, true)
+  assert.equal(run.reasonCode, null, 'reasonCode stays null so finalize derives agent-incomplete')
+  const perSurface = classifySurfaceOutcomes([run])
+  assert.equal(perSurface[0].reasonCode, 'agent-incomplete')
+  assert.equal(perSurface[0].error, 'agent: agentERR; replay: replayERR')
+  assert.equal(
+    aggregateExitCode(perSurface),
+    0,
+    'TUI agent-incomplete stays exit 0 (until BOS-226)',
+  )
+})
+
+test('BOS-223 (f): a leg crash with no good other leg ⇒ throws (dispatcher crash-catch → pipeline-error)', async () => {
+  const leg = fakeTuiLeg((_args, i) =>
+    i === 0 ? { __throw: 'boom' } : tuiLegRun({ hasFailure: true }),
+  )
+  await assert.rejects(
+    () =>
+      runTuiWithReplayFallback(
+        tuiDispatchCtx(),
+        replayDeps({ runTuiAgentProof: leg, agentUsable: true }),
+      ),
+    /boom/,
+    'pipeline-error is surfaced by rethrow so proof-finalize-outcome stays untouched',
+  )
+})
+
+test('BOS-223 (g): budget reserve split — agent leg = slice − reserve, replay leg = reserve', async () => {
+  const seen = []
+  const leg = fakeTuiLeg((args, i) => {
+    seen.push(args.runContext.maxWallClockMs)
+    return tuiLegRun({ hasFailure: i === 0 })
+  })
+  await runTuiWithReplayFallback(
+    tuiDispatchCtx({ runContext: { collect: true, maxWallClockMs: 600000 } }),
+    replayDeps({ runTuiAgentProof: leg, agentUsable: true, replayReserveMs: 120000 }),
+  )
+  assert.equal(seen[0], 480000, 'agent leg capped at slice − reserve')
+  assert.equal(seen[1], 120000, 'replay leg gets its reserve')
+
+  // 120s-floor edge: a slice equal to the reserve still leaves the agent leg ≥ 60s.
+  const seen2 = []
+  const leg2 = fakeTuiLeg((args, i) => {
+    seen2.push(args.runContext.maxWallClockMs)
+    return tuiLegRun({ hasFailure: i === 0 })
+  })
+  await runTuiWithReplayFallback(
+    tuiDispatchCtx({ runContext: { collect: true, maxWallClockMs: 120000 } }),
+    replayDeps({ runTuiAgentProof: leg2, agentUsable: true, replayReserveMs: 120000 }),
+  )
+  assert.equal(seen2[0], 60000, 'agent leg floored at 60s')
+  assert.equal(seen2[1], 120000, 'replay leg still gets its reserve')
+})
+
+test('BOS-223 (g2): multiple committed scenarios ⇒ replay only the FIRST (single-bundle safety)', async () => {
+  // The replay leg captures into one per-surface bundle dir (constant CAPTURE_ID),
+  // so replaying several scenarios would clobber all but the last on disk while
+  // emitting N captureShapes resolving to that one file. Until per-scenario capture
+  // namespacing lands, only the first committed scenario replays; the second is not
+  // invoked (a note is logged). The agent leg gets slice − reserve, the single
+  // replay leg the full reserve.
+  const twoScenarioCtx = tuiDispatchCtx({
+    changedFiles: ['proof/scenarios/home.scenario.json', 'proof/scenarios/detail.scenario.json'],
+    runContext: { collect: true, maxWallClockMs: 600000 },
+  })
+  const seen = []
+  const briefs = []
+  // call 0 = agent (gate-fail), call 1 = the FIRST replay scenario (passes).
+  const leg = fakeTuiLeg((args, i) => {
+    seen.push(args.runContext.maxWallClockMs)
+    briefs.push(args.runContext.briefFileName)
+    return tuiLegRun({ hasFailure: i === 0 })
+  })
+  const run = await runTuiWithReplayFallback(
+    twoScenarioCtx,
+    replayDeps({ runTuiAgentProof: leg, agentUsable: true, replayReserveMs: 120000 }),
+  )
+  assert.equal(leg.calls.length, 2, 'agent leg + exactly ONE replay leg (second scenario skipped)')
+  assert.equal(seen[0], 480000, 'agent leg capped at slice − reserve')
+  assert.equal(seen[1], 120000, 'the single replay leg gets the full reserve')
+  assert.equal(
+    briefs[1],
+    'brief-replay-home.scenario.json.json',
+    'the replayed scenario is the FIRST changed one',
+  )
+  assert.equal(run.proofSource, 'replay')
+  assert.equal(run.hasFailure, false)
+})
+
+test('BOS-223 (g3): the replay leg clears stale agent raw/ + capture artifacts before running', async () => {
+  // The replay leg reuses the shared collect-mode localDir, so without isolation it
+  // would inherit the failed agent leg's `raw/screen-*.txt` frames (renderFrames scans
+  // ALL of them) and its fixed-name capture media. Pre-seed both, then assert they are
+  // gone by the time the replay leg is invoked.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tui-replay-isolate-'))
+  fs.mkdirSync(path.join(tmp, 'raw'), { recursive: true })
+  fs.writeFileSync(path.join(tmp, 'raw', 'screen-000.txt'), 'stale agent frame')
+  fs.mkdirSync(path.join(tmp, 'tui-agent'), { recursive: true })
+  fs.writeFileSync(path.join(tmp, 'tui-agent', 'tui-agent.mp4'), 'stale agent media')
+
+  let staleAtReplay = null
+  const leg = fakeTuiLeg((_args, i) => {
+    if (i === 1) {
+      staleAtReplay = {
+        rawFrame: fs.existsSync(path.join(tmp, 'raw', 'screen-000.txt')),
+        media: fs.existsSync(path.join(tmp, 'tui-agent', 'tui-agent.mp4')),
+      }
+    }
+    return tuiLegRun({ hasFailure: i === 0 })
+  })
+  try {
+    await runTuiWithReplayFallback(
+      tuiDispatchCtx({ runContext: { collect: true, localDir: tmp, maxWallClockMs: 600000 } }),
+      replayDeps({ runTuiAgentProof: leg, agentUsable: true }),
+    )
+    assert.equal(leg.calls.length, 2, 'agent leg then replay leg')
+    assert.deepEqual(
+      staleAtReplay,
+      { rawFrame: false, media: false },
+      'stale agent raw frames AND capture media are cleared before the replay leg runs',
+    )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('BOS-223 budget: a committed-scenario TUI run extends the shared pool by TUI_REPLAY_EXTRA_MS', () => {
+  // Mirrors the runAgentSurfaces pool-extend line (the LIVE_AGENT_EXTRA_MS precedent).
+  const withScenario = ['services/boss/x.go', 'proof/scenarios/home.scenario.json']
+  const reserve = Number(process.env.TUI_REPLAY_EXTRA_MS) || TUI_REPLAY_EXTRA_MS
+  const total =
+    DEFAULT_TOTAL_PROOF_BUDGET_MS + (committedScenarioPresent(withScenario) ? reserve : 0)
+  assert.equal(total, DEFAULT_TOTAL_PROOF_BUDGET_MS + TUI_REPLAY_EXTRA_MS)
+  // A scenario-less TUI diff never triggers the extension.
+  assert.equal(committedScenarioPresent(['services/boss/x.go']), false)
+})
+
+test('BOS-223 (h): web driver dispatch is byte-identical — no TUI disclosure fields leak', async () => {
+  const webRun = {
+    surface: 'web',
+    captureShapes: [],
+    brief: {},
+    agentResult: { passed: true, summary: '', evidence: [], steps: 0 },
+    hasFailure: false,
+    noSurface: false,
+    scanTexts: [],
+    elapsedMs: 5,
+    reasonCode: null,
+  }
+  const spy = async (ctx) => ({ ...webRun, echoed: ctx.prNumber })
+  const drivers = builtinAgentDrivers({ ...driverStubDeps, runAgentProof: spy })
+  const web = driverForSurface(drivers, 'web')
+  const out = await web.run({
+    prNumber: 'PR9',
+    commit: 'c',
+    changedFiles: [],
+    dryRun: true,
+    planRequiredProof: [],
+    runContext: {},
+  })
+  assert.deepEqual(out, { ...webRun, echoed: 'PR9' })
+  assert.equal(out.proofSource, undefined, 'the web path carries no TUI proofSource/fallbackReason')
 })
 
 // ── BOS-219: `scenario` dispatch (validate/run) via runScenarioCommand ────────

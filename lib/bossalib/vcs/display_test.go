@@ -613,3 +613,14 @@ func TestDeriveMergeBlockReviewDetail(t *testing.T) {
 		t.Errorf("detail %q should carry the divergence note", noLogin.Detail)
 	}
 }
+
+// TestReviewBlockDetailSingularReviewer pins the singular boundary: one
+// outstanding reviewer must be described as one "review", not "reviews".
+// This catches display.go's len(changesRequestedBy) > 1 conditional.
+func TestReviewBlockDetailSingularReviewer(t *testing.T) {
+	got := reviewBlockDetail([]string{"alice"})
+	want := "1 outstanding changes-requested review from alice; " + divergenceNote
+	if got != want {
+		t.Errorf("reviewBlockDetail() = %q, want %q", got, want)
+	}
+}

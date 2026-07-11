@@ -42,6 +42,19 @@ Manage the local MCP server that exposes Bossanova to AI agents.
 
 See the [MCP guide](/guides/mcp) for agent wiring and the tool catalog.
 
+### `boss upgrade`
+
+Check for and install Bossanova upgrades.
+
+| Flag              | Description                                                           |
+| ----------------- | --------------------------------------------------------------------- |
+| `--check`         | check for an upgrade without installing                               |
+| `--yes`           | install without interactive confirmation                              |
+| `--version <tag>` | install a specific stable release tag (prereleases are not supported) |
+| `--no-restart`    | do not restart the daemon after upgrade                               |
+
+See [Upgrade](/upgrade) for the full upgrade guide.
+
 ### `boss new` and `boss chat` (scripted chat control)
 
 Create a session non-interactively and drive its chat from the shell (or, with the

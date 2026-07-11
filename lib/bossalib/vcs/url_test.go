@@ -425,6 +425,19 @@ func TestParseOriginURL_Boundaries(t *testing.T) {
 	}
 }
 
+// TestParseOriginURLParts_RejectsLeadingColon pins the SSH-shorthand boundary
+// before parseOriginURL discards the malformed host. A leading colon has no
+// host, so the parts parser must reject it rather than returning partial data.
+func TestParseOriginURLParts_RejectsLeadingColon(t *testing.T) {
+	host, parts := parseOriginURLParts(":owner/repo.git")
+	if host != "" {
+		t.Errorf("parseOriginURLParts returned host %q, want empty", host)
+	}
+	if parts != nil {
+		t.Errorf("parseOriginURLParts returned parts %q, want nil", parts)
+	}
+}
+
 // TestPullRequestWebLink_PRNumberBoundary pins the url.go:110 boundary
 // (`prNumber <= 0`, CONDITIONALS_BOUNDARY `<=` → `<`) at the helper level:
 // prNumber==0 hides the link; prNumber==1 (smallest valid) exposes it.

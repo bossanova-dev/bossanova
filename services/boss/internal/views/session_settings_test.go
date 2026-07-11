@@ -171,6 +171,10 @@ func (s *stubSessionSettingsClient) TestAccount(context.Context, string) (*pb.Te
 func (s *stubSessionSettingsClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
 	panic("unused")
 }
+
+func (s *stubSessionSettingsClient) StartRepairWorkflow(context.Context) (*pb.StartRepairWorkflowResponse, error) {
+	panic("unused")
+}
 func (s *stubSessionSettingsClient) ListCheckSnapshots(context.Context, string, int32) (*pb.ListCheckSnapshotsResponse, error) {
 	panic("unused")
 }

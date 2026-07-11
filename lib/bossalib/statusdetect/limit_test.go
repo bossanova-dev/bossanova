@@ -53,6 +53,11 @@ func TestStatusRegionBelowPrompt(t *testing.T) {
 			want: "status line one\nstatus line two",
 		},
 		{
+			name: "region below prompt marker on first line",
+			in:   "❯ \nstatus line",
+			want: "status line",
+		},
+		{
 			name: "region below bottom-most codex marker",
 			in:   "some transcript\n› \nreset info here",
 			want: "reset info here",
@@ -267,5 +272,69 @@ func TestDetectUsageLimitFailSafeEmpty(t *testing.T) {
 	pane := claudePane("body", "usage limit reached")
 	if lim, _, _ := DetectUsageLimit([]byte(pane), nil, agenterr.ParseResetTime); lim {
 		t.Error("no patterns should not be limited")
+	}
+}
+
+func TestDetectUsageLimitDoesNotMatchEmptyStatusRegion(t *testing.T) {
+	// A caller's grammar may include an empty match. With no footer below the
+	// prompt, that grammar must not be evaluated as a usage-limit banner.
+	patterns := []*regexp.Regexp{regexp.MustCompile(`^$`)}
+	pane := "transcript body\n❯ "
+
+	if limited, _, _ := DetectUsageLimit([]byte(pane), patterns, nil); limited {
+		t.Fatal("DetectUsageLimit() limited = true for an empty status region")
+	}
+}
+
+func TestLastTurnAbovePromptRejectsBarePromptAsBoundary(t *testing.T) {
+	pane := "❯ \nYou've hit your usage limit\n❯ "
+
+	if region := LastTurnAbovePrompt([]byte(pane)); region != nil {
+		t.Fatalf("LastTurnAbovePrompt() = %q, want nil for a bare prompt boundary", region)
+	}
+}
+
+func TestDetectUsageLimitDecisionModalWithTwoOptions(t *testing.T) {
+	// Two choices are sufficient for the CLI's blocking decision menu. Keep the
+	// cap text outside a prompt-owned status region so only the decision-modal
+	// detection path can find it.
+	pane := "You've hit your weekly limit\n" +
+		"  1. Stop and wait\n" +
+		"  2. Switch to usage credits\n" +
+		"Enter to confirm · Esc to cancel"
+
+	if limited, _, _ := DetectUsageLimit([]byte(pane), testLimitPatterns, nil); !limited {
+		t.Fatal("DetectUsageLimit() limited = false for a two-option decision modal")
+	}
+}
+
+func TestMatchLimitAnchoredHonorsLeadAllowanceBoundary(t *testing.T) {
+	patterns := []*regexp.Regexp{regexp.MustCompile(`usage limit`)}
+
+	for _, tt := range []struct {
+		name string
+		lead int
+		want bool
+	}{
+		{name: "pattern starts at the allowed boundary", lead: bannerLineLeadAllowance, want: true},
+		{name: "pattern starts past the allowed boundary", lead: bannerLineLeadAllowance + 1, want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			region := []byte(strings.Repeat("x", tt.lead) + "usage limit")
+			limited, _, _ := matchLimit(region, patterns, nil, true)
+			if limited != tt.want {
+				t.Fatalf("matchLimit() limited = %v, want %v", limited, tt.want)
+			}
+		})
+	}
+}
+
+func TestDetectUsageLimitDecisionModalRequiresTwoOptions(t *testing.T) {
+	pane := "You've hit your weekly limit\n" +
+		"  1. Stop and wait\n" +
+		"Enter to confirm · Esc to cancel"
+
+	if limited, _, _ := DetectUsageLimit([]byte(pane), testLimitPatterns, nil); limited {
+		t.Fatal("DetectUsageLimit() limited = true, want false for a one-option menu")
 	}
 }

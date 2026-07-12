@@ -13,8 +13,11 @@ Stop-hook cleanup before stopping.
 
 Three terminal states, nothing else:
 
-- `REVIEW_READY` — PR open + green; ticket moved to **In Review**; PR URL commented. For UI changes
-  (TUI/web), proof screenshots are captured opportunistically (best-effort, never blocking — Step 11).
+- `REVIEW_READY` — PR open + green; ticket moved to **In Review**; PR URL commented. Proof is
+  required for TUI: the proof pipeline fails loud (exit 1) on a missing/incomplete TUI video — a
+  signal for the cron/CI proof gate. Step 11 still records-and-ignores that exit code (it never flips
+  this run to BLOCKED), so author the TUI scenario proactively. Web and other surfaces stay
+  best-effort, captured opportunistically (never blocking — Step 11).
 - `BLOCKED` — ticket left **In Progress**; blocker comment explaining what failed (`file:line`) and
   what was tried; draft PR if work was pushed. Self-quarantines.
 - `NO_CHANGE` — no eligible candidate, claim lost with no runner-up, a foreign branch carrying real
@@ -667,8 +670,8 @@ hand-write skip prose or a "proof skipped: …" one-line note. When proof cannot
 missing prerequisite, pipeline bug), run `node scripts/proof.mjs run` anyway and let it post the honest
 `env-unavailable`/`pipeline-error` note (doctor output is embedded so a human can fix the env). The
 upload env is daemon-injected — do not source `.env`; run `node scripts/proof.mjs doctor` to see what
-is missing. A TUI diff lacking the scenario authored in Step 5 earns a warn-only `scenario-missing`
-note (exit 0). **Read [`references/proof-capture.md`](references/proof-capture.md)** for the full
+is missing. A TUI diff lacking the scenario authored in Step 5 earns a `scenario-missing`
+note (exit 1 — proof is required for TUI). **Read [`references/proof-capture.md`](references/proof-capture.md)** for the full
 surface/doctor gates, outcome classes, and non-fatal contract. Do not run the finalize sequence here
 (it already ran in Steps 8–9).
 

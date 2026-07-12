@@ -22,6 +22,7 @@ import {
 import {
   aggregateExitCode,
   classifySurfaceOutcomes,
+  softenTuiExit,
   surfaceRunHasMedia,
 } from './proof-finalize-outcome.mjs'
 import { buildSurfaceSections } from './proof-finalize-render.mjs'
@@ -365,10 +366,18 @@ export async function finalizeAgentProof({
   const commentPath = path.join(localDir, 'comment.md')
   fs.writeFileSync(commentPath, commentBody)
 
-  // Exit policy (BOS-139): aggregate the per-surface contributions. A no-surface
-  // outcome and every neutral deferral keep exit 0; a web agent-incomplete or
-  // any pipeline crash signals exit 1; a TUI agent-incomplete stays 0 (Q6).
-  if (aggregateExitCode(perSurface) === 1) {
+  // Exit policy (BOS-139, BOS-226): aggregate the per-surface contributions. A
+  // no-surface outcome and every neutral deferral keep exit 0; a pipeline crash,
+  // an agent-incomplete on EITHER surface, or a scenario-missing signals exit 1
+  // (TUI proof is now required — fail loud). `BOSS_PROOF_TUI_SOFT=1` is the
+  // rollback lever: it restores exit 0 for a TUI-only agent-incomplete/
+  // scenario-missing. It is an escape hatch for the new TUI enforcement ONLY —
+  // pipeline-error and every web contribution are never softened (whatever they
+  // contribute — 0 for a passed web surface, 1 otherwise — is left unchanged).
+  const perSurfaceForExit = softenTuiExit(perSurface, {
+    soft: process.env.BOSS_PROOF_TUI_SOFT === '1',
+  })
+  if (aggregateExitCode(perSurfaceForExit) === 1) {
     process.exitCode = 1
   }
 

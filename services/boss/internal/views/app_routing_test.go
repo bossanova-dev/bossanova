@@ -595,6 +595,187 @@ func TestBannerWithArchivingShowsArchivingLabel(t *testing.T) {
 	}
 }
 
+// TestBannerWithMergingShowsMergingLabel guards that renderBanner renders the
+// merging status string when bannerOpts.merging is true.
+func TestBannerWithMergingShowsMergingLabel(t *testing.T) {
+	sess := &pb.Session{
+		Id:            "s1",
+		Title:         "My session",
+		DisplayLabel:  "✓ passing",
+		DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+	}
+	sp := newStatusSpinner()
+	got := renderBanner(ViewChatPicker, bannerOpts{session: sess, spinner: sp, merging: true})
+	if !strings.Contains(got, "merging") {
+		t.Fatalf("banner with merging=true should contain 'merging', got %q", got)
+	}
+}
+
+// TestEscWhileMergingCarriesOverride guards that pressing esc mid-merge carries
+// the optimistic merging override (and in-flight marker) onto the home row via
+// MergingSessionID(), unioned with any concurrent merge already tracked.
+func TestEscWhileMergingCarriesOverride(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.markMerging("s1")
+	a.activeView = ViewChatPicker
+	// Merge in flight (no pre-set cancel) so the real ESC key path through
+	// chatpicker.Update sets cancel=true, exercising the actual keyboard route.
+	a.chatPicker = ChatPickerModel{merging: true, sessionID: "s2"}
+
+	model, _ := a.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	got := model.(App)
+
+	if got.activeView != ViewHome {
+		t.Fatalf("activeView = %v after esc-while-merging, want ViewHome", got.activeView)
+	}
+	for _, id := range []string{"s1", "s2"} {
+		if !got.home.isMerging(id) || !got.home.mergeInFlight(id) {
+			t.Fatalf("expected %s to remain merging and in flight after ESC carry", id)
+		}
+	}
+}
+
+// TestMergeFailureClearsOverride guards that a failed mergeResultMsg delivered
+// to the App clears only its matching home override, even when the user has
+// already navigated away from the chatpicker (ViewHome), so the row returns to
+// its real status.
+func TestMergeFailureClearsOverride(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.markMerging("s1")
+	a.home.markMerging("s2")
+
+	model, _ := a.Update(mergeResultMsg{sessionID: "s1", err: errors.New("boom")})
+	got := model.(App)
+
+	if got.home.isMerging("s1") || got.home.mergeInFlight("s1") {
+		t.Fatal("expected failed s1 merge override cleared")
+	}
+	if got.home.mergedOptimisticID == "s1" {
+		t.Fatal("failed merge must NOT set mergedOptimisticID")
+	}
+	if !got.home.isMerging("s2") || !got.home.mergeInFlight("s2") {
+		t.Fatal("expected concurrent s2 merge state retained")
+	}
+}
+
+// TestMergeFailureRebuildsHomeRows ensures a failed merge immediately replaces
+// the cached optimistic table status instead of waiting for a spinner tick or
+// the next session poll.
+func TestMergeFailureRebuildsHomeRows(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.sessions = []*pb.Session{{
+		Id:            "s1",
+		DisplayLabel:  "passing",
+		DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+	}}
+	a.home.markMerging("s1")
+	a.home.buildTableRows()
+	if !strings.Contains(a.home.table.Rows()[0][5], "merging") {
+		t.Fatal("precondition: expected cached row to render merging")
+	}
+
+	model, _ := a.Update(mergeResultMsg{sessionID: "s1", err: errors.New("boom")})
+	got := model.(App)
+
+	if strings.Contains(got.home.table.Rows()[0][5], "merging") {
+		t.Fatal("failed merge left cached row rendering merging")
+	}
+	if !strings.Contains(got.home.table.Rows()[0][5], "passing") {
+		t.Fatalf("failed merge row status = %q, want real status", got.home.table.Rows()[0][5])
+	}
+}
+
+// TestMergeSuccessHandsOffToMergedOptimistic guards the success handoff: a
+// successful mergeResultMsg clears the merging override (both sets) and sets
+// mergedOptimisticID so the row flips from blue "merging" straight to
+// "✓ merged" with no intervening "passing" flicker.
+func TestMergeSuccessHandsOffToMergedOptimistic(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.markMerging("s1")
+	a.home.markMerging("s2")
+
+	model, _ := a.Update(mergeResultMsg{sessionID: "s1", err: nil})
+	got := model.(App)
+
+	if got.home.isMerging("s1") || got.home.mergeInFlight("s1") {
+		t.Fatal("successful merge must clear the merging override (handoff to mergedOptimisticID)")
+	}
+	if got.home.mergedOptimisticID != "s1" {
+		t.Fatalf("mergedOptimisticID = %q, want s1 after successful merge", got.home.mergedOptimisticID)
+	}
+	if !got.home.isMerging("s2") || !got.home.mergeInFlight("s2") {
+		t.Fatal("expected concurrent s2 merge state retained")
+	}
+}
+
+// TestReEnterMergingSessionSeedsMerging guards that re-entering the
+// view-session screen while a merge is still in flight seeds the new
+// ChatPickerModel with merging=true so the banner shows the override and
+// [m]erge is hidden.
+func TestReEnterMergingSessionSeedsMerging(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.markMerging("s1")
+
+	model, _ := a.Update(switchViewMsg{view: ViewChatPicker, sessionID: "s1"})
+	got := model.(App)
+
+	if got.activeView != ViewChatPicker {
+		t.Fatalf("activeView = %v, want ViewChatPicker", got.activeView)
+	}
+	if !got.chatPicker.merging {
+		t.Fatalf("chatPicker.merging = false, want true when re-entering merging session")
+	}
+}
+
+// TestReEnterAfterMergeSuccessDoesNotSeedMerging guards the stale-override
+// case: after a successful merge the merging override is cleared
+// (mergeInFlight=false), so re-entering the session must NOT seed merging=true.
+func TestReEnterAfterMergeSuccessDoesNotSeedMerging(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.markMerging("s1")
+	a.home.resolveMerge("s1")
+
+	model, _ := a.Update(switchViewMsg{view: ViewChatPicker, sessionID: "s1"})
+	got := model.(App)
+
+	if got.chatPicker.merging {
+		t.Fatalf("chatPicker.merging = true after merge success, want false (resolved override must not re-enter as in-flight)")
+	}
+}
+
+// TestReEnterNonMergingSessionNoSeed guards that other sessions are NOT seeded
+// with merging=true when a different session is still in flight.
+func TestReEnterNonMergingSessionNoSeed(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.markMerging("s1")
+
+	model, _ := a.Update(switchViewMsg{view: ViewChatPicker, sessionID: "s2"})
+	got := model.(App)
+
+	if got.chatPicker.merging {
+		t.Fatalf("chatPicker.merging = true for non-merging session s2, want false")
+	}
+}
+
+// TestNewHomeModelCopiesMergeStateWithoutAliasing guards that rebuilding Home
+// preserves per-session merge state without sharing map storage with the prior
+// Home model.
+func TestNewHomeModelCopiesMergeStateWithoutAliasing(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.markMerging("s1")
+	a.home.markMerging("s2")
+
+	rebuilt := a.newHomeModel()
+
+	if !rebuilt.isMerging("s1") || !rebuilt.isMerging("s2") || !rebuilt.mergeInFlight("s1") || !rebuilt.mergeInFlight("s2") {
+		t.Fatal("rebuilt Home did not preserve per-session merge state")
+	}
+	rebuilt.resolveMerge("s1")
+	if !a.home.isMerging("s1") || !a.home.mergeInFlight("s1") {
+		t.Fatal("rebuilt Home aliases merge state from prior Home")
+	}
+}
+
 // TestAppSettingsA_OpensAccounts covers the Settings → [a] entry point: from
 // ViewSettings an 'a' keypress must emit switchViewMsg{view: ViewAccounts,
 // returnView: ViewSettings}. Guards the account-management epic entry point.

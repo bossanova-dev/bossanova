@@ -11,6 +11,7 @@ import {
   aggregateExitCode,
   classifyRunOutcome,
   classifySurfaceOutcomes,
+  softenTuiExit,
   surfaceLabel,
 } from './proof-finalize-outcome.mjs'
 
@@ -108,9 +109,17 @@ test('aggregateExitCode: web agent-incomplete → 1', () => {
   assert.equal(aggregateExitCode(perSurface), 1)
 })
 
-test('aggregateExitCode: TUI agent-incomplete → 0 (Q6 preserved)', () => {
+test('aggregateExitCode: TUI agent-incomplete → 1 (BOS-226 fail-loud flip)', () => {
   const perSurface = [{ surface: 'tui', outcome: 'deferred', reasonCode: 'agent-incomplete' }]
-  assert.equal(aggregateExitCode(perSurface), 0)
+  assert.equal(aggregateExitCode(perSurface), 1)
+})
+
+test('aggregateExitCode: mixed [tui agent-incomplete, web passed] → 1', () => {
+  const perSurface = [
+    { surface: 'tui', outcome: 'deferred', reasonCode: 'agent-incomplete' },
+    { surface: 'web', outcome: 'passed', reasonCode: null },
+  ]
+  assert.equal(aggregateExitCode(perSurface), 1)
 })
 
 test('aggregateExitCode: pipeline-error anywhere → 1', () => {
@@ -131,25 +140,73 @@ test('aggregateExitCode: no-media / no-ui-surface / env-unavailable → 0', () =
   }
 })
 
-// BOS-220: `scenario-missing` is a warn-only TUI authoring deferral — neutral
-// (→ 0) exactly like the other gate-miss deferrals. Epic 4 (BOS-226) flips it
-// fatal; this ticket must NOT. Pin both the single-surface contribution and the
-// aggregate so the warn semantics can't silently regress to a failing exit here.
-test('aggregateExitCode: TUI scenario-missing → 0 (warn-only, BOS-220)', () => {
+// BOS-226: `scenario-missing` was a warn-only TUI authoring deferral (BOS-220,
+// neutral → 0). Epic 4 (BOS-226) makes proof required for TUI: a missing
+// scenario now contributes exit 1 on both surfaces. Pin the single-surface and
+// aggregate contributions so the fail-loud semantics can't silently regress.
+test('aggregateExitCode: TUI scenario-missing → 1 (BOS-226 required-for-TUI flip)', () => {
   const perSurface = [{ surface: 'tui', outcome: 'deferred', reasonCode: 'scenario-missing' }]
-  assert.equal(aggregateExitCode(perSurface), 0)
+  assert.equal(aggregateExitCode(perSurface), 1)
 })
 
-test('aggregateExitCode: passed web + TUI scenario-missing → 0 (partial success neutral)', () => {
+test('aggregateExitCode: web scenario-missing → 1 (BOS-226)', () => {
+  const perSurface = [{ surface: 'web', outcome: 'deferred', reasonCode: 'scenario-missing' }]
+  assert.equal(aggregateExitCode(perSurface), 1)
+})
+
+test('aggregateExitCode: passed web + TUI scenario-missing → 1 (BOS-226 fatal)', () => {
   const perSurface = [
     { surface: 'web', outcome: 'passed', reasonCode: null },
     { surface: 'tui', outcome: 'deferred', reasonCode: 'scenario-missing' },
   ]
-  assert.equal(aggregateExitCode(perSurface), 0)
+  assert.equal(aggregateExitCode(perSurface), 1)
 })
 
 test('aggregateExitCode: empty → 0', () => {
   assert.equal(aggregateExitCode([]), 0)
+})
+
+// BOS-226 rollback lever: `softenTuiExit(perSurface, { soft })` is the pure
+// escape hatch. With soft=true it maps ONLY tui agent-incomplete/scenario-missing
+// entries to softened → 0; web contributions and pipeline-error are never
+// softened, and soft=false is a no-op.
+test('softenTuiExit: soft TUI agent-incomplete → aggregates 0', () => {
+  const softened = softenTuiExit(
+    [{ surface: 'tui', outcome: 'deferred', reasonCode: 'agent-incomplete' }],
+    { soft: true },
+  )
+  assert.equal(aggregateExitCode(softened), 0)
+})
+
+test('softenTuiExit: soft TUI scenario-missing → aggregates 0', () => {
+  const softened = softenTuiExit(
+    [{ surface: 'tui', outcome: 'deferred', reasonCode: 'scenario-missing' }],
+    { soft: true },
+  )
+  assert.equal(aggregateExitCode(softened), 0)
+})
+
+test('softenTuiExit: web agent-incomplete NOT softened → still 1', () => {
+  const softened = softenTuiExit(
+    [{ surface: 'web', outcome: 'deferred', reasonCode: 'agent-incomplete' }],
+    { soft: true },
+  )
+  assert.equal(aggregateExitCode(softened), 1)
+})
+
+test('softenTuiExit: TUI pipeline-error NEVER softened → still 1', () => {
+  const softened = softenTuiExit(
+    [{ surface: 'tui', outcome: 'failed', reasonCode: 'pipeline-error' }],
+    { soft: true },
+  )
+  assert.equal(aggregateExitCode(softened), 1)
+})
+
+test('softenTuiExit: soft=false is a no-op (no softened flag, aggregate unchanged)', () => {
+  const input = [{ surface: 'tui', outcome: 'deferred', reasonCode: 'agent-incomplete' }]
+  const out = softenTuiExit(input, { soft: false })
+  assert.deepEqual(out, input)
+  assert.equal(aggregateExitCode(out), 1)
 })
 
 test('surfaceLabel: tui → TUI, web → Web, other → capitalized', () => {

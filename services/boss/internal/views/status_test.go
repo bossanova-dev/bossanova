@@ -176,6 +176,22 @@ func TestRenderArchivingStatus_ShowsSpinnerAndLabel(t *testing.T) {
 	}
 }
 
+func TestRenderMergingStatus_ShowsSpinnerAndLabel(t *testing.T) {
+	sp := newStatusSpinner()
+	got := renderMergingStatus(sp)
+	if !strings.Contains(got, "merging") {
+		t.Fatalf("expected merging label, got %q", got)
+	}
+	if !strings.Contains(got, sp.View()) {
+		t.Fatalf("expected spinner frame %q in %q", sp.View(), got)
+	}
+	// The merging status uses the blue/info intent, distinct from the archiving
+	// warning color, so the two optimistic states are visually separable.
+	if want := styleStatusInfo.Render(sp.View() + "merging"); got != want {
+		t.Fatalf("renderMergingStatus = %q, want info-styled %q", got, want)
+	}
+}
+
 // TestRepairFailureHint covers the "repair failed (N×)" warning text
 // that flags sessions where Phase 1c's RecordRepairOutcome captured a
 // non-empty runner_error or exit_error.

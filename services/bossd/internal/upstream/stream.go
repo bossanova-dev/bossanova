@@ -501,6 +501,7 @@ type StreamClient struct {
 	creator          SessionCreator
 	reRegister       ReRegisterFunc
 	authState        *AuthState
+	onHandshake      func()
 	daemonID         string
 	hostname         string
 	logger           zerolog.Logger
@@ -580,6 +581,17 @@ type StreamClientConfig struct {
 	// Nil keeps the legacy tight-loop behaviour.
 	AuthState *AuthState
 
+	// OnHandshake, when set, is invoked after every successful snapshot
+	// handshake — i.e. once per registration bosso observes for this
+	// daemon, including reconnects. bosso builds a fresh DaemonState per
+	// registration, so any sibling stream bound to the prior state (the
+	// TerminalStream sender) is stranded from that moment on. Production
+	// wiring points this at TerminalStreamClient.CycleStream so the
+	// terminal sender rebinds to the current DaemonState after every
+	// registration (2026-07-11 incident). The hook runs on the openStream
+	// goroutine — keep it non-blocking. Nil is safe.
+	OnHandshake func()
+
 	// Observability / testing knobs.
 	Logger  zerolog.Logger
 	Metrics Metrics
@@ -647,6 +659,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 		creator:          cfg.Creator,
 		reRegister:       cfg.ReRegister,
 		authState:        cfg.AuthState,
+		onHandshake:      cfg.OnHandshake,
 		daemonID:         cfg.DaemonID,
 		hostname:         cfg.Hostname,
 		logger:           cfg.Logger.With().Str("component", "stream-client").Logger(),
@@ -824,6 +837,12 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 	// Mark connected only after a successful handshake. The outer loop
 	// uses this to decide whether to reset backoff on the next error.
 	c.markConnected()
+
+	// Every successful handshake corresponds to a fresh DaemonState on
+	// bosso; let sibling streams (TerminalStream) rebind to it.
+	if c.onHandshake != nil {
+		c.onHandshake()
+	}
 
 	// 2. Spin up the outbound writer. A single goroutine owns the
 	//    stream.Send side so snapshots/deltas/results don't race one

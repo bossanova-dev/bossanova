@@ -32,6 +32,24 @@ func TestTailEmptyFile(t *testing.T) {
 	}
 }
 
+// TestTailNonEmptyFileDoesNotReturnEmpty exercises the file-size guard before
+// Tail reads a small file. A non-empty file must not take the empty-file path.
+func TestTailNonEmptyFileDoesNotReturnEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "one-line.log")
+	const content = "only line\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Tail(path, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != content {
+		t.Errorf("non-empty file tail = %q, want %q", got, content)
+	}
+}
+
 func TestTailShortFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "short.log")
 	content := "one\ntwo\nthree\n"

@@ -1,0 +1,19 @@
+# Hand-authored base OpenAPI document (SOURCE input, NOT generated).
+#
+# protoc-gen-connect-openapi (wired in buf.gen.yaml via `base=`) merges this
+# file's fields into the generated bossanova.v1.openapi.yaml, which otherwise
+# emits an empty `info: {}`. Keep the `version` in sync with the current
+# apiversion (lib/bossalib/apiversion Current) and the API changelog.
+#
+# `make generate` writes bossanova.v1.openapi.yaml; it must never overwrite
+# this file.
+openapi: 3.1.0
+info:
+  title: Bossanova Orchestrator API
+  version: '2026-07-11'
+  description: >-
+    OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API
+    served by bosso. Callers select a date-based API version with the
+    Bossanova-Version request header; see the API changelog for version history.
+  license:
+    name: Proprietary

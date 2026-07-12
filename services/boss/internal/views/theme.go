@@ -274,6 +274,11 @@ type bannerOpts struct {
 	// archive is still in flight (the HomeModel tracks that session's ID).
 	archiving bool
 
+	// merging, when true, overrides the session's PR display status with the
+	// animated blue "merging" label. Set when the user re-enters a session whose
+	// PR merge is still in flight. Mutually exclusive with archiving per session.
+	merging bool
+
 	// Screen-specific overrides (used when session/repo are nil).
 	line1 string
 	line2 string
@@ -326,6 +331,8 @@ func renderBanner(active View, opts bannerOpts) string {
 		displayStatus := renderDisplayStatus(opts.session, opts.spinner)
 		if opts.archiving {
 			displayStatus = renderArchivingStatus(opts.spinner)
+		} else if opts.merging {
+			displayStatus = renderMergingStatus(opts.spinner)
 		}
 		if displayStatus != "" {
 			title += " (" + displayStatus + ")"

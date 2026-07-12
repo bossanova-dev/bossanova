@@ -255,6 +255,15 @@ export function validateBrief(raw, { source = 'authored', allowMatchers = true }
       const { liveAgent: _liveAgent, ...rest } = s
       return rest
     })
+    // A generated overshoot past MAX_SCENES is a steering miss by the LLM (the
+    // structured-output API cannot enforce maxItems, so the 1..MAX_SCENES bound
+    // is prompt-only) — clamp to the first MAX_SCENES instead of failing the
+    // whole run (BOS-251; PR 1146 hard-crashed on "brief.scenes exceeds 4").
+    // Authored briefs still reject below: a human-written brief is a contract,
+    // never silently reshaped.
+    if (scenesInput.length > MAX_SCENES) {
+      scenesInput = scenesInput.slice(0, MAX_SCENES)
+    }
   }
 
   if (scenesInput !== undefined) {
@@ -320,6 +329,7 @@ export function validateBrief(raw, { source = 'authored', allowMatchers = true }
       planRequiredProof: Array.isArray(r.planRequiredProof) ? r.planRequiredProof : [],
       budgets: { ...DEFAULT_BUDGETS, ...(r.budgets ?? {}) },
       genAi: r.genAi === true,
+      noUiSurface: r.noUiSurface === true,
       ...(Array.isArray(scenesInput) ? { scenes: scenesInput } : {}),
     },
     errors: [],
@@ -441,6 +451,11 @@ function makeBriefSchema(evidenceItemSchema) {
       stepsHints: { type: 'array', items: { type: 'string' } },
       expectedEvidence: { type: 'array', items: evidenceItemSchema },
       genAi: { type: 'boolean' },
+      // Honesty valve (BOS-251): the model may declare that the change has no
+      // demonstrable UI surface at all instead of inventing un-showable scenes.
+      // The runner decides whether to honor it (a diff that touches real view
+      // code always still captures).
+      noUiSurface: { type: 'boolean' },
       // NOTE: no `maxItems` here — the Anthropic structured-output API rejects
       // `maxItems` on array types (400 invalid_request_error). The 1..MAX_SCENES
       // bound is enforced post-generation by validateBrief (rejects > MAX_SCENES)
@@ -605,9 +620,19 @@ export function buildBriefPrompt({
     prioritized.length > maxDiffChars
       ? `${prioritized.slice(0, maxDiffChars)}\n...[diff truncated]`
       : prioritized
+  // TUI required-proof items are demonstrable-only (BOS-251): plan bullets are
+  // scoped by keyword and unscoped bullets are fed to every surface, so the TUI
+  // brief routinely receives items (backend tests, request shapes, docs) that a
+  // TUI recording can never show. Demanding "cover ALL first" for those forced
+  // the model to plan un-capturable scenes; tell it to skip them instead.
   const required = requiredProof.length
-    ? "The change's plan REQUIRES demonstrating the following. Cover ALL of these first; " +
-      'only add further demonstrations after every required item is covered:\n' +
+    ? "The change's plan REQUIRES demonstrating the following. " +
+      (surface === 'tui'
+        ? 'Cover every item below that can be shown on a TUI screen, in scene order. ' +
+          'An item that CANNOT appear on a TUI screen (unit/backend tests, shell commands, ' +
+          'request/proto shapes, code, documentation files) must NOT get a scene — list it ' +
+          'as out of scope in the description instead:\n'
+        : 'Cover ALL of these first; only add further demonstrations after every required item is covered:\n') +
       requiredProof.map((r) => `- ${r}`).join('\n') +
       '\n\n'
     : ''
@@ -619,7 +644,17 @@ export function buildBriefPrompt({
   // Surface-specific framing — the difference between web and tui output.
   const surfaceLine =
     surface === 'tui'
-      ? 'Drive the app with the provided key map — describe the keystrokes to press; if the change has no visible TUI surface, say so in the description and leave targetRoutes empty. '
+      ? 'Drive the app with the provided key map — describe the keystrokes to press; if the change has no visible TUI surface, say so in the description and leave targetRoutes empty. ' +
+        'HARD CONSTRAINT: every scene must be a flow a viewer can WATCH inside the running TUI — ' +
+        'pressing keys and seeing screens change. The recording terminal runs ONLY the TUI; there is ' +
+        'no shell, so a scene can never run tests, commands, or scripts, and can never show code, ' +
+        'diffs, request/proto shapes, or documentation files. When the change itself is not directly ' +
+        'visible, plan scenes around its closest user-visible TUI consequence (the screen, list, ' +
+        'label, color, or flow it affects) — never around how it was built or tested. ' +
+        'If NOTHING in the change affects any TUI screen, list, label, color, or flow (e.g. ' +
+        'backend-only, build tooling, tests, docs), set noUiSurface:true and explain why in the ' +
+        'description — but ONLY when there is truly nothing to show; never use it to dodge a ' +
+        'hard-to-stage demonstration. '
       : 'Use ONLY routes that exist in the route map; if the change has no UI surface, say so in the description and leave targetRoutes empty (do NOT invent a route). '
   const contextHeader = surface === 'tui' ? '## Available key map' : '## Available routes'
   // The shared evidence line (below) demands SHORT literal tokens on BOTH

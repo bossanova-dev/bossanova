@@ -249,7 +249,10 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 	if err != nil {
 		return 0, "", "", err
 	}
-	res := v.(wakeResult)
+	res, ok := v.(wakeResult)
+	if !ok {
+		return 0, "", "", fmt.Errorf("wake chat: singleflight returned unexpected type %T", v)
+	}
 	return res.outcome, res.tmuxName, res.reason, nil
 }
 

@@ -10,7 +10,6 @@ package tuidriver
 import (
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -24,7 +23,7 @@ import (
 // Driver controls a TUI process running in a PTY.
 type Driver struct {
 	cmd      *exec.Cmd
-	pty      *os.File
+	pty      io.ReadWriteCloser
 	vt       *vt.Emulator
 	mu       sync.Mutex // protects vt.Write, vt.String
 	width    int

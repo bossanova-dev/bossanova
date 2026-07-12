@@ -267,8 +267,8 @@ export const SCENARIO_FILE_RE = /^proof\/scenarios\/.+\.scenario\.json$/
 /**
  * Pure predicate: true when the PR's changed-files list adds or modifies a
  * committed `proof/scenarios/*.scenario.json`. BOS-220 gates the TUI proof
- * surface on this — a TUI change that ships without a scenario gets a warn-only
- * `scenario-missing` deferral (exit 0) nudging the author to commit one, so the
+ * surface on this — a TUI change that ships without a scenario gets a
+ * `scenario-missing` deferral (exit 1 since BOS-226) nudging the author to commit one, so the
  * deterministic TUI proof (BOS-219) actually gets authored. Modeled on
  * webUiSurfacePresent (pure, array-in → bool-out); a suffix+dir match rather
  * than a bare prefix because only `*.scenario.json` files count. Detection is

@@ -106,20 +106,31 @@ export function selectJudgeStills(captures) {
     }
   }
 
+  // Evenly-spaced sampling instead of first+last (BOS-251): the evidence a
+  // scene proves usually appears MID-scene (navigate → money shot → back), so
+  // endpoint-only selection routinely showed the judge two look-alike
+  // before/after frames and none of the proof, and it graded a passing capture
+  // unsatisfactory. Each scene group gets an even share of the cap (≥2), spread
+  // uniformly across its stills so mid-scene frames are always represented.
+  const failedKeys = groupOrder.filter((k) => groups.get(k).failed)
+  const passedKeys = groupOrder.filter((k) => !groups.get(k).failed)
+  const orderedKeys = [...failedKeys, ...passedKeys]
+  const perScene = Math.max(2, Math.floor(MAX_JUDGE_STILLS / Math.max(1, orderedKeys.length)))
+
   const pickRepresentative = (items) => {
     const sorted = [...items].sort((a, b) =>
       a.fileName < b.fileName ? -1 : a.fileName > b.fileName ? 1 : 0,
     )
-    if (sorted.length <= 1) return sorted
-    return [sorted[0], sorted[sorted.length - 1]]
+    if (sorted.length <= perScene) return sorted
+    const picked = []
+    for (let i = 0; i < perScene; i++) {
+      picked.push(sorted[Math.round((i * (sorted.length - 1)) / (perScene - 1))])
+    }
+    // De-dupe indexes that rounded together (short groups).
+    return [...new Set(picked)]
   }
 
-  const failedKeys = groupOrder.filter((k) => groups.get(k).failed)
-  const passedKeys = groupOrder.filter((k) => !groups.get(k).failed)
-
-  const selected = [...failedKeys, ...passedKeys].flatMap((k) =>
-    pickRepresentative(groups.get(k).items),
-  )
+  const selected = orderedKeys.flatMap((k) => pickRepresentative(groups.get(k).items))
 
   return selected.slice(0, MAX_JUDGE_STILLS)
 }
@@ -193,6 +204,19 @@ function renderRequiredProofSection(requiredProof, surfaces) {
   } else {
     for (const b of unscoped) lines.push(`- ${b}`)
   }
+  // Surface-appropriateness framing (BOS-251): plan bullets are keyword-scoped
+  // and unscoped ones reach every surface, so a UI recording is routinely asked
+  // to "prove" backend tests, shell output, or code shapes it can never show.
+  // Without this note the judge counts those as missing evidence and marks an
+  // otherwise-convincing capture unsatisfactory.
+  lines.push(
+    '',
+    'Judge ONLY what this capture surface can display. A required-proof item that',
+    'cannot appear in a UI recording (unit/backend test output, shell commands,',
+    'request/proto shapes, code, docs files) is out of scope here — do not count',
+    'it as missing evidence; other pipeline stages verify those. Grade the scenes',
+    'on whether the recording demonstrates the user-visible behavior.',
+  )
   return lines.join('\n')
 }
 

@@ -10,6 +10,17 @@ import (
 // TERM=xterm-256color in normal (non-application) mode. The sequences are
 // grounded line-by-line in ultraviolet's key_table.go; do not invent bytes.
 //
+// Cursor-key mode coupling: these are normal-mode (non-DECCKM) sequences —
+// arrows/home/end as CSI, F1-F4 as SS3 — written straight into the PTY. The
+// driver never negotiates DECCKM (application cursor-key mode). It doesn't need
+// to: ultraviolet's key_table.go decodes BOTH the normal-mode CSI forms and the
+// application-mode/SS3 forms to the same Key.Code unconditionally (the decoder
+// is a mode-agnostic static lookup), so app-side cursor-key mode does not affect
+// matching. TestKeyBytesDecodeContract (keybytes_parser_test.go) is the guard
+// that keeps this true across ultraviolet upgrades: it decodes every multi-byte
+// sequence below and asserts the intended key, so a future bump that dropped the
+// normal-mode rows would fail loudly instead of silently breaking the vocabulary.
+//
 // namedKeys is the single source of truth for testdata/key-vocab.json: the
 // golden test (TestKeyVocabGolden) derives that file's `named` list from these
 // keys, and the proof send_keys doc-drift guard reads it back to assert the

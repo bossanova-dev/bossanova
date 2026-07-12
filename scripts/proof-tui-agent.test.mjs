@@ -3054,8 +3054,11 @@ test('runAgentLoop: out-of-order begin_scene marker errors and leaves the active
         if (step === 1) return badMarkerTurn
         // The prior assistant turn's tool_result is the last user message —
         // inspect it to assert the error shape the loop fed back to the model.
+        // Capture only the FIRST tool_result: the premature done(passed=true)
+        // below is itself rejected once (BOS-251), so later turns carry the
+        // done-rejection error instead of the marker error.
         const lastUser = messages[messages.length - 1]
-        markerToolResult = JSON.parse(lastUser.content[0].content)
+        if (markerToolResult === null) markerToolResult = JSON.parse(lastUser.content[0].content)
         return toolUse('done', { passed: true, summary: 'done', evidence: [] })
       },
     }
@@ -3643,4 +3646,485 @@ test('TUI_BUDGETS: maxSteps raised to 40; wall-clock and tokens unchanged', asyn
   assert.equal(TUI_BUDGETS.maxSteps, 40, 'BOS-351 step-budget bump')
   assert.equal(TUI_BUDGETS.maxWallClockMs, 4 * 60 * 1000, 'wall clock unchanged (4 min)')
   assert.equal(TUI_BUDGETS.maxTokens, 200_000, 'token budget unchanged (200k)')
+})
+
+// ── BOS-251: loop robustness + no-ui-surface honesty valve ────────────────────
+
+test('SYSTEM_PROMPT: forbids quitting the TUI and steers un-showable scenes back on screen', async () => {
+  const mod = await import('./proof-tui-agent.mjs')
+  assert.match(mod.SYSTEM_PROMPT, /NEVER EXIT THE TUI/)
+  assert.match(mod.SYSTEM_PROMPT, /no shell/i)
+  assert.match(mod.SYSTEM_PROMPT, /never press q/i)
+  assert.match(mod.SYSTEM_PROMPT, /nearest TUI-visible behavior/i)
+})
+
+test('evaluateDoneCall: rejects a premature done while scenes remain, accepts once the bound is hit', async () => {
+  const { evaluateDoneCall, MAX_DONE_REJECTIONS } = await import('./proof-tui-agent.mjs')
+  const scenes = [
+    { id: 'scene-01', title: 'One' },
+    { id: 'scene-02', title: 'Two' },
+  ]
+  // Premature pass with a scene still owed → bounded corrective rejection.
+  const early = evaluateDoneCall({
+    input: { passed: true, summary: 'too early' },
+    activeSceneIndex: 0,
+    scenes,
+    doneRejections: 0,
+  })
+  assert.equal(early.accept, false)
+  assert.equal(early.rejected, true)
+  assert.equal(early.done, undefined)
+  assert.match(early.toolResult.error, /Only scene 1 of 2/)
+  assert.match(early.toolResult.error, /begin_scene\({id:"scene-02"}\)/)
+
+  // passed=false as a per-scene checkpoint is bounced too, with the blocker wording.
+  const checkpoint = evaluateDoneCall({
+    input: { passed: false, summary: 'scene 1 confirmed' },
+    activeSceneIndex: 0,
+    scenes,
+    doneRejections: 0,
+  })
+  assert.equal(checkpoint.rejected, true)
+  assert.match(checkpoint.toolResult.error, /genuine blocker/)
+
+  // Past the rejection bound, an insistence is accepted so a stuck agent cannot loop forever.
+  const insisted = evaluateDoneCall({
+    input: { passed: false, summary: 'blocked', evidence: ['nope'] },
+    activeSceneIndex: 0,
+    scenes,
+    doneRejections: MAX_DONE_REJECTIONS,
+  })
+  assert.equal(insisted.accept, true)
+  assert.equal(insisted.rejected, false)
+  assert.deepEqual(insisted.done, { passed: false, summary: 'blocked', evidence: ['nope'] })
+
+  // Last scene active → nothing owed → accept immediately.
+  const final = evaluateDoneCall({
+    input: { passed: true, summary: 'done' },
+    activeSceneIndex: 1,
+    scenes,
+    doneRejections: 0,
+  })
+  assert.equal(final.accept, true)
+  assert.equal(final.rejected, false)
+  assert.equal(final.done.passed, true)
+})
+
+test('runAgentLoop: premature done(passed=true) is rejected once, then the run continues', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    const brief = {
+      description: 'prove it',
+      scenes: [
+        { id: 'scene-01', title: 'One' },
+        { id: 'scene-02', title: 'Two' },
+      ],
+      budgets: { maxSteps: 8, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    }
+    const rejections = []
+    let step = 0
+    const model = {
+      async createMessage({ messages }) {
+        step += 1
+        if (step === 1) return toolUse('done', { passed: true, summary: 'too early' })
+        if (step === 2) {
+          const lastUser = messages[messages.length - 1]
+          rejections.push(JSON.parse(lastUser.content[0].content))
+          return toolUse('begin_scene', { id: 'scene-02' })
+        }
+        return toolUse('done', { passed: true, summary: 'finished both scenes' })
+      },
+    }
+    const bridge = scriptedBridge({ screens: ['Screen'] })
+    const result = await runAgentLoop({
+      brief,
+      model: 'test-model',
+      modelDep: model,
+      bridge,
+      rawDir,
+      readCastMs: () => 1000,
+    })
+    assert.equal(rejections.length, 1, 'first premature done must be rejected')
+    assert.match(rejections[0].error, /Only scene 1 of 2/)
+    assert.match(rejections[0].error, /begin_scene\({id:"scene-02"}\)/)
+    assert.equal(result.agentResult.passed, true, 'run completes after the nudge')
+    assert.equal(result.sceneTimings.length, 2, 'scene 2 was begun after the rejection')
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('runAgentLoop: a repeated premature done(passed=true) is accepted (no infinite loop)', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    const brief = {
+      description: 'prove it',
+      scenes: [
+        { id: 'scene-01', title: 'One' },
+        { id: 'scene-02', title: 'Two' },
+      ],
+      budgets: { maxSteps: 8, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    }
+    const model = scriptedModel(
+      [toolUse('done', { passed: true, summary: 'insisting' })],
+      { repeatLast: true },
+    )
+    const result = await runAgentLoop({
+      brief,
+      model: 'test-model',
+      modelDep: model,
+      bridge: scriptedBridge(),
+      rawDir,
+    })
+    const { MAX_DONE_REJECTIONS } = await import('./proof-tui-agent.mjs')
+    assert.equal(result.agentResult.passed, true)
+    assert.equal(
+      model.calls,
+      MAX_DONE_REJECTIONS + 1,
+      'bounded rejections, then the insistence is accepted',
+    )
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('runAgentLoop: a text-only turn is nudged back onto tools instead of ending the run', async () => {
+  const { runAgentLoop, MAX_TEXT_ONLY_NUDGES } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    const brief = {
+      description: 'prove it',
+      budgets: { maxSteps: 8, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    }
+    const textTurn = {
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 5, output_tokens: 5 },
+      content: [{ type: 'text', text: 'Let me think about this…' }],
+    }
+    let sawNudge = null
+    let step = 0
+    const model = {
+      async createMessage({ messages }) {
+        step += 1
+        if (step === 1) return textTurn
+        if (step === 2) {
+          sawNudge = messages[messages.length - 1].content
+          return toolUse('done', { passed: true, summary: 'ok' })
+        }
+        return toolUse('done', { passed: true, summary: 'ok' })
+      },
+    }
+    const result = await runAgentLoop({
+      brief,
+      model: 'test-model',
+      modelDep: model,
+      bridge: scriptedBridge(),
+      rawDir,
+    })
+    assert.equal(result.agentResult.passed, true, 'run recovers from a narration-only turn')
+    assert.match(String(sawNudge), /tool calls only/i)
+    assert.ok(MAX_TEXT_ONLY_NUDGES >= 1)
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('runAgentLoop: persistent text-only turns still end the run after the nudge budget', async () => {
+  const { runAgentLoop, MAX_TEXT_ONLY_NUDGES } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    const brief = {
+      description: 'prove it',
+      budgets: { maxSteps: 10, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    }
+    const textTurn = {
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 5, output_tokens: 5 },
+      content: [{ type: 'text', text: 'still talking' }],
+    }
+    const model = scriptedModel([textTurn], { repeatLast: true })
+    const result = await runAgentLoop({
+      brief,
+      model: 'test-model',
+      modelDep: model,
+      bridge: scriptedBridge(),
+      rawDir,
+    })
+    assert.equal(result.agentResult.passed, false)
+    assert.equal(model.calls, MAX_TEXT_ONLY_NUDGES + 1, 'bounded: nudges + the final give-up turn')
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('extractStillsFromVideo: blank and duplicate screens are skipped', async () => {
+  const { extractStillsFromVideo } = await import('./proof-tui-agent.mjs')
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-stills-'))
+  try {
+    const extracted = []
+    const extractStill = async ({ output }) => {
+      extracted.push(path.basename(output))
+      fs.writeFileSync(output, 'png')
+      return true
+    }
+    const stills = await extractStillsFromVideo({
+      screens: [
+        { seq: 1, text: 'HOME', castMs: 0 },
+        { seq: 2, text: '', castMs: 500 },        // blank — skipped
+        { seq: 3, text: 'HOME', castMs: 900 },     // duplicate of 1 — skipped
+        { seq: 4, text: 'SETTINGS', castMs: 1400 },
+        { seq: 5, text: '   \n  ', castMs: 1800 }, // whitespace-only — skipped
+      ],
+      sceneForScreen: { 1: 'scene-01', 2: 'scene-01', 3: 'scene-01', 4: 'scene-02', 5: 'scene-02' },
+      timeline: { trimMs: 0, segments: [{ startMs: 0, endMs: 2000, speed: 1 }], introMs: 0 },
+      mp4Path: '/tmp/fake.mp4',
+      captureDir,
+      extractStill,
+    })
+    assert.deepEqual(extracted, ['scene-01-frame-01.png', 'scene-02-frame-04.png'])
+    assert.equal(stills.length, 2)
+  } finally {
+    fs.rmSync(captureDir, { recursive: true, force: true })
+  }
+})
+
+test('extractStillsFromVideo: all-blank screens fall back to the raw list (never zero stills)', async () => {
+  const { extractStillsFromVideo } = await import('./proof-tui-agent.mjs')
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-stills-'))
+  try {
+    const extractStill = async ({ output }) => {
+      fs.writeFileSync(output, 'png')
+      return true
+    }
+    const stills = await extractStillsFromVideo({
+      screens: [
+        { seq: 1, text: '', castMs: 0 },
+        { seq: 2, text: '', castMs: 500 },
+      ],
+      sceneForScreen: { 1: 'scene-01', 2: 'scene-01' },
+      timeline: { trimMs: 0, segments: [{ startMs: 0, endMs: 1000, speed: 1 }], introMs: 0 },
+      mp4Path: '/tmp/fake.mp4',
+      captureDir,
+      extractStill,
+    })
+    assert.equal(stills.length, 2, 'blank-only capture keeps its frames rather than none')
+  } finally {
+    fs.rmSync(captureDir, { recursive: true, force: true })
+  }
+})
+
+test('extractStillsFromVideo: an exact repeat across a scene boundary still keeps the later scene a still', async () => {
+  const { extractStillsFromVideo } = await import('./proof-tui-agent.mjs')
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-stills-'))
+  try {
+    const extracted = []
+    const extractStill = async ({ output }) => {
+      extracted.push(path.basename(output))
+      fs.writeFileSync(output, 'png')
+      return true
+    }
+    const stills = await extractStillsFromVideo({
+      screens: [
+        { seq: 1, text: 'HOME', castMs: 0 },
+        { seq: 2, text: 'SESSIONS', castMs: 500 },
+        // scene-02's first screen is textually identical to scene-01's last:
+        // the repeat filter must reset at the boundary so scene-02 is not starved.
+        { seq: 3, text: 'SESSIONS', castMs: 1000 },
+      ],
+      sceneForScreen: { 1: 'scene-01', 2: 'scene-01', 3: 'scene-02' },
+      timeline: { trimMs: 0, segments: [{ startMs: 0, endMs: 1500, speed: 1 }], introMs: 0 },
+      mp4Path: '/tmp/fake.mp4',
+      captureDir,
+      extractStill,
+    })
+    assert.deepEqual(extracted, ['scene-01-frame-01.png', 'scene-01-frame-02.png', 'scene-02-frame-03.png'])
+    assert.equal(
+      stills.filter((s) => s.sceneId === 'scene-02').length,
+      1,
+      'scene-02 must keep its still even though it repeats scene-01 last screen',
+    )
+  } finally {
+    fs.rmSync(captureDir, { recursive: true, force: true })
+  }
+})
+
+test('runTuiAgentProof: generated noUiSurface brief defers as no-ui-surface without driving the TUI', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  try {
+    const bridge = scriptedBridge()
+    const surfaceRun = await runTuiAgentProof({
+      prNumber: 'tuinosurface',
+      commit: 'abc1234',
+      changedFiles: ['services/bossd/internal/server/foo.go'],
+      dryRun: true,
+      runContext: { collect: true, runId: 'tui-nosurface', token: 'tok-tui-test' },
+      deps: {
+        bridge,
+        model: { async createMessage() { throw new Error('agent loop must not run') } },
+        generateBriefFromDiff: async () => ({
+          title: 'backend-only change',
+          description: 'no TUI screen is affected — daemon-internal retry logic only',
+          targetRoutes: [],
+          stepsHints: [],
+          expectedEvidence: [],
+          noUiSurface: true,
+        }),
+        renderStill: fakeRenderStill(),
+        castToVideo: async () => null,
+      },
+    })
+    assert.equal(surfaceRun.noSurface, true)
+    assert.equal(surfaceRun.reasonCode, 'no-ui-surface')
+    assert.deepEqual(surfaceRun.captureShapes, [])
+    assert.equal(surfaceRun.hasFailure, false, 'neutral deferral — never a failure')
+    assert.equal(bridge.observeCount, 0, 'bridge never driven')
+    assert.equal(bridge.quitCalled, false, 'bridge never spawned/quit')
+  } finally {
+    cleanupPr('tuinosurface')
+  }
+})
+
+test('runTuiAgentProof: noUiSurface is IGNORED when the diff touches view code', async () => {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  try {
+    // Views changed → the valve must not skip capture; the injected loopRunner
+    // records that the capture path actually ran.
+    let loopRan = false
+    const surfaceRun = await runTuiAgentProof({
+      prNumber: 'tuiviewsforce',
+      commit: 'abc1234',
+      changedFiles: ['services/boss/internal/views/home.go'],
+      dryRun: true,
+      loopRunner: async ({ rawDir }) => {
+        loopRan = true
+        fs.writeFileSync(path.join(rawDir, 'screen-01.txt'), 'HOME')
+        return {
+          agentResult: { passed: true, summary: 'ok', evidence: [], steps: 1 },
+          finalScreen: 'HOME',
+          captionTimings: [],
+          sceneTimings: [{ id: 'scene-01', title: 'S', startMs: 0 }],
+          sceneForScreen: { 1: 'scene-01' },
+          screens: [{ seq: 1, text: 'HOME', castMs: null }],
+        }
+      },
+      deps: {
+        bridge: scriptedBridge(),
+        model: { async createMessage() { throw new Error('loopRunner injected') } },
+        generateBriefFromDiff: async () => ({
+          title: 'view change',
+          description: 'claims no surface (wrongly)',
+          targetRoutes: [],
+          stepsHints: [],
+          expectedEvidence: ['HOME'],
+          noUiSurface: true,
+        }),
+        renderStill: fakeRenderStill(),
+        castToVideo: async () => null,
+      },
+      runContext: { collect: true, runId: 'tui-viewsforce', token: 'tok-tui-test' },
+    })
+    assert.equal(loopRan, true, 'capture ran despite the noUiSurface claim')
+    assert.equal(surfaceRun.noSurface, false)
+  } finally {
+    cleanupPr('tuiviewsforce')
+  }
+})
+
+// ── BOS-251: TUI_CONTEXT_BLOCK ↔ fixture/view drift guard ────────────────────
+// The brief generator plans evidence tokens FROM the context block, and the
+// evidence gate matches them against what the fixture TUI actually renders. A
+// context-block fact that drifts from the Go sources sends every future proof
+// chasing strings that never appear (the PR-1240 failure shape). Pin the
+// critical facts on both sides.
+
+test('TUI_CONTEXT_BLOCK: fixture facts exist in fixtures.go and view keymaps in the views', async () => {
+  const { TUI_CONTEXT_BLOCK } = await import('./proof-tui-agent.mjs')
+  const fixturesGo = fs.readFileSync(
+    path.join(REPO_ROOT, 'services/boss/internal/fixtures/fixtures.go'),
+    'utf8',
+  )
+  const settingsGo = fs.readFileSync(
+    path.join(REPO_ROOT, 'services/boss/internal/views/settings.go'),
+    'utf8',
+  )
+  const statusGo = fs.readFileSync(
+    path.join(REPO_ROOT, 'services/boss/internal/views/status.go'),
+    'utf8',
+  )
+
+  // Every fixture fact the context block advertises must exist in fixtures.go…
+  const fixtureFacts = [
+    'Add dark mode',
+    'Fix login bug',
+    'Add rate limiting to public API',
+    'Refresh landing page hero',
+    'Upgrade to React Navigation 7',
+    '/Users/demo/worktrees/my-app/add-dark-mode',
+    'work-claude',
+    'personal-codex',
+    'Daily dependency update',
+    'Paused release gate',
+    'Paused visual regression',
+    'Initial implementation',
+    'Final polish pass',
+  ]
+  // The block hard-wraps long lines, so match with whitespace collapsed.
+  const ctx = TUI_CONTEXT_BLOCK.replace(/\s+/g, ' ')
+  for (const fact of fixtureFacts) {
+    assert.ok(ctx.includes(fact), `context block must mention ${fact}`)
+    assert.ok(fixturesGo.includes(fact), `fixtures.go must still provide ${fact}`)
+  }
+
+  // …and the promised keymap/action-bar tokens must exist in the views.
+  for (const key of ['[a]ccounts', '[c]ron', '[r]epos', '[t]rash']) {
+    assert.ok(TUI_CONTEXT_BLOCK.includes(`"${key}"`), `context block must quote ${key}`)
+    assert.ok(settingsGo.includes(`"${key}"`), `views/settings.go must still render ${key}`)
+  }
+  assert.ok(TUI_CONTEXT_BLOCK.includes('"archiving"'), 'context block quotes the archiving label')
+  assert.ok(statusGo.includes('"archiving"'), 'views/status.go must still render "archiving"')
+})
+
+test('runAgentLoop: done(passed=false) used as a scene checkpoint is rejected, genuine repeat accepted', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-raw-'))
+  try {
+    const brief = {
+      description: 'prove it',
+      scenes: [
+        { id: 'scene-01', title: 'One' },
+        { id: 'scene-02', title: 'Two' },
+      ],
+      budgets: { maxSteps: 8, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    }
+    const rejections = []
+    let step = 0
+    const model = {
+      async createMessage({ messages }) {
+        step += 1
+        if (step === 1) return toolUse('done', { passed: false, summary: 'Scene 1 confirmed!' })
+        if (step === 2) {
+          rejections.push(JSON.parse(messages[messages.length - 1].content[0].content))
+          return toolUse('begin_scene', { id: 'scene-02' })
+        }
+        return toolUse('done', { passed: true, summary: 'both scenes shown' })
+      },
+    }
+    const result = await runAgentLoop({
+      brief,
+      model: 'test-model',
+      modelDep: model,
+      bridge: scriptedBridge(),
+      rawDir,
+      readCastMs: () => 500,
+    })
+    assert.equal(rejections.length, 1)
+    assert.match(rejections[0].error, /ends the WHOLE recording/)
+    assert.match(rejections[0].error, /If you are NOT blocked/)
+    assert.equal(result.agentResult.passed, true, 'run recovered and completed both scenes')
+    assert.equal(result.sceneTimings.length, 2)
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
 })

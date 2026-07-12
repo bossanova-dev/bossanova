@@ -20,6 +20,8 @@ func ts(offset time.Duration) *timestamppb.Timestamp {
 
 func i32(n int32) *int32 { return &n }
 
+func sp(s string) *string { return &s }
+
 // World is the deterministic demo dataset used to populate proof screenshots.
 type World struct {
 	Repos    []*pb.Repo
@@ -62,30 +64,36 @@ func ActiveSessions() []*pb.Session {
 			Title: "Add dark mode", BranchName: "boss/add-dark-mode",
 			State:    pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
 			PrNumber: i32(597), CreatedAt: ts(-2 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-app/add-dark-mode",
+			AccountId:    sp("work-claude"),
 		},
 		{
 			Id: "sess-bbb-222", RepoId: "repo-1", RepoDisplayName: "my-app",
 			Title: "Fix login bug", BranchName: "boss/fix-login-bug",
-			State:     pb.SessionState_SESSION_STATE_AWAITING_CHECKS,
-			CreatedAt: ts(-5 * time.Hour),
+			State:        pb.SessionState_SESSION_STATE_AWAITING_CHECKS,
+			CreatedAt:    ts(-5 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-app/fix-login-bug",
 		},
 		{
 			Id: "sess-ddd-444", RepoId: "repo-2", RepoDisplayName: "my-api",
 			Title: "Add rate limiting to public API", BranchName: "boss/rate-limiting",
 			State:    pb.SessionState_SESSION_STATE_READY_FOR_REVIEW,
 			PrNumber: i32(412), CreatedAt: ts(-7 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-api/rate-limiting",
 		},
 		{
 			Id: "sess-eee-555", RepoId: "repo-3", RepoDisplayName: "my-web",
 			Title: "Refresh landing page hero", BranchName: "boss/landing-hero",
 			State:    pb.SessionState_SESSION_STATE_GREEN_DRAFT,
 			PrNumber: i32(88), CreatedAt: ts(-26 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-web/landing-hero",
 		},
 		{
 			Id: "sess-fff-666", RepoId: "repo-4", RepoDisplayName: "mobile-app",
 			Title: "Upgrade to React Navigation 7", BranchName: "boss/rn7-upgrade",
 			State:    pb.SessionState_SESSION_STATE_FIXING_CHECKS,
 			PrNumber: i32(233), CreatedAt: ts(-30 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/mobile-app/rn7-upgrade",
 		},
 	}
 }
@@ -155,6 +163,11 @@ func CronJobs() []*pb.CronJob {
 		{Id: "cron-3", RepoId: "repo-1", Name: "Weekly tech-debt sweep", Prompt: "Find and fix one unit of technical debt", Schedule: "@weekly", Timezone: "UTC", Enabled: true, AgentName: "claude", RunSetupCommand: true},
 		{Id: "cron-4", RepoId: "repo-3", Name: "Hourly broken-link check", Prompt: "Scan the marketing site for broken links", Schedule: "@hourly", Timezone: "UTC", Enabled: false, AgentName: "claude", RunSetupCommand: true},
 		{Id: "cron-5", RepoId: "repo-2", Name: "Morning PR triage", Prompt: "Triage open PRs and summarize review state", Schedule: "0 9 * * 1-5", Timezone: "UTC", Enabled: true, AgentName: "codex", GateCommand: "gh pr list --label needs-triage --state open | grep .", RunSetupCommand: false, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATED, LastRunOutcome: "gated"},
+		// Disabled jobs carrying a colored last-run status (gated / failed): the
+		// muted-row rendering states BOS-313 fixed are otherwise unreachable in
+		// the demo world, so TUI proofs could never show them (BOS-251).
+		{Id: "cron-6", RepoId: "repo-4", Name: "Paused release gate", Prompt: "Cut a release when the gate opens", Schedule: "@daily", Timezone: "UTC", Enabled: false, AgentName: "claude", GateCommand: "test -f RELEASE_READY", RunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATED, LastRunOutcome: "gated"},
+		{Id: "cron-7", RepoId: "repo-5", Name: "Paused visual regression", Prompt: "Run the visual regression suite", Schedule: "@weekly", Timezone: "UTC", Enabled: false, AgentName: "claude", RunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_FAILED, LastRunOutcome: "failed"},
 	}
 }
 

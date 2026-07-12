@@ -62,6 +62,24 @@ func TestChatPicker_ConflictingKeysBlockedDuringArchive(t *testing.T) {
 	}
 }
 
+// TestChatPicker_CanMergeFalseWhileMerging guards that a merge already in
+// flight hides the [m]erge affordance: canMerge() must return false while
+// m.merging is true even when the session otherwise qualifies (open passing
+// PR), so re-entering a still-merging session shows the optimistic status
+// instead of offering a second merge.
+func TestChatPicker_CanMergeFalseWhileMerging(t *testing.T) {
+	m := seedChatPickerWithPassingPR()
+
+	if !m.canMerge() {
+		t.Fatal("canMerge() = false before merge; test pre-condition broken (session must have an open passing PR)")
+	}
+
+	m.merging = true
+	if m.canMerge() {
+		t.Fatal("canMerge() = true while merging; expected false so [m]erge drops from the action bar during an in-flight merge")
+	}
+}
+
 // TestChatPicker_NotInFlight_AStillEntersConfirmArchive is a regression guard:
 // when neither archive nor merge is in flight, pressing 'a' still enters
 // confirmArchive as before.

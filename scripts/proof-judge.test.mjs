@@ -37,7 +37,7 @@ test('constants: caps and default model', () => {
 
 // ── selectJudgeStills ────────────────────────────────────────────────────
 
-test('selectJudgeStills: 1 scene x 5 stills -> first+last by filename order', () => {
+test('selectJudgeStills: 1 scene x 5 stills -> all kept, filename order (even sampling, BOS-251)', () => {
   const captures = [
     {
       surface: 'tui',
@@ -51,14 +51,38 @@ test('selectJudgeStills: 1 scene x 5 stills -> first+last by filename order', ()
       ],
     },
   ]
+  // One scene owns the whole MAX_JUDGE_STILLS share, so every still is kept —
+  // mid-scene frames (where the evidence usually is) must reach the judge.
   const out = selectJudgeStills(captures)
-  assert.equal(out.length, 2)
   assert.deepEqual(
     out.map((s) => s.fileName),
-    ['a.png', 'e.png'],
+    ['a.png', 'b.png', 'c.png', 'd.png', 'e.png'],
   )
   assert.ok(out.every((s) => s.sceneId === 'scene-01'))
   assert.ok(out.every((s) => s.surface === 'tui'))
+})
+
+test('selectJudgeStills: many scenes split the cap evenly and sample mid-scene stills', () => {
+  const mk = (scene, n) =>
+    Array.from({ length: n }, (_, i) => ({
+      fileName: `${scene}-${String(i + 1).padStart(2, '0')}.png`,
+      label: `${scene} ${i + 1}`,
+      sceneId: scene,
+    }))
+  const captures = [
+    { surface: 'tui', status: 'passed', stills: [...mk('scene-01', 9), ...mk('scene-02', 9)] },
+  ]
+  const out = selectJudgeStills(captures)
+  // 12-cap / 2 scenes = 6 per scene, spread across the 9 stills of each.
+  const s1 = out.filter((s) => s.sceneId === 'scene-01').map((s) => s.fileName)
+  assert.equal(s1.length, 6)
+  assert.equal(s1[0], 'scene-01-01.png')
+  assert.equal(s1[s1.length - 1], 'scene-01-09.png')
+  assert.ok(
+    ['scene-01-04.png', 'scene-01-05.png', 'scene-01-06.png'].some((f) => s1.includes(f)),
+    'a mid-scene still is represented',
+  )
+  assert.ok(out.length <= 12)
 })
 
 test('selectJudgeStills: 3 scenes x 1 still -> 3 stills, each kept', () => {
@@ -1180,4 +1204,17 @@ test('labelActionForJudge: falsy prNumber -> null even when unsatisfactory', () 
     }),
     null,
   )
+})
+
+// ── BOS-251: surface-appropriateness framing ─────────────────────────────────
+
+test('buildJudgePrompt: scopes judging to what the capture surface can display', async () => {
+  const { buildJudgePrompt } = await import('./proof-judge.mjs')
+  const { content } = buildJudgePrompt({
+    requiredProof: { unscoped: ['unit tests pass with PASS output'] },
+    surfaces: ['tui'],
+  })
+  const text = content[0].text
+  assert.match(text, /Judge ONLY what this capture surface can display/)
+  assert.match(text, /do not count\nit as missing evidence/)
 })

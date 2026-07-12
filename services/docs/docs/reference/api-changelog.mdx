@@ -1,0 +1,87 @@
+---
+id: api-changelog
+title: API Changelog
+description: >-
+  Date-based version history for the bossanova.v1 OrchestratorService API,
+  including the Bossanova-Version header and per-version behavior changes.
+---
+
+# API Changelog
+
+The bossanova.v1 **OrchestratorService** (see the [API Reference](/reference/api))
+uses **Stripe-style, date-based versioning**. Each dated version pins a stable
+response shape: when the server starts serving a new value or behavior, it also
+registers a _down-convert transform_ so callers pinned to an older version keep
+receiving the shape they were built against.
+
+## The `Bossanova-Version` header
+
+Clients select an API version by sending a `Bossanova-Version` request header
+containing a `YYYY-MM-DD` identifier (for example `Bossanova-Version: 2026-07-11`).
+The resolved version is echoed back on the response.
+
+- A request that negotiates the **Current** version runs zero transforms.
+- A request pinned to an older version has the ordered chain of down-convert
+  transforms applied so it observes the behavior that shipped with its version.
+- A **header-less** caller pins to the **Baseline** — the oldest supported
+  version — so it never silently shifts onto newer behavior. This matches the
+  Stripe intent of "pin to the version you started on."
+
+The current version is **2026-07-11**. The engineering procedure for adding a new
+version and its transform lives in the repository at `docs/api-versioning.md`
+([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
+
+## Versions
+
+Listed oldest to newest. Every version below is a member of the production
+registry served by the OrchestratorService.
+
+### 2026-06-29 — Baseline
+
+The launch baseline and the oldest supported version. It is the version assumed
+for header-less callers. No transforms run against a Baseline-shaped response
+beyond those introduced by later versions.
+
+### 2026-07-04 — Orphaned session state
+
+The OrchestratorService began serving `SessionState` value
+`SESSION_STATE_ORPHANED` on `Session.state`, a terminal state for a headless run
+that was killed by a daemon restart. Clients pinned to an older version — which
+were built before this value existed — are down-converted to
+`SESSION_STATE_IMPLEMENTING_PLAN`, the prior observable behavior.
+
+### 2026-07-05 — Agent auth-failed attention reason
+
+The OrchestratorService began serving `AttentionReason` value
+`ATTENTION_REASON_AGENT_AUTH_FAILED` on `Session.attention_status.reason`, a new
+attention reason surfaced when an agent's pane shows the login-required terminal
+shape (for example "Not logged in" / "Please run /login"). Older clients, which
+never saw this reason, are down-converted back to no attention reason.
+
+### 2026-07-06 — Unmanaged account label and limited chat status
+
+Two transforms shipped in this version:
+
+- **Unmanaged account label** — restores the prior "System default" account label
+  for older clients where the server now serves "Unmanaged local credentials" for
+  the unbound rotation account.
+- **Limited chat status** — maps `CHAT_STATUS_LIMITED` and the derived
+  "usage-limited…" session display shape back to the prior idle-style behavior for
+  older clients. In other words, the new **chat status** value is hidden from
+  clients that predate it.
+
+### 2026-07-11 — No-eligible-account rotation outcome (Current)
+
+The OrchestratorService began serving `RotationOutcome` value
+`ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT` on
+`Session.rotation_events[].outcome`, distinguishing "no active account to rotate
+to" from the prior "agent cannot rotate". Clients pinned to an older version are
+down-converted back to `ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY`, the prior
+observable value.
+
+## See also
+
+- [API Reference](/reference/api) — the generated OpenAPI reference for the
+  OrchestratorService.
+- `docs/api-versioning.md` in the repository — the engineering procedure for
+  adding a new API version and down-convert transform.

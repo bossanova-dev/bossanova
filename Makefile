@@ -1,10 +1,10 @@
 .PHONY: all build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format format-affected generate gen-skill kill kill-all lint vendor-toolbox vendor-toolbox-check \
-	lint-check-version lint-docs lint-scripts \
+	buf-check-version lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
 	debt-knip \
 	plugins plugins-all proof proof-plan proof-test proof-tui-prebuild readme-gifs release release-codex-check \
-	setup-worktree split stage-release test test-affected test-full test-profile test-race test-smoke \
+	setup-worktree split stage-release test test-affected test-full test-profile test-race test-smoke test-web \
 	test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
 	test-no-inline-stop-hooks test-public-mirror test-readme test-scripts \
 	build-mcp test-mcp lint-mcp \
@@ -20,6 +20,14 @@ all:
 # Pinned golangci-lint version. Must match the version used in CI
 # (.github/workflows/*.yml). Bumping requires coordinated changes to both.
 GOLANGCI_LINT_VERSION := v2.11.4
+
+# Pinned buf version — single source of truth for both local (`make deps`,
+# `buf-check-version`) and CI (the `version:` on every `bufbuild/buf-setup-action`
+# and `bufbuild/buf-action` step in .github/workflows/*.yml). The
+# scripts/gen-pin-drift.test.mjs test asserts those workflow `version:` values
+# equal this pin. Bumping requires re-running `make generate` and committing any
+# regen drift.
+BUF_VERSION := 1.66.1
 
 # Technical-debt scanner tools used by `make debt-*` (the bs-sweep-debt skill).
 # These are non-blocking, informational detectors (CI runs them continue-on-error,
@@ -54,6 +62,14 @@ README_TOUR_GIF_DIR := services/marketing/public/screenshots/tour/gifs
 export MACOSX_DEPLOYMENT_TARGET ?= $(shell sw_vers -productVersion 2>/dev/null)
 export CGO_CFLAGS ?= -Wno-overriding-deployment-version
 
+# Turborepo (web/marketing/ui-tokens TS caching). The cache is defaulted HERE,
+# not in shell env, because daemon/cron worktrees don't inherit an interactive
+# shell's exports — a machine-wide dir lets sibling worktrees share cache hits.
+# TURBO_DAEMON=false: no per-worktree turbod on the agent farm.
+export TURBO_CACHE_DIR ?= $(HOME)/.cache/bossanova-turbo
+export TURBO_DAEMON ?= false
+export TURBO_TELEMETRY_DISABLED ?= 1
+
 # Codesign identity for local macOS builds. Default '-' is ad-hoc, which produces
 # an unstable code identity so macOS keychain "Always Allow" entries don't
 # survive rebuilds. Override with a stable self-signed identity (e.g.
@@ -72,7 +88,7 @@ LDFLAGS := -s -w \
 	-X github.com/recurser/bossalib/buildinfo.Date=$(DATE)
 
 # Proto source files — stamp regenerates when these change
-PROTO_SOURCES := $(wildcard proto/bossanova/v1/*.proto) buf.gen.yaml
+PROTO_SOURCES := $(wildcard proto/bossanova/v1/*.proto) buf.gen.yaml lib/bossalib/go.mod lib/bossalib/go.sum
 GEN_STAMP := .generate.stamp
 WEB_DEPS_STAMP := node_modules/.modules.yaml
 
@@ -135,7 +151,10 @@ deps:
 		exit 1; \
 	fi
 	@echo "==> Installing build dependencies via Homebrew"
-	@for pkg in go buf jq gh pnpm; do \
+	@# buf is intentionally NOT installed via brew here — brew can't pin to an
+	@# exact version, and the pin ($(BUF_VERSION)) is enforced by
+	@# buf-check-version. buf is installed from a GitHub release below instead.
+	@for pkg in go jq gh pnpm; do \
 		if command -v $$pkg >/dev/null 2>&1; then \
 			echo "    $$pkg: already installed"; \
 		else \
@@ -143,6 +162,22 @@ deps:
 			brew install $$pkg; \
 		fi; \
 	done
+	@# buf: install the pinned version from GitHub releases (brew can't pin).
+	@# Best-effort: a download failure warns but does not abort `make deps`.
+	@gobin=$$(go env GOBIN); [ -z "$$gobin" ] && gobin=$$(go env GOPATH)/bin; \
+	want="$(BUF_VERSION)"; \
+	if command -v buf >/dev/null 2>&1 && buf --version 2>/dev/null | grep -Eq "^v?$${want#v}$$"; then \
+		echo "    buf: $$want already installed"; \
+	else \
+		echo "    buf: installing $$want from GitHub releases..."; \
+		mkdir -p "$$gobin"; \
+		url="https://github.com/bufbuild/buf/releases/download/v$${want#v}/buf-$$(uname -s)-$$(uname -m)"; \
+		if curl -sSfL "$$url" -o "$$gobin/buf" && chmod +x "$$gobin/buf"; then \
+			echo "    buf: installed $$want to $$gobin/buf"; \
+		else \
+			echo "    (warning: failed to download buf $$want from $$url — install it manually)"; \
+		fi; \
+	fi
 	@# golangci-lint: enforce pinned version so local runs match CI.
 	@gobin=$$(go env GOBIN); [ -z "$$gobin" ] && gobin=$$(go env GOPATH)/bin; \
 	want="$(GOLANGCI_LINT_VERSION)"; \
@@ -161,29 +196,17 @@ deps:
 		brew install go-gremlins/tap/gremlins; \
 	fi
 	@echo "==> Installing Go-based buf plugins"
-	@if command -v protoc-gen-go >/dev/null 2>&1; then \
-		echo "    protoc-gen-go: already installed"; \
+	@if command -v protoc-gen-connect-openapi >/dev/null 2>&1; then \
+		echo "    protoc-gen-connect-openapi: already installed"; \
 	else \
-		echo "    protoc-gen-go: installing..."; \
-		go install google.golang.org/protobuf/cmd/protoc-gen-go@latest; \
-	fi
-	@if command -v protoc-gen-connect-go >/dev/null 2>&1; then \
-		echo "    protoc-gen-connect-go: already installed"; \
-	else \
-		echo "    protoc-gen-connect-go: installing..."; \
-		go install connectrpc.com/connect/cmd/protoc-gen-connect-go@latest; \
+		echo "    protoc-gen-connect-openapi: installing..."; \
+		go install github.com/sudorandom/protoc-gen-connect-openapi@v0.25.7; \
 	fi
 	@echo "==> Warming technical-debt scanners (make debt-*)"
 	@for pkg in "$(DEADCODE_PKG)" "$(DUPL_PKG)" "$(GOCYCLO_PKG)" "$(GOVULNCHECK_PKG)"; do \
 		echo "    $$pkg"; \
 		go install "$$pkg" || echo "    (warning: failed to install $$pkg; make debt-* will fetch it on demand)"; \
 	done
-	@gobin=$$(go env GOBIN); [ -z "$$gobin" ] && gobin=$$(go env GOPATH)/bin; \
-	case ":$$PATH:" in *":$$gobin:"*) ;; \
-		*) echo ""; echo "NOTE: $$gobin is not on your PATH — add it so buf can find protoc-gen-go."; \
-		echo "      fish: fish_add_path $$gobin"; \
-		echo "      bash/zsh: export PATH=\"$$gobin:\$$PATH\"";; \
-	esac
 	@echo "==> Done. Run 'make' to build."
 
 ## setup-worktree: Copy gitignored local files (.env, .node-version, .config, .compound-engineering/config.local.yaml) from the main repo into a new worktree (for bossanova setup-script)
@@ -285,7 +308,7 @@ gen-skill:
 	$(MAKE) copy-skills
 
 ## generate: Run buf generate to produce Go code from proto definitions
-generate: $(GEN_STAMP)
+generate: buf-check-version $(GEN_STAMP)
 
 # Make web deps and buf conditional — public repo has committed gen code and no web/
 GEN_DEPS := $(PROTO_SOURCES)
@@ -299,7 +322,7 @@ ifneq ($(shell command -v buf 2>/dev/null),)
 	buf generate
 	@changed_go=$$(git diff --name-only -- lib/bossalib/gen | grep '\.go$$' || true); \
 	if [ -n "$$changed_go" ]; then \
-		printf '%s\n' "$$changed_go" | xargs go run golang.org/x/tools/cmd/goimports@v0.45.0 -w; \
+		printf '%s\n' "$$changed_go" | xargs go tool goimports -w; \
 	fi
 endif
 	@touch $(GEN_STAMP)
@@ -362,9 +385,22 @@ test: $(GEN_STAMP) copy-skills codex-skills-check vendor-toolbox-check
 		echo "==> Testing services/docs"; \
 		$(MAKE) -C services/docs test; \
 	fi
+# Net-new web coverage: `make test` had none before BOS-342. Guarded so the
+# public mirror (no services/web) never invokes turbo.
+ifneq ($(wildcard services/web/package.json),)
+	$(MAKE) test-web
+endif
 
 test-full:
 	$(MAKE) test
+
+ifneq ($(wildcard services/web/package.json),)
+## test-web: Run web+marketing tests/lint/typecheck through turbo (cached).
+## Machine-wide TURBO_CACHE_DIR (exported above) lets sibling worktrees share
+## hits. Deliberately kept out of test-smoke — node startup + turbo hash cost.
+test-web: $(WEB_DEPS_STAMP)
+	pnpm turbo run test lint typecheck --filter=web --filter=marketing
+endif
 
 ## test-smoke: Fast agent loop. No coverage, no race, no forced cache bypass.
 test-smoke: $(GEN_STAMP) copy-skills codex-skills-check vendor-toolbox-check
@@ -462,6 +498,22 @@ $(foreach p,$(PLUGIN_MODULES),$(eval \
 # Plugin claude tests rely on the embedded skill payload — keep it in sync.
 test-claude: copy-skills
 
+## buf-check-version: Fail if an installed buf does not match $(BUF_VERSION).
+## Soft-passes when buf is absent so the public mirror's bufless path (committed
+## gen code, no buf) stays green — only a PRESENT-but-mismatched buf is fatal.
+buf-check-version:
+	@if ! command -v buf >/dev/null 2>&1; then \
+		echo "buf not installed — skipping version check (committed gen used; run 'make deps' to install the pinned buf)"; \
+	else \
+		want="$(BUF_VERSION)"; \
+		if ! buf --version 2>/dev/null | grep -Eq "^v?$${want#v}$$"; then \
+			echo "buf version mismatch: want $$want"; \
+			echo "  got: $$(buf --version 2>/dev/null)"; \
+			echo "  run 'make deps' to install the pinned version"; \
+			exit 1; \
+		fi; \
+	fi
+
 ## lint-check-version: Fail if installed golangci-lint does not match $(GOLANGCI_LINT_VERSION)
 lint-check-version:
 	@if ! command -v golangci-lint >/dev/null 2>&1; then \
@@ -477,7 +529,7 @@ lint-check-version:
 	fi
 
 ## lint: Run golangci-lint and buf lint (generates protos first if needed)
-lint: lint-check-version $(GEN_STAMP)
+lint: buf-check-version lint-check-version $(GEN_STAMP)
 	buf lint
 	$(MAKE) lint-scripts
 	@node scripts/lint-affected.mjs

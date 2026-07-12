@@ -154,8 +154,8 @@ export function renderHtml({ title, text, caption = '' }) {
     <div class="titlebar">
       <span class="dot"></span><span class="dot"></span><span class="dot"></span>
       <span class="label">${escapeHtml(title)}</span>
-    </div>${captionBar}
-    <pre>${escapeHtml(text)}</pre>
+    </div>
+    <pre>${escapeHtml(text)}</pre>${captionBar}
   </section>
 </body>
 </html>`
@@ -164,7 +164,7 @@ export function renderHtml({ title, text, caption = '' }) {
 /**
  * A standalone, transparent caption-bar strip sized to the video width (BOS-121).
  * The bar fills the strip width and truncates to one line — the screenshot of
- * `[data-proof-caption-strip]` is overlaid at y=0 on the TUI proof video. Reuses
+ * `[data-proof-caption-strip]` is overlaid along the BOTTOM edge of the TUI proof video (BOS-251 — the top row is the app's banner). Reuses
  * captionBarMarkup so the strip matches the stills' bar exactly.
  */
 export function renderCaptionStripHtml({ caption, width }) {

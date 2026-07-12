@@ -90,42 +90,63 @@ export function classifySurfaceOutcomes(surfaceRuns) {
 
 /**
  * Exit-code contribution of a single per-surface outcome. Encodes the epic
- * exit policy: a passed surface and every neutral deferral (no-media,
- * no-ui-surface, budget-exceeded, env-unavailable, agent-unavailable,
- * scenario-missing) → 0; a pipeline crash → 1; an agent-incomplete → 1 for web
- * but 0 for TUI (preserves the Q6 non-fatal reset the old single-select TUI path
- * applied).
+ * exit policy (BOS-226 fail-loud):
+ *   - a passed surface, and every neutral deferral (no-media, no-ui-surface,
+ *     budget-exceeded, env-unavailable, agent-unavailable) → 0;
+ *   - `agent-incomplete` on either surface — web or tui (the agent ran and its
+ *     captured evidence failed the judge) → 1;
+ *   - `scenario-missing` (a TUI change shipped without a committed
+ *     proof/scenarios/*.scenario.json) → 1 — proof is required for TUI;
+ *   - a pipeline crash (`pipeline-error`) → 1.
  *
- * `scenario-missing` (BOS-220) is a warn-only TUI authoring nudge: a TUI PR that
- * shipped no committed proof/scenarios/*.scenario.json. It stays neutral (→ 0)
- * here even though the default branch already returns 0 — the explicit branch
- * makes the intent legible and makes Epic 4's (BOS-226) flip-to-fatal a one-line
- * change. Do NOT flip it in this epic.
- * @param {{ surface: string, outcome: string, reasonCode: string|null }} entry
+ * The `softened` flag is the rollback lever (see `softenTuiExit`): when an entry
+ * is marked `softened: true` its contribution is forced to 0. That is the only
+ * escape hatch — it is applied at the impure boundary (proof-agent-finalize.mjs)
+ * gated on `BOSS_PROOF_TUI_SOFT`, and only to TUI agent-incomplete/scenario-missing
+ * entries. `pipeline-error` and web contributions are never softened here.
+ * @param {{ outcome: string, reasonCode: string|null, softened?: boolean }} entry
  * @returns {0|1}
  */
-function surfaceExitContribution({ surface, outcome, reasonCode }) {
+function surfaceExitContribution({ outcome, reasonCode, softened }) {
   if (outcome === 'passed') return 0
   if (reasonCode === 'pipeline-error') return 1
-  // BOS-226 guidance (documented here, NOT changed in BOS-351): `agent-incomplete`
-  // (the agent ran and produced partial media) is already a DISTINCT reason code
-  // from `no-media`/`agent-unavailable` (the agent never ran) — see
-  // classifyRunOutcome. When BOS-226 flips TUI `agent-incomplete` to fatal, it
-  // should preserve this soft-vs-hard split: reserve exit 1 for "the agent ran and
-  // its captured evidence genuinely failed the judge," and keep "never ran / no
-  // media / env-unavailable / soft budget-truncation" neutral so a soft truncation
-  // does not brick unattended cron. BOS-351 leaves TUI `agent-incomplete` → 0.
-  if (reasonCode === 'agent-incomplete') return surface === 'web' ? 1 : 0
-  if (reasonCode === 'scenario-missing') return 0
+  if (softened) return 0
+  if (reasonCode === 'agent-incomplete') return 1
+  if (reasonCode === 'scenario-missing') return 1
   return 0
 }
 
 /**
- * Aggregate exit code across all per-surface outcomes (BOS-139 P2b): 1 if any
- * surface contributes a failure (pipeline-error anywhere, or a web
- * agent-incomplete), else 0. Partial success (≥1 passed, ≥1 neutral deferral)
- * → 0. Empty input → 0.
+ * Pure rollback lever for the BOS-226 TUI fail-loud flip. When `soft` is true,
+ * returns a NEW array where any entry with `surface === 'tui'` AND
+ * (`reasonCode === 'agent-incomplete'` OR `reasonCode === 'scenario-missing'`)
+ * is mapped to `{ ...entry, softened: true }` (its exit contribution is then
+ * forced to 0 by surfaceExitContribution); every other entry is returned
+ * unchanged. When `soft` is false the input array is returned unchanged (a
+ * no-op — no `softened` flag is added). `soft` is ALWAYS passed by the caller:
+ * this module never reads `process.env`.
  * @param {{ surface: string, outcome: string, reasonCode: string|null }[]} perSurface
+ * @param {{ soft?: boolean }} [opts]
+ * @returns {object[]}
+ */
+export function softenTuiExit(perSurface, { soft = false } = {}) {
+  const entries = perSurface ?? []
+  if (!soft) return entries
+  return entries.map((entry) => {
+    const isSoftenable =
+      entry.surface === 'tui' &&
+      (entry.reasonCode === 'agent-incomplete' || entry.reasonCode === 'scenario-missing')
+    return isSoftenable ? { ...entry, softened: true } : entry
+  })
+}
+
+/**
+ * Aggregate exit code across all per-surface outcomes (BOS-139 P2b, BOS-226
+ * fail-loud): 1 if any surface contributes a failure (pipeline-error anywhere,
+ * an agent-incomplete on either surface, or a scenario-missing), else 0.
+ * Partial success (≥1 passed, ≥1 neutral deferral) → 0. Empty input → 0.
+ * Entries marked `softened` (via `softenTuiExit` at the boundary) contribute 0.
+ * @param {{ outcome: string, reasonCode: string|null, softened?: boolean }[]} perSurface
  * @returns {0|1}
  */
 export function aggregateExitCode(perSurface) {

@@ -45,7 +45,7 @@ func workflowGetInfoHandler(srv any, ctx context.Context, dec func(any) error, _
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(WorkflowServiceHandler).GetInfo(ctx, req)
+	return srv.(WorkflowServiceHandler).GetInfo(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func workflowStartWorkflowHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -53,7 +53,7 @@ func workflowStartWorkflowHandler(srv any, ctx context.Context, dec func(any) er
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(WorkflowServiceHandler).StartWorkflow(ctx, req)
+	return srv.(WorkflowServiceHandler).StartWorkflow(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func workflowPauseWorkflowHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -61,7 +61,7 @@ func workflowPauseWorkflowHandler(srv any, ctx context.Context, dec func(any) er
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(WorkflowServiceHandler).PauseWorkflow(ctx, req)
+	return srv.(WorkflowServiceHandler).PauseWorkflow(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func workflowResumeWorkflowHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -69,7 +69,7 @@ func workflowResumeWorkflowHandler(srv any, ctx context.Context, dec func(any) e
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(WorkflowServiceHandler).ResumeWorkflow(ctx, req)
+	return srv.(WorkflowServiceHandler).ResumeWorkflow(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func workflowCancelWorkflowHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -77,7 +77,7 @@ func workflowCancelWorkflowHandler(srv any, ctx context.Context, dec func(any) e
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(WorkflowServiceHandler).CancelWorkflow(ctx, req)
+	return srv.(WorkflowServiceHandler).CancelWorkflow(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func workflowGetWorkflowStatusHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -85,7 +85,7 @@ func workflowGetWorkflowStatusHandler(srv any, ctx context.Context, dec func(any
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(WorkflowServiceHandler).GetWorkflowStatus(ctx, req)
+	return srv.(WorkflowServiceHandler).GetWorkflowStatus(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func workflowNotifyStatusChangeHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -93,5 +93,5 @@ func workflowNotifyStatusChangeHandler(srv any, ctx context.Context, dec func(an
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(WorkflowServiceHandler).NotifyStatusChange(ctx, req)
+	return srv.(WorkflowServiceHandler).NotifyStatusChange(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }

@@ -104,6 +104,39 @@ test('selectTargets maps Claude testing docs to manifest checks', () => {
   )
 })
 
+test('selectTargets maps web changes to the turbo web target', () => {
+  assert.deepEqual(selectTargets(['services/web/src/App.tsx']), [
+    { kind: 'make', target: 'test-web', env: {} },
+  ])
+})
+
+test('selectTargets maps marketing changes to the turbo web target', () => {
+  assert.deepEqual(selectTargets(['services/marketing/src/pages/index.astro']), [
+    { kind: 'make', target: 'test-web', env: {} },
+  ])
+})
+
+test('selectTargets maps ui-tokens changes to the turbo web target', () => {
+  assert.deepEqual(selectTargets(['lib/ui-tokens/index.css']), [
+    { kind: 'make', target: 'test-web', env: {} },
+  ])
+})
+
+test('selectTargets maps the lockfile and turbo.json to the turbo web target', () => {
+  assert.deepEqual(selectTargets(['pnpm-lock.yaml']), [
+    { kind: 'make', target: 'test-web', env: {} },
+  ])
+  assert.deepEqual(selectTargets(['turbo.json']), [{ kind: 'make', target: 'test-web', env: {} }])
+})
+
+test('selectTargets maps infra/install.sh to the turbo web target', () => {
+  // Marketing's prebuild copies infra/install.sh into public/, so it is a
+  // marketing build input (turbo.json globalDependencies + test-marketing.yml).
+  assert.deepEqual(selectTargets(['infra/install.sh']), [
+    { kind: 'make', target: 'test-web', env: {} },
+  ])
+})
+
 test('selectTargets falls back to smoke tests when no rule matches', () => {
   assert.deepEqual(selectTargets(['README.md']), [{ kind: 'make', target: 'test-smoke', env: {} }])
 })

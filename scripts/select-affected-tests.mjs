@@ -65,6 +65,15 @@ export function selectTargets(files) {
       continue
     }
 
+    // The TS workspace (web, marketing, ui-tokens) is tested via turbo behind
+    // `make test-web`. lib/ui-tokens is an internal dependency of both apps, and
+    // the lockfile / turbo.json are workspace-wide inputs, so any of them route
+    // here. These are NOT Go modules, so select the whole target.
+    if (isWebPath(file)) {
+      selectWholeTarget(selections, 'test-web')
+      continue
+    }
+
     const moduleRule = moduleRules.find(({ root }) => file.startsWith(root))
     if (moduleRule) {
       selectModuleTarget(selections, moduleRule, file)
@@ -143,6 +152,20 @@ function isManifestPath(file) {
 
 function isSkillPath(file) {
   return file.startsWith('.claude/skills/') || file.startsWith('.codex/skills/')
+}
+
+function isWebPath(file) {
+  return (
+    file.startsWith('services/web/') ||
+    file.startsWith('services/marketing/') ||
+    file.startsWith('lib/ui-tokens/') ||
+    file === 'pnpm-lock.yaml' ||
+    file === 'turbo.json' ||
+    // Marketing's prebuild copies infra/install.sh into public/, so it is a
+    // marketing build input: turbo.json globalDependencies and
+    // test-marketing.yml both treat it as one. Keep this in sync with those two.
+    file === 'infra/install.sh'
+  )
 }
 
 function normalizePath(file) {

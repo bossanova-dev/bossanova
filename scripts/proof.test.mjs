@@ -1202,8 +1202,8 @@ test('BOS-223 (e): both legs gate-fail ⇒ agent-incomplete with combined two-le
   assert.equal(perSurface[0].error, 'agent: agentERR; replay: replayERR')
   assert.equal(
     aggregateExitCode(perSurface),
-    0,
-    'TUI agent-incomplete stays exit 0 (until BOS-226)',
+    1,
+    'TUI agent-incomplete is fail-loud exit 1 (BOS-226)',
   )
 })
 

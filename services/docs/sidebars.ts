@@ -37,6 +37,19 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'API Reference',
+      collapsed: false,
+      items: [
+        {
+          type: 'link',
+          label: 'OrchestratorService (OpenAPI)',
+          href: '/reference/api',
+        },
+        'reference/api-changelog',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Security & Privacy',
       collapsed: false,
       items: ['reference/privacy', 'reference/security-and-permissions'],

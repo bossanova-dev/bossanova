@@ -1087,7 +1087,7 @@ export function tuiAgentUsable() {
  * than `tuiAgentUsable()`, which trusts the mode=agent assertion (correct for
  * `driver.usable`, where the key is daemon-injected in cron). The BOS-220
  * scenario-missing gate uses THIS predicate so a scenario-less TUI diff with no
- * real key defers the warn-only `scenario-missing` nudge (exit 0) rather than
+ * real key defers the `scenario-missing` nudge (exit 1 since BOS-226) rather than
  * falling through to a doomed agent leg. Exported for unit-testing the gate.
  * @returns {boolean}
  */
@@ -1314,14 +1314,15 @@ async function runAgentSurfaces({ plan, changedFiles, args }) {
     // `scenario-missing` is the honest, most-actionable authoring nudge (a keyless
     // CI env sees it, not `agent-unavailable`), and the ~4-min agent run + bridge
     // build is skipped. Critically it also avoids a doomed agent leg crashing to a
-    // `pipeline-error` (exit 1) under mode=agent-without-key, keeping this change
-    // exit-code-neutral. When a real key IS present, control falls through to the
-    // driver's agent-only leg (planTuiLegs {agentUsable:T, scenarioPresent:F} ⇒
-    // agent only) so the epic's agent-captured video is produced; the author is
-    // still nudged non-fatally that a committed scenario is owed (scenarioOwed,
-    // rendered by surfaceSectionLines). A committed scenario skips this gate
-    // entirely and proceeds normally. Warn-only for now; Epic 4 (BOS-226) flips
-    // the keyless case fatal.
+    // `pipeline-error` (exit 1) under mode=agent-without-key: both classes now exit
+    // 1 (BOS-226), but `scenario-missing` is the honest, actionable authoring nudge
+    // rather than a false blame on our own pipeline. When a real key IS present,
+    // control falls through to the driver's agent-only leg (planTuiLegs
+    // {agentUsable:T, scenarioPresent:F} ⇒ agent only) so the epic's agent-captured
+    // video is produced; a passed agent leg is still nudged non-fatally that a
+    // committed scenario is owed (scenarioOwed, rendered by surfaceSectionLines). A
+    // committed scenario skips this gate entirely and proceeds normally. BOS-226
+    // flipped the keyless case fatal: `scenario-missing` now exits 1.
     if (surface === 'tui' && !committedScenarioPresent(changedFiles) && !tuiAgentCanCapture()) {
       surfaceRuns.push(syntheticDeferredRun(surface, 'scenario-missing'))
       continue

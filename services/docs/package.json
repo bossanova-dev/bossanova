@@ -26,7 +26,8 @@
     "posthog-js": "^1.373.4",
     "prism-react-renderer": "^2.4.0",
     "react": "^19.2.5",
-    "react-dom": "^19.2.5"
+    "react-dom": "^19.2.5",
+    "redocusaurus": "^2.5.2"
   },
   "devDependencies": {
     "@docusaurus/module-type-aliases": "^3.8.0",
@@ -45,6 +46,11 @@
     "node": ">=18.0"
   },
   "private": true,
+  "pnpm": {
+    "overrides": {
+      "@docusaurus/theme-common": "3.10.1"
+    }
+  },
   "scripts": {
     "build": "docusaurus build",
     "dev": "docusaurus start --port 3001",

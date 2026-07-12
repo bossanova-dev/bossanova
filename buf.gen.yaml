@@ -1,10 +1,26 @@
 version: v2
 plugins:
-  - local: protoc-gen-go
+  - local: ["go", "tool", "protoc-gen-go"]
     out: lib/bossalib/gen
     opt: paths=source_relative
-  - local: protoc-gen-connect-go
+  - local: ["go", "tool", "protoc-gen-connect-go"]
     out: lib/bossalib/gen
     opt: paths=source_relative
+  # OpenAPI 3.1 reference for the public OrchestratorService, published on the
+  # Docusaurus site (services/docs). protoc-gen-connect-openapi understands
+  # Connect's POST-per-RPC shape. Installed pinned by `make deps` (v0.25.7) for
+  # drift-free regeneration. `services=` scopes the output to the public
+  # orchestrator surface so DaemonService/HostService and plugin-internal
+  # services are never published; `base=` merges the hand-authored info block
+  # (title/version/description) since the generator otherwise emits `info: {}`.
+  # The local form keeps generation self-contained with no network/remote-plugin
+  # dependency. See docs/api-versioning.md and
+  # services/docs/docs/reference/api-changelog.mdx.
+  - local: protoc-gen-connect-openapi
+    out: services/docs/openapi
+    opt:
+      - path=bossanova.v1.openapi.yaml
+      - services=bossanova.v1.OrchestratorService
+      - base=services/docs/openapi/base.openapi.yaml
 inputs:
   - directory: proto

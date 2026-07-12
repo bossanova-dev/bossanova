@@ -170,6 +170,10 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 		return fmt.Errorf("start mock daemon: %w", err)
 	}
 	seedWorld(daemon, preset.World())
+	// Slow archives just enough that the optimistic in-flight "archiving" row
+	// state is observable/recordable (BOS-251); an instant mock archive settles
+	// before any capture could catch it.
+	daemon.SetArchiveDelay(4 * time.Second)
 
 	// Guaranteed teardown (sync.Once), installed as soon as the daemon and temp
 	// dirs exist so every early-return path below also unwinds them. drv and

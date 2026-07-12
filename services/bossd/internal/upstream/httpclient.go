@@ -82,7 +82,13 @@ func BuildUpstreamHTTPClient(orchestratorURL string) *http.Client {
 }
 
 func buildHTTPSUpstreamTransport() (*http.Transport, *http2.Transport) {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		// http.DefaultTransport is always *http.Transport in std net/http; this
+		// defensive fallback keeps the assertion checked for forcetypeassert.
+		base = &http.Transport{}
+	}
+	tr := base.Clone()
 	h2tr, err := http2.ConfigureTransports(tr)
 	if err != nil {
 		// Clone of http.DefaultTransport has no custom TLSNextProto state, so

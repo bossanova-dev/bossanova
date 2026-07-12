@@ -1450,3 +1450,96 @@ test('generateBriefFromDiff: no injected bullets → no required block, no force
   assert.ok(!seenContent.includes('REQUIRES demonstrating'))
   assert.equal(raw.planRequiredProof, undefined)
 })
+
+// ── BOS-251: generated-scene clamp, noUiSurface valve, TUI-demonstrable prompt ─
+
+test('validateBrief: a GENERATED brief with >MAX_SCENES scenes is clamped, not rejected', async () => {
+  const { validateBrief, MAX_SCENES } = await import('./proof-brief.mjs')
+  const scenes = Array.from({ length: MAX_SCENES + 3 }, (_, i) => ({
+    id: `scene-${i + 1}`,
+    title: `Scene ${i + 1}`,
+    expectedEvidence: ['token'],
+  }))
+  const result = validateBrief(
+    { title: 't', description: 'd', expectedEvidence: [], scenes },
+    { source: 'generated' },
+  )
+  assert.deepEqual(result.errors, [])
+  assert.equal(result.brief.scenes.length, MAX_SCENES, 'clamped to the first MAX_SCENES')
+  assert.equal(result.brief.scenes[0].id, 'scene-1')
+  assert.equal(result.brief.scenes[MAX_SCENES - 1].id, `scene-${MAX_SCENES}`)
+})
+
+test('validateBrief: an AUTHORED brief with >MAX_SCENES scenes still rejects', async () => {
+  const { validateBrief, MAX_SCENES } = await import('./proof-brief.mjs')
+  const scenes = Array.from({ length: MAX_SCENES + 1 }, (_, i) => ({
+    id: `scene-${i + 1}`,
+    title: `Scene ${i + 1}`,
+    expectedEvidence: ['token'],
+  }))
+  const result = validateBrief(
+    { title: 't', description: 'd', expectedEvidence: [], scenes },
+    { source: 'authored' },
+  )
+  assert.equal(result.brief, null)
+  assert.ok(result.errors.some((e) => e.includes(`exceeds ${MAX_SCENES}`)))
+})
+
+test('validateBrief: noUiSurface is carried through as a strict boolean', async () => {
+  const { validateBrief } = await import('./proof-brief.mjs')
+  const base = { title: 't', description: 'd', expectedEvidence: [] }
+  assert.equal(
+    validateBrief({ ...base, noUiSurface: true }, { source: 'generated' }).brief.noUiSurface,
+    true,
+  )
+  assert.equal(validateBrief(base, { source: 'generated' }).brief.noUiSurface, false)
+  assert.equal(
+    validateBrief({ ...base, noUiSurface: 'yes' }, { source: 'generated' }).brief.noUiSurface,
+    false,
+    'non-boolean truthy never counts',
+  )
+})
+
+test('BRIEF_SCHEMA: exposes the optional noUiSurface boolean', async () => {
+  const { BRIEF_SCHEMA } = await import('./proof-brief.mjs')
+  assert.deepEqual(BRIEF_SCHEMA.properties.noUiSurface, { type: 'boolean' })
+  assert.ok(!BRIEF_SCHEMA.required.includes('noUiSurface'))
+})
+
+test('buildBriefPrompt(tui): hard-constrains scenes to TUI-watchable flows', async () => {
+  const { buildBriefPrompt } = await import('./proof-brief.mjs')
+  const prompt = buildBriefPrompt({ diff: '', routes: 'keys', fixtures: 'fx', surface: 'tui' })
+  assert.match(prompt, /HARD CONSTRAINT: every scene must be a flow a viewer can WATCH/)
+  assert.match(prompt, /no shell/i)
+  assert.match(prompt, /never around how it was built or tested/i)
+  assert.match(prompt, /set noUiSurface:true/)
+})
+
+test('buildBriefPrompt(web): stays free of the TUI-only constraint and noUiSurface text', async () => {
+  const { buildBriefPrompt } = await import('./proof-brief.mjs')
+  const prompt = buildBriefPrompt({ diff: '', routes: 'r', fixtures: 'fx', surface: 'web' })
+  assert.ok(!prompt.includes('HARD CONSTRAINT'))
+  assert.ok(!prompt.includes('noUiSurface'))
+})
+
+test('buildBriefPrompt(tui): required-proof block demands only TUI-demonstrable coverage', async () => {
+  const { buildBriefPrompt } = await import('./proof-brief.mjs')
+  const requiredProof = ['unit tests pass', 'the cron list renders gated rows in grey']
+  const tui = buildBriefPrompt({
+    diff: '',
+    routes: 'keys',
+    fixtures: 'fx',
+    surface: 'tui',
+    requiredProof,
+  })
+  assert.match(tui, /Cover every item below that can be shown on a TUI screen/)
+  assert.match(tui, /must NOT get a scene/)
+  const web = buildBriefPrompt({
+    diff: '',
+    routes: 'r',
+    fixtures: 'fx',
+    surface: 'web',
+    requiredProof,
+  })
+  assert.match(web, /Cover ALL of these first/, 'web wording is unchanged')
+})

@@ -207,6 +207,17 @@ test('an ok sentinel is re-verified against a present, non-empty plan file befor
   )
 })
 
+test('Phase 4 step 5 warns when an auto-linked blocker is itself transitively blocked (BOS-287)', () => {
+  assert.ok(
+    PHASE_4_SECTION.includes('Transitive-block warning'),
+    'Phase 4 step 5 must document the transitive-block warning',
+  )
+  assert.ok(
+    PHASE_4_SECTION.includes('scripts/linear-deps-lib.mjs'),
+    'the warning must reuse the scripts/linear-deps-lib.mjs cleared-state rule by name',
+  )
+})
+
 // ---------------------------------------------------------------------------
 // Bulk-output discipline — no raw bulk in the orchestrator.
 // ---------------------------------------------------------------------------
@@ -410,8 +421,13 @@ test('the resident body does not duplicate the full drafting spec', () => {
 // ---------------------------------------------------------------------------
 
 test('the resident SKILL.md body stays under the ratchet, below the pre-split baseline', () => {
-  const PRE_SPLIT_BASELINE = 25548 // bytes, the hand-written body before this split
-  const RATCHET = 25531 // pinned ceiling: post-split size + BOS-205's Phase 4 publish/tracker adapter seam (re-baselined after aggressive reclaim; still 17B below the pre-split baseline)
+  // PRE_SPLIT_BASELINE is a rolling upper bound kept a small margin above RATCHET, NOT the
+  // literal pre-split body size: it began at 25548 (the hand-written body before the BOS-204
+  // references split) and is re-baselined upward as Phase-4 prose legitimately grows. The
+  // RATCHET < PRE_SPLIT_BASELINE invariant preserves that explicit margin so an accidental
+  // bulk regrow in one edit trips the guard instead of sliding both constants up together.
+  const PRE_SPLIT_BASELINE = 27271
+  const RATCHET = 27233 // pinned exact byte ceiling: re-baselined for BOS-287's Phase 4 step 5 transitive-block warning (nested-blocker state-fetch clause corrected in review)
   assert.ok(
     RATCHET < PRE_SPLIT_BASELINE,
     'the ratchet ceiling must sit below the pre-split baseline',

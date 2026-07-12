@@ -1905,7 +1905,14 @@ func run(opts runOpts) error {
 			Creator:        creatorAdapter,
 			ReRegister:     reRegister,
 			AuthState:      authState,
-			Logger:         log.Logger,
+			// Every DaemonStream registration builds a fresh DaemonState
+			// on bosso, stranding any terminal sender bound to the prior
+			// state (2026-07-11 incident). Cycle the TerminalStream so its
+			// sender rebinds to the current state. terminalStreamClient is
+			// assigned just below; CycleStream is nil-safe and no
+			// handshake can complete before the Run loops start.
+			OnHandshake: func() { terminalStreamClient.CycleStream() },
+			Logger:      log.Logger,
 		})
 		// Periodic read-model reconciliation. The bidi DaemonStream is the
 		// primary feed, but delta delivery is best-effort (forwardEvent drops

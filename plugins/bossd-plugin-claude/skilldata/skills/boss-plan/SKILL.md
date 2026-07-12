@@ -311,14 +311,31 @@ blockedBy`). The **higher-priority** ticket is the blocker; on equal priority, t
    proposed blocker is already blocked by the proposed blocked ticket. `blocks`/`blockedBy`
    are **append-only** — only add, never clobber; v1 does not auto-prune stale relations.
 
+   e2. Transitive-block warning (only when (d) placed THIS ticket on the **blocked** side —
+   candidate outranks THIS → THIS blocked by candidate). Reuse the step-e
+   `get_issue includeRelations=true` on the candidate to inspect its own inverse `blocks` relations:
+   treat a blocker's blocker as **still blocking** unless its state is `Done`/`Canceled` — the exact
+   `isUnblocked` / `BLOCKER_CLEARED_STATE_TYPES` rule in `scripts/linear-deps-lib.mjs`, the single
+   source of the "cleared" definition (so prose and gate never diverge). If that payload lacks a
+   nested blocker's own state, fetch that blocker by id with `get_issue`. When the
+   candidate is itself open (not `Done`/`Canceled`) **AND** has ≥1 uncleared blocker, record a
+   transitive-block warning naming the just-linked blocker (BOS-Y) and the immediate open ticket(s)
+   blocking it (e.g. `BOS-Y is itself open and blocked by BOS-Z`). Detection only — never auto-prune.
+
    f. Record what you linked — **only when ≥1 link was added** (else skip). Step 4 saved the
    description first, so send a second tracker save with only `id` + `description`: re-send Step 4's
-   description plus `- Dependencies: blocks BOS-X; blocked by BOS-Y` under `## Planning`. This keeps
+   description plus `- Dependencies: blocks BOS-X; blocked by BOS-Y` under `## Planning`. When (e2)
+   found ≥1 transitive-block warning, add a sibling conditional line next to `- Dependencies:` (omit
+   it otherwise, mirroring how `- Dependencies:` is conditional):
+   `- Transitive-block warning: blocked by BOS-Y, which is itself open and blocked by BOS-Z`. This
+   line is orchestrator-owned — keep it out of the drafting subagent's returned template. This keeps
    Step 4's other fields and the (d) relations intact.
 
    **Headless note:** a genuinely balanced link direction (equal priority + age + partial
    overlap) is recorded as an Open Question per the headless rules; interactive mode asks
-   via AskUserQuestion.
+   via AskUserQuestion. Any (e2) transitive-block warning is recorded in prose (the `## Planning`
+   line above and the Phase 6 report) exactly as interactive mode would print it — never via
+   AskUserQuestion.
 
 ## Phase 5 — Discard local artifacts
 
@@ -337,8 +354,10 @@ abort, which also runs `bs-run-sentinel.mjs cleanup` — so an unattended run ne
 ## Phase 6 — Report
 
 Print a concise summary: issue id + title, plan URL, final labels, estimate, priority, and the
-status change (Unplanned -> Todo). The plan is hosted on R2 with no local copy remaining (it is
-copied into `docs/plans/` at implementation time, per the plan's first dev step).
+status change (Unplanned -> Todo). When step 5 (e2) recorded any transitive-block warning, echo it
+here too (e.g. `blocked by BOS-Y, which is itself open and blocked by BOS-Z`) so an unattended run
+leaves a visible trail before the operator opens Linear. The plan is hosted on R2 with no local copy
+remaining (it is copied into `docs/plans/` at implementation time, per the plan's first dev step).
 
 ## Privacy
 

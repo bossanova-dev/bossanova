@@ -240,6 +240,48 @@ func TestE2E_ArrowNav(t *testing.T) {
 	s.do(map[string]any{"id": 99, "op": "quit"})
 }
 
+// TestE2E_PageNav is the CSI-tilde-family E2E complement to the arrow-family
+// TestE2E_ArrowNav. Where the arrow test proves a CSI-with-final-letter key
+// (`\x1b[B`), this proves a CSI-tilde key end-to-end: `pgdn` pages the home
+// table to the LAST session (sess-fff-666 / "Upgrade to React Navigation 7",
+// which has no chats), then `enter` opens that session's chat picker — whose
+// "[n]ew chat" action bar is unique to the chat-picker view and whose absence of
+// "Initial implementation" (the first session's only distinctive chat title)
+// proves the cursor left row 0. This exercises the full path NDJSON -> key op ->
+// KeyBytes("pgdn") -> \x1b[6~ -> PTY -> bubbletea -> ultraviolet -> vt, proving
+// the tilde family decodes through a real terminal rather than by grounding
+// (keybytes_test.go) alone.
+func TestE2E_PageNav(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e in -short")
+	}
+	_, boss := buildBinaries(t)
+	s := startAgent(t, "demo", boss, "")
+
+	if !strings.Contains(screenOf(s.do(map[string]any{"id": 1, "op": "observe"})), "Add dark mode") {
+		t.Fatal("home not ready")
+	}
+	// Page the home table to the last session, then open its chat picker. The
+	// "[n]ew chat" action bar is unique to the chat-picker view, so it confirms
+	// enter opened a session rather than staying on home.
+	s.do(map[string]any{"id": 2, "op": "key", "keys": []string{"pgdn", "enter"}})
+	wr := s.do(map[string]any{"id": 3, "op": "wait", "text": "[n]ew chat", "timeoutMs": 10000})
+	if !okResp(wr) {
+		t.Fatalf("pgdn + enter did not open a session chat picker; screen:\n%s", screenOf(wr))
+	}
+	screen := screenOf(wr)
+	// pgdn moved selection to the LAST session ("Upgrade to React Navigation 7",
+	// which has no chats) — so its header shows and the FIRST session's only
+	// distinctive chat title ("Initial implementation") must be absent.
+	if !strings.Contains(screen, "Upgrade to React Navigation 7") {
+		t.Fatalf("expected the last session (\"Upgrade to React Navigation 7\") header; screen:\n%s", screen)
+	}
+	if strings.Contains(screen, "Initial implementation") {
+		t.Fatalf("pgdn should have selected a session other than the first, but screen shows the first session's chat; screen:\n%s", screen)
+	}
+	s.do(map[string]any{"id": 99, "op": "quit"})
+}
+
 // TestE2E_AddRepoReachable drives the #812 add-repo flow: 'r' (repos) -> 'a'
 // (add) -> Open project -> type a path -> confirm, asserting the wizard reaches
 // the input phase and then the repo details ("Merge strategy" / "Setup command").

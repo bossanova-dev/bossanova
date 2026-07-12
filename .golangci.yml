@@ -9,6 +9,7 @@ linters:
     - depguard
     - errcheck
     - exhaustive
+    - forcetypeassert
     - gocritic
     - gosec
     - govet
@@ -85,6 +86,12 @@ linters:
         linters:
           - gosec
           - prealloc
+          # forcetypeassert: unchecked assertions in tests panic on mismatch,
+          # which is an acceptable loud test failure. Test assertions also often
+          # live in closures without a *testing.T in scope, so comma-ok has no
+          # clean failure path. Mirrors the gosec/prealloc test relief above;
+          # production code is still fully guarded.
+          - forcetypeassert
       - path: _test\.go
         text: "SA5011"
         linters:

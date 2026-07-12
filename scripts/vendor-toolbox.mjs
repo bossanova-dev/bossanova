@@ -39,6 +39,7 @@ export const VENDOR_MAP = {
   'bs-sweep-debt': ['bs-run-sentinel.mjs'],
   'bs-sweep-mutation': ['bs-run-sentinel.mjs'],
   'bs-sweep-security': ['bs-run-sentinel.mjs'],
+  'bs-sweep-tests': ['bs-run-sentinel.mjs'],
 }
 
 // The published core skills whose canonical committed home is the embedded

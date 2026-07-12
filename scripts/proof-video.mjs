@@ -39,6 +39,10 @@ export const MIN_STATIC_RUN_MS = 8_000
 export const RETIME_PAD_MS = 1_000
 /** Playback duration each compressed stretch is squeezed into. */
 export const RETIME_TARGET_MS = 4_000
+/** Settle pad kept after the last content screen when a trailing cut applies. */
+export const TRAILING_CUT_PAD_MS = 800
+/** Minimum OUTPUT duration of each burned caption window (readability floor). */
+export const CAPTION_MIN_OUTPUT_MS = 2_000
 export const OUTPUT_FPS = 30
 
 // ── Leading white-flash trim ────────────────────────────────────────────────
@@ -249,6 +253,62 @@ export function planRetime(staticRuns, durationMs, opts = {}) {
 /** Output duration (ms) of a retime plan. */
 export function retimedDurationMs(segments) {
   return Math.round(segments.reduce((t, s) => t + (s.endMs - s.startMs) / s.speed, 0))
+}
+
+/** Minimum OUTPUT duration each brief scene occupies in the final video so a
+ * human can register what happened before the next scene starts (BOS-251 —
+ * scenario replays produced ~2s videos with scenes at 0:00 and 0:01). */
+export const MIN_SCENE_OUTPUT_MS = 3_000
+
+/**
+ * Enforce a per-scene watchability floor on a retime plan: any scene window
+ * whose planned OUTPUT duration is under `minSceneMs` is slowed (speed < 1 —
+ * the same setpts mechanism the idle speedup uses, in reverse) until it holds
+ * the screen for `minSceneMs`. `sceneStartsMs` are window-opening timestamps on
+ * the SAME (trimmed) clock the segments use; the last window runs to
+ * `durationMs`. Non-finite entries (null cast reads) are dropped — their scenes
+ * simply keep the neighbouring window's pacing. Pure; returns a new segment
+ * list that still tiles [0, durationMs].
+ * @param {Array<{startMs:number,endMs:number,speed:number}>} segments planRetime output
+ * @param {Array<number>} sceneStartsMs
+ * @param {number} durationMs
+ * @param {number} [minSceneMs]
+ * @returns {Array<{startMs:number,endMs:number,speed:number}>}
+ */
+export function applySceneFloors(segments, sceneStartsMs, durationMs, minSceneMs = MIN_SCENE_OUTPUT_MS) {
+  const bounds = [
+    ...new Set(
+      (sceneStartsMs ?? [])
+        .filter((b) => Number.isFinite(b))
+        .map((b) => Math.min(Math.max(0, Math.round(b)), durationMs)),
+    ),
+  ].sort((a, b) => a - b)
+  if (durationMs <= 0 || bounds.length === 0) return segments
+  if (bounds[0] !== 0) bounds.unshift(0)
+  const windows = bounds.map((b, i) => ({ startMs: b, endMs: bounds[i + 1] ?? durationMs }))
+
+  // Split the plan at window boundaries so every piece lies inside one window.
+  const cuts = bounds.filter((c) => c > 0 && c < durationMs)
+  const pieces = []
+  for (const s of segments) {
+    let start = s.startMs
+    for (const c of [...cuts.filter((c) => c > s.startMs && c < s.endMs), s.endMs]) {
+      if (c > start) pieces.push({ startMs: start, endMs: c, speed: s.speed })
+      start = c
+    }
+  }
+
+  for (const w of windows) {
+    if (w.endMs <= w.startMs) continue
+    const inWindow = pieces.filter((p) => p.startMs >= w.startMs && p.endMs <= w.endMs)
+    const outLen = inWindow.reduce((t, p) => t + (p.endMs - p.startMs) / p.speed, 0)
+    if (outLen <= 0 || outLen >= minSceneMs) continue
+    const factor = outLen / minSceneMs
+    for (const p of inWindow) {
+      p.speed = Math.max(0.01, Math.round(p.speed * factor * 100) / 100)
+    }
+  }
+  return pieces
 }
 
 /**
@@ -634,12 +694,27 @@ export function encoderCropHeight(cropHeight, recordedHeight) {
  * @param {{ trimSec: number, cropHeight: number|null|undefined, fps: number }} opts
  * @returns {string}
  */
-export function buildBaseChain({ trimSec, cropHeight, fps }) {
+export function buildBaseChain({ trimSec, endSec, cropHeight, fps }) {
   const parts = []
-  if (trimSec > 0) parts.push(`trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS`)
+  const hasEnd = Number.isFinite(endSec) && endSec > (trimSec > 0 ? trimSec : 0)
+  if (trimSec > 0 || hasEnd) {
+    // CFR-normalize BEFORE trimming (BOS-251): agg webms are sparse VFR — one
+    // frame per TUI repaint, seconds apart. `trim=start=X` drops any frame
+    // timestamped before X even though it visually spans past X, and
+    // `setpts=PTS-STARTPTS` then rebases the clock to the first SURVIVING
+    // frame — which can sit many seconds after X. Every burned overlay (timer,
+    // captions) and the retime plan assume the rebase lands exactly at X, so
+    // any run with a leading trim played its content shifted early against
+    // its overlays and lost its tail to the end cut. fps-first materializes a
+    // frame on every 1/fps tick, so a frame always exists at X.
+    parts.push(`fps=${fps}`)
+    const start = `start=${(trimSec > 0 ? trimSec : 0).toFixed(3)}`
+    const end = hasEnd ? `:end=${endSec.toFixed(3)}` : ''
+    parts.push(`trim=${start}${end},setpts=PTS-STARTPTS`)
+  }
   if (cropHeight != null && Number.isInteger(cropHeight) && cropHeight > 0)
     parts.push(`crop=in_w:${cropHeight}:0:0`)
-  parts.push(`fps=${fps}`)
+  if (!parts.includes(`fps=${fps}`)) parts.push(`fps=${fps}`)
   return `[0:v]${parts.join(',')}[base]`
 }
 
@@ -664,15 +739,24 @@ export function buildBaseChain({ trimSec, cropHeight, fps }) {
  */
 export function planCaptionWindows(timings, totalMs) {
   if (!Array.isArray(timings) || timings.length === 0) return []
-  const cleaned = timings
+  const entries = timings
     .map((t) => ({ text: formatCaption(t?.caption), startMs: Number(t?.startMs) }))
-    .filter((t) => t.text && Number.isFinite(t.startMs))
+    .filter((t) => Number.isFinite(t.startMs))
     .sort((a, b) => a.startMs - b.startMs)
+  // STRICT per-screen windows (BOS-251): a caption narrates exactly the screen
+  // it was recorded against and ends when the NEXT screen settles — blank or
+  // not. Captions used to be retained across later un-narrated screens, which
+  // burned stale text over screens it never described ("pressing Down…" shown
+  // over a screen several actions later). A screen with no narration shows an
+  // empty strip — truthful beats decorated. Readability is guaranteed by the
+  // caption floor in postprocessProofVideo, not by stretching a caption across
+  // foreign screens.
   const windows = []
-  for (let i = 0; i < cleaned.length; i++) {
-    const startMs = Math.max(0, cleaned[i].startMs)
-    const endMs = i + 1 < cleaned.length ? cleaned[i + 1].startMs : totalMs
-    if (endMs > startMs) windows.push({ text: cleaned[i].text, startMs, endMs })
+  for (let i = 0; i < entries.length; i++) {
+    if (!entries[i].text) continue
+    const startMs = Math.max(0, entries[i].startMs)
+    const endMs = i + 1 < entries.length ? entries[i + 1].startMs : totalMs
+    if (endMs > startMs) windows.push({ text: entries[i].text, startMs, endMs })
   }
   return windows
 }
@@ -683,16 +767,17 @@ function captionEnableExpr(startSec, endSec) {
 }
 
 /**
- * Pass-1 filtergraph: overlay zero or more per-step caption strips at the very
- * top (`y=0`, gated by an `enable` time window) and, when enabled, the elapsed
- * timer pill at the top-right (`y=44`, clear of the caption strip). With no
- * overlays at all the base chain (trim/crop/fps) is the whole graph. Pure string
- * builder.
+ * Pass-1 filtergraph: overlay zero or more per-step caption strips along the
+ * BOTTOM edge (`y=main_h-overlay_h`, gated by an `enable` time window — the
+ * bottom is dead space in every TUI screen, so the strip never obscures the UI
+ * under proof; BOS-251) and, when enabled, the elapsed timer pill at the
+ * top-right (`y=44`). With no overlays at all the base chain (trim/crop/fps)
+ * is the whole graph. Pure string builder.
  *
- * Captions are overlaid first (so they sit UNDER the timer where the regions
- * meet) and the timer last; the final overlay's output is `[v]`. Each caption's
- * `inputIndex` is the ffmpeg `-i` index of its rendered strip; the caller assigns
- * those indices and feeds the matching inputs in the same order.
+ * Captions are overlaid first and the timer last; the final overlay's output
+ * is `[v]`. Each caption's `inputIndex` is the ffmpeg `-i` index of its
+ * rendered strip; the caller assigns those indices and feeds the matching
+ * inputs in the same order.
  *
  * @param {string} baseChain e.g. '[0:v]crop=…,fps=30[base]'
  * @param {{timer:boolean, captions?: Array<{inputIndex:number, startSec:number, endSec:number}>, timerInputIndex?: number}} opts
@@ -701,7 +786,7 @@ function captionEnableExpr(startSec, endSec) {
 export function buildTimerOverlayFilter(baseChain, { timer, captions = [], timerInputIndex = 1 }) {
   const ops = captions.map(
     (c) =>
-      `[${c.inputIndex}:v]overlay=x=0:y=0:${captionEnableExpr(c.startSec, c.endSec)}:eof_action=repeat`,
+      `[${c.inputIndex}:v]overlay=x=0:y=main_h-overlay_h:${captionEnableExpr(c.startSec, c.endSec)}:eof_action=repeat`,
   )
   if (timer) ops.push(`[${timerInputIndex}:v]overlay=x=main_w-overlay_w-14:y=44:eof_action=repeat`)
   if (ops.length === 0) return `${baseChain}`
@@ -991,6 +1076,8 @@ export function postprocessProofVideo({
   trimLeadingBlank = true,
   captionTimings,
   renderCaptionStrip,
+  sceneStartsMs,
+  endCutMs,
 }) {
   const fullDurationMs = ffprobeDurationMs(webmPath)
   if (fullDurationMs === null)
@@ -1029,18 +1116,70 @@ export function postprocessProofVideo({
     : 0
   const trimSec = trimMs / 1000
   const dropFrames = Math.round((trimMs / 1000) * ANALYZE_FPS)
-  const diffs = trimMs > 0 ? analysis.diffs.slice(dropFrames) : analysis.diffs
-  const durationMs = Math.max(0, fullDurationMs - trimMs)
+  let diffs = trimMs > 0 ? analysis.diffs.slice(dropFrames) : analysis.diffs
+  let durationMs = Math.max(0, fullDurationMs - trimMs)
+  // Trailing dead-air cut (BOS-251): the cast keeps recording after the last
+  // settled content screen (bridge quit → blank PTY; a crashed leg → dead
+  // terminal), which used to end every video — and its extracted poster — on a
+  // caption-only blank frame. `endCutMs` is the source-clock timestamp of the
+  // last content the caller wants kept; everything past it (+ a settle pad) is
+  // dropped from the output.
+  let endSec
+  if (Number.isFinite(endCutMs)) {
+    const cut = Math.min(durationMs, Math.max(0, endCutMs + TRAILING_CUT_PAD_MS - trimMs))
+    if (cut > 0 && cut < durationMs) {
+      console.error(
+        `[proof-video] trailing cut: dropping ${Math.round(durationMs - cut)}ms of post-content tail ` +
+          `(endCutMs=${Math.round(endCutMs)}, trim=${Math.round(trimMs)}, duration=${Math.round(durationMs)})`,
+      )
+      durationMs = cut
+      endSec = (trimMs + cut) / 1000
+      const keepFrames = Math.ceil((durationMs / 1000) * ANALYZE_FPS)
+      if (diffs.length > keepFrames) diffs = diffs.slice(0, keepFrames)
+    } else {
+      console.error(
+        `[proof-video] trailing cut skipped (endCutMs=${Math.round(endCutMs)} + pad lands at ` +
+          `${Math.round(cut)}ms of ${Math.round(durationMs)}ms) — the cast and video clocks should ` +
+          'match; a large gap suggests idle-time compression upstream',
+      )
+    }
+  }
 
   const staticRuns = findStaticRuns(diffs)
-  const segments = planRetime(staticRuns, durationMs)
+  // With idleSpeedup off the speedup plan must not leak into pass 2 (floors may
+  // still force a retime pass below), so start from an identity plan instead.
+  let segments = idleSpeedup
+    ? planRetime(staticRuns, durationMs)
+    : durationMs > 0
+      ? [{ startMs: 0, endMs: durationMs, speed: 1 }]
+      : []
+  // Caption/screen-readability floor (BOS-251): every settled screen (each
+  // captionTimings entry, narrated or not, is one settled screen) must hold
+  // long enough to watch, and every burned caption long enough to read.
+  // Boundaries arrive on the source clock; shift onto the trimmed clock.
+  const captionStarts = (captionTimings ?? [])
+    .filter((c) => Number.isFinite(c.startMs))
+    .map((c) => c.startMs - trimMs)
+  if (captionStarts.length > 0) {
+    segments = applySceneFloors(segments, captionStarts, durationMs, CAPTION_MIN_OUTPUT_MS)
+  }
+  // Per-scene watchability floor (BOS-251): scene boundaries arrive on the
+  // source clock; shift them onto the trimmed clock the plan uses.
+  if (Array.isArray(sceneStartsMs) && sceneStartsMs.length > 0) {
+    segments = applySceneFloors(
+      segments,
+      sceneStartsMs.filter((b) => Number.isFinite(b)).map((b) => b - trimMs),
+      durationMs,
+    )
+  }
   const fastSegments = segments.filter((s) => s.speed > 1)
+  const slowSegments = segments.filter((s) => s.speed < 1)
 
   // Pass 1: optionally burn the elapsed timer on the (trimmed) original timeline
   // (so it shows real elapsed time and visibly fast-forwards once stretches are
   // retimed). The leading trim is applied in-filtergraph — NOT via -ss — so the
   // diff analysis, overlay timer, and retime plan all share one clock.
-  const baseChain = buildBaseChain({ trimSec, cropHeight: effectiveCrop, fps: OUTPUT_FPS })
+  const baseChain = buildBaseChain({ trimSec, endSec, cropHeight: effectiveCrop, fps: OUTPUT_FPS })
   const pass1Inputs = ['-i', webmPath]
   if (timer) {
     const strip = renderTimerStrip(Math.ceil(durationMs / 1000), fastForwardSeconds(segments))
@@ -1100,7 +1239,7 @@ export function postprocessProofVideo({
   // Pass 2: compress the static stretches. Nothing to compress (or idleSpeedup
   // disabled) → the timed video IS the final video.
   let result
-  if (!idleSpeedup || fastSegments.length === 0) {
+  if (fastSegments.length === 0 && slowSegments.length === 0) {
     copyFileSync(timedPath, outPath)
     result = {
       ok: true,

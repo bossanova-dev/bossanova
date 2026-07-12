@@ -39,6 +39,28 @@ func TestResolveTrustedExecutableFindsTrustedOnPath(t *testing.T) {
 	}
 }
 
+func TestResolveTrustedExecutableMakesRelativePathLookupAbsolute(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.Mkdir(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(binDir, "boss")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	previous := executablePath
+	executablePath = func() (string, error) { return "", os.ErrNotExist }
+	t.Cleanup(func() { executablePath = previous })
+	t.Chdir(root)
+	t.Setenv("PATH", t.TempDir())
+
+	if got := ResolveTrustedExecutable(filepath.Join("bin", "boss")); got != bin {
+		t.Fatalf("ResolveTrustedExecutable(\"bin/boss\") = %q, want absolute path %q", got, bin)
+	}
+}
+
 func TestResolveTrustedExecutableDoesNotUseWorkingDirectoryWhenExecutableLookupFails(t *testing.T) {
 	root := t.TempDir()
 	const name = "resolver-working-directory-test"

@@ -165,6 +165,17 @@ func WithArchiveDelay(delay time.Duration) Option {
 	}
 }
 
+// SetArchiveDelay slows ArchiveSession on a live daemon. The proof bridge uses
+// it so the in-flight optimistic "archiving" row state is actually visible in
+// recorded captures (BOS-251) — an instant mock archive settles before any
+// observe() could ever catch it. Guarded by m.mu because the daemon is already
+// serving: ArchiveSession reads archiveDelay on the RPC goroutine.
+func (m *MockDaemon) SetArchiveDelay(delay time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.archiveDelay = delay
+}
+
 // WithArchiveError makes ArchiveSession fail with the given message.
 func WithArchiveError(message string) Option {
 	return func(c *harnessConfig) {

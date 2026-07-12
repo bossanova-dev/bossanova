@@ -45,6 +45,8 @@ export function finishVideo({
   keepWebm,
   captionTimings,
   renderCaptionStrip,
+  sceneStartsMs,
+  endCutMs,
 }) {
   const mp4Path = path.join(recipeDir, `${recipeId}.mp4`)
   const timedPath = path.join(recipeDir, `${recipeId}-timed.mp4`)
@@ -85,6 +87,8 @@ export function finishVideo({
     trimLeadingBlank,
     captionTimings,
     renderCaptionStrip,
+    sceneStartsMs,
+    endCutMs,
   })
   if (!post.ok) {
     console.warn(`[proof] video post-processing failed (${post.warning}) — plain mp4 fallback`)

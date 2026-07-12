@@ -592,7 +592,7 @@ func hostServiceListOpenPRsHandler(srv any, ctx context.Context, dec func(any) e
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(hostServiceHandler).ListOpenPRs(ctx, req)
+	return srv.(hostServiceHandler).ListOpenPRs(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func hostServiceGetCheckResultsHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -600,7 +600,7 @@ func hostServiceGetCheckResultsHandler(srv any, ctx context.Context, dec func(an
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(hostServiceHandler).GetCheckResults(ctx, req)
+	return srv.(hostServiceHandler).GetCheckResults(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func hostServiceGetPRStatusHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -608,7 +608,7 @@ func hostServiceGetPRStatusHandler(srv any, ctx context.Context, dec func(any) e
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(hostServiceHandler).GetPRStatus(ctx, req)
+	return srv.(hostServiceHandler).GetPRStatus(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func hostServiceListClosedPRsHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -616,7 +616,7 @@ func hostServiceListClosedPRsHandler(srv any, ctx context.Context, dec func(any)
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(hostServiceHandler).ListClosedPRs(ctx, req)
+	return srv.(hostServiceHandler).ListClosedPRs(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 // --- VCS RPC implementations ---
@@ -995,14 +995,14 @@ func hostServiceListSessionsHandler(srv interface{}, ctx context.Context, dec fu
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(hostServiceHandler).ListSessions(ctx, in)
+		return srv.(hostServiceHandler).ListSessions(ctx, in) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
 		FullMethod: "/bossanova.v1.HostService/ListSessions",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(hostServiceHandler).ListSessions(ctx, req.(*bossanovav1.HostServiceListSessionsRequest))
+		return srv.(hostServiceHandler).ListSessions(ctx, req.(*bossanovav1.HostServiceListSessionsRequest)) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1013,14 +1013,14 @@ func hostServiceGetReviewCommentsHandler(srv interface{}, ctx context.Context, d
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(hostServiceHandler).GetReviewComments(ctx, in)
+		return srv.(hostServiceHandler).GetReviewComments(ctx, in) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
 		FullMethod: "/bossanova.v1.HostService/GetReviewComments",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(hostServiceHandler).GetReviewComments(ctx, req.(*bossanovav1.GetReviewCommentsRequest))
+		return srv.(hostServiceHandler).GetReviewComments(ctx, req.(*bossanovav1.GetReviewCommentsRequest)) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1058,7 +1058,7 @@ func hostServiceSetRepairStatusHandler(srv any, ctx context.Context, dec func(an
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(hostServiceHandler).SetRepairStatus(ctx, req)
+	return srv.(hostServiceHandler).SetRepairStatus(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func hostServiceFireSessionEventHandler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -1067,14 +1067,14 @@ func hostServiceFireSessionEventHandler(srv interface{}, ctx context.Context, de
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(hostServiceHandler).FireSessionEvent(ctx, in)
+		return srv.(hostServiceHandler).FireSessionEvent(ctx, in) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
 		FullMethod: "/bossanova.v1.HostService/FireSessionEvent",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(hostServiceHandler).FireSessionEvent(ctx, req.(*bossanovav1.FireSessionEventRequest))
+		return srv.(hostServiceHandler).FireSessionEvent(ctx, req.(*bossanovav1.FireSessionEventRequest)) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1249,7 +1249,7 @@ func hostServiceStartAgentRunHandler(srv any, ctx context.Context, dec func(any)
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(hostServiceHandler).StartAgentRun(ctx, req)
+	return srv.(hostServiceHandler).StartAgentRun(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func hostServiceWaitAgentRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -1257,7 +1257,7 @@ func hostServiceWaitAgentRunHandler(srv any, ctx context.Context, dec func(any) 
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(hostServiceHandler).WaitAgentRun(ctx, req)
+	return srv.(hostServiceHandler).WaitAgentRun(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 // RecordRepairOutcome persists the repair-attempt outcome onto the
@@ -1450,7 +1450,7 @@ func hostServiceRecordRepairOutcomeHandler(srv any, ctx context.Context, dec fun
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(hostServiceHandler).RecordRepairOutcome(ctx, req)
+	return srv.(hostServiceHandler).RecordRepairOutcome(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 // newRunHookToken mints a fresh per-run bearer token for the run-keyed
@@ -2049,7 +2049,7 @@ func hostServiceStartChatRunHandler(srv any, ctx context.Context, dec func(any) 
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(hostServiceHandler).StartChatRun(ctx, req)
+	return srv.(hostServiceHandler).StartChatRun(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func hostServiceWaitChatRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -2057,7 +2057,7 @@ func hostServiceWaitChatRunHandler(srv any, ctx context.Context, dec func(any) e
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(hostServiceHandler).WaitChatRun(ctx, req)
+	return srv.(hostServiceHandler).WaitChatRun(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func hostServiceReclaimRepairChatHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -2065,5 +2065,5 @@ func hostServiceReclaimRepairChatHandler(srv any, ctx context.Context, dec func(
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(hostServiceHandler).ReclaimRepairChat(ctx, req)
+	return srv.(hostServiceHandler).ReclaimRepairChat(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }

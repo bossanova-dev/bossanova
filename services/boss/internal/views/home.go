@@ -157,6 +157,18 @@ type HomeModel struct {
 	// RPC is still active, avoiding a picker stuck waiting on a resolved archive.
 	archiveInFlightIDs map[string]struct{}
 
+	// mergingOverrideIDs contains sessions whose status is optimistically
+	// rendered as "merging" (blue/info intent) while a PR merge is in flight.
+	// Unlike archiving, a successful merge does NOT linger here: the caller hands
+	// off to mergedOptimisticID so the row flips straight to "✓ merged", so both
+	// success and failure clear the id (see resolveMerge).
+	mergingOverrideIDs map[string]struct{}
+
+	// mergeInFlightIDs is the subset of mergingOverrideIDs whose merge RPC has
+	// not resolved. It only re-seeds a re-entered ChatPickerModel while the RPC
+	// is still active, avoiding a picker stuck waiting on a resolved merge.
+	mergeInFlightIDs map[string]struct{}
+
 	// Auth
 	authMgr              *auth.Manager // nil means auth not configured
 	loggedIn             bool
@@ -204,6 +216,8 @@ func NewHomeModel(c client.BossClient, ctx context.Context, authMgr *auth.Manage
 		now:                  now,
 		archivingOverrideIDs: make(map[string]struct{}),
 		archiveInFlightIDs:   make(map[string]struct{}),
+		mergingOverrideIDs:   make(map[string]struct{}),
+		mergeInFlightIDs:     make(map[string]struct{}),
 	}
 }
 
@@ -245,6 +259,50 @@ func (h *HomeModel) reconcileArchivingSessions() {
 		if !sessionsContainID(h.sessions, sessionID) {
 			delete(h.archivingOverrideIDs, sessionID)
 			delete(h.archiveInFlightIDs, sessionID)
+		}
+	}
+}
+
+func (h *HomeModel) markMerging(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	if h.mergingOverrideIDs == nil {
+		h.mergingOverrideIDs = make(map[string]struct{})
+	}
+	if h.mergeInFlightIDs == nil {
+		h.mergeInFlightIDs = make(map[string]struct{})
+	}
+	h.mergingOverrideIDs[sessionID] = struct{}{}
+	h.mergeInFlightIDs[sessionID] = struct{}{}
+}
+
+// resolveMerge records that a merge RPC has resolved. Unlike resolveArchive,
+// BOTH success and failure drop the render override, so it needs no error
+// argument: on success the caller sets mergedOptimisticID so the row flips to
+// "✓ merged" (keeping the merging override too would leave a blue "merging"
+// masking that), and on failure the caller rebuilds the row so it returns to
+// its real status. The in-flight subset is cleared in either case.
+func (h *HomeModel) resolveMerge(sessionID string) {
+	delete(h.mergeInFlightIDs, sessionID)
+	delete(h.mergingOverrideIDs, sessionID)
+}
+
+func (h HomeModel) isMerging(sessionID string) bool {
+	_, ok := h.mergingOverrideIDs[sessionID]
+	return ok
+}
+
+func (h HomeModel) mergeInFlight(sessionID string) bool {
+	_, ok := h.mergeInFlightIDs[sessionID]
+	return ok
+}
+
+func (h *HomeModel) reconcileMergingSessions() {
+	for sessionID := range h.mergingOverrideIDs {
+		if !sessionsContainID(h.sessions, sessionID) {
+			delete(h.mergingOverrideIDs, sessionID)
+			delete(h.mergeInFlightIDs, sessionID)
 		}
 	}
 }
@@ -451,6 +509,9 @@ func (h HomeModel) tableCursorForSessionIndex(sessionIndex int) int {
 }
 
 func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
+	if sess != nil && h.isMerging(sess.Id) {
+		return renderMergingStatus(h.spinner)
+	}
 	if sess != nil && h.isArchiving(sess.Id) {
 		return renderArchivingStatus(h.spinner)
 	}
@@ -934,6 +995,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.daemonStatuses = msg.daemonStatuses
 		h.applyMergedOptimisticOverride()
 		h.reconcileArchivingSessions()
+		h.reconcileMergingSessions()
 		h.buildTableRows()
 		if h.highlightSessionID != "" {
 			for i, sess := range h.sessions {

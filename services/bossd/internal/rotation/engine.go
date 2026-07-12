@@ -215,7 +215,11 @@ func (e *Engine) Decide(ctx context.Context, sig Signal) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
-	return r.(Outcome), nil
+	out, ok := r.(Outcome)
+	if !ok {
+		return Outcome{}, fmt.Errorf("rotation: singleflight returned unexpected type %T", r)
+	}
+	return out, nil
 }
 
 // SelectProactiveCandidate returns the lowest-utilization account eligible to

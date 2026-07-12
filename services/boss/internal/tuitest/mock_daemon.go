@@ -28,6 +28,16 @@ import (
 
 var socketCounter atomic.Int64
 
+// cloneMsg deep-copies a protobuf message, preserving its concrete type. It
+// wraps proto.Clone (which returns the proto.Message interface) with a checked
+// assertion so call sites stay free of unchecked type assertions
+// (forcetypeassert). Clone always returns the same dynamic type as its input,
+// so the comma-ok never fails in practice.
+func cloneMsg[T proto.Message](m T) T {
+	c, _ := proto.Clone(m).(T)
+	return c
+}
+
 // MockDaemon is a minimal ConnectRPC server that implements the DaemonService
 // interface with in-memory data. Only the RPCs actually used by the TUI are
 // implemented; the rest return Unimplemented.
@@ -291,7 +301,7 @@ func (m *MockDaemon) CreateCronJobCalls() []*pb.CreateCronJobRequest {
 	defer m.mu.RUnlock()
 	out := make([]*pb.CreateCronJobRequest, len(m.createCronJobCalls))
 	for i, req := range m.createCronJobCalls {
-		out[i] = proto.Clone(req).(*pb.CreateCronJobRequest)
+		out[i] = cloneMsg(req)
 	}
 	return out
 }
@@ -353,7 +363,7 @@ func (m *MockDaemon) AddAccountCalls() []*pb.AddAccountRequest {
 	defer m.mu.RUnlock()
 	out := make([]*pb.AddAccountRequest, len(m.addAccountCalls))
 	for i, req := range m.addAccountCalls {
-		out[i] = proto.Clone(req).(*pb.AddAccountRequest)
+		out[i] = cloneMsg(req)
 	}
 	return out
 }
@@ -364,7 +374,7 @@ func (m *MockDaemon) UpdateAccountCalls() []*pb.UpdateAccountRequest {
 	defer m.mu.RUnlock()
 	out := make([]*pb.UpdateAccountRequest, len(m.updateAccountCalls))
 	for i, req := range m.updateAccountCalls {
-		out[i] = proto.Clone(req).(*pb.UpdateAccountRequest)
+		out[i] = cloneMsg(req)
 	}
 	return out
 }
@@ -436,11 +446,18 @@ func (m *MockDaemon) GetSession(_ context.Context, req *connect.Request[pb.GetSe
 }
 
 func (m *MockDaemon) ArchiveSession(_ context.Context, req *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {
-	if m.archiveDelay > 0 {
-		time.Sleep(m.archiveDelay)
+	// Snapshot the injected delay/error under the lock: SetArchiveDelay can be
+	// called on the already-serving daemon (BOS-251 proof bridge), so a lock-free
+	// read here would be a data race under `go test -race`.
+	m.mu.RLock()
+	archiveDelay := m.archiveDelay
+	archiveError := m.archiveError
+	m.mu.RUnlock()
+	if archiveDelay > 0 {
+		time.Sleep(archiveDelay)
 	}
-	if m.archiveError != "" {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("%s", m.archiveError))
+	if archiveError != "" {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("%s", archiveError))
 	}
 
 	m.mu.Lock()
@@ -1006,7 +1023,7 @@ func (m *MockDaemon) CreateCronJob(_ context.Context, req *connect.Request[pb.Cr
 		UpdatedAt: timestamppb.Now(),
 	}
 	m.cronJobs[job.Id] = job
-	return connect.NewResponse(&pb.CreateCronJobResponse{CronJob: proto.Clone(job).(*pb.CronJob)}), nil
+	return connect.NewResponse(&pb.CreateCronJobResponse{CronJob: cloneMsg(job)}), nil
 }
 
 func (m *MockDaemon) ListCronJobs(_ context.Context, req *connect.Request[pb.ListCronJobsRequest]) (*connect.Response[pb.ListCronJobsResponse], error) {
@@ -1025,7 +1042,7 @@ func (m *MockDaemon) ListCronJobs(_ context.Context, req *connect.Request[pb.Lis
 		}
 		// Clone so concurrent writers (e.g. UpdateCronJob) cannot race with
 		// the response marshaler.
-		out = append(out, proto.Clone(job).(*pb.CronJob))
+		out = append(out, cloneMsg(job))
 	}
 	return connect.NewResponse(&pb.ListCronJobsResponse{CronJobs: out}), nil
 }
@@ -1037,13 +1054,13 @@ func (m *MockDaemon) GetCronJob(_ context.Context, req *connect.Request[pb.GetCr
 	if !ok {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("cron job %q not found", req.Msg.Id))
 	}
-	return connect.NewResponse(&pb.GetCronJobResponse{CronJob: proto.Clone(job).(*pb.CronJob)}), nil
+	return connect.NewResponse(&pb.GetCronJobResponse{CronJob: cloneMsg(job)}), nil
 }
 
 func (m *MockDaemon) UpdateCronJob(_ context.Context, req *connect.Request[pb.UpdateCronJobRequest]) (*connect.Response[pb.UpdateCronJobResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.updateCronJobCalls = append(m.updateCronJobCalls, proto.Clone(req.Msg).(*pb.UpdateCronJobRequest))
+	m.updateCronJobCalls = append(m.updateCronJobCalls, cloneMsg(req.Msg))
 	job, ok := m.cronJobs[req.Msg.Id]
 	if !ok {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("cron job %q not found", req.Msg.Id))
@@ -1070,7 +1087,7 @@ func (m *MockDaemon) UpdateCronJob(_ context.Context, req *connect.Request[pb.Up
 	// Clone before returning: connect-go marshals the response after we
 	// release the lock, and a subsequent UpdateCronJob would otherwise mutate
 	// the same pointer concurrently with the in-flight marshal.
-	return connect.NewResponse(&pb.UpdateCronJobResponse{CronJob: proto.Clone(job).(*pb.CronJob)}), nil
+	return connect.NewResponse(&pb.UpdateCronJobResponse{CronJob: cloneMsg(job)}), nil
 }
 
 func (m *MockDaemon) DeleteCronJob(_ context.Context, req *connect.Request[pb.DeleteCronJobRequest]) (*connect.Response[pb.DeleteCronJobResponse], error) {
@@ -1129,7 +1146,7 @@ func (m *MockDaemon) ListAccounts(_ context.Context, req *connect.Request[pb.Lis
 		if req.Msg.Provider != nil && *req.Msg.Provider != "" && acct.Provider != *req.Msg.Provider {
 			continue
 		}
-		out = append(out, proto.Clone(acct).(*pb.Account))
+		out = append(out, cloneMsg(acct))
 	}
 	return connect.NewResponse(&pb.ListAccountsResponse{Accounts: out}), nil
 }
@@ -1137,7 +1154,7 @@ func (m *MockDaemon) ListAccounts(_ context.Context, req *connect.Request[pb.Lis
 func (m *MockDaemon) AddAccount(_ context.Context, req *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.addAccountCalls = append(m.addAccountCalls, proto.Clone(req.Msg).(*pb.AddAccountRequest))
+	m.addAccountCalls = append(m.addAccountCalls, cloneMsg(req.Msg))
 	m.accountCounter++
 	acct := &pb.Account{
 		Id:        fmt.Sprintf("acct-%d", m.accountCounter),
@@ -1154,7 +1171,7 @@ func (m *MockDaemon) AddAccount(_ context.Context, req *connect.Request[pb.AddAc
 	if len(req.Msg.Credential) > 0 {
 		m.accountCredentials[acct.Id] = append([]byte(nil), req.Msg.Credential...)
 	}
-	return connect.NewResponse(&pb.AddAccountResponse{Account: proto.Clone(acct).(*pb.Account)}), nil
+	return connect.NewResponse(&pb.AddAccountResponse{Account: cloneMsg(acct)}), nil
 }
 
 func (m *MockDaemon) RefreshAccount(_ context.Context, req *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error) {
@@ -1170,13 +1187,13 @@ func (m *MockDaemon) RefreshAccount(_ context.Context, req *connect.Request[pb.R
 	m.accountCredentials[req.Msg.Id] = append([]byte(nil), req.Msg.Credential...)
 	acct.UpdatedAt = timestamppb.Now()
 	resp := &pb.RefreshAccountResponse{
-		Account: proto.Clone(acct).(*pb.Account),
+		Account: cloneMsg(acct),
 		Detail:  "credential refreshed",
 	}
 	if req.Msg.TestAfterSave {
 		acct.LastTestOkAt = timestamppb.Now()
 		acct.LastTestError = ""
-		resp.Account = proto.Clone(acct).(*pb.Account)
+		resp.Account = cloneMsg(acct)
 		resp.Detail = "credential validated (provider verification unavailable in mock)"
 	}
 	return connect.NewResponse(resp), nil
@@ -1185,7 +1202,7 @@ func (m *MockDaemon) RefreshAccount(_ context.Context, req *connect.Request[pb.R
 func (m *MockDaemon) UpdateAccount(_ context.Context, req *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.updateAccountCalls = append(m.updateAccountCalls, proto.Clone(req.Msg).(*pb.UpdateAccountRequest))
+	m.updateAccountCalls = append(m.updateAccountCalls, cloneMsg(req.Msg))
 	acct, ok := m.accounts[req.Msg.Id]
 	if !ok {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account %q not found", req.Msg.Id))
@@ -1203,7 +1220,7 @@ func (m *MockDaemon) UpdateAccount(_ context.Context, req *connect.Request[pb.Up
 		acct.AllowedModels = req.Msg.AllowedModels
 	}
 	acct.UpdatedAt = timestamppb.Now()
-	return connect.NewResponse(&pb.UpdateAccountResponse{Account: proto.Clone(acct).(*pb.Account)}), nil
+	return connect.NewResponse(&pb.UpdateAccountResponse{Account: cloneMsg(acct)}), nil
 }
 
 func (m *MockDaemon) RemoveAccount(_ context.Context, req *connect.Request[pb.RemoveAccountRequest]) (*connect.Response[pb.RemoveAccountResponse], error) {
@@ -1234,7 +1251,7 @@ func (m *MockDaemon) TestAccount(_ context.Context, req *connect.Request[pb.Test
 	acct.LastTestError = ""
 	acct.UpdatedAt = timestamppb.Now()
 	return connect.NewResponse(&pb.TestAccountResponse{
-		Account:      proto.Clone(acct).(*pb.Account),
+		Account:      cloneMsg(acct),
 		LiveSmokeRan: false,
 		Detail:       "credential validated (provider verification unavailable in mock)",
 	}), nil

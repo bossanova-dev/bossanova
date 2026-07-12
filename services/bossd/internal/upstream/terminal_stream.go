@@ -260,6 +260,14 @@ type TerminalStreamClient struct {
 	mu            sync.Mutex
 	attaches      map[string]*activeAttach
 	streamClosing bool
+
+	// cycleCancel cancels the Run loop's current stream attempt.
+	// CycleStream fires it; Run installs it before each openStream and
+	// clears it afterwards. Guarded by cycleMu (not mu — the attach map's
+	// mutex is held across attach bookkeeping and must not couple to
+	// lifecycle signalling).
+	cycleMu     sync.Mutex
+	cycleCancel context.CancelFunc
 }
 
 // activeAttach is the per-attach bookkeeping the client maintains while a
@@ -392,11 +400,31 @@ func (c *TerminalStreamClient) Run(ctx context.Context) error {
 			continue
 		}
 
+		// Each attempt runs under its own cancellable context so
+		// CycleStream can abandon a live stream without touching the
+		// caller's ctx. attemptCtx cancelled while ctx is still alive is
+		// therefore an unambiguous "cycled" signal.
+		attemptCtx, attemptCancel := context.WithCancel(ctx)
+		c.setCycleCancel(attemptCancel)
+
 		startedAt := c.clock.Now()
-		err := c.openStream(ctx)
+		err := c.openStream(attemptCtx)
+		c.setCycleCancel(nil)
+		cycled := attemptCtx.Err() != nil && ctx.Err() == nil
+		attemptCancel()
 		if ctx.Err() != nil {
 			c.closeAllAttaches()
 			return nil
+		}
+		if cycled {
+			// The DaemonStream completed a (re-)registration handshake:
+			// bosso replaced our DaemonState, so whatever sender the old
+			// stream had installed is stranded. Reconnect immediately —
+			// this is an intentional rebind, not a failure, so no warn
+			// and no backoff ramp.
+			c.logger.Info().Msg("terminal stream cycled after daemon re-registration; rebinding")
+			backoff = terminalStreamInitialBackoff
+			continue
 		}
 		if c.authState != nil && c.authState.NeedsLogin() {
 			// openStream returned because logout cancelled the inner
@@ -435,6 +463,37 @@ func (c *TerminalStreamClient) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// CycleStream abandons the current TerminalStream attempt (if any) so the
+// Run loop reconnects immediately. Production wiring invokes this from
+// StreamClientConfig.OnHandshake: every DaemonStream registration builds a
+// fresh DaemonState on bosso, and a terminal sender installed on the prior
+// state is permanently stranded — bosso can close the orphaned handler
+// (its half of the fix), but cycling here guarantees the rebind even
+// against orchestrators that don't. Active attaches are torn down by the
+// normal openStream teardown; their browsers reconnect via the WS layer,
+// which bosso force-closed at the same replace. Nil-safe and non-blocking;
+// a no-op when no attempt is in flight (the imminent attempt binds the
+// fresh state anyway).
+func (c *TerminalStreamClient) CycleStream() {
+	if c == nil {
+		return
+	}
+	c.cycleMu.Lock()
+	cancel := c.cycleCancel
+	c.cycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// setCycleCancel publishes (or clears) the cancel func for the Run loop's
+// current stream attempt.
+func (c *TerminalStreamClient) setCycleCancel(cancel context.CancelFunc) {
+	c.cycleMu.Lock()
+	c.cycleCancel = cancel
+	c.cycleMu.Unlock()
 }
 
 // openStream runs a single connect attempt end-to-end. Returns when the

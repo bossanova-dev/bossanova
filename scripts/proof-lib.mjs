@@ -239,7 +239,7 @@ export function planTuiLegs({ agentUsable, scenarioPresent }) {
  *   or crash text). A keyless replay-only pass carries `errorDetail:null`.
  * - NO leg passed + ANY leg crashed ⇒ `pipeline-error` (exit 1, unchanged
  *   BOS-138), `errorDetail` = the crash text(s).
- * - NO leg passed, NO crash ⇒ `agent-incomplete` (exit 0 until BOS-226) with a
+ * - NO leg passed, NO crash ⇒ `agent-incomplete` (exit 1 since BOS-226) with a
  *   combined per-leg `errorDetail`.
  *
  * `errorDetail` string shapes (consumed verbatim by Task 2):
@@ -298,7 +298,7 @@ export function classifyTuiOutcome({
     return { proofSource: null, reasonCode: 'pipeline-error', errorDetail }
   }
 
-  // No pass, no crash ⇒ agent-incomplete (exit 0 until BOS-226), combining each
+  // No pass, no crash ⇒ agent-incomplete (exit 1 since BOS-226), combining each
   // attempted leg's gate-fail reason (naming the missing scenario when replay was
   // skipped for lack of one).
   const parts = []
@@ -895,14 +895,15 @@ export function deferredReasonMessage(reasonCode, { missing } = {}) {
     // proof/scenarios/*.scenario.json demonstrating it, so the deterministic TUI
     // proof (BOS-219) had nothing to replay. This is an AUTHORING nudge, never an
     // "environment limitation": the fix is in the author's hands (commit a
-    // scenario), not the environment's. Warn-only for now; Epic 4 flips it fatal.
+    // scenario), not the environment's. BOS-226: proof is required for TUI, so this
+    // now exits 1 (fail-loud) rather than the old warn-only exit 0.
     return (
       'This TUI change did not commit a `proof/scenarios/*.scenario.json` demonstrating ' +
       'it, so the deterministic TUI proof had nothing to replay. Author one and iterate ' +
       'to green with `node scripts/proof.mjs scenario validate <file>` then ' +
       '`node scripts/proof.mjs scenario run <file> --dry-run`, and commit it in this PR. ' +
-      'Warn-only for now — a future change makes it required. This is an authoring gap, ' +
-      'not a problem with the change.'
+      'Proof is required for TUI — this exits 1 until a scenario is committed. This is an ' +
+      'authoring gap, not a problem with the change.'
     )
   }
   // Fallback for any unhandled reason code. It MUST NOT assert an "environment
@@ -1047,10 +1048,16 @@ export function renderGallery({ manifest }) {
 
     const stills = capture.stills ?? []
     if (isVideoMediaType(capture.mediaType) && (capture.videoUrl || capture.url)) {
-      const poster = capture.posterUrl ?? capture.url
+      // Thumbnail for the video link (BOS-251): the play-button poster when the
+      // run produced one, else the first still. NEVER the mp4 URL itself — an
+      // image tag pointing at a video renders as a broken image on GitHub, so
+      // with no raster candidate at all we emit a plain link instead.
+      const thumb = capture.posterUrl ?? stills.find((st) => st?.url)?.url
       if (capture.status !== 'passed') lines.push('')
       lines.push(
-        `[![${escapeMarkdown(capture.title)}](${poster})](${capture.videoUrl ?? capture.url})`,
+        thumb
+          ? `[![${escapeMarkdown(capture.title)}](${thumb})](${capture.videoUrl ?? capture.url})`
+          : `[${escapeMarkdown(capture.title)}](${capture.videoUrl ?? capture.url})`,
         '',
         '▶ Video',
       )

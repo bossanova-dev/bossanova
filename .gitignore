@@ -9,6 +9,9 @@ bin/
 node_modules/
 .node-version
 
+# Turborepo local cache + logs (machine-wide cache lives at $TURBO_CACHE_DIR)
+.turbo/
+
 # Protobuf generated code (committed for CI — regenerate with `make generate`)
 # lib/bossalib/gen/
 

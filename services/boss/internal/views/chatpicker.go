@@ -489,6 +489,12 @@ func (m ChatPickerModel) canOpenTracker() bool {
 // that errors. There is no auto-merge/merge-when-ready queue today, so the
 // affordance stays gated on the passing state the backend will actually accept.
 func (m ChatPickerModel) canMerge() bool {
+	// A merge already in flight hides the [m]erge affordance: the picker seeds
+	// merging=true on re-entry of a still-merging session, and the optimistic
+	// "merging" status stands in until the RPC resolves.
+	if m.merging {
+		return false
+	}
 	if m.merged || m.session == nil || m.session.GetPrNumber() == 0 {
 		return false
 	}
@@ -1277,6 +1283,15 @@ func (m ChatPickerModel) startDelete() (tea.Model, tea.Cmd) {
 // flight, else "". Lets app.go carry archiving state across the home rebuild.
 func (m ChatPickerModel) ArchivingSessionID() string {
 	if m.archiving {
+		return m.sessionID
+	}
+	return ""
+}
+
+// MergingSessionID returns the session id being merged if a merge is in
+// flight, else "". Lets app.go carry merging state across the home rebuild.
+func (m ChatPickerModel) MergingSessionID() string {
+	if m.merging {
 		return m.sessionID
 	}
 	return ""

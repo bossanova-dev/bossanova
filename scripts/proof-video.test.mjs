@@ -484,10 +484,13 @@ test('buildBaseChain: no trim, no crop → fps only', () => {
   assert.equal(buildBaseChain({ trimSec: 0, cropHeight: null, fps: 30 }), '[0:v]fps=30[base]')
 })
 
-test('buildBaseChain: trim only → trim+setpts+fps', () => {
+test('buildBaseChain: trim only → CFR-normalize FIRST, then trim+setpts (BOS-251)', () => {
+  // fps must come BEFORE trim: agg webms are sparse VFR, and trimming them
+  // first drops the frame spanning the boundary, rebasing the clock onto the
+  // next repaint (content desyncs from every burned overlay).
   assert.equal(
     buildBaseChain({ trimSec: 1.2, cropHeight: null, fps: 30 }),
-    '[0:v]trim=start=1.200,setpts=PTS-STARTPTS,fps=30[base]',
+    '[0:v]fps=30,trim=start=1.200,setpts=PTS-STARTPTS[base]',
   )
 })
 
@@ -496,18 +499,15 @@ test('buildBaseChain: crop only → crop+fps, no trim', () => {
   assert.equal(chain, '[0:v]crop=in_w:612:0:0,fps=30[base]')
 })
 
-test('buildBaseChain: trim+crop → trim+setpts+crop+fps', () => {
+test('buildBaseChain: trim+crop → fps+trim+setpts+crop', () => {
   const chain = buildBaseChain({ trimSec: 1.2, cropHeight: 612, fps: 30 })
-  assert.equal(chain, '[0:v]trim=start=1.200,setpts=PTS-STARTPTS,crop=in_w:612:0:0,fps=30[base]')
+  assert.equal(chain, '[0:v]fps=30,trim=start=1.200,setpts=PTS-STARTPTS,crop=in_w:612:0:0[base]')
 })
 
-test('buildBaseChain: crop appears after setpts and before fps', () => {
+test('buildBaseChain: crop appears after setpts; fps leads the chain', () => {
   const chain = buildBaseChain({ trimSec: 1.2, cropHeight: 612, fps: 30 })
-  const cropIdx = chain.indexOf('crop=in_w:612:0:0')
-  const setptsIdx = chain.indexOf('setpts=PTS-STARTPTS')
-  const fpsIdx = chain.indexOf('fps=30')
-  assert.ok(cropIdx > setptsIdx, 'crop must appear after setpts')
-  assert.ok(cropIdx < fpsIdx, 'crop must appear before fps')
+  assert.ok(chain.startsWith('[0:v]fps=30,'))
+  assert.ok(chain.indexOf('setpts') < chain.indexOf('crop='))
 })
 
 test('buildBaseChain: no crop= when cropHeight is null', () => {
@@ -563,22 +563,22 @@ test('planCaptionWindows: the last caption extends to the total duration', () =>
   assert.deepEqual(windows, [{ text: 'Only step', startMs: 500, endMs: 9000 }])
 })
 
-test('planCaptionWindows: blank captions are dropped; the prior window extends through them', () => {
+test('planCaptionWindows: a blank (un-narrated) screen ENDS the prior caption window (BOS-251)', () => {
   const windows = planCaptionWindows(
     [
       { seq: 1, caption: 'First', startMs: 0 },
-      { seq: 2, caption: '   ', startMs: 2000 }, // whitespace-only → skipped
+      { seq: 2, caption: '   ', startMs: 2000 }, // un-narrated screen → strip clears
       { seq: 3, caption: 'Second', startMs: 3000 },
     ],
     5000,
   )
   assert.deepEqual(windows, [
-    { text: 'First', startMs: 0, endMs: 3000 }, // extends across the skipped blank
+    { text: 'First', startMs: 0, endMs: 2000 }, // never burned over the foreign screen
     { text: 'Second', startMs: 3000, endMs: 5000 },
   ])
 })
 
-test('planCaptionWindows: a trailing blank is dropped; the prior extends to the end', () => {
+test('planCaptionWindows: a trailing blank screen ends the prior caption (no stale strip)', () => {
   const windows = planCaptionWindows(
     [
       { seq: 1, caption: 'First', startMs: 0 },
@@ -586,7 +586,7 @@ test('planCaptionWindows: a trailing blank is dropped; the prior extends to the 
     ],
     5000,
   )
-  assert.deepEqual(windows, [{ text: 'First', startMs: 0, endMs: 5000 }])
+  assert.deepEqual(windows, [{ text: 'First', startMs: 0, endMs: 2000 }])
 })
 
 test('planCaptionWindows: collapses whitespace via formatCaption', () => {
@@ -803,14 +803,14 @@ test('buildTimerOverlayFilter: timer off maps the base chain only', () => {
   assert.match(f, /\[base\]/)
 })
 
-test('buildTimerOverlayFilter: a caption overlays at y=0 with an enable window before the timer', () => {
+test('buildTimerOverlayFilter: a caption overlays along the bottom edge with an enable window before the timer', () => {
   const f = buildTimerOverlayFilter('[0:v]fps=30[base]', {
     timer: true,
     captions: [{ inputIndex: 2, startSec: 0, endSec: 2 }],
   })
   // caption overlaid onto [base] at top-left, gated by enable, output to an intermediate label
-  assert.match(f, /\[base\]\[2:v\]overlay=x=0:y=0:enable='between\(t,0\.000,2\.000\)'[^;]*\[ov0\]/)
-  // timer overlaid last onto the caption result, output [v], at the timer corner (y=44, clears y=0 strip)
+  assert.match(f, /\[base\]\[2:v\]overlay=x=0:y=main_h-overlay_h:enable='between\(t,0\.000,2\.000\)'[^;]*\[ov0\]/)
+  // timer overlaid last onto the caption result, output [v], at the top-right corner (y=44)
   assert.match(f, /\[ov0\]\[1:v\]overlay=x=main_w-overlay_w-14:y=44:eof_action=repeat\[v\]/)
 })
 
@@ -822,8 +822,8 @@ test('buildTimerOverlayFilter: captions without a timer still terminate in [v]',
       { inputIndex: 2, startSec: 1.5, endSec: 4 },
     ],
   })
-  assert.match(f, /\[base\]\[1:v\]overlay=x=0:y=0:enable='between\(t,0\.000,1\.500\)'[^;]*\[ov0\]/)
-  assert.match(f, /\[ov0\]\[2:v\]overlay=x=0:y=0:enable='between\(t,1\.500,4\.000\)'[^;]*\[v\]/)
+  assert.match(f, /\[base\]\[1:v\]overlay=x=0:y=main_h-overlay_h:enable='between\(t,0\.000,1\.500\)'[^;]*\[ov0\]/)
+  assert.match(f, /\[ov0\]\[2:v\]overlay=x=0:y=main_h-overlay_h:enable='between\(t,1\.500,4\.000\)'[^;]*\[v\]/)
 })
 
 test('buildTimerOverlayFilter: no captions + timer is byte-identical to the timer-only graph', () => {
@@ -886,4 +886,116 @@ test('selectEncoderArgs: defaults to libx264 when not requested or unavailable',
     assert.deepEqual(args.slice(0, 2), ['-c:v', 'libx264'], JSON.stringify(opts))
     assert.ok(args.includes('-crf'))
   }
+})
+
+// ── applySceneFloors (BOS-251 per-scene watchability floor) ──────────────────
+
+test('applySceneFloors: a short scene window is slowed to the floor', async () => {
+  const { applySceneFloors, retimedDurationMs } = await import('./proof-video.mjs')
+  // Two scenes: [0,1000) and [1000,10000). Scene 1 outputs 1000ms < 3000ms floor.
+  const segments = [{ startMs: 0, endMs: 10_000, speed: 1 }]
+  const out = applySceneFloors(segments, [0, 1000], 10_000)
+  // Plan still tiles [0, durationMs].
+  assert.equal(out[0].startMs, 0)
+  assert.equal(out[out.length - 1].endMs, 10_000)
+  for (let i = 1; i < out.length; i++) assert.equal(out[i].startMs, out[i - 1].endMs)
+  // Scene 1 (first 1000ms) plays at ~1/3 speed → ~3000ms of output.
+  const scene1 = out.filter((s) => s.endMs <= 1000)
+  const scene1Out = scene1.reduce((t, s) => t + (s.endMs - s.startMs) / s.speed, 0)
+  assert.ok(scene1Out >= 2900, `scene 1 output ${scene1Out}ms should be near the 3000ms floor`)
+  // Scene 2 (9000ms at speed 1) is untouched.
+  const scene2 = out.filter((s) => s.startMs >= 1000)
+  assert.ok(scene2.every((s) => s.speed === 1))
+  assert.ok(retimedDurationMs(out) >= 11_900)
+})
+
+test('applySceneFloors: windows already at/over the floor are unchanged', async () => {
+  const { applySceneFloors } = await import('./proof-video.mjs')
+  const segments = [{ startMs: 0, endMs: 12_000, speed: 1 }]
+  const out = applySceneFloors(segments, [0, 4000, 8000], 12_000)
+  assert.deepEqual(
+    out.map((s) => s.speed),
+    [1, 1, 1],
+  )
+})
+
+test('applySceneFloors: non-finite boundaries (null cast reads) are dropped', async () => {
+  const { applySceneFloors } = await import('./proof-video.mjs')
+  const segments = [{ startMs: 0, endMs: 10_000, speed: 1 }]
+  const out = applySceneFloors(segments, [0, null, NaN, undefined], 10_000)
+  assert.deepEqual(out, [{ startMs: 0, endMs: 10_000, speed: 1 }])
+})
+
+test('applySceneFloors: floors compose with existing speedup segments', async () => {
+  const { applySceneFloors } = await import('./proof-video.mjs')
+  // Scene 2 window [1000, 21000) contains a squeezed static run at speed 4 —
+  // output 1000+ (20000/4)=6000ms ≥ floor, so untouched; scene 1 window is 500ms → slowed.
+  const segments = [
+    { startMs: 0, endMs: 1000, speed: 1 },
+    { startMs: 1000, endMs: 21_000, speed: 4 },
+  ]
+  const out = applySceneFloors(segments, [0, 500], 21_000)
+  const scene1 = out.filter((s) => s.endMs <= 500)
+  assert.ok(scene1.every((s) => s.speed < 1))
+  const post = out.filter((s) => s.startMs >= 1000)
+  assert.ok(post.every((s) => s.speed === 4))
+})
+
+test('applySceneFloors: empty boundaries or zero duration are no-ops', async () => {
+  const { applySceneFloors } = await import('./proof-video.mjs')
+  const segments = [{ startMs: 0, endMs: 5000, speed: 1 }]
+  assert.deepEqual(applySceneFloors(segments, [], 5000), segments)
+  assert.deepEqual(applySceneFloors(segments, [0], 0), segments)
+})
+
+// ── BOS-251: trailing dead-air cut + caption readability floor ────────────────
+
+test('buildBaseChain: endSec adds a trim end on the same chain', async () => {
+  const { buildBaseChain } = await import('./proof-video.mjs')
+  assert.equal(
+    buildBaseChain({ trimSec: 1.5, endSec: 10.25, cropHeight: null, fps: 30 }),
+    '[0:v]fps=30,trim=start=1.500:end=10.250,setpts=PTS-STARTPTS[base]',
+  )
+  assert.equal(
+    buildBaseChain({ trimSec: 0, endSec: 8, cropHeight: null, fps: 30 }),
+    '[0:v]fps=30,trim=start=0.000:end=8.000,setpts=PTS-STARTPTS[base]',
+  )
+  // No end, no trim → byte-identical to the historical chain.
+  assert.equal(buildBaseChain({ trimSec: 0, cropHeight: null, fps: 30 }), '[0:v]fps=30[base]')
+  // A nonsense end (before the trim) is ignored.
+  assert.equal(
+    buildBaseChain({ trimSec: 5, endSec: 3, cropHeight: null, fps: 30 }),
+    '[0:v]fps=30,trim=start=5.000,setpts=PTS-STARTPTS[base]',
+  )
+})
+
+test('applySceneFloors: caption-window boundaries stretch short caption windows', async () => {
+  const { applySceneFloors, CAPTION_MIN_OUTPUT_MS } = await import('./proof-video.mjs')
+  // Three captions 500ms apart on a 10s timeline: each window is under the 2s
+  // floor and gets slowed; the post-caption remainder (8.5s) is untouched.
+  const segments = [{ startMs: 0, endMs: 10_000, speed: 1 }]
+  const out = applySceneFloors(segments, [0, 500, 1000], 10_000, CAPTION_MIN_OUTPUT_MS)
+  const w1 = out.filter((s) => s.endMs <= 500)
+  const w2 = out.filter((s) => s.startMs >= 500 && s.endMs <= 1000)
+  const rest = out.filter((s) => s.startMs >= 1000)
+  assert.ok(w1.every((s) => s.speed < 1))
+  assert.ok(w2.every((s) => s.speed < 1))
+  assert.ok(rest.every((s) => s.speed === 1))
+})
+
+test('planCaptionWindows: each caption covers ONLY its own screen — strict windows', async () => {
+  const { planCaptionWindows } = await import('./proof-video.mjs')
+  const windows = planCaptionWindows(
+    [
+      { caption: 'Pressing Down to highlight the session.', startMs: 1000 },
+      { caption: '', startMs: 1400 }, // esc in the same turn: strip clears
+      { caption: '', startMs: 6000 },
+      { caption: 'Opening Settings.', startMs: 9000 },
+    ],
+    12_000,
+  )
+  assert.deepEqual(windows, [
+    { text: 'Pressing Down to highlight the session.', startMs: 1000, endMs: 1400 },
+    { text: 'Opening Settings.', startMs: 9000, endMs: 12_000 },
+  ])
 })

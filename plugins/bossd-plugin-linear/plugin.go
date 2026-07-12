@@ -77,7 +77,7 @@ func taskSourceGetInfoHandler(srv any, ctx context.Context, dec func(any) error,
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(taskSourceServiceHandler).GetInfo(ctx, req)
+	return srv.(taskSourceServiceHandler).GetInfo(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func taskSourcePollTasksHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -85,7 +85,7 @@ func taskSourcePollTasksHandler(srv any, ctx context.Context, dec func(any) erro
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(taskSourceServiceHandler).PollTasks(ctx, req)
+	return srv.(taskSourceServiceHandler).PollTasks(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func taskSourceUpdateTaskStatusHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -93,7 +93,7 @@ func taskSourceUpdateTaskStatusHandler(srv any, ctx context.Context, dec func(an
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(taskSourceServiceHandler).UpdateTaskStatus(ctx, req)
+	return srv.(taskSourceServiceHandler).UpdateTaskStatus(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func taskSourceListAvailableIssuesHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -101,5 +101,5 @@ func taskSourceListAvailableIssuesHandler(srv any, ctx context.Context, dec func
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(taskSourceServiceHandler).ListAvailableIssues(ctx, req)
+	return srv.(taskSourceServiceHandler).ListAvailableIssues(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }

@@ -294,6 +294,16 @@ func TestLastTurnAbovePromptRejectsBarePromptAsBoundary(t *testing.T) {
 	}
 }
 
+func TestLastTurnAbovePromptAcceptsCommandEchoAtFirstLine(t *testing.T) {
+	// A pane may be cropped directly after the user's command echo. The echo at
+	// line zero still closes the live output region above the bottom prompt.
+	pane := "❯ /status\nYou've hit your usage limit\n❯ "
+
+	if got, want := string(LastTurnAbovePrompt([]byte(pane))), "You've hit your usage limit"; got != want {
+		t.Fatalf("LastTurnAbovePrompt() = %q, want %q", got, want)
+	}
+}
+
 func TestDetectUsageLimitDecisionModalWithTwoOptions(t *testing.T) {
 	// Two choices are sufficient for the CLI's blocking decision menu. Keep the
 	// cap text outside a prompt-owned status region so only the decision-modal

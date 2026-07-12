@@ -91,7 +91,7 @@ func agentGetInfoHandler(srv any, ctx context.Context, dec func(any) error, _ gr
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).GetInfo(ctx, req)
+	return srv.(agentRunnerServiceHandler).GetInfo(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentStartRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -99,7 +99,7 @@ func agentStartRunHandler(srv any, ctx context.Context, dec func(any) error, _ g
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).StartRun(ctx, req)
+	return srv.(agentRunnerServiceHandler).StartRun(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentStopRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -107,7 +107,7 @@ func agentStopRunHandler(srv any, ctx context.Context, dec func(any) error, _ gr
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).StopRun(ctx, req)
+	return srv.(agentRunnerServiceHandler).StopRun(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentIsRunningHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -115,7 +115,7 @@ func agentIsRunningHandler(srv any, ctx context.Context, dec func(any) error, _ 
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).IsRunning(ctx, req)
+	return srv.(agentRunnerServiceHandler).IsRunning(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentExitStatusHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -123,7 +123,7 @@ func agentExitStatusHandler(srv any, ctx context.Context, dec func(any) error, _
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).ExitStatus(ctx, req)
+	return srv.(agentRunnerServiceHandler).ExitStatus(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentConfigureFinalizeHookHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -131,7 +131,7 @@ func agentConfigureFinalizeHookHandler(srv any, ctx context.Context, dec func(an
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).ConfigureFinalizeHook(ctx, req)
+	return srv.(agentRunnerServiceHandler).ConfigureFinalizeHook(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentRemoveAgentRunHookHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -139,7 +139,7 @@ func agentRemoveAgentRunHookHandler(srv any, ctx context.Context, dec func(any) 
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).RemoveAgentRunHook(ctx, req)
+	return srv.(agentRunnerServiceHandler).RemoveAgentRunHook(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentBuildInteractiveCommandHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -147,7 +147,7 @@ func agentBuildInteractiveCommandHandler(srv any, ctx context.Context, dec func(
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).BuildInteractiveCommand(ctx, req)
+	return srv.(agentRunnerServiceHandler).BuildInteractiveCommand(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentResolveInteractiveSessionIDHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -155,7 +155,7 @@ func agentResolveInteractiveSessionIDHandler(srv any, ctx context.Context, dec f
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).ResolveInteractiveSessionID(ctx, req)
+	return srv.(agentRunnerServiceHandler).ResolveInteractiveSessionID(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentListIgnoredDirtyFilesHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -163,7 +163,7 @@ func agentListIgnoredDirtyFilesHandler(srv any, ctx context.Context, dec func(an
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).ListIgnoredDirtyFiles(ctx, req)
+	return srv.(agentRunnerServiceHandler).ListIgnoredDirtyFiles(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentGetChatTitleHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -171,7 +171,7 @@ func agentGetChatTitleHandler(srv any, ctx context.Context, dec func(any) error,
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).GetChatTitle(ctx, req)
+	return srv.(agentRunnerServiceHandler).GetChatTitle(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentSuggestPRTitleHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -179,7 +179,7 @@ func agentSuggestPRTitleHandler(srv any, ctx context.Context, dec func(any) erro
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).SuggestPRTitle(ctx, req)
+	return srv.(agentRunnerServiceHandler).SuggestPRTitle(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentHasQuestionPromptHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -187,7 +187,7 @@ func agentHasQuestionPromptHandler(srv any, ctx context.Context, dec func(any) e
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).HasQuestionPrompt(ctx, req)
+	return srv.(agentRunnerServiceHandler).HasQuestionPrompt(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentDetectUsageLimitHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -195,7 +195,7 @@ func agentDetectUsageLimitHandler(srv any, ctx context.Context, dec func(any) er
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).DetectUsageLimit(ctx, req)
+	return srv.(agentRunnerServiceHandler).DetectUsageLimit(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentProbeRateLimitHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -203,7 +203,7 @@ func agentProbeRateLimitHandler(srv any, ctx context.Context, dec func(any) erro
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).ProbeRateLimit(ctx, req)
+	return srv.(agentRunnerServiceHandler).ProbeRateLimit(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentHasWorkingIndicatorHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -211,7 +211,7 @@ func agentHasWorkingIndicatorHandler(srv any, ctx context.Context, dec func(any)
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).HasWorkingIndicator(ctx, req)
+	return srv.(agentRunnerServiceHandler).HasWorkingIndicator(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentLastTurnIsUserHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -219,7 +219,7 @@ func agentLastTurnIsUserHandler(srv any, ctx context.Context, dec func(any) erro
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).LastTurnIsUser(ctx, req)
+	return srv.(agentRunnerServiceHandler).LastTurnIsUser(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentTranscriptExistsHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -227,7 +227,7 @@ func agentTranscriptExistsHandler(srv any, ctx context.Context, dec func(any) er
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).TranscriptExists(ctx, req)
+	return srv.(agentRunnerServiceHandler).TranscriptExists(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentReadTranscriptHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -235,7 +235,7 @@ func agentReadTranscriptHandler(srv any, ctx context.Context, dec func(any) erro
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).ReadTranscript(ctx, req)
+	return srv.(agentRunnerServiceHandler).ReadTranscript(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentRotationCapabilityHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -243,7 +243,7 @@ func agentRotationCapabilityHandler(srv any, ctx context.Context, dec func(any) 
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).RotationCapability(ctx, req)
+	return srv.(agentRunnerServiceHandler).RotationCapability(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentMaterializeAccountHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -251,5 +251,5 @@ func agentMaterializeAccountHandler(srv any, ctx context.Context, dec func(any) 
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(agentRunnerServiceHandler).MaterializeAccount(ctx, req)
+	return srv.(agentRunnerServiceHandler).MaterializeAccount(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }

@@ -277,7 +277,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.toast, toastCmd = a.toast.Show(toasts[0])
 			}
 			updated, cmd := a.home.Update(msg)
-			a.home = updated.(HomeModel)
+			if m, ok := updated.(HomeModel); ok {
+				a.home = m
+			}
 			a.userSettings = a.home.settings
 			return a, tea.Batch(cmd, toastCmd)
 		}
@@ -391,6 +393,28 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case mergeResultMsg:
+		// Reconcile the home merging override when the merge RPC resolves. Runs at
+		// the app level (not per-view, and without returning early) so an
+		// ESC-then-result still reconciles the optimistic state even when the
+		// chatpicker is no longer the active view — execution continues past this
+		// type switch to the per-view dispatch below so the chatpicker (if still
+		// active) also flips its own merging=false / merged fields.
+		if a.home.isMerging(msg.sessionID) {
+			a.home.resolveMerge(msg.sessionID)
+			if msg.err != nil {
+				// Failed merge: rebuild the cached row so it drops the optimistic
+				// "merging" label and returns to its real status immediately, rather
+				// than waiting for the next spinner tick or session poll.
+				a.home.buildTableRows()
+			} else {
+				// Successful merge: hand off to the merged optimistic override so the
+				// row flips straight from blue "merging" to "✓ merged" without a
+				// "passing" flicker while the PR-merged webhook lands asynchronously.
+				a.home.mergedOptimisticID = msg.sessionID
+			}
+		}
+
 	case switchViewMsg:
 		a.activeView = msg.view
 		switch msg.view { //nolint:exhaustive // ViewBugReport is pushed via ctrl+b, not switchViewMsg
@@ -411,6 +435,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// session..." swallowing every key but Esc.
 			if a.home.archiveInFlight(msg.sessionID) {
 				a.chatPicker.archiving = true
+			}
+			// Same in-flight guard for merging: only seed merging=true (which shows
+			// the "Merging PR..." banner and hides [m]erge) while the merge RPC is
+			// still outstanding. After a successful merge the override lingers on the
+			// row for rendering but no mergeResultMsg is outstanding, so seeding here
+			// would leave the picker stuck.
+			if a.home.mergeInFlight(msg.sessionID) {
+				a.chatPicker.merging = true
 			}
 			return a, a.chatPicker.Init()
 		case ViewRepoAdd:
@@ -517,14 +549,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch a.activeView {
 	case ViewOnboarding:
 		updated, cmd := a.onboarding.Update(msg)
-		a.onboarding = updated.(OnboardingModel)
+		if m, ok := updated.(OnboardingModel); ok {
+			a.onboarding = m
+		}
 		if a.onboarding.Done() || a.onboarding.Cancelled() {
 			return a, a.switchToHome()
 		}
 		return a, cmd
 	case ViewHome:
 		updated, cmd := a.home.Update(msg)
-		a.home = updated.(HomeModel)
+		if m, ok := updated.(HomeModel); ok {
+			a.home = m
+		}
 		// Propagate any settings the home model persisted (e.g. the
 		// BossCloudValueDeliveredAt latch) back to the App, so later
 		// newHomeModel() recreations re-seed from the latched value instead of
@@ -535,7 +571,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	case ViewNewSession:
 		updated, cmd := a.newSession.Update(msg)
-		a.newSession = updated.(NewSessionModel)
+		if m, ok := updated.(NewSessionModel); ok {
+			a.newSession = m
+		}
 		if a.newSession.Cancelled() {
 			return a, a.switchToHome()
 		}
@@ -556,7 +594,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	case ViewChatPicker:
 		updated, cmd := a.chatPicker.Update(msg)
-		a.chatPicker = updated.(ChatPickerModel)
+		if m, ok := updated.(ChatPickerModel); ok {
+			a.chatPicker = m
+		}
 		// A successful merge keeps the user on the session-detail view so they can
 		// archive in place; only cancel/archive return to the session list.
 		if a.chatPicker.Cancelled() || a.chatPicker.Archived() {
@@ -581,12 +621,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if archivingID := a.chatPicker.ArchivingSessionID(); archivingID != "" {
 				a.home.markArchiving(archivingID)
 			}
+			// A mid-merge Esc is Cancelled() with merging still true, so
+			// MergingSessionID() is non-empty and the optimistic blue "merging"
+			// status carries onto the home row. A post-success return has
+			// merging=false (handled by mergedOptimisticID above) so this no-ops.
+			if mergingID := a.chatPicker.MergingSessionID(); mergingID != "" {
+				a.home.markMerging(mergingID)
+			}
 			return a, a.home.Init()
 		}
 		return a, cmd
 	case ViewRepoAdd:
 		updated, cmd := a.repoAdd.Update(msg)
-		a.repoAdd = updated.(RepoAddModel)
+		if m, ok := updated.(RepoAddModel); ok {
+			a.repoAdd = m
+		}
 		if a.repoAdd.Done() {
 			if a.repoAddCompleting {
 				return a, cmd
@@ -618,14 +667,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	case ViewRepoList:
 		updated, cmd := a.repoList.Update(msg)
-		a.repoList = updated.(RepoListModel)
+		if m, ok := updated.(RepoListModel); ok {
+			a.repoList = m
+		}
 		if a.repoList.Cancelled() {
 			return a, a.switchToReturn(a.repoList.returnView)
 		}
 		return a, cmd
 	case ViewRepoSettings:
 		updated, cmd := a.repoSettings.Update(msg)
-		a.repoSettings = updated.(RepoSettingsModel)
+		if m, ok := updated.(RepoSettingsModel); ok {
+			a.repoSettings = m
+		}
 		if a.repoSettings.Cancelled() || a.repoSettings.Done() {
 			// Return to repo list, highlighting the repo we came from.
 			returnView := a.repoList.returnView
@@ -640,7 +693,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	case ViewSessionSettings:
 		updated, cmd := a.sessionSettings.Update(msg)
-		a.sessionSettings = updated.(SessionSettingsModel)
+		if m, ok := updated.(SessionSettingsModel); ok {
+			a.sessionSettings = m
+		}
 		if a.sessionSettings.Cancelled() || a.sessionSettings.Done() {
 			// Return to chat picker, highlighting the chat we came from.
 			var highlightID string
@@ -657,7 +712,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	case ViewTrash:
 		updated, cmd := a.trash.Update(msg)
-		a.trash = updated.(TrashModel)
+		if m, ok := updated.(TrashModel); ok {
+			a.trash = m
+		}
 		if sessionID := a.trash.RestoredSessionID(); sessionID != "" {
 			a.chatPicker = NewChatPickerModel(a.client, a.ctx, sessionID, "")
 			a.chatPicker.SetTelemetry(a.telemetry)
@@ -672,14 +729,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	case ViewSettings:
 		updated, cmd := a.settings.Update(msg)
-		a.settings = updated.(SettingsModel)
+		if m, ok := updated.(SettingsModel); ok {
+			a.settings = m
+		}
 		if a.settings.Cancelled() {
 			return a, a.switchToHome()
 		}
 		return a, cmd
 	case ViewAttach:
 		updated, cmd := a.attach.Update(msg)
-		a.attach = updated.(AttachModel)
+		if m, ok := updated.(AttachModel); ok {
+			a.attach = m
+		}
 		if a.attach.Detached() {
 			sessionID := a.attach.SessionID()
 			agentSessionID := a.attach.AgentSessionID()
@@ -694,14 +755,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	case ViewLogin:
 		updated, cmd := a.login.Update(msg)
-		a.login = updated.(LoginModel)
+		if m, ok := updated.(LoginModel); ok {
+			a.login = m
+		}
 		if a.login.Cancelled() || a.login.Done() {
 			return a, a.switchToHome()
 		}
 		return a, cmd
 	case ViewBugReport:
 		updated, cmd := a.bugReport.Update(msg)
-		a.bugReport = updated.(BugReportModel)
+		if m, ok := updated.(BugReportModel); ok {
+			a.bugReport = m
+		}
 		if a.bugReport.Cancelled() || a.bugReport.Done() {
 			// Restore the prior view without recreating it so existing state
 			// (table cursor, loaded data, spinners) is preserved. The prior
@@ -713,7 +778,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	case ViewCron:
 		updated, cmd := a.cronList.Update(msg)
-		a.cronList = updated.(CronListModel)
+		if m, ok := updated.(CronListModel); ok {
+			a.cronList = m
+		}
 		if a.cronList.Cancelled() {
 			return a, a.switchToReturn(a.cronList.returnView)
 		}
@@ -730,7 +797,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	case ViewCronForm:
 		updated, cmd := a.cronForm.Update(msg)
-		a.cronForm = updated.(CronFormModel)
+		if m, ok := updated.(CronFormModel); ok {
+			a.cronForm = m
+		}
 		if a.cronForm.Cancelled() {
 			// Return to cron list without refreshing (user cancelled).
 			returnView := a.cronList.returnView
@@ -758,21 +827,27 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	case ViewAccounts:
 		updated, cmd := a.accountsList.Update(msg)
-		a.accountsList = updated.(AccountsListModel)
+		if m, ok := updated.(AccountsListModel); ok {
+			a.accountsList = m
+		}
 		if a.accountsList.Cancelled() {
 			return a, a.switchToReturn(a.accountsList.returnView)
 		}
 		return a, cmd
 	case ViewAccountEdit:
 		updated, cmd := a.accountEdit.Update(msg)
-		a.accountEdit = updated.(AccountEditModel)
+		if m, ok := updated.(AccountEditModel); ok {
+			a.accountEdit = m
+		}
 		if a.accountEdit.Cancelled() {
 			return a, a.switchToReturn(a.accountEdit.returnView)
 		}
 		return a, cmd
 	case ViewAccountRegister:
 		updated, cmd := a.accountRegister.Update(msg)
-		a.accountRegister = updated.(AccountRegisterModel)
+		if m, ok := updated.(AccountRegisterModel); ok {
+			a.accountRegister = m
+		}
 		if a.accountRegister.Cancelled() {
 			return a, a.switchToReturn(a.accountRegister.returnView)
 		}
@@ -881,6 +956,11 @@ func (a *App) newHomeModel() HomeModel {
 	// RPCs must survive until the next poll or result reconciles each session.
 	home.archivingOverrideIDs = cloneSessionIDSet(a.home.archivingOverrideIDs)
 	home.archiveInFlightIDs = cloneSessionIDSet(a.home.archiveInFlightIDs)
+	// Preserve optimistic merge state across rebuilds too — both the lingering
+	// success/failure overrides and any active RPC must survive until the next
+	// poll or mergeResultMsg reconciles each session.
+	home.mergingOverrideIDs = cloneSessionIDSet(a.home.mergingOverrideIDs)
+	home.mergeInFlightIDs = cloneSessionIDSet(a.home.mergeInFlightIDs)
 	return home
 }
 
@@ -954,6 +1034,7 @@ func (a App) View() tea.View {
 			opts.session = a.chatPicker.session
 			opts.spinner = a.chatPicker.spinner
 			opts.archiving = a.chatPicker.archiving
+			opts.merging = a.chatPicker.merging
 		case ViewRepoSettings:
 			opts.repo = a.repoSettings.repo
 		case ViewSessionSettings:

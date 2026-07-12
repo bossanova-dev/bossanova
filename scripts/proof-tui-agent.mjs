@@ -101,15 +101,25 @@ const BRIDGE_OP_TIMEOUT_MS = 45_000
 // tighter budgets than the generic web defaults. Still per-brief overridable.
 export const TUI_BUDGETS = { maxSteps: 40, maxWallClockMs: 4 * 60 * 1000, maxTokens: 200_000 }
 
+// How many narration-only (no tool_use) model turns are nudged back onto tools
+// before the loop gives up on the run (BOS-251).
+export const MAX_TEXT_ONLY_NUDGES = 2
+
+// How many premature done(passed=true) calls (scenes still unbegun) are
+// rejected with a corrective tool_result before an insistence is accepted
+// (anti-infinite-loop escape; BOS-251).
+export const MAX_DONE_REJECTIONS = 2
+
 // The fixed TUI key map + DemoWorld summary that anchors the brief. Passed as the
 // `routes` arg to generateBriefFromDiff (no proof-brief.mjs change needed).
 export const TUI_CONTEXT_BLOCK = [
   'Bossanova TUI key map (drive the app with these keystrokes):',
   '  home screen:',
-  '    s → Settings',
+  '    up/down + enter → open the selected session (chat picker: banner + chat list)',
+  '    s → Settings (its action bar reads exactly: "[a]ccounts", "[c]ron", "[r]epos", "[t]rash"; esc → back)',
   '    r → Repos',
   '    a → Add repo → "Open project" → type path → Enter to confirm',
-  '    n → New session',
+  '    n → New session (wizard: repo picker → session type → …)',
   '  esc → back/cancel; enter → confirm.',
   '  navigation keys (send via send_keys):',
   '    up / down / left / right → move selection',
@@ -117,9 +127,36 @@ export const TUI_CONTEXT_BLOCK = [
   '    home / end → jump to start/end; backspace / delete → edit text',
   '    f1–f12 → function keys.',
   '',
-  'DemoWorld fixture: a deterministic in-memory world with one demo repository',
-  'already cloned and a couple of example sessions, so the TUI boots straight to',
-  'a populated home screen with no network, auth, or real git access required.',
+  'DemoWorld fixture: a deterministic in-memory world; the TUI boots straight to a',
+  'populated home screen with no network, auth, or real git access. This is EXACTLY',
+  'what is on screen — pick expectedEvidence tokens from the strings below or from',
+  'structural labels (column headers, key hints), NEVER from invented data:',
+  '  home sessions (REPO / NAME / PR): my-app "Add dark mode" #597 · my-app "Fix login',
+  '    bug" · my-api "Add rate limiting to public API" #412 · my-web "Refresh landing',
+  '    page hero" #88 · mobile-app "Upgrade to React Navigation 7" #233.',
+  '  session view (enter on a session): banner line 1 "#597 Add dark mode (<status>)",',
+  '    line 2 "/Users/demo/worktrees/my-app/add-dark-mode · work-claude" (sessions',
+  '    without a bound account show "· Unmanaged"); chats: Initial implementation /',
+  '    Follow-up review / Address review comments / Fix failing checks / Final polish pass;',
+  '    pressing a ([a]rchive) shows an in-flight "archiving" status for ~4s in the banner',
+  '    and on the home row before the session leaves the home list. The window is short:',
+  '    plan at most ONE observation of the in-flight state — never a multi-step journey',
+  '    inside it, and never evidence that the archived session is still listed afterwards.',
+  '  cron list ("Scheduled Jobs", Settings → c): Daily dependency update (@daily) · Nightly',
+  '    mutation tests (gating) · Weekly tech-debt sweep (@weekly) · Hourly broken-link check',
+  '    (disabled) · Morning PR triage (gated) · Paused release gate (disabled + gated) ·',
+  '    Paused visual regression (disabled + failed).',
+  '  accounts list (Settings → a): work-claude (claude, active, ok) · personal-codex',
+  '    (codex, disabled, failed, cooling).',
+  'NOT stageable in the demo world — never plan scenes or evidence around them:',
+  '  upgrade/restart flows (the "Upgrading…" / "Restarting daemon…" spinners), RPC or',
+  '  network failures/error paths, and real git operations.',
+  'Actions are STATEFUL for the whole recording: an archived session leaves the list',
+  'permanently — make destructive actions the final scene and never expect the',
+  'pre-action state to come back.',
+  'Terminal COLORS are not part of the observe() text: never make a color itself an',
+  'evidence token — anchor evidence on the row/label TEXT and demonstrate the colored',
+  'state on screen so the recorded video and stills show the color.',
 ].join('\n')
 
 export const SYSTEM_PROMPT = [
@@ -135,10 +172,16 @@ export const SYSTEM_PROMPT = [
   'Call observe() after actions when you need to re-read the screen. When you have demonstrated the change',
   '(or proven it is broken), call done({ summary, passed }) with passed=true ONLY if you actually saw the',
   'expected result on screen. Do not attempt shell, network, or external access.',
+  'NEVER EXIT THE TUI: the terminal runs ONLY the TUI — there is no shell behind it. Never press q on the',
+  'home screen, never send ctrl+c or ctrl+d, and never try to run tests or commands: quitting kills the',
+  'recording and fails the proof. The harness closes the app itself after done().',
+  'If a scene asks for something that cannot appear on a TUI screen (test output, code, request shapes,',
+  'docs), demonstrate the nearest TUI-visible behavior instead and say so in your narration — do not leave',
+  'the TUI looking for it.',
   'Before calling done(passed=true), complete every step in provided hints and visit every screen they mention.',
   'Do not call done(passed=true) until you observed ALL listed expected-evidence strings on screen.',
   'You may call done(passed=false) early when the app is broken or you cannot complete a hint; include the observed blocker.',
-  "SCENES: the goal lists numbered scenes; call begin_scene({id}) before starting each scene's actions (scene 1 is active from the start), complete scenes in order, and make each scene's expected evidence visible on screen WITHIN that scene before moving on.",
+  "SCENES: the goal lists numbered scenes; call begin_scene({id}) before starting each scene's actions (scene 1 is active from the start), complete scenes in order, and make each scene's expected evidence visible on screen WITHIN that scene before moving on. done() ends the WHOLE recording — never call it between scenes as a progress report.",
 ].join(' ')
 
 export const TOOL_DEFS = [
@@ -193,7 +236,10 @@ export const TOOL_DEFS = [
   {
     name: 'done',
     description:
-      'Finish the proof. passed=true ONLY if you demonstrated the change works on screen; summary describes what you verified.',
+      'Finish the ENTIRE proof and end the recording. Call it exactly once, after ALL scenes are ' +
+      'demonstrated (passed=true only if you saw every expected result on screen) or when you are ' +
+      'genuinely blocked (passed=false, summary naming the blocker). NEVER call done to report ' +
+      'progress on a single scene — use begin_scene to move to the next scene instead.',
     input_schema: {
       type: 'object',
       properties: {
@@ -514,6 +560,9 @@ export function defaultCastToVideo({
   cardTitle,
   keepWebm,
   captionTimings,
+  sceneStartsMs,
+  posterSourceMs,
+  endCutMs,
 }) {
   if (!castPath || !fs.existsSync(castPath)) {
     console.warn('[proof-tui-agent] DEGRADED (cast-missing): cast file missing — stills-only proof')
@@ -534,7 +583,16 @@ export function defaultCastToVideo({
     }
   }
   const webmPath = path.join(captureDir, `${captureId}.webm`)
-  const aggRes = spawnSync('agg', [castPath, webmPath], { stdio: 'inherit' })
+  // --idle-time-limit: agg DEFAULTS to compressing idle gaps >5s, which makes
+  // the webm clock run BEHIND the cast clock after every long (LLM-thinking)
+  // pause — so cast-clock overlays (captions, scene chapters, the trailing
+  // dead-air cut) landed progressively late and the last caption sat on black
+  // (BOS-251). A huge limit keeps the two clocks identical; the postprocess
+  // idle-speedup then compresses static stretches WITH correct timeline
+  // mapping instead of agg doing it blindly.
+  const aggRes = spawnSync('agg', ['--idle-time-limit', '3600', castPath, webmPath], {
+    stdio: 'inherit',
+  })
   if (aggRes.status !== 0 || !fs.existsSync(webmPath)) {
     console.warn(
       '[proof-tui-agent] DEGRADED (agg-conversion-failed): agg conversion failed — stills-only proof',
@@ -557,24 +615,34 @@ export function defaultCastToVideo({
   ) {
     fs.copyFileSync(posterBasePng, posterPath)
   } else if (!fs.existsSync(posterPath)) {
-    spawnSync(
-      'ffmpeg',
-      [
-        '-y',
-        '-loglevel',
-        'error',
-        '-sseof',
-        '-0.1',
-        '-i',
-        webmPath,
-        '-vframes',
-        '1',
-        '-update',
-        '1',
-        posterPath,
-      ],
-      { stdio: 'inherit' },
-    )
+    // Poster frame (BOS-251): prefer the last CONTENT frame (the final
+    // non-blank settled screen's cast timestamp) over the video's literal last
+    // frame — a crashed/quit leg ends on a blank terminal, which used to
+    // become a caption-only black poster. Fallback chain, because a missing
+    // poster silently downgraded the GitHub gallery to embedding the raw mp4
+    // as an image (always broken): -ss at the content timestamp → -sseof last
+    // frame (silently produces NOTHING on agg webms without duration cues —
+    // the original regression) → plain first frame, which always decodes.
+    const attempts = [
+      ...(Number.isFinite(posterSourceMs)
+        ? [['-ss', (posterSourceMs / 1000).toFixed(3), '-i', webmPath]]
+        : []),
+      ['-sseof', '-0.1', '-i', webmPath],
+      ['-i', webmPath],
+    ]
+    for (const inputArgs of attempts) {
+      spawnSync(
+        'ffmpeg',
+        ['-y', '-loglevel', 'error', ...inputArgs, '-vframes', '1', '-update', '1', posterPath],
+        { stdio: 'inherit' },
+      )
+      if (fs.existsSync(posterPath)) break
+    }
+    if (!fs.existsSync(posterPath)) {
+      console.warn(
+        '[proof-tui-agent] poster extraction produced no frame — the gallery will link the video without a thumbnail',
+      )
+    }
   }
 
   let finished
@@ -595,6 +663,8 @@ export function defaultCastToVideo({
       keepWebm: Boolean(keepWebm),
       captionTimings,
       renderCaptionStrip: defaultRenderCaptionStrip,
+      sceneStartsMs,
+      endCutMs,
     })
   } catch (err) {
     console.warn(
@@ -713,7 +783,7 @@ function defaultExtractStill({ mp4Path, output, outputMs, videoDurationMs }) {
  * downstream gallery/comment code is unaffected — and, unlike renderFrames, never
  * launches Chromium. Returns the stills array (possibly empty → the caller falls
  * back to the Chromium text-scrape renderFrames path).
- * @param {{screens:Array<{seq:number,castMs:number|null}>, sceneForScreen?:Record<number,string>,
+ * @param {{screens:Array<{seq:number,text?:string,castMs:number|null}>, sceneForScreen?:Record<number,string>,
  *   timeline:object|null, mp4Path:string, captureDir:string, extractStill?:Function}} opts
  * @returns {Promise<Array<{fileName:string,label:string,sceneId:string}>>}
  */
@@ -726,8 +796,32 @@ export async function extractStillsFromVideo({
   extractStill = defaultExtractStill,
 }) {
   const videoDurationMs = timelineDurationMs(timeline ?? null)
+  // Gallery quality (BOS-251): a blank settled screen (e.g. a dead PTY after a
+  // crashed leg) or an exact repeat of the previous screen proves nothing —
+  // skip both. Fall back to the raw list only if filtering would leave nothing.
+  const all = screens ?? []
+  let selected = []
+  let prevText = null
+  let prevScene = null
+  for (const s of all) {
+    const text = String(s.text ?? '')
+    const sceneId = sceneForScreen[s.seq] ?? sceneForScreen[String(s.seq)] ?? 'scene-01'
+    // Reset the repeat cursor at each scene boundary (BOS-251): the exact-repeat
+    // filter is only meaningful within a scene. Spanning it across scenes could
+    // drop a later scene's only screen just because it matched the prior scene's
+    // final screen, starving that scene of every gallery/judge still (the global
+    // `selected.length === 0` fallback never fires while other scenes contributed).
+    if (sceneId !== prevScene) {
+      prevText = null
+      prevScene = sceneId
+    }
+    if (text.trim() === '' || text === prevText) continue
+    selected.push(s)
+    prevText = text
+  }
+  if (selected.length === 0) selected = all
   const stills = []
-  for (const s of screens ?? []) {
+  for (const s of selected) {
     const n = String(s.seq).padStart(2, '0')
     const sceneId = sceneForScreen[s.seq] ?? sceneForScreen[String(s.seq)] ?? 'scene-01'
     const ss = sceneOrdinal(sceneId)
@@ -888,6 +982,36 @@ export async function runTuiAgentProof({
       loadScenarioAnchors: d.loadScenarioAnchors,
       planRequiredProof,
     }))
+  // Honesty valve (BOS-251): a generated brief may declare the change has no
+  // demonstrable TUI surface (backend-only / tooling / docs diffs that reached
+  // this leg via broad path prefixes or keyword-forced surfaces). Honor it as a
+  // neutral no-ui-surface deferral instead of running a doomed capture — but
+  // NEVER when the diff touches real view/fixture code: those changes are
+  // TUI-visible by construction and must be captured.
+  const touchesTuiViews = (changedFiles ?? []).some(
+    (f) =>
+      String(f).startsWith('services/boss/internal/views/') ||
+      String(f).startsWith('services/boss/internal/fixtures/'),
+  )
+  if (brief.noUiSurface === true && !injectedBrief && !touchesTuiViews) {
+    console.error(
+      '[proof-tui-agent] brief declared noUiSurface — deferring as no-ui-surface ' +
+        `(reason: ${truncate(brief.description ?? '', 200)})`,
+    )
+    if (runContext?.collect) {
+      return {
+        surface: 'tui',
+        captureShapes: [],
+        brief,
+        agentResult: { passed: false, summary: brief.description ?? '', evidence: [], steps: 0 },
+        hasFailure: false,
+        noSurface: true,
+        scanTexts: [brief.title ?? '', brief.description ?? ''],
+        elapsedMs: Date.now() - startedAt,
+        reasonCode: 'no-ui-surface',
+      }
+    }
+  }
   // Apply TUI default budgets, letting any brief-specified budget win.
   const rawBudgets = brief.rawBudgets ?? {}
   delete brief.rawBudgets
@@ -988,6 +1112,11 @@ export async function runTuiAgentProof({
   let posterFileName = null
   let castResult = null
   const { label, cardTitle } = tuiIntroIdentity(brief.title, prNumber)
+  // Cast-clock timestamp of the last non-blank settled screen (null when none):
+  // the anchor for the poster frame and the trailing dead-air cut (BOS-251).
+  const lastContentMs = [...screens]
+    .reverse()
+    .find((s) => String(s.text ?? '').trim() !== '' && Number.isFinite(s.castMs))?.castMs
   try {
     castResult = await d.castToVideo({
       castPath,
@@ -998,6 +1127,12 @@ export async function runTuiAgentProof({
       cardTitle,
       keepWebm: !shouldUpload,
       captionTimings,
+      sceneStartsMs: sceneTimings.map((t) => t.startMs),
+      // The last CONTENT screen anchors both the poster frame and the trailing
+      // dead-air cut (BOS-251): everything the cast recorded after it (quit
+      // blanking, dead PTY) is dropped from the output.
+      posterSourceMs: lastContentMs,
+      endCutMs: lastContentMs,
     })
   } catch (err) {
     console.warn(`[proof-tui-agent] cast→video failed — stills-only proof: ${err.message}`)
@@ -1473,6 +1608,67 @@ export async function runTuiWithReplayFallback(ctx, deps) {
 // ── Agent loop ────────────────────────────────────────────────────────────────
 
 /**
+ * Pure decision for a `done()` tool call (BOS-251). Kept out of runAgentLoop's
+ * tool-dispatch switch so the premature-done / scene state machine is reasoned
+ * about — and unit-tested — in isolation rather than as inline branching in an
+ * already-large loop.
+ *
+ * Rejects a premature done while later scenes were never begun: a pass claimed
+ * early leaves those scenes with zero captured screens (the evidence gate then
+ * fails them wholesale), and a `passed=false` used as a per-scene checkpoint
+ * silently ends the whole recording. Both get a bounded corrective rejection; a
+ * repeat past the bound is accepted so a genuinely stuck agent cannot loop
+ * forever (and a genuine blocker stays expressible).
+ *
+ * @param {{ input:object, activeSceneIndex:number, scenes:Array<{id:string,title:string}>, doneRejections:number, maxDoneRejections?:number }} args
+ * @returns {{ accept:boolean, rejected:boolean, toolResult:object, done?:{passed:boolean,summary:string,evidence:Array} }}
+ *   `rejected` → the caller should increment its doneRejections counter; `accept`
+ *   → the caller should record `done` and stop the loop.
+ */
+export function evaluateDoneCall({
+  input,
+  activeSceneIndex,
+  scenes,
+  doneRejections,
+  maxDoneRejections = MAX_DONE_REJECTIONS,
+}) {
+  const wantsPass = Boolean(input?.passed)
+  const scenesRemain = activeSceneIndex < scenes.length - 1
+  if (scenesRemain && doneRejections < maxDoneRejections) {
+    const remaining = scenes
+      .slice(activeSceneIndex + 1)
+      .map((s) => `${s.id} ("${s.title}")`)
+      .join(', ')
+    const next = scenes[activeSceneIndex + 1]
+    return {
+      accept: false,
+      rejected: true,
+      toolResult: {
+        error:
+          `REJECTED — done() ends the WHOLE recording and the remaining scenes would be ` +
+          `recorded as FAILED. Only scene ${activeSceneIndex + 1} of ${scenes.length} was ` +
+          `demonstrated; still owed: ${remaining}. ` +
+          (wantsPass
+            ? `Call begin_scene({id:"${next.id}"}) now and demonstrate each remaining scene's ` +
+              'evidence on screen, or call done with passed=false explaining what could not be shown.'
+            : `If you are NOT blocked, call begin_scene({id:"${next.id}"}) and continue; if a ` +
+              'genuine blocker stops the run, call done(passed=false) again naming the blocker.'),
+      },
+    }
+  }
+  return {
+    accept: true,
+    rejected: false,
+    toolResult: { ok: true },
+    done: {
+      passed: wantsPass,
+      summary: String(input?.summary ?? ''),
+      evidence: Array.isArray(input?.evidence) ? input.evidence : [],
+    },
+  }
+}
+
+/**
  * Model tool-use loop. Mirrors the WEB runner: one in-flight model call per
  * step, execute the returned tool_use blocks, feed settled screens back as tool
  * results, enforce ALL THREE budgets (steps / wall-clock / tokens), stop on
@@ -1557,6 +1753,8 @@ export async function runAgentLoop({
   // marker-less run therefore attributes every screen to scene 1 and produces
   // a single sceneTimings entry, matching today's single-window behavior.
   let activeSceneIndex = 0
+  let textOnlyNudges = 0
+  let doneRejections = 0
   const sceneTimings =
     scenes.length > 0 ? [{ id: scenes[0].id, title: scenes[0].title, startMs: 0 }] : []
 
@@ -1582,7 +1780,25 @@ export async function runAgentLoop({
       .join('\n')
     if (text) finalText = text
 
-    if (resp.stop_reason !== 'tool_use') break
+    if (resp.stop_reason !== 'tool_use') {
+      // A text-only turn used to end the run on the spot — one narration-only
+      // response silently abandoned every remaining scene (BOS-251: the
+      // "scene 1 captured, scenes 2+ empty" runs). Nudge the model back onto
+      // tools a bounded number of times before giving up.
+      if (textOnlyNudges >= MAX_TEXT_ONLY_NUDGES) break
+      textOnlyNudges += 1
+      messages.push({
+        role: 'assistant',
+        content: resp.content?.length ? resp.content : [{ type: 'text', text: text || '…' }],
+      })
+      messages.push({
+        role: 'user',
+        content:
+          'Continue with tool calls only: observe/send_keys/type_text/begin_scene, ' +
+          'or call done({summary, passed}) to finish the proof.',
+      })
+      continue
+    }
     messages.push({ role: 'assistant', content: resp.content })
 
     const results = []
@@ -1602,10 +1818,19 @@ export async function runAgentLoop({
       if (block.type !== 'tool_use') continue
       let toolResult
       if (block.name === 'done') {
-        done.passed = Boolean(block.input?.passed)
-        done.summary = String(block.input?.summary ?? '')
-        done.evidence = Array.isArray(block.input?.evidence) ? block.input.evidence : []
-        toolResult = { ok: true }
+        const decision = evaluateDoneCall({
+          input: block.input,
+          activeSceneIndex,
+          scenes,
+          doneRejections,
+        })
+        if (decision.rejected) doneRejections += 1
+        if (decision.accept && decision.done) {
+          done.passed = decision.done.passed
+          done.summary = decision.done.summary
+          done.evidence = decision.done.evidence
+        }
+        toolResult = decision.toolResult
       } else if (block.name === 'begin_scene') {
         const id = String(block.input?.id ?? '')
         const activeId = scenes[activeSceneIndex]?.id
@@ -1691,6 +1916,19 @@ export async function runAgentLoop({
 
     if (done.passed !== null) break
     if (bridgeError) break
+  }
+
+  // Persist the full model conversation for post-mortems (BOS-251): an
+  // agent-incomplete run's manifest only carries the final summary, which
+  // cannot explain WHY the loop stopped (insisted done? narration-only turns?
+  // budget?). Best-effort — diagnostics never fail the run.
+  try {
+    fs.writeFileSync(
+      path.join(rawDir, 'transcript.json'),
+      `${JSON.stringify({ steps, done, messages }, null, 2)}\n`,
+    )
+  } catch {
+    // ignore — transcript is diagnostic only
   }
 
   const summary =

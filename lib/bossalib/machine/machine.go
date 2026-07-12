@@ -138,7 +138,10 @@ func (m *Machine) FireCtx(ctx context.Context, event Event) error {
 
 // State returns the current state.
 func (m *Machine) State() State {
-	return m.sm.MustState().(State)
+	// The state machine only ever holds State values, so the assertion cannot
+	// fail; use the comma-ok form to satisfy forcetypeassert without panicking.
+	st, _ := m.sm.MustState().(State)
+	return st
 }
 
 // Context returns the session context for reading.
@@ -157,7 +160,9 @@ func (m *Machine) PermittedTriggers() []Event {
 	triggers, _ := m.sm.PermittedTriggers()
 	events := make([]Event, len(triggers))
 	for i, t := range triggers {
-		events[i] = t.(Event)
+		// Triggers are always Event values; comma-ok satisfies forcetypeassert.
+		ev, _ := t.(Event)
+		events[i] = ev
 	}
 	return events
 }

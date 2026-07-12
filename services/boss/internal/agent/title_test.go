@@ -477,6 +477,15 @@ func TestTruncate_ExactlyMaxLength(t *testing.T) {
 	}
 }
 
+func TestTruncate_BelowMaxLength(t *testing.T) {
+	// A shorter title must not be expanded and suffixed with an ellipsis.
+	// Catches the CONDITIONALS_BOUNDARY mutation of <= to >=.
+	s := strings.Repeat("x", maxSummaryLen-1)
+	if got := truncate(s); got != s {
+		t.Errorf("truncate() = %q, want unchanged %q", got, s)
+	}
+}
+
 func TestTruncate_OneOverMaxLength(t *testing.T) {
 	// Tests boundary: string one character over maxSummaryLen.
 	s := strings.Repeat("x", maxSummaryLen+1)

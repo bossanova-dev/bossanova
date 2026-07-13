@@ -7,6 +7,11 @@ import {
   driverForSurface,
   validateSurfaceRun,
 } from './proof-agent-drivers.mjs'
+import { silenceConsole } from './quiet-test-console.mjs'
+
+// Silence the code-under-test console output (finalize manifest JSON dumps +
+// DEGRADED warnings) so a passing run stays quiet. See quiet-test-console.mjs.
+silenceConsole()
 
 const stubDeps = {
   tuiAgentUsable: () => true,

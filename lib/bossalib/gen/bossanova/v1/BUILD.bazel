@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "bossanova",
+    srcs = [
+        "daemon.pb.go",
+        "host_service.pb.go",
+        "models.pb.go",
+        "orchestrator.pb.go",
+        "plugin.pb.go",
+        "stream.pb.go",
+    ],
+    importpath = "github.com/recurser/bossalib/gen/bossanova/v1",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//runtime/protoimpl",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

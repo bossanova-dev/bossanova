@@ -59,7 +59,11 @@ export const SURFACE_DESCRIPTORS = [
     kind: 'agent',
     pathPrefixes: TUI_SURFACE_PREFIXES,
     renderServiceDir: 'services/web',
-    budget: { defaultMs: 4 * 60 * 1000, floorMs: 2 * 60 * 1000 },
+    // BOS-354: raised 4→6 min (default) / 2→3 min (floor) so a legitimate
+    // 4-scene Sonnet brief (slower per call since BOS-351) typically completes
+    // rather than truncating mid-flight. Paired with the maxWallClockMs bump in
+    // proof-tui-agent.mjs and the DEFAULT_TOTAL_PROOF_BUDGET_MS bump in proof-lib.mjs.
+    budget: { defaultMs: 6 * 60 * 1000, floorMs: 3 * 60 * 1000 },
   },
   {
     name: 'web',

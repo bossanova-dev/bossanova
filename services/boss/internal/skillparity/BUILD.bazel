@@ -1,0 +1,11 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "skillparity_test",
+    srcs = ["parity_test.go"],
+    data = [
+        "//plugins/bossd-plugin-claude/skilldata:skills_payload",  # keep: claude plugin mirror tree
+        "//services/boss/internal/skillinstall:skills_payload",  # keep: boss embed tree
+    ],
+    rundir = ".",  # keep: read both skill trees from repo-root-staged data via runtime.Caller
+)

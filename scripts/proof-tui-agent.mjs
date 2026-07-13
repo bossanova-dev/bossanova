@@ -99,7 +99,11 @@ const BRIDGE_OP_TIMEOUT_MS = 45_000
 
 // P1 — TUI runs are short, keystroke-driven, and fixture-backed, so they get
 // tighter budgets than the generic web defaults. Still per-brief overridable.
-export const TUI_BUDGETS = { maxSteps: 40, maxWallClockMs: 4 * 60 * 1000, maxTokens: 200_000 }
+// BOS-354: maxWallClockMs raised 4→6 min so a legitimate 4-scene Sonnet brief
+// (slower per call since BOS-351) typically completes rather than truncating
+// mid-flight. A run that still runs out of clock before any verdict now softens
+// to the neutral `tui-truncated` deferral (see runAgentLoop's wallClockTruncated).
+export const TUI_BUDGETS = { maxSteps: 40, maxWallClockMs: 6 * 60 * 1000, maxTokens: 200_000 }
 
 // How many narration-only (no tool_use) model turns are nudged back onto tools
 // before the loop gives up on the run (BOS-251).
@@ -1009,6 +1013,8 @@ export async function runTuiAgentProof({
         scanTexts: [brief.title ?? '', brief.description ?? ''],
         elapsedMs: Date.now() - startedAt,
         reasonCode: 'no-ui-surface',
+        // BOS-354: never truncated — this branch returns before the agent loop runs.
+        truncated: false,
       }
     }
   }
@@ -1045,6 +1051,10 @@ export async function runTuiAgentProof({
   // BOS-216: true when any scene-marker / settled-screen cast read returned null
   // (unreadable/empty cast) — surfaced as a loud degraded marker below.
   let nullCastRead = false
+  // BOS-354: true when the agent loop broke on the per-run wall clock before any
+  // verdict; carried onto the collect-mode SurfaceRun so the dispatcher can soften
+  // it to `tui-truncated`. Defaults false (a replay loopRunner omits it).
+  let wallClockTruncated = false
   const scenes = normalizeScenes(brief)
 
   try {
@@ -1063,6 +1073,7 @@ export async function runTuiAgentProof({
     sceneForScreen = loop.sceneForScreen ?? {}
     sceneTimings = loop.sceneTimings ?? []
     nullCastRead = Boolean(loop.nullCastRead)
+    wallClockTruncated = Boolean(loop.wallClockTruncated)
     // Persist the per-step caption timings (raw/caption-timings.json) — the
     // single source the video step reads to burn captions onto the mp4 (BOS-121).
     fs.writeFileSync(
@@ -1309,6 +1320,10 @@ export async function runTuiAgentProof({
       scanTexts,
       elapsedMs: Date.now() - startedAt,
       reasonCode: null,
+      // BOS-354: additive (false-default) mid-flight-truncation signal. Read by
+      // runTuiWithReplayFallback; ignored by every other consumer, so untruncated
+      // runs stay byte-identical. Only ever true on a wall-clock cutoff before a verdict.
+      truncated: wallClockTruncated,
     }
   }
 
@@ -1488,7 +1503,7 @@ export async function runTuiWithReplayFallback(ctx, deps) {
         brief: synthesizeBrief(scenario, fileBasename),
         // runTuiAgentProof clamps brief.budgets.maxWallClockMs to the reserved slice,
         // but the custom loopRunner args omit maxWallClockMs, so runReplayLoop would
-        // otherwise fall back to its 4-min default and blow the shared budget. Thread
+        // otherwise fall back to its 6-min default and blow the shared budget. Thread
         // the clamped brief budget (== reserve) through so the reserve is enforced.
         loopRunner: (args) =>
           runReplayLoop({
@@ -1514,12 +1529,17 @@ export async function runTuiWithReplayFallback(ctx, deps) {
     }
   }
 
+  // BOS-354: the additive truncation signal from the collect-mode agent leg. Only
+  // ever true when the agent loop broke on the per-run wall clock before any verdict.
+  const agentTruncated = Boolean(agentRun?.truncated)
+
   const outcome = classifyTuiOutcome({
     legs,
     agentOutcome,
     replayOutcome,
     agentDetail,
     replayDetail,
+    agentTruncated,
     // BOS-350: a scenario-less TUI diff now reaches here when the key is present
     // (the reordered upstream gate only defers the keyless scenario-less case), and
     // its sole leg is the agent — there is no scenario file to name as "missing", so
@@ -1573,6 +1593,31 @@ export async function runTuiWithReplayFallback(ctx, deps) {
       reasonCode: null,
       proofSource: 'replay',
       fallbackReason: agentOutcome === 'not-attempted' ? 'agent-unavailable' : 'agent-failed',
+    }
+  }
+
+  // BOS-354: a mid-flight wall-clock truncation (agent leg started + captured but
+  // the per-run wall clock cut it off before any done() verdict, and the replay leg
+  // did not genuinely gate-fail) softens to a neutral, exit-0 `tui-truncated`
+  // deferral. Return the explicit reasonCode with hasFailure:false so
+  // classifySurfaceOutcomes trusts the code verbatim instead of re-deriving the
+  // fatal agent-incomplete from hasFailure. The agent leg's captures ride along so
+  // its partial evidence stays reviewable. Genuine judge-rejections keep the fatal
+  // agent-incomplete path below unchanged.
+  if (outcome.reasonCode === 'tui-truncated') {
+    const primary = agentRun ?? replayRun
+    return {
+      surface: 'tui',
+      captureShapes: agentRun?.captureShapes ?? [],
+      brief: primary?.brief ?? {},
+      agentResult: primary?.agentResult ?? { passed: false, summary: '', evidence: [], steps: 0 },
+      hasFailure: false,
+      noSurface: false,
+      scanTexts: [...(agentRun?.scanTexts ?? []), ...replayScanTexts],
+      elapsedMs,
+      reasonCode: 'tui-truncated',
+      proofSource: null,
+      fallbackReason: null,
     }
   }
 
@@ -1755,11 +1800,38 @@ export async function runAgentLoop({
   let activeSceneIndex = 0
   let textOnlyNudges = 0
   let doneRejections = 0
+  // BOS-354: set true ONLY when the per-run wall clock cuts the loop off before
+  // any done() verdict (done.passed === null). The step/token/text-only-nudge
+  // exhaustion breaks below deliberately leave it false — those are genuine
+  // incompleteness, not a clock cutoff, and must stay fatal agent-incomplete.
+  let wallClockTruncated = false
+  // BOS-354: set true the moment the agent emits ANY failing verdict —
+  // done(passed:false) — including one that evaluateDoneCall PROCEDURALLY REJECTS
+  // (scenes remain + rejection budget unspent), which leaves done.passed === null.
+  // A genuine blocker signalled this way must stay fatal agent-incomplete even if
+  // the wall clock later expires, so a subsequent truncation NEVER softens it
+  // (BOS-226 intact). A rejected done(passed:true) — an unproven premature pass —
+  // does NOT set this: that is genuine incompleteness the clock may soften.
+  let sawFailingVerdict = false
   const sceneTimings =
     scenes.length > 0 ? [{ id: scenes[0].id, title: scenes[0].title, startMs: 0 }] : []
 
   for (let step = 0; step < brief.budgets.maxSteps; step++) {
-    if (Date.now() - started > brief.budgets.maxWallClockMs) break
+    if (Date.now() - started > brief.budgets.maxWallClockMs) {
+      // BOS-354: a mid-flight wall-clock cutoff BEFORE any verdict is the single,
+      // unambiguous truncation signal the classifier softens to `tui-truncated`.
+      // Guarded on done.passed === null so a run that already recorded an explicit
+      // done() verdict on an earlier iteration is never mislabeled. The per-call
+      // SDK-abort path (BOSS_PROOF_AGENT_TIMEOUT_MS in createSdkModel) was
+      // considered as a second source and deliberately NOT wired in: it degrades to
+      // an empty end_turn that routes through the text-only-nudge path, and if the
+      // clock has also run out this same guard catches it next iteration — keeping
+      // one clock-based signal avoids softening a genuinely-stuck agent.
+      // sawFailingVerdict additionally keeps a procedurally-rejected done(passed:false)
+      // fatal (it leaves done.passed === null but is a genuine blocker, not a truncation).
+      if (done.passed === null && !sawFailingVerdict) wallClockTruncated = true
+      break
+    }
     if (usage.inputTokens + usage.outputTokens >= brief.budgets.maxTokens) break
 
     // eslint-disable-next-line no-await-in-loop -- the loop is inherently sequential
@@ -1825,6 +1897,13 @@ export async function runAgentLoop({
           doneRejections,
         })
         if (decision.rejected) doneRejections += 1
+        // BOS-354: a done(passed:false) is a genuine failing verdict even when
+        // procedurally rejected (done.passed stays null). Record it so a later
+        // wall-clock cutoff stays fatal agent-incomplete instead of softening to
+        // the neutral tui-truncated deferral. Mirrors evaluateDoneCall's
+        // `wantsPass = Boolean(input?.passed)` — a done() with no passed field is
+        // a failing verdict too.
+        if (!block.input?.passed) sawFailingVerdict = true
         if (decision.accept && decision.done) {
           done.passed = decision.done.passed
           done.summary = decision.done.summary
@@ -1947,6 +2026,7 @@ export async function runAgentLoop({
     sceneForScreen,
     screens,
     nullCastRead,
+    wallClockTruncated,
   }
 }
 

@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "safego",
+    srcs = ["safego.go"],
+    importpath = "github.com/recurser/bossalib/safego",
+    visibility = ["//visibility:public"],
+    deps = ["@com_github_rs_zerolog//:zerolog"],
+)
+
+go_test(
+    name = "safego_test",
+    srcs = ["safego_test.go"],
+    deps = [
+        ":safego",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

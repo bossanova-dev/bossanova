@@ -1642,6 +1642,11 @@ type Session struct {
 	// hydrated by bossd like the display_* fields so TUI/web render history,
 	// the exhausted badge, and toasts from one field. (BOS-176)
 	RotationEvents []*RotationEvent `protobuf:"bytes,59,rep,name=rotation_events,json=rotationEvents,proto3" json:"rotation_events,omitempty"`
+	// True while a PR merge (MergeSession) is in flight. Transport-only: hydrated
+	// server-side from the in-memory DisplayTracker and never persisted. Drives
+	// the transient blue "merging" display status. Distinct from
+	// display_is_repairing (24) / display_setting_up (48).
+	DisplayMerging bool `protobuf:"varint,60,opt,name=display_merging,json=displayMerging,proto3" json:"display_merging,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2087,6 +2092,13 @@ func (x *Session) GetRotationEvents() []*RotationEvent {
 		return x.RotationEvents
 	}
 	return nil
+}
+
+func (x *Session) GetDisplayMerging() bool {
+	if x != nil {
+		return x.DisplayMerging
+	}
+	return false
 }
 
 // Attempt represents a fix attempt within a session.
@@ -3977,7 +3989,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0esentry_api_key\x18\x11 \x01(\tR\fsentryApiKey\x12\x1d\n" +
 	"\n" +
 	"sentry_org\x18\x12 \x01(\tR\tsentryOrgB\x0f\n" +
-	"\r_setup_scriptJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eJ\x04\b\x14\x10\x15J\x04\b\x10\x10\x11J\x04\b\x13\x10\x14\"\xeb\x19\n" +
+	"\r_setup_scriptJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eJ\x04\b\x14\x10\x15J\x04\b\x10\x10\x11J\x04\b\x13\x10\x14\"\x94\x1a\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -4050,7 +4062,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
 	"account_id\x189 \x01(\tH\x0eR\taccountId\x88\x01\x01\x12(\n" +
 	"\raccount_label\x18: \x01(\tH\x0fR\faccountLabel\x88\x01\x01\x12D\n" +
-	"\x0frotation_events\x18; \x03(\v2\x1b.bossanova.v1.RotationEventR\x0erotationEventsB\x13\n" +
+	"\x0frotation_events\x18; \x03(\v2\x1b.bossanova.v1.RotationEventR\x0erotationEvents\x12'\n" +
+	"\x0fdisplay_merging\x18< \x01(\bR\x0edisplayMergingB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +

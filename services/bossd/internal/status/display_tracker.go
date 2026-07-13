@@ -16,7 +16,11 @@ type DisplayEntry struct {
 	ChangesRequestedBy  []string
 	IsRepairing         bool
 	SettingUp           bool
-	HeadSHA             string
+	// Merging is true while a PR merge (MergeSession) is in flight. Transient,
+	// like SettingUp: set via SetMerging around the blocking merge and preserved
+	// across polls in Set so a mid-merge poll can't clobber it.
+	Merging bool
+	HeadSHA string
 	// Mergeable is the PR's last-polled mergeability (nil unknown / true
 	// mergeable / false conflicting), surfaced on Session.pr_mergeable so a
 	// conflict-after-green is readable without a merge attempt. Refreshed by
@@ -63,6 +67,10 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 	if existed {
 		settingUp = oldEntry.SettingUp
 	}
+	var merging bool
+	if existed {
+		merging = oldEntry.Merging
+	}
 	newEntry := &DisplayEntry{
 		Status:              info.Status,
 		HasFailures:         info.HasFailures,
@@ -70,6 +78,7 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 		ChangesRequestedBy:  info.ChangesRequestedBy,
 		IsRepairing:         isRepairing,
 		SettingUp:           settingUp,
+		Merging:             merging,
 		HeadSHA:             info.HeadSHA,
 		Mergeable:           info.Mergeable,
 		UpdatedAt:           time.Now(),
@@ -105,6 +114,7 @@ func (t *DisplayTracker) Get(sessionID string) *DisplayEntry {
 		ChangesRequestedBy:  e.ChangesRequestedBy,
 		IsRepairing:         e.IsRepairing,
 		SettingUp:           e.SettingUp,
+		Merging:             e.Merging,
 		HeadSHA:             e.HeadSHA,
 		Mergeable:           e.Mergeable,
 		UpdatedAt:           e.UpdatedAt,
@@ -128,6 +138,7 @@ func (t *DisplayTracker) GetBatch(sessionIDs []string) map[string]*DisplayEntry 
 			ChangesRequestedBy:  e.ChangesRequestedBy,
 			IsRepairing:         e.IsRepairing,
 			SettingUp:           e.SettingUp,
+			Merging:             e.Merging,
 			HeadSHA:             e.HeadSHA,
 			Mergeable:           e.Mergeable,
 			UpdatedAt:           e.UpdatedAt,
@@ -174,7 +185,7 @@ func (t *DisplayTracker) SetSettingUp(sessionID string, settingUp bool) {
 	if e, ok := t.entries[sessionID]; ok {
 		e.SettingUp = settingUp
 		e.UpdatedAt = time.Now()
-		if !settingUp && e.isSetupOnly() {
+		if !settingUp && e.isEmpty() {
 			delete(t.entries, sessionID)
 		}
 	} else if settingUp {
@@ -184,13 +195,40 @@ func (t *DisplayTracker) SetSettingUp(sessionID string, settingUp bool) {
 	t.scheduleRecompute(sessionID)
 }
 
-// isSetupOnly reports whether the entry carries no state beyond a now-cleared
-// transient setup flag — i.e. it holds no polled PR status and no other flag,
-// so it is safe to drop rather than leave as a zero-Status placeholder.
-func (e *DisplayEntry) isSetupOnly() bool {
+// SetMerging sets or clears the transient "merging" flag for a session while a
+// PR merge (MergeSession) is in flight, mirroring SetSettingUp exactly. Setting
+// creates a zero-valued entry if none exists; clearing removes an entry that
+// exists ONLY because of this flag (no polled PR status), so a zero-Status
+// placeholder does not linger and mis-read a passing PR as "not passing". An
+// entry carrying real PR status (or another flag) is preserved with only
+// Merging toggled off. The synchronous scheduleRecompute publishes the new
+// (label, intent, spinner) to clients before the caller continues — so a merge
+// in flight streams "merging" for its full duration.
+func (t *DisplayTracker) SetMerging(sessionID string, merging bool) {
+	t.mu.Lock()
+	if e, ok := t.entries[sessionID]; ok {
+		e.Merging = merging
+		e.UpdatedAt = time.Now()
+		if !merging && e.isEmpty() {
+			delete(t.entries, sessionID)
+		}
+	} else if merging {
+		t.entries[sessionID] = &DisplayEntry{Merging: merging, UpdatedAt: time.Now()}
+	}
+	t.mu.Unlock()
+	t.scheduleRecompute(sessionID)
+}
+
+// isEmpty reports whether the entry carries no state at all — no polled PR
+// status and no transient flag set — so a placeholder left behind after a
+// transient flag (SettingUp/Merging) is cleared can be dropped rather than
+// lingering as a zero-Status entry that would mis-read a passing PR as "not
+// passing". Both SetSettingUp and SetMerging use it after toggling their flag
+// off, at which point the just-cleared flag is already false.
+func (e *DisplayEntry) isEmpty() bool {
 	return e.Status == vcs.DisplayStatusUnspecified &&
 		!e.HasFailures && !e.HasChangesRequested &&
-		!e.IsRepairing && !e.SettingUp && e.HeadSHA == ""
+		!e.IsRepairing && !e.SettingUp && !e.Merging && e.HeadSHA == ""
 }
 
 // SetOnChange sets the callback function that is called when a display status changes.

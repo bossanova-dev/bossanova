@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "daemon",
+    srcs = [
+        "daemon.go",
+        "launchd.go",
+        "systemd.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/daemon",
+    visibility = ["//services/boss:__subpackages__"],
+)
+
+go_test(
+    name = "daemon_test",
+    srcs = [
+        "daemon_test.go",
+        "launchd_test.go",
+        "systemd_test.go",
+    ],
+    embed = [":daemon"],
+)

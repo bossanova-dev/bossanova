@@ -48,7 +48,7 @@ test('surfaceRenderServiceDir maps marketing/docs, everything else to services/w
 })
 
 test('surfaceBudget returns tui/web specs and null for recipe surfaces', () => {
-  assert.deepEqual(surfaceBudget('tui'), { defaultMs: 4 * 60 * 1000, floorMs: 2 * 60 * 1000 })
+  assert.deepEqual(surfaceBudget('tui'), { defaultMs: 6 * 60 * 1000, floorMs: 3 * 60 * 1000 })
   assert.deepEqual(surfaceBudget('web'), { defaultMs: 12 * 60 * 1000, floorMs: 6 * 60 * 1000 })
   assert.equal(surfaceBudget('marketing'), null)
   assert.equal(surfaceBudget('unknown'), null)

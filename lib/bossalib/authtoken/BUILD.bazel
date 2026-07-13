@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "authtoken",
+    srcs = ["authtoken.go"],
+    importpath = "github.com/recurser/bossalib/authtoken",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "authtoken_test",
+    srcs = ["authtoken_test.go"],
+    embed = [":authtoken"],
+)

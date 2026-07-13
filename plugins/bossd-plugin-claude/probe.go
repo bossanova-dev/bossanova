@@ -50,6 +50,46 @@ func (claudeUsageAuthError) GRPCStatus() *status.Status {
 	return status.New(codes.Unauthenticated, agenterr.KindAuthInvalidated.String())
 }
 
+var errClaudeAccountSuspended = errors.New("account_suspended")
+
+// claudeAccountSuspendedError reports that the account is suspended (an
+// org/billing block such as a credit-card limit disabling Claude subscription
+// access), as distinct from an invalidated credential (401) or a benign
+// scope-refusal 403. It maps to gRPC codes.PermissionDenied so the daemon can
+// act ONLY on a confirmed suspension and never on a transient 401. The message
+// carries a redaction-safe, human-legible reason for surfacing to operators.
+type claudeAccountSuspendedError struct{ reason string }
+
+func (e claudeAccountSuspendedError) Error() string {
+	if e.reason != "" {
+		return e.reason
+	}
+	return errClaudeAccountSuspended.Error()
+}
+
+func (claudeAccountSuspendedError) Unwrap() error {
+	return errClaudeAccountSuspended
+}
+
+func (e claudeAccountSuspendedError) GRPCStatus() *status.Status {
+	return status.New(codes.PermissionDenied, e.Error())
+}
+
+// suspensionErrFromResponse returns a claudeAccountSuspendedError when resp's
+// (non-2xx) body carries the account-suspension signature, else nil. Both probe
+// paths call it before degrading a non-2xx response to UNSUPPORTED. The 1 MiB
+// cap bounds the read of an untrusted error body.
+func suspensionErrFromResponse(resp *http.Response) error {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if err != nil {
+		return nil
+	}
+	if reason, ok := agenterr.SuspensionReason(string(body)); ok {
+		return claudeAccountSuspendedError{reason: reason}
+	}
+	return nil
+}
+
 // ProbeRateLimit calls Claude Code's OAuth usage endpoint with the target
 // account token and normalizes the response into RateLimitStatus.
 func (s *Server) ProbeRateLimit(ctx context.Context, req *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) {
@@ -80,6 +120,13 @@ func (s *Server) ProbeRateLimit(ctx context.Context, req *bossanovav1.ProbeRateL
 		return nil, claudeUsageAuthError{}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// A suspension (org/billing block) surfaces as a non-2xx body carrying
+		// the suspension signature; treat it as a hard failure so the account is
+		// failed, not silently degraded to UNSUPPORTED. A benign scope-refusal
+		// 403 does not match and falls through to today's header/messages path.
+		if err := suspensionErrFromResponse(resp); err != nil {
+			return nil, err
+		}
 		if status, ok := parseUsageHeaders(resp.Header); ok {
 			return &bossanovav1.ProbeRateLimitResponse{Status: status}, nil
 		}
@@ -140,6 +187,13 @@ func (s *Server) probeMessagesRateLimit(ctx context.Context, token string) (*bos
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, claudeUsageAuthError{}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// The suspended account's real /v1/messages 403 surfaces here; detect it
+		// before degrading to UNSUPPORTED. Benign non-2xx bodies do not match.
+		if err := suspensionErrFromResponse(resp); err != nil {
+			return nil, err
+		}
 	}
 	if status, ok := parseUsageHeaders(resp.Header); ok {
 		return &bossanovav1.ProbeRateLimitResponse{Status: status}, nil

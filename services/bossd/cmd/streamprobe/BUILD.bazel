@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "streamprobe_lib",
+    srcs = [
+        "main.go",
+        "probe.go",
+    ],
+    importpath = "github.com/recurser/bossd/cmd/streamprobe",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "streamprobe",
+    embed = [":streamprobe_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "streamprobe_test",
+    srcs = ["probe_test.go"],
+    embed = [":streamprobe_lib"],
+)

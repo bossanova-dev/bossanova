@@ -809,7 +809,10 @@ test('buildTimerOverlayFilter: a caption overlays along the bottom edge with an 
     captions: [{ inputIndex: 2, startSec: 0, endSec: 2 }],
   })
   // caption overlaid onto [base] at top-left, gated by enable, output to an intermediate label
-  assert.match(f, /\[base\]\[2:v\]overlay=x=0:y=main_h-overlay_h:enable='between\(t,0\.000,2\.000\)'[^;]*\[ov0\]/)
+  assert.match(
+    f,
+    /\[base\]\[2:v\]overlay=x=0:y=main_h-overlay_h:enable='between\(t,0\.000,2\.000\)'[^;]*\[ov0\]/,
+  )
   // timer overlaid last onto the caption result, output [v], at the top-right corner (y=44)
   assert.match(f, /\[ov0\]\[1:v\]overlay=x=main_w-overlay_w-14:y=44:eof_action=repeat\[v\]/)
 })
@@ -822,8 +825,14 @@ test('buildTimerOverlayFilter: captions without a timer still terminate in [v]',
       { inputIndex: 2, startSec: 1.5, endSec: 4 },
     ],
   })
-  assert.match(f, /\[base\]\[1:v\]overlay=x=0:y=main_h-overlay_h:enable='between\(t,0\.000,1\.500\)'[^;]*\[ov0\]/)
-  assert.match(f, /\[ov0\]\[2:v\]overlay=x=0:y=main_h-overlay_h:enable='between\(t,1\.500,4\.000\)'[^;]*\[v\]/)
+  assert.match(
+    f,
+    /\[base\]\[1:v\]overlay=x=0:y=main_h-overlay_h:enable='between\(t,0\.000,1\.500\)'[^;]*\[ov0\]/,
+  )
+  assert.match(
+    f,
+    /\[ov0\]\[2:v\]overlay=x=0:y=main_h-overlay_h:enable='between\(t,1\.500,4\.000\)'[^;]*\[v\]/,
+  )
 })
 
 test('buildTimerOverlayFilter: no captions + timer is byte-identical to the timer-only graph', () => {

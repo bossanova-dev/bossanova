@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 
 	"github.com/recurser/bossalib/models"
 )
@@ -42,6 +44,52 @@ func TestRefreshActiveAccountUsageProbesActiveNonCooling(t *testing.T) {
 	}
 	if cache.probeCalls != 2 || cache.recordCalls != 2 {
 		t.Fatalf("calls probe=%d record=%d, want 2/2", cache.probeCalls, cache.recordCalls)
+	}
+}
+
+// TestProbeUsageSnapshotSuspensionFailsHealth verifies that a probe error which
+// confirms suspension (codes.PermissionDenied) proactively fails the account's
+// health via MarkAccountSuspended, carrying the reason, rather than the fail-soft
+// log-and-skip taken for ordinary probe errors.
+func TestProbeUsageSnapshotSuspensionFailsHealth(t *testing.T) {
+	const reason = "account suspended: organization disabled Claude subscription access"
+	cache := &fakeDecisionUsageCache{
+		probeErr: grpcstatus.Error(codes.PermissionDenied, reason),
+	}
+
+	snap, ok := probeUsageSnapshotForRotation(context.Background(), zerolog.Nop(), cache, cache, "susp-acct")
+	if ok {
+		t.Fatalf("ok = true, want false on suspension")
+	}
+	if snap.FetchedAt != nil {
+		t.Fatalf("snapshot recorded on suspension: %+v", snap)
+	}
+	if cache.suspendCalls != 1 {
+		t.Fatalf("suspendCalls = %d, want 1", cache.suspendCalls)
+	}
+	if cache.suspendID != "susp-acct" {
+		t.Errorf("suspendID = %q, want susp-acct", cache.suspendID)
+	}
+	if cache.suspendReason != reason {
+		t.Errorf("suspendReason = %q, want %q", cache.suspendReason, reason)
+	}
+	if cache.recordCalls != 0 {
+		t.Errorf("recordCalls = %d, want 0 (no snapshot cached on suspension)", cache.recordCalls)
+	}
+}
+
+// TestProbeUsageSnapshotTransientErrorDoesNotFailHealth verifies a generic probe
+// error (not a confirmed suspension) keeps the conservative log-and-skip and
+// never fails health — avoiding false positives from transient auth blips.
+func TestProbeUsageSnapshotTransientErrorDoesNotFailHealth(t *testing.T) {
+	cache := &fakeDecisionUsageCache{
+		probeErr: grpcstatus.Error(codes.Unauthenticated, "auth_invalidated"),
+	}
+	if _, ok := probeUsageSnapshotForRotation(context.Background(), zerolog.Nop(), cache, cache, "acct"); ok {
+		t.Fatalf("ok = true, want false on probe error")
+	}
+	if cache.suspendCalls != 0 {
+		t.Fatalf("suspendCalls = %d, want 0 for non-suspension error", cache.suspendCalls)
 	}
 }
 

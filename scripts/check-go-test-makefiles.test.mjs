@@ -43,14 +43,21 @@ test('go module Makefiles do not duplicate the shared go test command', () => {
   }
 })
 
-test('shared Go test rules keep coverage out of fast test dry runs', () => {
+test('shared Go test rules keep coverage in test-all but out of the fast default test', () => {
   const moduleDir = path.join(repoRoot, 'lib/bossalib')
-  const fullTest = execFileSync('make', ['-n', '-C', moduleDir, 'test'], { encoding: 'utf8' })
-  const fastTest = execFileSync('make', ['-n', '-C', moduleDir, 'test-fast'], { encoding: 'utf8' })
+  // BOS-373: `test` is now the fast default (-short, no coverage); `test-all` is the
+  // exhaustive coverage run (the old `test`); `test-fast` stays a fast alias.
+  const fullTest = execFileSync('make', ['-n', '-C', moduleDir, 'test-all'], { encoding: 'utf8' })
+  const fastTest = execFileSync('make', ['-n', '-C', moduleDir, 'test'], { encoding: 'utf8' })
+  const fastAlias = execFileSync('make', ['-n', '-C', moduleDir, 'test-fast'], { encoding: 'utf8' })
 
   assert.match(fullTest, /go test .* -coverprofile=coverage\.out \.\/\.\.\./)
+
   assert.match(fastTest, /go test .* -short .* \.\/\.\.\./)
   assert.doesNotMatch(fastTest, /-coverprofile=coverage\.out/)
+
+  assert.match(fastAlias, /go test .* -short .* \.\/\.\.\./)
+  assert.doesNotMatch(fastAlias, /-coverprofile=coverage\.out/)
 })
 
 test('go module Makefiles can be dry-run from the repo root with -f', () => {
@@ -61,18 +68,31 @@ test('go module Makefiles can be dry-run from the repo root with -f', () => {
   ]
 
   for (const file of makefiles) {
-    const output = execFileSync('make', ['-n', '-f', file, 'test'], {
+    const moduleDir = path.dirname(file)
+
+    // BOS-373: the exhaustive coverage run moved from `test` to `test-all`.
+    const fullOutput = execFileSync('make', ['-n', '-f', file, 'test-all'], {
       cwd: repoRoot,
       encoding: 'utf8',
     })
-
-    const moduleDir = path.dirname(file)
     assert.match(
-      output,
+      fullOutput,
       new RegExp(
         `cd ["']?${moduleDir}/?["']? && go test .* -coverprofile=coverage\\.out \\.\\/\\.\\.\\.`,
       ),
       file,
     )
+
+    // The fast default `test` runs `-short` with no coverage profile.
+    const fastOutput = execFileSync('make', ['-n', '-f', file, 'test'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    })
+    assert.match(
+      fastOutput,
+      new RegExp(`cd ["']?${moduleDir}/?["']? && go test .* -short .* \\.\\/\\.\\.\\.`),
+      file,
+    )
+    assert.doesNotMatch(fastOutput, /-coverprofile=coverage\.out/, file)
   }
 })

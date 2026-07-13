@@ -2,6 +2,12 @@
 .claude/worktrees/
 .worktrees/
 
+# Implementation plans (docs/plans/**) are archival snapshots copied verbatim from
+# proof.bossanova.dev by boss-implement — never reformatted (BOS-371). Excluding
+# them also stops the recurring plan-file churn the whole-tree docs-prettier pass
+# used to produce. BOS-372's whole-repo sweep can still include them if desired.
+docs/plans/
+
 # services/web and services/marketing are owned by biome — each has its own
 # biome.json and a `format` target that runs `biome check --write`. `make format`
 # routes them through that biome target, never root prettier. Prettier only reaches

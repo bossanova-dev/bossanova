@@ -1,0 +1,41 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "bossmcp",
+    srcs = [
+        "backend.go",
+        "doc.go",
+        "manifest.go",
+        "tools.go",
+        "tools_destructive.go",
+        "tools_mutating.go",
+    ],
+    importpath = "github.com/recurser/bossalib/bossmcp",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_github_modelcontextprotocol_go_sdk//mcp",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_test(
+    name = "bossmcp_test",
+    srcs = [
+        "fake_backend_test.go",
+        "manifest_test.go",
+        "tools_account_test.go",
+        "tools_destructive_test.go",
+        "tools_mutating_test.go",
+        "tools_only_test.go",
+        "tools_read_test.go",
+        "tools_readonly_test.go",
+        "tools_test.go",
+    ],
+    embed = [":bossmcp"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_github_modelcontextprotocol_go_sdk//mcp",
+    ],
+)

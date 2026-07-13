@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "appstate",
+    srcs = ["appstate.go"],
+    importpath = "github.com/recurser/bossalib/appstate",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "appstate_test",
+    srcs = ["appstate_test.go"],
+    embed = [":appstate"],
+)

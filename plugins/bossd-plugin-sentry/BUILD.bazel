@@ -1,0 +1,43 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+# Package marker only — required so Gazelle's go_deps.from_file(go_work = "//:go.work")
+# can resolve //plugins/bossd-plugin-sentry:go.mod as a Bazel label. This module is not yet bazelified
+# (its BUILD targets land in BOS-344); it intentionally contains zero targets.
+
+go_library(
+    name = "bossd-plugin-sentry_lib",
+    srcs = [
+        "main.go",
+        "plugin.go",
+        "sentry.go",
+        "server.go",
+    ],
+    importpath = "github.com/recurser/bossd-plugin-sentry",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/plugin",
+        "@com_github_hashicorp_go_plugin//:go-plugin",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_grpc//:grpc",
+    ],
+)
+
+go_binary(
+    name = "bossd-plugin-sentry",
+    embed = [":bossd-plugin-sentry_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "bossd-plugin-sentry_test",
+    srcs = [
+        "sentry_test.go",
+        "server_test.go",
+    ],
+    embed = [":bossd-plugin-sentry_lib"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

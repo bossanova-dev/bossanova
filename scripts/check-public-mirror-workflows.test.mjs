@@ -10,18 +10,9 @@ const scriptPath = fileURLToPath(new URL('./check-public-mirror-workflows.mjs', 
 
 const requiredPublicWorkflows = [
   '.github/workflows/ci.yml',
-  '.github/workflows/test-boss.yml',
-  '.github/workflows/test-bossd.yml',
-  '.github/workflows/test-scripts.yml',
-  '.github/workflows/test-lib-bossalib.yml',
   '.github/workflows/test-proto.yml',
-  '.github/workflows/test-plugin-claude.yml',
-  '.github/workflows/test-plugin-codex.yml',
-  '.github/workflows/test-plugin-dependabot.yml',
-  '.github/workflows/test-plugin-linear.yml',
-  '.github/workflows/test-plugin-repair.yml',
-  '.github/workflows/test-plugin-sentry.yml',
-  '.github/workflows/test-plugin-stub-runner.yml',
+  '.github/workflows/test-scripts.yml',
+  '.github/workflows/test-go.yml',
 ]
 
 function withMirrorWorkflow(content, callback) {

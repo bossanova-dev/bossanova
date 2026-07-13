@@ -63,6 +63,9 @@ type Output struct {
 //     above WORKING and the PR-derived labels)
 //  2. Draft PR failure    → "? PR failed" / WARNING / no spinner
 //  3. DisplaySettingUp    → "initializing" / INFO / spinner
+//     3b. DisplayMerging  → "merging" / INFO / spinner (a PR merge in flight;
+//     wins over the stale PR-derived labels so a passing/approved session shows
+//     "merging" for the merge's full duration)
 //  4. ChatStatus WORKING  → "working"    / SUCCESS / spinner
 //  5. Active workflow     → "running L/M", "pending", "paused L/M",
 //     "failed L/M", "cancelled" with matching intents
@@ -99,6 +102,13 @@ func Compute(in Input) Output {
 	}
 	if in.Session != nil && in.Session.DisplaySettingUp {
 		return Output{Label: "initializing", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true}
+	}
+	// A PR merge is in flight (MergeSession set the transient flag). This must
+	// win over the stale PR-derived labels below (branch 7) so a passing/approved
+	// session renders "merging" for the full merge duration instead of a green
+	// label the merge is about to invalidate.
+	if in.Session != nil && in.Session.DisplayMerging {
+		return Output{Label: "merging", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true}
 	}
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING {
 		intent := pb.DisplayIntent_DISPLAY_INTENT_SUCCESS

@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "github",
+    srcs = [
+        "actionable_errors.go",
+        "provider.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/vcs/github",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/vcs",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "github_test",
+    srcs = [
+        "provider_e2e_test.go",
+        "provider_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":github"],
+    deps = [
+        "//lib/bossalib/vcs",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

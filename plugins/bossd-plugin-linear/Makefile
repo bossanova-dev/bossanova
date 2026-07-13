@@ -1,7 +1,10 @@
-.PHONY: all format test clean build
+.PHONY: all all-full format test clean build
 
 ## all: Clean, format, build, and test
 all: clean format build test
+
+## all-full: Clean, format, build, and the exhaustive coverage test suite (test-all)
+all-full: clean format build test-all
 
 BIN := ../../bin/bossd-plugin-linear
 
@@ -10,10 +13,9 @@ LDFLAGS := -s -w \
 	-X github.com/recurser/bossalib/buildinfo.Commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	-X github.com/recurser/bossalib/buildinfo.Date=$(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-## format: Format Go source files and run golangci-lint (catches typecheck errors locally)
+## format: Format Go source files (gofmt).
 format:
 	gofmt -w .
-	golangci-lint run ./...
 
 GO_TEST_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 include $(dir $(lastword $(MAKEFILE_LIST)))../../mk/go-test.mk

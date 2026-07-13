@@ -108,7 +108,10 @@ export function normalizeRecipe(recipe, { isAgentSurface = (s) => s === 'tui' } 
 // run (BOS-139 / epic D5). A NEW orchestrator concept — distinct from
 // BOSS_PROOF_AGENT_TIMEOUT_MS (the per-runner outer SIGKILL backstop / per-SDK
 // abort). Overridable per run via BOSS_PROOF_TOTAL_BUDGET_MS.
-export const DEFAULT_TOTAL_PROOF_BUDGET_MS = 15 * 60 * 1000
+// BOS-354: raised 15→17 min so a combined TUI(6) + web(12) run keeps both
+// per-surface defaults within the shared pool rather than squeezing the web
+// floor (the TUI wall clock rose 4→6 min in the same change).
+export const DEFAULT_TOTAL_PROOF_BUDGET_MS = 17 * 60 * 1000
 
 // The per-surface wall-clock defaults + viability floors (the old
 // SURFACE_BUDGET_SPEC) now live in scripts/proof-surfaces.mjs as descriptor
@@ -240,7 +243,12 @@ export function planTuiLegs({ agentUsable, scenarioPresent }) {
  * - NO leg passed + ANY leg crashed ⇒ `pipeline-error` (exit 1, unchanged
  *   BOS-138), `errorDetail` = the crash text(s).
  * - NO leg passed, NO crash ⇒ `agent-incomplete` (exit 1 since BOS-226) with a
- *   combined per-leg `errorDetail`.
+ *   combined per-leg `errorDetail` — UNLESS the agent leg was cut off mid-flight
+ *   by the per-run wall clock before any verdict (`agentTruncated:true`) AND the
+ *   replay leg did not genuinely gate-fail, in which case it softens to the
+ *   neutral, exit-0 `tui-truncated` deferral (BOS-354). A genuine judge-rejection
+ *   — `done({passed:false})` on the agent leg (never sets `agentTruncated`) or a
+ *   replay leg that gate-failed on real evidence — stays fatal `agent-incomplete`.
  *
  * `errorDetail` string shapes (consumed verbatim by Task 2):
  * - fallback disclosure detail → the raw agent-fail reason / crash text.
@@ -255,6 +263,7 @@ export function planTuiLegs({ agentUsable, scenarioPresent }) {
  *   agentDetail?: string|null,
  *   replayDetail?: string|null,
  *   missingScenario?: string|null,
+ *   agentTruncated?: boolean,
  * }} opts
  * @returns {{ proofSource: 'agent'|'replay'|null, reasonCode: string|null, errorDetail: string|null }}
  */
@@ -265,6 +274,7 @@ export function classifyTuiOutcome({
   agentDetail = null,
   replayDetail = null,
   missingScenario = null,
+  agentTruncated = false,
 }) {
   void legs // accepted for caller symmetry; outcomes fully determine the mapping.
   const agentFailed = agentOutcome === 'gate-failed' || agentOutcome === 'crashed'
@@ -307,11 +317,18 @@ export function classifyTuiOutcome({
   else if (replayOutcome === 'not-attempted' && missingScenario) {
     parts.push(`replay: no committed scenario (${missingScenario})`)
   }
-  return {
-    proofSource: null,
-    reasonCode: 'agent-incomplete',
-    errorDetail: parts.length > 0 ? parts.join('; ') : null,
+  const errorDetail = parts.length > 0 ? parts.join('; ') : null
+  // BOS-354: a mid-flight wall-clock truncation (the agent leg ran out of the
+  // per-run wall clock before reaching any done() verdict) softens to a neutral,
+  // exit-0 `tui-truncated` deferral — but ONLY when the replay leg did not
+  // genuinely gate-fail on evidence (a replay judge-rejection is real evidence
+  // failure and keeps the fatal agent-incomplete, BOS-226 intact). A
+  // done({passed:false}) on the agent leg never sets agentTruncated, so it also
+  // stays agent-incomplete. errorDetail is preserved verbatim either way.
+  if (agentTruncated && replayOutcome !== 'gate-failed') {
+    return { proofSource: null, reasonCode: 'tui-truncated', errorDetail }
   }
+  return { proofSource: null, reasonCode: 'agent-incomplete', errorDetail }
 }
 
 export function selectRecipes(catalog, changedFiles, explicitRecipeIds = []) {
@@ -831,9 +848,21 @@ export function deferredReasonMessage(reasonCode, { missing } = {}) {
     // consumed by an earlier surface in this multi-surface PR. NOT a problem
     // with the change and NEVER an "environment limitation".
     return (
-      'This surface was deferred because the shared proof budget (~15min per run) was ' +
+      'This surface was deferred because the shared proof budget (~17min per run) was ' +
       'consumed by an earlier surface in this multi-surface PR. The change itself is fine; ' +
       're-run proof for this surface alone to capture it.'
+    )
+  }
+  if (reasonCode === 'tui-truncated') {
+    // BOS-354: the TUI agent started and captured this change but the per-run
+    // wall clock cut it off before it reached a done() verdict. This is NOT a
+    // judge-rejection (those stay agent-incomplete) and NEVER an "environment
+    // limitation" (that phrase is reserved for the genuinely env-bound classes) —
+    // the change itself is fine and a re-run completes under the raised budget.
+    return (
+      'The TUI proof agent started and captured this change but was cut off by the ' +
+      'per-run wall clock before it finished. The change itself is fine — re-run proof ' +
+      'for the TUI surface and it typically completes under the raised per-run budget.'
     )
   }
   if (reasonCode === 'agent-unavailable') {

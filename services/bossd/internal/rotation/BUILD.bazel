@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "rotation",
+    srcs = [
+        "audit.go",
+        "chat_rotator.go",
+        "engine.go",
+        "usage_probe.go",
+        "util.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/rotation",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/models",
+        "//lib/bossalib/safego",
+        "//lib/bossalib/sqlutil",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_x_sync//singleflight",
+    ],
+)
+
+go_test(
+    name = "rotation_test",
+    srcs = [
+        "audit_test.go",
+        "chat_rotator_integration_test.go",
+        "chat_rotator_test.go",
+        "engine_test.go",
+        "fakestore_test.go",
+        "proactive_sweep_test.go",
+        "util_test.go",
+    ],
+    embed = [":rotation"],
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/models",
+        "//services/bossd/internal/status",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+    ],
+)

@@ -79,7 +79,10 @@ function validateFixture(fixture, push) {
   for (const k of Object.keys(fixture)) {
     if (!FIXTURE_KEYS.has(k)) push('fixture', `unknown field "${k}"`)
   }
-  if (fixture.preset !== undefined && (typeof fixture.preset !== 'string' || !fixture.preset.trim())) {
+  if (
+    fixture.preset !== undefined &&
+    (typeof fixture.preset !== 'string' || !fixture.preset.trim())
+  ) {
     push('fixture.preset', 'must be a non-empty string')
   }
   if (fixture.seed !== undefined && !isPlainObject(fixture.seed)) {

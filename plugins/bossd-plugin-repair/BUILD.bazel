@@ -1,0 +1,54 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+# Package marker only — required so Gazelle's go_deps.from_file(go_work = "//:go.work")
+# can resolve //plugins/bossd-plugin-repair:go.mod as a Bazel label. This module is not yet bazelified
+# (its BUILD targets land in BOS-344); it intentionally contains zero targets.
+
+go_library(
+    name = "bossd-plugin-repair_lib",
+    srcs = [
+        "host.go",
+        "main.go",
+        "plugin.go",
+        "server.go",
+    ],
+    importpath = "github.com/recurser/bossd-plugin-repair",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/plugin",
+        "//lib/bossalib/plugin/hostclient",
+        "@com_github_hashicorp_go_plugin//:go-plugin",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_binary(
+    name = "bossd-plugin-repair",
+    embed = [":bossd-plugin-repair_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "bossd-plugin-repair_test",
+    srcs = [
+        "helpers_test.go",
+        "main_test.go",
+        "server_test.go",
+        "workflow_lifecycle_test.go",
+    ],
+    embed = [":bossd-plugin-repair_lib"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_github_rs_zerolog//:zerolog",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

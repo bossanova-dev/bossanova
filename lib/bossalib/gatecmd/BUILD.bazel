@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "gatecmd",
+    srcs = ["gatecmd.go"],
+    importpath = "github.com/recurser/bossalib/gatecmd",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "gatecmd_test",
+    srcs = ["gatecmd_test.go"],
+    embed = [":gatecmd"],
+    # keep: execs subprocess gate scripts (including a relative-path script from a
+    # temp dir); the macOS darwin-sandbox hangs on that nested exec. Runs unsandboxed
+    # (still covered). See docs/solutions/build-systems/bazel-sandbox-patterns.md.
+    tags = ["local"],
+)

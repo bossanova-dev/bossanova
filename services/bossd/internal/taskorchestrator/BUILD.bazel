@@ -1,0 +1,50 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "taskorchestrator",
+    srcs = [
+        "liveness.go",
+        "orchestrator.go",
+        "session_creator.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/taskorchestrator",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/machine",
+        "//lib/bossalib/models",
+        "//lib/bossalib/safego",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/agent",
+        "//services/bossd/internal/db",
+        "//services/bossd/internal/git",
+        "//services/bossd/internal/mergepolicy",
+        "//services/bossd/internal/plugin",
+        "//services/bossd/internal/session",
+        "//services/bossd/internal/tmux",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "taskorchestrator_test",
+    srcs = [
+        "backoff_test.go",
+        "liveness_test.go",
+        "orchestrator_test.go",
+        "session_creator_test.go",
+    ],
+    embed = [":taskorchestrator"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/machine",
+        "//lib/bossalib/models",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/agent",
+        "//services/bossd/internal/db",
+        "//services/bossd/internal/git",
+        "//services/bossd/internal/plugin",
+        "//services/bossd/internal/session",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

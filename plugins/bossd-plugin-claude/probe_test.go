@@ -279,6 +279,89 @@ func TestProbeRateLimitHTTP403WithoutUsageHeadersFallsBackToMessagesHeaders(t *t
 	}
 }
 
+func TestProbeRateLimitUsageSuspensionReturnsPermissionDenied(t *testing.T) {
+	// A suspended account (org/billing block) returns a 403 whose body carries
+	// the suspension signature — distinct from the benign scope-refusal 403.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"oauth_org_not_allowed","request_id":"req_x"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	s := &Server{logger: zerolog.Nop(), httpClient: srv.Client(), usageURL: srv.URL}
+	resp, err := s.ProbeRateLimit(context.Background(), &bossanovav1.ProbeRateLimitRequest{
+		CredentialEnv: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "suspended-token"},
+	})
+	if err == nil {
+		t.Fatal("ProbeRateLimit err = nil, want suspension error")
+	}
+	if resp != nil {
+		t.Fatalf("ProbeRateLimit resp = %#v, want nil on suspension", resp)
+	}
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("status.Code = %v, want PermissionDenied", status.Code(err))
+	}
+	if !errors.Is(err, errClaudeAccountSuspended) {
+		t.Fatalf("err does not wrap suspended sentinel: %v", err)
+	}
+}
+
+func TestProbeRateLimitMessagesSuspensionReturnsPermissionDenied(t *testing.T) {
+	// Usage endpoint 403s benignly (no suspension signature); the messages
+	// fallback then surfaces the real /v1/messages 403 suspension body.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/oauth/usage":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"permission_error","message":"OAuth token does not meet scope requirement user:profile"}}`))
+		case "/v1/messages":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"permission_error","message":"Your organization has disabled Claude subscription access for Claude Code"}}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	s := &Server{logger: zerolog.Nop(), httpClient: srv.Client(), usageURL: srv.URL + "/api/oauth/usage", messagesURL: srv.URL + "/v1/messages"}
+	resp, err := s.ProbeRateLimit(context.Background(), &bossanovav1.ProbeRateLimitRequest{
+		CredentialEnv: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "suspended-token"},
+	})
+	if err == nil {
+		t.Fatal("ProbeRateLimit err = nil, want suspension error from messages fallback")
+	}
+	if resp != nil {
+		t.Fatalf("ProbeRateLimit resp = %#v, want nil on suspension", resp)
+	}
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("status.Code = %v, want PermissionDenied", status.Code(err))
+	}
+	if !errors.Is(err, errClaudeAccountSuspended) {
+		t.Fatalf("err does not wrap suspended sentinel: %v", err)
+	}
+}
+
+func TestProbeRateLimitBenign403BothEndpointsIsNotSuspension(t *testing.T) {
+	// Neither endpoint carries the suspension signature (a plain setup-token
+	// scope refusal on both) — must degrade to UNSUPPORTED, never suspension.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"permission_error","message":"OAuth token does not meet scope requirement user:profile"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	s := &Server{logger: zerolog.Nop(), httpClient: srv.Client(), usageURL: srv.URL + "/api/oauth/usage", messagesURL: srv.URL + "/v1/messages"}
+	resp, err := s.ProbeRateLimit(context.Background(), &bossanovav1.ProbeRateLimitRequest{
+		CredentialEnv: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "setup-token"},
+	})
+	if err != nil {
+		t.Fatalf("ProbeRateLimit err = %v, want benign fall-through", err)
+	}
+	if got := resp.GetStatus().GetStatus(); got != bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_UNSUPPORTED {
+		t.Fatalf("status = %v, want UNSUPPORTED for benign 403", got)
+	}
+}
+
 func TestProbeRateLimitMessagesFallbackUnauthorizedReturnsAuthError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

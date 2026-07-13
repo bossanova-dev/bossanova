@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "telemetry",
+    srcs = [
+        "client.go",
+        "events.go",
+    ],
+    importpath = "github.com/recurser/bossalib/telemetry",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/config",
+        "@com_github_posthog_posthog_go//:posthog-go",
+        "@com_github_rs_zerolog//log",
+    ],
+)
+
+go_test(
+    name = "telemetry_test",
+    srcs = ["client_test.go"],
+    embed = [":telemetry"],
+    deps = [
+        "//lib/bossalib/config",
+        "@com_github_posthog_posthog_go//:posthog-go",
+        "@com_github_rs_zerolog//:zerolog",
+        "@com_github_rs_zerolog//log",
+    ],
+)

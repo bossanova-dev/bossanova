@@ -58,6 +58,10 @@ function runScript(repoDir, args = [], pathOverride = MINIMAL_PATH) {
         HOME: process.env.HOME ?? '/tmp',
         PATH: pathOverride,
       },
+      // Capture stderr onto the result instead of letting execFileSync echo the
+      // script's diagnostics (e.g. git's "fatal: ambiguous argument
+      // origin/main...HEAD" on the missing-base-ref path) to the parent.
+      stdio: ['ignore', 'pipe', 'pipe'],
     })
     return { code: 0, stdout, stderr: '' }
   } catch (err) {

@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "cronutil",
+    srcs = ["cronutil.go"],
+    importpath = "github.com/recurser/bossalib/cronutil",
+    visibility = ["//visibility:public"],
+    deps = ["@com_github_robfig_cron_v3//:cron"],
+)
+
+go_test(
+    name = "cronutil_test",
+    srcs = ["cronutil_test.go"],
+    embed = [":cronutil"],
+)

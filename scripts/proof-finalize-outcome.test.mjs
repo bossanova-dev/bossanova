@@ -14,6 +14,11 @@ import {
   softenTuiExit,
   surfaceLabel,
 } from './proof-finalize-outcome.mjs'
+import { silenceConsole } from './quiet-test-console.mjs'
+
+// Silence the code-under-test console output (finalize manifest JSON dumps +
+// DEGRADED warnings) so a passing run stays quiet. See quiet-test-console.mjs.
+silenceConsole()
 
 test('classifyRunOutcome: passed + media → not degraded, no reason', () => {
   assert.deepEqual(classifyRunOutcome({ verdict: 'passed', hasMedia: true, noSurface: false }), {
@@ -207,6 +212,53 @@ test('softenTuiExit: soft=false is a no-op (no softened flag, aggregate unchange
   const out = softenTuiExit(input, { soft: false })
   assert.deepEqual(out, input)
   assert.equal(aggregateExitCode(out), 1)
+})
+
+// ── BOS-354: `tui-truncated` is a neutral, exit-0 deferral ────────────────────
+
+test('classifySurfaceOutcomes: TUI reasonCode tui-truncated (hasFailure:false) → deferred, verbatim code', () => {
+  const out = classifySurfaceOutcomes([
+    {
+      surface: 'tui',
+      hasFailure: false,
+      noSurface: false,
+      reasonCode: 'tui-truncated',
+      captureShapes: [],
+    },
+  ])
+  assert.deepEqual(out, [
+    { surface: 'tui', outcome: 'deferred', reasonCode: 'tui-truncated', error: null },
+  ])
+})
+
+test('surfaceExitContribution/aggregateExitCode: tui-truncated → 0 (neutral, never exit-1 on time alone)', () => {
+  assert.equal(
+    aggregateExitCode([{ surface: 'tui', outcome: 'deferred', reasonCode: 'tui-truncated' }]),
+    0,
+  )
+})
+
+test('aggregateExitCode: passed web + tui-truncated → 0 (partial success neutral)', () => {
+  const perSurface = classifySurfaceOutcomes([
+    passedRun('web'),
+    syntheticDeferred('tui', 'tui-truncated'),
+  ])
+  assert.deepEqual(perSurface, [
+    { surface: 'web', outcome: 'passed', reasonCode: null, error: null },
+    { surface: 'tui', outcome: 'deferred', reasonCode: 'tui-truncated', error: null },
+  ])
+  assert.equal(aggregateExitCode(perSurface), 0)
+})
+
+test('softenTuiExit: a tui-truncated entry is left untouched (already neutral, not softenable)', () => {
+  const input = [{ surface: 'tui', outcome: 'deferred', reasonCode: 'tui-truncated' }]
+  const out = softenTuiExit(input, { soft: true })
+  assert.deepEqual(
+    out,
+    input,
+    'no softened flag added — only agent-incomplete/scenario-missing are softenable',
+  )
+  assert.equal(aggregateExitCode(out), 0)
 })
 
 test('surfaceLabel: tui → TUI, web → Web, other → capitalized', () => {

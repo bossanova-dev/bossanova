@@ -365,6 +365,43 @@ func TestCompute(t *testing.T) {
 			want: Output{Label: "initializing", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
 		},
 
+		// --- DisplayMerging (merging) ---
+		{
+			name: "merging shows merging with spinner and info intent",
+			in: Input{
+				Session: &pb.Session{DisplayMerging: true},
+			},
+			want: Output{Label: "merging", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
+		},
+		{
+			name: "merging wins over a passing PR display status",
+			in: Input{
+				Session: &pb.Session{
+					DisplayMerging: true,
+					DisplayStatus:  pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+				},
+			},
+			want: Output{Label: "merging", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
+		},
+		{
+			name: "merging wins over an approved PR display status",
+			in: Input{
+				Session: &pb.Session{
+					DisplayMerging: true,
+					DisplayStatus:  pb.DisplayStatus_DISPLAY_STATUS_APPROVED,
+				},
+			},
+			want: Output{Label: "merging", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
+		},
+		{
+			name: "chat QUESTION wins over merging",
+			in: Input{
+				Session:    &pb.Session{DisplayMerging: true},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_QUESTION,
+			},
+			want: Output{Label: "? question", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+
 		// --- Orphaned (honest green: terminal dead run never surfaces as green) ---
 		{
 			name: "orphaned wins over a draft PR display status",

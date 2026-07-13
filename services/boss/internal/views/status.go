@@ -49,14 +49,6 @@ func renderArchivingStatus(sp spinner.Model) string {
 	return styleStatusWarning.Render(sp.View() + "archiving")
 }
 
-// renderMergingStatus renders the optimistic "merging" status with an animated
-// spinner (blue/info intent), used while a PR merge is in flight and across the
-// navigation that follows it. Mirrors renderArchivingStatus but uses the
-// transitional/progress info color instead of the archiving warning color.
-func renderMergingStatus(sp spinner.Model) string {
-	return styleStatusInfo.Render(sp.View() + "merging")
-}
-
 // styledPRStatus returns a styled label for a PR display status.
 // Returns "" for unspecified/unknown statuses.
 func styledPRStatus(sess *pb.Session, sp spinner.Model) string {

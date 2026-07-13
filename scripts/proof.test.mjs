@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { silenceConsole } from './quiet-test-console.mjs'
 
 import {
   __resetTuiAgentBridgeCache,
@@ -39,6 +40,10 @@ import {
   validateSurfaceRun,
 } from './proof-agent-drivers.mjs'
 import { runTuiWithReplayFallback } from './proof-tui-agent.mjs'
+
+// Silence the code-under-test's console output (DEGRADED warnings + run-file
+// manifest JSON dumps) so a passing run stays quiet. See quiet-test-console.mjs.
+silenceConsole()
 
 // ── evaluateRunPreflight (BOS-138 hard preflight) ─────────────────────────────
 

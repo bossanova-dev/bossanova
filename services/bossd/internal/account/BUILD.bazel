@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "account",
+    srcs = [
+        "binding.go",
+        "labels.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/account",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//services/bossd/internal/rotation",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "account_test",
+    srcs = ["binding_test.go"],
+    embed = [":account"],
+    deps = ["@com_github_rs_zerolog//:zerolog"],
+)

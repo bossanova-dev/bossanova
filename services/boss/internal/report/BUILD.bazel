@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "report",
+    srcs = ["collect.go"],
+    importpath = "github.com/recurser/boss/internal/report",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/buildinfo",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/log",
+        "//services/boss/internal/client",
+        "@com_github_rs_zerolog//log",
+    ],
+)
+
+go_test(
+    name = "report_test",
+    srcs = ["collect_test.go"],
+    embed = [":report"],
+    deps = [
+        "//lib/bossalib/buildinfo",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/internal/client",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

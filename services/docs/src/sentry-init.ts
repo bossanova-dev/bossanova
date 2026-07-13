@@ -21,6 +21,12 @@ const reBearer = /(\bBearer\s+)[A-Za-z0-9._~+/-]{20,}/gi
 const reEmail = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
 const reEnvSecret = /((?:api[_-]?key|secret|token|password|passwd)\s*[=:]\s*)\S+/gi
 
+// Third-party denylist: drop Cloudflare Web Analytics beacon noise (BOS-352).
+// The beacon is auto-injected at the Cloudflare Pages edge and is not our code.
+const reBeaconScript = /beacon\.min\.js/i
+const reCloudflareInsights = /static\.cloudflareinsights\.com/i
+const thirdPartyNoisePatterns = [reBeaconScript, reCloudflareInsights]
+
 export function scrub(input: string): string {
   if (input === '') {
     return input
@@ -45,12 +51,45 @@ export function initSentry(opts: { env?: string; release?: string } = {}): void 
     tracesSampleRate: 0,
     sendDefaultPii: false,
     integrations: [],
-    beforeSend(event) {
+    beforeSend(event): Sentry.ErrorEvent | null {
+      if (isThirdPartyNoise(event)) {
+        return null
+      }
       scrubEvent(event)
       return event
     },
   })
   Sentry.setTag('app', 'docs')
+}
+
+// isThirdPartyNoise reports whether the event's crashing (deepest/most-recent)
+// stack frame originates from a denylisted third-party bundle. Only the
+// primary exception's deepest frame is matched, mirroring Sentry denyUrls
+// semantics: exception.values is ordered oldest-cause-first with the crashing
+// exception last, and matching chained causes or shallower frames could drop
+// a first-party error that merely passes through a third-party callback.
+// Fails open: events without a parseable stacktrace are kept.
+function isThirdPartyNoise(event: unknown): boolean {
+  const eventRecord = asRecord(event)
+  if (!eventRecord) {
+    return false
+  }
+
+  const values = asArray(asRecord(eventRecord.exception)?.values)
+  const primary = asRecord(values[values.length - 1])
+  const frames = asArray(asRecord(primary?.stacktrace)?.frames)
+  const deepest = asRecord(frames[frames.length - 1])
+  if (!deepest) {
+    return false
+  }
+  // Match filename OR abs_path: browser SDKs may relativize filename (or
+  // emit '<anonymous>') while abs_path keeps the full third-party URL.
+  const locations = [deepest.filename, deepest.abs_path].filter(
+    (candidate): candidate is string => typeof candidate === 'string',
+  )
+  return locations.some((location) =>
+    thirdPartyNoisePatterns.some((pattern) => pattern.test(location)),
+  )
 }
 
 function scrubEvent(event: unknown): void {

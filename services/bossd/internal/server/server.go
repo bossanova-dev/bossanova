@@ -99,9 +99,13 @@ type Server struct {
 	cronScheduler  *cron.Scheduler
 	chatStatus     *status.Tracker
 	displayTracker *status.DisplayTracker
-	repairLease    *status.RepairLeaseManager
-	tmuxPoller     *status.TmuxStatusPoller
-	lifecycle      *session.Lifecycle
+	// prRefresher re-polls a single PR's display status on demand. MergeSession
+	// uses it to repopulate the display tracker on the merge-only path (see the
+	// SetMerging block there). Optional, may be nil in tests / older wiring.
+	prRefresher PRRefresher
+	repairLease *status.RepairLeaseManager
+	tmuxPoller  *status.TmuxStatusPoller
+	lifecycle   *session.Lifecycle
 	// switchAccountFn is the account-switch seam shared by the SwitchSessionAccount
 	// RPC and the SendChatMessage "/boss switch" interception. It defaults to
 	// lifecycle.SwitchAccount (see executeAccountSwitch); tests inject a spy so the
@@ -177,10 +181,14 @@ type Config struct {
 	CheckSnapshots db.CheckSnapshotStore
 	// RotationEvents is the rotation audit store hydrated onto
 	// Session.rotation_events for TUI/web history (BOS-176). Nil-safe.
-	RotationEvents     db.RotationEventStore
-	CronScheduler      *cron.Scheduler
-	ChatStatus         *status.Tracker
-	DisplayTracker     *status.DisplayTracker
+	RotationEvents db.RotationEventStore
+	CronScheduler  *cron.Scheduler
+	ChatStatus     *status.Tracker
+	DisplayTracker *status.DisplayTracker
+	// PRRefresher re-polls one PR's display status on demand, repopulating the
+	// display tracker. Satisfied by *session.DisplayPoller. Optional, may be
+	// nil; MergeSession then simply skips the merge-only re-poll.
+	PRRefresher        PRRefresher
 	RepairLease        *status.RepairLeaseManager
 	TmuxPoller         *status.TmuxStatusPoller
 	Lifecycle          *session.Lifecycle
@@ -224,6 +232,15 @@ type AuthNotifier interface {
 // PRAssociationResolver refreshes local session-to-PR links.
 type PRAssociationResolver interface {
 	ReconcileSessions(context.Context, []*models.Session) (int64, error)
+}
+
+// PRRefresher re-polls a single PR's display status on demand, repopulating the
+// display tracker with the live status. It is defined here (rather than
+// importing session) so the server depends only on this narrow surface;
+// *session.DisplayPoller satisfies it. MergeSession uses it to restore the real
+// PR label after clearing a merge-only tracker entry (see the SetMerging block).
+type PRRefresher interface {
+	RefreshPR(ctx context.Context, repoOriginURL string, prNumber int) error
 }
 
 // AccountCredentialStore is the credential-blob plane for accounts. The daemon
@@ -271,6 +288,7 @@ func New(cfg Config) *Server {
 		cronScheduler:  cfg.CronScheduler,
 		chatStatus:     cfg.ChatStatus,
 		displayTracker: cfg.DisplayTracker,
+		prRefresher:    cfg.PRRefresher,
 		repairLease:    cfg.RepairLease,
 		tmuxPoller:     cfg.TmuxPoller,
 		lifecycle:      cfg.Lifecycle,
@@ -1369,6 +1387,7 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 			p.DisplayHasChangesRequested = e.HasChangesRequested
 			p.DisplayIsRepairing = e.IsRepairing
 			p.DisplaySettingUp = e.SettingUp
+			p.DisplayMerging = e.Merging
 			p.PrMergeable = e.Mergeable
 			p.MergeBlock = displayEntryToMergeBlock(e)
 		}
@@ -1476,6 +1495,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 				pbSessions[i].DisplayHasChangesRequested = e.HasChangesRequested
 				pbSessions[i].DisplayIsRepairing = e.IsRepairing
 				pbSessions[i].DisplaySettingUp = e.SettingUp
+				pbSessions[i].DisplayMerging = e.Merging
 				pbSessions[i].PrMergeable = e.Mergeable
 				pbSessions[i].MergeBlock = displayEntryToMergeBlock(e)
 			}
@@ -1839,6 +1859,37 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 	repo, err := s.repos.Get(ctx, sess.RepoID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get repo: %w", err))
+	}
+
+	// Surface the transient blue "merging" display status for the full duration
+	// of the blocking merge (gate + provider merge + verification). scheduleRecompute
+	// is synchronous, so clients see "merging" before any blocking work starts;
+	// the defer clears it on every return path (blocked gate, local/PR merge
+	// success, or any error). Nil-guarded like lifecycle.go's SetSettingUp for
+	// test servers without a display tracker.
+	if s.displayTracker != nil {
+		// Whether a polled PR-status entry already existed. When it did NOT,
+		// SetMerging creates a merge-only entry (zero Status + Merging flag) and
+		// the deferred clear drops it — leaving the tracker with no PR status,
+		// so recompute downgrades the persisted PR label (e.g. "✓ passing") to
+		// the "stopped" fallback. That happens in the post-restart window before
+		// the first display poll. On the merge-only path we re-poll the PR after
+		// clearing so the computer restores the real label instead of the
+		// fallback — most visibly after a failed/blocked merge, where the
+		// session stays active and would otherwise stay downgraded until the
+		// next scheduled poll.
+		hadEntry := s.displayTracker.Get(req.Msg.Id) != nil
+		s.displayTracker.SetMerging(req.Msg.Id, true)
+		defer func() {
+			s.displayTracker.SetMerging(req.Msg.Id, false)
+			if !hadEntry && s.prRefresher != nil && sess.PRNumber != nil {
+				if err := s.prRefresher.RefreshPR(ctx, repo.OriginURL, *sess.PRNumber); err != nil {
+					s.logger.Debug().Err(err).
+						Str("session_id", req.Msg.Id).
+						Msg("merge: refresh pr after merge-only clear failed; next poll will repair")
+				}
+			}
+		}()
 	}
 
 	// Guard against merging a truly red/conflicted/rejected PR, but gate on a

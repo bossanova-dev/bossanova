@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "pluginharness",
+    srcs = ["harness.go"],
+    importpath = "github.com/recurser/bossd/internal/plugin/pluginharness",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//services/bossd/internal/plugin",
+        "@com_github_hashicorp_go_hclog//:go-hclog",
+        "@com_github_hashicorp_go_plugin//:go-plugin",
+    ],
+)

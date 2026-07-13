@@ -27,13 +27,16 @@ import (
 // can assert the last-used bump happens exactly once (and only for bound,
 // rotation-capable accounts).
 type spyStore struct {
-	accounts    map[string]*models.Account
-	getCalls    int
-	updateCalls int
-	usageCalls  int
-	usageSnap   models.UsageSnapshot
-	usageErr    error
-	lastUpdate  db.UpdateAccountParams
+	accounts      map[string]*models.Account
+	getCalls      int
+	updateCalls   int
+	usageCalls    int
+	usageSnap     models.UsageSnapshot
+	usageErr      error
+	lastUpdate    db.UpdateAccountParams
+	suspendCalls  int
+	suspendID     string
+	suspendReason string
 }
 
 func (s *spyStore) List(_ context.Context) ([]*models.Account, error) {
@@ -65,6 +68,13 @@ func (s *spyStore) RecordUsageProbe(_ context.Context, _ string, snap models.Usa
 	if s.usageErr != nil {
 		return s.usageErr
 	}
+	return nil
+}
+
+func (s *spyStore) MarkAccountSuspended(_ context.Context, id string, reason string) error {
+	s.suspendCalls++
+	s.suspendID = id
+	s.suspendReason = reason
 	return nil
 }
 
@@ -485,6 +495,62 @@ func TestMaterializer_RecordUsageProbeReturnsStoreError(t *testing.T) {
 
 	if err := probeCache.RecordUsageProbe(context.Background(), "a1"); err == nil {
 		t.Fatal("RecordUsageProbe error = nil, want store error for caller to log and ignore")
+	}
+}
+
+func TestMaterializer_RecordUsageProbeSuspensionFailsHealth(t *testing.T) {
+	const reason = "account suspended: organization disabled Claude subscription access"
+	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	client := &fakeRotationClient{
+		env:      map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "token"},
+		probeErr: grpcstatus.Error(codes.PermissionDenied, reason),
+	}
+	m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
+	probeCache := m.(interface {
+		RecordUsageProbe(context.Context, string) error
+	})
+
+	// A confirmed suspension is handled (health failed), not surfaced as an error
+	// for the caller to merely log — so the account is proactively sidelined.
+	if err := probeCache.RecordUsageProbe(context.Background(), "a1"); err != nil {
+		t.Fatalf("RecordUsageProbe err = %v, want nil (suspension handled)", err)
+	}
+	if store.suspendCalls != 1 || store.suspendID != "a1" {
+		t.Fatalf("MarkAccountSuspended calls=%d id=%q, want 1/a1", store.suspendCalls, store.suspendID)
+	}
+	if store.suspendReason != reason {
+		t.Errorf("suspend reason = %q, want %q", store.suspendReason, reason)
+	}
+	if store.usageCalls != 0 {
+		t.Errorf("usageCalls = %d, want 0 (no snapshot cached on suspension)", store.usageCalls)
+	}
+}
+
+func TestMaterializer_ProbeUsageSnapshotPreservesGRPCStatusVerbatim(t *testing.T) {
+	const reason = "account suspended: organization disabled Claude subscription access"
+	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	client := &fakeRotationClient{
+		env:      map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "token"},
+		probeErr: grpcstatus.Error(codes.PermissionDenied, reason),
+	}
+	m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
+	prober := m.(interface {
+		ProbeUsageSnapshot(context.Context, string) (models.UsageSnapshot, error)
+	})
+
+	// The plugin's gRPC-status error must surface verbatim so main.go's rotation
+	// refresh can classify it by code — NOT re-wrapped by fmt.Errorf("plugin
+	// ProbeRateLimit: %w", err), which would still unwrap the code but pollute the
+	// operator-facing reason message with a wrapper prefix.
+	_, err := prober.ProbeUsageSnapshot(context.Background(), "a1")
+	if err == nil {
+		t.Fatal("ProbeUsageSnapshot err = nil, want a PermissionDenied status error")
+	}
+	if got := grpcstatus.Code(err); got != codes.PermissionDenied {
+		t.Fatalf("grpcstatus.Code(err) = %v, want PermissionDenied", got)
+	}
+	if got := grpcstatus.Convert(err).Message(); got != reason {
+		t.Fatalf("status message = %q, want %q (verbatim, not wrapped)", got, reason)
 	}
 }
 

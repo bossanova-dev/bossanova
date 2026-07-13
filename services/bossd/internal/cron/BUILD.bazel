@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "cron",
+    srcs = ["scheduler.go"],
+    importpath = "github.com/recurser/bossd/internal/cron",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/cronutil",
+        "//lib/bossalib/gatecmd",
+        "//lib/bossalib/machine",
+        "//lib/bossalib/models",
+        "//services/bossd/internal/db",
+        "//services/bossd/internal/taskorchestrator",
+        "@com_github_robfig_cron_v3//:cron",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "cron_test",
+    srcs = [
+        "scheduler_test.go",
+        "tick_test.go",
+    ],
+    embed = [":cron"],
+    deps = [
+        "//lib/bossalib/machine",
+        "//lib/bossalib/models",
+        "//services/bossd/internal/db",
+        "//services/bossd/internal/taskorchestrator",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

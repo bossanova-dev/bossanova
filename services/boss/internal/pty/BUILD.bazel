@@ -1,0 +1,39 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "pty",
+    srcs = [
+        "command.go",
+        "filter.go",
+        "manager.go",
+        "question.go",
+        "ringbuffer.go",
+        "select_darwin.go",
+        "select_linux.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/pty",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/statusdetect",
+        "@com_github_creack_pty_v2//:pty",
+        "@org_golang_x_term//:term",
+    ],
+)
+
+go_test(
+    name = "pty_test",
+    srcs = [
+        "all_statuses_test.go",
+        "command_detach_pty_test.go",
+        "command_detach_test.go",
+        "filter_test.go",
+        "manager_test.go",
+        "question_test.go",
+        "ringbuffer_test.go",
+    ],
+    embed = [":pty"],
+    deps = [
+        "@com_github_creack_pty_v2//:pty",
+        "@org_golang_x_term//:term",
+    ],
+)

@@ -13,13 +13,17 @@ import (
 )
 
 type fakeDecisionUsageCache struct {
-	probeCalls  int
-	recordCalls int
-	probeSnap   models.UsageSnapshot
-	probeErr    error
-	recordErr   error
-	accounts    []*models.Account
-	listErr     error
+	probeCalls    int
+	recordCalls   int
+	probeSnap     models.UsageSnapshot
+	probeErr      error
+	recordErr     error
+	accounts      []*models.Account
+	listErr       error
+	suspendCalls  int
+	suspendID     string
+	suspendReason string
+	suspendErr    error
 }
 
 func (f *fakeDecisionUsageCache) ProbeUsageSnapshot(_ context.Context, _ string) (models.UsageSnapshot, error) {
@@ -40,6 +44,13 @@ func (f *fakeDecisionUsageCache) RecordUsageProbe(_ context.Context, _ string, _
 
 func (f *fakeDecisionUsageCache) List(context.Context) ([]*models.Account, error) {
 	return f.accounts, f.listErr
+}
+
+func (f *fakeDecisionUsageCache) MarkAccountSuspended(_ context.Context, id string, reason string) error {
+	f.suspendCalls++
+	f.suspendID = id
+	f.suspendReason = reason
+	return f.suspendErr
 }
 
 func probedResetForTest(cache *fakeDecisionUsageCache) *time.Time {

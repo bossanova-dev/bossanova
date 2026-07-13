@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "fixtures",
+    srcs = [
+        "fixtures.go",
+        "overlay.go",
+        "presets.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/fixtures",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_test(
+    name = "fixtures_test",
+    srcs = [
+        "fixtures_test.go",
+        "overlay_test.go",
+        "presets_test.go",
+    ],
+    embed = [":fixtures"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

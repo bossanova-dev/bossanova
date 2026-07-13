@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sqlutil",
+    srcs = [
+        "helpers.go",
+        "id.go",
+        "sqlite.go",
+    ],
+    importpath = "github.com/recurser/bossalib/sqlutil",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "sqlutil_test",
+    srcs = [
+        "helpers_test.go",
+        "id_test.go",
+        "sqlite_test.go",
+    ],
+    embed = [":sqlutil"],
+)

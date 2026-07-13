@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "authlock",
+    srcs = ["authlock.go"],
+    importpath = "github.com/recurser/bossalib/authlock",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/appstate",
+        "//lib/bossalib/config",
+        "@com_github_gofrs_flock//:flock",
+    ],
+)
+
+go_test(
+    name = "authlock_test",
+    srcs = ["authlock_test.go"],
+    embed = [":authlock"],
+    deps = [
+        "//lib/bossalib/appstate",
+        "//lib/bossalib/config",
+    ],
+)

@@ -1,0 +1,77 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "testharness",
+    srcs = [
+        "harness.go",
+        "mock_agent.go",
+        "mock_agent_runner.go",
+        "mock_git.go",
+        "mock_vcs.go",
+        "state_observer.go",
+        "stub_provider.go",
+        "tmux_fakes.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/testharness",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//lib/bossalib/machine",
+        "//lib/bossalib/migrate",
+        "//lib/bossalib/safego",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/accountcred",
+        "//services/bossd/internal/agent",
+        "//services/bossd/internal/db",
+        "//services/bossd/internal/git",
+        "//services/bossd/internal/plugin",
+        "//services/bossd/internal/server",
+        "//services/bossd/internal/session",
+        "//services/bossd/internal/status",
+        "//services/bossd/internal/tmux",
+        "//services/bossd/internal/upstream",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "testharness_test",
+    srcs = [
+        "e2e_cron2_test.go",
+        "e2e_cron_test.go",
+        "e2e_lifecycle_test.go",
+        "e2e_record_chat_tmux_test.go",
+        "e2e_resilience_test.go",
+        "e2e_session_deleted_test.go",
+        "e2e_session_env_test.go",
+        "e2e_start_tmux_chat_start_error_test.go",
+        "e2e_webhook_realtime_test.go",
+        "harness_test.go",
+        "seams_test.go",
+    ],
+    embed = [":testharness"],
+    tags = [
+        "manual",  # keep: excluded from bazel test — e2e bundle spawns real tmux/processes
+        "requires-tmux",  # keep: real-tmux e2e + reads out-of-module ../../../../plugins testdata
+    ],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//lib/bossalib/machine",
+        "//lib/bossalib/models",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/agent",
+        "//services/bossd/internal/cron",
+        "//services/bossd/internal/db",
+        "//services/bossd/internal/git",
+        "//services/bossd/internal/plugin",
+        "//services/bossd/internal/session",
+        "//services/bossd/internal/taskorchestrator",
+        "//services/bossd/internal/tmux",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

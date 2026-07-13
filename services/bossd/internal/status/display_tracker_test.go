@@ -367,3 +367,55 @@ func TestSetPreservesSettingUp(t *testing.T) {
 		t.Fatalf("Set() clobbered SettingUp; got %+v", e)
 	}
 }
+
+func TestSetMerging(t *testing.T) {
+	tr := NewDisplayTracker()
+	tr.SetMerging("s1", true)
+	if e := tr.Get("s1"); e == nil || !e.Merging {
+		t.Fatalf("expected Merging=true, got %+v", e)
+	}
+	// Clearing the flag on an entry that exists ONLY because of the transient
+	// merging flag (no polled PR status) must remove the entry entirely, so a
+	// zero-Status placeholder does not linger and mis-read a passing PR.
+	tr.SetMerging("s1", false)
+	if e := tr.Get("s1"); e != nil {
+		t.Fatalf("expected merging-only entry removed on clear, got %+v", e)
+	}
+}
+
+func TestSetMergingClearKeepsRealStatus(t *testing.T) {
+	tr := NewDisplayTracker()
+	tr.SetMerging("s1", true)
+	// A PR poll lands a real status while the merge is in flight.
+	tr.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
+	tr.SetMerging("s1", false)
+	e := tr.Get("s1")
+	if e == nil {
+		t.Fatalf("entry with real PR status must not be removed on clear")
+	}
+	if e.Merging {
+		t.Fatalf("expected Merging cleared, got %+v", e)
+	}
+	if e.Status != vcs.DisplayStatusPassing {
+		t.Fatalf("expected Status preserved as Passing, got %+v", e)
+	}
+}
+
+func TestSetMergingClearWhenAbsentNoOp(t *testing.T) {
+	tr := NewDisplayTracker()
+	// Clearing when no entry exists must not fabricate a placeholder entry.
+	tr.SetMerging("s1", false)
+	if e := tr.Get("s1"); e != nil {
+		t.Fatalf("clear-when-absent fabricated an entry: %+v", e)
+	}
+}
+
+func TestSetPreservesMerging(t *testing.T) {
+	tr := NewDisplayTracker()
+	tr.SetMerging("s1", true)
+	// A PR display poll update mid-merge must not clobber the Merging flag.
+	tr.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
+	if e := tr.Get("s1"); e == nil || !e.Merging {
+		t.Fatalf("Set() clobbered Merging; got %+v", e)
+	}
+}

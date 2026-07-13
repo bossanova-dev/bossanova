@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "displaystatus",
+    srcs = ["compute.go"],
+    importpath = "github.com/recurser/bossalib/displaystatus",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/sessionreason",
+    ],
+)
+
+go_test(
+    name = "displaystatus_test",
+    srcs = ["compute_test.go"],
+    embed = [":displaystatus"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/sessionreason",
+    ],
+)

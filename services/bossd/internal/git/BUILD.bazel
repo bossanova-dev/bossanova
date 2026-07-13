@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "git",
+    srcs = ["worktree.go"],
+    importpath = "github.com/recurser/bossd/internal/git",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/setupscript",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "git_test",
+    srcs = ["worktree_test.go"],
+    embed = [":git"],
+    deps = ["@com_github_rs_zerolog//:zerolog"],
+)

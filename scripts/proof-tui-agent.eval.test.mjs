@@ -43,6 +43,11 @@ import {
   runEval,
   sceneTimingsStrictlyIncreasing,
 } from './proof-tui-agent.eval.mjs'
+import { silenceConsole } from './quiet-test-console.mjs'
+
+// Silence the code-under-test console output (finalize manifest JSON dumps +
+// DEGRADED warnings) so a passing run stays quiet. See quiet-test-console.mjs.
+silenceConsole()
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

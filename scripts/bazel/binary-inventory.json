@@ -1,0 +1,27 @@
+{
+  "services": {
+    "boss": "//services/boss/cmd:cmd",
+    "bossd": "//services/bossd/cmd:cmd",
+    "bosso": "//services/bosso/cmd:cmd",
+    "mcp": "//services/mcp/cmd:cmd",
+    "mcp-gateway": "//services/mcp-gateway/cmd:cmd"
+  },
+  "auxiliary": {
+    "proof-tui-agent": "//services/boss/cmd/proof-tui-agent:proof-tui-agent",
+    "apiversioncheck": "//services/bossd/cmd/apiversioncheck:apiversioncheck",
+    "streamprobe": "//services/bossd/cmd/streamprobe:streamprobe"
+  },
+  "plugins": {
+    "bossd-plugin-claude": "//plugins/bossd-plugin-claude:bossd-plugin-claude",
+    "bossd-plugin-codex": "//plugins/bossd-plugin-codex:bossd-plugin-codex",
+    "bossd-plugin-dependabot": "//plugins/bossd-plugin-dependabot:bossd-plugin-dependabot",
+    "bossd-plugin-linear": "//plugins/bossd-plugin-linear:bossd-plugin-linear",
+    "bossd-plugin-repair": "//plugins/bossd-plugin-repair:bossd-plugin-repair",
+    "bossd-plugin-sentry": "//plugins/bossd-plugin-sentry:bossd-plugin-sentry",
+    "bossd-plugin-stub-runner": "//plugins/bossd-plugin-stub-runner:bossd-plugin-stub-runner"
+  },
+  "test_fixtures": {
+    "stub-claude": "//services/bossd/internal/server/testdata/stub-claude:stub-claude",
+    "bossd-plugin-linear-e2e": "//plugins/bossd-plugin-linear:bossd-plugin-linear-e2e"
+  }
+}

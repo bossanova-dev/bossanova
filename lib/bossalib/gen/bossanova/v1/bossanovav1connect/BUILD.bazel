@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "bossanovav1connect",
+    srcs = [
+        "daemon.connect.go",
+        "host_service.connect.go",
+        "orchestrator.connect.go",
+        "plugin.connect.go",
+    ],
+    importpath = "github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_connectrpc_connect//:connect",
+    ],
+)

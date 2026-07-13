@@ -1,20 +1,29 @@
-.PHONY: all build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format format-affected generate gen-skill kill kill-all lint vendor-toolbox vendor-toolbox-check \
-	buf-check-version lint-check-version lint-docs lint-scripts \
+.PHONY: all all-full build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format format-affected format-all generate gen-skill kill kill-all lint lint-all lint-go-fmt vendor-toolbox vendor-toolbox-check \
+	buf-check-version deps-golangci lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
 	debt-knip \
 	plugins plugins-all proof proof-plan proof-test proof-tui-prebuild readme-gifs release release-codex-check \
-	setup-worktree split stage-release test test-affected test-full test-profile test-race test-smoke test-web \
-	test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
+	setup-worktree split stage-release test test-affected test-all test-full test-profile test-race test-smoke test-web \
+	test-native-ledger test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
 	test-no-inline-stop-hooks test-public-mirror test-readme test-scripts \
+	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
 	build-mcp test-mcp lint-mcp \
 	deploy-staging deploy-production db-staging db-production connect-staging connect-production verify-staging verify-production
 
-## all: Clean, generate protos, format, and build all binaries (default target)
-all:
+## all: Fast affected check (default target) — lint + test only the affected/changed
+## code. Fast is the default and exhaustive is opt-in (BOS-371): the old exhaustive
+## clean+generate+format+build (~60s+, a full cross-platform rebuild that also
+## reformats every doc) now lives under `make all-full`. Build binaries with
+## `make build` / `make plugins`.
+all: lint test
+
+## all-full: Exhaustive clean, generate protos, format everything, and build all
+## binaries — the previous default `make`. Slow; use in release prep, not the edit loop.
+all-full:
 	$(MAKE) clean
 	$(MAKE) generate
-	$(MAKE) format
+	$(MAKE) format-all
 	$(MAKE) build plugins build-all plugins-all
 
 # Pinned golangci-lint version. Must match the version used in CI
@@ -43,6 +52,25 @@ DEBT_CYCLO_THRESHOLD ?= 15
 
 # Binaries output to bin/
 BIN_DIR := bin
+
+# Bazel facade plumbing (BOS-339). `make test` and friends delegate to
+# `bazel test //...` for content-addressed caching, then run the native ledger
+# step for the bazel-`manual` targets today's loop still covers.
+#
+# The Makefile is mirrored to a public repo that has NO working Bazel workspace,
+# so the facade keeps a bazel-absent fallback: when `bazel` is not on PATH OR
+# `BOSS_NO_BAZEL` is set, the test targets fall back to the legacy native
+# per-module `go test` loop. BAZEL_USABLE is computed once at parse time.
+BAZEL ?= bazel
+# $(BOSS_NO_BAZEL) (not $$BOSS_NO_BAZEL) so a command-line override
+# `make BOSS_NO_BAZEL=1 ...` is honored — make imports env vars as make vars too,
+# so this covers both the exported-env and the command-line-override cases.
+BAZEL_USABLE := $(shell { [ -z "$(BOSS_NO_BAZEL)" ] && command -v $(BAZEL) >/dev/null 2>&1; } && echo 1)
+# RACE=1 (CI / `make test-race`) maps to --config=race on every bazel invocation.
+BAZEL_TEST_FLAGS := --test_output=errors
+ifeq ($(RACE),1)
+BAZEL_TEST_FLAGS += --config=race
+endif
 
 # Auto-detect Go modules (works in both private and public repos)
 MODULES := $(patsubst %/go.mod,%,$(wildcard lib/*/go.mod services/*/go.mod plugins/*/go.mod))
@@ -154,7 +182,9 @@ deps:
 	@# buf is intentionally NOT installed via brew here — brew can't pin to an
 	@# exact version, and the pin ($(BUF_VERSION)) is enforced by
 	@# buf-check-version. buf is installed from a GitHub release below instead.
-	@for pkg in go jq gh pnpm; do \
+	@# bazelisk provides the `bazel` launcher the test facade delegates to (BOS-339);
+	@# `command -v bazelisk` is the right presence check (brew installs it as bazelisk).
+	@for pkg in go jq gh pnpm bazelisk; do \
 		if command -v $$pkg >/dev/null 2>&1; then \
 			echo "    $$pkg: already installed"; \
 		else \
@@ -207,9 +237,9 @@ deps:
 		echo "    $$pkg"; \
 		go install "$$pkg" || echo "    (warning: failed to install $$pkg; make debt-* will fetch it on demand)"; \
 	done
-	@echo "==> Done. Run 'make' to build."
+	@echo "==> Done. Run 'make build' to build binaries ('make' is now a fast affected lint+test check; 'make all-full' is the full rebuild)."
 
-## setup-worktree: Copy gitignored local files (.env, .node-version, .config, .compound-engineering/config.local.yaml) from the main repo into a new worktree (for bossanova setup-script)
+## setup-worktree: Copy gitignored local files (.env, .node-version, .bazelrc.user, .config, .compound-engineering/config.local.yaml) from the main repo into a new worktree (for bossanova setup-script)
 setup-worktree:
 	@if [ -z "$$REPO_DIR" ] || [ -z "$$WORKTREE_DIR" ]; then \
 		echo "setup-worktree must be invoked by bossanova (REPO_DIR and WORKTREE_DIR required)"; \
@@ -220,6 +250,15 @@ setup-worktree:
 		echo "Copied .env into $$WORKTREE_DIR"; \
 	else \
 		echo "No .env in $$REPO_DIR — skipping"; \
+	fi
+	@# Propagate the gitignored per-worktree BuildBuddy remote-cache config
+	@# (.bazelrc.user is %workspace%-relative, so each worktree needs its own).
+	@# Copying between local dirs keeps the API key out of git (BOS-345).
+	@if [ -f "$$REPO_DIR/.bazelrc.user" ]; then \
+		cp "$$REPO_DIR/.bazelrc.user" "$$WORKTREE_DIR/.bazelrc.user"; \
+		echo "Copied .bazelrc.user into $$WORKTREE_DIR"; \
+	else \
+		echo "No .bazelrc.user in $$REPO_DIR — skipping (disk-cache only)"; \
 	fi
 	@if [ -f "$$REPO_DIR/.node-version" ]; then \
 		cp "$$REPO_DIR/.node-version" "$$WORKTREE_DIR/.node-version"; \
@@ -287,6 +326,15 @@ setup-worktree:
 	@if command -v direnv >/dev/null 2>&1 && { [ -f "$$WORKTREE_DIR/.envrc" ] || [ -f "$$WORKTREE_DIR/.env" ]; }; then \
 		( cd "$$WORKTREE_DIR" && direnv allow ) || echo "direnv allow failed (non-fatal)"; \
 	fi
+	@# Non-fatal bazel presence check (BOS-339). The `make test` facade delegates to
+	@# `bazel test //...`, but worktree provisioning must never fail when Homebrew /
+	@# bazelisk is absent (e.g. the public mirror has no Bazel workspace) — `make test`
+	@# falls back to the native per-module `go test` loop in that case. Warn only.
+	@if command -v bazel >/dev/null 2>&1; then \
+		echo "bazel available ($$(bazel --version 2>/dev/null || echo 'version unknown')) — make test uses the cached bazel loop"; \
+	else \
+		echo "bazel not found on PATH — make test will fall back to the native go test loop (run 'make deps' to install bazelisk)"; \
+	fi
 
 ## web-deps: Install web dependencies (needed for protoc-gen-es plugin)
 $(WEB_DEPS_STAMP): services/web/package.json pnpm-lock.yaml
@@ -318,7 +366,10 @@ endif
 
 $(GEN_STAMP): $(GEN_DEPS)
 ifneq ($(shell command -v buf 2>/dev/null),)
-	rm -rf lib/bossalib/gen
+	# Remove buf's generated Go output (stale files from renamed/removed protos) but
+	# preserve committed Gazelle BUILD.bazel package files, which buf does not own —
+	# `rm -rf lib/bossalib/gen` would delete them and trip the generate drift gate.
+	find lib/bossalib/gen -type f ! -name 'BUILD.bazel' -delete 2>/dev/null || true
 	buf generate
 	@changed_go=$$(git diff --name-only -- lib/bossalib/gen | grep '\.go$$' || true); \
 	if [ -n "$$changed_go" ]; then \
@@ -371,16 +422,37 @@ $(BIN_DIR)/bossd-plugin-%: $(GEN_STAMP)
 # linking so the plugin binary and the boss CLI ship identical bytes.
 $(BIN_DIR)/bossd-plugin-claude: copy-skills
 
-## test: Run tests across all modules (generates protos first if needed)
-test: $(GEN_STAMP) copy-skills codex-skills-check vendor-toolbox-check
+## test-native-ledger: run ledger rows whose disposition is default-run (today-parity).
+## These are the bazel-`manual` targets today's `make test` still had to cover
+## natively; run after `bazel test //...`. RACE=1 injects -race into each command.
+test-native-ledger:
+	@node scripts/bazel/run-ledger.mjs --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+
+## test: Fast affected test (default) — runs only the tests selected for the files
+## changed on this branch (test-affected; falls back to test-smoke when nothing maps).
+## Fast is the default (BOS-371); the exhaustive whole-graph suite is `make test-all`,
+## which CI/release runs.
+test: test-affected
+
+## test-all: Run tests across all modules (generates protos first if needed). Was
+## `make test`. Delegates the Go module loop to `bazel test //...` (cached) + the
+## native ledger step; falls back to the legacy per-module loop when bazel is
+## unavailable (BOSS_NO_BAZEL set or not on PATH — keeps the public mirror green).
+test-all: $(GEN_STAMP) copy-skills codex-skills-check vendor-toolbox-check
 	$(MAKE) test-scripts
 	$(MAKE) test-readme
 	$(MAKE) test-no-inline-stop-hooks
 	$(MAKE) test-public-mirror
+ifeq ($(BAZEL_USABLE),1)
+	$(BAZEL) test $(BAZEL_TEST_FLAGS) //...
+	$(MAKE) test-native-ledger
+else
+	@echo "==> bazel unavailable (BOSS_NO_BAZEL set or bazel not on PATH) — native module loop (public-mirror fallback)"
 	@for mod in $(MODULES); do \
 		echo "==> Testing $$mod"; \
-		$(MAKE) -C $$mod test; \
+		$(MAKE) -C $$mod test-all; \
 	done
+endif
 	@if [ -d services/docs ]; then \
 		echo "==> Testing services/docs"; \
 		$(MAKE) -C services/docs test; \
@@ -391,8 +463,10 @@ ifneq ($(wildcard services/web/package.json),)
 	$(MAKE) test-web
 endif
 
+## test-full: Alias for the exhaustive suite (`make test-all`). Kept for the agent
+## command ladder / docs that name the "full" suite explicitly.
 test-full:
-	$(MAKE) test
+	$(MAKE) test-all
 
 ifneq ($(wildcard services/web/package.json),)
 ## test-web: Run web+marketing tests/lint/typecheck through turbo (cached).
@@ -403,12 +477,19 @@ test-web: $(WEB_DEPS_STAMP)
 endif
 
 ## test-smoke: Fast agent loop. No coverage, no race, no forced cache bypass.
+## Delegates to the cached bazel loop under `-test.short`; falls back to the native
+## `-short` module loop when bazel is unavailable (public-mirror fallback).
 test-smoke: $(GEN_STAMP) copy-skills codex-skills-check vendor-toolbox-check
 	node --test scripts/bs-*-skill.test.mjs
-	$(MAKE) -C lib/bossalib test-fast GO_TEST_PACKAGES="./config ./cronutil ./displaystatus ./sessionreason ./statusdetect"
-	$(MAKE) -C services/boss test-fast GO_TEST_PACKAGES="./internal/agent ./internal/auth ./internal/client ./internal/preflight"
-	$(MAKE) -C services/bossd test-fast GO_TEST_PACKAGES="./internal/agent ./internal/cron ./internal/mergepolicy ./internal/status ./internal/tmux"
-	$(MAKE) -C services/bosso test-fast GO_TEST_PACKAGES="./internal/auth ./internal/config ./internal/routing"
+ifeq ($(BAZEL_USABLE),1)
+	$(BAZEL) test $(BAZEL_TEST_FLAGS) --test_arg=-test.short //...
+else
+	@echo "==> bazel unavailable — native -short module loop (public-mirror fallback)"
+	@for mod in $(MODULES); do \
+		echo "==> Smoke-testing $$mod"; \
+		$(MAKE) -C $$mod test-fast; \
+	done
+endif
 
 ## test-profile: Run full Go modules with JSON output and print only the slowest results.
 test-profile:
@@ -453,26 +534,54 @@ format-affected:
 	@node scripts/format-affected.mjs
 
 ## test-race: Run the full test suite under -race (sets RACE=1 for sub-makes).
-## Race detector is opt-in: `make test` skips it; `make test-race` or `RACE=1 make test` enables it.
+## Race detector is opt-in: `make test-all` skips it; `make test-race` or
+## `RACE=1 make test-all` enables it. Runs the exhaustive suite, not the affected one.
 test-race:
-	@$(MAKE) test RACE=1
+	@$(MAKE) test-all RACE=1
 
-## Per-module test targets (no generate dep — CI uses committed gen code)
+## Per-module test targets (no generate dep — CI uses committed gen code).
+## Each delegates to `bazel test //<module>/...` (cached) + that module's
+## default-run ledger rows, with a native-loop fallback when bazel is absent.
 test-bossalib:
-	$(MAKE) -C lib/bossalib test
+ifeq ($(BAZEL_USABLE),1)
+	$(BAZEL) test $(BAZEL_TEST_FLAGS) //lib/bossalib/...
+	@node scripts/bazel/run-ledger.mjs --module lib/bossalib --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+else
+	$(MAKE) -C lib/bossalib test-all
+endif
 
 test-boss:
-	$(MAKE) -C services/boss test
+ifeq ($(BAZEL_USABLE),1)
+	$(BAZEL) test $(BAZEL_TEST_FLAGS) //services/boss/...
+	@node scripts/bazel/run-ledger.mjs --module services/boss --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+else
+	$(MAKE) -C services/boss test-all
+endif
 
 test-bossd:
-	$(MAKE) -C services/bossd test
+ifeq ($(BAZEL_USABLE),1)
+	$(BAZEL) test $(BAZEL_TEST_FLAGS) //services/bossd/...
+	@node scripts/bazel/run-ledger.mjs --module services/bossd --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+else
+	$(MAKE) -C services/bossd test-all
+endif
 
 test-mcp:
-	$(MAKE) -C services/mcp test
+ifeq ($(BAZEL_USABLE),1)
+	$(BAZEL) test $(BAZEL_TEST_FLAGS) //services/mcp/...
+	@node scripts/bazel/run-ledger.mjs --module services/mcp --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+else
+	$(MAKE) -C services/mcp test-all
+endif
 
 ifneq ($(wildcard services/mcp-gateway/go.mod),)
 test-mcp-gateway:
-	$(MAKE) -C services/mcp-gateway test
+ifeq ($(BAZEL_USABLE),1)
+	$(BAZEL) test $(BAZEL_TEST_FLAGS) //services/mcp-gateway/...
+	@node scripts/bazel/run-ledger.mjs --module services/mcp-gateway --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+else
+	$(MAKE) -C services/mcp-gateway test-all
+endif
 endif
 
 ## test-integration-bossd: Run bossd integration tests (requires tmux on PATH; gated by 'integration' build tag)
@@ -481,22 +590,60 @@ test-integration-bossd:
 
 ifneq ($(wildcard services/bosso/go.mod),)
 test-bosso:
-	$(MAKE) -C services/bosso test
+ifeq ($(BAZEL_USABLE),1)
+	$(BAZEL) test $(BAZEL_TEST_FLAGS) //services/bosso/...
+	@node scripts/bazel/run-ledger.mjs --module services/bosso --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+else
+	$(MAKE) -C services/bosso test-all
+endif
 
 test-bosso-scale:
 	cd services/bosso && go test ./internal/loadtest -run TestOrchestratorScaleSmoke -count=1
 endif
 
-# Auto-generate per-plugin test targets from detected modules
+# Auto-generate per-plugin test targets from detected modules. Same bazel-facade
+# pattern as the service modules; plugins have no ledger rows so run-ledger is a
+# no-op for them (kept uniform). Double-$ so the vars survive $(call)/$(eval).
 define define-plugin-test
 test-$(2):
-	$$(MAKE) -C $(1) test
+ifeq ($$(BAZEL_USABLE),1)
+	$$(BAZEL) test $$(BAZEL_TEST_FLAGS) //$(1)/...
+	@node scripts/bazel/run-ledger.mjs --module $(1) --disposition default-run $$(if $$(filter 1,$$(RACE)),--race,)
+else
+	$$(MAKE) -C $(1) test-all
+endif
 endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-test,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
 
 # Plugin claude tests rely on the embedded skill payload — keep it in sync.
 test-claude: copy-skills
+
+## coverage-<module>: native coverage profile (D12 — explicit; the bazel hot loop
+## emits no coverage.out). The module `test-all` target runs `go test` with
+## `-coverprofile=coverage.out` (mk/go-test.mk; BOS-373 — the fast default `test`
+## carries no coverage), so each is just that native exhaustive run.
+coverage-bossalib:
+	$(MAKE) -C lib/bossalib test-all
+
+coverage-boss:
+	$(MAKE) -C services/boss test-all
+
+coverage-bossd:
+	$(MAKE) -C services/bossd test-all
+
+coverage-mcp:
+	$(MAKE) -C services/mcp test-all
+
+ifneq ($(wildcard services/mcp-gateway/go.mod),)
+coverage-mcp-gateway:
+	$(MAKE) -C services/mcp-gateway test-all
+endif
+
+ifneq ($(wildcard services/bosso/go.mod),)
+coverage-bosso:
+	$(MAKE) -C services/bosso test-all
+endif
 
 ## buf-check-version: Fail if an installed buf does not match $(BUF_VERSION).
 ## Soft-passes when buf is absent so the public mirror's bufless path (committed
@@ -514,6 +661,20 @@ buf-check-version:
 		fi; \
 	fi
 
+## deps-golangci: Install ONLY the pinned golangci-lint (no Homebrew/full deps) — for CI lint jobs
+deps-golangci:
+	@# Same pinned install as `make deps`, isolated so lint-only CI runners don't need Homebrew.
+	@gobin=$$(go env GOBIN); [ -z "$$gobin" ] && gobin=$$(go env GOPATH)/bin; \
+	want="$(GOLANGCI_LINT_VERSION)"; \
+	if command -v golangci-lint >/dev/null 2>&1 && \
+	   golangci-lint --version 2>/dev/null | grep -Eq "version (v)?$${want#v}( |$$)"; then \
+		echo "    golangci-lint: $$want already installed"; \
+	else \
+		echo "    golangci-lint: installing $$want..."; \
+		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/$$want/install.sh \
+			| sh -s -- -b "$$gobin" $$want; \
+	fi
+
 ## lint-check-version: Fail if installed golangci-lint does not match $(GOLANGCI_LINT_VERSION)
 lint-check-version:
 	@if ! command -v golangci-lint >/dev/null 2>&1; then \
@@ -528,11 +689,32 @@ lint-check-version:
 		exit 1; \
 	fi
 
-## lint: Run golangci-lint and buf lint (generates protos first if needed)
+## lint: Fast affected lint (default) — buf lint + cached golangci (lint-affected,
+## content-stamp-skipped) + the standalone gofmt/goimports gate + docs lint, with the
+## markdown format check scoped to CHANGED files (lint-docs-affected). Fast is the
+## default (BOS-371); the exhaustive whole-tree markdown pass is `make lint-all`.
 lint: buf-check-version lint-check-version $(GEN_STAMP)
 	buf lint
 	$(MAKE) lint-scripts
 	@node scripts/lint-affected.mjs
+	$(MAKE) lint-go-fmt
+	@if [ -d services/docs ]; then \
+		echo "==> Linting services/docs"; \
+		$(MAKE) -C services/docs lint; \
+	fi
+	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
+		echo "==> Checking changed docs markdown formatting"; \
+		node scripts/lint-docs-affected.mjs; \
+	fi
+
+## lint-all: Exhaustive lint — the same buf/golangci/gofmt/docs gates as `make lint`,
+## but with the whole-tree `prettier --check` over ALL markdown (was `make lint`).
+## CI/release gate.
+lint-all: buf-check-version lint-check-version $(GEN_STAMP)
+	buf lint
+	$(MAKE) lint-scripts
+	@node scripts/lint-affected.mjs
+	$(MAKE) lint-go-fmt
 	@if [ -d services/docs ]; then \
 		echo "==> Linting services/docs"; \
 		$(MAKE) -C services/docs lint; \
@@ -541,6 +723,13 @@ lint: buf-check-version lint-check-version $(GEN_STAMP)
 		echo "==> Checking docs markdown formatting"; \
 		pnpm run lint:docs; \
 	fi
+
+## lint-go-fmt: Cheap standalone whole-tree Go format gate (~1s): gofmt -l + goimports -l.
+## Replaces the golangci `formatters:` block dropped in BOS-371 — golangci re-checked
+## formatting slowly (measured bossd 22s → 7s without it); this closes the same
+## whole-tree drift hole (e.g. `--no-verify` cron commits) far more cheaply.
+lint-go-fmt:
+	@node scripts/check-go-format.mjs
 
 ## Per-module lint targets
 lint-proto:
@@ -711,8 +900,17 @@ $(foreach p,$(PLUGIN_MODULES),$(eval \
 # convenience target in sync with the pattern rule above.
 build-claude: copy-skills
 
-## format: Format Go code (gofmt + golangci-lint), web code, package.json files, and markdown
-format: lint-check-version
+## format: Fast affected format (default) — format only the files changed on this
+## branch (format-affected: gofmt/goimports on changed .go; prettier/biome on changed
+## web/markdown; syncpack when a package.json changed). Fast is the default (BOS-371);
+## the whole-tree format is `make format-all`.
+format:
+	@node scripts/format-affected.mjs
+
+## format-all: Exhaustive whole-tree format — Go (gofmt), web (biome), package.json
+## (syncpack), and ALL markdown (prettier). Slow (was `make format`); CI/release and
+## BOS-372's sweep are the hard gate.
+format-all:
 	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
 		pnpm syncpack format; \
 		pnpm syncpack fix; \

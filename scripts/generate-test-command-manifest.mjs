@@ -10,6 +10,8 @@ const repoRoot = path.resolve(scriptDirectory, '..')
 const moduleRoots = ['lib', 'services', 'plugins']
 
 const defaultRootTargets = [
+  'test',
+  'test-all',
   'test-smoke',
   'test-affected',
   'test-full',
@@ -134,8 +136,9 @@ function renderTable(headers, rows, alignments = []) {
 export function renderManifest({ rootTargets, modules, webTargets = defaultWebTargets }) {
   const ladderRows = [
     ['Fast local confidence', '`make test-smoke`'],
+    ['Default edit-loop (affected)', '`make test`'],
     ['Changed-file selection', '`make test-affected`'],
-    ['Full test suite', '`make test-full`'],
+    ['Full/exhaustive suite', '`make test-all`'],
     ['Race detector pass', '`make test-race`'],
     ['Slow-test profiling', '`make test-profile`'],
   ]

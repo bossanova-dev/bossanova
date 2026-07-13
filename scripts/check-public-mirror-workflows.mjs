@@ -20,20 +20,15 @@ function includesFilenameToken(content, filename) {
   return pattern.test(content)
 }
 
+// BOS-343 consolidated the 13 per-module Go workflows into a private-only
+// bazel.yml. The public mirror does not get Bazel (its go.work omits private
+// modules), so the restored public workflow set is the native Go CI (test-go.yml)
+// plus the shared always-public workflows.
 const requiredPublicWorkflows = [
   '.github/workflows/ci.yml',
-  '.github/workflows/test-boss.yml',
-  '.github/workflows/test-bossd.yml',
-  '.github/workflows/test-scripts.yml',
-  '.github/workflows/test-lib-bossalib.yml',
   '.github/workflows/test-proto.yml',
-  '.github/workflows/test-plugin-claude.yml',
-  '.github/workflows/test-plugin-codex.yml',
-  '.github/workflows/test-plugin-dependabot.yml',
-  '.github/workflows/test-plugin-linear.yml',
-  '.github/workflows/test-plugin-repair.yml',
-  '.github/workflows/test-plugin-sentry.yml',
-  '.github/workflows/test-plugin-stub-runner.yml',
+  '.github/workflows/test-scripts.yml',
+  '.github/workflows/test-go.yml',
 ]
 
 const missing = requiredPublicWorkflows.filter((workflow) => !mirror.includes(workflow))

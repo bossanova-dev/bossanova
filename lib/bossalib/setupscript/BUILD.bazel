@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "setupscript",
+    srcs = ["setupscript.go"],
+    importpath = "github.com/recurser/bossalib/setupscript",
+    visibility = ["//visibility:public"],
+    deps = ["//lib/bossalib/loginshell"],
+)
+
+go_test(
+    name = "setupscript_test",
+    srcs = ["setupscript_test.go"],
+    embed = [":setupscript"],
+    # keep: execs generated setup scripts via a subprocess; the macOS darwin-sandbox
+    # hangs on that nested exec. Runs unsandboxed (still covered). See
+    # docs/solutions/build-systems/bazel-sandbox-patterns.md.
+    tags = ["local"],
+)

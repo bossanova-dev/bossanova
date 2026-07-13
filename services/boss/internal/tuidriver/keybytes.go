@@ -75,10 +75,10 @@ var namedKeys = map[string]string{
 
 // KeyBytes maps a proof key name to the raw bytes to write to the PTY.
 // "ctrl+<a-z>" -> control byte; a single character -> that byte (case
-// preserved). Named keys (case-insensitive) cover enter/return, esc/escape,
-// arrows (up/down/right/left + *arrow aliases), tab, shift+tab (shifttab/
-// backtab), pgup/pgdn (pageup/pagedown), home/end, backspace (bs)/delete (del),
-// and f1-f12. Any other name is an error.
+// preserved). Every other name is looked up case-insensitively in the namedKeys
+// map — enter/esc, the arrows, tab, paging, home/end, backspace, delete, and the
+// function keys, each with its aliases; see namedKeys for the authoritative set.
+// Any name not covered there is an error.
 func KeyBytes(name string) ([]byte, error) {
 	if len(name) == 1 {
 		return []byte{name[0]}, nil

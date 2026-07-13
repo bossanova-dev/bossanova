@@ -17,6 +17,11 @@ import path from 'node:path'
 import { test } from 'node:test'
 
 import { finalizeAgentProof } from './proof-agent-finalize.mjs'
+import { silenceConsole } from './quiet-test-console.mjs'
+
+// Silence the code-under-test console output (finalize manifest JSON dumps +
+// DEGRADED warnings) so a passing run stays quiet. See quiet-test-console.mjs.
+silenceConsole()
 
 const webCap = (status) => ({
   recipeId: 'agent-proof',

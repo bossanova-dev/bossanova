@@ -11,7 +11,7 @@ vi.mock('@sentry/react', () => sentryMock)
 
 import { initSentry, scrub } from './sentry-init'
 
-type BeforeSend = (event: Record<string, unknown>) => Record<string, unknown>
+type BeforeSend = (event: Record<string, unknown>) => Record<string, unknown> | null
 
 function beforeSend(): BeforeSend {
   initSentry()
@@ -171,5 +171,107 @@ describe('beforeSend', () => {
     const threadFrame = event.threads[0].stacktrace.frames[0]
     expect(exceptionFrame.vars).toBeUndefined()
     expect(threadFrame.vars).toBeUndefined()
+  })
+
+  function eventWithFrames(frames: Array<Record<string, unknown>>): Record<string, unknown> {
+    return {
+      exception: {
+        values: [{ stacktrace: { frames } }],
+      },
+    }
+  }
+
+  it('returns null when the deepest frame is beacon.min.js', () => {
+    const event = eventWithFrames([
+      { filename: 'https://docs.bossanova.dev/assets/main.js' },
+      { filename: 'https://example.invalid/beacon.min.js/v4513226cdae' },
+    ])
+
+    expect(beforeSend()(event)).toBeNull()
+  })
+
+  it('returns null when the deepest frame is static.cloudflareinsights.com', () => {
+    const event = eventWithFrames([
+      { filename: 'https://docs.bossanova.dev/assets/main.js' },
+      { filename: 'https://static.cloudflareinsights.com/some/bundle.js' },
+    ])
+
+    expect(beforeSend()(event)).toBeNull()
+  })
+
+  it('returns null when only abs_path of the deepest frame matches the denylist', () => {
+    const event = eventWithFrames([
+      { abs_path: 'https://static.cloudflareinsights.com/beacon.min.js' },
+    ])
+
+    expect(beforeSend()(event)).toBeNull()
+  })
+
+  it('returns the event when only a chained cause matches, primary is first-party', () => {
+    // Sentry orders exception.values oldest-cause-first with the crashing
+    // (primary) exception last; a first-party error that merely wraps a
+    // third-party cause must not be dropped.
+    const event = {
+      exception: {
+        values: [
+          { stacktrace: { frames: [{ filename: 'https://example.invalid/beacon.min.js' }] } },
+          { stacktrace: { frames: [{ filename: 'https://docs.bossanova.dev/assets/main.js' }] } },
+        ],
+      },
+    }
+
+    expect(beforeSend()(event)).toBe(event)
+  })
+
+  it('returns null when the primary (last) exception value crashes in the beacon', () => {
+    const event = {
+      exception: {
+        values: [
+          { stacktrace: { frames: [{ filename: 'https://docs.bossanova.dev/assets/main.js' }] } },
+          { stacktrace: { frames: [{ filename: 'https://example.invalid/beacon.min.js/v1' }] } },
+        ],
+      },
+    }
+
+    expect(beforeSend()(event)).toBeNull()
+  })
+
+  it('returns null when filename is non-matching but abs_path matches the denylist', () => {
+    const event = eventWithFrames([
+      {
+        filename: '/some/bundle.js',
+        abs_path: 'https://static.cloudflareinsights.com/some/bundle.js',
+      },
+    ])
+
+    expect(beforeSend()(event)).toBeNull()
+  })
+
+  it('returns the event for a first-party deepest frame, still scrubbed', () => {
+    const gitHubToken = 'ghp_AbCdEf0123456789AbCdEf0123456789AbCd'
+    const event = eventWithFrames([
+      // A shallower third-party frame must not trigger the drop: only the
+      // deepest (crashing) frame is matched, mirroring Sentry denyUrls.
+      { filename: 'https://static.cloudflareinsights.com/beacon.min.js' },
+      { filename: `https://docs.bossanova.dev/assets/main.js?token=${gitHubToken}` },
+    ])
+
+    const result = beforeSend()(event)
+
+    expect(result).toBe(event)
+    expect(JSON.stringify(result)).not.toContain(gitHubToken)
+    expect(JSON.stringify(result)).toContain('[REDACTED]')
+  })
+
+  it('returns the event when there is no parseable stacktrace (fail-open)', () => {
+    const event = { message: 'plain error without stacktrace' }
+
+    expect(beforeSend()(event)).toBe(event)
+  })
+
+  it('returns the event when frames are empty (fail-open)', () => {
+    const event = eventWithFrames([])
+
+    expect(beforeSend()(event)).toBe(event)
   })
 })

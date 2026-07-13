@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "log",
+    srcs = [
+        "log.go",
+        "tail.go",
+    ],
+    importpath = "github.com/recurser/bossalib/log",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_rs_zerolog//:zerolog",
+        "@com_github_rs_zerolog//log",
+        "@in_gopkg_natefinch_lumberjack_v2//:lumberjack_v2",
+    ],
+)
+
+go_test(
+    name = "log_test",
+    srcs = [
+        "log_test.go",
+        "tail_test.go",
+    ],
+    embed = [":log"],
+    deps = ["@com_github_rs_zerolog//log"],
+)

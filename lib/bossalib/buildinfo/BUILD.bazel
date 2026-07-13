@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "buildinfo",
+    srcs = ["buildinfo.go"],
+    importpath = "github.com/recurser/bossalib/buildinfo",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "buildinfo_test",
+    srcs = ["buildinfo_test.go"],
+    embed = [":buildinfo"],
+)

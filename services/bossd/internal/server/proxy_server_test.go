@@ -14,6 +14,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
 )
 
@@ -30,11 +31,20 @@ type fakeFailover struct {
 	currentBearerErr  error
 	currentBearerCall int
 	currentBearerID   string
+	lastKind          rotation.SignalKind
+	lastTrigger       string
 }
 
 func (f *fakeFailover) PrepareFailover(_ context.Context, _ string, status int) (session.FailoverResult, error) {
 	f.prepareCalls++
 	f.lastStatus = status
+	return f.result, f.prepareErr
+}
+
+func (f *fakeFailover) PrepareFailoverKind(_ context.Context, _ string, kind rotation.SignalKind, trigger string) (session.FailoverResult, error) {
+	f.prepareCalls++
+	f.lastKind = kind
+	f.lastTrigger = trigger
 	return f.result, f.prepareErr
 }
 
@@ -475,6 +485,97 @@ func TestProxy_429_swapsAndReplays(t *testing.T) {
 	// Preserved headers on the replay too.
 	if reqs[1].beta != "oauth-2025-04-20" || reqs[1].version != "2023-06-01" || reqs[1].userAgent != "claude-code/bossanova-1" {
 		t.Fatalf("headers not preserved on replay: %+v", reqs[1])
+	}
+}
+
+// newForbiddenUpstream returns 200 for the "second-token" bearer and a 403 with
+// forbiddenBody for every other bearer, so a suspension 403→swap→replay flow can
+// be exercised while a benign 403 can be shown to pass through unchanged.
+func newForbiddenUpstream(t *testing.T, forbiddenBody string) (*fakeUpstream, *httptest.Server) {
+	u := &fakeUpstream{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		auth := r.Header.Get("Authorization")
+		u.mu.Lock()
+		u.requests = append(u.requests, recordedRequest{
+			method: r.Method, path: r.URL.Path, auth: auth,
+			apiKey: r.Header.Get("x-api-key"), body: string(body),
+		})
+		u.mu.Unlock()
+		if auth == "Bearer second-token" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "pong")
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, forbiddenBody)
+	}))
+	t.Cleanup(srv.Close)
+	return u, srv
+}
+
+// TestProxy_403Suspension_swapsAndReplays proves an upstream 403 whose body
+// confirms an account suspension rotates the session to a healthy account and
+// replays — the in-flight analogue of the 401 auth-invalidation path.
+func TestProxy_403Suspension_swapsAndReplays(t *testing.T) {
+	up, srv := newForbiddenUpstream(t, `{"type":"error","error":{"type":"permission_error","message":"Your organization has disabled Claude subscription access for Claude Code"}}`)
+	f := &fakeFailover{result: session.FailoverResult{Rotate: true, Token: "second-token", NextAccountID: "acct-2", Trigger: "ROTATION_TRIGGER_AUTH_INVALIDATED"}}
+	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "suspended-token", `{"prompt":"hi"}`)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after suspension replay", resp.StatusCode)
+	}
+	if string(body) != "pong" {
+		t.Fatalf("body = %q, want pong", body)
+	}
+	if f.prepareCalls != 1 {
+		t.Fatalf("prepare calls = %d, want 1", f.prepareCalls)
+	}
+	if f.lastKind != rotation.AuthInvalidated {
+		t.Fatalf("failover kind = %v, want AuthInvalidated", f.lastKind)
+	}
+	if f.lastTrigger != "ROTATION_TRIGGER_AUTH_INVALIDATED" {
+		t.Fatalf("trigger = %q, want ROTATION_TRIGGER_AUTH_INVALIDATED", f.lastTrigger)
+	}
+	if f.commitCalls != 1 {
+		t.Fatalf("commit calls = %d, want 1", f.commitCalls)
+	}
+	if reqs := up.all(); len(reqs) != 2 {
+		t.Fatalf("upstream saw %d requests, want 2 (original 403 + replay)", len(reqs))
+	}
+}
+
+// TestProxy_403Benign_passesThrough proves a benign 403 (e.g. a setup-token
+// scope refusal) is NOT treated as a suspension: no failover is attempted and
+// the original response body is returned to the client byte-for-byte.
+func TestProxy_403Benign_passesThrough(t *testing.T) {
+	const benign = `{"type":"error","error":{"type":"permission_error","message":"OAuth token does not meet scope requirement user:profile"}}`
+	up, srv := newForbiddenUpstream(t, benign)
+	// Result would rotate if asked — the assertion is that it is never asked.
+	f := &fakeFailover{result: session.FailoverResult{Rotate: true, Token: "second-token"}}
+	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "benign-token", `{"prompt":"hi"}`)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 passed through", resp.StatusCode)
+	}
+	if string(body) != benign {
+		t.Fatalf("body = %q, want benign 403 passed through byte-identical", body)
+	}
+	if f.prepareCalls != 0 {
+		t.Fatalf("prepare calls = %d, want 0 (benign 403 must not trigger failover)", f.prepareCalls)
+	}
+	if reqs := up.all(); len(reqs) != 1 {
+		t.Fatalf("upstream saw %d requests, want 1 (no replay)", len(reqs))
 	}
 }
 

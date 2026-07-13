@@ -1,0 +1,4 @@
+#!/bin/sh
+# Fake bazel for facade contract tests: record args, exit configurably.
+printf '%s\n' "$*" >> "$FAKE_BAZEL_LOG"
+exit "${FAKE_BAZEL_EXIT:-0}"

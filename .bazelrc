@@ -1,0 +1,45 @@
+# Shared across ALL worktrees of this repo on this machine — the cache is
+# content-addressed, so cross-worktree reuse is safe by construction.
+common --disk_cache=~/.cache/bazel-bossanova-disk
+common --experimental_disk_cache_gc_max_size=30G
+
+test --test_output=errors
+build --incompatible_strict_action_env
+
+# Pass through $HOME to tests. Several bossalib tests resolve a home-relative
+# app-data / lock path (config, authlock, skillinstall) and fail closed when
+# $HOME is unset; `make test` runs them with $HOME set, so this restores parity.
+# Value is read from the invoking environment (set on dev machines and CI).
+test --test_env=HOME
+
+# Disable gpg commit signing inside tests. Several bossd tests exec the host
+# `git` to build scratch repos; dev machines commonly set commit.gpgsign=true
+# globally (read via the HOME passthrough above), but the strict sandbox PATH
+# has no gpg, so signing fails with "cannot run gpg". Test commits are never
+# signature-checked, so force signing off via git's config-env — narrower than
+# leaking the whole host PATH, and every test still runs sandboxed.
+test --test_env=GIT_CONFIG_COUNT=1
+test --test_env=GIT_CONFIG_KEY_0=commit.gpgsign
+test --test_env=GIT_CONFIG_VALUE_0=false
+
+# Race detector (CI parity): bazel test --config=race <patterns>
+build:race --@rules_go//go/config:race
+
+# Remote cache — activates ONLY when .bazelrc.user provides the API key and
+# opts in with `build --config=remote`. Absent file = disk-only (must not error).
+build:remote --remote_cache=grpcs://remote.buildbuddy.io
+build:remote --remote_timeout=3600
+# Build Event Stream (BES): uploading the invocation is what makes it appear on
+# the BuildBuddy "Builds" dashboard. --remote_cache alone populates cache metrics
+# but leaves the Builds list empty ("No builds found"), so BES is required for the
+# dashboard-invocation evidence. The API key header from .bazelrc.user authenticates
+# BES too (--remote_header is sent to every remote service, cache and BES alike).
+# fully_async so a BES upload error (auth hiccup, free-tier throttle) NEVER fails
+# the build — BES upload is otherwise fatal (bazel exits 38). This is why CI omits
+# BES entirely (see .github/workflows/bazel.yml): CI must not hard-depend on the
+# free-tier BES endpoint. Dashboard invocations come from local dev builds.
+build:remote --bes_backend=grpcs://remote.buildbuddy.io
+build:remote --bes_results_url=https://app.buildbuddy.io/invocation/
+build:remote --bes_upload_mode=fully_async
+
+try-import %workspace%/.bazelrc.user

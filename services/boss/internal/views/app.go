@@ -393,28 +393,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case mergeResultMsg:
-		// Reconcile the home merging override when the merge RPC resolves. Runs at
-		// the app level (not per-view, and without returning early) so an
-		// ESC-then-result still reconciles the optimistic state even when the
-		// chatpicker is no longer the active view — execution continues past this
-		// type switch to the per-view dispatch below so the chatpicker (if still
-		// active) also flips its own merging=false / merged fields.
-		if a.home.isMerging(msg.sessionID) {
-			a.home.resolveMerge(msg.sessionID)
-			if msg.err != nil {
-				// Failed merge: rebuild the cached row so it drops the optimistic
-				// "merging" label and returns to its real status immediately, rather
-				// than waiting for the next spinner tick or session poll.
-				a.home.buildTableRows()
-			} else {
-				// Successful merge: hand off to the merged optimistic override so the
-				// row flips straight from blue "merging" to "✓ merged" without a
-				// "passing" flicker while the PR-merged webhook lands asynchronously.
-				a.home.mergedOptimisticID = msg.sessionID
-			}
-		}
-
 	case switchViewMsg:
 		a.activeView = msg.view
 		switch msg.view { //nolint:exhaustive // ViewBugReport is pushed via ctrl+b, not switchViewMsg
@@ -435,14 +413,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// session..." swallowing every key but Esc.
 			if a.home.archiveInFlight(msg.sessionID) {
 				a.chatPicker.archiving = true
-			}
-			// Same in-flight guard for merging: only seed merging=true (which shows
-			// the "Merging PR..." banner and hides [m]erge) while the merge RPC is
-			// still outstanding. After a successful merge the override lingers on the
-			// row for rendering but no mergeResultMsg is outstanding, so seeding here
-			// would leave the picker stuck.
-			if a.home.mergeInFlight(msg.sessionID) {
-				a.chatPicker.merging = true
 			}
 			return a, a.chatPicker.Init()
 		case ViewRepoAdd:
@@ -620,13 +590,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if archivingID := a.chatPicker.ArchivingSessionID(); archivingID != "" {
 				a.home.markArchiving(archivingID)
-			}
-			// A mid-merge Esc is Cancelled() with merging still true, so
-			// MergingSessionID() is non-empty and the optimistic blue "merging"
-			// status carries onto the home row. A post-success return has
-			// merging=false (handled by mergedOptimisticID above) so this no-ops.
-			if mergingID := a.chatPicker.MergingSessionID(); mergingID != "" {
-				a.home.markMerging(mergingID)
 			}
 			return a, a.home.Init()
 		}
@@ -956,11 +919,6 @@ func (a *App) newHomeModel() HomeModel {
 	// RPCs must survive until the next poll or result reconciles each session.
 	home.archivingOverrideIDs = cloneSessionIDSet(a.home.archivingOverrideIDs)
 	home.archiveInFlightIDs = cloneSessionIDSet(a.home.archiveInFlightIDs)
-	// Preserve optimistic merge state across rebuilds too — both the lingering
-	// success/failure overrides and any active RPC must survive until the next
-	// poll or mergeResultMsg reconciles each session.
-	home.mergingOverrideIDs = cloneSessionIDSet(a.home.mergingOverrideIDs)
-	home.mergeInFlightIDs = cloneSessionIDSet(a.home.mergeInFlightIDs)
 	return home
 }
 
@@ -1034,7 +992,6 @@ func (a App) View() tea.View {
 			opts.session = a.chatPicker.session
 			opts.spinner = a.chatPicker.spinner
 			opts.archiving = a.chatPicker.archiving
-			opts.merging = a.chatPicker.merging
 		case ViewRepoSettings:
 			opts.repo = a.repoSettings.repo
 		case ViewSessionSettings:

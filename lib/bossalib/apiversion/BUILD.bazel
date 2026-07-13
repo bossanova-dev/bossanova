@@ -1,0 +1,41 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "apiversion",
+    srcs = [
+        "interceptor.go",
+        "released.go",
+        "transform.go",
+        "version.go",
+    ],
+    importpath = "github.com/recurser/bossalib/apiversion",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/displaystatus",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "@com_connectrpc_connect//:connect",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "apiversion_test",
+    srcs = [
+        "interceptor_test.go",
+        "released_test.go",
+        "transform_test.go",
+        "version_test.go",
+        "webversion_test.go",
+    ],
+    # keep: webversion_test.go reads services/web/src/api.ts, which escapes the
+    # bossalib module and is absent from the Bazel sandbox. Excluded from `bazel
+    # test`; still covered by `make test`. See docs/solutions/build-systems/bazel-sandbox-patterns.md.
+    tags = ["manual"],
+    deps = [
+        ":apiversion",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "@com_connectrpc_connect//:connect",
+    ],
+)

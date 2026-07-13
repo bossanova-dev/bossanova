@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "serve",
+    srcs = [
+        "drift.go",
+        "serve.go",
+    ],
+    importpath = "github.com/recurser/bossanova-mcp/internal/serve",
+    visibility = ["//services/mcp:__subpackages__"],
+    deps = [
+        "//lib/bossalib/bossmcp",
+        "//lib/bossalib/buildinfo",
+        "@com_github_modelcontextprotocol_go_sdk//mcp",
+    ],
+)
+
+go_test(
+    name = "serve_test",
+    srcs = [
+        "contract_test.go",
+        "drift_test.go",
+        "serve_test.go",
+    ],
+    embed = [":serve"],
+    deps = [
+        "//lib/bossalib/bossmcp",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_github_modelcontextprotocol_go_sdk//mcp",
+    ],
+)

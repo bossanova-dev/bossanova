@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "agent",
+    srcs = ["title.go"],
+    importpath = "github.com/recurser/boss/internal/agent",
+    visibility = ["//services/boss:__subpackages__"],
+)
+
+go_test(
+    name = "agent_test",
+    srcs = ["title_test.go"],
+    embed = [":agent"],
+)

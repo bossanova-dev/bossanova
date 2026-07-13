@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "loginshell",
+    srcs = ["loginshell.go"],
+    importpath = "github.com/recurser/bossalib/loginshell",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "loginshell_test",
+    srcs = ["loginshell_test.go"],
+    embed = [":loginshell"],
+)

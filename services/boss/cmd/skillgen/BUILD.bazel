@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "skillgen",
+    srcs = [
+        "extract.go",
+        "inject.go",
+        "render.go",
+    ],
+    importpath = "github.com/recurser/boss/cmd/skillgen",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/clidoc",
+        "@com_github_spf13_cobra//:cobra",
+        "@com_github_spf13_pflag//:pflag",
+    ],
+)
+
+go_test(
+    name = "skillgen_test",
+    srcs = [
+        "extract_test.go",
+        "inject_test.go",
+        "render_test.go",
+    ],
+    embed = [":skillgen"],
+    deps = [
+        "//lib/bossalib/clidoc",
+        "@com_github_spf13_cobra//:cobra",
+        "@com_github_spf13_pflag//:pflag",
+    ],
+)

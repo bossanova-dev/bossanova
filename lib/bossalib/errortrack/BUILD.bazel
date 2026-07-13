@@ -1,0 +1,36 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "errortrack",
+    srcs = [
+        "errortrack.go",
+        "http.go",
+        "interceptor.go",
+        "scrub.go",
+    ],
+    importpath = "github.com/recurser/bossalib/errortrack",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/safego",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_getsentry_sentry_go//:sentry-go",
+        "@com_github_getsentry_sentry_go//http",
+    ],
+)
+
+go_test(
+    name = "errortrack_test",
+    srcs = [
+        "errortrack_test.go",
+        "http_test.go",
+        "interceptor_test.go",
+        "scrub_test.go",
+    ],
+    embed = [":errortrack"],
+    deps = [
+        "//lib/bossalib/safego",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_getsentry_sentry_go//:sentry-go",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

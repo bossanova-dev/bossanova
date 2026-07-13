@@ -1,0 +1,52 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "status",
+    srcs = [
+        "display_computer.go",
+        "display_tracker.go",
+        "repair_lease.go",
+        "tmux_poller.go",
+        "tracker.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/status",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/displaystatus",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/models",
+        "//lib/bossalib/safego",
+        "//lib/bossalib/statusdetect",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/agent",
+        "//services/bossd/internal/db",
+        "//services/bossd/internal/tmux",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "status_test",
+    srcs = [
+        "display_computer_test.go",
+        "display_tracker_test.go",
+        "repair_lease_test.go",
+        "tmux_poller_test.go",
+        "tracker_test.go",
+    ],
+    data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller
+    embed = [":status"],
+    rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/migrate",
+        "//lib/bossalib/models",
+        "//lib/bossalib/statusdetect",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/agent",
+        "//services/bossd/internal/db",
+        "//services/bossd/internal/tmux",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

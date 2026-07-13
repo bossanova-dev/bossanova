@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "termnorm",
+    srcs = ["termnorm.go"],
+    importpath = "github.com/recurser/bossalib/termnorm",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "termnorm_test",
+    srcs = ["termnorm_test.go"],
+    embed = [":termnorm"],
+)

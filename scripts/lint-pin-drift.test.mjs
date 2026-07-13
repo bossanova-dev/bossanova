@@ -18,8 +18,12 @@ function makefilePin() {
   return match[1]
 }
 
-// Collect the `version:` pinned to each golangci-lint-action usage across a
-// workflow's YAML, as { file, version } rows.
+// Collect every golangci-lint version pin across a workflow's YAML, as
+// { file, version } rows. Two shapes are recognized:
+//   1. a `golangci/golangci-lint-action` step's `with.version:` input, and
+//   2. a `GOLANGCI_LINT_VERSION:` env assignment (used by the native public
+//      test-go.yml, which installs the pinned binary via the official
+//      install.sh rather than the action — BOS-343).
 function workflowGolangciPins() {
   const workflowsDir = path.join(repoRoot, '.github', 'workflows')
   const pins = []
@@ -27,6 +31,13 @@ function workflowGolangciPins() {
     if (!name.endsWith('.yml') && !name.endsWith('.yaml')) continue
     const lines = fs.readFileSync(path.join(workflowsDir, name), 'utf8').split('\n')
     for (let i = 0; i < lines.length; i++) {
+      // Shape 2: an explicit env pin, matched on any line.
+      const envMatch = lines[i].match(/^\s*GOLANGCI_LINT_VERSION:\s*(\S+)/)
+      if (envMatch) {
+        pins.push({ file: name, version: envMatch[1] })
+        continue
+      }
+      // Shape 1: the golangci-lint-action step's `with.version:`.
       if (!/golangci\/golangci-lint-action/.test(lines[i])) continue
       // Scan the following lines (the `with:` block) for the first `version:`.
       for (let j = i + 1; j < Math.min(i + 12, lines.length); j++) {

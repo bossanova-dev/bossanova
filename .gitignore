@@ -76,3 +76,7 @@ docs/handoffs/
 
 # Kubernetes secrets
 infra/kustomize/overlays/*/.env-bosso
+
+# Bazel
+/bazel-*
+.bazelrc.user

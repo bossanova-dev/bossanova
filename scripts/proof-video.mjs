@@ -275,7 +275,12 @@ export const MIN_SCENE_OUTPUT_MS = 3_000
  * @param {number} [minSceneMs]
  * @returns {Array<{startMs:number,endMs:number,speed:number}>}
  */
-export function applySceneFloors(segments, sceneStartsMs, durationMs, minSceneMs = MIN_SCENE_OUTPUT_MS) {
+export function applySceneFloors(
+  segments,
+  sceneStartsMs,
+  durationMs,
+  minSceneMs = MIN_SCENE_OUTPUT_MS,
+) {
   const bounds = [
     ...new Set(
       (sceneStartsMs ?? [])

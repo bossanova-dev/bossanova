@@ -1,0 +1,66 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "db",
+    srcs = [
+        "account_decide_tx.go",
+        "account_store.go",
+        "agent_chat_store.go",
+        "attempt_store.go",
+        "check_snapshot_store.go",
+        "cron_job_store.go",
+        "db.go",
+        "helpers.go",
+        "notifying_chat_store.go",
+        "recomputing_stores.go",
+        "repo_store.go",
+        "rotation_audit_adapter.go",
+        "rotation_event_store.go",
+        "session_store.go",
+        "store.go",
+        "task_mapping_store.go",
+        "workflow_store.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/db",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/machine",
+        "//lib/bossalib/models",
+        "//lib/bossalib/sqlutil",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/rotation",
+        "@org_modernc_sqlite//:sqlite",
+        "@org_modernc_sqlite//lib",
+    ],
+)
+
+go_test(
+    name = "db_test",
+    srcs = [
+        "account_decide_tx_test.go",
+        "account_store_test.go",
+        "agent_chat_store_test.go",
+        "cron_job_store_test.go",
+        "db_test.go",
+        "notifying_chat_store_test.go",
+        "path_test.go",
+        "recomputing_stores_test.go",
+        "rotation_event_store_test.go",
+        "session_store_test.go",
+        "sqlite_pool_test.go",
+        "task_mapping_store_test.go",
+        "workflow_store_test.go",
+    ],
+    data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller
+    embed = [":db"],
+    rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/machine",
+        "//lib/bossalib/migrate",
+        "//lib/bossalib/models",
+        "//lib/bossalib/sqlutil",
+        "//services/bossd/internal/rotation",
+    ],
+)

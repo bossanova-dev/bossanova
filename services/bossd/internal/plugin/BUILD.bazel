@@ -1,0 +1,120 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "plugin",
+    srcs = [
+        "agent_runner_grpc.go",
+        "grpc_plugins.go",
+        "hclog_adapter.go",
+        "host.go",
+        "host_agent_proxy.go",
+        "host_displace.go",
+        "host_service.go",
+        "shared.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/plugin",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/agenterr",
+        "//lib/bossalib/config",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/machine",
+        "//lib/bossalib/models",
+        "//lib/bossalib/plugin",
+        "//lib/bossalib/safego",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/agent",
+        "//services/bossd/internal/db",
+        "//services/bossd/internal/dotenv",
+        "//services/bossd/internal/plugin/eventbus",
+        "//services/bossd/internal/proofenv",
+        "//services/bossd/internal/session",
+        "//services/bossd/internal/status",
+        "@com_github_hashicorp_go_hclog//:go-hclog",
+        "@com_github_hashicorp_go_plugin//:go-plugin",
+        "@com_github_rs_zerolog//:zerolog",
+        "@com_github_rs_zerolog//log",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_test(
+    name = "plugin_test",
+    srcs = [
+        "account_env_test.go",
+        "agent_runner_grpc_test.go",
+        "claude_integration_test.go",
+        "dependabot_integration_test.go",
+        "discovery_integration_test.go",
+        "export_test.go",
+        "grpc_plugins_test.go",
+        "host_displace_test.go",
+        "host_restart_integration_test.go",
+        "host_restart_test.go",
+        "host_runner_lookup_test.go",
+        "host_service_test.go",
+        "host_test.go",
+        "host_watchdog_test.go",
+        "host_workflow_desire_test.go",
+        "integration_test.go",
+        "linear_integration_test.go",
+        "plugin_binary_test.go",
+        "repair_chat_visibility_test.go",
+        "repair_workflow_integration_test.go",
+        "shared_test.go",
+        "test_helpers_test.go",
+    ],
+    data = glob(["testdata/**"]) + [
+        # keep: prebuilt plugin binaries + migrations staged into runfiles; the
+        # harness resolves them via the BOSS_PLUGIN_BIN_* env vars below
+        # (rundir="." makes the runfiles-relative $(rootpath) values absolute).
+        "//plugins/bossd-plugin-claude",  # keep
+        "//plugins/bossd-plugin-dependabot",  # keep
+        "//plugins/bossd-plugin-linear",  # keep
+        "//plugins/bossd-plugin-linear:bossd-plugin-linear-e2e",  # keep
+        "//plugins/bossd-plugin-repair",  # keep
+        "//plugins/bossd-plugin-stub-runner",  # keep
+        "//services/bossd/migrations:sql",  # keep
+    ],
+    embed = [":plugin"],
+    env = {
+        # keep: per-plugin runfiles paths handed to pluginharness.PluginBinary;
+        # $(rootpath) expands to a runfiles-root-relative path, made absolute by
+        # rundir="." (cwd == runfiles root).
+        "BOSS_PLUGIN_BIN_BOSSD_PLUGIN_CLAUDE": "$(rootpath //plugins/bossd-plugin-claude)",  # keep
+        "BOSS_PLUGIN_BIN_BOSSD_PLUGIN_DEPENDABOT": "$(rootpath //plugins/bossd-plugin-dependabot)",  # keep
+        "BOSS_PLUGIN_BIN_BOSSD_PLUGIN_LINEAR": "$(rootpath //plugins/bossd-plugin-linear)",  # keep
+        "BOSS_PLUGIN_BIN_BOSSD_PLUGIN_LINEAR_E2E": "$(rootpath //plugins/bossd-plugin-linear:bossd-plugin-linear-e2e)",  # keep
+        "BOSS_PLUGIN_BIN_BOSSD_PLUGIN_REPAIR": "$(rootpath //plugins/bossd-plugin-repair)",  # keep
+        "BOSS_PLUGIN_BIN_BOSSD_PLUGIN_STUB_RUNNER": "$(rootpath //plugins/bossd-plugin-stub-runner)",  # keep
+    },
+    rundir = ".",  # keep: run from runfiles root so $(rootpath) plugin paths resolve via filepath.Abs
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/migrate",
+        "//lib/bossalib/models",
+        "//lib/bossalib/plugin",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/agent",
+        "//services/bossd/internal/db",
+        "//services/bossd/internal/plugin/eventbus",
+        "//services/bossd/internal/plugin/pluginharness",
+        "//services/bossd/internal/proofenv",
+        "//services/bossd/internal/session",
+        "//services/bossd/internal/status",
+        "//services/bossd/internal/taskorchestrator",
+        "@com_github_hashicorp_go_plugin//:go-plugin",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//credentials/insecure",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_grpc//test/bufconn",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+        "@org_uber_go_goleak//:goleak",
+    ],
+)

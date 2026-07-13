@@ -45,6 +45,42 @@ type AccountStore interface {
 type usageProbeStore interface {
 	Get(ctx context.Context, id string) (*models.Account, error)
 	RecordUsageProbe(ctx context.Context, id string, snap models.UsageSnapshot) error
+	MarkAccountSuspended(ctx context.Context, id string, reason string) error
+}
+
+// accountSuspender fails an account's health with a legible reason. The usage
+// probe uses it to proactively sideline an account the plugin confirms is
+// suspended (an org/billing block), so rotation and manual `--refresh` alike
+// stop selecting it.
+type accountSuspender interface {
+	MarkAccountSuspended(ctx context.Context, id string, reason string) error
+}
+
+// IsSuspension reports whether err is the claude plugin's confirmed
+// account-suspension signal: a gRPC codes.PermissionDenied. The plugin reserves
+// that code exclusively for a 403 whose body carries the suspension signature
+// (see plugins/bossd-plugin-claude/probe.go claudeAccountSuspendedError), so it
+// is the single source of truth for the plugin→daemon suspension contract.
+// grpcstatus.Code unwraps the %w chain.
+func IsSuspension(err error) bool {
+	return err != nil && grpcstatus.Code(err) == codes.PermissionDenied
+}
+
+// MarkSuspendedIfConfirmed is the single reaction point for the suspension
+// contract, shared by the periodic rotation refresh (cmd) and the manual
+// --refresh adapter path: when probeErr is a confirmed suspension it fails the
+// account's health with the plugin's legible reason. handled reports whether
+// probeErr was a suspension (regardless of the mark result); reason is the
+// plugin message; err is any error from the health write.
+func MarkSuspendedIfConfirmed(ctx context.Context, store accountSuspender, id string, probeErr error) (handled bool, reason string, err error) {
+	if !IsSuspension(probeErr) {
+		return false, "", nil
+	}
+	reason = grpcstatus.Convert(probeErr).Message()
+	if merr := store.MarkAccountSuspended(ctx, id, reason); merr != nil {
+		return true, reason, fmt.Errorf("mark account suspended: %w", merr)
+	}
+	return true, reason, nil
 }
 
 // CredentialLoader loads an account's opaque credential blob. Satisfied by the
@@ -205,6 +241,13 @@ func (m *materializerAdapter) RecordUsageProbe(ctx context.Context, accountID st
 	}
 	snap, err := m.ProbeUsageSnapshot(ctx, accountID)
 	if err != nil {
+		// A confirmed suspension (org/billing block) is permanent, unlike a
+		// transient probe failure: fail the account's health so rotation and a
+		// manual `--refresh` alike stop selecting it. Any other error is returned
+		// for the caller to log and ignore (fail-soft, unchanged).
+		if handled, _, merr := MarkSuspendedIfConfirmed(ctx, store, accountID, err); handled {
+			return merr // nil on success; the account is now health=failed
+		}
 		return err
 	}
 	if snap.FetchedAt == nil {
@@ -250,6 +293,13 @@ func (m *materializerAdapter) ProbeUsageSnapshot(ctx context.Context, accountID 
 	defer cleanup()
 	resp, err := client.ProbeRateLimit(ctx, &bossanovav1.ProbeRateLimitRequest{CredentialEnv: env})
 	if err != nil {
+		// Preserve a gRPC-status error verbatim (a typed 401 auth invalidation or
+		// a 403 account suspension) so callers can both classify it by code and
+		// surface the plugin's reason message unpolluted by a wrapper prefix.
+		// Only non-status errors get the context wrap.
+		if _, ok := grpcstatus.FromError(err); ok {
+			return models.UsageSnapshot{}, err
+		}
 		return models.UsageSnapshot{}, fmt.Errorf("plugin ProbeRateLimit: %w", err)
 	}
 	now := time.Now().UTC()

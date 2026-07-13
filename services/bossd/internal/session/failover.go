@@ -480,6 +480,16 @@ func (l *Lifecycle) PrepareFailover(ctx context.Context, sessionID string, statu
 	default:
 		return FailoverResult{}, nil
 	}
+	return l.PrepareFailoverKind(ctx, sessionID, kind, trigger)
+}
+
+// PrepareFailoverKind is PrepareFailover with the rotation signal already
+// decided by the caller, for signals not carried by a bare HTTP status. The
+// proxy uses it for an account suspension — an upstream 403 whose body confirms
+// an org/billing block — mapping it to AuthInvalidated so the account is failed
+// (not merely cooled) and the session rotates to a healthy account, exactly like
+// a 401. Same fail-safe contract as PrepareFailover throughout.
+func (l *Lifecycle) PrepareFailoverKind(ctx context.Context, sessionID string, kind rotation.SignalKind, trigger string) (FailoverResult, error) {
 	if !l.failoverProxyEnabled() {
 		return FailoverResult{}, nil
 	}

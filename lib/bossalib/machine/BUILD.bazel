@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "machine",
+    srcs = ["machine.go"],
+    importpath = "github.com/recurser/bossalib/machine",
+    visibility = ["//visibility:public"],
+    deps = ["@com_github_qmuntal_stateless//:stateless"],
+)
+
+go_test(
+    name = "machine_test",
+    srcs = ["machine_test.go"],
+    embed = [":machine"],
+)

@@ -1,0 +1,77 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# keep: raw skill tree exposed as a filegroup so the tree-aware skill-payload
+# parity test (//services/boss/internal/skillparity, BOS-344 Task 5) can read it
+# from disk under bazel runfiles and compare it to the claude plugin mirror.
+filegroup(
+    name = "skills_payload",
+    srcs = glob(["skills/**"]),
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "skillinstall",
+    srcs = ["embed.go"],
+    embedsrcs = [
+        "skills/.gitkeep",
+        "skills/boss-epic/SKILL.md",
+        "skills/boss-epic/toolbox/bs-epic-lib.mjs",
+        "skills/boss-epic/toolbox/bs-run-sentinel.mjs",
+        "skills/boss-epic/toolbox/dag-scheduler.mjs",
+        "skills/boss-finalize/SKILL.md",
+        "skills/boss-finalize/add-pr-numbers.sh",
+        "skills/boss-implement/SKILL.md",
+        "skills/boss-implement/agents/openai.yaml",
+        "skills/boss-implement/references/code-reviewer-template.md",
+        "skills/boss-implement/references/core-spine.md",
+        "skills/boss-implement/references/cron-gate.md",
+        "skills/boss-implement/references/proof-capture.md",
+        "skills/boss-implement/references/receiving-code-review.md",
+        "skills/boss-implement/references/resume-assessment.md",
+        "skills/boss-implement/references/review-stack.md",
+        "skills/boss-implement/references/standalone-mode.md",
+        "skills/boss-implement/references/troubleshooting.md",
+        "skills/boss-implement/toolbox/bs-review-caps.mjs",
+        "skills/boss-implement/toolbox/bs-review-report.mjs",
+        "skills/boss-implement/toolbox/bs-run-sentinel.mjs",
+        "skills/boss-implement/toolbox/skill-config.mjs",
+        "skills/boss-implement/toolbox/worktree-lock.sh",
+        "skills/boss-plan/SKILL.md",
+        "skills/boss-plan/references/extension-reviewers.md",
+        "skills/boss-plan/references/headless-drafting-brief.md",
+        "skills/boss-plan/references/interactive-mode.md",
+        "skills/boss-plan/toolbox/bs-run-sentinel.mjs",
+        "skills/boss-repair/SKILL.md",
+        "skills/boss-repair/scripts/review-feedback-probe.js",
+        "skills/boss-review/SKILL.md",
+        "skills/boss-review/references/core-methodology.md",
+        "skills/boss-review/toolbox/bs-review-caps.mjs",
+        "skills/boss-review/toolbox/bs-review-detect.mjs",
+        "skills/boss-review/toolbox/bs-review-report.mjs",
+        "skills/boss-review/toolbox/claude-review.mjs",
+        "skills/boss-review/toolbox/codex-review.mjs",
+        "skills/boss-review/toolbox/cross-review-lib.mjs",
+        "skills/boss-review/toolbox/skill-config.mjs",
+        "skills/boss-verify/SKILL.md",
+        "skills/boss/SKILL.md",
+    ],
+    importpath = "github.com/recurser/boss/internal/skillinstall",
+    visibility = ["//services/boss:__subpackages__"],
+)
+
+go_test(
+    name = "skillinstall_test",
+    srcs = [
+        "boss_epic_skill_test.go",
+        "boss_repair_skill_test.go",
+        "skills_manifest_test.go",
+    ],
+    embed = [":skillinstall"],
+    # keep: parity tests walk up for go.work and read out-of-module skill source
+    # trees — the go.work root is absent from the sandbox. Covered by `make test-boss`.
+    # The tree-aware bazel-native parity test (BOS-344 Task 5) supersedes these.
+    tags = [
+        "manual",
+        "requires-workspace",
+    ],
+)

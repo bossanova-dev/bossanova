@@ -1,0 +1,41 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "agent",
+    srcs = [
+        "dispatcher.go",
+        "log_tailer.go",
+        "noop_runner.go",
+        "plugin_runner.go",
+        "poll_fallback.go",
+        "registry_error.go",
+        "runner.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/agent",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/agenterr",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/safego",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "agent_test",
+    srcs = [
+        "dispatcher_test.go",
+        "log_tailer_test.go",
+        "plugin_runner_test.go",
+        "poll_fallback_test.go",
+        "registry_error_test.go",
+        "runner_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":agent"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

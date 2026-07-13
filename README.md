@@ -197,6 +197,12 @@ cd bossanova
 make
 ```
 
+> **Bazel unsupported in the public mirror.** The upstream repository builds and
+> tests with Bazel, but the public mirror ships only a subset of modules, so its
+> `go.work` does not resolve the Bazel workspace. Any `MODULE.bazel`/`BUILD` files
+> present here are inert. Use the Makefile: `make test` automatically falls back to
+> the native per-module Go test loop when Bazel is absent.
+
 ## Contributing
 
 Issues and pull requests are welcome. Before opening a PR, run:

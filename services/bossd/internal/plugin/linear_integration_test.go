@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -67,6 +68,17 @@ func (h *linearHarness) Requests() []linearCapturedRequest {
 	return out
 }
 
+// linearTestdataDir returns the absolute path to this package's
+// testdata/linear directory, anchored to this test file via runtime.Caller so
+// it resolves independently of cwd. Under `go test` cwd is the package dir;
+// under `bazel test` the plugin_test target sets rundir="." (cwd == runfiles
+// root) and the caller path is module-root-relative (trimpath), with the
+// testdata glob staged there as data — both resolve to the same fixtures.
+func linearTestdataDir() string {
+	_, filename, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(filename), "testdata", "linear")
+}
+
 func newLinearHarness(t *testing.T, opts linearHarnessOpts) *linearHarness {
 	t.Helper()
 
@@ -78,7 +90,7 @@ func newLinearHarness(t *testing.T, opts linearHarnessOpts) *linearHarness {
 
 	var issuesBody []byte
 	if opts.IssuesFixture != "" {
-		body, err := os.ReadFile(filepath.Join("testdata", "linear", opts.IssuesFixture))
+		body, err := os.ReadFile(filepath.Join(linearTestdataDir(), opts.IssuesFixture))
 		if err != nil {
 			t.Fatalf("read issues fixture %q: %v", opts.IssuesFixture, err)
 		}
@@ -118,7 +130,7 @@ func newLinearHarness(t *testing.T, opts linearHarnessOpts) *linearHarness {
 
 	prs := []vcs.PRSummary{}
 	if opts.PRsFixture != "" {
-		body, err := os.ReadFile(filepath.Join("testdata", "linear", opts.PRsFixture))
+		body, err := os.ReadFile(filepath.Join(linearTestdataDir(), opts.PRsFixture))
 		if err != nil {
 			t.Fatalf("read PRs fixture %q: %v", opts.PRsFixture, err)
 		}

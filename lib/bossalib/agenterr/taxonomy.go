@@ -68,6 +68,15 @@ var (
 	reAuthInvalidatedOAuth = regexp.MustCompile(`(?i)invalidated.{0,20}oauth token`)
 	reAuthSignInAgain      = regexp.MustCompile(`(?i)please (?:try )?sign(?:ing)? in again`)
 
+	// Suspension patterns identify an org/billing block (e.g. a credit-card
+	// limit disabling Claude subscription access), as distinct from a usage cap
+	// or a benign scope refusal. They intentionally match the machine code and
+	// the org-disabled message but NOT the setup-token "does not have the
+	// required scopes" 403, which is an expected healthy path.
+	reSuspendOrgNotAllowed  = regexp.MustCompile(`(?i)oauth_org_not_allowed`)
+	reSuspendOrgDisabledSub = regexp.MustCompile(`(?i)organization has disabled.{0,40}subscription`)
+	reSuspendDisabledAccess = regexp.MustCompile(`(?i)disabled Claude subscription access`)
+
 	reUsageInsufficientQuota = regexp.MustCompile(`(?i)insufficient_quota`)
 	reUsageQuotaExceeded     = regexp.MustCompile(`(?i)quota_exceeded`)
 	reUsageLimitReached      = regexp.MustCompile(`(?i)usage_limit_reached`)
@@ -95,6 +104,16 @@ var authPatterns = []*regexp.Regexp{
 	reAuthInvalidatedToken,
 	reAuthInvalidatedOAuth,
 	reAuthSignInAgain,
+}
+
+// suspensionPatterns are a subset of the auth bucket: they classify as
+// KindAuthInvalidated (permanent health failure), but are also matchable on
+// their own via SuspensionReason so callers can log/persist a legible reason
+// distinct from a bad-token failure without a new taxonomy Kind.
+var suspensionPatterns = []*regexp.Regexp{
+	reSuspendOrgNotAllowed,
+	reSuspendOrgDisabledSub,
+	reSuspendDisabledAccess,
 }
 
 var usagePatterns = []*regexp.Regexp{
@@ -133,7 +152,7 @@ var transientPatterns = []*regexp.Regexp{
 // rather than transient. Text matching none of the patterns fails safe to
 // KindNone.
 func Classify(text string, now time.Time) Classification {
-	if anyMatch(authPatterns, text) {
+	if anyMatch(authPatterns, text) || anyMatch(suspensionPatterns, text) {
 		return Classification{Kind: KindAuthInvalidated}
 	}
 	if anyMatch(usagePatterns, text) {
@@ -147,6 +166,20 @@ func Classify(text string, now time.Time) Classification {
 		return Classification{Kind: KindTransientProvider}
 	}
 	return Classification{Kind: KindNone}
+}
+
+// SuspensionReason reports whether text carries an account-suspension signature
+// (an org/billing block such as a credit-card limit disabling Claude
+// subscription access) and, if so, returns a short human-legible reason. It is
+// a narrow sub-check of the auth bucket: a suspension already classifies as
+// KindAuthInvalidated via Classify, but callers use this to persist/log a
+// reason distinct from an ordinary invalidated credential. text may be a raw
+// HTTP error body, a decoded error message, or a CLI banner.
+func SuspensionReason(text string) (string, bool) {
+	if anyMatch(suspensionPatterns, text) {
+		return "account suspended: organization disabled Claude subscription access", true
+	}
+	return "", false
 }
 
 func anyMatch(patterns []*regexp.Regexp, text string) bool {

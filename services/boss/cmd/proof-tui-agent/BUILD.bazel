@@ -1,0 +1,49 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "proof-tui-agent_lib",
+    srcs = [
+        "agent.go",
+        "cast.go",
+        "main.go",
+        "normalize.go",
+    ],
+    importpath = "github.com/recurser/boss/cmd/proof-tui-agent",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/internal/fixtures",
+        "//services/boss/internal/tuidriver",
+        "//services/boss/internal/tuitest",
+        "@land_charm_bubbles_v2//spinner",
+        "@land_charm_lipgloss_v2//:lipgloss",
+    ],
+)
+
+go_binary(
+    name = "proof-tui-agent",
+    embed = [":proof-tui-agent_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "proof-tui-agent_test",
+    srcs = [
+        "agent_test.go",
+        "cast_test.go",
+        "main_test.go",
+        "normalize_test.go",
+    ],
+    embed = [":proof-tui-agent_lib"],
+    # keep: e2e tests go-build the boss binary via a runtime.Caller workspace root —
+    # "go" is absent from the sandbox PATH. Covered by `make test-boss`.
+    tags = [
+        "manual",
+        "requires-workspace",
+    ],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@land_charm_bubbles_v2//spinner",
+        "@land_charm_lipgloss_v2//:lipgloss",
+    ],
+)

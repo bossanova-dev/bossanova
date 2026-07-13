@@ -29,6 +29,9 @@ type mergeGateProvider struct {
 	reviews     []vcs.ReviewComment
 	mergeErr    error
 	mergeCalled bool
+	// onMerge, when set, fires inside MergePR before it returns — a seam for
+	// observing display-tracker state at the exact moment the blocking merge runs.
+	onMerge func()
 }
 
 func (p *mergeGateProvider) GetPRStatus(context.Context, string, int) (*vcs.PRStatus, error) {
@@ -45,6 +48,9 @@ func (p *mergeGateProvider) GetAllowedMergeStrategies(context.Context, string) (
 }
 func (p *mergeGateProvider) MergePR(context.Context, string, int, string) error {
 	p.mergeCalled = true
+	if p.onMerge != nil {
+		p.onMerge()
+	}
 	if p.mergeErr != nil {
 		return p.mergeErr
 	}

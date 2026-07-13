@@ -2787,9 +2787,9 @@ test('planSurfaceBudget: first-run web gets the 12min default', () => {
   })
 })
 
-test('planSurfaceBudget: web after TUI consumed 4min → clamped to remaining 11min', () => {
+test('planSurfaceBudget: web after 6min elapsed of the 17min pool → clamped to remaining 11min', () => {
   assert.deepEqual(
-    planSurfaceBudget({ surface: 'web', elapsedMs: 4 * 60 * 1000, budget: WEB_BUDGET }),
+    planSurfaceBudget({ surface: 'web', elapsedMs: 6 * 60 * 1000, budget: WEB_BUDGET }),
     {
       run: true,
       maxWallClockMs: 11 * 60 * 1000,
@@ -2799,7 +2799,7 @@ test('planSurfaceBudget: web after TUI consumed 4min → clamped to remaining 11
 
 test('planSurfaceBudget: web with 5min remaining (< 6min floor) → budget-exceeded', () => {
   assert.deepEqual(
-    planSurfaceBudget({ surface: 'web', elapsedMs: 10 * 60 * 1000, budget: WEB_BUDGET }),
+    planSurfaceBudget({ surface: 'web', elapsedMs: 12 * 60 * 1000, budget: WEB_BUDGET }),
     {
       run: false,
       reasonCode: 'budget-exceeded',
@@ -2809,7 +2809,7 @@ test('planSurfaceBudget: web with 5min remaining (< 6min floor) → budget-excee
 
 test('planSurfaceBudget: TUI with 1min remaining (< 2min floor) → budget-exceeded', () => {
   assert.deepEqual(
-    planSurfaceBudget({ surface: 'tui', elapsedMs: 14 * 60 * 1000, budget: TUI_BUDGET }),
+    planSurfaceBudget({ surface: 'tui', elapsedMs: 16 * 60 * 1000, budget: TUI_BUDGET }),
     {
       run: false,
       reasonCode: 'budget-exceeded',
@@ -2836,8 +2836,8 @@ test('planSurfaceBudget: null budget (unknown/recipe surface) → budget-exceede
   })
 })
 
-test('DEFAULT_TOTAL_PROOF_BUDGET_MS constant is exported', () => {
-  assert.equal(DEFAULT_TOTAL_PROOF_BUDGET_MS, 15 * 60 * 1000)
+test('DEFAULT_TOTAL_PROOF_BUDGET_MS constant is exported (BOS-354: 17 min)', () => {
+  assert.equal(DEFAULT_TOTAL_PROOF_BUDGET_MS, 17 * 60 * 1000)
 })
 
 // ── planSurfaceBudget: liveAgent extension (BOS-142) ───────────────────────
@@ -2861,12 +2861,12 @@ test('planSurfaceBudget: liveAgent:false is byte-identical to omitting liveAgent
 test('planSurfaceBudget: liveAgent:false is byte-identical to omitting liveAgent (tui, floor deferral)', () => {
   const omitted = planSurfaceBudget({
     surface: 'tui',
-    elapsedMs: 14 * 60 * 1000,
+    elapsedMs: 16 * 60 * 1000,
     budget: TUI_BUDGET,
   })
   const explicitFalse = planSurfaceBudget({
     surface: 'tui',
-    elapsedMs: 14 * 60 * 1000,
+    elapsedMs: 16 * 60 * 1000,
     budget: TUI_BUDGET,
     liveAgent: false,
   })
@@ -2923,7 +2923,7 @@ test('planSurfaceBudget: liveAgent:true web that cannot fit still defers budget-
   // live extension widens the GRANT ceiling, never the viability floor.
   const result = planSurfaceBudget({
     surface: 'web',
-    elapsedMs: 10 * 60 * 1000,
+    elapsedMs: 12 * 60 * 1000,
     totalBudgetMs: DEFAULT_TOTAL_PROOF_BUDGET_MS,
     budget: WEB_BUDGET,
     liveAgent: true,
@@ -2968,12 +2968,11 @@ test('planSurfaceBudget: extending the shared TOTAL (call-site responsibility) k
   // ordering does not apply once web has more scoped bullets — D13 — but the
   // sequencing mechanics are identical either way) and consumes its full
   // live-extended grant; TUI runs second off whatever remains.
-  const nonExtendedTotal = DEFAULT_TOTAL_PROOF_BUDGET_MS // 15min
-  const extendedTotal = DEFAULT_TOTAL_PROOF_BUDGET_MS + LIVE_AGENT_EXTRA_MS // 19min
+  const nonExtendedTotal = DEFAULT_TOTAL_PROOF_BUDGET_MS // 17min (BOS-354)
+  const extendedTotal = DEFAULT_TOTAL_PROOF_BUDGET_MS + LIVE_AGENT_EXTRA_MS // 21min
 
-  // Without the total extension: web's own grant is clamped to the
-  // unextended total's remaining (15min, not the full 16min it wants), which
-  // then leaves nothing for TUI's 2min floor → squeezed into deferral.
+  // Without the total extension: the 17min pool just fits web's full live-extended
+  // 16min grant, leaving only 1min — below TUI's 2min floor → squeezed into deferral.
   const webWithoutExtension = planSurfaceBudget({
     surface: 'web',
     elapsedMs: 0,
@@ -2982,7 +2981,7 @@ test('planSurfaceBudget: extending the shared TOTAL (call-site responsibility) k
     liveAgent: true,
   })
   assert.equal(webWithoutExtension.run, true)
-  assert.equal(webWithoutExtension.maxWallClockMs, 15 * 60 * 1000) // clamped, not 16min
+  assert.equal(webWithoutExtension.maxWallClockMs, 16 * 60 * 1000) // full grant; leaves only 1min
   const tuiAfterSqueeze = planSurfaceBudget({
     surface: 'tui',
     elapsedMs: webWithoutExtension.maxWallClockMs,
@@ -2991,8 +2990,8 @@ test('planSurfaceBudget: extending the shared TOTAL (call-site responsibility) k
   })
   assert.deepEqual(tuiAfterSqueeze, { run: false, reasonCode: 'budget-exceeded' })
 
-  // With the total extension: web gets its full live-extended 16min grant
-  // AND the sibling TUI floor is intact (3min remains ≥ the 2min floor).
+  // With the total extension: web still gets its full 16min grant AND the sibling
+  // TUI floor is intact (5min remains ≥ the 2min floor → TUI runs at its 4min default).
   const webWithExtension = planSurfaceBudget({
     surface: 'web',
     elapsedMs: 0,
@@ -3008,7 +3007,7 @@ test('planSurfaceBudget: extending the shared TOTAL (call-site responsibility) k
     totalBudgetMs: extendedTotal,
     budget: TUI_BUDGET,
   })
-  assert.deepEqual(tuiAfterExtension, { run: true, maxWallClockMs: 3 * 60 * 1000 })
+  assert.deepEqual(tuiAfterExtension, { run: true, maxWallClockMs: 4 * 60 * 1000 })
 })
 
 test('deferredReasonMessage(budget-exceeded): honest, never "environment limitation"', () => {
@@ -3430,6 +3429,60 @@ test('classifyTuiOutcome: neither leg attempted (degenerate {F,F} guard) → age
     }),
     { proofSource: null, reasonCode: 'agent-incomplete', errorDetail: null },
   )
+})
+
+// ── BOS-354: mid-flight wall-clock truncation softens to `tui-truncated` ──────
+
+test('classifyTuiOutcome: agent gate-failed + agentTruncated + replay not-attempted → tui-truncated (soft, exit 0)', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: false },
+      agentOutcome: 'gate-failed',
+      replayOutcome: 'not-attempted',
+      agentDetail: A_GATE,
+      agentTruncated: true,
+    }),
+    { proofSource: null, reasonCode: 'tui-truncated', errorDetail: `agent: ${A_GATE}` },
+  )
+})
+
+test('classifyTuiOutcome: agent gate-failed + agentTruncated + replay gate-failed → stays agent-incomplete (genuine replay evidence failure dominates)', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: true },
+      agentOutcome: 'gate-failed',
+      replayOutcome: 'gate-failed',
+      agentDetail: A_GATE,
+      replayDetail: R_GATE,
+      agentTruncated: true,
+    }),
+    {
+      proofSource: null,
+      reasonCode: 'agent-incomplete',
+      errorDetail: `agent: ${A_GATE}; replay: ${R_GATE}`,
+    },
+  )
+})
+
+test('classifyTuiOutcome: agent gate-failed + agentTruncated:false → stays agent-incomplete (unchanged default)', () => {
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: false },
+      agentOutcome: 'gate-failed',
+      replayOutcome: 'not-attempted',
+      agentDetail: A_GATE,
+      agentTruncated: false,
+    }),
+    { proofSource: null, reasonCode: 'agent-incomplete', errorDetail: `agent: ${A_GATE}` },
+  )
+})
+
+test('deferredReasonMessage(tui-truncated): honest neutral copy, never "environment limitation"', () => {
+  const msg = deferredReasonMessage('tui-truncated')
+  assert.ok(!msg.includes('environment limitation'))
+  assert.ok(/per-run wall clock/.test(msg), 'names the wall-clock cutoff')
+  assert.ok(/change itself is fine/.test(msg), 'reassures the change is fine')
+  assert.ok(/re-run proof/i.test(msg), 'points at re-running proof')
 })
 
 // ── BOS-223: diff-only scenario discovery ──────────────────────────────────

@@ -1,0 +1,5 @@
+load("@gazelle//:def.bzl", "gazelle")
+
+# gazelle:proto disable_global
+# gazelle:exclude node_modules
+gazelle(name = "gazelle")

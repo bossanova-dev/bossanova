@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "apiversioncheck_lib",
+    srcs = [
+        "main.go",
+        "probe.go",
+    ],
+    importpath = "github.com/recurser/bossd/cmd/apiversioncheck",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//lib/bossalib/apiversion",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "@com_connectrpc_connect//:connect",
+    ],
+)
+
+go_binary(
+    name = "apiversioncheck",
+    embed = [":apiversioncheck_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "apiversioncheck_test",
+    srcs = ["probe_test.go"],
+    embed = [":apiversioncheck_lib"],
+    deps = [
+        "//lib/bossalib/apiversion",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_connectrpc_connect//:connect",
+    ],
+)

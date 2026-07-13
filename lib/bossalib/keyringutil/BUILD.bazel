@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "keyringutil",
+    srcs = ["keyringutil.go"],
+    importpath = "github.com/recurser/bossalib/keyringutil",
+    visibility = ["//visibility:public"],
+    deps = ["@com_github_99designs_keyring//:keyring"],
+)
+
+go_test(
+    name = "keyringutil_test",
+    srcs = ["keyringutil_test.go"],
+    embed = [":keyringutil"],
+    deps = ["@com_github_99designs_keyring//:keyring"],
+)

@@ -193,6 +193,28 @@ func (s *SQLiteAccountStore) RecordTestResult(ctx context.Context, id string, ok
 	return nil
 }
 
+// MarkAccountSuspended fails an account's health and records a legible reason in
+// one write: it sets health=failed, writes reason to last_test_error, and clears
+// last_test_ok_at (the account can no longer serve requests). It deliberately
+// leaves status untouched — recovering a suspended account (e.g. after fixing
+// billing) is an explicit operator action, mirroring any other health=failed
+// account. Returns sql.ErrNoRows when the row does not exist.
+func (s *SQLiteAccountStore) MarkAccountSuspended(ctx context.Context, id string, reason string) error {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE accounts
+		 SET health = ?, last_test_error = ?, last_test_ok_at = NULL, updated_at = ?
+		 WHERE id = ?`,
+		string(models.AccountHealthFailed), reason, now, id)
+	if err != nil {
+		return fmt.Errorf("mark account suspended: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // RecordUsageProbe overwrites only the cached usage-snapshot metadata columns
 // for a row. It never stores credential material. Returns sql.ErrNoRows when
 // the row does not exist.

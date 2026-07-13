@@ -389,6 +389,55 @@ func TestAccountStore_RecordTestResult(t *testing.T) {
 	}
 }
 
+func TestAccountStore_MarkAccountSuspended(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "susp"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Seed a passing test so we can prove suspension clears last_test_ok_at.
+	okAt := time.Now().Add(-time.Minute).UTC().Truncate(time.Millisecond)
+	if err := store.RecordTestResult(ctx, acct.ID, ptrTime(okAt), ""); err != nil {
+		t.Fatalf("seed test result: %v", err)
+	}
+
+	const reason = "account suspended: organization disabled Claude subscription access"
+	if err := store.MarkAccountSuspended(ctx, acct.ID, reason); err != nil {
+		t.Fatalf("mark suspended: %v", err)
+	}
+
+	got, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Health != models.AccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, models.AccountHealthFailed)
+	}
+	if got.LastTestError != reason {
+		t.Errorf("last_test_error = %q, want %q", got.LastTestError, reason)
+	}
+	if got.LastTestOkAt != nil {
+		t.Errorf("last_test_ok_at = %v, want nil (cleared)", got.LastTestOkAt)
+	}
+	// Status is left untouched — an operator re-enables via a separate action.
+	if got.Status != models.AccountStatusActive {
+		t.Errorf("status = %q, want unchanged active", got.Status)
+	}
+}
+
+func TestAccountStore_MarkAccountSuspendedUnknownID(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	if err := store.MarkAccountSuspended(ctx, "nope", "x"); err != sql.ErrNoRows {
+		t.Errorf("mark unknown: got %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestAccountStore_RecordTestResultUnknownID(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewAccountStore(db)

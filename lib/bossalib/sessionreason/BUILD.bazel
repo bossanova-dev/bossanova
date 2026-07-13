@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sessionreason",
+    srcs = [
+        "draft_pr.go",
+        "finalize.go",
+    ],
+    importpath = "github.com/recurser/bossalib/sessionreason",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "sessionreason_test",
+    srcs = [
+        "draft_pr_test.go",
+        "finalize_test.go",
+    ],
+    embed = [":sessionreason"],
+)

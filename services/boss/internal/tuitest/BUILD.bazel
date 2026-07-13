@@ -1,0 +1,63 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "tuitest",
+    srcs = [
+        "fixtureenv.go",
+        "harness.go",
+        "mock_daemon.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/tuitest",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//services/boss/internal/tuidriver",
+        "@com_connectrpc_connect//:connect",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_test(
+    name = "tuitest_test",
+    srcs = [
+        "bugreport_test.go",
+        "chatpicker_test.go",
+        "cron_test.go",
+        "fixtureenv_test.go",
+        "harness_test.go",
+        "home_test.go",
+        "login_subscription_test.go",
+        "login_test.go",
+        "main_test.go",
+        "mock_daemon_attach_test.go",
+        "mock_daemon_standalone_test.go",
+        "navigation_test.go",
+        "newsession_agent_test.go",
+        "newsession_test.go",
+        "onboarding_e2e_test.go",
+        "repoadd_test.go",
+        "repolist_test.go",
+        "reposettings_test.go",
+        "sessionsettings_test.go",
+        "settings_nav_test.go",
+        "settings_test.go",
+        "trash_test.go",
+    ],
+    embed = [":tuitest"],
+    # keep: TUI integration tests go-build the boss binary via a runtime.Caller
+    # workspace root — "go" is absent from the sandbox PATH. Covered by `make test-boss`.
+    tags = [
+        "manual",
+        "requires-workspace",
+    ],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//services/boss/internal/client",
+        "//services/boss/internal/fixtures",
+        "@com_connectrpc_connect//:connect",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

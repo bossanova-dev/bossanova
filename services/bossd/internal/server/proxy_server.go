@@ -18,6 +18,8 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/agenterr"
+	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
 )
 
@@ -67,6 +69,11 @@ type Failover interface {
 	// pass the original response through unchanged. It never persists the
 	// rebind (that is CommitFailover's job, post-replay).
 	PrepareFailover(ctx context.Context, sessionID string, status int) (session.FailoverResult, error)
+	// PrepareFailoverKind is PrepareFailover for a signal not carried by a bare
+	// HTTP status — used for an account suspension (a 403 whose body confirms an
+	// org/billing block) mapped to rotation.AuthInvalidated. Same contract as
+	// PrepareFailover otherwise.
+	PrepareFailoverKind(ctx context.Context, sessionID string, kind rotation.SignalKind, trigger string) (session.FailoverResult, error)
 	// CommitFailover persists the session→account rebind + audit AFTER a
 	// successful replay, so the persisted account is the one that served the
 	// request.
@@ -419,6 +426,48 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Status-gated failover: decide BEFORE any body bytes ship to the client.
 	canAttemptFailover := canFailover && (!credentiallessManagedSentinel || resp.StatusCode != http.StatusUnauthorized)
+
+	// A 403 carrying the account-suspension signature (an org/billing block, e.g.
+	// a credit-card limit disabling Claude subscription access) is handled like a
+	// 401: fail the account and rotate. Unlike 429/401 the discriminator is the
+	// BODY, so buffer the (small, error) response and inspect it. A benign 403
+	// (e.g. a scope refusal) does not match and passes through unchanged.
+	if canAttemptFailover && resp.StatusCode == http.StatusForbidden {
+		// Read only a bounded PREFIX for suspension detection, but preserve the
+		// FULL original body for pass-through by re-prepending the prefix via
+		// io.MultiReader and keeping the original body as the closer. Anthropic 403
+		// bodies are tiny, so the prefix holds the whole body in practice (the
+		// SuspensionReason check is byte-identical to inspecting the full body),
+		// but this avoids truncating a large benign 403 against the upstream
+		// Content-Length on the pass-through path.
+		prefix, _ := io.ReadAll(io.LimitReader(resp.Body, maxBufferedBody+1))
+		origBody := resp.Body
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(prefix), origBody), origBody}
+		if _, suspended := agenterr.SuspensionReason(string(prefix)); suspended {
+			// Trigger mirrors the SignalKind: suspension is modeled as an
+			// AuthInvalidated rotation, so it audits under the matching proto
+			// enum ROTATION_TRIGGER_AUTH_INVALIDATED. Using a string without a
+			// proto enum entry would hydrate back to ROTATION_TRIGGER_UNSPECIFIED
+			// via pb.RotationTrigger_value in account_binding.go.
+			res, ferr := p.failover.PrepareFailoverKind(r.Context(), sessionID, rotation.AuthInvalidated, "ROTATION_TRIGGER_AUTH_INVALIDATED")
+			if ferr != nil {
+				// Redaction-safe: the error never carries the token.
+				p.logger.Warn().Err(ferr).Str("session", sessionID).Msg("failover proxy: prepare suspension failover failed; returning original response")
+			}
+			if res.Rotate {
+				_ = resp.Body.Close()
+				p.replayAndCommit(w, r, upstreamPath, buffered, sessionID, res)
+				return
+			}
+		}
+		// Not a suspension, or no rotation target: pass the buffered 403 through.
+		p.copyResponse(w, resp)
+		return
+	}
+
 	if canAttemptFailover && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusUnauthorized) {
 		res, ferr := p.failover.PrepareFailover(r.Context(), sessionID, resp.StatusCode)
 		if ferr != nil {
@@ -428,46 +477,53 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		if res.Rotate {
 			// Discard the rejected response; replay with the next bearer.
 			_ = resp.Body.Close()
-			replay, rerr := p.forward(r, upstreamPath, newBodyReader(buffered), res.Token)
-			if rerr != nil {
-				p.logger.Warn().Err(rerr).Str("session", sessionID).Msg("failover proxy: replay request failed")
-				http.Error(w, "bad gateway", http.StatusBadGateway)
-				return
-			}
-			defer func() { _ = replay.Body.Close() }()
-			if replay.StatusCode < http.StatusBadRequest {
-				// Persist the rebind + audit for the account that actually served
-				// the successful request. Only make the swap STICKY once the
-				// rebind is durably persisted: caching the bearer while
-				// account_id stayed on the old account would desync the forwarded
-				// account from the persisted one. On a commit failure we still
-				// serve this successful replay (the request already went through)
-				// but leave the swap unstuck, so the next request re-forwards the
-				// old bearer, cleanly re-tries the failover, and re-attempts the
-				// commit — keeping forwarded and persisted accounts in sync.
-				//
-				// Commit on a DETACHED context: the replay already consumed the
-				// next account's quota, so the durable rebind must survive a client
-				// (subprocess) cancellation between the replay returning and this
-				// persist — otherwise the rebind is lost and the next request cools
-				// the wrong account. PrepareFailover + the replay legitimately stay
-				// on r.Context() (abort if the client goes away before success).
-				commitCtx, cancelCommit := context.WithTimeout(context.WithoutCancel(r.Context()), commitTimeout)
-				cerr := p.failover.CommitFailover(commitCtx, sessionID, res)
-				cancelCommit()
-				if cerr != nil {
-					p.logger.Error().Err(cerr).Str("session", sessionID).Msg("failover proxy: commit failover failed; swap not made sticky")
-				} else {
-					p.rememberBearer(sessionID, res.Token)
-					p.logger.Info().Str("session", sessionID).Int("replayed_status", replay.StatusCode).
-						Msg("failover proxy: replayed with next account, no pane respawn")
-				}
-			}
-			p.copyResponse(w, replay)
+			p.replayAndCommit(w, r, upstreamPath, buffered, sessionID, res)
 			return
 		}
 	}
 	p.copyResponse(w, resp)
+}
+
+// replayAndCommit replays the buffered request with the rotated bearer
+// (res.Token) and streams the result to the client, persisting the sticky rebind
+// on a successful replay. It assumes res.Rotate is true and the original
+// rejected response has already been discarded by the caller.
+func (p *ProxyServer) replayAndCommit(w http.ResponseWriter, r *http.Request, upstreamPath string, buffered []byte, sessionID string, res session.FailoverResult) {
+	replay, rerr := p.forward(r, upstreamPath, newBodyReader(buffered), res.Token)
+	if rerr != nil {
+		p.logger.Warn().Err(rerr).Str("session", sessionID).Msg("failover proxy: replay request failed")
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		return
+	}
+	defer func() { _ = replay.Body.Close() }()
+	if replay.StatusCode < http.StatusBadRequest {
+		// Persist the rebind + audit for the account that actually served the
+		// successful request. Only make the swap STICKY once the rebind is durably
+		// persisted: caching the bearer while account_id stayed on the old account
+		// would desync the forwarded account from the persisted one. On a commit
+		// failure we still serve this successful replay (the request already went
+		// through) but leave the swap unstuck, so the next request re-forwards the
+		// old bearer, cleanly re-tries the failover, and re-attempts the commit —
+		// keeping forwarded and persisted accounts in sync.
+		//
+		// Commit on a DETACHED context: the replay already consumed the next
+		// account's quota, so the durable rebind must survive a client (subprocess)
+		// cancellation between the replay returning and this persist — otherwise
+		// the rebind is lost and the next request cools the wrong account. The
+		// prepare + replay legitimately stay on r.Context() (abort if the client
+		// goes away before success).
+		commitCtx, cancelCommit := context.WithTimeout(context.WithoutCancel(r.Context()), commitTimeout)
+		cerr := p.failover.CommitFailover(commitCtx, sessionID, res)
+		cancelCommit()
+		if cerr != nil {
+			p.logger.Error().Err(cerr).Str("session", sessionID).Msg("failover proxy: commit failover failed; swap not made sticky")
+		} else {
+			p.rememberBearer(sessionID, res.Token)
+			p.logger.Info().Str("session", sessionID).Int("replayed_status", replay.StatusCode).
+				Msg("failover proxy: replayed with next account, no pane respawn")
+		}
+	}
+	p.copyResponse(w, replay)
 }
 
 // forward builds and issues one upstream request. overrideAuth, when non-empty,

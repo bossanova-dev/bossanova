@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "accountflow",
+    srcs = [
+        "claude.go",
+        "client.go",
+        "codex.go",
+        "exec.go",
+        "prompter.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/accountflow",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/agentcred",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/safego",
+        "//services/boss/internal/client",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_x_term//:term",
+    ],
+)
+
+go_test(
+    name = "accountflow_test",
+    srcs = [
+        "claude_test.go",
+        "codex_test.go",
+        "exec_test.go",
+        "fakes_test.go",
+    ],
+    embed = [":accountflow"],
+    deps = [
+        "//lib/bossalib/agentcred",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+    ],
+)

@@ -76,9 +76,12 @@ export function normalizeExpectation(raw, where = 'expect') {
 
 function matchAlternative(screenText, { text, match }) {
   if (match === 'literal') return screenText.includes(text)
-  if (match === 'normalized') return normalizeWhitespace(screenText).includes(normalizeWhitespace(text))
+  if (match === 'normalized')
+    return normalizeWhitespace(screenText).includes(normalizeWhitespace(text))
   if (match === 'normalized-ci') {
-    return normalizeWhitespace(screenText).toLowerCase().includes(normalizeWhitespace(text).toLowerCase())
+    return normalizeWhitespace(screenText)
+      .toLowerCase()
+      .includes(normalizeWhitespace(text).toLowerCase())
   }
   return compileRegex(text, 'regex').test(screenText)
 }

@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "skillinstall",
+    srcs = [
+        "doc.go",
+        "extract.go",
+    ],
+    importpath = "github.com/recurser/bossalib/skillinstall",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "skillinstall_test",
+    srcs = ["extract_test.go"],
+    embed = [":skillinstall"],
+)

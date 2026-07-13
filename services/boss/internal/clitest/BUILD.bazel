@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "clitest",
+    srcs = ["harness.go"],
+    importpath = "github.com/recurser/boss/internal/clitest",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/internal/tuitest",
+    ],
+)
+
+go_test(
+    name = "clitest_test",
+    srcs = [
+        "account_test.go",
+        "archive_test.go",
+        "cron_test.go",
+        "daemon_install_test.go",
+        "ls_agent_test.go",
+        "ls_test.go",
+        "main_test.go",
+        "rename_test.go",
+        "repo_test.go",
+        "session_link_pr_test.go",
+        "settings_profile_test.go",
+        "settings_test.go",
+        "show_test.go",
+        "smoke_test.go",
+        "trash_test.go",
+    ],
+    embed = [":clitest"],
+    # keep: CLI integration tests go-build the boss binary via a runtime.Caller
+    # workspace root — "go" is absent from the sandbox PATH. Covered by `make test-boss`.
+    tags = [
+        "manual",
+        "requires-workspace",
+    ],
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/internal/tuitest",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

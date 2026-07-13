@@ -1312,7 +1312,7 @@ async function runAgentSurfaces({ plan, changedFiles, args }) {
     // scenario-less TUI diff has no leg to run in those states — replay needs a
     // committed scenario and there is no authenticable agent — so
     // `scenario-missing` is the honest, most-actionable authoring nudge (a keyless
-    // CI env sees it, not `agent-unavailable`), and the ~4-min agent run + bridge
+    // CI env sees it, not `agent-unavailable`), and the ~6-min agent run + bridge
     // build is skipped. Critically it also avoids a doomed agent leg crashing to a
     // `pipeline-error` (exit 1) under mode=agent-without-key: both classes now exit
     // 1 (BOS-226), but `scenario-missing` is the honest, actionable authoring nudge

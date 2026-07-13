@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "webhookdispatchtest",
+    srcs = ["webhookdispatchtest.go"],
+    importpath = "github.com/recurser/bossd/webhookdispatchtest",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/bossd/internal/upstream",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

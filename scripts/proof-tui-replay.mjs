@@ -36,8 +36,9 @@ import {
 import { parseCastTailMs } from './proof-tui-agent.mjs'
 
 // Default wall-clock cap mirrors TUI_BUDGETS.maxWallClockMs in proof-tui-agent.mjs
-// (kept local to avoid a config import cycle). Overridable per call.
-const DEFAULT_MAX_WALL_CLOCK_MS = 4 * 60 * 1000
+// (kept local to avoid a config import cycle; bumped 4→6 min alongside it in
+// BOS-354). Overridable per call — the real dispatch always passes the reserve.
+const DEFAULT_MAX_WALL_CLOCK_MS = 6 * 60 * 1000
 // Default waitFor poll ceiling; matches the scenario schema's waitFor default.
 const DEFAULT_WAIT_FOR_TIMEOUT_MS = 10000
 

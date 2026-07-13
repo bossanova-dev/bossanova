@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "accountcred",
+    srcs = ["accountcred.go"],
+    importpath = "github.com/recurser/bossd/internal/accountcred",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/keyringutil",
+        "@com_github_99designs_keyring//:keyring",
+    ],
+)
+
+go_test(
+    name = "accountcred_test",
+    srcs = ["accountcred_test.go"],
+    embed = [":accountcred"],
+    deps = ["@com_github_99designs_keyring//:keyring"],
+)

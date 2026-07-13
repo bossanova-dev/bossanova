@@ -23,8 +23,15 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
+import { silenceConsole } from './quiet-test-console.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
+
+// Silence the code-under-test's console output (the "[proof-tui-agent] DEGRADED
+// …" warnings and finalize's run-file manifest JSON dumps). The few tests that
+// assert on warnings install their own capture inside the test body; that
+// composes cleanly with the per-test restore. See quiet-test-console.mjs.
+silenceConsole()
 
 // Hermeticity guard (BOS-141): finalizeAgentProof's default `judge` dep
 // (judgeProof) makes a REAL Anthropic API call whenever PROOF_ANTHROPIC_API_KEY
@@ -532,8 +539,10 @@ test('runTuiAgentProof: token budget halts the loop with a non-passed result', a
   }
 })
 
-test('runTuiAgentProof: wall-clock budget halts the loop with a non-passed result', async () => {
-  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+test('runTuiWithReplayFallback: a wall-clock-truncated agent leg (no scenario) softens to a deferred tui-truncated (exit 0), not agent-incomplete (BOS-354)', async () => {
+  const { runTuiAgentProof, runTuiWithReplayFallback } = await import('./proof-tui-agent.mjs')
+  const { classifySurfaceOutcomes, aggregateExitCode } =
+    await import('./proof-finalize-outcome.mjs')
   const originalExitCode = process.exitCode
   process.exitCode = undefined
 
@@ -543,37 +552,100 @@ test('runTuiAgentProof: wall-clock budget halts the loop with a non-passed resul
     budgets: { maxSteps: 50, maxWallClockMs: -1 },
   }
 
+  const localDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-truncated-'))
   try {
     await withTempBrief(brief, (briefPath) =>
       withEnv(
         BASE_ENV({ BOSS_PROOF_BRIEF: briefPath, BOSS_PROOF_RUN_ID: 'tui-wallclock' }),
         async () => {
           const model = scriptedModel([toolUse('observe', {})], { repeatLast: true })
-          const { manifest } = await runTuiAgentProof({
-            prNumber: 'tuiwallclock',
-            commit: 'abc1234',
-            changedFiles: [],
-            dryRun: true,
-            deps: {
-              bridge: scriptedBridge({ screens: ['Home'] }),
-              model,
-              renderStill: fakeRenderStill(),
-              castToVideo: async () => null,
+          // Drive the real agent leg through the dispatcher in collect mode with a
+          // negative wall clock: the loop breaks before any verdict → truncated.
+          const run = await runTuiWithReplayFallback(
+            {
+              prNumber: 'tuiwallclock',
+              commit: 'abc1234',
+              changedFiles: [], // no committed scenario → replay leg not attempted
+              dryRun: true,
+              runContext: {
+                collect: true,
+                runId: 'tui-wallclock',
+                token: 'tok-tui-test',
+                localDir,
+                maxWallClockMs: -1,
+              },
+              deps: {
+                bridge: scriptedBridge({ screens: ['Home'] }),
+                model,
+                renderStill: fakeRenderStill(),
+                castToVideo: async () => null,
+              },
             },
-          })
-          assert.equal(manifest.verdict, 'failed')
+            { runTuiAgentProof, agentUsable: true },
+          )
+          // The dispatcher softens the truncated leg into a neutral deferral.
+          assert.equal(
+            run.reasonCode,
+            'tui-truncated',
+            'truncated agent leg softens to tui-truncated',
+          )
+          assert.equal(run.hasFailure, false, 'a truncation is not a failure')
           assert.equal(
             model.calls,
             0,
             'a negative wall-clock budget must stop before any model call',
           )
+          // Downstream: deferred + exit 0 (never exit-1 on time alone).
+          const perSurface = classifySurfaceOutcomes([run])
+          assert.deepEqual(perSurface, [
+            { surface: 'tui', outcome: 'deferred', reasonCode: 'tui-truncated', error: null },
+          ])
+          assert.equal(aggregateExitCode(perSurface), 0)
         },
       ),
     )
   } finally {
     process.exitCode = originalExitCode
+    fs.rmSync(localDir, { recursive: true, force: true })
     cleanupPr('tuiwallclock')
   }
+})
+
+test('runTuiWithReplayFallback: truncated agent leg + no scenario → SurfaceRun carries reasonCode tui-truncated, hasFailure false (BOS-354)', async () => {
+  const { runTuiWithReplayFallback } = await import('./proof-tui-agent.mjs')
+  // A minimal fake agent leg that reports a collect-mode SurfaceRun flagged
+  // `truncated: true` (as the real leg does on a mid-flight wall-clock cutoff).
+  const fakeAgentLeg = async () => ({
+    surface: 'tui',
+    captureShapes: [{ surface: 'tui', status: 'failed', error: 'cut off mid-flight' }],
+    brief: { title: 'Rich 4-scene brief' },
+    agentResult: {
+      passed: false,
+      summary: 'ran out of clock before finishing',
+      evidence: [],
+      steps: 3,
+    },
+    hasFailure: true,
+    noSurface: false,
+    scanTexts: ['partial evidence'],
+    elapsedMs: 1234,
+    reasonCode: null,
+    truncated: true,
+  })
+  const run = await runTuiWithReplayFallback(
+    {
+      prNumber: '1',
+      commit: 'abc1234',
+      changedFiles: [], // no scenario → replay leg not attempted
+      dryRun: true,
+      runContext: { collect: true, runId: 'r', token: 't', maxWallClockMs: 60_000 },
+    },
+    { runTuiAgentProof: fakeAgentLeg, agentUsable: true },
+  )
+  assert.equal(run.reasonCode, 'tui-truncated')
+  assert.equal(run.hasFailure, false)
+  assert.equal(run.proofSource, null)
+  assert.equal(run.surface, 'tui')
 })
 
 // ── 4. zero-frame fallback ────────────────────────────────────────────────────
@@ -2827,6 +2899,131 @@ test('runAgentLoop: default cast clock degrades to startMs null when no .cast ex
   }
 })
 
+test('runAgentLoop: wallClockTruncated is true ONLY when the clock breaks before a verdict (BOS-354)', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+
+  // (1) Wall-clock cutoff before any verdict → truncated.
+  const truncated = await runAgentLoop({
+    brief: {
+      description: 'never finishes in time',
+      budgets: { maxSteps: 50, maxWallClockMs: -1, maxTokens: 100_000 },
+    },
+    model: 'test-model',
+    modelDep: scriptedModel([toolUse('observe', {})], { repeatLast: true }),
+    bridge: scriptedBridge({ screens: ['HOME'] }),
+    rawDir: fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-trunc-')),
+  })
+  assert.equal(truncated.wallClockTruncated, true, 'clock break with no verdict → truncated')
+  assert.equal(truncated.agentResult.passed, false, 'a truncated run never passes')
+
+  // (2) The agent reached an explicit done({passed:false}) verdict → NOT truncated.
+  const rejected = await runAgentLoop({
+    brief: {
+      description: 'agent judges its own evidence bad',
+      budgets: { maxSteps: 50, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    },
+    model: 'test-model',
+    modelDep: scriptedModel([toolUse('done', { passed: false, summary: 'blocked', evidence: [] })]),
+    bridge: scriptedBridge({ screens: ['HOME'] }),
+    rawDir: fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-trunc-')),
+  })
+  assert.equal(
+    rejected.wallClockTruncated,
+    false,
+    'a genuine done(passed:false) is not a truncation',
+  )
+
+  // (3) Step exhaustion (never calls done) → NOT truncated.
+  const exhausted = await runAgentLoop({
+    brief: {
+      description: 'runs out of steps',
+      budgets: { maxSteps: 2, maxWallClockMs: 60_000, maxTokens: 100_000 },
+    },
+    model: 'test-model',
+    modelDep: scriptedModel([toolUse('observe', {})], { repeatLast: true }),
+    bridge: scriptedBridge({ screens: ['HOME'] }),
+    rawDir: fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-trunc-')),
+  })
+  assert.equal(
+    exhausted.wallClockTruncated,
+    false,
+    'step exhaustion is genuine incompleteness, not a clock cutoff',
+  )
+})
+
+test('runAgentLoop: a procedurally-rejected done(passed:false) then a wall-clock cutoff stays fatal, never tui-truncated (BOS-354 / BOS-226)', async () => {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+
+  // A model that pauses ~80ms per call so the wall clock (25ms budget) trips on
+  // the SECOND top-of-loop check — AFTER the first response is processed. setTimeout
+  // only ever fires late, so iter-0 elapsed (~0 < 25) passes and iter-1 elapsed
+  // (>=80 > 25) breaks: deterministic, no real-time flakiness either direction.
+  const delayedModel = (responses) => {
+    let i = 0
+    return {
+      calls: 0,
+      async createMessage() {
+        this.calls += 1
+        await new Promise((r) => setTimeout(r, 80))
+        const resp = responses[Math.min(i, responses.length - 1)]
+        if (i < responses.length - 1) i += 1
+        return resp
+      },
+    }
+  }
+  // Two scenes so a done() at scene 1 leaves scenes remaining ⇒ evaluateDoneCall
+  // PROCEDURALLY REJECTS it (rejection budget unspent), leaving done.passed === null.
+  const twoScene = {
+    description: 'multi-scene: agent hits a blocker in scene 1',
+    scenes: [
+      { id: 'scene-01', title: 'Home', expectedEvidence: ['Home'] },
+      { id: 'scene-02', title: 'Settings', expectedEvidence: ['Settings'] },
+    ],
+    budgets: { maxSteps: 50, maxWallClockMs: 25, maxTokens: 100_000 },
+  }
+
+  // A genuine blocker signalled via done(passed:false), rejected (scenes remain),
+  // then the clock expires: MUST stay fatal (the BOS-226 invariant this ticket
+  // swears to keep) — never soften to the neutral tui-truncated deferral.
+  const failModel = delayedModel([
+    toolUse('done', { passed: false, summary: 'blocked in scene 1', evidence: [] }),
+  ])
+  const rejectedFail = await runAgentLoop({
+    brief: twoScene,
+    model: 'test-model',
+    modelDep: failModel,
+    bridge: scriptedBridge({ screens: ['HOME'] }),
+    rawDir: fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-trunc-')),
+  })
+  assert.equal(
+    failModel.calls,
+    1,
+    'the fail verdict is processed before the clock breaks on the next iteration',
+  )
+  assert.equal(
+    rejectedFail.wallClockTruncated,
+    false,
+    'a rejected done(passed:false) blocker + wall-clock cutoff stays fatal agent-incomplete, never tui-truncated',
+  )
+  assert.equal(rejectedFail.agentResult.passed, false)
+
+  // Positive control: the SAME delayed clock with an observe-only run (never a
+  // failing verdict) DOES truncate — proving the clock genuinely broke above and
+  // the `false` is the failing-verdict guard, not a clock that never fired.
+  const observeTimeout = await runAgentLoop({
+    brief: twoScene,
+    model: 'test-model',
+    modelDep: delayedModel([toolUse('observe', {})]),
+    bridge: scriptedBridge({ screens: ['HOME'] }),
+    rawDir: fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-trunc-')),
+  })
+  assert.equal(
+    observeTimeout.wallClockTruncated,
+    true,
+    'same delayed clock, no failing verdict → truncated (confirms the clock genuinely broke)',
+  )
+})
+
 test('runTuiAgentProof: persists raw/caption-timings.json and forwards timings to castToVideo', async () => {
   const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
   const originalExitCode = process.exitCode
@@ -3641,10 +3838,10 @@ test('proof-agent (web) default is unchanged at claude-haiku-4-5 and ignores TUI
   )
 })
 
-test('TUI_BUDGETS: maxSteps raised to 40; wall-clock and tokens unchanged', async () => {
+test('TUI_BUDGETS: maxSteps 40 (BOS-351); wall clock raised 4→6 min (BOS-354); tokens unchanged', async () => {
   const { TUI_BUDGETS } = await import('./proof-tui-agent.mjs')
   assert.equal(TUI_BUDGETS.maxSteps, 40, 'BOS-351 step-budget bump')
-  assert.equal(TUI_BUDGETS.maxWallClockMs, 4 * 60 * 1000, 'wall clock unchanged (4 min)')
+  assert.equal(TUI_BUDGETS.maxWallClockMs, 6 * 60 * 1000, 'BOS-354 wall-clock raise (6 min)')
   assert.equal(TUI_BUDGETS.maxTokens, 200_000, 'token budget unchanged (200k)')
 })
 
@@ -3767,10 +3964,9 @@ test('runAgentLoop: a repeated premature done(passed=true) is accepted (no infin
       ],
       budgets: { maxSteps: 8, maxWallClockMs: 60_000, maxTokens: 100_000 },
     }
-    const model = scriptedModel(
-      [toolUse('done', { passed: true, summary: 'insisting' })],
-      { repeatLast: true },
-    )
+    const model = scriptedModel([toolUse('done', { passed: true, summary: 'insisting' })], {
+      repeatLast: true,
+    })
     const result = await runAgentLoop({
       brief,
       model: 'test-model',
@@ -3872,8 +4068,8 @@ test('extractStillsFromVideo: blank and duplicate screens are skipped', async ()
     const stills = await extractStillsFromVideo({
       screens: [
         { seq: 1, text: 'HOME', castMs: 0 },
-        { seq: 2, text: '', castMs: 500 },        // blank — skipped
-        { seq: 3, text: 'HOME', castMs: 900 },     // duplicate of 1 — skipped
+        { seq: 2, text: '', castMs: 500 }, // blank — skipped
+        { seq: 3, text: 'HOME', castMs: 900 }, // duplicate of 1 — skipped
         { seq: 4, text: 'SETTINGS', castMs: 1400 },
         { seq: 5, text: '   \n  ', castMs: 1800 }, // whitespace-only — skipped
       ],
@@ -3939,7 +4135,11 @@ test('extractStillsFromVideo: an exact repeat across a scene boundary still keep
       captureDir,
       extractStill,
     })
-    assert.deepEqual(extracted, ['scene-01-frame-01.png', 'scene-01-frame-02.png', 'scene-02-frame-03.png'])
+    assert.deepEqual(extracted, [
+      'scene-01-frame-01.png',
+      'scene-01-frame-02.png',
+      'scene-02-frame-03.png',
+    ])
     assert.equal(
       stills.filter((s) => s.sceneId === 'scene-02').length,
       1,
@@ -3962,7 +4162,11 @@ test('runTuiAgentProof: generated noUiSurface brief defers as no-ui-surface with
       runContext: { collect: true, runId: 'tui-nosurface', token: 'tok-tui-test' },
       deps: {
         bridge,
-        model: { async createMessage() { throw new Error('agent loop must not run') } },
+        model: {
+          async createMessage() {
+            throw new Error('agent loop must not run')
+          },
+        },
         generateBriefFromDiff: async () => ({
           title: 'backend-only change',
           description: 'no TUI screen is affected — daemon-internal retry logic only',
@@ -4011,7 +4215,11 @@ test('runTuiAgentProof: noUiSurface is IGNORED when the diff touches view code',
       },
       deps: {
         bridge: scriptedBridge(),
-        model: { async createMessage() { throw new Error('loopRunner injected') } },
+        model: {
+          async createMessage() {
+            throw new Error('loopRunner injected')
+          },
+        },
         generateBriefFromDiff: async () => ({
           title: 'view change',
           description: 'claims no surface (wrongly)',

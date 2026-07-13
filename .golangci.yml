@@ -105,10 +105,9 @@ linters:
         linters:
           - gosec
 
-formatters:
-  enable:
-    - gofmt
-    - goimports
-  exclusions:
-    paths:
-      - gen
+# No `formatters:` block (BOS-371). gofmt+goimports are redundant here — they only
+# *re-check* formatting that `make format` / `format-affected` / the pre-commit hook
+# already *apply*, and they dominate golangci wall-time (measured bossd cold
+# 22s → 7s, ~3× without them). Whole-tree format is instead enforced by the cheap
+# standalone `make lint-go-fmt` gate (gofmt -l + goimports -l, ~1s) run from `make
+# lint` / `make lint-all`, plus the pre-commit formatter and BOS-372's sweep.

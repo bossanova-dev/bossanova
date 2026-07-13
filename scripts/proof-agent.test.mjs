@@ -20,6 +20,11 @@ import path from 'node:path'
 import { test } from 'node:test'
 
 import { finalizeAgentProof } from './proof-agent-finalize.mjs'
+import { silenceConsole } from './quiet-test-console.mjs'
+
+// Silence the code-under-test console output (finalize manifest JSON dumps +
+// DEGRADED warnings) so a passing run stays quiet. See quiet-test-console.mjs.
+silenceConsole()
 
 // Hermeticity guard (BOS-141): finalizeAgentProof's default `judge` dep
 // (judgeProof) makes a REAL Anthropic API call whenever PROOF_ANTHROPIC_API_KEY

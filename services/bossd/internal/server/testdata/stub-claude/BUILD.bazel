@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "stub-claude_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/recurser/bossd/internal/server/testdata/stub-claude",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "stub-claude",
+    embed = [":stub-claude_lib"],
+    visibility = ["//services/bossd:__subpackages__"],
+)

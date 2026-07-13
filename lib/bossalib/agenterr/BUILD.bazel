@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "agenterr",
+    srcs = [
+        "capture.go",
+        "reset.go",
+        "taxonomy.go",
+        "usagelimited.go",
+    ],
+    importpath = "github.com/recurser/bossalib/agenterr",
+    visibility = ["//visibility:public"],
+    deps = ["//lib/bossalib/appstate"],
+)
+
+go_test(
+    name = "agenterr_test",
+    srcs = [
+        "capture_test.go",
+        "reset_test.go",
+        "taxonomy_test.go",
+        "usagelimited_test.go",
+    ],
+    embed = [":agenterr"],
+)

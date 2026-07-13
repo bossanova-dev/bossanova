@@ -103,8 +103,14 @@ type usageSnapshotProber interface {
 	ProbeUsageSnapshot(context.Context, string) (models.UsageSnapshot, error)
 }
 
+// usageSnapshotRecorder persists a probe snapshot and, for a confirmed
+// suspension, fails the account's health. MarkAccountSuspended lets the periodic
+// usage refresh proactively sideline an account the probe confirms is suspended
+// (an org/billing block), so rotation stops selecting it before a session is
+// ever bound to it.
 type usageSnapshotRecorder interface {
 	RecordUsageProbe(context.Context, string, models.UsageSnapshot) error
+	MarkAccountSuspended(context.Context, string, string) error
 }
 
 func probeUsageSnapshotForRotation(
@@ -123,6 +129,21 @@ func probeUsageSnapshotForRotation(
 	}
 	snap, err := usageProbe.ProbeUsageSnapshot(ctx, accountID)
 	if err != nil {
+		// A confirmed suspension (org/billing block) is a permanent condition,
+		// unlike a transient probe failure: proactively fail the account's health
+		// so rotation excludes it before any session binds to it. Scoped narrowly
+		// to the suspension signal — a generic auth/transient error keeps the
+		// conservative log-and-skip below to avoid false positives from blips.
+		if handled, reason, merr := accountwiring.MarkSuspendedIfConfirmed(ctx, recorder, accountID, err); handled {
+			if merr != nil {
+				logger.Warn().Err(merr).Str("account_id", accountID).
+					Msg("auto-rotate: mark account suspended failed")
+			} else {
+				logger.Warn().Str("account_id", accountID).Str("reason", reason).
+					Msg("auto-rotate: account suspended; health failed")
+			}
+			return models.UsageSnapshot{}, false
+		}
 		logger.Warn().Err(err).Str("account_id", accountID).
 			Msg("auto-rotate: usage probe failed")
 		return models.UsageSnapshot{}, false
@@ -1994,6 +2015,7 @@ func run(opts runOpts) error {
 		CronScheduler:      cronScheduler,
 		ChatStatus:         chatStatusTracker,
 		DisplayTracker:     displayTracker,
+		PRRefresher:        displayPoller,
 		RepairLease:        repairLease,
 		TmuxPoller:         tmuxStatusPoller,
 		Lifecycle:          lifecycle,

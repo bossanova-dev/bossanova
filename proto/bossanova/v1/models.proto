@@ -341,6 +341,12 @@ message Session {
   // hydrated by bossd like the display_* fields so TUI/web render history,
   // the exhausted badge, and toasts from one field. (BOS-176)
   repeated RotationEvent rotation_events = 59;
+
+  // True while a PR merge (MergeSession) is in flight. Transport-only: hydrated
+  // server-side from the in-memory DisplayTracker and never persisted. Drives
+  // the transient blue "merging" display status. Distinct from
+  // display_is_repairing (24) / display_setting_up (48).
+  bool display_merging = 60;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display

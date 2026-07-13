@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "trackerprompt",
+    srcs = ["trackerprompt.go"],
+    importpath = "github.com/recurser/bossalib/trackerprompt",
+    visibility = ["//visibility:public"],
+    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+)
+
+go_test(
+    name = "trackerprompt_test",
+    srcs = ["trackerprompt_test.go"],
+    embed = [":trackerprompt"],
+    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+)

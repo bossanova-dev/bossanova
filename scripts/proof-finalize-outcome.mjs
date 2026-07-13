@@ -92,7 +92,9 @@ export function classifySurfaceOutcomes(surfaceRuns) {
  * Exit-code contribution of a single per-surface outcome. Encodes the epic
  * exit policy (BOS-226 fail-loud):
  *   - a passed surface, and every neutral deferral (no-media, no-ui-surface,
- *     budget-exceeded, env-unavailable, agent-unavailable) → 0;
+ *     budget-exceeded, env-unavailable, agent-unavailable, and the BOS-354
+ *     `tui-truncated` — a TUI capture cut off mid-flight by the per-run wall
+ *     clock before any verdict) → 0;
  *   - `agent-incomplete` on either surface — web or tui (the agent ran and its
  *     captured evidence failed the judge) → 1;
  *   - `scenario-missing` (a TUI change shipped without a committed
@@ -144,7 +146,8 @@ export function softenTuiExit(perSurface, { soft = false } = {}) {
  * Aggregate exit code across all per-surface outcomes (BOS-139 P2b, BOS-226
  * fail-loud): 1 if any surface contributes a failure (pipeline-error anywhere,
  * an agent-incomplete on either surface, or a scenario-missing), else 0.
- * Partial success (≥1 passed, ≥1 neutral deferral) → 0. Empty input → 0.
+ * Partial success (≥1 passed, ≥1 neutral deferral — including the BOS-354
+ * `tui-truncated`, which falls through to 0) → 0. Empty input → 0.
  * Entries marked `softened` (via `softenTuiExit` at the boundary) contribute 0.
  * @param {{ outcome: string, reasonCode: string|null, softened?: boolean }[]} perSurface
  * @returns {0|1}

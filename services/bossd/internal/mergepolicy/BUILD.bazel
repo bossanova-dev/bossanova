@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "mergepolicy",
+    srcs = ["mergepolicy.go"],
+    importpath = "github.com/recurser/bossd/internal/mergepolicy",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = ["//lib/bossalib/vcs"],
+)
+
+go_test(
+    name = "mergepolicy_test",
+    srcs = ["mergepolicy_test.go"],
+    embed = [":mergepolicy"],
+    deps = ["//lib/bossalib/vcs"],
+)

@@ -54,8 +54,13 @@ test('validateScenario rejects every invalid-*.json with a pointerful reason', (
     const r = validateScenario(readFixture(name))
     assert.equal(r.ok, false, `${name} should be rejected`)
     const first = r.errors[0]
-    assert.match(first, new RegExp(reason.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${name}: ${first}`)
-    if (pathScoped) assert.ok(first.includes('scenes['), `${name} first error lacks scenes[ path: ${first}`)
+    assert.match(
+      first,
+      new RegExp(reason.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      `${name}: ${first}`,
+    )
+    if (pathScoped)
+      assert.ok(first.includes('scenes['), `${name} first error lacks scenes[ path: ${first}`)
   }
 })
 
@@ -92,7 +97,11 @@ test('caption is allowed on every op', () => {
     { expect: 'x', caption: 'c' },
   ]) {
     const r = validateScenario({ version: 1, title: 't', scenes: [{ title: 's', steps: [step] }] })
-    assert.equal(r.ok, true, `caption rejected on ${Object.keys(step)[0]} step: ${JSON.stringify(r.errors)}`)
+    assert.equal(
+      r.ok,
+      true,
+      `caption rejected on ${Object.keys(step)[0]} step: ${JSON.stringify(r.errors)}`,
+    )
   }
 })
 
@@ -103,7 +112,11 @@ test('fixture preset defaults to "demo" when absent', () => {
 })
 
 test('version must be exactly 1', () => {
-  const r = validateScenario({ version: 2, title: 't', scenes: [{ title: 's', steps: [{ expect: 'x' }] }] })
+  const r = validateScenario({
+    version: 2,
+    title: 't',
+    scenes: [{ title: 's', steps: [{ expect: 'x' }] }],
+  })
   assert.equal(r.ok, false)
   assert.match(r.errors.join('\n'), /version: must be 1/)
 })
@@ -153,7 +166,10 @@ test('loadScenario throws with the file path on invalid JSON', () => {
   const p = path.join(os.tmpdir(), `bos218-badjson-${process.pid}.json`)
   fs.writeFileSync(p, '{ not json ')
   try {
-    assert.throws(() => loadScenario(p), (err) => err.message.includes(p) && /invalid JSON/.test(err.message))
+    assert.throws(
+      () => loadScenario(p),
+      (err) => err.message.includes(p) && /invalid JSON/.test(err.message),
+    )
   } finally {
     fs.rmSync(p, { force: true })
   }
@@ -163,7 +179,10 @@ test('loadScenario throws with ALL collected errors joined on a validation failu
   const p = path.join(os.tmpdir(), `bos218-invalid-${process.pid}.json`)
   fs.writeFileSync(p, fs.readFileSync(path.join(FIXTURE_DIR, 'invalid-multi-op.json'), 'utf8'))
   try {
-    assert.throws(() => loadScenario(p), (err) => /exactly one/.test(err.message) && /waitFor, waitMs/.test(err.message))
+    assert.throws(
+      () => loadScenario(p),
+      (err) => /exactly one/.test(err.message) && /waitFor, waitMs/.test(err.message),
+    )
   } finally {
     fs.rmSync(p, { force: true })
   }

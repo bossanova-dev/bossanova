@@ -209,14 +209,26 @@ test('the coverage-neutrality guardrail is stated in both mirrors', () => {
     ['.claude', SKILL],
     ['.codex', CODEX],
   ]) {
-    assert.match(skill, /coverage-neutrality/i, `${label} must name the coverage-neutrality guardrail`)
+    assert.match(
+      skill,
+      /coverage-neutrality/i,
+      `${label} must name the coverage-neutrality guardrail`,
+    )
     assert.match(skill, /not decrease/i, `${label} must require coverage does not decrease`)
-    assert.match(skill, /module.{0,20}test gate.{0,20}still passes?/i, `${label} must require the module gate still passes`)
+    assert.match(
+      skill,
+      /module.{0,20}test gate.{0,20}still passes?/i,
+      `${label} must require the module gate still passes`,
+    )
   }
 })
 
 test('judgment guardrails protect invariant / regression / golden / security tests', () => {
-  assert.match(SKILL, /documented invariant/i, 'must protect the last test of a documented invariant')
+  assert.match(
+    SKILL,
+    /documented invariant/i,
+    'must protect the last test of a documented invariant',
+  )
   assert.match(SKILL, /regression/i, 'must protect a bug-linked regression test')
   assert.match(SKILL, /golden|snapshot/i, 'must protect a golden/snapshot contract')
   assert.match(SKILL, /security/i, 'must protect a security-path test')
@@ -225,7 +237,11 @@ test('judgment guardrails protect invariant / regression / golden / security tes
 test('the skill never adds coverage and never edits production code beyond a mechanical follow-on', () => {
   assert.match(SKILL, /never adds? coverage|does not add coverage/i)
   assert.match(SKILL, /mechanical follow-on/i)
-  assert.match(SKILL, /bs-sweep-debt|bs-sweep-mutation/, 'must call out the non-overlap with the sibling sweeps')
+  assert.match(
+    SKILL,
+    /bs-sweep-debt|bs-sweep-mutation/,
+    'must call out the non-overlap with the sibling sweeps',
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -260,11 +276,19 @@ test('cron gate exists and uses shared open-PR suppression', () => {
     ['.claude/skills/bs-sweep-tests', SKILL, GATE],
     ['.codex/skills/bs-sweep-tests', CODEX, CODEX_GATE],
   ]) {
-    assert.match(gate, /linear-gate-lib\.mjs/, `${label} gate must import the shared gateExit helper`)
+    assert.match(
+      gate,
+      /linear-gate-lib\.mjs/,
+      `${label} gate must import the shared gateExit helper`,
+    )
     assert.match(gate, /cron-open-pr\.mjs/, `${label} gate must use shared cron-open-pr helper`)
     assert.match(gate, /Bossanova sweep tests/, `${label} gate must match the live cron name`)
     assert.match(gate, /'bs-sweep-tests'/, `${label} gate must carry the legacy cron name`)
-    assert.match(gate, /bs-sweep-tests gate: prior sweep PR still open/, `${label} skip reason must be loud`)
+    assert.match(
+      gate,
+      /bs-sweep-tests gate: prior sweep PR still open/,
+      `${label} skip reason must be loud`,
+    )
     assert.match(gate, /gateExit\(false/, `${label} gh errors must fail closed`)
     assert.match(skill, /GateCommand/, `${label}/SKILL.md must document the gate command`)
   }

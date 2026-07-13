@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "proofenv",
+    srcs = [
+        "noop.go",
+        "proofenv.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/proofenv",
+    visibility = ["//services/bossd:__subpackages__"],
+)
+
+go_test(
+    name = "proofenv_test",
+    srcs = ["proofenv_test.go"],
+    embed = [":proofenv"],
+)

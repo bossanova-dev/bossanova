@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "credmaterialize",
+    srcs = [
+        "credmaterialize.go",
+        "keyedmutex.go",
+        "merge.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/credmaterialize",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/config",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "credmaterialize_test",
+    srcs = ["credmaterialize_test.go"],
+    embed = [":credmaterialize"],
+    deps = ["@com_github_rs_zerolog//:zerolog"],
+)

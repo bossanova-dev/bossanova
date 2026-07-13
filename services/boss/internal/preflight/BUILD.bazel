@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "preflight",
+    srcs = ["preflight.go"],
+    importpath = "github.com/recurser/boss/internal/preflight",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/loginshell",
+        "//lib/bossalib/termnorm",
+    ],
+)
+
+go_test(
+    name = "preflight_test",
+    srcs = ["preflight_test.go"],
+    embed = [":preflight"],
+)

@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "agentcred",
+    srcs = [
+        "agentcred.go",
+        "codex.go",
+    ],
+    importpath = "github.com/recurser/bossalib/agentcred",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "agentcred_test",
+    srcs = [
+        "agentcred_test.go",
+        "codex_test.go",
+    ],
+    embed = [":agentcred"],
+)

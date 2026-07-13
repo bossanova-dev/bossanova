@@ -1,0 +1,79 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+# Package marker only — required so Gazelle's go_deps.from_file(go_work = "//:go.work")
+# can resolve //plugins/bossd-plugin-claude:go.mod as a Bazel label. This module is not yet bazelified
+# (its BUILD targets land in BOS-344); it intentionally contains zero targets.
+
+go_library(
+    name = "bossd-plugin-claude_lib",
+    srcs = [
+        "cap.go",
+        "dirty_files.go",
+        "hookconfig.go",
+        "host.go",
+        "limit.go",
+        "main.go",
+        "plugin.go",
+        "probe.go",
+        "runner.go",
+        "server.go",
+        "transcript.go",
+    ],
+    importpath = "github.com/recurser/bossd-plugin-claude",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//lib/bossalib/agenterr",
+        "//lib/bossalib/agentruntime",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/loginshell",
+        "//lib/bossalib/plugin",
+        "//lib/bossalib/plugin/hostclient",
+        "//lib/bossalib/skillinstall",
+        "//lib/bossalib/statusdetect",
+        "//plugins/bossd-plugin-claude/skilldata",
+        "@com_github_hashicorp_go_plugin//:go-plugin",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_binary(
+    name = "bossd-plugin-claude",
+    embed = [":bossd-plugin-claude_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "bossd-plugin-claude_test",
+    srcs = [
+        "cap_test.go",
+        "exitstatus_test.go",
+        "hookconfig_test.go",
+        "limit_test.go",
+        "main_test.go",
+        "probe_test.go",
+        "rotation_test.go",
+        "runner_test.go",
+        "server_test.go",
+        "suggest_pr_title_test.go",
+        "transcript_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":bossd-plugin-claude_lib"],
+    deps = [
+        "//lib/bossalib/agenterr",
+        "//lib/bossalib/agentruntime",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/skillinstall",
+        "//plugins/bossd-plugin-claude/skilldata",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//credentials/insecure",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_grpc//test/bufconn",
+    ],
+)

@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "config",
+    srcs = [
+        "binaries.go",
+        "config.go",
+        "env.go",
+        "heal.go",
+        "pluginsum.go",
+        "plugintrust.go",
+        "plugintrust_unix.go",
+        "plugintrust_windows.go",
+    ],
+    importpath = "github.com/recurser/bossalib/config",
+    visibility = ["//visibility:public"],
+    deps = ["//lib/bossalib/buildinfo"],
+)
+
+go_test(
+    name = "config_test",
+    srcs = [
+        "appdatadir_test.go",
+        "binaries_test.go",
+        "config_guard_test.go",
+        "config_test.go",
+        "env_test.go",
+        "heal_test.go",
+        "pluginsum_test.go",
+        "plugintrust_test.go",
+        "plugintrust_unix_test.go",
+    ],
+    embed = [":config"],
+)

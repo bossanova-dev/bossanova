@@ -38,6 +38,12 @@ func TestClassify(t *testing.T) {
 		{"auth please sign in again", "Please sign in again to continue", KindAuthInvalidated, false},
 		{"auth please try signing in again", "Please try signing in again", KindAuthInvalidated, false},
 
+		// SUSPENSION branches (org/billing block) fold into auth so the account
+		// is failed permanently, not merely cooled.
+		{"suspension oauth_org_not_allowed", `{"error":"oauth_org_not_allowed"}`, KindAuthInvalidated, false},
+		{"suspension org disabled subscription", "Your organization has disabled Claude subscription access for Claude Code", KindAuthInvalidated, false},
+		{"suspension disabled subscription access", "disabled Claude subscription access", KindAuthInvalidated, false},
+
 		// USAGE branches
 		{"usage insufficient_quota", "Error: insufficient_quota", KindUsageExhausted, false},
 		{"usage quota_exceeded", "quota_exceeded for this account", KindUsageExhausted, false},
@@ -79,6 +85,9 @@ func TestClassify(t *testing.T) {
 		{"benign rate limiting middleware", "rate limiting middleware failed to load", KindNone, false},
 		{"benign sky is the limit", "the sky is the limit for this team", KindNone, false},
 		{"benign empty string", "", KindNone, false},
+		// Benign 403 scope-refusal (setup-token lacking user:profile) must NOT be
+		// mistaken for a suspension — it is an expected, healthy path.
+		{"benign oauth scope refusal", `{"type":"error","error":{"type":"authentication_error","message":"OAuth token does not have the required scopes: user:profile"}}`, KindNone, false},
 
 		// Precedence: matches both auth and transient -> auth wins
 		{"precedence auth over transient", "please sign in again, the service timed out", KindAuthInvalidated, false},
@@ -100,6 +109,39 @@ func TestClassify(t *testing.T) {
 			}
 			if tc.wantResetAt && got.ResetAt != nil && !got.ResetAt.After(fixedNow) {
 				t.Fatalf("Classify(%q).ResetAt = %v, want time after now (%v)", tc.text, *got.ResetAt, fixedNow)
+			}
+		})
+	}
+}
+
+func TestSuspensionReason(t *testing.T) {
+	cases := []struct {
+		name   string
+		text   string
+		wantOK bool
+	}{
+		{"oauth_org_not_allowed code", `{"error":"oauth_org_not_allowed","request_id":"req_x"}`, true},
+		{"org disabled subscription message", "Your organization has disabled Claude subscription access for Claude Code", true},
+		{"disabled subscription access fragment", "disabled Claude subscription access", true},
+		{"case-insensitive", "OAUTH_ORG_NOT_ALLOWED", true},
+
+		// Negatives: benign scope refusal and unrelated auth/usage text.
+		{"benign scope refusal", `{"error":{"type":"authentication_error","message":"OAuth token does not have the required scopes: user:profile"}}`, false},
+		{"generic auth invalidated", "authentication token has been invalidated", false},
+		{"generic usage limit", "usage_limit_reached", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason, ok := SuspensionReason(tc.text)
+			if ok != tc.wantOK {
+				t.Fatalf("SuspensionReason(%q) ok = %v, want %v", tc.text, ok, tc.wantOK)
+			}
+			if ok && reason == "" {
+				t.Fatalf("SuspensionReason(%q) returned ok with empty reason", tc.text)
+			}
+			if !ok && reason != "" {
+				t.Fatalf("SuspensionReason(%q) returned reason %q with ok=false", tc.text, reason)
 			}
 		})
 	}

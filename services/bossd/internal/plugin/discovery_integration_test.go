@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -224,32 +223,20 @@ func TestE2E_PluginDiscovery_LoadsAllPlugins(t *testing.T) {
 	}
 }
 
-// buildCrashingPluginBinary compiles a tiny Go program that exits(1)
-// immediately into outDir under a name that passes the daemon's plugin-prefix
-// filter. The go-plugin handshake fails because the subprocess exits before
+// buildCrashingPluginBinary writes an executable that exits(1) immediately into
+// outDir under a name that passes the daemon's plugin-prefix filter. A tiny
+// `#!/bin/sh` script is used rather than a compiled Go program so the test stays
+// hermetic under `bazel test` (no `go` toolchain on the sandbox PATH); the
+// go-plugin handshake fails identically because the subprocess exits before
 // writing the handshake line, exercising the exact failure mode a stale or
 // broken production build would hit.
 func buildCrashingPluginBinary(t *testing.T, outDir, name string) string {
 	t.Helper()
 
-	srcDir := t.TempDir()
-	src := `package main
-
-import "os"
-
-func main() { os.Exit(1) }
-`
-	srcPath := filepath.Join(srcDir, "main.go")
-	if err := os.WriteFile(srcPath, []byte(src), 0o644); err != nil {
-		t.Fatalf("write crashing main.go: %v", err)
-	}
-
 	binPath := filepath.Join(outDir, name)
-	cmd := exec.Command("go", "build", "-o", binPath, srcPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("build crashing plugin: %v", err)
+	script := "#!/bin/sh\nexit 1\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write crashing plugin %q: %v", name, err)
 	}
 	return binPath
 }

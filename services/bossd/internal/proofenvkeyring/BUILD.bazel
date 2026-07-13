@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "proofenvkeyring",
+    srcs = ["proofenvkeyring.go"],
+    importpath = "github.com/recurser/bossd/internal/proofenvkeyring",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/keyringutil",
+        "//services/bossd/internal/proofenv",
+        "@com_github_99designs_keyring//:keyring",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "proofenvkeyring_test",
+    srcs = ["proofenvkeyring_test.go"],
+    embed = [":proofenvkeyring"],
+    deps = [
+        "//services/bossd/internal/proofenv",
+        "@com_github_99designs_keyring//:keyring",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

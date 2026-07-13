@@ -51,6 +51,9 @@ function runGuard(dir, base, head = 'public-mirror-head') {
     const stdout = execFileSync('bash', [scriptPath, base, head], {
       cwd: dir,
       encoding: 'utf8',
+      // Capture stderr onto the result instead of letting execFileSync echo the
+      // guard's "LEAK …/refusing to push" diagnostics to the parent's stderr.
+      stdio: ['ignore', 'pipe', 'pipe'],
     })
     return { code: 0, stdout, stderr: '' }
   } catch (err) {

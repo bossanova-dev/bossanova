@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "clidoc",
+    srcs = [
+        "clidoc.go",
+        "registry.go",
+    ],
+    importpath = "github.com/recurser/bossalib/clidoc",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "clidoc_test",
+    srcs = ["clidoc_test.go"],
+    embed = [":clidoc"],
+)

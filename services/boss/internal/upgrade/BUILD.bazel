@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "upgrade",
+    srcs = [
+        "cache.go",
+        "checker.go",
+        "install.go",
+        "version.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/upgrade",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/buildinfo",
+        "@org_golang_x_mod//semver",
+    ],
+)
+
+go_test(
+    name = "upgrade_test",
+    srcs = ["upgrade_test.go"],
+    embed = [":upgrade"],
+)

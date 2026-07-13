@@ -20,6 +20,11 @@ import path from 'node:path'
 import { test } from 'node:test'
 
 import { finalizeAgentProof } from './proof-agent-finalize.mjs'
+import { silenceConsole } from './quiet-test-console.mjs'
+
+// Silence the code-under-test console output (finalize manifest JSON dumps +
+// DEGRADED warnings) so a passing run stays quiet. See quiet-test-console.mjs.
+silenceConsole()
 
 const stubDeps = () => ({
   uploadBundle: () => {},
@@ -315,7 +320,7 @@ test('golden: two-surface partial (web proven, TUI deferred) → exit 0', async 
   })
   assert.equal(
     commentBody,
-    '<!-- bossanova-proof:pr-123 -->\n### 📸 Proof (unjudged)\n\n### [📸 Proof manifest](https://proof.example/pr/manifest.json)\n\n**Multi brief**\n\n**Commit:** `abc1234`  **Run:** RUN  **Gen-AI:** not live (UI-only demo)\n\n#### Web — ✅ proven\n\n<details><summary>Agent summary</summary>\n\nweb ok\n\n</details>\n\n✅ **Evidence:** Satisfactory\n\n✅ **Confidence:** High\n\n_Self-graded (unjudged): judge unavailable — stubbed._\n\n#### TUI — ⏸ deferred (budget-exceeded)\n\nThis surface was deferred because the shared proof budget (~15min per run) was consumed by an earlier surface in this multi-surface PR. The change itself is fine; re-run proof for this surface alone to capture it.\n\nRe-capture from a dev environment:\n\n```bash\nBOSS_PROOF_AGENT_SURFACE=tui node scripts/proof.mjs run\n```\n',
+    '<!-- bossanova-proof:pr-123 -->\n### 📸 Proof (unjudged)\n\n### [📸 Proof manifest](https://proof.example/pr/manifest.json)\n\n**Multi brief**\n\n**Commit:** `abc1234`  **Run:** RUN  **Gen-AI:** not live (UI-only demo)\n\n#### Web — ✅ proven\n\n<details><summary>Agent summary</summary>\n\nweb ok\n\n</details>\n\n✅ **Evidence:** Satisfactory\n\n✅ **Confidence:** High\n\n_Self-graded (unjudged): judge unavailable — stubbed._\n\n#### TUI — ⏸ deferred (budget-exceeded)\n\nThis surface was deferred because the shared proof budget (~17min per run) was consumed by an earlier surface in this multi-surface PR. The change itself is fine; re-run proof for this surface alone to capture it.\n\nRe-capture from a dev environment:\n\n```bash\nBOSS_PROOF_AGENT_SURFACE=tui node scripts/proof.mjs run\n```\n',
   )
   assert.equal(manifest.deferred ?? false, true)
   assert.equal(exitCode, 0)
@@ -338,7 +343,7 @@ test('golden: two-surface both deferred → two deferred sections (exit 0)', asy
   })
   assert.equal(
     commentBody,
-    '<!-- bossanova-proof:pr-123 -->\n### 📸 Proof (unjudged)\n\n### [📸 Proof manifest](https://proof.example/pr/manifest.json)\n\n**Multi brief**\n\n**Commit:** `abc1234`  **Run:** RUN  **Gen-AI:** not live (UI-only demo)\n\n#### TUI — ⏸ deferred (env-unavailable)\n\nbs-proof could not run because required prerequisites are missing in this environment: one or more prerequisites. Provision the missing keys/toolchain (run `node scripts/proof.mjs doctor` to see the full report) and re-run. This is a provisioning gap, not a problem with the change.\n\nRe-capture from a dev environment:\n\n```bash\nBOSS_PROOF_AGENT_SURFACE=tui node scripts/proof.mjs run\n```\n\n#### Web — ⏸ deferred (budget-exceeded)\n\nThis surface was deferred because the shared proof budget (~15min per run) was consumed by an earlier surface in this multi-surface PR. The change itself is fine; re-run proof for this surface alone to capture it.\n\nRe-capture from a dev environment:\n\n```bash\nBOSS_PROOF_AGENT_SURFACE=web node scripts/proof.mjs run\n```\n',
+    '<!-- bossanova-proof:pr-123 -->\n### 📸 Proof (unjudged)\n\n### [📸 Proof manifest](https://proof.example/pr/manifest.json)\n\n**Multi brief**\n\n**Commit:** `abc1234`  **Run:** RUN  **Gen-AI:** not live (UI-only demo)\n\n#### TUI — ⏸ deferred (env-unavailable)\n\nbs-proof could not run because required prerequisites are missing in this environment: one or more prerequisites. Provision the missing keys/toolchain (run `node scripts/proof.mjs doctor` to see the full report) and re-run. This is a provisioning gap, not a problem with the change.\n\nRe-capture from a dev environment:\n\n```bash\nBOSS_PROOF_AGENT_SURFACE=tui node scripts/proof.mjs run\n```\n\n#### Web — ⏸ deferred (budget-exceeded)\n\nThis surface was deferred because the shared proof budget (~17min per run) was consumed by an earlier surface in this multi-surface PR. The change itself is fine; re-run proof for this surface alone to capture it.\n\nRe-capture from a dev environment:\n\n```bash\nBOSS_PROOF_AGENT_SURFACE=web node scripts/proof.mjs run\n```\n',
   )
   assert.equal(manifest.deferred ?? false, true)
   assert.equal(exitCode, 0)

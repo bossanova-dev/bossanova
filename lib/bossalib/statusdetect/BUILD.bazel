@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "statusdetect",
+    srcs = [
+        "limit.go",
+        "login.go",
+        "question.go",
+    ],
+    importpath = "github.com/recurser/bossalib/statusdetect",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "statusdetect_test",
+    srcs = [
+        "limit_test.go",
+        "login_test.go",
+        "question_test.go",
+    ],
+    embed = [":statusdetect"],
+    deps = ["//lib/bossalib/agenterr"],
+)

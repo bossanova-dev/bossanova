@@ -1,0 +1,66 @@
+[
+  {
+    "label": "//lib/bossalib/apiversion:apiversion_test",
+    "module": "lib/bossalib",
+    "mechanism": "manual",
+    "command": "cd lib/bossalib && go test -timeout 300s ./apiversion/...",
+    "disposition": "default-run",
+    "reason": "webversion_test.go reads services/web/src/api.ts (escapes the module; absent from the sandbox); untagged, runs under today's plain go test ./..."
+  },
+  {
+    "label": "//services/bossd/internal/testharness:testharness_test",
+    "module": "services/bossd",
+    "mechanism": "manual + requires-tmux",
+    "command": "cd services/bossd && go test -timeout 300s ./internal/testharness/...",
+    "disposition": "default-run",
+    "reason": "e2e bundle spawns real tmux/processes and reads out-of-module ../../../../plugins testdata; the untagged tests run under today's plain go test ./... (the integration-build-tagged file is separate, covered only by test-integration-bossd)"
+  },
+  {
+    "label": "//services/bosso/internal/loadtest:loadtest_test",
+    "module": "services/bosso",
+    "mechanism": "manual + requires-scale",
+    "command": "cd services/bosso && go test -timeout 300s ./internal/loadtest -run TestOrchestratorScaleSmoke -count=1",
+    "disposition": "explicit-only",
+    "reason": "heavy in-memory scale smoke (100 users/300 daemons/3000 sessions); intentionally excluded from the hot loop per plan today-parity rule (test-bosso-scale stays explicit-only). PARITY EXCEPTION: today's plain go test ./... in bosso DOES run this untagged test; the new hot loop deliberately does not. Document this single diff in the Task 4 parity audit."
+  },
+  {
+    "label": "//services/boss/cmd:cmd_test",
+    "module": "services/boss",
+    "mechanism": "manual + requires-workspace",
+    "command": "cd services/boss && go test -timeout 300s ./cmd",
+    "disposition": "default-run",
+    "reason": "skill/upgrade tests go-build the boss binary via a runtime.Caller workspace root; go absent from sandbox PATH. Runs under today's plain go test ./..."
+  },
+  {
+    "label": "//services/boss/cmd/proof-tui-agent:proof-tui-agent_test",
+    "module": "services/boss",
+    "mechanism": "manual + requires-workspace",
+    "command": "cd services/boss && go test -timeout 300s ./cmd/proof-tui-agent",
+    "disposition": "default-run",
+    "reason": "e2e tests go-build the boss binary via a runtime.Caller workspace root; go absent from sandbox PATH. Runs under today's plain go test ./..."
+  },
+  {
+    "label": "//services/boss/internal/clitest:clitest_test",
+    "module": "services/boss",
+    "mechanism": "manual + requires-workspace",
+    "command": "cd services/boss && go test -timeout 300s ./internal/clitest",
+    "disposition": "default-run",
+    "reason": "CLI integration tests go-build the boss binary via a runtime.Caller workspace root. Runs under today's plain go test ./..."
+  },
+  {
+    "label": "//services/boss/internal/tuitest:tuitest_test",
+    "module": "services/boss",
+    "mechanism": "manual + requires-workspace",
+    "command": "cd services/boss && go test -timeout 300s ./internal/tuitest",
+    "disposition": "default-run",
+    "reason": "TUI integration tests go-build the boss binary via a runtime.Caller workspace root. Runs under today's plain go test ./..."
+  },
+  {
+    "label": "//services/boss/internal/skillinstall:skillinstall_test",
+    "module": "services/boss",
+    "mechanism": "manual + requires-workspace",
+    "command": "cd services/boss && go test -timeout 300s ./internal/skillinstall",
+    "disposition": "default-run",
+    "reason": "parity tests walk up for go.work and read out-of-module skill source trees; go.work root absent from sandbox. Runs under today's plain go test ./..."
+  }
+]

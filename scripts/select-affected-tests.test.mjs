@@ -8,7 +8,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { renderMakeCommands, selectTargets } from './select-affected-tests.mjs'
+import { renderMakeCommands, selectBazelAffected, selectTargets } from './select-affected-tests.mjs'
 
 const repoRoot = path.dirname(fileURLToPath(new URL('../Makefile', import.meta.url)))
 const makefilePath = path.join(repoRoot, 'Makefile')
@@ -146,6 +146,134 @@ test('renderMakeCommands prefixes scoped environment variables', () => {
     renderMakeCommands(selectTargets(['services/bossd/internal/session/lifecycle.go'])),
     ["GO_TEST_PACKAGES='./internal/session' make test-bossd"],
   )
+})
+
+test('--bazel CLI prints the sorted space-joined patterns on one line', () => {
+  const scriptPath = fileURLToPath(new URL('./select-affected-tests.mjs', import.meta.url))
+  const affected = spawnSync(
+    process.execPath,
+    [scriptPath, '--bazel', 'services/bossd/x.go', 'lib/bossalib/y.go'],
+    { encoding: 'utf8' },
+  )
+  assert.equal(affected.status, 0)
+  assert.equal(affected.stdout, '//lib/bossalib/... //services/bossd/...\n')
+
+  const full = spawnSync(process.execPath, [scriptPath, '--bazel', 'go.work'], { encoding: 'utf8' })
+  assert.equal(full.status, 0)
+  assert.equal(full.stdout, '//...\n')
+})
+
+test('selectBazelAffected maps one Go module to its bazel pattern', () => {
+  assert.deepEqual(selectBazelAffected(['services/bossd/internal/session/lifecycle.go']), {
+    full: false,
+    patterns: ['//services/bossd/...'],
+    reason: 'affected',
+  })
+})
+
+test('selectBazelAffected sorts and dedupes two affected modules', () => {
+  assert.deepEqual(
+    selectBazelAffected([
+      'services/bossd/internal/session/lifecycle.go',
+      'lib/bossalib/safego/safego.go',
+      'services/bossd/internal/db/db.go',
+    ]),
+    {
+      full: false,
+      patterns: ['//lib/bossalib/...', '//services/bossd/...'],
+      reason: 'affected',
+    },
+  )
+})
+
+test('selectBazelAffected maps a plugin change to its bazel pattern', () => {
+  assert.deepEqual(selectBazelAffected(['plugins/bossd-plugin-sentry/sentry.go']), {
+    full: false,
+    patterns: ['//plugins/bossd-plugin-sentry/...'],
+    reason: 'affected',
+  })
+})
+
+for (const graphWide of [
+  'proto/bossanova/v1/session.proto',
+  'go.work',
+  'go.work.sum',
+  '.bazelrc',
+  '.bazelversion',
+  'MODULE.bazel',
+  'MODULE.bazel.lock',
+  'Makefile',
+]) {
+  test(`selectBazelAffected falls back to FULL for graph-wide change ${graphWide}`, () => {
+    const result = selectBazelAffected([graphWide])
+    assert.equal(result.full, true)
+    assert.deepEqual(result.patterns, ['//...'])
+    // Pin the diagnostic reason so a mislabeled/dropped trigger is caught, not
+    // just silently absorbed by the `uncertain` fail-safe branch.
+    assert.match(result.reason, /graph-wide/)
+  })
+}
+
+// Lock the three Go modules the bazel map intentionally includes but the local
+// make `moduleRules` omits (mcp / mcp-gateway / stub-runner). These are the
+// deliberate divergence between the two maps; a typo or dropped entry here would
+// silently un-optimize (fall to FULL) or, worse, point bazel at a wrong target.
+for (const [file, pattern] of [
+  ['services/mcp/internal/serve/serve.go', '//services/mcp/...'],
+  ['services/mcp-gateway/internal/auth/middleware.go', '//services/mcp-gateway/...'],
+  ['plugins/bossd-plugin-stub-runner/server.go', '//plugins/bossd-plugin-stub-runner/...'],
+]) {
+  test(`selectBazelAffected maps bazel-only module ${pattern}`, () => {
+    assert.deepEqual(selectBazelAffected([file]), {
+      full: false,
+      patterns: [pattern],
+      reason: 'affected',
+    })
+  })
+}
+
+test('selectBazelAffected treats the docusaurus site (services/docs/) as irrelevant', () => {
+  const result = selectBazelAffected(['services/docs/docs/api.md'])
+  assert.equal(result.full, true)
+  assert.deepEqual(result.patterns, ['//...'])
+  assert.equal(result.reason, 'no affected go targets')
+})
+
+test('selectBazelAffected ignores Go-graph-irrelevant files mixed with a code change', () => {
+  // The common PR case: a Go change alongside a README/doc edit must select only
+  // the affected module, NOT fall back to FULL.
+  assert.deepEqual(selectBazelAffected(['services/bossd/x.go', 'README.md', 'docs/foo.md']), {
+    full: false,
+    patterns: ['//services/bossd/...'],
+    reason: 'affected',
+  })
+})
+
+test('selectBazelAffected falls back to FULL for a web-only change', () => {
+  const result = selectBazelAffected(['services/web/src/App.tsx'])
+  assert.equal(result.full, true)
+  assert.deepEqual(result.patterns, ['//...'])
+})
+
+test('selectBazelAffected falls back to FULL for a docs-only change', () => {
+  const result = selectBazelAffected(['docs/solutions/build-systems/bazel-sandbox-patterns.md'])
+  assert.equal(result.full, true)
+  assert.deepEqual(result.patterns, ['//...'])
+})
+
+test('selectBazelAffected fails safe to FULL for an unrecognized file', () => {
+  const result = selectBazelAffected(['weird-new-file.xyz'])
+  assert.equal(result.full, true)
+  assert.deepEqual(result.patterns, ['//...'])
+  assert.match(result.reason, /uncertain/)
+})
+
+test('selectBazelAffected falls back to FULL for empty input', () => {
+  assert.deepEqual(selectBazelAffected([]), {
+    full: true,
+    patterns: ['//...'],
+    reason: 'empty',
+  })
 })
 
 test('test-affected propagates selector startup failures', () => {

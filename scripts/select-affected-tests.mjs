@@ -17,6 +17,138 @@ const moduleRules = [
 
 const protoTargets = ['test-bossalib', 'test-boss', 'test-bossd', 'test-bosso']
 
+// BOS-370: Go-bazel-target selection for the PR fast tier (bazel.yml go-test).
+// This is a SEPARATE map from the make `moduleRules` above: it maps a changed
+// file to the set of `//<module>/...` bazel patterns the PR CI job runs instead
+// of the whole `//...` graph. It includes mcp / mcp-gateway / stub-runner (which
+// the local make map omits) because all 13 Go modules have `go_test` targets, so
+// `bazel test //<module>/...` is always a SAFE (never exit-4) selection.
+//
+// Fail-safe posture: err toward MORE testing, never less. Any file that cannot be
+// confidently classified as Go-graph-irrelevant forces a FULL `//...` run. The
+// release tier (main/staging/production) re-runs the whole `//...` graph (plain +
+// race) as the safety net, so an under-selection here can never let a regression
+// reach a release — it only affects PR latency.
+const bazelGoModuleRules = [
+  { root: 'lib/bossalib/', pattern: '//lib/bossalib/...' },
+  { root: 'services/boss/', pattern: '//services/boss/...' },
+  { root: 'services/bossd/', pattern: '//services/bossd/...' },
+  { root: 'services/bosso/', pattern: '//services/bosso/...' },
+  { root: 'services/mcp/', pattern: '//services/mcp/...' },
+  { root: 'services/mcp-gateway/', pattern: '//services/mcp-gateway/...' },
+  { root: 'plugins/bossd-plugin-claude/', pattern: '//plugins/bossd-plugin-claude/...' },
+  { root: 'plugins/bossd-plugin-codex/', pattern: '//plugins/bossd-plugin-codex/...' },
+  { root: 'plugins/bossd-plugin-dependabot/', pattern: '//plugins/bossd-plugin-dependabot/...' },
+  { root: 'plugins/bossd-plugin-linear/', pattern: '//plugins/bossd-plugin-linear/...' },
+  { root: 'plugins/bossd-plugin-repair/', pattern: '//plugins/bossd-plugin-repair/...' },
+  { root: 'plugins/bossd-plugin-sentry/', pattern: '//plugins/bossd-plugin-sentry/...' },
+  { root: 'plugins/bossd-plugin-stub-runner/', pattern: '//plugins/bossd-plugin-stub-runner/...' },
+]
+
+// Graph-wide FULL triggers: a change to any of these can affect the entire Go
+// bazel graph (proto codegen, workspace/module graph, bazel config, root make),
+// so the only safe selection is the whole `//...` graph.
+function isBazelGraphWideTrigger(file) {
+  return (
+    file.startsWith('proto/') ||
+    file === 'go.work' ||
+    file === 'go.work.sum' ||
+    file === '.bazelrc' ||
+    file === '.bazelversion' ||
+    file === 'MODULE.bazel' ||
+    file === 'MODULE.bazel.lock' ||
+    file === 'Makefile'
+  )
+}
+
+// Go-graph-irrelevant paths: files that provably CANNOT affect the Go bazel graph
+// (no `//go:embed` reads from these dirs), so they contribute no pattern and never
+// force a FULL run. Everything not matched here (and not a module or trigger) is
+// treated as unrecognized → FULL fail-safe.
+const bazelIrrelevantPrefixes = [
+  'services/web/',
+  'services/marketing/',
+  'services/docs/',
+  'lib/ui-tokens/',
+  '.claude/',
+  '.codex/',
+  'docs/',
+  '.github/',
+  'scripts/',
+  'proof/',
+  'skills-toolbox/',
+  'infra/',
+]
+
+const bazelIrrelevantFiles = new Set([
+  'README.md',
+  'LICENSE',
+  'AGENTS.md',
+  'CLAUDE.md',
+  '.gitignore',
+  'pnpm-lock.yaml',
+  'pnpm-workspace.yaml',
+  'package.json',
+  'turbo.json',
+  '.prettierrc',
+  '.prettierignore',
+  'commitlint.config.cjs',
+  'biome.json',
+])
+
+function isBazelIrrelevant(file) {
+  return (
+    bazelIrrelevantFiles.has(file) ||
+    bazelIrrelevantPrefixes.some((prefix) => file.startsWith(prefix))
+  )
+}
+
+// selectBazelAffected maps a changed-file list to the bazel target patterns the
+// PR CI go-test job should run. Returns { full, patterns, reason }:
+//   - full:true, patterns:['//...'] whenever the safe choice is the whole graph
+//     (empty input, a graph-wide trigger, an unrecognized file, or no affected Go
+//     module) — the fail-safe toward more testing.
+//   - full:false with a sorted, deduped list of `//<module>/...` patterns when the
+//     diff maps cleanly to one or more Go modules (irrelevant files are ignored).
+export function selectBazelAffected(files) {
+  if (!files || files.length === 0) {
+    return { full: true, patterns: ['//...'], reason: 'empty' }
+  }
+
+  const patterns = new Set()
+
+  for (const rawFile of files) {
+    const file = normalizePath(rawFile)
+    if (file === '') {
+      continue
+    }
+
+    if (isBazelGraphWideTrigger(file)) {
+      return { full: true, patterns: ['//...'], reason: `graph-wide: ${file}` }
+    }
+
+    const moduleRule = bazelGoModuleRules.find(({ root }) => file.startsWith(root))
+    if (moduleRule) {
+      patterns.add(moduleRule.pattern)
+      continue
+    }
+
+    if (isBazelIrrelevant(file)) {
+      continue
+    }
+
+    // Unrecognized file: cannot prove it is Go-graph-irrelevant → fail safe to FULL.
+    return { full: true, patterns: ['//...'], reason: `uncertain: ${file}` }
+  }
+
+  if (patterns.size === 0) {
+    // Only Go-graph-irrelevant files changed (web-only / docs-only PR).
+    return { full: true, patterns: ['//...'], reason: 'no affected go targets' }
+  }
+
+  return { full: false, patterns: [...patterns].sort(), reason: 'affected' }
+}
+
 export function selectTargets(files) {
   const selections = new Map()
 
@@ -188,6 +320,16 @@ function changedFilesFromGit() {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const files = process.argv.slice(2).length > 0 ? process.argv.slice(2) : changedFilesFromGit()
-  console.log(renderMakeCommands(selectTargets(files)).join('\n'))
+  const args = process.argv.slice(2)
+  if (args[0] === '--bazel') {
+    // BOS-370 PR CI path: print the space-joined bazel target patterns on ONE line
+    // (either `//...` or e.g. `//services/bossd/... //lib/bossalib/...`). Explicit
+    // files may follow `--bazel` for testability; otherwise diff against BASE_REF.
+    const explicitFiles = args.slice(1)
+    const files = explicitFiles.length > 0 ? explicitFiles : changedFilesFromGit()
+    console.log(selectBazelAffected(files).patterns.join(' '))
+  } else {
+    const files = args.length > 0 ? args : changedFilesFromGit()
+    console.log(renderMakeCommands(selectTargets(files)).join('\n'))
+  }
 }

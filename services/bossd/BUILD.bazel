@@ -1,0 +1,3 @@
+# Package marker only — required so Gazelle's go_deps.from_file(go_work = "//:go.work")
+# can resolve //services/bossd:go.mod as a Bazel label. This module is not yet bazelified
+# (its BUILD targets land in BOS-344); it intentionally contains zero targets.

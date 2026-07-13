@@ -7,6 +7,7 @@
 package pluginharness
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,37 +40,127 @@ func MigrationsDir() string {
 	return filepath.Join(workspaceRoot(), "services", "bossd", "migrations")
 }
 
-// BuildPlugin compiles the plugin named pluginName (the directory under
-// plugins/, e.g. "bossd-plugin-autopilot") into a temp directory and returns
-// the path to the resulting binary. If the plugin source directory is not
-// present (public repo checkout without plugins/), the test is skipped via
-// t.Skip — this mirrors the convention already used in integration_test.go
-// so checkouts without the private plugin source still pass CI.
+// PluginBinary returns an executable path for the plugin named pluginName (the
+// directory under plugins/, e.g. "bossd-plugin-repair"). This is the single
+// resolution contract every helper funnels through:
 //
-// The binary is built from the workspace root so go.work can resolve the
-// shared bossalib module.
-func BuildPlugin(t *testing.T, pluginName string) string {
+//   - Under `bazel test`, the plugin go_binary is prebuilt and staged into the
+//     test's runfiles; its runfiles-relative path is handed in via a per-plugin
+//     env var (see stagedBinary / pluginBinEnvKey). No `go` toolchain runs.
+//   - Under plain `go test`, that env var is unset, so the binary is compiled
+//     from source into a temp dir (the historical path).
+//
+// If the plugin source directory is not present (public repo checkout without
+// plugins/) and no staged binary was provided, the test is skipped via t.Skip —
+// mirroring the convention in integration_test.go so public checkouts pass CI.
+func PluginBinary(t *testing.T, pluginName string) string {
 	t.Helper()
-	return buildPlugin(t, t.TempDir(), pluginName, nil)
+	return resolvePlugin(t, pluginName, nil)
 }
 
-// BuildPluginWithTags is BuildPlugin plus `go build -tags <tags>`. Used by
-// tests that need to enable build-tag-fenced hooks in the plugin binary —
-// for example the linear plugin exposes LINEAR_API_ENDPOINT only under the
-// `e2e` tag, so the production binary never reads that env var.
+// BuildPlugin is the historical name for the no-tags resolution; it now routes
+// through the single PluginBinary contract.
+func BuildPlugin(t *testing.T, pluginName string) string {
+	t.Helper()
+	return PluginBinary(t, pluginName)
+}
+
+// BuildPluginWithTags resolves a build-tag-fenced variant of the plugin. Used
+// by tests that need tag-gated hooks — for example the linear plugin exposes
+// LINEAR_API_ENDPOINT only under the `e2e` tag, so the production binary never
+// reads that env var. Under Bazel the tagged variant is a separate go_binary
+// (gotags=[...]) staged under its own env key; under `go test` it is built with
+// `go build -tags <tags>`.
 func BuildPluginWithTags(t *testing.T, pluginName string, tags ...string) string {
 	t.Helper()
+	return resolvePlugin(t, pluginName, tags)
+}
+
+// BuildPluginInto resolves pluginName and copies the resulting binary into
+// outDir (which must already exist), returning the full destination path. The
+// discovery / host-restart / repair tests use this variant so every plugin
+// binary lands in a single directory the daemon's loader can scan — replicating
+// the production Homebrew / dev-mode layout where every bossd-plugin-* sits next
+// to the others. Copying works identically under both runners: under `go test`
+// the source is a freshly built temp binary, under Bazel it is the prebuilt
+// runfiles binary.
+func BuildPluginInto(t *testing.T, outDir, pluginName string) string {
+	t.Helper()
+	src := resolvePlugin(t, pluginName, nil)
+	dst := filepath.Join(outDir, pluginName)
+	copyExecutable(t, src, dst)
+	return dst
+}
+
+// resolvePlugin is the one place that decides how a plugin binary is obtained:
+// a Bazel-staged prebuilt binary if its env var is set, otherwise a go-build
+// from source. There is no other "if bazel" branch in this package.
+func resolvePlugin(t *testing.T, pluginName string, tags []string) string {
+	t.Helper()
+	if staged := stagedBinary(t, pluginName, tags); staged != "" {
+		return staged
+	}
 	return buildPlugin(t, t.TempDir(), pluginName, tags)
 }
 
-// BuildPluginInto compiles pluginName into outDir (which must already exist)
-// and returns the full path to the resulting binary. The discovery tests use
-// this variant so all four plugin binaries land in a single directory that
-// the daemon's loader can scan — replicating the production Homebrew /
-// dev-mode layout where every bossd-plugin-* sits next to the others.
-func BuildPluginInto(t *testing.T, outDir, pluginName string) string {
+// stagedBinary returns the absolute path to a Bazel-prebuilt plugin binary, or
+// "" when running under plain `go test` (env var unset). The env var holds a
+// runfiles-root-relative path; the go_test sets rundir="." so the test's cwd is
+// the runfiles root, making filepath.Abs resolve it to the staged executable.
+func stagedBinary(t *testing.T, pluginName string, tags []string) string {
 	t.Helper()
-	return buildPlugin(t, outDir, pluginName, nil)
+	rel := os.Getenv(pluginBinEnvKey(pluginName, tags))
+	if rel == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(rel)
+	if err != nil {
+		t.Fatalf("resolve staged plugin %q path %q: %v", pluginName, rel, err)
+	}
+	return abs
+}
+
+// pluginBinEnvKey derives the env var name the go_test uses to hand a prebuilt
+// binary to the harness: "BOSS_PLUGIN_BIN_" + upper(name[+tags]) with every
+// non-[A-Z0-9_] char replaced by "_". Examples:
+//
+//	("bossd-plugin-claude", nil)          -> BOSS_PLUGIN_BIN_BOSSD_PLUGIN_CLAUDE
+//	("bossd-plugin-linear", []string{"e2e"}) -> BOSS_PLUGIN_BIN_BOSSD_PLUGIN_LINEAR_E2E
+func pluginBinEnvKey(pluginName string, tags []string) string {
+	parts := append([]string{pluginName}, tags...)
+	raw := strings.ToUpper(strings.Join(parts, "_"))
+	sanitized := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, raw)
+	return "BOSS_PLUGIN_BIN_" + sanitized
+}
+
+// copyExecutable copies src to dst with mode 0o755. Used by BuildPluginInto so
+// staged/built binaries can be gathered into one scanned directory.
+func copyExecutable(t *testing.T, src, dst string) {
+	t.Helper()
+	in, err := os.Open(src)
+	if err != nil {
+		t.Fatalf("open plugin binary %q: %v", src, err)
+	}
+	defer func() { _ = in.Close() }()
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+	if err != nil {
+		t.Fatalf("create plugin binary %q: %v", dst, err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		t.Fatalf("copy plugin binary %q -> %q: %v", src, dst, err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatalf("close plugin binary %q: %v", dst, err)
+	}
 }
 
 func buildPlugin(t *testing.T, outDir, pluginName string, tags []string) string {

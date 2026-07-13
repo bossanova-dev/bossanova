@@ -7095,6 +7095,14 @@ components:
             Recent rotation audit events (newest first, capped server-side at 10),
              hydrated by bossd like the display_* fields so TUI/web render history,
              the exhausted badge, and toasts from one field. (BOS-176)
+        displayMerging:
+          type: boolean
+          title: display_merging
+          description: |-
+            True while a PR merge (MergeSession) is in flight. Transport-only: hydrated
+             server-side from the in-memory DisplayTracker and never persisted. Drives
+             the transient blue "merging" display status. Distinct from
+             display_is_repairing (24) / display_setting_up (48).
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.

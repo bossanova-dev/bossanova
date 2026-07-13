@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "dotenv",
+    srcs = ["dotenv.go"],
+    importpath = "github.com/recurser/bossd/internal/dotenv",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = ["//lib/bossalib/models"],
+)
+
+go_test(
+    name = "dotenv_test",
+    srcs = ["dotenv_test.go"],
+    embed = [":dotenv"],
+    deps = ["//lib/bossalib/models"],
+)

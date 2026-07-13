@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "plugin",
+    srcs = [
+        "shared.go",
+        "workflow.go",
+    ],
+    importpath = "github.com/recurser/bossalib/plugin",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_github_hashicorp_go_plugin//:go-plugin",
+        "@org_golang_google_grpc//:grpc",
+    ],
+)
+
+go_test(
+    name = "plugin_test",
+    srcs = ["shared_test.go"],
+    embed = [":plugin"],
+)

@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "vcs",
+    srcs = [
+        "actionable_error.go",
+        "attention.go",
+        "display.go",
+        "events.go",
+        "github.go",
+        "provider.go",
+        "types.go",
+        "url.go",
+    ],
+    importpath = "github.com/recurser/bossalib/vcs",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/machine",
+        "//lib/bossalib/models",
+    ],
+)
+
+go_test(
+    name = "vcs_test",
+    srcs = [
+        "actionable_error_test.go",
+        "attention_test.go",
+        "conflict_block_test.go",
+        "display_test.go",
+        "github_test.go",
+        "url_test.go",
+    ],
+    embed = [":vcs"],
+    deps = [
+        "//lib/bossalib/machine",
+        "//lib/bossalib/models",
+    ],
+)

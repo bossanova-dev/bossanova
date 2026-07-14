@@ -2413,6 +2413,73 @@ func TestHomeArchiveKeepsCursorPosition(t *testing.T) {
 	})
 }
 
+// TestHomeSelectionStickyWhenSiblingRowRemoved covers the BOS-367 scenario: the
+// one-shot highlightSessionID hand-off has already been consumed (the user
+// returned to the list and arrowed onto a different session), then a later poll
+// removes a *sibling* row above the cursor. The cursor must follow the selected
+// session rather than holding its stale row number.
+func TestHomeSelectionStickyWhenSiblingRowRemoved(t *testing.T) {
+	sessions := []*pb.Session{
+		{Id: "A", Title: "alpha"},
+		{Id: "B", Title: "bravo"},
+		{Id: "C", Title: "charlie"},
+		{Id: "D", Title: "delta"},
+	}
+
+	t.Run("sibling above cursor removed keeps selection", func(t *testing.T) {
+		h := NewHomeModel(nil, context.Background(), nil)
+		h.width = 100
+		h.height = 40
+		model, _ := h.Update(sessionListMsg{sessions: sessions})
+		h = model.(HomeModel)
+
+		// Move the cursor onto C (no highlight set — it was already consumed).
+		h.table.SetCursor(h.tableCursorForSessionIndex(2))
+		if got := h.selectedSessionID(); got != "C" {
+			t.Fatalf("setup: selected = %q, want C", got)
+		}
+
+		// A later poll removes the archiving sibling B (above the cursor).
+		remaining := []*pb.Session{sessions[0], sessions[2], sessions[3]}
+		model, _ = h.Update(sessionListMsg{sessions: remaining})
+		h = model.(HomeModel)
+
+		if got := h.selectedSessionID(); got != "C" {
+			t.Fatalf("after removing sibling B, selected = %q, want C", got)
+		}
+	})
+
+	t.Run("selected session removed falls back sanely", func(t *testing.T) {
+		h := NewHomeModel(nil, context.Background(), nil)
+		h.width = 100
+		h.height = 40
+		model, _ := h.Update(sessionListMsg{sessions: sessions})
+		h = model.(HomeModel)
+
+		// Select C, then a poll removes C itself with no highlight set.
+		h.table.SetCursor(h.tableCursorForSessionIndex(2))
+		if got := h.selectedSessionID(); got != "C" {
+			t.Fatalf("setup: selected = %q, want C", got)
+		}
+
+		remaining := []*pb.Session{sessions[0], sessions[1], sessions[3]}
+		model, _ = h.Update(sessionListMsg{sessions: remaining})
+		h = model.(HomeModel)
+
+		// Fallback (normalizeTableCursor): cursor must stay in range on a
+		// surviving session and must not panic.
+		got := h.selectedSessionID()
+		if got == "" {
+			t.Fatalf("after removing selected C, selection is empty; want a surviving session")
+		}
+		switch got {
+		case "A", "B", "D":
+		default:
+			t.Fatalf("after removing selected C, selected = %q, want one of A/B/D", got)
+		}
+	})
+}
+
 // blueSelectedSGR is the bold + selection-blue (#4CA7F8) open SGR that
 // pre-styled selected-row cells carry (see renderSelectedText in status.go).
 const blueSelectedSGR = "\x1b[1;38;2;76;167;248m"

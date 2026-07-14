@@ -27,13 +27,13 @@ base branch (or has no branch):
 
 ```bash
 if [ "$BOSSD_MANAGED" = "0" ] && { [ -z "$SESSION_BRANCH" ] || [ "$SESSION_BRANCH" = "$BASE_BRANCH" ]; }; then
-  SESSION_BRANCH="boss-implement/$(echo "<TICKET-ID>" | tr 'A-Z' 'a-z')"
+  SESSION_BRANCH="boss-build/$(echo "<TICKET-ID>" | tr 'A-Z' 'a-z')"
   git switch -c "$SESSION_BRANCH" "$BASE_BRANCH"
 fi
 test -n "$SESSION_BRANCH"
 ```
 
-The branch is named `boss-implement/<ticket-id>` (lower-cased). Provisioning an _isolated checkout_
+The branch is named `boss-build/<ticket-id>` (lower-cased). Provisioning an _isolated checkout_
 remains the scheduled runner's responsibility; the skill only guarantees it is on a dedicated non-base
 branch before it commits.
 

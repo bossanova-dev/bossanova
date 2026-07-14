@@ -33,9 +33,9 @@ func TestEmbeddedSkillManifestExcludesBossProof(t *testing.T) {
 
 	want := []string{
 		"boss",
+		"boss-build",
 		"boss-epic",
 		"boss-finalize",
-		"boss-implement",
 		"boss-plan",
 		"boss-repair",
 		"boss-review",
@@ -64,15 +64,15 @@ func TestEmbeddedSkillManifestExcludesBossProof(t *testing.T) {
 // from the publish set) because it is the parent core of the boss-proof-* extensions,
 // so its prefix is needed to recognize them.
 var knownCores = map[string]bool{
-	"boss":           true,
-	"boss-epic":      true,
-	"boss-finalize":  true,
-	"boss-implement": true,
-	"boss-plan":      true,
-	"boss-proof":     true,
-	"boss-repair":    true,
-	"boss-review":    true,
-	"boss-verify":    true,
+	"boss":          true,
+	"boss-epic":     true,
+	"boss-finalize": true,
+	"boss-build":    true,
+	"boss-plan":     true,
+	"boss-proof":    true,
+	"boss-repair":   true,
+	"boss-review":   true,
+	"boss-verify":   true,
 }
 
 // isExtensionDirName reports whether a skill directory name is a boss-<core>-<suffix>
@@ -107,14 +107,14 @@ func TestIsExtensionDirName(t *testing.T) {
 		{"boss", false},
 		{"boss-plan", false},
 		{"boss-review", false},
-		{"boss-implement", false},
+		{"boss-build", false},
 		{"boss-proof", false},
 		// boss-<core>-<suffix> names are extensions.
 		{"boss-plan-draft", true},
 		{"boss-review-golang", true},
 		{"boss-review-thermonuclear", true},
 		{"boss-proof-web", true},
-		{"boss-implement-superpowers", true},
+		{"boss-build-superpowers", true},
 		// Non-boss / unrelated names are not extensions.
 		{"golang-pro", false},
 		{"bossnew", false},

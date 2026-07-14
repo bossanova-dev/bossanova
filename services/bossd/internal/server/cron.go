@@ -89,7 +89,7 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 		}
 	}
 
-	return connect.NewResponse(&pb.CreateCronJobResponse{CronJob: cronJobToProto(ctx, job, s.sessions, s.gatingJobIDs())}), nil
+	return connect.NewResponse(&pb.CreateCronJobResponse{CronJob: cronJobToProto(ctx, job, s.sessions, s.cronActivity, s.gatingJobIDs())}), nil
 }
 
 // ListCronJobs returns all cron jobs, optionally filtered by repo_id.
@@ -110,7 +110,7 @@ func (s *Server) ListCronJobs(ctx context.Context, req *connect.Request[pb.ListC
 	gating := s.gatingJobIDs()
 	out := make([]*pb.CronJob, 0, len(jobs))
 	for _, j := range jobs {
-		out = append(out, cronJobToProto(ctx, j, s.sessions, gating))
+		out = append(out, cronJobToProto(ctx, j, s.sessions, s.cronActivity, gating))
 	}
 	return connect.NewResponse(&pb.ListCronJobsResponse{CronJobs: out}), nil
 }
@@ -127,7 +127,7 @@ func (s *Server) GetCronJob(ctx context.Context, req *connect.Request[pb.GetCron
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get cron job: %w", err))
 	}
-	return connect.NewResponse(&pb.GetCronJobResponse{CronJob: cronJobToProto(ctx, job, s.sessions, s.gatingJobIDs())}), nil
+	return connect.NewResponse(&pb.GetCronJobResponse{CronJob: cronJobToProto(ctx, job, s.sessions, s.cronActivity, s.gatingJobIDs())}), nil
 }
 
 // UpdateCronJob mutates an existing cron job and refreshes its scheduler
@@ -226,7 +226,7 @@ func (s *Server) UpdateCronJob(ctx context.Context, req *connect.Request[pb.Upda
 		}
 	}
 
-	return connect.NewResponse(&pb.UpdateCronJobResponse{CronJob: cronJobToProto(ctx, job, s.sessions, s.gatingJobIDs())}), nil
+	return connect.NewResponse(&pb.UpdateCronJobResponse{CronJob: cronJobToProto(ctx, job, s.sessions, s.cronActivity, s.gatingJobIDs())}), nil
 }
 
 // DeleteCronJob removes a cron job from the scheduler and the database.

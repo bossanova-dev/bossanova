@@ -1214,7 +1214,11 @@ test('extractStillsFromVideo: mirrors the renderFrames gallery shape and maps ea
       timeline,
       mp4Path: '/v.mp4',
       captureDir,
+      // Defines the last screen's mid-dwell window (BOS-355).
+      endCutMs: 8000,
       extractStill,
+      // Bright probe → nothing is dropped; the mid-dwell mapping is what's asserted.
+      probeStillLuma: () => 128,
     })
     assert.deepEqual(stills, [
       {
@@ -1228,11 +1232,169 @@ test('extractStillsFromVideo: mirrors the renderFrames gallery shape and maps ea
         sceneId: 'scene-02',
       },
     ])
-    // Each still extracted at its screen's mapped output-clock ms (introMs + castMs).
+    // Mid-dwell sampling (BOS-355): screen 1 dwell [0,4000] → castMs+min(2000,1500)
+    // =1500 → +introMs 1000 = 2500; screen 2 (last) dwell [4000,endCutMs 8000] →
+    // 4000+min(2000,1500)=5500 → +introMs 1000 = 6500.
     assert.deepEqual(seen, [
-      { output: 'scene-01-frame-01.png', outputMs: 1000 },
-      { output: 'scene-02-frame-02.png', outputMs: 5000 },
+      { output: 'scene-01-frame-01.png', outputMs: 2500 },
+      { output: 'scene-02-frame-02.png', outputMs: 6500 },
     ])
+  } finally {
+    fs.rmSync(captureDir, { recursive: true, force: true })
+  }
+})
+
+// ── BOS-355: mid-dwell still sampling + near-black luma guard ─────────────────
+
+test('stillSampleSourceMs: samples a settled mid-dwell frame, capped and clamped', async () => {
+  const { stillSampleSourceMs, SETTLE_SAMPLE_CAP_MS, RETRY_SAMPLE_CAP_MS, FALLBACK_DWELL_MS } =
+    await import('./proof-tui-agent.mjs')
+  const screens = [{ castMs: 0 }, { castMs: 4000 }]
+  // Interior screen → halfway to the next screen's castMs (dwell 4000 → +2000,
+  // capped to SETTLE_SAMPLE_CAP_MS = 1500).
+  assert.equal(stillSampleSourceMs({ screens, index: 0, endCutMs: 8000 }), 1500)
+  // Last screen → dwell measured off endCutMs (dwell 4000 → +1500 cap).
+  assert.equal(stillSampleSourceMs({ screens, index: 1, endCutMs: 8000 }), 5500)
+  // Tiny dwell → half the dwell, strictly below the next screen.
+  const tiny = [{ castMs: 100 }, { castMs: 110 }]
+  const tinySample = stillSampleSourceMs({ screens: tiny, index: 0 })
+  assert.equal(tinySample, 105)
+  assert.ok(tinySample < 110, 'tiny-dwell sample must stay strictly below next')
+  // Long dwell → capped exactly at the cap offset.
+  const long = [{ castMs: 0 }, { castMs: 100_000 }]
+  assert.equal(stillSampleSourceMs({ screens: long, index: 0 }), SETTLE_SAMPLE_CAP_MS)
+  // The near-black retry pass (deeper fraction 0.75 + the larger RETRY_SAMPLE_CAP_MS)
+  // samples a STRICTLY LATER timestamp than the primary (0.5, SETTLE_SAMPLE_CAP_MS)
+  // even when the primary saturated its cap, so the retry re-samples a different
+  // point in the dwell (BOS-355 follow-up).
+  const primary = stillSampleSourceMs({ screens: long, index: 0, fraction: 0.5 })
+  const retry = stillSampleSourceMs({
+    screens: long,
+    index: 0,
+    fraction: 0.75,
+    capMs: RETRY_SAMPLE_CAP_MS,
+  })
+  assert.equal(primary, SETTLE_SAMPLE_CAP_MS)
+  assert.equal(retry, RETRY_SAMPLE_CAP_MS)
+  assert.ok(retry > primary, 'the retry pass must sample later than the primary on a capped dwell')
+  // Non-finite castMs → returned unchanged (preserves the null-cast degrade).
+  assert.equal(stillSampleSourceMs({ screens: [{ castMs: null }], index: 0 }), null)
+  assert.equal(stillSampleSourceMs({ screens: [{}], index: 0 }), undefined)
+  // Degenerate next<=castMs (last screen, endCutMs === castMs) → FALLBACK_DWELL_MS.
+  assert.equal(
+    stillSampleSourceMs({ screens: [{ castMs: 5000 }], index: 0, endCutMs: 5000 }),
+    5000 + Math.min(FALLBACK_DWELL_MS * 0.5, SETTLE_SAMPLE_CAP_MS),
+  )
+})
+
+test('extractStillsFromVideo: injected probeStillLuma drops a near-black still, bright neighbours survive (BOS-355)', async () => {
+  const { extractStillsFromVideo } = await import('./proof-tui-agent.mjs')
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-luma-'))
+  try {
+    const extractStill = async ({ output }) => {
+      fs.writeFileSync(output, 'png')
+      return true
+    }
+    // Screen 2's frame is near-black on both passes → dropped; 1 and 3 survive.
+    const probeStillLuma = (p) => (path.basename(p) === 'scene-01-frame-02.png' ? 4 : 120)
+    const stills = await extractStillsFromVideo({
+      screens: [
+        { seq: 1, text: 'A', castMs: 0 },
+        { seq: 2, text: 'B', castMs: 2000 },
+        { seq: 3, text: 'C', castMs: 4000 },
+      ],
+      sceneForScreen: { 1: 'scene-01', 2: 'scene-01', 3: 'scene-01' },
+      timeline: { trimMs: 0, segments: [{ startMs: 0, endMs: 8000, speed: 1 }], introMs: 0 },
+      mp4Path: '/tmp/fake.mp4',
+      captureDir,
+      endCutMs: 8000,
+      extractStill,
+      probeStillLuma,
+    })
+    assert.deepEqual(
+      stills.map((s) => s.fileName),
+      ['tui-agent/scene-01-frame-01.png', 'tui-agent/scene-01-frame-03.png'],
+    )
+    // Kept stills preserve the gallery shape.
+    assert.deepEqual(stills[0], {
+      fileName: 'tui-agent/scene-01-frame-01.png',
+      label: 'scene 01 frame 01',
+      sceneId: 'scene-01',
+    })
+  } finally {
+    fs.rmSync(captureDir, { recursive: true, force: true })
+  }
+})
+
+test('extractStillsFromVideo: an all-near-black set keeps exactly the brightest still (floor, BOS-355)', async () => {
+  const { extractStillsFromVideo } = await import('./proof-tui-agent.mjs')
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-floor-'))
+  try {
+    const extractStill = async ({ output }) => {
+      fs.writeFileSync(output, 'png')
+      return true
+    }
+    // Every still is near-black (<10); frame-02 is the brightest → the floor keeps it.
+    const luma = {
+      'scene-01-frame-01.png': 3,
+      'scene-01-frame-02.png': 8,
+      'scene-01-frame-03.png': 1,
+    }
+    const probeStillLuma = (p) => luma[path.basename(p)]
+    const stills = await extractStillsFromVideo({
+      screens: [
+        { seq: 1, text: 'A', castMs: 0 },
+        { seq: 2, text: 'B', castMs: 2000 },
+        { seq: 3, text: 'C', castMs: 4000 },
+      ],
+      sceneForScreen: { 1: 'scene-01', 2: 'scene-01', 3: 'scene-01' },
+      timeline: { trimMs: 0, segments: [{ startMs: 0, endMs: 8000, speed: 1 }], introMs: 0 },
+      mp4Path: '/tmp/fake.mp4',
+      captureDir,
+      endCutMs: 8000,
+      extractStill,
+      probeStillLuma,
+    })
+    assert.equal(stills.length, 1, 'floor keeps exactly one still so the gallery never empties')
+    assert.equal(
+      stills[0].fileName,
+      'tui-agent/scene-01-frame-02.png',
+      'the brightest still is kept',
+    )
+  } finally {
+    fs.rmSync(captureDir, { recursive: true, force: true })
+  }
+})
+
+test('extractStillsFromVideo: near-black at 0.5 but bright at 0.75 → the retry rescues the still (BOS-355)', async () => {
+  const { extractStillsFromVideo } = await import('./proof-tui-agent.mjs')
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-rescue-'))
+  try {
+    const extractStill = async ({ output }) => {
+      fs.writeFileSync(output, 'png')
+      return true
+    }
+    // Single screen; probe returns near-black (4) on the first (0.5) pass, then a
+    // bright value (120) on the re-probe after the 0.75 retry re-extract → the
+    // still is rescued and kept, not dropped. Guards the retry-then-KEEP branch.
+    let calls = 0
+    const probeStillLuma = () => (++calls === 1 ? 4 : 120)
+    const stills = await extractStillsFromVideo({
+      screens: [{ seq: 1, text: 'A', castMs: 0 }],
+      sceneForScreen: { 1: 'scene-01' },
+      timeline: { trimMs: 0, segments: [{ startMs: 0, endMs: 8000, speed: 1 }], introMs: 0 },
+      mp4Path: '/tmp/fake.mp4',
+      captureDir,
+      endCutMs: 8000,
+      extractStill,
+      probeStillLuma,
+    })
+    assert.equal(calls, 2, 'the near-black still is re-probed after the retry re-extract')
+    assert.deepEqual(
+      stills.map((s) => s.fileName),
+      ['tui-agent/scene-01-frame-01.png'],
+      'a still that goes bright on the retry is kept, not dropped',
+    )
   } finally {
     fs.rmSync(captureDir, { recursive: true, force: true })
   }

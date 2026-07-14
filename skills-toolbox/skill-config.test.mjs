@@ -527,7 +527,7 @@ test('the committed .boss-skills.json reproduces the current hard-coded values',
   assert.equal(cfg.commands.testSmoke, 'make test-smoke')
   assert.equal(cfg.commands.testAffected, 'make test-affected')
   assert.equal(moduleTestCommand(cfg, 'boss'), 'make test-boss')
-  // env parity with boss-implement + boss-plan headless detection
+  // env parity with boss-build + boss-plan headless detection
   assert.equal(isHeadless(cfg, { BOSS_CRON: 'true' }, { isTTY: true }), true)
   assert.equal(isHeadless(cfg, { BS_HEADLESS: '1' }, { isTTY: true }), true)
   // adapter selection parity

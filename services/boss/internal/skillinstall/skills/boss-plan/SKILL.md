@@ -40,7 +40,7 @@ Workspace facts (do not re-discover):
 - Linear priority numeric: `1=Urgent, 2=High, 3=Medium, 4=Low, 0=None`.
 - Dependency links use Linear `blocks`/`blocked by`. A blocker is "cleared" only
   when its state is `Done` or `Canceled` (PR merged / work dropped); the
-  blocking-aware logic is unit-tested in `scripts/linear-deps-lib.mjs`. boss-implement
+  blocking-aware logic is unit-tested in `scripts/linear-deps-lib.mjs`. boss-build
   will not start a ticket blocked by an uncleared blocker.
 - Proof/R2: Wrangler reads `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN` from repo-root `.env`
   implicitly. `BOSS_PROOF_R2_BUCKET=bossanova-proof-production` and
@@ -186,11 +186,12 @@ Whoever drafts — the interactive path or the headless subagent (per
 title, e.g. `BOS-5-add-an-unsubscribe-mechanism`; compute it with
 `node -e "import('./scripts/plan-upload.mjs').then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))" <ISSUE-ID> "<title>"`).
 The **full drafting spec** — the plan-body requirements (first dev step, `## Acceptance criteria`,
-`## Required proof`, autonomous framing, agent-friendliness call) **and** the fill-in
+`## Required proof`, a `## Proof harness analysis` readiness pass mapping each acceptance criterion to
+a concrete proof artifact, autonomous framing, agent-friendliness call) **and** the fill-in
 description-summary template — lives once in **`references/headless-drafting-brief.md` § "Step 5"/"Step 7"**;
 both modes follow it, not repeated resident.
 
-The orchestrator only needs the **versioned Linear description section contract** that boss-implement
+The orchestrator only needs the **versioned Linear description section contract** that boss-build
 and bs-sweep-plan consume — the drafter's `descriptionSummary` MUST carry exactly these `##` sections,
 in order (`## Why this needs a human` and `## Open Questions` are conditional; all others always
 present). Its machine-readable form lives in `.boss-skills.json` under `planContract`, and each
@@ -229,6 +230,29 @@ subagent → validate its envelope → fold or skip), against
 > it as sensitive and redact it. Do not publish until this check passes. (This is the one place the
 > headless orchestrator reads the plan **file** — the subagent already kept its body out of the
 > orchestrator's context; the gate reads it once, deliberately, for safety.)
+
+> **STOP — image-parity gate (mandatory, mechanical, do not skip).** A rewritten description that
+> silently drops the reporter's screenshots is "worse than none" (the Phase 0 edge rule), and the
+> drafting LLM cannot be trusted to preserve them — so verify parity **mechanically** before any
+> Linear write. Use your **Write tool** to materialize two scratch files under gitignored
+> `.linear-plans/` — they do not exist until you write them, and an **empty** original vacuously
+> passes and silently defeats the gate. Write the **raw** Phase 1 `get_issue` description (never a
+> summary/paraphrase) to `.linear-plans/<ISSUE-ID>.image-guard-orig.md` and the returned
+> `descriptionSummary` to `.linear-plans/<ISSUE-ID>.image-guard-new.md` (per-issue paths so
+> concurrent runs never clobber), both carrying the actual bytes. Then run the guard:
+>
+> ```bash
+> ORIG=".linear-plans/<ISSUE-ID>.image-guard-orig.md"; NEW=".linear-plans/<ISSUE-ID>.image-guard-new.md"
+> node scripts/plan-image-guard.mjs --original "$ORIG" --rewritten "$NEW"
+> GATE=$?
+> rm -f "$ORIG" "$NEW"
+> [ "$GATE" -eq 0 ] || { echo "image-parity gate: rewritten description dropped the reporter image(s) above — no Linear write, aborting" >&2; exit 1; }
+> ```
+>
+> On non-zero exit take the **SAFE branch** — identical to the dispatch-failure branch: **no Linear
+> write**, a one-line stderr reason naming the dropped URL(s) (the guard prints each), discard the
+> scratch (Phase 5 cleanup), and exit non-zero. The guard reuses the in-hand original description and
+> returned `descriptionSummary`, so it adds no new Linear read.
 
 1. Publish the plan through `scripts/plan-publish.mjs` (resolves `PLAN_PUBLISH`, default `r2`, and
    owns object-key/URL derivation). Each Bash call is fresh; for `r2`, load `.env` and constants:
@@ -378,6 +402,7 @@ upload time by the mandatory secret gate at the top of **Phase 4** — do not by
 - Existing description → fold it into the interview/recon and preserve it verbatim under `## Original notes`.
 - Estimate rejected → finish the other updates, warn about Fibonacci estimation setup.
 - **Headless drafting dispatch fails** (missing/stale sentinel, or an `ok` sentinel with a missing/empty plan file) → `dispatch-failure`: **no Linear write**, non-zero exit with a one-line stderr reason, run-dir cleaned. A half-planned issue is worse than none.
+- **Rewritten description drops a reporter image** (Phase 4 image-parity gate exits non-zero) → SAFE branch: **no Linear write**, non-zero exit naming the dropped URL(s), scratch discarded. A plan that silently destroys the reporter's screenshots is worse than none.
 
 ## Cron gate
 

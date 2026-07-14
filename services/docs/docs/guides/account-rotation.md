@@ -70,6 +70,29 @@ boss account update <account-id>    # change label, priority, status, or allowed
 boss account remove <account-id>    # remove an account and its stored credential
 ```
 
+### Register accounts in the TUI
+
+The CLI and the TUI are **equivalent entry points** to the same registry — use
+whichever you prefer. To manage accounts inside the TUI:
+
+1. Open the **Settings** view and press **`a`** (the action bar shows
+   `[a]ccounts`) to open the accounts list. Its columns are LABEL, PROVIDER,
+   STATUS, HEALTH, UTIL5H, UTIL7D, AGE, COOLDOWN, and LAST TEST.
+2. In the accounts list, use these keys:
+   - **`a`** — register a new account. A `claude | codex` chooser runs the same
+     interactive setup-token / device-flow walkthrough as `boss account add`,
+     right inside the TUI (credentials stay masked).
+   - **`e`** / **`enter`** — edit the selected account's label, status, or
+     priority inline.
+   - **`x`** — disable or re-enable the selected account.
+   - **`d`** — remove the account (confirm-gated; purges the stored keyring
+     credential).
+   - **`t`** — run a live credential test.
+   - **`r`** — refresh usage metadata.
+
+Accounts you register in the TUI are the same records `boss account ls` shows on
+the command line; there is one registry per local daemon.
+
 You can always move a specific session onto a specific account by hand:
 
 ```bash
@@ -80,6 +103,40 @@ Manual switching stops the session's live chat, rebinds it to the chosen
 account, and respawns with resume. Pass `system-default` (or `0`) as the account
 to return a session to account 0. A mid-turn (working) chat is rejected unless
 you add `--force`.
+
+### Switch from inside a chat
+
+You can switch a running chat's account from the chat composer itself by
+submitting a **`/boss switch`** (or **`/switch`**) control command:
+
+```
+/boss switch <account>
+/switch <account>            # short form
+/boss switch <account> --force   # interrupt a mid-turn (WORKING) chat
+```
+
+`<account>` is an optional account id or label; omit it to let the daemon pick
+another eligible account. This is the **credit-free** in-chat switch: the daemon
+intercepts the submitted command **before it reaches the agent pane** and runs
+the account-switch primitive directly, returning the result as a notice. Because
+no LLM call is made, **it works even when that chat is credit-exhausted** — which
+is exactly when you need it.
+
+By contrast, **asking the assistant to switch its own account does not work once
+the chat is exhausted.** The in-chat `/boss` skill only gives the agent the
+`boss account switch` CLI reference; for the agent to act on it, it must emit a
+tool call — an LLM call on the very account that is already capped. Use the
+`/boss switch` control command instead (or switch from outside the chat).
+
+Two caveats worth knowing:
+
+- The interception only guards the RPC send path (the web/TUI composer submit).
+  **Raw keystrokes typed directly into the tmux pane over SSH bypass it** and
+  still reach the agent, so a `/boss switch` typed straight into an exhausted
+  pane hits a 401 rather than switching.
+- You can also switch from **outside** the chat at any time: the TUI chat picker
+  / session-detail view (press **`c`**, "swit[c]h account"), or the CLI
+  `boss account switch <session> <account>`.
 
 ## Rotation behavior
 
@@ -122,8 +179,10 @@ boss settings --managed-accounts      # re-enable it
 (`--no-rotation` / `--rotation` are deprecated hidden aliases for the same
 two flags, kept for back-compat scripts.)
 
-You can also flip the same toggle from the TUI Settings view. `boss settings`
-with no flags prints the current values on two lines:
+You can also flip the same toggle from the TUI Settings view: it is the
+**"Enable automatic account rotation"** checkbox, toggled with `enter`/`space`.
+`boss settings` with no flags prints all current settings; the two
+rotation-relevant lines are:
 
 ```
 Managed accounts: true|false
@@ -169,9 +228,3 @@ under your Claude or Codex provider's terms of service is **your
 responsibility**. Bossanova does not register or import any account you have not
 explicitly added, and it **never shares accounts between users**: every
 registered credential stays in your own OS keyring on your own machine.
-
-## Verifying your setup
-
-After registering accounts, follow
-[Verifying Account Rotation](./account-rotation-verification.md) for an
-end-to-end local checklist and the optional smoke script.

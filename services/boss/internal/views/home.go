@@ -450,6 +450,20 @@ func (h HomeModel) tableCursorForSessionIndex(sessionIndex int) int {
 	return -1
 }
 
+// tableCursorForSessionID returns the table cursor row for the session with the
+// given id, or (-1, false) when no session matches (including the empty id).
+func (h HomeModel) tableCursorForSessionID(id string) (int, bool) {
+	if id == "" {
+		return -1, false
+	}
+	for i, sess := range h.sessions {
+		if sess.Id == id {
+			return h.tableCursorForSessionIndex(i), true
+		}
+	}
+	return -1, false
+}
+
 func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
 	if sess != nil && h.isArchiving(sess.Id) {
 		return renderArchivingStatus(h.spinner)
@@ -929,6 +943,11 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.pollFailures = 0
 		h.err = nil
 		h.daemonRemediation = ""
+		// Capture the session under the cursor before the list is replaced so we
+		// can keep it selected across the poll even if rows above it disappear
+		// (e.g. a sibling session finished archiving). Empty when nothing is
+		// selected. See BOS-367.
+		selectedID := h.selectedSessionID()
 		h.sessions = msg.sessions
 		h.latchValueDeliveredIfNeeded()
 		h.daemonStatuses = msg.daemonStatuses
@@ -936,14 +955,17 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.reconcileArchivingSessions()
 		h.buildTableRows()
 		if h.highlightSessionID != "" {
-			for i, sess := range h.sessions {
-				if sess.Id == h.highlightSessionID {
-					h.table.SetCursor(h.tableCursorForSessionIndex(i))
-					updateCursorColumn(&h.table)
-					break
-				}
+			if row, ok := h.tableCursorForSessionID(h.highlightSessionID); ok {
+				h.table.SetCursor(row)
+				updateCursorColumn(&h.table)
 			}
 			h.highlightSessionID = ""
+		} else if row, ok := h.tableCursorForSessionID(selectedID); ok {
+			// Keep the same session under the cursor across the poll, even when
+			// rows above it were removed (BOS-367) — otherwise the cursor holds
+			// its row number and slides onto the next session down.
+			h.table.SetCursor(row)
+			updateCursorColumn(&h.table)
 		} else if len(h.sessions) > 0 {
 			h.normalizeTableCursor(h.table.Cursor())
 			updateCursorColumn(&h.table)

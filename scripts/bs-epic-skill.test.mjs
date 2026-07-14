@@ -2,7 +2,7 @@
 //
 // boss-epic orchestrates an entire epic of planned Linear tickets to merged PRs,
 // unattended: it assembles the epic's sub-issues, computes a dependency-ordered
-// schedule, spawns parallel boss-implement sessions, drives repair on failures,
+// schedule, spawns parallel boss-build sessions, drives repair on failures,
 // serializes merges, and reports progress on the parent issue. This test follows
 // the BOS-144 content-test pattern (scripts/bs-<skill>-skill.test.mjs, mirroring
 // scripts/boss-plan-skill.test.mjs). It pins:
@@ -51,7 +51,7 @@ test('size ratchet', () => {
   // Bumped 27648 → 28672 for the settled-green merge gate: Phase 3b/3c now require
   // the child session to have SETTLED (chat IDLE + stale last_agent_activity_at,
   // or STOPPED + stale/missing last_agent_activity_at) before a Passing green is merge-eligible, fixing
-  // premature merges of still-working children whose own boss-implement review +
+  // premature merges of still-working children whose own boss-build review +
   // comment resolution had not finished (recurser/bossanova#1174). This makes the
   // classified greens actually match nextToMerge's "passed-review" contract.
   // Bumped 28672 → 29696 for BOS-322, the "planning-only epic work must not

@@ -114,6 +114,97 @@ func TestAccountCooldownDetail(t *testing.T) {
 	})
 }
 
+func TestAccountUsageWindowDetail(t *testing.T) {
+	now := time.Date(2026, 1, 15, 9, 0, 0, 0, time.UTC)
+	t.Run("populated shows percent and reset countdown", func(t *testing.T) {
+		u := &pb.UsageSnapshot{
+			Util_5H:   0.93,
+			Reset_5H:  timestamppb.New(now.Add(5 * 24 * time.Hour)),
+			Status:    "active",
+			FetchedAt: timestamppb.New(now.Add(-4 * time.Minute)),
+		}
+		got := accountUsageWindowDetail(u, u.GetUtil_5H(), u.GetReset_5H(), now)
+		if !strings.Contains(got, "93%") {
+			t.Fatalf("window detail = %q, want a 93%% utilization", got)
+		}
+		if !strings.Contains(got, "resets in") {
+			t.Fatalf("window detail = %q, want a reset countdown", got)
+		}
+	})
+	t.Run("nil snapshot is em dash", func(t *testing.T) {
+		if got := accountUsageWindowDetail(nil, 0, nil, now); got != "—" {
+			t.Fatalf("nil window detail = %q, want em dash", got)
+		}
+	})
+	t.Run("never probed is em dash", func(t *testing.T) {
+		u := &pb.UsageSnapshot{Util_5H: 0.5, Status: "active"} // FetchedAt nil
+		if got := accountUsageWindowDetail(u, u.GetUtil_5H(), u.GetReset_5H(), now); got != "—" {
+			t.Fatalf("never-probed window detail = %q, want em dash", got)
+		}
+	})
+	t.Run("unsupported status is em dash", func(t *testing.T) {
+		u := &pb.UsageSnapshot{Util_5H: 0.5, Status: "unsupported", FetchedAt: timestamppb.New(now.Add(-time.Minute))}
+		if got := accountUsageWindowDetail(u, u.GetUtil_5H(), u.GetReset_5H(), now); got != "—" {
+			t.Fatalf("unsupported window detail = %q, want em dash", got)
+		}
+	})
+}
+
+func TestAccountUsageAgeCell(t *testing.T) {
+	now := time.Date(2026, 1, 15, 9, 0, 0, 0, time.UTC)
+	t.Run("populated shows compact age", func(t *testing.T) {
+		u := &pb.UsageSnapshot{Status: "active", FetchedAt: timestamppb.New(now.Add(-4 * time.Minute))}
+		if got := accountUsageAgeCell(u, now); got != "4m" {
+			t.Fatalf("age cell = %q, want 4m", got)
+		}
+	})
+	t.Run("nil snapshot is em dash", func(t *testing.T) {
+		if got := accountUsageAgeCell(nil, now); got != "—" {
+			t.Fatalf("nil age cell = %q, want em dash", got)
+		}
+	})
+	t.Run("never probed is em dash", func(t *testing.T) {
+		if got := accountUsageAgeCell(&pb.UsageSnapshot{Status: "active"}, now); got != "—" {
+			t.Fatalf("never-probed age cell = %q, want em dash", got)
+		}
+	})
+	t.Run("age renders even for unsupported status", func(t *testing.T) {
+		// The age is independent of the util windows' unsupported gate: a probe
+		// that ran but could not determine utilization still has a fetch time.
+		u := &pb.UsageSnapshot{Status: "unsupported", FetchedAt: timestamppb.New(now.Add(-2 * time.Hour))}
+		if got := accountUsageAgeCell(u, now); got != "2h" {
+			t.Fatalf("unsupported age cell = %q, want 2h", got)
+		}
+	})
+}
+
+func TestAccountUsageAgeDetail(t *testing.T) {
+	t.Run("populated shows fetched ... ago", func(t *testing.T) {
+		u := &pb.UsageSnapshot{Status: "active", FetchedAt: timestamppb.New(time.Now().Add(-4 * time.Minute))}
+		got := accountUsageAgeDetail(u)
+		if !strings.HasPrefix(got, "fetched ") || !strings.Contains(got, "ago") {
+			t.Fatalf("age detail = %q, want a 'fetched <rel> ago' line", got)
+		}
+	})
+	t.Run("nil snapshot is em dash", func(t *testing.T) {
+		if got := accountUsageAgeDetail(nil); got != "—" {
+			t.Fatalf("nil age detail = %q, want em dash", got)
+		}
+	})
+	t.Run("never probed is em dash", func(t *testing.T) {
+		if got := accountUsageAgeDetail(&pb.UsageSnapshot{Status: "active"}); got != "—" {
+			t.Fatalf("never-probed age detail = %q, want em dash", got)
+		}
+	})
+	t.Run("age renders even for unsupported status", func(t *testing.T) {
+		u := &pb.UsageSnapshot{Status: "unsupported", FetchedAt: timestamppb.New(time.Now().Add(-2 * time.Hour))}
+		got := accountUsageAgeDetail(u)
+		if !strings.HasPrefix(got, "fetched ") || !strings.Contains(got, "ago") {
+			t.Fatalf("unsupported age detail = %q, want a 'fetched <rel> ago' line", got)
+		}
+	})
+}
+
 func TestAccountLastTestedDetail(t *testing.T) {
 	t.Run("failed masks the error", func(t *testing.T) {
 		a := &pb.Account{LastTestError: "denied token=sk-FAKE0123456789abcdef"}

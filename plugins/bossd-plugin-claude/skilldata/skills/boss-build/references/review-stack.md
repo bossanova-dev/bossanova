@@ -20,7 +20,7 @@ file:
 
 ```bash
 SENTINEL="$RUN_SENTINEL"
-CAPS="$BOSS_IMPLEMENT_TOOLBOX/bs-review-caps.mjs"
+CAPS="$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs"
 node "$SENTINEL" write "$RUN_DIR" "$RUN_ID" review "$(node "$CAPS" sentinel clean)"   # clean; or: sentinel capped <N>
 ```
 
@@ -40,7 +40,7 @@ The orchestrator has already picked `REVIEW_BASE` (fresh/bootstrap-only → `$ST
 
 Run a **bounded converging review loop**: a fresh independent reviewer each round, fix the blockers,
 re-gate, repeat — capped at the effective review-round cap `MAX_ROUNDS=$(node
-"$BOSS_IMPLEMENT_TOOLBOX/bs-review-caps.mjs" rounds)`, which reads the `BS_REVIEW_MAX_ROUNDS` env var clamped
+"$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" rounds)`, which reads the `BS_REVIEW_MAX_ROUNDS` env var clamped
 **lower-only** to a default of **3** (invalid / absent / too-high → 3; the env may only lower the
 cap, never raise it — set it to 2–3 for cron/plugin invocations). Round counter starts at 1. Each
 round:
@@ -186,7 +186,7 @@ consolidated, multi-lens review over the implementation branch. Invoke it via th
 second-opinion round (codex↔claude), and a vendored `thermonuclear-review` round; it fixes every
 must-fix finding locally (committing tagless), and prints a rendered `wc-auto-review`-style report
 (a one-line header, a ✅/❌ verdict block, and collapsible `<details>` sections, produced by
-`$BOSS_IMPLEMENT_TOOLBOX/bs-review-report.mjs`) followed by a `bs-review clean:` or `bs-review capped:` sentinel
+`$BOSS_BUILD_TOOLBOX/bs-review-report.mjs`) followed by a `bs-review clean:` or `bs-review capped:` sentinel
 line.
 
 This step is **default-on**, **await-only** (never `run_in_background`), **advisory**, and

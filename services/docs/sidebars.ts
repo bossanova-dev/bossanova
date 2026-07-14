@@ -20,7 +20,6 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'guides/account-rotation',
-        'guides/account-rotation-verification',
         'guides/agent-plugins',
         'guides/mcp',
         'guides/setup-scripts',

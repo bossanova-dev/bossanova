@@ -3,7 +3,7 @@
 .worktrees/
 
 # Implementation plans (docs/plans/**) are archival snapshots copied verbatim from
-# proof.bossanova.dev by boss-implement — never reformatted (BOS-371). Excluding
+# proof.bossanova.dev by boss-build — never reformatted (BOS-371). Excluding
 # them also stops the recurring plan-file churn the whole-tree docs-prettier pass
 # used to produce. BOS-372's whole-repo sweep can still include them if desired.
 docs/plans/

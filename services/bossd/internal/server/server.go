@@ -97,6 +97,11 @@ type Server struct {
 	checkSnapshots db.CheckSnapshotStore
 	rotationEvents db.RotationEventStore
 	cronScheduler  *cron.Scheduler
+	// cronActivity is the agent-liveness seam used to derive cron STATUS
+	// (RUNNING only when the last-run agent is actively working). Shares the
+	// same instance as the scheduler's overlap check (cmd/main.go). Optional,
+	// may be nil — cronJobStatus then falls back to session-state heuristics.
+	cronActivity   cron.ActivityChecker
 	chatStatus     *status.Tracker
 	displayTracker *status.DisplayTracker
 	// prRefresher re-polls a single PR's display status on demand. MergeSession
@@ -183,6 +188,11 @@ type Config struct {
 	// Session.rotation_events for TUI/web history (BOS-176). Nil-safe.
 	RotationEvents db.RotationEventStore
 	CronScheduler  *cron.Scheduler
+	// CronActivity is the agent-liveness checker shared with the cron
+	// scheduler's overlap suppression; cronJobStatus uses it so the TUI STATUS
+	// column reads RUNNING only for an actively-working last run. Optional, may
+	// be nil (STATUS then falls back to session-state heuristics).
+	CronActivity   cron.ActivityChecker
 	ChatStatus     *status.Tracker
 	DisplayTracker *status.DisplayTracker
 	// PRRefresher re-polls one PR's display status on demand, repopulating the
@@ -286,6 +296,7 @@ func New(cfg Config) *Server {
 		checkSnapshots: cfg.CheckSnapshots,
 		rotationEvents: cfg.RotationEvents,
 		cronScheduler:  cfg.CronScheduler,
+		cronActivity:   cfg.CronActivity,
 		chatStatus:     cfg.ChatStatus,
 		displayTracker: cfg.DisplayTracker,
 		prRefresher:    cfg.PRRefresher,
@@ -1381,16 +1392,7 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 
 	// Hydrate PR display status from the in-memory tracker.
 	if s.displayTracker != nil {
-		if e := s.displayTracker.Get(session.ID); e != nil {
-			p.DisplayStatus = pb.DisplayStatus(e.Status)
-			p.DisplayHasFailures = e.HasFailures
-			p.DisplayHasChangesRequested = e.HasChangesRequested
-			p.DisplayIsRepairing = e.IsRepairing
-			p.DisplaySettingUp = e.SettingUp
-			p.DisplayMerging = e.Merging
-			p.PrMergeable = e.Mergeable
-			p.MergeBlock = displayEntryToMergeBlock(e)
-		}
+		HydrateDisplayEntry(p, s.displayTracker.Get(session.ID))
 	}
 	// repair_active is the authoritative, lease-backed single-repairer signal
 	// (nil-safe when the lease manager is not wired).
@@ -1490,14 +1492,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		entries = s.displayTracker.GetBatch(sessionIDs)
 		for i, sess := range pbSessions {
 			if e, ok := entries[sess.Id]; ok {
-				pbSessions[i].DisplayStatus = pb.DisplayStatus(e.Status)
-				pbSessions[i].DisplayHasFailures = e.HasFailures
-				pbSessions[i].DisplayHasChangesRequested = e.HasChangesRequested
-				pbSessions[i].DisplayIsRepairing = e.IsRepairing
-				pbSessions[i].DisplaySettingUp = e.SettingUp
-				pbSessions[i].DisplayMerging = e.Merging
-				pbSessions[i].PrMergeable = e.Mergeable
-				pbSessions[i].MergeBlock = displayEntryToMergeBlock(e)
+				HydrateDisplayEntry(pbSessions[i], e)
 			}
 			pbSessions[i].RepairActive = s.repairLease.Active(sess.Id)
 		}
@@ -2084,7 +2079,7 @@ func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.Upda
 		}
 		params.Title = &title
 	}
-	// tracker_url/tracker_id let a running session (e.g. a cron boss-implement run)
+	// tracker_url/tracker_id let a running session (e.g. a cron boss-build run)
 	// link itself to the Linear ticket it selected after creation, so the TUI
 	// [l]inear shortcut — gated on a non-empty tracker URL — becomes available.
 	// UpdateSessionParams uses **string so nil means "leave unchanged"; take the

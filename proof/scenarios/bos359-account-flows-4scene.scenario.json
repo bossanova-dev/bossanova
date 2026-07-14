@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "title": "BOS-359 rich 4-scene account flows exercise the raised TUI ladder end-to-end",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "accounts list shows both providers and the x/d action bar",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        { "key": "a", "caption": "Press [a] to open the Accounts list" },
+        {
+          "waitFor": {
+            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "label": "Accounts list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Accounts table settled"
+        },
+        {
+          "expect": [
+            {
+              "text": "LABEL PROVIDER STATUS HEALTH",
+              "match": "normalized",
+              "label": "Accounts column headers"
+            },
+            {
+              "text": "work-claude",
+              "match": "normalized",
+              "label": "active claude account row"
+            },
+            {
+              "text": "personal-codex",
+              "match": "normalized",
+              "label": "codex account row"
+            },
+            {
+              "text": "[x] disable/enable",
+              "match": "normalized",
+              "label": "action bar advertises the [x] disable/enable toggle"
+            },
+            {
+              "text": "[d] remove",
+              "match": "normalized",
+              "label": "action bar advertises the [d] remove action"
+            }
+          ],
+          "caption": "List shows both providers plus the disable/enable and remove actions"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "d opens the value-safe remove confirm dialog on the highlighted account",
+      "steps": [
+        { "key": "d", "caption": "Press [d] to remove the highlighted account" },
+        {
+          "waitFor": { "text": "Remove account", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Remove confirm dialog opened"
+        },
+        {
+          "expect": [
+            {
+              "text": "Remove account",
+              "match": "normalized",
+              "label": "remove confirm prompt names the destructive action"
+            },
+            {
+              "text": "work-claude",
+              "match": "normalized",
+              "label": "prompt names the highlighted target account"
+            },
+            {
+              "text": "cannot be undone",
+              "match": "normalized",
+              "label": "prompt states removal is irreversible"
+            },
+            {
+              "text": "[y/enter] confirm",
+              "match": "normalized",
+              "label": "value-safe confirm action bar"
+            }
+          ],
+          "caption": "The remove confirm dialog is shown before any credential is purged"
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "n dismisses the confirm without removing, back to the list",
+      "steps": [
+        { "key": "n", "caption": "Press [n] to dismiss without removing (no RPC fires)" },
+        {
+          "waitFor": { "text": "[d] remove", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Dismissed cleanly back to the accounts list"
+        },
+        {
+          "expect": [
+            {
+              "text": "work-claude",
+              "match": "normalized",
+              "label": "account still present after the dismissed remove"
+            },
+            {
+              "text": "[x] disable/enable",
+              "match": "normalized",
+              "label": "action bar restored on the list"
+            }
+          ],
+          "caption": "No account was removed; the list and its actions are intact"
+        }
+      ]
+    },
+    {
+      "id": "scene-04",
+      "title": "drill into the failed/cooling codex account detail",
+      "steps": [
+        { "key": "down", "caption": "Move the cursor to the failed/cooling codex row (index 1)" },
+        { "key": "enter", "caption": "Open the account detail screen" },
+        {
+          "waitFor": { "text": "Details", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Detail screen with the read-only breakdown is visible"
+        },
+        {
+          "expect": [
+            {
+              "text": "failed",
+              "match": "normalized",
+              "label": "failed health in the detail breakdown"
+            },
+            {
+              "text": "resets",
+              "match": "normalized",
+              "label": "cooldown reset time (cooling state)"
+            },
+            {
+              "text": "[REDACTED]",
+              "match": "normalized",
+              "label": "masked last-test error (redaction sentinel)"
+            }
+          ],
+          "caption": "Detail shows failed health, a cooldown reset time, and a masked last-test error"
+        }
+      ]
+    }
+  ]
+}

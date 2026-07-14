@@ -58,7 +58,8 @@ import {
   validateRecipeId,
   verdictBlockLines,
 } from './proof-lib.mjs'
-import { committedScenarioPresent } from './proof-surfaces.mjs'
+import { committedScenarioPresent, surfaceBudget } from './proof-surfaces.mjs'
+import { TUI_BUDGETS } from './proof-tui-agent.mjs'
 
 const catalog = {
   version: 1,
@@ -3483,6 +3484,82 @@ test('deferredReasonMessage(tui-truncated): honest neutral copy, never "environm
   assert.ok(/per-run wall clock/.test(msg), 'names the wall-clock cutoff')
   assert.ok(/change itself is fine/.test(msg), 'reassures the change is fine')
   assert.ok(/re-run proof/i.test(msg), 'points at re-running proof')
+})
+
+// ── BOS-359: a rich 4-scene TUI brief is grantable under the raised ladder ────
+// The BOS-354 softening closed the fatal exit-1-on-time path; BOS-359 locks the
+// coverage complement so a future budget-constant drift that makes a real
+// 4-scene brief ungrantable (or re-fatal on time alone) fails CI without a live
+// key. These bind the three coherent constants — the per-surface TUI
+// `defaultMs`/`floorMs` (proof-surfaces.mjs), the per-run wall clock
+// `TUI_BUDGETS.maxWallClockMs` (proof-tui-agent.mjs), and the shared pool
+// `DEFAULT_TOTAL_PROOF_BUDGET_MS` (proof-lib.mjs) — through the real resolved
+// values, not synthetic copies.
+
+test('BOS-359: a fresh-pool TUI slice grants exactly the per-run wall clock a 4-scene brief needs', () => {
+  // A rich 4-scene brief consumes the full per-run wall clock (TUI_BUDGETS). At
+  // elapsed 0 the ladder must grant that whole slice out of the 17-min pool,
+  // un-clamped — i.e. surfaceBudget('tui').defaultMs === TUI_BUDGETS.maxWallClockMs
+  // AND the pool is wide enough to hold it. If any of the three constants drifts
+  // out of lock-step, this equality breaks.
+  const budget = surfaceBudget('tui')
+  const grant = planSurfaceBudget({
+    surface: 'tui',
+    elapsedMs: 0,
+    totalBudgetMs: DEFAULT_TOTAL_PROOF_BUDGET_MS,
+    budget,
+  })
+  assert.deepEqual(grant, { run: true, maxWallClockMs: budget.defaultMs })
+  assert.equal(
+    grant.maxWallClockMs,
+    TUI_BUDGETS.maxWallClockMs,
+    'the granted TUI slice must equal the per-run wall clock a 4-scene brief runs against',
+  )
+  assert.ok(
+    grant.maxWallClockMs >= budget.floorMs,
+    'the granted slice must clear the viability floor',
+  )
+  assert.ok(
+    DEFAULT_TOTAL_PROOF_BUDGET_MS >= budget.defaultMs,
+    'the shared pool must hold a full TUI slice without clamping',
+  )
+})
+
+test('BOS-359: a TUI 4-scene brief stays grantable (≥ floor) after a sibling web surface consumes its default slice', () => {
+  // Coherence guard: raising the TUI ladder must grow the pool in lock-step so a
+  // rich TUI brief is never starved below its floor by a preceding web run.
+  const tuiBudget = surfaceBudget('tui')
+  const webBudget = surfaceBudget('web')
+  const grant = planSurfaceBudget({
+    surface: 'tui',
+    elapsedMs: webBudget.defaultMs,
+    totalBudgetMs: DEFAULT_TOTAL_PROOF_BUDGET_MS,
+    budget: tuiBudget,
+  })
+  assert.equal(grant.run, true, 'a 4-scene TUI brief must remain grantable after a web slice')
+  assert.ok(
+    grant.maxWallClockMs >= tuiBudget.floorMs,
+    'the post-web TUI slice must still clear the viability floor',
+  )
+})
+
+test('BOS-359: a truncated 4-scene agent run classifies tui-truncated (soft, exit 0 — never exit-1 on time)', () => {
+  // The deterministic proxy for the environmental live 4-scene capture: a
+  // 4-scene brief cut off mid-flight by the per-run wall clock (agentTruncated)
+  // with no genuine replay evidence failure softens to the neutral tui-truncated
+  // deferral, which surfaceExitContribution/aggregateExitCode map to 0
+  // (pinned in proof-finalize-outcome.test.mjs).
+  const detail = '4-scene account-flow brief cut off after scene 3 (per-run wall clock)'
+  assert.deepEqual(
+    classifyTuiOutcome({
+      legs: { runAgent: true, runReplay: false },
+      agentOutcome: 'gate-failed',
+      replayOutcome: 'not-attempted',
+      agentDetail: detail,
+      agentTruncated: true,
+    }),
+    { proofSource: null, reasonCode: 'tui-truncated', errorDetail: `agent: ${detail}` },
+  )
 })
 
 // ── BOS-223: diff-only scenario discovery ──────────────────────────────────

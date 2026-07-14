@@ -1,5 +1,5 @@
 // scripts/tracker/adapter.mjs
-// Pluggable tracker-adapter interface shared by the boss-plan / boss-implement /
+// Pluggable tracker-adapter interface shared by the boss-plan / boss-build /
 // boss-epic skills. Abstracts the Linear coupling those skills share so a future
 // tracker (GitHub Issues, Jira, ...) can slot in behind resolveTrackerAdapter.
 // node builtins only (the cron worktree is dependency-free — mirrors

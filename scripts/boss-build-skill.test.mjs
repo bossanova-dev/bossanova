@@ -7,11 +7,11 @@ import fs from 'node:fs'
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
 
 // BOS-271 collapsed the published cores onto the boss-repair single-source
-// topology: the canonical committed home for boss-implement is the embedded
+// topology: the canonical committed home for boss-build is the embedded
 // skillinstall payload, with no .claude/.codex committed copy. These tests read
-// that canonical home. (The boss-implement-superpowers *extension* stays repo-local
+// that canonical home. (The boss-build-superpowers *extension* stays repo-local
 // and dual-mirrored under .claude/.codex, so its own assertions below are unchanged.)
-const CORE = 'services/boss/internal/skillinstall/skills/boss-implement'
+const CORE = 'services/boss/internal/skillinstall/skills/boss-build'
 
 const RESIDENT_BODY_SKILLS = [`${CORE}/SKILL.md`]
 
@@ -56,8 +56,8 @@ test('every moved reference is reachable: a body pointer plus an existing file',
 
 test('methodology extension carries moved SDD/TDD references in both mirrors', () => {
   const extensionDirs = [
-    path.join(rootDir, '.claude/skills/boss-implement-superpowers'),
-    path.join(rootDir, '.codex/skills/boss-implement-superpowers'),
+    path.join(rootDir, '.claude/skills/boss-build-superpowers'),
+    path.join(rootDir, '.codex/skills/boss-build-superpowers'),
   ]
   const references = [
     'references/subagent-driven-development.md',
@@ -250,8 +250,8 @@ test('runtime helper references are local to methodology extension mirrors', () 
   ]
 
   const skillDirs = [
-    path.join(rootDir, '.claude/skills/boss-implement-superpowers'),
-    path.join(rootDir, '.codex/skills/boss-implement-superpowers'),
+    path.join(rootDir, '.claude/skills/boss-build-superpowers'),
+    path.join(rootDir, '.codex/skills/boss-build-superpowers'),
   ]
 
   for (const skillDir of skillDirs) {
@@ -330,7 +330,7 @@ test('Step 7 always posts the boss-review comment, unconditionally (BOS-181)', (
   assert.match(step7, /fallback note/i)
 })
 
-// BOS-240: boss-implement must finalize BLOCKED (not REVIEW_READY) when it defers a *required*
+// BOS-240: boss-build must finalize BLOCKED (not REVIEW_READY) when it defers a *required*
 // item at the wall-clock cap. These assertions pin the honest-finalize invariant into the
 // shipped Claude and Codex artifacts so the terminal-state logic can't silently regress. They
 // read the committed generated files (no source skip) so CI enforces them without superpowers.

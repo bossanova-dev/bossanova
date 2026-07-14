@@ -1,5 +1,5 @@
 // scripts/tracker/cli.mjs
-// Thin shell entrypoint that routes the boss-implement spine's executable claim
+// Thin shell entrypoint that routes the boss-build spine's executable claim
 // helpers through the resolved tracker adapter, so the skill names a tracker-agnostic
 // capability instead of a Linear-specific script. node builtins only (the cron
 // worktree is dependency-free).

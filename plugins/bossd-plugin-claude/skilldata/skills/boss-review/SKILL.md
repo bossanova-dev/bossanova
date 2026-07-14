@@ -1,6 +1,6 @@
 ---
 name: boss-review
-description: Multi-lens, subagent-driven code review for a Bossanova branch. Runs conditional golang-pro / tui-design / impeccable lenses, discovered whole-branch round extensions with a host/inline fallback contract, fixes every must-fix finding locally, and emits an Assessment/Evidence/Confidence report plus a copy-able follow-up-ticket prompt. Used by boss-implement. Use when asked to "review this branch", "boss-review", or to run automated review before a PR.
+description: Multi-lens, subagent-driven code review for a Bossanova branch. Runs conditional golang-pro / tui-design / impeccable lenses, discovered whole-branch round extensions with a host/inline fallback contract, fixes every must-fix finding locally, and emits an Assessment/Evidence/Confidence report plus a copy-able follow-up-ticket prompt. Used by boss-build. Use when asked to "review this branch", "boss-review", or to run automated review before a PR.
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Task, Skill
 ---
 
@@ -8,7 +8,7 @@ allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Task, Skill
 
 Run a converging, multi-lens review over the current branch's changes, fix every
 must-fix finding, and report. This is the Bossanova analogue of `wc-auto-review`,
-but it runs **locally inside `boss-implement`** (pre-PR): it commits fixes and emits
+but it runs **locally inside `boss-build`** (pre-PR): it commits fixes and emits
 a report — it does **not** post GitHub PR review threads.
 
 Pipeline: match specialist lenses -> run lenses + discovered review rounds in subagents ->
@@ -38,7 +38,7 @@ runs in a **fresh, read-only subagent** and **returns findings JSON only** — t
 owns aggregation, the fix-loop, and all commits; **await every subagent** (never
 `run_in_background`). The Bossanova-specific operational rules on top of that core:
 
-- **Non-fatal inside boss-implement.** A round extension error never aborts the run — it is
+- **Non-fatal inside boss-build.** A round extension error never aborts the run — it is
   recorded as a skipped round and the pipeline continues. `boss-review` only fixes what it can
   and reports honestly.
 - **Decide and record.** When headless there is no human to ask; resolve ordinary ambiguity,
@@ -291,7 +291,7 @@ Each round:
    rounds** at the effective review-round cap — `node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" rounds`, which
    reads the `BS_REVIEW_MAX_ROUNDS` env var clamped **lower-only** to the default of **3** (invalid
    / absent / too-high → 3; the env may only lower the cap, never raise it), matching
-   `boss-implement` Step 6. Set it to 2–3 for cron/plugin invocations. On cap, exit via the capped
+   `boss-build` Step 6. Set it to 2–3 for cron/plugin invocations. On cap, exit via the capped
    report.
 
 ## Phase 7 — Report
@@ -353,7 +353,7 @@ node "$BOSS_REVIEW_TOOLBOX/bs-review-report.mjs" --in "$REPORT_JSON"
 ```
 
 Print that rendered markdown verbatim — it is the boss-review report. The caller
-(`boss-implement` Step 6c) captures it and posts it as the single, upserted `<!-- bs-review -->`
+(`boss-build` Step 6c) captures it and posts it as the single, upserted `<!-- bs-review -->`
 PR comment.
 
 End with **exactly one** sentinel line on its own, emitted through the single-sourced builder so

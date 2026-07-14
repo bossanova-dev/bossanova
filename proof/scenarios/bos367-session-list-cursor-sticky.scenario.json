@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "title": "BOS-367 session-list cursor follows the selected session when a sibling row leaves",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "home session list settled",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        {
+          "expect": [
+            {
+              "text": "REPO NAME PR STATUS",
+              "match": "normalized",
+              "label": "session-list column headers"
+            },
+            {
+              "text": "Add dark mode",
+              "match": "normalized",
+              "label": "top session (sess-aaa-111)"
+            },
+            {
+              "text": "Fix login bug",
+              "match": "normalized",
+              "label": "second session (sess-bbb-222)"
+            },
+            {
+              "text": "Add rate limiting to public API",
+              "match": "normalized",
+              "label": "third session (sess-ddd-444)"
+            }
+          ],
+          "caption": "Anchor the starting order: Add dark mode, Fix login bug, Add rate limiting to public API"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "archive the top session, return to the list while it is still archiving",
+      "steps": [
+        { "key": "enter", "caption": "Open the top session (Add dark mode)" },
+        {
+          "waitFor": "Initial implementation",
+          "timeoutMs": 10000,
+          "caption": "Chat picker for Add dark mode loaded"
+        },
+        { "key": "a", "caption": "Press [a] to archive the session" },
+        {
+          "waitFor": "Archive this session?",
+          "timeoutMs": 10000,
+          "caption": "Archive confirm dialog"
+        },
+        { "key": "y", "caption": "Confirm the archive" },
+        {
+          "waitFor": "Archiving session",
+          "timeoutMs": 10000,
+          "caption": "Archive RPC in flight (optimistic archiving state)"
+        },
+        {
+          "key": "esc",
+          "caption": "Return to the session list while the archive is still in flight"
+        },
+        {
+          "waitFor": {
+            "text": "❯.*Fix login bug",
+            "match": "regex",
+            "label": "cursor auto-lands on the neighbour Fix login bug"
+          },
+          "timeoutMs": 10000,
+          "caption": "Back on the list; cursor sits on the neighbour just below the archiving row"
+        },
+        {
+          "expect": [
+            {
+              "text": "Add dark mode",
+              "match": "normalized",
+              "label": "archiving session still listed during the optimistic window"
+            },
+            {
+              "text": "archiving",
+              "match": "normalized",
+              "label": "optimistic archiving status on the row"
+            },
+            {
+              "text": "❯.*Fix login bug",
+              "match": "regex",
+              "label": "chevron on the neighbour Fix login bug"
+            }
+          ],
+          "caption": "Add dark mode is archiving; the chevron sits on Fix login bug"
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "move the cursor onto a surviving sibling below the archiving row",
+      "steps": [
+        {
+          "key": "down",
+          "caption": "Move the cursor down onto Add rate limiting to public API"
+        },
+        {
+          "expect": [
+            {
+              "text": "❯.*Add rate limiting to public API",
+              "match": "regex",
+              "label": "chevron now on Add rate limiting to public API (sess-ddd-444)"
+            }
+          ],
+          "caption": "Cursor moved to Add rate limiting to public API, a sibling below the archiving Add dark mode row"
+        }
+      ]
+    },
+    {
+      "id": "scene-04",
+      "title": "archived row leaves; the chevron stays on the same session",
+      "steps": [
+        {
+          "waitMs": 9000,
+          "caption": "Wait for the archive poll (~4s) to drop Add dark mode from the list"
+        },
+        {
+          "expect": [
+            {
+              "text": "❯.*Add rate limiting to public API",
+              "match": "regex",
+              "label": "chevron STILL on Add rate limiting to public API after the archived sibling left (BOS-367 fix)"
+            },
+            {
+              "text": "Add rate limiting to public API",
+              "match": "normalized",
+              "label": "the kept session remains selected"
+            }
+          ],
+          "caption": "After Add dark mode leaves the list, the chevron stays on Add rate limiting to public API instead of sliding onto the row below"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: 'boss-build'
+  short_description: 'Implement one agent-friendly planned Linear ticket into a review-ready PR'
+  default_prompt: 'Use $boss-build to implement the next agent-friendly planned Linear ticket: claim one Todo with an implementation plan, implement it via subagent-driven development, drive the PR to green, finalize it, and move the ticket to In Review. One ticket per run; never merge.'

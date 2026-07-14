@@ -93,7 +93,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   },
   adapters: { tracker: 'linear', publish: 'proof', sessionRunner: 'bossd' },
   // Versioned wire contract for the `##`-section plan description that boss-plan emits and
-  // boss-implement / bs-sweep-plan consume (BOS-204). `version` is the integer contract
+  // boss-build / bs-sweep-plan consume (BOS-204). `version` is the integer contract
   // version stamped in-band as `- Contract: v<N>` under `## Planning`; `sections` is the
   // ordered heading set as emitted, each classed `always` (every plan carries it) or
   // conditional (`needs-human` / `open-questions`). v1 == today's exact section set —

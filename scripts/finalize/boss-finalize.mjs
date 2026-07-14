@@ -1,7 +1,7 @@
 // scripts/finalize/boss-finalize.mjs
 // boss-finalize reference implementation of the finalize adapter (see adapter.mjs).
 // Captures the tag-injection -> draft->ready -> repair finalize policy the
-// boss-implement skill owns today, with ZERO behaviour change: injectPrTag delegates
+// boss-build skill owns today, with ZERO behaviour change: injectPrTag delegates
 // to the existing add-pr-numbers.sh helper (the dependency-free finalize helper the
 // cron siblings shell), and the operation map + policy constants are the exact values
 // the SKILL body's Steps 8-10 use. node builtins only (the cron worktree is
@@ -21,7 +21,7 @@ import path from 'node:path'
 
 // The dependency-free finalize helper (NOT a boss CLI) is installed under BOTH skill
 // trees: services/boss/internal/skillinstall ships it to ~/.claude and the Codex mirror
-// ships it to ~/.codex. boss-implement can run from either host, so resolve to whichever
+// ships it to ~/.codex. boss-build can run from either host, so resolve to whichever
 // tree actually contains the helper instead of hard-wiring the Claude path — a
 // Codex-only install has no .claude tree, so shelling the Claude path would ENOENT
 // before any commit tags are injected. Reachable in a cron worktree; the same helper the

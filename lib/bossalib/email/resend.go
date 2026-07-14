@@ -79,7 +79,10 @@ func (m *ResendMailer) Send(ctx context.Context, to, subject, htmlBody string) e
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if err != nil {
+			return fmt.Errorf("read resend error response (status %d): %w", resp.StatusCode, err)
+		}
 		return fmt.Errorf("resend: status %d: %s", resp.StatusCode, bytes.TrimSpace(respBody))
 	}
 	return nil

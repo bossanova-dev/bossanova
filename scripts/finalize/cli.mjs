@@ -1,5 +1,5 @@
 // scripts/finalize/cli.mjs
-// Thin shell entrypoint that routes the boss-implement spine's executable finalize
+// Thin shell entrypoint that routes the boss-build spine's executable finalize
 // step (PR-number tag injection) through the resolved finalize adapter, so the skill
 // names a finalize capability instead of hard-wiring the tag-injection script. node
 // builtins only (the cron worktree is dependency-free).

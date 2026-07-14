@@ -284,6 +284,7 @@ type streamSessionHydrator struct {
 	rawSessions       db.SessionStore
 	repos             db.RepoStore
 	chatStatusTracker *status.Tracker
+	displayTracker    *status.DisplayTracker
 	rotationEvents    db.RotationEventStore
 	accountLabeler    streamAccountLabeler
 	logger            zerolog.Logger
@@ -311,6 +312,16 @@ func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1
 				pbSess.AccountLabel = &label
 			}
 		}
+	}
+	// Stamp the per-axis display-tracker fields (DisplayStatus, PR mergeability,
+	// merge-block, transient merge/setup flags) that live only in the in-memory
+	// tracker — the same fields the local GetSession/ListSessions RPCs add. The
+	// cloud/web read model is fed solely by the reverse stream, so without this
+	// the web sees DisplayStatus=UNSPECIFIED and anything gating on PASSING (e.g.
+	// the web Merge button) never lights up. Applied on every delta because bosso
+	// treats deltas as full replacements.
+	if h.displayTracker != nil {
+		server.HydrateDisplayEntry(pbSess, h.displayTracker.Get(pbSess.Id))
 	}
 	server.HydrateRotationEvents(ctx, h.rotationEvents, h.logger, pbSess, pbSess.Id)
 	if h.agentChats == nil {
@@ -680,6 +691,7 @@ func run(opts runOpts) error {
 		rawSessions:       rawSessions,
 		repos:             repos,
 		chatStatusTracker: chatStatusTracker,
+		displayTracker:    displayTracker,
 		rotationEvents:    rotationEvents,
 		accountLabeler:    accountLabeler,
 		logger:            log.Logger,
@@ -1513,12 +1525,16 @@ func run(opts runOpts) error {
 
 	// --- Cron Scheduler ---
 
+	// cronActivity is shared by BOTH the scheduler's overlap suppression and the
+	// server's cron STATUS derivation (BOS-332), so the TUI STATUS column and the
+	// scheduler agree on "is this run still active" from one source of truth.
+	cronActivity := session.NewCronActivityChecker(agentLogsDir, livenessChecker)
 	cronScheduler := cronpkg.New(cronpkg.Config{
 		Store:    cronJobs,
 		Sessions: sessions,
 		Repos:    repos,
 		Creator:  sessionCreator,
-		Activity: session.NewCronActivityChecker(agentLogsDir, livenessChecker),
+		Activity: cronActivity,
 		Logger:   log.Logger,
 	})
 	// NOTE: cronScheduler.Start is intentionally deferred until after the hook
@@ -1902,6 +1918,27 @@ func run(opts runOpts) error {
 		// clears it after a fresh `boss login`. Without this, the
 		// daemon tight-loops on a dead credential indefinitely.
 		authState := upstream.NewAuthState()
+		// BOS-376: positive terminal-liveness signal shared by the
+		// TerminalStream reader (sets it healthy on TerminalReady) and its
+		// Run-loop watchdog (escalates to a forced paired re-register when a
+		// run of ready-timeouts shows the stream is alive but bound to the
+		// wrong bosso pod after a deploy).
+		//
+		// Deploy-ordering note: the readiness gate is unconditional here by
+		// design — an old bosso and a new-bosso-but-wrongly-bound stream are
+		// indistinguishable (both send no TerminalReady), so the daemon must
+		// treat "no ready" as unhealthy for cross-pod-split detection to work
+		// at all, and the ticket asks for unbounded self-heal ("instigate
+		// restart until they know that they are connected"). The one cost is a
+		// version skew where a NEWER daemon runs against an OLDER bosso that
+		// predates WithTerminalLiveness: that bosso never sends TerminalReady,
+		// so the daemon will churn its terminal stream (and periodically force
+		// a DaemonStream re-register). bosso's liveness is server-side and
+		// additive and ships from the same monorepo commit, so it deploys
+		// ahead of any released daemon; the skew direction is a dogfooding-only
+		// state the operator controls (run a matching-or-older daemon against
+		// deployed bosso). See the plan's Open Questions.
+		terminalHealth := upstream.NewTerminalHealth()
 		// creatorAdapter drives the daemon's StreamCreateSession core for
 		// reverse-stream CreateSessionCommands. Server is wired post-hoc
 		// (after srv.New, below) — same pattern as cmdHandlerStream.Waker.
@@ -1992,7 +2029,22 @@ func run(opts runOpts) error {
 			AuthState:     authState,
 			TmuxClient:    tmuxClient,
 			Chats:         upstream.NewChatStoreLookup(agentChats),
-			Logger:        log.Logger,
+			// BOS-376 self-heal wiring. Health is the positive-liveness
+			// signal; ReRegister + CloseIdle are the watchdog's paired
+			// re-dial hooks. reRegister rotates the DaemonStream session
+			// token and streamClient.Reconnect() wakes its Run loop, then
+			// httpClient.CloseIdleConnections drops pooled HTTP/2
+			// connections so the next dial of BOTH reverse streams lands on
+			// one fresh connection and co-locates on a single bosso pod.
+			Health: terminalHealth,
+			ReRegister: func(ctx context.Context) {
+				if _, err := reRegister(ctx); err != nil {
+					log.Warn().Err(err).Msg("terminal watchdog: forced DaemonStream re-register failed")
+				}
+				streamClient.Reconnect()
+			},
+			CloseIdle: httpClient.CloseIdleConnections,
+			Logger:    log.Logger,
 		})
 	}
 
@@ -2013,6 +2065,7 @@ func run(opts runOpts) error {
 		CheckSnapshots:     checkSnapshots,
 		RotationEvents:     rotationEvents,
 		CronScheduler:      cronScheduler,
+		CronActivity:       cronActivity,
 		ChatStatus:         chatStatusTracker,
 		DisplayTracker:     displayTracker,
 		PRRefresher:        displayPoller,

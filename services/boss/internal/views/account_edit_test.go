@@ -364,6 +364,60 @@ func TestAccountEditViewShowsReadOnlyDetails(t *testing.T) {
 	}
 }
 
+func TestAccountEditDetailUsageRows(t *testing.T) {
+	t.Run("populated account renders usage rows", func(t *testing.T) {
+		m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{
+			Id:       "acct-1",
+			Label:    "prod",
+			Provider: "claude",
+			Status:   "active",
+			Health:   "ok",
+			Tier:     "max",
+			Usage: &pb.UsageSnapshot{
+				Util_5H:   0.42,
+				Util_7D:   0.93,
+				Reset_5H:  timestamppb.New(time.Now().Add(3 * time.Hour)),
+				Reset_7D:  timestamppb.New(time.Now().Add(5 * 24 * time.Hour)),
+				Status:    "active",
+				PlanTier:  "pro",
+				FetchedAt: timestamppb.New(time.Now().Add(-4 * time.Minute)),
+			},
+		})
+		got := m.View().Content
+		for _, want := range []string{"Usage 5h:", "Usage 7d:", "Plan tier:", "Usage age:", "42%", "93%", "resets in", "pro"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("detail usage rows missing %q:\n%s", want, got)
+			}
+		}
+		// The usage-age row is a "fetched <rel> ago" freshness line.
+		if !strings.Contains(got, "fetched") || !strings.Contains(got, "ago") {
+			t.Fatalf("detail usage age row missing 'fetched <rel> ago':\n%s", got)
+		}
+	})
+
+	t.Run("nil usage renders em dashes", func(t *testing.T) {
+		m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{
+			Id:       "acct-1",
+			Label:    "prod",
+			Provider: "claude",
+			Status:   "active",
+			Health:   "ok",
+		})
+		got := m.View().Content
+		// The row labels are always present; their values are em dashes when the
+		// snapshot is nil (never probed).
+		for _, want := range []string{"Usage 5h:", "Usage 7d:", "Plan tier:", "Usage age:", "—"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("nil-usage detail missing %q:\n%s", want, got)
+			}
+		}
+		// No fabricated utilization percentage for a never-probed account.
+		if strings.Contains(got, "0%") {
+			t.Fatalf("nil-usage detail must not render a fabricated 0%%:\n%s", got)
+		}
+	})
+}
+
 func TestAccountEditDetailStates(t *testing.T) {
 	t.Run("cooling account shows resets", func(t *testing.T) {
 		m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{

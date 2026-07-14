@@ -1,6 +1,6 @@
 ---
 name: boss-epic
-description: Orchestrate an entire epic of planned Linear tickets to merged PRs, unattended. Assembles the epic's sub-issues (or an explicit ticket list), computes a dependency-ordered schedule, spawns parallel boss-implement sessions, drives repair on failures, serializes merges, and reports progress on the parent issue. Use when asked to "implement an epic", "run this epic", "boss-epic", or given an epic parent ticket like BOS-177 to ship end-to-end.
+description: Orchestrate an entire epic of planned Linear tickets to merged PRs, unattended. Assembles the epic's sub-issues (or an explicit ticket list), computes a dependency-ordered schedule, spawns parallel boss-build sessions, drives repair on failures, serializes merges, and reports progress on the parent issue. Use when asked to "implement an epic", "run this epic", "boss-epic", or given an epic parent ticket like BOS-177 to ship end-to-end.
 allowed-tools: Bash, Read, Glob, Grep, Skill
 ---
 
@@ -11,7 +11,7 @@ allowed-tools: Bash, Read, Glob, Grep, Skill
 Take a whole **epic** — a Linear parent issue whose sub-issues are already
 planned, agent-friendly tickets, or an explicit list of such tickets — and drive
 every eligible ticket from `Todo` to a **merged PR**, with **no human present**.
-This is the fan-out sibling of `boss-implement`: where `boss-implement` ships one
+This is the fan-out sibling of `boss-build`: where `boss-build` ships one
 ticket, `boss-epic` schedules a fleet of them, respecting dependency order,
 capping concurrency, running repair on red PRs, and serializing merges so the
 base branch never races itself.
@@ -25,8 +25,8 @@ skill's own job is the I/O, and it reaches every Bossanova coupling through the
 **adapter seams** below: the tracker adapter (assembly, state, progress comment)
 and the session-runner adapter (spawn/poll/merge sessions, per-ticket dispatch).
 
-The unit of work per ticket is a `subSkills.implement` (`/boss-implement BOS-NN`)
-session. Do **not** re-implement boss-implement's pipeline here; boss-epic only
+The unit of work per ticket is a `subSkills.implement` (`/boss-build BOS-NN`)
+session. Do **not** re-implement boss-build's pipeline here; boss-epic only
 schedules and merges.
 
 ## Operating Contract
@@ -85,7 +85,7 @@ Bossanova reference impls resolve to today's exact tools and sub-skills —
   `resolveContext` / `listAgents`, plus `recordChat` / `sendChatMessage` and the
   optional `getSessionStatuses`) and per-ticket dispatch route through its
   `operationMap` + `subSkills`. Reference `createBossSessionRunnerAdapter` → the
-  boss MCP tools; `subSkills.implement` = `/boss-implement`, `subSkills.repair`
+  boss MCP tools; `subSkills.implement` = `/boss-build`, `subSkills.repair`
   = `/boss-repair`. The tool/arg names named across Phases 3–4 are exactly this
   map's entries (`merge_session` carries the mandatory `confirm`).
 
@@ -197,7 +197,7 @@ assumeCleared, assumeClearedAndMerge}`.
    agent proceeds autonomously; the pane survives a `bossd` restart and is
    attach-safe); repair runs in a fresh chat inside the ticket's session
    (Phase 3c). QUESTION stalls largely disappear: an unattended
-   `/boss-implement` self-decides under `BOSS_CRON` and, if truly stuck, ends
+   `/boss-build` self-decides under `BOSS_CRON` and, if truly stuck, ends
    BLOCKED (fail-isolated). Non-`claude` agents work the same way, but the
    settled-green gate still applies: a runner without readable chat status must
    hold or fail-isolate, never merge from `get_session` + `list_check_snapshots`
@@ -343,7 +343,7 @@ create_session {
   repo_id,
   tmux_unattended: true,        // durable, restart-surviving, attach-safe
   model:  "claude-opus-4-8",   // MODEL from Phase 0 — no /model two-step
-  prompt: "/boss-implement BOS-NN",   // BARE single-line command — see below
+  prompt: "/boss-build BOS-NN",   // BARE single-line command — see below
   title:  "boss-epic BOS-NN: <ticket title>",
   agent,                       // from Phase 0
   tracker_id:     "BOS-NN",
@@ -357,7 +357,7 @@ daemon auto-submits a pane's prompt only when it is one trimmed line starting
 with `/` or `$` (`cronChatInputFromPrompt`); a multi-line prompt is pasted but
 left **unsubmitted** and the run never starts. A preamble is unnecessary
 anyway: `tmux_unattended` sessions run with `BOSS_CRON=true`, so
-`/boss-implement` self-decides (no questions; ends BLOCKED if truly stuck).
+`/boss-build` self-decides (no questions; ends BLOCKED if truly stuck).
 Repair (3c) follows the same bare-command rule.
 
 The `create_session` **response carries the primary `chat_id` (agent_session_id)

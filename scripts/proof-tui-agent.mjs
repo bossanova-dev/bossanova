@@ -60,7 +60,13 @@ import {
   evaluateExpectations,
   normalizeExpectation,
 } from './proof-evidence-matcher.mjs'
-import { mapSourceToOutputMs, retimedDurationMs } from './proof-video.mjs'
+import {
+  ANALYZE_H,
+  ANALYZE_W,
+  computeFrameLuma,
+  mapSourceToOutputMs,
+  retimedDurationMs,
+} from './proof-video.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -270,6 +276,7 @@ function defaultDeps() {
     renderStill: defaultRenderStill,
     castToVideo: defaultCastToVideo,
     extractStill: defaultExtractStill,
+    probeStillLuma: defaultProbeStillLuma,
   }
 }
 
@@ -693,6 +700,108 @@ export function defaultCastToVideo({
 
 // ── ffmpeg-extracted stills (BOS-216) ──────────────────────────────────────────
 
+// Mid-dwell still sampling (BOS-355). agg webms are sparse VFR — one frame per
+// TUI repaint, seconds apart — so seeking to the exact `screen.castMs` boundary
+// frequently lands on the previous, still-transitioning (dark) repaint rather
+// than the settled screen. Sample deeper INTO the settled dwell instead: halfway
+// to the next screen, capped so a long dwell doesn't drift arbitrarily far from
+// the settle point where the proof-relevant UI is on screen.
+export const SETTLE_SAMPLE_CAP_MS = 1500
+// Deeper drift cap used ONLY by the near-black RETRY pass (BOS-355). The retry
+// deliberately samples further into the dwell than the primary so it lands on a
+// strictly later source timestamp even when the primary already saturated
+// SETTLE_SAMPLE_CAP_MS; without a larger cap both passes would clamp to the same
+// offset and the retry would re-sample the identical timestamp. Kept above
+// SETTLE_SAMPLE_CAP_MS but still bounded so the retry stays near the settle point.
+export const RETRY_SAMPLE_CAP_MS = 2500
+// Dwell assumed for a screen whose `next` can't be resolved (the last screen with
+// no endCutMs, or a degenerate next<=castMs) so there is always a positive dwell
+// window to sample within.
+export const FALLBACK_DWELL_MS = 1200
+// Mean grayscale luma (0-255) at/below which an extracted still counts as
+// near-black (a blank/dark repaint). Deliberately low: rendered text + chrome
+// raise a genuinely-dark-but-valid terminal's mean luma well above this, so the
+// guard only removes true blanks.
+export const NEAR_BLACK_LUMA = 10
+
+/**
+ * Source-clock ms to extract `screens[index]`'s still at: a settled MID-DWELL
+ * frame rather than the `screen.castMs` boundary (BOS-355). The dwell window is
+ * `[castMs, next]` where `next` is the following screen's finite `castMs`, else
+ * the finite `endCutMs`, else `castMs + FALLBACK_DWELL_MS`; a resolved `next`
+ * that is not strictly greater than `castMs` (degenerate — e.g. the last screen
+ * where `endCutMs === castMs`) also falls back to `castMs + FALLBACK_DWELL_MS`,
+ * so the window is always positive. The sample is
+ * `castMs + min((next - castMs) * fraction, capMs)`, clamped strictly below `next`
+ * so it never bleeds into the following screen. A non-finite `castMs` is returned
+ * unchanged (the null-cast read still degrades to a last-frame extract
+ * downstream). The selector is protocol-agnostic: it just samples at `fraction`
+ * within the dwell, bounded by `capMs`. The caller drives the near-black retry by
+ * passing a deeper `fraction` AND a larger `capMs` (RETRY_SAMPLE_CAP_MS), which
+ * yields a strictly later timestamp than the primary (0.5, SETTLE_SAMPLE_CAP_MS)
+ * pass even when the primary already saturated its cap. `fraction` defaults to 0.5
+ * (mid-dwell); `capMs` defaults to SETTLE_SAMPLE_CAP_MS. Pure + exported for unit
+ * tests.
+ * @param {{screens:Array<{castMs:number|null}>, index:number, endCutMs?:number, fraction?:number, capMs?:number}} opts
+ * @returns {number|null}
+ */
+export function stillSampleSourceMs({
+  screens,
+  index,
+  endCutMs,
+  fraction = 0.5,
+  capMs = SETTLE_SAMPLE_CAP_MS,
+}) {
+  const castMs = screens?.[index]?.castMs
+  if (!Number.isFinite(castMs)) return castMs
+  const nextCast = screens?.[index + 1]?.castMs
+  let next
+  if (Number.isFinite(nextCast)) next = nextCast
+  else if (Number.isFinite(endCutMs)) next = endCutMs
+  else next = castMs + FALLBACK_DWELL_MS
+  if (!(next > castMs)) next = castMs + FALLBACK_DWELL_MS
+  const dwell = next - castMs
+  const sample = castMs + Math.min(dwell * fraction, capMs)
+  // Strictly below `next` — never bleed into the following screen.
+  return Math.min(sample, next - 1e-3)
+}
+
+/**
+ * Decode a single still PNG to one downscaled grayscale frame and return its mean
+ * luma (0-255), or null on any failure (BOS-355). Reuses the exact
+ * `scale=W:H,format=gray -f rawvideo -` incantation and `computeFrameLuma`
+ * arithmetic proven in proof-video's `analyzeDiffs`, so the near-black threshold
+ * is measured on the same scale. Injected as `deps.probeStillLuma`; unit tests
+ * stub it so no real ffmpeg runs. Best-effort: a missing ffmpeg, an undecodable
+ * PNG, or any spawn error yields null (never worse than pre-BOS-355 behavior).
+ * @param {string} pngPath
+ * @returns {number|null}
+ */
+function defaultProbeStillLuma(pngPath) {
+  try {
+    const res = spawnSync(
+      'ffmpeg',
+      [
+        '-loglevel',
+        'error',
+        '-i',
+        pngPath,
+        '-vf',
+        `scale=${ANALYZE_W}:${ANALYZE_H},format=gray`,
+        '-f',
+        'rawvideo',
+        '-',
+      ],
+      { maxBuffer: 32 * 1024 * 1024 },
+    )
+    if (res.status !== 0 || !res.stdout || res.stdout.length === 0) return null
+    const luma = computeFrameLuma(res.stdout, ANALYZE_W * ANALYZE_H)
+    return luma.length > 0 ? luma[0] : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * Total output-clock duration (ms) of a finished video, derived from its
  * timeline (`introMs` + the retimed segment duration). Returns null for a
@@ -788,7 +897,8 @@ function defaultExtractStill({ mp4Path, output, outputMs, videoDurationMs }) {
  * launches Chromium. Returns the stills array (possibly empty → the caller falls
  * back to the Chromium text-scrape renderFrames path).
  * @param {{screens:Array<{seq:number,text?:string,castMs:number|null}>, sceneForScreen?:Record<number,string>,
- *   timeline:object|null, mp4Path:string, captureDir:string, extractStill?:Function}} opts
+ *   timeline:object|null, mp4Path:string, captureDir:string, endCutMs?:number,
+ *   extractStill?:Function, probeStillLuma?:Function}} opts
  * @returns {Promise<Array<{fileName:string,label:string,sceneId:string}>>}
  */
 export async function extractStillsFromVideo({
@@ -797,7 +907,9 @@ export async function extractStillsFromVideo({
   timeline,
   mp4Path,
   captureDir,
+  endCutMs,
   extractStill = defaultExtractStill,
+  probeStillLuma = defaultProbeStillLuma,
 }) {
   const videoDurationMs = timelineDurationMs(timeline ?? null)
   // Gallery quality (BOS-251): a blank settled screen (e.g. a dead PTY after a
@@ -824,28 +936,65 @@ export async function extractStillsFromVideo({
     prevText = text
   }
   if (selected.length === 0) selected = all
+  // Best-effort luma probe: any failure yields null → the still is kept (luma
+  // filtering can only remove blanks, never fail the proof).
+  const safeProbe = (p) => {
+    try {
+      const v = probeStillLuma(p)
+      return Number.isFinite(v) ? v : null
+    } catch {
+      return null
+    }
+  }
+  const extractAt = async (fraction, capMs, index, output) => {
+    const sourceMs = stillSampleSourceMs({ screens: selected, index, endCutMs, fraction, capMs })
+    const outputMs = mapSourceToOutputMs(timeline ?? null, sourceMs)
+    try {
+      return await extractStill({ mp4Path, output, outputMs, videoDurationMs })
+    } catch (err) {
+      const n = String(selected[index].seq).padStart(2, '0')
+      console.warn(`[proof-tui-agent] still extraction failed for screen-${n}: ${err.message}`)
+      return false
+    }
+  }
   const stills = []
-  for (const s of selected) {
+  // Floor (BOS-355): track the brightest extracted still so luma filtering can
+  // never empty the gallery (a null probe scores Infinity — always keepable).
+  let brightest = null
+  for (let index = 0; index < selected.length; index++) {
+    const s = selected[index]
     const n = String(s.seq).padStart(2, '0')
     const sceneId = sceneForScreen[s.seq] ?? sceneForScreen[String(s.seq)] ?? 'scene-01'
     const ss = sceneOrdinal(sceneId)
     const output = path.join(captureDir, `scene-${ss}-frame-${n}.png`)
-    const outputMs = mapSourceToOutputMs(timeline ?? null, s.castMs)
-    let ok = false
-    try {
-      // eslint-disable-next-line no-await-in-loop -- frames extract sequentially
-      ok = await extractStill({ mp4Path, output, outputMs, videoDurationMs })
-    } catch (err) {
-      console.warn(`[proof-tui-agent] still extraction failed for screen-${n}: ${err.message}`)
+    // eslint-disable-next-line no-await-in-loop -- frames extract sequentially
+    const ok = await extractAt(0.5, SETTLE_SAMPLE_CAP_MS, index, output)
+    if (!(ok && fs.existsSync(output))) continue
+    let luma = safeProbe(output)
+    // Near-black guard (BOS-355): retry ONCE deeper into the dwell (0.75 fraction +
+    // the larger RETRY_SAMPLE_CAP_MS so the retry lands on a strictly later source
+    // timestamp than the primary even when the primary saturated its cap), re-probe,
+    // then drop the still only if it is still near-black. `<=` matches the
+    // documented "at/below" NEAR_BLACK_LUMA contract.
+    const isNearBlack = (v) => Number.isFinite(v) && v <= NEAR_BLACK_LUMA
+    if (isNearBlack(luma)) {
+      // eslint-disable-next-line no-await-in-loop -- retry extracts sequentially
+      const retried = await extractAt(0.75, RETRY_SAMPLE_CAP_MS, index, output)
+      if (retried && fs.existsSync(output)) luma = safeProbe(output)
     }
-    if (ok && fs.existsSync(output)) {
-      stills.push({
-        fileName: `${CAPTURE_ID}/scene-${ss}-frame-${n}.png`,
-        label: `scene ${ss} frame ${n}`,
-        sceneId,
-      })
+    const still = {
+      fileName: `${CAPTURE_ID}/scene-${ss}-frame-${n}.png`,
+      label: `scene ${ss} frame ${n}`,
+      sceneId,
     }
+    const lumaScore = Number.isFinite(luma) ? luma : Infinity
+    if (brightest === null || lumaScore > brightest.luma) brightest = { still, luma: lumaScore }
+    if (isNearBlack(luma)) continue // near-black → drop
+    stills.push(still)
   }
+  // If the guard dropped every still, keep the brightest one so stills.length > 0
+  // (preserves the Chromium fallback + the Epic-1 exit-code invariant).
+  if (stills.length === 0 && brightest) stills.push(brightest.still)
   return stills
 }
 
@@ -1184,7 +1333,11 @@ export async function runTuiAgentProof({
       timeline: castResult.timeline,
       mp4Path,
       captureDir,
+      // The last-content anchor also defines the final screen's mid-dwell window
+      // (BOS-355) so its still samples a settled frame, not the trailing tail.
+      endCutMs: lastContentMs,
       extractStill: d.extractStill,
+      probeStillLuma: d.probeStillLuma,
     })
   }
   // Single Chromium recovery path: reached when there is no mp4, when the mp4 has

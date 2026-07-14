@@ -10,8 +10,8 @@
 // Sub-skill dispatch resolves to the current Bossanova sub-skills. Note the
 // reconciliation: the BOS-198 plan/acceptance-criteria wrote `/bs-implement`,
 // but the BOS-194 rename (bs-* -> boss-*) is merged, so today's exact implement
-// sub-skill is `/boss-implement` (the boss-epic SKILL dispatches
-// `/boss-implement BOS-NN`). Using `/bs-implement` would resolve to a
+// sub-skill is `/boss-build` (the boss-epic SKILL dispatches
+// `/boss-build BOS-NN`). Using `/bs-implement` would resolve to a
 // non-existent skill and BREAK the zero-behaviour-change bar; `/boss-repair`
 // was already renamed and is unchanged.
 
@@ -128,8 +128,8 @@ export const bossSessionOperationMap = {
   },
   dispatchImplement: {
     // Reconciled from the plan's pre-rename `/bs-implement` — see file header.
-    subSkill: '/boss-implement',
-    // dispatched as the BARE single-line prompt "/boss-implement BOS-NN".
+    subSkill: '/boss-build',
+    // dispatched as the BARE single-line prompt "/boss-build BOS-NN".
     args: ['ticketId'],
   },
   dispatchRepair: {

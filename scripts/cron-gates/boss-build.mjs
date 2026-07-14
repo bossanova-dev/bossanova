@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Cron gate for boss-implement.
+// Cron gate for boss-build.
 //
 // Exit 0 (run the implementer) iff at least one Linear issue is in the `Todo`
 // state, carries the `agent-friendly` label, AND is not blocked by an uncleared
@@ -17,7 +17,7 @@
 // one-line reason on stderr (captured in the scheduler's gate_output log).
 //
 // Register on the cron job (gate cwd = repo root):
-//   node scripts/cron-gates/boss-implement.mjs
+//   node scripts/cron-gates/boss-build.mjs
 
 import { gateExit } from '../linear-gate-lib.mjs'
 import { resolveTrackerAdapter } from '../tracker/adapter.mjs'
@@ -25,7 +25,7 @@ import { resolveTrackerAdapter } from '../tracker/adapter.mjs'
 try {
   const tracker = resolveTrackerAdapter()
   const hasWork = await tracker.hasUnblockedWork({ state: 'Todo', label: 'agent-friendly' })
-  gateExit(hasWork, hasWork ? null : 'boss-implement gate: no unblocked Todo agent-friendly issues')
+  gateExit(hasWork, hasWork ? null : 'boss-build gate: no unblocked Todo agent-friendly issues')
 } catch (err) {
-  gateExit(false, `boss-implement gate: ${err.message}`)
+  gateExit(false, `boss-build gate: ${err.message}`)
 }

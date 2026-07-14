@@ -9,6 +9,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/vcs"
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossd/internal/db"
@@ -181,4 +182,42 @@ func requireSessionDelta(t *testing.T, ev upstream.StreamEvent) *bossanovav1.Ses
 		t.Fatalf("event session payload = nil")
 	}
 	return ev.Session.Session
+}
+
+// TestStreamHydrator_StampsDisplayStatus proves the reverse-stream projection
+// carries the per-axis DisplayStatus from the in-memory tracker. The cloud/web
+// read model is fed ONLY by this stream, and the web Merge button gates on
+// DISPLAY_STATUS_PASSING — so without this hydration the button never shows on
+// web even for a passing PR (BOS-365 follow-up).
+func TestStreamHydrator_StampsDisplayStatus(t *testing.T) {
+	t.Parallel()
+
+	tracker := status.NewDisplayTracker()
+	mergeable := true
+	tracker.Set("sess-1", vcs.DisplayInfo{
+		Status:    vcs.DisplayStatusPassing,
+		Mergeable: &mergeable,
+	})
+
+	h := &streamSessionHydrator{
+		displayTracker: tracker,
+		logger:         zerolog.Nop(),
+	}
+	pbSess := &bossanovav1.Session{Id: "sess-1"}
+	h.Hydrate(t.Context(), pbSess)
+
+	if pbSess.GetDisplayStatus() != bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING {
+		t.Fatalf("display_status = %v, want PASSING", pbSess.GetDisplayStatus())
+	}
+	if !pbSess.GetPrMergeable() {
+		t.Errorf("pr_mergeable = %v, want true", pbSess.GetPrMergeable())
+	}
+
+	// A session with no tracker entry keeps DisplayStatus UNSPECIFIED (the
+	// no-PR / not-yet-polled case) — the web then correctly hides Merge.
+	unknown := &bossanovav1.Session{Id: "sess-unknown"}
+	h.Hydrate(t.Context(), unknown)
+	if unknown.GetDisplayStatus() != bossanovav1.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED {
+		t.Fatalf("unknown session display_status = %v, want UNSPECIFIED", unknown.GetDisplayStatus())
+	}
 }

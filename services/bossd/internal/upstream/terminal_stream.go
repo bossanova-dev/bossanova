@@ -66,6 +66,10 @@ const (
 	terminalStreamHealthyDuration = terminalStreamMaxBackoff
 )
 
+// The BOS-376 terminal-liveness machinery (readiness/heartbeat signalling,
+// tunable defaults, errTerminalNotConfirmed, runHeartbeat, escalateWedged,
+// and the not-co-located matcher) lives in the sibling terminal_liveness.go.
+
 // terminalBidiStream is the subset of *connect.BidiStreamForClient the
 // TerminalStreamClient touches. The real connect type satisfies it
 // structurally; tests pass a hand-rolled fake.
@@ -268,6 +272,21 @@ type TerminalStreamClient struct {
 	// lifecycle signalling).
 	cycleMu     sync.Mutex
 	cycleCancel context.CancelFunc
+
+	// Terminal liveness handshake / watchdog (BOS-376). health is nil in
+	// legacy tests; when nil the ready-gate, heartbeat, and escalation are
+	// all skipped and the client behaves exactly as before. reRegister and
+	// closeIdle are the paired-re-dial hooks the watchdog fires after K
+	// consecutive ready-timeouts; readyTimeoutStreak counts them (only ever
+	// touched from the single Run goroutine, so it needs no lock).
+	health             *TerminalHealth
+	reRegister         func(context.Context)
+	closeIdle          func()
+	readyTimeout       time.Duration
+	pingInterval       time.Duration
+	missedBeatsBudget  int
+	readyTimeoutBudget int
+	readyTimeoutStreak int
 }
 
 // activeAttach is the per-attach bookkeeping the client maintains while a
@@ -322,6 +341,28 @@ type TerminalStreamClientConfig struct {
 	// constructor. Used by tests to drop in a fake-attach implementation.
 	AttachFactory terminalAttachFactory
 
+	// Health, when set, enables the BOS-376 positive-liveness path:
+	// openStream waits for a TerminalReady frame before treating the
+	// attempt as connected, runs the heartbeat watchdog, and the Run loop
+	// escalates a run of ready-timeouts. Nil keeps the pre-BOS-376
+	// behaviour (used by the legacy unit tests).
+	Health *TerminalHealth
+
+	// ReRegister is invoked by the watchdog after ReadyTimeoutBudget
+	// consecutive ready-timeouts to force a fresh DaemonStream
+	// registration (which rotates the session token and nudges the
+	// DaemonStream to reconnect). CloseIdle drops pooled HTTP/2
+	// connections so the paired re-dial lands both reverse streams on one
+	// fresh connection, co-locating them. Both are optional.
+	ReRegister func(context.Context)
+	CloseIdle  func()
+
+	// Liveness tunables. Zero values fall back to the terminal* constants.
+	ReadyTimeout       time.Duration
+	PingInterval       time.Duration
+	MissedBeatsBudget  int
+	ReadyTimeoutBudget int
+
 	Logger zerolog.Logger
 	Clock  Clock // nil → realClock
 }
@@ -357,15 +398,38 @@ func NewTerminalStreamClient(cfg TerminalStreamClientConfig) *TerminalStreamClie
 	if factory == nil {
 		factory = defaultTerminalAttachFactory
 	}
+	readyTimeout := cfg.ReadyTimeout
+	if readyTimeout <= 0 {
+		readyTimeout = terminalReadyTimeout
+	}
+	pingInterval := cfg.PingInterval
+	if pingInterval <= 0 {
+		pingInterval = terminalPingInterval
+	}
+	missedBeatsBudget := cfg.MissedBeatsBudget
+	if missedBeatsBudget <= 0 {
+		missedBeatsBudget = terminalMissedBeatsBudget
+	}
+	readyTimeoutBudget := cfg.ReadyTimeoutBudget
+	if readyTimeoutBudget <= 0 {
+		readyTimeoutBudget = terminalReadyTimeoutBudget
+	}
 	return &TerminalStreamClient{
-		opener:        opener,
-		authState:     cfg.AuthState,
-		tmuxClient:    cfg.TmuxClient,
-		chats:         cfg.Chats,
-		attachFactory: factory,
-		logger:        cfg.Logger.With().Str("component", "terminal-stream-client").Logger(),
-		clock:         clock,
-		attaches:      make(map[string]*activeAttach),
+		opener:             opener,
+		authState:          cfg.AuthState,
+		tmuxClient:         cfg.TmuxClient,
+		chats:              cfg.Chats,
+		attachFactory:      factory,
+		logger:             cfg.Logger.With().Str("component", "terminal-stream-client").Logger(),
+		clock:              clock,
+		attaches:           make(map[string]*activeAttach),
+		health:             cfg.Health,
+		reRegister:         cfg.ReRegister,
+		closeIdle:          cfg.CloseIdle,
+		readyTimeout:       readyTimeout,
+		pingInterval:       pingInterval,
+		missedBeatsBudget:  missedBeatsBudget,
+		readyTimeoutBudget: readyTimeoutBudget,
 	}
 }
 
@@ -433,6 +497,30 @@ func (c *TerminalStreamClient) Run(ctx context.Context) error {
 			// straight to the NeedsLogin gate above.
 			continue
 		}
+		// BOS-376 watchdog: a run of ready-timeouts means the terminal
+		// stream keeps opening but never confirms readiness — the
+		// alive-but-wrongly-bound (deploy cross-pod split) signature that
+		// HTTP/2 keepalive cannot see. After K in a row, force a paired
+		// DaemonStream re-register + fresh-connection re-dial so both
+		// reverse streams co-locate again. Any other outcome (healthy
+		// stream, transport error, ready confirmed) resets the streak.
+		if c.health != nil && errors.Is(err, errTerminalNotConfirmed) {
+			c.readyTimeoutStreak++
+			if c.readyTimeoutStreak >= c.readyTimeoutBudget {
+				c.escalateWedged(ctx)
+				c.readyTimeoutStreak = 0
+				// Reset backoff so the paired re-dial the watchdog just
+				// forced happens promptly. Waiting out a ramped backoff here
+				// would blunt the "instigate restart until they know they are
+				// connected" responsiveness at exactly the moment we want the
+				// fresh connection to re-dial and co-locate. The K-gate on the
+				// streak still prevents tight-looping the escalation itself.
+				backoff = terminalStreamInitialBackoff
+			}
+		} else {
+			c.readyTimeoutStreak = 0
+		}
+
 		// Treat any stream that lived >= terminalStreamHealthyDuration as a
 		// successful connection: any error after that is a transient drop,
 		// not a sick bosso, so the next reconnect should start from the
@@ -548,28 +636,92 @@ func (c *TerminalStreamClient) openStream(ctx context.Context) error {
 		c.runWriter(streamCtx, stream, outbound)
 	})
 
-	readErr := c.runReader(streamCtx, stream, outbound)
-	readCtxErr := streamCtx.Err()
+	// The reader runs on its own goroutine (BOS-376) so openStream can wait
+	// on the readiness gate concurrently with dispatch. readErrCh (buffered)
+	// carries the reader's terminal error; readerDone closes after the
+	// goroutine — including its panic-recovery path — has fully exited, so
+	// it is safe to join before closing outbound.
+	sess := newTerminalStreamSession()
+	readErrCh := make(chan error, 1)
+	readerDone := safego.Go(c.logger, func() {
+		readErrCh <- c.runReader(streamCtx, stream, outbound, sess)
+	})
+
+	// hbDone is a closed channel until the ready gate passes and the
+	// heartbeat watchdog is armed; teardown always joins it.
+	closed := make(chan struct{})
+	close(closed)
+	hbDone := (<-chan struct{})(closed)
 
 	// Tear down attaches in phases. TerminalAttach.Close must run before
 	// streamCtx cancellation so PTYs are not leaked, but streamCtx cancellation
 	// must happen before waiting on attach pumps so any pump blocked on outbound
-	// can observe ctx.Done. Only close outbound after every attach producer is
-	// done, then wait for the single writer.
-	states := c.closeActiveAttaches()
-	cancel()
-	c.cancelAndWaitAttaches(states)
-	<-authWatchDone
-	close(outbound)
-	<-writerDone
+	// can observe ctx.Done. Only close outbound after every attach producer
+	// (the pumps AND the reader, which emits pongs) is done, then wait for
+	// the single writer. MarkUnhealthy on every exit so the watchdog never
+	// sees a stale healthy signal after teardown.
+	teardown := func() {
+		if c.health != nil {
+			c.health.MarkUnhealthy()
+		}
+		states := c.closeActiveAttaches()
+		cancel()
+		c.cancelAndWaitAttaches(states)
+		<-readerDone
+		<-hbDone
+		<-authWatchDone
+		close(outbound)
+		<-writerDone
+	}
 
-	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		return readErr
+	finalErr := func(readErr, readCtxErr error) error {
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return readErr
+		}
+		if readCtxErr != nil {
+			return readCtxErr
+		}
+		return nil
 	}
-	if readCtxErr != nil {
-		return readCtxErr
+
+	// BOS-376 readiness gate. Only active when a health signal is wired
+	// (production); legacy tests without one skip straight to the reader
+	// join and behave exactly as before.
+	if c.health != nil {
+		select {
+		case <-sess.readyCh:
+			if c.health.MarkHealthy() {
+				c.logger.Info().Msg("terminal stream ready confirmed")
+			}
+		case <-c.clock.After(c.readyTimeout):
+			c.health.NoteReadyTimeout()
+			c.logger.Warn().Dur("timeout", c.readyTimeout).Msg("terminal stream: no TerminalReady within deadline; reconnecting")
+			teardown()
+			return errTerminalNotConfirmed
+		case readErr := <-readErrCh:
+			readCtxErr := streamCtx.Err()
+			teardown()
+			return finalErr(readErr, readCtxErr)
+		case <-streamCtx.Done():
+			teardown()
+			return finalErr(nil, streamCtx.Err())
+		}
+
+		// Ready confirmed — arm the heartbeat watchdog. It resets on every
+		// TerminalPing and tears the stream down after MissedBeatsBudget
+		// silent intervals (an alive-but-wrongly-bound stream stops getting
+		// pings). It writes nothing to outbound, so it need not be joined
+		// before closing outbound — but teardown joins it anyway to avoid a
+		// goroutine leak across reconnects.
+		hbDone = safego.Go(c.logger, func() {
+			c.runHeartbeat(streamCtx, sess, cancel)
+		})
 	}
-	return nil
+
+	readErr := <-readErrCh
+	readCtxErr := streamCtx.Err()
+	teardown()
+	return finalErr(readErr, readCtxErr)
 }
 
 // closeAttachesThenCancelOnNeedsLogin watches for logout and, when it
@@ -606,7 +758,7 @@ func (c *TerminalStreamClient) runWriter(ctx context.Context, stream terminalBid
 
 // runReader blocks on stream.Receive and dispatches each inbound command.
 // Returns when Receive errors so the outer loop can reconnect.
-func (c *TerminalStreamClient) runReader(ctx context.Context, stream terminalBidiStream, outbound chan<- *pb.TerminalServerMessage) error {
+func (c *TerminalStreamClient) runReader(ctx context.Context, stream terminalBidiStream, outbound chan<- *pb.TerminalServerMessage, sess *terminalStreamSession) error {
 	for {
 		msg, err := stream.Receive()
 		if err != nil {
@@ -616,16 +768,26 @@ func (c *TerminalStreamClient) runReader(ctx context.Context, stream terminalBid
 			if ctx.Err() != nil {
 				return nil
 			}
+			// BOS-376: bosso tags a not-co-located precondition rejection
+			// (the TerminalStream landed on a pod whose DaemonStream is not
+			// local-and-Ready — the deploy cross-pod split). Map it to
+			// errTerminalNotConfirmed so the Run-loop watchdog counts it
+			// toward the forced-re-register streak, exactly like a
+			// ready-timeout. A plain transport error stays transient and
+			// does NOT feed the streak.
+			if isTerminalNotColocated(err) {
+				return fmt.Errorf("%w: %v", errTerminalNotConfirmed, err)
+			}
 			return fmt.Errorf("terminal stream receive: %w", err)
 		}
-		c.handleClientMessage(ctx, msg, outbound)
+		c.handleClientMessage(ctx, msg, outbound, sess)
 	}
 }
 
 // handleClientMessage routes one inbound TerminalClientMessage. Unknown
 // attach_ids on input/resize/close are logged and dropped (forward-compat
 // with future commands).
-func (c *TerminalStreamClient) handleClientMessage(ctx context.Context, msg *pb.TerminalClientMessage, outbound chan<- *pb.TerminalServerMessage) {
+func (c *TerminalStreamClient) handleClientMessage(ctx context.Context, msg *pb.TerminalClientMessage, outbound chan<- *pb.TerminalServerMessage, sess *terminalStreamSession) {
 	switch m := msg.GetMsg().(type) {
 	case *pb.TerminalClientMessage_Attach:
 		c.handleAttach(ctx, m.Attach, outbound)
@@ -635,6 +797,17 @@ func (c *TerminalStreamClient) handleClientMessage(ctx context.Context, msg *pb.
 		c.handleResize(m.Resize)
 	case *pb.TerminalClientMessage_Close:
 		c.handleClose(m.Close)
+	case *pb.TerminalClientMessage_Ready:
+		// BOS-376: positive proof this stream is bound to a co-located,
+		// Ready bosso pod. Unblocks openStream's readiness gate.
+		sess.signalReady()
+	case *pb.TerminalClientMessage_Ping:
+		// BOS-376: application-level liveness probe. Reset the heartbeat
+		// watchdog and echo a matching pong so bosso can measure the RTT.
+		sess.signalPing()
+		c.sendServerMessage(ctx, outbound, &pb.TerminalServerMessage{
+			Msg: &pb.TerminalServerMessage_Pong{Pong: &pb.TerminalPong{Seq: m.Ping.GetSeq()}},
+		})
 	default:
 		c.logger.Warn().Msg("terminal stream: unknown client message; dropping")
 	}

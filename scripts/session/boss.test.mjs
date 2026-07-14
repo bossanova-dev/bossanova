@@ -113,14 +113,14 @@ test('the repair-round + optional-signal boss MCP tools are documented', () => {
 
 test('dispatch capabilities carry the sub-skill invocation shapes', () => {
   // Reconciled from the plan's pre-rename `/bs-implement`: the current
-  // Bossanova implement sub-skill is `/boss-implement` (BOS-194 rename merged).
-  assert.equal(bossSessionOperationMap.dispatchImplement.subSkill, '/boss-implement')
+  // Bossanova implement sub-skill is `/boss-build` (BOS-194 rename merged).
+  assert.equal(bossSessionOperationMap.dispatchImplement.subSkill, '/boss-build')
   assert.equal(bossSessionOperationMap.dispatchRepair.subSkill, '/boss-repair')
 })
 
 test('subSkills resolves to the Bossanova reference sub-skills', () => {
   const adapter = createBossSessionRunnerAdapter()
-  assert.equal(adapter.subSkills.implement, '/boss-implement')
+  assert.equal(adapter.subSkills.implement, '/boss-build')
   assert.equal(adapter.subSkills.repair, '/boss-repair')
 })
 

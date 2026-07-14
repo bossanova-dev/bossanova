@@ -7,12 +7,13 @@
 package bossanovav1
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -3868,6 +3869,145 @@ func (x *TerminalAttachExited) GetReason() string {
 	return ""
 }
 
+// TerminalReady: bosso → daemon. Carried inside TerminalClientMessage.
+// Sent exactly once, immediately after the bosso handler installs the
+// terminal sender and has confirmed the DaemonStream is local-and-Ready.
+// It is the daemon's positive, application-level proof that its
+// TerminalStream is bound to a healthy, co-located pod — the daemon does
+// NOT treat the stream as connected until this frame arrives. A ready
+// frame that never comes (e.g. a deploy split the two reverse streams
+// across pods) is what the daemon's watchdog keys on to self-heal.
+type TerminalReady struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalReady) Reset() {
+	*x = TerminalReady{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalReady) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalReady) ProtoMessage() {}
+
+func (x *TerminalReady) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalReady.ProtoReflect.Descriptor instead.
+func (*TerminalReady) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{43}
+}
+
+// TerminalPing: bosso → daemon. Application-level liveness probe sent on a
+// fixed interval while the stream is open. The daemon answers each with a
+// TerminalPong. A missed-beats budget on the daemon tears the stream down,
+// which detects an alive-but-wrongly-bound stream — a failure mode HTTP/2
+// keepalive cannot see because the underlying connection is still healthy.
+type TerminalPing struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Seq           uint64                 `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalPing) Reset() {
+	*x = TerminalPing{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalPing) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalPing) ProtoMessage() {}
+
+func (x *TerminalPing) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalPing.ProtoReflect.Descriptor instead.
+func (*TerminalPing) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *TerminalPing) GetSeq() uint64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+// TerminalPong: daemon → bosso. Answer to a TerminalPing, echoing its seq
+// so bosso can match the round-trip.
+type TerminalPong struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Seq           uint64                 `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalPong) Reset() {
+	*x = TerminalPong{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalPong) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalPong) ProtoMessage() {}
+
+func (x *TerminalPong) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalPong.ProtoReflect.Descriptor instead.
+func (*TerminalPong) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *TerminalPong) GetSeq() uint64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
 // TerminalClientMessage is the bosso → daemon envelope on the new RPC.
 // Despite the name, this is the gRPC RESPONSE stream type (bosso is the
 // gRPC server). Unknown oneof cases are logged and skipped by the daemon
@@ -3880,6 +4020,8 @@ type TerminalClientMessage struct {
 	//	*TerminalClientMessage_Input
 	//	*TerminalClientMessage_Resize
 	//	*TerminalClientMessage_Close
+	//	*TerminalClientMessage_Ready
+	//	*TerminalClientMessage_Ping
 	Msg           isTerminalClientMessage_Msg `protobuf_oneof:"msg"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3887,7 +4029,7 @@ type TerminalClientMessage struct {
 
 func (x *TerminalClientMessage) Reset() {
 	*x = TerminalClientMessage{}
-	mi := &file_bossanova_v1_stream_proto_msgTypes[43]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3899,7 +4041,7 @@ func (x *TerminalClientMessage) String() string {
 func (*TerminalClientMessage) ProtoMessage() {}
 
 func (x *TerminalClientMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_stream_proto_msgTypes[43]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3912,7 +4054,7 @@ func (x *TerminalClientMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalClientMessage.ProtoReflect.Descriptor instead.
 func (*TerminalClientMessage) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{43}
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *TerminalClientMessage) GetMsg() isTerminalClientMessage_Msg {
@@ -3958,6 +4100,24 @@ func (x *TerminalClientMessage) GetClose() *TerminalCloseCommand {
 	return nil
 }
 
+func (x *TerminalClientMessage) GetReady() *TerminalReady {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalClientMessage_Ready); ok {
+			return x.Ready
+		}
+	}
+	return nil
+}
+
+func (x *TerminalClientMessage) GetPing() *TerminalPing {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalClientMessage_Ping); ok {
+			return x.Ping
+		}
+	}
+	return nil
+}
+
 type isTerminalClientMessage_Msg interface {
 	isTerminalClientMessage_Msg()
 }
@@ -3978,6 +4138,14 @@ type TerminalClientMessage_Close struct {
 	Close *TerminalCloseCommand `protobuf:"bytes,4,opt,name=close,proto3,oneof"`
 }
 
+type TerminalClientMessage_Ready struct {
+	Ready *TerminalReady `protobuf:"bytes,5,opt,name=ready,proto3,oneof"`
+}
+
+type TerminalClientMessage_Ping struct {
+	Ping *TerminalPing `protobuf:"bytes,6,opt,name=ping,proto3,oneof"`
+}
+
 func (*TerminalClientMessage_Attach) isTerminalClientMessage_Msg() {}
 
 func (*TerminalClientMessage_Input) isTerminalClientMessage_Msg() {}
@@ -3985,6 +4153,10 @@ func (*TerminalClientMessage_Input) isTerminalClientMessage_Msg() {}
 func (*TerminalClientMessage_Resize) isTerminalClientMessage_Msg() {}
 
 func (*TerminalClientMessage_Close) isTerminalClientMessage_Msg() {}
+
+func (*TerminalClientMessage_Ready) isTerminalClientMessage_Msg() {}
+
+func (*TerminalClientMessage_Ping) isTerminalClientMessage_Msg() {}
 
 // TerminalServerMessage is the daemon → bosso envelope on the new RPC.
 // Despite the name, this is the gRPC REQUEST stream type (bossd is the
@@ -3996,6 +4168,7 @@ type TerminalServerMessage struct {
 	//
 	//	*TerminalServerMessage_Data
 	//	*TerminalServerMessage_Exited
+	//	*TerminalServerMessage_Pong
 	Msg           isTerminalServerMessage_Msg `protobuf_oneof:"msg"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4003,7 +4176,7 @@ type TerminalServerMessage struct {
 
 func (x *TerminalServerMessage) Reset() {
 	*x = TerminalServerMessage{}
-	mi := &file_bossanova_v1_stream_proto_msgTypes[44]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4015,7 +4188,7 @@ func (x *TerminalServerMessage) String() string {
 func (*TerminalServerMessage) ProtoMessage() {}
 
 func (x *TerminalServerMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_stream_proto_msgTypes[44]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4028,7 +4201,7 @@ func (x *TerminalServerMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalServerMessage.ProtoReflect.Descriptor instead.
 func (*TerminalServerMessage) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{44}
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *TerminalServerMessage) GetMsg() isTerminalServerMessage_Msg {
@@ -4056,6 +4229,15 @@ func (x *TerminalServerMessage) GetExited() *TerminalAttachExited {
 	return nil
 }
 
+func (x *TerminalServerMessage) GetPong() *TerminalPong {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalServerMessage_Pong); ok {
+			return x.Pong
+		}
+	}
+	return nil
+}
+
 type isTerminalServerMessage_Msg interface {
 	isTerminalServerMessage_Msg()
 }
@@ -4068,9 +4250,15 @@ type TerminalServerMessage_Exited struct {
 	Exited *TerminalAttachExited `protobuf:"bytes,2,opt,name=exited,proto3,oneof"`
 }
 
+type TerminalServerMessage_Pong struct {
+	Pong *TerminalPong `protobuf:"bytes,3,opt,name=pong,proto3,oneof"`
+}
+
 func (*TerminalServerMessage_Data) isTerminalServerMessage_Msg() {}
 
 func (*TerminalServerMessage_Exited) isTerminalServerMessage_Msg() {}
+
+func (*TerminalServerMessage_Pong) isTerminalServerMessage_Msg() {}
 
 var File_bossanova_v1_stream_proto protoreflect.FileDescriptor
 
@@ -4377,16 +4565,24 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x14TerminalAttachExited\x12\x1b\n" +
 	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x1b\n" +
 	"\texit_code\x18\x02 \x01(\x05R\bexitCode\x12\x16\n" +
-	"\x06reason\x18\x03 \x01(\tR\x06reason\"\x94\x02\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"\x0f\n" +
+	"\rTerminalReady\" \n" +
+	"\fTerminalPing\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\x04R\x03seq\" \n" +
+	"\fTerminalPong\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\x04R\x03seq\"\xfb\x02\n" +
 	"\x15TerminalClientMessage\x12=\n" +
 	"\x06attach\x18\x01 \x01(\v2#.bossanova.v1.TerminalAttachCommandH\x00R\x06attach\x12:\n" +
 	"\x05input\x18\x02 \x01(\v2\".bossanova.v1.TerminalInputCommandH\x00R\x05input\x12=\n" +
 	"\x06resize\x18\x03 \x01(\v2#.bossanova.v1.TerminalResizeCommandH\x00R\x06resize\x12:\n" +
-	"\x05close\x18\x04 \x01(\v2\".bossanova.v1.TerminalCloseCommandH\x00R\x05closeB\x05\n" +
-	"\x03msg\"\x93\x01\n" +
+	"\x05close\x18\x04 \x01(\v2\".bossanova.v1.TerminalCloseCommandH\x00R\x05close\x123\n" +
+	"\x05ready\x18\x05 \x01(\v2\x1b.bossanova.v1.TerminalReadyH\x00R\x05ready\x120\n" +
+	"\x04ping\x18\x06 \x01(\v2\x1a.bossanova.v1.TerminalPingH\x00R\x04pingB\x05\n" +
+	"\x03msg\"\xc5\x01\n" +
 	"\x15TerminalServerMessage\x125\n" +
 	"\x04data\x18\x01 \x01(\v2\x1f.bossanova.v1.TerminalDataChunkH\x00R\x04data\x12<\n" +
-	"\x06exited\x18\x02 \x01(\v2\".bossanova.v1.TerminalAttachExitedH\x00R\x06exitedB\x05\n" +
+	"\x06exited\x18\x02 \x01(\v2\".bossanova.v1.TerminalAttachExitedH\x00R\x06exited\x120\n" +
+	"\x04pong\x18\x03 \x01(\v2\x1a.bossanova.v1.TerminalPongH\x00R\x04pongB\x05\n" +
 	"\x03msgB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
@@ -4402,7 +4598,7 @@ func file_bossanova_v1_stream_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_stream_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_bossanova_v1_stream_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
+var file_bossanova_v1_stream_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
 var file_bossanova_v1_stream_proto_goTypes = []any{
 	(SessionDelta_Kind)(0),            // 0: bossanova.v1.SessionDelta.Kind
 	(ChatDelta_Kind)(0),               // 1: bossanova.v1.ChatDelta.Kind
@@ -4451,25 +4647,28 @@ var file_bossanova_v1_stream_proto_goTypes = []any{
 	(*TerminalCloseCommand)(nil),      // 44: bossanova.v1.TerminalCloseCommand
 	(*TerminalDataChunk)(nil),         // 45: bossanova.v1.TerminalDataChunk
 	(*TerminalAttachExited)(nil),      // 46: bossanova.v1.TerminalAttachExited
-	(*TerminalClientMessage)(nil),     // 47: bossanova.v1.TerminalClientMessage
-	(*TerminalServerMessage)(nil),     // 48: bossanova.v1.TerminalServerMessage
-	nil,                               // 49: bossanova.v1.WebhookEvent.HeadersEntry
-	(*Session)(nil),                   // 50: bossanova.v1.Session
-	(*ChatStatusEntry)(nil),           // 51: bossanova.v1.ChatStatusEntry
-	(ChatStatus)(0),                   // 52: bossanova.v1.ChatStatus
-	(*timestamppb.Timestamp)(nil),     // 53: google.protobuf.Timestamp
-	(*ClaudeChat)(nil),                // 54: bossanova.v1.ClaudeChat
-	(*ListReposResponse)(nil),         // 55: bossanova.v1.ListReposResponse
-	(*ListAgentsResponse)(nil),        // 56: bossanova.v1.ListAgentsResponse
-	(*ListRepoPRsResponse)(nil),       // 57: bossanova.v1.ListRepoPRsResponse
-	(*ListTrackerIssuesResponse)(nil), // 58: bossanova.v1.ListTrackerIssuesResponse
-	(*GetChatTranscriptResponse)(nil), // 59: bossanova.v1.GetChatTranscriptResponse
-	(*SendChatMessageResponse)(nil),   // 60: bossanova.v1.SendChatMessageResponse
-	(*ListAccountsResponse)(nil),      // 61: bossanova.v1.ListAccountsResponse
-	(*OutputLine)(nil),                // 62: bossanova.v1.OutputLine
-	(*StateChange)(nil),               // 63: bossanova.v1.StateChange
-	(*SessionEnded)(nil),              // 64: bossanova.v1.SessionEnded
-	(*TrackerIssue)(nil),              // 65: bossanova.v1.TrackerIssue
+	(*TerminalReady)(nil),             // 47: bossanova.v1.TerminalReady
+	(*TerminalPing)(nil),              // 48: bossanova.v1.TerminalPing
+	(*TerminalPong)(nil),              // 49: bossanova.v1.TerminalPong
+	(*TerminalClientMessage)(nil),     // 50: bossanova.v1.TerminalClientMessage
+	(*TerminalServerMessage)(nil),     // 51: bossanova.v1.TerminalServerMessage
+	nil,                               // 52: bossanova.v1.WebhookEvent.HeadersEntry
+	(*Session)(nil),                   // 53: bossanova.v1.Session
+	(*ChatStatusEntry)(nil),           // 54: bossanova.v1.ChatStatusEntry
+	(ChatStatus)(0),                   // 55: bossanova.v1.ChatStatus
+	(*timestamppb.Timestamp)(nil),     // 56: google.protobuf.Timestamp
+	(*ClaudeChat)(nil),                // 57: bossanova.v1.ClaudeChat
+	(*ListReposResponse)(nil),         // 58: bossanova.v1.ListReposResponse
+	(*ListAgentsResponse)(nil),        // 59: bossanova.v1.ListAgentsResponse
+	(*ListRepoPRsResponse)(nil),       // 60: bossanova.v1.ListRepoPRsResponse
+	(*ListTrackerIssuesResponse)(nil), // 61: bossanova.v1.ListTrackerIssuesResponse
+	(*GetChatTranscriptResponse)(nil), // 62: bossanova.v1.GetChatTranscriptResponse
+	(*SendChatMessageResponse)(nil),   // 63: bossanova.v1.SendChatMessageResponse
+	(*ListAccountsResponse)(nil),      // 64: bossanova.v1.ListAccountsResponse
+	(*OutputLine)(nil),                // 65: bossanova.v1.OutputLine
+	(*StateChange)(nil),               // 66: bossanova.v1.StateChange
+	(*SessionEnded)(nil),              // 67: bossanova.v1.SessionEnded
+	(*TrackerIssue)(nil),              // 68: bossanova.v1.TrackerIssue
 }
 var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	6,  // 0: bossanova.v1.DaemonEvent.snapshot:type_name -> bossanova.v1.DaemonSnapshot
@@ -4503,49 +4702,52 @@ var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	36, // 28: bossanova.v1.OrchestratorCommand.send_chat_message:type_name -> bossanova.v1.SendChatMessageCommand
 	24, // 29: bossanova.v1.OrchestratorCommand.switch_account:type_name -> bossanova.v1.SwitchAccountCommand
 	32, // 30: bossanova.v1.OrchestratorCommand.list_accounts:type_name -> bossanova.v1.ListAccountsCommand
-	50, // 31: bossanova.v1.DaemonSnapshot.sessions:type_name -> bossanova.v1.Session
+	53, // 31: bossanova.v1.DaemonSnapshot.sessions:type_name -> bossanova.v1.Session
 	10, // 32: bossanova.v1.DaemonSnapshot.chats:type_name -> bossanova.v1.ClaudeChatMetadata
-	51, // 33: bossanova.v1.DaemonSnapshot.statuses:type_name -> bossanova.v1.ChatStatusEntry
+	54, // 33: bossanova.v1.DaemonSnapshot.statuses:type_name -> bossanova.v1.ChatStatusEntry
 	0,  // 34: bossanova.v1.SessionDelta.kind:type_name -> bossanova.v1.SessionDelta.Kind
-	50, // 35: bossanova.v1.SessionDelta.session:type_name -> bossanova.v1.Session
+	53, // 35: bossanova.v1.SessionDelta.session:type_name -> bossanova.v1.Session
 	1,  // 36: bossanova.v1.ChatDelta.kind:type_name -> bossanova.v1.ChatDelta.Kind
 	10, // 37: bossanova.v1.ChatDelta.chat:type_name -> bossanova.v1.ClaudeChatMetadata
-	52, // 38: bossanova.v1.ChatStatusDelta.status:type_name -> bossanova.v1.ChatStatus
-	53, // 39: bossanova.v1.ChatStatusDelta.last_output_at:type_name -> google.protobuf.Timestamp
-	53, // 40: bossanova.v1.ClaudeChatMetadata.created_at:type_name -> google.protobuf.Timestamp
-	53, // 41: bossanova.v1.ClaudeChatMetadata.updated_at:type_name -> google.protobuf.Timestamp
-	50, // 42: bossanova.v1.CommandResult.session:type_name -> bossanova.v1.Session
+	55, // 38: bossanova.v1.ChatStatusDelta.status:type_name -> bossanova.v1.ChatStatus
+	56, // 39: bossanova.v1.ChatStatusDelta.last_output_at:type_name -> google.protobuf.Timestamp
+	56, // 40: bossanova.v1.ClaudeChatMetadata.created_at:type_name -> google.protobuf.Timestamp
+	56, // 41: bossanova.v1.ClaudeChatMetadata.updated_at:type_name -> google.protobuf.Timestamp
+	53, // 42: bossanova.v1.CommandResult.session:type_name -> bossanova.v1.Session
 	38, // 43: bossanova.v1.CommandResult.transfer_confirmed:type_name -> bossanova.v1.TransferConfirmed
 	23, // 44: bossanova.v1.CommandResult.wake_chat:type_name -> bossanova.v1.WakeChatResult
-	54, // 45: bossanova.v1.CommandResult.record_chat:type_name -> bossanova.v1.ClaudeChat
-	55, // 46: bossanova.v1.CommandResult.list_repos:type_name -> bossanova.v1.ListReposResponse
-	56, // 47: bossanova.v1.CommandResult.list_agents:type_name -> bossanova.v1.ListAgentsResponse
-	57, // 48: bossanova.v1.CommandResult.list_repo_prs:type_name -> bossanova.v1.ListRepoPRsResponse
-	58, // 49: bossanova.v1.CommandResult.list_tracker_issues:type_name -> bossanova.v1.ListTrackerIssuesResponse
-	59, // 50: bossanova.v1.CommandResult.get_chat_transcript:type_name -> bossanova.v1.GetChatTranscriptResponse
-	60, // 51: bossanova.v1.CommandResult.send_chat_message:type_name -> bossanova.v1.SendChatMessageResponse
+	57, // 45: bossanova.v1.CommandResult.record_chat:type_name -> bossanova.v1.ClaudeChat
+	58, // 46: bossanova.v1.CommandResult.list_repos:type_name -> bossanova.v1.ListReposResponse
+	59, // 47: bossanova.v1.CommandResult.list_agents:type_name -> bossanova.v1.ListAgentsResponse
+	60, // 48: bossanova.v1.CommandResult.list_repo_prs:type_name -> bossanova.v1.ListRepoPRsResponse
+	61, // 49: bossanova.v1.CommandResult.list_tracker_issues:type_name -> bossanova.v1.ListTrackerIssuesResponse
+	62, // 50: bossanova.v1.CommandResult.get_chat_transcript:type_name -> bossanova.v1.GetChatTranscriptResponse
+	63, // 51: bossanova.v1.CommandResult.send_chat_message:type_name -> bossanova.v1.SendChatMessageResponse
 	25, // 52: bossanova.v1.CommandResult.switch_account:type_name -> bossanova.v1.SwitchAccountResult
-	61, // 53: bossanova.v1.CommandResult.list_accounts:type_name -> bossanova.v1.ListAccountsResponse
+	64, // 53: bossanova.v1.CommandResult.list_accounts:type_name -> bossanova.v1.ListAccountsResponse
 	2,  // 54: bossanova.v1.CommandResult.error_code:type_name -> bossanova.v1.CommandResult.ErrorCode
-	50, // 55: bossanova.v1.SessionCreateChunk.created:type_name -> bossanova.v1.Session
+	53, // 55: bossanova.v1.SessionCreateChunk.created:type_name -> bossanova.v1.Session
 	15, // 56: bossanova.v1.SessionCreateChunk.error:type_name -> bossanova.v1.CreateError
-	62, // 57: bossanova.v1.SessionAttachChunk.output_line:type_name -> bossanova.v1.OutputLine
-	63, // 58: bossanova.v1.SessionAttachChunk.state_change:type_name -> bossanova.v1.StateChange
-	64, // 59: bossanova.v1.SessionAttachChunk.session_ended:type_name -> bossanova.v1.SessionEnded
-	65, // 60: bossanova.v1.CreateSessionCommand.tracker_issue:type_name -> bossanova.v1.TrackerIssue
+	65, // 57: bossanova.v1.SessionAttachChunk.output_line:type_name -> bossanova.v1.OutputLine
+	66, // 58: bossanova.v1.SessionAttachChunk.state_change:type_name -> bossanova.v1.StateChange
+	67, // 59: bossanova.v1.SessionAttachChunk.session_ended:type_name -> bossanova.v1.SessionEnded
+	68, // 60: bossanova.v1.CreateSessionCommand.tracker_issue:type_name -> bossanova.v1.TrackerIssue
 	3,  // 61: bossanova.v1.WakeChatResult.outcome:type_name -> bossanova.v1.WakeChatResult.Outcome
-	49, // 62: bossanova.v1.WebhookEvent.headers:type_name -> bossanova.v1.WebhookEvent.HeadersEntry
+	52, // 62: bossanova.v1.WebhookEvent.headers:type_name -> bossanova.v1.WebhookEvent.HeadersEntry
 	41, // 63: bossanova.v1.TerminalClientMessage.attach:type_name -> bossanova.v1.TerminalAttachCommand
 	42, // 64: bossanova.v1.TerminalClientMessage.input:type_name -> bossanova.v1.TerminalInputCommand
 	43, // 65: bossanova.v1.TerminalClientMessage.resize:type_name -> bossanova.v1.TerminalResizeCommand
 	44, // 66: bossanova.v1.TerminalClientMessage.close:type_name -> bossanova.v1.TerminalCloseCommand
-	45, // 67: bossanova.v1.TerminalServerMessage.data:type_name -> bossanova.v1.TerminalDataChunk
-	46, // 68: bossanova.v1.TerminalServerMessage.exited:type_name -> bossanova.v1.TerminalAttachExited
-	69, // [69:69] is the sub-list for method output_type
-	69, // [69:69] is the sub-list for method input_type
-	69, // [69:69] is the sub-list for extension type_name
-	69, // [69:69] is the sub-list for extension extendee
-	0,  // [0:69] is the sub-list for field type_name
+	47, // 67: bossanova.v1.TerminalClientMessage.ready:type_name -> bossanova.v1.TerminalReady
+	48, // 68: bossanova.v1.TerminalClientMessage.ping:type_name -> bossanova.v1.TerminalPing
+	45, // 69: bossanova.v1.TerminalServerMessage.data:type_name -> bossanova.v1.TerminalDataChunk
+	46, // 70: bossanova.v1.TerminalServerMessage.exited:type_name -> bossanova.v1.TerminalAttachExited
+	49, // 71: bossanova.v1.TerminalServerMessage.pong:type_name -> bossanova.v1.TerminalPong
+	72, // [72:72] is the sub-list for method output_type
+	72, // [72:72] is the sub-list for method input_type
+	72, // [72:72] is the sub-list for extension type_name
+	72, // [72:72] is the sub-list for extension extendee
+	0,  // [0:72] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_stream_proto_init() }
@@ -4616,15 +4818,18 @@ func file_bossanova_v1_stream_proto_init() {
 	}
 	file_bossanova_v1_stream_proto_msgTypes[17].OneofWrappers = []any{}
 	file_bossanova_v1_stream_proto_msgTypes[30].OneofWrappers = []any{}
-	file_bossanova_v1_stream_proto_msgTypes[43].OneofWrappers = []any{
+	file_bossanova_v1_stream_proto_msgTypes[46].OneofWrappers = []any{
 		(*TerminalClientMessage_Attach)(nil),
 		(*TerminalClientMessage_Input)(nil),
 		(*TerminalClientMessage_Resize)(nil),
 		(*TerminalClientMessage_Close)(nil),
+		(*TerminalClientMessage_Ready)(nil),
+		(*TerminalClientMessage_Ping)(nil),
 	}
-	file_bossanova_v1_stream_proto_msgTypes[44].OneofWrappers = []any{
+	file_bossanova_v1_stream_proto_msgTypes[47].OneofWrappers = []any{
 		(*TerminalServerMessage_Data)(nil),
 		(*TerminalServerMessage_Exited)(nil),
+		(*TerminalServerMessage_Pong)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -4632,7 +4837,7 @@ func file_bossanova_v1_stream_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_stream_proto_rawDesc), len(file_bossanova_v1_stream_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   46,
+			NumMessages:   49,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

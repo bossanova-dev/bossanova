@@ -14,6 +14,7 @@ import {
   softenTuiExit,
   surfaceLabel,
 } from './proof-finalize-outcome.mjs'
+import { classifyTuiOutcome } from './proof-lib.mjs'
 import { silenceConsole } from './quiet-test-console.mjs'
 
 // Silence the code-under-test console output (finalize manifest JSON dumps +
@@ -245,6 +246,35 @@ test('aggregateExitCode: passed web + tui-truncated → 0 (partial success neutr
   ])
   assert.deepEqual(perSurface, [
     { surface: 'web', outcome: 'passed', reasonCode: null, error: null },
+    { surface: 'tui', outcome: 'deferred', reasonCode: 'tui-truncated', error: null },
+  ])
+  assert.equal(aggregateExitCode(perSurface), 0)
+})
+
+// ── BOS-359: end-to-end — a truncated 4-scene run never exits 1 on time alone ─
+// Wires the two seams together (classifyTuiOutcome → classifySurfaceOutcomes →
+// aggregateExitCode) so the acceptance guard holds across module boundaries: a
+// rich 4-scene brief cut off mid-flight by the per-run wall clock classifies
+// tui-truncated and aggregates to exit 0, deterministically and with no live key.
+test('BOS-359: a truncated 4-scene TUI run classifies tui-truncated and aggregates to exit 0', () => {
+  const classified = classifyTuiOutcome({
+    legs: { runAgent: true, runReplay: false },
+    agentOutcome: 'gate-failed',
+    replayOutcome: 'not-attempted',
+    agentDetail: '4-scene account-flow brief cut off after scene 3 (per-run wall clock)',
+    agentTruncated: true,
+  })
+  assert.equal(classified.reasonCode, 'tui-truncated')
+  const perSurface = classifySurfaceOutcomes([
+    {
+      surface: 'tui',
+      hasFailure: false,
+      noSurface: false,
+      reasonCode: classified.reasonCode,
+      captureShapes: [],
+    },
+  ])
+  assert.deepEqual(perSurface, [
     { surface: 'tui', outcome: 'deferred', reasonCode: 'tui-truncated', error: null },
   ])
   assert.equal(aggregateExitCode(perSurface), 0)

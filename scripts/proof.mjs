@@ -41,6 +41,7 @@ import {
   classifySurfaces,
   classifyTuiSurface,
   committedScenarioPresent,
+  proofHarnessOnlyDiff,
   resolveSurfaceRegistry,
   surfaceBudget,
   webUiSurfacePresent,
@@ -1112,6 +1113,9 @@ export function tuiAgentCanCapture() {
  * @returns {'tui' | 'web' | 'recipe'}
  */
 export function agentSurface({ catalog, changedFiles }) {
+  // BOS-356: intentionally NOT harness-exempt. This legacy single-select field is
+  // cosmetic (kept for one release) and no longer drives dispatch — resolveSurfacePlan's
+  // `order`/`surfaces` is authoritative and carries the harness-only carve-out.
   const override = process.env.BOSS_PROOF_AGENT_SURFACE
   if (override === 'tui' || override === 'web') return override
   const briefSurface = briefSurfaceOverride()
@@ -1164,9 +1168,23 @@ export function resolveSurfacePlan({
 
   const override = env.BOSS_PROOF_AGENT_SURFACE
   const forced = override === 'tui' || override === 'web' ? override : briefSurface
-  const surfaces = forced
+  let surfaces = forced
     ? { tui: forced === 'tui', web: forced === 'web' }
     : { tui: classified.tui, web: classified.web }
+
+  // BOS-356: exempt a proof-harness-only diff (scripts/proof* + optional plan doc)
+  // from any agent surface. Such a diff changes no product code, so a forced
+  // `## Required proof` bullet (D16 `forcedSurfaces`) has no product behavior to
+  // demonstrate — a live agent would only capture a stock demo unrelated to the
+  // change and can fail fatally on an `agent-incomplete` flake (BOS-226). This is
+  // a DELIBERATE, narrow override of the D16 forced-surface push, applied after
+  // classification/force resolution so it beats `forcedSurfaces` and any brief/env
+  // override. The escape hatch: committing a `proof/scenarios/*.scenario.json`
+  // makes the diff no longer harness-only and re-enables the deterministic replay
+  // (BOS-223). An empty `order` routes the run to the honest `no-ui-surface` note
+  // (scripts/proof.mjs `postNoWebUiSurfaceComment`, exit 0).
+  const harnessOnly = proofHarnessOnlyDiff(changedFiles) && !committedScenarioPresent(changedFiles)
+  if (harnessOnly) surfaces = { tui: false, web: false }
 
   return {
     order: orderSurfaces({ surfaces, scoped }),

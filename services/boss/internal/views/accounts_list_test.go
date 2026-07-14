@@ -153,6 +153,41 @@ func TestAccountsList_RendersUsagePercentages(t *testing.T) {
 	}
 }
 
+func TestAccountsList_RendersUsageAgeColumn(t *testing.T) {
+	// The list carries an AGE column: a compact freshness age since the usage
+	// snapshot's fetched_at for a probed account, and an em dash for a
+	// never-probed one (nil UsageSnapshot).
+	probed := &pb.Account{
+		Id:       "acc-probed",
+		Provider: "claude",
+		Label:    "Probed",
+		Status:   "active",
+		Health:   "ok",
+		Usage: &pb.UsageSnapshot{
+			Util_5H:   0.42,
+			Util_7D:   0.93,
+			Status:    "active",
+			FetchedAt: timestamppb.New(time.Now().Add(-4 * time.Minute)),
+		},
+	}
+	neverProbed := &pb.Account{Id: "acc-none", Provider: "codex", Label: "No Usage", Status: "active", Health: "ok"}
+	stub := &accountsStub{accounts: []*pb.Account{probed, neverProbed}}
+	m := seedAccountsList(t, stub)
+
+	content := m.View().Content
+	if !strings.Contains(content, "AGE") {
+		t.Fatalf("accounts list missing AGE column header\n%s", content)
+	}
+	// The probed row shows a real compact age token.
+	if !strings.Contains(content, "4m") {
+		t.Fatalf("probed account missing usage age token %q\n%s", "4m", content)
+	}
+	// The never-probed row shows an em dash (U+2014), not a fabricated age.
+	if !strings.Contains(content, "—") {
+		t.Fatalf("never-probed account missing em-dash age cell\n%s", content)
+	}
+}
+
 func TestAccountsList_UsageDashWhenUnprobed(t *testing.T) {
 	// No UsageSnapshot (never probed) → the util cells render an em dash, not a
 	// fabricated 0%.

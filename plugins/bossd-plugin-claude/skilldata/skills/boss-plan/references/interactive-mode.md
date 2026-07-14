@@ -108,6 +108,15 @@ details in `references/headless-drafting-brief.md` **Step 5** and **Step 7** (pl
 and the description summary template). Write to `.linear-plans/<ISSUE-ID>-<slug>.md` and stop after
 saving the plan file. Do not continue into subagent-driven-development or executing-plans.
 
+**Preserve every image reference VERBATIM** (all interactive tiers). When composing `## Original
+notes`, copy every image reference the ticket carried — inline markdown `![alt](…)`, HTML `<img …>`
+tags, and bare `uploads.linear.app`/attachment URLs — byte-for-byte, URLs intact. **Never** replace
+an image with a `[screenshot: …]` text placeholder or any paraphrase: Linear does not expose
+description history, so the rewritten description is the only surviving copy of those URLs (the
+BOS-364 data loss). You MAY additionally list them under a `## Screenshots` bullet list in the plan
+body, but the URLs must stay intact in `## Original notes`. The orchestrator's mechanical guard
+(`scripts/plan-image-guard.mjs`, Phase 4) aborts the Linear write if any source image is dropped.
+
 ## Interactive cleanup
 
 In addition to the plan file, remove the design doc you seeded in Phase 3 (headless has no design

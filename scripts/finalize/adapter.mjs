@@ -1,5 +1,5 @@
 // scripts/finalize/adapter.mjs
-// Pluggable finalize-adapter interface for the boss-implement skill. Abstracts the
+// Pluggable finalize-adapter interface for the boss-build skill. Abstracts the
 // tag-injection -> draft->ready -> repair finalize policy the skill owns today so a
 // future project can slot a different finalize workflow in behind
 // resolveFinalizeAdapter. Mirrors the capability-manifest + operation-map structure of

@@ -7957,6 +7957,22 @@ components:
             - input
         - type: object
           properties:
+            ping:
+              title: ping
+              $ref: '#/components/schemas/bossanova.v1.TerminalPing'
+          title: ping
+          required:
+            - ping
+        - type: object
+          properties:
+            ready:
+              title: ready
+              $ref: '#/components/schemas/bossanova.v1.TerminalReady'
+          title: ready
+          required:
+            - ready
+        - type: object
+          properties:
             resize:
               title: resize
               $ref: '#/components/schemas/bossanova.v1.TerminalResizeCommand'
@@ -8034,6 +8050,50 @@ components:
          client to be written to the PTY stdin. Payload is opaque to bosso so a
          future libsodium framing layer can swap in without changing the wire
          shape.
+    bossanova.v1.TerminalPing:
+      type: object
+      properties:
+        seq:
+          type:
+            - integer
+            - string
+          title: seq
+          format: int64
+      title: TerminalPing
+      additionalProperties: false
+      description: |-
+        TerminalPing: bosso → daemon. Application-level liveness probe sent on a
+         fixed interval while the stream is open. The daemon answers each with a
+         TerminalPong. A missed-beats budget on the daemon tears the stream down,
+         which detects an alive-but-wrongly-bound stream — a failure mode HTTP/2
+         keepalive cannot see because the underlying connection is still healthy.
+    bossanova.v1.TerminalPong:
+      type: object
+      properties:
+        seq:
+          type:
+            - integer
+            - string
+          title: seq
+          format: int64
+      title: TerminalPong
+      additionalProperties: false
+      description: |-
+        TerminalPong: daemon → bosso. Answer to a TerminalPing, echoing its seq
+         so bosso can match the round-trip.
+    bossanova.v1.TerminalReady:
+      type: object
+      title: TerminalReady
+      additionalProperties: false
+      description: |-
+        TerminalReady: bosso → daemon. Carried inside TerminalClientMessage.
+         Sent exactly once, immediately after the bosso handler installs the
+         terminal sender and has confirmed the DaemonStream is local-and-Ready.
+         It is the daemon's positive, application-level proof that its
+         TerminalStream is bound to a healthy, co-located pod — the daemon does
+         NOT treat the stream as connected until this frame arrives. A ready
+         frame that never comes (e.g. a deploy split the two reverse streams
+         across pods) is what the daemon's watchdog keys on to self-heal.
     bossanova.v1.TerminalResizeCommand:
       type: object
       properties:
@@ -8071,6 +8131,14 @@ components:
           title: exited
           required:
             - exited
+        - type: object
+          properties:
+            pong:
+              title: pong
+              $ref: '#/components/schemas/bossanova.v1.TerminalPong'
+          title: pong
+          required:
+            - pong
       title: TerminalServerMessage
       additionalProperties: false
       description: |-

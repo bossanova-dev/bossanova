@@ -1,9 +1,9 @@
 ---
-name: boss-implement
-description: Use when asked to implement a planned Linear ticket on a schedule, "implement the next ticket", "boss-implement", or given a ticket ID like BOS-12 to implement. Unattended cron-safe sibling of boss-plan — it consumes agent-friendly planned Todos and ships review-ready PRs.
+name: boss-build
+description: Use when asked to implement a planned Linear ticket on a schedule, "implement the next ticket", "boss-build", or given a ticket ID like BOS-12 to implement. Unattended cron-safe sibling of boss-plan — it consumes agent-friendly planned Todos and ships review-ready PRs.
 ---
 
-# boss-implement
+# boss-build
 
 Implement exactly **one** planned Linear ticket end to end, unattended, and hand off a
 review-ready PR. This skill is the second half of the pair whose first half is `boss-plan`
@@ -161,12 +161,12 @@ if [ "$BOSSD_MANAGED" = "1" ]; then
 fi
 if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
   for candidate in "$HOME/.claude/skills/bossanova" "$HOME/.codex/skills/bossanova"; do
-    if [ -d "$candidate/boss-implement/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+    if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
   done
 fi
 test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed bossanova skills not found"; exit 1; }
-BOSS_IMPLEMENT_TOOLBOX="$BOSS_SKILLS_HOME/boss-implement/toolbox"
-export BOSS_SKILLS_HOME BOSS_IMPLEMENT_TOOLBOX
+BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
+export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX
 ```
 
 Confirm the tracker is reachable with a cheap read through the adapter's status/select capability
@@ -184,7 +184,7 @@ Resolve it to an absolute path once (the harness resets cwd between commands) an
 fresh run-id token from the tracker adapter's claim capability:
 
 ```bash
-LOCK="$BOSS_IMPLEMENT_TOOLBOX/worktree-lock.sh"
+LOCK="$BOSS_BUILD_TOOLBOX/worktree-lock.sh"
 BLI_RUNID="$(node "$(git rev-parse --show-toplevel)/scripts/tracker/cli.mjs" claim-token)"
 "$LOCK" acquire "$BLI_RUNID" pending
 ```
@@ -243,7 +243,7 @@ bootstrap; `=0` has neither. Whether that PR/branch is ours to adopt or foreign 
 Once the ticket id is known, reconcile it into the lock (you already own it, so this only rewrites the
 ticket field): `"$LOCK" acquire "$BLI_RUNID" <TICKET-ID>` (e.g. `BOS-12`).
 
-**Standalone (`BOSSD_MANAGED=0`):** bootstrap your own `boss-implement/<ticket-id>` branch off base
+**Standalone (`BOSSD_MANAGED=0`):** bootstrap your own `boss-build/<ticket-id>` branch off base
 before committing (snippet + narrative: `references/standalone-mode.md`).
 
 ## Step 2.5: Classify the workspace (ours to adopt, or foreign)
@@ -321,8 +321,15 @@ If validation or fetch fails, comment the reason and go to **Stop cleanly** with
 the fetched file); on `unsupportedVersion` or a missing section, comment and **Stop cleanly** BLOCKED
 (no stamp = v1).
 
+**View reporter screenshots.** When the fetched ticket `description` (or its `## Original notes`
+block) contains image markdown (`![](…)`), an HTML `<img>` tag, or an `uploads.linear.app`/attachment
+URL, call `mcp__bossanova-linear__extract_images` on that markdown before planning the change —
+reading `![](url)` as text does not surface the pixels, and the reporter's screenshots often
+disambiguate what the words leave ambiguous (the BOS-364 web-vs-TUI lesson). Best-effort and
+non-fatal: log and continue if extraction fails.
+
 Check staleness deterministically. The plan link's `createdAt` is the authoritative plan
-timestamp. Compare it to the issue `updatedAt`, ignoring this/prior boss-implement bookkeeping edits
+timestamp. Compare it to the issue `updatedAt`, ignoring this/prior boss-build bookkeeping edits
 (a resume finds the ticket `In Progress` with claim comments). If the issue was
 materially edited (scope/description/acceptance criteria) after that timestamp, comment that the plan
 is stale and stop BLOCKED. Copy the saved plan into the repo:
@@ -363,7 +370,7 @@ cleanly** with BLOCKED.
      Selection scales the implementer by task complexity: cheapest tier only for pure transcription
      where the plan carries the complete code; standard/most-capable otherwise. -->
 
-**boss-implement overlay:** each task subagent returns a **fixed short contract** — task id, files
+**boss-build overlay:** each task subagent returns a **fixed short contract** — task id, files
 touched, tests added/passing, interface signatures, residual risks — never its raw transcript. The
 orchestrator threads **only that fixed short contract** into the next task's dispatch, never a prior
 task's full transcript. The implementation methodology owns task briefs, report files, and any
@@ -374,10 +381,10 @@ Resolve the implementation methodology by strict precedence:
 1. **Tier 1 — discovered methodology extensions.** Run:
 
    ```bash
-   node scripts/skill-extensions.mjs discover --core boss-implement --role methodology --json
+   node scripts/skill-extensions.mjs discover --core boss-build --role methodology --json
    ```
 
-   If one or more `boss-implement-*` extensions are listed, dispatch each in ascending `order` as a
+   If one or more `boss-build-*` extensions are listed, dispatch each in ascending `order` as a
    fresh awaited subagent. Each extension receives the copied plan path, the current Step-5 scope
    (full plan vs. remaining acceptance criteria), the unattended Decide-vs-ABORT rules, and the
    fixed short task-contract schema. When any extension is present, tiers 2 and 3 are **suppressed**.
@@ -395,7 +402,10 @@ When the ticket touches a web or marketing UI surface (`services/web`, marketing
 the proof recipe (`proof/recipes/default.json`) plus any affordances proof needs — a stable route, a
 fixture, a `data-testid` — **as part of the task**, so "ships with the means to prove itself" passes
 through the same review (this is what lets Step 11 capture proof unattended). TUI diffs use the
-scenario path below instead of a recipe.
+scenario path below instead of a recipe. The specific affordances to build in-PR are the ones the
+plan's `## Proof harness analysis` section already scheduled (boss-plan writes that gap list at plan
+time) — treat it as the source list when present; if the plan predates or omits that (advisory)
+section, derive the affordances yourself from the changed surfaces rather than skipping them.
 
 For a TUI diff, **before Step 6**, author and commit a
 `proof/scenarios/*.scenario.json` that demonstrates the specific change. Read the Scenario authoring
@@ -446,12 +456,12 @@ dead/watchdog-killed subagent that writes nothing becomes a distinct `dispatch-f
 non-clean branch). Provision a per-run sentinel context **before** dispatch:
 
 ```bash
-RUN_SENTINEL="$BOSS_IMPLEMENT_TOOLBOX/bs-run-sentinel.mjs"
+RUN_SENTINEL="$BOSS_BUILD_TOOLBOX/bs-run-sentinel.mjs"
 test -f "$RUN_SENTINEL" || { echo "BLOCKED: bs-run-sentinel.mjs missing"; exit 1; }
-RUN="$(node "$RUN_SENTINEL" make-ctx boss-implement)"
+RUN="$(node "$RUN_SENTINEL" make-ctx boss-build)"
 RUN_ID="${RUN%%$'\t'*}"; RUN_DIR="${RUN#*$'\t'}"
 DISPATCH_FAILURE="dispatch-failure"   # byte-identical to the module's DISPATCH_FAILURE
-export BOSS_SKILLS_HOME BOSS_IMPLEMENT_TOOLBOX RUN_SENTINEL RUN_ID RUN_DIR DISPATCH_FAILURE
+export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX RUN_SENTINEL RUN_ID RUN_DIR DISPATCH_FAILURE
 ```
 
 **Dispatch the review stack.** Dispatch the ENTIRE review stack to **one fresh awaited subagent**
@@ -690,7 +700,7 @@ node scripts/remove-bossd-stop-hooks.mjs
 (A no-op under `BOSSD_MANAGED=0` — bossd installed no Stop-hooks.) Finally, release the worktree lock:
 
 ```bash
-"$BOSS_IMPLEMENT_TOOLBOX/worktree-lock.sh" release "$BLI_RUNID"
+"$BOSS_BUILD_TOOLBOX/worktree-lock.sh" release "$BLI_RUNID"
 ```
 
 (The startup `HELD_BY_PEER` yield is the one exit that does **not** reach Step 12 — it never owned the
@@ -710,7 +720,7 @@ ambiguous or you catch yourself talking past a hard rule.
 ## Cron gate
 
 When this skill is scheduled as an unattended implementation cron, register the gate command
-`node scripts/cron-gates/boss-implement.mjs` on the job (scheduler UI, `GateCommand`) so the run
+`node scripts/cron-gates/boss-build.mjs` on the job (scheduler UI, `GateCommand`) so the run
 only fires when there is a candidate, spending **zero** agent tokens otherwise. It is a deliberately
 loose, fail-closed superset of Step 2's selection (Step 2 remains the source of truth). **Read
 [`references/cron-gate.md`](references/cron-gate.md)** for the exact run/skip conditions and

@@ -1094,6 +1094,22 @@ func seedChatPickerWithPassingPR() ChatPickerModel {
 	return m
 }
 
+// TestChatPickerCanMerge_ApprovedCleanPR guards the TUI policy against
+// rejecting an approved, clean PR that the live MergeSession gate accepts.
+func TestChatPickerCanMerge_ApprovedCleanPR(t *testing.T) {
+	prNum := int32(42)
+	m := seedChatPicker(&chatPickerStub{}, statusWorking)
+	m.session = &pb.Session{
+		Id:            "session-1",
+		PrNumber:      &prNum,
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_APPROVED,
+	}
+
+	if !m.canMerge() {
+		t.Fatal("canMerge() = false for an approved clean PR; want true because the live MergeSession gate accepts it")
+	}
+}
+
 // TestChatPickerCanMergeDropsAfterMerge guards that canMerge() returns false
 // once m.merged is true, even when the session otherwise qualifies for merge
 // (open passing PR). The !m.merged guard is what drops [m]erge from the bar.

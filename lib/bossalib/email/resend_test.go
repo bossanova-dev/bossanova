@@ -3,6 +3,7 @@ package email
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,24 @@ import (
 	"testing"
 	"time"
 )
+
+type resendRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f resendRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type resendReadErrorBody struct {
+	err error
+}
+
+func (b resendReadErrorBody) Read([]byte) (int, error) {
+	return 0, b.err
+}
+
+func (resendReadErrorBody) Close() error {
+	return nil
+}
 
 func TestResendMailer_Send(t *testing.T) {
 	var gotAuth, gotContentType string
@@ -66,6 +85,27 @@ func TestResendMailer_Send_Non2xxReturnsError(t *testing.T) {
 	msg := err.Error()
 	if !strings.Contains(msg, "401") || !strings.Contains(msg, "Invalid API key") {
 		t.Errorf("error = %q, want 401 + body", msg)
+	}
+}
+
+func TestResendMailer_Send_Non2xxBodyReadError(t *testing.T) {
+	readErr := errors.New("response body read failed")
+	m := NewResendMailer("k", "reports@example.com").WithHTTPClient(&http.Client{
+		Transport: resendRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Body:       resendReadErrorBody{err: readErr},
+				Request:    req,
+			}, nil
+		}),
+	})
+
+	err := m.Send(context.Background(), "triage@example.com", "s", "<p>x</p>")
+	if !errors.Is(err, readErr) {
+		t.Fatalf("Send error = %v, want wrapped %v", err, readErr)
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Errorf("Send error = %q, want status context", err)
 	}
 }
 

@@ -466,6 +466,7 @@ func (m *AccountsListModel) rebuildTable() {
 	healths := make([]string, n)
 	util5hs := make([]string, n)
 	util7ds := make([]string, n)
+	usageAges := make([]string, n)
 	cooldowns := make([]string, n)
 	lastTests := make([]string, n)
 
@@ -478,6 +479,7 @@ func (m *AccountsListModel) rebuildTable() {
 		u := a.GetUsage()
 		util5hs[i] = accountUtilCell(u, u.GetUtil_5H(), u.GetReset_5H(), now)
 		util7ds[i] = accountUtilCell(u, u.GetUtil_7D(), u.GetReset_7D(), now)
+		usageAges[i] = accountUsageAgeCell(u, now)
 		cooldowns[i] = accountCooldownCell(a, now)
 		lastTests[i] = accountLastTestCell(a)
 	}
@@ -490,6 +492,7 @@ func (m *AccountsListModel) rebuildTable() {
 		{Title: "HEALTH", Width: maxColWidth("HEALTH", healths, 10) + tableColumnSep},
 		{Title: "UTIL5H", Width: maxColWidth("UTIL5H", util5hs, 12) + tableColumnSep},
 		{Title: "UTIL7D", Width: maxColWidth("UTIL7D", util7ds, 12) + tableColumnSep},
+		{Title: "AGE", Width: maxColWidth("AGE", usageAges, 6) + tableColumnSep},
 		{Title: "COOLDOWN", Width: maxColWidth("COOLDOWN", cooldowns, 16) + tableColumnSep},
 		{Title: "LAST TEST", Width: maxColWidth("LAST TEST", lastTests, 24) + tableColumnSep},
 	}
@@ -511,6 +514,7 @@ func (m *AccountsListModel) rebuildTable() {
 		label, provider, status := labels[i], providers[i], statuses[i]
 		health, cooldown, lastTest := healths[i], cooldowns[i], lastTests[i]
 		util5h, util7d := util5hs[i], util7ds[i]
+		usageAge := usageAges[i]
 
 		disabled := a.GetStatus() == "disabled"
 		if !disabled {
@@ -542,11 +546,12 @@ func (m *AccountsListModel) rebuildTable() {
 			health = muted.Render(health)
 			util5h = muted.Render(util5h)
 			util7d = muted.Render(util7d)
+			usageAge = muted.Render(usageAge)
 			cooldown = muted.Render(cooldown)
 			lastTest = muted.Render(lastTest)
 		}
 
-		rows[i] = table.Row{indicator, label, provider, status, health, util5h, util7d, cooldown, lastTest}
+		rows[i] = table.Row{indicator, label, provider, status, health, util5h, util7d, usageAge, cooldown, lastTest}
 	}
 
 	m.table.SetColumns(cols)
@@ -591,18 +596,19 @@ func accountHealthCell(health string) string {
 // window's reset countdown, e.g. "93% (5d)", matching the CLI account list
 // (UTIL5H / UTIL7D columns, cmd/account.go). It returns an em dash when the
 // snapshot carries no usable signal: nil, never probed, or an
-// unsupported/unspecified rate-limit status.
+// unsupported/unspecified rate-limit status. The honest-empty gate and percent
+// format are shared with the detail-screen accountUsageWindowDetail via
+// accountUtilParts; this cell differs only in the countdown decoration ("(<dur>)"
+// vs the detail row's "· resets in <dur>").
 func accountUtilCell(u *pb.UsageSnapshot, pct float64, reset *timestamppb.Timestamp, now time.Time) string {
-	if u == nil || u.GetFetchedAt() == nil || usageSnapshotUnsupported(u.GetStatus()) {
+	pctStr, countdown, ok := accountUtilParts(u, pct, reset, now)
+	if !ok {
 		return "—"
 	}
-	s := fmt.Sprintf("%.0f%%", pct*100)
-	if reset != nil {
-		if d := reset.AsTime().Sub(now); d > 0 {
-			s += " (" + compactFutureDuration(d) + ")"
-		}
+	if countdown != "" {
+		return pctStr + " (" + countdown + ")"
 	}
-	return s
+	return pctStr
 }
 
 // usageSnapshotUnsupported reports whether a usage probe could not

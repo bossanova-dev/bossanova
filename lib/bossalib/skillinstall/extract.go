@@ -276,8 +276,8 @@ func Extract(dir string, fsys fs.FS) error {
 		if d.IsDir() {
 			return nil
 		}
-		// path is "skills/boss-implement/SKILL.md"
-		// Strip leading "skills/" to get "boss-implement/SKILL.md"
+		// path is "skills/boss-build/SKILL.md"
+		// Strip leading "skills/" to get "boss-build/SKILL.md"
 		rel := strings.TrimPrefix(path, "skills/")
 		destPath := filepath.Join(nsDir, rel)
 		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {

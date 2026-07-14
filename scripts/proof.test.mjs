@@ -861,6 +861,32 @@ test('resolveSurfacePlan: backend-only + no bullets → empty order + recipes', 
   assert.deepEqual(plan.recipes, [])
 })
 
+// ── BOS-356: harness-only diffs are exempt from a live agent surface ──────────
+
+test('resolveSurfacePlan: harness-only diff with a TUI-scoped bullet → empty order (exemption beats force)', () => {
+  const plan = resolveSurfacePlan({
+    catalog: planCat,
+    changedFiles: ['scripts/proof.mjs', 'docs/plans/BOS-356-x.md'],
+    // A TUI-scoped `## Required proof` bullet would normally FORCE tui (D16), but
+    // a harness-only diff has no product surface to demonstrate — exemption wins.
+    requiredProofBullets: ['(TUI) settled screen shows the session list'],
+  })
+  assert.deepEqual(plan.surfaces, { tui: false, web: false })
+  assert.deepEqual(plan.order, [])
+})
+
+test('resolveSurfacePlan: harness-only diff + committed scenario is NOT exempt (dogfood opt-in)', () => {
+  const plan = resolveSurfacePlan({
+    catalog: planCat,
+    // A committed proof/scenarios/*.scenario.json makes the diff no longer
+    // harness-only, so the TUI-scoped bullet forces tui and replay is reachable.
+    changedFiles: ['scripts/proof.mjs', 'proof/scenarios/home.scenario.json'],
+    requiredProofBullets: ['(TUI) settled screen shows the session list'],
+  })
+  assert.equal(plan.surfaces.tui, true)
+  assert.ok(plan.order.includes('tui'))
+})
+
 // ── D5 shared-budget sequencing: TUI consuming the budget defers web ─────────
 
 test('D5: TUI consuming the shared budget defers web with budget-exceeded (exit 0)', () => {

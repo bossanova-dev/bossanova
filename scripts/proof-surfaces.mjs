@@ -285,6 +285,59 @@ export function committedScenarioPresent(changedFiles) {
 }
 
 /**
+ * BOS-356: matches a proof-harness script — `scripts/proof*.{mjs,js,mts,cjs}`.
+ * Anchored so it catches the whole harness family (`scripts/proof.mjs`,
+ * `scripts/proof-lib.mjs`, `scripts/proof-*.test.mjs`, `scripts/proof-brief.d.mts`,
+ * `scripts/proof-*.eval.mjs`) while never catching a non-proof script such as
+ * `scripts/skill-extensions.mjs`. Verified against the live `scripts/` listing:
+ * every `scripts/proof*` file matches, and nothing outside that family does.
+ * @type {RegExp}
+ */
+export const PROOF_HARNESS_FILE_RE = /^scripts\/proof[\w.-]*\.(?:mjs|js|mts|cjs)$/
+
+/**
+ * BOS-356: matches a TOP-LEVEL plan doc (`docs/plans/<name>.md`, no subdir),
+ * mirroring loadPlanEvidence's no-subdir rule (scripts/proof-brief.mjs:79-86).
+ * A harness PR commits its plan alongside the harness edits, so a plan doc must
+ * count as "still harness-only" — but only at the top level, matching the run
+ * path that actually reads these bullets.
+ * @type {RegExp}
+ */
+export const PLAN_DOC_RE = /^docs\/plans\/[^/]+\.md$/
+
+/**
+ * BOS-356: pure predicate — true when a diff is ENTIRELY the proof harness
+ * itself (`scripts/proof*` scripts) plus optionally its top-level plan doc, with
+ * at least one harness file present. Such a diff changes no product surface, so
+ * running a live TUI/web agent captures a stock demo unrelated to the change
+ * (useless proof) and — post-BOS-226 — can fail fatally on an `agent-incomplete`
+ * flake. resolveSurfacePlan uses this to zero the surface set and defer to the
+ * honest `no-ui-surface` note (exit 0).
+ *
+ * The "≥1 harness file" clause keeps a pure docs-only diff (`docs/plans/*.md`
+ * with no harness script) from being mislabeled "harness-only". A committed
+ * `proof/scenarios/*.scenario.json` is neither a harness script nor a plan doc,
+ * so a scenario-bearing diff is (by construction) NOT harness-only — that is the
+ * deliberate opt-in to the existing deterministic replay (BOS-223).
+ * Modeled on committedScenarioPresent: array-in → bool-out, no fs/env/Date.
+ * @param {string[]|null|undefined} changedFiles
+ * @returns {boolean}
+ */
+export function proofHarnessOnlyDiff(changedFiles) {
+  const files = normalizeChangedFiles(changedFiles ?? [])
+  if (files.length === 0) return false
+  let sawHarnessFile = false
+  for (const f of files) {
+    if (PROOF_HARNESS_FILE_RE.test(f)) {
+      sawHarnessFile = true
+      continue
+    }
+    if (!PLAN_DOC_RE.test(f)) return false
+  }
+  return sawHarnessFile
+}
+
+/**
  * Surface SET classifier (BOS-139 / epic D5). Replaces the single-select
  * dispatch (agentSurface) so a mixed diff proves BOTH the TUI and the web app.
  * Relocated to the surface registry (BOS-201).

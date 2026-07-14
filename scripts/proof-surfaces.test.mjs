@@ -14,6 +14,7 @@ import {
   classifyTuiSurface,
   webUiSurfacePresent,
   committedScenarioPresent,
+  proofHarnessOnlyDiff,
   classifySurfaces,
   TUI_SURFACE_PREFIXES,
   WEB_UI_SURFACE_PREFIXES,
@@ -194,6 +195,55 @@ test('committedScenarioPresent is false for a TUI diff with no scenario file', (
 test('committedScenarioPresent normalizes leading ./ and backslashes', () => {
   assert.equal(committedScenarioPresent(['./proof/scenarios/demo.scenario.json']), true)
   assert.equal(committedScenarioPresent(['proof\\scenarios\\demo.scenario.json']), true)
+})
+
+// ── proofHarnessOnlyDiff: BOS-356 harness-only exemption predicate ────────────
+
+test('proofHarnessOnlyDiff is true for a diff of only proof-harness scripts (+plan doc)', () => {
+  assert.equal(proofHarnessOnlyDiff(['scripts/proof.mjs']), true)
+  assert.equal(
+    proofHarnessOnlyDiff([
+      'scripts/proof-lib.mjs',
+      'scripts/proof.test.mjs',
+      'docs/plans/BOS-356-x.md',
+    ]),
+    true,
+  )
+})
+
+test('proofHarnessOnlyDiff is false for mixed, non-proof, empty, docs-only, and scenario-bearing diffs', () => {
+  // Mixed product diff: a harness file alongside product code is not harness-only.
+  assert.equal(
+    proofHarnessOnlyDiff(['scripts/proof.mjs', 'services/boss/internal/views/home.go']),
+    false,
+  )
+  // A non-proof script must not be caught by the harness regex.
+  assert.equal(proofHarnessOnlyDiff(['scripts/skill-extensions.mjs']), false)
+  // Empty diff is never harness-only.
+  assert.equal(proofHarnessOnlyDiff([]), false)
+  assert.equal(proofHarnessOnlyDiff(null), false)
+  // A committed scenario is neither a harness script nor a plan doc → not harness-only,
+  // so the deterministic-replay opt-in (BOS-223) sits outside the exemption.
+  assert.equal(
+    proofHarnessOnlyDiff(['scripts/proof.mjs', 'proof/scenarios/home.scenario.json']),
+    false,
+  )
+  // Pure docs-only diff has no harness file → not "harness-only".
+  assert.equal(proofHarnessOnlyDiff(['docs/plans/BOS-356-x.md']), false)
+  // A plan doc in a subdir does not count (top-level docs/plans only).
+  assert.equal(proofHarnessOnlyDiff(['scripts/proof.mjs', 'docs/plans/sub/x.md']), false)
+})
+
+test('proofHarnessOnlyDiff normalizes leading ./ and backslashes', () => {
+  assert.equal(proofHarnessOnlyDiff(['./scripts/proof.mjs']), true)
+  assert.equal(proofHarnessOnlyDiff(['scripts\\proof-lib.mjs']), true)
+})
+
+// BOS-356 regression lock: `scripts/` is intentionally NOT a TUI prefix, so a
+// pure proof-harness diff never classifies as a TUI surface via path. The
+// exemption is a separate predicate, not an edit to TUI_SURFACE_PREFIXES.
+test('BOS-356: classifyTuiSurface(["scripts/proof.mjs"]) stays false', () => {
+  assert.equal(classifyTuiSurface(['scripts/proof.mjs']), false)
 })
 
 // ── classifySurfaces: surface SET classifier (BOS-139 / D5) ──────────────────

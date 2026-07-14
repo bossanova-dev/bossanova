@@ -239,14 +239,14 @@ test('discoverExtensions finds the committed boss-review round extensions repo-l
   )
 })
 
-test('discoverExtensions finds the committed boss-implement methodology extension repo-local', () => {
+test('discoverExtensions finds the committed boss-build methodology extension repo-local', () => {
   const out = execFileSync(
     'node',
     [
       'scripts/skill-extensions.mjs',
       'discover',
       '--core',
-      'boss-implement',
+      'boss-build',
       '--role',
       'methodology',
       '--json',
@@ -254,10 +254,10 @@ test('discoverExtensions finds the committed boss-implement methodology extensio
     { encoding: 'utf8', cwd: process.cwd() },
   )
   const { extensions } = JSON.parse(out)
-  const found = extensions.find((e) => e.name === 'boss-implement-superpowers')
+  const found = extensions.find((e) => e.name === 'boss-build-superpowers')
   assert.ok(
     found,
-    `expected boss-implement-superpowers in ${JSON.stringify(extensions.map((e) => e.name))}`,
+    `expected boss-build-superpowers in ${JSON.stringify(extensions.map((e) => e.name))}`,
   )
   assert.equal(found.role, 'methodology')
 })

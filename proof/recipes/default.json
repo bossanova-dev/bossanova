@@ -60,30 +60,29 @@
     {
       "id": "web-session-detail",
       "surface": "web",
-      "title": "Web Session Detail",
-      "description": "Product web session-detail view: GitHub-logo action button, no Stop button, no Branch/PR meta rows, status pill at left.",
+      "title": "Web Session Detail (passing PR)",
+      "description": "Product web session-detail header on a session with a passing PR: the Merge button is visible alongside Archive and Open GitHub. No Stop button, no Branch/PR meta rows, no 'Switch account' button, status pill at left.",
       "privacy": "fixture",
       "route": "/sessions/sess-e2e-1",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-session-detail-no-pr",
+      "surface": "web",
+      "title": "Web Session Detail (no PR / Quick Chat)",
+      "description": "Product web session-detail header on a Quick-Chat session with no PR: it shows the session title, New chat, and Archive, but NO Merge button and NO 'Switch account' button.",
+      "privacy": "fixture",
+      "route": "/sessions/sess-e2e-quick",
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
       "id": "web-session-detail-mobile",
       "surface": "web",
       "title": "Web Session Detail (mobile)",
-      "description": "Session-detail at phone width: status pill left, action buttons right, icon-only chat buttons.",
+      "description": "Session-detail header at phone width (390px): the session title is on its own row above the action buttons, left-aligned and truncating with an ellipsis when long; the action buttons sit on the row below, right-aligned. Icon-only chat buttons.",
       "privacy": "fixture",
       "route": "/sessions/sess-e2e-1",
       "viewport": { "width": 390, "height": 844 }
-    },
-    {
-      "id": "web-account-switch",
-      "surface": "web",
-      "title": "Web Account Switch",
-      "description": "Session-detail account controls: the current-account badge with the adjacent Switch account button (data-testid switch-account-button) that stops, swaps, and resumes the session under a chosen rotation account (BOS-171).",
-      "privacy": "fixture",
-      "route": "/sessions/sess-e2e-1",
-      "cropToSelector": ".sub-header-actions",
-      "viewport": { "width": 1440, "height": 1000 }
     },
     {
       "id": "web-sessions-mobile",
@@ -303,6 +302,16 @@
       "route": "/guides/setup-scripts",
       "selector": "article",
       "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-account-rotation",
+      "surface": "docs",
+      "title": "Docs — Account Rotation Guide",
+      "description": "Rendered Account Rotation documentation guide page (services/docs/docs/guides/account-rotation.md).",
+      "privacy": "fixture",
+      "route": "/guides/account-rotation",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
     }
   ],
   "pathRules": [
@@ -313,6 +322,7 @@
         "web-sessions",
         "web-sessions-mobile",
         "web-session-detail",
+        "web-session-detail-no-pr",
         "web-session-detail-mobile",
         "web-new-session-mobile",
         "web-repositories",
@@ -352,6 +362,11 @@
       "name": "Docs Setup Scripts guide",
       "patterns": ["services/docs/docs/guides/setup-scripts"],
       "recipeIds": ["docs-setup-scripts-guide"]
+    },
+    {
+      "name": "Docs Account Rotation guide",
+      "patterns": ["services/docs/docs/guides/account-rotation"],
+      "recipeIds": ["docs-account-rotation"]
     }
   ]
 }

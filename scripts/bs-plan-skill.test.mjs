@@ -235,7 +235,7 @@ test('the SKILL carries the bulk-output-discipline block', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Byte-identical Linear description section contract (boss-implement/bs-sweep-plan consume it).
+// Byte-identical Linear description section contract (boss-build/bs-sweep-plan consume it).
 // ---------------------------------------------------------------------------
 
 test('the resident body documents the byte-identical description section contract', () => {
@@ -417,6 +417,97 @@ test('the resident body does not duplicate the full drafting spec', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Proof-harness readiness guidance (BOS-111) — boss-plan decides at plan time
+// what proof each plan needs, and the stale screenshot-only claim is corrected.
+// ---------------------------------------------------------------------------
+
+const MIRROR_BRIEF = readIfExists(
+  '../plugins/bossd-plugin-claude/skilldata/skills/boss-plan/references/headless-drafting-brief.md',
+)
+
+test('the brief no longer claims boss-proof is screenshot-only (stills AND video today)', () => {
+  assert.equal(
+    count(BRIEF, 'screenshot-only'),
+    0,
+    'the brief must not call boss-proof screenshot-only — it captures stills AND video today',
+  )
+  assert.doesNotMatch(
+    BRIEF,
+    /future proof type/i,
+    'the brief must not describe video as a "future" proof type — it is captured today',
+  )
+  assert.match(
+    BRIEF,
+    /stills and video/i,
+    'the brief must state boss-proof captures stills and video',
+  )
+})
+
+test('the brief Step 5 instructs a proof-harness readiness analysis + criterion→artifact mapping', () => {
+  assert.ok(
+    BRIEF.includes('## Proof harness analysis'),
+    'the brief must instruct a `## Proof harness analysis` readiness pass',
+  )
+  assert.match(
+    BRIEF,
+    /classify.{0,20}proof-applicability/i,
+    'the readiness pass must classify proof-applicability via the shared surface gate',
+  )
+  assert.match(
+    BRIEF,
+    /proof\.mjs plan/,
+    'the readiness pass must use the same `proof.mjs plan` gate the implementer uses',
+  )
+  assert.match(
+    BRIEF,
+    /map each acceptance criterion to a concrete proof artifact/i,
+    'the readiness pass must map each acceptance criterion to a concrete proof artifact',
+  )
+  assert.match(
+    BRIEF,
+    /missing but buildable[\s\S]{0,200}IN-PR work/i,
+    'the readiness pass must schedule buildable-but-missing affordances as in-PR work',
+  )
+  assert.match(
+    BRIEF,
+    /never call `AskUserQuestion`/,
+    'the readiness pass must stay headless-safe (never AskUserQuestion)',
+  )
+})
+
+test('the brief Step 7 template carries a `## Proof harness analysis` block (advisory, not a contract bump)', () => {
+  // Two occurrences: the Step 5 plan-body requirement + the Step 7 fill-in template block.
+  assert.equal(
+    count(BRIEF, '## Proof harness analysis'),
+    2,
+    'the brief must carry `## Proof harness analysis` in both the Step 5 guidance and the Step 7 template',
+  )
+  const template = sectionBetween(BRIEF, '## Required proof', '## Why this needs a human')
+  assert.ok(
+    template.includes('## Proof harness analysis'),
+    'the Step 7 template must place `## Proof harness analysis` between Required proof and Why this needs a human',
+  )
+})
+
+test('the regenerated plugin mirror brief matches the canonical brief on the new contract strings', () => {
+  assert.notEqual(
+    MIRROR_BRIEF,
+    '',
+    'the plugin-mirror brief must exist (make copy-skills committed)',
+  )
+  assert.equal(
+    count(MIRROR_BRIEF, 'screenshot-only'),
+    0,
+    'the mirror brief must also drop the stale screenshot-only claim (mirror committed in sync)',
+  )
+  assert.equal(
+    count(MIRROR_BRIEF, '## Proof harness analysis'),
+    2,
+    'the mirror brief must carry the same `## Proof harness analysis` blocks as the canonical brief',
+  )
+})
+
+// ---------------------------------------------------------------------------
 // Size-ratchet — the resident body stays below the pre-split baseline.
 // ---------------------------------------------------------------------------
 
@@ -426,8 +517,8 @@ test('the resident SKILL.md body stays under the ratchet, below the pre-split ba
   // references split) and is re-baselined upward as Phase-4 prose legitimately grows. The
   // RATCHET < PRE_SPLIT_BASELINE invariant preserves that explicit margin so an accidental
   // bulk regrow in one edit trips the guard instead of sliding both constants up together.
-  const PRE_SPLIT_BASELINE = 27271
-  const RATCHET = 27233 // pinned exact byte ceiling: re-baselined for BOS-287's Phase 4 step 5 transitive-block warning (nested-blocker state-fetch clause corrected in review)
+  const PRE_SPLIT_BASELINE = 29255
+  const RATCHET = 29217 // pinned exact byte ceiling: re-baselined for BOS-111's Phase 3 `## Proof harness analysis` readiness-pass clause, on top of BOS-378's Phase 4 image-parity gate baseline
   assert.ok(
     RATCHET < PRE_SPLIT_BASELINE,
     'the ratchet ceiling must sit below the pre-split baseline',

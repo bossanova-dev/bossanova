@@ -459,12 +459,17 @@ func (m AccountEditModel) View() tea.View {
 // rendered raw.
 func (m AccountEditModel) renderDetails(a *pb.Account) string {
 	now := time.Now()
+	u := a.GetUsage()
 	rows := [][2]string{
 		{"Provider", a.GetProvider()},
 		{"Status", accountStatusLabel(a)},
 		{"Health", accountHealthCell(accountHealthLabel(a))},
 		{"Priority", strconv.Itoa(int(a.GetPriority()))},
 		{"Tier", detailOrDash(a.GetTier())},
+		{"Usage 5h", accountUsageWindowDetail(u, u.GetUtil_5H(), u.GetReset_5H(), now)},
+		{"Usage 7d", accountUsageWindowDetail(u, u.GetUtil_7D(), u.GetReset_7D(), now)},
+		{"Plan tier", detailOrDash(u.GetPlanTier())},
+		{"Usage age", accountUsageAgeDetail(u)},
 		{"Cooldown", accountCooldownDetail(a, now)},
 		{"Last used", accountLastUsedDetail(a)},
 		{"Last tested", accountLastTestedDetail(a)},

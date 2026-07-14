@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # worktree-lock.sh — atomic, re-entrant per-worktree mutex for
-# boss-implement. One deterministic artifact:
+# boss-build. One deterministic artifact:
 #   - acquired with an ATOMIC `mkdir` (exactly one winner under a double-dispatch race),
 #   - RE-ENTRANT on the run-id (a run reading its own lock can never collide with itself),
 #   - stored OUTSIDE the worktree (~/.local/state/bossanova) so it never shows in `git status`,

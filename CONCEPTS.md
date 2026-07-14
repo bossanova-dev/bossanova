@@ -93,7 +93,7 @@ re-launched with the identical command and resume.
 ### Child session
 
 A bossd session the driver creates for one epic ticket (prompt
-`/boss-implement BOS-NN`, tracker fields set, `claude` agent by default —
+`/boss-build BOS-NN`, tracker fields set, `claude` agent by default —
 codex-exec sessions have no chat row for mid-run delivery).
 
 ### Isolate

@@ -214,3 +214,19 @@ test('schema agreement: scene bounds and version const match the validator', () 
   assert.equal(schema.properties.scenes.maxItems, SCENARIO_MAX_SCENES)
   assert.equal(schema.properties.version.const, 1)
 })
+
+// ── BOS-359: the committed rich 4-scene account-flow scenario ─────────────────
+// The first committed scenario to exercise the schema's maxItems: 4 ceiling with
+// account flows over the raised 6-min/17-min ladder. loadScenario throws on any
+// shape error, so this both validates it against the schema and pins its scene
+// count at the ceiling — a future edit that drops it below 4 (or breaks its
+// shape) fails CI without a live key.
+test('BOS-359 committed 4-scene account-flow scenario validates and has exactly 4 scenes', () => {
+  const scenarioPath = fileURLToPath(
+    new URL('../proof/scenarios/bos359-account-flows-4scene.scenario.json', import.meta.url),
+  )
+  const { scenario, scenes } = loadScenario(scenarioPath)
+  assert.equal(scenario.scenes.length, 4, 'must exercise the maxItems: 4 ceiling')
+  assert.equal(scenario.scenes.length, SCENARIO_MAX_SCENES)
+  assert.equal(scenes.length, 4, 'derived scenes match the authored count')
+})

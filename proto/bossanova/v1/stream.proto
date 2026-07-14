@@ -634,6 +634,31 @@ message TerminalAttachExited {
   string reason = 3;
 }
 
+// TerminalReady: bosso → daemon. Carried inside TerminalClientMessage.
+// Sent exactly once, immediately after the bosso handler installs the
+// terminal sender and has confirmed the DaemonStream is local-and-Ready.
+// It is the daemon's positive, application-level proof that its
+// TerminalStream is bound to a healthy, co-located pod — the daemon does
+// NOT treat the stream as connected until this frame arrives. A ready
+// frame that never comes (e.g. a deploy split the two reverse streams
+// across pods) is what the daemon's watchdog keys on to self-heal.
+message TerminalReady {}
+
+// TerminalPing: bosso → daemon. Application-level liveness probe sent on a
+// fixed interval while the stream is open. The daemon answers each with a
+// TerminalPong. A missed-beats budget on the daemon tears the stream down,
+// which detects an alive-but-wrongly-bound stream — a failure mode HTTP/2
+// keepalive cannot see because the underlying connection is still healthy.
+message TerminalPing {
+  uint64 seq = 1;
+}
+
+// TerminalPong: daemon → bosso. Answer to a TerminalPing, echoing its seq
+// so bosso can match the round-trip.
+message TerminalPong {
+  uint64 seq = 1;
+}
+
 // TerminalClientMessage is the bosso → daemon envelope on the new RPC.
 // Despite the name, this is the gRPC RESPONSE stream type (bosso is the
 // gRPC server). Unknown oneof cases are logged and skipped by the daemon
@@ -644,6 +669,8 @@ message TerminalClientMessage {
     TerminalInputCommand input = 2;
     TerminalResizeCommand resize = 3;
     TerminalCloseCommand close = 4;
+    TerminalReady ready = 5;
+    TerminalPing ping = 6;
   }
 }
 
@@ -655,5 +682,6 @@ message TerminalServerMessage {
   oneof msg {
     TerminalDataChunk data = 1;
     TerminalAttachExited exited = 2;
+    TerminalPong pong = 3;
   }
 }

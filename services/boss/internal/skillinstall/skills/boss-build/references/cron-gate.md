@@ -1,11 +1,11 @@
 # Cron gate — full detail
 
-Read this when scheduling `boss-implement` as an unattended implementation cron (a setup-time concern,
+Read this when scheduling `boss-build` as an unattended implementation cron (a setup-time concern,
 not part of a run). Register this **gate command** on the job (scheduler UI, `GateCommand` — see
 PR #870) so the run only fires when there is a candidate, spending **zero** agent tokens otherwise:
 
 ```
-node scripts/cron-gates/boss-implement.mjs
+node scripts/cron-gates/boss-build.mjs
 ```
 
 It exits `0` (run) iff at least one Linear issue is in the **`Todo`** state, carries the

@@ -646,7 +646,7 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 			// implementation run. Divert them to the deleted_no_changes cleanup
 			// path instead of pr_no_changes/Blocked (BOS-322). Real quick chats
 			// skip finalize entirely; this is the defensive backstop for any that
-			// reach it. True empty /boss-implement runs (QuickChat false) still
+			// reach it. True empty /boss-build runs (QuickChat false) still
 			// fall through to pr_no_changes and Block.
 			if isPlanningOnlyNoChangeSession(session) {
 				l.logger.Info().

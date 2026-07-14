@@ -191,6 +191,27 @@ func Accounts() []*pb.Account {
 			LastTestOkAt: ts(-2 * time.Hour),
 			CreatedAt:    ts(-720 * time.Hour),
 			UpdatedAt:    ts(-30 * time.Minute),
+			// A populated usage snapshot so the Accounts list AGE column and the
+			// detail-screen usage rows (BOS-270) render real values for this
+			// probed account, while the sibling codex account below stays
+			// never-probed (nil Usage → em dash everywhere). PlanTier is the
+			// provider-reported plan, deliberately distinct from the registry
+			// Tier ("max") above. Reset instants use a far-FUTURE offset for the
+			// same reason CooldownUntil does (see the codex account): the TUI's
+			// usage cells countdown against the real wall clock, but every ts()
+			// derives from fixedNow (pinned in the past), so a near offset would
+			// already be elapsed at capture and drop the "resets in …" countdown.
+			// FetchedAt is a small offset in the past so the age renders as a
+			// concrete "fetched … ago" freshness line.
+			Usage: &pb.UsageSnapshot{
+				Util_5H:   0.42,
+				Util_7D:   0.68,
+				Reset_5H:  ts(500 * 24 * time.Hour),
+				Reset_7D:  ts(505 * 24 * time.Hour),
+				Status:    "active",
+				PlanTier:  "max_20x",
+				FetchedAt: ts(-4 * time.Minute),
+			},
 		},
 		{
 			Id:       "acct-codex-1",

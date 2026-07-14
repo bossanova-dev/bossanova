@@ -541,7 +541,21 @@ function webStageScript() {
         repoDisplayName: 'bossanova',
         prNumber: 597,
         prUrl: 'https://github.com/recurser/bossanova/pull/597',
+        // DisplayStatus.PASSING (=6) so the session-detail header offers the
+        // Merge button — the Merge gate requires an open PR whose display
+        // status is PASSING (BOS-365 item 3).
+        displayStatus: 6,
         chats: [{ id: 'chat-1', agentSessionId: 'claude-1', title: 'Proof chat', status: 'idle' }],
+      }, {
+        // A Quick-Chat session with no PR: the header must show New chat/Archive
+        // but NO Merge button and NO "Switch account" control (BOS-365 items 1 & 3).
+        id: 'sess-e2e-quick',
+        title: 'Proof quick chat',
+        branchName: 'proof/quick-chat',
+        baseBranch: 'main',
+        repoId: 'repo-proof',
+        repoDisplayName: 'bossanova',
+        chats: [{ id: 'chat-2', agentSessionId: 'claude-2', title: 'Quick chat', status: 'idle' }],
       }],
       // Seed connected repos so the web-repositories recipe (/settings/repos)
       // renders the repo table (.data-table-wrap) with Disconnect buttons

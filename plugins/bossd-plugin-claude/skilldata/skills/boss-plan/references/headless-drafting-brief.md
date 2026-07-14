@@ -42,6 +42,12 @@ tests, and any relevant `docs/solutions/` or `CONCEPTS.md`. Ground every plan cl
 the whole reason the drafting is isolated in a subagent: it accumulates here, in your context, and
 never lands on the orchestrator's main thread.
 
+**View the reporter's screenshots.** When the ticket `description` carries image markdown
+(`![](…)`), an HTML `<img>` tag, or an `uploads.linear.app`/attachment URL, an agent reading that
+markdown as text does **not** see the pixels. Call `mcp__bossanova-linear__extract_images` on the
+description markdown to actually view the reporter's screenshots — they often disambiguate what the
+words alone leave ambiguous (the BOS-364 web-vs-TUI mix-up would have been resolved on sight).
+
 ## Step 3 — Work the self-review dimensions yourself
 
 The Bossanova interactive path gets these dimensions from its draft extension; headless has no
@@ -95,17 +101,42 @@ This section is the **shared drafting spec** for both modes — the interactive 
 - A **## Acceptance criteria** section: concrete, testable pass/fail conditions.
 - A **## Required proof** section: a checklist of artifacts the implementer must produce to pass
   review, each paired with what it must demonstrate. Proof is captured with the existing `boss-proof`
-  skill (`node scripts/proof.mjs run --recipe <id>`), which uploads screenshots to
-  proof.bossanova.dev and comments them on the PR. For UI/TUI/web work, name the recipes and the
-  expected visual evidence; for backend-only work, specify test output/logs and note "no screenshot
-  applicable." Where a still image cannot show the behaviour (animation, multi-step flow), note
-  **video as a future proof type** — boss-proof is screenshot-only today.
+  skill (`node scripts/proof.mjs run`), which uploads **stills and video** to proof.bossanova.dev and
+  comments them on the PR. boss-proof captures **both today** — web/marketing MP4 via Playwright
+  (`"capture": "video"`), and TUI via a committed `proof/scenarios/*.scenario.json` replay plus
+  agent-frame video — across the TUI / web / marketing / docs surfaces classified by
+  `node scripts/proof.mjs plan`. For UI/TUI/web work, name the recipes/scenarios and the expected
+  visual evidence; for backend-only work, specify test output/logs and note "no screenshot
+  applicable." Where a still image cannot show the behaviour (animation, multi-step flow), name a
+  **video** recipe/scenario — not a "future" proof type.
   Scope each proof bullet to ONE surface by naming it (TUI / web / marketing / docs), and for a
   multi-flow demonstration write one bullet per scene/flow, each pairing the flow with 1–3 SHORT
   literal on-screen evidence tokens. A fresh-context judge grades the captured proof against these
   bullets (BOS-141): a bullet whose evidence is not visible in the run's media downgrades the
   verdict, so write bullets an independent reviewer can check against the stills — never internal
   claims a screen cannot show.
+- A **## Proof harness analysis** section: before finalizing the proof plan, analyze whether the
+  current proof harness can already prove this change and record the result. Specifically:
+  - **classify proof-applicability** with the _same_ gate the implementer uses —
+    `node scripts/proof.mjs plan` selects recipes/scenarios from the changed paths against
+    `proof/recipes/default.json` `pathRules`. The change is proof-applicable **iff** it touches a
+    capturable surface (a TUI scenario — existing or buildable in-PR per the gap bullet below — /
+    product web / marketing / docs); otherwise state "proof not applicable" (backend-only Go, scripts,
+    proto, prompt/markdown, pure config/types, or test-only diffs). A TUI (`services/boss`) change is
+    proof-applicable even when no scenario is committed yet — the missing scenario is the buildable
+    affordance, not grounds to classify it "not applicable";
+  - state the **surfaces touched** and the **existing recipe/scenario coverage** — name the recipe
+    ids or `proof/scenarios/*.scenario.json` files that already cover the surface (from
+    `proof/recipes/default.json` and `proof/scenarios/`);
+  - **map each acceptance criterion to a concrete proof artifact** — a recipe id, a
+    `proof/scenarios/*.scenario.json` scene + fixture preset, or a stated "no proof applicable —
+    tests/diff are the evidence";
+  - where a needed affordance is **missing but buildable** (a scenario, a fixture preset, a route, a
+    `data-testid`, a recipe), **schedule it as IN-PR work** so the plan ships the means to prove
+    itself — this is exactly the affordance boss-build Step 5 then builds;
+  - record any **external blocker**: a surface no affordance can reach unattended.
+    Keep it headless-safe: **never call `AskUserQuestion`** — decide defaults and record only
+    genuinely controversial forks as open questions.
 - **Autonomous framing**: state explicitly that an autonomous agent will likely implement this
   unattended, so steps, acceptance criteria, and proof must be unambiguous and self-contained — no
   "ask the user" gaps.
@@ -131,12 +162,12 @@ the value. When in doubt, redact.
 ## Step 7 — Compose the description summary (byte-identical template)
 
 Compose the Linear description block the orchestrator will write back **verbatim** and return it as
-`descriptionSummary`. This template is the **byte-identical external contract** boss-implement and
+`descriptionSummary`. This template is the **byte-identical external contract** boss-build and
 bs-sweep-plan consume — do not rename or drop sections. Do NOT add the `- Dependencies:` line — the
 orchestrator appends that itself when it links conflicting dependencies.
 
 The `- Contract: v<N>` bullet under `## Planning` stamps the version of this description-section
-contract so consumers (boss-implement, bs-sweep-plan) can validate compatibility. Keep it equal to
+contract so consumers (boss-build, bs-sweep-plan) can validate compatibility. Keep it equal to
 `planContract.version` in the repo-root `.boss-skills.json` (v1 today); the sync gate
 `skills-toolbox/plan-contract.test.mjs` fails if the stamp and the config version disagree.
 
@@ -170,6 +201,10 @@ contract so consumers (boss-implement, bs-sweep-plan) can validate compatibility
 - [ ] (<surface: TUI / web / marketing / docs>) <boss-proof recipe / artifact> — the flow it must
       demonstrate, with 1–3 short literal on-screen evidence tokens a reviewer can check against the stills
 
+## Proof harness analysis
+
+- Applicability: <proof-applicable (capturable surface, per `node scripts/proof.mjs plan`) | not applicable — tests/diff are the evidence> · Surfaces touched: <TUI / web / marketing / docs / backend-only> · Existing coverage: <recipe ids / scenario files, or none> · Gap → in-PR affordances: <scenario / fixture preset / route / data-testid / recipe to build, or none> · External blockers: <none | the surface no affordance can reach unattended>
+
 ## Why this needs a human
 
 - <needs-human only: the specific blocker(s) that put this beyond an autonomous agent. Omit this entire `## Why this needs a human` heading when the plan is agent-friendly.>
@@ -190,6 +225,17 @@ contract so consumers (boss-implement, bs-sweep-plan) can validate compatibility
 <verbatim prior description if the ticket had one — preserved, never discarded>
 ```
 
+**Preserve every image reference VERBATIM.** When composing `## Original notes`, copy every image
+reference the ticket carried — inline markdown `![alt](…)`, HTML `<img …>` tags, and bare
+`uploads.linear.app`/attachment URLs — **byte-for-byte**, URLs intact. **Never** replace an image
+with a `[screenshot: …]` text placeholder or any paraphrase: Linear does not expose description
+history to agents, so the rewritten description is the only surviving copy of those URLs, and a
+paraphrase destroys them permanently (this is the exact BOS-364 data loss). You MAY _additionally_
+list the images under a `## Screenshots` bullet list in the plan body for the implementer's
+convenience, but the original URLs must stay intact inside `## Original notes`. A mechanical
+orchestrator-side guard (`scripts/plan-image-guard.mjs`) aborts the Linear write if any source image
+is missing from your `descriptionSummary`, so a dropped image fails the whole run — do not let it.
+
 ## Step 8 — Write the terminal sentinel
 
 Once the plan file is written and non-empty, record your terminal decision to the run-file sentinel
@@ -203,6 +249,12 @@ node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok \
 
 Write this **only after** the plan file exists. If you cannot produce the plan, do **not** write an
 `ok` sentinel — leave it absent so the orchestrator reads `missing` and takes the safe branch.
+
+Before writing the sentinel, **self-verify image parity**: confirm every image URL in the ticket's
+original description (inline `![](…)`, `<img>`, `uploads.linear.app`/attachment URLs) survives
+verbatim in your `descriptionSummary`'s `## Original notes` (run `scripts/plan-image-guard.mjs`
+against the two, or eyeball the URL set). Fix any drop before writing the `ok` sentinel — the
+orchestrator's mechanical guard will otherwise abort the whole run.
 
 ## Step 9 — Return only bounded metadata (never the plan content)
 

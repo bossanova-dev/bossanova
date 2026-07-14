@@ -12,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/status"
 	goproto "google.golang.org/protobuf/proto"
@@ -580,6 +581,14 @@ func (f *fakeSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ ti
 	panic("not used")
 }
 
+// fakeActivity is a minimal cron.ActivityChecker for cronJobStatus tests. It
+// mirrors the fake in internal/cron/scheduler_test.go: RunActive returns a fixed
+// verdict regardless of the session, which is enough because each liveness-path
+// case exercises exactly one session.
+type fakeActivity struct{ active bool }
+
+func (f fakeActivity) RunActive(_ *models.Session) bool { return f.active }
+
 func TestCronJobStatus(t *testing.T) {
 	now := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 	sessID := "sess-active"
@@ -607,15 +616,37 @@ func TestCronJobStatus(t *testing.T) {
 	store.put(&models.Session{ID: closedSessID, State: machine.Closed})
 	store.put(&models.Session{ID: blockedSessID, State: machine.Blocked})
 
+	// BOS-332: sessions in post-implement / strand states used to prove the
+	// liveness path and the widened nil-activity fallback treat them as NOT
+	// running.
+	readyID := "sess-ready"
+	pushingID := "sess-pushing"
+	store.put(&models.Session{ID: readyID, State: machine.ReadyForReview})
+	store.put(&models.Session{ID: pushingID, State: machine.PushingBranch})
+
+	// The rest of the states the widened cronStatusInactiveState now excludes, so
+	// the nil-activity fallback locks in every arm of the switch (a regression
+	// dropping any one would otherwise slip through: the liveness path covers
+	// production, but the fallback must stay correct too).
+	orphanedID := "sess-orphaned"
+	awaitingID := "sess-awaiting"
+	fixingID := "sess-fixing"
+	greenDraftID := "sess-greendraft"
+	store.put(&models.Session{ID: orphanedID, State: machine.Orphaned})
+	store.put(&models.Session{ID: awaitingID, State: machine.AwaitingChecks})
+	store.put(&models.Session{ID: fixingID, State: machine.FixingChecks})
+	store.put(&models.Session{ID: greenDraftID, State: machine.GreenDraft})
+
 	// errStore returns an error from every Get — covers the lookup-error fall-through.
 	errStore := newFakeSessionStore()
 	errStore.getErr = errors.New("db down")
 
 	tests := []struct {
-		name  string
-		job   *models.CronJob
-		store db.SessionStore
-		want  pb.CronJobStatus
+		name     string
+		job      *models.CronJob
+		store    db.SessionStore
+		activity cron.ActivityChecker // nil => legacy widened-fallback path
+		want     pb.CronJobStatus
 	}{
 		{
 			name:  "never run, no outcome -> IDLE",
@@ -786,11 +817,81 @@ func TestCronJobStatus(t *testing.T) {
 			store: store,
 			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
 		},
+		// BOS-332 liveness path (activity non-nil): STATUS is RUNNING only when
+		// the last-run agent is actively working, not merely because the row is
+		// non-terminal.
+		{
+			name:     "liveness: ReadyForReview + RunActive false -> IDLE (not running)",
+			job:      &models.CronJob{LastRunSessionID: &readyID},
+			store:    store,
+			activity: fakeActivity{active: false},
+			want:     pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:     "liveness: PushingBranch strand + RunActive false -> IDLE (not running)",
+			job:      &models.CronJob{LastRunSessionID: &pushingID},
+			store:    store,
+			activity: fakeActivity{active: false},
+			want:     pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:     "liveness: ImplementingPlan + RunActive true -> RUNNING",
+			job:      &models.CronJob{LastRunSessionID: &sessID},
+			store:    store,
+			activity: fakeActivity{active: true},
+			want:     pb.CronJobStatus_CRON_JOB_STATUS_RUNNING,
+		},
+		{
+			name:     "liveness: ImplementingPlan + RunActive false -> IDLE (not running)",
+			job:      &models.CronJob{LastRunSessionID: &sessID},
+			store:    store,
+			activity: fakeActivity{active: false},
+			want:     pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		// BOS-332 nil-activity fallback: widened cronStatusInactiveState excludes
+		// ReadyForReview, so a non-terminal-but-not-implementing row is not
+		// RUNNING; ImplementingPlan still is.
+		{
+			name:  "nil activity: ReadyForReview -> IDLE (widened inactive state)",
+			job:   &models.CronJob{LastRunSessionID: &readyID},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "nil activity: Orphaned -> IDLE (widened inactive state)",
+			job:   &models.CronJob{LastRunSessionID: &orphanedID},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "nil activity: AwaitingChecks -> IDLE (widened inactive state)",
+			job:   &models.CronJob{LastRunSessionID: &awaitingID},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "nil activity: FixingChecks -> IDLE (widened inactive state)",
+			job:   &models.CronJob{LastRunSessionID: &fixingID},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "nil activity: GreenDraft -> IDLE (widened inactive state)",
+			job:   &models.CronJob{LastRunSessionID: &greenDraftID},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "nil activity: ImplementingPlan -> RUNNING",
+			job:   &models.CronJob{LastRunSessionID: &sessID},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_RUNNING,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := cronJobStatus(context.Background(), tt.job, tt.store)
+			got := cronJobStatus(context.Background(), tt.job, tt.store, tt.activity)
 			if got != tt.want {
 				t.Errorf("cronJobStatus = %v, want %v", got, tt.want)
 			}
@@ -812,7 +913,7 @@ func TestCronJobToProtoIncludesAgentName(t *testing.T) {
 		UpdatedAt: now,
 	}
 
-	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), nil)
+	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), nil, nil)
 
 	if got.AgentName != "codex" {
 		t.Fatalf("agent_name = %q, want codex", got.AgentName)
@@ -822,7 +923,7 @@ func TestCronJobToProtoIncludesAgentName(t *testing.T) {
 func TestCronJobStatusGated(t *testing.T) {
 	gatedOutcome := models.CronJobOutcomeGated
 	job := &models.CronJob{LastRunOutcome: &gatedOutcome}
-	got := cronJobStatus(context.Background(), job, newFakeSessionStore())
+	got := cronJobStatus(context.Background(), job, newFakeSessionStore(), nil)
 	if got != pb.CronJobStatus_CRON_JOB_STATUS_GATED {
 		t.Fatalf("cronJobStatus with gated outcome = %v, want GATED", got)
 	}
@@ -842,7 +943,7 @@ func TestCronJobToProtoGatingOverride(t *testing.T) {
 
 	// Job ID present in gating map → GATING.
 	gating := map[string]struct{}{"job-1": {}}
-	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), gating)
+	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), nil, gating)
 	if got.LastRunStatus != pb.CronJobStatus_CRON_JOB_STATUS_GATING {
 		t.Fatalf("gating map present: LastRunStatus = %v, want GATING", got.LastRunStatus)
 	}
@@ -864,7 +965,7 @@ func TestCronJobToProtoGatingBeatsStaleGated(t *testing.T) {
 
 	// GATED outcome in DB, but job is currently mid-gate → GATING must win.
 	gating := map[string]struct{}{"job-2": {}}
-	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), gating)
+	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), nil, gating)
 	if got.LastRunStatus != pb.CronJobStatus_CRON_JOB_STATUS_GATING {
 		t.Fatalf("gating beats stale gated: LastRunStatus = %v, want GATING", got.LastRunStatus)
 	}
@@ -889,7 +990,7 @@ func TestCronJobToProtoRunningNotAffectedByGatingSet(t *testing.T) {
 
 	// Job not in gating map → RUNNING from active session wins.
 	gating := map[string]struct{}{"other-job": {}}
-	got := cronJobToProto(context.Background(), job, store, gating)
+	got := cronJobToProto(context.Background(), job, store, nil, gating)
 	if got.LastRunStatus != pb.CronJobStatus_CRON_JOB_STATUS_RUNNING {
 		t.Fatalf("non-gating job with active session: LastRunStatus = %v, want RUNNING", got.LastRunStatus)
 	}
@@ -909,7 +1010,7 @@ func TestCronJobToProtoGateCommandAndRunSetupCommandRoundTrip(t *testing.T) {
 		UpdatedAt:       now,
 	}
 
-	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), nil)
+	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), nil, nil)
 	if got.GateCommand != "make gate-check" {
 		t.Fatalf("GateCommand = %q, want %q", got.GateCommand, "make gate-check")
 	}
@@ -1029,5 +1130,54 @@ func TestDisplayEntryToMergeBlock(t *testing.T) {
 	passing := displayEntryToMergeBlock(&status.DisplayEntry{Status: vcs.DisplayStatusPassing})
 	if passing.GetGate() != pb.MergeBlock_GATE_NONE {
 		t.Errorf("passing entry gate = %v, want GATE_NONE", passing.GetGate())
+	}
+}
+
+// TestHydrateDisplayEntry pins the single source of truth for stamping the
+// in-memory display-tracker fields onto a Session proto — shared by the local
+// GetSession/ListSessions RPCs and the reverse-stream projection that feeds the
+// cloud/web read model. The DisplayStatus assertion is the one that keeps the
+// web Merge button working: it gates on DISPLAY_STATUS_PASSING, and the web only
+// ever sees this field via the reverse stream.
+func TestHydrateDisplayEntry(t *testing.T) {
+	// Nil guards: neither a nil proto nor a nil entry may panic.
+	HydrateDisplayEntry(nil, &status.DisplayEntry{})
+	if got := (&pb.Session{}); func() (panicked bool) {
+		defer func() { panicked = recover() != nil }()
+		HydrateDisplayEntry(got, nil)
+		return
+	}() {
+		t.Fatal("HydrateDisplayEntry(p, nil) panicked, want no-op")
+	}
+	// A nil entry must leave DisplayStatus untouched (UNSPECIFIED).
+	blank := &pb.Session{}
+	HydrateDisplayEntry(blank, nil)
+	if blank.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED {
+		t.Errorf("nil entry: display_status = %v, want UNSPECIFIED", blank.GetDisplayStatus())
+	}
+
+	mergeable := true
+	p := &pb.Session{}
+	HydrateDisplayEntry(p, &status.DisplayEntry{
+		Status:              vcs.DisplayStatusPassing,
+		HasFailures:         true,
+		HasChangesRequested: true,
+		IsRepairing:         true,
+		SettingUp:           true,
+		Merging:             true,
+		Mergeable:           &mergeable,
+	})
+	if p.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_PASSING {
+		t.Errorf("display_status = %v, want PASSING", p.GetDisplayStatus())
+	}
+	if !p.GetDisplayHasFailures() || !p.GetDisplayHasChangesRequested() ||
+		!p.GetDisplayIsRepairing() || !p.GetDisplaySettingUp() || !p.GetDisplayMerging() {
+		t.Errorf("per-axis flags not all stamped: %+v", p)
+	}
+	if p.PrMergeable == nil || !p.GetPrMergeable() {
+		t.Errorf("pr_mergeable = %v, want true", p.PrMergeable)
+	}
+	if p.GetMergeBlock() == nil {
+		t.Error("merge_block not derived, want non-nil")
 	}
 }

@@ -240,11 +240,11 @@ func TestExtractPreservesExtensionlessShebangScripts(t *testing.T) {
 	// and executableSkillFile's filename heuristic misses them, so extraction
 	// must fall back to a shebang probe or public installs hit "permission denied".
 	fsys := fstest.MapFS{
-		"skills/boss-implement/SKILL.md": {Data: []byte("# Implement\nRun it.")},
-		"skills/boss-implement/support/superpowers/sdd/scripts/review-package": {
+		"skills/boss-build/SKILL.md": {Data: []byte("# Implement\nRun it.")},
+		"skills/boss-build/support/superpowers/sdd/scripts/review-package": {
 			Data: []byte("#!/usr/bin/env bash\necho ok"),
 		},
-		"skills/boss-implement/support/superpowers/sdd/README": {
+		"skills/boss-build/support/superpowers/sdd/README": {
 			Data: []byte("plain text, no shebang, must stay 0644"),
 		},
 	}
@@ -253,7 +253,7 @@ func TestExtractPreservesExtensionlessShebangScripts(t *testing.T) {
 		t.Fatalf("Extract: %v", err)
 	}
 
-	scriptPath := filepath.Join(dest, "bossanova", "boss-implement", "support", "superpowers", "sdd", "scripts", "review-package")
+	scriptPath := filepath.Join(dest, "bossanova", "boss-build", "support", "superpowers", "sdd", "scripts", "review-package")
 	info, err := os.Stat(scriptPath)
 	if err != nil {
 		t.Fatalf("Stat(%s): %v", scriptPath, err)
@@ -262,7 +262,7 @@ func TestExtractPreservesExtensionlessShebangScripts(t *testing.T) {
 		t.Errorf("expected extensionless shebang script to be executable, got mode %o", info.Mode().Perm())
 	}
 
-	plainPath := filepath.Join(dest, "bossanova", "boss-implement", "support", "superpowers", "sdd", "README")
+	plainPath := filepath.Join(dest, "bossanova", "boss-build", "support", "superpowers", "sdd", "README")
 	info, err = os.Stat(plainPath)
 	if err != nil {
 		t.Fatalf("Stat(%s): %v", plainPath, err)

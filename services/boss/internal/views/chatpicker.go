@@ -478,8 +478,8 @@ func (m ChatPickerModel) canOpenTracker() bool {
 
 // canMerge reports whether the [m]erge action should be available for the
 // current session — when the session has an open PR whose display status is
-// "passing" and the merge has not already completed (merged sessions no longer
-// offer merge; they show the merged status in place instead).
+// "passing" or "approved" and the merge has not already completed (merged
+// sessions no longer offer merge; they show the merged status in place instead).
 //
 // This intentionally mirrors what the backend MergeSession RPC accepts: it
 // performs an immediate merge and rejects any PR whose tracked display status
@@ -487,7 +487,7 @@ func (m ChatPickerModel) canOpenTracker() bool {
 // PR still CHECKING — even with no failures yet — would be rejected, so
 // offering [m]erge in that state only leads the user into a confirm dialog
 // that errors. There is no auto-merge/merge-when-ready queue today, so the
-// affordance stays gated on the passing state the backend will actually accept.
+// affordance stays gated on the green states the backend will actually accept.
 func (m ChatPickerModel) canMerge() bool {
 	// A merge already in flight hides the [m]erge affordance: m.merging is set
 	// when the user confirms a merge and cleared when the mergeResultMsg lands,
@@ -498,7 +498,9 @@ func (m ChatPickerModel) canMerge() bool {
 	if m.merged || m.session == nil || m.session.GetPrNumber() == 0 {
 		return false
 	}
-	return m.session.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_PASSING
+	status := m.session.GetDisplayStatus()
+	return status == pb.DisplayStatus_DISPLAY_STATUS_PASSING ||
+		status == pb.DisplayStatus_DISPLAY_STATUS_APPROVED
 }
 
 // selectedChat returns the chat at the current table cursor, or nil if empty.

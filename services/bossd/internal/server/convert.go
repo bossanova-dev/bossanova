@@ -10,10 +10,33 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// HydrateDisplayEntry stamps the per-axis display-tracker fields onto a Session
+// proto: DisplayStatus, the failure/changes-requested/repairing/setting-up/
+// merging flags, PR mergeability, and the derived MergeBlock. These live ONLY in
+// the in-memory DisplayTracker, not on models.Session, so every read path that
+// needs them must apply this — the local GetSession/ListSessions RPCs AND the
+// reverse-stream projection that feeds the cloud/web read model (without it the
+// web sees DisplayStatus=UNSPECIFIED, so anything gating on PASSING — e.g. the
+// web Merge button — never lights up). No-op when p or e is nil.
+func HydrateDisplayEntry(p *pb.Session, e *status.DisplayEntry) {
+	if p == nil || e == nil {
+		return
+	}
+	p.DisplayStatus = pb.DisplayStatus(e.Status)
+	p.DisplayHasFailures = e.HasFailures
+	p.DisplayHasChangesRequested = e.HasChangesRequested
+	p.DisplayIsRepairing = e.IsRepairing
+	p.DisplaySettingUp = e.SettingUp
+	p.DisplayMerging = e.Merging
+	p.PrMergeable = e.Mergeable
+	p.MergeBlock = displayEntryToMergeBlock(e)
+}
 
 // displayEntryToMergeBlock derives the structured MergeBlock proto from a
 // cached DisplayEntry via vcs.DeriveMergeBlock (the single source of truth for
@@ -203,8 +226,8 @@ func agentChatToProto(c *models.AgentChat) *pb.ClaudeChat {
 // FAILED vs. IDLE) — the proto's last_run_status field is computed, not
 // persisted. gating is the set of job IDs currently mid-gate; when a job
 // ID appears there, GATING overrides all other status logic.
-func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionStore, gating map[string]struct{}) *pb.CronJob {
-	status := cronJobStatus(ctx, c, sessions)
+func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionStore, activity cron.ActivityChecker, gating map[string]struct{}) *pb.CronJob {
+	status := cronJobStatus(ctx, c, sessions, activity)
 	if gating != nil {
 		if _, ok := gating[c.ID]; ok {
 			status = pb.CronJobStatus_CRON_JOB_STATUS_GATING
@@ -289,23 +312,39 @@ func accountToProto(a *models.Account) *pb.Account {
 	return p
 }
 
-// cronJobStatus derives the run-status enum for a cron job. It mirrors
-// scheduler.previousRunActive's logic so the daemon has a single source of
-// truth for "is this run still going" — with one deliberate divergence: a
-// Blocked session counts as not-running here so housekeeping failures do not
-// leave cron STATUS stuck on RUNNING. The scheduler's overlap check must NOT
-// treat Blocked as terminal (you may want to refire on top of a stuck run);
-// the STATUS column should. After inactive-session fall-through, only
-// fire_failed maps to FAILED.
+// cronJobStatus derives the run-status enum for a cron job. Its primary path is
+// agent liveness: when an activity checker is wired it shares the scheduler's
+// CronActivityChecker (single source of truth for "is this run still going"),
+// so STATUS reads RUNNING only when RunActive reports a live ImplementingPlan
+// run. When no checker is wired it falls back to the session-state heuristic
+// cronStatusInactiveState — with one deliberate divergence: a Blocked session
+// counts as not-running there so housekeeping failures do not leave cron STATUS
+// stuck on RUNNING. The scheduler's overlap check must NOT treat Blocked as
+// terminal (you may want to refire on top of a stuck run); the STATUS column
+// should. After inactive-session fall-through, only fire_failed maps to FAILED.
 //
 // Order matters: a re-fire after a previous failure must show RUNNING, not
 // FAILED. MarkFireStarted updates last_run_session_id but leaves
 // last_run_outcome untouched, so the stale outcome would otherwise win.
-func cronJobStatus(ctx context.Context, job *models.CronJob, sessions db.SessionStore) pb.CronJobStatus {
+func cronJobStatus(ctx context.Context, job *models.CronJob, sessions db.SessionStore, activity cron.ActivityChecker) pb.CronJobStatus {
 	if job.LastRunSessionID != nil && *job.LastRunSessionID != "" {
 		sess, err := sessions.Get(ctx, *job.LastRunSessionID)
-		if err == nil && sess != nil && sess.ArchivedAt == nil && !cronStatusInactiveState(sess.State) {
-			return pb.CronJobStatus_CRON_JOB_STATUS_RUNNING
+		if err == nil && sess != nil && sess.ArchivedAt == nil {
+			if activity != nil {
+				// Liveness path (BOS-332): STATUS is RUNNING only when the
+				// agent is actively working. RunActive is stricter than the
+				// state-based fallback below — it counts only a live
+				// ImplementingPlan run, so a post-implement wait (ReadyForReview,
+				// AwaitingChecks, …) or a stranded pre-implement state reads as
+				// not-running and falls through to GATED/FAILED/IDLE.
+				if activity.RunActive(sess) {
+					return pb.CronJobStatus_CRON_JOB_STATUS_RUNNING
+				}
+			} else if !cronStatusInactiveState(sess.State) {
+				// Nil-activity fallback (legacy + widened): no liveness checker
+				// wired, so approximate "still running" from session state.
+				return pb.CronJobStatus_CRON_JOB_STATUS_RUNNING
+			}
 		}
 	}
 	// A gate block records outcome=gated without touching last_run_session_id,
@@ -323,12 +362,29 @@ func cronJobStatus(ctx context.Context, job *models.CronJob, sessions db.Session
 }
 
 // cronStatusInactiveState reports whether a session should NOT count as
-// "running" when deriving cron STATUS. Diverges from cron.isTerminalState
-// (which controls overlap-skip): Blocked is included here because PR/chat/
-// cleanup housekeeping problems are session attention states, not active cron
-// runs. Only fire_failed later maps cron STATUS to FAILED.
+// "running" when deriving cron STATUS. It is the fallback used only when no
+// liveness checker is wired into cronJobStatus; the liveness path (RunActive)
+// is stricter — only a live ImplementingPlan run counts as active — so this
+// helper deliberately diverges from it in the same spirit as its Blocked
+// divergence below.
+//
+// Diverges from cron.isTerminalState (which controls overlap-skip): Blocked is
+// included here because PR/chat/cleanup housekeeping problems are session
+// attention states, not active cron runs. Beyond the terminal Merged/Closed and
+// Blocked, the post-implement waiting states (ReadyForReview, AwaitingChecks,
+// FixingChecks, GreenDraft) and the terminal Orphaned state are also excluded:
+// the agent is no longer working in any of them, so cron STATUS must not read
+// RUNNING just because the row is non-terminal. Only fire_failed later maps
+// cron STATUS to FAILED.
 func cronStatusInactiveState(st machine.State) bool {
-	return st == machine.Merged || st == machine.Closed || st == machine.Blocked
+	switch st {
+	case machine.Merged, machine.Closed, machine.Blocked,
+		machine.ReadyForReview, machine.Orphaned,
+		machine.AwaitingChecks, machine.FixingChecks, machine.GreenDraft:
+		return true
+	default:
+		return false
+	}
 }
 
 // isCronFailureOutcome reports whether a recorded outcome should paint the

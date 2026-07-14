@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "title": "BOS-270 Per-account usage freshness age & detail usage rows",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "probed account: list AGE column + detail usage rows",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        { "key": "a", "caption": "Press [a] to open the Accounts list" },
+        {
+          "waitFor": {
+            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "label": "Accounts list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Accounts table settled"
+        },
+        {
+          "expect": [
+            { "text": "AGE", "match": "normalized", "label": "list AGE freshness column header" },
+            {
+              "text": "work-claude",
+              "match": "normalized",
+              "label": "probed claude account row"
+            },
+            {
+              "text": "42%",
+              "match": "normalized",
+              "label": "probed account 5h utilization in the list"
+            }
+          ],
+          "caption": "List shows the AGE column and a real utilization for the probed account"
+        },
+        { "key": "enter", "caption": "Open the probed claude account detail (cursor at index 0)" },
+        {
+          "waitFor": { "text": "Details", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Detail screen with the read-only breakdown is visible"
+        },
+        {
+          "expect": [
+            { "text": "Usage 5h", "match": "normalized", "label": "5h utilization detail row" },
+            { "text": "Usage 7d", "match": "normalized", "label": "7d utilization detail row" },
+            { "text": "42%", "match": "normalized", "label": "utilization percentage" },
+            { "text": "resets in", "match": "normalized", "label": "reset countdown" },
+            { "text": "Plan tier", "match": "normalized", "label": "provider plan-tier row" },
+            {
+              "text": "max_20x",
+              "match": "normalized",
+              "label": "provider-reported plan tier (distinct from registry Tier)"
+            },
+            { "text": "fetched", "match": "normalized", "label": "usage-age row prefix" },
+            { "text": "ago", "match": "normalized", "label": "freshness age token" }
+          ],
+          "caption": "Detail shows 5h/7d utilization %, reset countdown, plan tier, and a 'fetched … ago' freshness age"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "never-probed account: honest em dash everywhere",
+      "steps": [
+        { "key": "esc", "caption": "Back to the Accounts list" },
+        {
+          "waitFor": {
+            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "label": "Accounts list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Accounts table settled again"
+        },
+        { "key": "down", "caption": "Move the cursor to the never-probed codex row (index 1)" },
+        { "key": "enter", "caption": "Open the never-probed codex account detail" },
+        {
+          "waitFor": { "text": "Details", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Codex detail screen visible"
+        },
+        {
+          "expect": [
+            {
+              "text": "personal-codex",
+              "match": "normalized",
+              "label": "never-probed codex account"
+            },
+            { "text": "Usage age", "match": "normalized", "label": "usage-age row present" },
+            {
+              "text": "—",
+              "match": "normalized",
+              "label": "honest em dash for the never-probed account's usage"
+            }
+          ],
+          "caption": "Never-probed account renders an em dash for its usage — no fabricated number"
+        }
+      ]
+    }
+  ]
+}

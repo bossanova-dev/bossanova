@@ -20,7 +20,7 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'dag-scheduler.mjs',
   ])
   assert.ok(VENDOR_MAP['boss-plan'].includes('bs-run-sentinel.mjs'))
-  assert.ok(VENDOR_MAP['boss-implement'].includes('worktree-lock.sh'))
+  assert.ok(VENDOR_MAP['boss-build'].includes('worktree-lock.sh'))
 })
 
 test('the review-specific helpers route only to boss-review (BOS-196)', () => {
@@ -41,10 +41,10 @@ test('the review-specific helpers route only to boss-review (BOS-196)', () => {
     }
   }
   // skill-config.mjs (BOS-192) is NOT review-exclusive: boss-review vendors it as a
-  // transitive dep of bs-review-detect.mjs, and boss-implement vendors it as a direct
+  // transitive dep of bs-review-detect.mjs, and boss-build vendors it as a direct
   // dep of the Step 4 plan-contract check (validatePlanDescription, BOS-204). It must
   // still not leak into any skill that consumes neither.
-  const skillConfigConsumers = new Set(['boss-review', 'boss-implement'])
+  const skillConfigConsumers = new Set(['boss-review', 'boss-build'])
   for (const [skill, files] of Object.entries(VENDOR_MAP)) {
     if (skillConfigConsumers.has(skill)) {
       assert.ok(files.includes('skill-config.mjs'), `${skill} must vendor skill-config.mjs`)
@@ -118,7 +118,7 @@ test('vendorToolbox preserves and --check detects executable-mode drift', () => 
   // worktree-lock.sh is invoked directly, so it ships +x; vendoring must preserve that bit.
   chmodSync(join(sourceRoot, 'worktree-lock.sh'), 0o755)
   vendorToolbox({ sourceRoot, skillsRoot, check: false })
-  const dest = join(skillsRoot, 'boss-implement', 'toolbox', 'worktree-lock.sh')
+  const dest = join(skillsRoot, 'boss-build', 'toolbox', 'worktree-lock.sh')
   assert.equal(statSync(dest).mode & 0o777, 0o755)
   const clean = vendorToolbox({ sourceRoot, skillsRoot, check: true })
   assert.equal(clean.changed, false)

@@ -19,13 +19,13 @@ export const VENDOR_MAP = {
     'claude-review.mjs',
     'skill-config.mjs',
   ],
-  'boss-implement': [
+  'boss-build': [
     'bs-run-sentinel.mjs',
     'worktree-lock.sh',
     'bs-review-caps.mjs',
     'bs-review-report.mjs',
     // skill-config.mjs (BOS-204) exposes validatePlanDescription, invoked in Step 4's
-    // plan-contract check. boss-implement ships to user repos via the embedded skillinstall
+    // plan-contract check. boss-build ships to user repos via the embedded skillinstall
     // payload, which has no repo-root skills-toolbox/, so the helper must be co-located in
     // this skill's own toolbox rather than referenced from boss-review's copy.
     'skill-config.mjs',
@@ -46,7 +46,7 @@ export const VENDOR_MAP = {
 // skillinstall payload (BOS-271), not .claude/skills. Their toolbox/ vendors into
 // services/boss/internal/skillinstall/skills/<s>/toolbox/; every other VENDOR_MAP
 // entry (the repo-local bs-sweep-*) still vendors into .claude/skills/<s>/toolbox/.
-export const PUBLISHED_SKILLS = new Set(['boss-review', 'boss-implement', 'boss-epic', 'boss-plan'])
+export const PUBLISHED_SKILLS = new Set(['boss-review', 'boss-build', 'boss-epic', 'boss-plan'])
 
 export function vendorToolbox({ sourceRoot, skillsRoot, publishedRoot, check }) {
   // Each skill resolves to its own destination root: a published core → publishedRoot

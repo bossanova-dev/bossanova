@@ -184,14 +184,16 @@ func TestTUI_OnboardingFlow_NeedsSubscriptionShowsWaitingView(t *testing.T) {
 	loginFromHome(t, h)
 	waitForSubscriptionWaitingView(t, h)
 
-	screen := h.Driver.Screen()
+	// The action bar renders a frame after the loading view, so poll for each
+	// action rather than snapshotting the screen the instant the loading text
+	// appears (matches TestTUI_LoginFlow_NeedsSubscriptionShowsWaitingView).
 	for _, want := range []string{
 		subscriptionWaitingText,
 		"[enter] re-open subscription page",
 		"[esc] cancel",
 	} {
-		if !strings.Contains(screen, want) {
-			t.Fatalf("expected subscription waiting view to include %q; screen:\n%s", want, screen)
+		if err := h.Driver.WaitForText(waitTimeout, want); err != nil {
+			t.Fatalf("expected subscription waiting view to include %q; screen:\n%s", want, h.Driver.Screen())
 		}
 	}
 }

@@ -27,6 +27,29 @@ const reBeaconScript = /beacon\.min\.js/i
 const reCloudflareInsights = /static\.cloudflareinsights\.com/i
 const thirdPartyNoisePatterns = [reBeaconScript, reCloudflareInsights]
 
+// Unactionable parse-noise: a `SyntaxError: Unexpected token …` reaching
+// production Sentry cannot be a first-party bundle defect, because a
+// syntactically invalid bundle is caught before it ships — `docusaurus build`
+// fails on invalid JS and the Playwright smoke loads the built site in
+// Chromium. Any such error that still reaches Sentry is client-environment
+// noise (legacy browser / injected extension script / corrupted partial
+// download) we cannot control (BOS-383).
+//
+// Scope note (deliberate over-match, BOS-383): keyed to message text, not
+// frame origin, this pattern also drops two adjacent first-party classes —
+// `JSON.parse` failures (`Unexpected token 'o', "…" is not valid JSON`) and
+// the `Unexpected token '<'` "HTML served where JS was expected" signature of
+// a stale-asset / bad-deploy / CDN-routing miss. That trade-off is accepted,
+// not overlooked: (a) `services/docs/src` does NO first-party `JSON.parse`
+// (grep-verified), so no first-party data-parse SyntaxError exists to lose;
+// (b) a bad deploy serving HTML-as-JS is caught by the docs Playwright smoke
+// on the next deploy, Cloudflare Pages deploy status, and user reports — not by
+// this one-event Sentry issue; and (c) this filter is a single, trivially
+// reversible `beforeSend` guard. Frame-origin scoping was rejected because the
+// originating event's culprit `?(assets/js/common)` is itself a first-party
+// bundle frame, so an "external-frames-only" filter would fail to drop it.
+const reUnexpectedToken = /Unexpected token/i
+
 export function scrub(input: string): string {
   if (input === '') {
     return input
@@ -52,7 +75,7 @@ export function initSentry(opts: { env?: string; release?: string } = {}): void 
     sendDefaultPii: false,
     integrations: [],
     beforeSend(event): Sentry.ErrorEvent | null {
-      if (isThirdPartyNoise(event)) {
+      if (isThirdPartyNoise(event) || isUnactionableParseNoise(event)) {
         return null
       }
       scrubEvent(event)
@@ -89,6 +112,31 @@ function isThirdPartyNoise(event: unknown): boolean {
   )
   return locations.some((location) =>
     thirdPartyNoisePatterns.some((pattern) => pattern.test(location)),
+  )
+}
+
+// isUnactionableParseNoise reports whether the event's primary (crashing)
+// exception is a `SyntaxError` whose value matches `Unexpected token`. The
+// match is keyed to BOTH the type and the message so first-party
+// TypeError/ReferenceError with real stacks — and SyntaxErrors that are not
+// parse-token failures — are never suppressed. The primary exception is the
+// last element of exception.values, matching the isThirdPartyNoise ordering
+// convention. Fails open: any unparseable shape is kept. See BOS-383.
+function isUnactionableParseNoise(event: unknown): boolean {
+  const eventRecord = asRecord(event)
+  if (!eventRecord) {
+    return false
+  }
+
+  const values = asArray(asRecord(eventRecord.exception)?.values)
+  const primary = asRecord(values[values.length - 1])
+  if (!primary) {
+    return false
+  }
+  return (
+    primary.type === 'SyntaxError' &&
+    typeof primary.value === 'string' &&
+    reUnexpectedToken.test(primary.value)
   )
 }
 

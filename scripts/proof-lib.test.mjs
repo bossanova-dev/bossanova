@@ -7,6 +7,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import {
+  ALLOWED_SURFACES,
   PROOF_MEDIA_TYPES,
   DEFAULT_TOTAL_PROOF_BUDGET_MS,
   LIVE_AGENT_EXTRA_MS,
@@ -562,6 +563,7 @@ test('parseProofArgs parses run command with explicit recipes', () => {
     changedFiles: [],
     dryRun: false,
     json: false,
+    surface: null,
   })
 })
 
@@ -574,6 +576,7 @@ test('parseProofArgs parses changed files and dry run', () => {
       changedFiles: ['services/web/src/App.tsx'],
       dryRun: true,
       json: false,
+      surface: null,
     },
   )
 })
@@ -585,6 +588,7 @@ test('parseProofArgs defaults flags-only invocation to run command', () => {
     changedFiles: ['services/web/src/App.tsx'],
     dryRun: true,
     json: false,
+    surface: null,
   })
 })
 
@@ -595,6 +599,42 @@ test('parseProofArgs rejects recipe flag without value', () => {
 
 test('parseProofArgs rejects unknown arguments', () => {
   assert.throws(() => parseProofArgs(['run', '--unknown']), /unknown proof argument: --unknown/)
+})
+
+// ── BOS-357: doctor `--surface` selector (parse + validate) ───────────────────
+
+test('parseProofArgs parses `doctor --surface tui`', () => {
+  const parsed = parseProofArgs(['doctor', '--surface', 'tui'])
+  assert.equal(parsed.command, 'doctor')
+  assert.equal(parsed.surface, 'tui')
+})
+
+test('parseProofArgs defaults surface to null when --surface is absent', () => {
+  assert.equal(parseProofArgs(['doctor']).surface, null)
+  assert.equal(parseProofArgs(['run']).surface, null)
+  assert.equal(parseProofArgs(['plan']).surface, null)
+})
+
+test('parseProofArgs accepts every allowed --surface value', () => {
+  for (const surface of ALLOWED_SURFACES) {
+    assert.equal(parseProofArgs(['doctor', '--surface', surface]).surface, surface)
+  }
+  assert.deepEqual(ALLOWED_SURFACES, ['tui', 'web', 'recipe', 'docs', 'all'])
+})
+
+test('parseProofArgs rejects an invalid --surface value', () => {
+  assert.throws(
+    () => parseProofArgs(['doctor', '--surface', 'portal']),
+    /invalid --surface: portal \(expected tui\|web\|recipe\|docs\|all\)/,
+  )
+})
+
+test('parseProofArgs rejects --surface without a value', () => {
+  assert.throws(() => parseProofArgs(['doctor', '--surface']), /--surface requires a value/)
+  assert.throws(
+    () => parseProofArgs(['doctor', '--surface', '--json']),
+    /--surface requires a value/,
+  )
 })
 
 // ── BOS-219: scenario subcommand (subcommand token + positional file) ─────────
@@ -609,6 +649,7 @@ test('parseProofArgs parses `scenario validate <file>`', () => {
     changedFiles: [],
     dryRun: false,
     json: false,
+    surface: null,
   })
 })
 
@@ -631,6 +672,7 @@ test('parseProofArgs parses `scenario run <file> --dry-run --pr 7`', () => {
       changedFiles: [],
       dryRun: true,
       json: false,
+      surface: null,
     },
   )
 })
@@ -679,19 +721,67 @@ test('parseProofArgs: scenario rejects unknown flags and extra positionals', () 
 })
 
 test('parseProofArgs: every non-scenario command parses byte-identically (regression table)', () => {
+  // BOS-357: `surface: null` is the additive default every command now carries.
   const cases = [
-    [[], { command: 'help', recipes: [], changedFiles: [], dryRun: false, json: false }],
-    [['help'], { command: 'help', recipes: [], changedFiles: [], dryRun: false, json: false }],
-    [['doctor'], { command: 'doctor', recipes: [], changedFiles: [], dryRun: false, json: false }],
+    [
+      [],
+      { command: 'help', recipes: [], changedFiles: [], dryRun: false, json: false, surface: null },
+    ],
+    [
+      ['help'],
+      { command: 'help', recipes: [], changedFiles: [], dryRun: false, json: false, surface: null },
+    ],
+    [
+      ['doctor'],
+      {
+        command: 'doctor',
+        recipes: [],
+        changedFiles: [],
+        dryRun: false,
+        json: false,
+        surface: null,
+      },
+    ],
     [
       ['doctor', '--json'],
-      { command: 'doctor', recipes: [], changedFiles: [], dryRun: false, json: true },
+      {
+        command: 'doctor',
+        recipes: [],
+        changedFiles: [],
+        dryRun: false,
+        json: true,
+        surface: null,
+      },
     ],
-    [['plan'], { command: 'plan', recipes: [], changedFiles: [], dryRun: false, json: false }],
-    [['run'], { command: 'run', recipes: [], changedFiles: [], dryRun: false, json: false }],
+    [
+      ['doctor', '--surface', 'tui'],
+      {
+        command: 'doctor',
+        recipes: [],
+        changedFiles: [],
+        dryRun: false,
+        json: false,
+        surface: 'tui',
+      },
+    ],
+    [
+      ['plan'],
+      { command: 'plan', recipes: [], changedFiles: [], dryRun: false, json: false, surface: null },
+    ],
+    [
+      ['run'],
+      { command: 'run', recipes: [], changedFiles: [], dryRun: false, json: false, surface: null },
+    ],
     [
       ['run', '--recipe', 'tui-home', '--dry-run'],
-      { command: 'run', recipes: ['tui-home'], changedFiles: [], dryRun: true, json: false },
+      {
+        command: 'run',
+        recipes: ['tui-home'],
+        changedFiles: [],
+        dryRun: true,
+        json: false,
+        surface: null,
+      },
     ],
     [
       ['run', '--changed-file', 'services/web/src/App.tsx'],
@@ -701,11 +791,12 @@ test('parseProofArgs: every non-scenario command parses byte-identically (regres
         changedFiles: ['services/web/src/App.tsx'],
         dryRun: false,
         json: false,
+        surface: null,
       },
     ],
     [
       ['--dry-run', '--json'],
-      { command: 'run', recipes: [], changedFiles: [], dryRun: true, json: true },
+      { command: 'run', recipes: [], changedFiles: [], dryRun: true, json: true, surface: null },
     ],
   ]
   for (const [argv, expected] of cases) {
@@ -2533,6 +2624,7 @@ test('parseProofArgs defaults empty invocation to help (not run)', () => {
     changedFiles: [],
     dryRun: false,
     json: false,
+    surface: null,
   })
 })
 

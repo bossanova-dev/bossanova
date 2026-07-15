@@ -306,11 +306,14 @@ Options:
   --recipe <id>        Capture a specific recipe (repeatable)
   --changed-file <p>   Override changed-file detection (repeatable)
   --dry-run            Capture locally without uploading or commenting
+  --surface <s>        (doctor) Override the auto-detected surface;
+                       s = tui|web|recipe|docs|all
   --pr <n>             (scenario run) PR number when not on a PR branch
 
 Examples:
   node scripts/proof.mjs plan
   node scripts/proof.mjs run --dry-run --recipe tui-home
+  node scripts/proof.mjs doctor --surface tui
   node scripts/proof.mjs scenario validate proof/scenarios/demo.scenario.json
   node scripts/proof.mjs scenario run proof/scenarios/demo.scenario.json --dry-run`
 
@@ -332,7 +335,10 @@ async function main() {
   const changedFiles = args.changedFiles.length > 0 ? args.changedFiles : changedFilesFromGit()
 
   if (args.command === 'doctor') {
-    const surface = agentSurface({ catalog, changedFiles })
+    // BOS-357: an explicit `--surface` overrides the diff-based auto-classification
+    // (a TUI-only host-readiness check can't be expressed otherwise); no flag keeps
+    // the pre-BOS-357 behaviour byte-for-byte.
+    const surface = args.surface ?? agentSurface({ catalog, changedFiles })
     const report = doctorReport({ surface, lookups: defaultDoctorLookups({ repoRoot }) })
     if (args.json) console.log(JSON.stringify(report, null, 2))
     else console.log(formatDoctorReport(report))

@@ -1133,9 +1133,9 @@ func (h HomeModel) upgradeStatusView() string {
 	}
 	switch {
 	case h.upgrading:
-		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(h.spinner.View()+" Upgrading..."))
+		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(h.spinner.View()+"Upgrading..."))
 	case h.restarting:
-		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(h.spinner.View()+" Restarting daemon..."))
+		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(h.spinner.View()+"Restarting daemon..."))
 	case h.restartPrompt:
 		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render("Upgrade installed. Quit boss after restart to use the new binary. [r]estart [esc] later"))
 	case h.upgradeDone:
@@ -1351,7 +1351,7 @@ func (h HomeModel) View() tea.View {
 		}
 		return tea.NewView(
 			renderError(fmt.Sprintf("Cannot connect to daemon (%v)", h.err), h.width) +
-				"\n" +
+				"\n\n" +
 				lipgloss.NewStyle().Padding(0, 2).Render(remediation) +
 				"\n" +
 				styleActionBar.Render("Press q to quit."),

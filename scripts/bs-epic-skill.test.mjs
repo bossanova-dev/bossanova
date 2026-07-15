@@ -68,7 +68,12 @@ test('size ratchet', () => {
   // zero-launch (no-ready/no-inflight) branch — one upserted progress comment
   // carrying `no sessions spawned`, stop success, no create-then-edit — with
   // matching Reporting + Edge-cases wording, the core deliverable.
-  const RATCHET = 32768
+  // Bumped 32768 → 33792 for BOS-303: a Safety-rails "a PR number alone is
+  // never completion or merge-readiness" rail plus an "Empty draft PR
+  // placeholder" Edge-cases bullet (adopt the existing branch/session and
+  // continue, distinct from the settled BOS-179 no-op) — the empty-placeholder
+  // guidance addition, trimmed to one KiB above actual.
+  const RATCHET = 33792
   const bytes = Buffer.byteLength(CLAUDE, 'utf8')
   assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
 })
@@ -254,10 +259,40 @@ test('no stub or placeholder prose in the claude source', () => {
   // throughout (e.g. "eligible: `Todo` + agent-friendly"); the stub-marker
   // convention this guards against is an all-caps `TODO` note.
   assert.doesNotMatch(CLAUDE, /\bTODO\b/, 'CLAUDE SKILL.md must not contain TODO markers')
+  // BOS-303 domain-term exception: "empty draft PR placeholder" (and its
+  // shorter "empty draft placeholder" form) is legitimate guidance — an empty
+  // bootstrap draft PR the child boss-build adopts and continues. A negative
+  // lookbehind carves out exactly the "draft placeholder" / "draft PR
+  // placeholder" domain phrase while keeping the guard strict against every
+  // other use: bare `placeholder`, adjective-filler ("placeholder
+  // implementation/value/text/…"), a `<placeholder>` template token, and an
+  // all-caps `PLACEHOLDER` stub marker (the `i` flag covers case).
   assert.doesNotMatch(
     CLAUDE,
-    /\bplaceholder\b/i,
-    'CLAUDE SKILL.md must not contain placeholder prose',
+    /(?<!draft (?:PR )?)\bplaceholder\b/i,
+    'CLAUDE SKILL.md must not contain placeholder stub/filler prose (only the "draft [PR] placeholder" domain term is allowed)',
+  )
+})
+
+test('empty draft PR placeholder is adopt-and-continue, not completion (BOS-303)', () => {
+  // A draft PR with no real changes and no check evidence, appearing before a
+  // settled run, must route the child boss-build to continue from existing
+  // branch/session state — never restart planning, never count the PR as done,
+  // and distinct from the settled BOS-179 no-op that fail-isolates.
+  assert.match(
+    CLAUDE,
+    /empty draft PR placeholder/,
+    'skill must name the empty draft PR placeholder case',
+  )
+  assert.match(
+    CLAUDE,
+    /adopt(?:s)? the existing branch\/session/i,
+    'the placeholder case must adopt the existing branch/session and continue',
+  )
+  assert.match(
+    CLAUDE,
+    /a PR number alone is (?:never|not)[^\n]*(?:completion|merge)/i,
+    'skill must state a PR number alone is not completion/merge-readiness',
   )
 })
 

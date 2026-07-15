@@ -1188,6 +1188,12 @@ function escapeMarkdown(value) {
 export const SCENARIO_USAGE =
   'usage: scenario validate <file> | scenario run <file> [--dry-run] [--pr <n>]'
 
+// BOS-357: the surfaces the `doctor --surface` selector accepts, matching the
+// set `requiredIdsForSurface`/`doctorReport` (scripts/proof-doctor.mjs) already
+// compute a required set for. Single source of truth shared by the parser and
+// its tests; keep in sync with the `base` keys in requiredIdsForSurface.
+export const ALLOWED_SURFACES = ['tui', 'web', 'recipe', 'docs', 'all']
+
 export function parseProofArgs(argv) {
   const [firstArg, ...tail] = argv
   // A completely empty invocation prints usage rather than silently running a
@@ -1202,6 +1208,9 @@ export function parseProofArgs(argv) {
     changedFiles: [],
     dryRun: false,
     json: false,
+    // BOS-357: `--surface` override for the `doctor` command; null = auto-classify.
+    // Parsed for every command (additive, defaults null); only `doctor` reads it.
+    surface: null,
   }
 
   // BOS-219: ONLY the `scenario` command accepts a subcommand token + one
@@ -1229,6 +1238,15 @@ export function parseProofArgs(argv) {
     }
     if (arg === '--json') {
       parsed.json = true
+      continue
+    }
+    if (arg === '--surface') {
+      const value = requireValue(rest, i, arg)
+      if (!ALLOWED_SURFACES.includes(value)) {
+        throw new Error(`invalid --surface: ${value} (expected ${ALLOWED_SURFACES.join('|')})`)
+      }
+      parsed.surface = value
+      i += 1
       continue
     }
     throw new Error(`unknown proof argument: ${arg}`)

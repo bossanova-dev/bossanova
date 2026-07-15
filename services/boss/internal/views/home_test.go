@@ -1588,6 +1588,9 @@ func TestHomeUpgradeKeyShowsBusySpinnerAndHidesActions(t *testing.T) {
 	if !strings.Contains(content, "Upgrading") {
 		t.Fatalf("expected upgrading spinner state, got: %s", content)
 	}
+	if strings.Contains(content, "  Upgrading") {
+		t.Fatalf("expected exactly one space between the spinner and the upgrading label, got a double space: %s", content)
+	}
 	if !lineBeforeMarkerIsBlank(content, "Upgrading") {
 		t.Fatalf("expected blank line immediately above upgrading spinner, got: %s", content)
 	}
@@ -1718,6 +1721,9 @@ func TestHomeRestartKeyShowsBusySpinnerAndHidesActions(t *testing.T) {
 	content := h.View().Content
 	if !strings.Contains(content, "Restarting daemon") {
 		t.Fatalf("expected restarting spinner state, got: %s", content)
+	}
+	if strings.Contains(content, "  Restarting daemon") {
+		t.Fatalf("expected exactly one space between the spinner and the restarting label, got a double space: %s", content)
 	}
 	if !lineBeforeMarkerIsBlank(content, "Restarting daemon") {
 		t.Fatalf("expected blank line immediately above restarting spinner, got: %s", content)
@@ -2055,6 +2061,49 @@ func TestHomeDaemonDownRemediationUsesStaticDaemonCommands(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Fatalf("daemon-down remediation missing %q: %s", want, content)
 		}
+	}
+}
+
+// TestHomeDaemonDownRemediationHasBlankLineBeforeTry pins the BOS-375 layout: the
+// daemon-unreachable screen must render exactly one blank line between the
+// "Cannot connect to daemon (<err>)" line and the "Try:" hint. It fails if the
+// separator regresses from "\n\n" to a single "\n".
+func TestHomeDaemonDownRemediationHasBlankLineBeforeTry(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 100
+	for h.pollFailures < pollFailureThreshold {
+		model, _ := h.Update(sessionListMsg{err: errors.New("dial unix: connection refused")})
+		h = model.(HomeModel)
+	}
+
+	content := stripANSI(h.View().Content)
+	if !strings.Contains(content, "Cannot connect to daemon") {
+		t.Fatalf("daemon-down screen not rendered: %s", content)
+	}
+
+	lines := strings.Split(content, "\n")
+	tryIdx := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "Try:" {
+			tryIdx = i
+			break
+		}
+	}
+	if tryIdx < 0 {
+		t.Fatalf("no %q line found in daemon-down screen: %s", "Try:", content)
+	}
+	// The line immediately above "Try:" must be blank (the inserted blank line).
+	if tryIdx == 0 || strings.TrimSpace(lines[tryIdx-1]) != "" {
+		got := ""
+		if tryIdx > 0 {
+			got = lines[tryIdx-1]
+		}
+		t.Fatalf("expected a blank line immediately before %q, got %q: %s", "Try:", got, content)
+	}
+	// And the daemon error line must sit directly above that blank line, so the
+	// separation is exactly one blank line (guards the "\n\n" join, not more/less).
+	if tryIdx < 2 || !strings.Contains(lines[tryIdx-2], "Cannot connect to daemon") {
+		t.Fatalf("expected the daemon error line above the blank line before %q: %s", "Try:", content)
 	}
 }
 

@@ -426,6 +426,31 @@ test('BOS-240: review-stack adds a conditional API-surface required check (both 
   }
 })
 
+test('BOS-303: an empty/bootstrap draft PR placeholder is adopted and resumed, not a stop condition', () => {
+  // boss-epic (BOS-303) routes an empty draft PR placeholder to the child
+  // boss-build to continue from existing branch/session state. This pins the
+  // boss-build side of that contract: an existing empty bootstrap/draft PR is
+  // adopted (Step 2.5 → fresh reuse / resume), never treated as completed work
+  // and never a stop condition merely because a PR number exists.
+  const skill = claudeBody()
+  assert.match(
+    skill,
+    /bossd's bootstrap draft, an empty PR[^\n]*is \*\*adopted and\s*\n?resumed\*\*, not a stop condition/,
+    'boss-build must state an existing empty/bootstrap draft PR is adopted and resumed, not a stop condition',
+  )
+  const step25 = skill.slice(skill.indexOf('## Step 2.5:'), skill.indexOf('## Step 3:'))
+  assert.match(
+    step25,
+    /empty bootstrap PR is adoptable, never foreign/,
+    'Step 2.5 must classify an empty bootstrap PR as adoptable, never foreign',
+  )
+  assert.match(
+    step25,
+    /the bootstrap PR \(no create\)/,
+    'Step 2.5 must route a bootstrap-only PR to fresh-reuse (adopt), not restart',
+  )
+})
+
 test('BOS-240: troubleshooting adds the required-deferred rows without weakening optional proof (both mirrors)', () => {
   for (const mirror of Object.keys(RESIDENT_BODIES)) {
     const troubleshooting = readRef(mirror, 'troubleshooting.md')

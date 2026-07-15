@@ -526,6 +526,11 @@ State and honor these explicitly:
 
 - **Never `merge_session` without `confirm: true`**, and never merge outside the
   `nextToMerge` order. At most one merge in flight, ever.
+- **A PR number alone is never completion or merge-readiness.** An open PR —
+  especially an empty draft placeholder — proves only that a branch exists. A
+  ticket is merge-eligible only through the settled-green gate (chat SETTLED +
+  DisplayStatus Passing + real changed files), never on the strength of a PR
+  existing.
 - **Never `stop_session` a failed ticket.** Fail-isolate means leave the session
   open so a human inherits the evidence.
 - **Never call AskUserQuestion after Phase 0** — the run is fire-and-forget.
@@ -556,8 +561,17 @@ State and honor these explicitly:
   skipped/blocked. `transitiveDependents` is cycle-safe.
 - Driver killed mid-run → relaunch the identical command; Phase 2 adopts
   in-flight sessions and the marker comment.
-- Empty/no-op run → the daemon Blocks it (BOS-179), so the driver sees BLOCKED
-  and fail-isolates — it never merges an empty PR.
+- Empty draft PR placeholder — a draft PR with no real file changes and no check
+  evidence, present _before/without_ a settled run (e.g. bossd's bootstrap
+  draft). This is **not** completion and **not** a settled no-op. Such an
+  empty draft PR placeholder routes the child `/boss-build` to
+  **adopt the existing branch/session** and continue implementation:
+  never restart selection/planning, and never fail-isolate merely because a PR
+  exists — a PR number alone is not completion or merge-readiness. Contrast the
+  settled no-op below.
+- Empty/no-op run → a run that genuinely _settled_ with no changes: the daemon
+  Blocks it (BOS-179), so the driver sees BLOCKED and fail-isolates — it never
+  merges an empty PR.
 - Non-`claude` agent → runs unattended the same way (tmux-hosted run + repair in
   a fresh chat), but the settled-green gate is mandatory. A runner without
   readable chat status must hold or fail-isolate; it must not merge from

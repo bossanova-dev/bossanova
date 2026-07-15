@@ -199,6 +199,27 @@ describe('beforeSend', () => {
     expect(beforeSend()(event)).toBeNull()
   })
 
+  it('returns null for the BOS-363 signature (TypeError: this.i.at) crashing in beacon.min.js', () => {
+    const event = {
+      exception: {
+        values: [
+          {
+            type: 'TypeError',
+            value: 'this.i.at is not a function',
+            stacktrace: {
+              frames: [
+                { filename: 'https://docs.bossanova.dev/assets/main.js' },
+                { filename: 'https://example.invalid/beacon.min.js/v4513226cdae' },
+              ],
+            },
+          },
+        ],
+      },
+    }
+
+    expect(beforeSend()(event)).toBeNull()
+  })
+
   it('returns null when only abs_path of the deepest frame matches the denylist', () => {
     const event = eventWithFrames([
       { abs_path: 'https://static.cloudflareinsights.com/beacon.min.js' },
@@ -271,6 +292,61 @@ describe('beforeSend', () => {
 
   it('returns the event when frames are empty (fail-open)', () => {
     const event = eventWithFrames([])
+
+    expect(beforeSend()(event)).toBe(event)
+  })
+
+  function eventWithPrimaryException(
+    type: string,
+    value: string,
+    frames: Array<Record<string, unknown>>,
+  ): Record<string, unknown> {
+    return {
+      exception: {
+        values: [{ type, value, stacktrace: { frames } }],
+      },
+    }
+  }
+
+  it('returns null for a SyntaxError with "Unexpected token \'{\'" (BOS-383)', () => {
+    const event = eventWithPrimaryException('SyntaxError', "Unexpected token '{'", [
+      { filename: 'https://docs.bossanova.dev/assets/js/common.js' },
+    ])
+
+    expect(beforeSend()(event)).toBeNull()
+  })
+
+  it('returns null for a SyntaxError with "Unexpected token \'<\'" (stale-asset variant)', () => {
+    const event = eventWithPrimaryException('SyntaxError', "Unexpected token '<'", [
+      { filename: 'https://docs.bossanova.dev/assets/js/common.js' },
+    ])
+
+    expect(beforeSend()(event)).toBeNull()
+  })
+
+  it('returns the event for a first-party TypeError with a real in-app frame (still scrubbed)', () => {
+    const gitHubToken = 'ghp_AbCdEf0123456789AbCdEf0123456789AbCd'
+    const event = eventWithPrimaryException('TypeError', 'x is not a function', [
+      { filename: `https://docs.bossanova.dev/assets/main.js?token=${gitHubToken}` },
+    ])
+
+    const result = beforeSend()(event)
+
+    expect(result).toBe(event)
+    expect(JSON.stringify(result)).not.toContain(gitHubToken)
+    expect(JSON.stringify(result)).toContain('[REDACTED]')
+  })
+
+  it('returns the event for a SyntaxError without "Unexpected token" in its value', () => {
+    const event = eventWithPrimaryException('SyntaxError', 'Unexpected end of JSON input', [
+      { filename: 'https://docs.bossanova.dev/assets/main.js' },
+    ])
+
+    expect(beforeSend()(event)).toBe(event)
+  })
+
+  it('returns the event for a SyntaxError with no exception.values (fail-open)', () => {
+    const event = { message: 'SyntaxError without a stacktrace' }
 
     expect(beforeSend()(event)).toBe(event)
   })

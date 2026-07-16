@@ -76,6 +76,7 @@ docs/handoffs/
 
 # Kubernetes secrets
 infra/kustomize/overlays/*/.env-bosso
+infra/kustomize/overlays/*/.env-mcp
 
 # Bazel
 /bazel-*

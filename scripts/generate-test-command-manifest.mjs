@@ -21,6 +21,7 @@ const defaultRootTargets = [
   'test-no-inline-stop-hooks',
   'test-readme',
   'test-public-mirror',
+  'test-web-e2e',
 ]
 
 // Hand-curated: the web suite is npm-script driven and cannot be derived from go.mod layout.
@@ -170,6 +171,8 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     ...renderTable(['Command', 'Description', 'CI?'], webRows),
     '',
     'Run from `services/web/`. `test:e2e:real` requires `E2E_REAL=1` and a running bossd+bosso stack; it is never set in CI.',
+    '',
+    "The repo-root `make test-web-e2e` target delegates to this module's Tier-1 `pnpm run test:e2e` (the Playwright faked suite, including the `smoke.spec.ts` harness-boot spec). It first does a best-effort `playwright install chromium` (non-fatal; fallback: `pnpm run test:e2e:install`), then runs `make -C services/web test-e2e`. It is opt-in / release-tier — NOT a per-feature-PR gate and NOT part of the default `make test` graph (the release-only `web-e2e` CI job invokes Playwright directly).",
     '',
     '## Go Module Targets',
     '',

@@ -394,17 +394,24 @@ func (r *Resolver) Label(ctx context.Context, accountID string) (string, error) 
 		return UnmanagedLocalCredentialsLabel, nil
 	}
 	if r == nil || r.reg == nil {
-		return shortID(accountID), nil
+		return ShortID(accountID), nil
 	}
 	acct, ok, err := r.reg.Get(ctx, accountID)
 	if err != nil || !ok || acct.Label == "" {
-		return shortID(accountID), nil
+		return ShortID(accountID), nil
 	}
 	return acct.Label, nil
 }
 
-// shortID returns the first 8 characters of id (or the whole id if shorter).
-func shortID(id string) string {
+// ShortID returns the first 8 characters of id (or the whole id if shorter).
+// It is the single degraded-DISPLAY-label policy for account ids that cannot
+// be resolved to a human label: Resolver.Label (session AccountLabel, chat
+// rotator audit from-side) and the session package's resolveAccountLabel /
+// registry adapter (manual-switch, failover, headless-rotation audits) all
+// fall back through it, so the same broken account degrades to the same
+// string on every surface. Display-only — never feed a shortened id back
+// into an RPC/CLI input, which requires the full id.
+func ShortID(id string) string {
 	if len(id) > 8 {
 		return id[:8]
 	}

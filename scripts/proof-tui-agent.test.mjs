@@ -193,6 +193,14 @@ test('SYSTEM_PROMPT: requires a narration sentence alongside each action (captio
   assert.match(mod.SYSTEM_PROMPT, /never call those tools without a leading narration/i)
 })
 
+test('SYSTEM_PROMPT instructs a final captioned observe() before done() (BOS-393)', async () => {
+  const { SYSTEM_PROMPT } = await import('./proof-tui-agent.mjs')
+  // Loose but anchored on the three load-bearing ideas: a final observe, quoting
+  // the on-screen evidence, before done() — so the closing narration is a strong
+  // final caption for the confirmation outro.
+  assert.match(SYSTEM_PROMPT, /final observe\(\)[\s\S]*quot(e|es|ing)[\s\S]*before[\s\S]*done\(\)/i)
+})
+
 test('doc-drift: send_keys documents the full KeyBytes vocabulary via golden (BOS-282)', async () => {
   const mod = await import('./proof-tui-agent.mjs')
   // The accepted key vocabulary is owned by the Go parser (tuidriver.namedKeys)
@@ -1033,6 +1041,102 @@ test('runTuiAgentProof: castToVideo returns mp4 → capture mediaType mp4', asyn
     process.exitCode = originalExitCode
     cleanupPr('123')
   }
+})
+
+// ── BOS-393: outroStartMs threading + outroDegraded surfacing ─────────────────
+
+/**
+ * Run runTuiAgentProof in collect mode with a loopRunner that returns a fixed
+ * `outro`, recording the options handed to castToVideo. castToVideo writes a
+ * fake mp4 (+ timeline) so the stills-only `degraded` channel stays null and we
+ * can prove the outro path never rides it.
+ */
+async function runOutroThreadCollect(outro) {
+  const { runTuiAgentProof } = await import('./proof-tui-agent.mjs')
+  const originalExitCode = process.exitCode
+  process.exitCode = undefined
+  let recorded = null
+  try {
+    return await withEnv(
+      BASE_ENV({ BOSS_PROOF_BRIEF: undefined, BOSS_PROOF_RUN_ID: 'tui-outrothread' }),
+      async () => {
+        const brief = {
+          title: 'Outro thread',
+          description: 'thread outro',
+          scenes: [{ id: 'scene-01', title: 'S', expectedEvidence: ['READY'] }],
+          budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+        }
+        const loopRunner = async ({ rawDir }) => {
+          fs.writeFileSync(path.join(rawDir, 'screen-01.txt'), 'READY screen')
+          return {
+            agentResult: { passed: true, summary: 'ok', evidence: [], steps: 1 },
+            finalScreen: 'READY screen',
+            captionTimings: [{ seq: 1, caption: 'looking', startMs: 100 }],
+            sceneTimings: [{ id: 'scene-01', title: 'S', startMs: 0 }],
+            sceneForScreen: { 1: 'scene-01' },
+            screens: [{ seq: 1, text: 'READY screen', castMs: 100 }],
+            nullCastRead: false,
+            outro,
+          }
+        }
+        const castToVideo = async (args) => {
+          recorded = args
+          const { captureDir, captureId } = args
+          const mp4Path = path.join(captureDir, `${captureId}.mp4`)
+          const posterPath = path.join(captureDir, `${captureId}.png`)
+          fs.writeFileSync(mp4Path, 'fake-mp4')
+          fs.writeFileSync(posterPath, 'fake-poster')
+          return {
+            mp4Path,
+            posterPath,
+            timeline: { trimMs: 0, segments: [{ startMs: 0, endMs: 5000, speed: 1 }], introMs: 0 },
+          }
+        }
+        const extractStill = async ({ output }) => {
+          fs.writeFileSync(output, 'fake-extracted-png')
+          return true
+        }
+        const surfaceRun = await runTuiAgentProof({
+          prNumber: 'tuioutrothread',
+          commit: 'abc1234',
+          changedFiles: [],
+          dryRun: true,
+          brief,
+          loopRunner,
+          runContext: { collect: true, runId: 'tui-outrothread', token: 'tok-tui-test' },
+          deps: {
+            bridge: scriptedBridge({ screens: ['READY screen'] }),
+            model: scriptedModel([toolUse('done', { passed: true, summary: 'ok' })]),
+            renderStill: fakeRenderStill(),
+            extractStill,
+            castToVideo,
+          },
+        })
+        return { surfaceRun, recorded }
+      },
+    )
+  } finally {
+    process.exitCode = originalExitCode
+    cleanupPr('tuioutrothread')
+  }
+}
+
+test('runTuiAgentProof threads outro.startMs to castToVideo as outroStartMs', async () => {
+  const { recorded } = await runOutroThreadCollect({ startMs: 4200 })
+  assert.equal(recorded.outroStartMs, 4200)
+})
+
+test('runTuiAgentProof passes null outroStartMs and surfaces outroDegraded on a degraded outro', async () => {
+  const { surfaceRun, recorded } = await runOutroThreadCollect({
+    degraded: { reason: 'outro-degraded', detail: 'x' },
+  })
+  assert.equal(recorded.outroStartMs, null)
+  assert.deepEqual(surfaceRun.captureShapes[0].outroDegraded, {
+    reason: 'outro-degraded',
+    detail: 'x',
+  })
+  // The stills-only degraded channel must be untouched by an outro failure.
+  assert.equal(surfaceRun.captureShapes[0].degraded ?? null, null)
 })
 
 test('runTuiAgentProof: castToVideo returns null → stills-only run still succeeds', async () => {
@@ -2950,6 +3054,304 @@ test('runAgentLoop binds each frame caption to the narration preceding its tool 
   }
 })
 
+// ── Confirmation outro (BOS-393) ─────────────────────────────────────────────
+
+/**
+ * Drive runAgentLoop with a scripted model + bridge inside a scratch rawDir,
+ * returning the loop result. `bridge` defaults to a scriptedBridge; `readCastMs`
+ * defaults to an injected finite clock so the outro frame gets a real timestamp.
+ */
+async function runOutroLoop({
+  responses,
+  bridge = scriptedBridge({ screens: ['EVIDENCE SCREEN'] }),
+  scenes,
+  stamps = [1000, 2000, 3000, 4000],
+  readCastMs,
+  budgets = { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+}) {
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-outro-'))
+  let i = 0
+  const clock = readCastMs ?? (() => stamps[Math.min(i++, stamps.length - 1)])
+  try {
+    return await runAgentLoop({
+      brief: { description: 'prove it', budgets, ...(scenes ? { scenes } : {}) },
+      ...(scenes ? { scenes } : {}),
+      model: 'test-model',
+      modelDep: scriptedModel(responses),
+      bridge,
+      rawDir,
+      readCastMs: clock,
+    })
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+}
+
+test('runAgentLoop captures a ✔ outro frame after an accepted done(passed=true)', async () => {
+  const loop = await runOutroLoop({
+    responses: [
+      toolUse('observe', {}, { text: 'observing evidence' }),
+      toolUse(
+        'done',
+        { passed: true, summary: 'evidence visible', evidence: [] },
+        { text: 'closing narration text' },
+      ),
+    ],
+  })
+  assert.equal(loop.agentResult.passed, true)
+  assert.ok(Number.isFinite(loop.outro.startMs))
+  const last = loop.captionTimings.at(-1)
+  assert.match(last.caption, /^✔ /)
+  assert.match(last.caption, /closing narration text/) // narration wins over summary
+  assert.equal(loop.screens.at(-1).text, 'EVIDENCE SCREEN') // outro pushed to screens
+  assert.equal(loop.outro.startMs, loop.screens.at(-1).castMs)
+})
+
+test('runAgentLoop outro uses done.summary when no narration precedes done()', async () => {
+  const loop = await runOutroLoop({
+    responses: [
+      toolUse('observe', {}, { text: 'observing evidence' }),
+      toolUse('done', { passed: true, summary: 'evidence visible', evidence: [] }),
+    ],
+  })
+  assert.match(loop.captionTimings.at(-1).caption, /^✔ evidence visible/)
+})
+
+test('runAgentLoop outro falls back to done.summary when narration is whitespace-only (BOS-393)', async () => {
+  // A closing text block of only whitespace is truthy but empty once trimmed; it
+  // must NOT win over done.summary and yield a bare `✔`.
+  const loop = await runOutroLoop({
+    responses: [
+      toolUse('observe', {}, { text: 'observing evidence' }),
+      toolUse('done', { passed: true, summary: 'evidence visible', evidence: [] }, { text: '   ' }),
+    ],
+  })
+  assert.match(loop.captionTimings.at(-1).caption, /^✔ evidence visible/)
+})
+
+test('runAgentLoop captures a ✖ outro for an ACCEPTED done(passed=false)', async () => {
+  // Single (synthesized) scene → evaluateDoneCall accepts the failing verdict.
+  const loop = await runOutroLoop({
+    responses: [
+      toolUse('observe', {}, { text: 'looking' }),
+      toolUse(
+        'done',
+        { passed: false, summary: 'could not load', evidence: [] },
+        {
+          text: 'blocker found',
+        },
+      ),
+    ],
+  })
+  assert.equal(loop.agentResult.passed, false)
+  assert.match(loop.captionTimings.at(-1).caption, /^✖ /)
+  assert.match(loop.captionTimings.at(-1).caption, /blocker found/)
+})
+
+test('runAgentLoop emits NO outro for a rejected premature done', async () => {
+  // done(passed=true) with a later scene unbegun → evaluateDoneCall rejects; with
+  // maxSteps=2 the loop exhausts before the rejection budget is spent, so
+  // done.passed stays null and no outro is staged.
+  const loop = await runOutroLoop({
+    scenes: [
+      { id: 'scene-01', title: 'A' },
+      { id: 'scene-02', title: 'B' },
+    ],
+    responses: [
+      toolUse('done', { passed: true, summary: 'x', evidence: [] }),
+      toolUse('done', { passed: true, summary: 'x', evidence: [] }),
+    ],
+    budgets: { maxSteps: 2, maxWallClockMs: 60_000, maxTokens: 100_000 },
+  })
+  assert.equal(loop.outro, null)
+  assert.ok(!loop.captionTimings.at(-1)?.caption?.startsWith('✔'))
+})
+
+test('runAgentLoop outro is all-or-nothing: observe error degrades, verdict preserved', async () => {
+  // bridge.observe succeeds in the loop, throws ONLY on the post-done outro call.
+  let observeCount = 0
+  const bridge = {
+    async observe() {
+      observeCount += 1
+      if (observeCount > 1) throw new Error('outro observe boom')
+      return { screen: 'EVIDENCE SCREEN' }
+    },
+    async sendKeys() {
+      return { screen: 'EVIDENCE SCREEN' }
+    },
+    async typeText() {
+      return { screen: 'EVIDENCE SCREEN' }
+    },
+    async quit() {},
+  }
+  const loop = await runOutroLoop({
+    bridge,
+    responses: [
+      toolUse('observe', {}, { text: 'looking' }),
+      toolUse('done', { passed: true, summary: 'ok', evidence: [] }, { text: 'closing' }),
+    ],
+  })
+  assert.equal(loop.agentResult.passed, true) // verdict untouched (2b-A)
+  assert.equal(loop.outro.degraded.reason, 'outro-degraded')
+  assert.ok(!loop.captionTimings.at(-1)?.caption?.startsWith('✔')) // nothing half-written
+})
+
+test('runAgentLoop outro skips on a blank screen (all-or-nothing, nullCastRead unchanged)', async () => {
+  let observeCount = 0
+  const bridge = {
+    async observe() {
+      observeCount += 1
+      return { screen: observeCount > 1 ? '   \n' : 'EVIDENCE SCREEN' }
+    },
+    async sendKeys() {
+      return { screen: 'EVIDENCE SCREEN' }
+    },
+    async typeText() {
+      return { screen: 'EVIDENCE SCREEN' }
+    },
+    async quit() {},
+  }
+  const loop = await runOutroLoop({
+    bridge,
+    responses: [
+      toolUse('observe', {}, { text: 'looking' }),
+      toolUse('done', { passed: true, summary: 'ok', evidence: [] }, { text: 'closing' }),
+    ],
+  })
+  assert.equal(loop.outro.degraded.reason, 'outro-degraded')
+  assert.equal(loop.screens.length, 1) // no outro frame pushed
+  assert.equal(loop.nullCastRead, false) // outro never sets the BOS-216 flag
+})
+
+test('runAgentLoop outro skips on a null cast read and rolls the partial capture back', async () => {
+  // outro observe returns a real screen, but readCastMs() → null on the outro
+  // read: the partial capture must roll back and nullCastRead must stay false.
+  const stamps = [1000, null]
+  let i = 0
+  const loop = await runOutroLoop({
+    responses: [
+      toolUse('observe', {}, { text: 'looking' }),
+      toolUse('done', { passed: true, summary: 'ok', evidence: [] }, { text: 'closing' }),
+    ],
+    readCastMs: () => stamps[Math.min(i++, stamps.length - 1)],
+  })
+  assert.equal(loop.outro.degraded.reason, 'outro-degraded')
+  assert.equal(loop.screens.length, 1) // rolled back to loop-only frame
+  assert.equal(loop.captionTimings.length, 1)
+  assert.equal(loop.nullCastRead, false) // outro never sets the BOS-216 flag
+})
+
+test('runAgentLoop outro restores finalScreen on the null-cast rollback (BOS-393)', async () => {
+  // The outro observe returns a DIFFERENT screen than the last tool frame; the
+  // cast read goes null on the outro, so the whole capture — finalScreen too —
+  // must roll back to the pre-outro frame. finalScreen feeds the evidence scan,
+  // so leaving it on an unrecorded outro screen would scan a dropped frame.
+  let observeCount = 0
+  const bridge = {
+    async observe() {
+      observeCount += 1
+      return { screen: observeCount > 1 ? 'OUTRO SCREEN' : 'LOOP SCREEN' }
+    },
+    async sendKeys() {
+      return { screen: 'LOOP SCREEN' }
+    },
+    async typeText() {
+      return { screen: 'LOOP SCREEN' }
+    },
+    async quit() {},
+  }
+  const stamps = [1000, null]
+  let i = 0
+  const loop = await runOutroLoop({
+    bridge,
+    responses: [
+      toolUse('observe', {}, { text: 'looking' }),
+      toolUse('done', { passed: true, summary: 'ok', evidence: [] }, { text: 'closing' }),
+    ],
+    readCastMs: () => stamps[Math.min(i++, stamps.length - 1)],
+  })
+  assert.equal(loop.outro.degraded.reason, 'outro-degraded')
+  assert.equal(loop.finalScreen, 'LOOP SCREEN') // restored, not the outro screen
+  assert.equal(loop.screens.at(-1).text, 'LOOP SCREEN') // no outro frame stranded
+})
+
+test('runAgentLoop outro rolls back wholesale when captureSettledScreen throws (BOS-393)', async () => {
+  // readCastMs throws DURING the outro capture (after the sidecars are written).
+  // The outro must degrade AND leave no partial state: verdict, frame count,
+  // finalScreen, and the on-disk sidecars all restored to the pre-outro loop.
+  let observeCount = 0
+  const bridge = {
+    async observe() {
+      observeCount += 1
+      return { screen: observeCount > 1 ? 'OUTRO SCREEN' : 'LOOP SCREEN' }
+    },
+    async sendKeys() {
+      return { screen: 'LOOP SCREEN' }
+    },
+    async typeText() {
+      return { screen: 'LOOP SCREEN' }
+    },
+    async quit() {},
+  }
+  const { runAgentLoop } = await import('./proof-tui-agent.mjs')
+  const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-outro-throw-'))
+  let reads = 0
+  const readCastMs = () => {
+    reads += 1
+    if (reads > 1) throw new Error('cast read boom') // throws on the outro read
+    return 1000
+  }
+  try {
+    const loop = await runAgentLoop({
+      brief: {
+        description: 'prove it',
+        budgets: { maxSteps: 5, maxWallClockMs: 60_000, maxTokens: 100_000 },
+      },
+      model: 'test-model',
+      modelDep: scriptedModel([
+        toolUse('observe', {}, { text: 'looking' }),
+        toolUse('done', { passed: true, summary: 'ok', evidence: [] }, { text: 'closing' }),
+      ]),
+      bridge,
+      rawDir,
+      readCastMs,
+    })
+    assert.equal(loop.agentResult.passed, true) // verdict preserved (2b-A)
+    assert.equal(loop.outro.degraded.reason, 'outro-degraded')
+    assert.match(loop.outro.degraded.detail, /outro capture failed/)
+    assert.equal(loop.screens.length, 1) // no stranded outro frame
+    assert.equal(loop.captionTimings.length, 1)
+    assert.equal(loop.finalScreen, 'LOOP SCREEN') // rolled back
+    assert.equal(loop.nullCastRead, false)
+    // The outro sidecars written before the throw must be cleaned up.
+    assert.equal(fs.existsSync(path.join(rawDir, 'screen-02.txt')), false)
+    assert.equal(fs.existsSync(path.join(rawDir, 'caption-02.txt')), false)
+  } finally {
+    fs.rmSync(rawDir, { recursive: true, force: true })
+  }
+})
+
+test('runAgentLoop outro is FINAL even when tool blocks trail the done() in the same message', async () => {
+  // One turn: [narration, done(passed=true), observe] — the trailing observe
+  // still executes and captures a screen; the outro must come AFTER it (6A).
+  const loop = await runOutroLoop({
+    responses: [
+      {
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 10, output_tokens: 5 },
+        content: [
+          { type: 'text', text: 'closing narration' },
+          { type: 'tool_use', id: 'd', name: 'done', input: { passed: true, summary: 'x' } },
+          { type: 'tool_use', id: 'o', name: 'observe', input: {} },
+        ],
+      },
+    ],
+  })
+  assert.match(loop.captionTimings.at(-1).caption, /^✔ /)
+  assert.match(loop.captionTimings.at(-1).caption, /closing narration/)
+})
+
 // ── parseCastTailMs (caption clock, BOS-121) ─────────────────────────────────
 
 test('parseCastTailMs: returns the last event time in ms (header skipped)', async () => {
@@ -3023,6 +3425,10 @@ test('runAgentLoop: records per-step caption timings from the injected cast cloc
     assert.deepEqual(captionTimings, [
       { seq: 1, caption: 'Opening the cron list', startMs: 1000 },
       { seq: 2, caption: 'Selecting the first row', startMs: 3500 },
+      // BOS-393 confirmation outro: the accepted done() burns a final ✔ frame
+      // (done.summary — no narration preceded this done() call). The injected
+      // clock repeats its last stamp for the outro read.
+      { seq: 3, caption: '✔ done', startMs: 3500 },
     ])
   } finally {
     fs.rmSync(rawDir, { recursive: true, force: true })
@@ -3362,7 +3768,9 @@ test('runAgentLoop: begin_scene(scene-02) records sceneTimings + sceneForScreen 
       { id: 'scene-01', title: 'Home', startMs: 0 },
       { id: 'scene-02', title: 'Settings', startMs: 1200 },
     ])
-    assert.deepEqual(result.sceneForScreen, { 1: 'scene-01', 2: 'scene-02' })
+    // BOS-393: the accepted done() adds a 3rd (outro) frame within the active
+    // scene (scene-02), so sceneForScreen/screens now carry that trailing entry.
+    assert.deepEqual(result.sceneForScreen, { 1: 'scene-01', 2: 'scene-02', 3: 'scene-02' })
     assert.equal(result.captionTimings[0].caption, '')
     assert.equal(
       result.captionTimings[1].caption,
@@ -3376,12 +3784,14 @@ test('runAgentLoop: begin_scene(scene-02) records sceneTimings + sceneForScreen 
     )
     assert.deepEqual(
       result.screens.map((s) => s.seq),
-      [1, 2],
+      [1, 2, 3],
     )
     assert.deepEqual(
       result.screens.map((s) => s.text),
-      ['Home screen', 'Settings screen'],
+      // The 3rd is the confirmation-outro frame (the last screen repeats).
+      ['Home screen', 'Settings screen', 'Settings screen'],
     )
+    assert.match(result.captionTimings.at(-1).caption, /^✔ done/)
   } finally {
     fs.rmSync(rawDir, { recursive: true, force: true })
   }

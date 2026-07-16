@@ -288,6 +288,85 @@ func TestAttemptUsageLimitRotation_RotateHappyPath_SteeringPrefix(t *testing.T) 
 	}
 }
 
+// TestAttemptUsageLimitRotation_AuditsResolvedAccountLabels ensures the
+// headless usage-limit path stores the same human-readable account labels as
+// chat, manual-switch, and failover rotation paths.
+func TestAttemptUsageLimitRotation_AuditsResolvedAccountLabels(t *testing.T) {
+	f := newRotationFixture(t)
+	store := &capturingAuditStore{}
+	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
+	f.lc.accountSwitchRegistry = mapSwitchRegistry{
+		"acct-capped": {ID: "acct-capped", Label: "yuki@kamik.ai", Status: AccountActive},
+		"acct-next":   {ID: "acct-next", Label: "dave@kamik.ai", Status: AccountActive},
+	}
+	f.decider.outcome = rotation.Outcome{
+		Kind:            rotation.OutcomeRotate,
+		NextAccount:     &models.Account{ID: "acct-next"},
+		CooldownApplied: true,
+	}
+
+	if !f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "usage_limit_reached") {
+		t.Fatal("expected handled=true on rotate")
+	}
+	if len(store.inserted) != 1 {
+		t.Fatalf("want exactly one audit event, got %d", len(store.inserted))
+	}
+	if got, want := store.inserted[0].FromAccount, "yuki@kamik.ai"; got != want {
+		t.Errorf("audit FromAccount = %q, want %q", got, want)
+	}
+	if got, want := store.inserted[0].ToAccount, "dave@kamik.ai"; got != want {
+		t.Errorf("audit ToAccount = %q, want %q", got, want)
+	}
+}
+
+// TestAttemptUsageLimitRotation_ExhaustedAuditsResolvedFromLabel ensures the
+// all-accounts-exhausted audit resolves its from-side to the same human label
+// every other rotation audit path stores, not the raw capped account id.
+func TestAttemptUsageLimitRotation_ExhaustedAuditsResolvedFromLabel(t *testing.T) {
+	f := newRotationFixture(t)
+	store := &capturingAuditStore{}
+	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
+	f.lc.accountSwitchRegistry = mapSwitchRegistry{
+		"acct-capped": {ID: "acct-capped", Label: "yuki@kamik.ai", Status: AccountActive},
+	}
+	resumeAt := time.Now().Add(90 * time.Minute)
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeAllExhausted, ResumeAt: resumeAt}
+
+	if !f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "usage_limit_reached") {
+		t.Fatal("expected handled=true on all-exhausted park")
+	}
+	if len(store.inserted) != 1 {
+		t.Fatalf("want exactly one audit event, got %d", len(store.inserted))
+	}
+	if got, want := store.inserted[0].FromAccount, "yuki@kamik.ai"; got != want {
+		t.Errorf("exhausted audit FromAccount = %q, want resolved label %q", got, want)
+	}
+	if got, want := store.inserted[0].Outcome, "ROTATION_OUTCOME_EXHAUSTED"; got != want {
+		t.Errorf("exhausted audit Outcome = %q, want %q", got, want)
+	}
+}
+
+// TestRecordRotation_KeepsEmptyTargetForStatusOnly ensures a no-target outcome
+// remains distinguishable from an explicit switch to unmanaged credentials.
+func TestRecordRotation_KeepsEmptyTargetForStatusOnly(t *testing.T) {
+	f := newRotationFixture(t)
+	store := &capturingAuditStore{}
+	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
+	f.lc.accountSwitchRegistry = mapSwitchRegistry{
+		"": {ID: "", Label: "Unmanaged local credentials", Status: AccountActive},
+	}
+
+	f.lc.recordRotation(context.Background(), f.sessions.sessions[f.sessionID], f.binding.binding,
+		"ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY", "", "agent cannot rotate", nil)
+
+	if len(store.inserted) != 1 {
+		t.Fatalf("want exactly one audit event, got %d", len(store.inserted))
+	}
+	if got := store.inserted[0].ToAccount; got != "" {
+		t.Errorf("audit ToAccount = %q, want empty for a no-target outcome", got)
+	}
+}
+
 func TestAttemptUsageLimitRotation_RotatesThroughAdapterShapes(t *testing.T) {
 	f := newRotationFixture(t)
 	cappedID := "acct-capped"

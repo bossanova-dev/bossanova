@@ -28,6 +28,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/socketauth"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/agent"
@@ -299,8 +300,15 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		t.Fatalf("listen unix: %v", err)
 	}
 
+	// Auth token co-located with the harness socket: the server rejects RPCs
+	// without it, so the harness client must attach it too.
+	token, err := socketauth.LoadOrCreateToken(socketPath)
+	if err != nil {
+		t.Fatalf("load socket auth token: %v", err)
+	}
+
 	mux := http.NewServeMux()
-	path, handler := bossanovav1connect.NewDaemonServiceHandler(srv)
+	path, handler := bossanovav1connect.NewDaemonServiceHandler(srv, connect.WithInterceptors(socketauth.NewServerInterceptor(token)))
 	mux.Handle(path, handler)
 
 	httpServer := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -318,6 +326,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		httpClient,
 		"http://localhost",
 		connect.WithGRPC(),
+		connect.WithInterceptors(socketauth.NewClientInterceptor(token)),
 	)
 
 	// Host service — same instance the plugin broker would dispense in

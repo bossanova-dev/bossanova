@@ -27,6 +27,17 @@ const (
 	// surfaced as a green ready-for-review PR, so a headless /boss-epic driver
 	// fail-isolates the dead session instead of merging an empty PR.
 	CronJobOutcomePRNoChanges CronJobOutcome = "pr_no_changes"
+	// CronJobOutcomeWorktreeGone records a finalize that ran against a session
+	// whose worktree is already gone — e.g. the session was archived/removed
+	// (ArchiveSession deletes the worktree but leaves the row in an
+	// implementing state) before a late Stop hook or stranded-cron sweep tried
+	// to finalize it. `git status` against the missing path fails, but this is a
+	// benign no-op, NOT a PR/housekeeping failure: there is nothing left to
+	// finalize. It is therefore a non-attention outcome (needsAttention ==
+	// false, no scary blocked_reason) and a benign cron STATUS (not FAILED) —
+	// distinct from pr_failed, which means the agent ran and only PR creation
+	// failed against a live worktree.
+	CronJobOutcomeWorktreeGone CronJobOutcome = "worktree_gone"
 )
 
 // CronJob represents a scheduled prompt that fires on a cron expression.

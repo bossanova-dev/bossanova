@@ -69,6 +69,12 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchListAgents(ctx, cmdID, outbound)
 	case *pb.OrchestratorCommand_ListAccounts:
 		return c.dispatchListAccounts(ctx, cmdID, cmd.GetListAccounts(), outbound)
+	case *pb.OrchestratorCommand_GetRepo:
+		return c.dispatchGetRepo(ctx, cmdID, cmd.GetGetRepo(), outbound)
+	case *pb.OrchestratorCommand_UpdateRepo:
+		return c.dispatchUpdateRepo(ctx, cmdID, cmd.GetUpdateRepo(), outbound)
+	case *pb.OrchestratorCommand_RemoveRepo:
+		return c.dispatchRemoveRepo(ctx, cmdID, cmd.GetRemoveRepo(), outbound)
 	case *pb.OrchestratorCommand_ListRepoPrs:
 		return c.dispatchListRepoPRs(ctx, cmdID, cmd.GetListRepoPrs(), outbound)
 	case *pb.OrchestratorCommand_ListTrackerIssues:
@@ -516,6 +522,50 @@ func (c *StreamClient) dispatchListAccounts(ctx context.Context, cmdID string, r
 				Payload:   &pb.CommandResult_ListAccounts{ListAccounts: out},
 			},
 		}}
+	})
+}
+
+func (c *StreamClient) dispatchGetRepo(ctx context.Context, cmdID string, req *pb.GetRepoCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.GetRepo(ctx, req.GetRepoId())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_GetRepo{GetRepo: out},
+		}}}
+	})
+}
+
+func (c *StreamClient) dispatchUpdateRepo(ctx context.Context, cmdID string, req *pb.UpdateRepoCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.UpdateRepo(ctx, req)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_UpdateRepo{UpdateRepo: out},
+		}}}
+	})
+}
+
+func (c *StreamClient) dispatchRemoveRepo(ctx context.Context, cmdID string, req *pb.RemoveRepoCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		if err := c.commandHandler.RemoveRepo(ctx, req.GetRepoId()); err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return commandOK(cmdID, nil)
 	})
 }
 

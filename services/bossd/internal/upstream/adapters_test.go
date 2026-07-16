@@ -63,6 +63,18 @@ func (f *fakeSessionCommandServer) ListAccounts(_ context.Context, _ *connect.Re
 	return connect.NewResponse(&pb.ListAccountsResponse{}), nil
 }
 
+func (f *fakeSessionCommandServer) GetRepoSettings(_ context.Context, _ *connect.Request[pb.GetRepoSettingsRequest]) (*connect.Response[pb.GetRepoSettingsResponse], error) {
+	return connect.NewResponse(&pb.GetRepoSettingsResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) UpdateRepo(_ context.Context, _ *connect.Request[pb.UpdateRepoRequest]) (*connect.Response[pb.UpdateRepoResponse], error) {
+	return connect.NewResponse(&pb.UpdateRepoResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) RemoveRepo(_ context.Context, _ *connect.Request[pb.RemoveRepoRequest]) (*connect.Response[pb.RemoveRepoResponse], error) {
+	return connect.NewResponse(&pb.RemoveRepoResponse{}), nil
+}
+
 func (f *fakeSessionCommandServer) ListRepoPRs(_ context.Context, _ *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {
 	return connect.NewResponse(&pb.ListRepoPRsResponse{}), nil
 }
@@ -157,6 +169,18 @@ func (e *errCommandServer) ListAgents(context.Context, *connect.Request[pb.ListA
 }
 
 func (e *errCommandServer) ListAccounts(context.Context, *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) GetRepoSettings(context.Context, *connect.Request[pb.GetRepoSettingsRequest]) (*connect.Response[pb.GetRepoSettingsResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) UpdateRepo(context.Context, *connect.Request[pb.UpdateRepoRequest]) (*connect.Response[pb.UpdateRepoResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) RemoveRepo(context.Context, *connect.Request[pb.RemoveRepoRequest]) (*connect.Response[pb.RemoveRepoResponse], error) {
 	return nil, e.err
 }
 

@@ -547,6 +547,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyGetChatTranscriptResponse'
+  /bossanova.v1.OrchestratorService/ProxyGetRepo:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyGetRepo
+      description: |-
+        Per-repo proxies for web repo management. Route to the daemon named by
+         daemon_id and address the repo by repo_id. Reads/updates are secret-masked
+         (RepoSettings); writes carry tri-state SecretUpdate + expected_updated_at.
+      operationId: bossanova.v1.OrchestratorService.ProxyGetRepo
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyGetRepoRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyGetRepoResponse'
   /bossanova.v1.OrchestratorService/ProxyGetSession:
     post:
       tags:
@@ -909,6 +948,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyRecordChatResponse'
+  /bossanova.v1.OrchestratorService/ProxyRemoveRepo:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyRemoveRepo
+      operationId: bossanova.v1.OrchestratorService.ProxyRemoveRepo
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyRemoveRepoRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyRemoveRepoResponse'
   /bossanova.v1.OrchestratorService/ProxyResumeSession:
     post:
       tags:
@@ -1058,6 +1132,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxySwitchSessionAccountResponse'
+  /bossanova.v1.OrchestratorService/ProxyUpdateRepo:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyUpdateRepo
+      operationId: bossanova.v1.OrchestratorService.ProxyUpdateRepo
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyUpdateRepoRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyUpdateRepoResponse'
   /bossanova.v1.OrchestratorService/ProxyWakeChat:
     post:
       tags:
@@ -2195,6 +2304,15 @@ components:
                 - getChatTranscript
             - type: object
               properties:
+                getRepo:
+                  title: get_repo
+                  description: GetRepo returns the daemon's web-safe repo settings.
+                  $ref: '#/components/schemas/bossanova.v1.GetRepoSettingsResponse'
+              title: get_repo
+              required:
+                - getRepo
+            - type: object
+              properties:
                 listAccounts:
                   title: list_accounts
                   description: |-
@@ -2285,6 +2403,17 @@ components:
               title: transfer_confirmed
               required:
                 - transferConfirmed
+            - type: object
+              properties:
+                updateRepo:
+                  title: update_repo
+                  description: |-
+                    UpdateRepo returns the daemon's full repo; bosso projects it before
+                     returning it to a browser.
+                  $ref: '#/components/schemas/bossanova.v1.UpdateRepoResponse'
+              title: update_repo
+              required:
+                - updateRepo
             - type: object
               properties:
                 wakeChat:
@@ -3607,6 +3736,33 @@ components:
           $ref: '#/components/schemas/bossanova.v1.PRStatus'
       title: GetPRStatusResponse
       additionalProperties: false
+    bossanova.v1.GetRepoCommand:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+      title: GetRepoCommand
+      additionalProperties: false
+      description: |-
+        GetRepoCommand asks the daemon for its web-safe repo settings. It reuses the
+         existing GetRepoSettings daemon handler and therefore never carries secrets.
+    bossanova.v1.GetRepoSettingsRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: GetRepoSettingsRequest
+      additionalProperties: false
+    bossanova.v1.GetRepoSettingsResponse:
+      type: object
+      properties:
+        settings:
+          title: settings
+          $ref: '#/components/schemas/bossanova.v1.RepoSettings'
+      title: GetRepoSettingsResponse
+      additionalProperties: false
     bossanova.v1.GetReviewCommentsRequest:
       type: object
       properties:
@@ -4476,6 +4632,17 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: MergeSessionResponse
       additionalProperties: false
+    bossanova.v1.MergeStrategy:
+      type: string
+      title: MergeStrategy
+      enum:
+        - MERGE_STRATEGY_UNSPECIFIED
+        - MERGE_STRATEGY_MERGE
+        - MERGE_STRATEGY_REBASE
+        - MERGE_STRATEGY_SQUASH
+      description: |-
+        MergeStrategy is the merge method used when auto-merging PRs. Mirrors the
+         domain values in lib/bossalib/models (merge / rebase / squash).
     bossanova.v1.NoOpAction:
       type: object
       properties:
@@ -4580,6 +4747,17 @@ components:
                 - getChatTranscript
             - type: object
               properties:
+                getRepo:
+                  title: get_repo
+                  description: |-
+                    bosso → daemon: read a repo's web-safe settings. Replies
+                     CommandResult{get_repo}.
+                  $ref: '#/components/schemas/bossanova.v1.GetRepoCommand'
+              title: get_repo
+              required:
+                - getRepo
+            - type: object
+              properties:
                 listAccounts:
                   title: list_accounts
                   description: |-
@@ -4651,6 +4829,15 @@ components:
               title: record_chat
               required:
                 - recordChat
+            - type: object
+              properties:
+                removeRepo:
+                  title: remove_repo
+                  description: 'bosso → daemon: remove a repo. Replies CommandResult{Ok}.'
+                  $ref: '#/components/schemas/bossanova.v1.RemoveRepoCommand'
+              title: remove_repo
+              required:
+                - removeRepo
             - type: object
               properties:
                 resume:
@@ -4726,6 +4913,15 @@ components:
               title: transfer_confirmed
               required:
                 - transferConfirmed
+            - type: object
+              properties:
+                updateRepo:
+                  title: update_repo
+                  description: 'bosso → daemon: update a repo. Replies CommandResult{update_repo}.'
+                  $ref: '#/components/schemas/bossanova.v1.UpdateRepoCommand'
+              title: update_repo
+              required:
+                - updateRepo
             - type: object
               properties:
                 wakeChat:
@@ -5314,6 +5510,25 @@ components:
         ProxyGetChatTranscriptResponse mirrors daemon.proto's GetChatTranscriptResponse
          shape so the gateway can forward it field-for-field. ChatMessage is defined in
          daemon.proto (already imported).
+    bossanova.v1.ProxyGetRepoRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        repoId:
+          type: string
+          title: repo_id
+      title: ProxyGetRepoRequest
+      additionalProperties: false
+    bossanova.v1.ProxyGetRepoResponse:
+      type: object
+      properties:
+        settings:
+          title: settings
+          $ref: '#/components/schemas/bossanova.v1.RepoSettings'
+      title: ProxyGetRepoResponse
+      additionalProperties: false
     bossanova.v1.ProxyGetSessionRequest:
       type: object
       properties:
@@ -5533,6 +5748,21 @@ components:
           $ref: '#/components/schemas/bossanova.v1.ClaudeChat'
       title: ProxyRecordChatResponse
       additionalProperties: false
+    bossanova.v1.ProxyRemoveRepoRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        repoId:
+          type: string
+          title: repo_id
+      title: ProxyRemoveRepoRequest
+      additionalProperties: false
+    bossanova.v1.ProxyRemoveRepoResponse:
+      type: object
+      title: ProxyRemoveRepoResponse
+      additionalProperties: false
     bossanova.v1.ProxyResumeSessionRequest:
       type: object
       properties:
@@ -5663,6 +5893,74 @@ components:
           type: string
           title: notice_text
       title: ProxySwitchSessionAccountResponse
+      additionalProperties: false
+    bossanova.v1.ProxyUpdateRepoRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        repoId:
+          type: string
+          title: repo_id
+        displayName:
+          type:
+            - string
+            - "null"
+          title: display_name
+        setupScript:
+          type:
+            - string
+            - "null"
+          title: setup_script
+        mergeStrategy:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.MergeStrategy'
+            - type: "null"
+          title: merge_strategy
+        canAutoMerge:
+          type:
+            - boolean
+            - "null"
+          title: can_auto_merge
+        canAutoMergeDependabot:
+          type:
+            - boolean
+            - "null"
+          title: can_auto_merge_dependabot
+        canAutoRepair:
+          type:
+            - boolean
+            - "null"
+          title: can_auto_repair
+        sentryOrg:
+          type:
+            - string
+            - "null"
+          title: sentry_org
+        linearKey:
+          title: linear_key
+          $ref: '#/components/schemas/bossanova.v1.SecretUpdate'
+        sentryKey:
+          title: sentry_key
+          $ref: '#/components/schemas/bossanova.v1.SecretUpdate'
+        expectedUpdatedAt:
+          title: expected_updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: ProxyUpdateRepoRequest
+      additionalProperties: false
+      description: |-
+        ProxyUpdateRepoRequest mirrors the field-mask shape of daemon UpdateRepoRequest,
+         but uses the MergeStrategy enum and replaces the two plaintext secret string
+         fields with tri-state SecretUpdate messages. expected_updated_at drives
+         optimistic concurrency (reject if the stored updated_at has advanced).
+    bossanova.v1.ProxyUpdateRepoResponse:
+      type: object
+      properties:
+        settings:
+          title: settings
+          $ref: '#/components/schemas/bossanova.v1.RepoSettings'
+      title: ProxyUpdateRepoResponse
       additionalProperties: false
     bossanova.v1.ProxyWakeChatRequest:
       type: object
@@ -6105,6 +6403,17 @@ components:
           title: is_supported
       title: RemoveAgentRunHookResponse
       additionalProperties: false
+    bossanova.v1.RemoveRepoCommand:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+      title: RemoveRepoCommand
+      additionalProperties: false
+      description: |-
+        RemoveRepoCommand asks the daemon to remove a repo. Successful responses
+         carry no payload.
     bossanova.v1.RemoveRepoRequest:
       type: object
       properties:
@@ -6259,6 +6568,51 @@ components:
       title: Repo
       additionalProperties: false
       description: Repo represents a registered Git repository.
+    bossanova.v1.RepoSettings:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        displayName:
+          type: string
+          title: display_name
+        setupScript:
+          type:
+            - string
+            - "null"
+          title: setup_script
+        mergeStrategy:
+          title: merge_strategy
+          $ref: '#/components/schemas/bossanova.v1.MergeStrategy'
+        canAutoMerge:
+          type: boolean
+          title: can_auto_merge
+        canAutoMergeDependabot:
+          type: boolean
+          title: can_auto_merge_dependabot
+        canAutoRepair:
+          type: boolean
+          title: can_auto_repair
+        sentryOrg:
+          type: string
+          title: sentry_org
+        hasLinearKey:
+          type: boolean
+          title: has_linear_key
+        hasSentryKey:
+          type: boolean
+          title: has_sentry_key
+        updatedAt:
+          title: updated_at
+          description: echoed for optimistic concurrency
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: RepoSettings
+      additionalProperties: false
+      description: |-
+        RepoSettings is the web-safe projection of a Repo: non-secret fields plus
+         has_* booleans that report whether a secret is present. It NEVER carries a
+         plaintext key. Mirrors the masking done by DaemonRepoRef.
     bossanova.v1.ReportBugRequest:
       type: object
       properties:
@@ -6719,6 +7073,34 @@ components:
           $ref: '#/components/schemas/bossanova.v1.PluginInfo'
       title: SchedulerServiceGetInfoResponse
       additionalProperties: false
+    bossanova.v1.SecretAction:
+      type: string
+      title: SecretAction
+      enum:
+        - SECRET_ACTION_UNSPECIFIED
+        - SECRET_ACTION_UNCHANGED
+        - SECRET_ACTION_SET
+        - SECRET_ACTION_CLEAR
+      description: |-
+        SecretAction is the tri-state applied to a secret field on update.
+         UNSPECIFIED is treated as UNCHANGED (safe default for a default-constructed
+         message); SET replaces the value; CLEAR removes it.
+    bossanova.v1.SecretUpdate:
+      type: object
+      properties:
+        action:
+          title: action
+          $ref: '#/components/schemas/bossanova.v1.SecretAction'
+        value:
+          type:
+            - string
+            - "null"
+          title: value
+      title: SecretUpdate
+      additionalProperties: false
+      description: |-
+        SecretUpdate carries a secret mutation. value is required iff action == SET
+         and is ignored otherwise. Never populated on read/aggregate responses.
     bossanova.v1.SendChatMessageCommand:
       type: object
       properties:
@@ -8438,6 +8820,61 @@ components:
           $ref: '#/components/schemas/bossanova.v1.CronJob'
       title: UpdateCronJobResponse
       additionalProperties: false
+    bossanova.v1.UpdateRepoCommand:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+        displayName:
+          type:
+            - string
+            - "null"
+          title: display_name
+        setupScript:
+          type:
+            - string
+            - "null"
+          title: setup_script
+        mergeStrategy:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.MergeStrategy'
+            - type: "null"
+          title: merge_strategy
+        canAutoMerge:
+          type:
+            - boolean
+            - "null"
+          title: can_auto_merge
+        canAutoMergeDependabot:
+          type:
+            - boolean
+            - "null"
+          title: can_auto_merge_dependabot
+        canAutoRepair:
+          type:
+            - boolean
+            - "null"
+          title: can_auto_repair
+        sentryOrg:
+          type:
+            - string
+            - "null"
+          title: sentry_org
+        linearKey:
+          title: linear_key
+          $ref: '#/components/schemas/bossanova.v1.SecretUpdate'
+        sentryKey:
+          title: sentry_key
+          $ref: '#/components/schemas/bossanova.v1.SecretUpdate'
+        expectedUpdatedAt:
+          title: expected_updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: UpdateRepoCommand
+      additionalProperties: false
+      description: |-
+        UpdateRepoCommand mirrors the browser-safe proxy update surface. SecretUpdate
+         values are forwarded unchanged to the daemon's existing UpdateRepo handler.
     bossanova.v1.UpdateRepoRequest:
       type: object
       properties:
@@ -8474,6 +8911,11 @@ components:
             - string
             - "null"
           title: linear_api_key
+          description: |-
+            Legacy plaintext secret fields. Retained for backward-compat: a present
+             value still writes the key. When a SecretUpdate (linear_key/sentry_key
+             below) carries an action other than UNSPECIFIED/UNCHANGED, the SecretUpdate
+             wins over the legacy field for that secret.
         sentryApiKey:
           type:
             - string
@@ -8489,6 +8931,21 @@ components:
             - boolean
             - "null"
           title: can_auto_repair
+        linearKey:
+          title: linear_key
+          description: |-
+            Tri-state secret actions (UNCHANGED/SET/CLEAR): the authoritative secret
+             surface that never blanks a key on a save that does not re-supply it.
+          $ref: '#/components/schemas/bossanova.v1.SecretUpdate'
+        sentryKey:
+          title: sentry_key
+          $ref: '#/components/schemas/bossanova.v1.SecretUpdate'
+        expectedUpdatedAt:
+          title: expected_updated_at
+          description: |-
+            Optimistic-concurrency token: when set, the update is rejected (CodeAborted)
+             unless it still equals the repo's stored updated_at.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
       title: UpdateRepoRequest
       additionalProperties: false
     bossanova.v1.UpdateRepoResponse:

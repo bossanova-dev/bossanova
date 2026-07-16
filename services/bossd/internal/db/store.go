@@ -16,6 +16,14 @@ import (
 // finalize can't move the pointer back to a stale session and re-enable overlap.
 var ErrCronJobLastRunSuperseded = errors.New("cron job last run superseded by newer run")
 
+// ErrStaleRepoUpdate is returned by RepoStore.Update when an optimistic-
+// concurrency guard (UpdateRepoParams.ExpectedUpdatedAt set) does not match the
+// repo's current updated_at: another writer advanced the row since the caller
+// last read it. The write is rolled back atomically — no field is changed — so
+// callers surface a conflict (connect.CodeAborted) rather than clobbering the
+// concurrent edit. Distinct from sql.ErrNoRows, which means the row is gone.
+var ErrStaleRepoUpdate = errors.New("repo update rejected: stale updated_at token")
+
 // CreateRepoParams holds the parameters for creating a new repo.
 type CreateRepoParams struct {
 	DisplayName       string
@@ -42,6 +50,12 @@ type UpdateRepoParams struct {
 	LinearAPIKey           *string
 	SentryAPIKey           *string
 	SentryOrg              *string
+	// ExpectedUpdatedAt, when non-nil, enables an optimistic-concurrency guard:
+	// the update is applied only while the repo's stored updated_at still matches
+	// this token (compared at the stored millisecond string granularity). A
+	// mismatch returns ErrStaleRepoUpdate and rolls back atomically; a missing
+	// row returns sql.ErrNoRows.
+	ExpectedUpdatedAt *time.Time
 }
 
 // RepoStore defines the interface for repo persistence.
@@ -242,6 +256,9 @@ type CreateAgentChatParams struct {
 	// AccountID binds the chat to a rotation account; nil/empty = the
 	// system-default account 0 (no injected env, D9).
 	AccountID *string
+	// Model is the per-chat agent model id; empty inherits the agent CLI
+	// default (BOS-381). bossd never enumerates valid models.
+	Model string
 }
 
 // AgentChatStore defines the interface for agent chat persistence.

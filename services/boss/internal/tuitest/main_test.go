@@ -34,15 +34,3 @@ func testSessions() []*pb.Session {
 func testChats() []*pb.ClaudeChat {
 	return fixtures.Chats()
 }
-
-func testPRs() []*pb.PRSummary { //nolint:unused // available for future tests
-	return []*pb.PRSummary{
-		{
-			Number:     42,
-			Title:      "Add dark mode support",
-			HeadBranch: "boss/add-dark-mode",
-			State:      pb.PRState_PR_STATE_OPEN,
-			Author:     "dave",
-		},
-	}
-}

@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "title": "BOS-384 a worktree_gone cron outcome renders as a benign idle row, never a red FAILED",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "home settles, then open Settings",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        { "key": "s", "caption": "Press [s] to open Settings" },
+        {
+          "waitFor": "Worktree base directory",
+          "timeoutMs": 10000,
+          "caption": "Settings screen loaded"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "open the Scheduled Jobs list",
+      "steps": [
+        { "key": "c", "caption": "Press [c] to open the Scheduled Jobs (cron) list" },
+        {
+          "waitFor": "Stale branch cleanup",
+          "timeoutMs": 10000,
+          "caption": "Cron list loaded; the worktree_gone job 'Stale branch cleanup' is present"
+        },
+        {
+          "expect": [
+            {
+              "text": "CRON NAME REPO",
+              "match": "normalized",
+              "label": "cron list column headers (CRON NAME REPO AGENT ENABLED LAST RUN NEXT RUN STATUS)"
+            },
+            {
+              "text": "Stale branch cleanup",
+              "match": "normalized",
+              "label": "the worktree_gone job 'Stale branch cleanup' is listed"
+            },
+            {
+              "text": "Stale branch cleanup.*idle",
+              "match": "regex",
+              "label": "'Stale branch cleanup' (the worktree_gone job) shows a benign 'idle' STATUS — it is the last row, so a red FAILED would break this match"
+            }
+          ],
+          "caption": "The worktree_gone job 'Stale branch cleanup' renders with a plain 'idle' STATUS — no red FAILED framing"
+        }
+      ]
+    }
+  ]
+}

@@ -536,3 +536,31 @@ func TestRecoverStrandedCronSessions_LiveAndAttended_Untouched(t *testing.T) {
 		t.Fatalf("routed=%d reaped=%d, want 0/0 (live + attended both skipped)", n, rec.count())
 	}
 }
+
+func TestRecoverStrandedCronSessions_Archived_Skipped(t *testing.T) {
+	// An archived session's worktree was already removed by ArchiveSession,
+	// which leaves the row in an implementing state. ListByStates returns
+	// archived rows regardless of archived status, so finalizing one here would
+	// run `git status` against a gone path and surface the exact spurious
+	// pr_failed BOS-384 kills. The reaper must skip archived sessions entirely.
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	s := strandedCronSession("s1", "a1")
+	archivedAt := time.Now().Add(-time.Minute)
+	s.ArchivedAt = &archivedAt
+	sessions.sessions["s1"] = s
+	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute) // idle -> would otherwise route
+
+	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 || rec.count() != 0 {
+		t.Fatalf("routed=%d reaped=%d, want 0/0 (archived session skipped)", n, rec.count())
+	}
+	for _, c := range rec.calls {
+		if c.sessionID == "s1" {
+			t.Fatal("archived session must never be finalized")
+		}
+	}
+}

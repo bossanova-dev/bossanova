@@ -47,16 +47,16 @@ func TestAccountActions_DisableUnbound_ImmediateUpdate(t *testing.T) {
 	stub := &accountsStub{accounts: accountsListFixture()} // no sessions
 	m := seedAccountsListWithSessions(t, stub)             // sessionsKnown=true, count=0
 
-	updated, cmd := m.Update(keyPress('x'))
+	updated, cmd := m.Update(specialKeyPress(tea.KeySpace))
 	am := updated.(AccountsListModel)
 	if am.confirm.active {
-		t.Fatal("x on a known-unbound active account must NOT open a confirm")
+		t.Fatal("space on a known-unbound active account must NOT open a confirm")
 	}
 	if !am.disabling["acc-claude"] {
-		t.Fatal("x must mark the row as disabling")
+		t.Fatal("space must mark the row as disabling")
 	}
 	if runCmd(cmd) == nil {
-		t.Fatal("x must emit an UpdateAccount command")
+		t.Fatal("space must emit an UpdateAccount command")
 	}
 	if len(stub.updateReqs) != 1 {
 		t.Fatalf("UpdateAccount calls = %d, want 1", len(stub.updateReqs))
@@ -79,10 +79,10 @@ func TestAccountActions_DisableBound_ConfirmThenUpdate(t *testing.T) {
 	}
 	m := seedAccountsListWithSessions(t, stub)
 
-	updated, cmd := m.Update(keyPress('x'))
+	updated, cmd := m.Update(specialKeyPress(tea.KeySpace))
 	am := updated.(AccountsListModel)
 	if !am.confirm.active {
-		t.Fatal("x on a bound active account must open a confirm")
+		t.Fatal("space on a bound active account must open a confirm")
 	}
 	if cmd != nil {
 		t.Fatal("opening the disable confirm must not fire an RPC yet")
@@ -122,13 +122,13 @@ func TestAccountActions_Enable_NoWarning(t *testing.T) {
 	m := seedAccountsListWithSessions(t, stub)
 	m = cursorDown(t, m) // highlight acc-codex (disabled)
 
-	updated, cmd := m.Update(keyPress('x'))
+	updated, cmd := m.Update(specialKeyPress(tea.KeySpace))
 	am := updated.(AccountsListModel)
 	if am.confirm.active {
 		t.Fatal("enabling a disabled account must not open a confirm")
 	}
 	if runCmd(cmd) == nil {
-		t.Fatal("x must emit an UpdateAccount command to enable")
+		t.Fatal("space must emit an UpdateAccount command to enable")
 	}
 	if len(stub.updateReqs) != 1 {
 		t.Fatalf("UpdateAccount calls = %d, want 1", len(stub.updateReqs))
@@ -220,7 +220,7 @@ func TestAccountActions_BoundWarningCopy_GenericFallback(t *testing.T) {
 
 	// Disable of an active account with an unknown count opens a confirm with
 	// the generic warning (not a fabricated "0 running chats").
-	updated, _ := m.Update(keyPress('x'))
+	updated, _ := m.Update(specialKeyPress(tea.KeySpace))
 	dm := updated.(AccountsListModel)
 	if !dm.confirm.active {
 		t.Fatal("disable with unknown bound count must open a confirm (fail toward warning)")
@@ -318,7 +318,7 @@ func TestAccountActions_ConfirmPrompt_CredentialSafety(t *testing.T) {
 	}
 	m := seedAccountsListWithSessions(t, stub)
 
-	for _, key := range []tea.KeyPressMsg{keyPress('x'), keyPress('d')} {
+	for _, key := range []tea.KeyPressMsg{specialKeyPress(tea.KeySpace), keyPress('d')} {
 		updated, _ := m.Update(key)
 		content := strings.ToLower(updated.(AccountsListModel).View().Content)
 		for _, forbidden := range []string{"password", "sk-ant", "secret", "bearer "} {
@@ -394,10 +394,10 @@ func TestAccountActions_StatusUpdateError_ClearsPendingNoRefetch(t *testing.T) {
 	}
 	m := seedAccountsListWithSessions(t, stub)
 
-	updated, cmd := m.Update(keyPress('x')) // immediate disable
+	updated, cmd := m.Update(specialKeyPress(tea.KeySpace)) // immediate disable
 	am := updated.(AccountsListModel)
 	if !am.disabling["acc-claude"] {
-		t.Fatal("x must mark the row disabling before the RPC resolves")
+		t.Fatal("space must mark the row disabling before the RPC resolves")
 	}
 	msg := runCmd(cmd)
 	res, ok := msg.(accountStatusUpdatedMsg)
@@ -480,26 +480,26 @@ func TestAccountEdit_RemoveError_KeepsFormOpen(t *testing.T) {
 }
 
 // TestAccountActions_InFlightGuard_NoDuplicateRPC: while a row's status flip or
-// remove is in flight, a repeated x/d keypress is ignored so no duplicate RPC
+// remove is in flight, a repeated space/d keypress is ignored so no duplicate RPC
 // is dispatched.
 func TestAccountActions_InFlightGuard_NoDuplicateRPC(t *testing.T) {
-	// Immediate disable in flight -> second x is a no-op.
+	// Immediate disable in flight -> second space is a no-op.
 	stub := &accountsStub{accounts: accountsListFixture()}
 	m := seedAccountsListWithSessions(t, stub)
-	updated, firstCmd := m.Update(keyPress('x'))
+	updated, firstCmd := m.Update(specialKeyPress(tea.KeySpace))
 	am := updated.(AccountsListModel)
 	if runCmd(firstCmd) == nil {
-		t.Fatal("first x must emit an UpdateAccount command")
+		t.Fatal("first space must emit an UpdateAccount command")
 	}
 	if len(stub.updateReqs) != 1 {
-		t.Fatalf("first x must issue one UpdateAccount, got %d", len(stub.updateReqs))
+		t.Fatalf("first space must issue one UpdateAccount, got %d", len(stub.updateReqs))
 	}
-	_, cmd := am.Update(keyPress('x'))
+	_, cmd := am.Update(specialKeyPress(tea.KeySpace))
 	if cmd != nil {
-		t.Fatal("a second x while disabling is in flight must be a no-op")
+		t.Fatal("a second space while disabling is in flight must be a no-op")
 	}
 	if len(stub.updateReqs) != 1 {
-		t.Fatalf("a second x must not issue a duplicate UpdateAccount, got %d", len(stub.updateReqs))
+		t.Fatalf("a second space must not issue a duplicate UpdateAccount, got %d", len(stub.updateReqs))
 	}
 
 	// Remove confirmed -> row removing -> second d does not open a new confirm.

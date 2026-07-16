@@ -1115,6 +1115,11 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "session %s has no worktree path", sessionID)
 	}
 
+	// BOS-381: provider/account/model authority lives on the primary chat. Resolve
+	// it so a repair run dispatches under the chat's runner/credentials/model, not
+	// the session's stale seed.
+	sess = s.effectiveChatSession(ctx, sess)
+
 	// Route to the agent plugin matching the session's recorded AgentName.
 	// Sessions persisted before the multi-agent migration may have an empty
 	// AgentName here; the SQLite store's ""→"claude" fallback (Task 1)
@@ -1826,6 +1831,33 @@ func watchdogCompletionAvailable(run activeChatRun) (completionResult, bool) {
 	default:
 		return completionResult{}, false
 	}
+}
+
+// effectiveChatSession returns a shallow copy of sess with AgentName, Model, and
+// AccountID overridden from the session's PRIMARY chat (BOS-381 authority), or
+// sess unchanged when no primary chat row exists yet. Repair/agent runs that hold
+// only a session dispatch by the chat's provider, not the session's stale seed. A
+// chat that never bound its own account (nil) or model ("") inherits the
+// session's mirrored value.
+func (s *HostServiceServer) effectiveChatSession(ctx context.Context, sess *models.Session) *models.Session {
+	if sess == nil || s.agentChats == nil || sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
+		return sess
+	}
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, *sess.AgentSessionID)
+	if err != nil || chat == nil {
+		return sess
+	}
+	eff := *sess
+	if chat.AgentName != "" {
+		eff.AgentName = chat.AgentName
+	}
+	if chat.Model != "" {
+		eff.Model = chat.Model
+	}
+	if chat.AccountID != nil {
+		eff.AccountID = chat.AccountID
+	}
+	return &eff
 }
 
 func (s *HostServiceServer) providerSessionIDForAgentSession(ctx context.Context, agentSessionID string) string {

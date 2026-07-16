@@ -14,9 +14,10 @@ import (
 // edit form (account_edit.go), so the two surfaces cannot drift in behavior or
 // prompt copy.
 //
-// Keymap reconciliation (BOS-268): the list binds `x` = toggle disable/enable
-// and `d` = remove. This reassigns `d` from BOS-265's disable-stub to remove and
-// introduces `x` for the toggle, matching the ticket's acceptance criteria.
+// Keymap reconciliation: the list binds `[space]` = toggle disable/enable and
+// `d` = remove. BOS-268 reassigned `d` from BOS-265's disable-stub to remove and
+// introduced the toggle; BOS-392 rebound the toggle from `x` to `[space]` so it
+// matches the cron list's `[space] toggle`.
 //
 // Account status vocabulary mirrors lib/bossalib/models/account.go
 // (AccountStatusActive / AccountStatusDisabled), which this package cannot

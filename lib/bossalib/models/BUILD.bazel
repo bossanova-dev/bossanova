@@ -20,7 +20,10 @@ go_library(
 
 go_test(
     name = "models_test",
-    srcs = ["convert_test.go"],
+    srcs = [
+        "convert_test.go",
+        "merge_strategy_test.go",
+    ],
     embed = [":models"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",

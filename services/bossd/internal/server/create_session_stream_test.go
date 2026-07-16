@@ -22,6 +22,7 @@ import (
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/socketauth"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -32,6 +33,10 @@ import (
 )
 
 var setupServerTestDBMigrateMu sync.Mutex
+
+// streamTestToken is a fixed valid 64-char hex socket-auth token used to wire
+// the in-process httptest server and its client in this file's harness.
+const streamTestToken = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 
 func TestServerListenSetsWriteTimeout(t *testing.T) {
 	t.Parallel()
@@ -564,13 +569,16 @@ func newCreateSessionStreamHarnessWithProvider(t *testing.T, worktrees *setupStr
 	})
 
 	mux := http.NewServeMux()
-	path, handler := bossanovav1connect.NewDaemonServiceHandler(s)
+	path, handler := bossanovav1connect.NewDaemonServiceHandler(s, connect.WithInterceptors(socketauth.NewServerInterceptor(streamTestToken)))
 	mux.Handle(path, handler)
 	httpServer := httptest.NewServer(mux)
 	t.Cleanup(httpServer.Close)
 
 	return &createSessionStreamHarness{
-		client:   bossanovav1connect.NewDaemonServiceClient(httpServer.Client(), httpServer.URL),
+		client: bossanovav1connect.NewDaemonServiceClient(
+			httpServer.Client(), httpServer.URL,
+			connect.WithInterceptors(socketauth.NewClientInterceptor(streamTestToken)),
+		),
 		server:   s,
 		repo:     repo,
 		repos:    repos,

@@ -646,6 +646,194 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPRTitleUpdateFailure_BlocksS
 	}
 }
 
+// TestFinalizeSession_MissingWorktree_BenignWorktreeGone proves that finalizing
+// a session whose worktree is already gone (archived/removed) yields the benign
+// worktree_gone outcome — NOT pr_failed — and does not transition the session to
+// Blocked or persist a scary blocked reason. This is the defensive fix for the
+// spurious "finalize failed (pr_failed)" errors on cron/headless sessions.
+func TestFinalizeSession_MissingWorktree_BenignWorktreeGone(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	// Status fails because the worktree path is gone: git reports it is not a
+	// git repository. Mirrors Manager.Status wrapping the runGit error.
+	wt := &mockWorktreeManager{
+		statusErr: fmt.Errorf("git status: fatal: not a git repository (or any of the parent directories): .git"),
+	}
+	cr := newMockAgentRunner()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	// A worktree path that genuinely does not exist on disk (never created).
+	gonePath := t.TempDir() + "/removed-worktree"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: gonePath,
+		BranchName:   "cron-br-1",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, nil, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomeWorktreeGone {
+		t.Fatalf("outcome = %q, want %q (benign, not pr_failed)",
+			res.Outcome, models.CronJobOutcomeWorktreeGone)
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess == nil {
+		t.Fatal("session row should be preserved")
+	}
+	if sess.State == machine.Blocked {
+		t.Fatalf("state = %s, want NOT blocked (worktree_gone is benign)", sess.State)
+	}
+	if sess.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %v, want nil (no pr_failed reason persisted)", *sess.BlockedReason)
+	}
+	// The recorded cron outcome is worktree_gone, not pr_failed.
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomeWorktreeGone {
+		t.Fatalf("recorded outcome = %+v, want single worktree_gone entry", cron.lastRunCalls)
+	}
+}
+
+// TestNeedsAttention_WorktreeGone_False pins that worktree_gone is a
+// non-attention outcome, so a finalize against a gone worktree never routes the
+// session to Blocked.
+func TestNeedsAttention_WorktreeGone_False(t *testing.T) {
+	if needsAttention(models.CronJobOutcomeWorktreeGone) {
+		t.Fatal("needsAttention(worktree_gone) = true, want false (benign no-op)")
+	}
+}
+
+// TestFinalizeSession_LiveWorktreeStatusError_PRFailed is the non-regression
+// twin of the worktree_gone test: when `git status` fails but the worktree path
+// still exists on disk, the failure is a genuine one against a live (corrupt or
+// de-initialized) worktree — so it must stay the attention-worthy pr_failed
+// (Blocked, scary reason), NOT be swallowed as benign worktree_gone. The status
+// error text here even names "not a git repository" (the exact string
+// worktreeIsMissing matches as a fallback), so this pins that os.Stat confirming
+// the path is present wins over the error-text fallback: a live-but-corrupt
+// worktree must never be reclassified as gone.
+func TestFinalizeSession_LiveWorktreeStatusError_PRFailed(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	// Status fails with a git error whose text DOES name a missing repository —
+	// the fallback substring — but the worktree path below is present on disk
+	// (e.g. a corrupt/de-initialized worktree whose .git was removed). The
+	// present-path check must win, keeping this a genuine pr_failed.
+	wt := &mockWorktreeManager{
+		statusErr: fmt.Errorf("git status: fatal: not a git repository (or any of the parent directories): .git"),
+	}
+	cr := newMockAgentRunner()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	// A worktree path that genuinely exists on disk (t.TempDir), so os.Stat
+	// confirms presence and the missing-worktree fallback must not apply.
+	livePath := t.TempDir()
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: livePath,
+		BranchName:   "cron-br-1",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, nil, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want %q (live path, generic git error is not benign)",
+			res.Outcome, models.CronJobOutcomePRFailed)
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess == nil {
+		t.Fatal("session row should be preserved")
+	}
+	if sess.State != machine.Blocked {
+		t.Fatalf("state = %s, want blocked (genuine finalize failure)", sess.State)
+	}
+	if sess.BlockedReason == nil || !strings.Contains(*sess.BlockedReason, "pr_failed") {
+		t.Fatalf("BlockedReason = %v, want a pr_failed reason persisted", sess.BlockedReason)
+	}
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("recorded outcome = %+v, want single pr_failed entry", cron.lastRunCalls)
+	}
+}
+
+// TestWorktreeIsMissing gives the nuanced worktreeIsMissing helper direct
+// table-driven coverage of every documented branch — the integration tests only
+// exercise the present-path and absent-path happy branches. The precedence under
+// test: os.Stat confirming PRESENCE wins (a live-but-corrupt worktree stays a
+// genuine failure regardless of error text); os.IsNotExist is the authoritative
+// "gone" signal; and the git-error-text fallback ("not a git repository" / "no
+// such file or directory") only stands in when the path cannot be confirmed
+// present (empty path). Pinning these makes the empty-path fallback an
+// intentional, tested design choice rather than an accident.
+func TestWorktreeIsMissing(t *testing.T) {
+	present := t.TempDir()             // a path that exists on disk
+	absent := t.TempDir() + "/gone-wt" // never created → os.Stat IsNotExist
+	notARepo := fmt.Errorf("fatal: not a git repository (or any of the parent directories): .git")
+	noSuchFile := fmt.Errorf("chdir /x: no such file or directory")
+	unrelated := fmt.Errorf("fatal: unable to read tree object")
+
+	tests := []struct {
+		name      string
+		path      string
+		statusErr error
+		want      bool
+	}{
+		// Present path wins over the error-text fallback: a corrupt/de-initialized
+		// live worktree is a genuine failure (pr_failed), never benign.
+		{"present path + not-a-git-repo text -> live failure", present, notARepo, false},
+		{"present path + no-such-file text -> live failure", present, noSuchFile, false},
+		{"present path + nil err -> live failure", present, nil, false},
+		// Absent path is the authoritative gone signal, regardless of error text.
+		{"absent path + unrelated err -> gone", absent, unrelated, true},
+		{"absent path + nil err -> gone", absent, nil, true},
+		// Empty path can't name a live worktree: the error-text fallback stands in.
+		{"empty path + not-a-git-repo text -> gone (fallback)", "", notARepo, true},
+		{"empty path + no-such-file text -> gone (fallback)", "", noSuchFile, true},
+		{"empty path + unrelated err -> live failure", "", unrelated, false},
+		{"empty path + nil err -> live failure", "", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := worktreeIsMissing(tc.path, tc.statusErr); got != tc.want {
+				t.Fatalf("worktreeIsMissing(%q, %v) = %v, want %v", tc.path, tc.statusErr, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFinalizeSession_CleanWorktreeNoBranchPR_DeletesSession(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
@@ -2131,6 +2319,56 @@ func TestRecoverFinalizingSessions(t *testing.T) {
 	}
 	if cron.lastRunCalls[0].outcome != models.CronJobOutcomeFailedRecovered {
 		t.Errorf("recorded outcome = %q, want failed_recovered", cron.lastRunCalls[0].outcome)
+	}
+}
+
+// TestRecoverFinalizingSessions_Archived_Skipped pins the symmetric archived
+// guard: a benign worktree_gone finalize leaves an archived/removed session in
+// Finalizing (FinalizeSession steps 5 and 6 are both skipped for that benign
+// outcome). ListByState returns archived rows, so without the guard this
+// restart-recovery pass would record failed_recovered and transition the row to
+// Blocked — resurrecting the exact scary framing BOS-384 kills. The pass must
+// skip archived sessions entirely, mirroring RecoverStrandedCronSessions.
+func TestRecoverFinalizingSessions_Archived_Skipped(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	archivedAt := time.Now().Add(-time.Minute)
+	sessions.sessions["sess-archived"] = &models.Session{
+		ID:           "sess-archived",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-archived",
+		State:        machine.Finalizing,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+		ArchivedAt:   &archivedAt,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	n, err := lc.RecoverFinalizingSessions(ctx)
+	if err != nil {
+		t.Fatalf("RecoverFinalizingSessions: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("recovered count = %d, want 0 (archived session skipped)", n)
+	}
+	// The archived row is left untouched: still Finalizing, no Blocked
+	// transition, and no failed_recovered cron write clobbering worktree_gone.
+	sess := sessions.sessions["sess-archived"]
+	if sess.State != machine.Finalizing {
+		t.Fatalf("archived session state = %s, want unchanged (finalizing)", sess.State)
+	}
+	if len(cron.lastRunCalls) != 0 {
+		t.Fatalf("UpdateLastRun calls = %d, want 0 (archived session never reclassified)", len(cron.lastRunCalls))
 	}
 }
 

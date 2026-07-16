@@ -199,8 +199,9 @@ func rotationExhaustedHint(sess *pb.Session, now time.Time) string {
 
 // rotationHistoryBlock renders the session's recent rotation decisions
 // (newest-first, capped) as a muted block, e.g.
-// "15:02 acct-a → acct-b rotated". Returns "" when the session has no
-// rotation history so callers can skip rendering entirely (no layout shift).
+// "15:02 yuki@kamik.ai switched to dave@kamik.ai — resumed". Returns "" when
+// the session has no rotation history so callers can skip rendering entirely
+// (no layout shift).
 func rotationHistoryBlock(sess *pb.Session, width int) string {
 	if sess == nil {
 		return ""
@@ -219,7 +220,7 @@ func rotationHistoryBlock(sess *pb.Session, width int) string {
 		line := fmt.Sprintf("%s %s",
 			ev.GetCreatedAt().AsTime().Local().Format("15:04"),
 			rotationEventLabel(ev))
-		if detail := strings.TrimSpace(ev.GetDetail()); detail != "" {
+		if detail := rotationEventDetail(ev); detail != "" {
 			line += " — " + detail
 		}
 		lines = append(lines, line)
@@ -227,12 +228,33 @@ func rotationHistoryBlock(sess *pb.Session, width int) string {
 	return styleStatusMuted.Width(width).Render(strings.Join(lines, "\n"))
 }
 
+// rotationEventDetail preserves outcome-specific context. The TrimPrefix is a
+// LEGACY-ROW shim only: manual-switch audits written before the daemon split
+// the pane notice from the audit Detail (switch_account.go step 6) stored the
+// full "switched to <account> — resumed" sentence, which would duplicate the
+// label line. New rows carry only the outcome suffix ("resumed" / "started
+// fresh (…)"), so the prefix never matches and the detail passes through.
+func rotationEventDetail(ev *pb.RotationEvent) string {
+	detail := strings.TrimSpace(ev.GetDetail())
+	if ev.GetOutcome() != pb.RotationOutcome_ROTATION_OUTCOME_ROTATED {
+		return detail
+	}
+	prefix := "switched to " + ev.GetToAccount() + " —"
+	return strings.TrimSpace(strings.TrimPrefix(detail, prefix))
+}
+
 // rotationEventLabel renders a single rotation decision as a short,
 // human-readable phrase keyed off its outcome (BOS-176).
 func rotationEventLabel(ev *pb.RotationEvent) string {
 	switch ev.GetOutcome() {
 	case pb.RotationOutcome_ROTATION_OUTCOME_ROTATED:
-		return fmt.Sprintf("%s → %s rotated", ev.GetFromAccount(), ev.GetToAccount())
+		// Both sides render as account labels (emails). Legacy rows written
+		// before the from-side was resolved to a label carry an empty from —
+		// drop the leading space rather than render " switched to X".
+		if ev.GetFromAccount() == "" {
+			return fmt.Sprintf("switched to %s", ev.GetToAccount())
+		}
+		return fmt.Sprintf("%s switched to %s", ev.GetFromAccount(), ev.GetToAccount())
 	case pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_DISABLED:
 		return "rotation disabled — status only"
 	case pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY:

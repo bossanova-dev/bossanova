@@ -529,6 +529,78 @@ func TestStartTmuxChat_SendsModel(t *testing.T) {
 	}
 }
 
+// TestEffectiveSpawnSession_ReSourcesFromPrimaryChat proves restart/rotation
+// spawn paths (which hold only a session) read provider/account/model from the
+// session's primary chat (BOS-381), and fall back to the session unchanged when
+// no primary chat exists (the first-start seed).
+func TestEffectiveSpawnSession_ReSourcesFromPrimaryChat(t *testing.T) {
+	h := newStartTmuxChatHarness(t)
+	agentSessionID := "agent-1"
+	acct := "acct-codex-2"
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			SessionID:      "sess-1",
+			AgentSessionID: agentSessionID,
+			AgentName:      "codex",
+			Model:          "gpt-5",
+			AccountID:      &acct,
+		}},
+	}
+	sess := &models.Session{ID: "sess-1", AgentName: "claude", Model: "sonnet", AgentSessionID: &agentSessionID}
+	eff := h.lc.effectiveSpawnSession(context.Background(), sess)
+	if eff.AgentName != "codex" {
+		t.Errorf("eff.AgentName = %q, want codex (from primary chat)", eff.AgentName)
+	}
+	if eff.Model != "gpt-5" {
+		t.Errorf("eff.Model = %q, want gpt-5 (from primary chat)", eff.Model)
+	}
+	if eff.AccountID == nil || *eff.AccountID != acct {
+		t.Errorf("eff.AccountID = %v, want %q (from primary chat)", eff.AccountID, acct)
+	}
+	// The original session is not mutated.
+	if sess.AgentName != "claude" || sess.Model != "sonnet" {
+		t.Errorf("original session mutated: agent=%q model=%q", sess.AgentName, sess.Model)
+	}
+
+	// No primary chat (nil AgentSessionID) → session returned unchanged (seed path).
+	seed := &models.Session{ID: "sess-x", AgentName: "claude", Model: "sonnet"}
+	if got := h.lc.effectiveSpawnSession(context.Background(), seed); got != seed {
+		t.Errorf("effectiveSpawnSession with no primary chat = %v, want the session unchanged", got)
+	}
+}
+
+// TestStartTmuxChat_SeedsFirstChatAgentAccountModel proves the first chat's
+// agent_chats row is seeded from the session's resolved provider/account/model
+// (BOS-381): the chat becomes the runtime authority from the moment it exists.
+func TestStartTmuxChat_SeedsFirstChatAgentAccountModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	acct := "acct-seed-1"
+	h.sessions.sessions["sess-1"].Model = "sonnet"
+	h.sessions.sessions["sess-1"].AccountID = &acct
+	h.sessions.sessions["sess-1"].AgentName = "claude"
+
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{}); err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if len(h.chats.createCalls) != 1 {
+		t.Fatalf("agent_chats Create calls = %d, want 1", len(h.chats.createCalls))
+	}
+	got := h.chats.createCalls[0]
+	if got.AgentName != "claude" {
+		t.Errorf("seed AgentName = %q, want claude", got.AgentName)
+	}
+	if got.Model != "sonnet" {
+		t.Errorf("seed Model = %q, want sonnet", got.Model)
+	}
+	if got.AccountID == nil || *got.AccountID != acct {
+		t.Errorf("seed AccountID = %v, want %q", got.AccountID, acct)
+	}
+}
+
 // TestStartTmuxChat_PassesMcpConfigPath proves the live spawn wires the
 // per-session boss MCP config: with a trusted `mcp` binary resolvable, the
 // captured request carries an absolute McpConfigPath under the app-data dir

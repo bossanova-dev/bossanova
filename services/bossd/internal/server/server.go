@@ -28,6 +28,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/socketauth"
 	"github.com/recurser/bossalib/trackerprompt"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/account"
@@ -372,8 +373,20 @@ func (s *Server) Listen(socketPath string) error {
 		return fmt.Errorf("chmod socket: %w", err)
 	}
 
+	// Application-level auth (defence-in-depth behind the 0700 socket perms):
+	// generate/load a stable Bearer token co-located with the socket and reject
+	// any RPC lacking it. Never log the token itself.
+	token, err := socketauth.LoadOrCreateToken(socketPath)
+	if err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("load socket auth token: %w", err)
+	}
+
 	mux := http.NewServeMux()
-	path, handler := bossanovav1connect.NewDaemonServiceHandler(s, connect.WithInterceptors(errortrack.Interceptor()))
+	path, handler := bossanovav1connect.NewDaemonServiceHandler(s, connect.WithInterceptors(
+		socketauth.NewServerInterceptor(token),
+		errortrack.Interceptor(),
+	))
 	mux.Handle(path, withCreateSessionWriteDeadlineOverride(handler))
 
 	s.srv = &http.Server{
@@ -585,6 +598,9 @@ func (s *Server) RemoveRepo(ctx context.Context, req *connect.Request[pb.RemoveR
 	}
 
 	if err := s.repos.Delete(ctx, req.Msg.Id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %s", req.Msg.Id))
+		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("remove repo: %w", err))
 	}
 
@@ -611,7 +627,10 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 		params.CanAutoRepair = msg.CanAutoRepair
 	}
 	if msg.MergeStrategy != nil {
-		ms := models.MergeStrategy(*msg.MergeStrategy)
+		// Normalize at the storage boundary so an empty/unknown legacy string is
+		// persisted as the default 'merge' rather than written verbatim (scanRepo
+		// normalizes on read, but keep invalid values out of the column too).
+		ms := models.ParseMergeStrategy(*msg.MergeStrategy)
 		params.MergeStrategy = &ms
 	}
 	if msg.SetupScript != nil {
@@ -622,21 +641,75 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 			params.SetupScript = &msg.SetupScript
 		}
 	}
-	if msg.LinearApiKey != nil {
-		params.LinearAPIKey = msg.LinearApiKey
-	}
-	if msg.SentryApiKey != nil {
-		params.SentryAPIKey = msg.SentryApiKey
-	}
+	// Secret fields: the tri-state SecretUpdate is authoritative and wins over
+	// the legacy plaintext field. UNCHANGED/UNSPECIFIED (or a nil message) leaves
+	// the param nil so the stored key is never blanked on a save-without-retype.
+	params.LinearAPIKey = secretUpdateToParam(msg.LinearKey, msg.LinearApiKey)
+	params.SentryAPIKey = secretUpdateToParam(msg.SentryKey, msg.SentryApiKey)
 	if msg.SentryOrg != nil {
 		params.SentryOrg = msg.SentryOrg
 	}
+	if msg.ExpectedUpdatedAt != nil {
+		t := msg.ExpectedUpdatedAt.AsTime()
+		params.ExpectedUpdatedAt = &t
+	}
 	repo, err := s.repos.Update(ctx, msg.Id, params)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update repo: %w", err))
+		switch {
+		case errors.Is(err, db.ErrStaleRepoUpdate):
+			return nil, connect.NewError(connect.CodeAborted, fmt.Errorf("repo changed since last read: %w", err))
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
+		default:
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update repo: %w", err))
+		}
 	}
 
 	return connect.NewResponse(&pb.UpdateRepoResponse{Repo: repoToProto(repo)}), nil
+}
+
+// secretUpdateToParam translates a tri-state SecretUpdate into an
+// UpdateRepoParams secret pointer, falling back to the legacy plaintext field.
+//   - SET   → &value (write the provided secret; "" when no value is supplied)
+//   - CLEAR → pointer to "" (clear the stored key)
+//   - UNCHANGED/UNSPECIFIED or a nil message → the legacy field (nil = no write)
+//
+// The SecretUpdate therefore wins over the legacy field whenever it carries an
+// actionable SET/CLEAR; only an absent or UNCHANGED action defers to legacy.
+func secretUpdateToParam(su *pb.SecretUpdate, legacy *string) *string {
+	if su != nil {
+		switch su.GetAction() {
+		case pb.SecretAction_SECRET_ACTION_SET:
+			v := su.GetValue()
+			return &v
+		case pb.SecretAction_SECRET_ACTION_CLEAR:
+			empty := ""
+			return &empty
+		case pb.SecretAction_SECRET_ACTION_UNSPECIFIED, pb.SecretAction_SECRET_ACTION_UNCHANGED:
+			// Defer to the legacy field below (no actionable secret mutation).
+		}
+	}
+	return legacy
+}
+
+// GetRepoSettings returns the web-safe, secret-masked settings for a repo. The
+// response carries has_linear_key/has_sentry_key booleans and the non-secret
+// sentry_org — never the plaintext key material — plus updated_at as the
+// optimistic-concurrency token the client echoes back on the next UpdateRepo.
+func (s *Server) GetRepoSettings(ctx context.Context, req *connect.Request[pb.GetRepoSettingsRequest]) (*connect.Response[pb.GetRepoSettingsResponse], error) {
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	}
+
+	repo, err := s.repos.Get(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get repo: %w", err))
+	}
+
+	return connect.NewResponse(&pb.GetRepoSettingsResponse{Settings: repoToRepoSettings(repo)}), nil
 }
 
 func (s *Server) ListRepoPRs(ctx context.Context, req *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {
@@ -1407,6 +1480,8 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 		}
 	}
 
+	// Re-source provider/account from the primary chat (BOS-381 authority).
+	s.withPrimaryChatIdentity(ctx, p, session)
 	// Resolve the non-secret account label for display (best-effort).
 	s.withAccountLabel(ctx, p, session)
 	// Hydrate the recent rotation audit events for the history block (best-effort).
@@ -1438,13 +1513,17 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		}
 	}
 
-	// Build repo lookup for denormalization and attention hydration.
+	// Build repo lookup for denormalization and attention hydration, plus a
+	// session-by-id index for the BOS-381 primary-chat re-source below (which runs
+	// after the batch chat load to avoid an N+1 lookup).
 	repoCache := make(map[string]*models.Repo)
+	sessByID := make(map[string]*models.Session, len(rows))
 	for _, row := range rows {
 		if row == nil || row.Session == nil {
 			continue
 		}
 		sess := row.Session
+		sessByID[sess.ID] = sess
 		if _, ok := repoCache[sess.RepoID]; !ok {
 			if repo, err := s.repos.Get(ctx, sess.RepoID); err == nil {
 				repoCache[sess.RepoID] = repo
@@ -1467,10 +1546,9 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 			p.RepoDisplayName = row.RepoDisplayName
 			p.RepoOriginUrl = CanonicalRepoOriginURL(row.RepoOriginURL)
 		}
-		// Resolve the non-secret account label for display (best-effort).
-		s.withAccountLabel(ctx, p, sess)
-		// Hydrate recent rotation audit events for the history block (best-effort).
-		s.withRotationEvents(ctx, p, sess)
+		// Provider/account re-source (BOS-381) + account label + rotation events are
+		// hydrated below, after the batch chat load, so the primary-chat re-source
+		// reuses the already-loaded chats instead of an N+1 GetByAgentSessionID.
 		pbSessions = append(pbSessions, p)
 	}
 
@@ -1507,6 +1585,21 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	// the autopilot removal will reintroduce a repair-driven derivation.
 
 	chatsBySession, chatsLoaded := s.chatsBySessionForStatuses(ctx, sessionIDs)
+
+	// BOS-381: re-source provider/account from each session's PRIMARY chat (the
+	// runtime authority) using the already-loaded chats, then hydrate the account
+	// label (reads the re-sourced account_id) and rotation events. Runs here so the
+	// primary-chat re-source reuses the batch load above rather than an N+1 lookup.
+	for _, p := range pbSessions {
+		if primary := primaryChatFromSlice(chatsBySession[p.Id], p.GetAgentSessionId()); primary != nil {
+			applyPrimaryChatIdentity(p, primary)
+		}
+		sess := sessByID[p.Id]
+		// Resolve the non-secret account label for display (best-effort).
+		s.withAccountLabel(ctx, p, sess)
+		// Hydrate recent rotation audit events for the history block (best-effort).
+		s.withRotationEvents(ctx, p, sess)
+	}
 
 	// Hydrate the liveness heartbeat + auth-failed attention overlay per session.
 	// Runs after suppressStaleConflictAttention so the auth overlay sees the
@@ -2345,8 +2438,6 @@ func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessi
 		case errors.Is(err, session.ErrChatMidTurn):
 			return session.SwitchAccountResult{}, connect.NewError(connect.CodeFailedPrecondition,
 				fmt.Errorf("chat is mid-turn; confirm the switch (force) to interrupt it: %w", err))
-		case errors.Is(err, session.ErrCrossAgentSwitchUnsupported):
-			return session.SwitchAccountResult{}, connect.NewError(connect.CodeFailedPrecondition, err)
 		case errors.Is(err, session.ErrAccountCooling), errors.Is(err, session.ErrAccountDisabled), errors.Is(err, session.ErrAccountFailed):
 			return session.SwitchAccountResult{}, connect.NewError(connect.CodeFailedPrecondition, err)
 		case errors.Is(err, sql.ErrNoRows):
@@ -2365,6 +2456,9 @@ func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessi
 	if s.onSessionUpdated != nil {
 		if sess, gerr := s.sessions.Get(ctx, sessionID); gerr == nil {
 			p := s.sessionProtoWithRepo(ctx, sess)
+			// Re-source provider/account from the primary chat (BOS-381 authority)
+			// so the streamed delta matches the Get/List read paths.
+			s.withPrimaryChatIdentity(ctx, p, sess)
 			// Hydrate the non-secret account label so the streamed delta matches
 			// the Get/List read paths; otherwise the web AccountBadge shows the
 			// raw account id until the next full snapshot.
@@ -2559,7 +2653,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 			repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "attach chat", s.logger)
 			return dotenv.OverlayWithRepo(sessionEnvFunc(), sess.WorktreePath, repo)
 		},
-		Model:           modelForChatAgent(sess, chat.AgentName),
+		Model:           chat.Model,
 		McpConfigPath:   mcpConfigPath,
 		StrictMcpConfig: session.StrictMcpConfigForSession(sess),
 	})

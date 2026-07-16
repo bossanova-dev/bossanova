@@ -4,7 +4,7 @@
 	mutate-report mutate-survivors mutate-uncovered \
 	debt-knip \
 	plugins plugins-all proof proof-plan proof-test proof-tui-prebuild readme-gifs release release-codex-check \
-	setup-worktree split stage-release test test-affected test-all test-full test-profile test-race test-smoke test-web \
+	setup-worktree split stage-release test test-affected test-all test-full test-profile test-race test-smoke test-web test-web-e2e \
 	test-native-ledger test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
 	test-no-inline-stop-hooks test-public-mirror test-readme test-scripts \
 	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
@@ -14,9 +14,16 @@
 ## all: Fast affected check (default target) — lint + test only the affected/changed
 ## code. Fast is the default and exhaustive is opt-in (BOS-371): the old exhaustive
 ## clean+generate+format+build (~60s+, a full cross-platform rebuild that also
-## reformats every doc) now lives under `make all-full`. Build binaries with
+## reformats every doc) now lives under `make all-full`. As a convenience, if bin/
+## has been removed (e.g. after `make clean`) this self-heals the binaries first via
+## `make build plugins`, then runs the fast check. The guard keys off bin/boss, so a
+## populated bin/ adds ~0ms — the fast loop is untouched. `plugins` is deliberately
+## NOT an unconditional prereq: its claude sub-binary relinks every run (phony
+## copy-skills dep), which would tax every warm `make`. Rebuild explicitly with
 ## `make build` / `make plugins`.
-all: lint test
+all:
+	@[ -x $(BIN_DIR)/boss ] || $(MAKE) build plugins
+	$(MAKE) lint test
 
 ## all-full: Exhaustive clean, generate protos, format everything, and build all
 ## binaries — the previous default `make`. Slow; use in release prep, not the edit loop.
@@ -474,6 +481,17 @@ ifneq ($(wildcard services/web/package.json),)
 ## hits. Deliberately kept out of test-smoke — node startup + turbo hash cost.
 test-web: $(WEB_DEPS_STAMP)
 	pnpm turbo run test lint typecheck --filter=web --filter=marketing
+endif
+
+ifneq ($(wildcard services/web/package.json),)
+## test-web-e2e: Opt-in/release-tier web Playwright Tier-1 faked E2E suite (incl. smoke spec).
+## NOT part of the default test/test-web/test-smoke graph — it rebuilds the VITE_E2E
+## bundle and needs a Chromium browser, so it stays opt-in and matches the release-only CI job.
+test-web-e2e: $(WEB_DEPS_STAMP)
+	@# Best-effort Chromium install (mirrors setup-worktree) — never fatal so the
+	@# target itself is correct even where the browser can't be fetched.
+	( cd services/web && pnpm exec playwright install chromium ) || echo "playwright install chromium failed (non-fatal)";
+	$(MAKE) -C services/web test-e2e
 endif
 
 ## test-smoke: Fast agent loop. No coverage, no race, no forced cache bypass.

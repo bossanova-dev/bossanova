@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -342,6 +343,16 @@ func TestRemoveRepo(t *testing.T) {
 		_, err := s.RemoveRepo(context.Background(), connect.NewRequest(&pb.RemoveRepoRequest{Id: "r1"}))
 		if err == nil || !strings.Contains(err.Error(), "remove repo") {
 			t.Fatalf("RemoveRepo() error = %v, want remove repo error", err)
+		}
+	})
+
+	t.Run("missing repo returns not found", func(t *testing.T) {
+		repos := &repoMgmtRepoStore{deleteErr: sql.ErrNoRows}
+		s := New(Config{Repos: repos})
+
+		_, err := s.RemoveRepo(context.Background(), connect.NewRequest(&pb.RemoveRepoRequest{Id: "missing"}))
+		if got := connect.CodeOf(err); got != connect.CodeNotFound {
+			t.Fatalf("code = %v, want NotFound (err=%v)", got, err)
 		}
 	})
 

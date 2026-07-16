@@ -46,14 +46,14 @@ check_terraform_env() {
   require_file "docs/plans/2026-05-28-gke-orchestrator-migration.md"
 
   local variables=(
-    "variable \"bosso_workos_api_key\""
+    "variable \"workos_api_key\""
     "variable \"bosso_stripe_secret_key\""
     "variable \"bosso_stripe_cloud_price_id\""
     "variable \"bosso_sentry_dsn\""
   )
   local terraform_lines=(
     "bosso_github_app_private_key_env = replace(var.bosso_github_app_private_key, \"\\n\", \"\\\\n\")"
-    "BOSSO_WORKOS_API_KEY=\${var.bosso_workos_api_key}"
+    "BOSSO_WORKOS_API_KEY=\${var.workos_api_key}"
     "BOSSO_STRIPE_SECRET_KEY=\${var.bosso_stripe_secret_key}"
     "BOSSO_STRIPE_CLOUD_PRICE_ID=\${var.bosso_stripe_cloud_price_id}"
     "BOSSO_GITHUB_APP_ID=\${var.bosso_github_app_id}"

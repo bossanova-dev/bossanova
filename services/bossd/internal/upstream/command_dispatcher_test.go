@@ -35,6 +35,10 @@ type fakeCommandHandler struct {
 	listAgentsResult     *pb.ListAgentsResponse
 	listAccountsResult   *pb.ListAccountsResponse
 	listAccountsProvider string // last provider passed to ListAccounts
+	repoSettings         *pb.GetRepoSettingsResponse
+	updatedRepo          *pb.UpdateRepoResponse
+	removedRepoID        string
+	updatedRepoRequest   *pb.UpdateRepoCommand
 	// ListRepoPRs / ListTrackerIssues knobs.
 	repoPRs    *pb.ListRepoPRsResponse
 	issues     *pb.ListTrackerIssuesResponse
@@ -124,6 +128,17 @@ func (f *fakeCommandHandler) ListAccounts(_ context.Context, provider string) (*
 	f.listAccountsCalls.Add(1)
 	f.listAccountsProvider = provider
 	return f.listAccountsResult, f.returnErr
+}
+func (f *fakeCommandHandler) GetRepo(_ context.Context, _ string) (*pb.GetRepoSettingsResponse, error) {
+	return f.repoSettings, f.returnErr
+}
+func (f *fakeCommandHandler) UpdateRepo(_ context.Context, req *pb.UpdateRepoCommand) (*pb.UpdateRepoResponse, error) {
+	f.updatedRepoRequest = req
+	return f.updatedRepo, f.returnErr
+}
+func (f *fakeCommandHandler) RemoveRepo(_ context.Context, repoID string) error {
+	f.removedRepoID = repoID
+	return f.returnErr
 }
 func (f *fakeCommandHandler) ListRepoPRs(_ context.Context, repoID string) (*pb.ListRepoPRsResponse, error) {
 	f.lastRepoID = repoID
@@ -237,6 +252,71 @@ func TestDispatch_ListRepoPRs(t *testing.T) {
 	}
 	if fake.lastRepoID != "r1" {
 		t.Fatalf("lastRepoID = %q, want r1", fake.lastRepoID)
+	}
+}
+
+func TestDispatch_RepoManagement(t *testing.T) {
+	fake := &fakeCommandHandler{
+		repoSettings: &pb.GetRepoSettingsResponse{Settings: &pb.RepoSettings{Id: "repo-1"}},
+		updatedRepo:  &pb.UpdateRepoResponse{Repo: &pb.Repo{Id: "repo-1"}},
+	}
+	client := newDispatcherClient(fake, nil, nil)
+
+	tests := []struct {
+		name      string
+		command   *pb.OrchestratorCommand
+		assertion func(t *testing.T, result *pb.CommandResult)
+	}{
+		{
+			name: "get",
+			command: &pb.OrchestratorCommand{CommandId: "get", Cmd: &pb.OrchestratorCommand_GetRepo{
+				GetRepo: &pb.GetRepoCommand{RepoId: "repo-1"},
+			}},
+			assertion: func(t *testing.T, result *pb.CommandResult) {
+				if got := result.GetGetRepo().GetSettings().GetId(); got != "repo-1" {
+					t.Fatalf("settings repo_id = %q, want repo-1", got)
+				}
+			},
+		},
+		{
+			name: "update",
+			command: &pb.OrchestratorCommand{CommandId: "update", Cmd: &pb.OrchestratorCommand_UpdateRepo{
+				UpdateRepo: &pb.UpdateRepoCommand{RepoId: "repo-1"},
+			}},
+			assertion: func(t *testing.T, result *pb.CommandResult) {
+				if got := result.GetUpdateRepo().GetRepo().GetId(); got != "repo-1" {
+					t.Fatalf("updated repo_id = %q, want repo-1", got)
+				}
+			},
+		},
+		{
+			name: "remove",
+			command: &pb.OrchestratorCommand{CommandId: "remove", Cmd: &pb.OrchestratorCommand_RemoveRepo{
+				RemoveRepo: &pb.RemoveRepoCommand{RepoId: "repo-1"},
+			}},
+			assertion: func(t *testing.T, result *pb.CommandResult) {
+				if got := fake.removedRepoID; got != "repo-1" {
+					t.Fatalf("removed repo_id = %q, want repo-1", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := make(chan *pb.DaemonEvent, 1)
+			if event := client.dispatchCommand(context.Background(), tt.command, out); event != nil {
+				t.Fatalf("expected async command to return nil, got %+v", event)
+			}
+			result := recvEvent(t, out).GetResult()
+			if result == nil || !result.GetOk() {
+				t.Fatalf("result = %+v, want ok", result)
+			}
+			tt.assertion(t, result)
+		})
+	}
+	if got := fake.updatedRepoRequest.GetRepoId(); got != "repo-1" {
+		t.Fatalf("updated repo_id = %q, want repo-1", got)
 	}
 }
 

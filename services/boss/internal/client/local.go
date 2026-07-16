@@ -12,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/socketauth"
 )
 
 // DefaultSocketPath returns the default Unix socket path for the daemon.
@@ -67,10 +68,22 @@ func NewLocal(socketPath string) *LocalClient {
 		},
 	}
 
+	// errMapInterceptor is outermost so it maps a CodeUnauthenticated from any
+	// unary RPC (whichever one the TUI/CLI issues first) into a clear message.
+	// The socket auth token (co-located with the socket) is attached inside it;
+	// if the token file is missing or malformed we still build the client — the
+	// RPC then fails with CodeUnauthenticated, which errMapInterceptor turns into
+	// an actionable message.
+	interceptors := []connect.Interceptor{errMapInterceptor{}}
+	if token, err := socketauth.ReadToken(socketPath); err == nil {
+		interceptors = append(interceptors, socketauth.NewClientInterceptor(token))
+	}
+
 	// The base URL host is ignored; the Unix socket dialer overrides it.
 	rpc := bossanovav1connect.NewDaemonServiceClient(
 		httpClient,
 		"http://localhost",
+		connect.WithInterceptors(interceptors...),
 	)
 
 	return &LocalClient{
@@ -79,6 +92,41 @@ func NewLocal(socketPath string) *LocalClient {
 	}
 }
 
+// mapClientErr rewrites a daemon CodeUnauthenticated response — which means the
+// socket auth token was missing or stale on this client — into an actionable
+// message, instead of surfacing a raw "unauthenticated" to the TUI/CLI.
+func mapClientErr(err error) error {
+	if err != nil && connect.CodeOf(err) == connect.CodeUnauthenticated {
+		return fmt.Errorf("daemon rejected this client (socket auth token missing or stale); restart the daemon and ensure boss is up to date: %w", err)
+	}
+	return err
+}
+
+// errMapInterceptor applies mapClientErr to every unary RPC's returned error, so
+// whichever RPC the TUI/CLI issues first (ListSessions/ListRepos, not the rarely
+// called Ping) surfaces a clear "restart the daemon / update boss" message on a
+// missing or stale socket auth token rather than a raw CodeUnauthenticated. The
+// streaming RPCs (CreateSession/AttachSession) map the same error in their stream
+// wrappers' Err(), since a streaming client interceptor cannot see the open error.
+type errMapInterceptor struct{}
+
+func (errMapInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		resp, err := next(ctx, req)
+		return resp, mapClientErr(err)
+	}
+}
+
+func (errMapInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (errMapInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return next
+}
+
+// Ping verifies the daemon is reachable. The unary error mapping (errMapInterceptor)
+// turns a missing/stale-token CodeUnauthenticated into a clear error here too.
 func (c *LocalClient) Ping(ctx context.Context) error {
 	_, err := c.rpc.ListRepos(ctx, connect.NewRequest(&pb.ListReposRequest{}))
 	return err
@@ -170,7 +218,7 @@ func (c *LocalClient) ListTrackerIssues(ctx context.Context, repoID, query, sour
 func (c *LocalClient) CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (CreateSessionStream, error) {
 	stream, err := c.rpc.CreateSession(ctx, connect.NewRequest(req))
 	if err != nil {
-		return nil, err
+		return nil, mapClientErr(err)
 	}
 	return &localCreateSessionStream{stream: stream}, nil
 }
@@ -189,7 +237,7 @@ func (s *localCreateSessionStream) Msg() *pb.CreateSessionResponse {
 }
 
 func (s *localCreateSessionStream) Err() error {
-	return s.stream.Err()
+	return mapClientErr(s.stream.Err())
 }
 
 func (s *localCreateSessionStream) Close() error {
@@ -215,7 +263,7 @@ func (c *LocalClient) ListSessions(ctx context.Context, req *pb.ListSessionsRequ
 func (c *LocalClient) AttachSession(ctx context.Context, id string) (AttachStream, error) {
 	stream, err := c.rpc.AttachSession(ctx, connect.NewRequest(&pb.AttachSessionRequest{Id: id}))
 	if err != nil {
-		return nil, err
+		return nil, mapClientErr(err)
 	}
 	return &localAttachStream{stream: stream}, nil
 }
@@ -642,7 +690,7 @@ func (s *localAttachStream) Msg() *AttachEvent {
 }
 
 func (s *localAttachStream) Err() error {
-	return s.stream.Err()
+	return mapClientErr(s.stream.Err())
 }
 
 func (s *localAttachStream) Close() error {

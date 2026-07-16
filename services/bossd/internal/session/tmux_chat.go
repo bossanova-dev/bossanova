@@ -350,6 +350,48 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	tmuxName := tmux.ChatSessionName(sess.RepoID, agentSessionID)
 	logPath := l.agentLogPathFor(agentSessionID)
 
+	// BOS-381: provider/account/model authority lives on the chat. For a fresh
+	// launch this is the first chat, so the session's resolved seed governs. For
+	// a resume/respawn (e.g. a cross-agent switch_account respawn) the existing
+	// chat row already carries its own provider/account/model — read them so the
+	// respawn dispatches under the chat's runner, credentials, and model rather
+	// than the session's stale seed. A chat that never bound its own account
+	// (nil) or model ("") inherits the session's mirrored value.
+	spawnAgentName, spawnModel, spawnAccountID := sess.AgentName, sess.Model, sess.AccountID
+	if resuming && l.agentChats != nil {
+		if existing, gerr := l.agentChats.GetByAgentSessionID(ctx, agentSessionID); gerr == nil && existing != nil {
+			if existing.AgentName != "" {
+				spawnAgentName = existing.AgentName
+			}
+			if existing.Model != "" {
+				spawnModel = existing.Model
+			}
+			if existing.AccountID != nil {
+				spawnAccountID = existing.AccountID
+			}
+		}
+	}
+	// Re-select the runner plugin when the chat's provider differs from the
+	// session's — a cross-agent chat spawns its own runner.
+	if spawnAgentName != sess.AgentName {
+		if c, cerr := l.clientForAgentName(spawnAgentName); cerr == nil && c != nil {
+			client = c
+		} else if cerr != nil {
+			return "", grpcstatus.Errorf(codes.FailedPrecondition,
+				"agent runner not loaded for chat %s: %v", agentSessionID, cerr)
+		}
+	}
+	// Build a session view carrying the chat's provider/account for the env
+	// overlay resolvers (account materialization + failover proxy are keyed off
+	// AgentName/AccountID). Shares all other fields by value.
+	spawnSess := sess
+	if spawnAgentName != sess.AgentName || spawnAccountID != sess.AccountID {
+		cp := *sess
+		cp.AgentName = spawnAgentName
+		cp.AccountID = spawnAccountID
+		spawnSess = &cp
+	}
+
 	// Step 5: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
 	mcpConfigPath := l.writeSessionMcpConfig(sess, agentSessionID, sessionID)
@@ -360,8 +402,8 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		InitialPrompt:      input.Prompt,
 		InitialCommand:     input.Command,
 		WorktreePath:       sess.WorktreePath,
-		AppendSystemPrompt: AppendSystemPromptFor(sess, agentSessionID, sess.AgentName, mcpConfigPath),
-		Model:              sess.Model,
+		AppendSystemPrompt: AppendSystemPromptFor(sess, agentSessionID, spawnAgentName, mcpConfigPath),
+		Model:              spawnModel,
 		McpConfigPath:      mcpConfigPath,
 		StrictMcpConfig:    isCronSession(sess),
 	})
@@ -408,14 +450,14 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		Name:    tmuxName,
 		WorkDir: sess.WorktreePath,
 		Command: cmdResp.Argv,
-		Env:     dotenv.OverlayWithRepo(mergeSessionEnv(ManagedSessionEnv(sess, agentSessionID, sess.AgentName), l.resolveAccountEnv(ctx, sess), l.resolveProofEnv()), sess.WorktreePath, repo),
+		Env:     dotenv.OverlayWithRepo(mergeSessionEnv(ManagedSessionEnv(sess, agentSessionID, spawnAgentName), l.resolveAccountEnv(ctx, spawnSess), l.resolveProofEnv()), sess.WorktreePath, repo),
 	}); err != nil {
 		// tmux's error carries its own stderr (e.g. a missing-terminfo
 		// "missing or unsuitable terminal" failure). The normal agent_chats row
 		// (Step 7) does not exist yet, so create-and-stamp a "(failed to start)"
 		// row here best-effort — that surfaces the real reason to boss show, the
 		// TUI badge, and external clients instead of only logging it.
-		l.recordFailedStartChat(ctx, sessionID, agentSessionID, sess.AgentName, title,
+		l.recordFailedStartChat(ctx, sessionID, agentSessionID, spawnAgentName, title,
 			fmt.Sprintf("tmux launch failed: %v", err))
 		return "", fmt.Errorf("create tmux session %q: %w", tmuxName, err)
 	}
@@ -465,8 +507,10 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	if _, err := l.agentChats.Create(ctx, db.CreateAgentChatParams{
 		SessionID:      sessionID,
 		AgentSessionID: agentSessionID,
-		AgentName:      sess.AgentName,
+		AgentName:      spawnAgentName,
 		Title:          title,
+		AccountID:      spawnAccountID,
+		Model:          spawnModel,
 	}); err != nil {
 		l.killTmuxChatBestEffort(ctx, sessionID, agentSessionID, tmuxName)
 		return "", fmt.Errorf("create agent_chats row for session %s: %w", sessionID, err)

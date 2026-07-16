@@ -179,6 +179,49 @@ message Repo {
   reserved 19; // was sentry_project (removed: issues are listed org-wide)
 }
 
+// MergeStrategy is the merge method used when auto-merging PRs. Mirrors the
+// domain values in lib/bossalib/models (merge / rebase / squash).
+enum MergeStrategy {
+  MERGE_STRATEGY_UNSPECIFIED = 0;
+  MERGE_STRATEGY_MERGE = 1;
+  MERGE_STRATEGY_REBASE = 2;
+  MERGE_STRATEGY_SQUASH = 3;
+}
+
+// SecretAction is the tri-state applied to a secret field on update.
+// UNSPECIFIED is treated as UNCHANGED (safe default for a default-constructed
+// message); SET replaces the value; CLEAR removes it.
+enum SecretAction {
+  SECRET_ACTION_UNSPECIFIED = 0;
+  SECRET_ACTION_UNCHANGED = 1;
+  SECRET_ACTION_SET = 2;
+  SECRET_ACTION_CLEAR = 3;
+}
+
+// SecretUpdate carries a secret mutation. value is required iff action == SET
+// and is ignored otherwise. Never populated on read/aggregate responses.
+message SecretUpdate {
+  SecretAction action = 1;
+  optional string value = 2;
+}
+
+// RepoSettings is the web-safe projection of a Repo: non-secret fields plus
+// has_* booleans that report whether a secret is present. It NEVER carries a
+// plaintext key. Mirrors the masking done by DaemonRepoRef.
+message RepoSettings {
+  string id = 1;
+  string display_name = 2;
+  optional string setup_script = 3;
+  MergeStrategy merge_strategy = 4;
+  bool can_auto_merge = 5;
+  bool can_auto_merge_dependabot = 6;
+  bool can_auto_repair = 7;
+  string sentry_org = 8;
+  bool has_linear_key = 9;
+  bool has_sentry_key = 10;
+  google.protobuf.Timestamp updated_at = 11; // echoed for optimistic concurrency
+}
+
 // Session represents a coding-agent session.
 message Session {
   string id = 1;

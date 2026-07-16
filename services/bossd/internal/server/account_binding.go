@@ -318,17 +318,72 @@ func mergeManagedOverAccount(managed, account map[string]string) map[string]stri
 	return merged
 }
 
+// withPrimaryChatIdentity re-sources the wire/display provider + account fields
+// (agent_name, account_id) on a Session proto from the session's PRIMARY chat,
+// which is the runtime authority for provider/account (BOS-381). The proto
+// fields and session DB columns remain a derived mirror for the append-only
+// apiversion contract; this just makes the projection reflect the chat a client
+// would actually act on when a chat-scoped switch has diverged the primary chat
+// from the session's original seed. Best-effort: a nil chat store, missing
+// primary chat, or lookup error leaves the session's own mirrored proto fields
+// (already set by SessionToProto) untouched. A chat that never bound its own
+// account (nil AccountID) or model ("") keeps the inherited session value.
+func (s *Server) withPrimaryChatIdentity(ctx context.Context, p *pb.Session, session *models.Session) {
+	if p == nil || session == nil || s.agentChats == nil ||
+		session.AgentSessionID == nil || *session.AgentSessionID == "" {
+		return
+	}
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, *session.AgentSessionID)
+	if err != nil || chat == nil {
+		return
+	}
+	applyPrimaryChatIdentity(p, chat)
+}
+
+// applyPrimaryChatIdentity overrides the proto's provider/account from an
+// already-resolved primary chat (BOS-381). Used by the list path, which
+// batch-loads chats once, to avoid an N+1 GetByAgentSessionID per session.
+func applyPrimaryChatIdentity(p *pb.Session, chat *models.AgentChat) {
+	if p == nil || chat == nil {
+		return
+	}
+	if chat.AgentName != "" {
+		p.AgentName = protoString(chat.AgentName)
+	}
+	if chat.AccountID != nil {
+		p.AccountId = protoStringPtr(chat.AccountID)
+	}
+}
+
+// primaryChatFromSlice returns the chat in chats whose agent_session_id matches
+// agentSessionID (the session's primary chat), or nil.
+func primaryChatFromSlice(chats []*models.AgentChat, agentSessionID string) *models.AgentChat {
+	if agentSessionID == "" {
+		return nil
+	}
+	for _, c := range chats {
+		if c != nil && c.AgentSessionID == agentSessionID {
+			return c
+		}
+	}
+	return nil
+}
+
 // withAccountLabel populates the read-only, non-secret account_label on a
 // session proto from the resolver ("Unmanaged local credentials" when unbound). It is
 // best-effort: a nil resolver or a proto without an account binding is left
 // untouched, and a resolver error never fails the RPC (Label already falls
-// back to a short id / "Unmanaged local credentials").
+// back to a short id / "Unmanaged local credentials"). It reads the proto's
+// account_id (which withPrimaryChatIdentity may have re-sourced from the primary
+// chat, BOS-381) so the label matches the account the client would act on.
 func (s *Server) withAccountLabel(ctx context.Context, p *pb.Session, session *models.Session) {
 	if p == nil || s.resolver == nil {
 		return
 	}
 	accountID := ""
-	if session != nil && session.AccountID != nil {
+	if p.AccountId != nil {
+		accountID = p.GetAccountId()
+	} else if session != nil && session.AccountID != nil {
 		accountID = *session.AccountID
 	}
 	label, err := s.resolver.Label(ctx, accountID)

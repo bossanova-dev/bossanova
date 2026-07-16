@@ -13,6 +13,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/socketauth"
 )
 
 // fakeDaemon is a minimal DaemonService implementation served over a Unix
@@ -90,6 +91,83 @@ func serveFakeDaemonAt(t *testing.T, fake bossanovav1connect.DaemonServiceHandle
 		_ = srv.Close()
 		_ = os.Remove(socketPath)
 	})
+}
+
+// serveAuthedFakeDaemonAt starts the fake daemon gated by the socketauth server
+// interceptor for the given token, mirroring how bossd's Listen() now requires a
+// Bearer token on every DaemonService RPC.
+func serveAuthedFakeDaemonAt(t *testing.T, fake bossanovav1connect.DaemonServiceHandler, socketPath, token string) {
+	t.Helper()
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+
+	_, handler := bossanovav1connect.NewDaemonServiceHandler(fake, connect.WithInterceptors(socketauth.NewServerInterceptor(token)))
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = os.Remove(socketPath)
+		_ = os.Remove(socketauth.TokenPath(socketPath))
+	})
+}
+
+// TestNewAttachesSocketAuthToken proves the MCP socket backend authenticates
+// against an auth-gated daemon — i.e. New() reads the co-located token and
+// attaches the client interceptor, exactly like the boss CLI's local client.
+// Without this the whole `boss mcp` local tool surface would be rejected with
+// CodeUnauthenticated once bossd requires the token.
+func TestNewAttachesSocketAuthToken(t *testing.T) {
+	t.Parallel()
+
+	socketPath := shortSocketPath(t)
+	token, err := socketauth.LoadOrCreateToken(socketPath)
+	if err != nil {
+		t.Fatalf("LoadOrCreateToken: %v", err)
+	}
+	serveAuthedFakeDaemonAt(t, &fakeDaemon{sessions: []*pb.Session{{Id: "sess-1"}}}, socketPath, token)
+
+	backend, err := New(socketPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got, err := backend.ListSessions(context.Background(), &pb.ListSessionsRequest{})
+	if err != nil {
+		t.Fatalf("authed ListSessions failed (token not attached?): %v", err)
+	}
+	if len(got) != 1 || got[0].GetId() != "sess-1" {
+		t.Fatalf("unexpected sessions: %+v", got)
+	}
+}
+
+// TestAuthedDaemonRejectsWhenTokenMissing proves the gate is real: with no
+// co-located token, New() attaches no credential and the auth-gated daemon
+// rejects the RPC with CodeUnauthenticated (so the passing test above is not a
+// false positive from an ungated server).
+func TestAuthedDaemonRejectsWhenTokenMissing(t *testing.T) {
+	t.Parallel()
+
+	socketPath := shortSocketPath(t)
+	token, err := socketauth.LoadOrCreateToken(socketPath)
+	if err != nil {
+		t.Fatalf("LoadOrCreateToken: %v", err)
+	}
+	serveAuthedFakeDaemonAt(t, &fakeDaemon{}, socketPath, token)
+
+	if err := os.Remove(socketauth.TokenPath(socketPath)); err != nil {
+		t.Fatalf("remove token: %v", err)
+	}
+
+	backend, err := New(socketPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := backend.ListSessions(context.Background(), &pb.ListSessionsRequest{}); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("code = %v, want Unauthenticated", connect.CodeOf(err))
+	}
 }
 
 func TestListSessionsRoundTrips(t *testing.T) {

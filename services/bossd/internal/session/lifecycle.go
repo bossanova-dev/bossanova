@@ -948,6 +948,61 @@ func (l *Lifecycle) agentClientFor(sess *models.Session) (agent.AgentRunnerClien
 	return nil, fmt.Errorf("agent %q not loaded for session %s: %w", sess.AgentName, sess.ID, agent.ErrAgentNotLoaded)
 }
 
+// clientForAgentName returns the registered AgentRunnerClient for a bare agent
+// name (BOS-381: a chat can run a different provider than its parent session, so
+// spawn paths that resolve the chat's provider dispatch by the chat's agent, not
+// the session's). Mirrors agentClientFor's not-loaded error.
+func (l *Lifecycle) clientForAgentName(agentName string) (agent.AgentRunnerClient, error) {
+	if c, ok := l.agents[agentName]; ok && c != nil {
+		return c, nil
+	}
+	return nil, fmt.Errorf("agent %q not loaded: %w", agentName, agent.ErrAgentNotLoaded)
+}
+
+// primaryChatForSession returns the session's primary agent chat — the chat
+// whose agent_session_id matches the session's AgentSessionID (the first chat,
+// created from the create-session seed). Returns nil (never an error) when the
+// session has no primary chat yet (first-start, before the row is persisted) or
+// the lookup fails, so callers fall back to the session's own mirrored
+// provider/account/model fields. BOS-381: provider/account/model authority lives
+// on the chat; restart/rotation/resume paths that hold only a session resolve it
+// here.
+func (l *Lifecycle) primaryChatForSession(ctx context.Context, sess *models.Session) *models.AgentChat {
+	if sess == nil || l.agentChats == nil || sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
+		return nil
+	}
+	chat, err := l.agentChats.GetByAgentSessionID(ctx, *sess.AgentSessionID)
+	if err != nil || chat == nil {
+		return nil
+	}
+	return chat
+}
+
+// effectiveSpawnSession returns a shallow copy of sess with AgentName, Model, and
+// AccountID overridden from its primary chat (BOS-381), for restart/rotation/
+// resume spawn paths that hold only a session. Returns sess unchanged when no
+// primary chat exists yet (first-start seed) so the seed on the session still
+// governs the very first spawn. Only the three authority fields are copied; a
+// chat that never bound its own account (nil AccountID) or model ("") inherits
+// the session's mirrored value, preserving the same-provider common case.
+func (l *Lifecycle) effectiveSpawnSession(ctx context.Context, sess *models.Session) *models.Session {
+	chat := l.primaryChatForSession(ctx, sess)
+	if chat == nil {
+		return sess
+	}
+	eff := *sess
+	if chat.AgentName != "" {
+		eff.AgentName = chat.AgentName
+	}
+	if chat.Model != "" {
+		eff.Model = chat.Model
+	}
+	if chat.AccountID != nil {
+		eff.AccountID = chat.AccountID
+	}
+	return &eff
+}
+
 // NewLifecycle creates a new session lifecycle orchestrator. cronJobs may be
 // nil for callers that never spawn cron-linked sessions (tests, legacy flows);
 // FinalizeSession requires it and will error if it's absent.
@@ -1308,11 +1363,16 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		// already created its row, so only the headless branch does this.
 		// (l.agentChats is nil in some unit tests; production always sets it.)
 		if headlessRun && l.agentChats != nil {
+			// BOS-381: seed the primary chat with the session's resolved
+			// provider/account/model so the chat is the runtime authority from the
+			// moment it exists (convert/rotation/resume all read the chat).
 			if _, err := l.agentChats.Create(ctx, db.CreateAgentChatParams{
 				SessionID:      sessionID,
 				AgentSessionID: claudeSessionID,
 				AgentName:      session.AgentName,
 				Title:          session.Title,
+				AccountID:      session.AccountID,
+				Model:          session.Model,
 			}); err != nil {
 				return fmt.Errorf("create agent_chats row for headless run of session %s: %w", sessionID, err)
 			}
@@ -2198,9 +2258,12 @@ func (l *Lifecycle) StopSession(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("get session: %w", err)
 	}
 
-	// Stop Claude process if running.
-	if session.AgentSessionID != nil && l.agentRunner.IsRunningByAgent(session.AgentName, *session.AgentSessionID) {
-		if err := l.agentRunner.StopByAgent(session.AgentName, *session.AgentSessionID); err != nil {
+	// Stop Claude process if running. The primary chat's provider (BOS-381) keys
+	// the runner: a primary chat switched to another agent runs under the chat's
+	// plugin, so stopping by the stale session agent would miss it.
+	stopSess := l.effectiveSpawnSession(ctx, session)
+	if session.AgentSessionID != nil && l.agentRunner.IsRunningByAgent(stopSess.AgentName, *session.AgentSessionID) {
+		if err := l.agentRunner.StopByAgent(stopSess.AgentName, *session.AgentSessionID); err != nil {
 			l.logger.Warn().Err(err).
 				Str("session", sessionID).
 				Msg("failed to stop claude process")
@@ -2235,9 +2298,11 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 		return fmt.Errorf("get session: %w", err)
 	}
 
-	// Stop Claude process if running.
-	if session.AgentSessionID != nil && l.agentRunner.IsRunningByAgent(session.AgentName, *session.AgentSessionID) {
-		if err := l.agentRunner.StopByAgent(session.AgentName, *session.AgentSessionID); err != nil {
+	// Stop Claude process if running. Route by the primary chat's provider
+	// (BOS-381) so a chat switched to another agent is still stopped.
+	stopSess := l.effectiveSpawnSession(ctx, session)
+	if session.AgentSessionID != nil && l.agentRunner.IsRunningByAgent(stopSess.AgentName, *session.AgentSessionID) {
+		if err := l.agentRunner.StopByAgent(stopSess.AgentName, *session.AgentSessionID); err != nil {
 			l.logger.Warn().Err(err).
 				Str("session", sessionID).
 				Msg("failed to stop claude process")
@@ -2324,8 +2389,12 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 	// stored LINEAR_API_KEY / SENTRY_* secrets are filled beneath the worktree
 	// .env (OverlayWithRepo) so the resumed run keeps its own repo's Linear
 	// workspace, not the daemon's ambient one.
-	resumeEnv := dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), session.WorktreePath, repo)
-	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, session.AgentName, session.WorktreePath, session.Plan, resume, "", session.Model, resumeEnv)
+	// BOS-381: the primary chat carries the authoritative provider/account/model.
+	// Resolve it so a chat whose agent/account/model diverged from the session's
+	// seed resumes under the right runner, credentials, and model.
+	spawnSess := l.effectiveSpawnSession(ctx, session)
+	resumeEnv := dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, spawnSess), l.resolveProofEnv()), session.WorktreePath, repo)
+	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, spawnSess.AgentName, session.WorktreePath, session.Plan, resume, "", spawnSess.Model, resumeEnv)
 	if err != nil {
 		return fmt.Errorf("start claude: %w", err)
 	}

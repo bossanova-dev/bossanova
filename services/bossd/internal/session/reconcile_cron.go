@@ -181,6 +181,14 @@ func (l *Lifecycle) RecoverStrandedCronSessions(ctx context.Context) (int, error
 
 	routed := 0
 	for _, sess := range stranded {
+		// Skip archived sessions. ArchiveSession removes the worktree but leaves
+		// the row in an implementing state, and ListByStates returns archived
+		// rows regardless of archived status (session_store.go), so finalizing
+		// one here would run `git status` against a gone worktree path — the
+		// exact spurious pr_failed BOS-384 kills. There is nothing to finalize.
+		if sess.ArchivedAt != nil {
+			continue
+		}
 		// Match the completion gate's eligibility exactly: recover both
 		// cron-scheduled and tmux_unattended (e.g. /boss-epic) sessions. A
 		// tmux_unattended session has no CronJobID, so filtering on it here would

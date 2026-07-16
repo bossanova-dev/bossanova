@@ -48,7 +48,7 @@ func (s *Server) DescribeChatLaunch(ctx context.Context, req *connect.Request[pb
 	resumeID, _ := chatResumeSessionID(chat)
 	resume := transcripts.TranscriptExists(ctx, chat.AgentName, sess.WorktreePath, resumeID)
 
-	argv, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", modelForChatAgent(sess, chat.AgentName), "", false)
+	argv, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", chat.Model, "", false)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("build launch command: %w", err))
 	}

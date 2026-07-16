@@ -437,11 +437,12 @@ func TestWakeChat_CrossAgentBindsAndPersistsDefaultAccount(t *testing.T) {
 	}
 }
 
-// TestWakeChat_CrossAgentDropsSessionModel is the BOS-255 regression: a codex
-// chat living inside a claude session must NOT inherit the session's claude
-// model id (e.g. "opus"), which Codex rejects as an unknown model. The model
-// forwarded to the codex runner must be empty so the codex plugin resolves its
-// own default.
+// TestWakeChat_CrossAgentDropsSessionModel is the BOS-255 regression, now
+// enforced structurally by chat-scoped model authority (BOS-381): a codex chat
+// living inside a claude session forwards its OWN (here empty) chat.Model, never
+// the session's claude "opus" — which Codex rejects as an unknown model. The
+// session model is no longer consulted at all, so the empty forward is proof the
+// session's opus cannot leak into the codex runner.
 func TestWakeChat_CrossAgentDropsSessionModel(t *testing.T) {
 	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "codex"}
 	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "claude", Model: "opus"}
@@ -482,13 +483,13 @@ func TestWakeChat_CrossAgentDropsSessionModel(t *testing.T) {
 	}
 }
 
-// TestWakeChat_SameAgentForwardsModel guards the common path: a claude chat in
-// a claude session still forwards the session model ("opus"). This locks in
-// that the BOS-255 fix does not over-broadly strip models from same-agent
-// chats (protecting the untouched consistent sites in tmux_chat.go too).
+// TestWakeChat_SameAgentForwardsModel guards the common path under chat-scoped
+// model authority (BOS-381): the spawn forwards the CHAT's model ("opus"), not
+// the session's. The session model is deliberately left empty to prove the
+// forwarded value comes from chat.Model, not from the session.
 func TestWakeChat_SameAgentForwardsModel(t *testing.T) {
-	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "claude"}
-	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "claude", Model: "opus"}
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "claude", Model: "opus"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "claude", Model: ""}
 	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
 	builder := claudeArgvBuilder()
 	s := &Server{

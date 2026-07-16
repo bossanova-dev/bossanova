@@ -124,6 +124,22 @@ func TestAccountsList_LoadedState_RendersRows(t *testing.T) {
 	}
 }
 
+// TestAccountsList_ActionBar_SpaceToggle locks the unified toggle label
+// (BOS-392): the populated accounts action bar renders "[space] toggle" and no
+// longer renders the old "[x] disable/enable" wording, matching the cron list.
+func TestAccountsList_ActionBar_SpaceToggle(t *testing.T) {
+	stub := &accountsStub{accounts: accountsListFixture()}
+	m := seedAccountsList(t, stub)
+
+	content := m.View().Content
+	if !strings.Contains(content, "[space] toggle") {
+		t.Fatalf("accounts action bar must render %q\n%s", "[space] toggle", content)
+	}
+	if strings.Contains(content, "[x] disable/enable") {
+		t.Fatalf("accounts action bar must not render the old %q label\n%s", "[x] disable/enable", content)
+	}
+}
+
 func TestAccountsList_RendersUsagePercentages(t *testing.T) {
 	// Usage %/reset come straight from the persisted UsageSnapshot, mirroring
 	// the CLI account list (UTIL5H / UTIL7D). 0.42 → "42%", 0.93 → "93%".
@@ -336,6 +352,7 @@ func TestAccountsList_Refresh_ReprobesUsage(t *testing.T) {
 	if !strings.Contains(am.View().Content, "Refreshing usage") {
 		t.Fatalf("refreshing affordance not rendered\n%s", am.View().Content)
 	}
+	assertPrecededByBlankLine(t, am.View().Content, "Refreshing usage")
 	if cmd == nil {
 		t.Fatal("r must emit a refresh command")
 	}
@@ -354,6 +371,30 @@ func TestAccountsList_Refresh_ReprobesUsage(t *testing.T) {
 	if !strings.Contains(am.View().Content, "Usage refreshed") {
 		t.Fatalf("completed refresh must show a done status\n%s", am.View().Content)
 	}
+	assertPrecededByBlankLine(t, am.View().Content, "Usage refreshed")
+}
+
+// assertPrecededByBlankLine fails if the first line of content containing
+// substr is not immediately preceded by a blank (whitespace-only) line. The
+// status messages are rendered with lipgloss Padding(0, 2), so the message
+// line itself carries leading spaces; the separator line above it must be
+// genuinely empty once trimmed.
+func assertPrecededByBlankLine(t *testing.T, content, substr string) {
+	t.Helper()
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, substr) {
+			continue
+		}
+		if i == 0 {
+			t.Fatalf("line containing %q is the first line; expected a blank line above it\n%s", substr, content)
+		}
+		if strings.TrimSpace(lines[i-1]) != "" {
+			t.Fatalf("line containing %q is not preceded by a blank line (prior line: %q)\n%s", substr, lines[i-1], content)
+		}
+		return
+	}
+	t.Fatalf("no line containing %q found\n%s", substr, content)
 }
 
 func TestAccountsList_Test_LivePath(t *testing.T) {

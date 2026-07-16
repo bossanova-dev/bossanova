@@ -29,6 +29,7 @@ type ChatContext struct {
 	RepoID    string
 	Provider  string // Session.AgentName ("claude", "codex", ...)
 	AccountID string // persisted account binding; empty machine account-0 is not probeable
+	FromLabel string // human label of the bound (from) account, resolved by the adapter; audited as the rotation's from-side so the TUI renders an email, not a raw id
 }
 
 // DecideRequest is the rotator-side view of a rotation decision request. The
@@ -405,11 +406,12 @@ func (r *ChatRotator) rotate(agentSessionID string, resetAt time.Time) {
 		resetPtr = &probedReset
 	}
 	auditBase := AuditEvent{
-		SessionID: cc.SessionID,
-		ChatID:    agentSessionID,
-		Provider:  cc.Provider,
-		Trigger:   triggerUsageLimited,
-		ResetAt:   resetPtr,
+		SessionID:   cc.SessionID,
+		ChatID:      agentSessionID,
+		Provider:    cc.Provider,
+		Trigger:     triggerUsageLimited,
+		FromAccount: cc.FromLabel,
+		ResetAt:     resetPtr,
 	}
 
 	decision, err := r.deps.Decide(ctx, DecideRequest{
@@ -529,9 +531,10 @@ func (r *ChatRotator) rotateAuth(agentSessionID string) {
 		log.Debug().Str("repo_id", cc.RepoID).Msg("auto-rotate(auth): opted out; leaving chat as-is")
 		r.deps.Recorder.Record(ctx, AuditEvent{
 			SessionID: cc.SessionID, ChatID: agentSessionID, Provider: cc.Provider,
-			Trigger: triggerAuthInvalidated,
-			Outcome: "ROTATION_OUTCOME_STATUS_ONLY_DISABLED",
-			Detail:  "automatic rotation disabled",
+			Trigger:     triggerAuthInvalidated,
+			FromAccount: cc.FromLabel,
+			Outcome:     "ROTATION_OUTCOME_STATUS_ONLY_DISABLED",
+			Detail:      "automatic rotation disabled",
 		})
 		return
 	}
@@ -541,9 +544,10 @@ func (r *ChatRotator) rotateAuth(agentSessionID string) {
 		log.Debug().Msg("auto-rotate(auth): pane no longer auth-failed; aborting")
 		r.deps.Recorder.Record(ctx, AuditEvent{
 			SessionID: cc.SessionID, ChatID: agentSessionID, Provider: cc.Provider,
-			Trigger: triggerAuthInvalidated,
-			Outcome: "ROTATION_OUTCOME_STATUS_ONLY_RECOVERED",
-			Detail:  "pane recovered before rotation",
+			Trigger:     triggerAuthInvalidated,
+			FromAccount: cc.FromLabel,
+			Outcome:     "ROTATION_OUTCOME_STATUS_ONLY_RECOVERED",
+			Detail:      "pane recovered before rotation",
 		})
 		return
 	}
@@ -571,10 +575,11 @@ func (r *ChatRotator) rotateAuth(agentSessionID string) {
 	}
 
 	auditBase := AuditEvent{
-		SessionID: cc.SessionID,
-		ChatID:    agentSessionID,
-		Provider:  cc.Provider,
-		Trigger:   triggerAuthInvalidated,
+		SessionID:   cc.SessionID,
+		ChatID:      agentSessionID,
+		Provider:    cc.Provider,
+		Trigger:     triggerAuthInvalidated,
+		FromAccount: cc.FromLabel,
 	}
 
 	decision, err := r.deps.Decide(ctx, DecideRequest{
@@ -791,7 +796,7 @@ func (r *ChatRotator) tryProactiveOne(ctx context.Context, agentSessionID string
 			Msg("proactive-sweep: switch did not complete; leaving chat as-is")
 		failed := AuditEvent{
 			SessionID: cc.SessionID, ChatID: agentSessionID, Provider: cc.Provider,
-			Trigger: triggerUsageLimited, FromAccount: cc.AccountID, ToAccount: dec.Label,
+			Trigger: triggerUsageLimited, FromAccount: cc.FromLabel, ToAccount: dec.Label,
 			Outcome: "ROTATION_OUTCOME_FAILED", Detail: "proactive pre-cap switch did not complete",
 		}
 		r.deps.Recorder.Record(ctx, failed)
@@ -801,7 +806,7 @@ func (r *ChatRotator) tryProactiveOne(ctx context.Context, agentSessionID string
 		Msg("proactive-sweep: rotated idle chat off soon-to-cap account")
 	rotated := AuditEvent{
 		SessionID: cc.SessionID, ChatID: agentSessionID, Provider: cc.Provider,
-		Trigger: triggerUsageLimited, FromAccount: cc.AccountID, ToAccount: res.SwitchedToLabel,
+		Trigger: triggerUsageLimited, FromAccount: cc.FromLabel, ToAccount: res.SwitchedToLabel,
 		Outcome: "ROTATION_OUTCOME_ROTATED", Detail: "proactive pre-cap",
 	}
 	r.deps.Recorder.Record(ctx, rotated)
@@ -834,7 +839,7 @@ func (r *ChatRotator) recordAuthProbeStatusOnly(ctx context.Context, cc ChatCont
 		ChatID:      agentSessionID,
 		Provider:    cc.Provider,
 		Trigger:     triggerAuthInvalidated,
-		FromAccount: cc.AccountID,
+		FromAccount: cc.FromLabel,
 		Outcome:     "ROTATION_OUTCOME_STATUS_ONLY_PROBE_UNCONFIRMED",
 		Detail:      detail,
 	})
@@ -846,7 +851,7 @@ func (r *ChatRotator) recordProbeStatusOnly(ctx context.Context, cc ChatContext,
 		ChatID:      agentSessionID,
 		Provider:    cc.Provider,
 		Trigger:     triggerUsageLimited,
-		FromAccount: cc.AccountID,
+		FromAccount: cc.FromLabel,
 		ResetAt:     resetAt,
 		Outcome:     "ROTATION_OUTCOME_STATUS_ONLY_PROBE_UNCONFIRMED",
 		Detail:      detail,

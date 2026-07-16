@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "title": "BOS-395 accounts refresh status renders with a blank line above it",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "pressing [r]efresh shows Usage refreshed. separated from the table by a blank line",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        { "key": "a", "caption": "Press [a] to open the Accounts list" },
+        {
+          "waitFor": {
+            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "label": "Accounts list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Accounts table settled"
+        },
+        {
+          "expect": [
+            {
+              "text": "LABEL PROVIDER",
+              "match": "normalized",
+              "label": "account table header is present above the (soon-to-appear) blank gap"
+            },
+            {
+              "text": "[r]efresh",
+              "match": "normalized",
+              "label": "action bar advertises [r]efresh"
+            }
+          ],
+          "caption": "Accounts list with table header and [r]efresh affordance"
+        },
+        { "key": "r", "caption": "Press [r] to refresh usage" },
+        {
+          "waitFor": {
+            "text": "Usage refreshed",
+            "match": "normalized",
+            "label": "refresh completed status shown"
+          },
+          "timeoutMs": 15000,
+          "caption": "Usage re-probe completed"
+        },
+        {
+          "expect": [
+            {
+              "text": "Usage refreshed",
+              "match": "normalized",
+              "label": "the completed 'Usage refreshed.' status renders below the table with a blank line above it (BOS-395)"
+            },
+            {
+              "text": "LABEL PROVIDER",
+              "match": "normalized",
+              "label": "the account table header still frames the list above the blank gap"
+            },
+            {
+              "text": "[esc] back",
+              "match": "normalized",
+              "label": "the action bar still renders below the status message"
+            }
+          ],
+          "caption": "Usage refreshed. now sits below the account table with a blank line of breathing room above it"
+        }
+      ]
+    }
+  ]
+}

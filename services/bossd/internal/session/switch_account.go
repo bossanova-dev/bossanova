@@ -128,15 +128,6 @@ var (
 	ErrAccountFailed = errors.New("target account failed its last health check")
 	// ErrChatMidTurn means the chat is WORKING and Force was not set.
 	ErrChatMidTurn = errors.New("chat is mid-turn")
-	// ErrCrossAgentSwitchUnsupported means the selected chat runs a different
-	// agent than its parent session (a cross-agent chat, e.g. a Codex chat inside
-	// a Claude session). The switch reuses session-agent-scoped primitives — the
-	// respawn (StartTmuxChat) relaunches under the session's own AgentName and the
-	// rebind (BindSessionAccount) binds the SESSION's account — so switching a
-	// cross-agent chat would relaunch it as the wrong agent and bind the session
-	// to another provider's account. Refuse rather than silently corrupt both;
-	// a chat-scoped respawn/binding is a later seam (BOS-174 area).
-	ErrCrossAgentSwitchUnsupported = errors.New("cross-agent account switch is not supported")
 )
 
 // SetAccountSwitchDeps wires the production account-switch adapters onto the
@@ -186,21 +177,14 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 		return SwitchAccountResult{}, fmt.Errorf("agent chat not found for agent_session_id %q", p.AgentSessionID)
 	}
 
-	// Cross-agent guard: everything below (respawn via StartTmuxChat, rebind via
-	// BindSessionAccount) is scoped to the SESSION's agent. If the selected chat
-	// runs a different agent than the session (a cross-agent chat), respawning
-	// here would relaunch it as the session's default agent and bind the session
-	// to the target provider's account — corrupting both the chat and the
-	// session's own binding. Refuse before any pane is touched. A legacy chat with
-	// an empty AgentName is treated as running the session's agent (no guard).
-	if chat.AgentName != "" && chat.AgentName != session.AgentName {
-		return SwitchAccountResult{}, fmt.Errorf("%w: chat runs %q but session runs %q",
-			ErrCrossAgentSwitchUnsupported, chat.AgentName, session.AgentName)
-	}
-
+	// The switch binds the CHAT's account, not the session's, so a cross-agent
+	// chat (e.g. a Codex chat inside a Claude session) switches without corrupting
+	// the parent session's own binding — each chat carries its own provider-scoped
+	// account. The default binding reads/writes chat.AccountID via the chat store;
+	// tests inject l.accountSwitchBinding.
 	binding := l.accountSwitchBinding
 	if binding == nil {
-		binding = sessionAccountBinding{sessions: l.sessions}
+		binding = chatAccountBinding{chats: l.agentChats, agentSessionID: p.AgentSessionID}
 	}
 	if l.accountSwitchRegistry == nil {
 		return SwitchAccountResult{}, fmt.Errorf("account switch: account registry not configured")
@@ -248,13 +232,17 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 		return SwitchAccountResult{}, fmt.Errorf("%w; confirm/--force to interrupt", ErrChatMidTurn)
 	}
 
-	// 4. Resume-vs-fresh. Provider comes from the target account (it matches
-	// Session.AgentName per the registry contract); for the system-default
-	// account 0 (empty provider) fall back to the session's own agent name so a
-	// switch to/from account 0 still probes the right plugin.
+	// 4. Resume-vs-fresh. Provider comes from the target account; for the
+	// system-default account 0 (empty provider) fall back to the CHAT's own agent
+	// name — a cross-agent chat may run a different provider than its parent
+	// session, so switching to/from account 0 must probe the chat's plugin — then
+	// to the session's agent for legacy chats with an empty AgentName.
 	provider := target.Provider
 	if provider == "" {
-		provider = session.AgentName
+		provider = chat.AgentName
+		if provider == "" {
+			provider = session.AgentName
+		}
 	}
 	resumeID, hasResume := switchResumeID(chat)
 	resumable := resumeFeasibleCrossAccount(provider) && hasResume &&
@@ -265,13 +253,17 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 		return SwitchAccountResult{}, fmt.Errorf("stop chat before switch: %w", err)
 	}
 
-	// 6. Build the outcome notice. Never resend the interrupted prompt. Computed
-	// before the rebind so the manual path can pass it as the audit Detail
-	// through the shared RebindAndAudit helper.
-	notice := "switched to " + target.Label + " — resumed"
+	// 6. Build the outcome. Never resend the interrupted prompt. The audit
+	// Detail carries ONLY the outcome suffix ("resumed" / "started fresh (…)"):
+	// the rotation history renders "<from> switched to <to> — <detail>" from
+	// the structured From/To fields, so repeating "switched to <label>" in
+	// Detail would force every consumer to string-strip the duplication back
+	// out. The full sentence lives only in the operator-facing pane notice.
+	outcomeDetail := "resumed"
 	if !resumable {
-		notice = "switched to " + target.Label + " — started fresh (could not resume this conversation cross-account)"
+		outcomeDetail = "started fresh (could not resume this conversation cross-account)"
 	}
+	notice := "switched to " + target.Label + " — " + outcomeDetail
 	// The automatic rotation path (BOS-175) uses the D4 notice wording, which
 	// carries the previous account's reset time; the fresh-start caveat is still
 	// appended when cross-account resume was not feasible.
@@ -298,15 +290,19 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 			return SwitchAccountResult{}, fmt.Errorf("rebind session %s to account %q: %w", p.SessionID, p.TargetAccountID, err)
 		}
 	} else if err := l.RebindAndAudit(ctx, binding, RebindAndAuditParams{
-		SessionID:     p.SessionID,
-		ChatID:        p.AgentSessionID,
-		Provider:      provider,
-		Trigger:       "ROTATION_TRIGGER_MANUAL",
-		FromAccount:   current,
+		SessionID: p.SessionID,
+		ChatID:    p.AgentSessionID,
+		Provider:  provider,
+		Trigger:   "ROTATION_TRIGGER_MANUAL",
+		// Audit the from-side as its human label (like ToAccount), not the raw
+		// account id, so the TUI rotation history reads "<from> switched to <to>".
+		// Degrades per resolveAccountLabel: an unresolvable id falls back to its
+		// short-id display form, an empty id to the unmanaged-credentials label.
+		FromAccount:   l.resolveAccountLabel(ctx, current),
 		BindAccountID: p.TargetAccountID,
 		ToAccount:     target.Label,
 		Outcome:       "ROTATION_OUTCOME_ROTATED",
-		Detail:        notice,
+		Detail:        outcomeDetail,
 	}); err != nil {
 		l.stampSwitchStartError(ctx, p.AgentSessionID, "rebind account failed: "+err.Error())
 		return SwitchAccountResult{}, err
@@ -443,6 +439,35 @@ func (b sessionAccountBinding) BindSessionAccount(ctx context.Context, sessionID
 	return err
 }
 
+// chatAccountBinding adapts db.AgentChatStore to the accountBinding seam so the
+// manual switch binds the CHAT's account (agent_chats.account_id) rather than
+// the parent session's — the authority moved to the chat in BOS-381. It is
+// scoped to a single agentSessionID at construction: the sessionID argument the
+// accountBinding interface passes (RebindAndAudit forwards p.SessionID) is
+// ignored, since the write targets the chat row directly via
+// UpdateAccountIDByAgentSessionID. A present-empty account id (system-default
+// account 0) persists as a non-nil pointer to "", mirroring the session binding.
+type chatAccountBinding struct {
+	chats          db.AgentChatStore
+	agentSessionID string
+}
+
+func (b chatAccountBinding) SessionAccount(ctx context.Context, _ string) (string, error) {
+	chat, err := b.chats.GetByAgentSessionID(ctx, b.agentSessionID)
+	if err != nil {
+		return "", err
+	}
+	if chat == nil || chat.AccountID == nil {
+		return "", nil
+	}
+	return *chat.AccountID, nil
+}
+
+func (b chatAccountBinding) BindSessionAccount(ctx context.Context, _, accountID string) error {
+	acctPtr := &accountID
+	return b.chats.UpdateAccountIDByAgentSessionID(ctx, b.agentSessionID, acctPtr)
+}
+
 // accountRegistryAdapter adapts db.AccountStore to the accountRegistry seam,
 // projecting models.Account into the switch's internal view. The empty account
 // id resolves to the system-default account 0 (always active, no env).
@@ -469,7 +494,9 @@ func (a accountRegistryAdapter) Account(ctx context.Context, accountID string) (
 		CooldownUntil: acct.CooldownUntil,
 	}
 	if sa.Label == "" {
-		sa.Label = shortAccountID(acct.ID)
+		// Shared degraded-label policy (account.ShortID) so a label-less
+		// account renders the same everywhere it surfaces.
+		sa.Label = account.ShortID(acct.ID)
 	}
 	// Mirror checkAccountEligible's selectability predicate (status/health/cooldown)
 	// so a manual switch refuses exactly what the rotation engine and session
@@ -486,13 +513,38 @@ func (a accountRegistryAdapter) Account(ctx context.Context, accountID string) (
 	return sa, nil
 }
 
-// shortAccountID returns the first 8 characters of id so an account with no
-// label never surfaces as blank in the switch notice.
-func shortAccountID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
+// resolveAccountLabel resolves an account id to its human label for rotation
+// audit fields on EITHER side (manual-switch/failover/headless-rotation
+// FromAccount AND ToAccount call sites), mirroring how the manual switch's
+// to-side (target.Label) is already stored. An empty id (unbound session)
+// resolves to the unmanaged-credentials label — mapped here, not in the
+// registry adapter, so the contract holds for every registry state (including
+// nil) — and an unresolvable id degrades to its account.ShortID display form,
+// so the result is never blank. Side semantics: an empty FROM-side id means
+// unmanaged credentials and maps to that label; an empty TO-side means "no
+// target" (status-only outcomes) and stays empty — callers guard it (see
+// recordRotation) so this helper is never asked to label an
+// intentionally-empty to-side.
+//
+// The degraded fallback is account.ShortID, deliberately matching
+// account.Resolver.Label (which feeds the chat rotator's audit from-side via
+// ChatContext.FromLabel): both audit-feeding resolvers must degrade an
+// unresolvable id to the same string. The full id stays observable in the
+// Debug log below.
+func (l *Lifecycle) resolveAccountLabel(ctx context.Context, accountID string) string {
+	if accountID == "" {
+		return account.UnmanagedLocalCredentialsLabel
 	}
-	return id
+	if l.accountSwitchRegistry == nil {
+		return account.ShortID(accountID)
+	}
+	sa, err := l.accountSwitchRegistry.Account(ctx, accountID)
+	if err != nil {
+		l.logger.Debug().Err(err).Str("account_id", accountID).
+			Msg("rotation audit: account label lookup failed; falling back to short id")
+		return account.ShortID(accountID)
+	}
+	return sa.Label
 }
 
 // transcriptProbeAdapter dispatches TranscriptExists to the agent plugin

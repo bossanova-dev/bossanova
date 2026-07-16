@@ -318,6 +318,14 @@ type SessionCommandHandler interface {
 	// credentials), optionally filtered by provider ("" = all). Bosso proxies
 	// this for the web account-switch picker, scoped to a session's owning daemon.
 	ListAccounts(ctx context.Context, provider string) (*pb.ListAccountsResponse, error)
+	// GetRepo returns a repo's web-safe settings for the hosted repo-management
+	// surface. The direct daemon handler never exposes plaintext keys.
+	GetRepo(ctx context.Context, repoID string) (*pb.GetRepoSettingsResponse, error)
+	// UpdateRepo forwards the browser-safe update command to the direct daemon
+	// handler. SecretUpdate values retain their tri-state semantics unchanged.
+	UpdateRepo(ctx context.Context, req *pb.UpdateRepoCommand) (*pb.UpdateRepoResponse, error)
+	// RemoveRepo removes a repo by ID.
+	RemoveRepo(ctx context.Context, repoID string) error
 	// ListRepoPRs returns a repo's open PRs for the web "existing PR" picker.
 	ListRepoPRs(ctx context.Context, repoID string) (*pb.ListRepoPRsResponse, error)
 	// ListTrackerIssues returns a repo's tracker issues (optional server-side

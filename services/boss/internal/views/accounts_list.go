@@ -320,11 +320,13 @@ func (m AccountsListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.rebuildTable()
 		return m, m.testAccountCmd(id)
 
-	case "x":
-		// Toggle disable/enable (BOS-268). Enabling (active-ward) is a bare
-		// metadata flip with no warning. Disabling an account bound to live
-		// sessions (or when the bound count is unknown) goes through a confirm
-		// prompt; a known-unbound disable flips immediately.
+	case "space":
+		// [space] toggle disable/enable (BOS-392 unifies this with the cron
+		// list's [space] toggle; behavior unchanged since BOS-268). Enabling
+		// (active-ward) is a bare metadata flip with no warning. Disabling an
+		// account bound to live sessions (or when the bound count is unknown)
+		// goes through a confirm prompt; a known-unbound disable flips
+		// immediately.
 		acct := m.selectedAccount()
 		if acct == nil {
 			return m, nil
@@ -369,7 +371,7 @@ func (m AccountsListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		id := acct.GetId()
 		// Ignore the key while a status flip or remove for this row is already
-		// in flight (see [x]); prevents a second confirm firing a duplicate
+		// in flight (see [space]); prevents a second confirm firing a duplicate
 		// RemoveAccount and the misleading post-removal error toast.
 		if m.disabling[id] || m.removing[id] {
 			return m, nil
@@ -698,11 +700,13 @@ func (m AccountsListModel) View() tea.View {
 	// usage re-probe can outlast the 5s transient-status window). Otherwise show
 	// the transient status toast.
 	if m.refreshing {
+		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
 			strings.TrimRight(m.spinner.View(), " ") + " Refreshing usage…",
 		))
 		b.WriteString("\n")
 	} else if m.status != "" && time.Since(m.statusAt) < 5*time.Second {
+		b.WriteString("\n")
 		style := styleStatusInfo
 		if m.statusErr {
 			style = styleStatusDanger
@@ -711,7 +715,7 @@ func (m AccountsListModel) View() tea.View {
 		b.WriteString("\n")
 	}
 	b.WriteString(actionBar(
-		[]string{"[e/enter]dit", "[a]dd", "[t]est", "[r]efresh", "[x] disable/enable", "[d] remove"},
+		[]string{"[e/enter]dit", "[a]dd", "[t]est", "[r]efresh", "[space] toggle", "[d] remove"},
 		[]string{"[esc] back"},
 	))
 

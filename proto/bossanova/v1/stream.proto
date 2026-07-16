@@ -116,6 +116,13 @@ message OrchestratorCommand {
     // bosso → daemon: list the daemon's rotation accounts (web account-switch
     // picker). Optional provider filter. Replies CommandResult{list_accounts}.
     ListAccountsCommand list_accounts = 23;
+    // bosso → daemon: read a repo's web-safe settings. Replies
+    // CommandResult{get_repo}.
+    GetRepoCommand get_repo = 24;
+    // bosso → daemon: update a repo. Replies CommandResult{update_repo}.
+    UpdateRepoCommand update_repo = 25;
+    // bosso → daemon: remove a repo. Replies CommandResult{Ok}.
+    RemoveRepoCommand remove_repo = 26;
   }
 }
 
@@ -258,6 +265,11 @@ message CommandResult {
     // ListAccounts returns the daemon's rotation accounts (reuses daemon.proto
     // type; metadata only — never credentials).
     ListAccountsResponse list_accounts = 16;
+    // GetRepo returns the daemon's web-safe repo settings.
+    GetRepoSettingsResponse get_repo = 17;
+    // UpdateRepo returns the daemon's full repo; bosso projects it before
+    // returning it to a browser.
+    UpdateRepoResponse update_repo = 18;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -474,6 +486,30 @@ message ListAgentsCommand {}
 message ListAccountsCommand {
   string provider = 1;
 }
+
+// GetRepoCommand asks the daemon for its web-safe repo settings. It reuses the
+// existing GetRepoSettings daemon handler and therefore never carries secrets.
+message GetRepoCommand { string repo_id = 1; }
+
+// UpdateRepoCommand mirrors the browser-safe proxy update surface. SecretUpdate
+// values are forwarded unchanged to the daemon's existing UpdateRepo handler.
+message UpdateRepoCommand {
+  string repo_id = 1;
+  optional string display_name = 2;
+  optional string setup_script = 3;
+  optional MergeStrategy merge_strategy = 4;
+  optional bool can_auto_merge = 5;
+  optional bool can_auto_merge_dependabot = 6;
+  optional bool can_auto_repair = 7;
+  optional string sentry_org = 8;
+  SecretUpdate linear_key = 9;
+  SecretUpdate sentry_key = 10;
+  google.protobuf.Timestamp expected_updated_at = 11;
+}
+
+// RemoveRepoCommand asks the daemon to remove a repo. Successful responses
+// carry no payload.
+message RemoveRepoCommand { string repo_id = 1; }
 
 // ListRepoPRsCommand asks the daemon for a repo's open PRs (new-session
 // "existing PR" picker). Reuses daemon.proto's ListRepoPRsResponse.

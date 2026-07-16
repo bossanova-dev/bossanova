@@ -74,6 +74,12 @@ service OrchestratorService {
   rpc ProxyListAgents(ProxyListAgentsRequest) returns (ProxyListAgentsResponse);
   rpc ProxyListRepoPRs(ProxyListRepoPRsRequest) returns (ProxyListRepoPRsResponse);
   rpc ProxyListTrackerIssues(ProxyListTrackerIssuesRequest) returns (ProxyListTrackerIssuesResponse);
+  // Per-repo proxies for web repo management. Route to the daemon named by
+  // daemon_id and address the repo by repo_id. Reads/updates are secret-masked
+  // (RepoSettings); writes carry tri-state SecretUpdate + expected_updated_at.
+  rpc ProxyGetRepo(ProxyGetRepoRequest) returns (ProxyGetRepoResponse);
+  rpc ProxyUpdateRepo(ProxyUpdateRepoRequest) returns (ProxyUpdateRepoResponse);
+  rpc ProxyRemoveRepo(ProxyRemoveRepoRequest) returns (ProxyRemoveRepoResponse);
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -457,6 +463,32 @@ message ProxyListTrackerIssuesRequest {
   optional string source = 4;  // "linear" (default) | "sentry"
 }
 message ProxyListTrackerIssuesResponse { repeated TrackerIssue issues = 1; }
+
+message ProxyGetRepoRequest { string daemon_id = 1; string repo_id = 2; }
+message ProxyGetRepoResponse { RepoSettings settings = 1; }
+
+// ProxyUpdateRepoRequest mirrors the field-mask shape of daemon UpdateRepoRequest,
+// but uses the MergeStrategy enum and replaces the two plaintext secret string
+// fields with tri-state SecretUpdate messages. expected_updated_at drives
+// optimistic concurrency (reject if the stored updated_at has advanced).
+message ProxyUpdateRepoRequest {
+  string daemon_id = 1;
+  string repo_id = 2;
+  optional string display_name = 3;
+  optional string setup_script = 4;
+  optional MergeStrategy merge_strategy = 5;
+  optional bool can_auto_merge = 6;
+  optional bool can_auto_merge_dependabot = 7;
+  optional bool can_auto_repair = 8;
+  optional string sentry_org = 9;
+  SecretUpdate linear_key = 10;
+  SecretUpdate sentry_key = 11;
+  google.protobuf.Timestamp expected_updated_at = 12;
+}
+message ProxyUpdateRepoResponse { RepoSettings settings = 1; }
+
+message ProxyRemoveRepoRequest { string daemon_id = 1; string repo_id = 2; }
+message ProxyRemoveRepoResponse {}
 
 // ProxyStreamChatsRequest selects the session whose chat list (and per-chat
 // statuses) the caller wants to follow. The orchestrator resolves the owning

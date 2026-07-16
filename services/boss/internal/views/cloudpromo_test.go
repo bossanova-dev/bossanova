@@ -103,6 +103,14 @@ func TestCloudGuestOfferHiddenAfterValueWindow(t *testing.T) {
 	}
 }
 
+func TestCloudGuestOfferValueWindowIsExactlyThreeDays(t *testing.T) {
+	// Keep the product promise independent from the implementation constant so a
+	// changed multiplier cannot move the offer window without detection.
+	if got, want := cloudGuestOfferValueWindow, 72*time.Hour; got != want {
+		t.Fatalf("cloudGuestOfferValueWindow = %s, want %s", got, want)
+	}
+}
+
 func TestCloudGuestOfferHiddenWhenLoggedInOrAuthUnavailable(t *testing.T) {
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
 	settings := config.DefaultSettings()

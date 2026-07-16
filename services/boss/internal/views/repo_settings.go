@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 )
 
@@ -72,8 +73,21 @@ const (
 	repoSettingsGitHubModeOpening
 )
 
-// mergeStrategies is the cycle order for the merge strategy setting.
-var mergeStrategies = []string{"merge", "rebase", "squash"}
+// mergeStrategies is the cycle order for the merge strategy setting, sourced
+// from the canonical models.MergeStrategies() ordering rather than duplicating
+// bare string literals.
+var mergeStrategies = mergeStrategyStrings()
+
+// mergeStrategyStrings renders the canonical models.MergeStrategy cycle order as
+// wire strings for the pb.Repo.merge_strategy field the TUI reads/writes.
+func mergeStrategyStrings() []string {
+	ms := models.MergeStrategies()
+	out := make([]string, len(ms))
+	for i, s := range ms {
+		out[i] = string(s)
+	}
+	return out
+}
 
 // mergeStrategyLabel returns a human-readable label for a merge strategy.
 func mergeStrategyLabel(s string) string {
@@ -524,8 +538,9 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 		m.editingField = repoSettingsRowSetupScript
 		return m, m.setupInput.Focus()
 	case repoSettingsRowMergeStrategy:
-		// Cycle through merge strategies.
-		current := m.repo.MergeStrategy
+		// Cycle through merge strategies. Normalize the stored value first so an
+		// unknown/empty value starts the cycle from the default (merge).
+		current := string(models.ParseMergeStrategy(m.repo.MergeStrategy))
 		next := mergeStrategies[0]
 		for i, s := range mergeStrategies {
 			if s == current {

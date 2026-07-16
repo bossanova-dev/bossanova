@@ -43,6 +43,11 @@ export const RETIME_TARGET_MS = 4_000
 export const TRAILING_CUT_PAD_MS = 800
 /** Minimum OUTPUT duration of each burned caption window (readability floor). */
 export const CAPTION_MIN_OUTPUT_MS = 2_000
+/** Minimum OUTPUT hold of the confirmation-outro window (BOS-393): the final
+ * ✔/✖ caption must linger long enough to register as a deliberate ending.
+ * Applied ONLY when the agent leg passes explicit outroStartMs metadata (7A) —
+ * truncated/bridge-died runs have no outro and keep their exact pacing. */
+export const OUTRO_HOLD_MS = 3_000
 export const OUTPUT_FPS = 30
 
 // ── Leading white-flash trim ────────────────────────────────────────────────
@@ -1083,6 +1088,7 @@ export function postprocessProofVideo({
   renderCaptionStrip,
   sceneStartsMs,
   endCutMs,
+  outroStartMs,
 }) {
   const fullDurationMs = ffprobeDurationMs(webmPath)
   if (fullDurationMs === null)
@@ -1167,6 +1173,13 @@ export function postprocessProofVideo({
     .map((c) => c.startMs - trimMs)
   if (captionStarts.length > 0) {
     segments = applySceneFloors(segments, captionStarts, durationMs, CAPTION_MIN_OUTPUT_MS)
+  }
+  // Confirmation-outro hold (BOS-393, 1B+7A): floor the outro window — from the
+  // outro frame to end-of-video — to OUTRO_HOLD_MS of output. Gated on explicit
+  // metadata: `captionTimings` alone cannot distinguish an outro from a stale
+  // last caption on a truncated run, and those must keep today's ending.
+  if (Number.isFinite(outroStartMs)) {
+    segments = applySceneFloors(segments, [outroStartMs - trimMs], durationMs, OUTRO_HOLD_MS)
   }
   // Per-scene watchability floor (BOS-251): scene boundaries arrive on the
   // source clock; shift them onto the trimmed clock the plan uses.

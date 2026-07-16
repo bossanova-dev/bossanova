@@ -61,6 +61,48 @@ func TestListSessions_RecomputesDisplayCompositeFromLiveTracker(t *testing.T) {
 	}
 }
 
+// TestListSessions_ReSourcesProviderAccountFromPrimaryChat proves the list
+// projection reports the PRIMARY chat's provider/account on the wire (BOS-381),
+// reusing the batch chat load (no per-session GetByAgentSessionID). The session
+// is seeded claude/acct-claude but its primary chat switched to codex/acct-codex.
+func TestListSessions_ReSourcesProviderAccountFromPrimaryChat(t *testing.T) {
+	agentSessionID := "agent-1"
+	sessAcct := "acct-claude"
+	sess := &models.Session{
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		Title:          "Cross-agent chat",
+		State:          machine.ImplementingPlan,
+		AgentName:      "claude",
+		AccountID:      &sessAcct,
+		AgentSessionID: &agentSessionID,
+		CreatedAt:      time.Now(),
+	}
+	chatAcct := "acct-codex"
+	chats := map[string][]*models.AgentChat{
+		sess.ID: {{
+			ID:             "chat-1",
+			SessionID:      sess.ID,
+			AgentSessionID: agentSessionID,
+			AgentName:      "codex",
+			AccountID:      &chatAcct,
+		}},
+	}
+	s := newListSessionsDisplayStatusTestServer([]*models.Session{sess}, chats, status.NewDisplayTracker(), status.NewTracker())
+
+	resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	got := onlySession(t, resp.Msg.Sessions)
+	if got.GetAgentName() != "codex" {
+		t.Errorf("agent_name = %q, want codex (from primary chat)", got.GetAgentName())
+	}
+	if got.GetAccountId() != chatAcct {
+		t.Errorf("account_id = %q, want %q (from primary chat)", got.GetAccountId(), chatAcct)
+	}
+}
+
 func TestListSessions_RecomputedDisplayCompositeKeepsChatPrecedence(t *testing.T) {
 	agentSessionID := "agent-1"
 	sess := &models.Session{

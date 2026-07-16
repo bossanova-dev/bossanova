@@ -556,6 +556,26 @@ function webStageScript() {
         repoId: 'repo-proof',
         repoDisplayName: 'bossanova',
         chats: [{ id: 'chat-2', agentSessionId: 'claude-2', title: 'Quick chat', status: 'idle' }],
+      }, {
+        // A session carrying a rotation audit record so the subtle
+        // RotationHistory block renders for the web-session-detail-rotation
+        // recipe (BOS-394). Most fixtures omit rotationEvents, so the block
+        // renders nothing there.
+        id: 'sess-e2e-rotation',
+        title: 'Proof rotated session',
+        branchName: 'proof/rotation',
+        baseBranch: 'main',
+        repoId: 'repo-proof',
+        repoDisplayName: 'bossanova',
+        rotationEvents: [{
+          id: 'rot-e2e-1',
+          // RotationOutcome.ROTATED (=1).
+          outcome: 1,
+          fromAccount: 'yuki@kamik.ai',
+          toAccount: 'dave@kamik.ai',
+          // Fixed event time so the rendered <time> label is deterministic.
+          createdAtSeconds: 1700000100,
+        }],
       }],
       // Seed connected repos so the web-repositories recipe (/settings/repos)
       // renders the repo table (.data-table-wrap) with Disconnect buttons
@@ -564,6 +584,20 @@ function webStageScript() {
         { repoOriginUrl: 'github.com/recurser/bossanova', installed: true },
         { repoOriginUrl: 'github.com/madverts/madverts-core', installed: true },
       ],
+      // Seed a daemon-local repository so repository settings proof flows can
+      // open its form and confirmation dialog without relying on a live daemon.
+      daemons: [{ id: 'daemon-proof', displayName: 'Proof daemon' }],
+      repos: [{
+        id: 'repo-proof',
+        displayName: 'Proof repository',
+        setupScript: 'pnpm install',
+        canAutoMerge: true,
+        canAutoMergeDependabot: true,
+        canAutoRepair: true,
+        sentryOrg: 'proof',
+        hasLinearKey: true,
+        hasSentryKey: true,
+      }],
     };
   });
   await page.routeWebSocket('**/ws/attach*', (ws) => {

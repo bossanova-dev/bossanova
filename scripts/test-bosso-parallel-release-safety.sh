@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KUSTOMIZE_DIR="infra/kustomize"
 K8S_IMAGE="europe-west1-docker.pkg.dev/madverts-operations/services/bosso"
+MCP_IMAGE="europe-west1-docker.pkg.dev/madverts-operations/services/mcp-gateway"
 K8S_REGISTRY="europe-west1-docker.pkg.dev"
 LEGACY_PROVIDER="f""ly"
 LEGACY_PROVIDER_UPPER="$(printf '%s' "${LEGACY_PROVIDER}" | tr '[:lower:]' '[:upper:]')"
@@ -130,9 +131,53 @@ check_dns_cutover_safety() {
   require_grep "infra/environments/main.tf" '"orchestrator-k8s"' "production K8s canary hostname must be configured"
 }
 
+# BOS-49: hosted MCP gateway deploy safety. The gateway ships in the shared
+# kustomize base (gateway + cloudflared sidecar), each overlay pins its own
+# Artifact Registry image with a CI-rewritable marker, the tunnel token is
+# sourced from the secret (never a literal), and the cf-tunnel Terraform module
+# is gated off by default so staging enables before production.
+check_mcp_gateway() {
+  require_file "${KUSTOMIZE_DIR}/base/deployment-mcp-gateway.yml"
+  require_file "${KUSTOMIZE_DIR}/base/service-mcp-gateway.yml"
+  require_file "${KUSTOMIZE_DIR}/base/configmap-mcp-gateway.yml"
+  require_grep "${KUSTOMIZE_DIR}/base/kustomization.yml" "deployment-mcp-gateway.yml" "base must include the MCP gateway Deployment"
+  require_grep "${KUSTOMIZE_DIR}/base/deployment-mcp-gateway.yml" "image: ${MCP_IMAGE}:production" "MCP gateway default image must use Artifact Registry"
+  require_grep "${KUSTOMIZE_DIR}/base/deployment-mcp-gateway.yml" "name: cloudflared" "MCP gateway pod must run the cloudflared sidecar"
+  require_grep "${KUSTOMIZE_DIR}/base/deployment-mcp-gateway.yml" "name: mcp-gateway" "MCP gateway pod must run the gateway container"
+  # The tunnel token must come from the secret env, never a literal in kustomize.
+  require_grep "${KUSTOMIZE_DIR}/base/deployment-mcp-gateway.yml" "key: CLOUDFLARE_TUNNEL_TOKEN" "cloudflared token must come from the secret, not a literal"
+  require_absent "${KUSTOMIZE_DIR}/base/deployment-mcp-gateway.yml" "TUNNEL_TOKEN: ey" "cloudflared token must not be inlined"
+  for env in staging production; do
+    require_grep "${KUSTOMIZE_DIR}/overlays/${env}/kustomization.yml" "name: ${MCP_IMAGE}" "K8s ${env} overlay must pin the MCP gateway image"
+    require_grep "${KUSTOMIZE_DIR}/overlays/${env}/kustomization.yml" "# mcp-gateway" "K8s ${env} overlay must tag the mcp-gateway pin for CI to rewrite"
+    require_grep "${KUSTOMIZE_DIR}/overlays/${env}/kustomization.yml" "name: bs-mcp-secret" "K8s ${env} overlay must generate the bs-mcp-secret"
+    require_file "${KUSTOMIZE_DIR}/overlays/${env}/.env-mcp.example"
+    require_absent "${KUSTOMIZE_DIR}/overlays/${env}/.env-mcp.example" "cfargotunnel.com" "overlay .env-mcp.example must not carry a real tunnel token"
+  done
+  # cf-tunnel Terraform module: present, gated off by default, token sourced
+  # from state and never a literal.
+  require_file "infra/modules/cf-tunnel/main.tf"
+  require_grep_after "infra/modules/cf-tunnel/variables.tf" 'variable "enabled"' 'default     = false' "cf-tunnel module must default enabled=false"
+  require_grep "infra/environments/main.tf" 'module "cf_tunnel"' "environments must wire the cf-tunnel module"
+  require_grep_after "infra/environments/variables.tf" 'variable "mcp_gateway_enabled"' 'default     = false' "MCP gateway enable flag must default false"
+  require_grep "infra/environments/main.tf" "CLOUDFLARE_TUNNEL_TOKEN=\${module.cf_tunnel.tunnel_token}" "MCP secret must source the tunnel token from the module output"
+  # GitOps release parity with bosso: both release workflows build+push the
+  # gateway image from its own Dockerfile.k8s and pin the # mcp-gateway marker
+  # back into the overlay on the env branch.
+  require_file "services/mcp-gateway/Dockerfile.k8s"
+  require_absent_file "services/mcp-gateway/Dockerfile"
+  require_grep "services/mcp-gateway/Dockerfile.k8s" 'ENTRYPOINT ["mcp-gateway"]' "MCP gateway K8s image must run mcp-gateway directly"
+  for file in .github/workflows/perform-staging-release.yml .github/workflows/perform-production-release.yml; do
+    require_grep "$file" "services/mcp-gateway/Dockerfile.k8s" "release workflow must build the gateway image from Dockerfile.k8s"
+    require_grep "$file" "${MCP_IMAGE}" "release workflow must push the gateway image to Artifact Registry"
+    require_grep "$file" "newTag: '\${{ needs.version.outputs.version }}'  # mcp-gateway" "release workflow must pin the mcp-gateway overlay tag"
+  done
+}
+
 check_k8s_has_separate_image
 check_release_workflows
 check_kustomize_staging_and_production
 check_dns_cutover_safety
+check_mcp_gateway
 
 echo "PASS: bosso parallel release safety"

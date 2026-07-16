@@ -15,6 +15,7 @@ import (
 
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/rotation"
 )
 
@@ -48,6 +49,19 @@ func (s *captureAuditStore) all() []rotation.AuditEvent {
 func enableFailoverProxy(lc *Lifecycle) {
 	on := true
 	lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &on})
+}
+
+// mapSwitchRegistry resolves a distinct switchAccount per id (unknown ids error),
+// so tests can assert the from/to sides of an audit resolve to human labels
+// rather than raw account ids.
+type mapSwitchRegistry map[string]switchAccount
+
+func (m mapSwitchRegistry) Account(_ context.Context, id string) (switchAccount, error) {
+	sa, ok := m[id]
+	if !ok {
+		return switchAccount{}, errors.New("account not found: " + id)
+	}
+	return sa, nil
 }
 
 // --- RebindAndAudit ---
@@ -507,11 +521,47 @@ func TestCommitFailover_persistsSecondAccountAndAudits(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("want exactly one AuditEvent, got %d", len(events))
 	}
-	if events[0].ToAccount != "acct-next" || events[0].Outcome != "ROTATION_OUTCOME_ROTATED" {
+	// No registry is wired in this fixture, so the audit sides degrade to the
+	// shared short-id display fallback (account.ShortID) — the same policy the
+	// chat-rotator path (account.Resolver.Label) uses for unresolvable ids.
+	if events[0].ToAccount != account.ShortID("acct-next") || events[0].Outcome != "ROTATION_OUTCOME_ROTATED" {
 		t.Fatalf("unexpected audit event: %+v", events[0])
 	}
 	if !strings.Contains(events[0].Detail, "no pane respawn") {
 		t.Fatalf("audit detail should note no pane respawn, got %q", events[0].Detail)
+	}
+}
+
+// TestCommitFailover_auditsResolvedLabels pins that both audit sides are
+// resolved to human labels (via the account registry) instead of the raw
+// account ids the FailoverResult carries, so the TUI renders emails.
+func TestCommitFailover_auditsResolvedLabels(t *testing.T) {
+	f := newRotationFixture(t)
+	enableFailoverProxy(f.lc)
+	store := &captureAuditStore{}
+	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
+	f.lc.accountSwitchRegistry = mapSwitchRegistry{
+		"acct-capped": {ID: "acct-capped", Label: "yuki@kamik.ai", Status: AccountActive},
+		"acct-next":   {ID: "acct-next", Label: "dave@kamik.ai", Status: AccountActive},
+	}
+
+	res := FailoverResult{
+		Rotate:        true,
+		NextAccountID: "acct-next",
+		FromAccountID: "acct-capped",
+		Provider:      "claude",
+		Trigger:       "ROTATION_TRIGGER_USAGE_LIMITED",
+	}
+	if err := f.lc.CommitFailover(context.Background(), f.sessionID, res); err != nil {
+		t.Fatalf("CommitFailover: %v", err)
+	}
+	events := store.all()
+	if len(events) != 1 {
+		t.Fatalf("want exactly one AuditEvent, got %d", len(events))
+	}
+	if events[0].FromAccount != "yuki@kamik.ai" || events[0].ToAccount != "dave@kamik.ai" {
+		t.Fatalf("audit did not resolve labels: from=%q to=%q, want yuki@kamik.ai / dave@kamik.ai",
+			events[0].FromAccount, events[0].ToAccount)
 	}
 }
 

@@ -957,6 +957,79 @@ test('applySceneFloors: empty boundaries or zero duration are no-ops', async () 
   assert.deepEqual(applySceneFloors(segments, [0], 0), segments)
 })
 
+// ── BOS-393: confirmation-outro hold floor (OUTRO_HOLD_MS, gated) ─────────────
+
+test('outro floor slows only the final window to OUTRO_HOLD_MS output', async () => {
+  const { applySceneFloors, OUTRO_HOLD_MS } = await import('./proof-video.mjs')
+  // One 10s timeline, outro at 9200ms (800ms tail): window 9200→10000 must be
+  // slowed to 3000ms output; earlier segments untouched.
+  const segments = [{ startMs: 0, endMs: 10_000, speed: 1 }]
+  const floored = applySceneFloors(segments, [9_200], 10_000, OUTRO_HOLD_MS)
+  const tail = floored.filter((s) => s.startMs >= 9_200)
+  const tailOut = tail.reduce((t, s) => t + (s.endMs - s.startMs) / s.speed, 0)
+  assert.ok(Math.abs(tailOut - 3_000) < 50, `tail output ${tailOut}ms should be ~3000ms`)
+  assert.equal(floored.find((s) => s.endMs <= 9_200).speed, 1)
+})
+
+test('outro window already ≥ OUTRO_HOLD_MS output is not slowed further', async () => {
+  const { applySceneFloors, OUTRO_HOLD_MS } = await import('./proof-video.mjs')
+  // The final window [6000,10000) already outputs 4000ms ≥ 3000ms floor → no-op.
+  const segments = [{ startMs: 0, endMs: 10_000, speed: 1 }]
+  const floored = applySceneFloors(segments, [6_000], 10_000, OUTRO_HOLD_MS)
+  assert.ok(
+    floored.every((s) => s.speed === 1),
+    'a window already over the outro floor keeps its 1x pacing',
+  )
+})
+
+test('postprocess plan is byte-identical without outroStartMs (7A gating)', (t) => {
+  if (!requireFfmpeg(t)) return
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-video-outro-'))
+  try {
+    const webmPath = path.join(dir, 'in.webm')
+    const gen = spawnSync('ffmpeg', [
+      '-y',
+      '-loglevel',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'color=c=blue:s=64x64:d=0.5',
+      '-c:v',
+      'libvpx',
+      '-pix_fmt',
+      'yuv420p',
+      webmPath,
+    ])
+    assert.equal(gen.status, 0, 'synthetic webm fixture must be created')
+
+    const run = (extra) =>
+      postprocessProofVideo({
+        webmPath,
+        timedPath: path.join(dir, 'timed.mp4'),
+        outPath: path.join(dir, 'out.mp4'),
+        scratchPath: path.join(dir, 'scratch.raw'),
+        ...extra,
+      })
+
+    const baseline = run({})
+    const nullOutro = run({ outroStartMs: null })
+    // A null/absent outroStartMs must not change the plan — a truncated /
+    // bridge-died run (no outro metadata) keeps today's exact pacing.
+    assert.deepEqual(nullOutro.timeline.segments, baseline.timeline.segments)
+
+    // A finite outroStartMs at the clip start floors the whole (short) window to
+    // the 3s hold → the final segment slows below 1x, changing the plan.
+    const withOutro = run({ outroStartMs: 0 })
+    assert.ok(
+      withOutro.timeline.segments.some((s) => s.speed < 1),
+      'a finite outroStartMs must stretch the outro window below 1x',
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ── BOS-251: trailing dead-air cut + caption readability floor ────────────────
 
 test('buildBaseChain: endSec adds a trim end on the same chain', async () => {

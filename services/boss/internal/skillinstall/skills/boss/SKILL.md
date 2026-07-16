@@ -432,6 +432,10 @@ Restarts the bossd daemon via the platform service manager. Errors out if the da
 boss daemon restart
 ```
 
+### `boss daemon rotate-token`
+
+Rotate the daemon socket auth token (regenerated on next daemon start)
+
 ### `boss daemon start`
 
 Start the bossd daemon

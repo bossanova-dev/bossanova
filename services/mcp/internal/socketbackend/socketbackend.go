@@ -19,6 +19,7 @@ import (
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/socketauth"
 )
 
 // Dial retry bounds. During a bossd restart the Unix socket file is briefly
@@ -94,7 +95,17 @@ func New(socketPath string) (*Backend, error) {
 		},
 	}
 
-	rpc := bossanovav1connect.NewDaemonServiceClient(httpClient, "http://localhost")
+	// Attach the daemon's socket auth token (co-located with the socket), exactly
+	// as the boss CLI's local client does — bossd rejects every DaemonService RPC
+	// lacking it with CodeUnauthenticated. If the token file is missing/malformed
+	// we still build the client; the RPC then surfaces the daemon's clear
+	// Unauthenticated error.
+	var opts []connect.ClientOption
+	if token, err := socketauth.ReadToken(socketPath); err == nil {
+		opts = append(opts, connect.WithInterceptors(socketauth.NewClientInterceptor(token)))
+	}
+
+	rpc := bossanovav1connect.NewDaemonServiceClient(httpClient, "http://localhost", opts...)
 	return &Backend{rpc: rpc, socketPath: socketPath}, nil
 }
 

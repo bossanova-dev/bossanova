@@ -20,6 +20,7 @@ go_library(
         "//lib/bossalib/machine",
         "//lib/bossalib/migrate",
         "//lib/bossalib/safego",
+        "//lib/bossalib/socketauth",
         "//lib/bossalib/vcs",
         "//services/bossd/internal/accountcred",
         "//services/bossd/internal/agent",

@@ -36,9 +36,9 @@ func (s *SQLiteAgentChatStore) Create(ctx context.Context, params CreateAgentCha
 		agentName = "claude"
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO agent_chats (id, session_id, agent_session_id, provider_session_id, agent_name, title, start_error, account_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-		id, params.SessionID, params.AgentSessionID, params.ProviderSessionID, agentName, params.Title, params.AccountID, now,
+		`INSERT INTO agent_chats (id, session_id, agent_session_id, provider_session_id, agent_name, title, start_error, account_id, model, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+		id, params.SessionID, params.AgentSessionID, params.ProviderSessionID, agentName, params.Title, params.AccountID, params.Model, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert agent_chat: %w", err)
@@ -52,13 +52,14 @@ func (s *SQLiteAgentChatStore) Create(ctx context.Context, params CreateAgentCha
 		AgentName:         agentName,
 		Title:             params.Title,
 		AccountID:         params.AccountID,
+		Model:             params.Model,
 		CreatedAt:         sqlutil.ParseTime(now),
 	}, nil
 }
 
 func (s *SQLiteAgentChatStore) GetByAgentSessionID(ctx context.Context, agentSessionID string) (*models.AgentChat, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, created_at
+		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, model, created_at
 		 FROM agent_chats
 		 WHERE agent_session_id = ?`,
 		agentSessionID,
@@ -79,7 +80,7 @@ func (s *SQLiteAgentChatStore) GetByAgentSessionID(ctx context.Context, agentSes
 
 func (s *SQLiteAgentChatStore) ListBySession(ctx context.Context, sessionID string) ([]*models.AgentChat, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, created_at
+		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, model, created_at
 		 FROM agent_chats
 		 WHERE session_id = ?
 		 ORDER BY created_at DESC`,
@@ -128,7 +129,7 @@ func (s *SQLiteAgentChatStore) listBySessionsChunk(ctx context.Context, sessionI
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		fmt.Sprintf(`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, created_at
+		fmt.Sprintf(`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, model, created_at
 		 FROM agent_chats
 		 WHERE session_id IN (%s)
 		 ORDER BY session_id, created_at DESC`, placeholders),
@@ -233,7 +234,7 @@ func (s *SQLiteAgentChatStore) DeleteByAgentSessionID(ctx context.Context, agent
 
 func (s *SQLiteAgentChatStore) ListWithTmuxSession(ctx context.Context) ([]*models.AgentChat, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, created_at
+		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, model, created_at
 		 FROM agent_chats
 		 WHERE tmux_session_name IS NOT NULL AND tmux_session_name != ''
 		 ORDER BY created_at DESC`,
@@ -265,7 +266,7 @@ func (s *SQLiteAgentChatStore) ListWithTmuxSession(ctx context.Context) ([]*mode
 // cleared by MarkStartFailed) are excluded — they are not routable.
 func (s *SQLiteAgentChatStore) ListRoutableChats(ctx context.Context) ([]*models.AgentChat, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, created_at
+		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, model, created_at
 		 FROM agent_chats
 		 WHERE (tmux_session_name IS NOT NULL AND tmux_session_name != '')
 		    OR (start_error IS NULL OR start_error = '')
@@ -290,7 +291,7 @@ func (s *SQLiteAgentChatStore) ListRoutableChats(ctx context.Context) ([]*models
 func scanAgentChat(rows *sql.Rows) (*models.AgentChat, error) {
 	var c models.AgentChat
 	var createdAt string
-	if err := rows.Scan(&c.ID, &c.SessionID, &c.AgentSessionID, &c.ProviderSessionID, &c.AgentName, &c.Title, &c.DaemonID, &c.TmuxSessionName, &c.StartError, &c.AccountID, &createdAt); err != nil {
+	if err := rows.Scan(&c.ID, &c.SessionID, &c.AgentSessionID, &c.ProviderSessionID, &c.AgentName, &c.Title, &c.DaemonID, &c.TmuxSessionName, &c.StartError, &c.AccountID, &c.Model, &createdAt); err != nil {
 		return nil, fmt.Errorf("scan agent_chat: %w", err)
 	}
 	c.CreatedAt = sqlutil.ParseTime(createdAt)

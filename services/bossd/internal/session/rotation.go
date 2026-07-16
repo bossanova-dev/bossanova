@@ -131,12 +131,21 @@ func (l *Lifecycle) autoRotateAllowed() bool {
 // AuditEvent from the current session + signal and records the given outcome.
 // Auditing never fails a rotation (the Recorder swallows insert errors).
 func (l *Lifecycle) recordRotation(ctx context.Context, session *models.Session, b RotationBinding, outcome, toAccount, detail string, resetAt *time.Time) {
+	// Side semantics: an empty TO-side stays empty — status-only outcomes have
+	// no target, and labeling them would be indistinguishable from an explicit
+	// switch to unmanaged credentials (pinned by
+	// TestRecordRotation_KeepsEmptyTargetForStatusOnly). An empty FROM-side
+	// means unmanaged credentials and is mapped inside resolveAccountLabel.
+	toLabel := toAccount
+	if toAccount != "" {
+		toLabel = l.resolveAccountLabel(ctx, toAccount)
+	}
 	l.rotationRecorder.Record(ctx, rotation.AuditEvent{
 		SessionID:   session.ID,
 		Provider:    b.Provider,
 		Trigger:     "ROTATION_TRIGGER_USAGE_LIMITED",
-		FromAccount: b.CappedAccountID,
-		ToAccount:   toAccount,
+		FromAccount: l.resolveAccountLabel(ctx, b.CappedAccountID),
+		ToAccount:   toLabel,
 		ResetAt:     resetAt,
 		Outcome:     outcome,
 		Detail:      detail,
@@ -295,7 +304,7 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 			SessionID:   session.ID,
 			Provider:    b.Provider,
 			Trigger:     "ROTATION_TRIGGER_USAGE_LIMITED",
-			FromAccount: b.CappedAccountID,
+			FromAccount: l.resolveAccountLabel(ctx, b.CappedAccountID),
 			ResetAt:     &resumePtr,
 			Outcome:     "ROTATION_OUTCOME_EXHAUSTED",
 			Detail:      "all accounts cooling until " + outcome.ResumeAt.Format("15:04"),
@@ -360,7 +369,11 @@ func (l *Lifecycle) rotateAndRestart(ctx context.Context, session *models.Sessio
 	if session.AgentSessionID != nil {
 		resume = session.AgentSessionID
 	}
-	newID, err := l.agentRunner.StartByAgent(ctx, session.AgentName, session.WorktreePath, resumedPrompt, resume, "", session.Model, mergedEnv)
+	// BOS-381: dispatch the restart under the primary chat's provider/model (the
+	// runtime authority), not the session's stale seed. The account overlay is
+	// already the rotation-selected `next` account, materialized above.
+	spawnSess := l.effectiveSpawnSession(ctx, session)
+	newID, err := l.agentRunner.StartByAgent(ctx, spawnSess.AgentName, session.WorktreePath, resumedPrompt, resume, "", spawnSess.Model, mergedEnv)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", session.ID).
 			Msg("usage-limit rotation: restart failed")

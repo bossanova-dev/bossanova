@@ -3,6 +3,7 @@ package views
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -15,13 +16,19 @@ func TestToast_ShowRendersText(t *testing.T) {
 	if got := tm.View(80); got != "" {
 		t.Errorf("empty toast View = %q, want empty", got)
 	}
-	tm, cmd := tm.Show("session-x: acct-a → acct-b rotated")
+	tm, cmd := tm.Show("session-x: acct-a switched to acct-b")
 	if cmd == nil {
 		t.Error("Show returned a nil expire command")
 	}
 	got := tm.View(80)
-	if !strings.Contains(got, "acct-a → acct-b rotated") {
+	if !strings.Contains(got, "acct-a switched to acct-b") {
 		t.Errorf("toast View = %q, want it to contain the shown text", got)
+	}
+}
+
+func TestToastDurationIsSixSeconds(t *testing.T) {
+	if got, want := toastDuration, 6*time.Second; got != want {
+		t.Fatalf("toastDuration = %s, want %s", got, want)
 	}
 }
 
@@ -106,7 +113,7 @@ func TestDetectNewRotationEvents_SeedThenDiff(t *testing.T) {
 	if len(toasts) != 1 {
 		t.Fatalf("changed toasts = %v, want exactly one", toasts)
 	}
-	if !strings.Contains(toasts[0], "Fix the bug") || !strings.Contains(toasts[0], "acct-b → acct-c rotated") {
+	if !strings.Contains(toasts[0], "Fix the bug") || !strings.Contains(toasts[0], "acct-b switched to acct-c") {
 		t.Errorf("toast = %q, want session title + rotation label", toasts[0])
 	}
 	if seen["sess-1"] != "ev-2" {

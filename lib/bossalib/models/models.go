@@ -19,6 +19,38 @@ const (
 	MergeStrategySquash MergeStrategy = "squash"
 )
 
+// Valid reports whether m is one of the recognized merge strategies
+// (merge/rebase/squash). The empty string and any unknown value are invalid.
+func (m MergeStrategy) Valid() bool {
+	switch m {
+	case MergeStrategyMerge, MergeStrategyRebase, MergeStrategySquash:
+		return true
+	default:
+		return false
+	}
+}
+
+// MergeStrategies returns the recognized merge strategies in canonical cycle
+// order (merge, rebase, squash). It is the single source of truth for the
+// allowed values — the TUI cycler and any picker should source from here rather
+// than duplicating bare string literals.
+func MergeStrategies() []MergeStrategy {
+	return []MergeStrategy{MergeStrategyMerge, MergeStrategyRebase, MergeStrategySquash}
+}
+
+// ParseMergeStrategy normalizes a stored/wire string into a validated
+// MergeStrategy. A valid value maps to itself; the empty string and any unknown
+// value map to the default MergeStrategyMerge (matching the DB column default
+// 'merge'). This replaces unchecked MergeStrategy(s) casts at storage
+// boundaries.
+func ParseMergeStrategy(s string) MergeStrategy {
+	m := MergeStrategy(s)
+	if m.Valid() {
+		return m
+	}
+	return MergeStrategyMerge
+}
+
 // Repo represents a registered Git repository.
 type Repo struct {
 	ID                     string
@@ -170,6 +202,10 @@ type AgentChat struct {
 	// AccountID binds the chat to a rotation account; nil/empty = the
 	// system-default account 0 (no injected env, D9).
 	AccountID *string
+	// Model is the per-chat agent model id. Empty string means "inherit the
+	// agent CLI default" (BOS-381 moves model authority from the session to the
+	// chat). bossd never enumerates valid models; the agent CLI validates it.
+	Model     string
 	CreatedAt time.Time
 }
 

@@ -641,6 +641,13 @@ func daemonCmd() *cobra.Command {
 				return runDaemonRestart(cmd)
 			},
 		},
+		&cobra.Command{
+			Use:   "rotate-token",
+			Short: "Rotate the daemon socket auth token (regenerated on next daemon start)",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runDaemonRotateToken(cmd)
+			},
+		},
 	)
 
 	return d

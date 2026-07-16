@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -412,6 +413,46 @@ func porcelainHasTrackedChanges(porcelain string) bool {
 	return false
 }
 
+// worktreeIsMissing reports whether a failed `git status` was caused by the
+// worktree path being gone (the session's worktree was archived/removed) rather
+// than a genuine git failure against a live worktree. It is deliberately
+// conservative — a genuine git failure at a still-present path must NOT be
+// swallowed as benign:
+//   - if os.Stat confirms the path is PRESENT, the failure is treated as a live
+//     (non-benign) failure regardless of the git error text — a corrupt or
+//     de-initialized worktree (e.g. a deleted .git that makes git report "not a
+//     git repository") must surface as pr_failed, not be reclassified as gone;
+//   - os.Stat reporting the path does not exist is the authoritative "gone"
+//     signal;
+//   - only when the path cannot be confirmed present (empty path, or os.Stat
+//     itself errored for another reason) does the git error text naming a
+//     missing repository/path stand in as a fallback, for the race where the
+//     directory vanished mid-finalize.
+func worktreeIsMissing(path string, statusErr error) bool {
+	if path != "" {
+		switch _, err := os.Stat(path); {
+		case err == nil:
+			// The worktree path is present on disk, so a failed `git status`
+			// here is a genuine failure against a live worktree. Do not let the
+			// error-text fallback below (which matches common strings like "no
+			// such file or directory") reclassify a confirmed-present path as
+			// gone.
+			return false
+		case os.IsNotExist(err):
+			return true
+		}
+		// Stat errored for another reason (e.g. permission); fall through to the
+		// error-text fallback so a race where the path can't be inspected is
+		// still handled.
+	}
+	if statusErr == nil {
+		return false
+	}
+	msg := strings.ToLower(statusErr.Error())
+	return strings.Contains(msg, "not a git repository") ||
+		strings.Contains(msg, "no such file or directory")
+}
+
 // classifyFinalizeOutcome runs steps 2 and 3 of the finalize pipeline: it
 // inspects the worktree and routes to the cleanup, no-github, PR-failed, or
 // PR-created branch. It never returns an error — unrecoverable failures are
@@ -419,8 +460,22 @@ func porcelainHasTrackedChanges(porcelain string) bool {
 func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models.Session) *FinalizeResult {
 	status, err := l.worktrees.Status(ctx, session.WorktreePath)
 	if err != nil {
-		// Can't tell whether there were changes; treat as recoverable pr_failed
-		// so the user can investigate the worktree manually.
+		if worktreeIsMissing(session.WorktreePath, err) {
+			// The worktree is already gone — e.g. the session was
+			// archived/removed (ArchiveSession deletes the worktree but leaves
+			// the row in an implementing state) before a late Stop hook or a
+			// stranded-cron sweep reached finalize. There is nothing left to
+			// finalize; this is a benign no-op, not a PR failure. Record it as
+			// worktree_gone so the session is NOT surfaced as attention-needed
+			// with a scary pr_failed blocked reason.
+			return &FinalizeResult{
+				Outcome: models.CronJobOutcomeWorktreeGone,
+				Err:     fmt.Errorf("worktree gone: %w", err),
+			}
+		}
+		// The path exists but git status failed for some other reason; we can't
+		// tell whether there were changes, so treat as recoverable pr_failed so
+		// the user can investigate the worktree manually.
 		return &FinalizeResult{
 			Outcome: models.CronJobOutcomePRFailed,
 			Err:     fmt.Errorf("git status: %w", err),
@@ -942,6 +997,18 @@ func (l *Lifecycle) RecoverFinalizingSessions(ctx context.Context) (int, error) 
 
 	recovered := 0
 	for _, sess := range stuck {
+		// Skip archived sessions, symmetric with the RecoverStrandedCronSessions
+		// guard. ListByState returns rows regardless of archived status
+		// (session_store.go), and a benign worktree_gone finalize (archived /
+		// removed session, worktree deleted) leaves the row in Finalizing —
+		// steps 5 and 6 of FinalizeSession are both skipped for that outcome. If
+		// this recovery pass reclassified such a row it would record
+		// failed_recovered and transition it to Blocked on the next daemon
+		// restart, resurrecting the exact scary pr_failed-style framing BOS-384
+		// kills. There is nothing to recover for an archived session.
+		if sess.ArchivedAt != nil {
+			continue
+		}
 		if sess.CronJobID != nil && *sess.CronJobID != "" && l.cronJobs != nil {
 			recordedID := sess.ID
 			// Guard against a newer run, same as FinalizeSession: while this
@@ -1033,7 +1100,11 @@ func needsAttention(o models.CronJobOutcome) bool {
 		models.CronJobOutcomePRCreated,
 		models.CronJobOutcomeFailedRecovered,
 		models.CronJobOutcomeFireFailed,
-		models.CronJobOutcomeGated:
+		models.CronJobOutcomeGated,
+		// worktree_gone: finalize ran against an already-removed worktree
+		// (archived/deleted session). A benign no-op, not a housekeeping
+		// failure — so the session must NOT be routed to Blocked.
+		models.CronJobOutcomeWorktreeGone:
 		return false
 	}
 	return false

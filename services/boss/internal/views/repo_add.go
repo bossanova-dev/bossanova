@@ -18,6 +18,7 @@ import (
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 )
 
@@ -46,7 +47,7 @@ const (
 // wizard's details form is seeded to these so its controls reflect the real
 // post-create state, and add-time options are only persisted (via a follow-up
 // UpdateRepo) when the user changes something. Keep in sync with that INSERT.
-const defaultRepoMergeStrategy = "merge"
+const defaultRepoMergeStrategy = string(models.MergeStrategyMerge)
 
 const (
 	defaultCanAutoMerge           = false
@@ -363,9 +364,9 @@ func (m *RepoAddModel) buildDetailsForm() {
 			huh.NewSelect[string]().
 				Title("Merge strategy").
 				Options(
-					huh.NewOption("Merge commit", "merge"),
-					huh.NewOption("Rebase", "rebase"),
-					huh.NewOption("Squash", "squash"),
+					huh.NewOption("Merge commit", string(models.MergeStrategyMerge)),
+					huh.NewOption("Rebase", string(models.MergeStrategyRebase)),
+					huh.NewOption("Squash", string(models.MergeStrategySquash)),
 				).
 				Value(&m.fd.mergeStrategy),
 			huh.NewMultiSelect[string]().

@@ -179,6 +179,9 @@ export const SYSTEM_PROMPT = [
   'sentence (max ~12 words) describing what you are about to do. That text is burned onto the recorded frame',
   'as a caption so the video explains itself — a tool call with no accompanying text leaves the frame',
   'uncaptioned, so never call those tools without a leading narration sentence.',
+  'ENDING: when the required evidence is on screen, make one final observe() call whose narration',
+  'quotes exactly the on-screen evidence (the visible row/text) before you call done() —',
+  "this closing narration becomes the video's final caption.",
   'Call observe() after actions when you need to re-read the screen. When you have demonstrated the change',
   '(or proven it is broken), call done({ summary, passed }) with passed=true ONLY if you actually saw the',
   'expected result on screen. Do not attempt shell, network, or external access.',
@@ -574,6 +577,7 @@ export function defaultCastToVideo({
   sceneStartsMs,
   posterSourceMs,
   endCutMs,
+  outroStartMs,
 }) {
   if (!castPath || !fs.existsSync(castPath)) {
     console.warn('[proof-tui-agent] DEGRADED (cast-missing): cast file missing — stills-only proof')
@@ -676,6 +680,7 @@ export function defaultCastToVideo({
       renderCaptionStrip: defaultRenderCaptionStrip,
       sceneStartsMs,
       endCutMs,
+      outroStartMs,
     })
   } catch (err) {
     console.warn(
@@ -1204,6 +1209,10 @@ export async function runTuiAgentProof({
   // verdict; carried onto the collect-mode SurfaceRun so the dispatcher can soften
   // it to `tui-truncated`. Defaults false (a replay loopRunner omits it).
   let wallClockTruncated = false
+  // BOS-393: the confirmation-outro result from the agent loop (null for a
+  // replay loopRunner or any run with no accepted verdict). Read after the try
+  // block to thread outroStartMs into the video step and surface outroDegraded.
+  let outro = null
   const scenes = normalizeScenes(brief)
 
   try {
@@ -1223,6 +1232,11 @@ export async function runTuiAgentProof({
     sceneTimings = loop.sceneTimings ?? []
     nullCastRead = Boolean(loop.nullCastRead)
     wallClockTruncated = Boolean(loop.wallClockTruncated)
+    // BOS-393: the confirmation-outro result. `startMs` (finite) → the video
+    // step floors the outro window to OUTRO_HOLD_MS; `degraded` → surfaced on
+    // the capture shape via its OWN field, never the stills-only `degraded`
+    // channel (2b-A). Null when no accepted verdict produced an outro.
+    outro = loop.outro ?? null
     // Persist the per-step caption timings (raw/caption-timings.json) — the
     // single source the video step reads to burn captions onto the mp4 (BOS-121).
     fs.writeFileSync(
@@ -1293,6 +1307,10 @@ export async function runTuiAgentProof({
       // blanking, dead PTY) is dropped from the output.
       posterSourceMs: lastContentMs,
       endCutMs: lastContentMs,
+      // BOS-393: the source-clock start of the confirmation-outro frame. Finite
+      // → the postprocessor floors that final window to OUTRO_HOLD_MS (1B/7A);
+      // null (no outro / degraded outro) → the video keeps its exact pacing.
+      outroStartMs: Number.isFinite(outro?.startMs) ? outro.startMs : null,
     })
   } catch (err) {
     console.warn(`[proof-tui-agent] cast→video failed — stills-only proof: ${err.message}`)
@@ -1455,6 +1473,11 @@ export async function runTuiAgentProof({
     ...(posterFileName ? { posterFileName } : {}),
     ...(stills.length > 0 ? { stills } : {}),
     ...(degraded ? { degraded } : {}),
+    // BOS-393: the confirmation-outro degrade lives on its OWN field, kept
+    // strictly off the stills-only `degraded` channel above (which gates
+    // BOSS_PROOF_TUI_ALLOW_STILLS_ONLY / the BOS-226 hard-fail). An outro
+    // failure is post-verdict polish: it must never fail or gate the surface.
+    ...(outro?.degraded ? { outroDegraded: outro.degraded } : {}),
     ...(error ? { error } : {}),
   }
   const scanTexts = [finalScreen, brief.title, brief.description, agentResult.summary ?? '']
@@ -1883,7 +1906,7 @@ export function evaluateDoneCall({
  * Scene 1 is auto-opened at startMs 0. The model marks later scene boundaries
  * via the `begin_scene` tool; each settled screen is attributed to whichever
  * scene is active when it is captured (`sceneForScreen`).
- * @returns {Promise<{ agentResult: object, finalScreen: string, captionTimings: Array<{seq?:number,caption:string,startMs:number|null}>, sceneTimings: Array<{id:string,title:string,startMs:number|null}>, sceneForScreen: Record<number,string>, screens: Array<{seq:number,text:string,castMs:number|null}>, nullCastRead: boolean }>}
+ * @returns {Promise<{ agentResult: object, finalScreen: string, captionTimings: Array<{seq?:number,caption:string,startMs:number|null}>, sceneTimings: Array<{id:string,title:string,startMs:number|null}>, sceneForScreen: Record<number,string>, screens: Array<{seq:number,text:string,castMs:number|null}>, nullCastRead: boolean, outro: {startMs:number} | {degraded:{reason:'outro-degraded',detail:string}} | null }>}
  */
 export async function runAgentLoop({
   brief,
@@ -1936,6 +1959,12 @@ export async function runAgentLoop({
   const usage = { inputTokens: 0, outputTokens: 0 }
   const started = Date.now()
   const done = { passed: null, summary: '', evidence: [] }
+  // BOS-393: the narration that immediately preceded an ACCEPTED done() — the
+  // agent's closing words, burned onto the confirmation outro frame after the
+  // loop. '' when done() carried no preceding text (the outro then falls back
+  // to done.summary). The block loop clears/overwrites pendingCaption, so it is
+  // snapshotted here at the accept site rather than read post-loop.
+  let doneNarration = ''
   let steps = 0
   let screenN = 0
   let finalScreen = ''
@@ -1953,6 +1982,42 @@ export async function runAgentLoop({
   let activeSceneIndex = 0
   let textOnlyNudges = 0
   let doneRejections = 0
+
+  // BOS-393: the single owner of the settled-frame sidecar filenames, so the
+  // capture helper and the outro rollback can never drift on the naming scheme —
+  // a divergence would strand an orphan `screen-NN.txt` that `renderFrames`
+  // globs (`screen-\d+\.txt`) into a phantom trailing frame.
+  const sidecarPaths = (n) => {
+    const seq = String(n).padStart(2, '0')
+    return {
+      screenPath: path.join(rawDir, `screen-${seq}.txt`),
+      captionPath: path.join(rawDir, `caption-${seq}.txt`),
+    }
+  }
+
+  // Shared settled-screen capture (BOS-393): one code path writes the screen
+  // text + caption sidecar, reads the cast clock, and updates every consumer
+  // (captionTimings, screens, sceneForScreen, finalScreen) ATOMICALLY —
+  // lastContentMs/poster/trailing-cut all derive from `screens`, so a partial
+  // update strands the frame. Failure mode is the CALLER's: the tool path
+  // lets errors propagate to its bridgeError catch; the outro call site
+  // wraps this in its own all-or-nothing guard. Accounting-neutral: it does
+  // NOT touch nullCastRead (the tool path sets the BOS-216 flag; the outro
+  // applies its own all-or-nothing semantics).
+  function captureSettledScreen({ screen, caption, captionTimed = false }) {
+    finalScreen = screen
+    screenN += 1
+    const { screenPath, captionPath } = sidecarPaths(screenN)
+    fs.writeFileSync(screenPath, screen)
+    fs.writeFileSync(captionPath, caption)
+    const screenMs = readCastMs()
+    if (!captionTimed) {
+      captionTimings.push({ seq: screenN, caption, startMs: screenMs })
+    }
+    screens.push({ seq: screenN, text: screen, castMs: screenMs })
+    sceneForScreen[screenN] = scenes[activeSceneIndex]?.id
+    return { screenMs }
+  }
   // BOS-354: set true ONLY when the per-run wall clock cuts the loop off before
   // any done() verdict (done.passed === null). The step/token/text-only-nudge
   // exhaustion breaks below deliberately leave it false — those are genuine
@@ -2061,6 +2126,9 @@ export async function runAgentLoop({
           done.passed = decision.done.passed
           done.summary = decision.done.summary
           done.evidence = decision.done.evidence
+          // Snapshot the narration preceding this done() for the outro (BOS-393);
+          // '' when no text block preceded the call in this turn.
+          doneNarration = pendingCaption
         }
         toolResult = decision.toolResult
       } else if (block.name === 'begin_scene') {
@@ -2107,27 +2175,20 @@ export async function runAgentLoop({
             // eslint-disable-next-line no-await-in-loop -- sequential by design
             r = await bridge.typeText(String(block.input?.text ?? ''))
           }
+          // Settled-screen capture (BOS-393): the shared helper writes the
+          // screen text + caption sidecar (the narration that preceded THIS
+          // tool call, not the whole turn), reads the cast clock, and updates
+          // captionTimings/screens/sceneForScreen/finalScreen atomically. The
+          // nullCastRead accounting (BOS-216) stays at THIS call site — the
+          // helper is accounting-neutral so the outro can apply its own
+          // all-or-nothing semantics.
           const screen = r?.screen ?? ''
-          finalScreen = screen
-          screenN += 1
-          const seq = String(screenN).padStart(2, '0')
-          fs.writeFileSync(path.join(rawDir, `screen-${seq}.txt`), screen)
-          // Sidecar caption: the narration that preceded THIS tool call (not
-          // the whole turn), carried to the matching frame's blue caption bar in
-          // renderFrames. Empty narration writes an empty file (renderFrames
-          // defaults missing/empty to '').
-          fs.writeFileSync(path.join(rawDir, `caption-${seq}.txt`), pendingCaption)
-          // Record the cast-relative time of THIS settled screen so the caption
-          // can be burned into the video for the window that starts here (BOS-121).
-          const screenMs = readCastMs()
+          const { screenMs } = captureSettledScreen({
+            screen,
+            caption: pendingCaption,
+            captionTimed: pendingCaptionTimed,
+          })
           if (screenMs === null) nullCastRead = true
-          if (!pendingCaptionTimed) {
-            captionTimings.push({ seq: screenN, caption: pendingCaption, startMs: screenMs })
-          }
-          // BOS-216: carry the screen's cast-clock ms so the stills step can
-          // place each extracted still on the mp4 clock via mapSourceToOutputMs.
-          screens.push({ seq: screenN, text: screen, castMs: screenMs })
-          sceneForScreen[screenN] = scenes[activeSceneIndex]?.id
           pendingCaption = ''
           pendingCaptionTimed = false
           toolResult = { screen }
@@ -2148,6 +2209,93 @@ export async function runAgentLoop({
 
     if (done.passed !== null) break
     if (bridgeError) break
+  }
+
+  // Confirmation outro (BOS-393): after ANY accepted done() verdict, burn the
+  // agent's closing narration onto one final settled frame — ✔ for passed,
+  // ✖ for failed — so the video ends on the confirmation instead of the
+  // previous action's stale caption. Staged AFTER the tool-block loop so a
+  // trailing tool call in the done() message can never overtake it (6A).
+  // All-or-nothing (8A): a blank screen, a bridge error, or a null cast read
+  // skips the outro wholesale with a dedicated degraded reason — a ✔ over a
+  // blank/mistimed frame is worse than no outro. The verdict and the
+  // bridgeError/nullCastRead accounting are NEVER touched here (2b-A): this
+  // is post-verdict polish, not evidence.
+  let outro = null
+  if (done.passed !== null && !bridgeError) {
+    const mark = done.passed ? '✔' : '✖'
+    // Trim the narration BEFORE the fallback so a whitespace-only closing text
+    // block (truthy but empty once trimmed) still falls through to done.summary
+    // instead of yielding a bare `✔`/`✖`.
+    const caption = `${mark} ${(doneNarration.trim() || done.summary || '').trim()}`.trim()
+    try {
+      const { screen } = await bridge.observe()
+      if (!String(screen ?? '').trim()) {
+        outro = {
+          degraded: { reason: 'outro-degraded', detail: 'outro observe returned a blank screen' },
+        }
+      } else {
+        // Snapshot EVERY field captureSettledScreen mutates — including
+        // finalScreen — so a null cast read OR a mid-capture throw (sidecar
+        // write, cast read) rolls the outro back wholesale. finalScreen feeds
+        // the downstream evidence text-scan, so leaving it on an unrecorded
+        // outro screen would let the gate scan a frame absent from the video.
+        const before = {
+          screenN,
+          finalScreen,
+          screens: screens.length,
+          captions: captionTimings.length,
+        }
+        const rollbackOutro = () => {
+          screens.length = before.screens
+          captionTimings.length = before.captions
+          screenN = before.screenN
+          finalScreen = before.finalScreen
+          delete sceneForScreen[before.screenN + 1]
+          const { screenPath, captionPath } = sidecarPaths(before.screenN + 1)
+          fs.rmSync(screenPath, { force: true })
+          fs.rmSync(captionPath, { force: true })
+        }
+        let screenMs = null
+        let captureError = null
+        try {
+          ;({ screenMs } = captureSettledScreen({ screen, caption }))
+        } catch (capErr) {
+          // A sidecar write or cast read threw partway: honor the all-or-nothing
+          // guard the tool path defers to bridgeError — the outro owns rollback.
+          rollbackOutro()
+          captureError = capErr
+        }
+        if (captureError) {
+          outro = {
+            degraded: {
+              reason: 'outro-degraded',
+              detail: `outro capture failed: ${captureError.message}`,
+            },
+          }
+        } else if (screenMs === null) {
+          // Roll the partial capture back so the outro stays all-or-nothing:
+          // a caption window anchored to a null/stale timestamp mis-times the
+          // confirmation over the wrong frames.
+          rollbackOutro()
+          outro = {
+            degraded: { reason: 'outro-degraded', detail: 'outro cast-clock read was null' },
+          }
+        } else {
+          finalScreen = screen
+          outro = { startMs: screenMs }
+        }
+      }
+    } catch (err) {
+      outro = {
+        degraded: { reason: 'outro-degraded', detail: `outro observe failed: ${err.message}` },
+      }
+    }
+    if (outro?.degraded) {
+      console.warn(
+        `[proof-tui-agent] DEGRADED (outro-degraded): ${outro.degraded.detail} — video ends without the confirmation outro; verdict unaffected`,
+      )
+    }
   }
 
   // Persist the full model conversation for post-mortems (BOS-251): an
@@ -2180,6 +2328,7 @@ export async function runAgentLoop({
     screens,
     nullCastRead,
     wallClockTruncated,
+    outro,
   }
 }
 

@@ -8,7 +8,11 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/account"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/rotation"
+	"github.com/rs/zerolog"
 )
 
 // getOnlyAccountStore is a minimal db.AccountStore that serves a single account
@@ -126,6 +130,43 @@ func (s stubSwitchRegistry) Account(_ context.Context, _ string) (switchAccount,
 	return s.acct, s.err
 }
 
+// TestResolveAccountLabel covers the side-neutral account-label resolver used
+// by the manual-switch, failover, and headless-rotation audits: a hit returns
+// the account label, a nil registry or a lookup error degrades to the short-id
+// display fallback (account.ShortID — the SAME degradation policy as
+// account.Resolver.Label, which feeds the chat rotator's audit from-side), and
+// an empty id resolves to the unmanaged-credentials label regardless of
+// registry state — so an audited side is never blank.
+func TestResolveAccountLabel(t *testing.T) {
+	ctx := context.Background()
+
+	nilReg := &Lifecycle{}
+	if got := nilReg.resolveAccountLabel(ctx, "acct-x"); got != "acct-x" {
+		t.Errorf("nil registry: got %q, want short-id fallback acct-x", got)
+	}
+	// The empty-id → unmanaged-credentials mapping is the helper's own contract:
+	// it must hold even with no registry wired (nil-registry daemons/tests).
+	if got := nilReg.resolveAccountLabel(ctx, ""); got != account.UnmanagedLocalCredentialsLabel {
+		t.Errorf("nil registry, empty id: got %q, want %q", got, account.UnmanagedLocalCredentialsLabel)
+	}
+
+	lc := &Lifecycle{accountSwitchRegistry: mapSwitchRegistry{
+		"acct-x": {ID: "acct-x", Label: "dave@kamik.ai"},
+	}}
+	if got := lc.resolveAccountLabel(ctx, "acct-x"); got != "dave@kamik.ai" {
+		t.Errorf("registry hit: got %q, want dave@kamik.ai", got)
+	}
+	// Lookup failure degrades to the shared 8-char display fallback, matching
+	// what the chat-rotator path (account.Resolver.Label) would store for the
+	// same unresolvable id.
+	if got, want := lc.resolveAccountLabel(ctx, "acct-missing-long-id"), account.ShortID("acct-missing-long-id"); got != want {
+		t.Errorf("registry miss: got %q, want short-id fallback %q", got, want)
+	}
+	if got := lc.resolveAccountLabel(ctx, ""); got != account.UnmanagedLocalCredentialsLabel {
+		t.Errorf("wired registry, empty id: got %q, want %q", got, account.UnmanagedLocalCredentialsLabel)
+	}
+}
+
 type stubChatWorking struct{ working bool }
 
 func (s stubChatWorking) IsWorking(_ string) bool { return s.working }
@@ -168,6 +209,8 @@ func TestSwitchAccount_HappyResume(t *testing.T) {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
 	h := newSwitchHarness(t)
+	store := &captureAuditStore{}
+	h.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
 
 	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
@@ -181,6 +224,16 @@ func TestSwitchAccount_HappyResume(t *testing.T) {
 	if !strings.Contains(res.NoticeText, "resumed") {
 		t.Errorf("NoticeText = %q, want it to mention resumed", res.NoticeText)
 	}
+	// The audit Detail carries only the outcome suffix — the "switched to
+	// <label> — " sentence stays in the pane notice; the rotation history
+	// renders the switch line from the structured From/To fields instead.
+	events := store.all()
+	if len(events) != 1 {
+		t.Fatalf("want exactly one AuditEvent, got %d", len(events))
+	}
+	if got, want := events[0].Detail, "resumed"; got != want {
+		t.Errorf("audit Detail = %q, want outcome suffix %q only", got, want)
+	}
 	if res.TargetLabel != "Work" {
 		t.Errorf("TargetLabel = %q, want Work", res.TargetLabel)
 	}
@@ -188,9 +241,13 @@ func TestSwitchAccount_HappyResume(t *testing.T) {
 	if h.findCall("kill-session") == nil {
 		t.Error("expected tmux kill-session (STOP), none recorded")
 	}
-	// REBIND persisted onto the session (default binding over the session store).
-	if got := h.sessions.sessions["sess-1"].AccountID; got == nil || *got != "acct-2" {
-		t.Errorf("session AccountID = %v, want acct-2", got)
+	// REBIND persisted onto the CHAT (chat-scoped binding, BOS-381), not the
+	// session — the session's own binding is left untouched.
+	if got := h.chats.chatsBySession["sess-1"][0].AccountID; got == nil || *got != "acct-2" {
+		t.Errorf("chat AccountID = %v, want acct-2", got)
+	}
+	if got := h.sessions.sessions["sess-1"].AccountID; got != nil {
+		t.Errorf("session AccountID = %v, want nil (switch binds the chat, not the session)", got)
 	}
 	// RESPAWN resumed the prior id and did NOT resend the interrupted prompt.
 	last := h.agentFake.LastBuildInteractiveCommand
@@ -220,6 +277,8 @@ func TestSwitchAccount_StaleTranscriptStartsFresh(t *testing.T) {
 	}
 	h := newSwitchHarness(t)
 	h.lc.accountSwitchTranscripts = stubTranscriptProbe{exists: false}
+	store := &captureAuditStore{}
+	h.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
 
 	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
@@ -232,6 +291,15 @@ func TestSwitchAccount_StaleTranscriptStartsFresh(t *testing.T) {
 	}
 	if !strings.Contains(res.NoticeText, "started fresh") {
 		t.Errorf("NoticeText = %q, want it to mention started fresh", res.NoticeText)
+	}
+	// Fresh fallback: audit Detail is the outcome suffix only, without the
+	// duplicated "switched to <label>" sentence (that stays in the notice).
+	events := store.all()
+	if len(events) != 1 {
+		t.Fatalf("want exactly one AuditEvent, got %d", len(events))
+	}
+	if got, want := events[0].Detail, "started fresh (could not resume this conversation cross-account)"; got != want {
+		t.Errorf("audit Detail = %q, want outcome suffix %q only", got, want)
 	}
 	last := h.agentFake.LastBuildInteractiveCommand
 	if last == nil {
@@ -272,27 +340,40 @@ func TestSwitchAccount_CrossAccountResumeUnsupported(t *testing.T) {
 	}
 }
 
-// TestSwitchAccount_CrossAgentChatRefused: a chat whose agent differs from its
-// session's agent is refused before any stop/rebind. The session-scoped respawn
-// (StartTmuxChat under sess.AgentName) and rebind (BindSessionAccount) would
-// otherwise relaunch it as the wrong agent and bind the session to another
-// provider's account.
-func TestSwitchAccount_CrossAgentChatRefused(t *testing.T) {
+// TestSwitchAccount_CrossAgentChatSucceeds: a chat whose agent differs from its
+// session's agent now switches successfully (BOS-381). The old
+// ErrCrossAgentSwitchUnsupported guard existed because the switch rebound the
+// SESSION; with chat-scoped binding the codex chat's own account is rebound and
+// the parent claude session's binding is left untouched.
+func TestSwitchAccount_CrossAgentChatSucceeds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	h := newSwitchHarness(t)
-	// The session runs "claude"; make the selected chat a cross-agent codex chat.
+	// The session runs "claude"; make the selected chat a cross-agent codex chat
+	// and target a codex account. The respawn must dispatch under the chat's
+	// provider (BOS-381), so the codex runner must be loaded.
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
+	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
+		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AccountActive,
+	}}
 
-	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
-	if !errors.Is(err, ErrCrossAgentSwitchUnsupported) {
-		t.Fatalf("err = %v, want ErrCrossAgentSwitchUnsupported", err)
+	if err != nil {
+		t.Fatalf("SwitchAccount cross-agent: %v", err)
 	}
-	if h.findCall("kill-session") != nil {
-		t.Error("cross-agent refusal must not kill the pane")
+	if res.TargetLabel != "Codex Work" {
+		t.Errorf("TargetLabel = %q, want Codex Work", res.TargetLabel)
+	}
+	// The CHAT's account is rebound; the parent session's binding is untouched.
+	if got := h.chats.chatsBySession["sess-1"][0].AccountID; got == nil || *got != "acct-2" {
+		t.Errorf("chat AccountID = %v, want acct-2 (cross-agent chat rebound)", got)
 	}
 	if got := h.sessions.sessions["sess-1"].AccountID; got != nil {
-		t.Errorf("session AccountID = %v, want nil (no rebind on refusal)", got)
+		t.Errorf("session AccountID = %v, want nil (session binding untouched)", got)
 	}
 }
 
@@ -377,8 +458,8 @@ func TestSwitchAccount_MidTurnRefusedWithoutForce(t *testing.T) {
 	if h.findCall("kill-session") != nil {
 		t.Error("mid-turn refusal must not kill the pane")
 	}
-	if got := h.sessions.sessions["sess-1"].AccountID; got != nil {
-		t.Errorf("session AccountID = %v, want nil (no rebind on refusal)", got)
+	if got := h.chats.chatsBySession["sess-1"][0].AccountID; got != nil {
+		t.Errorf("chat AccountID = %v, want nil (no rebind on refusal)", got)
 	}
 }
 
@@ -421,8 +502,8 @@ func TestSwitchAccount_AutoRefusesRecoveredWorkingChat(t *testing.T) {
 	if h.findCall("kill-session") != nil {
 		t.Error("Auto refusal on a recovered WORKING chat must not kill the pane")
 	}
-	if got := h.sessions.sessions["sess-1"].AccountID; got != nil {
-		t.Errorf("session AccountID = %v, want nil (no rebind on refusal)", got)
+	if got := h.chats.chatsBySession["sess-1"][0].AccountID; got != nil {
+		t.Errorf("chat AccountID = %v, want nil (no rebind on refusal)", got)
 	}
 }
 
@@ -476,8 +557,8 @@ func TestSwitchAccount_CoolingTargetRefused(t *testing.T) {
 	if h.findCall("kill-session") != nil {
 		t.Error("cooling refusal must not kill the pane")
 	}
-	if got := h.sessions.sessions["sess-1"].AccountID; got != nil {
-		t.Errorf("session AccountID = %v, want nil (no rebind)", got)
+	if got := h.chats.chatsBySession["sess-1"][0].AccountID; got != nil {
+		t.Errorf("chat AccountID = %v, want nil (no rebind)", got)
 	}
 }
 
@@ -519,8 +600,8 @@ func TestSwitchAccount_FailedHealthTargetRefused(t *testing.T) {
 	if h.findCall("kill-session") != nil {
 		t.Error("failed-health refusal must not kill the pane")
 	}
-	if got := h.sessions.sessions["sess-1"].AccountID; got != nil {
-		t.Errorf("session AccountID = %v, want nil (no rebind)", got)
+	if got := h.chats.chatsBySession["sess-1"][0].AccountID; got != nil {
+		t.Errorf("chat AccountID = %v, want nil (no rebind)", got)
 	}
 }
 
@@ -529,7 +610,9 @@ func TestSwitchAccount_FailedHealthTargetRefused(t *testing.T) {
 func TestSwitchAccount_IdempotentNoop(t *testing.T) {
 	h := newSwitchHarness(t)
 	bound := "acct-2"
-	h.sessions.sessions["sess-1"].AccountID = &bound
+	// The chat (not the session) is the authority: seed the CHAT's account so the
+	// switch detects it is already on the target.
+	h.chats.chatsBySession["sess-1"][0].AccountID = &bound
 
 	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
@@ -157,28 +158,67 @@ func (s *SQLiteRepoStore) list(ctx context.Context, q repoSQL) ([]*models.Repo, 
 }
 
 func (s *SQLiteRepoStore) Update(ctx context.Context, id string, params UpdateRepoParams) (*models.Repo, error) {
+	// The non-transactional fast path only applies when there is neither a
+	// canonical-origin uniqueness check nor an optimistic-concurrency guard to
+	// run atomically with the write.
+	if params.OriginURL == nil && params.ExpectedUpdatedAt == nil {
+		return s.update(ctx, s.db, id, params)
+	}
+
+	conn, err := s.beginImmediate(ctx)
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer s.closeImmediate(ctx, conn, &committed)
+
 	if params.OriginURL != nil {
-		conn, err := s.beginImmediate(ctx)
-		if err != nil {
-			return nil, err
-		}
-		committed := false
-		defer s.closeImmediate(ctx, conn, &committed)
 		if err := s.ensureUniqueCanonicalOrigin(ctx, conn, *params.OriginURL, id); err != nil {
 			return nil, err
 		}
-		repo, err := s.update(ctx, conn, id, params)
-		if err != nil {
+	}
+	if params.ExpectedUpdatedAt != nil {
+		if err := s.checkExpectedUpdatedAt(ctx, conn, id, *params.ExpectedUpdatedAt); err != nil {
 			return nil, err
 		}
-		if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-			return nil, fmt.Errorf("commit repo update: %w", err)
-		}
-		committed = true
-		return repo, nil
 	}
+	repo, err := s.update(ctx, conn, id, params)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return nil, fmt.Errorf("commit repo update: %w", err)
+	}
+	committed = true
+	return repo, nil
+}
 
-	return s.update(ctx, s.db, id, params)
+// checkExpectedUpdatedAt enforces the optimistic-concurrency guard inside the
+// caller's open transaction. It reads the repo's current updated_at TEXT and
+// compares it string-to-string against expected formatted with the canonical
+// storage layout, so the comparison is at the stored millisecond granularity
+// (raw time.Time equality would spuriously fail on sub-millisecond client
+// round-trip drift). Returns sql.ErrNoRows when the row is gone and
+// ErrStaleRepoUpdate on a token mismatch; in either case the caller does not
+// commit, so no field is changed.
+//
+// Limitation: the token is millisecond-granular, so two writes landing in the
+// same millisecond produce identical updated_at strings and a stale reader's
+// token could still match — a narrow lost-update window. This is acceptable for
+// human-paced repo-settings edits; a monotonic version column would close it if
+// finer concurrency guarantees are ever needed.
+func (s *SQLiteRepoStore) checkExpectedUpdatedAt(ctx context.Context, q repoSQL, id string, expected time.Time) error {
+	var stored string
+	if err := q.QueryRowContext(ctx, `SELECT updated_at FROM repos WHERE id = ?`, id).Scan(&stored); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return sql.ErrNoRows
+		}
+		return fmt.Errorf("read repo updated_at: %w", err)
+	}
+	if stored != sqlutil.FormatTime(expected) {
+		return ErrStaleRepoUpdate
+	}
+	return nil
 }
 
 func (s *SQLiteRepoStore) update(ctx context.Context, q repoSQL, id string, params UpdateRepoParams) (*models.Repo, error) {
@@ -357,7 +397,7 @@ func scanRepo(s sqlutil.Scanner) (*models.Repo, error) {
 	r.CanAutoMergeDependabot = canAutoMergeDependabot != 0
 	r.CanAutoRepair = canAutoRepair != 0
 	r.CanAutoRotate = canAutoRotate != 0
-	r.MergeStrategy = models.MergeStrategy(mergeStrategy)
+	r.MergeStrategy = models.ParseMergeStrategy(mergeStrategy)
 	r.CreatedAt = sqlutil.ParseTime(createdAt)
 	r.UpdatedAt = sqlutil.ParseTime(updatedAt)
 	return &r, nil

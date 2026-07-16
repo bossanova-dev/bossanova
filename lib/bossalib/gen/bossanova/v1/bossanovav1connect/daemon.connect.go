@@ -54,6 +54,9 @@ const (
 	// DaemonServiceUpdateRepoProcedure is the fully-qualified name of the DaemonService's UpdateRepo
 	// RPC.
 	DaemonServiceUpdateRepoProcedure = "/bossanova.v1.DaemonService/UpdateRepo"
+	// DaemonServiceGetRepoSettingsProcedure is the fully-qualified name of the DaemonService's
+	// GetRepoSettings RPC.
+	DaemonServiceGetRepoSettingsProcedure = "/bossanova.v1.DaemonService/GetRepoSettings"
 	// DaemonServiceListRepoPRsProcedure is the fully-qualified name of the DaemonService's ListRepoPRs
 	// RPC.
 	DaemonServiceListRepoPRsProcedure = "/bossanova.v1.DaemonService/ListRepoPRs"
@@ -212,6 +215,8 @@ type DaemonServiceClient interface {
 	ListRepos(context.Context, *connect.Request[v1.ListReposRequest]) (*connect.Response[v1.ListReposResponse], error)
 	RemoveRepo(context.Context, *connect.Request[v1.RemoveRepoRequest]) (*connect.Response[v1.RemoveRepoResponse], error)
 	UpdateRepo(context.Context, *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error)
+	// GetRepoSettings returns the web-safe (secret-masked) settings for a repo.
+	GetRepoSettings(context.Context, *connect.Request[v1.GetRepoSettingsRequest]) (*connect.Response[v1.GetRepoSettingsResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error)
 	ListTrackerIssues(context.Context, *connect.Request[v1.ListTrackerIssuesRequest]) (*connect.Response[v1.ListTrackerIssuesResponse], error)
 	// Session lifecycle
@@ -383,6 +388,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceUpdateRepoProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("UpdateRepo")),
+			connect.WithClientOptions(opts...),
+		),
+		getRepoSettings: connect.NewClient[v1.GetRepoSettingsRequest, v1.GetRepoSettingsResponse](
+			httpClient,
+			baseURL+DaemonServiceGetRepoSettingsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetRepoSettings")),
 			connect.WithClientOptions(opts...),
 		),
 		listRepoPRs: connect.NewClient[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse](
@@ -691,6 +702,7 @@ type daemonServiceClient struct {
 	listRepos            *connect.Client[v1.ListReposRequest, v1.ListReposResponse]
 	removeRepo           *connect.Client[v1.RemoveRepoRequest, v1.RemoveRepoResponse]
 	updateRepo           *connect.Client[v1.UpdateRepoRequest, v1.UpdateRepoResponse]
+	getRepoSettings      *connect.Client[v1.GetRepoSettingsRequest, v1.GetRepoSettingsResponse]
 	listRepoPRs          *connect.Client[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse]
 	listTrackerIssues    *connect.Client[v1.ListTrackerIssuesRequest, v1.ListTrackerIssuesResponse]
 	createSession        *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
@@ -775,6 +787,11 @@ func (c *daemonServiceClient) RemoveRepo(ctx context.Context, req *connect.Reque
 // UpdateRepo calls bossanova.v1.DaemonService.UpdateRepo.
 func (c *daemonServiceClient) UpdateRepo(ctx context.Context, req *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error) {
 	return c.updateRepo.CallUnary(ctx, req)
+}
+
+// GetRepoSettings calls bossanova.v1.DaemonService.GetRepoSettings.
+func (c *daemonServiceClient) GetRepoSettings(ctx context.Context, req *connect.Request[v1.GetRepoSettingsRequest]) (*connect.Response[v1.GetRepoSettingsResponse], error) {
+	return c.getRepoSettings.CallUnary(ctx, req)
 }
 
 // ListRepoPRs calls bossanova.v1.DaemonService.ListRepoPRs.
@@ -1033,6 +1050,8 @@ type DaemonServiceHandler interface {
 	ListRepos(context.Context, *connect.Request[v1.ListReposRequest]) (*connect.Response[v1.ListReposResponse], error)
 	RemoveRepo(context.Context, *connect.Request[v1.RemoveRepoRequest]) (*connect.Response[v1.RemoveRepoResponse], error)
 	UpdateRepo(context.Context, *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error)
+	// GetRepoSettings returns the web-safe (secret-masked) settings for a repo.
+	GetRepoSettings(context.Context, *connect.Request[v1.GetRepoSettingsRequest]) (*connect.Response[v1.GetRepoSettingsResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error)
 	ListTrackerIssues(context.Context, *connect.Request[v1.ListTrackerIssuesRequest]) (*connect.Response[v1.ListTrackerIssuesResponse], error)
 	// Session lifecycle
@@ -1200,6 +1219,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceUpdateRepoProcedure,
 		svc.UpdateRepo,
 		connect.WithSchema(daemonServiceMethods.ByName("UpdateRepo")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceGetRepoSettingsHandler := connect.NewUnaryHandler(
+		DaemonServiceGetRepoSettingsProcedure,
+		svc.GetRepoSettings,
+		connect.WithSchema(daemonServiceMethods.ByName("GetRepoSettings")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceListRepoPRsHandler := connect.NewUnaryHandler(
@@ -1512,6 +1537,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceRemoveRepoHandler.ServeHTTP(w, r)
 		case DaemonServiceUpdateRepoProcedure:
 			daemonServiceUpdateRepoHandler.ServeHTTP(w, r)
+		case DaemonServiceGetRepoSettingsProcedure:
+			daemonServiceGetRepoSettingsHandler.ServeHTTP(w, r)
 		case DaemonServiceListRepoPRsProcedure:
 			daemonServiceListRepoPRsHandler.ServeHTTP(w, r)
 		case DaemonServiceListTrackerIssuesProcedure:
@@ -1645,6 +1672,10 @@ func (UnimplementedDaemonServiceHandler) RemoveRepo(context.Context, *connect.Re
 
 func (UnimplementedDaemonServiceHandler) UpdateRepo(context.Context, *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateRepo is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetRepoSettings(context.Context, *connect.Request[v1.GetRepoSettingsRequest]) (*connect.Response[v1.GetRepoSettingsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetRepoSettings is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error) {

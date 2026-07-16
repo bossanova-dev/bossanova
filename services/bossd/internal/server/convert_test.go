@@ -607,6 +607,7 @@ func TestCronJobStatus(t *testing.T) {
 	deletedNoChanges := models.CronJobOutcomeDeletedNoChanges
 	prSkippedNoGitHub := models.CronJobOutcomePRSkippedNoGitHub
 	failedRecovered := models.CronJobOutcomeFailedRecovered
+	worktreeGone := models.CronJobOutcomeWorktreeGone
 
 	// Seed the fake store with sessions in various lifecycle states.
 	store := newFakeSessionStore()
@@ -777,6 +778,20 @@ func TestCronJobStatus(t *testing.T) {
 			job:   &models.CronJob{LastRunOutcome: &fireFailed},
 			store: store,
 			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+		},
+		{
+			// worktree_gone: finalize ran against a removed worktree; benign
+			// no-op, not a run failure. Must paint IDLE, never red FAILED.
+			name:  "outcome worktree_gone -> IDLE",
+			job:   &models.CronJob{LastRunOutcome: &worktreeGone},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "session blocked, worktree_gone -> IDLE",
+			job:   &models.CronJob{LastRunSessionID: &blockedSessID, LastRunOutcome: &worktreeGone},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
 		},
 		// chat_spawn_failed and cleanup_failed are post-PR janitorial steps;
 		// they surface as session attention, not cron FAILED status.

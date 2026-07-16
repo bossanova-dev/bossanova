@@ -20,6 +20,8 @@ service DaemonService {
   rpc ListRepos(ListReposRequest) returns (ListReposResponse);
   rpc RemoveRepo(RemoveRepoRequest) returns (RemoveRepoResponse);
   rpc UpdateRepo(UpdateRepoRequest) returns (UpdateRepoResponse);
+  // GetRepoSettings returns the web-safe (secret-masked) settings for a repo.
+  rpc GetRepoSettings(GetRepoSettingsRequest) returns (GetRepoSettingsResponse);
   rpc ListRepoPRs(ListRepoPRsRequest) returns (ListRepoPRsResponse);
   rpc ListTrackerIssues(ListTrackerIssuesRequest) returns (ListTrackerIssuesResponse);
 
@@ -250,17 +252,31 @@ message UpdateRepoRequest {
   reserved 5, 6, 14;
   optional string merge_strategy = 7;
   optional string setup_script = 8;
+  // Legacy plaintext secret fields. Retained for backward-compat: a present
+  // value still writes the key. When a SecretUpdate (linear_key/sentry_key
+  // below) carries an action other than UNSPECIFIED/UNCHANGED, the SecretUpdate
+  // wins over the legacy field for that secret.
   optional string linear_api_key = 9;
   reserved 10;
   optional string sentry_api_key = 11;
   optional string sentry_org = 12;
   reserved 13; // was sentry_project (removed: issues are listed org-wide)
   optional bool can_auto_repair = 15;
+  // Tri-state secret actions (UNCHANGED/SET/CLEAR): the authoritative secret
+  // surface that never blanks a key on a save that does not re-supply it.
+  SecretUpdate linear_key = 16;
+  SecretUpdate sentry_key = 17;
+  // Optimistic-concurrency token: when set, the update is rejected (CodeAborted)
+  // unless it still equals the repo's stored updated_at.
+  google.protobuf.Timestamp expected_updated_at = 18;
 }
 
 message UpdateRepoResponse {
   Repo repo = 1;
 }
+
+message GetRepoSettingsRequest { string id = 1; }
+message GetRepoSettingsResponse { RepoSettings settings = 1; }
 
 message ListRepoPRsRequest {
   string repo_id = 1;

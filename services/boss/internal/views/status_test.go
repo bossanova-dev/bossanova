@@ -776,7 +776,7 @@ func TestRotationHistoryBlock(t *testing.T) {
 				ToAccount:   "acct-b",
 				CreatedAt:   timestamppb.New(time.Now()),
 			}),
-			wantContains: "acct-a → acct-b rotated",
+			wantContains: "acct-a switched to acct-b",
 		},
 		{name: "no events", sess: rotationSession(), wantContains: ""},
 		{name: "nil session", sess: nil, wantContains: ""},
@@ -800,13 +800,50 @@ func TestRotationHistoryBlock(t *testing.T) {
 	}
 }
 
+// TestRotationHistoryBlockKeepsRotatedDetailSuffix preserves information such
+// as whether a switch resumed the prior conversation or when the capped account
+// resets. The first event exercises the LEGACY-row shim: manual-switch audits
+// written before the daemon split the pane notice from the audit Detail stored
+// the full "switched to <account> — resumed" sentence; new daemon rows carry
+// only the suffix (the second event's shape), which passes through untouched.
+func TestRotationHistoryBlockKeepsRotatedDetailSuffix(t *testing.T) {
+	sess := rotationSession(
+		&pb.RotationEvent{
+			Outcome:     pb.RotationOutcome_ROTATION_OUTCOME_ROTATED,
+			FromAccount: "acct-a",
+			ToAccount:   "acct-b",
+			Detail:      "switched to acct-b — resumed",
+			CreatedAt:   timestamppb.New(time.Now()),
+		},
+		&pb.RotationEvent{
+			Outcome:     pb.RotationOutcome_ROTATION_OUTCOME_ROTATED,
+			FromAccount: "acct-c",
+			ToAccount:   "acct-d",
+			Detail:      "resets 15:04",
+			CreatedAt:   timestamppb.New(time.Now()),
+		},
+	)
+	got := rotationHistoryBlock(sess, 80)
+	for _, want := range []string{
+		"acct-a switched to acct-b — resumed",
+		"acct-c switched to acct-d — resets 15:04",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rotationHistoryBlock = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "acct-a switched to acct-b — switched to acct-b") {
+		t.Errorf("rotationHistoryBlock = %q, should not repeat the switch label", got)
+	}
+}
+
 // TestRotationEventLabel pins the per-outcome phrasing.
 func TestRotationEventLabel(t *testing.T) {
 	cases := []struct {
 		outcome pb.RotationOutcome
 		want    string
 	}{
-		{pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, "acct-a → acct-b rotated"},
+		{pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, "acct-a switched to acct-b"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_DISABLED, "rotation disabled — status only"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY, "agent cannot rotate — status only"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT, "no eligible account — status only"},
@@ -819,6 +856,16 @@ func TestRotationEventLabel(t *testing.T) {
 		if got := rotationEventLabel(ev); got != tc.want {
 			t.Errorf("rotationEventLabel(%v) = %q, want %q", tc.outcome, got, tc.want)
 		}
+	}
+
+	// Legacy ROTATED rows with an unresolved (empty) from-side drop the leading
+	// space rather than render " switched to acct-b".
+	emptyFrom := &pb.RotationEvent{
+		Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_ROTATED,
+		ToAccount: "acct-b",
+	}
+	if got, want := rotationEventLabel(emptyFrom), "switched to acct-b"; got != want {
+		t.Errorf("rotationEventLabel(empty from) = %q, want %q", got, want)
 	}
 }
 

@@ -141,6 +141,65 @@ func TestAgentChatStore_AccountIDRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAgentChatStore_ModelRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	chatStore := NewAgentChatStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Chat model test",
+		WorktreePath: "/tmp/wt/chat-model",
+		BranchName:   "feat/chat-model",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// A chat created with a model persists it on the returned model and
+	// round-trips through a re-read (BOS-381 per-chat model column).
+	created, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID:      sess.ID,
+		AgentSessionID: "agent-model-set",
+		Title:          "model chat",
+		Model:          "opus",
+	})
+	if err != nil {
+		t.Fatalf("create model chat: %v", err)
+	}
+	if created.Model != "opus" {
+		t.Fatalf("create chat Model = %q, want opus", created.Model)
+	}
+	got, err := chatStore.GetByAgentSessionID(ctx, "agent-model-set")
+	if err != nil {
+		t.Fatalf("get model chat: %v", err)
+	}
+	if got.Model != "opus" {
+		t.Fatalf("get chat Model = %q, want opus", got.Model)
+	}
+
+	// A chat created without a model backfills to the empty-string default
+	// (empty → the plugin resolves the agent CLI default).
+	if _, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID:      sess.ID,
+		AgentSessionID: "agent-model-empty",
+		Title:          "no model chat",
+	}); err != nil {
+		t.Fatalf("create no-model chat: %v", err)
+	}
+	gotEmpty, err := chatStore.GetByAgentSessionID(ctx, "agent-model-empty")
+	if err != nil {
+		t.Fatalf("get no-model chat: %v", err)
+	}
+	if gotEmpty.Model != "" {
+		t.Fatalf("unset chat Model = %q, want empty", gotEmpty.Model)
+	}
+}
+
 func TestAgentChatStore_UpdateAccountIDByAgentSessionID(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

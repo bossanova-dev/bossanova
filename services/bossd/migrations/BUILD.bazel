@@ -49,6 +49,7 @@ go_library(
         "20260707000000_account_usage_snapshot.sql",
         "20260708120000_drop_account_email.sql",
         "20260709000000_add_session_quick_chat.sql",
+        "20260710000000_add_agent_chat_model.sql",
     ],
     importpath = "github.com/recurser/bossd/migrations",
     visibility = ["//visibility:public"],

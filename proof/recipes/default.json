@@ -76,6 +76,16 @@
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
+      "id": "web-session-detail-rotation",
+      "surface": "web",
+      "title": "Web Session Detail (rotation history)",
+      "description": "Session-detail rotation history rendered subtly (BOS-394): a grey time + 'switched to <email>' line with NO 'Rotation history' heading and NO bullet dot. Cropped to the rotation-history region.",
+      "privacy": "fixture",
+      "route": "/sessions/sess-e2e-rotation",
+      "cropToSelector": "section[aria-label=\"Rotation history\"]",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
       "id": "web-session-detail-mobile",
       "surface": "web",
       "title": "Web Session Detail (mobile)",
@@ -106,11 +116,96 @@
       "id": "web-repositories",
       "surface": "web",
       "title": "Web Repositories",
-      "description": "Repositories settings page: the Disconnect button shows a cross icon and still confirms.",
+      "description": "Repositories settings page: one unified, heading-less list of registered repos with a per-row edit icon and no separate 'GitHub App' section.",
       "privacy": "fixture",
+      "capture": "still",
       "route": "/settings/repos",
-      "cropToSelector": ".data-table-wrap",
+      "cropToSelector": "[data-testid='repositories-section']",
       "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-repository-edit",
+      "surface": "web",
+      "title": "Web Repository Edit Page",
+      "description": "Keyboard-open a repository row and land on the styled edit page (narrow card, 'Edit <name>' heading, Update/Cancel) using fixture data.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/settings/repos",
+          "label": "Open repository settings",
+          "caption": "Open repository settings"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"repo-row\"]",
+          "label": "Repository row",
+          "caption": "One unified list of registered repositories"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid=\"repo-row\"]",
+          "label": "Open repository",
+          "caption": "Open the repository for editing"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"repo-settings-form\"]",
+          "label": "Edit page",
+          "caption": "Styled edit card with Update / Cancel"
+        }
+      ]
+    },
+    {
+      "id": "web-repository-removal",
+      "surface": "web",
+      "title": "Web Repository Removal Confirmation",
+      "description": "Walkthrough of opening a daemon-local repository's edit page and its removal confirmation using fixture data.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/settings/repos",
+          "label": "Open repository settings",
+          "caption": "Open repository settings"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"repo-row\"]",
+          "label": "Repository row",
+          "caption": "Repository is registered with the daemon"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid=\"repo-row\"]",
+          "label": "Open repository",
+          "caption": "Open the repository for editing"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"repo-settings-form\"]",
+          "label": "Repository form",
+          "caption": "Repository settings load on the edit page"
+        },
+        {
+          "action": "click",
+          "selector": "button.btn-danger:has-text(\"Remove repository\")",
+          "label": "Remove repository",
+          "caption": "Choose Remove repository"
+        },
+        {
+          "action": "wait",
+          "selector": "[role=\"dialog\"]",
+          "label": "Removal confirmation",
+          "caption": "Remove unregisters only; repository files are kept"
+        }
+      ]
     },
     {
       "id": "marketing-home",
@@ -323,9 +418,12 @@
         "web-sessions-mobile",
         "web-session-detail",
         "web-session-detail-no-pr",
+        "web-session-detail-rotation",
         "web-session-detail-mobile",
         "web-new-session-mobile",
         "web-repositories",
+        "web-repository-edit",
+        "web-repository-removal",
         "web-account",
         "web-chat-terminal",
         "web-new-session-flow",

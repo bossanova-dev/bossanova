@@ -80,6 +80,7 @@ go_test(
         "//lib/bossalib/machine",
         "//lib/bossalib/models",
         "//lib/bossalib/telemetry",
+        "//lib/bossalib/vcs",
         "//services/bossd/internal/db",
         "//services/bossd/internal/rotation",
         "//services/bossd/internal/server",

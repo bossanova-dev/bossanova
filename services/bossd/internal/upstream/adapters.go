@@ -140,6 +140,9 @@ type SessionCommandServer interface {
 	ListRepos(context.Context, *connect.Request[pb.ListReposRequest]) (*connect.Response[pb.ListReposResponse], error)
 	ListAgents(context.Context, *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error)
 	ListAccounts(context.Context, *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error)
+	GetRepoSettings(context.Context, *connect.Request[pb.GetRepoSettingsRequest]) (*connect.Response[pb.GetRepoSettingsResponse], error)
+	UpdateRepo(context.Context, *connect.Request[pb.UpdateRepoRequest]) (*connect.Response[pb.UpdateRepoResponse], error)
+	RemoveRepo(context.Context, *connect.Request[pb.RemoveRepoRequest]) (*connect.Response[pb.RemoveRepoResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error)
 	ListTrackerIssues(context.Context, *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error)
 	GetChatTranscript(context.Context, *connect.Request[pb.GetChatTranscriptRequest]) (*connect.Response[pb.GetChatTranscriptResponse], error)
@@ -376,6 +379,69 @@ func (a *CommandHandlerAdapter) ListAccounts(ctx context.Context, provider strin
 		return nil, fmt.Errorf("list accounts: %w", err)
 	}
 	return resp.Msg, nil
+}
+
+// GetRepo implements SessionCommandHandler.GetRepo through the daemon's
+// existing web-safe settings handler.
+func (a *CommandHandlerAdapter) GetRepo(ctx context.Context, repoID string) (*pb.GetRepoSettingsResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("get_repo: command server not wired")
+	}
+	resp, err := a.Commands.GetRepoSettings(ctx, connect.NewRequest(&pb.GetRepoSettingsRequest{Id: repoID}))
+	if err != nil {
+		return nil, fmt.Errorf("get repo: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// UpdateRepo implements SessionCommandHandler.UpdateRepo through the daemon's
+// direct handler, translating only the enum merge strategy to its legacy
+// storage string while preserving SecretUpdate fields exactly.
+func (a *CommandHandlerAdapter) UpdateRepo(ctx context.Context, msg *pb.UpdateRepoCommand) (*pb.UpdateRepoResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("update_repo: command server not wired")
+	}
+	req := &pb.UpdateRepoRequest{
+		Id:                     msg.GetRepoId(),
+		DisplayName:            msg.DisplayName,
+		SetupScript:            msg.SetupScript,
+		CanAutoMerge:           msg.CanAutoMerge,
+		CanAutoMergeDependabot: msg.CanAutoMergeDependabot,
+		CanAutoRepair:          msg.CanAutoRepair,
+		SentryOrg:              msg.SentryOrg,
+		LinearKey:              msg.LinearKey,
+		SentryKey:              msg.SentryKey,
+		ExpectedUpdatedAt:      msg.ExpectedUpdatedAt,
+	}
+	if msg.MergeStrategy != nil {
+		strategy := "merge"
+		switch msg.GetMergeStrategy() {
+		case pb.MergeStrategy_MERGE_STRATEGY_UNSPECIFIED, pb.MergeStrategy_MERGE_STRATEGY_MERGE:
+			// Both retain the direct handler's legacy merge default.
+		case pb.MergeStrategy_MERGE_STRATEGY_REBASE:
+			strategy = "rebase"
+		case pb.MergeStrategy_MERGE_STRATEGY_SQUASH:
+			strategy = "squash"
+		}
+		req.MergeStrategy = &strategy
+	}
+	resp, err := a.Commands.UpdateRepo(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, fmt.Errorf("update repo: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// RemoveRepo implements SessionCommandHandler.RemoveRepo through the daemon's
+// existing direct handler.
+func (a *CommandHandlerAdapter) RemoveRepo(ctx context.Context, repoID string) error {
+	if a.Commands == nil {
+		return errors.New("remove_repo: command server not wired")
+	}
+	if _, err := a.Commands.RemoveRepo(ctx, connect.NewRequest(&pb.RemoveRepoRequest{Id: repoID})); err != nil {
+		return fmt.Errorf("remove repo: %w", err)
+	}
+	return nil
 }
 
 // ListRepoPRs implements SessionCommandHandler.ListRepoPRs.

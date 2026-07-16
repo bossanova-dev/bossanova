@@ -1176,11 +1176,26 @@ func run(opts runOpts) error {
 			if err != nil {
 				return rotation.ChatContext{}, err
 			}
+			// BOS-381: provider + account authority lives on the CHAT, not the
+			// session. Read them from the freshly-fetched chat; a chat that never
+			// bound its own account (nil) inherits the session's mirrored binding.
 			accountID := ""
-			if sess.AccountID != nil {
+			if chat.AccountID != nil {
+				accountID = *chat.AccountID
+			} else if sess.AccountID != nil {
 				accountID = *sess.AccountID
 			}
-			return rotation.ChatContext{SessionID: sess.ID, RepoID: sess.RepoID, Provider: sess.AgentName, AccountID: accountID}, nil
+			provider := chat.AgentName
+			if provider == "" {
+				provider = sess.AgentName
+			}
+			// Resolve the bound account to its human label here (never empty:
+			// "" -> "Unmanaged local credentials", unknown -> short id) so every
+			// rotation audit records a readable from-side. Keeps the rotation
+			// package free of the account/db packages — the label is injected,
+			// mirroring how the to-side decision.Label is injected.
+			fromLabel, _ := accountResolver.Label(ctx, accountID)
+			return rotation.ChatContext{SessionID: sess.ID, RepoID: sess.RepoID, Provider: provider, AccountID: accountID, FromLabel: fromLabel}, nil
 		},
 		CurrentStatus: func(agentSessionID string) bossanovav1.ChatStatus {
 			if e := chatStatusTracker.Get(agentSessionID); e != nil {

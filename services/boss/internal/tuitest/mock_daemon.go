@@ -22,6 +22,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/socketauth"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -145,6 +146,15 @@ type MockDaemon struct {
 // Returns the daemon and a stop() that closes the server and removes the socket.
 func StartMockDaemon(socketPath string) (*MockDaemon, func() error, error) {
 	_ = removeSocket(socketPath)
+
+	// Generate the socket auth token co-located with the socket so client.NewLocal
+	// (which reads it from the same directory) authenticates transparently, just
+	// as it does against the real daemon.
+	token, err := socketauth.LoadOrCreateToken(socketPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load socket auth token: %w", err)
+	}
+
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("listen unix: %w", err)
@@ -161,13 +171,14 @@ func StartMockDaemon(socketPath string) (*MockDaemon, func() error, error) {
 		attachActive:       make(map[string]int),
 	}
 	mux := http.NewServeMux()
-	path, handler := bossanovav1connect.NewDaemonServiceHandler(m)
+	path, handler := bossanovav1connect.NewDaemonServiceHandler(m, connect.WithInterceptors(socketauth.NewServerInterceptor(token)))
 	mux.Handle(path, handler)
 	m.httpServer = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = m.httpServer.Serve(ln) }()
 	stop := func() error {
 		err := m.httpServer.Close()
 		_ = removeSocket(socketPath)
+		_ = os.Remove(socketauth.TokenPath(socketPath))
 		return err
 	}
 	return m, stop, nil
@@ -579,6 +590,37 @@ func (m *MockDaemon) RemoveRepo(_ context.Context, req *connect.Request[pb.Remov
 		if r.Id == req.Msg.Id {
 			m.repos = append(m.repos[:i], m.repos[i+1:]...)
 			return connect.NewResponse(&pb.RemoveRepoResponse{}), nil
+		}
+	}
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo %q not found", req.Msg.Id))
+}
+
+func (m *MockDaemon) GetRepoSettings(_ context.Context, req *connect.Request[pb.GetRepoSettingsRequest]) (*connect.Response[pb.GetRepoSettingsResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.repos {
+		if r.Id == req.Msg.Id {
+			settings := &pb.RepoSettings{
+				Id:                     r.Id,
+				DisplayName:            r.DisplayName,
+				SetupScript:            r.SetupScript,
+				CanAutoMerge:           r.CanAutoMerge,
+				CanAutoMergeDependabot: r.CanAutoMergeDependabot,
+				CanAutoRepair:          r.CanAutoRepair,
+				SentryOrg:              r.SentryOrg,
+				HasLinearKey:           r.LinearApiKey != "",
+				HasSentryKey:           r.SentryApiKey != "",
+				UpdatedAt:              r.UpdatedAt,
+			}
+			switch r.MergeStrategy {
+			case "merge":
+				settings.MergeStrategy = pb.MergeStrategy_MERGE_STRATEGY_MERGE
+			case "rebase":
+				settings.MergeStrategy = pb.MergeStrategy_MERGE_STRATEGY_REBASE
+			case "squash":
+				settings.MergeStrategy = pb.MergeStrategy_MERGE_STRATEGY_SQUASH
+			}
+			return connect.NewResponse(&pb.GetRepoSettingsResponse{Settings: settings}), nil
 		}
 	}
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo %q not found", req.Msg.Id))

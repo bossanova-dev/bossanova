@@ -46,6 +46,7 @@ go_test(
         "notifying_chat_store_test.go",
         "path_test.go",
         "recomputing_stores_test.go",
+        "repo_store_test.go",
         "rotation_event_store_test.go",
         "session_store_test.go",
         "sqlite_pool_test.go",

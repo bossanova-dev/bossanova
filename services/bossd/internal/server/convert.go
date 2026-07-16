@@ -110,6 +110,58 @@ func repoToProto(r *models.Repo) *pb.Repo {
 	return p
 }
 
+// mergeStrategyToProtoEnum maps a domain MergeStrategy to the proto enum used by
+// the masked RepoSettings surface. Any invalid/empty value normalizes to MERGE
+// (mirroring models.ParseMergeStrategy and the DB default).
+func mergeStrategyToProtoEnum(m models.MergeStrategy) pb.MergeStrategy {
+	switch models.ParseMergeStrategy(string(m)) {
+	case models.MergeStrategyRebase:
+		return pb.MergeStrategy_MERGE_STRATEGY_REBASE
+	case models.MergeStrategySquash:
+		return pb.MergeStrategy_MERGE_STRATEGY_SQUASH
+	default:
+		return pb.MergeStrategy_MERGE_STRATEGY_MERGE
+	}
+}
+
+// mergeStrategyFromProtoEnum maps a proto MergeStrategy enum back to the domain
+// type. MERGE_STRATEGY_UNSPECIFIED (the default-constructed zero) falls back to
+// the default MergeStrategyMerge.
+func mergeStrategyFromProtoEnum(m pb.MergeStrategy) models.MergeStrategy {
+	switch m {
+	case pb.MergeStrategy_MERGE_STRATEGY_REBASE:
+		return models.MergeStrategyRebase
+	case pb.MergeStrategy_MERGE_STRATEGY_SQUASH:
+		return models.MergeStrategySquash
+	default:
+		return models.MergeStrategyMerge
+	}
+}
+
+// repoToRepoSettings builds the web-safe, secret-masked RepoSettings projection
+// of a Repo. It carries ONLY non-secret fields plus has_* booleans reporting
+// whether a secret is present; it MUST NEVER read a key value into the message.
+// updated_at is the optimistic-concurrency token the client echoes back on the
+// next UpdateRepo.
+func repoToRepoSettings(r *models.Repo) *pb.RepoSettings {
+	settings := &pb.RepoSettings{
+		Id:                     protoString(r.ID),
+		DisplayName:            protoString(r.DisplayName),
+		MergeStrategy:          mergeStrategyToProtoEnum(r.MergeStrategy),
+		CanAutoMerge:           r.CanAutoMerge,
+		CanAutoMergeDependabot: r.CanAutoMergeDependabot,
+		CanAutoRepair:          r.CanAutoRepair,
+		SentryOrg:              protoString(r.SentryOrg),
+		HasLinearKey:           r.LinearAPIKey != "",
+		HasSentryKey:           r.SentryAPIKey != "",
+		UpdatedAt:              timestamppb.New(r.UpdatedAt),
+	}
+	if r.SetupScript != nil {
+		settings.SetupScript = protoStringPtr(r.SetupScript)
+	}
+	return settings
+}
+
 // SessionToProto converts a domain Session to its protobuf representation.
 func SessionToProto(s *models.Session) *pb.Session {
 	p := &pb.Session{
@@ -407,6 +459,8 @@ func cronStatusInactiveState(st machine.State) bool {
 //     transient gh/GitHub error). Shown as a Blocked session, not red cron.
 //   - chat_spawn_failed - the PR was created before the chat-spawn step failed
 //   - cleanup_failed - the run completed; only worktree cleanup errored
+//   - worktree_gone - finalize ran against an already-removed worktree
+//     (archived/deleted session); a benign no-op, not a run failure
 func isCronFailureOutcome(o models.CronJobOutcome) bool {
 	return o == models.CronJobOutcomeFireFailed
 }

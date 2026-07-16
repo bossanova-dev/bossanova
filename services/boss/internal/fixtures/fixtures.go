@@ -155,7 +155,10 @@ func Chats() []*pb.ClaudeChat {
 // realistic fill; cron-1 stays first to match legacy data. Two carry the
 // gate-command statuses (gating in progress, gated blocked) so the list
 // proof shows the new STATUS values, and "Morning PR triage" sets a gate
-// command so the cron form proof has a populated Gate command field.
+// command so the cron form proof has a populated Gate command field. cron-8
+// carries the benign worktree_gone outcome with an IDLE status (BOS-384): a
+// finalize against an already-removed worktree renders as a plain "idle" row,
+// never a red FAILED framing.
 func CronJobs() []*pb.CronJob {
 	return []*pb.CronJob{
 		{Id: "cron-1", RepoId: "repo-1", Name: "Daily dependency update", Prompt: "Update dependencies and open a PR", Schedule: "@daily", Timezone: "UTC", Enabled: true, AgentName: "claude", RunSetupCommand: true},
@@ -168,6 +171,10 @@ func CronJobs() []*pb.CronJob {
 		// the demo world, so TUI proofs could never show them (BOS-251).
 		{Id: "cron-6", RepoId: "repo-4", Name: "Paused release gate", Prompt: "Cut a release when the gate opens", Schedule: "@daily", Timezone: "UTC", Enabled: false, AgentName: "claude", GateCommand: "test -f RELEASE_READY", RunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATED, LastRunOutcome: "gated"},
 		{Id: "cron-7", RepoId: "repo-5", Name: "Paused visual regression", Prompt: "Run the visual regression suite", Schedule: "@weekly", Timezone: "UTC", Enabled: false, AgentName: "claude", RunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_FAILED, LastRunOutcome: "failed"},
+		// cron-8 (BOS-384): a benign worktree_gone outcome — finalize ran against
+		// an already-removed worktree (archived/deleted session). It renders with
+		// a plain IDLE status, never a red FAILED framing.
+		{Id: "cron-8", RepoId: "repo-1", Name: "Stale branch cleanup", Prompt: "Prune merged branches and open a cleanup PR", Schedule: "@daily", Timezone: "UTC", Enabled: true, AgentName: "claude", RunSetupCommand: true, LastRunAt: ts(-2 * time.Hour), LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_IDLE, LastRunOutcome: "worktree_gone"},
 	}
 }
 

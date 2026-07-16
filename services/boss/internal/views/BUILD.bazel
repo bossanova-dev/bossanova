@@ -54,6 +54,7 @@ go_library(
         "//lib/bossalib/cronutil",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/loginshell",
+        "//lib/bossalib/models",
         "//lib/bossalib/safego",
         "//lib/bossalib/telemetry",
         "//lib/bossalib/termnorm",

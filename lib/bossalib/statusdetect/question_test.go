@@ -1680,6 +1680,38 @@ func TestHasWorkingIndicator(t *testing.T) {
 			data: "I ran the shell command and it finished.\n",
 			want: false,
 		},
+		{
+			// Claude's blocked-on-background-agents footer (singular).
+			name: "one background agent to finish (ticket fixture)",
+			data: "✻ Waiting for 1 background agent to finish\n",
+			want: true,
+		},
+		{
+			name: "two background agents to finish",
+			data: "✻ Waiting for 2 background agents to finish\n",
+			want: true,
+		},
+		{
+			name: "three background agents to finish",
+			data: "✻ Waiting for 3 background agents to finish\n",
+			want: true,
+		},
+		{
+			// Prose without the "N background agent(s) to finish" grammar must
+			// not false-positive.
+			name: "prose about a background job is not a working marker",
+			data: "I was waiting for the background job.\n",
+			want: false,
+		},
+		{
+			// The footer phrase embedded mid-sentence in prose/tool output is NOT
+			// the live footer (the real footer ends its line). The end-of-line
+			// anchor must reject it so lingering narration cannot pin idle chats
+			// as WORKING.
+			name: "footer phrase embedded mid-sentence is not a working marker",
+			data: "Still Waiting for 1 background agent to finish before I proceed.\n",
+			want: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1724,6 +1756,59 @@ func TestHasWorkingIndicator_CurrentScreenMarker(t *testing.T) {
 	b.WriteString("✻ Cooked for 48s · 1 shell still running\n")
 	if !HasWorkingIndicator([]byte(b.String())) {
 		t.Error("current-screen working marker must report working")
+	}
+}
+
+// TestHasWorkingIndicator_WaitingForBackgroundAgent_CurrentScreenMarker mirrors
+// the reporter's realistic pane: the "✻ Waiting for 1 background agent to
+// finish" footer, a task list, and a status bar whose git indicator line is
+// "⏺ main". This guards that the trailing "⏺ main" glyph does NOT suppress this
+// arm — unlike the shell footer, the background-agent footer is self-evicting
+// and carries no freshness check, so a bare current-screen match is WORKING.
+func TestHasWorkingIndicator_WaitingForBackgroundAgent_CurrentScreenMarker(t *testing.T) {
+	pane := "" +
+		"CI is now ALLGREEN (20/20 checks). Holding — the wc-auto-review subagent still owns the branch.\n" +
+		"\n" +
+		"✻ Waiting for 1 background agent to finish\n" +
+		"\n" +
+		"  6 tasks (4 done, 1 in progress, 1 open)\n" +
+		"  ◼ Run wc-auto-review on PR #710\n" +
+		"  ◻ Finalize: labels, proof decision, flip ready\n" +
+		"  ✔ Check out won-1747 branch & rebase onto dev\n" +
+		"  ✔ Fix Format (frontend) prettier failure\n" +
+		"  ✔ Re-verify local gates (frontend lint/build/test)\n" +
+		"   … +1 completed\n" +
+		"\n" +
+		"──────── WON-1747 implementation ──\n" +
+		"❯ Waiting for CI to finish.\n" +
+		"────────\n" +
+		"  Opus 4.8 (1M context) | Context: 81% remaining | /Users/dave/Documents/Code/kamikai/wondercanvas-mono\n" +
+		"  ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #710 · ← for agents\n" +
+		"\n" +
+		"  ⏺ main\n"
+	if !HasWorkingIndicator([]byte(pane)) {
+		t.Error("a background-agent footer must report working even with a trailing ⏺ main status glyph")
+	}
+}
+
+// TestHasWorkingIndicator_WaitingForBackgroundAgent_StaleMarkerEvicted mirrors
+// TestHasWorkingIndicator_StaleMarkerEvicted for the background-agent footer: a
+// "Waiting for 1 background agent to finish" line from an earlier frame followed
+// by a full idle-screen re-render (the agent returned and Claude redrew the idle
+// input box) must NOT report working — the current-screen scope evicts it.
+func TestHasWorkingIndicator_WaitingForBackgroundAgent_StaleMarkerEvicted(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("✻ Waiting for 1 background agent to finish\n")
+	// Fresh idle content re-rendered after the agent returned. This pushes the
+	// stale footer above the current-screen window.
+	for range 35 {
+		b.WriteString("⏺ finished a step\n")
+	}
+	b.WriteString("╭──────────────╮\n")
+	b.WriteString("│ ❯            │\n")
+	b.WriteString("╰──────────────╯\n")
+	if HasWorkingIndicator([]byte(b.String())) {
+		t.Error("stale background-agent marker above the current screen must not report working")
 	}
 }
 

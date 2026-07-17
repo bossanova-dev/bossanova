@@ -17,10 +17,10 @@ echo "BUILD files clean (repo-wide gazelle diff)"
 #    EXACTLY — no missing labels, no stale labels.
 query_bins="$(bazel query 'kind(go_binary, //...)' 2>/dev/null | sort -u)"
 inv_bins="$(jq -r '.[] | .[]' scripts/bazel/binary-inventory.json | sort -u)"
-if ! diff <(printf '%s\n' "$query_bins") <(printf '%s\n' "$inv_bins") >/tmp/inventory-drift.diff 2>&1; then
+if ! diff <(printf '%s\n' "$query_bins") <(printf '%s\n' "$inv_bins") >/dev/null; then
   echo "ERROR: scripts/bazel/binary-inventory.json is out of sync with 'bazel query kind(go_binary, //...)':" >&2
   echo "  (< = in query but missing from inventory; > = in inventory but not in the graph)" >&2
-  cat /tmp/inventory-drift.diff >&2
+  diff <(printf '%s\n' "$query_bins") <(printf '%s\n' "$inv_bins") >&2 || true
   exit 1
 fi
 echo "binary-inventory.json matches the live go_binary graph"
@@ -33,10 +33,10 @@ echo "binary-inventory.json matches the live go_binary graph"
 #    coverage with no failing test. Fail loudly on that drift here.
 query_manual="$(bazel query 'attr(tags, "manual", tests(//...))' 2>/dev/null | sort -u)"
 ledger_manual="$(jq -r '.[].label' scripts/bazel/ledger.json | sort -u)"
-if ! diff <(printf '%s\n' "$query_manual") <(printf '%s\n' "$ledger_manual") >/tmp/ledger-drift.diff 2>&1; then
+if ! diff <(printf '%s\n' "$query_manual") <(printf '%s\n' "$ledger_manual") >/dev/null; then
   echo "ERROR: scripts/bazel/ledger.json is out of sync with 'bazel query attr(tags,\"manual\",tests(//...))':" >&2
   echo "  (< = manual target missing from the ledger; > = ledger label no longer a manual target)" >&2
-  cat /tmp/ledger-drift.diff >&2
+  diff <(printf '%s\n' "$query_manual") <(printf '%s\n' "$ledger_manual") >&2 || true
   exit 1
 fi
 echo "ledger.json matches the live manual-tagged test set"

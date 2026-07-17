@@ -156,6 +156,11 @@ type ChatPickerModel struct {
 	width   int
 	height  int
 
+	// autoArchiving is set when a merged session's repo has archive-after-merge
+	// on and the daemon's async archive is expected imminently; it drives the
+	// "Archiving…" status until the session actually archives (archived → home).
+	autoArchiving bool
+
 	// newTabSupported is cached at construction so we don't re-inspect
 	// env vars on every render. The [t]erminal action is hidden when
 	// false — there's no recoverable path on unsupported terminals.
@@ -643,6 +648,9 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// MERGED optimistically until the daemon reconciles (if the user then
 		// cancels or archives back to the list).
 		m.merged = true
+		if m.session.GetRepoArchiveSessionsAfterMerge() {
+			m.autoArchiving = true // daemon will archive on the merge webhook; show it
+		}
 		return m, nil
 
 	case archiveResultMsg:
@@ -719,6 +727,19 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// pointing at the new PR.
 			prevPR := m.session.GetPrNumber()
 			m.session = msg.session
+			if m.session.GetArchivedAt() != nil {
+				// The session was archived out from under us (BOS-46 archive-after-merge,
+				// an external merge, or a manual archive elsewhere). Flip the same flag a
+				// TUI-initiated archive sets so the app loop returns us to the session list.
+				m.archived = true
+			}
+			// Derive this from every poll, rather than latching it true: another
+			// client can disable archive-after-merge while this picker is open.
+			// A stale true value would otherwise leave the detail view claiming it
+			// is archiving forever even though the dispatcher correctly skips it.
+			m.autoArchiving = m.session.GetArchivedAt() == nil &&
+				m.session.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_MERGED &&
+				m.session.GetRepoArchiveSessionsAfterMerge()
 			if m.session.GetPrNumber() != prevPR {
 				m.repoWebLink = repoWebLink{}
 				refreshWebLink = m.fetchRepoWebLink()
@@ -1357,7 +1378,7 @@ func (m ChatPickerModel) View() tea.View {
 	if m.err != nil {
 		body := renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n"
 		switch {
-		case m.archiving:
+		case m.archiving || m.autoArchiving:
 			body += lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 				m.spinner.View() + "Archiving session...")
 		case m.confirm == confirmArchive:
@@ -1452,7 +1473,7 @@ func (m ChatPickerModel) View() tea.View {
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + label))
-	} else if m.archiving {
+	} else if m.archiving || m.autoArchiving {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + "Archiving session..."))
 	} else if m.switching {

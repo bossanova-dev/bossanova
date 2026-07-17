@@ -2134,6 +2134,11 @@ func run(opts runOpts) error {
 	// session leaves the TUI immediately.
 	orchestrator.SetSessionArchiver(taskorchestrator.SessionArchiverFunc(srv.ArchiveSessionAndNotify))
 
+	// Auto-archive a session when its PR merges, if the repo has the
+	// ArchiveSessionsAfterMerge flag on (BOS-46). Reuses the same
+	// archive-and-notify path as the dependabot auto-archive above.
+	dispatcher.SetArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify))
+
 	// Wire the chat-waker on the existing CommandHandlerAdapter now that
 	// the server is constructed. Done post-hoc rather than at adapter
 	// construction time because the adapter is built before srv.New

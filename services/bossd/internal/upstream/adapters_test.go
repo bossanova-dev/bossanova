@@ -21,6 +21,10 @@ type fakeSessionCommandServer struct {
 	lastSendReq      *pb.SendChatMessageRequest
 	lastSwitchReq    *pb.SwitchSessionAccountRequest
 	switchResp       *pb.SwitchSessionAccountResponse
+	lastCreateCron   *pb.CreateCronJobRequest
+	lastUpdateCron   *pb.UpdateCronJobRequest
+	lastDeleteCronID string
+	lastRunCronID    string
 }
 
 func (f *fakeSessionCommandServer) MergeSession(_ context.Context, _ *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
@@ -95,6 +99,30 @@ func (f *fakeSessionCommandServer) GetChatTranscript(_ context.Context, req *con
 func (f *fakeSessionCommandServer) SendChatMessage(_ context.Context, req *connect.Request[pb.SendChatMessageRequest]) (*connect.Response[pb.SendChatMessageResponse], error) {
 	f.lastSendReq = req.Msg
 	return connect.NewResponse(&pb.SendChatMessageResponse{TmuxSessionName: "tmux-send", Delivered: true}), nil
+}
+
+func (f *fakeSessionCommandServer) CreateCronJob(_ context.Context, req *connect.Request[pb.CreateCronJobRequest]) (*connect.Response[pb.CreateCronJobResponse], error) {
+	f.lastCreateCron = req.Msg
+	return connect.NewResponse(&pb.CreateCronJobResponse{CronJob: &pb.CronJob{Id: "cj-new", Name: req.Msg.GetName()}}), nil
+}
+
+func (f *fakeSessionCommandServer) ListCronJobs(_ context.Context, _ *connect.Request[pb.ListCronJobsRequest]) (*connect.Response[pb.ListCronJobsResponse], error) {
+	return connect.NewResponse(&pb.ListCronJobsResponse{CronJobs: []*pb.CronJob{{Id: "cj1"}}}), nil
+}
+
+func (f *fakeSessionCommandServer) UpdateCronJob(_ context.Context, req *connect.Request[pb.UpdateCronJobRequest]) (*connect.Response[pb.UpdateCronJobResponse], error) {
+	f.lastUpdateCron = req.Msg
+	return connect.NewResponse(&pb.UpdateCronJobResponse{CronJob: &pb.CronJob{Id: req.Msg.GetId()}}), nil
+}
+
+func (f *fakeSessionCommandServer) DeleteCronJob(_ context.Context, req *connect.Request[pb.DeleteCronJobRequest]) (*connect.Response[pb.DeleteCronJobResponse], error) {
+	f.lastDeleteCronID = req.Msg.GetId()
+	return connect.NewResponse(&pb.DeleteCronJobResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) RunCronJobNow(_ context.Context, req *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error) {
+	f.lastRunCronID = req.Msg.GetId()
+	return connect.NewResponse(&pb.RunCronJobNowResponse{SkippedReason: "skip"}), nil
 }
 
 // fakeAutomationToggler records the last SetAutomationEnabled call and returns
@@ -197,6 +225,26 @@ func (e *errCommandServer) GetChatTranscript(context.Context, *connect.Request[p
 }
 
 func (e *errCommandServer) SendChatMessage(context.Context, *connect.Request[pb.SendChatMessageRequest]) (*connect.Response[pb.SendChatMessageResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) CreateCronJob(context.Context, *connect.Request[pb.CreateCronJobRequest]) (*connect.Response[pb.CreateCronJobResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ListCronJobs(context.Context, *connect.Request[pb.ListCronJobsRequest]) (*connect.Response[pb.ListCronJobsResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) UpdateCronJob(context.Context, *connect.Request[pb.UpdateCronJobRequest]) (*connect.Response[pb.UpdateCronJobResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) DeleteCronJob(context.Context, *connect.Request[pb.DeleteCronJobRequest]) (*connect.Response[pb.DeleteCronJobResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) RunCronJobNow(context.Context, *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error) {
 	return nil, e.err
 }
 
@@ -1017,6 +1065,156 @@ func TestCommandHandlerAdapter_GetChatTranscript(t *testing.T) {
 		}
 		if fake.lastTranscriptID != "agent-9" {
 			t.Fatalf("agent_session_id not forwarded: %q", fake.lastTranscriptID)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_CronJobs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("create forwards every field including the run_setup_command pointer", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		runSetup := false
+		resp, err := adapter.CreateCronJob(context.Background(), &pb.CreateCronJobCommand{
+			RepoId:          "repo-1",
+			Name:            "nightly",
+			Prompt:          "do the thing",
+			Schedule:        "0 3 * * *",
+			Timezone:        "UTC",
+			Enabled:         true,
+			AgentName:       "claude",
+			Model:           "opus",
+			GateCommand:     "true",
+			RunSetupCommand: &runSetup,
+		})
+		if err != nil {
+			t.Fatalf("CreateCronJob returned error: %v", err)
+		}
+		if resp.GetCronJob().GetName() != "nightly" {
+			t.Fatalf("response job name = %q, want nightly", resp.GetCronJob().GetName())
+		}
+		got := fake.lastCreateCron
+		if got == nil {
+			t.Fatal("no CreateCronJobRequest captured by the fake")
+		}
+		if got.GetRepoId() != "repo-1" || got.GetName() != "nightly" || got.GetPrompt() != "do the thing" ||
+			got.GetSchedule() != "0 3 * * *" || got.GetTimezone() != "UTC" || !got.GetEnabled() ||
+			got.GetAgentName() != "claude" || got.GetModel() != "opus" || got.GetGateCommand() != "true" {
+			t.Fatalf("create fields not forwarded: %+v", got)
+		}
+		// The optional tri-state pointer must reach the daemon by reference, not
+		// be flattened by a Get accessor.
+		if got.RunSetupCommand == nil || got.GetRunSetupCommand() != false {
+			t.Fatalf("run_setup_command pointer not forwarded: %v", got.RunSetupCommand)
+		}
+	})
+
+	t.Run("update forwards set pointers and leaves unset fields nil", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		name := "renamed"
+		enabled := false
+		resp, err := adapter.UpdateCronJob(context.Background(), &pb.UpdateCronJobCommand{
+			Id:      "cj-1",
+			Name:    &name,
+			Enabled: &enabled,
+		})
+		if err != nil {
+			t.Fatalf("UpdateCronJob returned error: %v", err)
+		}
+		if resp.GetCronJob().GetId() != "cj-1" {
+			t.Fatalf("response job id = %q, want cj-1", resp.GetCronJob().GetId())
+		}
+		got := fake.lastUpdateCron
+		if got == nil {
+			t.Fatal("no UpdateCronJobRequest captured by the fake")
+		}
+		if got.GetId() != "cj-1" {
+			t.Fatalf("id = %q, want cj-1", got.GetId())
+		}
+		if got.Name == nil || got.GetName() != "renamed" {
+			t.Fatalf("name not forwarded: %v", got.Name)
+		}
+		if got.Enabled == nil || got.GetEnabled() != false {
+			t.Fatalf("enabled not forwarded: %v", got.Enabled)
+		}
+		// A partial update must leave every untouched field nil so the daemon
+		// preserves its stored value.
+		if got.Prompt != nil || got.Schedule != nil || got.Timezone != nil ||
+			got.AgentName != nil || got.Model != nil || got.GateCommand != nil || got.RunSetupCommand != nil {
+			t.Fatalf("unset fields leaked non-nil: %+v", got)
+		}
+	})
+
+	t.Run("delete forwards the id", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		if err := adapter.DeleteCronJob(context.Background(), "cj-9"); err != nil {
+			t.Fatalf("DeleteCronJob returned error: %v", err)
+		}
+		if fake.lastDeleteCronID != "cj-9" {
+			t.Fatalf("delete id = %q, want cj-9", fake.lastDeleteCronID)
+		}
+	})
+
+	t.Run("run now forwards the id and returns the response", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		resp, err := adapter.RunCronJobNow(context.Background(), "cj-run")
+		if err != nil {
+			t.Fatalf("RunCronJobNow returned error: %v", err)
+		}
+		if resp.GetSkippedReason() != "skip" {
+			t.Fatalf("skipped_reason = %q, want skip", resp.GetSkippedReason())
+		}
+		if fake.lastRunCronID != "cj-run" {
+			t.Fatalf("run id = %q, want cj-run", fake.lastRunCronID)
+		}
+	})
+
+	t.Run("list returns the response", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		resp, err := adapter.ListCronJobs(context.Background())
+		if err != nil {
+			t.Fatalf("ListCronJobs returned error: %v", err)
+		}
+		if len(resp.GetCronJobs()) != 1 || resp.GetCronJobs()[0].GetId() != "cj1" {
+			t.Fatalf("unexpected list response: %+v", resp)
+		}
+	})
+
+	t.Run("nil command server is rejected for every verb", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.ListCronJobs(context.Background()); err == nil || !strings.Contains(err.Error(), "list_cron_jobs: command server not wired") {
+			t.Fatalf("ListCronJobs error = %v, want command server not wired", err)
+		}
+		if _, err := adapter.CreateCronJob(context.Background(), &pb.CreateCronJobCommand{}); err == nil || !strings.Contains(err.Error(), "create_cron_job: command server not wired") {
+			t.Fatalf("CreateCronJob error = %v, want command server not wired", err)
+		}
+		if _, err := adapter.UpdateCronJob(context.Background(), &pb.UpdateCronJobCommand{}); err == nil || !strings.Contains(err.Error(), "update_cron_job: command server not wired") {
+			t.Fatalf("UpdateCronJob error = %v, want command server not wired", err)
+		}
+		if err := adapter.DeleteCronJob(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "delete_cron_job: command server not wired") {
+			t.Fatalf("DeleteCronJob error = %v, want command server not wired", err)
+		}
+		if _, err := adapter.RunCronJobNow(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "run_cron_job_now: command server not wired") {
+			t.Fatalf("RunCronJobNow error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.UpdateCronJob(context.Background(), &pb.UpdateCronJobCommand{Id: "x"}); err == nil || !strings.Contains(err.Error(), "update cron job: boom") {
+			t.Fatalf("UpdateCronJob error = %v, want update cron job: boom", err)
 		}
 	})
 }

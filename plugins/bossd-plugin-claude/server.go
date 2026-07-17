@@ -121,16 +121,23 @@ func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusR
 	if err != nil {
 		resp.ExitError = err.Error()
 	}
-	// Surface a usage-cap classification through the two optional fields while
-	// leaving exit_error (above) untouched. Claude has no auth sentinel, so
-	// only the usage-limited branch applies here.
+	// Surface a usage-cap or rate-limit classification through the optional
+	// fields while leaving exit_error (above) untouched. Claude has no auth
+	// sentinel, so only the usage-limited and rate-limited branches apply here.
 	var ul agenterr.ErrUsageLimited
-	if errors.As(err, &ul) {
+	var rl agenterr.ErrRateLimited
+	switch {
+	case errors.As(err, &ul):
 		fc := agenterr.KindUsageExhausted.String()
 		resp.FailureClass = &fc
 		if !ul.ResetAt.IsZero() {
 			resp.ResetAt = timestamppb.New(ul.ResetAt)
 		}
+	case errors.As(err, &rl):
+		// Rate-limited carries no reset; only FailureClass is set. This is for
+		// logging fidelity — the rotation trigger flows through exit_error.
+		fc := agenterr.KindRateLimited.String()
+		resp.FailureClass = &fc
 	}
 	return resp, nil
 }

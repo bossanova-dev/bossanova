@@ -9,6 +9,7 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
@@ -32,6 +33,23 @@ type DisplayStatusSetter interface {
 	Set(sessionID string, info vcs.DisplayInfo)
 }
 
+// SessionArchiver archives a session by id, performing the full archive (stop
+// agent, kill tmux, remove worktree) and emitting the stream update. Satisfied
+// by the same archiver the task orchestrator uses for the BOS-101 dependabot
+// auto-archive. Injected via a setter because the dispatcher is constructed
+// before the archiver is wired.
+type SessionArchiver interface {
+	ArchiveSession(ctx context.Context, sessionID string) error
+}
+
+// SessionArchiverFunc adapts a plain func to the SessionArchiver interface.
+type SessionArchiverFunc func(ctx context.Context, sessionID string) error
+
+// ArchiveSession implements SessionArchiver.
+func (f SessionArchiverFunc) ArchiveSession(ctx context.Context, id string) error {
+	return f(ctx, id)
+}
+
 // Dispatcher consumes VCS events from the poller and applies the
 // corresponding state machine transitions and database updates.
 //
@@ -48,6 +66,7 @@ type Dispatcher struct {
 	provider           vcs.Provider
 	completionNotifier SessionCompletionNotifier
 	displayStatus      DisplayStatusSetter
+	archiver           SessionArchiver
 	logger             zerolog.Logger
 	mu                 sync.Mutex // see type doc: redundant given single-goroutine Run, kept as a safety net
 }
@@ -81,6 +100,14 @@ func (d *Dispatcher) SetCompletionNotifier(n SessionCompletionNotifier) {
 // status on its next cycle.
 func (d *Dispatcher) SetDisplayStatusSetter(s DisplayStatusSetter) {
 	d.displayStatus = s
+}
+
+// SetArchiver wires the archiver invoked after a PR merges when the repo's
+// ArchiveSessionsAfterMerge flag is on. Uses a setter (not a constructor param)
+// because the dispatcher is created before the archiver is wired in main.go.
+// nil-safe: leaving it unset disables the post-merge archive automation.
+func (d *Dispatcher) SetArchiver(a SessionArchiver) {
+	d.archiver = a
 }
 
 // notifyCompletion calls the completion notifier if one is set.
@@ -402,7 +429,43 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 		return fmt.Errorf("fire pr_merged: %w", err)
 	}
 
-	return d.persistTerminalPRState(ctx, sess, machine.Merged, vcs.DisplayStatusMerged, "PR merged", models.TaskMappingStatusCompleted)
+	if err := d.persistTerminalPRState(ctx, sess, machine.Merged, vcs.DisplayStatusMerged, "PR merged", models.TaskMappingStatusCompleted); err != nil {
+		return err
+	}
+	// Merge-only: the archive hook lives here, not in the shared
+	// persistTerminalPRState, so a PR *close* never archives the session.
+	d.archiveAfterMergeIfEnabled(ctx, sess)
+	return nil
+}
+
+// archiveAfterMergeIfEnabled archives the just-merged session when its repo has
+// the ArchiveSessionsAfterMerge flag on. The archive runs asynchronously — it
+// stops the agent, kills tmux, and removes the worktree, none of which must
+// block the dispatcher's single event goroutine — and is best-effort: the
+// underlying archive is idempotent, so re-archiving an already-archived session
+// is a no-op success. nil-safe: with no archiver wired the automation is off.
+func (d *Dispatcher) archiveAfterMergeIfEnabled(ctx context.Context, sess *models.Session) {
+	if d.archiver == nil {
+		return
+	}
+	repo, err := d.repos.Get(ctx, sess.RepoID)
+	if err != nil {
+		d.logger.Warn().Err(err).Str("session", sess.ID).Msg("archive-after-merge: repo lookup failed")
+		return
+	}
+	if !repo.ArchiveSessionsAfterMerge {
+		return
+	}
+	sessionID := sess.ID
+	// Detach from ctx: the archive must complete even if the event ctx is
+	// cancelled when this handler returns. safego.Go recovers panics.
+	safego.Go(d.logger, func() {
+		if err := d.archiver.ArchiveSession(context.Background(), sessionID); err != nil {
+			d.logger.Warn().Err(err).Str("session", sessionID).Msg("archive-after-merge: archive failed")
+			return
+		}
+		d.logger.Info().Str("session", sessionID).Msg("archive-after-merge: session archived")
+	})
 }
 
 // clearBlockMetadata sets the UpdateSessionParams fields that OnExit(actionClearBlocked)

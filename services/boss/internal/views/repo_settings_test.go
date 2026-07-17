@@ -117,6 +117,7 @@ func TestRepoSettings_CollapsedNavigationSkipsChildRows(t *testing.T) {
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
+		repoSettingsRowArchiveSessionsAfterMerge,
 		repoSettingsRowLinearHeader,
 		repoSettingsRowSentryHeader,
 	}
@@ -164,6 +165,7 @@ func TestRepoSettings_ExpandedNavigationIncludesChildRows(t *testing.T) {
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
+		repoSettingsRowArchiveSessionsAfterMerge,
 		repoSettingsRowLinearHeader,
 		repoSettingsRowLinearApiKey,
 		repoSettingsRowSentryHeader,
@@ -481,21 +483,63 @@ func TestRepoSettings_AutomationTogglesUnderAutomationsHeading(t *testing.T) {
 	markReadyIdx := strings.Index(out, "Mark ready for review when checks pass")
 	depIdx := strings.Index(out, "Auto-merge Dependabot PRs")
 	repairIdx := strings.Index(out, "Automatic repair (failing checks, conflicts, review feedback)")
+	archiveIdx := strings.Index(out, "Archive sessions after merging PRs")
 	integrationsIdx := strings.Index(out, "Integrations")
 
-	if automationsIdx < 0 || markReadyIdx < 0 || depIdx < 0 || repairIdx < 0 || integrationsIdx < 0 {
-		t.Fatalf("missing expected labels: automations=%d markReady=%d dep=%d repair=%d integrations=%d\n%s",
-			automationsIdx, markReadyIdx, depIdx, repairIdx, integrationsIdx, out)
+	if automationsIdx < 0 || markReadyIdx < 0 || depIdx < 0 || repairIdx < 0 || archiveIdx < 0 || integrationsIdx < 0 {
+		t.Fatalf("missing expected labels: automations=%d markReady=%d dep=%d repair=%d archive=%d integrations=%d\n%s",
+			automationsIdx, markReadyIdx, depIdx, repairIdx, archiveIdx, integrationsIdx, out)
 	}
-	// Under "Automations", in order: Mark ready, Auto-merge Dependabot, Automatic repair.
-	if automationsIdx >= markReadyIdx || markReadyIdx >= depIdx || depIdx >= repairIdx {
-		t.Errorf("expected order Automations < markReady < dependabot < repair; got %d < %d < %d < %d",
-			automationsIdx, markReadyIdx, depIdx, repairIdx)
+	// Under "Automations", in order: Mark ready, Auto-merge Dependabot, Automatic repair, Archive sessions.
+	if automationsIdx >= markReadyIdx || markReadyIdx >= depIdx || depIdx >= repairIdx || repairIdx >= archiveIdx {
+		t.Errorf("expected order Automations < markReady < dependabot < repair < archive; got %d < %d < %d < %d < %d",
+			automationsIdx, markReadyIdx, depIdx, repairIdx, archiveIdx)
 	}
-	// The three automation toggles all render above the Integrations heading.
-	if repairIdx >= integrationsIdx {
-		t.Errorf("automation toggles should render above the Integrations heading; repair=%d integrations=%d",
-			repairIdx, integrationsIdx)
+	// All automation toggles render above the Integrations heading.
+	if archiveIdx >= integrationsIdx {
+		t.Errorf("automation toggles should render above the Integrations heading; archive=%d integrations=%d",
+			archiveIdx, integrationsIdx)
+	}
+}
+
+// TestRepoSettings_ArchiveSessionsAfterMergeToggle verifies the new Automations
+// checkbox renders (default-checked) and that activating its row emits an
+// UpdateRepoRequest carrying the negated ArchiveSessionsAfterMerge value.
+func TestRepoSettings_ArchiveSessionsAfterMergeToggle(t *testing.T) {
+	stub := &stubRepoClient{repos: []*pb.Repo{{
+		Id:                        "repo-1",
+		DisplayName:               "Test Repo",
+		ArchiveSessionsAfterMerge: true, // default on
+	}}}
+	m := initSettings(t, stub)
+
+	// Rendered under Automations, default-checked ([x]).
+	out := m.View().Content
+	labelIdx := strings.Index(out, "Archive sessions after merging PRs")
+	if labelIdx < 0 {
+		t.Fatalf("expected the archive-after-merge checkbox label, not found in:\n%s", out)
+	}
+	if checked := strings.LastIndex(out[:labelIdx], "[x]"); checked < 0 {
+		t.Errorf("expected the archive-after-merge checkbox to render checked by default:\n%s", out)
+	}
+
+	// Navigate to the row and toggle it off.
+	cursorToRow(t, &m, repoSettingsRowArchiveSessionsAfterMerge)
+	updatedModel, cmd := m.activateRow()
+	m = updatedModel.(RepoSettingsModel)
+	if cmd == nil {
+		t.Fatal("activateRow returned a nil cmd; expected an UpdateRepo save")
+	}
+	cmd() // executes saveSettings, capturing the request on the stub
+
+	if stub.updateReq == nil {
+		t.Fatal("no UpdateRepoRequest was captured")
+	}
+	if stub.updateReq.ArchiveSessionsAfterMerge == nil {
+		t.Fatal("UpdateRepoRequest.ArchiveSessionsAfterMerge is nil, want a value")
+	}
+	if *stub.updateReq.ArchiveSessionsAfterMerge {
+		t.Errorf("toggled request ArchiveSessionsAfterMerge = true, want false (negation of the prior true)")
 	}
 }
 
@@ -513,6 +557,7 @@ func TestRepoSettings_VisibleRowsOrderMatchesRender(t *testing.T) {
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
+		repoSettingsRowArchiveSessionsAfterMerge,
 		repoSettingsRowLinearHeader,
 		repoSettingsRowSentryHeader,
 	}

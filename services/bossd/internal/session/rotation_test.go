@@ -209,8 +209,11 @@ func TestClassifyUsageLimit(t *testing.T) {
 	}{
 		{"usage plain", "usage_limit_reached: try later", true, false},
 		{"usage with reset", "You have reached your 5-hour limit", true, true},
+		{"rate limited sentinel", "agent rate limit reached (429)", true, false},
+		{"rate limited banner", "API Error: Request rejected (429) · This request would exceed your account's rate limit.", true, false},
 		{"auth", "Please sign in again to continue", false, false},
-		{"transient", "rate limit exceeded, try again", false, false},
+		{"transient timeout", "the request timed out", false, false},
+		{"transient 500", "server responded 500", false, false},
 		{"empty", "", false, false},
 		{"ambiguous limit prose", "the sky is the limit for this team", false, false},
 	}
@@ -503,6 +506,121 @@ func TestAttemptUsageLimitRotation_RearmsPollFallback(t *testing.T) {
 	}
 	if !armer.armCalled || armer.armedID != "agent-new" {
 		t.Fatalf("poll fallback not re-armed for rotated run: armed=%v id=%q", armer.armCalled, armer.armedID)
+	}
+}
+
+// --- BOS-406: 429 / rate-limit routes through the SAME rotation machinery ---
+
+// rateLimitExit is the flattened exit-error string a headless 429 surfaces
+// (agenterr.ErrRateLimited{}.Error()), which re-classifies as KindRateLimited.
+const rateLimitExit = "agent rate limit reached (429)"
+
+// TestAttemptRateLimitRotation_RotateBranch: a probe-confirmed 429 with a
+// candidate account available rotates-and-restarts, exactly like a usage cap.
+func TestAttemptRateLimitRotation_RotateBranch(t *testing.T) {
+	f := newRotationFixture(t)
+	f.decider.outcome = rotation.Outcome{
+		Kind:            rotation.OutcomeRotate,
+		NextAccount:     &models.Account{ID: "acct-next"},
+		CooldownApplied: true,
+	}
+
+	handled := f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", rateLimitExit)
+	if !handled {
+		t.Fatal("expected handled=true on rate-limit rotate")
+	}
+	if len(f.runner.started) != 1 {
+		t.Fatalf("expected exactly 1 StartByAgent, got %d", len(f.runner.started))
+	}
+	s := f.sessions.sessions[f.sessionID]
+	if s.RotationAttemptCount != 1 || s.State != machine.ImplementingPlan {
+		t.Fatalf("after rotate: count=%d state=%v, want 1/ImplementingPlan", s.RotationAttemptCount, s.State)
+	}
+}
+
+// TestAttemptRateLimitRotation_ParkAllExhausted: a 429 with all accounts cooling
+// parks the session until the earliest recovery time (OutcomeAllExhausted).
+func TestAttemptRateLimitRotation_ParkAllExhausted(t *testing.T) {
+	f := newRotationFixture(t)
+	resumeAt := time.Date(2026, 7, 5, 15, 4, 0, 0, time.UTC)
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeAllExhausted, ResumeAt: resumeAt}
+
+	var captured db.UpdateSessionParams
+	f.sessions.updateHook = func(_ string, p db.UpdateSessionParams) error {
+		if p.BlockedReason != nil {
+			captured = p
+		}
+		return nil
+	}
+
+	handled := f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", rateLimitExit)
+	if !handled {
+		t.Fatal("expected handled=true on all-cooling park")
+	}
+	if len(f.runner.started) != 0 {
+		t.Errorf("no restart expected on all-cooling, got %d", len(f.runner.started))
+	}
+	if f.sessions.sessions[f.sessionID].State != machine.Blocked {
+		t.Errorf("session not parked to Blocked")
+	}
+	if captured.RotationResumeAt == nil || *captured.RotationResumeAt == nil {
+		t.Fatalf("resume_at must be set on all-cooling park")
+	}
+	if **captured.RotationResumeAt != resumeAt.Format(time.RFC3339) {
+		t.Errorf("resume_at = %q, want %q", **captured.RotationResumeAt, resumeAt.Format(time.RFC3339))
+	}
+}
+
+// TestAttemptRateLimitRotation_NoEligibleAccount: a 429 where rotation is capable
+// but no account is eligible falls through to Block AND records the distinct
+// no-eligible outcome with the actionable NoEligibleAccountDetail reason.
+func TestAttemptRateLimitRotation_NoEligibleAccount(t *testing.T) {
+	f := newRotationFixture(t)
+	store := &capturingAuditStore{}
+	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeNoEligibleAccount}
+
+	if f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", rateLimitExit) {
+		t.Fatal("no-eligible-account must return handled=false (today's Block)")
+	}
+	if len(store.inserted) != 1 {
+		t.Fatalf("want exactly one audit event recorded, got %d", len(store.inserted))
+	}
+	ev := store.inserted[0]
+	if ev.Outcome != "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT" {
+		t.Fatalf("outcome = %q, want ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT", ev.Outcome)
+	}
+	if ev.Detail != rotation.NoEligibleAccountDetail {
+		t.Fatalf("detail = %q, want NoEligibleAccountDetail", ev.Detail)
+	}
+}
+
+// TestAttemptRateLimitRotation_ProbeNegativeFallsThrough: a burst 429 whose probe
+// says the account is NOT limited falls straight through to today's Block path
+// with no rotation bookkeeping — the probe is the authority, the 429 is only the
+// loose trigger.
+func TestAttemptRateLimitRotation_ProbeNegativeFallsThrough(t *testing.T) {
+	f := newRotationFixture(t)
+	fetched := time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC)
+	f.probe.snap = models.UsageSnapshot{
+		Util5h:    0.08,
+		Status:    "RATE_LIMIT_PLAN_STATUS_ACTIVE",
+		FetchedAt: &fetched,
+	}
+	f.decider.outcome = rotation.Outcome{
+		Kind:            rotation.OutcomeRotate,
+		NextAccount:     &models.Account{ID: "acct-next"},
+		CooldownApplied: true,
+	}
+
+	if f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", rateLimitExit) {
+		t.Fatal("probe-negative 429 must return handled=false (today's Block)")
+	}
+	if f.decider.calls != 0 {
+		t.Errorf("decider must not be called when probe says not-limited, got %d", f.decider.calls)
+	}
+	if len(f.runner.started) != 0 {
+		t.Errorf("no restart on probe-negative 429, got %d", len(f.runner.started))
 	}
 }
 

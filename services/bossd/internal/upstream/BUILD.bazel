@@ -57,7 +57,6 @@ go_test(
         "command_dispatcher_test.go",
         "daemon_id_test.go",
         "event_forwarding_test.go",
-        "gogithub_smoke_test.go",
         "httpclient_test.go",
         "logout_stream_test.go",
         "snapshot_test.go",

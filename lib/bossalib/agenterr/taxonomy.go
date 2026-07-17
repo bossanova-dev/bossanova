@@ -24,12 +24,20 @@ const (
 	// KindUsageExhausted indicates the provider/CLI reported a usage or
 	// billing cap (quota, credits, or a rate/plan limit) has been hit.
 	KindUsageExhausted
+	// KindRateLimited indicates the provider reported a 429 / rate-limit
+	// (short-term throttling), distinct from a genuine infra transient
+	// (KindTransientProvider). It is its own kind (BOS-406) so a rotation
+	// consumer can fail over on it rather than treating it as a benign retry.
+	// It carries no ResetAt — a rate limit's reset is resolved from the bossd
+	// usage probe, exactly as a reset-less usage-exhausted match is.
+	KindRateLimited
 	// KindAuthInvalidated indicates stored credentials were invalidated and
 	// require the user to re-authenticate.
 	KindAuthInvalidated
 	// KindTransientProvider indicates a transient, provider-side failure
-	// (rate limiting, timeouts, 5xx, overload) that is expected to clear on
-	// retry rather than requiring user action.
+	// (timeouts, 5xx, overload) that is expected to clear on retry rather than
+	// requiring user action. Rate limiting is deliberately NOT here — a 429 is
+	// KindRateLimited (BOS-406) so a rotation consumer can act on it.
 	KindTransientProvider
 )
 
@@ -41,6 +49,8 @@ func (k Kind) String() string {
 		return "none"
 	case KindUsageExhausted:
 		return "usage_exhausted"
+	case KindRateLimited:
+		return "rate_limited"
 	case KindAuthInvalidated:
 		return "auth_invalidated"
 	case KindTransientProvider:
@@ -89,8 +99,14 @@ var (
 	reUsageBillingLimit      = regexp.MustCompile(`(?i)billing.*(?:limit|quota)`)
 	reUsageSubscription      = regexp.MustCompile(`(?i)subscription.*(?:expired|required)`)
 
-	reTransient429             = regexp.MustCompile(`(?i)\b429\b`)
-	reTransientRateLimit       = regexp.MustCompile(`(?i)\brate limit\b`)
+	// Rate-limit banners (BOS-406). The two bare patterns are intentionally
+	// liberal (they match the headless exit path); the two anchored banner
+	// patterns pin the Claude 429 banner shape. All live in rateLimitedPatterns,
+	// NOT transientPatterns, so they classify as KindRateLimited.
+	reRateLimit429             = regexp.MustCompile(`(?i)\b429\b`)
+	reRateLimitRate            = regexp.MustCompile(`(?i)\brate limit\b`)
+	reRateLimitRejected        = regexp.MustCompile(`(?i)request rejected \(429\)`)
+	reRateLimitWouldExc        = regexp.MustCompile(`(?i)would exceed your .*rate limit`)
 	reTransient5xx             = regexp.MustCompile(`(?i)\b5(?:00|02|03|29)\b`)
 	reTransientOverloaded      = regexp.MustCompile(`(?i)overloaded`)
 	reTransientTimedOut        = regexp.MustCompile(`(?i)timed out`)
@@ -130,9 +146,17 @@ var usagePatterns = []*regexp.Regexp{
 	reUsageSubscription,
 }
 
+// rateLimitedPatterns classify a 429 / rate-limit banner as KindRateLimited
+// (BOS-406), keeping it distinct from the genuine infra transients below so a
+// rotation consumer can act on it.
+var rateLimitedPatterns = []*regexp.Regexp{
+	reRateLimit429,
+	reRateLimitRate,
+	reRateLimitRejected,
+	reRateLimitWouldExc,
+}
+
 var transientPatterns = []*regexp.Regexp{
-	reTransient429,
-	reTransientRateLimit,
 	reTransient5xx,
 	reTransientOverloaded,
 	reTransientTimedOut,
@@ -146,11 +170,13 @@ var transientPatterns = []*regexp.Regexp{
 // returns its Classification. now anchors reset-time parsing for a
 // KindUsageExhausted match.
 //
-// Precedence is AUTH, then USAGE, then TRANSIENT (mirroring lumi-bridge) so a
-// line like "please sign in again" classifies as auth even if it also
-// contains transient-sounding text, and a usage line classifies as usage
-// rather than transient. Text matching none of the patterns fails safe to
-// KindNone.
+// Precedence is AUTH, then USAGE, then RATE_LIMITED, then TRANSIENT so a line
+// like "please sign in again" classifies as auth even if it also contains
+// transient-sounding text, a usage line classifies as usage rather than
+// rate-limited (a usage banner mentioning "rate limit" is still a usage cap),
+// and a 429 / rate-limit banner classifies as its own KindRateLimited rather
+// than a benign infra transient (BOS-406). Text matching none of the patterns
+// fails safe to KindNone.
 func Classify(text string, now time.Time) Classification {
 	if anyMatch(authPatterns, text) || anyMatch(suspensionPatterns, text) {
 		return Classification{Kind: KindAuthInvalidated}
@@ -161,6 +187,9 @@ func Classify(text string, now time.Time) Classification {
 			c.ResetAt = &resetAt
 		}
 		return c
+	}
+	if anyMatch(rateLimitedPatterns, text) {
+		return Classification{Kind: KindRateLimited}
 	}
 	if anyMatch(transientPatterns, text) {
 		return Classification{Kind: KindTransientProvider}

@@ -1230,14 +1230,14 @@ func (s *HostServiceServer) WaitAgentRun(ctx context.Context, req *bossanovav1.W
 			// No status change, event, or rotation — those belong to E4. The
 			// new fields are threaded only as far as this log; they are not
 			// added to WaitAgentRunHostResponse or session-completion state.
-			if es.GetFailureClass() == agenterr.KindUsageExhausted.String() {
+			if fc := es.GetFailureClass(); fc == agenterr.KindUsageExhausted.String() || fc == agenterr.KindRateLimited.String() {
 				ev := log.Info().
 					Str("agent_session", agentSessionID).
 					Str("failure_class", es.GetFailureClass())
 				if ts := es.GetResetAt(); ts != nil {
 					ev = ev.Time("reset_at", ts.AsTime())
 				}
-				ev.Msg("agent run exited usage-limited (record-only)")
+				ev.Msg("agent run exited usage/rate limited (record-only)")
 			}
 			return &bossanovav1.WaitAgentRunHostResponse{ExitError: es.GetExitError()}, nil
 		}

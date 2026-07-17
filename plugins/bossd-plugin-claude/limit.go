@@ -27,6 +27,12 @@ var claudeLimitPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)hit your .{0,40}limit`),
 	regexp.MustCompile(`(?i)credits? exhausted`),
 	regexp.MustCompile(`(?i)out of credits`),
+	// Rate-limit (429) banner (BOS-406). Deliberately tightly anchored — NOT a
+	// bare "rate limit", which would false-trigger on ordinary pane prose (an
+	// agent discussing rate limits). Only the Claude 429 banner shape matches,
+	// and only inside the status region below the input box.
+	regexp.MustCompile(`(?i)request rejected \(429\)`),
+	regexp.MustCompile(`(?i)would exceed your .*rate limit`),
 	// The interactive usage-limit decision modal's first option. It lets the
 	// modal be detected even when the "hit your … limit" banner above it has
 	// scrolled off the visible pane; statusdetect only scans the whole screen

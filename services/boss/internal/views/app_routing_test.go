@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // appWithRepoList builds an App whose (pre-replacement) repoList holds the given
@@ -362,6 +363,25 @@ func TestAppChatPickerArchiveAfterMergeReturnsHome(t *testing.T) {
 	}
 	if got.home.mergedOptimisticID != "s1" {
 		t.Fatalf("mergedOptimisticID = %q, want %q (optimistic merge must carry through)", got.home.mergedOptimisticID, "s1")
+	}
+}
+
+// TestAppChatPickerRefreshDetectedArchiveReturnsHome guards the poll-detected
+// archive path: no TUI-initiated archive RPC, just a refreshed session that
+// already carries ArchivedAt (e.g. archive-after-merge fired server-side, or
+// an external/manual archive). The chatPickerRefreshMsg must flow through
+// ChatPickerModel.Update (setting m.archived), and the app loop must then
+// route back to ViewHome exactly as it does for a TUI-initiated archive.
+func TestAppChatPickerRefreshDetectedArchiveReturnsHome(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewChatPicker
+	a.chatPicker = ChatPickerModel{sessionID: "s1", session: &pb.Session{Id: "s1"}}
+
+	model, _ := a.Update(chatPickerRefreshMsg{session: &pb.Session{Id: "s1", ArchivedAt: timestamppb.Now()}})
+	got := model.(App)
+
+	if got.activeView != ViewHome {
+		t.Fatalf("activeView = %v after refresh-detected archive, want ViewHome", got.activeView)
 	}
 }
 

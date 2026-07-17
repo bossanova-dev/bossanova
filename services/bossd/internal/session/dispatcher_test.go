@@ -523,6 +523,129 @@ func TestDispatcherPRClosed_ClearsBlockMetadataFromBlocked(t *testing.T) {
 	}
 }
 
+// fakeArchiver records ArchiveSession calls on a buffered channel so the async
+// (safego.Go) archive path can be observed without racing.
+type fakeArchiver struct {
+	calls chan string
+}
+
+func newFakeArchiver() *fakeArchiver {
+	return &fakeArchiver{calls: make(chan string, 8)}
+}
+
+func (f *fakeArchiver) ArchiveSession(_ context.Context, id string) error {
+	f.calls <- id
+	return nil
+}
+
+// When a PR merges and the repo has ArchiveSessionsAfterMerge on, the session is
+// archived exactly once, asynchronously, after reaching Merged.
+func TestDispatcherPRMerged_ArchivesWhenEnabled(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", ArchiveSessionsAfterMerge: true}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.AwaitingChecks,
+	}
+
+	arch := newFakeArchiver()
+	d := NewDispatcher(sessions, repos, vp, logger)
+	d.SetArchiver(arch)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	if got := sessions.sessions["sess-1"].State; got != machine.Merged {
+		t.Errorf("state = %v, want Merged", got)
+	}
+	select {
+	case id := <-arch.calls:
+		if id != "sess-1" {
+			t.Errorf("archived %q, want sess-1", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session was not archived after merge")
+	}
+	// Exactly once: no further archive call should arrive.
+	select {
+	case id := <-arch.calls:
+		t.Errorf("session archived more than once (extra: %q)", id)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// With the flag off, a merged session is not archived.
+func TestDispatcherPRMerged_DoesNotArchiveWhenDisabled(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", ArchiveSessionsAfterMerge: false}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.AwaitingChecks,
+	}
+
+	arch := newFakeArchiver()
+	d := NewDispatcher(sessions, repos, vp, logger)
+	d.SetArchiver(arch)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	if got := sessions.sessions["sess-1"].State; got != machine.Merged {
+		t.Errorf("state = %v, want Merged", got)
+	}
+	select {
+	case id := <-arch.calls:
+		t.Errorf("session %q archived despite flag off", id)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// With no archiver wired, handling a merge neither panics nor errors.
+func TestDispatcherPRMerged_NilArchiverIsSafe(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", ArchiveSessionsAfterMerge: true}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.AwaitingChecks,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, logger) // no SetArchiver
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	if got := sessions.sessions["sess-1"].State; got != machine.Merged {
+		t.Errorf("state = %v, want Merged", got)
+	}
+}
+
 func TestDispatcherContextCancellation(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()

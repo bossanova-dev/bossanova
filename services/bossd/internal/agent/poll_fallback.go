@@ -76,7 +76,7 @@ func (p *PollFallback) Arm(ctx context.Context, sessionID, agentSessionID string
 			// Record-only (BOS-165): a usage-cap exit is logged for
 			// observability but takes NO further action here — no status
 			// change, no rotation. The run still completes normally below.
-			if resp.GetFailureClass() == agenterr.KindUsageExhausted.String() {
+			if fc := resp.GetFailureClass(); fc == agenterr.KindUsageExhausted.String() || fc == agenterr.KindRateLimited.String() {
 				ev := p.logger.Info().
 					Str("agent_session", agentSessionID).
 					Str("session", sessionID).
@@ -84,7 +84,7 @@ func (p *PollFallback) Arm(ctx context.Context, sessionID, agentSessionID string
 				if ts := resp.GetResetAt(); ts != nil {
 					ev = ev.Time("reset_at", ts.AsTime())
 				}
-				ev.Msg("agent run exited usage-limited (record-only)")
+				ev.Msg("agent run exited usage/rate limited (record-only)")
 			}
 			p.completer.SignalSessionRunComplete(sessionID, agentSessionID, resp.ExitError)
 			return

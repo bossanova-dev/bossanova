@@ -80,6 +80,14 @@ service OrchestratorService {
   rpc ProxyGetRepo(ProxyGetRepoRequest) returns (ProxyGetRepoResponse);
   rpc ProxyUpdateRepo(ProxyUpdateRepoRequest) returns (ProxyUpdateRepoResponse);
   rpc ProxyRemoveRepo(ProxyRemoveRepoRequest) returns (ProxyRemoveRepoResponse);
+  // Cron-job proxies for web cron-job management. ProxyListCronJobs aggregates
+  // across all of the caller's live daemons; the mutating proxies route to the
+  // daemon named by daemon_id and address the job by id.
+  rpc ProxyListCronJobs(ProxyListCronJobsRequest) returns (ProxyListCronJobsResponse);
+  rpc ProxyCreateCronJob(ProxyCreateCronJobRequest) returns (ProxyCreateCronJobResponse);
+  rpc ProxyUpdateCronJob(ProxyUpdateCronJobRequest) returns (ProxyUpdateCronJobResponse);
+  rpc ProxyDeleteCronJob(ProxyDeleteCronJobRequest) returns (ProxyDeleteCronJobResponse);
+  rpc ProxyRunCronJobNow(ProxyRunCronJobNowRequest) returns (ProxyRunCronJobNowResponse);
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -489,6 +497,59 @@ message ProxyUpdateRepoResponse { RepoSettings settings = 1; }
 
 message ProxyRemoveRepoRequest { string daemon_id = 1; string repo_id = 2; }
 message ProxyRemoveRepoResponse {}
+
+// --- Cron-job proxies (web cron-job management) ---
+
+// CronJobWithDaemon tags a cron job with the daemon that owns it, so the web
+// aggregated list can route subsequent mutating calls back to the right daemon.
+message CronJobWithDaemon {
+  CronJob job = 1;
+  string daemon_id = 2;
+  string daemon_hostname = 3;
+}
+
+message ProxyListCronJobsRequest {}
+message ProxyListCronJobsResponse { repeated CronJobWithDaemon jobs = 1; }
+
+// ProxyCreateCronJobRequest names the daemon to create the cron job on plus the
+// creation parameters (mirrors CreateCronJobCommand in stream.proto).
+message ProxyCreateCronJobRequest {
+  string daemon_id = 1;
+  string repo_id = 2;
+  string name = 3;
+  string prompt = 4;
+  string schedule = 5;
+  string timezone = 6;
+  bool enabled = 7;
+  string agent_name = 8;
+  string model = 9;
+  string gate_command = 10;
+  optional bool run_setup_command = 11;
+}
+message ProxyCreateCronJobResponse { CronJob job = 1; }
+
+// ProxyUpdateCronJobRequest routes to daemon_id and addresses the job by id.
+// Mutable fields are optional (mirrors UpdateCronJobCommand in stream.proto).
+message ProxyUpdateCronJobRequest {
+  string daemon_id = 1;
+  string id = 2;
+  optional string name = 3;
+  optional string prompt = 4;
+  optional string schedule = 5;
+  optional string timezone = 6;
+  optional bool enabled = 7;
+  optional string agent_name = 8;
+  optional string model = 9;
+  optional string gate_command = 10;
+  optional bool run_setup_command = 11;
+}
+message ProxyUpdateCronJobResponse { CronJob job = 1; }
+
+message ProxyDeleteCronJobRequest { string daemon_id = 1; string id = 2; }
+message ProxyDeleteCronJobResponse {}
+
+message ProxyRunCronJobNowRequest { string daemon_id = 1; string id = 2; }
+message ProxyRunCronJobNowResponse { Session session = 1; string skipped_reason = 2; }
 
 // ProxyStreamChatsRequest selects the session whose chat list (and per-chat
 // statuses) the caller wants to follow. The orchestrator resolves the owning

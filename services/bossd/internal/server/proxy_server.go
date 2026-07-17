@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -42,6 +43,37 @@ const proxyReadHeaderTimeout = 30 * time.Second
 // commitTimeout bounds the detached post-replay rebind+audit persist so a hung
 // store can't leak a goroutine after the client leg is done.
 const commitTimeout = 10 * time.Second
+
+// sseErrorPeekByteCap bounds how many leading bytes of a 200 text/event-stream
+// response the proxy buffers while deciding whether the stream opens with a
+// rate_limit_error (rotate + replay) or ships content (pass through). Anthropic's
+// opening frames (message_start / content_block_start / ping) are tiny, so this
+// small cap comfortably holds the whole pre-content window; if the cap is reached
+// before a decisive frame the peek FAILS SAFE to today's byte-identical
+// pass-through rather than holding the stream. Overridable per-server for tests.
+const sseErrorPeekByteCap = 64 << 10 // 64 KiB
+
+// sseErrorPeekDeadline bounds how long the peek keeps buffering opening frames
+// before it gives up and fails safe to pass-through, so a slow-first-token stream
+// (e.g. long extended thinking) or a schema drift degrades to today's behaviour
+// rather than buffering the pre-content window indefinitely. This is a
+// BETWEEN-READS budget: it is evaluated at the top of the peek loop and bounds
+// how long we keep buffering across successive reads (Anthropic emits periodic
+// `ping` keepalive frames during a pre-content gap, so reads keep returning and
+// the budget is honoured at ping granularity). It does NOT preempt a single
+// in-flight origBody.Read that stalls mid-frame — that read is bounded only by
+// the request context (client cancellation) exactly as today's pass-through
+// copy loop is, so this introduces no new hang. Overridable per-server for tests.
+const sseErrorPeekDeadline = 5 * time.Second
+
+// sseFrameBoundary delimits Server-Sent-Event frames (a blank line). The peek
+// splits the buffered prefix on this boundary and inspects one frame at a time.
+// LF-only ("\n\n"): this matches Anthropic's Messages API wire format. A
+// CRLF-framed stream ("\r\n\r\n", spec-valid but not emitted by the target API)
+// yields no boundary match, so the peek simply fails safe to byte-identical
+// pass-through (today's behaviour) rather than misdetecting — never a false
+// rotate.
+var sseFrameBoundary = []byte("\n\n")
 
 // hopByHopHeaders are connection-scoped headers that must not be forwarded
 // across the proxy (RFC 7230 §6.1).
@@ -102,6 +134,13 @@ type ProxyServer struct {
 	upstream  *url.URL
 	transport http.RoundTripper
 
+	// ssePeekByteCap and ssePeekDeadline bound the 200-SSE rate-limit peek. They
+	// default to the sseErrorPeekByteCap / sseErrorPeekDeadline constants and are
+	// exposed as fields only so tests can drive the byte-cap / deadline backstops
+	// deterministically (no wall-clock sleeps).
+	ssePeekByteCap  int
+	ssePeekDeadline time.Duration
+
 	listener net.Listener
 	srv      *http.Server
 
@@ -153,15 +192,17 @@ func NewProxyServer(cfg ProxyServerConfig) (*ProxyServer, error) {
 		transport = http.DefaultTransport
 	}
 	return &ProxyServer{
-		failover:       cfg.Failover,
-		logger:         cfg.Logger,
-		upstream:       u,
-		transport:      transport,
-		tokenToSession: map[string]string{},
-		sessionToToken: map[string]string{},
-		chatToToken:    map[string]string{},
-		sessionChats:   map[string]map[string]string{},
-		sessionBearer:  map[string]string{},
+		failover:        cfg.Failover,
+		logger:          cfg.Logger,
+		upstream:        u,
+		transport:       transport,
+		ssePeekByteCap:  sseErrorPeekByteCap,
+		ssePeekDeadline: sseErrorPeekDeadline,
+		tokenToSession:  map[string]string{},
+		sessionToToken:  map[string]string{},
+		chatToToken:     map[string]string{},
+		sessionChats:    map[string]map[string]string{},
+		sessionBearer:   map[string]string{},
 	}, nil
 }
 
@@ -481,7 +522,185 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// A 200 text/event-stream response can still carry a rate_limit_error INSIDE
+	// the stream (Anthropic returns HTTP 200 then emits `event: error` with
+	// `error.type: rate_limit_error` before any content ships). The status-line
+	// checks above are blind to that, so peek the opening SSE frames — buffering
+	// only the pre-content prefix, bounded by a byte cap + deadline — and, if a
+	// rate_limit_error arrives before the first content_block_delta, route it into
+	// the same failover+replay machinery. Every other 200 (or a peek that reaches
+	// content / a backstop) is reconstructed byte-for-byte and passes through, so
+	// behaviour is unchanged outside this narrow, failover-capable case.
+	if canAttemptFailover && resp.StatusCode == http.StatusOK && isSSEContentType(resp.Header.Get("Content-Type")) {
+		rotate, reconstructed := p.peekSSEForRateLimit(resp)
+		if rotate {
+			res, ferr := p.failover.PrepareFailoverKind(r.Context(), sessionID, rotation.UsageLimited, "ROTATION_TRIGGER_USAGE_LIMITED")
+			if ferr != nil {
+				// Redaction-safe: the error never carries the token.
+				p.logger.Warn().Err(ferr).Str("session", sessionID).Msg("failover proxy: prepare SSE rate-limit failover failed; returning original response")
+			}
+			if res.Rotate {
+				// Discard the rejected stream (nothing shipped); replay with the next
+				// bearer. reconstructed is the same *http.Response as resp with its body
+				// re-prepended, so closing it releases the upstream connection.
+				_ = reconstructed.Body.Close()
+				p.replayAndCommit(w, r, upstreamPath, buffered, sessionID, res)
+				return
+			}
+		}
+		// No decisive rate_limit_error, or no rotation target: stream the
+		// reconstructed (buffered prefix + remainder) response through unchanged.
+		p.copyResponse(w, reconstructed)
+		return
+	}
 	p.copyResponse(w, resp)
+}
+
+// isSSEContentType reports whether a Content-Type header names a Server-Sent-Event
+// stream (e.g. "text/event-stream" or "text/event-stream; charset=utf-8").
+func isSSEContentType(ct string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "text/event-stream")
+}
+
+// sseDecision is the outcome of classifying one SSE frame during the peek.
+type sseDecision int
+
+const (
+	// sseUndecided is a pre-content opening frame (message_start, ping,
+	// content_block_start, …) — keep peeking.
+	sseUndecided sseDecision = iota
+	// sseRotate is a terminal `error` frame whose error.type is rate_limit_error,
+	// seen before any content shipped — discard the prefix and fail over.
+	sseRotate
+	// ssePassthrough is a decisive non-rotating frame: the first content_block_delta
+	// (content is now on the wire) or any other error (e.g. overloaded_error). Flush
+	// the buffered prefix and stream the remainder unchanged.
+	ssePassthrough
+)
+
+// sseEventData is the minimal subset of an SSE `data:` JSON payload the peek
+// inspects: the top-level event `type` and, for an error frame, `error.type`.
+// Content deltas are deliberately NOT deserialized.
+type sseEventData struct {
+	Type  string `json:"type"`
+	Error struct {
+		Type string `json:"type"`
+	} `json:"error"`
+}
+
+// peekSSEForRateLimit reads the leading frames of a 200 text/event-stream
+// response, deciding whether the stream opens with a rate_limit_error (rotate)
+// before any content ships. It ALWAYS returns a reconstructed response whose body
+// re-prepends the buffered prefix (via io.MultiReader, keeping the original body
+// as the io.Closer) so the caller can pass it through byte-for-byte when it does
+// not rotate — mirroring the 403 suspension prefix pattern. Only event names and
+// error types are inspected; no auth material is ever read or logged. The peek is
+// bounded by ssePeekByteCap and by the ssePeekDeadline between-reads budget (see
+// their doc comments) and fails safe to pass-through on any malformed/partial
+// frame, EOF, read error, or backstop. Until it releases, the pre-content opening
+// frames (message_start / content_block_start / ping) are held rather than
+// flushed per-read; the first content_block_delta (or a backstop) flushes the
+// whole buffered prefix, so visible tokens are never delayed beyond the deadline.
+func (p *ProxyServer) peekSSEForRateLimit(resp *http.Response) (bool, *http.Response) {
+	origBody := resp.Body
+	byteCap := p.ssePeekByteCap
+	if byteCap <= 0 {
+		byteCap = sseErrorPeekByteCap
+	}
+	deadline := time.Now().Add(p.ssePeekDeadline)
+
+	var prefix bytes.Buffer
+	chunk := make([]byte, 4096)
+	scanned := 0 // bytes of prefix already scanned for frame boundaries
+	rotate := false
+
+peekLoop:
+	// Stop once the byte cap or the deadline is reached (fail safe to
+	// pass-through); decisive frames break out early below.
+	for prefix.Len() < byteCap && time.Now().Before(deadline) {
+		n, rerr := origBody.Read(chunk)
+		if n > 0 {
+			prefix.Write(chunk[:n])
+			buf := prefix.Bytes()
+			for {
+				rel := bytes.Index(buf[scanned:], sseFrameBoundary)
+				if rel < 0 {
+					break // no complete frame yet; read more
+				}
+				frameEnd := scanned + rel + len(sseFrameBoundary)
+				if frameEnd > byteCap {
+					// The next frame's boundary lies beyond the peek budget: give up
+					// and fail safe to pass-through rather than buffer past the cap.
+					break peekLoop
+				}
+				frame := buf[scanned : scanned+rel]
+				scanned = frameEnd
+				switch classifySSEFrame(frame) {
+				case sseRotate:
+					rotate = true
+					break peekLoop
+				case ssePassthrough:
+					break peekLoop
+				case sseUndecided:
+					// keep scanning subsequent frames
+				}
+			}
+		}
+		if rerr != nil {
+			break // EOF or read error: fail safe to pass-through
+		}
+	}
+
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(prefix.Bytes()), origBody), origBody}
+	return rotate, resp
+}
+
+// classifySSEFrame decides whether a single SSE frame is a rate_limit_error
+// (rotate), a decisive non-rotating frame (content_block_delta or another error →
+// pass through), or a pre-content opening frame (undecided → keep peeking). It is
+// tolerant: a malformed/partial `data:` payload falls back to the `event:` name
+// and never rotates unless it POSITIVELY reads error.type == "rate_limit_error".
+func classifySSEFrame(frame []byte) sseDecision {
+	eventName, dataJSON := parseSSEFrame(frame)
+	var payload sseEventData
+	_ = json.Unmarshal([]byte(dataJSON), &payload) // tolerant: err ⇒ empty payload
+	typ := payload.Type
+	if typ == "" {
+		typ = eventName
+	}
+	switch typ {
+	case "content_block_delta":
+		return ssePassthrough
+	case "error":
+		if payload.Error.Type == "rate_limit_error" {
+			return sseRotate
+		}
+		return ssePassthrough
+	default:
+		return sseUndecided
+	}
+}
+
+// parseSSEFrame extracts the `event:` name and the concatenated `data:` payload
+// from one SSE frame. Multiple data lines are joined with "\n" per the SSE spec
+// (valid inter-token whitespace for a JSON value split across lines). Only these
+// two fields are read — never any auth header or token.
+func parseSSEFrame(frame []byte) (eventName, data string) {
+	var dataParts []string
+	for _, raw := range bytes.Split(frame, []byte("\n")) {
+		line := bytes.TrimRight(raw, "\r")
+		switch {
+		case bytes.HasPrefix(line, []byte("event:")):
+			eventName = strings.TrimSpace(string(line[len("event:"):]))
+		case bytes.HasPrefix(line, []byte("data:")):
+			dataParts = append(dataParts, strings.TrimSpace(string(line[len("data:"):])))
+		}
+	}
+	return eventName, strings.Join(dataParts, "\n")
 }
 
 // replayAndCommit replays the buffered request with the rotated bearer

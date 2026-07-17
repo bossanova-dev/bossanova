@@ -169,6 +169,9 @@ message Repo {
   // (failing checks, merge conflicts, review feedback). Honored by the plugin.
   // Defaults on.
   bool can_auto_repair = 21;
+  // Whether the daemon automatically archives a session once its PR is merged.
+  // Honored by the session dispatcher on the PR-merged transition. Defaults on.
+  bool archive_sessions_after_merge = 22;
   string linear_api_key = 15;
   reserved 16;
   // Sentry credentials. Mirrors linear_api_key: a Sentry auth token alone can't
@@ -390,6 +393,11 @@ message Session {
   // the transient blue "merging" display status. Distinct from
   // display_is_repairing (24) / display_setting_up (48).
   bool display_merging = 60;
+
+  // Denormalized repo.archive_sessions_after_merge, populated server-side by
+  // GetSession so the TUI session-detail view can show an "Archiving…" status
+  // and know a merged session is about to be auto-archived (BOS-46 follow-up).
+  bool repo_archive_sessions_after_merge = 61;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display

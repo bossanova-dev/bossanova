@@ -118,6 +118,21 @@ const (
 	// OrchestratorServiceProxyRemoveRepoProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyRemoveRepo RPC.
 	OrchestratorServiceProxyRemoveRepoProcedure = "/bossanova.v1.OrchestratorService/ProxyRemoveRepo"
+	// OrchestratorServiceProxyListCronJobsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListCronJobs RPC.
+	OrchestratorServiceProxyListCronJobsProcedure = "/bossanova.v1.OrchestratorService/ProxyListCronJobs"
+	// OrchestratorServiceProxyCreateCronJobProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyCreateCronJob RPC.
+	OrchestratorServiceProxyCreateCronJobProcedure = "/bossanova.v1.OrchestratorService/ProxyCreateCronJob"
+	// OrchestratorServiceProxyUpdateCronJobProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyUpdateCronJob RPC.
+	OrchestratorServiceProxyUpdateCronJobProcedure = "/bossanova.v1.OrchestratorService/ProxyUpdateCronJob"
+	// OrchestratorServiceProxyDeleteCronJobProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyDeleteCronJob RPC.
+	OrchestratorServiceProxyDeleteCronJobProcedure = "/bossanova.v1.OrchestratorService/ProxyDeleteCronJob"
+	// OrchestratorServiceProxyRunCronJobNowProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyRunCronJobNow RPC.
+	OrchestratorServiceProxyRunCronJobNowProcedure = "/bossanova.v1.OrchestratorService/ProxyRunCronJobNow"
 	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStreamChats RPC.
 	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
@@ -233,6 +248,14 @@ type OrchestratorServiceClient interface {
 	ProxyGetRepo(context.Context, *connect.Request[v1.ProxyGetRepoRequest]) (*connect.Response[v1.ProxyGetRepoResponse], error)
 	ProxyUpdateRepo(context.Context, *connect.Request[v1.ProxyUpdateRepoRequest]) (*connect.Response[v1.ProxyUpdateRepoResponse], error)
 	ProxyRemoveRepo(context.Context, *connect.Request[v1.ProxyRemoveRepoRequest]) (*connect.Response[v1.ProxyRemoveRepoResponse], error)
+	// Cron-job proxies for web cron-job management. ProxyListCronJobs aggregates
+	// across all of the caller's live daemons; the mutating proxies route to the
+	// daemon named by daemon_id and address the job by id.
+	ProxyListCronJobs(context.Context, *connect.Request[v1.ProxyListCronJobsRequest]) (*connect.Response[v1.ProxyListCronJobsResponse], error)
+	ProxyCreateCronJob(context.Context, *connect.Request[v1.ProxyCreateCronJobRequest]) (*connect.Response[v1.ProxyCreateCronJobResponse], error)
+	ProxyUpdateCronJob(context.Context, *connect.Request[v1.ProxyUpdateCronJobRequest]) (*connect.Response[v1.ProxyUpdateCronJobResponse], error)
+	ProxyDeleteCronJob(context.Context, *connect.Request[v1.ProxyDeleteCronJobRequest]) (*connect.Response[v1.ProxyDeleteCronJobResponse], error)
+	ProxyRunCronJobNow(context.Context, *connect.Request[v1.ProxyRunCronJobNowRequest]) (*connect.Response[v1.ProxyRunCronJobNowResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -454,6 +477,36 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRemoveRepo")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyListCronJobs: connect.NewClient[v1.ProxyListCronJobsRequest, v1.ProxyListCronJobsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListCronJobsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListCronJobs")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyCreateCronJob: connect.NewClient[v1.ProxyCreateCronJobRequest, v1.ProxyCreateCronJobResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyCreateCronJobProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateCronJob")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyUpdateCronJob: connect.NewClient[v1.ProxyUpdateCronJobRequest, v1.ProxyUpdateCronJobResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyUpdateCronJobProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateCronJob")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyDeleteCronJob: connect.NewClient[v1.ProxyDeleteCronJobRequest, v1.ProxyDeleteCronJobResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyDeleteCronJobProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteCronJob")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyRunCronJobNow: connect.NewClient[v1.ProxyRunCronJobNowRequest, v1.ProxyRunCronJobNowResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyRunCronJobNowProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRunCronJobNow")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyStreamChats: connect.NewClient[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent](
 			httpClient,
 			baseURL+OrchestratorServiceProxyStreamChatsProcedure,
@@ -577,6 +630,11 @@ type orchestratorServiceClient struct {
 	proxyGetRepo               *connect.Client[v1.ProxyGetRepoRequest, v1.ProxyGetRepoResponse]
 	proxyUpdateRepo            *connect.Client[v1.ProxyUpdateRepoRequest, v1.ProxyUpdateRepoResponse]
 	proxyRemoveRepo            *connect.Client[v1.ProxyRemoveRepoRequest, v1.ProxyRemoveRepoResponse]
+	proxyListCronJobs          *connect.Client[v1.ProxyListCronJobsRequest, v1.ProxyListCronJobsResponse]
+	proxyCreateCronJob         *connect.Client[v1.ProxyCreateCronJobRequest, v1.ProxyCreateCronJobResponse]
+	proxyUpdateCronJob         *connect.Client[v1.ProxyUpdateCronJobRequest, v1.ProxyUpdateCronJobResponse]
+	proxyDeleteCronJob         *connect.Client[v1.ProxyDeleteCronJobRequest, v1.ProxyDeleteCronJobResponse]
+	proxyRunCronJobNow         *connect.Client[v1.ProxyRunCronJobNowRequest, v1.ProxyRunCronJobNowResponse]
 	proxyStreamChats           *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken           *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
 	terminalStream             *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
@@ -734,6 +792,31 @@ func (c *orchestratorServiceClient) ProxyRemoveRepo(ctx context.Context, req *co
 	return c.proxyRemoveRepo.CallUnary(ctx, req)
 }
 
+// ProxyListCronJobs calls bossanova.v1.OrchestratorService.ProxyListCronJobs.
+func (c *orchestratorServiceClient) ProxyListCronJobs(ctx context.Context, req *connect.Request[v1.ProxyListCronJobsRequest]) (*connect.Response[v1.ProxyListCronJobsResponse], error) {
+	return c.proxyListCronJobs.CallUnary(ctx, req)
+}
+
+// ProxyCreateCronJob calls bossanova.v1.OrchestratorService.ProxyCreateCronJob.
+func (c *orchestratorServiceClient) ProxyCreateCronJob(ctx context.Context, req *connect.Request[v1.ProxyCreateCronJobRequest]) (*connect.Response[v1.ProxyCreateCronJobResponse], error) {
+	return c.proxyCreateCronJob.CallUnary(ctx, req)
+}
+
+// ProxyUpdateCronJob calls bossanova.v1.OrchestratorService.ProxyUpdateCronJob.
+func (c *orchestratorServiceClient) ProxyUpdateCronJob(ctx context.Context, req *connect.Request[v1.ProxyUpdateCronJobRequest]) (*connect.Response[v1.ProxyUpdateCronJobResponse], error) {
+	return c.proxyUpdateCronJob.CallUnary(ctx, req)
+}
+
+// ProxyDeleteCronJob calls bossanova.v1.OrchestratorService.ProxyDeleteCronJob.
+func (c *orchestratorServiceClient) ProxyDeleteCronJob(ctx context.Context, req *connect.Request[v1.ProxyDeleteCronJobRequest]) (*connect.Response[v1.ProxyDeleteCronJobResponse], error) {
+	return c.proxyDeleteCronJob.CallUnary(ctx, req)
+}
+
+// ProxyRunCronJobNow calls bossanova.v1.OrchestratorService.ProxyRunCronJobNow.
+func (c *orchestratorServiceClient) ProxyRunCronJobNow(ctx context.Context, req *connect.Request[v1.ProxyRunCronJobNowRequest]) (*connect.Response[v1.ProxyRunCronJobNowResponse], error) {
+	return c.proxyRunCronJobNow.CallUnary(ctx, req)
+}
+
 // ProxyStreamChats calls bossanova.v1.OrchestratorService.ProxyStreamChats.
 func (c *orchestratorServiceClient) ProxyStreamChats(ctx context.Context, req *connect.Request[v1.ProxyStreamChatsRequest]) (*connect.ServerStreamForClient[v1.ProxyChatListEvent], error) {
 	return c.proxyStreamChats.CallServerStream(ctx, req)
@@ -877,6 +960,14 @@ type OrchestratorServiceHandler interface {
 	ProxyGetRepo(context.Context, *connect.Request[v1.ProxyGetRepoRequest]) (*connect.Response[v1.ProxyGetRepoResponse], error)
 	ProxyUpdateRepo(context.Context, *connect.Request[v1.ProxyUpdateRepoRequest]) (*connect.Response[v1.ProxyUpdateRepoResponse], error)
 	ProxyRemoveRepo(context.Context, *connect.Request[v1.ProxyRemoveRepoRequest]) (*connect.Response[v1.ProxyRemoveRepoResponse], error)
+	// Cron-job proxies for web cron-job management. ProxyListCronJobs aggregates
+	// across all of the caller's live daemons; the mutating proxies route to the
+	// daemon named by daemon_id and address the job by id.
+	ProxyListCronJobs(context.Context, *connect.Request[v1.ProxyListCronJobsRequest]) (*connect.Response[v1.ProxyListCronJobsResponse], error)
+	ProxyCreateCronJob(context.Context, *connect.Request[v1.ProxyCreateCronJobRequest]) (*connect.Response[v1.ProxyCreateCronJobResponse], error)
+	ProxyUpdateCronJob(context.Context, *connect.Request[v1.ProxyUpdateCronJobRequest]) (*connect.Response[v1.ProxyUpdateCronJobResponse], error)
+	ProxyDeleteCronJob(context.Context, *connect.Request[v1.ProxyDeleteCronJobRequest]) (*connect.Response[v1.ProxyDeleteCronJobResponse], error)
+	ProxyRunCronJobNow(context.Context, *connect.Request[v1.ProxyRunCronJobNowRequest]) (*connect.Response[v1.ProxyRunCronJobNowResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -1094,6 +1185,36 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRemoveRepo")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyListCronJobsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListCronJobsProcedure,
+		svc.ProxyListCronJobs,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListCronJobs")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyCreateCronJobHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyCreateCronJobProcedure,
+		svc.ProxyCreateCronJob,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateCronJob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyUpdateCronJobHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyUpdateCronJobProcedure,
+		svc.ProxyUpdateCronJob,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateCronJob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyDeleteCronJobHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyDeleteCronJobProcedure,
+		svc.ProxyDeleteCronJob,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteCronJob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyRunCronJobNowHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyRunCronJobNowProcedure,
+		svc.ProxyRunCronJobNow,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRunCronJobNow")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyStreamChatsHandler := connect.NewServerStreamHandler(
 		OrchestratorServiceProxyStreamChatsProcedure,
 		svc.ProxyStreamChats,
@@ -1242,6 +1363,16 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyUpdateRepoHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyRemoveRepoProcedure:
 			orchestratorServiceProxyRemoveRepoHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListCronJobsProcedure:
+			orchestratorServiceProxyListCronJobsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyCreateCronJobProcedure:
+			orchestratorServiceProxyCreateCronJobHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyUpdateCronJobProcedure:
+			orchestratorServiceProxyUpdateCronJobHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyDeleteCronJobProcedure:
+			orchestratorServiceProxyDeleteCronJobHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyRunCronJobNowProcedure:
+			orchestratorServiceProxyRunCronJobNowHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
 			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceIssueAttachTokenProcedure:
@@ -1391,6 +1522,26 @@ func (UnimplementedOrchestratorServiceHandler) ProxyUpdateRepo(context.Context, 
 
 func (UnimplementedOrchestratorServiceHandler) ProxyRemoveRepo(context.Context, *connect.Request[v1.ProxyRemoveRepoRequest]) (*connect.Response[v1.ProxyRemoveRepoResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyRemoveRepo is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListCronJobs(context.Context, *connect.Request[v1.ProxyListCronJobsRequest]) (*connect.Response[v1.ProxyListCronJobsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListCronJobs is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyCreateCronJob(context.Context, *connect.Request[v1.ProxyCreateCronJobRequest]) (*connect.Response[v1.ProxyCreateCronJobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyCreateCronJob is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyUpdateCronJob(context.Context, *connect.Request[v1.ProxyUpdateCronJobRequest]) (*connect.Response[v1.ProxyUpdateCronJobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyUpdateCronJob is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyDeleteCronJob(context.Context, *connect.Request[v1.ProxyDeleteCronJobRequest]) (*connect.Response[v1.ProxyDeleteCronJobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyDeleteCronJob is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyRunCronJobNow(context.Context, *connect.Request[v1.ProxyRunCronJobNowRequest]) (*connect.Response[v1.ProxyRunCronJobNowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyRunCronJobNow is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {

@@ -46,10 +46,12 @@ type UpdateRepoParams struct {
 	CanAutoMergeDependabot *bool
 	CanAutoRepair          *bool
 	CanAutoRotate          *bool
-	MergeStrategy          *models.MergeStrategy
-	LinearAPIKey           *string
-	SentryAPIKey           *string
-	SentryOrg              *string
+	// ArchiveSessionsAfterMerge toggles the post-merge auto-archive automation.
+	ArchiveSessionsAfterMerge *bool
+	MergeStrategy             *models.MergeStrategy
+	LinearAPIKey              *string
+	SentryAPIKey              *string
+	SentryOrg                 *string
 	// ExpectedUpdatedAt, when non-nil, enables an optimistic-concurrency guard:
 	// the update is applied only while the repo's stored updated_at still matches
 	// this token (compared at the stored millisecond string granularity). A

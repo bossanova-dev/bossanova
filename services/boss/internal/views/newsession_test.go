@@ -2143,6 +2143,80 @@ func TestNewSession_CreatingPhase_RendersInitializingIndicator(t *testing.T) {
 	}
 }
 
+// TestNewSession_CreatingPhase_BlankLineAfterInitializing asserts that the
+// creating-step view places exactly one blank line between the "initializing"
+// label and the following "Creating a new session..." status line (BOS-397).
+func TestNewSession_CreatingPhase_BlankLineAfterInitializing(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m.phase = newSessionPhaseCreating
+
+	view := stripANSI(m.View().Content)
+	lines := strings.Split(view, "\n")
+
+	initIdx, statusIdx := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "initializing") {
+			initIdx = i
+		}
+		if strings.Contains(line, "Creating a new session...") {
+			statusIdx = i
+		}
+	}
+	if initIdx == -1 {
+		t.Fatalf("creating view missing 'initializing' line in:\n%s", view)
+	}
+	if statusIdx == -1 {
+		t.Fatalf("creating view missing 'Creating a new session...' line in:\n%s", view)
+	}
+	// Exactly one blank line between the two ⇒ status line is two indices below.
+	if statusIdx != initIdx+2 {
+		t.Errorf("want exactly one blank line between 'initializing' (line %d) and 'Creating a new session...' (line %d); indices should differ by 2, got %d:\n%s",
+			initIdx, statusIdx, statusIdx-initIdx, view)
+	}
+	if strings.TrimSpace(lines[initIdx+1]) != "" {
+		t.Errorf("line after 'initializing' should be blank, got %q in:\n%s", lines[initIdx+1], view)
+	}
+}
+
+// TestNewSession_CreatingPhase_BlankLineBeforeSetupScript asserts that the same
+// blank line precedes the "Running setup script..." status line when a setup
+// script is running (m.setupLines populated), covering the setupLines>0 render
+// branch that shares the BOS-397 "\n\n" write.
+func TestNewSession_CreatingPhase_BlankLineBeforeSetupScript(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m.phase = newSessionPhaseCreating
+	m.setupLines = []string{"installing deps"}
+
+	view := stripANSI(m.View().Content)
+	lines := strings.Split(view, "\n")
+
+	initIdx, statusIdx := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "initializing") {
+			initIdx = i
+		}
+		if strings.Contains(line, "Running setup script...") {
+			statusIdx = i
+		}
+	}
+	if initIdx == -1 {
+		t.Fatalf("creating view missing 'initializing' line in:\n%s", view)
+	}
+	if statusIdx == -1 {
+		t.Fatalf("creating view missing 'Running setup script...' line in:\n%s", view)
+	}
+	// Exactly one blank line between the two ⇒ status line is two indices below.
+	if statusIdx != initIdx+2 {
+		t.Errorf("want exactly one blank line between 'initializing' (line %d) and 'Running setup script...' (line %d); indices should differ by 2, got %d:\n%s",
+			initIdx, statusIdx, statusIdx-initIdx, view)
+	}
+	if strings.TrimSpace(lines[initIdx+1]) != "" {
+		t.Errorf("line after 'initializing' should be blank, got %q in:\n%s", lines[initIdx+1], view)
+	}
+}
+
 // --- Spinner animation tests ---
 
 // newTestNewSessionModel returns a minimal NewSessionModel for spinner tests.

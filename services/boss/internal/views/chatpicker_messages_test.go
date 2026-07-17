@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // TestChatPicker_MergeResultMsg pins the merge-result handler: a failure
@@ -257,6 +258,35 @@ func TestChatPicker_EnterKey_AttachesSelectedChat(t *testing.T) {
 	}
 	if msg.resumeID != "agent-1" {
 		t.Errorf("enter should resume the selected chat agent-1, got %q", msg.resumeID)
+	}
+}
+
+// TestChatPicker_RefreshWithArchivedSessionReturnsArchived pins the polling
+// refresh handler: a session that comes back with archived_at set (archived
+// out from under the picker — e.g. BOS-46 archive-after-merge, an external
+// merge, or a manual archive elsewhere) flips the same Archived() flag a
+// TUI-initiated archive sets, so the app loop routes back to the session list.
+func TestChatPicker_RefreshWithArchivedSessionReturnsArchived(t *testing.T) {
+	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
+	updated, _ := m.Update(chatPickerRefreshMsg{
+		session: &pb.Session{Id: "session-1", ArchivedAt: timestamppb.Now()},
+	})
+	cp, ok := updated.(ChatPickerModel)
+	if !ok {
+		t.Fatalf("expected ChatPickerModel, got %T", updated)
+	}
+	if !cp.Archived() {
+		t.Error("expected Archived() true when the polled session has archived_at set")
+	}
+}
+
+// TestChatPicker_RefreshWithActiveSessionStaysPut verifies the counterpart:
+// a non-archived refreshed session leaves Archived() false.
+func TestChatPicker_RefreshWithActiveSessionStaysPut(t *testing.T) {
+	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
+	updated, _ := m.Update(chatPickerRefreshMsg{session: &pb.Session{Id: "session-1"}})
+	if cp := updated.(ChatPickerModel); cp.Archived() {
+		t.Error("expected Archived() false for a non-archived session")
 	}
 }
 

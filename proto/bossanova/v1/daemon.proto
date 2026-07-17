@@ -269,6 +269,7 @@ message UpdateRepoRequest {
   // Optimistic-concurrency token: when set, the update is rejected (CodeAborted)
   // unless it still equals the repo's stored updated_at.
   google.protobuf.Timestamp expected_updated_at = 18;
+  optional bool archive_sessions_after_merge = 19;
 }
 
 message UpdateRepoResponse {

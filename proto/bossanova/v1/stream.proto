@@ -123,6 +123,16 @@ message OrchestratorCommand {
     UpdateRepoCommand update_repo = 25;
     // bosso → daemon: remove a repo. Replies CommandResult{Ok}.
     RemoveRepoCommand remove_repo = 26;
+    // bosso → daemon: list the daemon's cron jobs. Replies CommandResult{list_cron_jobs}.
+    ListCronJobsCommand list_cron_jobs = 27;
+    // bosso → daemon: create a cron job. Replies CommandResult{create_cron_job}.
+    CreateCronJobCommand create_cron_job = 28;
+    // bosso → daemon: update a cron job. Replies CommandResult{update_cron_job}.
+    UpdateCronJobCommand update_cron_job = 29;
+    // bosso → daemon: delete a cron job. Replies CommandResult{Ok} with no payload.
+    DeleteCronJobCommand delete_cron_job = 30;
+    // bosso → daemon: fire a cron job immediately. Replies CommandResult{run_cron_job_now}.
+    RunCronJobNowCommand run_cron_job_now = 31;
   }
 }
 
@@ -270,6 +280,14 @@ message CommandResult {
     // UpdateRepo returns the daemon's full repo; bosso projects it before
     // returning it to a browser.
     UpdateRepoResponse update_repo = 18;
+    // ListCronJobs returns the daemon's cron jobs (reuses daemon.proto type).
+    ListCronJobsResponse list_cron_jobs = 19;
+    // CreateCronJob returns the created cron job (reuses daemon.proto type).
+    CreateCronJobResponse create_cron_job = 20;
+    // UpdateCronJob returns the updated cron job (reuses daemon.proto type).
+    UpdateCronJobResponse update_cron_job = 21;
+    // RunCronJobNow returns the spawned session or a skip reason (reuses daemon.proto type).
+    RunCronJobNowResponse run_cron_job_now = 22;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -478,6 +496,51 @@ message ListReposCommand {}
 // bosso → daemon: list the daemon's installed agents.
 // Replies with CommandResult carrying a ListAgentsResponse (list_agents = 10).
 message ListAgentsCommand {}
+
+// bosso → daemon: list the daemon's cron jobs.
+// Replies with CommandResult carrying a ListCronJobsResponse (list_cron_jobs = 19).
+message ListCronJobsCommand {}
+
+// CreateCronJobCommand asks the daemon to register a new scheduled prompt for a
+// repo. Fields mirror daemon.proto's CreateCronJobRequest. Replies with
+// CommandResult carrying a CreateCronJobResponse (create_cron_job = 20).
+message CreateCronJobCommand {
+  string repo_id = 1;
+  string name = 2;
+  string prompt = 3;
+  string schedule = 4;
+  string timezone = 5;
+  bool enabled = 6;
+  string agent_name = 7;
+  string model = 8;
+  string gate_command = 9;
+  optional bool run_setup_command = 10;
+}
+
+// UpdateCronJobCommand asks the daemon to mutate an existing cron job. Mutable
+// fields are optional. Fields mirror daemon.proto's UpdateCronJobRequest.
+// Replies with CommandResult carrying an UpdateCronJobResponse (update_cron_job = 21).
+message UpdateCronJobCommand {
+  string id = 1;
+  optional string name = 2;
+  optional string prompt = 3;
+  optional string schedule = 4;
+  optional string timezone = 5;
+  optional bool enabled = 6;
+  optional string agent_name = 7;
+  optional string model = 8;
+  optional string gate_command = 9;
+  optional bool run_setup_command = 10;
+}
+
+// DeleteCronJobCommand asks the daemon to remove a cron job.
+// Replies with CommandResult{ok:true} and no payload.
+message DeleteCronJobCommand { string id = 1; }
+
+// RunCronJobNowCommand asks the daemon to fire a cron job immediately, ignoring
+// its schedule. Replies with CommandResult carrying a RunCronJobNowResponse
+// (run_cron_job_now = 22).
+message RunCronJobNowCommand { string id = 1; }
 
 // bosso → daemon: list the daemon's rotation accounts, optionally filtered by
 // provider (empty = all). Reuses daemon.proto's ListAccountsResponse (metadata

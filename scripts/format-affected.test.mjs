@@ -168,6 +168,15 @@ test('format-affected: routeFiles routes biome-owned dirs to biome and drops the
   assert.deepEqual(plan.biome['services/marketing/'], ['services/marketing/a.tsx'])
 })
 
+test('format-affected: routeFiles drops web generated code ignored by biome', () => {
+  const plan = routeFiles([
+    'services/web/src/gen/bossanova/v1/daemon_pb.ts',
+    'services/web/src/app.ts',
+  ])
+
+  assert.deepEqual(plan.biome['services/web/'], ['services/web/src/app.ts'])
+})
+
 test('format-affected: routeFiles sends a non-web package.json to syncpack only (not prettier)', () => {
   const plan = routeFiles(['package.json', 'services/bossd/go.mod'])
   assert.deepEqual(plan.prettier, [], 'root package.json must not land in the prettier bucket')

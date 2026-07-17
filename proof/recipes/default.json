@@ -208,6 +208,64 @@
       ]
     },
     {
+      "id": "web-cron-list",
+      "surface": "web",
+      "title": "Web Cron Jobs",
+      "description": "Cron Jobs settings page (/settings/cron): the TUI-parity table with Name, Schedule, Repo, Agent, Enabled, Last run, Next run, and Status column headers, populated with fixture jobs including an enabled Running job and a failed job.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/settings/cron",
+      "cropToSelector": "[data-testid='cron-jobs-section']",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-cron-form",
+      "surface": "web",
+      "title": "Web Cron Job Form",
+      "description": "Opening the New cron job create form on /settings/cron: the modal with Name, Repo, Agent, Model, Prompt, Schedule, Timezone, and Gate command fields plus the Run setup / Enabled toggles.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/settings/cron",
+          "label": "Open cron jobs",
+          "caption": "Open the Cron Jobs settings page"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"cron-jobs-section\"]",
+          "label": "Cron table",
+          "caption": "Scheduled jobs listed in a TUI-parity table"
+        },
+        {
+          "action": "click",
+          "selector": "button:has-text(\"New cron job\")",
+          "label": "New cron job",
+          "caption": "Open the New cron job form"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"cron-job-form\"]",
+          "label": "Create form",
+          "caption": "Create form with schedule, prompt, agent, and gate fields"
+        }
+      ]
+    },
+    {
+      "id": "web-cron-nav",
+      "surface": "web",
+      "title": "Web Settings Nav (Cron Jobs)",
+      "description": "Settings sidebar navigation with the Cron Jobs entry active alongside Appearance, Billing, and Repositories.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/settings/cron",
+      "cropToSelector": "nav[aria-label=\"Settings\"]",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
       "id": "marketing-home",
       "surface": "marketing",
       "title": "Marketing Home",
@@ -424,6 +482,9 @@
         "web-repositories",
         "web-repository-edit",
         "web-repository-removal",
+        "web-cron-list",
+        "web-cron-form",
+        "web-cron-nav",
         "web-account",
         "web-chat-terminal",
         "web-new-session-flow",

@@ -138,9 +138,21 @@ func (u *fakeUpstream) all() []recordedRequest {
 
 func startProxy(t *testing.T, f Failover, upstreamURL string, logger zerolog.Logger) (*ProxyServer, string) {
 	t.Helper()
+	return startProxyConfigured(t, f, upstreamURL, logger, nil)
+}
+
+// startProxyConfigured is startProxy with a hook to mutate the server BEFORE it
+// begins serving (e.g. to shrink the SSE peek byte cap / deadline for a backstop
+// test), so the field write happens-before the serve goroutine and stays
+// -race-clean.
+func startProxyConfigured(t *testing.T, f Failover, upstreamURL string, logger zerolog.Logger, configure func(*ProxyServer)) (*ProxyServer, string) {
+	t.Helper()
 	ps, err := NewProxyServer(ProxyServerConfig{Failover: f, Logger: logger, Upstream: upstreamURL})
 	if err != nil {
 		t.Fatalf("NewProxyServer: %v", err)
+	}
+	if configure != nil {
+		configure(ps)
 	}
 	if err := ps.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -155,6 +167,46 @@ func startProxy(t *testing.T, f Failover, upstreamURL string, logger zerolog.Log
 	})
 	return ps, fmt.Sprintf("http://127.0.0.1:%d", ps.Port())
 }
+
+// newSSEUpstream stands in for api.anthropic.com on the mid-stream-SSE path. For
+// the "second-token" bearer (the rotation target) it returns a PLAIN 200 whose
+// body is "REPLAYED", so a replayed stream is trivially distinguishable from the
+// initial one. For every other bearer it returns a 200 text/event-stream (well,
+// the given contentType) carrying initialBody. It records every request.
+func newSSEUpstream(t *testing.T, contentType, initialBody string) (*fakeUpstream, *httptest.Server) {
+	u := &fakeUpstream{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		auth := r.Header.Get("Authorization")
+		u.mu.Lock()
+		u.requests = append(u.requests, recordedRequest{
+			method: r.Method, path: r.URL.Path, auth: auth,
+			apiKey: r.Header.Get("x-api-key"), body: string(body),
+		})
+		u.mu.Unlock()
+		if auth == "Bearer second-token" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "REPLAYED")
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, initialBody)
+	}))
+	t.Cleanup(srv.Close)
+	return u, srv
+}
+
+// Canonical Anthropic Messages SSE frames used by the mid-stream-SSE tests.
+const (
+	sseMessageStart      = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\n"
+	ssePing              = "event: ping\ndata: {\"type\":\"ping\"}\n\n"
+	sseContentBlockStart = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0}\n\n"
+	sseContentBlockDelta = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"
+	sseMessageStop       = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	sseRateLimitError    = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"rate limited\"}}\n\n"
+	sseOverloadedError   = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n"
+)
 
 // doMessages sends a POST /v1/messages through the proxy for the given token.
 func doMessages(t *testing.T, base, token, bearer, body string) *http.Response {
@@ -871,6 +923,282 @@ func TestProxy_tokenRegistryRoundTrip(t *testing.T) {
 	ps.Deregister("sess-1")
 	if _, ok := ps.sessionForToken(tok); ok {
 		t.Fatalf("token still resolves after Deregister")
+	}
+}
+
+// --- mid-stream SSE rate-limit peek (BOS-408) ---
+
+// TestProxy_SSEErrorFirstRateLimit_swapsAndReplays proves a 200 text/event-stream
+// whose FIRST frame is an `error` with rate_limit_error (before any
+// message_start) rotates and replays: the client receives ONLY the replayed
+// stream, zero bytes of the rejected one.
+func TestProxy_SSEErrorFirstRateLimit_swapsAndReplays(t *testing.T) {
+	up, srv := newSSEUpstream(t, "text/event-stream", sseRateLimitError)
+	f := &fakeFailover{result: session.FailoverResult{Rotate: true, Token: "second-token", NextAccountID: "acct-2", Trigger: "ROTATION_TRIGGER_USAGE_LIMITED"}}
+	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "first-token", `{"prompt":"hi"}`)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after replay", resp.StatusCode)
+	}
+	if string(body) != "REPLAYED" {
+		t.Fatalf("body = %q, want REPLAYED (only the replayed stream)", body)
+	}
+	if strings.Contains(string(body), "rate_limit_error") {
+		t.Fatalf("rejected stream leaked to client: %q", body)
+	}
+	if f.prepareCalls != 1 {
+		t.Fatalf("PrepareFailover calls = %d, want 1", f.prepareCalls)
+	}
+	if f.lastKind != rotation.UsageLimited {
+		t.Fatalf("failover kind = %v, want UsageLimited", f.lastKind)
+	}
+	if f.lastTrigger != "ROTATION_TRIGGER_USAGE_LIMITED" {
+		t.Fatalf("trigger = %q, want ROTATION_TRIGGER_USAGE_LIMITED", f.lastTrigger)
+	}
+	if f.commitCalls != 1 {
+		t.Fatalf("CommitFailover calls = %d, want 1", f.commitCalls)
+	}
+	reqs := up.all()
+	if len(reqs) != 2 {
+		t.Fatalf("upstream saw %d requests, want 2 (original SSE + replay)", len(reqs))
+	}
+	if reqs[1].auth != "Bearer second-token" {
+		t.Fatalf("replay bearer = %q, want second-token", reqs[1].auth)
+	}
+}
+
+// TestProxy_SSEPreContentRateLimit_swapsAndReplays proves a rate_limit_error that
+// arrives AFTER message_start/ping but BEFORE the first content_block_delta is
+// still transparently recovered: the buffered opening frames are discarded, and
+// the client sees only the replayed stream.
+func TestProxy_SSEPreContentRateLimit_swapsAndReplays(t *testing.T) {
+	preContent := sseMessageStart + ssePing + sseRateLimitError
+	_, srv := newSSEUpstream(t, "text/event-stream", preContent)
+	f := &fakeFailover{result: session.FailoverResult{Rotate: true, Token: "second-token", NextAccountID: "acct-2", Trigger: "ROTATION_TRIGGER_USAGE_LIMITED"}}
+	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "first-token", `{"prompt":"hi"}`)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK || string(body) != "REPLAYED" {
+		t.Fatalf("status=%d body=%q, want 200/REPLAYED", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "message_start") || strings.Contains(string(body), "rate_limit_error") {
+		t.Fatalf("buffered pre-content prefix leaked to client: %q", body)
+	}
+	if f.prepareCalls != 1 || f.lastKind != rotation.UsageLimited {
+		t.Fatalf("prepareCalls=%d kind=%v, want 1/UsageLimited", f.prepareCalls, f.lastKind)
+	}
+	if f.commitCalls != 1 {
+		t.Fatalf("CommitFailover calls = %d, want 1", f.commitCalls)
+	}
+}
+
+// TestProxy_SSEPostContentRateLimit_passesThrough proves a rate_limit_error that
+// arrives AFTER a content_block_delta already shipped is passed through
+// byte-for-byte with no replay — the transparent-recovery boundary. (BOS-406/407
+// cover this after the fact.)
+func TestProxy_SSEPostContentRateLimit_passesThrough(t *testing.T) {
+	postContent := sseMessageStart + sseContentBlockStart + sseContentBlockDelta + sseRateLimitError + sseMessageStop
+	up, srv := newSSEUpstream(t, "text/event-stream", postContent)
+	// Result WOULD rotate if asked — the assertion is that it is never asked.
+	f := &fakeFailover{result: session.FailoverResult{Rotate: true, Token: "second-token"}}
+	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "first-token", `{"prompt":"hi"}`)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 passed through", resp.StatusCode)
+	}
+	if string(body) != postContent {
+		t.Fatalf("body not byte-identical passthrough:\n got %q\nwant %q", body, postContent)
+	}
+	if f.prepareCalls != 0 {
+		t.Fatalf("prepare calls = %d, want 0 (post-content rate_limit must not rotate)", f.prepareCalls)
+	}
+	if reqs := up.all(); len(reqs) != 1 {
+		t.Fatalf("upstream saw %d requests, want 1 (no replay)", len(reqs))
+	}
+}
+
+// TestProxy_SSEOverloadedError_passesThrough proves an overloaded_error is
+// transient (the CLI retries it) and does NOT rotate — it passes through.
+func TestProxy_SSEOverloadedError_passesThrough(t *testing.T) {
+	overloaded := sseMessageStart + sseOverloadedError
+	_, srv := newSSEUpstream(t, "text/event-stream", overloaded)
+	f := &fakeFailover{result: session.FailoverResult{Rotate: true, Token: "second-token"}}
+	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "first-token", `{"prompt":"hi"}`)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK || string(body) != overloaded {
+		t.Fatalf("status=%d body=%q, want overloaded stream passed through byte-identical", resp.StatusCode, body)
+	}
+	if f.prepareCalls != 0 {
+		t.Fatalf("prepare calls = %d, want 0 (overloaded_error must not rotate)", f.prepareCalls)
+	}
+}
+
+// TestProxy_SSEHappyPath_byteIdentical proves a clean stream (no error) is
+// delivered byte-for-byte and failover is never consulted.
+func TestProxy_SSEHappyPath_byteIdentical(t *testing.T) {
+	happy := sseMessageStart + sseContentBlockStart + ssePing + sseContentBlockDelta + sseMessageStop
+	up, srv := newSSEUpstream(t, "text/event-stream", happy)
+	f := &fakeFailover{result: session.FailoverResult{Rotate: true, Token: "second-token"}}
+	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "first-token", `{"prompt":"hi"}`)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if string(body) != happy {
+		t.Fatalf("happy-path stream not byte-identical:\n got %q\nwant %q", body, happy)
+	}
+	if f.prepareCalls != 0 {
+		t.Fatalf("prepare calls = %d, want 0 (no error → no failover)", f.prepareCalls)
+	}
+	if reqs := up.all(); len(reqs) != 1 {
+		t.Fatalf("upstream saw %d requests, want 1", len(reqs))
+	}
+}
+
+// TestProxy_SSEByteCapBackstop_passesThrough proves the byte-cap backstop: when a
+// decisive frame lies beyond the peek's byte budget the stream fails safe to
+// pass-through (no rotation), even though a rate_limit_error is present.
+func TestProxy_SSEByteCapBackstop_passesThrough(t *testing.T) {
+	body := ssePing + sseRateLimitError // ping frame alone exceeds the tiny cap
+	_, srv := newSSEUpstream(t, "text/event-stream", body)
+	f := &fakeFailover{result: session.FailoverResult{Rotate: true, Token: "second-token"}}
+	ps, base := startProxyConfigured(t, f, srv.URL, zerolog.Nop(), func(ps *ProxyServer) {
+		ps.ssePeekByteCap = 8 // smaller than the first frame
+	})
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "first-token", `{"prompt":"hi"}`)
+	defer func() { _ = resp.Body.Close() }()
+	got, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK || string(got) != body {
+		t.Fatalf("status=%d body=%q, want the stream passed through byte-identical", resp.StatusCode, got)
+	}
+	if f.prepareCalls != 0 {
+		t.Fatalf("prepare calls = %d, want 0 (byte-cap backstop must not rotate)", f.prepareCalls)
+	}
+}
+
+// TestProxy_SSEDeadlineBackstop_passesThrough proves the deadline backstop: with
+// the peek deadline already elapsed the stream fails safe to pass-through even
+// though its first frame is a rate_limit_error. This exercises the between-reads
+// loop guard (the deadline is checked at the top of the peek loop), which is the
+// bound the deadline actually provides — not a mid-read stall. Deterministic
+// (negative deadline, no wall-clock sleep).
+func TestProxy_SSEDeadlineBackstop_passesThrough(t *testing.T) {
+	_, srv := newSSEUpstream(t, "text/event-stream", sseRateLimitError)
+	f := &fakeFailover{result: session.FailoverResult{Rotate: true, Token: "second-token"}}
+	ps, base := startProxyConfigured(t, f, srv.URL, zerolog.Nop(), func(ps *ProxyServer) {
+		ps.ssePeekDeadline = -time.Second // already elapsed at first read
+	})
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "first-token", `{"prompt":"hi"}`)
+	defer func() { _ = resp.Body.Close() }()
+	got, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK || string(got) != sseRateLimitError {
+		t.Fatalf("status=%d body=%q, want the stream passed through byte-identical", resp.StatusCode, got)
+	}
+	if f.prepareCalls != 0 {
+		t.Fatalf("prepare calls = %d, want 0 (deadline backstop must not rotate)", f.prepareCalls)
+	}
+}
+
+// TestProxy_NonSSE200_peekNotEngaged proves a non-SSE 200 (application/json) is
+// streamed through untouched — the peek is gated on the SSE content type, so a
+// rate_limit_error-looking JSON body is never inspected for rotation.
+func TestProxy_NonSSE200_peekNotEngaged(t *testing.T) {
+	jsonBody := `{"type":"error","error":{"type":"rate_limit_error"}}`
+	up, srv := newSSEUpstream(t, "application/json", jsonBody)
+	f := &fakeFailover{result: session.FailoverResult{Rotate: true, Token: "second-token"}}
+	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "first-token", `{"prompt":"hi"}`)
+	defer func() { _ = resp.Body.Close() }()
+	got, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK || string(got) != jsonBody {
+		t.Fatalf("status=%d body=%q, want json body passed through unchanged", resp.StatusCode, got)
+	}
+	if f.prepareCalls != 0 {
+		t.Fatalf("prepare calls = %d, want 0 (non-SSE 200 must not engage the peek)", f.prepareCalls)
+	}
+	if reqs := up.all(); len(reqs) != 1 {
+		t.Fatalf("upstream saw %d requests, want 1", len(reqs))
+	}
+}
+
+func TestParseSSEFrame(t *testing.T) {
+	cases := []struct {
+		name      string
+		frame     string
+		wantEvent string
+		wantData  string
+	}{
+		{"event and data", "event: error\ndata: {\"type\":\"error\"}", "error", `{"type":"error"}`},
+		{"data only", "data: {\"type\":\"ping\"}", "", `{"type":"ping"}`},
+		{"multi-line data joined with newline", "event: message_start\ndata: {\"type\":\ndata: \"message_start\"}", "message_start", "{\"type\":\n\"message_start\"}"},
+		{"carriage returns trimmed", "event: ping\r\ndata: {}\r", "ping", "{}"},
+		{"no recognized lines", "id: 42\nretry: 100", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev, data := parseSSEFrame([]byte(tc.frame))
+			if ev != tc.wantEvent || data != tc.wantData {
+				t.Fatalf("parseSSEFrame(%q) = %q,%q want %q,%q", tc.frame, ev, data, tc.wantEvent, tc.wantData)
+			}
+		})
+	}
+}
+
+func TestClassifySSEFrame(t *testing.T) {
+	cases := []struct {
+		name  string
+		frame string
+		want  sseDecision
+	}{
+		{"rate_limit_error rotates", "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}", sseRotate},
+		{"overloaded_error passes", "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}", ssePassthrough},
+		{"content_block_delta passes", "event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}", ssePassthrough},
+		{"message_start undecided", "event: message_start\ndata: {\"type\":\"message_start\"}", sseUndecided},
+		{"ping undecided", "event: ping\ndata: {\"type\":\"ping\"}", sseUndecided},
+		{"malformed data on error frame does not rotate", "event: error\ndata: {not json", ssePassthrough},
+		{"malformed data no event is undecided", "data: {not json", sseUndecided},
+		{"event name only content_block_delta passes", "event: content_block_delta", ssePassthrough},
+		{"data-type wins over event name", "event: message_start\ndata: {\"type\":\"content_block_delta\"}", ssePassthrough},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifySSEFrame([]byte(tc.frame)); got != tc.want {
+				t.Fatalf("classifySSEFrame(%q) = %v, want %v", tc.frame, got, tc.want)
+			}
+		})
 	}
 }
 

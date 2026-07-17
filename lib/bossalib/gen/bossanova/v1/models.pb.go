@@ -1462,8 +1462,11 @@ type Repo struct {
 	// Whether the daemon's repair plugin may automatically repair this repo's PRs
 	// (failing checks, merge conflicts, review feedback). Honored by the plugin.
 	// Defaults on.
-	CanAutoRepair bool   `protobuf:"varint,21,opt,name=can_auto_repair,json=canAutoRepair,proto3" json:"can_auto_repair,omitempty"`
-	LinearApiKey  string `protobuf:"bytes,15,opt,name=linear_api_key,json=linearApiKey,proto3" json:"linear_api_key,omitempty"`
+	CanAutoRepair bool `protobuf:"varint,21,opt,name=can_auto_repair,json=canAutoRepair,proto3" json:"can_auto_repair,omitempty"`
+	// Whether the daemon automatically archives a session once its PR is merged.
+	// Honored by the session dispatcher on the PR-merged transition. Defaults on.
+	ArchiveSessionsAfterMerge bool   `protobuf:"varint,22,opt,name=archive_sessions_after_merge,json=archiveSessionsAfterMerge,proto3" json:"archive_sessions_after_merge,omitempty"`
+	LinearApiKey              string `protobuf:"bytes,15,opt,name=linear_api_key,json=linearApiKey,proto3" json:"linear_api_key,omitempty"`
 	// Sentry credentials. Mirrors linear_api_key: a Sentry auth token alone can't
 	// address an organization, so the org slug is stored alongside it. Issues are
 	// listed org-wide (across every project), so no project slug is needed.
@@ -1590,6 +1593,13 @@ func (x *Repo) GetMergeStrategy() string {
 func (x *Repo) GetCanAutoRepair() bool {
 	if x != nil {
 		return x.CanAutoRepair
+	}
+	return false
+}
+
+func (x *Repo) GetArchiveSessionsAfterMerge() bool {
+	if x != nil {
+		return x.ArchiveSessionsAfterMerge
 	}
 	return false
 }
@@ -1937,8 +1947,12 @@ type Session struct {
 	// the transient blue "merging" display status. Distinct from
 	// display_is_repairing (24) / display_setting_up (48).
 	DisplayMerging bool `protobuf:"varint,60,opt,name=display_merging,json=displayMerging,proto3" json:"display_merging,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Denormalized repo.archive_sessions_after_merge, populated server-side by
+	// GetSession so the TUI session-detail view can show an "Archiving…" status
+	// and know a merged session is about to be auto-archived (BOS-46 follow-up).
+	RepoArchiveSessionsAfterMerge bool `protobuf:"varint,61,opt,name=repo_archive_sessions_after_merge,json=repoArchiveSessionsAfterMerge,proto3" json:"repo_archive_sessions_after_merge,omitempty"`
+	unknownFields                 protoimpl.UnknownFields
+	sizeCache                     protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -2387,6 +2401,13 @@ func (x *Session) GetRotationEvents() []*RotationEvent {
 func (x *Session) GetDisplayMerging() bool {
 	if x != nil {
 		return x.DisplayMerging
+	}
+	return false
+}
+
+func (x *Session) GetRepoArchiveSessionsAfterMerge() bool {
+	if x != nil {
+		return x.RepoArchiveSessionsAfterMerge
 	}
 	return false
 }
@@ -4255,7 +4276,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	" \x01(\tR\x06detail\x129\n" +
 	"\n" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAtB\v\n" +
-	"\t_reset_at\"\xbb\x05\n" +
+	"\t_reset_at\"\xfc\x05\n" +
 	"\x04Repo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x1d\n" +
@@ -4274,7 +4295,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	" \x01(\bR\fcanAutoMerge\x129\n" +
 	"\x19can_auto_merge_dependabot\x18\v \x01(\bR\x16canAutoMergeDependabot\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategy\x12&\n" +
-	"\x0fcan_auto_repair\x18\x15 \x01(\bR\rcanAutoRepair\x12$\n" +
+	"\x0fcan_auto_repair\x18\x15 \x01(\bR\rcanAutoRepair\x12?\n" +
+	"\x1carchive_sessions_after_merge\x18\x16 \x01(\bR\x19archiveSessionsAfterMerge\x12$\n" +
 	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKey\x12$\n" +
 	"\x0esentry_api_key\x18\x11 \x01(\tR\fsentryApiKey\x12\x1d\n" +
 	"\n" +
@@ -4299,7 +4321,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	" \x01(\bR\fhasSentryKey\x129\n" +
 	"\n" +
 	"updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\x0f\n" +
-	"\r_setup_script\"\x94\x1a\n" +
+	"\r_setup_script\"\xde\x1a\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -4373,7 +4395,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"account_id\x189 \x01(\tH\x0eR\taccountId\x88\x01\x01\x12(\n" +
 	"\raccount_label\x18: \x01(\tH\x0fR\faccountLabel\x88\x01\x01\x12D\n" +
 	"\x0frotation_events\x18; \x03(\v2\x1b.bossanova.v1.RotationEventR\x0erotationEvents\x12'\n" +
-	"\x0fdisplay_merging\x18< \x01(\bR\x0edisplayMergingB\x13\n" +
+	"\x0fdisplay_merging\x18< \x01(\bR\x0edisplayMerging\x12H\n" +
+	"!repo_archive_sessions_after_merge\x18= \x01(\bR\x1drepoArchiveSessionsAfterMergeB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +

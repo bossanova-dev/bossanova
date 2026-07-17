@@ -472,6 +472,41 @@ paths:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyArchiveSessionResponse'
   /bossanova.v1.OrchestratorService/ProxyAttachSession: {}
+  /bossanova.v1.OrchestratorService/ProxyCreateCronJob:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyCreateCronJob
+      operationId: bossanova.v1.OrchestratorService.ProxyCreateCronJob
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyCreateCronJobRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyCreateCronJobResponse'
   /bossanova.v1.OrchestratorService/ProxyCreateSession: {}
   /bossanova.v1.OrchestratorService/ProxyDeleteChat:
     post:
@@ -509,6 +544,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyDeleteChatResponse'
+  /bossanova.v1.OrchestratorService/ProxyDeleteCronJob:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyDeleteCronJob
+      operationId: bossanova.v1.OrchestratorService.ProxyDeleteCronJob
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyDeleteCronJobRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyDeleteCronJobResponse'
   /bossanova.v1.OrchestratorService/ProxyGetChatTranscript:
     post:
       tags:
@@ -697,6 +767,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyListAgentsResponse'
+  /bossanova.v1.OrchestratorService/ProxyListCronJobs:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyListCronJobs
+      description: |-
+        Cron-job proxies for web cron-job management. ProxyListCronJobs aggregates
+         across all of the caller's live daemons; the mutating proxies route to the
+         daemon named by daemon_id and address the job by id.
+      operationId: bossanova.v1.OrchestratorService.ProxyListCronJobs
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyListCronJobsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyListCronJobsResponse'
   /bossanova.v1.OrchestratorService/ProxyListRepoPRs:
     post:
       tags:
@@ -1018,6 +1127,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyResumeSessionResponse'
+  /bossanova.v1.OrchestratorService/ProxyRunCronJobNow:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyRunCronJobNow
+      operationId: bossanova.v1.OrchestratorService.ProxyRunCronJobNow
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyRunCronJobNowRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyRunCronJobNowResponse'
   /bossanova.v1.OrchestratorService/ProxySendChatMessage:
     post:
       tags:
@@ -1132,6 +1276,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxySwitchSessionAccountResponse'
+  /bossanova.v1.OrchestratorService/ProxyUpdateCronJob:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyUpdateCronJob
+      operationId: bossanova.v1.OrchestratorService.ProxyUpdateCronJob
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyUpdateCronJobRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyUpdateCronJobResponse'
   /bossanova.v1.OrchestratorService/ProxyUpdateRepo:
     post:
       tags:
@@ -2295,6 +2474,15 @@ components:
         - oneOf:
             - type: object
               properties:
+                createCronJob:
+                  title: create_cron_job
+                  description: CreateCronJob returns the created cron job (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.CreateCronJobResponse'
+              title: create_cron_job
+              required:
+                - createCronJob
+            - type: object
+              properties:
                 getChatTranscript:
                   title: get_chat_transcript
                   description: GetChatTranscript returns the chat's transcript (reuses daemon.proto type).
@@ -2333,6 +2521,15 @@ components:
                 - listAgents
             - type: object
               properties:
+                listCronJobs:
+                  title: list_cron_jobs
+                  description: ListCronJobs returns the daemon's cron jobs (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.ListCronJobsResponse'
+              title: list_cron_jobs
+              required:
+                - listCronJobs
+            - type: object
+              properties:
                 listRepoPrs:
                   title: list_repo_prs
                   description: ListRepoPRs returns the repo's open PRs (reuses daemon.proto type).
@@ -2369,6 +2566,15 @@ components:
                 - recordChat
             - type: object
               properties:
+                runCronJobNow:
+                  title: run_cron_job_now
+                  description: RunCronJobNow returns the spawned session or a skip reason (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.RunCronJobNowResponse'
+              title: run_cron_job_now
+              required:
+                - runCronJobNow
+            - type: object
+              properties:
                 sendChatMessage:
                   title: send_chat_message
                   description: SendChatMessage returns the delivery outcome (reuses daemon.proto type).
@@ -2403,6 +2609,15 @@ components:
               title: transfer_confirmed
               required:
                 - transferConfirmed
+            - type: object
+              properties:
+                updateCronJob:
+                  title: update_cron_job
+                  description: UpdateCronJob returns the updated cron job (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.UpdateCronJobResponse'
+              title: update_cron_job
+              required:
+                - updateCronJob
             - type: object
               properties:
                 updateRepo:
@@ -2553,6 +2768,47 @@ components:
           $ref: '#/components/schemas/bossanova.v1.CloudAccessStatus'
       title: CreateCheckoutSessionResponse
       additionalProperties: false
+    bossanova.v1.CreateCronJobCommand:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+        name:
+          type: string
+          title: name
+        prompt:
+          type: string
+          title: prompt
+        schedule:
+          type: string
+          title: schedule
+        timezone:
+          type: string
+          title: timezone
+        enabled:
+          type: boolean
+          title: enabled
+        agentName:
+          type: string
+          title: agent_name
+        model:
+          type: string
+          title: model
+        gateCommand:
+          type: string
+          title: gate_command
+        runSetupCommand:
+          type:
+            - boolean
+            - "null"
+          title: run_setup_command
+      title: CreateCronJobCommand
+      additionalProperties: false
+      description: |-
+        CreateCronJobCommand asks the daemon to register a new scheduled prompt for a
+         repo. Fields mirror daemon.proto's CreateCronJobRequest. Replies with
+         CommandResult carrying a CreateCronJobResponse (create_cron_job = 20).
     bossanova.v1.CreateCronJobRequest:
       type: object
       properties:
@@ -2999,6 +3255,23 @@ components:
         CronJobStatus is the derived run-status for a cron job, computed from
          the previous run's session state and recorded outcome. Not persisted —
          `last_run_outcome` (string) remains the audit field on disk.
+    bossanova.v1.CronJobWithDaemon:
+      type: object
+      properties:
+        job:
+          title: job
+          $ref: '#/components/schemas/bossanova.v1.CronJob'
+        daemonId:
+          type: string
+          title: daemon_id
+        daemonHostname:
+          type: string
+          title: daemon_hostname
+      title: CronJobWithDaemon
+      additionalProperties: false
+      description: |-
+        CronJobWithDaemon tags a cron job with the daemon that owns it, so the web
+         aggregated list can route subsequent mutating calls back to the right daemon.
     bossanova.v1.CustomEvent:
       type: object
       properties:
@@ -3248,6 +3521,17 @@ components:
       type: object
       title: DeleteChatResponse
       additionalProperties: false
+    bossanova.v1.DeleteCronJobCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: DeleteCronJobCommand
+      additionalProperties: false
+      description: |-
+        DeleteCronJobCommand asks the daemon to remove a cron job.
+         Replies with CommandResult{ok:true} and no payload.
     bossanova.v1.DeleteCronJobRequest:
       type: object
       properties:
@@ -4255,6 +4539,13 @@ components:
           title: prs
       title: ListClosedPRsResponse
       additionalProperties: false
+    bossanova.v1.ListCronJobsCommand:
+      type: object
+      title: ListCronJobsCommand
+      additionalProperties: false
+      description: |-
+        bosso → daemon: list the daemon's cron jobs.
+         Replies with CommandResult carrying a ListCronJobsResponse (list_cron_jobs = 19).
     bossanova.v1.ListCronJobsRequest:
       type: object
       properties:
@@ -4717,6 +5008,15 @@ components:
                 - attach
             - type: object
               properties:
+                createCronJob:
+                  title: create_cron_job
+                  description: 'bosso → daemon: create a cron job. Replies CommandResult{create_cron_job}.'
+                  $ref: '#/components/schemas/bossanova.v1.CreateCronJobCommand'
+              title: create_cron_job
+              required:
+                - createCronJob
+            - type: object
+              properties:
                 createSession:
                   title: create_session
                   description: |-
@@ -4736,6 +5036,15 @@ components:
               title: delete_chat
               required:
                 - deleteChat
+            - type: object
+              properties:
+                deleteCronJob:
+                  title: delete_cron_job
+                  description: 'bosso → daemon: delete a cron job. Replies CommandResult{Ok} with no payload.'
+                  $ref: '#/components/schemas/bossanova.v1.DeleteCronJobCommand'
+              title: delete_cron_job
+              required:
+                - deleteCronJob
             - type: object
               properties:
                 getChatTranscript:
@@ -4776,6 +5085,15 @@ components:
               title: list_agents
               required:
                 - listAgents
+            - type: object
+              properties:
+                listCronJobs:
+                  title: list_cron_jobs
+                  description: 'bosso → daemon: list the daemon''s cron jobs. Replies CommandResult{list_cron_jobs}.'
+                  $ref: '#/components/schemas/bossanova.v1.ListCronJobsCommand'
+              title: list_cron_jobs
+              required:
+                - listCronJobs
             - type: object
               properties:
                 listRepoPrs:
@@ -4848,6 +5166,15 @@ components:
                 - resume
             - type: object
               properties:
+                runCronJobNow:
+                  title: run_cron_job_now
+                  description: 'bosso → daemon: fire a cron job immediately. Replies CommandResult{run_cron_job_now}.'
+                  $ref: '#/components/schemas/bossanova.v1.RunCronJobNowCommand'
+              title: run_cron_job_now
+              required:
+                - runCronJobNow
+            - type: object
+              properties:
                 sendChatMessage:
                   title: send_chat_message
                   description: 'bosso → daemon: send a user message into a chat. Replies CommandResult{send_chat_message}.'
@@ -4913,6 +5240,15 @@ components:
               title: transfer_confirmed
               required:
                 - transferConfirmed
+            - type: object
+              properties:
+                updateCronJob:
+                  title: update_cron_job
+                  description: 'bosso → daemon: update a cron job. Replies CommandResult{update_cron_job}.'
+                  $ref: '#/components/schemas/bossanova.v1.UpdateCronJobCommand'
+              title: update_cron_job
+              required:
+                - updateCronJob
             - type: object
               properties:
                 updateRepo:
@@ -5311,6 +5647,57 @@ components:
         ProxyChatListSnapshot is the required first event on every
          ProxyStreamChats connection. It carries the current chat list and live
          per-chat statuses for the requested session.
+    bossanova.v1.ProxyCreateCronJobRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        repoId:
+          type: string
+          title: repo_id
+        name:
+          type: string
+          title: name
+        prompt:
+          type: string
+          title: prompt
+        schedule:
+          type: string
+          title: schedule
+        timezone:
+          type: string
+          title: timezone
+        enabled:
+          type: boolean
+          title: enabled
+        agentName:
+          type: string
+          title: agent_name
+        model:
+          type: string
+          title: model
+        gateCommand:
+          type: string
+          title: gate_command
+        runSetupCommand:
+          type:
+            - boolean
+            - "null"
+          title: run_setup_command
+      title: ProxyCreateCronJobRequest
+      additionalProperties: false
+      description: |-
+        ProxyCreateCronJobRequest names the daemon to create the cron job on plus the
+         creation parameters (mirrors CreateCronJobCommand in stream.proto).
+    bossanova.v1.ProxyCreateCronJobResponse:
+      type: object
+      properties:
+        job:
+          title: job
+          $ref: '#/components/schemas/bossanova.v1.CronJob'
+      title: ProxyCreateCronJobResponse
+      additionalProperties: false
     bossanova.v1.ProxyCreateSessionRequest:
       type: object
       properties:
@@ -5466,6 +5853,21 @@ components:
       type: object
       title: ProxyDeleteChatResponse
       additionalProperties: false
+    bossanova.v1.ProxyDeleteCronJobRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        id:
+          type: string
+          title: id
+      title: ProxyDeleteCronJobRequest
+      additionalProperties: false
+    bossanova.v1.ProxyDeleteCronJobResponse:
+      type: object
+      title: ProxyDeleteCronJobResponse
+      additionalProperties: false
     bossanova.v1.ProxyGetChatTranscriptRequest:
       type: object
       properties:
@@ -5588,6 +5990,20 @@ components:
             $ref: '#/components/schemas/bossanova.v1.AgentInfo'
           title: agents
       title: ProxyListAgentsResponse
+      additionalProperties: false
+    bossanova.v1.ProxyListCronJobsRequest:
+      type: object
+      title: ProxyListCronJobsRequest
+      additionalProperties: false
+    bossanova.v1.ProxyListCronJobsResponse:
+      type: object
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.CronJobWithDaemon'
+          title: jobs
+      title: ProxyListCronJobsResponse
       additionalProperties: false
     bossanova.v1.ProxyListRepoPRsRequest:
       type: object
@@ -5779,6 +6195,28 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: ProxyResumeSessionResponse
       additionalProperties: false
+    bossanova.v1.ProxyRunCronJobNowRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        id:
+          type: string
+          title: id
+      title: ProxyRunCronJobNowRequest
+      additionalProperties: false
+    bossanova.v1.ProxyRunCronJobNowResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+        skippedReason:
+          type: string
+          title: skipped_reason
+      title: ProxyRunCronJobNowResponse
+      additionalProperties: false
     bossanova.v1.ProxySendChatMessageRequest:
       type: object
       properties:
@@ -5893,6 +6331,73 @@ components:
           type: string
           title: notice_text
       title: ProxySwitchSessionAccountResponse
+      additionalProperties: false
+    bossanova.v1.ProxyUpdateCronJobRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        id:
+          type: string
+          title: id
+        name:
+          type:
+            - string
+            - "null"
+          title: name
+        prompt:
+          type:
+            - string
+            - "null"
+          title: prompt
+        schedule:
+          type:
+            - string
+            - "null"
+          title: schedule
+        timezone:
+          type:
+            - string
+            - "null"
+          title: timezone
+        enabled:
+          type:
+            - boolean
+            - "null"
+          title: enabled
+        agentName:
+          type:
+            - string
+            - "null"
+          title: agent_name
+        model:
+          type:
+            - string
+            - "null"
+          title: model
+        gateCommand:
+          type:
+            - string
+            - "null"
+          title: gate_command
+        runSetupCommand:
+          type:
+            - boolean
+            - "null"
+          title: run_setup_command
+      title: ProxyUpdateCronJobRequest
+      additionalProperties: false
+      description: |-
+        ProxyUpdateCronJobRequest routes to daemon_id and addresses the job by id.
+         Mutable fields are optional (mirrors UpdateCronJobCommand in stream.proto).
+    bossanova.v1.ProxyUpdateCronJobResponse:
+      type: object
+      properties:
+        job:
+          title: job
+          $ref: '#/components/schemas/bossanova.v1.CronJob'
+      title: ProxyUpdateCronJobResponse
       additionalProperties: false
     bossanova.v1.ProxyUpdateRepoRequest:
       type: object
@@ -6552,6 +7057,12 @@ components:
             Whether the daemon's repair plugin may automatically repair this repo's PRs
              (failing checks, merge conflicts, review feedback). Honored by the plugin.
              Defaults on.
+        archiveSessionsAfterMerge:
+          type: boolean
+          title: archive_sessions_after_merge
+          description: |-
+            Whether the daemon automatically archives a session once its PR is merged.
+             Honored by the session dispatcher on the PR-merged transition. Defaults on.
         linearApiKey:
           type: string
           title: linear_api_key
@@ -6998,6 +7509,18 @@ components:
         - ROTATION_TRIGGER_AUTH_INVALIDATED
         - ROTATION_TRIGGER_MANUAL
       description: RotationTrigger says why a rotation decision was evaluated. (BOS-176)
+    bossanova.v1.RunCronJobNowCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: RunCronJobNowCommand
+      additionalProperties: false
+      description: |-
+        RunCronJobNowCommand asks the daemon to fire a cron job immediately, ignoring
+         its schedule. Replies with CommandResult carrying a RunCronJobNowResponse
+         (run_cron_job_now = 22).
     bossanova.v1.RunCronJobNowRequest:
       type: object
       properties:
@@ -7485,6 +8008,13 @@ components:
              server-side from the in-memory DisplayTracker and never persisted. Drives
              the transient blue "merging" display status. Distinct from
              display_is_repairing (24) / display_setting_up (48).
+        repoArchiveSessionsAfterMerge:
+          type: boolean
+          title: repo_archive_sessions_after_merge
+          description: |-
+            Denormalized repo.archive_sessions_after_merge, populated server-side by
+             GetSession so the TUI session-detail view can show an "Archiving…" status
+             and know a merged session is about to be auto-archived (BOS-46 follow-up).
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -8756,6 +9286,63 @@ components:
       type: object
       title: UpdateChatTitleResponse
       additionalProperties: false
+    bossanova.v1.UpdateCronJobCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        name:
+          type:
+            - string
+            - "null"
+          title: name
+        prompt:
+          type:
+            - string
+            - "null"
+          title: prompt
+        schedule:
+          type:
+            - string
+            - "null"
+          title: schedule
+        timezone:
+          type:
+            - string
+            - "null"
+          title: timezone
+        enabled:
+          type:
+            - boolean
+            - "null"
+          title: enabled
+        agentName:
+          type:
+            - string
+            - "null"
+          title: agent_name
+        model:
+          type:
+            - string
+            - "null"
+          title: model
+        gateCommand:
+          type:
+            - string
+            - "null"
+          title: gate_command
+        runSetupCommand:
+          type:
+            - boolean
+            - "null"
+          title: run_setup_command
+      title: UpdateCronJobCommand
+      additionalProperties: false
+      description: |-
+        UpdateCronJobCommand asks the daemon to mutate an existing cron job. Mutable
+         fields are optional. Fields mirror daemon.proto's UpdateCronJobRequest.
+         Replies with CommandResult carrying an UpdateCronJobResponse (update_cron_job = 21).
     bossanova.v1.UpdateCronJobRequest:
       type: object
       properties:
@@ -8946,6 +9533,11 @@ components:
             Optimistic-concurrency token: when set, the update is rejected (CodeAborted)
              unless it still equals the repo's stored updated_at.
           $ref: '#/components/schemas/google.protobuf.Timestamp'
+        archiveSessionsAfterMerge:
+          type:
+            - boolean
+            - "null"
+          title: archive_sessions_after_merge
       title: UpdateRepoRequest
       additionalProperties: false
     bossanova.v1.UpdateRepoResponse:

@@ -1442,7 +1442,10 @@ func (m NewSessionModel) View() tea.View {
 		// Render "initializing" indicator using INFO/blue style with an animated
 		// Dot spinner (same style as the session-list spinner).
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusInfo.Render(m.spinner.View() + "initializing")))
-		b.WriteString("\n")
+		// Blank line after "initializing" so the creating phase has more breathing
+		// room before the following status line (BOS-397). The gap precedes whichever
+		// message comes next ("Running setup script..." or "Creating a new session...").
+		b.WriteString("\n\n")
 		if len(m.setupLines) > 0 {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Running setup script..."))
 			b.WriteString("\n")

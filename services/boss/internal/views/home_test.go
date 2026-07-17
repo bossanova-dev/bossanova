@@ -2623,3 +2623,137 @@ func TestNavigation_RestylesSelectedRow(t *testing.T) {
 		t.Errorf("after moving down, previously selected row repo should not be blue: %q", repo0)
 	}
 }
+
+func TestHomeWarningRowsMapToSessionsAndNormalizeCursor(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.sessions = []*pb.Session{
+		{
+			Id:                     "warn",
+			LastRepairAttemptCount: 2,
+			LastRepairExitError:    "exit status 1",
+			AttentionStatus: &pb.AttentionStatus{
+				NeedsAttention: true,
+				Summary:        "repair needs attention",
+			},
+		},
+		{Id: "plain"},
+	}
+
+	rows := h.primarySessionRows()
+	if len(rows) != 2 || rows[0] != 0 || rows[1] != 3 {
+		t.Fatalf("primarySessionRows() = %v, want [0 3]", rows)
+	}
+	if got := h.tableDataRowCount(); got != 4 {
+		t.Fatalf("tableDataRowCount() = %d, want 4", got)
+	}
+
+	for _, tt := range []struct {
+		cursor int
+		id     string
+		ok     bool
+	}{
+		{cursor: -1},
+		{cursor: 0, id: "warn", ok: true},
+		{cursor: 1, id: "warn", ok: true},
+		{cursor: 2, id: "warn", ok: true},
+		{cursor: 3, id: "plain", ok: true},
+		{cursor: 4},
+	} {
+		index, ok := h.sessionIndexForTableCursor(tt.cursor)
+		if ok != tt.ok {
+			t.Errorf("sessionIndexForTableCursor(%d) ok = %t, want %t", tt.cursor, ok, tt.ok)
+			continue
+		}
+		if ok && h.sessions[index].GetId() != tt.id {
+			t.Errorf("sessionIndexForTableCursor(%d) session = %q, want %q", tt.cursor, h.sessions[index].GetId(), tt.id)
+		}
+	}
+
+	for _, tt := range []struct {
+		index int
+		want  int
+	}{
+		{index: 0, want: 0},
+		{index: 1, want: 3},
+		{index: 2, want: -1},
+	} {
+		if got := h.tableCursorForSessionIndex(tt.index); got != tt.want {
+			t.Errorf("tableCursorForSessionIndex(%d) = %d, want %d", tt.index, got, tt.want)
+		}
+	}
+
+	h.buildTableRows()
+	for _, tt := range []struct {
+		cursor   int
+		previous int
+		want     int
+	}{
+		{cursor: 1, previous: 0, want: 3},
+		{cursor: 2, previous: 3, want: 0},
+		{cursor: 2, previous: 2, want: 0},
+	} {
+		h.table.SetCursor(tt.cursor)
+		h.normalizeTableCursor(tt.previous)
+		if got := h.table.Cursor(); got != tt.want {
+			t.Errorf("normalizeTableCursor(%d) from %d = %d, want %d", tt.previous, tt.cursor, got, tt.want)
+		}
+	}
+}
+
+func TestHomeCloudStatusTransitionsStartAndContinuePolling(t *testing.T) {
+	t.Run("authenticated status check starts when no status is cached", func(t *testing.T) {
+		h := NewHomeModel(nil, context.Background(), nil)
+		h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+
+		updated, cmd := h.Update(authStatusMsg{loggedIn: true, email: "dave@example.com"})
+		h = updated.(HomeModel)
+
+		if !h.loggedIn || h.loggedInEmail != "dave@example.com" {
+			t.Fatalf("auth state = (%t, %q), want (true, dave@example.com)", h.loggedIn, h.loggedInEmail)
+		}
+		if !h.cloudChecking {
+			t.Fatal("authenticated status update did not start cloud status check")
+		}
+		if cmd == nil {
+			t.Fatal("authenticated status update returned nil cloud status command")
+		}
+	})
+
+	t.Run("checkout error with billing URL preserves recovery path", func(t *testing.T) {
+		h := NewHomeModel(nil, context.Background(), nil)
+		h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+
+		updated, cmd := h.Update(homeCloudCheckoutMsg{
+			err: errors.New("checkout request failed"),
+			url: "https://billing.example.test/session",
+		})
+		h = updated.(HomeModel)
+
+		if got, want := h.cloudCheckoutStatus, "Open this billing URL: https://billing.example.test/session"; got != want {
+			t.Fatalf("cloudCheckoutStatus = %q, want %q", got, want)
+		}
+		if !h.cloudCheckoutPolling || !h.cloudChecking {
+			t.Fatalf("checkout retry flags = (polling=%t, checking=%t), want both true", h.cloudCheckoutPolling, h.cloudChecking)
+		}
+		if cmd == nil {
+			t.Fatal("checkout error with billing URL returned nil refresh command")
+		}
+	})
+
+	t.Run("tick refreshes pending authenticated cloud status", func(t *testing.T) {
+		h := NewHomeModel(nil, context.Background(), nil)
+		h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+		h.loggedIn = true
+		h.cloudStatus = &pb.CloudAccessStatus{State: pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH}
+
+		updated, cmd := h.Update(tickMsg{})
+		h = updated.(HomeModel)
+
+		if !h.cloudChecking {
+			t.Fatal("tick did not start pending cloud status refresh")
+		}
+		if cmd == nil {
+			t.Fatal("tick returned nil batch command")
+		}
+	})
+}

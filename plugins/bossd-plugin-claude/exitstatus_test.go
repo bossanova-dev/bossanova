@@ -49,6 +49,31 @@ func TestExitStatusPropagatesUsageLimited(t *testing.T) {
 	}
 }
 
+func TestExitStatusPropagatesRateLimited(t *testing.T) {
+	isolateCaptureDir(t)
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "agent.log")
+	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeClaude(t, "echo 'API Error: Request rejected (429) · This request would exceed your account'\\''s rate limit.'; exit 1")))
+	srv := &Server{logger: zerolog.Nop(), runner: r}
+
+	start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-rate", LogPath: logPath})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	exit := waitExit(t, srv, start.SessionId)
+
+	if exit.GetFailureClass() != "rate_limited" {
+		t.Errorf("FailureClass = %q, want rate_limited", exit.GetFailureClass())
+	}
+	// Rate-limited carries no reset (the bossd probe resolves it).
+	if exit.GetResetAt() != nil {
+		t.Errorf("ResetAt = %v, want unset for a rate-limited exit", exit.GetResetAt())
+	}
+	if exit.GetExitError() == "" {
+		t.Error("ExitError empty, want the rate-limited message")
+	}
+}
+
 func TestExitStatusUsageLimitedUnparseableResetOmitsResetAt(t *testing.T) {
 	isolateCaptureDir(t)
 	dir := t.TempDir()

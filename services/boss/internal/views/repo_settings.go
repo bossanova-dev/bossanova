@@ -58,6 +58,7 @@ const (
 	repoSettingsRowCanAutoMerge
 	repoSettingsRowCanAutoMergeDependabot
 	repoSettingsRowCanAutoRepair
+	repoSettingsRowArchiveSessionsAfterMerge
 	repoSettingsRowLinearHeader
 	repoSettingsRowLinearApiKey
 	repoSettingsRowSentryHeader
@@ -208,6 +209,7 @@ func (m RepoSettingsModel) visibleRows() []rowID {
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
+		repoSettingsRowArchiveSessionsAfterMerge,
 		repoSettingsRowLinearHeader,
 	}
 	if m.linearExpanded {
@@ -574,6 +576,13 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 			Id:            m.repoID,
 			CanAutoRepair: &v,
 		})
+	case repoSettingsRowArchiveSessionsAfterMerge:
+		v := !m.repo.ArchiveSessionsAfterMerge
+		m.repo.ArchiveSessionsAfterMerge = v
+		return m, m.saveSettings(&pb.UpdateRepoRequest{
+			Id:                        m.repoID,
+			ArchiveSessionsAfterMerge: &v,
+		})
 	case repoSettingsRowLinearHeader:
 		// UI-only expand/collapse toggle; never reads or writes credentials.
 		m.linearExpanded = !m.linearExpanded
@@ -845,6 +854,7 @@ func (m RepoSettingsModel) View() tea.View {
 		{"Mark ready for review when checks pass", m.repo.CanAutoMerge, repoSettingsRowCanAutoMerge},
 		{"Auto-merge Dependabot PRs", m.repo.CanAutoMergeDependabot, repoSettingsRowCanAutoMergeDependabot},
 		{"Automatic repair (failing checks, conflicts, review feedback)", m.repo.CanAutoRepair, repoSettingsRowCanAutoRepair},
+		{"Archive sessions after merging PRs", m.repo.ArchiveSessionsAfterMerge, repoSettingsRowArchiveSessionsAfterMerge},
 	} {
 		renderCheckbox(cb)
 	}

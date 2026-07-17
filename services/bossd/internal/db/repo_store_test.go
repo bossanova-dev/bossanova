@@ -176,3 +176,38 @@ func TestRepoStore_OptimisticConcurrency_MissingRow(t *testing.T) {
 		t.Fatalf("missing-row update err = %v, want sql.ErrNoRows", err)
 	}
 }
+
+// TestRepoStore_ArchiveSessionsAfterMerge_DefaultsTrue verifies a freshly created
+// repo has the archive-after-merge flag ON (the double-default: migration DEFAULT 1
+// plus the repos INSERT literal), since proto3's bool zero value is false.
+func TestRepoStore_ArchiveSessionsAfterMerge_DefaultsTrue(t *testing.T) {
+	store := NewRepoStore(setupTestDB(t))
+	repo := createTestRepo(t, store)
+	if !repo.ArchiveSessionsAfterMerge {
+		t.Fatal("new repos should default to archive-after-merge ON")
+	}
+}
+
+// TestRepoStore_ArchiveSessionsAfterMerge_Update verifies the flag toggles off
+// through UpdateRepoParams and reads back false.
+func TestRepoStore_ArchiveSessionsAfterMerge_Update(t *testing.T) {
+	store := NewRepoStore(setupTestDB(t))
+	ctx := context.Background()
+	repo := createTestRepo(t, store)
+
+	off := false
+	updated, err := store.Update(ctx, repo.ID, UpdateRepoParams{ArchiveSessionsAfterMerge: &off})
+	if err != nil {
+		t.Fatalf("update archive_sessions_after_merge: %v", err)
+	}
+	if updated.ArchiveSessionsAfterMerge {
+		t.Error("update returned archive_sessions_after_merge = true, want false")
+	}
+	got, err := store.Get(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ArchiveSessionsAfterMerge {
+		t.Error("stored archive_sessions_after_merge = true, want false")
+	}
+}

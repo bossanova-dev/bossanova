@@ -871,6 +871,61 @@ func TestChatPicker_RefreshRefetchesWebLinkWhenPRNumberAppears(t *testing.T) {
 	}
 }
 
+// TestChatPicker_MergedWithArchiveFlagShowsArchiving guards Task 4 of the
+// BOS-46 archive-after-merge spec: when a refresh reports a merged session
+// whose repo has archive-after-merge on, the picker sets autoArchiving and
+// the detail view shows the "Archiving..." status until the session
+// actually archives.
+func TestChatPicker_MergedWithArchiveFlagShowsArchiving(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	updated, _ = m.Update(chatPickerRefreshMsg{session: &pb.Session{
+		Id:                            "session-1",
+		DisplayStatus:                 pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+		RepoArchiveSessionsAfterMerge: true,
+	}})
+	cp := updated.(ChatPickerModel)
+	if !cp.autoArchiving {
+		t.Fatal("expected autoArchiving true for a merged session in an archive-after-merge repo")
+	}
+	if !strings.Contains(cp.View().Content, "Archiving") {
+		t.Errorf("expected the detail view to show an Archiving status:\n%s", cp.View().Content)
+	}
+}
+
+// TestChatPicker_MergedWithoutArchiveFlagDoesNotShowArchiving guards that a
+// merged session in a repo WITHOUT archive-after-merge does not flip
+// autoArchiving — the merge affordance/behavior must not regress.
+func TestChatPicker_MergedWithoutArchiveFlagDoesNotShowArchiving(t *testing.T) {
+	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
+	updated, _ := m.Update(chatPickerRefreshMsg{session: &pb.Session{
+		Id:            "session-1",
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+	}})
+	if cp := updated.(ChatPickerModel); cp.autoArchiving {
+		t.Error("expected autoArchiving false when the repo flag is off")
+	}
+}
+
+// TestChatPicker_RefreshClearsAutoArchivingWhenArchiveSettingIsDisabled guards
+// against leaving the detail view in a permanent "Archiving..." state after
+// another client disables the repo setting between polls.
+func TestChatPicker_RefreshClearsAutoArchivingWhenArchiveSettingIsDisabled(t *testing.T) {
+	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
+	m.autoArchiving = true
+	updated, _ := m.Update(chatPickerRefreshMsg{session: &pb.Session{
+		Id:            "session-1",
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+	}})
+	cp := updated.(ChatPickerModel)
+	if cp.autoArchiving {
+		t.Error("expected refresh with archive-after-merge disabled to clear autoArchiving")
+	}
+}
+
 func TestChatPicker_RefreshDoesNotRefetchWebLinkWhenPRNumberUnchanged(t *testing.T) {
 	prNumber := int32(42)
 	stub := &chatPickerStub{

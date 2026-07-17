@@ -73,6 +73,15 @@ type fakeCommandHandler struct {
 	sendAgentID       string // last agentSessionID passed to SendChatMessage
 	sendMessage       string // last message passed to SendChatMessage
 	sendSubmit        bool   // last submit flag passed to SendChatMessage
+	// Cron knobs.
+	listCronResult   *pb.ListCronJobsResponse
+	createCronResult *pb.CreateCronJobResponse
+	createCronCmd    *pb.CreateCronJobCommand // last command passed to CreateCronJob
+	updateCronResult *pb.UpdateCronJobResponse
+	updateCronCmd    *pb.UpdateCronJobCommand // last command passed to UpdateCronJob
+	runCronResult    *pb.RunCronJobNowResponse
+	deleteCronID     string // last id passed to DeleteCronJob
+	runCronID        string // last id passed to RunCronJobNow
 }
 
 func (f *fakeCommandHandler) Stop(_ context.Context, _ string) (*pb.Session, error) {
@@ -165,6 +174,26 @@ func (f *fakeCommandHandler) SendChatMessage(_ context.Context, agentSessionID, 
 	return f.sendResult, f.returnErr
 }
 
+func (f *fakeCommandHandler) ListCronJobs(_ context.Context) (*pb.ListCronJobsResponse, error) {
+	return f.listCronResult, f.returnErr
+}
+func (f *fakeCommandHandler) CreateCronJob(_ context.Context, cmd *pb.CreateCronJobCommand) (*pb.CreateCronJobResponse, error) {
+	f.createCronCmd = cmd
+	return f.createCronResult, f.returnErr
+}
+func (f *fakeCommandHandler) UpdateCronJob(_ context.Context, cmd *pb.UpdateCronJobCommand) (*pb.UpdateCronJobResponse, error) {
+	f.updateCronCmd = cmd
+	return f.updateCronResult, f.returnErr
+}
+func (f *fakeCommandHandler) DeleteCronJob(_ context.Context, id string) error {
+	f.deleteCronID = id
+	return f.returnErr
+}
+func (f *fakeCommandHandler) RunCronJobNow(_ context.Context, id string) (*pb.RunCronJobNowResponse, error) {
+	f.runCronID = id
+	return f.runCronResult, f.returnErr
+}
+
 func strPtr(s string) *string { return &s }
 
 // recvEvent reads one DaemonEvent from out, failing if none arrives promptly.
@@ -252,6 +281,194 @@ func TestDispatch_ListRepoPRs(t *testing.T) {
 	}
 	if fake.lastRepoID != "r1" {
 		t.Fatalf("lastRepoID = %q, want r1", fake.lastRepoID)
+	}
+}
+
+func TestDispatch_ListCronJobs(t *testing.T) {
+	fake := &fakeCommandHandler{listCronResult: &pb.ListCronJobsResponse{
+		CronJobs: []*pb.CronJob{{Id: "cj1", Name: "nightly"}},
+	}}
+	client := newDispatcherClient(fake, nil, nil)
+
+	out := make(chan *pb.DaemonEvent, 1)
+	if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "c1",
+		Cmd:       &pb.OrchestratorCommand_ListCronJobs{ListCronJobs: &pb.ListCronJobsCommand{}},
+	}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
+	}
+
+	ev := recvEvent(t, out)
+	res := ev.GetResult()
+	if res == nil || !res.GetOk() {
+		t.Fatalf("expected ok result, got %+v", ev)
+	}
+	if res.GetCommandId() != "c1" {
+		t.Fatalf("command_id = %q, want c1", res.GetCommandId())
+	}
+	jobs := res.GetListCronJobs().GetCronJobs()
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 cron job, got %d", len(jobs))
+	}
+	if jobs[0].GetId() != "cj1" || jobs[0].GetName() != "nightly" {
+		t.Fatalf("job = %+v, want id=cj1 name=nightly", jobs[0])
+	}
+}
+
+func TestDispatch_CreateCronJob(t *testing.T) {
+	fake := &fakeCommandHandler{createCronResult: &pb.CreateCronJobResponse{
+		CronJob: &pb.CronJob{Id: "cj-new", Name: "nightly", Schedule: "@daily"},
+	}}
+	client := newDispatcherClient(fake, nil, nil)
+
+	out := make(chan *pb.DaemonEvent, 1)
+	if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "c1",
+		Cmd: &pb.OrchestratorCommand_CreateCronJob{CreateCronJob: &pb.CreateCronJobCommand{
+			RepoId:   "r1",
+			Name:     "nightly",
+			Prompt:   "do the thing",
+			Schedule: "@daily",
+		}},
+	}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async command, got %+v", ev)
+	}
+
+	ev := recvEvent(t, out)
+	res := ev.GetResult()
+	if res == nil || !res.GetOk() {
+		t.Fatalf("expected ok result, got %+v", ev)
+	}
+	if fake.createCronCmd == nil || fake.createCronCmd.GetName() != "nightly" || fake.createCronCmd.GetRepoId() != "r1" {
+		t.Fatalf("create command fields did not reach handler: %+v", fake.createCronCmd)
+	}
+	job := res.GetCreateCronJob().GetCronJob()
+	if job.GetId() != "cj-new" || job.GetName() != "nightly" {
+		t.Fatalf("job = %+v, want id=cj-new name=nightly", job)
+	}
+}
+
+func TestDispatch_UpdateCronJob(t *testing.T) {
+	fake := &fakeCommandHandler{updateCronResult: &pb.UpdateCronJobResponse{
+		CronJob: &pb.CronJob{Id: "cj1", Name: "renamed"},
+	}}
+	client := newDispatcherClient(fake, nil, nil)
+
+	name := "renamed"
+	enabled := false
+	out := make(chan *pb.DaemonEvent, 1)
+	if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "c1",
+		Cmd: &pb.OrchestratorCommand_UpdateCronJob{UpdateCronJob: &pb.UpdateCronJobCommand{
+			Id:      "cj1",
+			Name:    &name,
+			Enabled: &enabled,
+		}},
+	}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async command, got %+v", ev)
+	}
+
+	ev := recvEvent(t, out)
+	res := ev.GetResult()
+	if res == nil || !res.GetOk() {
+		t.Fatalf("expected ok result, got %+v", ev)
+	}
+	got := fake.updateCronCmd
+	if got == nil {
+		t.Fatal("update command did not reach handler")
+	}
+	if got.GetId() != "cj1" {
+		t.Fatalf("id = %q, want cj1", got.GetId())
+	}
+	if got.Name == nil || got.GetName() != "renamed" {
+		t.Fatalf("name not forwarded: %v", got.Name)
+	}
+	if got.Enabled == nil || got.GetEnabled() != false {
+		t.Fatalf("enabled not forwarded: %v", got.Enabled)
+	}
+	// Unset optional fields must stay nil so the daemon leaves the stored
+	// values untouched on a partial update.
+	if got.Prompt != nil || got.Schedule != nil || got.Model != nil || got.RunSetupCommand != nil {
+		t.Fatalf("unset fields leaked non-nil: %+v", got)
+	}
+	if job := res.GetUpdateCronJob().GetCronJob(); job.GetName() != "renamed" {
+		t.Fatalf("job name = %q, want renamed", job.GetName())
+	}
+}
+
+func TestDispatch_DeleteCronJob(t *testing.T) {
+	fake := &fakeCommandHandler{}
+	client := newDispatcherClient(fake, nil, nil)
+
+	out := make(chan *pb.DaemonEvent, 1)
+	if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "c1",
+		Cmd:       &pb.OrchestratorCommand_DeleteCronJob{DeleteCronJob: &pb.DeleteCronJobCommand{Id: "cj1"}},
+	}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async command, got %+v", ev)
+	}
+
+	ev := recvEvent(t, out)
+	res := ev.GetResult()
+	if res == nil || !res.GetOk() {
+		t.Fatalf("expected ok result, got %+v", ev)
+	}
+	if res.GetPayload() != nil {
+		t.Fatalf("expected no payload on delete result, got %+v", res.GetPayload())
+	}
+	if fake.deleteCronID != "cj1" {
+		t.Fatalf("deleteCronID = %q, want cj1", fake.deleteCronID)
+	}
+}
+
+func TestDispatch_RunCronJobNow(t *testing.T) {
+	fake := &fakeCommandHandler{runCronResult: &pb.RunCronJobNowResponse{
+		SkippedReason: "overlap with running session",
+	}}
+	client := newDispatcherClient(fake, nil, nil)
+
+	out := make(chan *pb.DaemonEvent, 1)
+	if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "c1",
+		Cmd:       &pb.OrchestratorCommand_RunCronJobNow{RunCronJobNow: &pb.RunCronJobNowCommand{Id: "cj1"}},
+	}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async command, got %+v", ev)
+	}
+
+	ev := recvEvent(t, out)
+	res := ev.GetResult()
+	if res == nil || !res.GetOk() {
+		t.Fatalf("expected ok result, got %+v", ev)
+	}
+	if fake.runCronID != "cj1" {
+		t.Fatalf("runCronID = %q, want cj1", fake.runCronID)
+	}
+	if got := res.GetRunCronJobNow().GetSkippedReason(); got != "overlap with running session" {
+		t.Fatalf("skipped_reason = %q, want overlap message", got)
+	}
+}
+
+func TestDispatch_CreateCronJob_ValidationError(t *testing.T) {
+	fake := &fakeCommandHandler{returnErr: connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("schedule is required"))}
+	client := newDispatcherClient(fake, nil, nil)
+
+	out := make(chan *pb.DaemonEvent, 1)
+	if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "c1",
+		Cmd: &pb.OrchestratorCommand_CreateCronJob{CreateCronJob: &pb.CreateCronJobCommand{
+			RepoId: "r1", Name: "nightly", Prompt: "x",
+		}},
+	}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async command, got %+v", ev)
+	}
+
+	ev := recvEvent(t, out)
+	res := ev.GetResult()
+	if res == nil || res.GetOk() {
+		t.Fatalf("expected failed result, got %+v", ev)
+	}
+	if res.GetError() == "" {
+		t.Fatalf("expected non-empty error message on validation failure")
 	}
 }
 

@@ -63,10 +63,11 @@ func NewRunner(logger zerolog.Logger, opts ...RunnerOption) *Runner {
 		BinaryName: "claude",
 		BuildArgv:  r.buildArgv,
 		// On a non-nil exit, classify the log tail for a provider usage cap
-		// and upgrade to ErrUsageLimited so the daemon can detect the capped
-		// state via ExitStatus. Auth is out of scope for claude (no sentinel);
-		// classifyUsageCap returns nil for any non-usage classification, so a
-		// benign or auth tail leaves the exit error unchanged.
+		// or rate limit and upgrade to ErrUsageLimited / ErrRateLimited so the
+		// daemon can detect the capped state via ExitStatus. Auth is out of
+		// scope for claude (no sentinel); classifyUsageCap returns nil for any
+		// non-usage/non-rate classification, so a benign or auth tail leaves
+		// the exit error unchanged.
 		PostExit: func(orig error, tail []byte) error {
 			if orig == nil {
 				return nil

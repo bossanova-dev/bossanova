@@ -112,9 +112,12 @@ func TestTUI_RepoSettingsView_ToggleCheckbox(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// Record initial state.
+	// Record initial state of the specific "Mark ready" checkbox — not a
+	// whole-screen [x] scan, which other default-on toggles (e.g.
+	// archive-after-merge) would confound.
+	const markReady = "[x] Mark ready for review when checks pass"
 	screenBefore := h.Driver.Screen()
-	hadCheck := strings.Contains(screenBefore, "[x]")
+	hadCheck := strings.Contains(screenBefore, markReady)
 
 	// Toggle.
 	if err := h.Driver.SendKey(' '); err != nil {
@@ -123,10 +126,10 @@ func TestTUI_RepoSettingsView_ToggleCheckbox(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	screenAfter := h.Driver.Screen()
-	hasCheck := strings.Contains(screenAfter, "[x]")
+	hasCheck := strings.Contains(screenAfter, markReady)
 
 	if hadCheck == hasCheck {
-		t.Fatalf("expected checkbox state to change; before:\n%s\nafter:\n%s", screenBefore, screenAfter)
+		t.Fatalf("expected 'Mark ready' checkbox state to change; before:\n%s\nafter:\n%s", screenBefore, screenAfter)
 	}
 }
 

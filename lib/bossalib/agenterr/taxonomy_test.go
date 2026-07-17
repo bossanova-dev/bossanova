@@ -12,6 +12,7 @@ func TestKindString(t *testing.T) {
 	}{
 		{KindNone, "none"},
 		{KindUsageExhausted, "usage_exhausted"},
+		{KindRateLimited, "rate_limited"},
 		{KindAuthInvalidated, "auth_invalidated"},
 		{KindTransientProvider, "transient_provider"},
 		{Kind(99), "unknown"},
@@ -66,9 +67,15 @@ func TestClassify(t *testing.T) {
 		{"usage with reset time", "usage_limit_reached, resets at 15:00", KindUsageExhausted, true},
 		{"usage with ambiguous reset", "usage_limit_reached, weekly limit", KindUsageExhausted, false},
 
+		// RATE_LIMITED branches (BOS-406): a 429 / rate-limit banner is its own
+		// kind, distinct from a genuine infra transient, so a rotation consumer
+		// can act on it.
+		{"rate limited incident banner", "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.", KindRateLimited, false},
+		{"rate limited bare 429", "request failed with status 429", KindRateLimited, false},
+		{"rate limited bare rate limit", "rate limit exceeded, try again", KindRateLimited, false},
+		{"rate limited would exceed", "This request would exceed your account's rate limit", KindRateLimited, false},
+
 		// TRANSIENT branches
-		{"transient 429", "request failed with status 429", KindTransientProvider, false},
-		{"transient rate limit", "rate limit exceeded, try again", KindTransientProvider, false},
 		{"transient 500", "server responded 500 Internal Server Error", KindTransientProvider, false},
 		{"transient 502", "bad gateway 502", KindTransientProvider, false},
 		{"transient 503", "service returned 503", KindTransientProvider, false},
@@ -93,6 +100,11 @@ func TestClassify(t *testing.T) {
 		{"precedence auth over transient", "please sign in again, the service timed out", KindAuthInvalidated, false},
 		// Precedence: matches both usage and transient -> usage wins
 		{"precedence usage over transient", "usage_limit_reached, the service timed out", KindUsageExhausted, false},
+		// Precedence: matches both usage and rate-limited -> usage wins
+		{"precedence usage over rate limited", "usage_limit_reached, request rejected (429)", KindUsageExhausted, false},
+		// Precedence: matches both rate-limited and transient -> rate-limited wins
+		// (pins the load-bearing RATE_LIMITED-over-TRANSIENT ordering, BOS-406).
+		{"precedence rate limited over transient", "request failed 429, the service timed out", KindRateLimited, false},
 	}
 
 	for _, tc := range cases {

@@ -626,6 +626,9 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 	if msg.CanAutoRepair != nil {
 		params.CanAutoRepair = msg.CanAutoRepair
 	}
+	if msg.ArchiveSessionsAfterMerge != nil {
+		params.ArchiveSessionsAfterMerge = msg.ArchiveSessionsAfterMerge
+	}
 	if msg.MergeStrategy != nil {
 		// Normalize at the storage boundary so an empty/unknown legacy string is
 		// persisted as the default 'merge' rather than written verbatim (scanRepo
@@ -1460,6 +1463,7 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 	if repo, err := s.repos.Get(ctx, session.RepoID); err == nil {
 		p.RepoDisplayName = repo.DisplayName
 		p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
+		p.RepoArchiveSessionsAfterMerge = repo.ArchiveSessionsAfterMerge
 		p.AttentionStatus = attentionStatusToProto(vcs.ComputeAttentionStatus(session, repo))
 	}
 

@@ -59,6 +59,11 @@ const PRETTIER_EXTENSIONS = new Set([
 // per-package `biome check --write`, never root prettier.
 const BIOME_ROOTS = ['services/web/', 'services/marketing/']
 
+// Generated web protobuf code is committed for consumers but explicitly ignored
+// by services/web/biome.json. Do not pass it to Biome: it exits non-zero when
+// every explicit path is ignored, making `make format` fail on proto-only work.
+const BIOME_IGNORED_PATH_PREFIXES = ['services/web/src/gen/']
+
 // Package roots that live OUTSIDE the pnpm workspace, so syncpack (whose default
 // source discovery follows pnpm-workspace.yaml) never touches their package.json.
 // Their `make format` target is their own prettier (which globs `*.json`, i.e. the
@@ -126,6 +131,9 @@ export function routeFiles(files) {
 
     const biomeRoot = BIOME_ROOTS.find((root) => file.startsWith(root))
     if (biomeRoot) {
+      if (BIOME_IGNORED_PATH_PREFIXES.some((prefix) => file.startsWith(prefix))) {
+        continue
+      }
       if (isPackageJson) {
         packageJson = true
       }

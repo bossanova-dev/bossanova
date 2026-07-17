@@ -83,6 +83,16 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchGetChatTranscript(ctx, cmdID, cmd.GetGetChatTranscript(), outbound)
 	case *pb.OrchestratorCommand_SendChatMessage:
 		return c.dispatchSendChatMessage(ctx, cmdID, cmd.GetSendChatMessage(), outbound)
+	case *pb.OrchestratorCommand_ListCronJobs:
+		return c.dispatchListCronJobs(ctx, cmdID, outbound)
+	case *pb.OrchestratorCommand_CreateCronJob:
+		return c.dispatchCreateCronJob(ctx, cmdID, cmd.GetCreateCronJob(), outbound)
+	case *pb.OrchestratorCommand_UpdateCronJob:
+		return c.dispatchUpdateCronJob(ctx, cmdID, cmd.GetUpdateCronJob(), outbound)
+	case *pb.OrchestratorCommand_DeleteCronJob:
+		return c.dispatchDeleteCronJob(ctx, cmdID, cmd.GetDeleteCronJob(), outbound)
+	case *pb.OrchestratorCommand_RunCronJobNow:
+		return c.dispatchRunCronJobNow(ctx, cmdID, cmd.GetRunCronJobNow(), outbound)
 	default:
 		// Unknown oneof — forward-compat: log and drop. Do NOT emit a
 		// CommandResult; bosso will time out the correlation slot.
@@ -646,6 +656,101 @@ func (c *StreamClient) dispatchSendChatMessage(ctx context.Context, cmdID string
 		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
 			CommandId: cmdID, Ok: true,
 			Payload: &pb.CommandResult_SendChatMessage{SendChatMessage: out},
+		}}}
+	})
+}
+
+// dispatchListCronJobs routes a ListCronJobsCommand to the handler and wraps the
+// daemon's cron jobs in a CommandResult{list_cron_jobs}. Dispatched
+// asynchronously: cron store reads must not block the command reader (mirrors
+// dispatchListRepos).
+func (c *StreamClient) dispatchListCronJobs(ctx context.Context, cmdID string, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.ListCronJobs(ctx)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_ListCronJobs{ListCronJobs: out},
+		}}}
+	})
+}
+
+// dispatchCreateCronJob routes a CreateCronJobCommand to the handler and wraps
+// the created job in a CommandResult{create_cron_job}. Validation errors from the
+// daemon's cron handler surface via CommandResult.error (their connect code
+// collapses to UNSPECIFIED, which bosso treats as Aborted). Dispatched async:
+// creating a job touches the store and scheduler.
+func (c *StreamClient) dispatchCreateCronJob(ctx context.Context, cmdID string, req *pb.CreateCronJobCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.CreateCronJob(ctx, req)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_CreateCronJob{CreateCronJob: out},
+		}}}
+	})
+}
+
+// dispatchUpdateCronJob routes an UpdateCronJobCommand to the handler and wraps
+// the updated job in a CommandResult{update_cron_job}. Dispatched async (store +
+// scheduler resync).
+func (c *StreamClient) dispatchUpdateCronJob(ctx context.Context, cmdID string, req *pb.UpdateCronJobCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.UpdateCronJob(ctx, req)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_UpdateCronJob{UpdateCronJob: out},
+		}}}
+	})
+}
+
+// dispatchDeleteCronJob routes a DeleteCronJobCommand to the handler and replies
+// with a success CommandResult carrying no payload (mirrors dispatchRemoveRepo).
+// Dispatched async.
+func (c *StreamClient) dispatchDeleteCronJob(ctx context.Context, cmdID string, req *pb.DeleteCronJobCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		if err := c.commandHandler.DeleteCronJob(ctx, req.GetId()); err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return commandOK(cmdID, nil)
+	})
+}
+
+// dispatchRunCronJobNow routes a RunCronJobNowCommand to the handler and wraps
+// the spawned session (or skipped reason) in a CommandResult{run_cron_job_now}.
+// Dispatched async: firing a job spawns a session, which must not block the
+// command reader.
+func (c *StreamClient) dispatchRunCronJobNow(ctx context.Context, cmdID string, req *pb.RunCronJobNowCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.RunCronJobNow(ctx, req.GetId())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_RunCronJobNow{RunCronJobNow: out},
 		}}}
 	})
 }

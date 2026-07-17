@@ -153,17 +153,20 @@ func (l *Lifecycle) recordRotation(ctx context.Context, session *models.Session,
 }
 
 // classifyUsageLimit reports whether a headless run's exit-error string is a
-// usage/quota cap, and the parsed reset time when the banner carried one. It is
-// deliberately fail-safe: an empty string or any non-usage classification
-// yields ok=false so the caller runs today's Block path unchanged. Classifying
-// from the flattened exit string (not structured proto fields) keeps the
+// usage/quota cap or rate limit, and the parsed reset time when the banner
+// carried one. It is deliberately fail-safe: an empty string or any other
+// classification yields ok=false so the caller runs today's Block path
+// unchanged. A rate-limit (429, BOS-406) is accepted alongside a usage cap so it
+// routes into the same probe-gated rotation machinery; it carries no ResetAt, so
+// the authoritative usage probe supplies the real reset. Classifying from the
+// flattened exit string (not structured proto fields) keeps the
 // SignalSessionRunComplete signature untouched.
 func classifyUsageLimit(exitError string) (resetAt time.Time, ok bool) {
 	if exitError == "" {
 		return time.Time{}, false
 	}
 	c := agenterr.Classify(exitError, time.Now())
-	if c.Kind != agenterr.KindUsageExhausted {
+	if c.Kind != agenterr.KindUsageExhausted && c.Kind != agenterr.KindRateLimited {
 		return time.Time{}, false
 	}
 	if c.ResetAt != nil {

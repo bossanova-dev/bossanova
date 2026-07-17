@@ -147,6 +147,11 @@ type SessionCommandServer interface {
 	ListTrackerIssues(context.Context, *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error)
 	GetChatTranscript(context.Context, *connect.Request[pb.GetChatTranscriptRequest]) (*connect.Response[pb.GetChatTranscriptResponse], error)
 	SendChatMessage(context.Context, *connect.Request[pb.SendChatMessageRequest]) (*connect.Response[pb.SendChatMessageResponse], error)
+	CreateCronJob(context.Context, *connect.Request[pb.CreateCronJobRequest]) (*connect.Response[pb.CreateCronJobResponse], error)
+	ListCronJobs(context.Context, *connect.Request[pb.ListCronJobsRequest]) (*connect.Response[pb.ListCronJobsResponse], error)
+	UpdateCronJob(context.Context, *connect.Request[pb.UpdateCronJobRequest]) (*connect.Response[pb.UpdateCronJobResponse], error)
+	DeleteCronJob(context.Context, *connect.Request[pb.DeleteCronJobRequest]) (*connect.Response[pb.DeleteCronJobResponse], error)
+	RunCronJobNow(context.Context, *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error)
 }
 
 // CommandHandlerAdapter implements SessionCommandHandler by delegating
@@ -501,6 +506,96 @@ func (a *CommandHandlerAdapter) SendChatMessage(ctx context.Context, agentSessio
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("send chat message: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// ListCronJobs implements SessionCommandHandler.ListCronJobs by delegating to the
+// daemon's ListCronJobs connect handler and unwrapping the response message.
+func (a *CommandHandlerAdapter) ListCronJobs(ctx context.Context) (*pb.ListCronJobsResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("list_cron_jobs: command server not wired")
+	}
+	resp, err := a.Commands.ListCronJobs(ctx, connect.NewRequest(&pb.ListCronJobsRequest{}))
+	if err != nil {
+		return nil, fmt.Errorf("list cron jobs: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// CreateCronJob implements SessionCommandHandler.CreateCronJob, translating the
+// stream command into the daemon's CreateCronJobRequest field-for-field. The
+// run_setup_command optional bool is copied as a pointer so its unset/true/false
+// tri-state reaches the daemon unchanged.
+func (a *CommandHandlerAdapter) CreateCronJob(ctx context.Context, cmd *pb.CreateCronJobCommand) (*pb.CreateCronJobResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("create_cron_job: command server not wired")
+	}
+	resp, err := a.Commands.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:          cmd.GetRepoId(),
+		Name:            cmd.GetName(),
+		Prompt:          cmd.GetPrompt(),
+		Schedule:        cmd.GetSchedule(),
+		Timezone:        cmd.GetTimezone(),
+		Enabled:         cmd.GetEnabled(),
+		AgentName:       cmd.GetAgentName(),
+		Model:           cmd.GetModel(),
+		GateCommand:     cmd.GetGateCommand(),
+		RunSetupCommand: cmd.RunSetupCommand,
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("create cron job: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// UpdateCronJob implements SessionCommandHandler.UpdateCronJob, translating the
+// stream command into the daemon's UpdateCronJobRequest. Every mutable field is
+// an optional pointer copied straight through so the daemon applies only the
+// fields the caller set.
+func (a *CommandHandlerAdapter) UpdateCronJob(ctx context.Context, cmd *pb.UpdateCronJobCommand) (*pb.UpdateCronJobResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("update_cron_job: command server not wired")
+	}
+	resp, err := a.Commands.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{
+		Id:              cmd.GetId(),
+		Name:            cmd.Name,
+		Prompt:          cmd.Prompt,
+		Schedule:        cmd.Schedule,
+		Timezone:        cmd.Timezone,
+		Enabled:         cmd.Enabled,
+		AgentName:       cmd.AgentName,
+		Model:           cmd.Model,
+		GateCommand:     cmd.GateCommand,
+		RunSetupCommand: cmd.RunSetupCommand,
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("update cron job: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// DeleteCronJob implements SessionCommandHandler.DeleteCronJob. The daemon's
+// DeleteCronJobResponse carries no payload, so the response is discarded.
+func (a *CommandHandlerAdapter) DeleteCronJob(ctx context.Context, id string) error {
+	if a.Commands == nil {
+		return errors.New("delete_cron_job: command server not wired")
+	}
+	if _, err := a.Commands.DeleteCronJob(ctx, connect.NewRequest(&pb.DeleteCronJobRequest{Id: id})); err != nil {
+		return fmt.Errorf("delete cron job: %w", err)
+	}
+	return nil
+}
+
+// RunCronJobNow implements SessionCommandHandler.RunCronJobNow by delegating to
+// the daemon's RunCronJobNow connect handler.
+func (a *CommandHandlerAdapter) RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("run_cron_job_now: command server not wired")
+	}
+	resp, err := a.Commands.RunCronJobNow(ctx, connect.NewRequest(&pb.RunCronJobNowRequest{Id: id}))
+	if err != nil {
+		return nil, fmt.Errorf("run cron job now: %w", err)
 	}
 	return resp.Msg, nil
 }

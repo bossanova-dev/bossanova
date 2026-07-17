@@ -45,6 +45,7 @@ func TestClassifyUsageCap(t *testing.T) {
 		tail          []byte
 		wantLimited   bool
 		wantResetZero bool
+		wantRate      bool // expect ErrRateLimited rather than ErrUsageLimited
 	}{
 		{
 			name:          "usage cap with parseable reset",
@@ -57,6 +58,12 @@ func TestClassifyUsageCap(t *testing.T) {
 			tail:          padTail("Claude usage limit reached. try again later"),
 			wantLimited:   true,
 			wantResetZero: true,
+		},
+		{
+			name:        "rate-limited 429 tail",
+			tail:        padTail("API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later."),
+			wantLimited: true,
+			wantRate:    true,
 		},
 		{
 			name:        "claude auth tail is out of scope (nil)",
@@ -85,6 +92,13 @@ func TestClassifyUsageCap(t *testing.T) {
 			if !tt.wantLimited {
 				if err != nil {
 					t.Fatalf("classifyUsageCap = %v, want nil", err)
+				}
+				return
+			}
+			if tt.wantRate {
+				var rl agenterr.ErrRateLimited
+				if !errors.As(err, &rl) {
+					t.Fatalf("classifyUsageCap = %v, want ErrRateLimited", err)
 				}
 				return
 			}

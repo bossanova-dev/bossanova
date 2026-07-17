@@ -4,6 +4,7 @@ go_library(
     name = "agenterr",
     srcs = [
         "capture.go",
+        "ratelimited.go",
         "reset.go",
         "taxonomy.go",
         "usagelimited.go",
@@ -17,6 +18,7 @@ go_test(
     name = "agenterr_test",
     srcs = [
         "capture_test.go",
+        "ratelimited_test.go",
         "reset_test.go",
         "taxonomy_test.go",
         "usagelimited_test.go",

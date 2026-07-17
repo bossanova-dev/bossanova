@@ -339,6 +339,22 @@ type SessionCommandHandler interface {
 	// waking it first. submit routes verified-submit vs. prefill delivery (BOS-242
 	// Gap 1). Network/tmux-bound — dispatched async.
 	SendChatMessage(ctx context.Context, agentSessionID, message string, wakeIfAsleep, submit bool) (*pb.SendChatMessageResponse, error)
+	// ListCronJobs returns the daemon's cron jobs for the web cron-management
+	// surface. Not session-scoped. Store-bound — dispatched async.
+	ListCronJobs(ctx context.Context) (*pb.ListCronJobsResponse, error)
+	// CreateCronJob registers a new scheduled prompt. Validation (required fields,
+	// schedule parse, agent/model) happens in the daemon's cron handler; the
+	// daemon's connect-coded error surfaces via CommandResult.error. Async.
+	CreateCronJob(ctx context.Context, cmd *pb.CreateCronJobCommand) (*pb.CreateCronJobResponse, error)
+	// UpdateCronJob mutates an existing cron job. Only the optional fields the
+	// command sets are updated; the rest are left untouched by the daemon handler.
+	// Async.
+	UpdateCronJob(ctx context.Context, cmd *pb.UpdateCronJobCommand) (*pb.UpdateCronJobResponse, error)
+	// DeleteCronJob removes a cron job by ID (scheduler + database). Async.
+	DeleteCronJob(ctx context.Context, id string) error
+	// RunCronJobNow fires a cron job immediately, honoring the same overlap and
+	// concurrency-cap rules as scheduled fires. Async.
+	RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
 }
 
 // WebhookCommandDispatcher forwards a webhook payload to whatever in-daemon

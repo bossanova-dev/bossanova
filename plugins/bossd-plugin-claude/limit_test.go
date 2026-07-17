@@ -77,6 +77,42 @@ func TestDetectUsageLimitFiresOnLiveBannerRenderings(t *testing.T) {
 	}
 }
 
+// TestDetectUsageLimitFiresOnAnchoredRateLimitBanner is the BOS-406 interactive
+// criterion: a 429 / rate-limit banner rendered in the status region below the
+// prompt marker trips detection, so a mid-stream rate limit reaching the tmux
+// pane flips CHAT_STATUS_LIMITED.
+func TestDetectUsageLimitFiresOnAnchoredRateLimitBanner(t *testing.T) {
+	for _, banner := range []string{
+		"API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.",
+		"This request would exceed your account's rate limit",
+	} {
+		pane := []byte("⏺ working on the task…\n\n❯ \n  " + banner + "\n")
+		s := &Server{logger: zerolog.Nop()}
+		resp, err := s.DetectUsageLimit(context.Background(), &bossanovav1.DetectUsageLimitRequest{PaneContent: pane})
+		if err != nil {
+			t.Fatalf("DetectUsageLimit: %v", err)
+		}
+		if !resp.GetLimited() {
+			t.Errorf("expected limited=true for anchored rate-limit banner %q", banner)
+		}
+	}
+}
+
+// TestDetectUsageLimitIgnoresBareRateLimitProse confirms the interactive anchor
+// is deliberately tight: a bare "rate limit" mention in pane prose (an agent
+// discussing rate limits) must NOT trip CHAT_STATUS_LIMITED.
+func TestDetectUsageLimitIgnoresBareRateLimitProse(t *testing.T) {
+	pane := []byte("⏺ Let me add rate limit handling to the client…\n\n❯ \n  claude-opus-4 · ~/code/bossanova · ready\n")
+	s := &Server{logger: zerolog.Nop()}
+	resp, err := s.DetectUsageLimit(context.Background(), &bossanovav1.DetectUsageLimitRequest{PaneContent: pane})
+	if err != nil {
+		t.Fatalf("DetectUsageLimit: %v", err)
+	}
+	if resp.GetLimited() {
+		t.Errorf("expected limited=false for a bare 'rate limit' prose mention")
+	}
+}
+
 // TestDetectUsageLimitIgnoresWorkingPane confirms an ordinary working pane with
 // no status-region banner is not limited (fail-safe: ambiguity never limits).
 func TestDetectUsageLimitIgnoresWorkingPane(t *testing.T) {

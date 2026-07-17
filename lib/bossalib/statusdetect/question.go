@@ -594,6 +594,22 @@ var escToInterruptRe = regexp.MustCompile(`esc to interrupt`)
 // HasWorkingIndicator for the freshness check.
 var shellsRunningRe = regexp.MustCompile(`[0-9]+ shells? still running`)
 
+// waitingForBackgroundAgentRe matches Claude's footer while the main thread
+// is blocked on background subagents (e.g. "✻ Waiting for 1 background agent
+// to finish", "Waiting for 2 background agents to finish"). Like the spinner,
+// Claude renders this only while actively waiting and redraws it away the
+// instant the agents return, so it is self-evicting — a match anywhere in the
+// current-screen tail is a live WORKING signal (no freshness check needed).
+//
+// The phrase is matched independent of the leading spinner glyph (robust across
+// animation frames and after StripANSI) but anchored to the end of its line
+// ((?m)…$, tolerating trailing tmux padding). Unlike "esc to interrupt", this
+// phrasing is natural-language-plausible, so the end-of-line anchor rejects it
+// when it appears embedded mid-sentence in prose/tool output (e.g. "…still
+// waiting for 1 background agent to finish before I proceed."), which would
+// otherwise risk pinning a genuinely-idle chat as WORKING.
+var waitingForBackgroundAgentRe = regexp.MustCompile(`(?m)Waiting for [0-9]+ background agents? to finish[ \t]*$`)
+
 // responseMarkerRe matches a Claude response / tool-result marker (⏺, U+23FA) at
 // the start of a line. When one renders after a "shells still running" footer,
 // the shell has since finished (Claude printed e.g. `⏺ Background command "…"
@@ -629,6 +645,12 @@ func HasWorkingIndicator(data []byte) bool {
 	// The active spinner is unambiguously live (it never lingers), so a match
 	// anywhere in the current screen means WORKING.
 	if escToInterruptRe.Match(tail) {
+		return true
+	}
+
+	// A blocked-on-background-agents footer is a live spinner state, self-evicting
+	// like escToInterrupt — bare match in the current-screen tail means WORKING.
+	if waitingForBackgroundAgentRe.Match(tail) {
 		return true
 	}
 

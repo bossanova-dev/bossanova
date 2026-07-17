@@ -64,12 +64,15 @@ type Repo struct {
 	CanAutoMergeDependabot bool
 	CanAutoRepair          bool
 	CanAutoRotate          bool
-	MergeStrategy          MergeStrategy
-	LinearAPIKey           string
-	SentryAPIKey           string
-	SentryOrg              string
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	// ArchiveSessionsAfterMerge controls whether the daemon archives a session
+	// once its PR is detected as merged. Defaults true.
+	ArchiveSessionsAfterMerge bool
+	MergeStrategy             MergeStrategy
+	LinearAPIKey              string
+	SentryAPIKey              string
+	SentryOrg                 string
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
 }
 
 // Session represents an agent coding session.

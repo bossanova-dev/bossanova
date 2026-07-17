@@ -101,6 +101,53 @@ service OrchestratorService {
   rpc ProxyUpdateAccount(ProxyUpdateAccountRequest) returns (ProxyUpdateAccountResponse);
   rpc ProxyRemoveAccount(ProxyRemoveAccountRequest) returns (ProxyRemoveAccountResponse);
   rpc ProxyTestAccount(ProxyTestAccountRequest) returns (ProxyTestAccountResponse);
+  // Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
+  // owning daemon via FindSessionDaemon; session-less reads aggregate across the
+  // caller's Ready daemons via the shared resolver.
+  // ProxyListChats reads a session's chats (routes by session_id).
+  rpc ProxyListChats(ProxyListChatsRequest) returns (ProxyListChatsResponse);
+  // ProxyGetSessionStatuses fans out per session_id (FindSessionDaemon), skipping
+  // unknown ids, and unions the returned SessionStatusEntry values.
+  rpc ProxyGetSessionStatuses(ProxyGetSessionStatusesRequest) returns (ProxyGetSessionStatusesResponse);
+  // ProxyListCheckSnapshots reads a session's recent CI check snapshots (routes by session_id).
+  rpc ProxyListCheckSnapshots(ProxyListCheckSnapshotsRequest) returns (ProxyListCheckSnapshotsResponse);
+  // ProxyListAgentsAggregated aggregates installed agents across the caller's
+  // Ready daemons (session-less; distinct from the daemon-scoped ProxyListAgents).
+  rpc ProxyListAgentsAggregated(ProxyListAgentsAggregatedRequest) returns (ProxyListAgentsAggregatedResponse);
+  // ProxyListPlugins aggregates configured plugins across the caller's Ready daemons.
+  rpc ProxyListPlugins(ProxyListPluginsRequest) returns (ProxyListPluginsResponse);
+  // ProxyGetCronJob returns the first Ready daemon that owns the id (NotFound if none).
+  rpc ProxyGetCronJob(ProxyGetCronJobRequest) returns (ProxyGetCronJobResponse);
+  // ProxyRepairDoctor merges repair-doctor reports across the caller's Ready daemons.
+  rpc ProxyRepairDoctor(ProxyRepairDoctorRequest) returns (ProxyRepairDoctorResponse);
+  // Destructive-tier MCP gateway parity (BOS-404). Session-scoped destructive
+  // ops route to the owning daemon via FindSessionDaemon (NotFound for a
+  // missing/foreign session); empty_trash is daemon-wide and aggregates across
+  // the caller's Ready daemons via the shared resolver.
+  // ProxyCloseSession closes (abandons) a session, returning the updated Session.
+  rpc ProxyCloseSession(ProxyCloseSessionRequest) returns (ProxyCloseSessionResponse);
+  // ProxyResurrectSession restores an archived session, returning the updated Session.
+  rpc ProxyResurrectSession(ProxyResurrectSessionRequest) returns (ProxyResurrectSessionResponse);
+  // ProxyRemoveSession permanently removes a session and its worktree (Ok-only).
+  rpc ProxyRemoveSession(ProxyRemoveSessionRequest) returns (ProxyRemoveSessionResponse);
+  // ProxyEmptyTrash permanently deletes archived sessions across the caller's
+  // Ready daemons, summing each daemon's deleted_count.
+  rpc ProxyEmptyTrash(ProxyEmptyTrashRequest) returns (ProxyEmptyTrashResponse);
+  // Mutating MCP gateway parity (BOS-402). Session-scoped mutations route to the
+  // owning daemon via FindSessionDaemon; chat-scoped mutations via
+  // FindDaemonForChat(agent_session_id). A foreign entity resolves to NotFound,
+  // so no cross-user mutation can dispatch.
+  // ProxyRetrySession retries a failed session (routes by session_id).
+  rpc ProxyRetrySession(ProxyRetrySessionRequest) returns (ProxyRetrySessionResponse);
+  // ProxyUpdateSession updates a session's title/tracker (routes by session_id).
+  rpc ProxyUpdateSession(ProxyUpdateSessionRequest) returns (ProxyUpdateSessionResponse);
+  // ProxyLinkSessionPR attaches an existing PR to a session (routes by session_id).
+  rpc ProxyLinkSessionPR(ProxyLinkSessionPRRequest) returns (ProxyLinkSessionPRResponse);
+  // ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
+  rpc ProxyUpdateChatTitle(ProxyUpdateChatTitleRequest) returns (ProxyUpdateChatTitleResponse);
+  // ProxyReportChatStatus forwards chat status heartbeats. All reports must
+  // resolve to the caller's own chats on a single daemon.
+  rpc ProxyReportChatStatus(ProxyReportChatStatusRequest) returns (ProxyReportChatStatusResponse);
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -593,6 +640,34 @@ message ProxyUpdateRepoResponse { RepoSettings settings = 1; }
 message ProxyRemoveRepoRequest { string daemon_id = 1; string repo_id = 2; }
 message ProxyRemoveRepoResponse {}
 
+// --- Mutating MCP gateway parity (BOS-402) ---
+
+message ProxyRetrySessionRequest { string id = 1; }
+message ProxyRetrySessionResponse { Session session = 1; }
+
+message ProxyUpdateSessionRequest {
+  string id = 1;
+  optional string title = 2;
+  optional string tracker_url = 3;
+  optional string tracker_id = 4;
+}
+message ProxyUpdateSessionResponse { Session session = 1; }
+
+message ProxyLinkSessionPRRequest {
+  string id = 1;
+  string pr = 2;
+}
+message ProxyLinkSessionPRResponse { Session session = 1; }
+
+message ProxyUpdateChatTitleRequest {
+  string agent_session_id = 1;
+  string title = 2;
+}
+message ProxyUpdateChatTitleResponse {}
+
+message ProxyReportChatStatusRequest { repeated ChatStatusReport reports = 1; }
+message ProxyReportChatStatusResponse {}
+
 // --- Cron-job proxies (web cron-job management) ---
 
 // CronJobWithDaemon tags a cron job with the daemon that owns it, so the web
@@ -901,6 +976,72 @@ message ReportContext {
   // Optionally populated — most recent Claude turns, if available.
   repeated ClaudeTurn recent_turns = 11;
 }
+
+// --- Read-tier MCP gateway parity (BOS-401) ---
+// Session-scoped and session-less read proxies. All reuse daemon.proto response
+// shapes field-for-field so the gateway can forward them directly.
+
+// ProxyListChatsRequest reads a session's chats. session_id routes to the owning
+// daemon (FindSessionDaemon) and scopes authz.
+message ProxyListChatsRequest { string session_id = 1; }
+message ProxyListChatsResponse { repeated ClaudeChat chats = 1; }
+
+// ProxyGetSessionStatusesRequest resolves each session's owning daemon and
+// unions the returned statuses; unknown ids are skipped, not errored.
+message ProxyGetSessionStatusesRequest { repeated string session_ids = 1; }
+message ProxyGetSessionStatusesResponse { repeated SessionStatusEntry statuses = 1; }
+
+// ProxyListCheckSnapshotsRequest reads a session's recent CI check snapshots.
+// session_id routes to the owning daemon; limit defaults to 10 when zero.
+message ProxyListCheckSnapshotsRequest {
+  string session_id = 1;
+  int32 limit = 2;
+}
+message ProxyListCheckSnapshotsResponse { repeated CheckSnapshot snapshots = 1; }
+
+// ProxyListAgentsAggregatedRequest aggregates installed agents across the
+// caller's Ready daemons (session-less). Distinct from the daemon-scoped
+// ProxyListAgents, which takes a daemon_id.
+message ProxyListAgentsAggregatedRequest {}
+message ProxyListAgentsAggregatedResponse { repeated AgentInfo agents = 1; }
+
+// ProxyListPluginsRequest aggregates configured plugins across the caller's
+// Ready daemons.
+message ProxyListPluginsRequest {}
+message ProxyListPluginsResponse { repeated InstalledPlugin plugins = 1; }
+
+// ProxyGetCronJobRequest returns the first Ready daemon that owns the id.
+// An empty cron_job in the response => not found (bosso returns CodeNotFound).
+message ProxyGetCronJobRequest { string id = 1; }
+message ProxyGetCronJobResponse { CronJob cron_job = 1; }
+
+// ProxyRepairDoctorRequest merges repair-doctor reports across the caller's
+// Ready daemons; when the caller has >1 Ready daemon, bosso prefixes each check
+// name and log path with the daemon hostname for provenance.
+message ProxyRepairDoctorRequest {}
+message ProxyRepairDoctorResponse {
+  repeated RepairDoctorCheck checks = 1;
+  repeated RepairLogSnapshot recent_logs = 2;
+}
+
+// Destructive-tier proxy messages (BOS-404). Session-scoped requests carry the
+// session id; close/resurrect return the updated Session, remove is Ok-only.
+message ProxyCloseSessionRequest { string id = 1; }
+message ProxyCloseSessionResponse { Session session = 1; }
+
+message ProxyResurrectSessionRequest { string id = 1; }
+message ProxyResurrectSessionResponse { Session session = 1; }
+
+message ProxyRemoveSessionRequest { string id = 1; }
+message ProxyRemoveSessionResponse {}
+
+// ProxyEmptyTrash is daemon-wide (no session/repo id). older_than mirrors the
+// daemon EmptyTrashRequest; the response sums deleted_count across the caller's
+// Ready daemons.
+message ProxyEmptyTrashRequest {
+  optional google.protobuf.Timestamp older_than = 1;
+}
+message ProxyEmptyTrashResponse { int32 deleted_count = 1; }
 
 // SessionSummary is a lightweight view of a Session for report context.
 message SessionSummary {

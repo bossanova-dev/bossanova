@@ -2327,6 +2327,18 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 		if err := l.worktrees.Archive(ctx, session.WorktreePath); err != nil {
 			return fmt.Errorf("archive worktree: %w", err)
 		}
+
+		// BOS-180: reclaim the session's LOCAL branch on archive when the repo
+		// opts in (CanAutoDeleteBranches) and the branch is safe to drop.
+		// Guarded by the same non-quick-chat condition as the worktree removal.
+		// Best-effort: the worktree is already archived, so neither a
+		// "not safe, keep it" outcome nor any git failure may fail the archive.
+		// LOCAL ONLY — never deletes or pushes the remote branch. Safety is
+		// routed through the worktree-manager interface (BranchSafeToDelete ==
+		// merge-base --is-ancestor) so this path stays testable via the mock.
+		if repo.CanAutoDeleteBranches && session.BranchName != "" {
+			l.maybeDeleteArchivedLocalBranch(ctx, sessionID, repo, session)
+		}
 	}
 
 	// Mark session as archived in DB.
@@ -2336,6 +2348,54 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 
 	l.logger.Info().Str("session", sessionID).Msg("session archived")
 	return nil
+}
+
+// maybeDeleteArchivedLocalBranch best-effort deletes the session's LOCAL branch
+// after its worktree has been archived, when the repo opts in and the branch is
+// safe to drop (merged/fast-forwarded/NO_CHANGE per BranchSafeToDelete). It
+// never returns an error: the archive has already succeeded, so a predicate
+// failure, an "unsafe, keep it" outcome, or a delete failure is only logged.
+// LOCAL ONLY — it never touches the remote branch.
+func (l *Lifecycle) maybeDeleteArchivedLocalBranch(ctx context.Context, sessionID string, repo *models.Repo, session *models.Session) {
+	// Defensive guard: never force-delete the base branch. A ref is trivially
+	// its own ancestor, so if a session's BranchName ever equals its BaseBranch
+	// (or the repo default), BranchSafeToDelete returns true and the destructive
+	// `git branch -D` would remove the base branch locally whenever it is not the
+	// currently checked-out branch. Normal generated-branch sessions never hit
+	// this, but a force-delete's safety must not depend on that invariant.
+	if session.BranchName == session.BaseBranch || session.BranchName == repo.DefaultBaseBranch {
+		l.logger.Info().
+			Str("session", sessionID).
+			Str("branch", session.BranchName).
+			Msg("archived branch is the base branch; keeping branch")
+		return
+	}
+	safe, err := l.worktrees.BranchSafeToDelete(ctx, repo.LocalPath, session.BranchName, session.BaseBranch)
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Str("branch", session.BranchName).
+			Msg("branch safe-to-delete check failed; keeping branch")
+		return
+	}
+	if !safe {
+		l.logger.Info().
+			Str("session", sessionID).
+			Str("branch", session.BranchName).
+			Msg("archived branch not safe to auto-delete; keeping branch")
+		return
+	}
+	if err := l.worktrees.DeleteLocalBranch(ctx, repo.LocalPath, session.BranchName); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Str("branch", session.BranchName).
+			Msg("failed to delete archived local branch; keeping branch")
+		return
+	}
+	l.logger.Info().
+		Str("session", sessionID).
+		Str("branch", session.BranchName).
+		Msg("deleted safe local branch on archive")
 }
 
 // ResurrectSession re-creates a worktree from an existing branch and

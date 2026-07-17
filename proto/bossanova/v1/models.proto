@@ -172,6 +172,9 @@ message Repo {
   // Whether the daemon automatically archives a session once its PR is merged.
   // Honored by the session dispatcher on the PR-merged transition. Defaults on.
   bool archive_sessions_after_merge = 22;
+  // Whether the daemon automatically deletes a session's git branch once its
+  // session is archived. Honored by the session dispatcher. Defaults on.
+  bool can_auto_delete_branches = 23;
   string linear_api_key = 15;
   reserved 16;
   // Sentry credentials. Mirrors linear_api_key: a Sentry auth token alone can't

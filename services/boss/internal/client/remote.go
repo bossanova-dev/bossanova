@@ -2,8 +2,10 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/apiversion"
@@ -101,12 +103,153 @@ func (c *RemoteClient) ListRepos(_ context.Context) ([]*pb.Repo, error) {
 	return nil, errLocalOnly("ListRepos")
 }
 
-func (c *RemoteClient) RemoveRepo(_ context.Context, _ string) error {
-	return errLocalOnly("RemoveRepo")
+// RemoveRepo resolves which of the caller's live daemons serves repoID (via the
+// origin-deduped aggregate) and forwards the destructive remove through
+// ProxyRemoveRepo. The resolution is scoped to the caller's own repos, so a
+// foreign repo id is indistinguishable from absent.
+func (c *RemoteClient) RemoveRepo(ctx context.Context, id string) error {
+	daemonID, err := c.resolveDaemonForRepo(ctx, id)
+	if err != nil {
+		return err
+	}
+	_, err = c.rpc.ProxyRemoveRepo(ctx, connect.NewRequest(&pb.ProxyRemoveRepoRequest{
+		DaemonId: daemonID,
+		RepoId:   id,
+	}))
+	return err
 }
 
-func (c *RemoteClient) UpdateRepo(_ context.Context, _ *pb.UpdateRepoRequest) (*pb.Repo, error) {
-	return nil, errLocalOnly("UpdateRepo")
+// resolveDaemonForRepo finds which of the caller's live daemons serves repoID
+// using the same origin-deduped aggregate the gateway backend uses.
+func (c *RemoteClient) resolveDaemonForRepo(ctx context.Context, repoID string) (string, error) {
+	if repoID == "" {
+		return "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_id is required"))
+	}
+	resp, err := c.rpc.ProxyListReposAggregated(ctx, connect.NewRequest(&pb.ProxyListReposAggregatedRequest{}))
+	if err != nil {
+		return "", err
+	}
+	for _, agg := range resp.Msg.GetRepos() {
+		for _, ref := range agg.GetDaemons() {
+			if ref.GetRepoId() == repoID {
+				return ref.GetDaemonId(), nil
+			}
+		}
+	}
+	return "", connect.NewError(connect.CodeNotFound, fmt.Errorf("no live daemon serves repo %q", repoID))
+}
+
+// UpdateRepo resolves the daemon serving the repo (scoped to the caller's own
+// daemons via ProxyListReposAggregated) and forwards the update through the
+// orchestrator's ProxyUpdateRepo RPC. It returns the security-masked settings
+// projected back to a *pb.Repo (secret/physical fields stay empty), mirroring the
+// mcp-gateway proxybackend.
+func (c *RemoteClient) UpdateRepo(ctx context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error) {
+	daemonID, err := c.resolveRemoteDaemonForRepo(ctx, req.GetId())
+	if err != nil {
+		return nil, err
+	}
+	proxyReq := &pb.ProxyUpdateRepoRequest{
+		DaemonId:                  daemonID,
+		RepoId:                    req.GetId(),
+		DisplayName:               req.DisplayName,
+		SetupScript:               req.SetupScript,
+		CanAutoMerge:              req.CanAutoMerge,
+		CanAutoMergeDependabot:    req.CanAutoMergeDependabot,
+		CanAutoRepair:             req.CanAutoRepair,
+		ArchiveSessionsAfterMerge: req.ArchiveSessionsAfterMerge,
+		SentryOrg:                 req.SentryOrg,
+		ExpectedUpdatedAt:         req.GetExpectedUpdatedAt(),
+	}
+	if req.MergeStrategy != nil {
+		ms := remoteMergeStrategyStringToEnum(req.GetMergeStrategy())
+		proxyReq.MergeStrategy = &ms
+	}
+	proxyReq.LinearKey = remoteChooseSecretUpdate(req.GetLinearKey(), req.LinearApiKey)
+	proxyReq.SentryKey = remoteChooseSecretUpdate(req.GetSentryKey(), req.SentryApiKey)
+	resp, err := c.rpc.ProxyUpdateRepo(ctx, connect.NewRequest(proxyReq))
+	if err != nil {
+		return nil, err
+	}
+	return remoteSettingsToRepo(resp.Msg.GetSettings()), nil
+}
+
+// resolveRemoteDaemonForRepo finds which of the caller's Ready daemons serves
+// repoID, using the same aggregate ListRepos exposes. A repo the caller does not
+// own is absent from the aggregate, so it never resolves.
+func (c *RemoteClient) resolveRemoteDaemonForRepo(ctx context.Context, repoID string) (string, error) {
+	if repoID == "" {
+		return "", errors.New("repo id is required")
+	}
+	resp, err := c.rpc.ProxyListReposAggregated(ctx, connect.NewRequest(&pb.ProxyListReposAggregatedRequest{}))
+	if err != nil {
+		return "", err
+	}
+	for _, agg := range resp.Msg.GetRepos() {
+		for _, ref := range agg.GetDaemons() {
+			if ref.GetRepoId() == repoID {
+				return ref.GetDaemonId(), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no live daemon serves repo %q", repoID)
+}
+
+func remoteMergeStrategyStringToEnum(s string) pb.MergeStrategy {
+	switch strings.ToLower(s) {
+	case "rebase":
+		return pb.MergeStrategy_MERGE_STRATEGY_REBASE
+	case "squash":
+		return pb.MergeStrategy_MERGE_STRATEGY_SQUASH
+	case "merge":
+		return pb.MergeStrategy_MERGE_STRATEGY_MERGE
+	default:
+		return pb.MergeStrategy_MERGE_STRATEGY_UNSPECIFIED
+	}
+}
+
+func remoteMergeStrategyEnumToString(ms pb.MergeStrategy) string {
+	switch ms {
+	case pb.MergeStrategy_MERGE_STRATEGY_REBASE:
+		return "rebase"
+	case pb.MergeStrategy_MERGE_STRATEGY_SQUASH:
+		return "squash"
+	case pb.MergeStrategy_MERGE_STRATEGY_MERGE:
+		return "merge"
+	default:
+		return ""
+	}
+}
+
+func remoteChooseSecretUpdate(explicit *pb.SecretUpdate, legacy *string) *pb.SecretUpdate {
+	if explicit != nil && explicit.GetAction() != pb.SecretAction_SECRET_ACTION_UNSPECIFIED {
+		return explicit
+	}
+	if legacy != nil {
+		return &pb.SecretUpdate{Action: pb.SecretAction_SECRET_ACTION_SET, Value: legacy}
+	}
+	return nil
+}
+
+func remoteSettingsToRepo(s *pb.RepoSettings) *pb.Repo {
+	if s == nil {
+		return nil
+	}
+	repo := &pb.Repo{
+		Id:                        s.GetId(),
+		DisplayName:               s.GetDisplayName(),
+		MergeStrategy:             remoteMergeStrategyEnumToString(s.GetMergeStrategy()),
+		CanAutoMerge:              s.GetCanAutoMerge(),
+		CanAutoMergeDependabot:    s.GetCanAutoMergeDependabot(),
+		CanAutoRepair:             s.GetCanAutoRepair(),
+		ArchiveSessionsAfterMerge: s.GetArchiveSessionsAfterMerge(),
+		SentryOrg:                 s.GetSentryOrg(),
+		UpdatedAt:                 s.GetUpdatedAt(),
+	}
+	if s.SetupScript != nil {
+		repo.SetupScript = s.SetupScript
+	}
+	return repo
 }
 
 func (c *RemoteClient) ListRepoPRs(_ context.Context, _ string) ([]*pb.PRSummary, error) {
@@ -178,28 +321,50 @@ func (c *RemoteClient) ResumeSession(ctx context.Context, id string) (*pb.Sessio
 	return resp.Msg.Session, nil
 }
 
-func (c *RemoteClient) RetrySession(_ context.Context, _ string) (*pb.Session, error) {
-	return nil, errLocalOnly("RetrySession")
+func (c *RemoteClient) RetrySession(ctx context.Context, id string) (*pb.Session, error) {
+	resp, err := c.rpc.ProxyRetrySession(ctx, connect.NewRequest(&pb.ProxyRetrySessionRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSession(), nil
 }
 
-func (c *RemoteClient) CloseSession(_ context.Context, _ string) (*pb.Session, error) {
-	return nil, errLocalOnly("CloseSession")
+func (c *RemoteClient) CloseSession(ctx context.Context, id string) (*pb.Session, error) {
+	resp, err := c.rpc.ProxyCloseSession(ctx, connect.NewRequest(&pb.ProxyCloseSessionRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Session, nil
 }
 
 func (c *RemoteClient) MergeSession(_ context.Context, _ string) (*pb.Session, error) {
 	return nil, errLocalOnly("MergeSession")
 }
 
-func (c *RemoteClient) RemoveSession(_ context.Context, _ string) error {
-	return errLocalOnly("RemoveSession")
+func (c *RemoteClient) RemoveSession(ctx context.Context, id string) error {
+	_, err := c.rpc.ProxyRemoveSession(ctx, connect.NewRequest(&pb.ProxyRemoveSessionRequest{Id: id}))
+	return err
 }
 
-func (c *RemoteClient) UpdateSession(_ context.Context, _ *pb.UpdateSessionRequest) (*pb.Session, error) {
-	return nil, errLocalOnly("UpdateSession")
+func (c *RemoteClient) UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error) {
+	resp, err := c.rpc.ProxyUpdateSession(ctx, connect.NewRequest(&pb.ProxyUpdateSessionRequest{
+		Id:         req.GetId(),
+		Title:      req.Title,
+		TrackerUrl: req.TrackerUrl,
+		TrackerId:  req.TrackerId,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSession(), nil
 }
 
-func (c *RemoteClient) LinkSessionPR(_ context.Context, _, _ string) (*pb.Session, error) {
-	return nil, errLocalOnly("LinkSessionPR")
+func (c *RemoteClient) LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error) {
+	resp, err := c.rpc.ProxyLinkSessionPR(ctx, connect.NewRequest(&pb.ProxyLinkSessionPRRequest{Id: id, Pr: pr}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSession(), nil
 }
 
 // --- Archive / Resurrect (local only) ---
@@ -208,12 +373,24 @@ func (c *RemoteClient) ArchiveSession(_ context.Context, _ string) (*pb.Session,
 	return nil, errLocalOnly("ArchiveSession")
 }
 
-func (c *RemoteClient) ResurrectSession(_ context.Context, _ string) (*pb.Session, error) {
-	return nil, errLocalOnly("ResurrectSession")
+func (c *RemoteClient) ResurrectSession(ctx context.Context, id string) (*pb.Session, error) {
+	resp, err := c.rpc.ProxyResurrectSession(ctx, connect.NewRequest(&pb.ProxyResurrectSessionRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Session, nil
 }
 
-func (c *RemoteClient) EmptyTrash(_ context.Context, _ *pb.EmptyTrashRequest) (int32, error) {
-	return 0, errLocalOnly("EmptyTrash")
+// EmptyTrash proxies the daemon-wide trash purge through the orchestrator, which
+// aggregates across the caller's Ready daemons and sums the deleted counts.
+func (c *RemoteClient) EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest) (int32, error) {
+	resp, err := c.rpc.ProxyEmptyTrash(ctx, connect.NewRequest(&pb.ProxyEmptyTrashRequest{
+		OlderThan: req.GetOlderThan(),
+	}))
+	if err != nil {
+		return 0, err
+	}
+	return resp.Msg.GetDeletedCount(), nil
 }
 
 // --- Claude Chat Tracking (local only) ---
@@ -222,20 +399,36 @@ func (c *RemoteClient) RecordChat(_ context.Context, _, _, _, _ string, _ bool) 
 	return nil, errLocalOnly("RecordChat")
 }
 
-func (c *RemoteClient) ListChats(_ context.Context, _ string) ([]*pb.ClaudeChat, error) {
-	return nil, errLocalOnly("ListChats")
+// ListChats proxies a session's chat list through the orchestrator, which routes
+// by session_id to the owning daemon and enforces the session-level authz check.
+func (c *RemoteClient) ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error) {
+	resp, err := c.rpc.ProxyListChats(ctx, connect.NewRequest(&pb.ProxyListChatsRequest{SessionId: sessionID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetChats(), nil
 }
 
 func (c *RemoteClient) DescribeChatLaunch(_ context.Context, _ string) (*pb.DescribeChatLaunchResponse, error) {
 	return nil, errLocalOnly("DescribeChatLaunch")
 }
 
-func (c *RemoteClient) UpdateChatTitle(_ context.Context, _, _ string) error {
-	return errLocalOnly("UpdateChatTitle")
+func (c *RemoteClient) UpdateChatTitle(ctx context.Context, agentSessionID, title string) error {
+	_, err := c.rpc.ProxyUpdateChatTitle(ctx, connect.NewRequest(&pb.ProxyUpdateChatTitleRequest{
+		AgentSessionId: agentSessionID,
+		Title:          title,
+	}))
+	return err
 }
 
-func (c *RemoteClient) DeleteChat(_ context.Context, _ string) error {
-	return errLocalOnly("DeleteChat")
+// DeleteChat proxies a chat delete through the orchestrator, which resolves the
+// owning daemon by agent_session_id (scoped to the caller's daemons) since the
+// delete_chat tool carries no session_id.
+func (c *RemoteClient) DeleteChat(ctx context.Context, agentSessionID string) error {
+	_, err := c.rpc.ProxyDeleteChat(ctx, connect.NewRequest(&pb.ProxyDeleteChatRequest{
+		AgentSessionId: agentSessionID,
+	}))
+	return err
 }
 
 // WakeChat proxies a wake request through the orchestrator. The orchestrator
@@ -322,18 +515,26 @@ func (c *RemoteClient) SendChatMessage(ctx context.Context, req *pb.SendChatMess
 	}, nil
 }
 
-// --- Chat Status (local only) ---
+// --- Chat Status ---
 
-func (c *RemoteClient) ReportChatStatus(_ context.Context, _ []*pb.ChatStatusReport) error {
-	return errLocalOnly("ReportChatStatus")
+func (c *RemoteClient) ReportChatStatus(ctx context.Context, reports []*pb.ChatStatusReport) error {
+	_, err := c.rpc.ProxyReportChatStatus(ctx, connect.NewRequest(&pb.ProxyReportChatStatusRequest{Reports: reports}))
+	return err
 }
 
 func (c *RemoteClient) GetChatStatuses(_ context.Context, _ string) ([]*pb.ChatStatusEntry, error) {
 	return nil, errLocalOnly("GetChatStatuses")
 }
 
-func (c *RemoteClient) GetSessionStatuses(_ context.Context, _ []string) ([]*pb.SessionStatusEntry, error) {
-	return nil, errLocalOnly("GetSessionStatuses")
+// GetSessionStatuses proxies a multi-session status read through the orchestrator,
+// which fans each session_id out to its owning daemon (scoped to the caller's
+// daemons) and unions the results, skipping unknown ids.
+func (c *RemoteClient) GetSessionStatuses(ctx context.Context, sessionIDs []string) ([]*pb.SessionStatusEntry, error) {
+	resp, err := c.rpc.ProxyGetSessionStatuses(ctx, connect.NewRequest(&pb.ProxyGetSessionStatusesRequest{SessionIds: sessionIDs}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetStatuses(), nil
 }
 
 // --- Auth Change Notification (local only) ---
@@ -403,28 +604,98 @@ func (c *RemoteClient) ListGitHubAppRepos(ctx context.Context) ([]*pb.GitHubAppR
 
 // --- Cron Jobs (local only) ---
 
-func (c *RemoteClient) CreateCronJob(_ context.Context, _ *pb.CreateCronJobRequest) (*pb.CronJob, error) {
-	return nil, errLocalOnly("CreateCronJob")
+// CreateCronJob proxies a cron-job create through the orchestrator. daemon_id is
+// left empty so bosso resolves the caller's sole Ready daemon (FailedPrecondition
+// when the caller has more than one — never a silent guess).
+func (c *RemoteClient) CreateCronJob(ctx context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+	resp, err := c.rpc.ProxyCreateCronJob(ctx, connect.NewRequest(&pb.ProxyCreateCronJobRequest{
+		RepoId:          req.GetRepoId(),
+		Name:            req.GetName(),
+		Prompt:          req.GetPrompt(),
+		Schedule:        req.GetSchedule(),
+		Timezone:        req.GetTimezone(),
+		Enabled:         req.GetEnabled(),
+		AgentName:       req.GetAgentName(),
+		Model:           req.GetModel(),
+		GateCommand:     req.GetGateCommand(),
+		RunSetupCommand: req.RunSetupCommand,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetJob(), nil
 }
 
-func (c *RemoteClient) GetCronJob(_ context.Context, _ string) (*pb.CronJob, error) {
-	return nil, errLocalOnly("GetCronJob")
+// GetCronJob proxies a by-id cron-job read through the orchestrator, which
+// returns the first daemon whose registry holds the id (NotFound if none).
+func (c *RemoteClient) GetCronJob(ctx context.Context, id string) (*pb.CronJob, error) {
+	resp, err := c.rpc.ProxyGetCronJob(ctx, connect.NewRequest(&pb.ProxyGetCronJobRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetCronJob(), nil
 }
 
-func (c *RemoteClient) ListCronJobs(_ context.Context, _ string) ([]*pb.CronJob, error) {
-	return nil, errLocalOnly("ListCronJobs")
+// ListCronJobs proxies the aggregate cron-job list through the orchestrator,
+// which fans out across the caller's Ready daemons. When repoID is non-empty the
+// result is filtered client-side to that repo, matching the local daemon's
+// repo-scoped listing.
+func (c *RemoteClient) ListCronJobs(ctx context.Context, repoID string) ([]*pb.CronJob, error) {
+	resp, err := c.rpc.ProxyListCronJobs(ctx, connect.NewRequest(&pb.ProxyListCronJobsRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	jobs := make([]*pb.CronJob, 0, len(resp.Msg.GetJobs()))
+	for _, jwd := range resp.Msg.GetJobs() {
+		job := jwd.GetJob()
+		if repoID != "" && job.GetRepoId() != repoID {
+			continue
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, nil
 }
 
-func (c *RemoteClient) UpdateCronJob(_ context.Context, _ *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
-	return nil, errLocalOnly("UpdateCronJob")
+// UpdateCronJob proxies a cron-job update through the orchestrator, which
+// resolves the owning daemon by id (daemon_id left empty). Optional field
+// pointers pass straight through so an unset field leaves the value untouched.
+func (c *RemoteClient) UpdateCronJob(ctx context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
+	resp, err := c.rpc.ProxyUpdateCronJob(ctx, connect.NewRequest(&pb.ProxyUpdateCronJobRequest{
+		Id:              req.GetId(),
+		Name:            req.Name,
+		Prompt:          req.Prompt,
+		Schedule:        req.Schedule,
+		Timezone:        req.Timezone,
+		Enabled:         req.Enabled,
+		AgentName:       req.AgentName,
+		Model:           req.Model,
+		GateCommand:     req.GateCommand,
+		RunSetupCommand: req.RunSetupCommand,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetJob(), nil
 }
 
-func (c *RemoteClient) DeleteCronJob(_ context.Context, _ string) error {
-	return errLocalOnly("DeleteCronJob")
+// DeleteCronJob proxies a cron-job delete through the orchestrator, resolving the
+// owning daemon by id (daemon_id left empty).
+func (c *RemoteClient) DeleteCronJob(ctx context.Context, id string) error {
+	_, err := c.rpc.ProxyDeleteCronJob(ctx, connect.NewRequest(&pb.ProxyDeleteCronJobRequest{Id: id}))
+	return err
 }
 
-func (c *RemoteClient) RunCronJobNow(_ context.Context, _ string) (*pb.RunCronJobNowResponse, error) {
-	return nil, errLocalOnly("RunCronJobNow")
+// RunCronJobNow proxies a manual cron-job fire through the orchestrator,
+// resolving the owning daemon by id (daemon_id left empty).
+func (c *RemoteClient) RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error) {
+	resp, err := c.rpc.ProxyRunCronJobNow(ctx, connect.NewRequest(&pb.ProxyRunCronJobNowRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.RunCronJobNowResponse{
+		Session:       resp.Msg.GetSession(),
+		SkippedReason: resp.Msg.GetSkippedReason(),
+	}, nil
 }
 
 // --- Accounts (local only) ---
@@ -477,30 +748,59 @@ func (c *RemoteClient) SwitchSessionAccount(ctx context.Context, req *pb.SwitchS
 	}, nil
 }
 
-func (c *RemoteClient) RepairDoctor(_ context.Context) (*pb.RepairDoctorResponse, error) {
-	return nil, errLocalOnly("RepairDoctor")
+// RepairDoctor proxies the repair diagnostics through the orchestrator, which
+// merges checks and recent logs across the caller's Ready daemons.
+func (c *RemoteClient) RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, error) {
+	resp, err := c.rpc.ProxyRepairDoctor(ctx, connect.NewRequest(&pb.ProxyRepairDoctorRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.RepairDoctorResponse{
+		Checks:     resp.Msg.GetChecks(),
+		RecentLogs: resp.Msg.GetRecentLogs(),
+	}, nil
 }
 
 func (c *RemoteClient) StartRepairWorkflow(_ context.Context) (*pb.StartRepairWorkflowResponse, error) {
 	return nil, errLocalOnly("StartRepairWorkflow")
 }
 
-func (c *RemoteClient) ListCheckSnapshots(_ context.Context, _ string, _ int32) (*pb.ListCheckSnapshotsResponse, error) {
-	return nil, errLocalOnly("ListCheckSnapshots")
+// ListCheckSnapshots proxies a session's CI check-snapshot history through the
+// orchestrator, which routes by session_id to the owning daemon.
+func (c *RemoteClient) ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error) {
+	resp, err := c.rpc.ProxyListCheckSnapshots(ctx, connect.NewRequest(&pb.ProxyListCheckSnapshotsRequest{
+		SessionId: sessionID,
+		Limit:     limit,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.ListCheckSnapshotsResponse{Snapshots: resp.Msg.GetSnapshots()}, nil
 }
 
-func (c *RemoteClient) ListAgents(_ context.Context) ([]AgentInfo, error) {
-	// Agent listing is a local-daemon concept; the orchestrator doesn't expose
-	// it (each daemon has its own loaded plugin set). Return an empty list so
-	// callers can render "no agents loaded" instead of erroring out the way
-	// other local-only RPCs do.
-	return nil, nil
+// ListAgents proxies the aggregate agent-runner list through the orchestrator,
+// which concatenates each Ready daemon's loaded plugin set, converting each proto
+// AgentInfo into the package-local type views consume.
+func (c *RemoteClient) ListAgents(ctx context.Context) ([]AgentInfo, error) {
+	resp, err := c.rpc.ProxyListAgentsAggregated(ctx, connect.NewRequest(&pb.ProxyListAgentsAggregatedRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	agents := make([]AgentInfo, 0, len(resp.Msg.GetAgents()))
+	for _, a := range resp.Msg.GetAgents() {
+		agents = append(agents, agentInfoFromProto(a))
+	}
+	return agents, nil
 }
 
-func (c *RemoteClient) ListPlugins(_ context.Context) ([]*pb.InstalledPlugin, error) {
-	// Plugin status, like agent listing, is per-daemon and intentionally
-	// not proxied through the orchestrator.
-	return nil, errLocalOnly("ListPlugins")
+// ListPlugins proxies the aggregate installed-plugin list through the
+// orchestrator, which concatenates each Ready daemon's plugin set.
+func (c *RemoteClient) ListPlugins(ctx context.Context) ([]*pb.InstalledPlugin, error) {
+	resp, err := c.rpc.ProxyListPlugins(ctx, connect.NewRequest(&pb.ProxyListPluginsRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetPlugins(), nil
 }
 
 // remoteAttachStream wraps the OrchestratorService ProxyAttachSession stream.

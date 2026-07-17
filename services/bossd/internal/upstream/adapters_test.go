@@ -10,26 +10,36 @@ import (
 	connect "connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // fakeSessionCommandServer captures the last RecordChatRequest and returns a
 // stub response. The other three methods return zero-value responses; they are
 // unused by these tests but required to satisfy SessionCommandServer.
 type fakeSessionCommandServer struct {
-	lastRecordChat   *pb.RecordChatRequest
-	lastTranscriptID string
-	lastSendReq      *pb.SendChatMessageRequest
-	lastSwitchReq    *pb.SwitchSessionAccountRequest
-	switchResp       *pb.SwitchSessionAccountResponse
-	lastCreateCron   *pb.CreateCronJobRequest
-	lastUpdateCron   *pb.UpdateCronJobRequest
-	lastDeleteCronID string
-	lastRunCronID    string
-	lastAddAccount   *pb.AddAccountRequest
-	lastRefreshAcct  *pb.RefreshAccountRequest
-	lastUpdateAcct   *pb.UpdateAccountRequest
-	lastRemoveAcctID string
-	lastTestAcctID   string
+	lastRecordChat       *pb.RecordChatRequest
+	lastTranscriptID     string
+	lastSendReq          *pb.SendChatMessageRequest
+	lastSwitchReq        *pb.SwitchSessionAccountRequest
+	switchResp           *pb.SwitchSessionAccountResponse
+	lastCreateCron       *pb.CreateCronJobRequest
+	lastUpdateCron       *pb.UpdateCronJobRequest
+	lastDeleteCronID     string
+	lastRunCronID        string
+	lastAddAccount       *pb.AddAccountRequest
+	lastRefreshAcct      *pb.RefreshAccountRequest
+	lastUpdateAcct       *pb.UpdateAccountRequest
+	lastRemoveAcctID     string
+	lastTestAcctID       string
+	lastCloseID          string
+	lastResurrectID      string
+	lastRemoveSessionID  string
+	lastEmptyTrashReq    *pb.EmptyTrashRequest
+	lastRetryID          string
+	lastUpdateReq        *pb.UpdateSessionRequest
+	lastLinkReq          *pb.LinkSessionPRRequest
+	lastUpdateChatTitle  *pb.UpdateChatTitleRequest
+	lastReportChatStatus *pb.ReportChatStatusRequest
 }
 
 func (f *fakeSessionCommandServer) MergeSession(_ context.Context, _ *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
@@ -49,6 +59,41 @@ func (f *fakeSessionCommandServer) ArchiveSession(_ context.Context, _ *connect.
 	return connect.NewResponse(&pb.ArchiveSessionResponse{}), nil
 }
 
+func (f *fakeSessionCommandServer) CloseSession(_ context.Context, req *connect.Request[pb.CloseSessionRequest]) (*connect.Response[pb.CloseSessionResponse], error) {
+	f.lastCloseID = req.Msg.GetId()
+	return connect.NewResponse(&pb.CloseSessionResponse{Session: &pb.Session{Id: req.Msg.GetId()}}), nil
+}
+
+func (f *fakeSessionCommandServer) ResurrectSession(_ context.Context, req *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error) {
+	f.lastResurrectID = req.Msg.GetId()
+	return connect.NewResponse(&pb.ResurrectSessionResponse{Session: &pb.Session{Id: req.Msg.GetId()}}), nil
+}
+
+func (f *fakeSessionCommandServer) RemoveSession(_ context.Context, req *connect.Request[pb.RemoveSessionRequest]) (*connect.Response[pb.RemoveSessionResponse], error) {
+	f.lastRemoveSessionID = req.Msg.GetId()
+	return connect.NewResponse(&pb.RemoveSessionResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) EmptyTrash(_ context.Context, req *connect.Request[pb.EmptyTrashRequest]) (*connect.Response[pb.EmptyTrashResponse], error) {
+	f.lastEmptyTrashReq = req.Msg
+	return connect.NewResponse(&pb.EmptyTrashResponse{DeletedCount: 3}), nil
+}
+
+func (f *fakeSessionCommandServer) RetrySession(_ context.Context, req *connect.Request[pb.RetrySessionRequest]) (*connect.Response[pb.RetrySessionResponse], error) {
+	f.lastRetryID = req.Msg.GetId()
+	return connect.NewResponse(&pb.RetrySessionResponse{Session: &pb.Session{Id: req.Msg.GetId()}}), nil
+}
+
+func (f *fakeSessionCommandServer) UpdateSession(_ context.Context, req *connect.Request[pb.UpdateSessionRequest]) (*connect.Response[pb.UpdateSessionResponse], error) {
+	f.lastUpdateReq = req.Msg
+	return connect.NewResponse(&pb.UpdateSessionResponse{Session: &pb.Session{Id: req.Msg.GetId()}}), nil
+}
+
+func (f *fakeSessionCommandServer) LinkSessionPR(_ context.Context, req *connect.Request[pb.LinkSessionPRRequest]) (*connect.Response[pb.LinkSessionPRResponse], error) {
+	f.lastLinkReq = req.Msg
+	return connect.NewResponse(&pb.LinkSessionPRResponse{Session: &pb.Session{Id: req.Msg.GetId()}}), nil
+}
+
 func (f *fakeSessionCommandServer) RecordChat(_ context.Context, req *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
 	f.lastRecordChat = req.Msg
 	return connect.NewResponse(&pb.RecordChatResponse{
@@ -58,6 +103,16 @@ func (f *fakeSessionCommandServer) RecordChat(_ context.Context, req *connect.Re
 
 func (f *fakeSessionCommandServer) DeleteChat(_ context.Context, _ *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error) {
 	return connect.NewResponse(&pb.DeleteChatResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) UpdateChatTitle(_ context.Context, req *connect.Request[pb.UpdateChatTitleRequest]) (*connect.Response[pb.UpdateChatTitleResponse], error) {
+	f.lastUpdateChatTitle = req.Msg
+	return connect.NewResponse(&pb.UpdateChatTitleResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) ReportChatStatus(_ context.Context, req *connect.Request[pb.ReportChatStatusRequest]) (*connect.Response[pb.ReportChatStatusResponse], error) {
+	f.lastReportChatStatus = req.Msg
+	return connect.NewResponse(&pb.ReportChatStatusResponse{}), nil
 }
 
 func (f *fakeSessionCommandServer) ListRepos(_ context.Context, _ *connect.Request[pb.ListReposRequest]) (*connect.Response[pb.ListReposResponse], error) {
@@ -155,6 +210,30 @@ func (f *fakeSessionCommandServer) TestAccount(_ context.Context, req *connect.R
 	return connect.NewResponse(&pb.TestAccountResponse{Account: &pb.Account{Id: req.Msg.GetId()}, LiveSmokeRan: true, Detail: "credential test passed"}), nil
 }
 
+func (f *fakeSessionCommandServer) ListChats(_ context.Context, _ *connect.Request[pb.ListChatsRequest]) (*connect.Response[pb.ListChatsResponse], error) {
+	return connect.NewResponse(&pb.ListChatsResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) GetSessionStatuses(_ context.Context, _ *connect.Request[pb.GetSessionStatusesRequest]) (*connect.Response[pb.GetSessionStatusesResponse], error) {
+	return connect.NewResponse(&pb.GetSessionStatusesResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) ListCheckSnapshots(_ context.Context, _ *connect.Request[pb.ListCheckSnapshotsRequest]) (*connect.Response[pb.ListCheckSnapshotsResponse], error) {
+	return connect.NewResponse(&pb.ListCheckSnapshotsResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) ListPlugins(_ context.Context, _ *connect.Request[pb.ListPluginsRequest]) (*connect.Response[pb.ListPluginsResponse], error) {
+	return connect.NewResponse(&pb.ListPluginsResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) GetCronJob(_ context.Context, _ *connect.Request[pb.GetCronJobRequest]) (*connect.Response[pb.GetCronJobResponse], error) {
+	return connect.NewResponse(&pb.GetCronJobResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) RepairDoctor(_ context.Context, _ *connect.Request[pb.RepairDoctorRequest]) (*connect.Response[pb.RepairDoctorResponse], error) {
+	return connect.NewResponse(&pb.RepairDoctorResponse{}), nil
+}
+
 // fakeAutomationToggler records the last SetAutomationEnabled call and returns
 // the configured error, driving the pause/resume adapter paths.
 type fakeAutomationToggler struct {
@@ -210,11 +289,31 @@ func (e *errCommandServer) ArchiveSession(context.Context, *connect.Request[pb.A
 	return nil, e.err
 }
 
+func (e *errCommandServer) RetrySession(context.Context, *connect.Request[pb.RetrySessionRequest]) (*connect.Response[pb.RetrySessionResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) UpdateSession(context.Context, *connect.Request[pb.UpdateSessionRequest]) (*connect.Response[pb.UpdateSessionResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) LinkSessionPR(context.Context, *connect.Request[pb.LinkSessionPRRequest]) (*connect.Response[pb.LinkSessionPRResponse], error) {
+	return nil, e.err
+}
+
 func (e *errCommandServer) RecordChat(context.Context, *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
 	return nil, e.err
 }
 
 func (e *errCommandServer) DeleteChat(context.Context, *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) UpdateChatTitle(context.Context, *connect.Request[pb.UpdateChatTitleRequest]) (*connect.Response[pb.UpdateChatTitleResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ReportChatStatus(context.Context, *connect.Request[pb.ReportChatStatusRequest]) (*connect.Response[pb.ReportChatStatusResponse], error) {
 	return nil, e.err
 }
 
@@ -295,6 +394,46 @@ func (e *errCommandServer) RemoveAccount(context.Context, *connect.Request[pb.Re
 }
 
 func (e *errCommandServer) TestAccount(context.Context, *connect.Request[pb.TestAccountRequest]) (*connect.Response[pb.TestAccountResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ListChats(context.Context, *connect.Request[pb.ListChatsRequest]) (*connect.Response[pb.ListChatsResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) GetSessionStatuses(context.Context, *connect.Request[pb.GetSessionStatusesRequest]) (*connect.Response[pb.GetSessionStatusesResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ListCheckSnapshots(context.Context, *connect.Request[pb.ListCheckSnapshotsRequest]) (*connect.Response[pb.ListCheckSnapshotsResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ListPlugins(context.Context, *connect.Request[pb.ListPluginsRequest]) (*connect.Response[pb.ListPluginsResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) GetCronJob(context.Context, *connect.Request[pb.GetCronJobRequest]) (*connect.Response[pb.GetCronJobResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) RepairDoctor(context.Context, *connect.Request[pb.RepairDoctorRequest]) (*connect.Response[pb.RepairDoctorResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) CloseSession(context.Context, *connect.Request[pb.CloseSessionRequest]) (*connect.Response[pb.CloseSessionResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ResurrectSession(context.Context, *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) RemoveSession(context.Context, *connect.Request[pb.RemoveSessionRequest]) (*connect.Response[pb.RemoveSessionResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) EmptyTrash(context.Context, *connect.Request[pb.EmptyTrashRequest]) (*connect.Response[pb.EmptyTrashResponse], error) {
 	return nil, e.err
 }
 
@@ -796,6 +935,151 @@ func TestCommandHandlerAdapter_MergeSession(t *testing.T) {
 	})
 }
 
+func TestCommandHandlerAdapter_RetrySession(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty session id is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		if _, err := adapter.RetrySession(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "retry: session_id required") {
+			t.Fatalf("RetrySession error = %v, want retry: session_id required", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.RetrySession(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "retry session: boom") {
+			t.Fatalf("RetrySession error = %v, want retry session: boom", err)
+		}
+	})
+
+	t.Run("forwards id and returns session", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		sess, err := adapter.RetrySession(context.Background(), "s1")
+		if err != nil {
+			t.Fatalf("RetrySession returned error: %v", err)
+		}
+		if fake.lastRetryID != "s1" || sess.GetId() != "s1" {
+			t.Fatalf("retry id = %q, session = %+v", fake.lastRetryID, sess)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_UpdateSession(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty session id is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		if _, err := adapter.UpdateSession(context.Background(), &pb.UpdateSessionCommand{}); err == nil || !strings.Contains(err.Error(), "update_session: session_id required") {
+			t.Fatalf("UpdateSession error = %v, want session_id required", err)
+		}
+	})
+
+	t.Run("forwards optional title/tracker pointers unchanged", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		title := "New"
+		trackerID := "BOS-9"
+		if _, err := adapter.UpdateSession(context.Background(), &pb.UpdateSessionCommand{
+			SessionId: "s1", Title: &title, TrackerId: &trackerID,
+		}); err != nil {
+			t.Fatalf("UpdateSession returned error: %v", err)
+		}
+		if fake.lastUpdateReq.GetId() != "s1" || fake.lastUpdateReq.GetTitle() != title || fake.lastUpdateReq.GetTrackerId() != trackerID {
+			t.Fatalf("forwarded req = %+v", fake.lastUpdateReq)
+		}
+		if fake.lastUpdateReq.TrackerUrl != nil {
+			t.Fatalf("tracker_url should stay nil, got %v", fake.lastUpdateReq.TrackerUrl)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_LinkSessionPR(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty session id is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		if _, err := adapter.LinkSessionPR(context.Background(), "", "1"); err == nil || !strings.Contains(err.Error(), "link_session_pr: session_id required") {
+			t.Fatalf("LinkSessionPR error = %v, want session_id required", err)
+		}
+	})
+
+	t.Run("forwards id and pr", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		if _, err := adapter.LinkSessionPR(context.Background(), "s1", "42"); err != nil {
+			t.Fatalf("LinkSessionPR returned error: %v", err)
+		}
+		if fake.lastLinkReq.GetId() != "s1" || fake.lastLinkReq.GetPr() != "42" {
+			t.Fatalf("forwarded req = %+v", fake.lastLinkReq)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_UpdateChatTitle(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty agent id is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		if err := adapter.UpdateChatTitle(context.Background(), "", "t"); err == nil || !strings.Contains(err.Error(), "update_chat_title: agent_session_id required") {
+			t.Fatalf("UpdateChatTitle error = %v, want agent_session_id required", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if err := adapter.UpdateChatTitle(context.Background(), "agent-1", "t"); err == nil || !strings.Contains(err.Error(), "update chat title: boom") {
+			t.Fatalf("UpdateChatTitle error = %v, want update chat title: boom", err)
+		}
+	})
+
+	t.Run("forwards agent id and title", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		if err := adapter.UpdateChatTitle(context.Background(), "agent-1", "Renamed"); err != nil {
+			t.Fatalf("UpdateChatTitle returned error: %v", err)
+		}
+		if fake.lastUpdateChatTitle.GetAgentSessionId() != "agent-1" || fake.lastUpdateChatTitle.GetTitle() != "Renamed" {
+			t.Fatalf("forwarded req = %+v", fake.lastUpdateChatTitle)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_ReportChatStatus(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if err := adapter.ReportChatStatus(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "report_chat_status: command server not wired") {
+			t.Fatalf("ReportChatStatus error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("forwards the reports slice", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		reports := []*pb.ChatStatusReport{{AgentSessionId: "agent-1"}, {AgentSessionId: "agent-2"}}
+		if err := adapter.ReportChatStatus(context.Background(), reports); err != nil {
+			t.Fatalf("ReportChatStatus returned error: %v", err)
+		}
+		if len(fake.lastReportChatStatus.GetReports()) != 2 {
+			t.Fatalf("forwarded reports = %d, want 2", len(fake.lastReportChatStatus.GetReports()))
+		}
+	})
+}
+
 func TestCommandHandlerAdapter_SwitchAccount(t *testing.T) {
 	t.Parallel()
 
@@ -891,6 +1175,142 @@ func TestCommandHandlerAdapter_ArchiveSession(t *testing.T) {
 		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
 		if _, err := adapter.ArchiveSession(context.Background(), "s1"); err != nil {
 			t.Fatalf("ArchiveSession returned error: %v", err)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_CloseSession(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty session id is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		if _, err := adapter.CloseSession(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "close: session_id required") {
+			t.Fatalf("CloseSession error = %v, want close: session_id required", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.CloseSession(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "close session: boom") {
+			t.Fatalf("CloseSession error = %v, want close session: boom", err)
+		}
+	})
+
+	t.Run("returns the session on success", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		sess, err := adapter.CloseSession(context.Background(), "s1")
+		if err != nil {
+			t.Fatalf("CloseSession returned error: %v", err)
+		}
+		if fake.lastCloseID != "s1" || sess.GetId() != "s1" {
+			t.Fatalf("CloseSession id plumbing = %q / %q, want s1", fake.lastCloseID, sess.GetId())
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_ResurrectSession(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty session id is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		if _, err := adapter.ResurrectSession(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "resurrect: session_id required") {
+			t.Fatalf("ResurrectSession error = %v, want resurrect: session_id required", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.ResurrectSession(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "resurrect session: boom") {
+			t.Fatalf("ResurrectSession error = %v, want resurrect session: boom", err)
+		}
+	})
+
+	t.Run("returns the session on success", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		sess, err := adapter.ResurrectSession(context.Background(), "s1")
+		if err != nil {
+			t.Fatalf("ResurrectSession returned error: %v", err)
+		}
+		if fake.lastResurrectID != "s1" || sess.GetId() != "s1" {
+			t.Fatalf("ResurrectSession id plumbing = %q / %q, want s1", fake.lastResurrectID, sess.GetId())
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_RemoveSession(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty session id is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		if err := adapter.RemoveSession(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "remove: session_id required") {
+			t.Fatalf("RemoveSession error = %v, want remove: session_id required", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if err := adapter.RemoveSession(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "remove session: boom") {
+			t.Fatalf("RemoveSession error = %v, want remove session: boom", err)
+		}
+	})
+
+	t.Run("succeeds when the command server returns ok", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		if err := adapter.RemoveSession(context.Background(), "s1"); err != nil {
+			t.Fatalf("RemoveSession returned error: %v", err)
+		}
+		if fake.lastRemoveSessionID != "s1" {
+			t.Fatalf("RemoveSession id = %q, want s1", fake.lastRemoveSessionID)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_EmptyTrash(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.EmptyTrash(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "empty_trash: command server not wired") {
+			t.Fatalf("EmptyTrash error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.EmptyTrash(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "empty trash: boom") {
+			t.Fatalf("EmptyTrash error = %v, want empty trash: boom", err)
+		}
+	})
+
+	t.Run("threads older_than and returns the deleted count", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		older := timestamppb.Now()
+		count, err := adapter.EmptyTrash(context.Background(), older)
+		if err != nil {
+			t.Fatalf("EmptyTrash returned error: %v", err)
+		}
+		if count != 3 {
+			t.Fatalf("EmptyTrash count = %d, want 3", count)
+		}
+		if fake.lastEmptyTrashReq == nil || fake.lastEmptyTrashReq.GetOlderThan() == nil ||
+			!fake.lastEmptyTrashReq.GetOlderThan().AsTime().Equal(older.AsTime()) {
+			t.Fatalf("EmptyTrash older_than not threaded through: %+v", fake.lastEmptyTrashReq)
 		}
 	})
 }

@@ -309,6 +309,8 @@ func repoCmd() *cobra.Command {
 	update.Flags().Bool("no-auto-merge-dependabot", false, "Disable auto-merge for Dependabot PRs")
 	update.Flags().Bool("auto-repair", false, "Enable automatic repair (failing checks, conflicts, review feedback)")
 	update.Flags().Bool("no-auto-repair", false, "Disable automatic repair")
+	update.Flags().Bool("delete-branches", false, "Enable deleting safe local branches after archiving")
+	update.Flags().Bool("no-delete-branches", false, "Disable deleting local branches after archiving")
 
 	repo.AddCommand(
 		&cobra.Command{

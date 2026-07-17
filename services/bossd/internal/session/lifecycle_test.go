@@ -766,6 +766,10 @@ type mockWorktreeManager struct {
 	fetchedBases                []string
 	fetchBaseErr                error
 	isAncestorFn                func(localPath, ref, target string) (bool, error)
+	branchSafeToDelete          bool     // returned by BranchSafeToDelete when branchSafeToDeleteErr is nil
+	branchSafeToDeleteErr       error    // if set, BranchSafeToDelete returns this error
+	deletedLocalBranches        []string // branches passed to DeleteLocalBranch
+	deleteLocalBranchErr        error    // if set, DeleteLocalBranch returns this error
 	injectPRNumbersCalls        []injectPRNumbersCall
 	injectPRNumbersErr          error
 	retryDeferredBaseSyncsCalls int
@@ -905,6 +909,15 @@ func (m *mockWorktreeManager) Clone(_ context.Context, _, _ string) error {
 
 func (m *mockWorktreeManager) EmptyTrash(_ context.Context, _ string, _ []string) error {
 	return nil
+}
+
+func (m *mockWorktreeManager) DeleteLocalBranch(_ context.Context, _, branch string) error {
+	m.deletedLocalBranches = append(m.deletedLocalBranches, branch)
+	return m.deleteLocalBranchErr
+}
+
+func (m *mockWorktreeManager) BranchSafeToDelete(_ context.Context, _, _, _ string) (bool, error) {
+	return m.branchSafeToDelete, m.branchSafeToDeleteErr
 }
 
 func (m *mockWorktreeManager) DetectOriginURL(_ context.Context, _ string) (string, error) {
@@ -1837,6 +1850,135 @@ func TestArchiveSession(t *testing.T) {
 	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/worktrees/test-repo/test" {
 		t.Errorf("expected worktree archived at /tmp/worktrees/test-repo/test, got %v", wt.archived)
 	}
+}
+
+func TestArchiveSessionDeletesLocalBranch(t *testing.T) {
+	// buildLifecycle wires a lifecycle around a session on branch "feature" whose
+	// worktree differs from the repo local path (the non-quick-chat path).
+	buildLifecycle := func(t *testing.T, canAutoDelete, safe bool, deleteErr error, worktreePath string) (*Lifecycle, *mockWorktreeManager) {
+		t.Helper()
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		wt := &mockWorktreeManager{branchSafeToDelete: safe, deleteLocalBranchErr: deleteErr}
+		cr := newMockAgentRunner()
+
+		repos.repos["repo-1"] = &models.Repo{
+			ID:                    "repo-1",
+			LocalPath:             "/tmp/repo",
+			CanAutoDeleteBranches: canAutoDelete,
+		}
+		sessions.sessions["sess-1"] = &models.Session{
+			ID:           "sess-1",
+			RepoID:       "repo-1",
+			State:        machine.ImplementingPlan,
+			WorktreePath: worktreePath,
+			BranchName:   "feature",
+			BaseBranch:   "main",
+		}
+
+		lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+		return lc, wt
+	}
+
+	t.Run("flag on and branch safe deletes the branch", func(t *testing.T) {
+		lc, wt := buildLifecycle(t, true, true, nil, "/tmp/worktrees/test-repo/test")
+		if err := lc.ArchiveSession(context.Background(), "sess-1"); err != nil {
+			t.Fatalf("ArchiveSession: %v", err)
+		}
+		if len(wt.deletedLocalBranches) != 1 || wt.deletedLocalBranches[0] != "feature" {
+			t.Errorf("expected DeleteLocalBranch once with %q, got %v", "feature", wt.deletedLocalBranches)
+		}
+	})
+
+	t.Run("flag off never deletes", func(t *testing.T) {
+		lc, wt := buildLifecycle(t, false, true, nil, "/tmp/worktrees/test-repo/test")
+		if err := lc.ArchiveSession(context.Background(), "sess-1"); err != nil {
+			t.Fatalf("ArchiveSession: %v", err)
+		}
+		if len(wt.deletedLocalBranches) != 0 {
+			t.Errorf("expected no DeleteLocalBranch, got %v", wt.deletedLocalBranches)
+		}
+	})
+
+	t.Run("branch unsafe never deletes", func(t *testing.T) {
+		lc, wt := buildLifecycle(t, true, false, nil, "/tmp/worktrees/test-repo/test")
+		if err := lc.ArchiveSession(context.Background(), "sess-1"); err != nil {
+			t.Fatalf("ArchiveSession: %v", err)
+		}
+		if len(wt.deletedLocalBranches) != 0 {
+			t.Errorf("expected no DeleteLocalBranch for unsafe branch, got %v", wt.deletedLocalBranches)
+		}
+	})
+
+	t.Run("quick chat session never deletes", func(t *testing.T) {
+		// Quick chat: worktree path equals the repo local path, so the whole
+		// archive+delete block is skipped.
+		lc, wt := buildLifecycle(t, true, true, nil, "/tmp/repo")
+		if err := lc.ArchiveSession(context.Background(), "sess-1"); err != nil {
+			t.Fatalf("ArchiveSession: %v", err)
+		}
+		if len(wt.deletedLocalBranches) != 0 {
+			t.Errorf("expected no DeleteLocalBranch for quick chat, got %v", wt.deletedLocalBranches)
+		}
+		if len(wt.archived) != 0 {
+			t.Errorf("expected no worktree archive for quick chat, got %v", wt.archived)
+		}
+	})
+
+	t.Run("delete failure does not fail archive", func(t *testing.T) {
+		lc, wt := buildLifecycle(t, true, true, errors.New("boom"), "/tmp/worktrees/test-repo/test")
+		if err := lc.ArchiveSession(context.Background(), "sess-1"); err != nil {
+			t.Fatalf("ArchiveSession should swallow delete errors, got: %v", err)
+		}
+		if len(wt.deletedLocalBranches) != 1 {
+			t.Errorf("expected DeleteLocalBranch attempted once, got %v", wt.deletedLocalBranches)
+		}
+	})
+
+	t.Run("safe-check error keeps branch and does not fail archive", func(t *testing.T) {
+		// BranchSafeToDelete itself erroring is a best-effort no-op: the archive
+		// has already succeeded, so the branch is kept and no error propagates.
+		lc, wt := buildLifecycle(t, true, true, nil, "/tmp/worktrees/test-repo/test")
+		wt.branchSafeToDeleteErr = errors.New("git blew up")
+		if err := lc.ArchiveSession(context.Background(), "sess-1"); err != nil {
+			t.Fatalf("ArchiveSession should swallow predicate errors, got: %v", err)
+		}
+		if len(wt.deletedLocalBranches) != 0 {
+			t.Errorf("expected no DeleteLocalBranch when safe-check errors, got %v", wt.deletedLocalBranches)
+		}
+	})
+
+	t.Run("base branch is never deleted", func(t *testing.T) {
+		// A session whose BranchName equals its BaseBranch would pass the
+		// self-ancestor safe check; only the base-branch guard prevents the
+		// destructive `git branch -D <base>`. BranchSafeToDelete must never even
+		// be consulted here.
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		wt := &mockWorktreeManager{branchSafeToDelete: true}
+		cr := newMockAgentRunner()
+		repos.repos["repo-1"] = &models.Repo{
+			ID:                    "repo-1",
+			LocalPath:             "/tmp/repo",
+			DefaultBaseBranch:     "main",
+			CanAutoDeleteBranches: true,
+		}
+		sessions.sessions["sess-1"] = &models.Session{
+			ID:           "sess-1",
+			RepoID:       "repo-1",
+			State:        machine.ImplementingPlan,
+			WorktreePath: "/tmp/worktrees/test-repo/test",
+			BranchName:   "main",
+			BaseBranch:   "main",
+		}
+		lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+		if err := lc.ArchiveSession(context.Background(), "sess-1"); err != nil {
+			t.Fatalf("ArchiveSession: %v", err)
+		}
+		if len(wt.deletedLocalBranches) != 0 {
+			t.Errorf("expected the base branch to be kept, got deletes %v", wt.deletedLocalBranches)
+		}
+	})
 }
 
 func TestResurrectSession(t *testing.T) {

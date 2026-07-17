@@ -194,11 +194,13 @@ Update repository settings
 - `--auto-merge` — Enable auto-merge
 - `--auto-merge-dependabot` — Enable auto-merge for Dependabot PRs
 - `--auto-repair` — Enable automatic repair (failing checks, conflicts, review feedback)
+- `--delete-branches` — Enable deleting safe local branches after archiving
 - `--merge-strategy` — Set merge strategy (merge, rebase, squash)
 - `--name` — Set display name
 - `--no-auto-merge` — Disable auto-merge
 - `--no-auto-merge-dependabot` — Disable auto-merge for Dependabot PRs
 - `--no-auto-repair` — Disable automatic repair
+- `--no-delete-branches` — Disable deleting local branches after archiving
 - `--setup-script` — Set setup script (empty string to clear)
 
 ```bash

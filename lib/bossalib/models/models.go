@@ -67,12 +67,15 @@ type Repo struct {
 	// ArchiveSessionsAfterMerge controls whether the daemon archives a session
 	// once its PR is detected as merged. Defaults true.
 	ArchiveSessionsAfterMerge bool
-	MergeStrategy             MergeStrategy
-	LinearAPIKey              string
-	SentryAPIKey              string
-	SentryOrg                 string
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
+	// CanAutoDeleteBranches controls whether the daemon deletes a session's git
+	// branch once its session is archived. Defaults true.
+	CanAutoDeleteBranches bool
+	MergeStrategy         MergeStrategy
+	LinearAPIKey          string
+	SentryAPIKey          string
+	SentryOrg             string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 // Session represents an agent coding session.

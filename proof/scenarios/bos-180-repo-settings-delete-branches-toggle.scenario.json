@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "title": "BOS-180 Repo settings → Delete branches after archiving toggle",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "open a repo's settings from the Settings hub",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        {
+          "expect": {
+            "text": "[r]epos",
+            "match": "normalized",
+            "label": "Settings action bar advertises [r]epos"
+          },
+          "caption": "Settings action bar shows the [r]epos entry"
+        },
+        { "key": "r", "caption": "Press [r] to open the repository list" },
+        {
+          "waitFor": {
+            "anyOf": [
+              { "text": "design-system", "match": "normalized" },
+              { "text": "[enter] settings", "match": "normalized" }
+            ],
+            "label": "Repository list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Repository list settled (design-system sorts first)"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the Delete-branches-after-archiving toggle renders checked by default",
+      "steps": [
+        {
+          "key": "enter",
+          "caption": "Press [enter] to open the selected repo's settings"
+        },
+        {
+          "waitFor": "[x] Delete branches after archiving",
+          "timeoutMs": 10000,
+          "caption": "Repository settings — Automations section visible"
+        },
+        {
+          "expect": [
+            {
+              "text": "Automations",
+              "match": "normalized",
+              "label": "Automations section heading"
+            },
+            {
+              "text": "[x] Archive sessions after merging PRs",
+              "match": "normalized",
+              "label": "existing archive-after-merge toggle (sibling)"
+            },
+            {
+              "text": "[x] Delete branches after archiving",
+              "match": "normalized",
+              "label": "new delete-branches toggle, checked by default"
+            }
+          ],
+          "caption": "New 'Delete branches after archiving' checkbox renders default-checked under Automations, below the archive-after-merge toggle"
+        }
+      ]
+    }
+  ]
+}

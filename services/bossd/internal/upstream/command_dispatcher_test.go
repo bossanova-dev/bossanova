@@ -12,34 +12,50 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type fakeCommandHandler struct {
-	stopCalls            atomic.Int32
-	pauseCalls           atomic.Int32
-	resumeCalls          atomic.Int32
-	wakeCalls            atomic.Int32
-	mergeCalls           atomic.Int32
-	archiveCalls         atomic.Int32
-	recordChatCalls      atomic.Int32
-	deleteChatCalls      atomic.Int32
-	deleteChatScope      string // last sessionID passed to DeleteChat
-	listReposCalls       atomic.Int32
-	listAgentsCalls      atomic.Int32
-	listAccountsCalls    atomic.Int32
-	returnErr            error
-	session              *pb.Session
-	mergeSession         *pb.Session
-	archiveSession       *pb.Session
-	recordChatResult     *pb.ClaudeChat
-	listReposResult      *pb.ListReposResponse
-	listAgentsResult     *pb.ListAgentsResponse
-	listAccountsResult   *pb.ListAccountsResponse
-	listAccountsProvider string // last provider passed to ListAccounts
-	repoSettings         *pb.GetRepoSettingsResponse
-	updatedRepo          *pb.UpdateRepoResponse
-	removedRepoID        string
-	updatedRepoRequest   *pb.UpdateRepoCommand
+	stopCalls               atomic.Int32
+	pauseCalls              atomic.Int32
+	resumeCalls             atomic.Int32
+	wakeCalls               atomic.Int32
+	mergeCalls              atomic.Int32
+	archiveCalls            atomic.Int32
+	retryCalls              atomic.Int32
+	updateSessionCalls      atomic.Int32
+	linkPRCalls             atomic.Int32
+	recordChatCalls         atomic.Int32
+	deleteChatCalls         atomic.Int32
+	deleteChatScope         string // last sessionID passed to DeleteChat
+	updateChatTitleCalls    atomic.Int32
+	reportChatStatusCalls   atomic.Int32
+	listReposCalls          atomic.Int32
+	listAgentsCalls         atomic.Int32
+	listAccountsCalls       atomic.Int32
+	returnErr               error
+	session                 *pb.Session
+	mergeSession            *pb.Session
+	archiveSession          *pb.Session
+	retrySession            *pb.Session
+	retrySessionID          string // last sessionID passed to RetrySession
+	updateSession           *pb.Session
+	updateSessionCmd        *pb.UpdateSessionCommand // last command passed to UpdateSession
+	linkSession             *pb.Session
+	linkSessionID           string                 // last sessionID passed to LinkSessionPR
+	linkPR                  string                 // last pr passed to LinkSessionPR
+	updateChatTitleAgentID  string                 // last agentSessionID passed to UpdateChatTitle
+	updateChatTitleValue    string                 // last title passed to UpdateChatTitle
+	reportChatStatusReports []*pb.ChatStatusReport // last reports passed to ReportChatStatus
+	recordChatResult        *pb.ClaudeChat
+	listReposResult         *pb.ListReposResponse
+	listAgentsResult        *pb.ListAgentsResponse
+	listAccountsResult      *pb.ListAccountsResponse
+	listAccountsProvider    string // last provider passed to ListAccounts
+	repoSettings            *pb.GetRepoSettingsResponse
+	updatedRepo             *pb.UpdateRepoResponse
+	removedRepoID           string
+	updatedRepoRequest      *pb.UpdateRepoCommand
 	// ListRepoPRs / ListTrackerIssues knobs.
 	repoPRs    *pb.ListRepoPRsResponse
 	issues     *pb.ListTrackerIssuesResponse
@@ -93,6 +109,26 @@ type fakeCommandHandler struct {
 	testAccountResult    *pb.TestAccountResponse
 	testAccountID        string // last id passed to TestAccount
 	removeAccountID      string // last id passed to RemoveAccount
+	// Read-tier parity knobs (BOS-401).
+	listChatsResult          *pb.ListChatsResponse
+	listChatsSession         string // last sessionID passed to ListChats
+	sessionStatusesResult    *pb.GetSessionStatusesResponse
+	sessionStatusesIDs       []string // last sessionIDs passed to GetSessionStatuses
+	listCheckSnapshotsResult *pb.ListCheckSnapshotsResponse
+	checkSnapshotsSession    string // last sessionID passed to ListCheckSnapshots
+	checkSnapshotsLimit      int32  // last limit passed to ListCheckSnapshots
+	listPluginsResult        *pb.ListPluginsResponse
+	getCronJobResult         *pb.GetCronJobResponse
+	getCronJobID             string // last id passed to GetCronJob
+	repairDoctorResult       *pb.RepairDoctorResponse
+
+	closeSession        *pb.Session
+	closeSessionID      string // last sessionID passed to CloseSession
+	resurrectSession    *pb.Session
+	resurrectSessionID  string // last sessionID passed to ResurrectSession
+	removeSessionID     string // last sessionID passed to RemoveSession
+	emptyTrashOlderThan *timestamppb.Timestamp
+	emptyTrashCount     int32
 }
 
 func (f *fakeCommandHandler) Stop(_ context.Context, _ string) (*pb.Session, error) {
@@ -127,6 +163,22 @@ func (f *fakeCommandHandler) ArchiveSession(_ context.Context, _ string) (*pb.Se
 	f.archiveCalls.Add(1)
 	return f.archiveSession, f.returnErr
 }
+func (f *fakeCommandHandler) RetrySession(_ context.Context, sessionID string) (*pb.Session, error) {
+	f.retryCalls.Add(1)
+	f.retrySessionID = sessionID
+	return f.retrySession, f.returnErr
+}
+func (f *fakeCommandHandler) UpdateSession(_ context.Context, req *pb.UpdateSessionCommand) (*pb.Session, error) {
+	f.updateSessionCalls.Add(1)
+	f.updateSessionCmd = req
+	return f.updateSession, f.returnErr
+}
+func (f *fakeCommandHandler) LinkSessionPR(_ context.Context, sessionID, pr string) (*pb.Session, error) {
+	f.linkPRCalls.Add(1)
+	f.linkSessionID = sessionID
+	f.linkPR = pr
+	return f.linkSession, f.returnErr
+}
 func (f *fakeCommandHandler) RecordChat(_ context.Context, _, _, _ string, _ bool, _ string) (*pb.ClaudeChat, error) {
 	f.recordChatCalls.Add(1)
 	return f.recordChatResult, f.returnErr
@@ -134,6 +186,17 @@ func (f *fakeCommandHandler) RecordChat(_ context.Context, _, _, _ string, _ boo
 func (f *fakeCommandHandler) DeleteChat(_ context.Context, sessionID, _ string) error {
 	f.deleteChatCalls.Add(1)
 	f.deleteChatScope = sessionID
+	return f.returnErr
+}
+func (f *fakeCommandHandler) UpdateChatTitle(_ context.Context, agentSessionID, title string) error {
+	f.updateChatTitleCalls.Add(1)
+	f.updateChatTitleAgentID = agentSessionID
+	f.updateChatTitleValue = title
+	return f.returnErr
+}
+func (f *fakeCommandHandler) ReportChatStatus(_ context.Context, reports []*pb.ChatStatusReport) error {
+	f.reportChatStatusCalls.Add(1)
+	f.reportChatStatusReports = reports
 	return f.returnErr
 }
 func (f *fakeCommandHandler) ListRepos(_ context.Context) (*pb.ListReposResponse, error) {
@@ -223,6 +286,45 @@ func (f *fakeCommandHandler) RemoveAccount(_ context.Context, id string) error {
 func (f *fakeCommandHandler) TestAccount(_ context.Context, cmd *pb.TestAccountCommand) (*pb.TestAccountResponse, error) {
 	f.testAccountID = cmd.GetId()
 	return f.testAccountResult, f.returnErr
+}
+func (f *fakeCommandHandler) ListChats(_ context.Context, sessionID string) (*pb.ListChatsResponse, error) {
+	f.listChatsSession = sessionID
+	return f.listChatsResult, f.returnErr
+}
+func (f *fakeCommandHandler) GetSessionStatuses(_ context.Context, sessionIDs []string) (*pb.GetSessionStatusesResponse, error) {
+	f.sessionStatusesIDs = sessionIDs
+	return f.sessionStatusesResult, f.returnErr
+}
+func (f *fakeCommandHandler) ListCheckSnapshots(_ context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error) {
+	f.checkSnapshotsSession = sessionID
+	f.checkSnapshotsLimit = limit
+	return f.listCheckSnapshotsResult, f.returnErr
+}
+func (f *fakeCommandHandler) ListPlugins(_ context.Context) (*pb.ListPluginsResponse, error) {
+	return f.listPluginsResult, f.returnErr
+}
+func (f *fakeCommandHandler) GetCronJob(_ context.Context, id string) (*pb.GetCronJobResponse, error) {
+	f.getCronJobID = id
+	return f.getCronJobResult, f.returnErr
+}
+func (f *fakeCommandHandler) RepairDoctor(_ context.Context) (*pb.RepairDoctorResponse, error) {
+	return f.repairDoctorResult, f.returnErr
+}
+func (f *fakeCommandHandler) CloseSession(_ context.Context, sessionID string) (*pb.Session, error) {
+	f.closeSessionID = sessionID
+	return f.closeSession, f.returnErr
+}
+func (f *fakeCommandHandler) ResurrectSession(_ context.Context, sessionID string) (*pb.Session, error) {
+	f.resurrectSessionID = sessionID
+	return f.resurrectSession, f.returnErr
+}
+func (f *fakeCommandHandler) RemoveSession(_ context.Context, sessionID string) error {
+	f.removeSessionID = sessionID
+	return f.returnErr
+}
+func (f *fakeCommandHandler) EmptyTrash(_ context.Context, olderThan *timestamppb.Timestamp) (int32, error) {
+	f.emptyTrashOlderThan = olderThan
+	return f.emptyTrashCount, f.returnErr
 }
 
 func strPtr(s string) *string { return &s }
@@ -1448,6 +1550,109 @@ func TestDispatchCommand_Merge_MapsConnectCodeToErrorCode(t *testing.T) {
 	}
 }
 
+func TestDispatchCommand_RetrySession_CallsHandler(t *testing.T) {
+	handler := &fakeCommandHandler{retrySession: &pb.Session{Id: "s-retry"}}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-r1",
+			Cmd:       &pb.OrchestratorCommand_RetrySession{RetrySession: &pb.RetrySessionCommand{SessionId: "s-retry"}},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.retryCalls.Load() != 1 || handler.retrySessionID != "s-retry" {
+		t.Fatalf("retry not called with s-retry: calls=%d id=%q", handler.retryCalls.Load(), handler.retrySessionID)
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetSession().GetId() != "s-retry" {
+		t.Fatalf("expected ok result with session s-retry, got %+v", ev)
+	}
+}
+
+func TestDispatchCommand_UpdateSession_ForwardsFields(t *testing.T) {
+	handler := &fakeCommandHandler{updateSession: &pb.Session{Id: "s-upd"}}
+	client := newDispatcherClient(handler, nil, nil)
+	title := "Renamed"
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-u1",
+			Cmd: &pb.OrchestratorCommand_UpdateSession{UpdateSession: &pb.UpdateSessionCommand{
+				SessionId: "s-upd", Title: &title,
+			}},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.updateSessionCalls.Load() != 1 {
+		t.Fatalf("update calls = %d, want 1", handler.updateSessionCalls.Load())
+	}
+	if handler.updateSessionCmd.GetSessionId() != "s-upd" || handler.updateSessionCmd.GetTitle() != title {
+		t.Fatalf("update command not forwarded: %+v", handler.updateSessionCmd)
+	}
+	if r := ev.GetResult(); r == nil || !r.GetOk() || r.GetSession().GetId() != "s-upd" {
+		t.Fatalf("expected ok result with session s-upd, got %+v", ev)
+	}
+}
+
+func TestDispatchCommand_LinkSessionPR_ForwardsFields(t *testing.T) {
+	handler := &fakeCommandHandler{linkSession: &pb.Session{Id: "s-link"}}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-l1",
+			Cmd:       &pb.OrchestratorCommand_LinkSessionPr{LinkSessionPr: &pb.LinkSessionPRCommand{SessionId: "s-link", Pr: "42"}},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.linkPRCalls.Load() != 1 || handler.linkSessionID != "s-link" || handler.linkPR != "42" {
+		t.Fatalf("link not forwarded: calls=%d id=%q pr=%q", handler.linkPRCalls.Load(), handler.linkSessionID, handler.linkPR)
+	}
+	if r := ev.GetResult(); r == nil || !r.GetOk() || r.GetSession().GetId() != "s-link" {
+		t.Fatalf("expected ok result with session s-link, got %+v", ev)
+	}
+}
+
+func TestDispatchCommand_SessionMutations_MapConnectCodeToErrorCode(t *testing.T) {
+	handler := &fakeCommandHandler{returnErr: fmt.Errorf("retry session: %w", connect.NewError(connect.CodeNotFound, errors.New("session not found")))}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-rerr",
+			Cmd:       &pb.OrchestratorCommand_RetrySession{RetrySession: &pb.RetrySessionCommand{SessionId: "s1"}},
+		}, make(chan *pb.DaemonEvent, 4))
+	r := ev.GetResult()
+	if r == nil || r.GetOk() || r.GetErrorCode() != pb.CommandResult_ERROR_CODE_NOT_FOUND {
+		t.Fatalf("expected NotFound error_code, got %+v", ev)
+	}
+}
+
+func TestDispatchCommand_UpdateChatTitle_CallsHandler(t *testing.T) {
+	handler := &fakeCommandHandler{}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-ct1",
+			Cmd:       &pb.OrchestratorCommand_UpdateChatTitle{UpdateChatTitle: &pb.UpdateChatTitleCommand{AgentSessionId: "agent-1", Title: "Renamed"}},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.updateChatTitleCalls.Load() != 1 || handler.updateChatTitleAgentID != "agent-1" || handler.updateChatTitleValue != "Renamed" {
+		t.Fatalf("update_chat_title not forwarded: calls=%d id=%q title=%q", handler.updateChatTitleCalls.Load(), handler.updateChatTitleAgentID, handler.updateChatTitleValue)
+	}
+	// Empty result (no payload), Ok=true.
+	if r := ev.GetResult(); r == nil || !r.GetOk() || r.GetSession() != nil {
+		t.Fatalf("expected ok result with no session payload, got %+v", ev)
+	}
+}
+
+func TestDispatchCommand_ReportChatStatus_CallsHandler(t *testing.T) {
+	handler := &fakeCommandHandler{}
+	client := newDispatcherClient(handler, nil, nil)
+	reports := []*pb.ChatStatusReport{{AgentSessionId: "agent-1"}, {AgentSessionId: "agent-2"}}
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-rs1",
+			Cmd:       &pb.OrchestratorCommand_ReportChatStatus{ReportChatStatus: &pb.ReportChatStatusCommand{Reports: reports}},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.reportChatStatusCalls.Load() != 1 || len(handler.reportChatStatusReports) != 2 {
+		t.Fatalf("report_chat_status not forwarded: calls=%d reports=%d", handler.reportChatStatusCalls.Load(), len(handler.reportChatStatusReports))
+	}
+	if r := ev.GetResult(); r == nil || !r.GetOk() {
+		t.Fatalf("expected ok result, got %+v", ev)
+	}
+}
+
 func TestDispatchCommand_Archive_CallsHandler(t *testing.T) {
 	sess := &pb.Session{Id: "s-arch"}
 	handler := &fakeCommandHandler{archiveSession: sess}
@@ -1466,6 +1671,97 @@ func TestDispatchCommand_Archive_CallsHandler(t *testing.T) {
 	}
 	if r.GetSession().GetId() != "s-arch" {
 		t.Fatalf("expected session id s-arch, got %q", r.GetSession().GetId())
+	}
+}
+
+func TestDispatchCommand_CloseSession_CallsHandler(t *testing.T) {
+	sess := &pb.Session{Id: "s-close"}
+	handler := &fakeCommandHandler{closeSession: sess}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-cl1",
+			Cmd:       &pb.OrchestratorCommand_CloseSession{CloseSession: &pb.CloseSessionCommand{SessionId: "s-close"}},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.closeSessionID != "s-close" {
+		t.Fatalf("close session id = %q, want s-close", handler.closeSessionID)
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-cl1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	if r.GetSession().GetId() != "s-close" {
+		t.Fatalf("expected session id s-close, got %q", r.GetSession().GetId())
+	}
+}
+
+func TestDispatchCommand_ResurrectSession_CallsHandler(t *testing.T) {
+	sess := &pb.Session{Id: "s-res"}
+	handler := &fakeCommandHandler{resurrectSession: sess}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-rs1",
+			Cmd:       &pb.OrchestratorCommand_ResurrectSession{ResurrectSession: &pb.ResurrectSessionCommand{SessionId: "s-res"}},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.resurrectSessionID != "s-res" {
+		t.Fatalf("resurrect session id = %q, want s-res", handler.resurrectSessionID)
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-rs1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	if r.GetSession().GetId() != "s-res" {
+		t.Fatalf("expected session id s-res, got %q", r.GetSession().GetId())
+	}
+}
+
+func TestDispatchCommand_RemoveSession_CallsHandler(t *testing.T) {
+	handler := &fakeCommandHandler{}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	if ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-rms1",
+			Cmd:       &pb.OrchestratorCommand_RemoveSession{RemoveSession: &pb.RemoveSessionCommand{SessionId: "s-rm"}},
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async remove command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
+	if handler.removeSessionID != "s-rm" {
+		t.Fatalf("remove session id = %q, want s-rm", handler.removeSessionID)
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-rms1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	if r.GetSession() != nil {
+		t.Fatalf("expected no session payload for remove_session, got %+v", r.GetSession())
+	}
+}
+
+func TestDispatchCommand_EmptyTrash_CallsHandler(t *testing.T) {
+	handler := &fakeCommandHandler{emptyTrashCount: 7}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	older := timestamppb.Now()
+	if ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-et1",
+			Cmd:       &pb.OrchestratorCommand_EmptyTrash{EmptyTrash: &pb.EmptyTrashCommand{OlderThan: older}},
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async empty_trash command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
+	if handler.emptyTrashOlderThan == nil || !handler.emptyTrashOlderThan.AsTime().Equal(older.AsTime()) {
+		t.Fatalf("empty_trash older_than not threaded through: %+v", handler.emptyTrashOlderThan)
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-et1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	if r.GetEmptyTrash().GetDeletedCount() != 7 {
+		t.Fatalf("expected deleted_count 7, got %d", r.GetEmptyTrash().GetDeletedCount())
 	}
 }
 

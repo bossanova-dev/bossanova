@@ -112,6 +112,18 @@ type WorktreeManager interface {
 	// stale worktree refs.
 	EmptyTrash(ctx context.Context, repoPath string, branches []string) error
 
+	// DeleteLocalBranch force-deletes the LOCAL branch and prunes stale
+	// worktree refs. It never touches the remote (no push --delete). Used by
+	// archive gating to reclaim a session's branch once BranchSafeToDelete
+	// confirms it is safe.
+	DeleteLocalBranch(ctx context.Context, repoPath, branch string) error
+
+	// BranchSafeToDelete reports whether branchTip is an ancestor of baseBranch
+	// (merged, fast-forwarded, or a zero-commit NO_CHANGE branch), i.e. safe to
+	// auto-delete locally on archive. A non-ancestor is (false, nil); only git
+	// invocation failures return an error.
+	BranchSafeToDelete(ctx context.Context, repoPath, branchTip, baseBranch string) (bool, error)
+
 	// EmptyCommit creates an empty commit in the given worktree. This is
 	// used to ensure a branch has at least one commit diverging from the
 	// base branch before creating a PR.
@@ -730,6 +742,51 @@ func (m *Manager) EmptyTrash(ctx context.Context, repoPath string, branches []st
 	}
 
 	return nil
+}
+
+// DeleteLocalBranch force-deletes a LOCAL branch and prunes stale worktree
+// refs. Unlike EmptyTrash it never touches the remote — there is no
+// `git push origin --delete`. The `-D` (force) form is deliberate: the caller
+// gates deletion on BranchSafeToDelete, and the safe form (`-d`) would wrongly
+// refuse squash/rebase-merged branches whose commits are not literal ancestors
+// of the base.
+func (m *Manager) DeleteLocalBranch(ctx context.Context, repoPath, branch string) error {
+	// Prune BEFORE deleting. Archive's common path (`git worktree remove
+	// --force`) already unregisters the worktree, but its os.RemoveAll fallback
+	// deletes the directory without unregistering it — leaving a stale worktree
+	// ref that makes `git branch -D` fail with "branch is checked out at
+	// <missing path>". Pruning first clears any such stale registration so the
+	// delete succeeds regardless of which archive path ran.
+	if _, err := runGit(ctx, repoPath, "worktree", "prune"); err != nil {
+		return fmt.Errorf("prune worktrees before deleting %q: %w", branch, err)
+	}
+	if _, err := runGit(ctx, repoPath, "branch", "-D", branch); err != nil {
+		return fmt.Errorf("delete local branch %q: %w", branch, err)
+	}
+	return nil
+}
+
+// BranchSafeToDelete reports whether the session's local branch is safe to
+// auto-delete on archive. It implements SIGNAL 1 only: branchTip is an ancestor
+// of baseBranch (`git merge-base --is-ancestor`, reused via IsAncestor). That is
+// true for a merged/fast-forwarded branch AND for a zero-commit NO_CHANGE branch
+// (its tip is trivially an ancestor of the base). A non-ancestor is a normal
+// (false, nil); only real git invocation failures propagate as errors.
+//
+// branchTip may be a branch name or a tip SHA — the caller passes the session's
+// BranchName directly and lets git resolve it.
+//
+// It is a named domain predicate on the WorktreeManager interface (rather than
+// inlining the IsAncestor call at the caller) so the "safe to delete" policy has
+// one home: the BOS-180 fast-follow below adds a second signal (PR-merged) here
+// without touching archive gating. IsAncestor already provides interface-level
+// testability, so this method is a policy seam, not a testability workaround.
+//
+// TODO(BOS-180 fast-follow): squash/rebase merges aren't caught by
+// --is-ancestor; wire the PR-merged signal when cheaply available. Remote
+// squash-merged branches are auto-deleted by GitHub.
+func (m *Manager) BranchSafeToDelete(ctx context.Context, repoPath, branchTip, baseBranch string) (bool, error) {
+	return m.IsAncestor(ctx, repoPath, branchTip, baseBranch)
 }
 
 // Push pushes the given branch to the "origin" remote.

@@ -130,3 +130,11 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 A hosted endpoint at `mcp.bossanova.dev` — WorkOS-authenticated and routed to your
 own daemon, so you can drive Bossanova from agents without running `bin/mcp` locally —
 is **coming soon**. Until it ships, use the local `bin/mcp` server described above.
+
+When it ships, the gateway advertises a 35-tool proxiable subset (15 read-only,
+11 mutating, 9 destructive) — every session/repo/chat lifecycle tool, including the
+destructive ones (which still require `confirm: true`) and the cron-job mutators.
+Tools that stay local-only are the ones without a session/daemon-routed backing
+RPC: repo bootstrap (`resolve_context`, `validate_repo_path`, `register_repo`,
+`clone_and_register_repo`), the remaining repo/session metadata writers, and the
+account tools (whose credentials never leave your daemon).

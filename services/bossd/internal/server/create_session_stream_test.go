@@ -742,6 +742,10 @@ func (w *setupStreamWorktree) RetryDeferredBaseSyncs(context.Context)           
 func (w *setupStreamWorktree) IsAncestor(context.Context, string, string, string) (bool, error) {
 	return true, nil
 }
+func (w *setupStreamWorktree) DeleteLocalBranch(context.Context, string, string) error { return nil }
+func (w *setupStreamWorktree) BranchSafeToDelete(context.Context, string, string, string) (bool, error) {
+	return false, nil
+}
 func (w *setupStreamWorktree) FetchBase(context.Context, string, string) error { return nil }
 func (w *setupStreamWorktree) MergeLocalBranch(context.Context, string, string, string, string) error {
 	return nil

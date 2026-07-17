@@ -1285,6 +1285,91 @@ func TestEmptyTrash(t *testing.T) {
 	}
 }
 
+func TestBranchSafeToDelete(t *testing.T) {
+	ctx := context.Background()
+	mgr := NewManager(zerolog.Nop())
+
+	t.Run("merged branch is an ancestor of base", func(t *testing.T) {
+		repoDir := initTestRepo(t)
+		// Branch off main, add a commit, then fast-forward main onto it so the
+		// branch tip is an ancestor of main (the merged case).
+		gitOutput(t, repoDir, "checkout", "-b", "feature")
+		gitOutput(t, repoDir, "commit", "--allow-empty", "-m", "feature work")
+		gitOutput(t, repoDir, "checkout", "main")
+		gitOutput(t, repoDir, "merge", "--ff-only", "feature")
+
+		safe, err := mgr.BranchSafeToDelete(ctx, repoDir, "feature", "main")
+		if err != nil {
+			t.Fatalf("BranchSafeToDelete: %v", err)
+		}
+		if !safe {
+			t.Error("merged branch should be safe to delete")
+		}
+	})
+
+	t.Run("no-change branch at same commit as base is safe", func(t *testing.T) {
+		repoDir := initTestRepo(t)
+		// Branch with no commits of its own — tip equals base, trivially an
+		// ancestor.
+		gitOutput(t, repoDir, "checkout", "-b", "nochange")
+
+		safe, err := mgr.BranchSafeToDelete(ctx, repoDir, "nochange", "main")
+		if err != nil {
+			t.Fatalf("BranchSafeToDelete: %v", err)
+		}
+		if !safe {
+			t.Error("no-change branch should be safe to delete")
+		}
+	})
+
+	t.Run("branch ahead of base is not safe", func(t *testing.T) {
+		repoDir := initTestRepo(t)
+		gitOutput(t, repoDir, "checkout", "-b", "unmerged")
+		gitOutput(t, repoDir, "commit", "--allow-empty", "-m", "unmerged work")
+
+		safe, err := mgr.BranchSafeToDelete(ctx, repoDir, "unmerged", "main")
+		if err != nil {
+			t.Fatalf("BranchSafeToDelete: %v", err)
+		}
+		if safe {
+			t.Error("branch with an unmerged commit should NOT be safe to delete")
+		}
+	})
+}
+
+func TestDeleteLocalBranch(t *testing.T) {
+	ctx := context.Background()
+	mgr := NewManager(zerolog.Nop())
+	repoDir := initTestRepo(t)
+
+	// Record the remote's refs so we can assert they are untouched.
+	remoteBefore := gitOutput(t, repoDir, "ls-remote", "origin")
+
+	// Create two local branches; only "doomed" is deleted.
+	gitOutput(t, repoDir, "branch", "doomed", "main")
+	gitOutput(t, repoDir, "branch", "keeper", "main")
+
+	if err := mgr.DeleteLocalBranch(ctx, repoDir, "doomed"); err != nil {
+		t.Fatalf("DeleteLocalBranch: %v", err)
+	}
+
+	// The deleted branch is gone.
+	if out := gitOutput(t, repoDir, "branch", "--list", "doomed"); out != "" {
+		t.Errorf("branch 'doomed' should be deleted, got: %q", out)
+	}
+	// Other branches remain.
+	if out := gitOutput(t, repoDir, "branch", "--list", "keeper"); !strings.Contains(out, "keeper") {
+		t.Errorf("branch 'keeper' should remain, got: %q", out)
+	}
+
+	// No remote interaction: the remote refs are unchanged (nothing pushed or
+	// deleted on origin).
+	remoteAfter := gitOutput(t, repoDir, "ls-remote", "origin")
+	if remoteAfter != remoteBefore {
+		t.Errorf("remote refs changed after DeleteLocalBranch:\nbefore: %q\nafter:  %q", remoteBefore, remoteAfter)
+	}
+}
+
 func TestEmptyCommitBypassesCommitHooks(t *testing.T) {
 	repoDir := initTestRepo(t)
 	hookPath := filepath.Join(repoDir, ".git", "hooks", "commit-msg")

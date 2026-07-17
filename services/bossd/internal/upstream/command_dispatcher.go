@@ -59,10 +59,20 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchMerge(ctx, cmdID, cmd.GetMerge())
 	case *pb.OrchestratorCommand_Archive:
 		return c.dispatchArchive(ctx, cmdID, cmd.GetArchive())
+	case *pb.OrchestratorCommand_RetrySession:
+		return c.dispatchRetrySession(ctx, cmdID, cmd.GetRetrySession())
+	case *pb.OrchestratorCommand_UpdateSession:
+		return c.dispatchUpdateSession(ctx, cmdID, cmd.GetUpdateSession())
+	case *pb.OrchestratorCommand_LinkSessionPr:
+		return c.dispatchLinkSessionPR(ctx, cmdID, cmd.GetLinkSessionPr())
 	case *pb.OrchestratorCommand_RecordChat:
 		return c.dispatchRecordChat(ctx, cmdID, cmd.GetRecordChat())
 	case *pb.OrchestratorCommand_DeleteChat:
 		return c.dispatchDeleteChat(ctx, cmdID, cmd.GetDeleteChat())
+	case *pb.OrchestratorCommand_UpdateChatTitle:
+		return c.dispatchUpdateChatTitle(ctx, cmdID, cmd.GetUpdateChatTitle())
+	case *pb.OrchestratorCommand_ReportChatStatus:
+		return c.dispatchReportChatStatus(ctx, cmdID, cmd.GetReportChatStatus())
 	case *pb.OrchestratorCommand_ListRepos:
 		return c.dispatchListRepos(ctx, cmdID, outbound)
 	case *pb.OrchestratorCommand_ListAgents:
@@ -103,6 +113,26 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchRemoveAccount(ctx, cmdID, cmd.GetRemoveAccount(), outbound)
 	case *pb.OrchestratorCommand_TestAccount:
 		return c.dispatchTestAccount(ctx, cmdID, cmd.GetTestAccount(), outbound)
+	case *pb.OrchestratorCommand_ListChats:
+		return c.dispatchListChats(ctx, cmdID, cmd.GetListChats(), outbound)
+	case *pb.OrchestratorCommand_GetSessionStatuses:
+		return c.dispatchGetSessionStatuses(ctx, cmdID, cmd.GetGetSessionStatuses(), outbound)
+	case *pb.OrchestratorCommand_ListCheckSnapshots:
+		return c.dispatchListCheckSnapshots(ctx, cmdID, cmd.GetListCheckSnapshots(), outbound)
+	case *pb.OrchestratorCommand_ListPlugins:
+		return c.dispatchListPlugins(ctx, cmdID, outbound)
+	case *pb.OrchestratorCommand_GetCronJob:
+		return c.dispatchGetCronJob(ctx, cmdID, cmd.GetGetCronJob(), outbound)
+	case *pb.OrchestratorCommand_RepairDoctor:
+		return c.dispatchRepairDoctor(ctx, cmdID, outbound)
+	case *pb.OrchestratorCommand_CloseSession:
+		return c.dispatchCloseSession(ctx, cmdID, cmd.GetCloseSession())
+	case *pb.OrchestratorCommand_ResurrectSession:
+		return c.dispatchResurrectSession(ctx, cmdID, cmd.GetResurrectSession())
+	case *pb.OrchestratorCommand_RemoveSession:
+		return c.dispatchRemoveSession(ctx, cmdID, cmd.GetRemoveSession(), outbound)
+	case *pb.OrchestratorCommand_EmptyTrash:
+		return c.dispatchEmptyTrash(ctx, cmdID, cmd.GetEmptyTrash(), outbound)
 	default:
 		// Unknown oneof — forward-compat: log and drop. Do NOT emit a
 		// CommandResult; bosso will time out the correlation slot.
@@ -403,6 +433,105 @@ func (c *StreamClient) dispatchArchive(ctx context.Context, cmdID string, req *p
 	return commandOK(cmdID, sess)
 }
 
+// dispatchCloseSession routes a CloseSessionCommand to the handler and replies
+// with the updated Session (session = 4). Mirrors dispatchArchive.
+func (c *StreamClient) dispatchCloseSession(ctx context.Context, cmdID string, req *pb.CloseSessionCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	sess, err := c.commandHandler.CloseSession(ctx, req.GetSessionId())
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return commandOK(cmdID, sess)
+}
+
+// dispatchResurrectSession routes a ResurrectSessionCommand to the handler and
+// replies with the updated Session (session = 4). Mirrors dispatchArchive.
+func (c *StreamClient) dispatchResurrectSession(ctx context.Context, cmdID string, req *pb.ResurrectSessionCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	sess, err := c.commandHandler.ResurrectSession(ctx, req.GetSessionId())
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return commandOK(cmdID, sess)
+}
+
+// dispatchRemoveSession routes a RemoveSessionCommand to the handler and replies
+// with a success CommandResult carrying no payload. Dispatched asynchronously:
+// removing a session tears down its worktree (filesystem-bound), which must not
+// block the command reader (mirrors dispatchRemoveRepo).
+func (c *StreamClient) dispatchRemoveSession(ctx context.Context, cmdID string, req *pb.RemoveSessionCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		if err := c.commandHandler.RemoveSession(ctx, req.GetSessionId()); err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return commandOK(cmdID, nil)
+	})
+}
+
+// dispatchEmptyTrash routes a (session-less) EmptyTrashCommand to the handler and
+// wraps the deleted-session count in a CommandResult{empty_trash}. Dispatched
+// asynchronously: emptying the trash removes archived worktrees (filesystem-bound)
+// and must not block the command reader.
+func (c *StreamClient) dispatchEmptyTrash(ctx context.Context, cmdID string, req *pb.EmptyTrashCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		count, err := c.commandHandler.EmptyTrash(ctx, req.GetOlderThan())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_EmptyTrash{EmptyTrash: &pb.EmptyTrashResult{DeletedCount: count}},
+		}}}
+	})
+}
+
+// dispatchRetrySession / dispatchUpdateSession / dispatchLinkSessionPR are
+// synchronous session-scoped mutations (mirroring dispatchMerge/dispatchArchive):
+// they call the handler, echo the updated Session on success, and attach a typed
+// error code on failure so bosso maps it back to the right ConnectRPC code.
+func (c *StreamClient) dispatchRetrySession(ctx context.Context, cmdID string, req *pb.RetrySessionCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	sess, err := c.commandHandler.RetrySession(ctx, req.GetSessionId())
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return commandOK(cmdID, sess)
+}
+
+func (c *StreamClient) dispatchUpdateSession(ctx context.Context, cmdID string, req *pb.UpdateSessionCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	sess, err := c.commandHandler.UpdateSession(ctx, req)
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return commandOK(cmdID, sess)
+}
+
+func (c *StreamClient) dispatchLinkSessionPR(ctx context.Context, cmdID string, req *pb.LinkSessionPRCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	sess, err := c.commandHandler.LinkSessionPR(ctx, req.GetSessionId(), req.GetPr())
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return commandOK(cmdID, sess)
+}
+
 func (c *StreamClient) dispatchRecordChat(ctx context.Context, cmdID string, req *pb.RecordChatCommand) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
@@ -425,6 +554,29 @@ func (c *StreamClient) dispatchDeleteChat(ctx context.Context, cmdID string, req
 		return commandErr(cmdID, "command handler not wired")
 	}
 	if err := c.commandHandler.DeleteChat(ctx, req.GetSessionId(), req.GetAgentSessionId()); err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return commandOK(cmdID, nil)
+}
+
+// dispatchUpdateChatTitle / dispatchReportChatStatus are synchronous chat-scoped
+// mutations returning no payload (commandOK(cmdID, nil)), mirroring
+// dispatchDeleteChat.
+func (c *StreamClient) dispatchUpdateChatTitle(ctx context.Context, cmdID string, req *pb.UpdateChatTitleCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	if err := c.commandHandler.UpdateChatTitle(ctx, req.GetAgentSessionId(), req.GetTitle()); err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return commandOK(cmdID, nil)
+}
+
+func (c *StreamClient) dispatchReportChatStatus(ctx context.Context, cmdID string, req *pb.ReportChatStatusCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	if err := c.commandHandler.ReportChatStatus(ctx, req.GetReports()); err != nil {
 		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 	}
 	return commandOK(cmdID, nil)
@@ -646,6 +798,120 @@ func (c *StreamClient) dispatchGetChatTranscript(ctx context.Context, cmdID stri
 		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
 			CommandId: cmdID, Ok: true,
 			Payload: &pb.CommandResult_GetChatTranscript{GetChatTranscript: out},
+		}}}
+	})
+}
+
+// dispatchListChats routes a ListChatsCommand to the handler and wraps the
+// session's chats in a CommandResult{list_chats}. session_id scopes the read
+// for authz. Dispatched asynchronously (mirrors dispatchGetChatTranscript).
+func (c *StreamClient) dispatchListChats(ctx context.Context, cmdID string, req *pb.ListChatsCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.ListChats(ctx, req.GetSessionId())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_ListChats{ListChats: out},
+		}}}
+	})
+}
+
+// dispatchGetSessionStatuses routes a GetSessionStatusesCommand to the handler
+// and wraps the sessions' aggregate statuses in a
+// CommandResult{get_session_statuses}. Dispatched asynchronously.
+func (c *StreamClient) dispatchGetSessionStatuses(ctx context.Context, cmdID string, req *pb.GetSessionStatusesCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.GetSessionStatuses(ctx, req.GetSessionIds())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_GetSessionStatuses{GetSessionStatuses: out},
+		}}}
+	})
+}
+
+// dispatchListCheckSnapshots routes a ListCheckSnapshotsCommand to the handler
+// and wraps the session's recent CI snapshots in a
+// CommandResult{list_check_snapshots}. session_id scopes the read for authz.
+// Dispatched asynchronously.
+func (c *StreamClient) dispatchListCheckSnapshots(ctx context.Context, cmdID string, req *pb.ListCheckSnapshotsCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.ListCheckSnapshots(ctx, req.GetSessionId(), req.GetLimit())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_ListCheckSnapshots{ListCheckSnapshots: out},
+		}}}
+	})
+}
+
+// dispatchListPlugins routes a (session-less) ListPluginsCommand to the handler
+// and wraps the daemon's configured plugins in a CommandResult{list_plugins}.
+// Dispatched asynchronously (mirrors dispatchListAgents).
+func (c *StreamClient) dispatchListPlugins(ctx context.Context, cmdID string, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.ListPlugins(ctx)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_ListPlugins{ListPlugins: out},
+		}}}
+	})
+}
+
+// dispatchGetCronJob routes a GetCronJobCommand to the handler and wraps the
+// cron job in a CommandResult{get_cron_job}. Dispatched asynchronously.
+func (c *StreamClient) dispatchGetCronJob(ctx context.Context, cmdID string, req *pb.GetCronJobCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.GetCronJob(ctx, req.GetId())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_GetCronJob{GetCronJob: out},
+		}}}
+	})
+}
+
+// dispatchRepairDoctor routes a (session-less) RepairDoctorCommand to the
+// handler and wraps the diagnostics report in a CommandResult{repair_doctor}.
+// Dispatched asynchronously.
+func (c *StreamClient) dispatchRepairDoctor(ctx context.Context, cmdID string, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.RepairDoctor(ctx)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_RepairDoctor{RepairDoctor: out},
 		}}}
 	})
 }

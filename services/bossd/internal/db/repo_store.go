@@ -55,8 +55,8 @@ func (s *SQLiteRepoStore) Create(ctx context.Context, params CreateRepoParams) (
 
 	now := sqlutil.TimeNow()
 	_, err = conn.ExecContext(ctx,
-		`INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, archive_sessions_after_merge, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, 1, 'merge', '', '', '', ?, ?)`,
+		`INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, archive_sessions_after_merge, can_auto_delete_branches, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, 1, 1, 'merge', '', '', '', ?, ?)`,
 		id, params.DisplayName, params.LocalPath, params.OriginURL,
 		params.DefaultBaseBranch, params.WorktreeBaseDir, params.SetupScript, now, now,
 	)
@@ -80,21 +80,21 @@ func (s *SQLiteRepoStore) Get(ctx context.Context, id string) (*models.Repo, err
 
 func (s *SQLiteRepoStore) get(ctx context.Context, q repoSQL, id string) (*models.Repo, error) {
 	row := q.QueryRowContext(ctx,
-		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, archive_sessions_after_merge, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
+		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, archive_sessions_after_merge, can_auto_delete_branches, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
 		 FROM repos WHERE id = ?`, id)
 	return scanRepo(row)
 }
 
 func (s *SQLiteRepoStore) GetByPath(ctx context.Context, localPath string) (*models.Repo, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, archive_sessions_after_merge, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
+		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, archive_sessions_after_merge, can_auto_delete_branches, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
 		 FROM repos WHERE local_path = ?`, localPath)
 	return scanRepo(row)
 }
 
 func (s *SQLiteRepoStore) GetByOrigin(ctx context.Context, originURL string) (*models.Repo, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, archive_sessions_after_merge, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
+		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, archive_sessions_after_merge, can_auto_delete_branches, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
 		 FROM repos WHERE origin_url = ?`, originURL)
 	repo, err := scanRepo(row)
 	if err != nil && err != sql.ErrNoRows {
@@ -139,7 +139,7 @@ func (s *SQLiteRepoStore) List(ctx context.Context) ([]*models.Repo, error) {
 
 func (s *SQLiteRepoStore) list(ctx context.Context, q repoSQL) ([]*models.Repo, error) {
 	rows, err := q.QueryContext(ctx,
-		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, archive_sessions_after_merge, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
+		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, archive_sessions_after_merge, can_auto_delete_branches, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at
 		 FROM repos ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list repos: %w", err)
@@ -266,6 +266,10 @@ func (s *SQLiteRepoStore) update(ctx context.Context, q repoSQL, id string, para
 		sets = append(sets, "archive_sessions_after_merge = ?")
 		args = append(args, sqlutil.BoolToInt(*params.ArchiveSessionsAfterMerge))
 	}
+	if params.CanAutoDeleteBranches != nil {
+		sets = append(sets, "can_auto_delete_branches = ?")
+		args = append(args, sqlutil.BoolToInt(*params.CanAutoDeleteBranches))
+	}
 	if params.MergeStrategy != nil {
 		sets = append(sets, "merge_strategy = ?")
 		args = append(args, string(*params.MergeStrategy))
@@ -387,11 +391,13 @@ func scanRepo(s sqlutil.Scanner) (*models.Repo, error) {
 	var createdAt, updatedAt string
 	var canAutoMerge, canAutoMergeDependabot, canAutoRepair, canAutoRotate int
 	var archiveSessionsAfterMerge int
+	var canAutoDeleteBranches int
 	var mergeStrategy string
 	err := s.Scan(&r.ID, &r.DisplayName, &r.LocalPath, &r.OriginURL,
 		&r.DefaultBaseBranch, &r.WorktreeBaseDir, &r.SetupScript,
 		&canAutoMerge, &canAutoMergeDependabot, &canAutoRepair, &canAutoRotate,
 		&archiveSessionsAfterMerge,
+		&canAutoDeleteBranches,
 		&mergeStrategy,
 		&r.LinearAPIKey,
 		&r.SentryAPIKey, &r.SentryOrg,
@@ -404,6 +410,7 @@ func scanRepo(s sqlutil.Scanner) (*models.Repo, error) {
 	r.CanAutoRepair = canAutoRepair != 0
 	r.CanAutoRotate = canAutoRotate != 0
 	r.ArchiveSessionsAfterMerge = archiveSessionsAfterMerge != 0
+	r.CanAutoDeleteBranches = canAutoDeleteBranches != 0
 	r.MergeStrategy = models.ParseMergeStrategy(mergeStrategy)
 	r.CreatedAt = sqlutil.ParseTime(createdAt)
 	r.UpdatedAt = sqlutil.ParseTime(updatedAt)

@@ -2463,6 +2463,7 @@ func runRepoUpdate(cmd *cobra.Command, repoID string) error {
 		{"auto-merge", "no-auto-merge", func(v bool) { req.CanAutoMerge = &v }},
 		{"auto-merge-dependabot", "no-auto-merge-dependabot", func(v bool) { req.CanAutoMergeDependabot = &v }},
 		{"auto-repair", "no-auto-repair", func(v bool) { req.CanAutoRepair = &v }},
+		{"delete-branches", "no-delete-branches", func(v bool) { req.CanAutoDeleteBranches = &v }},
 	}
 	for _, bp := range boolPairs {
 		enableChanged := cmd.Flags().Changed(bp.enable)
@@ -2500,6 +2501,7 @@ func runRepoUpdate(cmd *cobra.Command, repoID string) error {
 	fmt.Printf("  Mark ready on green:    %v\n", repo.CanAutoMerge)
 	fmt.Printf("  Auto-merge Dependabot:  %v\n", repo.CanAutoMergeDependabot)
 	fmt.Printf("  Automatic repair:       %v\n", repo.CanAutoRepair)
+	fmt.Printf("  Delete branches:        %v\n", repo.CanAutoDeleteBranches)
 	return nil
 }
 

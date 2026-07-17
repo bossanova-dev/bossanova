@@ -25,6 +25,11 @@ type fakeSessionCommandServer struct {
 	lastUpdateCron   *pb.UpdateCronJobRequest
 	lastDeleteCronID string
 	lastRunCronID    string
+	lastAddAccount   *pb.AddAccountRequest
+	lastRefreshAcct  *pb.RefreshAccountRequest
+	lastUpdateAcct   *pb.UpdateAccountRequest
+	lastRemoveAcctID string
+	lastTestAcctID   string
 }
 
 func (f *fakeSessionCommandServer) MergeSession(_ context.Context, _ *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
@@ -123,6 +128,31 @@ func (f *fakeSessionCommandServer) DeleteCronJob(_ context.Context, req *connect
 func (f *fakeSessionCommandServer) RunCronJobNow(_ context.Context, req *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error) {
 	f.lastRunCronID = req.Msg.GetId()
 	return connect.NewResponse(&pb.RunCronJobNowResponse{SkippedReason: "skip"}), nil
+}
+
+func (f *fakeSessionCommandServer) AddAccount(_ context.Context, req *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error) {
+	f.lastAddAccount = req.Msg
+	return connect.NewResponse(&pb.AddAccountResponse{Account: &pb.Account{Id: "acc-new", Provider: req.Msg.GetProvider(), Label: req.Msg.GetLabel()}}), nil
+}
+
+func (f *fakeSessionCommandServer) RefreshAccount(_ context.Context, req *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error) {
+	f.lastRefreshAcct = req.Msg
+	return connect.NewResponse(&pb.RefreshAccountResponse{Account: &pb.Account{Id: req.Msg.GetId()}, Detail: "credential refreshed"}), nil
+}
+
+func (f *fakeSessionCommandServer) UpdateAccount(_ context.Context, req *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error) {
+	f.lastUpdateAcct = req.Msg
+	return connect.NewResponse(&pb.UpdateAccountResponse{Account: &pb.Account{Id: req.Msg.GetId()}}), nil
+}
+
+func (f *fakeSessionCommandServer) RemoveAccount(_ context.Context, req *connect.Request[pb.RemoveAccountRequest]) (*connect.Response[pb.RemoveAccountResponse], error) {
+	f.lastRemoveAcctID = req.Msg.GetId()
+	return connect.NewResponse(&pb.RemoveAccountResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) TestAccount(_ context.Context, req *connect.Request[pb.TestAccountRequest]) (*connect.Response[pb.TestAccountResponse], error) {
+	f.lastTestAcctID = req.Msg.GetId()
+	return connect.NewResponse(&pb.TestAccountResponse{Account: &pb.Account{Id: req.Msg.GetId()}, LiveSmokeRan: true, Detail: "credential test passed"}), nil
 }
 
 // fakeAutomationToggler records the last SetAutomationEnabled call and returns
@@ -245,6 +275,26 @@ func (e *errCommandServer) DeleteCronJob(context.Context, *connect.Request[pb.De
 }
 
 func (e *errCommandServer) RunCronJobNow(context.Context, *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) AddAccount(context.Context, *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) RefreshAccount(context.Context, *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) UpdateAccount(context.Context, *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) RemoveAccount(context.Context, *connect.Request[pb.RemoveAccountRequest]) (*connect.Response[pb.RemoveAccountResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) TestAccount(context.Context, *connect.Request[pb.TestAccountRequest]) (*connect.Response[pb.TestAccountResponse], error) {
 	return nil, e.err
 }
 
@@ -965,6 +1015,209 @@ func TestCommandHandlerAdapter_ListAccounts(t *testing.T) {
 		}
 		if resp == nil {
 			t.Fatal("ListAccounts returned nil response on success")
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_AddAccount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.AddAccount(context.Background(), &pb.AddAccountCommand{}); err == nil || !strings.Contains(err.Error(), "add_account: command server not wired") {
+			t.Fatalf("AddAccount error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.AddAccount(context.Background(), &pb.AddAccountCommand{Provider: "claude"}); err == nil || !strings.Contains(err.Error(), "add account: boom") {
+			t.Fatalf("AddAccount error = %v, want add account: boom", err)
+		}
+	})
+
+	t.Run("forwards fields verbatim and unwraps the response", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		resp, err := adapter.AddAccount(context.Background(), &pb.AddAccountCommand{
+			Provider: "codex", Label: "work", Priority: 3, Credential: []byte("cred-bytes"),
+		})
+		if err != nil {
+			t.Fatalf("AddAccount returned error: %v", err)
+		}
+		if resp == nil || resp.GetAccount().GetId() != "acc-new" {
+			t.Fatalf("unexpected response: %+v", resp)
+		}
+		if fake.lastAddAccount.GetProvider() != "codex" || fake.lastAddAccount.GetLabel() != "work" ||
+			fake.lastAddAccount.GetPriority() != 3 || string(fake.lastAddAccount.GetCredential()) != "cred-bytes" {
+			t.Fatalf("fields not forwarded verbatim: %+v", fake.lastAddAccount)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_RefreshAccount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.RefreshAccount(context.Background(), &pb.RefreshAccountCommand{}); err == nil || !strings.Contains(err.Error(), "refresh_account: command server not wired") {
+			t.Fatalf("RefreshAccount error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.RefreshAccount(context.Background(), &pb.RefreshAccountCommand{Id: "a1"}); err == nil || !strings.Contains(err.Error(), "refresh account: boom") {
+			t.Fatalf("RefreshAccount error = %v, want refresh account: boom", err)
+		}
+	})
+
+	t.Run("forwards fields verbatim and unwraps the response", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		resp, err := adapter.RefreshAccount(context.Background(), &pb.RefreshAccountCommand{
+			Id: "a1", Credential: []byte("new-cred"), TestAfterSave: true,
+		})
+		if err != nil {
+			t.Fatalf("RefreshAccount returned error: %v", err)
+		}
+		if resp == nil || resp.GetAccount().GetId() != "a1" {
+			t.Fatalf("unexpected response: %+v", resp)
+		}
+		if fake.lastRefreshAcct.GetId() != "a1" || string(fake.lastRefreshAcct.GetCredential()) != "new-cred" ||
+			!fake.lastRefreshAcct.GetTestAfterSave() {
+			t.Fatalf("fields not forwarded verbatim: %+v", fake.lastRefreshAcct)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_UpdateAccount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.UpdateAccount(context.Background(), &pb.UpdateAccountCommand{}); err == nil || !strings.Contains(err.Error(), "update_account: command server not wired") {
+			t.Fatalf("UpdateAccount error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.UpdateAccount(context.Background(), &pb.UpdateAccountCommand{Id: "a1"}); err == nil || !strings.Contains(err.Error(), "update account: boom") {
+			t.Fatalf("UpdateAccount error = %v, want update account: boom", err)
+		}
+	})
+
+	t.Run("forwards optional pointers 1:1 and unwraps the response", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		label := "renamed"
+		priority := int32(7)
+		status := "disabled"
+		resp, err := adapter.UpdateAccount(context.Background(), &pb.UpdateAccountCommand{
+			Id: "a1", Label: &label, Priority: &priority, Status: &status, AllowedModels: []string{"m1"},
+		})
+		if err != nil {
+			t.Fatalf("UpdateAccount returned error: %v", err)
+		}
+		if resp == nil || resp.GetAccount().GetId() != "a1" {
+			t.Fatalf("unexpected response: %+v", resp)
+		}
+		got := fake.lastUpdateAcct
+		if got.GetId() != "a1" || got.Label == nil || *got.Label != "renamed" ||
+			got.Priority == nil || *got.Priority != 7 || got.Status == nil || *got.Status != "disabled" ||
+			len(got.GetAllowedModels()) != 1 {
+			t.Fatalf("optional pointers not forwarded 1:1: %+v", got)
+		}
+	})
+
+	t.Run("unset optional pointers stay nil", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		if _, err := adapter.UpdateAccount(context.Background(), &pb.UpdateAccountCommand{Id: "a1"}); err != nil {
+			t.Fatalf("UpdateAccount returned error: %v", err)
+		}
+		got := fake.lastUpdateAcct
+		if got.Label != nil || got.Priority != nil || got.Status != nil || len(got.GetAllowedModels()) != 0 {
+			t.Fatalf("expected unset optionals to stay nil, got: %+v", got)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_RemoveAccount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if err := adapter.RemoveAccount(context.Background(), "a1"); err == nil || !strings.Contains(err.Error(), "remove_account: command server not wired") {
+			t.Fatalf("RemoveAccount error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if err := adapter.RemoveAccount(context.Background(), "a1"); err == nil || !strings.Contains(err.Error(), "remove account: boom") {
+			t.Fatalf("RemoveAccount error = %v, want remove account: boom", err)
+		}
+	})
+
+	t.Run("forwards the id and returns nil on success", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		if err := adapter.RemoveAccount(context.Background(), "a1"); err != nil {
+			t.Fatalf("RemoveAccount returned error: %v", err)
+		}
+		if fake.lastRemoveAcctID != "a1" {
+			t.Fatalf("id not forwarded: %q", fake.lastRemoveAcctID)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_TestAccount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.TestAccount(context.Background(), &pb.TestAccountCommand{}); err == nil || !strings.Contains(err.Error(), "test_account: command server not wired") {
+			t.Fatalf("TestAccount error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.TestAccount(context.Background(), &pb.TestAccountCommand{Id: "a1"}); err == nil || !strings.Contains(err.Error(), "test account: boom") {
+			t.Fatalf("TestAccount error = %v, want test account: boom", err)
+		}
+	})
+
+	t.Run("forwards the id and unwraps the response", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		resp, err := adapter.TestAccount(context.Background(), &pb.TestAccountCommand{Id: "a1"})
+		if err != nil {
+			t.Fatalf("TestAccount returned error: %v", err)
+		}
+		if resp == nil || resp.GetAccount().GetId() != "a1" || !resp.GetLiveSmokeRan() {
+			t.Fatalf("unexpected response: %+v", resp)
+		}
+		if fake.lastTestAcctID != "a1" {
+			t.Fatalf("id not forwarded: %q", fake.lastTestAcctID)
 		}
 	})
 }

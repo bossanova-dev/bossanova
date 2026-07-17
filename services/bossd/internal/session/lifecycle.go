@@ -646,6 +646,11 @@ func (l *Lifecycle) sweepOrphanedHeadlessRuns(ctx context.Context) {
 	if l.sessions == nil {
 		return
 	}
+	orphanStore, ok := l.sessions.(db.OrphanHeadlessRunStore)
+	if !ok {
+		l.logger.Error().Msg("orphan sweep: session store does not support atomic orphan marker")
+		return
+	}
 	stranded, err := l.sessions.ListByState(ctx, int(machine.ImplementingPlan))
 	if err != nil {
 		l.logger.Warn().Err(err).Msg("orphan sweep: failed to list implementing_plan sessions")
@@ -671,7 +676,7 @@ func (l *Lifecycle) sweepOrphanedHeadlessRuns(ctx context.Context) {
 		if l.liveness == nil || l.liveness.IsSessionAlive(ctx, sess.ID) {
 			continue
 		}
-		advanced, err := l.sessions.UpdateStateConditional(ctx, sess.ID, int(machine.Orphaned), int(machine.ImplementingPlan))
+		advanced, err := orphanStore.OrphanHeadlessRun(ctx, sess.ID, OrphanedHeadlessRunReason)
 		if err != nil {
 			l.logger.Error().Err(err).Str("session", sess.ID).Msg("orphan sweep: transition to orphaned failed")
 			continue
@@ -680,11 +685,6 @@ func (l *Lifecycle) sweepOrphanedHeadlessRuns(ctx context.Context) {
 			// A concurrent signal already advanced the session out of
 			// ImplementingPlan; nothing to orphan.
 			continue
-		}
-		reason := "headless run orphaned: killed by daemon restart (no recorded exit, no live agent process)"
-		reasonPtr := &reason
-		if _, err := l.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{BlockedReason: &reasonPtr}); err != nil {
-			l.logger.Error().Err(err).Str("session", sess.ID).Msg("orphan sweep: persist orphaned reason failed")
 		}
 		l.logger.Warn().
 			Str("session", sess.ID).

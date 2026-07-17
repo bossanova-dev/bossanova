@@ -312,6 +312,18 @@ func (m *mockChatStore) UpdateTitleByAgentSessionID(_ context.Context, agentSess
 	c.Title = title
 	return nil
 }
+func (m *mockChatStore) UpdateAgentSessionID(_ context.Context, _ string, oldAgentSessionID, newAgentSessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.chats[oldAgentSessionID]
+	if !ok {
+		return nil
+	}
+	delete(m.chats, oldAgentSessionID)
+	c.AgentSessionID = newAgentSessionID
+	m.chats[newAgentSessionID] = c
+	return nil
+}
 func (m *mockChatStore) UpdateTmuxSessionName(_ context.Context, _ string, _ *string) error {
 	return nil
 }

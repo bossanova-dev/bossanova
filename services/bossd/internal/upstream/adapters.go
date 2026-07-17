@@ -152,6 +152,11 @@ type SessionCommandServer interface {
 	UpdateCronJob(context.Context, *connect.Request[pb.UpdateCronJobRequest]) (*connect.Response[pb.UpdateCronJobResponse], error)
 	DeleteCronJob(context.Context, *connect.Request[pb.DeleteCronJobRequest]) (*connect.Response[pb.DeleteCronJobResponse], error)
 	RunCronJobNow(context.Context, *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error)
+	AddAccount(context.Context, *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error)
+	RefreshAccount(context.Context, *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error)
+	UpdateAccount(context.Context, *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error)
+	RemoveAccount(context.Context, *connect.Request[pb.RemoveAccountRequest]) (*connect.Response[pb.RemoveAccountResponse], error)
+	TestAccount(context.Context, *connect.Request[pb.TestAccountRequest]) (*connect.Response[pb.TestAccountResponse], error)
 }
 
 // CommandHandlerAdapter implements SessionCommandHandler by delegating
@@ -407,16 +412,17 @@ func (a *CommandHandlerAdapter) UpdateRepo(ctx context.Context, msg *pb.UpdateRe
 		return nil, errors.New("update_repo: command server not wired")
 	}
 	req := &pb.UpdateRepoRequest{
-		Id:                     msg.GetRepoId(),
-		DisplayName:            msg.DisplayName,
-		SetupScript:            msg.SetupScript,
-		CanAutoMerge:           msg.CanAutoMerge,
-		CanAutoMergeDependabot: msg.CanAutoMergeDependabot,
-		CanAutoRepair:          msg.CanAutoRepair,
-		SentryOrg:              msg.SentryOrg,
-		LinearKey:              msg.LinearKey,
-		SentryKey:              msg.SentryKey,
-		ExpectedUpdatedAt:      msg.ExpectedUpdatedAt,
+		Id:                        msg.GetRepoId(),
+		DisplayName:               msg.DisplayName,
+		SetupScript:               msg.SetupScript,
+		CanAutoMerge:              msg.CanAutoMerge,
+		CanAutoMergeDependabot:    msg.CanAutoMergeDependabot,
+		CanAutoRepair:             msg.CanAutoRepair,
+		ArchiveSessionsAfterMerge: msg.ArchiveSessionsAfterMerge,
+		SentryOrg:                 msg.SentryOrg,
+		LinearKey:                 msg.LinearKey,
+		SentryKey:                 msg.SentryKey,
+		ExpectedUpdatedAt:         msg.ExpectedUpdatedAt,
 	}
 	if msg.MergeStrategy != nil {
 		strategy := "merge"
@@ -596,6 +602,92 @@ func (a *CommandHandlerAdapter) RunCronJobNow(ctx context.Context, id string) (*
 	resp, err := a.Commands.RunCronJobNow(ctx, connect.NewRequest(&pb.RunCronJobNowRequest{Id: id}))
 	if err != nil {
 		return nil, fmt.Errorf("run cron job now: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// AddAccount implements SessionCommandHandler.AddAccount, translating the stream
+// command into the daemon's AddAccountRequest. The credential blob is inbound
+// only — forwarded verbatim into the keyring by the daemon handler and never
+// logged or echoed here.
+func (a *CommandHandlerAdapter) AddAccount(ctx context.Context, cmd *pb.AddAccountCommand) (*pb.AddAccountResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("add_account: command server not wired")
+	}
+	resp, err := a.Commands.AddAccount(ctx, connect.NewRequest(&pb.AddAccountRequest{
+		Provider:   cmd.GetProvider(),
+		Label:      cmd.GetLabel(),
+		Priority:   cmd.GetPriority(),
+		Credential: cmd.GetCredential(),
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("add account: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// RefreshAccount implements SessionCommandHandler.RefreshAccount, translating the
+// stream command into the daemon's RefreshAccountRequest. The credential is
+// inbound only; test_after_save is copied through so the daemon runs the smoke
+// check when requested.
+func (a *CommandHandlerAdapter) RefreshAccount(ctx context.Context, cmd *pb.RefreshAccountCommand) (*pb.RefreshAccountResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("refresh_account: command server not wired")
+	}
+	resp, err := a.Commands.RefreshAccount(ctx, connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:            cmd.GetId(),
+		Credential:    cmd.GetCredential(),
+		TestAfterSave: cmd.GetTestAfterSave(),
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("refresh account: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// UpdateAccount implements SessionCommandHandler.UpdateAccount, translating the
+// stream command into the daemon's UpdateAccountRequest. The optional label /
+// priority / status pointers are forwarded 1:1 so the daemon applies present-only
+// semantics; allowed_models (repeated, no presence) is passed straight through.
+func (a *CommandHandlerAdapter) UpdateAccount(ctx context.Context, cmd *pb.UpdateAccountCommand) (*pb.UpdateAccountResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("update_account: command server not wired")
+	}
+	resp, err := a.Commands.UpdateAccount(ctx, connect.NewRequest(&pb.UpdateAccountRequest{
+		Id:            cmd.GetId(),
+		Label:         cmd.Label,
+		Priority:      cmd.Priority,
+		Status:        cmd.Status,
+		AllowedModels: cmd.GetAllowedModels(),
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("update account: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// RemoveAccount implements SessionCommandHandler.RemoveAccount by delegating to
+// the daemon's RemoveAccount connect handler. The RemoveAccountResponse carries
+// no payload, so the response is discarded.
+func (a *CommandHandlerAdapter) RemoveAccount(ctx context.Context, id string) error {
+	if a.Commands == nil {
+		return errors.New("remove_account: command server not wired")
+	}
+	if _, err := a.Commands.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: id})); err != nil {
+		return fmt.Errorf("remove account: %w", err)
+	}
+	return nil
+}
+
+// TestAccount implements SessionCommandHandler.TestAccount by delegating to the
+// daemon's TestAccount connect handler and unwrapping the response message.
+func (a *CommandHandlerAdapter) TestAccount(ctx context.Context, cmd *pb.TestAccountCommand) (*pb.TestAccountResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("test_account: command server not wired")
+	}
+	resp, err := a.Commands.TestAccount(ctx, connect.NewRequest(&pb.TestAccountRequest{Id: cmd.GetId()}))
+	if err != nil {
+		return nil, fmt.Errorf("test account: %w", err)
 	}
 	return resp.Msg, nil
 }

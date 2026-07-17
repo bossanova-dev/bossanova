@@ -146,16 +146,17 @@ func mergeStrategyFromProtoEnum(m pb.MergeStrategy) models.MergeStrategy {
 // next UpdateRepo.
 func repoToRepoSettings(r *models.Repo) *pb.RepoSettings {
 	settings := &pb.RepoSettings{
-		Id:                     protoString(r.ID),
-		DisplayName:            protoString(r.DisplayName),
-		MergeStrategy:          mergeStrategyToProtoEnum(r.MergeStrategy),
-		CanAutoMerge:           r.CanAutoMerge,
-		CanAutoMergeDependabot: r.CanAutoMergeDependabot,
-		CanAutoRepair:          r.CanAutoRepair,
-		SentryOrg:              protoString(r.SentryOrg),
-		HasLinearKey:           r.LinearAPIKey != "",
-		HasSentryKey:           r.SentryAPIKey != "",
-		UpdatedAt:              timestamppb.New(r.UpdatedAt),
+		Id:                        protoString(r.ID),
+		DisplayName:               protoString(r.DisplayName),
+		MergeStrategy:             mergeStrategyToProtoEnum(r.MergeStrategy),
+		CanAutoMerge:              r.CanAutoMerge,
+		CanAutoMergeDependabot:    r.CanAutoMergeDependabot,
+		CanAutoRepair:             r.CanAutoRepair,
+		ArchiveSessionsAfterMerge: r.ArchiveSessionsAfterMerge,
+		SentryOrg:                 protoString(r.SentryOrg),
+		HasLinearKey:              r.LinearAPIKey != "",
+		HasSentryKey:              r.SentryAPIKey != "",
+		UpdatedAt:                 timestamppb.New(r.UpdatedAt),
 	}
 	if r.SetupScript != nil {
 		settings.SetupScript = protoStringPtr(r.SetupScript)

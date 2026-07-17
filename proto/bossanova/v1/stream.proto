@@ -133,6 +133,18 @@ message OrchestratorCommand {
     DeleteCronJobCommand delete_cron_job = 30;
     // bosso → daemon: fire a cron job immediately. Replies CommandResult{run_cron_job_now}.
     RunCronJobNowCommand run_cron_job_now = 31;
+    // bosso → daemon: register a new rotation account (web Settings > Accounts).
+    // The credential blob is inbound only. Replies CommandResult{add_account}.
+    AddAccountCommand add_account = 32;
+    // bosso → daemon: replace an account's stored credential. The credential
+    // blob is inbound only. Replies CommandResult{refresh_account}.
+    RefreshAccountCommand refresh_account = 33;
+    // bosso → daemon: edit an account's metadata. Replies CommandResult{update_account}.
+    UpdateAccountCommand update_account = 34;
+    // bosso → daemon: remove an account. Replies CommandResult{Ok} with no payload.
+    RemoveAccountCommand remove_account = 35;
+    // bosso → daemon: run a live account validation. Replies CommandResult{test_account}.
+    TestAccountCommand test_account = 36;
   }
 }
 
@@ -288,6 +300,17 @@ message CommandResult {
     UpdateCronJobResponse update_cron_job = 21;
     // RunCronJobNow returns the spawned session or a skip reason (reuses daemon.proto type).
     RunCronJobNowResponse run_cron_job_now = 22;
+    // AddAccount returns the created account (reuses daemon.proto type; metadata
+    // only — never the credential).
+    AddAccountResponse add_account = 23;
+    // RefreshAccount returns the updated account + smoke-test outcome (reuses
+    // daemon.proto type).
+    RefreshAccountResponse refresh_account = 24;
+    // UpdateAccount returns the updated account (reuses daemon.proto type).
+    UpdateAccountResponse update_account = 25;
+    // TestAccount returns the updated account + validation outcome (reuses
+    // daemon.proto type).
+    TestAccountResponse test_account = 26;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -542,6 +565,53 @@ message DeleteCronJobCommand { string id = 1; }
 // (run_cron_job_now = 22).
 message RunCronJobNowCommand { string id = 1; }
 
+// --- Account management (web Settings > Accounts, daemon-scoped) ---
+//
+// The daemon-scoped global list reuses ListAccountsCommand / list_accounts
+// (its wire payload is routing-agnostic; bosso targets the daemon by
+// daemon_id). The mutating commands below mirror daemon.proto's account
+// request messages. The add / refresh credential blobs are inbound only and
+// never appear in a CommandResult.
+
+// AddAccountCommand registers a new rotation account. Fields mirror
+// daemon.proto's AddAccountRequest (minus the reserved email field). Replies
+// with CommandResult carrying an AddAccountResponse (add_account = 23).
+message AddAccountCommand {
+  string provider = 1;   // "claude" | "codex"
+  string label = 2;
+  int32 priority = 3;
+  bytes credential = 4;  // inbound only; consumed into the keyring, never echoed
+}
+
+// RefreshAccountCommand replaces an account's stored credential. Fields mirror
+// daemon.proto's RefreshAccountRequest. Replies with CommandResult carrying a
+// RefreshAccountResponse (refresh_account = 24).
+message RefreshAccountCommand {
+  string id = 1;
+  bytes credential = 2;      // inbound only; never echoed
+  bool test_after_save = 3;
+}
+
+// UpdateAccountCommand edits an account's metadata. Fields mirror
+// daemon.proto's UpdateAccountRequest. Replies with CommandResult carrying an
+// UpdateAccountResponse (update_account = 25).
+message UpdateAccountCommand {
+  string id = 1;
+  optional string label = 2;
+  optional int32 priority = 3;
+  optional string status = 4;  // "active" | "disabled"
+  repeated string allowed_models = 5;
+}
+
+// RemoveAccountCommand removes an account. Replies with CommandResult{ok:true}
+// and no payload.
+message RemoveAccountCommand { string id = 1; }
+
+// TestAccountCommand runs a live account validation. Fields mirror
+// daemon.proto's TestAccountRequest. Replies with CommandResult carrying a
+// TestAccountResponse (test_account = 26).
+message TestAccountCommand { string id = 1; }
+
 // bosso → daemon: list the daemon's rotation accounts, optionally filtered by
 // provider (empty = all). Reuses daemon.proto's ListAccountsResponse (metadata
 // only — never credentials). Replies with CommandResult carrying a
@@ -564,6 +634,7 @@ message UpdateRepoCommand {
   optional bool can_auto_merge = 5;
   optional bool can_auto_merge_dependabot = 6;
   optional bool can_auto_repair = 7;
+  optional bool archive_sessions_after_merge = 12;
   optional string sentry_org = 8;
   SecretUpdate linear_key = 9;
   SecretUpdate sentry_key = 10;

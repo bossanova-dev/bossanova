@@ -89,6 +89,31 @@ func TestNotifyingAgentChatStore_UpdateTitleByAgentSessionID_FiresUpdated(t *tes
 	}
 }
 
+func TestNotifyingAgentChatStore_UpdateAgentSessionID_FiresUpdated(t *testing.T) {
+	store, sessionID, got := newSeededNotifyingStore(t)
+	ctx := context.Background()
+
+	chat, err := store.Create(ctx, CreateAgentChatParams{
+		SessionID:      sessionID,
+		AgentSessionID: "claude-orphaned",
+		Title:          "Resumed chat",
+	})
+	if err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+	*got = nil
+
+	if err := store.UpdateAgentSessionID(ctx, chat.ID, "claude-orphaned", "claude-resumed"); err != nil {
+		t.Fatalf("update agent session id: %v", err)
+	}
+	if len(*got) != 1 || (*got)[0].kind != ChatChangeUpdated {
+		t.Fatalf("hook = %+v, want one Updated", *got)
+	}
+	if (*got)[0].chat.AgentSessionID != "claude-resumed" {
+		t.Errorf("hook agent session id = %q, want claude-resumed", (*got)[0].chat.AgentSessionID)
+	}
+}
+
 func TestNotifyingAgentChatStore_UpdateTmuxSessionName_FiresUpdated(t *testing.T) {
 	store, sessionID, got := newSeededNotifyingStore(t)
 	ctx := context.Background()

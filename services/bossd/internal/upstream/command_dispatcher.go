@@ -93,6 +93,16 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchDeleteCronJob(ctx, cmdID, cmd.GetDeleteCronJob(), outbound)
 	case *pb.OrchestratorCommand_RunCronJobNow:
 		return c.dispatchRunCronJobNow(ctx, cmdID, cmd.GetRunCronJobNow(), outbound)
+	case *pb.OrchestratorCommand_AddAccount:
+		return c.dispatchAddAccount(ctx, cmdID, cmd.GetAddAccount(), outbound)
+	case *pb.OrchestratorCommand_RefreshAccount:
+		return c.dispatchRefreshAccount(ctx, cmdID, cmd.GetRefreshAccount(), outbound)
+	case *pb.OrchestratorCommand_UpdateAccount:
+		return c.dispatchUpdateAccount(ctx, cmdID, cmd.GetUpdateAccount(), outbound)
+	case *pb.OrchestratorCommand_RemoveAccount:
+		return c.dispatchRemoveAccount(ctx, cmdID, cmd.GetRemoveAccount(), outbound)
+	case *pb.OrchestratorCommand_TestAccount:
+		return c.dispatchTestAccount(ctx, cmdID, cmd.GetTestAccount(), outbound)
 	default:
 		// Unknown oneof — forward-compat: log and drop. Do NOT emit a
 		// CommandResult; bosso will time out the correlation slot.
@@ -751,6 +761,100 @@ func (c *StreamClient) dispatchRunCronJobNow(ctx context.Context, cmdID string, 
 		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
 			CommandId: cmdID, Ok: true,
 			Payload: &pb.CommandResult_RunCronJobNow{RunCronJobNow: out},
+		}}}
+	})
+}
+
+// dispatchAddAccount routes an AddAccountCommand to the handler and wraps the
+// created account in a CommandResult{add_account} (metadata only — the inbound
+// credential is never echoed). Dispatched async: registering an account touches
+// the store and keyring.
+func (c *StreamClient) dispatchAddAccount(ctx context.Context, cmdID string, req *pb.AddAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.AddAccount(ctx, req)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_AddAccount{AddAccount: out},
+		}}}
+	})
+}
+
+// dispatchRefreshAccount routes a RefreshAccountCommand to the handler and wraps
+// the updated account (+ optional smoke-test outcome) in a
+// CommandResult{refresh_account}. Dispatched async: saving the credential and
+// running the optional provider test are store/keyring/network-bound.
+func (c *StreamClient) dispatchRefreshAccount(ctx context.Context, cmdID string, req *pb.RefreshAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.RefreshAccount(ctx, req)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_RefreshAccount{RefreshAccount: out},
+		}}}
+	})
+}
+
+// dispatchUpdateAccount routes an UpdateAccountCommand to the handler and wraps
+// the updated account in a CommandResult{update_account}. Only the optional
+// fields the command sets are applied by the daemon handler. Dispatched async
+// (store write).
+func (c *StreamClient) dispatchUpdateAccount(ctx context.Context, cmdID string, req *pb.UpdateAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.UpdateAccount(ctx, req)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_UpdateAccount{UpdateAccount: out},
+		}}}
+	})
+}
+
+// dispatchRemoveAccount routes a RemoveAccountCommand to the handler and replies
+// with a success CommandResult carrying no payload (mirrors dispatchRemoveRepo).
+// Dispatched async: removal touches the store and keyring.
+func (c *StreamClient) dispatchRemoveAccount(ctx context.Context, cmdID string, req *pb.RemoveAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		if err := c.commandHandler.RemoveAccount(ctx, req.GetId()); err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return commandOK(cmdID, nil)
+	})
+}
+
+// dispatchTestAccount routes a TestAccountCommand to the handler and wraps the
+// updated account (+ validation outcome) in a CommandResult{test_account}.
+// Dispatched async: provider verification is network-bound.
+func (c *StreamClient) dispatchTestAccount(ctx context.Context, cmdID string, req *pb.TestAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.TestAccount(ctx, req)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_TestAccount{TestAccount: out},
 		}}}
 	})
 }

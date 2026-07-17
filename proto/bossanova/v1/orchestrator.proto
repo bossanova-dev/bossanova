@@ -88,6 +88,19 @@ service OrchestratorService {
   rpc ProxyUpdateCronJob(ProxyUpdateCronJobRequest) returns (ProxyUpdateCronJobResponse);
   rpc ProxyDeleteCronJob(ProxyDeleteCronJobRequest) returns (ProxyDeleteCronJobResponse);
   rpc ProxyRunCronJobNow(ProxyRunCronJobNowRequest) returns (ProxyRunCronJobNowResponse);
+  // Daemon-scoped account-management proxies for the web Settings > Accounts
+  // section. Unlike ProxyListAccounts (session-scoped, switch picker) these
+  // route to the daemon named by daemon_id, since a Settings-level manager is
+  // not session-scoped. Accounts stay metadata only on the wire — the add /
+  // refresh requests carry an inbound-only credential blob (consumed straight
+  // into the daemon keyring, never echoed back). Each proxy forwards 1:1 to the
+  // existing daemon account.go handler via a reverse-stream OrchestratorCommand.
+  rpc ProxyManageListAccounts(ProxyManageListAccountsRequest) returns (ProxyManageListAccountsResponse);
+  rpc ProxyAddAccount(ProxyAddAccountRequest) returns (ProxyAddAccountResponse);
+  rpc ProxyRefreshAccount(ProxyRefreshAccountRequest) returns (ProxyRefreshAccountResponse);
+  rpc ProxyUpdateAccount(ProxyUpdateAccountRequest) returns (ProxyUpdateAccountResponse);
+  rpc ProxyRemoveAccount(ProxyRemoveAccountRequest) returns (ProxyRemoveAccountResponse);
+  rpc ProxyTestAccount(ProxyTestAccountRequest) returns (ProxyTestAccountResponse);
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -458,6 +471,87 @@ message ProxyListAccountsResponse {
   repeated Account accounts = 1;
 }
 
+// --- Daemon-scoped account management (web Settings > Accounts) ---
+//
+// Every request routes by daemon_id (the owning daemon), mirroring
+// ProxyListAgents / ProxyGetRepo. Responses are metadata only — an Account
+// never carries a credential. The add / refresh requests carry an inbound-only
+// credential blob (Claude setup-token string bytes; Codex auth.json bytes) that
+// is consumed straight into the daemon keyring and never echoed back.
+
+// ProxyManageListAccountsRequest lists every rotation account on the daemon
+// named by daemon_id (not session-scoped). provider optionally filters
+// ("" = all).
+message ProxyManageListAccountsRequest {
+  string daemon_id = 1;
+  string provider = 2;
+}
+message ProxyManageListAccountsResponse {
+  repeated Account accounts = 1;
+}
+
+// ProxyAddAccountRequest registers a new account on the named daemon. The
+// credential blob is inbound only (never returned). Mirrors daemon
+// AddAccountRequest (minus the reserved email field).
+message ProxyAddAccountRequest {
+  string daemon_id = 1;
+  string provider = 2;   // "claude" | "codex"
+  string label = 3;
+  int32 priority = 4;    // sort order; lower = preferred
+  bytes credential = 5;  // inbound only; consumed into the keyring, never echoed
+}
+message ProxyAddAccountResponse {
+  Account account = 1;   // metadata only; never the credential
+}
+
+// ProxyRefreshAccountRequest replaces an account's stored credential on the
+// named daemon. Mirrors daemon RefreshAccountRequest.
+message ProxyRefreshAccountRequest {
+  string daemon_id = 1;
+  string id = 2;
+  bytes credential = 3;      // inbound only; never echoed
+  bool test_after_save = 4;  // run the TestAccount validation path after saving
+}
+message ProxyRefreshAccountResponse {
+  Account account = 1;
+  bool live_smoke_ran = 2;
+  string detail = 3;
+}
+
+// ProxyUpdateAccountRequest edits an account's metadata on the named daemon.
+// Mirrors daemon UpdateAccountRequest (optional fields; allowed_models replaces
+// the set when present).
+message ProxyUpdateAccountRequest {
+  string daemon_id = 1;
+  string id = 2;
+  optional string label = 3;
+  optional int32 priority = 4;
+  optional string status = 5;  // "active" | "disabled"
+  repeated string allowed_models = 6;
+}
+message ProxyUpdateAccountResponse {
+  Account account = 1;
+}
+
+// ProxyRemoveAccountRequest removes an account from the named daemon.
+message ProxyRemoveAccountRequest {
+  string daemon_id = 1;
+  string id = 2;
+}
+message ProxyRemoveAccountResponse {}
+
+// ProxyTestAccountRequest runs a live validation of an account on the named
+// daemon. Mirrors daemon TestAccountRequest.
+message ProxyTestAccountRequest {
+  string daemon_id = 1;
+  string id = 2;
+}
+message ProxyTestAccountResponse {
+  Account account = 1;       // updated metadata (last_test_ok_at / last_test_error)
+  bool live_smoke_ran = 2;
+  string detail = 3;
+}
+
 message ProxyListRepoPRsRequest {
   string daemon_id = 1;
   string repo_id = 2;
@@ -488,6 +582,7 @@ message ProxyUpdateRepoRequest {
   optional bool can_auto_merge = 6;
   optional bool can_auto_merge_dependabot = 7;
   optional bool can_auto_repair = 8;
+  optional bool archive_sessions_after_merge = 13;
   optional string sentry_org = 9;
   SecretUpdate linear_key = 10;
   SecretUpdate sentry_key = 11;

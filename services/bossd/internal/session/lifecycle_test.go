@@ -69,7 +69,11 @@ type mockSessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]*models.Session
 
-	updateHook func(id string, params db.UpdateSessionParams) error
+	updateHook                 func(id string, params db.UpdateSessionParams) error
+	updateStateConditionalHook func(id string)
+	orphanResumeCommitHook     func(id string)
+	orphanResumeCommitErr      error
+	orphanResumeReparkErr      error
 }
 
 func newMockSessionStore() *mockSessionStore {
@@ -336,6 +340,9 @@ func (m *mockSessionStore) UpdateStateConditional(_ context.Context, id string, 
 	// Mirror the SQL `UPDATE ... WHERE state = ?` atomic check-and-set so the
 	// FinalizeSession idempotency test (concurrent goroutines) sees the same
 	// race-free behavior the real SQLite store provides.
+	if m.updateStateConditionalHook != nil {
+		m.updateStateConditionalHook(id)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
@@ -347,6 +354,90 @@ func (m *mockSessionStore) UpdateStateConditional(_ context.Context, id string, 
 	}
 	s.State = machine.State(newState)
 	return true, nil
+}
+
+func (m *mockSessionStore) OrphanHeadlessRun(_ context.Context, id, reason string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok || s.State != machine.ImplementingPlan {
+		return false, nil
+	}
+	reasonPtr := &reason
+	if m.updateHook != nil {
+		if err := m.updateHook(id, db.UpdateSessionParams{BlockedReason: &reasonPtr}); err != nil {
+			return false, err
+		}
+	}
+	s.State = machine.Orphaned
+	s.BlockedReason = reasonPtr
+	return true, nil
+}
+
+func (m *mockSessionStore) ClaimUnarchivedOrphan(_ context.Context, id, reason string) (bool, error) {
+	if m.updateStateConditionalHook != nil {
+		m.updateStateConditionalHook(id)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok || s.State != machine.Orphaned || s.ArchivedAt != nil || s.BlockedReason == nil || *s.BlockedReason != reason {
+		return false, nil
+	}
+	s.State = machine.ImplementingPlan
+	return true, nil
+}
+
+func (m *mockSessionStore) CommitOrphanResume(_ context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.orphanResumeCommitErr != nil {
+		return false, m.orphanResumeCommitErr
+	}
+	if m.orphanResumeCommitHook != nil {
+		m.orphanResumeCommitHook(id)
+	}
+	s, ok := m.sessions[id]
+	if !ok || s.State != machine.ImplementingPlan || s.ArchivedAt != nil || s.BlockedReason == nil || *s.BlockedReason != reason || !sameAgentSessionID(s.AgentSessionID, priorAgentSession) {
+		return false, nil
+	}
+	s.AgentSessionID = &newAgentSessionID
+	s.BlockedReason = nil
+	return true, nil
+}
+
+func (m *mockSessionStore) ReleaseOrphanResumeClaim(_ context.Context, id, reason string, priorAgentSession *string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok || s.State != machine.ImplementingPlan || s.ArchivedAt != nil || (s.BlockedReason != nil && *s.BlockedReason != reason) || !sameAgentSessionID(s.AgentSessionID, priorAgentSession) {
+		return false, nil
+	}
+	s.State = machine.Orphaned
+	return true, nil
+}
+
+func (m *mockSessionStore) ReparkOrphanResume(_ context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.orphanResumeReparkErr != nil {
+		return false, m.orphanResumeReparkErr
+	}
+	s, ok := m.sessions[id]
+	if !ok || s.State != machine.ImplementingPlan || s.ArchivedAt != nil || s.BlockedReason != nil || s.AgentSessionID == nil || *s.AgentSessionID != newAgentSessionID {
+		return false, nil
+	}
+	s.State = machine.Orphaned
+	s.AgentSessionID = priorAgentSession
+	s.BlockedReason = &reason
+	return true, nil
+}
+
+func sameAgentSessionID(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 // --- Mock RepoStore ---
@@ -437,6 +528,7 @@ func (m *mockRepoStore) Delete(_ context.Context, id string) error {
 type mockAgentChatStore struct {
 	mu                     sync.Mutex
 	createCalls            []db.CreateAgentChatParams
+	agentSessionIDUpdates  []agentSessionIDUpdate
 	tmuxNameUpdates        []tmuxNameUpdate
 	accountIDUpdates       []accountIDUpdate
 	deletedAgentSessionIDs []string
@@ -457,6 +549,12 @@ type markStartFailedCall struct {
 type tmuxNameUpdate struct {
 	agentSessionID string
 	name           *string
+}
+
+type agentSessionIDUpdate struct {
+	id                string
+	oldAgentSessionID string
+	newAgentSessionID string
 }
 
 type accountIDUpdate struct {
@@ -528,6 +626,25 @@ func (m *mockAgentChatStore) UpdateTitle(_ context.Context, _, _ string) error {
 }
 
 func (m *mockAgentChatStore) UpdateTitleByAgentSessionID(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *mockAgentChatStore) UpdateAgentSessionID(_ context.Context, id, oldAgentSessionID, newAgentSessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.agentSessionIDUpdates = append(m.agentSessionIDUpdates, agentSessionIDUpdate{id: id, oldAgentSessionID: oldAgentSessionID, newAgentSessionID: newAgentSessionID})
+	for _, chats := range m.chatsBySession {
+		for _, chat := range chats {
+			if chat.ID == id && chat.AgentSessionID == oldAgentSessionID {
+				chat.AgentSessionID = newAgentSessionID
+			}
+		}
+	}
+	for _, chat := range m.chatsWithTmux {
+		if chat.ID == id && chat.AgentSessionID == oldAgentSessionID {
+			chat.AgentSessionID = newAgentSessionID
+		}
+	}
 	return nil
 }
 
@@ -840,6 +957,11 @@ func (m *mockWorktreeManager) CreateFromExistingBranch(_ context.Context, opts g
 // --- Mock AgentRunner ---
 
 type mockAgentRunner struct {
+	// mu guards running, which the orphan-resume poll goroutine
+	// (watchHeadlessRunStatus → IsRunning) reads concurrently with the test
+	// goroutine's Start/Stop mutations. The started/stopped slices are only
+	// touched synchronously by the test goroutine, so they need no locking.
+	mu       sync.Mutex
 	started  []mockStartCall
 	stopped  []string
 	running  map[string]bool
@@ -868,17 +990,23 @@ func (m *mockAgentRunner) Start(_ context.Context, workDir, plan string, resume 
 		return "", m.startErr
 	}
 	id := m.nextID
+	m.mu.Lock()
 	m.running[id] = true
+	m.mu.Unlock()
 	return id, nil
 }
 
 func (m *mockAgentRunner) Stop(sessionID string) error {
 	m.stopped = append(m.stopped, sessionID)
+	m.mu.Lock()
 	delete(m.running, sessionID)
+	m.mu.Unlock()
 	return nil
 }
 
 func (m *mockAgentRunner) IsRunning(sessionID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.running[sessionID]
 }
 
@@ -5157,6 +5285,40 @@ func TestBootstrapDoesNotReArmHeadlessImplementingRuns(t *testing.T) {
 	}
 	if r := sessions.sessions["sess-headless"].BlockedReason; r == nil || *r == "" {
 		t.Fatalf("orphaned headless run must carry a reason, got %v", r)
+	}
+}
+
+func TestBootstrapKeepsHeadlessRunImplementingWhenOrphanMarkerCannotPersist(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	runID := "run-marker-write-failure"
+	sessions.sessions["sess-headless"] = &models.Session{
+		ID:             "sess-headless",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-h",
+		BaseBranch:     "main",
+		State:          machine.ImplementingPlan,
+		AgentName:      "codex",
+		AgentSessionID: &runID,
+	}
+	sessions.updateHook = func(_ string, params db.UpdateSessionParams) error {
+		if params.BlockedReason != nil {
+			return errors.New("blocked reason write failed")
+		}
+		return nil
+	}
+
+	lc := newTestLifecycle(sessions, repos, &mockAgentChatStore{}, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}})
+	lc.SetDaemonCtx(ctx)
+
+	lc.Bootstrap(ctx)
+
+	if got := sessions.sessions["sess-headless"].State; got != machine.ImplementingPlan {
+		t.Fatalf("state after failed orphan marker write = %s, want ImplementingPlan", got)
 	}
 }
 

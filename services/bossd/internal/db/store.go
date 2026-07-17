@@ -236,6 +236,30 @@ type SessionStore interface {
 	UpdateRepairBlocked(ctx context.Context, sessionID string, at time.Time, reason string) error
 }
 
+// OrphanHeadlessRunStore atomically stamps the daemon-restart orphan reason
+// while moving a headless run from ImplementingPlan to Orphaned.
+type OrphanHeadlessRunStore interface {
+	OrphanHeadlessRun(ctx context.Context, id, reason string) (bool, error)
+}
+
+// UnarchivedOrphanClaimStore atomically claims an unarchived Orphaned session
+// with its expected daemon-restart marker for auto-resume, allowing an archive
+// or marker change to win over a stale sweep snapshot.
+type UnarchivedOrphanClaimStore interface {
+	ClaimUnarchivedOrphan(ctx context.Context, id, reason string) (bool, error)
+}
+
+// OrphanResumeStore owns the complete conditional handoff for an orphaned
+// headless run. Each operation checks the claim shape in SQL and returns its
+// affected-row result without a follow-up read, so a concurrent completion or
+// archive cannot be overwritten after the initial claim.
+type OrphanResumeStore interface {
+	UnarchivedOrphanClaimStore
+	CommitOrphanResume(ctx context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error)
+	ReleaseOrphanResumeClaim(ctx context.Context, id, reason string, priorAgentSession *string) (bool, error)
+	ReparkOrphanResume(ctx context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error)
+}
+
 // UpdateRepairDiagnosticsParams carries the per-attempt outcome that the
 // repair plugin reports via host.RecordRepairOutcome.
 type UpdateRepairDiagnosticsParams struct {
@@ -271,6 +295,7 @@ type AgentChatStore interface {
 	ListBySessions(ctx context.Context, sessionIDs []string) (map[string][]*models.AgentChat, error)
 	UpdateTitle(ctx context.Context, id string, title string) error
 	UpdateTitleByAgentSessionID(ctx context.Context, agentSessionID string, title string) error
+	UpdateAgentSessionID(ctx context.Context, id, oldAgentSessionID, newAgentSessionID string) error
 	UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error
 	UpdateProviderSessionID(ctx context.Context, agentSessionID string, providerSessionID *string) error
 	UpdateAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error

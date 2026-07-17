@@ -186,18 +186,19 @@ func TestRepoToProto(t *testing.T) {
 	script := "make install"
 
 	repo := &models.Repo{
-		ID:                     "repo-1",
-		DisplayName:            "my-app",
-		LocalPath:              "/home/user/my-app",
-		OriginURL:              "https://github.com/user/my-app.git",
-		DefaultBaseBranch:      "main",
-		WorktreeBaseDir:        "/home/user/.worktrees",
-		SetupScript:            &script,
-		CanAutoMerge:           true,
-		CanAutoMergeDependabot: true,
-		CanAutoRepair:          true,
-		CreatedAt:              now,
-		UpdatedAt:              now,
+		ID:                        "repo-1",
+		DisplayName:               "my-app",
+		LocalPath:                 "/home/user/my-app",
+		OriginURL:                 "https://github.com/user/my-app.git",
+		DefaultBaseBranch:         "main",
+		WorktreeBaseDir:           "/home/user/.worktrees",
+		SetupScript:               &script,
+		CanAutoMerge:              true,
+		CanAutoMergeDependabot:    true,
+		CanAutoRepair:             true,
+		ArchiveSessionsAfterMerge: true,
+		CreatedAt:                 now,
+		UpdatedAt:                 now,
 	}
 
 	p := repoToProto(repo)
@@ -231,8 +232,25 @@ func TestRepoToProto(t *testing.T) {
 	if !p.CanAutoRepair {
 		t.Error("CanAutoRepair should be true")
 	}
+	if !p.ArchiveSessionsAfterMerge {
+		t.Error("ArchiveSessionsAfterMerge should be true")
+	}
 	if p.CreatedAt == nil {
 		t.Error("CreatedAt should not be nil")
+	}
+}
+
+// TestRepoToRepoSettings_ArchiveAfterMerge proves the web-safe settings
+// projection carries archive_sessions_after_merge so cloud/web repo settings can
+// read and toggle it (mirrors the can_auto_repair projection).
+func TestRepoToRepoSettings_ArchiveAfterMerge(t *testing.T) {
+	on := repoToRepoSettings(&models.Repo{ID: "r", ArchiveSessionsAfterMerge: true})
+	if !on.GetArchiveSessionsAfterMerge() {
+		t.Error("ArchiveSessionsAfterMerge should project true")
+	}
+	off := repoToRepoSettings(&models.Repo{ID: "r", ArchiveSessionsAfterMerge: false})
+	if off.GetArchiveSessionsAfterMerge() {
+		t.Error("ArchiveSessionsAfterMerge should project false")
 	}
 }
 

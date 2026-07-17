@@ -705,8 +705,11 @@ func parseSSEFrame(frame []byte) (eventName, data string) {
 
 // replayAndCommit replays the buffered request with the rotated bearer
 // (res.Token) and streams the result to the client, persisting the sticky rebind
-// on a successful replay. It assumes res.Rotate is true and the original
-// rejected response has already been discarded by the caller.
+// on a successful replay. A replay is "successful" only when its status line is
+// <400 AND it did not itself open with a pre-content SSE rate_limit_error, so a
+// rotated account that is also rate-limited does not get audited/rebound as if
+// it served the request. It assumes res.Rotate is true and the original rejected
+// response has already been discarded by the caller.
 func (p *ProxyServer) replayAndCommit(w http.ResponseWriter, r *http.Request, upstreamPath string, buffered []byte, sessionID string, res session.FailoverResult) {
 	replay, rerr := p.forward(r, upstreamPath, newBodyReader(buffered), res.Token)
 	if rerr != nil {
@@ -715,7 +718,22 @@ func (p *ProxyServer) replayAndCommit(w http.ResponseWriter, r *http.Request, up
 		return
 	}
 	defer func() { _ = replay.Body.Close() }()
-	if replay.StatusCode < http.StatusBadRequest {
+
+	// A replay can succeed at the status line (HTTP 200) yet still open with an
+	// SSE rate_limit_error — Anthropic ships 200, then an `error` frame whose
+	// error.type is rate_limit_error before any content. Committing the sticky
+	// rebind on that would rebind + audit the rotated account as if it served the
+	// request, while the client still receives a rate limit. Peek the replay's
+	// opening frames exactly as the first leg does; when the replay is itself
+	// pre-content rate-limited, skip the commit and stream the reconstructed
+	// stream through unchanged, leaving the swap unstuck so the next request
+	// cleanly re-tries failover (mirroring the commit-failure fallback below).
+	replayRateLimited := false
+	if replay.StatusCode == http.StatusOK && isSSEContentType(replay.Header.Get("Content-Type")) {
+		replayRateLimited, replay = p.peekSSEForRateLimit(replay)
+	}
+
+	if replay.StatusCode < http.StatusBadRequest && !replayRateLimited {
 		// Persist the rebind + audit for the account that actually served the
 		// successful request. Only make the swap STICKY once the rebind is durably
 		// persisted: caching the bearer while account_id stayed on the old account

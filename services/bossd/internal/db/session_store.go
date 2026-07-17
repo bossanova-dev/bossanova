@@ -42,6 +42,107 @@ func (s *SQLiteSessionStore) UpdateStateConditional(ctx context.Context, id stri
 	return n == 1, nil
 }
 
+// OrphanHeadlessRun atomically records the daemon-restart marker with the
+// ImplementingPlan→Orphaned transition. Keeping both writes in one UPDATE
+// avoids leaving a markerless Orphaned row that an auto-resume sweep cannot
+// identify safely.
+func (s *SQLiteSessionStore) OrphanHeadlessRun(ctx context.Context, id, reason string) (bool, error) {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET state = ?, blocked_reason = ?, updated_at = ? WHERE id = ? AND state = ?`,
+		machine.Orphaned, reason, now, id, machine.ImplementingPlan)
+	if err != nil {
+		return false, fmt.Errorf("orphan headless run: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
+// ClaimUnarchivedOrphan atomically advances an orphan only while it remains
+// unarchived with the expected daemon-restart marker, so a user archive or
+// marker change between the sweep list and this claim prevents a new headless
+// run from starting.
+func (s *SQLiteSessionStore) ClaimUnarchivedOrphan(ctx context.Context, id, reason string) (bool, error) {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET state = ?, updated_at = ? WHERE id = ? AND state = ? AND archived_at IS NULL AND blocked_reason = ?`,
+		machine.ImplementingPlan, now, id, machine.Orphaned, reason)
+	if err != nil {
+		return false, fmt.Errorf("claim unarchived orphan: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
+// CommitOrphanResume records a spawned replacement agent only while the
+// original orphan claim remains exclusively owned by this handoff. It does not
+// call Get after the UPDATE: an affected-row result is unambiguous even when a
+// later read would fail, and the predicates prevent an old completion or user
+// archive from being overwritten.
+func (s *SQLiteSessionStore) CommitOrphanResume(ctx context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error) {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET agent_session_id = ?, blocked_reason = NULL, updated_at = ?
+		 WHERE id = ? AND state = ? AND archived_at IS NULL AND blocked_reason = ? AND agent_session_id IS ?`,
+		newAgentSessionID, now, id, machine.ImplementingPlan, reason, priorAgentSession)
+	if err != nil {
+		return false, fmt.Errorf("commit orphan resume: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
+// ReleaseOrphanResumeClaim returns a claimed orphan to its original candidate
+// state when spawning failed before a replacement agent was persisted. The
+// expected marker and prior agent ID prevent this cleanup from overwriting a
+// winner that changed the row after the claim. RetrySession intentionally
+// clears blocked_reason without starting a replacement; accepting a NULL marker
+// in that one claimed shape releases the dead run while preserving Retry's
+// markerless state.
+func (s *SQLiteSessionStore) ReleaseOrphanResumeClaim(ctx context.Context, id, reason string, priorAgentSession *string) (bool, error) {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET state = ?, updated_at = ?
+		 WHERE id = ? AND state = ? AND archived_at IS NULL AND (blocked_reason = ? OR blocked_reason IS NULL) AND agent_session_id IS ?`,
+		machine.Orphaned, now, id, machine.ImplementingPlan, reason, priorAgentSession)
+	if err != nil {
+		return false, fmt.Errorf("release orphan resume claim: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
+// ReparkOrphanResume restores the pre-resume orphan shape only while this
+// handoff still owns the newly persisted agent ID. A completion, archive, or
+// manual intervention that won after the commit makes this a harmless no-op.
+func (s *SQLiteSessionStore) ReparkOrphanResume(ctx context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error) {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET state = ?, agent_session_id = ?, blocked_reason = ?, updated_at = ?
+		 WHERE id = ? AND state = ? AND archived_at IS NULL AND blocked_reason IS NULL AND agent_session_id = ?`,
+		machine.Orphaned, priorAgentSession, reason, now, id, machine.ImplementingPlan, newAgentSessionID)
+	if err != nil {
+		return false, fmt.Errorf("repark orphan resume: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
 // UpdateStateConditionalFrom is the from-set variant of UpdateStateConditional:
 // it transitions the session to newState only when its current state is one of
 // expectedStates. It backs the broadened stranded-cron reap (BOS-333), whose

@@ -49,6 +49,10 @@ func (f *switchChatStoreFake) UpdateTitleByAgentSessionID(context.Context, strin
 	return nil
 }
 
+func (f *switchChatStoreFake) UpdateAgentSessionID(context.Context, string, string, string) error {
+	return nil
+}
+
 func (f *switchChatStoreFake) UpdateTmuxSessionName(context.Context, string, *string) error {
 	return nil
 }

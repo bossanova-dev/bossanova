@@ -69,11 +69,18 @@ func TestClassify(t *testing.T) {
 
 		// RATE_LIMITED branches (BOS-406): a 429 / rate-limit banner is its own
 		// kind, distinct from a genuine infra transient, so a rotation consumer
-		// can act on it.
+		// can act on it. The patterns pin real provider banner shapes and must NOT
+		// fire on agent prose that merely mentions a rate limit or a 429 (see the
+		// fail-safe cases below).
 		{"rate limited incident banner", "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.", KindRateLimited, false},
-		{"rate limited bare 429", "request failed with status 429", KindRateLimited, false},
-		{"rate limited bare rate limit", "rate limit exceeded, try again", KindRateLimited, false},
+		{"rate limited structured error type", `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`, KindRateLimited, false},
+		{"rate limited status 429", "request failed with status 429", KindRateLimited, false},
+		{"rate limited 429 too many requests", "HTTP 429 Too Many Requests", KindRateLimited, false},
+		{"rate limited exceeded", "rate limit exceeded, try again", KindRateLimited, false},
 		{"rate limited would exceed", "This request would exceed your account's rate limit", KindRateLimited, false},
+		// The ErrRateLimited round-trip sentinel must re-derive KindRateLimited
+		// (rotation.go re-classifies the flattened exit string).
+		{"rate limited round-trip sentinel", "agent rate limit reached (429)", KindRateLimited, false},
 
 		// TRANSIENT branches
 		{"transient 500", "server responded 500 Internal Server Error", KindTransientProvider, false},
@@ -92,6 +99,12 @@ func TestClassify(t *testing.T) {
 		{"benign rate limiting middleware", "rate limiting middleware failed to load", KindNone, false},
 		{"benign sky is the limit", "the sky is the limit for this team", KindNone, false},
 		{"benign empty string", "", KindNone, false},
+		// Fail-safe: a headless run whose TASK was rate-limit code must not be
+		// mistaken for a provider rate limit just because its output/tail mentions
+		// "rate limit" or "429" (the reason these patterns are anchored).
+		{"benign implementing rate-limit code", "Implemented a rate limit for the /api endpoint in the new middleware.", KindNone, false},
+		{"benign discusses handling a 429", "Added handling so the client retries when it sees a 429 from the server.", KindNone, false},
+		{"benign test names a rate limit", "--- PASS: TestRateLimit (0.01s)\nok  rate limit tests passed", KindNone, false},
 		// Benign 403 scope-refusal (setup-token lacking user:profile) must NOT be
 		// mistaken for a suspension — it is an expected, healthy path.
 		{"benign oauth scope refusal", `{"type":"error","error":{"type":"authentication_error","message":"OAuth token does not have the required scopes: user:profile"}}`, KindNone, false},

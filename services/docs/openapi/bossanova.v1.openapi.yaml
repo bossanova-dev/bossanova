@@ -435,6 +435,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListWebhookConfigsResponse'
+  /bossanova.v1.OrchestratorService/ProxyAddAccount:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyAddAccount
+      operationId: bossanova.v1.OrchestratorService.ProxyAddAccount
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyAddAccountRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyAddAccountResponse'
   /bossanova.v1.OrchestratorService/ProxyArchiveSession:
     post:
       tags:
@@ -950,6 +985,49 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyListTrackerIssuesResponse'
+  /bossanova.v1.OrchestratorService/ProxyManageListAccounts:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyManageListAccounts
+      description: |-
+        Daemon-scoped account-management proxies for the web Settings > Accounts
+         section. Unlike ProxyListAccounts (session-scoped, switch picker) these
+         route to the daemon named by daemon_id, since a Settings-level manager is
+         not session-scoped. Accounts stay metadata only on the wire — the add /
+         refresh requests carry an inbound-only credential blob (consumed straight
+         into the daemon keyring, never echoed back). Each proxy forwards 1:1 to the
+         existing daemon account.go handler via a reverse-stream OrchestratorCommand.
+      operationId: bossanova.v1.OrchestratorService.ProxyManageListAccounts
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyManageListAccountsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyManageListAccountsResponse'
   /bossanova.v1.OrchestratorService/ProxyMergeSession:
     post:
       tags:
@@ -1057,6 +1135,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyRecordChatResponse'
+  /bossanova.v1.OrchestratorService/ProxyRefreshAccount:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyRefreshAccount
+      operationId: bossanova.v1.OrchestratorService.ProxyRefreshAccount
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyRefreshAccountRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyRefreshAccountResponse'
+  /bossanova.v1.OrchestratorService/ProxyRemoveAccount:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyRemoveAccount
+      operationId: bossanova.v1.OrchestratorService.ProxyRemoveAccount
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyRemoveAccountRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyRemoveAccountResponse'
   /bossanova.v1.OrchestratorService/ProxyRemoveRepo:
     post:
       tags:
@@ -1276,6 +1424,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxySwitchSessionAccountResponse'
+  /bossanova.v1.OrchestratorService/ProxyTestAccount:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyTestAccount
+      operationId: bossanova.v1.OrchestratorService.ProxyTestAccount
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyTestAccountRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyTestAccountResponse'
+  /bossanova.v1.OrchestratorService/ProxyUpdateAccount:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyUpdateAccount
+      operationId: bossanova.v1.OrchestratorService.ProxyUpdateAccount
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyUpdateAccountRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyUpdateAccountResponse'
   /bossanova.v1.OrchestratorService/ProxyUpdateCronJob:
     post:
       tags:
@@ -1640,6 +1858,31 @@ components:
          rotation (BOS-157). It carries METADATA ONLY — the credential blob is never
          a field here and never crosses this message (locked decision D3); secrets
          live only in the OS keyring on the daemon host.
+    bossanova.v1.AddAccountCommand:
+      type: object
+      properties:
+        provider:
+          type: string
+          title: provider
+          description: '"claude" | "codex"'
+        label:
+          type: string
+          title: label
+        priority:
+          type: integer
+          title: priority
+          format: int32
+        credential:
+          type: string
+          title: credential
+          format: byte
+          description: inbound only; consumed into the keyring, never echoed
+      title: AddAccountCommand
+      additionalProperties: false
+      description: |-
+        AddAccountCommand registers a new rotation account. Fields mirror
+         daemon.proto's AddAccountRequest (minus the reserved email field). Replies
+         with CommandResult carrying an AddAccountResponse (add_account = 23).
     bossanova.v1.AddAccountRequest:
       type: object
       properties:
@@ -2474,6 +2717,17 @@ components:
         - oneOf:
             - type: object
               properties:
+                addAccount:
+                  title: add_account
+                  description: |-
+                    AddAccount returns the created account (reuses daemon.proto type; metadata
+                     only — never the credential).
+                  $ref: '#/components/schemas/bossanova.v1.AddAccountResponse'
+              title: add_account
+              required:
+                - addAccount
+            - type: object
+              properties:
                 createCronJob:
                   title: create_cron_job
                   description: CreateCronJob returns the created cron job (reuses daemon.proto type).
@@ -2566,6 +2820,17 @@ components:
                 - recordChat
             - type: object
               properties:
+                refreshAccount:
+                  title: refresh_account
+                  description: |-
+                    RefreshAccount returns the updated account + smoke-test outcome (reuses
+                     daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.RefreshAccountResponse'
+              title: refresh_account
+              required:
+                - refreshAccount
+            - type: object
+              properties:
                 runCronJobNow:
                   title: run_cron_job_now
                   description: RunCronJobNow returns the spawned session or a skip reason (reuses daemon.proto type).
@@ -2602,6 +2867,17 @@ components:
                 - switchAccount
             - type: object
               properties:
+                testAccount:
+                  title: test_account
+                  description: |-
+                    TestAccount returns the updated account + validation outcome (reuses
+                     daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.TestAccountResponse'
+              title: test_account
+              required:
+                - testAccount
+            - type: object
+              properties:
                 transferConfirmed:
                   title: transfer_confirmed
                   description: 'Transfer target confirms RESUME with this payload (decision #14).'
@@ -2609,6 +2885,15 @@ components:
               title: transfer_confirmed
               required:
                 - transferConfirmed
+            - type: object
+              properties:
+                updateAccount:
+                  title: update_account
+                  description: UpdateAccount returns the updated account (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.UpdateAccountResponse'
+              title: update_account
+              required:
+                - updateAccount
             - type: object
               properties:
                 updateCronJob:
@@ -4988,6 +5273,17 @@ components:
         - oneOf:
             - type: object
               properties:
+                addAccount:
+                  title: add_account
+                  description: |-
+                    bosso → daemon: register a new rotation account (web Settings > Accounts).
+                     The credential blob is inbound only. Replies CommandResult{add_account}.
+                  $ref: '#/components/schemas/bossanova.v1.AddAccountCommand'
+              title: add_account
+              required:
+                - addAccount
+            - type: object
+              properties:
                 archive:
                   title: archive
                   description: 'bosso → daemon: archive a session. Replies CommandResult{Session}.'
@@ -5149,6 +5445,26 @@ components:
                 - recordChat
             - type: object
               properties:
+                refreshAccount:
+                  title: refresh_account
+                  description: |-
+                    bosso → daemon: replace an account's stored credential. The credential
+                     blob is inbound only. Replies CommandResult{refresh_account}.
+                  $ref: '#/components/schemas/bossanova.v1.RefreshAccountCommand'
+              title: refresh_account
+              required:
+                - refreshAccount
+            - type: object
+              properties:
+                removeAccount:
+                  title: remove_account
+                  description: 'bosso → daemon: remove an account. Replies CommandResult{Ok} with no payload.'
+                  $ref: '#/components/schemas/bossanova.v1.RemoveAccountCommand'
+              title: remove_account
+              required:
+                - removeAccount
+            - type: object
+              properties:
                 removeRepo:
                   title: remove_repo
                   description: 'bosso → daemon: remove a repo. Replies CommandResult{Ok}.'
@@ -5203,6 +5519,15 @@ components:
                 - switchAccount
             - type: object
               properties:
+                testAccount:
+                  title: test_account
+                  description: 'bosso → daemon: run a live account validation. Replies CommandResult{test_account}.'
+                  $ref: '#/components/schemas/bossanova.v1.TestAccountCommand'
+              title: test_account
+              required:
+                - testAccount
+            - type: object
+              properties:
                 transfer:
                   title: transfer
                   description: 'Coordinated transfer protocol (decision #14 in the design doc).'
@@ -5240,6 +5565,15 @@ components:
               title: transfer_confirmed
               required:
                 - transferConfirmed
+            - type: object
+              properties:
+                updateAccount:
+                  title: update_account
+                  description: 'bosso → daemon: edit an account''s metadata. Replies CommandResult{update_account}.'
+                  $ref: '#/components/schemas/bossanova.v1.UpdateAccountCommand'
+              title: update_account
+              required:
+                - updateAccount
             - type: object
               properties:
                 updateCronJob:
@@ -5508,6 +5842,44 @@ components:
           title: status
           $ref: '#/components/schemas/bossanova.v1.RateLimitStatus'
       title: ProbeRateLimitResponse
+      additionalProperties: false
+    bossanova.v1.ProxyAddAccountRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        provider:
+          type: string
+          title: provider
+          description: '"claude" | "codex"'
+        label:
+          type: string
+          title: label
+        priority:
+          type: integer
+          title: priority
+          format: int32
+          description: sort order; lower = preferred
+        credential:
+          type: string
+          title: credential
+          format: byte
+          description: inbound only; consumed into the keyring, never echoed
+      title: ProxyAddAccountRequest
+      additionalProperties: false
+      description: |-
+        ProxyAddAccountRequest registers a new account on the named daemon. The
+         credential blob is inbound only (never returned). Mirrors daemon
+         AddAccountRequest (minus the reserved email field).
+    bossanova.v1.ProxyAddAccountResponse:
+      type: object
+      properties:
+        account:
+          title: account
+          description: metadata only; never the credential
+          $ref: '#/components/schemas/bossanova.v1.Account'
+      title: ProxyAddAccountResponse
       additionalProperties: false
     bossanova.v1.ProxyArchiveSessionRequest:
       type: object
@@ -6104,6 +6476,31 @@ components:
           title: issues
       title: ProxyListTrackerIssuesResponse
       additionalProperties: false
+    bossanova.v1.ProxyManageListAccountsRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        provider:
+          type: string
+          title: provider
+      title: ProxyManageListAccountsRequest
+      additionalProperties: false
+      description: |-
+        ProxyManageListAccountsRequest lists every rotation account on the daemon
+         named by daemon_id (not session-scoped). provider optionally filters
+         ("" = all).
+    bossanova.v1.ProxyManageListAccountsResponse:
+      type: object
+      properties:
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.Account'
+          title: accounts
+      title: ProxyManageListAccountsResponse
+      additionalProperties: false
     bossanova.v1.ProxyMergeSessionRequest:
       type: object
       properties:
@@ -6163,6 +6560,59 @@ components:
           title: chat
           $ref: '#/components/schemas/bossanova.v1.ClaudeChat'
       title: ProxyRecordChatResponse
+      additionalProperties: false
+    bossanova.v1.ProxyRefreshAccountRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        id:
+          type: string
+          title: id
+        credential:
+          type: string
+          title: credential
+          format: byte
+          description: inbound only; never echoed
+        testAfterSave:
+          type: boolean
+          title: test_after_save
+          description: run the TestAccount validation path after saving
+      title: ProxyRefreshAccountRequest
+      additionalProperties: false
+      description: |-
+        ProxyRefreshAccountRequest replaces an account's stored credential on the
+         named daemon. Mirrors daemon RefreshAccountRequest.
+    bossanova.v1.ProxyRefreshAccountResponse:
+      type: object
+      properties:
+        account:
+          title: account
+          $ref: '#/components/schemas/bossanova.v1.Account'
+        liveSmokeRan:
+          type: boolean
+          title: live_smoke_ran
+        detail:
+          type: string
+          title: detail
+      title: ProxyRefreshAccountResponse
+      additionalProperties: false
+    bossanova.v1.ProxyRemoveAccountRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        id:
+          type: string
+          title: id
+      title: ProxyRemoveAccountRequest
+      additionalProperties: false
+      description: ProxyRemoveAccountRequest removes an account from the named daemon.
+    bossanova.v1.ProxyRemoveAccountResponse:
+      type: object
+      title: ProxyRemoveAccountResponse
       additionalProperties: false
     bossanova.v1.ProxyRemoveRepoRequest:
       type: object
@@ -6332,6 +6782,80 @@ components:
           title: notice_text
       title: ProxySwitchSessionAccountResponse
       additionalProperties: false
+    bossanova.v1.ProxyTestAccountRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        id:
+          type: string
+          title: id
+      title: ProxyTestAccountRequest
+      additionalProperties: false
+      description: |-
+        ProxyTestAccountRequest runs a live validation of an account on the named
+         daemon. Mirrors daemon TestAccountRequest.
+    bossanova.v1.ProxyTestAccountResponse:
+      type: object
+      properties:
+        account:
+          title: account
+          description: updated metadata (last_test_ok_at / last_test_error)
+          $ref: '#/components/schemas/bossanova.v1.Account'
+        liveSmokeRan:
+          type: boolean
+          title: live_smoke_ran
+        detail:
+          type: string
+          title: detail
+      title: ProxyTestAccountResponse
+      additionalProperties: false
+    bossanova.v1.ProxyUpdateAccountRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        id:
+          type: string
+          title: id
+        label:
+          type:
+            - string
+            - "null"
+          title: label
+        priority:
+          type:
+            - integer
+            - "null"
+          title: priority
+          format: int32
+        status:
+          type:
+            - string
+            - "null"
+          title: status
+          description: '"active" | "disabled"'
+        allowedModels:
+          type: array
+          items:
+            type: string
+          title: allowed_models
+      title: ProxyUpdateAccountRequest
+      additionalProperties: false
+      description: |-
+        ProxyUpdateAccountRequest edits an account's metadata on the named daemon.
+         Mirrors daemon UpdateAccountRequest (optional fields; allowed_models replaces
+         the set when present).
+    bossanova.v1.ProxyUpdateAccountResponse:
+      type: object
+      properties:
+        account:
+          title: account
+          $ref: '#/components/schemas/bossanova.v1.Account'
+      title: ProxyUpdateAccountResponse
+      additionalProperties: false
     bossanova.v1.ProxyUpdateCronJobRequest:
       type: object
       properties:
@@ -6438,6 +6962,11 @@ components:
             - boolean
             - "null"
           title: can_auto_repair
+        archiveSessionsAfterMerge:
+          type:
+            - boolean
+            - "null"
+          title: archive_sessions_after_merge
         sentryOrg:
           type:
             - string
@@ -6759,6 +7288,26 @@ components:
       type: object
       title: RecordRepairOutcomeResponse
       additionalProperties: false
+    bossanova.v1.RefreshAccountCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        credential:
+          type: string
+          title: credential
+          format: byte
+          description: inbound only; never echoed
+        testAfterSave:
+          type: boolean
+          title: test_after_save
+      title: RefreshAccountCommand
+      additionalProperties: false
+      description: |-
+        RefreshAccountCommand replaces an account's stored credential. Fields mirror
+         daemon.proto's RefreshAccountRequest. Replies with CommandResult carrying a
+         RefreshAccountResponse (refresh_account = 24).
     bossanova.v1.RefreshAccountRequest:
       type: object
       properties:
@@ -6877,6 +7426,17 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Repo'
       title: RegisterRepoResponse
       additionalProperties: false
+    bossanova.v1.RemoveAccountCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: RemoveAccountCommand
+      additionalProperties: false
+      description: |-
+        RemoveAccountCommand removes an account. Replies with CommandResult{ok:true}
+         and no payload.
     bossanova.v1.RemoveAccountRequest:
       type: object
       properties:
@@ -7105,6 +7665,13 @@ components:
         canAutoRepair:
           type: boolean
           title: can_auto_repair
+        archiveSessionsAfterMerge:
+          type: boolean
+          title: archive_sessions_after_merge
+          description: |-
+            Whether the daemon auto-archives a session once its PR is merged (BOS-46).
+             Projected here so web/cloud repo settings can see and toggle it, matching the
+             local daemon UpdateRepo surface. Defaults on.
         sentryOrg:
           type: string
           title: sentry_org
@@ -9058,6 +9625,18 @@ components:
          Despite the name, this is the gRPC REQUEST stream type (bossd is the
          gRPC client and initiates the stream). Unknown oneof cases are logged
          and skipped by bosso for forward compatibility.
+    bossanova.v1.TestAccountCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: TestAccountCommand
+      additionalProperties: false
+      description: |-
+        TestAccountCommand runs a live account validation. Fields mirror
+         daemon.proto's TestAccountRequest. Replies with CommandResult carrying a
+         TestAccountResponse (test_account = 26).
     bossanova.v1.TestAccountRequest:
       type: object
       properties:
@@ -9231,6 +9810,40 @@ components:
           title: target_daemon_id
       title: TransferSessionResponse
       additionalProperties: false
+    bossanova.v1.UpdateAccountCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        label:
+          type:
+            - string
+            - "null"
+          title: label
+        priority:
+          type:
+            - integer
+            - "null"
+          title: priority
+          format: int32
+        status:
+          type:
+            - string
+            - "null"
+          title: status
+          description: '"active" | "disabled"'
+        allowedModels:
+          type: array
+          items:
+            type: string
+          title: allowed_models
+      title: UpdateAccountCommand
+      additionalProperties: false
+      description: |-
+        UpdateAccountCommand edits an account's metadata. Fields mirror
+         daemon.proto's UpdateAccountRequest. Replies with CommandResult carrying an
+         UpdateAccountResponse (update_account = 25).
     bossanova.v1.UpdateAccountRequest:
       type: object
       properties:
@@ -9443,6 +10056,11 @@ components:
             - boolean
             - "null"
           title: can_auto_repair
+        archiveSessionsAfterMerge:
+          type:
+            - boolean
+            - "null"
+          title: archive_sessions_after_merge
         sentryOrg:
           type:
             - string

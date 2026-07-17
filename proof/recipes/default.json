@@ -156,6 +156,12 @@
           "selector": "[data-testid=\"repo-settings-form\"]",
           "label": "Edit page",
           "caption": "Styled edit card with Update / Cancel"
+        },
+        {
+          "action": "wait",
+          "selector": "text=Archive sessions after merging PRs",
+          "label": "Archive toggle",
+          "caption": "Archive sessions after merging PRs (default on)"
         }
       ]
     },
@@ -251,6 +257,89 @@
           "selector": "[data-testid=\"cron-job-form\"]",
           "label": "Create form",
           "caption": "Create form with schedule, prompt, agent, and gate fields"
+        }
+      ]
+    },
+    {
+      "id": "web-accounts-list",
+      "surface": "web",
+      "title": "Web Accounts",
+      "description": "Accounts settings page (/settings/accounts): the rotation-accounts table with Provider (claude/codex), Label, Status (active), Health (ok), Priority, Last used, and Usage columns, populated with fixture accounts — a Claude account (work@anthropic.com) and a Codex account (personal).",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/settings/accounts",
+      "cropToSelector": "[data-testid='accounts-section']",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-account-add-form",
+      "surface": "web",
+      "title": "Web Add Account Form",
+      "description": "Opening the Add account modal on /settings/accounts: the Provider selector (Claude/Codex) with the Claude form's Setup token input and the `boss account add` terminal-guidance string for registering an account interactively (the same command that registers a Codex login).",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/settings/accounts",
+          "label": "Open accounts",
+          "caption": "Open the Accounts settings page"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"accounts-section\"]",
+          "label": "Accounts table",
+          "caption": "Registered accounts listed with provider, status, and usage"
+        },
+        {
+          "action": "click",
+          "selector": "button:has-text(\"Add account\")",
+          "label": "Add account",
+          "caption": "Open the Add account form"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"add-account-form\"]",
+          "label": "Add form",
+          "caption": "Provider selector, Setup token input, and boss account add guidance"
+        }
+      ]
+    },
+    {
+      "id": "web-account-remove",
+      "surface": "web",
+      "title": "Web Remove Account Confirmation",
+      "description": "Walkthrough of removing a rotation account on /settings/accounts: clicking a row's Remove action opens a confirmation dialog naming the account label (work@anthropic.com) and warning the credential is deleted from the daemon keyring.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/settings/accounts",
+          "label": "Open accounts",
+          "caption": "Open the Accounts settings page"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"accounts-section\"]",
+          "label": "Accounts table",
+          "caption": "Registered accounts listed with per-row actions"
+        },
+        {
+          "action": "click",
+          "selector": "button[aria-label=\"Remove work@anthropic.com\"]",
+          "label": "Remove account",
+          "caption": "Choose Remove on the Claude account row"
+        },
+        {
+          "action": "wait",
+          "selector": "[role=\"dialog\"]",
+          "label": "Removal confirmation",
+          "caption": "Confirmation names the account and warns the keyring credential is deleted"
         }
       ]
     },
@@ -485,6 +574,9 @@
         "web-cron-list",
         "web-cron-form",
         "web-cron-nav",
+        "web-accounts-list",
+        "web-account-add-form",
+        "web-account-remove",
         "web-account",
         "web-chat-terminal",
         "web-new-session-flow",

@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/recurser/bossalib/models"
 )
@@ -55,6 +56,70 @@ func (s *RecomputingSessionStore) Update(ctx context.Context, id string, params 
 	}
 	_ = s.recomputer.Recompute(ctx, id)
 	return sess, nil
+}
+
+// OrphanHeadlessRun delegates the atomic state-and-marker stamp and recomputes
+// display state when it wins the transition.
+func (s *RecomputingSessionStore) OrphanHeadlessRun(ctx context.Context, id, reason string) (bool, error) {
+	inner, ok := s.SessionStore.(OrphanHeadlessRunStore)
+	if !ok {
+		return false, fmt.Errorf("session store does not support atomic orphan marker")
+	}
+	advanced, err := inner.OrphanHeadlessRun(ctx, id, reason)
+	if err == nil && advanced {
+		_ = s.recomputer.Recompute(ctx, id)
+	}
+	return advanced, err
+}
+
+// ClaimUnarchivedOrphan delegates the atomic marker-checked unarchived claim
+// and recomputes display state when it wins the transition.
+func (s *RecomputingSessionStore) ClaimUnarchivedOrphan(ctx context.Context, id, reason string) (bool, error) {
+	inner, ok := s.SessionStore.(UnarchivedOrphanClaimStore)
+	if !ok {
+		return false, fmt.Errorf("session store does not support atomic unarchived orphan claim")
+	}
+	advanced, err := inner.ClaimUnarchivedOrphan(ctx, id, reason)
+	if err == nil && advanced {
+		_ = s.recomputer.Recompute(ctx, id)
+	}
+	return advanced, err
+}
+
+func (s *RecomputingSessionStore) CommitOrphanResume(ctx context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error) {
+	inner, ok := s.SessionStore.(OrphanResumeStore)
+	if !ok {
+		return false, fmt.Errorf("session store does not support orphan resume commit")
+	}
+	advanced, err := inner.CommitOrphanResume(ctx, id, reason, priorAgentSession, newAgentSessionID)
+	if err == nil && advanced {
+		_ = s.recomputer.Recompute(ctx, id)
+	}
+	return advanced, err
+}
+
+func (s *RecomputingSessionStore) ReleaseOrphanResumeClaim(ctx context.Context, id, reason string, priorAgentSession *string) (bool, error) {
+	inner, ok := s.SessionStore.(OrphanResumeStore)
+	if !ok {
+		return false, fmt.Errorf("session store does not support orphan resume release")
+	}
+	advanced, err := inner.ReleaseOrphanResumeClaim(ctx, id, reason, priorAgentSession)
+	if err == nil && advanced {
+		_ = s.recomputer.Recompute(ctx, id)
+	}
+	return advanced, err
+}
+
+func (s *RecomputingSessionStore) ReparkOrphanResume(ctx context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error) {
+	inner, ok := s.SessionStore.(OrphanResumeStore)
+	if !ok {
+		return false, fmt.Errorf("session store does not support orphan resume repark")
+	}
+	advanced, err := inner.ReparkOrphanResume(ctx, id, reason, priorAgentSession, newAgentSessionID)
+	if err == nil && advanced {
+		_ = s.recomputer.Recompute(ctx, id)
+	}
+	return advanced, err
 }
 
 // isComputerSelfWrite reports whether the only non-nil fields in params are

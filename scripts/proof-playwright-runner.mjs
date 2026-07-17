@@ -594,6 +594,7 @@ function webStageScript() {
         canAutoMerge: true,
         canAutoMergeDependabot: true,
         canAutoRepair: true,
+        archiveSessionsAfterMerge: true,
         sentryOrg: 'proof',
         hasLinearKey: true,
         hasSentryKey: true,

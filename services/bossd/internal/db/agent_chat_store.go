@@ -172,6 +172,25 @@ func (s *SQLiteAgentChatStore) UpdateTitleByAgentSessionID(ctx context.Context, 
 	return nil
 }
 
+// UpdateAgentSessionID keeps a primary chat attached to a resumed headless
+// run. The row remains the same chat, retaining its provider, account, model,
+// title, and creation time while its live agent run identity changes.
+func (s *SQLiteAgentChatStore) UpdateAgentSessionID(ctx context.Context, id, oldAgentSessionID, newAgentSessionID string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE agent_chats SET agent_session_id = ? WHERE id = ? AND agent_session_id = ?`,
+		newAgentSessionID, id, oldAgentSessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("update agent_chat agent_session_id: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("update agent_chat agent_session_id rows affected: %w", err)
+	} else if n == 0 {
+		return fmt.Errorf("%w for agent_session_id %q", ErrAgentChatNotFound, oldAgentSessionID)
+	}
+	return nil
+}
+
 func (s *SQLiteAgentChatStore) UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE agent_chats SET tmux_session_name = ? WHERE agent_session_id = ?`,

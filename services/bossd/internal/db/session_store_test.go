@@ -11,6 +11,206 @@ import (
 	"github.com/recurser/bossalib/models"
 )
 
+// TestClaimUnarchivedOrphan_RequiresMatchingReason ensures a candidate from a
+// stale orphan-resume sweep cannot be claimed after another writer clears or
+// changes its daemon-restart marker.
+func TestClaimUnarchivedOrphan_RequiresMatchingReason(t *testing.T) {
+	database := setupTestDB(t)
+	repoStore := NewRepoStore(database)
+	store := NewSessionStore(database)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := store.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "claim orphan marker",
+		WorktreePath: "/tmp/wt/claim-orphan-marker",
+		BranchName:   "feat/claim-orphan-marker",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	setSessionState(t, store, sess.ID, machine.Orphaned)
+	marker := "headless run orphaned: daemon restart"
+	markerPtr := &marker
+	if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{BlockedReason: &markerPtr}); err != nil {
+		t.Fatalf("set orphan marker: %v", err)
+	}
+
+	changedMarker := "cleared by retry"
+	changedMarkerPtr := &changedMarker
+	if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{BlockedReason: &changedMarkerPtr}); err != nil {
+		t.Fatalf("change orphan marker: %v", err)
+	}
+
+	advanced, err := store.ClaimUnarchivedOrphan(ctx, sess.ID, marker)
+	if err != nil {
+		t.Fatalf("claim with stale marker: %v", err)
+	}
+	if advanced {
+		t.Fatal("claim with stale marker advanced, want false")
+	}
+	got, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get after stale claim: %v", err)
+	}
+	if got.State != machine.Orphaned {
+		t.Fatalf("state after stale claim = %v, want Orphaned", got.State)
+	}
+	if got.BlockedReason == nil || *got.BlockedReason != changedMarker {
+		t.Fatalf("marker after stale claim = %v, want %q", got.BlockedReason, changedMarker)
+	}
+
+	if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{BlockedReason: &markerPtr}); err != nil {
+		t.Fatalf("restore orphan marker: %v", err)
+	}
+
+	advanced, err = store.ClaimUnarchivedOrphan(ctx, sess.ID, marker)
+	if err != nil {
+		t.Fatalf("claim with matching marker: %v", err)
+	}
+	if !advanced {
+		t.Fatal("claim with matching marker did not advance")
+	}
+}
+
+func TestOrphanResumeStore_ConditionalHandoff(t *testing.T) {
+	database := setupTestDB(t)
+	repoStore := NewRepoStore(database)
+	store := NewSessionStore(database)
+	ctx := context.Background()
+	repo := createTestRepo(t, repoStore)
+	marker := "headless run orphaned: daemon restart"
+
+	newCandidate := func(t *testing.T, priorAgentSession *string) *models.Session {
+		t.Helper()
+		sess, err := store.Create(ctx, CreateSessionParams{
+			RepoID:       repo.ID,
+			Title:        "orphan resume handoff",
+			WorktreePath: "/tmp/wt/orphan-resume-handoff",
+			BranchName:   "feat/orphan-resume-handoff",
+			BaseBranch:   "main",
+		})
+		if err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+		setSessionState(t, store, sess.ID, machine.Orphaned)
+		markerPtr := &marker
+		if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{
+			AgentSessionID: &priorAgentSession,
+			BlockedReason:  &markerPtr,
+		}); err != nil {
+			t.Fatalf("prepare orphan candidate: %v", err)
+		}
+		return sess
+	}
+
+	t.Run("commits and reparks a nil prior agent session", func(t *testing.T) {
+		sess := newCandidate(t, nil)
+		if ok, err := store.ClaimUnarchivedOrphan(ctx, sess.ID, marker); err != nil || !ok {
+			t.Fatalf("claim = %v, %v; want true, nil", ok, err)
+		}
+		if ok, err := store.CommitOrphanResume(ctx, sess.ID, marker, nil, "agent-new"); err != nil || !ok {
+			t.Fatalf("commit = %v, %v; want true, nil", ok, err)
+		}
+		if ok, err := store.ReparkOrphanResume(ctx, sess.ID, marker, nil, "agent-new"); err != nil || !ok {
+			t.Fatalf("repark = %v, %v; want true, nil", ok, err)
+		}
+		got, err := store.Get(ctx, sess.ID)
+		if err != nil {
+			t.Fatalf("get reparking result: %v", err)
+		}
+		if got.State != machine.Orphaned || got.AgentSessionID != nil || got.BlockedReason == nil || *got.BlockedReason != marker {
+			t.Fatalf("reparked session = %+v, want original nil-agent orphan shape", got)
+		}
+	})
+
+	t.Run("does not commit after archive or prior agent change", func(t *testing.T) {
+		prior := "agent-old"
+		sess := newCandidate(t, &prior)
+		if ok, err := store.ClaimUnarchivedOrphan(ctx, sess.ID, marker); err != nil || !ok {
+			t.Fatalf("claim = %v, %v; want true, nil", ok, err)
+		}
+		if err := store.Archive(ctx, sess.ID); err != nil {
+			t.Fatalf("archive: %v", err)
+		}
+		if ok, err := store.CommitOrphanResume(ctx, sess.ID, marker, &prior, "agent-new"); err != nil || ok {
+			t.Fatalf("commit after archive = %v, %v; want false, nil", ok, err)
+		}
+
+		other := "agent-other"
+		otherPtr := &other
+		sess = newCandidate(t, &prior)
+		if ok, err := store.ClaimUnarchivedOrphan(ctx, sess.ID, marker); err != nil || !ok {
+			t.Fatalf("claim = %v, %v; want true, nil", ok, err)
+		}
+		if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{AgentSessionID: &otherPtr}); err != nil {
+			t.Fatalf("replace prior agent: %v", err)
+		}
+		if ok, err := store.CommitOrphanResume(ctx, sess.ID, marker, &prior, "agent-new"); err != nil || ok {
+			t.Fatalf("commit after agent replacement = %v, %v; want false, nil", ok, err)
+		}
+	})
+
+	t.Run("releases a claimed orphan when retry cleared its marker", func(t *testing.T) {
+		prior := "agent-old"
+		sess := newCandidate(t, &prior)
+		if ok, err := store.ClaimUnarchivedOrphan(ctx, sess.ID, marker); err != nil || !ok {
+			t.Fatalf("claim = %v, %v; want true, nil", ok, err)
+		}
+		var nilReason *string
+		if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{BlockedReason: &nilReason}); err != nil {
+			t.Fatalf("clear orphan marker for retry: %v", err)
+		}
+		if ok, err := store.ReleaseOrphanResumeClaim(ctx, sess.ID, marker, &prior); err != nil || !ok {
+			t.Fatalf("release markerless retry claim = %v, %v; want true, nil", ok, err)
+		}
+		got, err := store.Get(ctx, sess.ID)
+		if err != nil {
+			t.Fatalf("get released retry claim: %v", err)
+		}
+		if got.State != machine.Orphaned || got.BlockedReason != nil || got.AgentSessionID == nil || *got.AgentSessionID != prior {
+			t.Fatalf("released retry claim = %+v, want markerless orphan with original agent", got)
+		}
+	})
+
+	t.Run("does not release a markerless claim after archive or manual agent replacement", func(t *testing.T) {
+		prior := "agent-old"
+		clearMarker := func(t *testing.T, sess *models.Session) {
+			t.Helper()
+			if ok, err := store.ClaimUnarchivedOrphan(ctx, sess.ID, marker); err != nil || !ok {
+				t.Fatalf("claim = %v, %v; want true, nil", ok, err)
+			}
+			var nilReason *string
+			if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{BlockedReason: &nilReason}); err != nil {
+				t.Fatalf("clear orphan marker: %v", err)
+			}
+		}
+
+		archived := newCandidate(t, &prior)
+		clearMarker(t, archived)
+		if err := store.Archive(ctx, archived.ID); err != nil {
+			t.Fatalf("archive claimed orphan: %v", err)
+		}
+		if ok, err := store.ReleaseOrphanResumeClaim(ctx, archived.ID, marker, &prior); err != nil || ok {
+			t.Fatalf("release after archive = %v, %v; want false, nil", ok, err)
+		}
+
+		replaced := newCandidate(t, &prior)
+		clearMarker(t, replaced)
+		other := "agent-manual"
+		otherPtr := &other
+		if _, err := store.Update(ctx, replaced.ID, UpdateSessionParams{AgentSessionID: &otherPtr}); err != nil {
+			t.Fatalf("replace claimed agent: %v", err)
+		}
+		if ok, err := store.ReleaseOrphanResumeClaim(ctx, replaced.ID, marker, &prior); err != nil || ok {
+			t.Fatalf("release after manual agent replacement = %v, %v; want false, nil", ok, err)
+		}
+	})
+}
+
 // TestUpdateLastAttemptHeadSHA round-trips the BOS-235 last_attempt_head_sha
 // column through the store: set a value, then clear it to NULL via the
 // nullable-string double-pointer convention.

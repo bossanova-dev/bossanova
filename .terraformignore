@@ -1,0 +1,18 @@
+# Files excluded from the config context HCP Terraform (Terraform Cloud) uploads
+# on CLI-driven runs. The remote workspace roots at infra/environments/ but the
+# uploader captures the whole repo, so anything here that isn't Terraform config
+# is dead weight — or worse, breaks the upload.
+#
+# The bazel-* entries are symlinks into the sandbox execroot
+# (/private/var/tmp/_bazel_*). Their trees contain build outputs that come and
+# go between runs; the uploader follows the symlink and lstat()s files that have
+# since been cleaned, failing the run with "no such file or directory". They are
+# never Terraform configuration — exclude them.
+bazel-bin
+bazel-bossanova
+bazel-out
+bazel-testlogs
+
+# Not Terraform config; large and irrelevant to the uploaded context.
+.git
+node_modules

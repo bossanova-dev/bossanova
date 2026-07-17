@@ -52,6 +52,10 @@ func (f *deleteChatStoreFake) UpdateTitleByAgentSessionID(context.Context, strin
 	return nil
 }
 
+func (f *deleteChatStoreFake) UpdateAgentSessionID(context.Context, string, string, string) error {
+	return nil
+}
+
 func (f *deleteChatStoreFake) UpdateTmuxSessionName(context.Context, string, *string) error {
 	return nil
 }

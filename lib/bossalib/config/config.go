@@ -188,6 +188,14 @@ type ManagedAccountsConfig struct {
 	// management enabled, the proxy is injected unless explicitly disabled. Opt
 	// out with failover_proxy_enabled:false or managed_accounts.enabled:false.
 	FailoverProxy *bool `json:"failover_proxy_enabled,omitempty"`
+
+	// AutoResumeOrphans gates auto-resume of headless runs that a daemon restart
+	// orphaned (BOS-407). Unlike the rotation bools it defaults OFF (nil ⇒ false):
+	// auto-resume reverses the deliberate "a one-shot's prompt may have side
+	// effects — the human decides" default, so it must be an explicit opt-in. It
+	// is independent of the rotation kill switch (no ManagedAccountsEnabled()
+	// coupling); the resume restarts on the SAME account, never rotating.
+	AutoResumeOrphans *bool `json:"auto_resume_orphans,omitempty"`
 }
 
 // AutoRotateChatsEnabled resolves the interactive-chat auto-rotate scope for a
@@ -284,6 +292,16 @@ func (c ManagedAccountsConfig) ProactiveRotationEnabled() bool {
 // managed_accounts.failover_proxy_enabled:false or managed_accounts.enabled:false.
 func (c ManagedAccountsConfig) FailoverProxyEnabled() bool {
 	return c.FailoverProxy == nil || *c.FailoverProxy
+}
+
+// AutoResumeOrphansEnabled reports whether auto-resume of daemon-restart-
+// orphaned headless runs is on (BOS-407). It defaults OFF (nil ⇒ false): the
+// resume is an explicit opt-in because it reverses the deliberate "human
+// decides" default for side-effectful one-shots. With it disabled the orphan
+// sweep behaves exactly as before — the run stays in the terminal Orphaned
+// state until a human nudges it.
+func (c ManagedAccountsConfig) AutoResumeOrphansEnabled() bool {
+	return c.AutoResumeOrphans != nil && *c.AutoResumeOrphans
 }
 
 // ProactiveSweepInterval returns the cadence of the proactive pre-cap sweep,

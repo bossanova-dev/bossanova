@@ -1001,6 +1001,66 @@ func TestProxy_SSEPreContentRateLimit_swapsAndReplays(t *testing.T) {
 	}
 }
 
+// TestProxy_SSEReplayAlsoRateLimited_noCommit proves that when the FIRST leg
+// opens with a pre-content SSE rate_limit_error (rotate) and the rotated
+// account's REPLAY is ALSO an HTTP-200 SSE rate_limit_error, the swap is NOT
+// committed: the rotated account must not be rebound/audited as if it served the
+// request just because its status line was <400. The client still receives the
+// (reconstructed) rate-limited stream, and the swap is left unstuck so the next
+// request re-tries failover.
+func TestProxy_SSEReplayAlsoRateLimited_noCommit(t *testing.T) {
+	// Both bearers get a 200 text/event-stream that opens with a rate_limit_error
+	// before any content — the first leg AND the replay are rate-limited.
+	preContent := sseMessageStart + ssePing + sseRateLimitError
+	u := &fakeUpstream{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		u.mu.Lock()
+		u.requests = append(u.requests, recordedRequest{
+			method: r.Method, path: r.URL.Path, auth: r.Header.Get("Authorization"),
+			apiKey: r.Header.Get("x-api-key"), body: string(body),
+		})
+		u.mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, preContent)
+	}))
+	t.Cleanup(srv.Close)
+
+	f := &fakeFailover{result: session.FailoverResult{Rotate: true, Token: "second-token", NextAccountID: "acct-2", Trigger: "ROTATION_TRIGGER_USAGE_LIMITED"}}
+	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "first-token", `{"prompt":"hi"}`)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (rate-limited replay streamed through)", resp.StatusCode)
+	}
+	// The client receives the reconstructed rate-limited stream (honest), not a
+	// false success.
+	if !strings.Contains(string(body), "rate_limit_error") {
+		t.Fatalf("body = %q, want the rate_limit_error streamed through", body)
+	}
+	if f.prepareCalls != 1 {
+		t.Fatalf("PrepareFailover calls = %d, want 1 (first leg rotated)", f.prepareCalls)
+	}
+	if f.commitCalls != 0 {
+		t.Fatalf("CommitFailover calls = %d, want 0 (a rate-limited replay must not commit)", f.commitCalls)
+	}
+	if got := ps.bearerForSession("sess-1"); got != "" {
+		t.Fatalf("swap must NOT be sticky when the replay is itself rate-limited, cached bearer = %q", got)
+	}
+	reqs := u.all()
+	if len(reqs) != 2 {
+		t.Fatalf("upstream saw %d requests, want 2 (original + replay)", len(reqs))
+	}
+	if reqs[1].auth != "Bearer second-token" {
+		t.Fatalf("replay bearer = %q, want second-token", reqs[1].auth)
+	}
+}
+
 // TestProxy_SSEPostContentRateLimit_passesThrough proves a rate_limit_error that
 // arrives AFTER a content_block_delta already shipped is passed through
 // byte-for-byte with no replay — the transparent-recovery boundary. (BOS-406/407

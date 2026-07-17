@@ -78,6 +78,86 @@ func TestAgentChatStore_CRUD(t *testing.T) {
 	if chats[0].Title != "Title by claude ID" {
 		t.Errorf("title after update by claude ID = %q, want %q", chats[0].Title, "Title by claude ID")
 	}
+
+	// A resumed headless run keeps the same primary chat row but points it at
+	// its newly started agent process.
+	if err := chatStore.UpdateAgentSessionID(ctx, chat.ID, "claude-abc-123", "claude-resumed-456"); err != nil {
+		t.Fatalf("update agent session id: %v", err)
+	}
+	if _, err := chatStore.GetByAgentSessionID(ctx, "claude-abc-123"); !errors.Is(err, ErrAgentChatNotFound) {
+		t.Fatalf("old agent session id lookup err = %v, want ErrAgentChatNotFound", err)
+	}
+	resumed, err := chatStore.GetByAgentSessionID(ctx, "claude-resumed-456")
+	if err != nil {
+		t.Fatalf("get resumed chat: %v", err)
+	}
+	if resumed.ID != chat.ID || resumed.Title != "Title by claude ID" {
+		t.Errorf("resumed chat = %+v, want original row with updated agent id", resumed)
+	}
+}
+
+func TestAgentChatStore_UpdateAgentSessionIDMissing(t *testing.T) {
+	db := setupTestDB(t)
+	chatStore := NewAgentChatStore(db)
+
+	err := chatStore.UpdateAgentSessionID(context.Background(), "missing-chat", "missing-agent", "resumed-agent")
+	if !errors.Is(err, ErrAgentChatNotFound) {
+		t.Fatalf("UpdateAgentSessionID error = %v, want ErrAgentChatNotFound", err)
+	}
+}
+
+// A stale agent session ID may be shared by duplicate chat rows. Resuming one
+// session must not re-route the other row to the replacement run.
+func TestAgentChatStore_UpdateAgentSessionIDScopesUpdateToChatID(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	chatStore := NewAgentChatStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	primarySession, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "Primary", WorktreePath: "/tmp/wt/primary", BranchName: "feat/primary", BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("create primary session: %v", err)
+	}
+	duplicateSession, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "Duplicate", WorktreePath: "/tmp/wt/duplicate", BranchName: "feat/duplicate", BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("create duplicate session: %v", err)
+	}
+	primaryChat, err := chatStore.Create(ctx, CreateAgentChatParams{SessionID: primarySession.ID, AgentSessionID: "stale-agent", Title: "Primary chat"})
+	if err != nil {
+		t.Fatalf("create primary chat: %v", err)
+	}
+	duplicateChat, err := chatStore.Create(ctx, CreateAgentChatParams{SessionID: duplicateSession.ID, AgentSessionID: "stale-agent", Title: "Duplicate chat"})
+	if err != nil {
+		t.Fatalf("create duplicate chat: %v", err)
+	}
+
+	if err := chatStore.UpdateAgentSessionID(ctx, primaryChat.ID, "stale-agent", "resumed-agent"); err != nil {
+		t.Fatalf("update primary chat agent session id: %v", err)
+	}
+
+	primaryChats, err := chatStore.ListBySession(ctx, primarySession.ID)
+	if err != nil {
+		t.Fatalf("list primary chats: %v", err)
+	}
+	if got := primaryChats[0].AgentSessionID; got != "resumed-agent" {
+		t.Errorf("primary chat agent session id = %q, want resumed-agent", got)
+	}
+	duplicateChats, err := chatStore.ListBySession(ctx, duplicateSession.ID)
+	if err != nil {
+		t.Fatalf("list duplicate chats: %v", err)
+	}
+	if got := duplicateChats[0].ID; got != duplicateChat.ID {
+		t.Fatalf("duplicate chat id = %q, want %q", got, duplicateChat.ID)
+	}
+	if got := duplicateChats[0].AgentSessionID; got != "stale-agent" {
+		t.Errorf("duplicate chat agent session id = %q, want stale-agent", got)
+	}
 }
 
 // TestAgentChatStore_AccountIDRoundTrip pins the BOS-170 nullable account_id

@@ -99,12 +99,29 @@ var (
 	reUsageBillingLimit      = regexp.MustCompile(`(?i)billing.*(?:limit|quota)`)
 	reUsageSubscription      = regexp.MustCompile(`(?i)subscription.*(?:expired|required)`)
 
-	// Rate-limit banners (BOS-406). The two bare patterns are intentionally
-	// liberal (they match the headless exit path); the two anchored banner
-	// patterns pin the Claude 429 banner shape. All live in rateLimitedPatterns,
-	// NOT transientPatterns, so they classify as KindRateLimited.
-	reRateLimit429             = regexp.MustCompile(`(?i)\b429\b`)
-	reRateLimitRate            = regexp.MustCompile(`(?i)\brate limit\b`)
+	// Rate-limit banners (BOS-406). These pin the provider's real 429 / rate-limit
+	// banner shapes so agent prose that merely mentions a rate limit or a 429
+	// status — e.g. a headless run whose task was implementing rate-limit
+	// middleware, or test output in the ~8KB PostExit tail — does NOT misclassify
+	// an unrelated non-zero exit as a rate limit and route it through account
+	// rotation. All live in rateLimitedPatterns, NOT transientPatterns, so they
+	// classify as KindRateLimited.
+	//
+	//   - reRateLimitError    Anthropic's structured error.type (the SSE / JSON
+	//                         machine token; does not appear in ordinary prose).
+	//   - reRateLimit429      a 429 qualified by an HTTP-status / API-error /
+	//                         rejection context word (or "429 Too Many Requests"),
+	//                         never a bare number sitting in prose.
+	//   - reRateLimitRate     a "rate limit" banner that states the limit was
+	//                         exceeded / reached / hit / exhausted. This also
+	//                         covers the ErrRateLimited round-trip sentinel
+	//                         "agent rate limit reached (429)".
+	//   - reRateLimitRejected / reRateLimitWouldExc  the CLI incident-banner shape
+	//                         "Request rejected (429) · … would exceed your … rate
+	//                         limit".
+	reRateLimitError           = regexp.MustCompile(`(?i)rate_limit_error`)
+	reRateLimit429             = regexp.MustCompile(`(?i)\b(?:status|code|http|error|rejected|failed)\b[^\n]{0,20}\b429\b|\b429\b[^\n]{0,20}too many requests`)
+	reRateLimitRate            = regexp.MustCompile(`(?i)\brate limit\b[^\n]{0,24}\b(?:exceed(?:ed)?|reached|hit|exhausted)\b`)
 	reRateLimitRejected        = regexp.MustCompile(`(?i)request rejected \(429\)`)
 	reRateLimitWouldExc        = regexp.MustCompile(`(?i)would exceed your .*rate limit`)
 	reTransient5xx             = regexp.MustCompile(`(?i)\b5(?:00|02|03|29)\b`)
@@ -150,6 +167,7 @@ var usagePatterns = []*regexp.Regexp{
 // (BOS-406), keeping it distinct from the genuine infra transients below so a
 // rotation consumer can act on it.
 var rateLimitedPatterns = []*regexp.Regexp{
+	reRateLimitError,
 	reRateLimit429,
 	reRateLimitRate,
 	reRateLimitRejected,

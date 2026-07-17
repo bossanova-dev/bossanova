@@ -84,6 +84,14 @@ func (s *NotifyingAgentChatStore) UpdateTitleByAgentSessionID(ctx context.Contex
 	return nil
 }
 
+func (s *NotifyingAgentChatStore) UpdateAgentSessionID(ctx context.Context, id, oldAgentSessionID, newAgentSessionID string) error {
+	if err := s.inner.UpdateAgentSessionID(ctx, id, oldAgentSessionID, newAgentSessionID); err != nil {
+		return err
+	}
+	s.notifyAfterUpdate(ctx, newAgentSessionID)
+	return nil
+}
+
 func (s *NotifyingAgentChatStore) UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error {
 	if err := s.inner.UpdateTmuxSessionName(ctx, agentSessionID, name); err != nil {
 		return err

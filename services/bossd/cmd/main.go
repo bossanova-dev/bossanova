@@ -2301,6 +2301,14 @@ func run(opts runOpts) error {
 		log.Info().Int64("count", n).Msg("advanced orphaned sessions to awaiting_checks")
 	}
 
+	// Resume only after the startup bulk advancement. Bootstrap's orphan sweep
+	// stamps restart-killed detached runs Orphaned; resuming earlier would put
+	// them back in ImplementingPlan where AdvanceOrphanedSessions mistakes them
+	// for a completed workflow-less run and advances them to AwaitingChecks.
+	if n := lifecycle.ResumeOrphanedHeadlessRuns(pollerCtx); n > 0 {
+		log.Info().Int("count", n).Msg("orphan-resume sweep: resumed orphaned headless runs")
+	}
+
 	// Backfill the display-status composite for every active session. After
 	// a daemon restart the in-memory inputs (chat, display tracker) are
 	// empty, so the persisted display_label may not match the stored state.
@@ -2421,6 +2429,27 @@ func run(opts runOpts) error {
 			case <-ticker.C:
 				if n := lifecycle.SweepParkedRotations(pollerCtx); n > 0 {
 					log.Info().Int("count", n).Msg("parked-rotation sweep: redispatched parked headless runs")
+				}
+			}
+		}
+	})
+
+	// Periodically auto-resume headless runs a daemon restart orphaned (BOS-407).
+	// Level-triggered off the persisted Orphaned state, so it re-arms every
+	// still-orphaned run across a daemon restart (no in-memory timer) and retries
+	// any resume that could not happen at Bootstrap (agent plugin not yet ready,
+	// transient StartByAgent error). Default OFF — ResumeOrphanedHeadlessRuns is a
+	// no-op unless AutoResumeOrphans is opted in. Reuses the park-sweep cadence.
+	trackedGo(func() {
+		ticker := time.NewTicker(settings.ManagedAccounts.ParkSweepInterval())
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pollerCtx.Done():
+				return
+			case <-ticker.C:
+				if n := lifecycle.ResumeOrphanedHeadlessRuns(pollerCtx); n > 0 {
+					log.Info().Int("count", n).Msg("orphan-resume sweep: resumed orphaned headless runs")
 				}
 			}
 		}

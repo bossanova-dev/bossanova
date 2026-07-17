@@ -162,14 +162,16 @@ type fakePollArmer struct {
 	armedSessionID string
 	armedID        string
 	armedSessions  []string
+	client         agent.AgentRunnerClient
 }
 
-func (f *fakePollArmer) Arm(_ context.Context, sessionID, agentSessionID string, _ agent.AgentRunnerClient) {
+func (f *fakePollArmer) Arm(_ context.Context, sessionID, agentSessionID string, client agent.AgentRunnerClient) {
 	f.armCalled = true
 	f.armCount++
 	f.armedSessionID = sessionID
 	f.armedID = agentSessionID
 	f.armedSessions = append(f.armedSessions, sessionID)
+	f.client = client
 }
 
 type recordingCronCompletionNotifier struct {

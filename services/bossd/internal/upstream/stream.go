@@ -355,6 +355,22 @@ type SessionCommandHandler interface {
 	// RunCronJobNow fires a cron job immediately, honoring the same overlap and
 	// concurrency-cap rules as scheduled fires. Async.
 	RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
+	// AddAccount registers a new provider login. The credential blob is
+	// inbound-only (consumed into the keyring, never echoed); the response
+	// carries account metadata only. Store/keyring-bound — dispatched async.
+	AddAccount(ctx context.Context, cmd *pb.AddAccountCommand) (*pb.AddAccountResponse, error)
+	// RefreshAccount replaces an account's stored credential in place and,
+	// optionally, tests it after save. Credential inbound-only. Async.
+	RefreshAccount(ctx context.Context, cmd *pb.RefreshAccountCommand) (*pb.RefreshAccountResponse, error)
+	// UpdateAccount mutates account metadata (present-only semantics: only the
+	// optional fields the command sets are applied). Async.
+	UpdateAccount(ctx context.Context, cmd *pb.UpdateAccountCommand) (*pb.UpdateAccountResponse, error)
+	// RemoveAccount deletes the metadata row and purges the keyring credential.
+	// Async.
+	RemoveAccount(ctx context.Context, id string) error
+	// TestAccount validates the account's stored credential (and runs a provider
+	// smoke check when a runner is wired), recording the outcome. Async.
+	TestAccount(ctx context.Context, cmd *pb.TestAccountCommand) (*pb.TestAccountResponse, error)
 }
 
 // WebhookCommandDispatcher forwards a webhook payload to whatever in-daemon

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -82,6 +83,16 @@ type fakeCommandHandler struct {
 	runCronResult    *pb.RunCronJobNowResponse
 	deleteCronID     string // last id passed to DeleteCronJob
 	runCronID        string // last id passed to RunCronJobNow
+	// Account-management knobs.
+	addAccountResult     *pb.AddAccountResponse
+	addAccountCmd        *pb.AddAccountCommand // last command passed to AddAccount
+	refreshAccountResult *pb.RefreshAccountResponse
+	refreshAccountCmd    *pb.RefreshAccountCommand // last command passed to RefreshAccount
+	updateAccountResult  *pb.UpdateAccountResponse
+	updateAccountCmd     *pb.UpdateAccountCommand // last command passed to UpdateAccount
+	testAccountResult    *pb.TestAccountResponse
+	testAccountID        string // last id passed to TestAccount
+	removeAccountID      string // last id passed to RemoveAccount
 }
 
 func (f *fakeCommandHandler) Stop(_ context.Context, _ string) (*pb.Session, error) {
@@ -192,6 +203,26 @@ func (f *fakeCommandHandler) DeleteCronJob(_ context.Context, id string) error {
 func (f *fakeCommandHandler) RunCronJobNow(_ context.Context, id string) (*pb.RunCronJobNowResponse, error) {
 	f.runCronID = id
 	return f.runCronResult, f.returnErr
+}
+func (f *fakeCommandHandler) AddAccount(_ context.Context, cmd *pb.AddAccountCommand) (*pb.AddAccountResponse, error) {
+	f.addAccountCmd = cmd
+	return f.addAccountResult, f.returnErr
+}
+func (f *fakeCommandHandler) RefreshAccount(_ context.Context, cmd *pb.RefreshAccountCommand) (*pb.RefreshAccountResponse, error) {
+	f.refreshAccountCmd = cmd
+	return f.refreshAccountResult, f.returnErr
+}
+func (f *fakeCommandHandler) UpdateAccount(_ context.Context, cmd *pb.UpdateAccountCommand) (*pb.UpdateAccountResponse, error) {
+	f.updateAccountCmd = cmd
+	return f.updateAccountResult, f.returnErr
+}
+func (f *fakeCommandHandler) RemoveAccount(_ context.Context, id string) error {
+	f.removeAccountID = id
+	return f.returnErr
+}
+func (f *fakeCommandHandler) TestAccount(_ context.Context, cmd *pb.TestAccountCommand) (*pb.TestAccountResponse, error) {
+	f.testAccountID = cmd.GetId()
+	return f.testAccountResult, f.returnErr
 }
 
 func strPtr(s string) *string { return &s }
@@ -1637,6 +1668,233 @@ func TestDispatchCommand_ListAccounts_HandlerError_ReturnsCommandErr(t *testing.
 	}
 	if r.GetError() != "list accounts boom" {
 		t.Fatalf("expected error %q, got %q", "list accounts boom", r.GetError())
+	}
+}
+
+func TestDispatchCommand_AddAccount_CallsHandler(t *testing.T) {
+	handler := &fakeCommandHandler{addAccountResult: &pb.AddAccountResponse{Account: &pb.Account{Id: "acc-1", Provider: "claude", Label: "primary"}}}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	if ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-add1",
+			Cmd: &pb.OrchestratorCommand_AddAccount{AddAccount: &pb.AddAccountCommand{
+				Provider: "claude", Label: "primary", Priority: 2, Credential: []byte("secret-token"),
+			}},
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
+	if handler.addAccountCmd == nil || handler.addAccountCmd.GetProvider() != "claude" ||
+		handler.addAccountCmd.GetLabel() != "primary" || handler.addAccountCmd.GetPriority() != 2 ||
+		string(handler.addAccountCmd.GetCredential()) != "secret-token" {
+		t.Fatalf("add_account command not forwarded verbatim: %+v", handler.addAccountCmd)
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-add1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	if r.GetAddAccount().GetAccount().GetId() != "acc-1" {
+		t.Fatalf("expected add_account payload with acc-1, got %+v", r.GetAddAccount())
+	}
+}
+
+func TestDispatchCommand_AddAccount_HandlerError_ClassifiesCode(t *testing.T) {
+	handler := &fakeCommandHandler{returnErr: connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("dupe"))}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-add-err",
+			Cmd:       &pb.OrchestratorCommand_AddAccount{AddAccount: &pb.AddAccountCommand{Provider: "claude", Label: "x"}},
+		}, out)
+	r := recvEvent(t, out).GetResult()
+	if r == nil || r.GetOk() || !strings.Contains(r.GetError(), "dupe") {
+		t.Fatalf("expected failed result mentioning dupe, got %+v", r)
+	}
+	// CodeAlreadyExists isn't modeled by the reverse-stream protocol, so it
+	// collapses to UNSPECIFIED (bosso treats it as Aborted).
+	if r.GetErrorCode() != pb.CommandResult_ERROR_CODE_UNSPECIFIED {
+		t.Fatalf("error_code = %v, want UNSPECIFIED", r.GetErrorCode())
+	}
+}
+
+func TestDispatchCommand_RefreshAccount_CallsHandler(t *testing.T) {
+	handler := &fakeCommandHandler{refreshAccountResult: &pb.RefreshAccountResponse{Account: &pb.Account{Id: "acc-1"}, LiveSmokeRan: true, Detail: "ok"}}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-ref1",
+			Cmd: &pb.OrchestratorCommand_RefreshAccount{RefreshAccount: &pb.RefreshAccountCommand{
+				Id: "acc-1", Credential: []byte("new-token"), TestAfterSave: true,
+			}},
+		}, out)
+	ev := recvEvent(t, out)
+	if handler.refreshAccountCmd == nil || handler.refreshAccountCmd.GetId() != "acc-1" ||
+		string(handler.refreshAccountCmd.GetCredential()) != "new-token" || !handler.refreshAccountCmd.GetTestAfterSave() {
+		t.Fatalf("refresh_account command not forwarded verbatim: %+v", handler.refreshAccountCmd)
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-ref1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	if !r.GetRefreshAccount().GetLiveSmokeRan() || r.GetRefreshAccount().GetAccount().GetId() != "acc-1" {
+		t.Fatalf("unexpected refresh_account payload: %+v", r.GetRefreshAccount())
+	}
+}
+
+func TestDispatchCommand_RefreshAccount_HandlerError_ClassifiesCode(t *testing.T) {
+	handler := &fakeCommandHandler{returnErr: connect.NewError(connect.CodeNotFound, fmt.Errorf("no account"))}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-ref-err",
+			Cmd:       &pb.OrchestratorCommand_RefreshAccount{RefreshAccount: &pb.RefreshAccountCommand{Id: "gone"}},
+		}, out)
+	r := recvEvent(t, out).GetResult()
+	if r == nil || r.GetOk() || !strings.Contains(r.GetError(), "no account") {
+		t.Fatalf("expected failed result mentioning no account, got %+v", r)
+	}
+	if r.GetErrorCode() != pb.CommandResult_ERROR_CODE_NOT_FOUND {
+		t.Fatalf("error_code = %v, want NOT_FOUND", r.GetErrorCode())
+	}
+}
+
+func TestDispatchCommand_UpdateAccount_CallsHandler(t *testing.T) {
+	handler := &fakeCommandHandler{updateAccountResult: &pb.UpdateAccountResponse{Account: &pb.Account{Id: "acc-1", Label: "renamed"}}}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	newLabel := "renamed"
+	newPriority := int32(5)
+	newStatus := "disabled"
+	client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-upd1",
+			Cmd: &pb.OrchestratorCommand_UpdateAccount{UpdateAccount: &pb.UpdateAccountCommand{
+				Id: "acc-1", Label: &newLabel, Priority: &newPriority, Status: &newStatus, AllowedModels: []string{"m1", "m2"},
+			}},
+		}, out)
+	ev := recvEvent(t, out)
+	cmd := handler.updateAccountCmd
+	if cmd == nil || cmd.GetId() != "acc-1" || cmd.Label == nil || *cmd.Label != "renamed" ||
+		cmd.Priority == nil || *cmd.Priority != 5 || cmd.Status == nil || *cmd.Status != "disabled" ||
+		len(cmd.GetAllowedModels()) != 2 {
+		t.Fatalf("update_account optional pointers not forwarded 1:1: %+v", cmd)
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetUpdateAccount().GetAccount().GetLabel() != "renamed" {
+		t.Fatalf("unexpected update_account result: %+v", r)
+	}
+}
+
+func TestDispatchCommand_UpdateAccount_HandlerError_ClassifiesCode(t *testing.T) {
+	handler := &fakeCommandHandler{returnErr: connect.NewError(connect.CodeNotFound, fmt.Errorf("no account"))}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-upd-err",
+			Cmd:       &pb.OrchestratorCommand_UpdateAccount{UpdateAccount: &pb.UpdateAccountCommand{Id: "gone"}},
+		}, out)
+	r := recvEvent(t, out).GetResult()
+	if r == nil || r.GetOk() || r.GetErrorCode() != pb.CommandResult_ERROR_CODE_NOT_FOUND {
+		t.Fatalf("expected NOT_FOUND failed result, got %+v", r)
+	}
+}
+
+func TestDispatchCommand_RemoveAccount_CallsHandler(t *testing.T) {
+	handler := &fakeCommandHandler{}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-rem1",
+			Cmd:       &pb.OrchestratorCommand_RemoveAccount{RemoveAccount: &pb.RemoveAccountCommand{Id: "acc-1"}},
+		}, out)
+	r := recvEvent(t, out).GetResult()
+	if handler.removeAccountID != "acc-1" {
+		t.Fatalf("remove_account id = %q, want acc-1", handler.removeAccountID)
+	}
+	// RemoveAccount succeeds with no payload (mirrors dispatchRemoveRepo).
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-rem1" || r.GetPayload() != nil {
+		t.Fatalf("expected ok result with no payload, got %+v", r)
+	}
+}
+
+func TestDispatchCommand_RemoveAccount_HandlerError_ClassifiesCode(t *testing.T) {
+	handler := &fakeCommandHandler{returnErr: connect.NewError(connect.CodeNotFound, fmt.Errorf("no account"))}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-rem-err",
+			Cmd:       &pb.OrchestratorCommand_RemoveAccount{RemoveAccount: &pb.RemoveAccountCommand{Id: "gone"}},
+		}, out)
+	r := recvEvent(t, out).GetResult()
+	if r == nil || r.GetOk() || r.GetErrorCode() != pb.CommandResult_ERROR_CODE_NOT_FOUND {
+		t.Fatalf("expected NOT_FOUND failed result, got %+v", r)
+	}
+}
+
+func TestDispatchCommand_TestAccount_CallsHandler(t *testing.T) {
+	handler := &fakeCommandHandler{testAccountResult: &pb.TestAccountResponse{Account: &pb.Account{Id: "acc-1"}, LiveSmokeRan: true, Detail: "credential test passed"}}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-test1",
+			Cmd:       &pb.OrchestratorCommand_TestAccount{TestAccount: &pb.TestAccountCommand{Id: "acc-1"}},
+		}, out)
+	ev := recvEvent(t, out)
+	if handler.testAccountID != "acc-1" {
+		t.Fatalf("test_account id = %q, want acc-1", handler.testAccountID)
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-test1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	if !r.GetTestAccount().GetLiveSmokeRan() || r.GetTestAccount().GetAccount().GetId() != "acc-1" {
+		t.Fatalf("unexpected test_account payload: %+v", r.GetTestAccount())
+	}
+}
+
+func TestDispatchCommand_TestAccount_HandlerError_ClassifiesCode(t *testing.T) {
+	handler := &fakeCommandHandler{returnErr: connect.NewError(connect.CodeNotFound, fmt.Errorf("no account"))}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-test-err",
+			Cmd:       &pb.OrchestratorCommand_TestAccount{TestAccount: &pb.TestAccountCommand{Id: "gone"}},
+		}, out)
+	r := recvEvent(t, out).GetResult()
+	if r == nil || r.GetOk() || r.GetErrorCode() != pb.CommandResult_ERROR_CODE_NOT_FOUND {
+		t.Fatalf("expected NOT_FOUND failed result, got %+v", r)
+	}
+}
+
+func TestDispatchCommand_AccountCommands_HandlerNotWired(t *testing.T) {
+	client := newDispatcherClient(nil, nil, nil) // no command handler
+	cases := []struct {
+		name string
+		cmd  *pb.OrchestratorCommand
+	}{
+		{"add", &pb.OrchestratorCommand{CommandId: "n1", Cmd: &pb.OrchestratorCommand_AddAccount{AddAccount: &pb.AddAccountCommand{}}}},
+		{"refresh", &pb.OrchestratorCommand{CommandId: "n2", Cmd: &pb.OrchestratorCommand_RefreshAccount{RefreshAccount: &pb.RefreshAccountCommand{}}}},
+		{"update", &pb.OrchestratorCommand{CommandId: "n3", Cmd: &pb.OrchestratorCommand_UpdateAccount{UpdateAccount: &pb.UpdateAccountCommand{}}}},
+		{"remove", &pb.OrchestratorCommand{CommandId: "n4", Cmd: &pb.OrchestratorCommand_RemoveAccount{RemoveAccount: &pb.RemoveAccountCommand{}}}},
+		{"test", &pb.OrchestratorCommand{CommandId: "n5", Cmd: &pb.OrchestratorCommand_TestAccount{TestAccount: &pb.TestAccountCommand{}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := client.dispatchCommand(context.Background(), tc.cmd, make(chan *pb.DaemonEvent, 1))
+			r := ev.GetResult()
+			if r == nil || r.GetOk() || r.GetError() != "command handler not wired" {
+				t.Fatalf("expected synchronous not-wired error, got %+v", ev)
+			}
+		})
 	}
 }
 

@@ -1691,12 +1691,16 @@ type RepoSettings struct {
 	CanAutoMerge           bool                   `protobuf:"varint,5,opt,name=can_auto_merge,json=canAutoMerge,proto3" json:"can_auto_merge,omitempty"`
 	CanAutoMergeDependabot bool                   `protobuf:"varint,6,opt,name=can_auto_merge_dependabot,json=canAutoMergeDependabot,proto3" json:"can_auto_merge_dependabot,omitempty"`
 	CanAutoRepair          bool                   `protobuf:"varint,7,opt,name=can_auto_repair,json=canAutoRepair,proto3" json:"can_auto_repair,omitempty"`
-	SentryOrg              string                 `protobuf:"bytes,8,opt,name=sentry_org,json=sentryOrg,proto3" json:"sentry_org,omitempty"`
-	HasLinearKey           bool                   `protobuf:"varint,9,opt,name=has_linear_key,json=hasLinearKey,proto3" json:"has_linear_key,omitempty"`
-	HasSentryKey           bool                   `protobuf:"varint,10,opt,name=has_sentry_key,json=hasSentryKey,proto3" json:"has_sentry_key,omitempty"`
-	UpdatedAt              *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // echoed for optimistic concurrency
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// Whether the daemon auto-archives a session once its PR is merged (BOS-46).
+	// Projected here so web/cloud repo settings can see and toggle it, matching the
+	// local daemon UpdateRepo surface. Defaults on.
+	ArchiveSessionsAfterMerge bool                   `protobuf:"varint,12,opt,name=archive_sessions_after_merge,json=archiveSessionsAfterMerge,proto3" json:"archive_sessions_after_merge,omitempty"`
+	SentryOrg                 string                 `protobuf:"bytes,8,opt,name=sentry_org,json=sentryOrg,proto3" json:"sentry_org,omitempty"`
+	HasLinearKey              bool                   `protobuf:"varint,9,opt,name=has_linear_key,json=hasLinearKey,proto3" json:"has_linear_key,omitempty"`
+	HasSentryKey              bool                   `protobuf:"varint,10,opt,name=has_sentry_key,json=hasSentryKey,proto3" json:"has_sentry_key,omitempty"`
+	UpdatedAt                 *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // echoed for optimistic concurrency
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *RepoSettings) Reset() {
@@ -1774,6 +1778,13 @@ func (x *RepoSettings) GetCanAutoMergeDependabot() bool {
 func (x *RepoSettings) GetCanAutoRepair() bool {
 	if x != nil {
 		return x.CanAutoRepair
+	}
+	return false
+}
+
+func (x *RepoSettings) GetArchiveSessionsAfterMerge() bool {
+	if x != nil {
+		return x.ArchiveSessionsAfterMerge
 	}
 	return false
 }
@@ -4305,7 +4316,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\fSecretUpdate\x122\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x1a.bossanova.v1.SecretActionR\x06action\x12\x19\n" +
 	"\x05value\x18\x02 \x01(\tH\x00R\x05value\x88\x01\x01B\b\n" +
-	"\x06_value\"\xed\x03\n" +
+	"\x06_value\"\xae\x04\n" +
 	"\fRepoSettings\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12&\n" +
@@ -4313,7 +4324,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0emerge_strategy\x18\x04 \x01(\x0e2\x1b.bossanova.v1.MergeStrategyR\rmergeStrategy\x12$\n" +
 	"\x0ecan_auto_merge\x18\x05 \x01(\bR\fcanAutoMerge\x129\n" +
 	"\x19can_auto_merge_dependabot\x18\x06 \x01(\bR\x16canAutoMergeDependabot\x12&\n" +
-	"\x0fcan_auto_repair\x18\a \x01(\bR\rcanAutoRepair\x12\x1d\n" +
+	"\x0fcan_auto_repair\x18\a \x01(\bR\rcanAutoRepair\x12?\n" +
+	"\x1carchive_sessions_after_merge\x18\f \x01(\bR\x19archiveSessionsAfterMerge\x12\x1d\n" +
 	"\n" +
 	"sentry_org\x18\b \x01(\tR\tsentryOrg\x12$\n" +
 	"\x0ehas_linear_key\x18\t \x01(\bR\fhasLinearKey\x12$\n" +

@@ -219,6 +219,10 @@ message RepoSettings {
   bool can_auto_merge = 5;
   bool can_auto_merge_dependabot = 6;
   bool can_auto_repair = 7;
+  // Whether the daemon auto-archives a session once its PR is merged (BOS-46).
+  // Projected here so web/cloud repo settings can see and toggle it, matching the
+  // local daemon UpdateRepo surface. Defaults on.
+  bool archive_sessions_after_merge = 12;
   string sentry_org = 8;
   bool has_linear_key = 9;
   bool has_sentry_key = 10;

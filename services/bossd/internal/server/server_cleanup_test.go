@@ -272,6 +272,12 @@ func (m *cleanupWorktreeManager) RetryDeferredBaseSyncs(context.Context) {
 func (m *cleanupWorktreeManager) IsAncestor(context.Context, string, string, string) (bool, error) {
 	panic("not used")
 }
+func (m *cleanupWorktreeManager) DeleteLocalBranch(context.Context, string, string) error {
+	panic("not used")
+}
+func (m *cleanupWorktreeManager) BranchSafeToDelete(context.Context, string, string, string) (bool, error) {
+	panic("not used")
+}
 func (m *cleanupWorktreeManager) FetchBase(context.Context, string, string) error {
 	panic("not used")
 }

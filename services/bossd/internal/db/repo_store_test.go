@@ -211,3 +211,39 @@ func TestRepoStore_ArchiveSessionsAfterMerge_Update(t *testing.T) {
 		t.Error("stored archive_sessions_after_merge = true, want false")
 	}
 }
+
+// TestRepoStore_CanAutoDeleteBranches_DefaultsTrue verifies a freshly created
+// repo has the auto-delete-branches flag ON (the double-default: migration
+// DEFAULT 1 plus the repos INSERT literal), since proto3's bool zero value is
+// false.
+func TestRepoStore_CanAutoDeleteBranches_DefaultsTrue(t *testing.T) {
+	store := NewRepoStore(setupTestDB(t))
+	repo := createTestRepo(t, store)
+	if !repo.CanAutoDeleteBranches {
+		t.Fatal("new repos should default to auto-delete-branches ON")
+	}
+}
+
+// TestRepoStore_CanAutoDeleteBranches_Update verifies the flag toggles off
+// through UpdateRepoParams and reads back false.
+func TestRepoStore_CanAutoDeleteBranches_Update(t *testing.T) {
+	store := NewRepoStore(setupTestDB(t))
+	ctx := context.Background()
+	repo := createTestRepo(t, store)
+
+	off := false
+	updated, err := store.Update(ctx, repo.ID, UpdateRepoParams{CanAutoDeleteBranches: &off})
+	if err != nil {
+		t.Fatalf("update can_auto_delete_branches: %v", err)
+	}
+	if updated.CanAutoDeleteBranches {
+		t.Error("update returned can_auto_delete_branches = true, want false")
+	}
+	got, err := store.Get(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.CanAutoDeleteBranches {
+		t.Error("stored can_auto_delete_branches = true, want false")
+	}
+}

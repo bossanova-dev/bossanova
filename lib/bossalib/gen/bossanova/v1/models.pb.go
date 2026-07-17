@@ -1465,8 +1465,11 @@ type Repo struct {
 	CanAutoRepair bool `protobuf:"varint,21,opt,name=can_auto_repair,json=canAutoRepair,proto3" json:"can_auto_repair,omitempty"`
 	// Whether the daemon automatically archives a session once its PR is merged.
 	// Honored by the session dispatcher on the PR-merged transition. Defaults on.
-	ArchiveSessionsAfterMerge bool   `protobuf:"varint,22,opt,name=archive_sessions_after_merge,json=archiveSessionsAfterMerge,proto3" json:"archive_sessions_after_merge,omitempty"`
-	LinearApiKey              string `protobuf:"bytes,15,opt,name=linear_api_key,json=linearApiKey,proto3" json:"linear_api_key,omitempty"`
+	ArchiveSessionsAfterMerge bool `protobuf:"varint,22,opt,name=archive_sessions_after_merge,json=archiveSessionsAfterMerge,proto3" json:"archive_sessions_after_merge,omitempty"`
+	// Whether the daemon automatically deletes a session's git branch once its
+	// session is archived. Honored by the session dispatcher. Defaults on.
+	CanAutoDeleteBranches bool   `protobuf:"varint,23,opt,name=can_auto_delete_branches,json=canAutoDeleteBranches,proto3" json:"can_auto_delete_branches,omitempty"`
+	LinearApiKey          string `protobuf:"bytes,15,opt,name=linear_api_key,json=linearApiKey,proto3" json:"linear_api_key,omitempty"`
 	// Sentry credentials. Mirrors linear_api_key: a Sentry auth token alone can't
 	// address an organization, so the org slug is stored alongside it. Issues are
 	// listed org-wide (across every project), so no project slug is needed.
@@ -1600,6 +1603,13 @@ func (x *Repo) GetCanAutoRepair() bool {
 func (x *Repo) GetArchiveSessionsAfterMerge() bool {
 	if x != nil {
 		return x.ArchiveSessionsAfterMerge
+	}
+	return false
+}
+
+func (x *Repo) GetCanAutoDeleteBranches() bool {
+	if x != nil {
+		return x.CanAutoDeleteBranches
 	}
 	return false
 }
@@ -4287,7 +4297,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	" \x01(\tR\x06detail\x129\n" +
 	"\n" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAtB\v\n" +
-	"\t_reset_at\"\xfc\x05\n" +
+	"\t_reset_at\"\xb5\x06\n" +
 	"\x04Repo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x1d\n" +
@@ -4307,7 +4317,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x19can_auto_merge_dependabot\x18\v \x01(\bR\x16canAutoMergeDependabot\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategy\x12&\n" +
 	"\x0fcan_auto_repair\x18\x15 \x01(\bR\rcanAutoRepair\x12?\n" +
-	"\x1carchive_sessions_after_merge\x18\x16 \x01(\bR\x19archiveSessionsAfterMerge\x12$\n" +
+	"\x1carchive_sessions_after_merge\x18\x16 \x01(\bR\x19archiveSessionsAfterMerge\x127\n" +
+	"\x18can_auto_delete_branches\x18\x17 \x01(\bR\x15canAutoDeleteBranches\x12$\n" +
 	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKey\x12$\n" +
 	"\x0esentry_api_key\x18\x11 \x01(\tR\fsentryApiKey\x12\x1d\n" +
 	"\n" +

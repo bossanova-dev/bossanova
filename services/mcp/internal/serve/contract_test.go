@@ -80,6 +80,13 @@ type contractBackend struct {
 	sessions        []*pb.Session
 	removedRepoID   string
 
+	// destructive-tier confirm-gate tracking (BOS-404)
+	closedSessionID  string
+	removedSessionID string
+	resurrectedID    string
+	deletedAgentID   string
+	emptyTrashCalled bool
+
 	// chat-control fields for TestContractChatControl
 	createdSession     *pb.Session
 	sendResponse       *pb.SendChatMessageResponse
@@ -96,6 +103,31 @@ func (b *contractBackend) ListSessions(_ context.Context, _ *pb.ListSessionsRequ
 func (b *contractBackend) RemoveRepo(_ context.Context, id string) error {
 	b.removedRepoID = id
 	return nil
+}
+
+func (b *contractBackend) CloseSession(_ context.Context, id string) (*pb.Session, error) {
+	b.closedSessionID = id
+	return &pb.Session{Id: id}, nil
+}
+
+func (b *contractBackend) RemoveSession(_ context.Context, id string) error {
+	b.removedSessionID = id
+	return nil
+}
+
+func (b *contractBackend) ResurrectSession(_ context.Context, id string) (*pb.Session, error) {
+	b.resurrectedID = id
+	return &pb.Session{Id: id}, nil
+}
+
+func (b *contractBackend) DeleteChat(_ context.Context, agentSessionID string) error {
+	b.deletedAgentID = agentSessionID
+	return nil
+}
+
+func (b *contractBackend) EmptyTrash(_ context.Context, _ *pb.EmptyTrashRequest) (int32, error) {
+	b.emptyTrashCalled = true
+	return 0, nil
 }
 
 func (b *contractBackend) CreateSession(_ context.Context, _ *pb.CreateSessionRequest) (*bossmcp.CreateSessionResult, error) {
@@ -318,6 +350,56 @@ func TestContractDestructiveToolConfirmGate(t *testing.T) {
 	}
 	if backend.removedRepoID != "repo-123" {
 		t.Fatalf("backend.RemoveRepo not called with correct id; got %q", backend.removedRepoID)
+	}
+
+	// BOS-404: the destructive tools promoted to the hosted gateway must still
+	// pass through the local confirm:true gate before the backend is called.
+	// The gate fires in bossmcp before proxybackend, so it holds identically for
+	// the local socket and hosted gateway backends.
+	destructive := []struct {
+		tool   string
+		args   map[string]any
+		called func() bool
+	}{
+		{"close_session", map[string]any{"id": "s-1"}, func() bool { return backend.closedSessionID != "" }},
+		{"remove_session", map[string]any{"id": "s-1"}, func() bool { return backend.removedSessionID != "" }},
+		{"resurrect_session", map[string]any{"id": "s-1"}, func() bool { return backend.resurrectedID != "" }},
+		{"delete_chat", map[string]any{"agent_session_id": "a-1"}, func() bool { return backend.deletedAgentID != "" }},
+		{"empty_trash", map[string]any{}, func() bool { return backend.emptyTrashCalled }},
+	}
+	for _, tc := range destructive {
+		t.Run(tc.tool, func(t *testing.T) {
+			// Without confirm — error result, backend untouched.
+			resNo, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: tc.tool, Arguments: tc.args})
+			if err != nil {
+				t.Fatalf("%s (no confirm): unexpected transport error: %v", tc.tool, err)
+			}
+			if !resNo.IsError {
+				t.Fatalf("%s without confirm should return IsError=true", tc.tool)
+			}
+			if !strings.Contains(textOf(t, resNo), "confirm") {
+				t.Fatalf("%s error message should mention 'confirm'; got: %s", tc.tool, textOf(t, resNo))
+			}
+			if tc.called() {
+				t.Fatalf("%s backend must not be called without confirm", tc.tool)
+			}
+
+			// With confirm:true — success, backend called.
+			args := map[string]any{"confirm": true}
+			for k, v := range tc.args {
+				args[k] = v
+			}
+			resYes, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: tc.tool, Arguments: args})
+			if err != nil {
+				t.Fatalf("%s (confirm:true): unexpected transport error: %v", tc.tool, err)
+			}
+			if resYes.IsError {
+				t.Fatalf("%s with confirm:true returned error: %s", tc.tool, textOf(t, resYes))
+			}
+			if !tc.called() {
+				t.Fatalf("%s backend not called with confirm:true", tc.tool)
+			}
+		})
 	}
 }
 

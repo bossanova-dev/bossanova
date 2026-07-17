@@ -151,6 +151,54 @@ const (
 	// OrchestratorServiceProxyTestAccountProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyTestAccount RPC.
 	OrchestratorServiceProxyTestAccountProcedure = "/bossanova.v1.OrchestratorService/ProxyTestAccount"
+	// OrchestratorServiceProxyListChatsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListChats RPC.
+	OrchestratorServiceProxyListChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyListChats"
+	// OrchestratorServiceProxyGetSessionStatusesProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyGetSessionStatuses RPC.
+	OrchestratorServiceProxyGetSessionStatusesProcedure = "/bossanova.v1.OrchestratorService/ProxyGetSessionStatuses"
+	// OrchestratorServiceProxyListCheckSnapshotsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListCheckSnapshots RPC.
+	OrchestratorServiceProxyListCheckSnapshotsProcedure = "/bossanova.v1.OrchestratorService/ProxyListCheckSnapshots"
+	// OrchestratorServiceProxyListAgentsAggregatedProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListAgentsAggregated RPC.
+	OrchestratorServiceProxyListAgentsAggregatedProcedure = "/bossanova.v1.OrchestratorService/ProxyListAgentsAggregated"
+	// OrchestratorServiceProxyListPluginsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListPlugins RPC.
+	OrchestratorServiceProxyListPluginsProcedure = "/bossanova.v1.OrchestratorService/ProxyListPlugins"
+	// OrchestratorServiceProxyGetCronJobProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyGetCronJob RPC.
+	OrchestratorServiceProxyGetCronJobProcedure = "/bossanova.v1.OrchestratorService/ProxyGetCronJob"
+	// OrchestratorServiceProxyRepairDoctorProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyRepairDoctor RPC.
+	OrchestratorServiceProxyRepairDoctorProcedure = "/bossanova.v1.OrchestratorService/ProxyRepairDoctor"
+	// OrchestratorServiceProxyCloseSessionProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyCloseSession RPC.
+	OrchestratorServiceProxyCloseSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyCloseSession"
+	// OrchestratorServiceProxyResurrectSessionProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyResurrectSession RPC.
+	OrchestratorServiceProxyResurrectSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyResurrectSession"
+	// OrchestratorServiceProxyRemoveSessionProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyRemoveSession RPC.
+	OrchestratorServiceProxyRemoveSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyRemoveSession"
+	// OrchestratorServiceProxyEmptyTrashProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyEmptyTrash RPC.
+	OrchestratorServiceProxyEmptyTrashProcedure = "/bossanova.v1.OrchestratorService/ProxyEmptyTrash"
+	// OrchestratorServiceProxyRetrySessionProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyRetrySession RPC.
+	OrchestratorServiceProxyRetrySessionProcedure = "/bossanova.v1.OrchestratorService/ProxyRetrySession"
+	// OrchestratorServiceProxyUpdateSessionProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyUpdateSession RPC.
+	OrchestratorServiceProxyUpdateSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyUpdateSession"
+	// OrchestratorServiceProxyLinkSessionPRProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyLinkSessionPR RPC.
+	OrchestratorServiceProxyLinkSessionPRProcedure = "/bossanova.v1.OrchestratorService/ProxyLinkSessionPR"
+	// OrchestratorServiceProxyUpdateChatTitleProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyUpdateChatTitle RPC.
+	OrchestratorServiceProxyUpdateChatTitleProcedure = "/bossanova.v1.OrchestratorService/ProxyUpdateChatTitle"
+	// OrchestratorServiceProxyReportChatStatusProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyReportChatStatus RPC.
+	OrchestratorServiceProxyReportChatStatusProcedure = "/bossanova.v1.OrchestratorService/ProxyReportChatStatus"
 	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStreamChats RPC.
 	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
@@ -287,6 +335,53 @@ type OrchestratorServiceClient interface {
 	ProxyUpdateAccount(context.Context, *connect.Request[v1.ProxyUpdateAccountRequest]) (*connect.Response[v1.ProxyUpdateAccountResponse], error)
 	ProxyRemoveAccount(context.Context, *connect.Request[v1.ProxyRemoveAccountRequest]) (*connect.Response[v1.ProxyRemoveAccountResponse], error)
 	ProxyTestAccount(context.Context, *connect.Request[v1.ProxyTestAccountRequest]) (*connect.Response[v1.ProxyTestAccountResponse], error)
+	// Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
+	// owning daemon via FindSessionDaemon; session-less reads aggregate across the
+	// caller's Ready daemons via the shared resolver.
+	// ProxyListChats reads a session's chats (routes by session_id).
+	ProxyListChats(context.Context, *connect.Request[v1.ProxyListChatsRequest]) (*connect.Response[v1.ProxyListChatsResponse], error)
+	// ProxyGetSessionStatuses fans out per session_id (FindSessionDaemon), skipping
+	// unknown ids, and unions the returned SessionStatusEntry values.
+	ProxyGetSessionStatuses(context.Context, *connect.Request[v1.ProxyGetSessionStatusesRequest]) (*connect.Response[v1.ProxyGetSessionStatusesResponse], error)
+	// ProxyListCheckSnapshots reads a session's recent CI check snapshots (routes by session_id).
+	ProxyListCheckSnapshots(context.Context, *connect.Request[v1.ProxyListCheckSnapshotsRequest]) (*connect.Response[v1.ProxyListCheckSnapshotsResponse], error)
+	// ProxyListAgentsAggregated aggregates installed agents across the caller's
+	// Ready daemons (session-less; distinct from the daemon-scoped ProxyListAgents).
+	ProxyListAgentsAggregated(context.Context, *connect.Request[v1.ProxyListAgentsAggregatedRequest]) (*connect.Response[v1.ProxyListAgentsAggregatedResponse], error)
+	// ProxyListPlugins aggregates configured plugins across the caller's Ready daemons.
+	ProxyListPlugins(context.Context, *connect.Request[v1.ProxyListPluginsRequest]) (*connect.Response[v1.ProxyListPluginsResponse], error)
+	// ProxyGetCronJob returns the first Ready daemon that owns the id (NotFound if none).
+	ProxyGetCronJob(context.Context, *connect.Request[v1.ProxyGetCronJobRequest]) (*connect.Response[v1.ProxyGetCronJobResponse], error)
+	// ProxyRepairDoctor merges repair-doctor reports across the caller's Ready daemons.
+	ProxyRepairDoctor(context.Context, *connect.Request[v1.ProxyRepairDoctorRequest]) (*connect.Response[v1.ProxyRepairDoctorResponse], error)
+	// Destructive-tier MCP gateway parity (BOS-404). Session-scoped destructive
+	// ops route to the owning daemon via FindSessionDaemon (NotFound for a
+	// missing/foreign session); empty_trash is daemon-wide and aggregates across
+	// the caller's Ready daemons via the shared resolver.
+	// ProxyCloseSession closes (abandons) a session, returning the updated Session.
+	ProxyCloseSession(context.Context, *connect.Request[v1.ProxyCloseSessionRequest]) (*connect.Response[v1.ProxyCloseSessionResponse], error)
+	// ProxyResurrectSession restores an archived session, returning the updated Session.
+	ProxyResurrectSession(context.Context, *connect.Request[v1.ProxyResurrectSessionRequest]) (*connect.Response[v1.ProxyResurrectSessionResponse], error)
+	// ProxyRemoveSession permanently removes a session and its worktree (Ok-only).
+	ProxyRemoveSession(context.Context, *connect.Request[v1.ProxyRemoveSessionRequest]) (*connect.Response[v1.ProxyRemoveSessionResponse], error)
+	// ProxyEmptyTrash permanently deletes archived sessions across the caller's
+	// Ready daemons, summing each daemon's deleted_count.
+	ProxyEmptyTrash(context.Context, *connect.Request[v1.ProxyEmptyTrashRequest]) (*connect.Response[v1.ProxyEmptyTrashResponse], error)
+	// Mutating MCP gateway parity (BOS-402). Session-scoped mutations route to the
+	// owning daemon via FindSessionDaemon; chat-scoped mutations via
+	// FindDaemonForChat(agent_session_id). A foreign entity resolves to NotFound,
+	// so no cross-user mutation can dispatch.
+	// ProxyRetrySession retries a failed session (routes by session_id).
+	ProxyRetrySession(context.Context, *connect.Request[v1.ProxyRetrySessionRequest]) (*connect.Response[v1.ProxyRetrySessionResponse], error)
+	// ProxyUpdateSession updates a session's title/tracker (routes by session_id).
+	ProxyUpdateSession(context.Context, *connect.Request[v1.ProxyUpdateSessionRequest]) (*connect.Response[v1.ProxyUpdateSessionResponse], error)
+	// ProxyLinkSessionPR attaches an existing PR to a session (routes by session_id).
+	ProxyLinkSessionPR(context.Context, *connect.Request[v1.ProxyLinkSessionPRRequest]) (*connect.Response[v1.ProxyLinkSessionPRResponse], error)
+	// ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
+	ProxyUpdateChatTitle(context.Context, *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error)
+	// ProxyReportChatStatus forwards chat status heartbeats. All reports must
+	// resolve to the caller's own chats on a single daemon.
+	ProxyReportChatStatus(context.Context, *connect.Request[v1.ProxyReportChatStatusRequest]) (*connect.Response[v1.ProxyReportChatStatusResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -574,6 +669,102 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyTestAccount")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyListChats: connect.NewClient[v1.ProxyListChatsRequest, v1.ProxyListChatsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListChatsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListChats")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyGetSessionStatuses: connect.NewClient[v1.ProxyGetSessionStatusesRequest, v1.ProxyGetSessionStatusesResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyGetSessionStatusesProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetSessionStatuses")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyListCheckSnapshots: connect.NewClient[v1.ProxyListCheckSnapshotsRequest, v1.ProxyListCheckSnapshotsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListCheckSnapshotsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListCheckSnapshots")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyListAgentsAggregated: connect.NewClient[v1.ProxyListAgentsAggregatedRequest, v1.ProxyListAgentsAggregatedResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListAgentsAggregatedProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAgentsAggregated")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyListPlugins: connect.NewClient[v1.ProxyListPluginsRequest, v1.ProxyListPluginsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListPluginsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListPlugins")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyGetCronJob: connect.NewClient[v1.ProxyGetCronJobRequest, v1.ProxyGetCronJobResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyGetCronJobProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetCronJob")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyRepairDoctor: connect.NewClient[v1.ProxyRepairDoctorRequest, v1.ProxyRepairDoctorResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyRepairDoctorProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRepairDoctor")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyCloseSession: connect.NewClient[v1.ProxyCloseSessionRequest, v1.ProxyCloseSessionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyCloseSessionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCloseSession")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyResurrectSession: connect.NewClient[v1.ProxyResurrectSessionRequest, v1.ProxyResurrectSessionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyResurrectSessionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyResurrectSession")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyRemoveSession: connect.NewClient[v1.ProxyRemoveSessionRequest, v1.ProxyRemoveSessionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyRemoveSessionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRemoveSession")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyEmptyTrash: connect.NewClient[v1.ProxyEmptyTrashRequest, v1.ProxyEmptyTrashResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyEmptyTrashProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyEmptyTrash")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyRetrySession: connect.NewClient[v1.ProxyRetrySessionRequest, v1.ProxyRetrySessionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyRetrySessionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRetrySession")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyUpdateSession: connect.NewClient[v1.ProxyUpdateSessionRequest, v1.ProxyUpdateSessionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyUpdateSessionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateSession")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyLinkSessionPR: connect.NewClient[v1.ProxyLinkSessionPRRequest, v1.ProxyLinkSessionPRResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyLinkSessionPRProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyLinkSessionPR")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyUpdateChatTitle: connect.NewClient[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyUpdateChatTitleProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateChatTitle")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyReportChatStatus: connect.NewClient[v1.ProxyReportChatStatusRequest, v1.ProxyReportChatStatusResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyReportChatStatusProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyReportChatStatus")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyStreamChats: connect.NewClient[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent](
 			httpClient,
 			baseURL+OrchestratorServiceProxyStreamChatsProcedure,
@@ -708,6 +899,22 @@ type orchestratorServiceClient struct {
 	proxyUpdateAccount         *connect.Client[v1.ProxyUpdateAccountRequest, v1.ProxyUpdateAccountResponse]
 	proxyRemoveAccount         *connect.Client[v1.ProxyRemoveAccountRequest, v1.ProxyRemoveAccountResponse]
 	proxyTestAccount           *connect.Client[v1.ProxyTestAccountRequest, v1.ProxyTestAccountResponse]
+	proxyListChats             *connect.Client[v1.ProxyListChatsRequest, v1.ProxyListChatsResponse]
+	proxyGetSessionStatuses    *connect.Client[v1.ProxyGetSessionStatusesRequest, v1.ProxyGetSessionStatusesResponse]
+	proxyListCheckSnapshots    *connect.Client[v1.ProxyListCheckSnapshotsRequest, v1.ProxyListCheckSnapshotsResponse]
+	proxyListAgentsAggregated  *connect.Client[v1.ProxyListAgentsAggregatedRequest, v1.ProxyListAgentsAggregatedResponse]
+	proxyListPlugins           *connect.Client[v1.ProxyListPluginsRequest, v1.ProxyListPluginsResponse]
+	proxyGetCronJob            *connect.Client[v1.ProxyGetCronJobRequest, v1.ProxyGetCronJobResponse]
+	proxyRepairDoctor          *connect.Client[v1.ProxyRepairDoctorRequest, v1.ProxyRepairDoctorResponse]
+	proxyCloseSession          *connect.Client[v1.ProxyCloseSessionRequest, v1.ProxyCloseSessionResponse]
+	proxyResurrectSession      *connect.Client[v1.ProxyResurrectSessionRequest, v1.ProxyResurrectSessionResponse]
+	proxyRemoveSession         *connect.Client[v1.ProxyRemoveSessionRequest, v1.ProxyRemoveSessionResponse]
+	proxyEmptyTrash            *connect.Client[v1.ProxyEmptyTrashRequest, v1.ProxyEmptyTrashResponse]
+	proxyRetrySession          *connect.Client[v1.ProxyRetrySessionRequest, v1.ProxyRetrySessionResponse]
+	proxyUpdateSession         *connect.Client[v1.ProxyUpdateSessionRequest, v1.ProxyUpdateSessionResponse]
+	proxyLinkSessionPR         *connect.Client[v1.ProxyLinkSessionPRRequest, v1.ProxyLinkSessionPRResponse]
+	proxyUpdateChatTitle       *connect.Client[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse]
+	proxyReportChatStatus      *connect.Client[v1.ProxyReportChatStatusRequest, v1.ProxyReportChatStatusResponse]
 	proxyStreamChats           *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken           *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
 	terminalStream             *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
@@ -920,6 +1127,86 @@ func (c *orchestratorServiceClient) ProxyTestAccount(ctx context.Context, req *c
 	return c.proxyTestAccount.CallUnary(ctx, req)
 }
 
+// ProxyListChats calls bossanova.v1.OrchestratorService.ProxyListChats.
+func (c *orchestratorServiceClient) ProxyListChats(ctx context.Context, req *connect.Request[v1.ProxyListChatsRequest]) (*connect.Response[v1.ProxyListChatsResponse], error) {
+	return c.proxyListChats.CallUnary(ctx, req)
+}
+
+// ProxyGetSessionStatuses calls bossanova.v1.OrchestratorService.ProxyGetSessionStatuses.
+func (c *orchestratorServiceClient) ProxyGetSessionStatuses(ctx context.Context, req *connect.Request[v1.ProxyGetSessionStatusesRequest]) (*connect.Response[v1.ProxyGetSessionStatusesResponse], error) {
+	return c.proxyGetSessionStatuses.CallUnary(ctx, req)
+}
+
+// ProxyListCheckSnapshots calls bossanova.v1.OrchestratorService.ProxyListCheckSnapshots.
+func (c *orchestratorServiceClient) ProxyListCheckSnapshots(ctx context.Context, req *connect.Request[v1.ProxyListCheckSnapshotsRequest]) (*connect.Response[v1.ProxyListCheckSnapshotsResponse], error) {
+	return c.proxyListCheckSnapshots.CallUnary(ctx, req)
+}
+
+// ProxyListAgentsAggregated calls bossanova.v1.OrchestratorService.ProxyListAgentsAggregated.
+func (c *orchestratorServiceClient) ProxyListAgentsAggregated(ctx context.Context, req *connect.Request[v1.ProxyListAgentsAggregatedRequest]) (*connect.Response[v1.ProxyListAgentsAggregatedResponse], error) {
+	return c.proxyListAgentsAggregated.CallUnary(ctx, req)
+}
+
+// ProxyListPlugins calls bossanova.v1.OrchestratorService.ProxyListPlugins.
+func (c *orchestratorServiceClient) ProxyListPlugins(ctx context.Context, req *connect.Request[v1.ProxyListPluginsRequest]) (*connect.Response[v1.ProxyListPluginsResponse], error) {
+	return c.proxyListPlugins.CallUnary(ctx, req)
+}
+
+// ProxyGetCronJob calls bossanova.v1.OrchestratorService.ProxyGetCronJob.
+func (c *orchestratorServiceClient) ProxyGetCronJob(ctx context.Context, req *connect.Request[v1.ProxyGetCronJobRequest]) (*connect.Response[v1.ProxyGetCronJobResponse], error) {
+	return c.proxyGetCronJob.CallUnary(ctx, req)
+}
+
+// ProxyRepairDoctor calls bossanova.v1.OrchestratorService.ProxyRepairDoctor.
+func (c *orchestratorServiceClient) ProxyRepairDoctor(ctx context.Context, req *connect.Request[v1.ProxyRepairDoctorRequest]) (*connect.Response[v1.ProxyRepairDoctorResponse], error) {
+	return c.proxyRepairDoctor.CallUnary(ctx, req)
+}
+
+// ProxyCloseSession calls bossanova.v1.OrchestratorService.ProxyCloseSession.
+func (c *orchestratorServiceClient) ProxyCloseSession(ctx context.Context, req *connect.Request[v1.ProxyCloseSessionRequest]) (*connect.Response[v1.ProxyCloseSessionResponse], error) {
+	return c.proxyCloseSession.CallUnary(ctx, req)
+}
+
+// ProxyResurrectSession calls bossanova.v1.OrchestratorService.ProxyResurrectSession.
+func (c *orchestratorServiceClient) ProxyResurrectSession(ctx context.Context, req *connect.Request[v1.ProxyResurrectSessionRequest]) (*connect.Response[v1.ProxyResurrectSessionResponse], error) {
+	return c.proxyResurrectSession.CallUnary(ctx, req)
+}
+
+// ProxyRemoveSession calls bossanova.v1.OrchestratorService.ProxyRemoveSession.
+func (c *orchestratorServiceClient) ProxyRemoveSession(ctx context.Context, req *connect.Request[v1.ProxyRemoveSessionRequest]) (*connect.Response[v1.ProxyRemoveSessionResponse], error) {
+	return c.proxyRemoveSession.CallUnary(ctx, req)
+}
+
+// ProxyEmptyTrash calls bossanova.v1.OrchestratorService.ProxyEmptyTrash.
+func (c *orchestratorServiceClient) ProxyEmptyTrash(ctx context.Context, req *connect.Request[v1.ProxyEmptyTrashRequest]) (*connect.Response[v1.ProxyEmptyTrashResponse], error) {
+	return c.proxyEmptyTrash.CallUnary(ctx, req)
+}
+
+// ProxyRetrySession calls bossanova.v1.OrchestratorService.ProxyRetrySession.
+func (c *orchestratorServiceClient) ProxyRetrySession(ctx context.Context, req *connect.Request[v1.ProxyRetrySessionRequest]) (*connect.Response[v1.ProxyRetrySessionResponse], error) {
+	return c.proxyRetrySession.CallUnary(ctx, req)
+}
+
+// ProxyUpdateSession calls bossanova.v1.OrchestratorService.ProxyUpdateSession.
+func (c *orchestratorServiceClient) ProxyUpdateSession(ctx context.Context, req *connect.Request[v1.ProxyUpdateSessionRequest]) (*connect.Response[v1.ProxyUpdateSessionResponse], error) {
+	return c.proxyUpdateSession.CallUnary(ctx, req)
+}
+
+// ProxyLinkSessionPR calls bossanova.v1.OrchestratorService.ProxyLinkSessionPR.
+func (c *orchestratorServiceClient) ProxyLinkSessionPR(ctx context.Context, req *connect.Request[v1.ProxyLinkSessionPRRequest]) (*connect.Response[v1.ProxyLinkSessionPRResponse], error) {
+	return c.proxyLinkSessionPR.CallUnary(ctx, req)
+}
+
+// ProxyUpdateChatTitle calls bossanova.v1.OrchestratorService.ProxyUpdateChatTitle.
+func (c *orchestratorServiceClient) ProxyUpdateChatTitle(ctx context.Context, req *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error) {
+	return c.proxyUpdateChatTitle.CallUnary(ctx, req)
+}
+
+// ProxyReportChatStatus calls bossanova.v1.OrchestratorService.ProxyReportChatStatus.
+func (c *orchestratorServiceClient) ProxyReportChatStatus(ctx context.Context, req *connect.Request[v1.ProxyReportChatStatusRequest]) (*connect.Response[v1.ProxyReportChatStatusResponse], error) {
+	return c.proxyReportChatStatus.CallUnary(ctx, req)
+}
+
 // ProxyStreamChats calls bossanova.v1.OrchestratorService.ProxyStreamChats.
 func (c *orchestratorServiceClient) ProxyStreamChats(ctx context.Context, req *connect.Request[v1.ProxyStreamChatsRequest]) (*connect.ServerStreamForClient[v1.ProxyChatListEvent], error) {
 	return c.proxyStreamChats.CallServerStream(ctx, req)
@@ -1084,6 +1371,53 @@ type OrchestratorServiceHandler interface {
 	ProxyUpdateAccount(context.Context, *connect.Request[v1.ProxyUpdateAccountRequest]) (*connect.Response[v1.ProxyUpdateAccountResponse], error)
 	ProxyRemoveAccount(context.Context, *connect.Request[v1.ProxyRemoveAccountRequest]) (*connect.Response[v1.ProxyRemoveAccountResponse], error)
 	ProxyTestAccount(context.Context, *connect.Request[v1.ProxyTestAccountRequest]) (*connect.Response[v1.ProxyTestAccountResponse], error)
+	// Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
+	// owning daemon via FindSessionDaemon; session-less reads aggregate across the
+	// caller's Ready daemons via the shared resolver.
+	// ProxyListChats reads a session's chats (routes by session_id).
+	ProxyListChats(context.Context, *connect.Request[v1.ProxyListChatsRequest]) (*connect.Response[v1.ProxyListChatsResponse], error)
+	// ProxyGetSessionStatuses fans out per session_id (FindSessionDaemon), skipping
+	// unknown ids, and unions the returned SessionStatusEntry values.
+	ProxyGetSessionStatuses(context.Context, *connect.Request[v1.ProxyGetSessionStatusesRequest]) (*connect.Response[v1.ProxyGetSessionStatusesResponse], error)
+	// ProxyListCheckSnapshots reads a session's recent CI check snapshots (routes by session_id).
+	ProxyListCheckSnapshots(context.Context, *connect.Request[v1.ProxyListCheckSnapshotsRequest]) (*connect.Response[v1.ProxyListCheckSnapshotsResponse], error)
+	// ProxyListAgentsAggregated aggregates installed agents across the caller's
+	// Ready daemons (session-less; distinct from the daemon-scoped ProxyListAgents).
+	ProxyListAgentsAggregated(context.Context, *connect.Request[v1.ProxyListAgentsAggregatedRequest]) (*connect.Response[v1.ProxyListAgentsAggregatedResponse], error)
+	// ProxyListPlugins aggregates configured plugins across the caller's Ready daemons.
+	ProxyListPlugins(context.Context, *connect.Request[v1.ProxyListPluginsRequest]) (*connect.Response[v1.ProxyListPluginsResponse], error)
+	// ProxyGetCronJob returns the first Ready daemon that owns the id (NotFound if none).
+	ProxyGetCronJob(context.Context, *connect.Request[v1.ProxyGetCronJobRequest]) (*connect.Response[v1.ProxyGetCronJobResponse], error)
+	// ProxyRepairDoctor merges repair-doctor reports across the caller's Ready daemons.
+	ProxyRepairDoctor(context.Context, *connect.Request[v1.ProxyRepairDoctorRequest]) (*connect.Response[v1.ProxyRepairDoctorResponse], error)
+	// Destructive-tier MCP gateway parity (BOS-404). Session-scoped destructive
+	// ops route to the owning daemon via FindSessionDaemon (NotFound for a
+	// missing/foreign session); empty_trash is daemon-wide and aggregates across
+	// the caller's Ready daemons via the shared resolver.
+	// ProxyCloseSession closes (abandons) a session, returning the updated Session.
+	ProxyCloseSession(context.Context, *connect.Request[v1.ProxyCloseSessionRequest]) (*connect.Response[v1.ProxyCloseSessionResponse], error)
+	// ProxyResurrectSession restores an archived session, returning the updated Session.
+	ProxyResurrectSession(context.Context, *connect.Request[v1.ProxyResurrectSessionRequest]) (*connect.Response[v1.ProxyResurrectSessionResponse], error)
+	// ProxyRemoveSession permanently removes a session and its worktree (Ok-only).
+	ProxyRemoveSession(context.Context, *connect.Request[v1.ProxyRemoveSessionRequest]) (*connect.Response[v1.ProxyRemoveSessionResponse], error)
+	// ProxyEmptyTrash permanently deletes archived sessions across the caller's
+	// Ready daemons, summing each daemon's deleted_count.
+	ProxyEmptyTrash(context.Context, *connect.Request[v1.ProxyEmptyTrashRequest]) (*connect.Response[v1.ProxyEmptyTrashResponse], error)
+	// Mutating MCP gateway parity (BOS-402). Session-scoped mutations route to the
+	// owning daemon via FindSessionDaemon; chat-scoped mutations via
+	// FindDaemonForChat(agent_session_id). A foreign entity resolves to NotFound,
+	// so no cross-user mutation can dispatch.
+	// ProxyRetrySession retries a failed session (routes by session_id).
+	ProxyRetrySession(context.Context, *connect.Request[v1.ProxyRetrySessionRequest]) (*connect.Response[v1.ProxyRetrySessionResponse], error)
+	// ProxyUpdateSession updates a session's title/tracker (routes by session_id).
+	ProxyUpdateSession(context.Context, *connect.Request[v1.ProxyUpdateSessionRequest]) (*connect.Response[v1.ProxyUpdateSessionResponse], error)
+	// ProxyLinkSessionPR attaches an existing PR to a session (routes by session_id).
+	ProxyLinkSessionPR(context.Context, *connect.Request[v1.ProxyLinkSessionPRRequest]) (*connect.Response[v1.ProxyLinkSessionPRResponse], error)
+	// ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
+	ProxyUpdateChatTitle(context.Context, *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error)
+	// ProxyReportChatStatus forwards chat status heartbeats. All reports must
+	// resolve to the caller's own chats on a single daemon.
+	ProxyReportChatStatus(context.Context, *connect.Request[v1.ProxyReportChatStatusRequest]) (*connect.Response[v1.ProxyReportChatStatusResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -1367,6 +1701,102 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyTestAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyListChatsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListChatsProcedure,
+		svc.ProxyListChats,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListChats")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyGetSessionStatusesHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyGetSessionStatusesProcedure,
+		svc.ProxyGetSessionStatuses,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetSessionStatuses")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyListCheckSnapshotsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListCheckSnapshotsProcedure,
+		svc.ProxyListCheckSnapshots,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListCheckSnapshots")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyListAgentsAggregatedHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListAgentsAggregatedProcedure,
+		svc.ProxyListAgentsAggregated,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAgentsAggregated")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyListPluginsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListPluginsProcedure,
+		svc.ProxyListPlugins,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListPlugins")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyGetCronJobHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyGetCronJobProcedure,
+		svc.ProxyGetCronJob,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetCronJob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyRepairDoctorHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyRepairDoctorProcedure,
+		svc.ProxyRepairDoctor,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRepairDoctor")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyCloseSessionHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyCloseSessionProcedure,
+		svc.ProxyCloseSession,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCloseSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyResurrectSessionHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyResurrectSessionProcedure,
+		svc.ProxyResurrectSession,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyResurrectSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyRemoveSessionHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyRemoveSessionProcedure,
+		svc.ProxyRemoveSession,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRemoveSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyEmptyTrashHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyEmptyTrashProcedure,
+		svc.ProxyEmptyTrash,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyEmptyTrash")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyRetrySessionHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyRetrySessionProcedure,
+		svc.ProxyRetrySession,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRetrySession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyUpdateSessionHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyUpdateSessionProcedure,
+		svc.ProxyUpdateSession,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyLinkSessionPRHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyLinkSessionPRProcedure,
+		svc.ProxyLinkSessionPR,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyLinkSessionPR")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyUpdateChatTitleHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyUpdateChatTitleProcedure,
+		svc.ProxyUpdateChatTitle,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateChatTitle")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyReportChatStatusHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyReportChatStatusProcedure,
+		svc.ProxyReportChatStatus,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyReportChatStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyStreamChatsHandler := connect.NewServerStreamHandler(
 		OrchestratorServiceProxyStreamChatsProcedure,
 		svc.ProxyStreamChats,
@@ -1537,6 +1967,38 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyRemoveAccountHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyTestAccountProcedure:
 			orchestratorServiceProxyTestAccountHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListChatsProcedure:
+			orchestratorServiceProxyListChatsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyGetSessionStatusesProcedure:
+			orchestratorServiceProxyGetSessionStatusesHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListCheckSnapshotsProcedure:
+			orchestratorServiceProxyListCheckSnapshotsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListAgentsAggregatedProcedure:
+			orchestratorServiceProxyListAgentsAggregatedHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListPluginsProcedure:
+			orchestratorServiceProxyListPluginsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyGetCronJobProcedure:
+			orchestratorServiceProxyGetCronJobHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyRepairDoctorProcedure:
+			orchestratorServiceProxyRepairDoctorHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyCloseSessionProcedure:
+			orchestratorServiceProxyCloseSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyResurrectSessionProcedure:
+			orchestratorServiceProxyResurrectSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyRemoveSessionProcedure:
+			orchestratorServiceProxyRemoveSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyEmptyTrashProcedure:
+			orchestratorServiceProxyEmptyTrashHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyRetrySessionProcedure:
+			orchestratorServiceProxyRetrySessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyUpdateSessionProcedure:
+			orchestratorServiceProxyUpdateSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyLinkSessionPRProcedure:
+			orchestratorServiceProxyLinkSessionPRHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyUpdateChatTitleProcedure:
+			orchestratorServiceProxyUpdateChatTitleHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyReportChatStatusProcedure:
+			orchestratorServiceProxyReportChatStatusHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
 			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceIssueAttachTokenProcedure:
@@ -1730,6 +2192,70 @@ func (UnimplementedOrchestratorServiceHandler) ProxyRemoveAccount(context.Contex
 
 func (UnimplementedOrchestratorServiceHandler) ProxyTestAccount(context.Context, *connect.Request[v1.ProxyTestAccountRequest]) (*connect.Response[v1.ProxyTestAccountResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyTestAccount is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListChats(context.Context, *connect.Request[v1.ProxyListChatsRequest]) (*connect.Response[v1.ProxyListChatsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListChats is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyGetSessionStatuses(context.Context, *connect.Request[v1.ProxyGetSessionStatusesRequest]) (*connect.Response[v1.ProxyGetSessionStatusesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyGetSessionStatuses is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListCheckSnapshots(context.Context, *connect.Request[v1.ProxyListCheckSnapshotsRequest]) (*connect.Response[v1.ProxyListCheckSnapshotsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListCheckSnapshots is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListAgentsAggregated(context.Context, *connect.Request[v1.ProxyListAgentsAggregatedRequest]) (*connect.Response[v1.ProxyListAgentsAggregatedResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListAgentsAggregated is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListPlugins(context.Context, *connect.Request[v1.ProxyListPluginsRequest]) (*connect.Response[v1.ProxyListPluginsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListPlugins is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyGetCronJob(context.Context, *connect.Request[v1.ProxyGetCronJobRequest]) (*connect.Response[v1.ProxyGetCronJobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyGetCronJob is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyRepairDoctor(context.Context, *connect.Request[v1.ProxyRepairDoctorRequest]) (*connect.Response[v1.ProxyRepairDoctorResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyRepairDoctor is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyCloseSession(context.Context, *connect.Request[v1.ProxyCloseSessionRequest]) (*connect.Response[v1.ProxyCloseSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyCloseSession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyResurrectSession(context.Context, *connect.Request[v1.ProxyResurrectSessionRequest]) (*connect.Response[v1.ProxyResurrectSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyResurrectSession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyRemoveSession(context.Context, *connect.Request[v1.ProxyRemoveSessionRequest]) (*connect.Response[v1.ProxyRemoveSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyRemoveSession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyEmptyTrash(context.Context, *connect.Request[v1.ProxyEmptyTrashRequest]) (*connect.Response[v1.ProxyEmptyTrashResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyEmptyTrash is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyRetrySession(context.Context, *connect.Request[v1.ProxyRetrySessionRequest]) (*connect.Response[v1.ProxyRetrySessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyRetrySession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyUpdateSession(context.Context, *connect.Request[v1.ProxyUpdateSessionRequest]) (*connect.Response[v1.ProxyUpdateSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyUpdateSession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyLinkSessionPR(context.Context, *connect.Request[v1.ProxyLinkSessionPRRequest]) (*connect.Response[v1.ProxyLinkSessionPRResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyLinkSessionPR is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyUpdateChatTitle(context.Context, *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyUpdateChatTitle is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyReportChatStatus(context.Context, *connect.Request[v1.ProxyReportChatStatusRequest]) (*connect.Response[v1.ProxyReportChatStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyReportChatStatus is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {

@@ -19,6 +19,7 @@ import (
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/safego"
 	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Backoff bounds for the stream outer loop. Start cheap, cap tight so a
@@ -301,12 +302,25 @@ type SessionCommandHandler interface {
 	SwitchAccount(ctx context.Context, sessionID, agentSessionID, accountID string, force bool) (resumed bool, targetLabel, noticeText string, errorCode pb.CommandResult_ErrorCode, err error)
 	MergeSession(ctx context.Context, sessionID string) (*pb.Session, error)
 	ArchiveSession(ctx context.Context, sessionID string) (*pb.Session, error)
+	// RetrySession retries a failed session and returns the updated row.
+	RetrySession(ctx context.Context, sessionID string) (*pb.Session, error)
+	// UpdateSession updates a session's title/tracker fields (carried on the
+	// stream command's optional pointers) and returns the updated row.
+	UpdateSession(ctx context.Context, req *pb.UpdateSessionCommand) (*pb.Session, error)
+	// LinkSessionPR attaches an existing PR to a session and returns the updated row.
+	LinkSessionPR(ctx context.Context, sessionID, pr string) (*pb.Session, error)
 	RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.ClaudeChat, error)
 	// DeleteChat removes a chat by agent_session_id. sessionID, when non-empty,
 	// scopes the delete: the handler rejects the request if the chat does not
 	// belong to that session (so bosso's session-level authz is enforced
 	// end-to-end, not advisory).
 	DeleteChat(ctx context.Context, sessionID, agentSessionID string) error
+	// UpdateChatTitle renames a chat by agent_session_id. Returns no payload.
+	UpdateChatTitle(ctx context.Context, agentSessionID, title string) error
+	// ReportChatStatus forwards one or more chat status heartbeats. Returns no
+	// payload. Bosso resolves each report's owning daemon before dispatch, so the
+	// slice handed here is already scoped to this daemon's chats.
+	ReportChatStatus(ctx context.Context, reports []*pb.ChatStatusReport) error
 	// ListRepos returns the daemon's full Repo set. Not session-scoped —
 	// used by bosso's repo-first new-session wizard to aggregate repos
 	// across every live daemon.
@@ -371,6 +385,34 @@ type SessionCommandHandler interface {
 	// TestAccount validates the account's stored credential (and runs a provider
 	// smoke check when a runner is wired), recording the outcome. Async.
 	TestAccount(ctx context.Context, cmd *pb.TestAccountCommand) (*pb.TestAccountResponse, error)
+	// ListChats returns a session's chats. sessionID scopes the read for authz.
+	// Store-bound — dispatched async.
+	ListChats(ctx context.Context, sessionID string) (*pb.ListChatsResponse, error)
+	// GetSessionStatuses returns the aggregate status for the given sessions.
+	// Store-bound — dispatched async.
+	GetSessionStatuses(ctx context.Context, sessionIDs []string) (*pb.GetSessionStatusesResponse, error)
+	// ListCheckSnapshots returns a session's recent CI check snapshots
+	// (newest-first; limit defaults to 10 when zero). Store-bound — dispatched async.
+	ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error)
+	// ListPlugins returns the daemon's configured plugins and load state. Not
+	// session-scoped. Async.
+	ListPlugins(ctx context.Context) (*pb.ListPluginsResponse, error)
+	// GetCronJob returns a single cron job by id. Not session-scoped. Async.
+	GetCronJob(ctx context.Context, id string) (*pb.GetCronJobResponse, error)
+	// RepairDoctor runs the daemon's repair-doctor diagnostics. Not
+	// session-scoped. Async.
+	RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, error)
+	// CloseSession closes (abandons) a session, returning the updated Session.
+	CloseSession(ctx context.Context, sessionID string) (*pb.Session, error)
+	// ResurrectSession restores an archived session, returning the updated Session.
+	ResurrectSession(ctx context.Context, sessionID string) (*pb.Session, error)
+	// RemoveSession permanently removes a session and its worktree. Filesystem-bound
+	// — dispatched async.
+	RemoveSession(ctx context.Context, sessionID string) error
+	// EmptyTrash permanently deletes archived sessions, optionally only those
+	// archived before olderThan (nil = all). Returns the deleted count.
+	// Filesystem-bound — dispatched async. Not session-scoped.
+	EmptyTrash(ctx context.Context, olderThan *timestamppb.Timestamp) (int32, error)
 }
 
 // WebhookCommandDispatcher forwards a webhook payload to whatever in-daemon

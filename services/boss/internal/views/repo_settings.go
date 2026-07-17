@@ -59,6 +59,7 @@ const (
 	repoSettingsRowCanAutoMergeDependabot
 	repoSettingsRowCanAutoRepair
 	repoSettingsRowArchiveSessionsAfterMerge
+	repoSettingsRowCanAutoDeleteBranches
 	repoSettingsRowLinearHeader
 	repoSettingsRowLinearApiKey
 	repoSettingsRowSentryHeader
@@ -210,6 +211,7 @@ func (m RepoSettingsModel) visibleRows() []rowID {
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
 		repoSettingsRowArchiveSessionsAfterMerge,
+		repoSettingsRowCanAutoDeleteBranches,
 		repoSettingsRowLinearHeader,
 	}
 	if m.linearExpanded {
@@ -583,6 +585,13 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 			Id:                        m.repoID,
 			ArchiveSessionsAfterMerge: &v,
 		})
+	case repoSettingsRowCanAutoDeleteBranches:
+		v := !m.repo.CanAutoDeleteBranches
+		m.repo.CanAutoDeleteBranches = v
+		return m, m.saveSettings(&pb.UpdateRepoRequest{
+			Id:                    m.repoID,
+			CanAutoDeleteBranches: &v,
+		})
 	case repoSettingsRowLinearHeader:
 		// UI-only expand/collapse toggle; never reads or writes credentials.
 		m.linearExpanded = !m.linearExpanded
@@ -855,6 +864,7 @@ func (m RepoSettingsModel) View() tea.View {
 		{"Auto-merge Dependabot PRs", m.repo.CanAutoMergeDependabot, repoSettingsRowCanAutoMergeDependabot},
 		{"Automatic repair (failing checks, conflicts, review feedback)", m.repo.CanAutoRepair, repoSettingsRowCanAutoRepair},
 		{"Archive sessions after merging PRs", m.repo.ArchiveSessionsAfterMerge, repoSettingsRowArchiveSessionsAfterMerge},
+		{"Delete branches after archiving", m.repo.CanAutoDeleteBranches, repoSettingsRowCanAutoDeleteBranches},
 	} {
 		renderCheckbox(cb)
 	}

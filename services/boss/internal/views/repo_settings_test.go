@@ -118,6 +118,7 @@ func TestRepoSettings_CollapsedNavigationSkipsChildRows(t *testing.T) {
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
 		repoSettingsRowArchiveSessionsAfterMerge,
+		repoSettingsRowCanAutoDeleteBranches,
 		repoSettingsRowLinearHeader,
 		repoSettingsRowSentryHeader,
 	}
@@ -166,6 +167,7 @@ func TestRepoSettings_ExpandedNavigationIncludesChildRows(t *testing.T) {
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
 		repoSettingsRowArchiveSessionsAfterMerge,
+		repoSettingsRowCanAutoDeleteBranches,
 		repoSettingsRowLinearHeader,
 		repoSettingsRowLinearApiKey,
 		repoSettingsRowSentryHeader,
@@ -484,21 +486,22 @@ func TestRepoSettings_AutomationTogglesUnderAutomationsHeading(t *testing.T) {
 	depIdx := strings.Index(out, "Auto-merge Dependabot PRs")
 	repairIdx := strings.Index(out, "Automatic repair (failing checks, conflicts, review feedback)")
 	archiveIdx := strings.Index(out, "Archive sessions after merging PRs")
+	deleteBranchesIdx := strings.Index(out, "Delete branches after archiving")
 	integrationsIdx := strings.Index(out, "Integrations")
 
-	if automationsIdx < 0 || markReadyIdx < 0 || depIdx < 0 || repairIdx < 0 || archiveIdx < 0 || integrationsIdx < 0 {
-		t.Fatalf("missing expected labels: automations=%d markReady=%d dep=%d repair=%d archive=%d integrations=%d\n%s",
-			automationsIdx, markReadyIdx, depIdx, repairIdx, archiveIdx, integrationsIdx, out)
+	if automationsIdx < 0 || markReadyIdx < 0 || depIdx < 0 || repairIdx < 0 || archiveIdx < 0 || deleteBranchesIdx < 0 || integrationsIdx < 0 {
+		t.Fatalf("missing expected labels: automations=%d markReady=%d dep=%d repair=%d archive=%d deleteBranches=%d integrations=%d\n%s",
+			automationsIdx, markReadyIdx, depIdx, repairIdx, archiveIdx, deleteBranchesIdx, integrationsIdx, out)
 	}
-	// Under "Automations", in order: Mark ready, Auto-merge Dependabot, Automatic repair, Archive sessions.
-	if automationsIdx >= markReadyIdx || markReadyIdx >= depIdx || depIdx >= repairIdx || repairIdx >= archiveIdx {
-		t.Errorf("expected order Automations < markReady < dependabot < repair < archive; got %d < %d < %d < %d < %d",
-			automationsIdx, markReadyIdx, depIdx, repairIdx, archiveIdx)
+	// Under "Automations", in order: Mark ready, Auto-merge Dependabot, Automatic repair, Archive sessions, Delete branches.
+	if automationsIdx >= markReadyIdx || markReadyIdx >= depIdx || depIdx >= repairIdx || repairIdx >= archiveIdx || archiveIdx >= deleteBranchesIdx {
+		t.Errorf("expected order Automations < markReady < dependabot < repair < archive < deleteBranches; got %d < %d < %d < %d < %d < %d",
+			automationsIdx, markReadyIdx, depIdx, repairIdx, archiveIdx, deleteBranchesIdx)
 	}
 	// All automation toggles render above the Integrations heading.
-	if archiveIdx >= integrationsIdx {
-		t.Errorf("automation toggles should render above the Integrations heading; archive=%d integrations=%d",
-			archiveIdx, integrationsIdx)
+	if deleteBranchesIdx >= integrationsIdx {
+		t.Errorf("automation toggles should render above the Integrations heading; deleteBranches=%d integrations=%d",
+			deleteBranchesIdx, integrationsIdx)
 	}
 }
 
@@ -543,6 +546,47 @@ func TestRepoSettings_ArchiveSessionsAfterMergeToggle(t *testing.T) {
 	}
 }
 
+// TestRepoSettings_CanAutoDeleteBranchesToggle verifies the new Automations
+// checkbox renders (default-checked) and that activating its row emits an
+// UpdateRepoRequest carrying the negated CanAutoDeleteBranches value.
+func TestRepoSettings_CanAutoDeleteBranchesToggle(t *testing.T) {
+	stub := &stubRepoClient{repos: []*pb.Repo{{
+		Id:                    "repo-1",
+		DisplayName:           "Test Repo",
+		CanAutoDeleteBranches: true, // default on
+	}}}
+	m := initSettings(t, stub)
+
+	// Rendered under Automations, default-checked ([x]).
+	out := m.View().Content
+	labelIdx := strings.Index(out, "Delete branches after archiving")
+	if labelIdx < 0 {
+		t.Fatalf("expected the delete-branches checkbox label, not found in:\n%s", out)
+	}
+	if checked := strings.LastIndex(out[:labelIdx], "[x]"); checked < 0 {
+		t.Errorf("expected the delete-branches checkbox to render checked by default:\n%s", out)
+	}
+
+	// Navigate to the row and toggle it off.
+	cursorToRow(t, &m, repoSettingsRowCanAutoDeleteBranches)
+	updatedModel, cmd := m.activateRow()
+	m = updatedModel.(RepoSettingsModel)
+	if cmd == nil {
+		t.Fatal("activateRow returned a nil cmd; expected an UpdateRepo save")
+	}
+	cmd() // executes saveSettings, capturing the request on the stub
+
+	if stub.updateReq == nil {
+		t.Fatal("no UpdateRepoRequest was captured")
+	}
+	if stub.updateReq.CanAutoDeleteBranches == nil {
+		t.Fatal("UpdateRepoRequest.CanAutoDeleteBranches is nil, want a value")
+	}
+	if *stub.updateReq.CanAutoDeleteBranches {
+		t.Errorf("toggled request CanAutoDeleteBranches = true, want false (negation of the prior true)")
+	}
+}
+
 func TestRepoSettings_VisibleRowsOrderMatchesRender(t *testing.T) {
 	stub := &stubRepoClient{repos: []*pb.Repo{{
 		Id:          "repo-1",
@@ -558,6 +602,7 @@ func TestRepoSettings_VisibleRowsOrderMatchesRender(t *testing.T) {
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
 		repoSettingsRowArchiveSessionsAfterMerge,
+		repoSettingsRowCanAutoDeleteBranches,
 		repoSettingsRowLinearHeader,
 		repoSettingsRowSentryHeader,
 	}

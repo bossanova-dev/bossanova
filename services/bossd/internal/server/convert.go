@@ -98,6 +98,7 @@ func repoToProto(r *models.Repo) *pb.Repo {
 		CanAutoMergeDependabot:    r.CanAutoMergeDependabot,
 		CanAutoRepair:             r.CanAutoRepair,
 		ArchiveSessionsAfterMerge: r.ArchiveSessionsAfterMerge,
+		CanAutoDeleteBranches:     r.CanAutoDeleteBranches,
 		MergeStrategy:             protoString(string(r.MergeStrategy)),
 		LinearApiKey:              protoString(r.LinearAPIKey),
 		SentryApiKey:              protoString(r.SentryAPIKey),

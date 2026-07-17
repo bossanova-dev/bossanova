@@ -629,6 +629,9 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 	if msg.ArchiveSessionsAfterMerge != nil {
 		params.ArchiveSessionsAfterMerge = msg.ArchiveSessionsAfterMerge
 	}
+	if msg.CanAutoDeleteBranches != nil {
+		params.CanAutoDeleteBranches = msg.CanAutoDeleteBranches
+	}
 	if msg.MergeStrategy != nil {
 		// Normalize at the storage boundary so an empty/unknown legacy string is
 		// persisted as the default 'merge' rather than written verbatim (scanRepo

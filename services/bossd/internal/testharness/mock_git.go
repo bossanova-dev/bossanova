@@ -26,6 +26,15 @@ type MockWorktreeManager struct {
 	VerifyPushedBranchCalls       []verifyPushedBranchCall
 	EmptyTrashCalls               []emptyTrashCall
 	PurgeWorktreeCalls            []purgeWorktreeCall
+	DeleteLocalBranchCalls        []string
+
+	// DeleteLocalBranchErr is returned by DeleteLocalBranch when non-nil.
+	DeleteLocalBranchErr error
+	// BranchSafeToDeleteResult is returned by BranchSafeToDelete when
+	// BranchSafeToDeleteFn is nil (default false).
+	BranchSafeToDeleteResult bool
+	// BranchSafeToDeleteFn overrides BranchSafeToDelete when set.
+	BranchSafeToDeleteFn func(ctx context.Context, repoPath, branchTip, baseBranch string) (bool, error)
 
 	// CreateFunc overrides the default Create behavior when set.
 	CreateFunc func(ctx context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error)
@@ -235,6 +244,29 @@ func (m *MockWorktreeManager) EmptyTrash(ctx context.Context, repoPath string, b
 	m.EmptyTrashCalls = append(m.EmptyTrashCalls, emptyTrashCall{RepoPath: repoPath, Branches: branches})
 	m.mu.Unlock()
 	return nil
+}
+
+// DeleteLocalBranchCalls records each branch passed to DeleteLocalBranch so
+// archive-gating tests can assert the local-only delete ran.
+func (m *MockWorktreeManager) DeleteLocalBranch(_ context.Context, _, branch string) error {
+	m.mu.Lock()
+	m.DeleteLocalBranchCalls = append(m.DeleteLocalBranchCalls, branch)
+	err := m.DeleteLocalBranchErr
+	m.mu.Unlock()
+	return err
+}
+
+// BranchSafeToDelete returns BranchSafeToDeleteResult (default false) unless
+// BranchSafeToDeleteFn is set.
+func (m *MockWorktreeManager) BranchSafeToDelete(ctx context.Context, repoPath, branchTip, baseBranch string) (bool, error) {
+	m.mu.Lock()
+	fn := m.BranchSafeToDeleteFn
+	result := m.BranchSafeToDeleteResult
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, repoPath, branchTip, baseBranch)
+	}
+	return result, nil
 }
 
 func (m *MockWorktreeManager) PurgeWorktree(_ context.Context, repoPath, repoName, worktreeBaseDir, branch string) {

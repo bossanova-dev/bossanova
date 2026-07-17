@@ -507,6 +507,47 @@ paths:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyArchiveSessionResponse'
   /bossanova.v1.OrchestratorService/ProxyAttachSession: {}
+  /bossanova.v1.OrchestratorService/ProxyCloseSession:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyCloseSession
+      description: |-
+        Destructive-tier MCP gateway parity (BOS-404). Session-scoped destructive
+         ops route to the owning daemon via FindSessionDaemon (NotFound for a
+         missing/foreign session); empty_trash is daemon-wide and aggregates across
+         the caller's Ready daemons via the shared resolver.
+         ProxyCloseSession closes (abandons) a session, returning the updated Session.
+      operationId: bossanova.v1.OrchestratorService.ProxyCloseSession
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyCloseSessionRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyCloseSessionResponse'
   /bossanova.v1.OrchestratorService/ProxyCreateCronJob:
     post:
       tags:
@@ -614,6 +655,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyDeleteCronJobResponse'
+  /bossanova.v1.OrchestratorService/ProxyEmptyTrash:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyEmptyTrash
+      description: |-
+        ProxyEmptyTrash permanently deletes archived sessions across the caller's
+         Ready daemons, summing each daemon's deleted_count.
+      operationId: bossanova.v1.OrchestratorService.ProxyEmptyTrash
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyEmptyTrashRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyEmptyTrashResponse'
   /bossanova.v1.OrchestratorService/ProxyGetChatTranscript:
     post:
       tags:
@@ -652,6 +731,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyGetChatTranscriptResponse'
+  /bossanova.v1.OrchestratorService/ProxyGetCronJob:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyGetCronJob
+      description: ProxyGetCronJob returns the first Ready daemon that owns the id (NotFound if none).
+      operationId: bossanova.v1.OrchestratorService.ProxyGetCronJob
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyGetCronJobRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyGetCronJobResponse'
   /bossanova.v1.OrchestratorService/ProxyGetRepo:
     post:
       tags:
@@ -726,6 +841,80 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyGetSessionResponse'
+  /bossanova.v1.OrchestratorService/ProxyGetSessionStatuses:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyGetSessionStatuses
+      description: |-
+        ProxyGetSessionStatuses fans out per session_id (FindSessionDaemon), skipping
+         unknown ids, and unions the returned SessionStatusEntry values.
+      operationId: bossanova.v1.OrchestratorService.ProxyGetSessionStatuses
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyGetSessionStatusesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyGetSessionStatusesResponse'
+  /bossanova.v1.OrchestratorService/ProxyLinkSessionPR:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyLinkSessionPR
+      description: ProxyLinkSessionPR attaches an existing PR to a session (routes by session_id).
+      operationId: bossanova.v1.OrchestratorService.ProxyLinkSessionPR
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyLinkSessionPRRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyLinkSessionPRResponse'
   /bossanova.v1.OrchestratorService/ProxyListAccounts:
     post:
       tags:
@@ -802,6 +991,120 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyListAgentsResponse'
+  /bossanova.v1.OrchestratorService/ProxyListAgentsAggregated:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyListAgentsAggregated
+      description: |-
+        ProxyListAgentsAggregated aggregates installed agents across the caller's
+         Ready daemons (session-less; distinct from the daemon-scoped ProxyListAgents).
+      operationId: bossanova.v1.OrchestratorService.ProxyListAgentsAggregated
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyListAgentsAggregatedRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyListAgentsAggregatedResponse'
+  /bossanova.v1.OrchestratorService/ProxyListChats:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyListChats
+      description: |-
+        Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
+         owning daemon via FindSessionDaemon; session-less reads aggregate across the
+         caller's Ready daemons via the shared resolver.
+         ProxyListChats reads a session's chats (routes by session_id).
+      operationId: bossanova.v1.OrchestratorService.ProxyListChats
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyListChatsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyListChatsResponse'
+  /bossanova.v1.OrchestratorService/ProxyListCheckSnapshots:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyListCheckSnapshots
+      description: ProxyListCheckSnapshots reads a session's recent CI check snapshots (routes by session_id).
+      operationId: bossanova.v1.OrchestratorService.ProxyListCheckSnapshots
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyListCheckSnapshotsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyListCheckSnapshotsResponse'
   /bossanova.v1.OrchestratorService/ProxyListCronJobs:
     post:
       tags:
@@ -841,6 +1144,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyListCronJobsResponse'
+  /bossanova.v1.OrchestratorService/ProxyListPlugins:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyListPlugins
+      description: ProxyListPlugins aggregates configured plugins across the caller's Ready daemons.
+      operationId: bossanova.v1.OrchestratorService.ProxyListPlugins
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyListPluginsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyListPluginsResponse'
   /bossanova.v1.OrchestratorService/ProxyListRepoPRs:
     post:
       tags:
@@ -1240,6 +1579,116 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyRemoveRepoResponse'
+  /bossanova.v1.OrchestratorService/ProxyRemoveSession:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyRemoveSession
+      description: ProxyRemoveSession permanently removes a session and its worktree (Ok-only).
+      operationId: bossanova.v1.OrchestratorService.ProxyRemoveSession
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyRemoveSessionRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyRemoveSessionResponse'
+  /bossanova.v1.OrchestratorService/ProxyRepairDoctor:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyRepairDoctor
+      description: ProxyRepairDoctor merges repair-doctor reports across the caller's Ready daemons.
+      operationId: bossanova.v1.OrchestratorService.ProxyRepairDoctor
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyRepairDoctorRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyRepairDoctorResponse'
+  /bossanova.v1.OrchestratorService/ProxyReportChatStatus:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyReportChatStatus
+      description: |-
+        ProxyReportChatStatus forwards chat status heartbeats. All reports must
+         resolve to the caller's own chats on a single daemon.
+      operationId: bossanova.v1.OrchestratorService.ProxyReportChatStatus
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyReportChatStatusRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyReportChatStatusResponse'
   /bossanova.v1.OrchestratorService/ProxyResumeSession:
     post:
       tags:
@@ -1275,6 +1724,83 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyResumeSessionResponse'
+  /bossanova.v1.OrchestratorService/ProxyResurrectSession:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyResurrectSession
+      description: ProxyResurrectSession restores an archived session, returning the updated Session.
+      operationId: bossanova.v1.OrchestratorService.ProxyResurrectSession
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyResurrectSessionRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyResurrectSessionResponse'
+  /bossanova.v1.OrchestratorService/ProxyRetrySession:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyRetrySession
+      description: |-
+        Mutating MCP gateway parity (BOS-402). Session-scoped mutations route to the
+         owning daemon via FindSessionDaemon; chat-scoped mutations via
+         FindDaemonForChat(agent_session_id). A foreign entity resolves to NotFound,
+         so no cross-user mutation can dispatch.
+         ProxyRetrySession retries a failed session (routes by session_id).
+      operationId: bossanova.v1.OrchestratorService.ProxyRetrySession
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyRetrySessionRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyRetrySessionResponse'
   /bossanova.v1.OrchestratorService/ProxyRunCronJobNow:
     post:
       tags:
@@ -1494,6 +2020,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyUpdateAccountResponse'
+  /bossanova.v1.OrchestratorService/ProxyUpdateChatTitle:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyUpdateChatTitle
+      description: ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
+      operationId: bossanova.v1.OrchestratorService.ProxyUpdateChatTitle
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyUpdateChatTitleRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyUpdateChatTitleResponse'
   /bossanova.v1.OrchestratorService/ProxyUpdateCronJob:
     post:
       tags:
@@ -1564,6 +2126,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyUpdateRepoResponse'
+  /bossanova.v1.OrchestratorService/ProxyUpdateSession:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyUpdateSession
+      description: ProxyUpdateSession updates a session's title/tracker (routes by session_id).
+      operationId: bossanova.v1.OrchestratorService.ProxyUpdateSession
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyUpdateSessionRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyUpdateSessionResponse'
   /bossanova.v1.OrchestratorService/ProxyWakeChat:
     post:
       tags:
@@ -2631,6 +3229,17 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Repo'
       title: CloneAndRegisterRepoResponse
       additionalProperties: false
+    bossanova.v1.CloseSessionCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: CloseSessionCommand
+      additionalProperties: false
+      description: |-
+        CloseSessionCommand asks the daemon to close (abandon) a session.
+         Replies with CommandResult carrying the updated Session (session = 4).
     bossanova.v1.CloseSessionRequest:
       type: object
       properties:
@@ -2737,6 +3346,17 @@ components:
                 - createCronJob
             - type: object
               properties:
+                emptyTrash:
+                  title: empty_trash
+                  description: |-
+                    EmptyTrash returns the number of archived sessions permanently deleted.
+                     CloseSession/ResurrectSession reuse session = 4; RemoveSession is Ok-only.
+                  $ref: '#/components/schemas/bossanova.v1.EmptyTrashResult'
+              title: empty_trash
+              required:
+                - emptyTrash
+            - type: object
+              properties:
                 getChatTranscript:
                   title: get_chat_transcript
                   description: GetChatTranscript returns the chat's transcript (reuses daemon.proto type).
@@ -2746,6 +3366,15 @@ components:
                 - getChatTranscript
             - type: object
               properties:
+                getCronJob:
+                  title: get_cron_job
+                  description: GetCronJob returns a single cron job (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.GetCronJobResponse'
+              title: get_cron_job
+              required:
+                - getCronJob
+            - type: object
+              properties:
                 getRepo:
                   title: get_repo
                   description: GetRepo returns the daemon's web-safe repo settings.
@@ -2753,6 +3382,15 @@ components:
               title: get_repo
               required:
                 - getRepo
+            - type: object
+              properties:
+                getSessionStatuses:
+                  title: get_session_statuses
+                  description: GetSessionStatuses returns the sessions' aggregate statuses (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.GetSessionStatusesResponse'
+              title: get_session_statuses
+              required:
+                - getSessionStatuses
             - type: object
               properties:
                 listAccounts:
@@ -2775,6 +3413,24 @@ components:
                 - listAgents
             - type: object
               properties:
+                listChats:
+                  title: list_chats
+                  description: ListChats returns the session's chats (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.ListChatsResponse'
+              title: list_chats
+              required:
+                - listChats
+            - type: object
+              properties:
+                listCheckSnapshots:
+                  title: list_check_snapshots
+                  description: ListCheckSnapshots returns the session's recent CI snapshots (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.ListCheckSnapshotsResponse'
+              title: list_check_snapshots
+              required:
+                - listCheckSnapshots
+            - type: object
+              properties:
                 listCronJobs:
                   title: list_cron_jobs
                   description: ListCronJobs returns the daemon's cron jobs (reuses daemon.proto type).
@@ -2782,6 +3438,15 @@ components:
               title: list_cron_jobs
               required:
                 - listCronJobs
+            - type: object
+              properties:
+                listPlugins:
+                  title: list_plugins
+                  description: ListPlugins returns the daemon's configured plugins (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.ListPluginsResponse'
+              title: list_plugins
+              required:
+                - listPlugins
             - type: object
               properties:
                 listRepoPrs:
@@ -2829,6 +3494,15 @@ components:
               title: refresh_account
               required:
                 - refreshAccount
+            - type: object
+              properties:
+                repairDoctor:
+                  title: repair_doctor
+                  description: RepairDoctor returns the daemon's diagnostics report (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.RepairDoctorResponse'
+              title: repair_doctor
+              required:
+                - repairDoctor
             - type: object
               properties:
                 runCronJobNow:
@@ -3961,6 +4635,20 @@ components:
         - DISPLAY_STATUS_APPROVED
         - DISPLAY_STATUS_REVIEW
       description: DisplayStatus represents the unified display status for a session in the TUI.
+    bossanova.v1.EmptyTrashCommand:
+      type: object
+      properties:
+        olderThan:
+          oneOf:
+            - $ref: '#/components/schemas/google.protobuf.Timestamp'
+            - type: "null"
+          title: older_than
+          description: Only empty sessions archived before this timestamp.
+      title: EmptyTrashCommand
+      additionalProperties: false
+      description: |-
+        EmptyTrashCommand asks the daemon to permanently delete archived sessions.
+         Replies with CommandResult carrying an EmptyTrashResult (empty_trash = 33).
     bossanova.v1.EmptyTrashRequest:
       type: object
       properties:
@@ -3982,6 +4670,16 @@ components:
           description: Number of archived sessions permanently deleted.
       title: EmptyTrashResponse
       additionalProperties: false
+    bossanova.v1.EmptyTrashResult:
+      type: object
+      properties:
+        deletedCount:
+          type: integer
+          title: deleted_count
+          format: int32
+      title: EmptyTrashResult
+      additionalProperties: false
+      description: EmptyTrashResult carries the number of archived sessions permanently deleted.
     bossanova.v1.EventNotification:
       type: object
       allOf:
@@ -4250,6 +4948,17 @@ components:
           $ref: '#/components/schemas/bossanova.v1.CloudAccessStatus'
       title: GetCloudAccessStatusResponse
       additionalProperties: false
+    bossanova.v1.GetCronJobCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: GetCronJobCommand
+      additionalProperties: false
+      description: |-
+        GetCronJobCommand asks the daemon for a single cron job by id. Replies with
+         CommandResult carrying a GetCronJobResponse (get_cron_job = 31).
     bossanova.v1.GetCronJobRequest:
       type: object
       properties:
@@ -4386,6 +5095,20 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: GetSessionResponse
       additionalProperties: false
+    bossanova.v1.GetSessionStatusesCommand:
+      type: object
+      properties:
+        sessionIds:
+          type: array
+          items:
+            type: string
+          title: session_ids
+      title: GetSessionStatusesCommand
+      additionalProperties: false
+      description: |-
+        GetSessionStatusesCommand asks the daemon for the aggregate status of the
+         given sessions. Replies with CommandResult carrying a
+         GetSessionStatusesResponse (get_session_statuses = 28).
     bossanova.v1.GetSessionStatusesRequest:
       type: object
       properties:
@@ -4644,6 +5367,21 @@ components:
           title: is_user
       title: LastTurnIsUserResponse
       additionalProperties: false
+    bossanova.v1.LinkSessionPRCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        pr:
+          type: string
+          title: pr
+      title: LinkSessionPRCommand
+      additionalProperties: false
+      description: |-
+        LinkSessionPRCommand asks the daemon to attach an existing PR to a session.
+         Mirrors daemon.proto's LinkSessionPRRequest. Replies with CommandResult
+         carrying the updated Session (session = 4).
     bossanova.v1.LinkSessionPRRequest:
       type: object
       properties:
@@ -4762,6 +5500,18 @@ components:
           title: issues
       title: ListAvailableIssuesResponse
       additionalProperties: false
+    bossanova.v1.ListChatsCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: ListChatsCommand
+      additionalProperties: false
+      description: |-
+        ListChatsCommand asks the daemon for a session's chats. Replies with
+         CommandResult carrying a ListChatsResponse (list_chats = 27). session_id
+         scopes the read for authz, mirroring GetChatTranscriptCommand.
     bossanova.v1.ListChatsRequest:
       type: object
       properties:
@@ -4780,6 +5530,22 @@ components:
           title: chats
       title: ListChatsResponse
       additionalProperties: false
+    bossanova.v1.ListCheckSnapshotsCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        limit:
+          type: integer
+          title: limit
+          format: int32
+      title: ListCheckSnapshotsCommand
+      additionalProperties: false
+      description: |-
+        ListCheckSnapshotsCommand asks the daemon for a session's recent CI check
+         snapshots (newest-first, limit defaults to 10 when zero). Replies with
+         CommandResult carrying a ListCheckSnapshotsResponse (list_check_snapshots = 29).
     bossanova.v1.ListCheckSnapshotsRequest:
       type: object
       properties:
@@ -4918,6 +5684,14 @@ components:
           title: prs
       title: ListOpenPRsResponse
       additionalProperties: false
+    bossanova.v1.ListPluginsCommand:
+      type: object
+      title: ListPluginsCommand
+      additionalProperties: false
+      description: |-
+        ListPluginsCommand asks the daemon for its configured plugins and load
+         state. Replies with CommandResult carrying a ListPluginsResponse
+         (list_plugins = 30).
     bossanova.v1.ListPluginsRequest:
       type: object
       title: ListPluginsRequest
@@ -5304,6 +6078,15 @@ components:
                 - attach
             - type: object
               properties:
+                closeSession:
+                  title: close_session
+                  description: 'bosso → daemon: close (abandon) a session. Replies CommandResult{session}.'
+                  $ref: '#/components/schemas/bossanova.v1.CloseSessionCommand'
+              title: close_session
+              required:
+                - closeSession
+            - type: object
+              properties:
                 createCronJob:
                   title: create_cron_job
                   description: 'bosso → daemon: create a cron job. Replies CommandResult{create_cron_job}.'
@@ -5343,6 +6126,15 @@ components:
                 - deleteCronJob
             - type: object
               properties:
+                emptyTrash:
+                  title: empty_trash
+                  description: 'bosso → daemon: permanently delete archived sessions. Replies CommandResult{empty_trash}.'
+                  $ref: '#/components/schemas/bossanova.v1.EmptyTrashCommand'
+              title: empty_trash
+              required:
+                - emptyTrash
+            - type: object
+              properties:
                 getChatTranscript:
                   title: get_chat_transcript
                   description: 'bosso → daemon: read a chat''s transcript. Replies CommandResult{get_chat_transcript}.'
@@ -5350,6 +6142,15 @@ components:
               title: get_chat_transcript
               required:
                 - getChatTranscript
+            - type: object
+              properties:
+                getCronJob:
+                  title: get_cron_job
+                  description: 'bosso → daemon: read a single cron job by id. Replies CommandResult{get_cron_job}.'
+                  $ref: '#/components/schemas/bossanova.v1.GetCronJobCommand'
+              title: get_cron_job
+              required:
+                - getCronJob
             - type: object
               properties:
                 getRepo:
@@ -5361,6 +6162,24 @@ components:
               title: get_repo
               required:
                 - getRepo
+            - type: object
+              properties:
+                getSessionStatuses:
+                  title: get_session_statuses
+                  description: 'bosso → daemon: aggregate status for the given sessions. Replies CommandResult{get_session_statuses}.'
+                  $ref: '#/components/schemas/bossanova.v1.GetSessionStatusesCommand'
+              title: get_session_statuses
+              required:
+                - getSessionStatuses
+            - type: object
+              properties:
+                linkSessionPr:
+                  title: link_session_pr
+                  description: 'bosso → daemon: attach an existing PR to a session. Replies CommandResult{Session}.'
+                  $ref: '#/components/schemas/bossanova.v1.LinkSessionPRCommand'
+              title: link_session_pr
+              required:
+                - linkSessionPr
             - type: object
               properties:
                 listAccounts:
@@ -5383,6 +6202,24 @@ components:
                 - listAgents
             - type: object
               properties:
+                listChats:
+                  title: list_chats
+                  description: 'bosso → daemon: list a session''s chats. Replies CommandResult{list_chats}.'
+                  $ref: '#/components/schemas/bossanova.v1.ListChatsCommand'
+              title: list_chats
+              required:
+                - listChats
+            - type: object
+              properties:
+                listCheckSnapshots:
+                  title: list_check_snapshots
+                  description: 'bosso → daemon: list a session''s recent CI check snapshots. Replies CommandResult{list_check_snapshots}.'
+                  $ref: '#/components/schemas/bossanova.v1.ListCheckSnapshotsCommand'
+              title: list_check_snapshots
+              required:
+                - listCheckSnapshots
+            - type: object
+              properties:
                 listCronJobs:
                   title: list_cron_jobs
                   description: 'bosso → daemon: list the daemon''s cron jobs. Replies CommandResult{list_cron_jobs}.'
@@ -5390,6 +6227,15 @@ components:
               title: list_cron_jobs
               required:
                 - listCronJobs
+            - type: object
+              properties:
+                listPlugins:
+                  title: list_plugins
+                  description: 'bosso → daemon: list the daemon''s configured plugins. Replies CommandResult{list_plugins}.'
+                  $ref: '#/components/schemas/bossanova.v1.ListPluginsCommand'
+              title: list_plugins
+              required:
+                - listPlugins
             - type: object
               properties:
                 listRepoPrs:
@@ -5474,12 +6320,57 @@ components:
                 - removeRepo
             - type: object
               properties:
+                removeSession:
+                  title: remove_session
+                  description: 'bosso → daemon: permanently remove a session and its worktree. Replies CommandResult{Ok} with no payload.'
+                  $ref: '#/components/schemas/bossanova.v1.RemoveSessionCommand'
+              title: remove_session
+              required:
+                - removeSession
+            - type: object
+              properties:
+                repairDoctor:
+                  title: repair_doctor
+                  description: 'bosso → daemon: run repair-doctor diagnostics. Replies CommandResult{repair_doctor}.'
+                  $ref: '#/components/schemas/bossanova.v1.RepairDoctorCommand'
+              title: repair_doctor
+              required:
+                - repairDoctor
+            - type: object
+              properties:
+                reportChatStatus:
+                  title: report_chat_status
+                  description: 'bosso → daemon: report chat status heartbeats. Replies CommandResult{Ok} with no payload.'
+                  $ref: '#/components/schemas/bossanova.v1.ReportChatStatusCommand'
+              title: report_chat_status
+              required:
+                - reportChatStatus
+            - type: object
+              properties:
                 resume:
                   title: resume
                   $ref: '#/components/schemas/bossanova.v1.ResumeSessionCommand'
               title: resume
               required:
                 - resume
+            - type: object
+              properties:
+                resurrectSession:
+                  title: resurrect_session
+                  description: 'bosso → daemon: resurrect an archived session. Replies CommandResult{session}.'
+                  $ref: '#/components/schemas/bossanova.v1.ResurrectSessionCommand'
+              title: resurrect_session
+              required:
+                - resurrectSession
+            - type: object
+              properties:
+                retrySession:
+                  title: retry_session
+                  description: 'bosso → daemon: retry a failed session. Replies CommandResult{Session}.'
+                  $ref: '#/components/schemas/bossanova.v1.RetrySessionCommand'
+              title: retry_session
+              required:
+                - retrySession
             - type: object
               properties:
                 runCronJobNow:
@@ -5576,6 +6467,15 @@ components:
                 - updateAccount
             - type: object
               properties:
+                updateChatTitle:
+                  title: update_chat_title
+                  description: 'bosso → daemon: update a chat''s title. Replies CommandResult{Ok} with no payload.'
+                  $ref: '#/components/schemas/bossanova.v1.UpdateChatTitleCommand'
+              title: update_chat_title
+              required:
+                - updateChatTitle
+            - type: object
+              properties:
                 updateCronJob:
                   title: update_cron_job
                   description: 'bosso → daemon: update a cron job. Replies CommandResult{update_cron_job}.'
@@ -5592,6 +6492,15 @@ components:
               title: update_repo
               required:
                 - updateRepo
+            - type: object
+              properties:
+                updateSession:
+                  title: update_session
+                  description: 'bosso → daemon: update a session''s title/tracker. Replies CommandResult{Session}.'
+                  $ref: '#/components/schemas/bossanova.v1.UpdateSessionCommand'
+              title: update_session
+              required:
+                - updateSession
             - type: object
               properties:
                 wakeChat:
@@ -6019,6 +6928,25 @@ components:
         ProxyChatListSnapshot is the required first event on every
          ProxyStreamChats connection. It carries the current chat list and live
          per-chat statuses for the requested session.
+    bossanova.v1.ProxyCloseSessionRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: ProxyCloseSessionRequest
+      additionalProperties: false
+      description: |-
+        Destructive-tier proxy messages (BOS-404). Session-scoped requests carry the
+         session id; close/resurrect return the updated Session, remove is Ok-only.
+    bossanova.v1.ProxyCloseSessionResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: ProxyCloseSessionResponse
+      additionalProperties: false
     bossanova.v1.ProxyCreateCronJobRequest:
       type: object
       properties:
@@ -6240,6 +7168,29 @@ components:
       type: object
       title: ProxyDeleteCronJobResponse
       additionalProperties: false
+    bossanova.v1.ProxyEmptyTrashRequest:
+      type: object
+      properties:
+        olderThan:
+          oneOf:
+            - $ref: '#/components/schemas/google.protobuf.Timestamp'
+            - type: "null"
+          title: older_than
+      title: ProxyEmptyTrashRequest
+      additionalProperties: false
+      description: |-
+        ProxyEmptyTrash is daemon-wide (no session/repo id). older_than mirrors the
+         daemon EmptyTrashRequest; the response sums deleted_count across the caller's
+         Ready daemons.
+    bossanova.v1.ProxyEmptyTrashResponse:
+      type: object
+      properties:
+        deletedCount:
+          type: integer
+          title: deleted_count
+          format: int32
+      title: ProxyEmptyTrashResponse
+      additionalProperties: false
     bossanova.v1.ProxyGetChatTranscriptRequest:
       type: object
       properties:
@@ -6284,6 +7235,25 @@ components:
         ProxyGetChatTranscriptResponse mirrors daemon.proto's GetChatTranscriptResponse
          shape so the gateway can forward it field-for-field. ChatMessage is defined in
          daemon.proto (already imported).
+    bossanova.v1.ProxyGetCronJobRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: ProxyGetCronJobRequest
+      additionalProperties: false
+      description: |-
+        ProxyGetCronJobRequest returns the first Ready daemon that owns the id.
+         An empty cron_job in the response => not found (bosso returns CodeNotFound).
+    bossanova.v1.ProxyGetCronJobResponse:
+      type: object
+      properties:
+        cronJob:
+          title: cron_job
+          $ref: '#/components/schemas/bossanova.v1.CronJob'
+      title: ProxyGetCronJobResponse
+      additionalProperties: false
     bossanova.v1.ProxyGetRepoRequest:
       type: object
       properties:
@@ -6319,6 +7289,48 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: ProxyGetSessionResponse
       additionalProperties: false
+    bossanova.v1.ProxyGetSessionStatusesRequest:
+      type: object
+      properties:
+        sessionIds:
+          type: array
+          items:
+            type: string
+          title: session_ids
+      title: ProxyGetSessionStatusesRequest
+      additionalProperties: false
+      description: |-
+        ProxyGetSessionStatusesRequest resolves each session's owning daemon and
+         unions the returned statuses; unknown ids are skipped, not errored.
+    bossanova.v1.ProxyGetSessionStatusesResponse:
+      type: object
+      properties:
+        statuses:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SessionStatusEntry'
+          title: statuses
+      title: ProxyGetSessionStatusesResponse
+      additionalProperties: false
+    bossanova.v1.ProxyLinkSessionPRRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        pr:
+          type: string
+          title: pr
+      title: ProxyLinkSessionPRRequest
+      additionalProperties: false
+    bossanova.v1.ProxyLinkSessionPRResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: ProxyLinkSessionPRResponse
+      additionalProperties: false
     bossanova.v1.ProxyListAccountsRequest:
       type: object
       properties:
@@ -6345,6 +7357,24 @@ components:
           title: accounts
       title: ProxyListAccountsResponse
       additionalProperties: false
+    bossanova.v1.ProxyListAgentsAggregatedRequest:
+      type: object
+      title: ProxyListAgentsAggregatedRequest
+      additionalProperties: false
+      description: |-
+        ProxyListAgentsAggregatedRequest aggregates installed agents across the
+         caller's Ready daemons (session-less). Distinct from the daemon-scoped
+         ProxyListAgents, which takes a daemon_id.
+    bossanova.v1.ProxyListAgentsAggregatedResponse:
+      type: object
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentInfo'
+          title: agents
+      title: ProxyListAgentsAggregatedResponse
+      additionalProperties: false
     bossanova.v1.ProxyListAgentsRequest:
       type: object
       properties:
@@ -6363,6 +7393,52 @@ components:
           title: agents
       title: ProxyListAgentsResponse
       additionalProperties: false
+    bossanova.v1.ProxyListChatsRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: ProxyListChatsRequest
+      additionalProperties: false
+      description: |-
+        ProxyListChatsRequest reads a session's chats. session_id routes to the owning
+         daemon (FindSessionDaemon) and scopes authz.
+    bossanova.v1.ProxyListChatsResponse:
+      type: object
+      properties:
+        chats:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ClaudeChat'
+          title: chats
+      title: ProxyListChatsResponse
+      additionalProperties: false
+    bossanova.v1.ProxyListCheckSnapshotsRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        limit:
+          type: integer
+          title: limit
+          format: int32
+      title: ProxyListCheckSnapshotsRequest
+      additionalProperties: false
+      description: |-
+        ProxyListCheckSnapshotsRequest reads a session's recent CI check snapshots.
+         session_id routes to the owning daemon; limit defaults to 10 when zero.
+    bossanova.v1.ProxyListCheckSnapshotsResponse:
+      type: object
+      properties:
+        snapshots:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.CheckSnapshot'
+          title: snapshots
+      title: ProxyListCheckSnapshotsResponse
+      additionalProperties: false
     bossanova.v1.ProxyListCronJobsRequest:
       type: object
       title: ProxyListCronJobsRequest
@@ -6376,6 +7452,23 @@ components:
             $ref: '#/components/schemas/bossanova.v1.CronJobWithDaemon'
           title: jobs
       title: ProxyListCronJobsResponse
+      additionalProperties: false
+    bossanova.v1.ProxyListPluginsRequest:
+      type: object
+      title: ProxyListPluginsRequest
+      additionalProperties: false
+      description: |-
+        ProxyListPluginsRequest aggregates configured plugins across the caller's
+         Ready daemons.
+    bossanova.v1.ProxyListPluginsResponse:
+      type: object
+      properties:
+        plugins:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.InstalledPlugin'
+          title: plugins
+      title: ProxyListPluginsResponse
       additionalProperties: false
     bossanova.v1.ProxyListRepoPRsRequest:
       type: object
@@ -6629,6 +7722,55 @@ components:
       type: object
       title: ProxyRemoveRepoResponse
       additionalProperties: false
+    bossanova.v1.ProxyRemoveSessionRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: ProxyRemoveSessionRequest
+      additionalProperties: false
+    bossanova.v1.ProxyRemoveSessionResponse:
+      type: object
+      title: ProxyRemoveSessionResponse
+      additionalProperties: false
+    bossanova.v1.ProxyRepairDoctorRequest:
+      type: object
+      title: ProxyRepairDoctorRequest
+      additionalProperties: false
+      description: |-
+        ProxyRepairDoctorRequest merges repair-doctor reports across the caller's
+         Ready daemons; when the caller has >1 Ready daemon, bosso prefixes each check
+         name and log path with the daemon hostname for provenance.
+    bossanova.v1.ProxyRepairDoctorResponse:
+      type: object
+      properties:
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.RepairDoctorCheck'
+          title: checks
+        recentLogs:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.RepairLogSnapshot'
+          title: recent_logs
+      title: ProxyRepairDoctorResponse
+      additionalProperties: false
+    bossanova.v1.ProxyReportChatStatusRequest:
+      type: object
+      properties:
+        reports:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ChatStatusReport'
+          title: reports
+      title: ProxyReportChatStatusRequest
+      additionalProperties: false
+    bossanova.v1.ProxyReportChatStatusResponse:
+      type: object
+      title: ProxyReportChatStatusResponse
+      additionalProperties: false
     bossanova.v1.ProxyResumeSessionRequest:
       type: object
       properties:
@@ -6644,6 +7786,38 @@ components:
           title: session
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: ProxyResumeSessionResponse
+      additionalProperties: false
+    bossanova.v1.ProxyResurrectSessionRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: ProxyResurrectSessionRequest
+      additionalProperties: false
+    bossanova.v1.ProxyResurrectSessionResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: ProxyResurrectSessionResponse
+      additionalProperties: false
+    bossanova.v1.ProxyRetrySessionRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: ProxyRetrySessionRequest
+      additionalProperties: false
+    bossanova.v1.ProxyRetrySessionResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: ProxyRetrySessionResponse
       additionalProperties: false
     bossanova.v1.ProxyRunCronJobNowRequest:
       type: object
@@ -6856,6 +8030,21 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Account'
       title: ProxyUpdateAccountResponse
       additionalProperties: false
+    bossanova.v1.ProxyUpdateChatTitleRequest:
+      type: object
+      properties:
+        agentSessionId:
+          type: string
+          title: agent_session_id
+        title:
+          type: string
+          title: title
+      title: ProxyUpdateChatTitleRequest
+      additionalProperties: false
+    bossanova.v1.ProxyUpdateChatTitleResponse:
+      type: object
+      title: ProxyUpdateChatTitleResponse
+      additionalProperties: false
     bossanova.v1.ProxyUpdateCronJobRequest:
       type: object
       properties:
@@ -6995,6 +8184,37 @@ components:
           title: settings
           $ref: '#/components/schemas/bossanova.v1.RepoSettings'
       title: ProxyUpdateRepoResponse
+      additionalProperties: false
+    bossanova.v1.ProxyUpdateSessionRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        title:
+          type:
+            - string
+            - "null"
+          title: title
+        trackerUrl:
+          type:
+            - string
+            - "null"
+          title: tracker_url
+        trackerId:
+          type:
+            - string
+            - "null"
+          title: tracker_id
+      title: ProxyUpdateSessionRequest
+      additionalProperties: false
+    bossanova.v1.ProxyUpdateSessionResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: ProxyUpdateSessionResponse
       additionalProperties: false
     bossanova.v1.ProxyWakeChatRequest:
       type: object
@@ -7491,6 +8711,17 @@ components:
       type: object
       title: RemoveRepoResponse
       additionalProperties: false
+    bossanova.v1.RemoveSessionCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: RemoveSessionCommand
+      additionalProperties: false
+      description: |-
+        RemoveSessionCommand asks the daemon to permanently remove a session and its
+         worktree. Replies with CommandResult{ok:true} and no payload.
     bossanova.v1.RemoveSessionRequest:
       type: object
       properties:
@@ -7522,6 +8753,13 @@ components:
          has a stable name (so the CLI can render it in a fixed order with
          per-check formatting), a pass/fail bit, and a free-form detail string
          the operator reads to diagnose the failure.
+    bossanova.v1.RepairDoctorCommand:
+      type: object
+      title: RepairDoctorCommand
+      additionalProperties: false
+      description: |-
+        RepairDoctorCommand asks the daemon to run its repair-doctor diagnostics.
+         Replies with CommandResult carrying a RepairDoctorResponse (repair_doctor = 32).
     bossanova.v1.RepairDoctorRequest:
       type: object
       title: RepairDoctorRequest
@@ -7623,6 +8861,12 @@ components:
           description: |-
             Whether the daemon automatically archives a session once its PR is merged.
              Honored by the session dispatcher on the PR-merged transition. Defaults on.
+        canAutoDeleteBranches:
+          type: boolean
+          title: can_auto_delete_branches
+          description: |-
+            Whether the daemon automatically deletes a session's git branch once its
+             session is archived. Honored by the session dispatcher. Defaults on.
         linearApiKey:
           type: string
           title: linear_api_key
@@ -7710,6 +8954,20 @@ components:
           title: report_id
       title: ReportBugResponse
       additionalProperties: false
+    bossanova.v1.ReportChatStatusCommand:
+      type: object
+      properties:
+        reports:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ChatStatusReport'
+          title: reports
+      title: ReportChatStatusCommand
+      additionalProperties: false
+      description: |-
+        ReportChatStatusCommand forwards one or more chat status heartbeats. Mirrors
+         daemon.proto's ReportChatStatusRequest. Replies with CommandResult{ok:true}
+         and no payload.
     bossanova.v1.ReportChatStatusRequest:
       type: object
       properties:
@@ -7909,6 +9167,17 @@ components:
           $ref: '#/components/schemas/bossanova.v1.WorkflowStatusInfo'
       title: ResumeWorkflowResponse
       additionalProperties: false
+    bossanova.v1.ResurrectSessionCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: ResurrectSessionCommand
+      additionalProperties: false
+      description: |-
+        ResurrectSessionCommand asks the daemon to restore an archived session.
+         Replies with CommandResult carrying the updated Session (session = 4).
     bossanova.v1.ResurrectSessionRequest:
       type: object
       properties:
@@ -7925,6 +9194,18 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: ResurrectSessionResponse
       additionalProperties: false
+    bossanova.v1.RetrySessionCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: RetrySessionCommand
+      additionalProperties: false
+      description: |-
+        RetrySessionCommand asks the daemon to retry a failed session. Mirrors
+         daemon.proto's RetrySessionRequest. Replies with CommandResult carrying the
+         updated Session (session = 4).
     bossanova.v1.RetrySessionRequest:
       type: object
       properties:
@@ -9883,6 +11164,21 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Account'
       title: UpdateAccountResponse
       additionalProperties: false
+    bossanova.v1.UpdateChatTitleCommand:
+      type: object
+      properties:
+        agentSessionId:
+          type: string
+          title: agent_session_id
+        title:
+          type: string
+          title: title
+      title: UpdateChatTitleCommand
+      additionalProperties: false
+      description: |-
+        UpdateChatTitleCommand asks the daemon to rename a chat. Mirrors
+         daemon.proto's UpdateChatTitleRequest. Replies with CommandResult{ok:true}
+         and no payload.
     bossanova.v1.UpdateChatTitleRequest:
       type: object
       properties:
@@ -10156,6 +11452,11 @@ components:
             - boolean
             - "null"
           title: archive_sessions_after_merge
+        canAutoDeleteBranches:
+          type:
+            - boolean
+            - "null"
+          title: can_auto_delete_branches
       title: UpdateRepoRequest
       additionalProperties: false
     bossanova.v1.UpdateRepoResponse:
@@ -10166,6 +11467,33 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Repo'
       title: UpdateRepoResponse
       additionalProperties: false
+    bossanova.v1.UpdateSessionCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        title:
+          type:
+            - string
+            - "null"
+          title: title
+        trackerUrl:
+          type:
+            - string
+            - "null"
+          title: tracker_url
+        trackerId:
+          type:
+            - string
+            - "null"
+          title: tracker_id
+      title: UpdateSessionCommand
+      additionalProperties: false
+      description: |-
+        UpdateSessionCommand asks the daemon to update a session's title/tracker.
+         Mirrors daemon.proto's UpdateSessionRequest. Replies with CommandResult
+         carrying the updated Session (session = 4).
     bossanova.v1.UpdateSessionRequest:
       type: object
       properties:

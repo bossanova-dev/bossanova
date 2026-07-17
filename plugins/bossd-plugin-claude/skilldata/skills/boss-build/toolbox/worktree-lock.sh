@@ -24,13 +24,43 @@ LOCK="$HOME_DIR/linear-implement/locks/$SLUG/$(basename "$CANON_TOP")-$(hash_pat
 META="$LOCK/owner"   # 4 lines: runid, pid (non-load-bearing), heartbeat-epoch, ticket
 
 now() { date +%s; }
-# Atomic meta write: temp file + rename, so a racing reader never sees half-written meta.
+# Single emitter for the line-ordered owner meta so the 4-line format (read back by
+# owner_field / eff_heartbeat by line index) lives in exactly one place and cannot drift.
+# Field 2 (PID) is non-load-bearing: liveness reads only the runid + heartbeat; it is
+# kept so the 4-line meta format and `status` output stay stable.
+emit_owner() { printf '%s\n%s\n%s\n%s\n' "$1" "$PPID" "$(now)" "$2"; }
+# CLAIM-path meta write: publish the owner meta into a lock this process just won with its
+# own exclusive `mkdir "$LOCK"` (fresh acquire, or stale steal). Atomic temp-file + rename so
+# a racing reader never sees half-written meta, and robust against a concurrent reviver
+# transiently renaming $LOCK aside then restoring it: the whole `ensure $LOCK -> write temp ->
+# rename onto owner` retries a bounded number of times instead of aborting mid-claim under
+# `set -e` when $LOCK is momentarily gone (BOS-400 Defect B). Recreate-on-vanish is safe HERE
+# because a stale-observation peer that grabs our freshly-mkdir'd lock never matches what it
+# observed, so its guard RESTORES our lock rather than taking ownership — it can never become a
+# rival owner for us to clobber. This must NOT be used to refresh a lock we did not just create
+# (see refresh_meta). Temp stays INSIDE $LOCK so it is reclaimed when $LOCK is removed/renamed.
 write_meta() {
-  mkdir -p "$LOCK"
+  local tmp n=0
+  while [ "$n" -lt 100 ]; do
+    mkdir -p "$LOCK" 2>/dev/null || true
+    tmp="$LOCK/.owner.$$"
+    if emit_owner "$1" "$2" > "$tmp" 2>/dev/null && mv -f "$tmp" "$META" 2>/dev/null; then
+      return 0
+    fi
+    n=$(( n + 1 ))
+  done
+  return 1
+}
+# REFRESH-path meta write: update our OWN heartbeat in place (heartbeat + re-entrant acquire),
+# on a lock we did NOT just create and that may already be stale. Unlike write_meta it NEVER
+# recreates a vanished $LOCK and NEVER overwrites a different owner: if a genuine stale-steal
+# took our lock over between the caller's ownership check and here, `mv -f` lands on the moved
+# temp / foreign dir and fails -> return non-zero, so we can never resurrect-and-clobber a
+# successor into a double-takeover (BOS-400 orphan-resume race). Ownership is re-checked first.
+refresh_meta() {
+  [ "$(owner_field 1)" = "$1" ] || return 1
   local tmp="$LOCK/.owner.$$"
-  # Field 2 (PID) is non-load-bearing: liveness reads only the runid + heartbeat.
-  # Kept so the 4-line meta format and `status` output stay stable.
-  printf '%s\n%s\n%s\n%s\n' "$1" "$PPID" "$(now)" "$2" > "$tmp" && mv -f "$tmp" "$META"
+  emit_owner "$1" "$2" > "$tmp" 2>/dev/null && mv -f "$tmp" "$META" 2>/dev/null
 }
 owner_field() { [ -f "$META" ] && sed -n "${1}p" "$META" 2>/dev/null || true; }
 # Portable dir mtime as a bare epoch int (GNU `stat -c %Y` then BSD/macOS `stat -f %m`);
@@ -59,11 +89,20 @@ case "$cmd" in
     fi
     o_runid="$(owner_field 1)"
     if [ "$o_runid" = "$runid" ]; then
-      write_meta "$runid" "$ticket"; echo "ACQUIRED runid=$runid (re-entrant)"; exit 0
+      # Re-entrant refresh of our own lock (never recreates/clobbers — see refresh_meta).
+      if refresh_meta "$runid" "$ticket"; then echo "ACQUIRED runid=$runid (re-entrant)"; exit 0; fi
+      # Refresh failed: our lock may have been stale and just genuinely stolen. Re-read; if we
+      # still own it, it is ours (a benign transient); otherwise fall through to peer/steal.
+      o_runid="$(owner_field 1)"
+      if [ "$o_runid" = "$runid" ]; then echo "ACQUIRED runid=$runid (re-entrant)"; exit 0; fi
     fi
     o_hb="$(eff_heartbeat)"
     age=$(( $(now) - ${o_hb:-0} ))
-    if [ "$age" -le "$STALE_SECS" ]; then
+    # Decisively-stale boundary: live is strictly age < STALE_SECS, so an age exactly
+    # equal to the threshold STEALS. `date +%s` truncates to whole seconds, so with a
+    # `<=` gate two racers computing age == STALE_SECS both read live and both back off,
+    # yielding zero winners (BOS-400). `-lt` makes the boundary decisively stealable.
+    if [ "$age" -lt "$STALE_SECS" ]; then
       echo "HELD_BY_PEER runid=${o_runid:-unknown} age=${age}s"; exit 3
     fi
     # Genuinely stale -> steal ATOMICALLY: rename(2) the stale lock aside. Exactly one
@@ -71,15 +110,26 @@ case "$cmd" in
     stamp="${LOCK}.stale.$$"
     if mv "$LOCK" "$stamp" 2>/dev/null; then
       # Another reviver may have replaced the stale lock after this process read
-      # o_runid/o_hb but before this mv. Only steal the exact lock observed.
+      # o_runid/o_hb but before this mv. Only steal the exact lock observed; if a fresh
+      # successor slipped in, restore it untouched (its own stale timeout reclaims it).
       s_runid="$(sed -n '1p' "$stamp/owner" 2>/dev/null || true)"
       s_hb="$(sed -n '3p' "$stamp/owner" 2>/dev/null || true)"
       if { [ -n "$o_runid" ] && [ "$s_runid" != "$o_runid" ]; } || { [ -n "$o_hb" ] && [ -n "$s_hb" ] && [ "$s_hb" != "$o_hb" ]; }; then
         mv "$stamp" "$LOCK" 2>/dev/null || rm -rf "$stamp"
       else
+        # Genuine steal. Discard the stale dir, then claim the canonical name with an
+        # EXCLUSIVE `mkdir` — the same unambiguous single-winner primitive as a fresh acquire
+        # (above): among all concurrent revivers AND fresh acquirers, exactly one `mkdir
+        # "$LOCK"` succeeds, so there is never a double-takeover. (Publishing with `mv "$stamp"
+        # "$LOCK"` cannot select a winner safely: portable `mv` silently NESTS into an existing
+        # dir instead of failing, so two processes can both "succeed".) On a win, write_meta
+        # publishes robustly (it now retries a transiently-renamed-aside $LOCK, so BOS-400
+        # Defect B can no longer abort the winner's meta write); on a loss (another reviver or
+        # fresh acquirer already recreated $LOCK) fall through to the re-read tail below.
         rm -rf "$stamp" 2>/dev/null || true
         if mkdir "$LOCK" 2>/dev/null; then
-          write_meta "$runid" "$ticket"; echo "TOOK_OVER_STALE runid=$runid prev=${o_runid:-none} age=${age}s"; exit 0
+          write_meta "$runid" "$ticket"
+          echo "TOOK_OVER_STALE runid=$runid prev=${o_runid:-none} age=${age}s"; exit 0
         fi
       fi
     fi
@@ -89,7 +139,9 @@ case "$cmd" in
   heartbeat)
     [ -n "$runid" ] || { echo "ERR: heartbeat needs <runid>" >&2; exit 2; }
     [ "$(owner_field 1)" = "$runid" ] || { echo "NOT_OWNER"; exit 3; }
-    write_meta "$runid" "$(owner_field 4)"; echo "OK"; exit 0 ;;
+    # Refresh in place — never recreate/clobber a lock a stale-steal may have taken over.
+    if refresh_meta "$runid" "$(owner_field 4)"; then echo "OK"; exit 0; fi
+    echo "NOT_OWNER"; exit 3 ;;
 
   release)
     [ -n "$runid" ] || { echo "ERR: release needs <runid>" >&2; exit 2; }

@@ -35,14 +35,15 @@ type World struct {
 // matches the legacy tuitest data so existing tests keep passing when they
 // delegate here. Five entries fill the repo list for a realistic capture.
 func Repos() []*pb.Repo {
-	// ArchiveSessionsAfterMerge is true on every demo repo to mirror the real
-	// default-on (the double-default the DB layer enforces on Create), so the
-	// repo-settings Automations section renders the checkbox checked in proof.
+	// ArchiveSessionsAfterMerge and CanAutoDeleteBranches are true on every demo
+	// repo to mirror the real default-on (the double-default the DB layer enforces
+	// on Create), so the repo-settings Automations section renders both checkboxes
+	// checked in proof.
 	return []*pb.Repo{
-		{Id: "repo-1", DisplayName: "my-app", LocalPath: "/tmp/my-app", DefaultBaseBranch: "main", MergeStrategy: "merge", ArchiveSessionsAfterMerge: true},
-		{Id: "repo-2", DisplayName: "my-api", LocalPath: "/tmp/my-api", DefaultBaseBranch: "main", MergeStrategy: "squash", ArchiveSessionsAfterMerge: true},
-		{Id: "repo-3", DisplayName: "my-web", LocalPath: "/tmp/my-web", DefaultBaseBranch: "main", MergeStrategy: "squash", ArchiveSessionsAfterMerge: true},
-		{Id: "repo-4", DisplayName: "mobile-app", LocalPath: "/tmp/mobile-app", DefaultBaseBranch: "main", MergeStrategy: "merge", ArchiveSessionsAfterMerge: true},
+		{Id: "repo-1", DisplayName: "my-app", LocalPath: "/tmp/my-app", DefaultBaseBranch: "main", MergeStrategy: "merge", ArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true},
+		{Id: "repo-2", DisplayName: "my-api", LocalPath: "/tmp/my-api", DefaultBaseBranch: "main", MergeStrategy: "squash", ArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true},
+		{Id: "repo-3", DisplayName: "my-web", LocalPath: "/tmp/my-web", DefaultBaseBranch: "main", MergeStrategy: "squash", ArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true},
+		{Id: "repo-4", DisplayName: "mobile-app", LocalPath: "/tmp/mobile-app", DefaultBaseBranch: "main", MergeStrategy: "merge", ArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true},
 		{
 			// design-system sorts first alphabetically, so it is the default-selected
 			// repo in both the repo-settings and new-session pickers. Made-up Sentry
@@ -50,7 +51,7 @@ func Repos() []*pb.Repo {
 			// new-session "Fix a Sentry issue" option in proof captures. The API key
 			// renders masked (last 4 only), so the demo token is safe to publish.
 			Id: "repo-5", DisplayName: "design-system", LocalPath: "/tmp/design-system", DefaultBaseBranch: "main", MergeStrategy: "merge",
-			SentryApiKey: "sntryu_0f4d2c9a1b6e8740demo3a5c", SentryOrg: "acme-engineering", ArchiveSessionsAfterMerge: true,
+			SentryApiKey: "sntryu_0f4d2c9a1b6e8740demo3a5c", SentryOrg: "acme-engineering", ArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true,
 		},
 	}
 }

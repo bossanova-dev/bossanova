@@ -135,8 +135,13 @@ type SessionCommandServer interface {
 	MergeSession(context.Context, *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error)
 	SwitchSessionAccount(context.Context, *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error)
 	ArchiveSession(context.Context, *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error)
+	RetrySession(context.Context, *connect.Request[pb.RetrySessionRequest]) (*connect.Response[pb.RetrySessionResponse], error)
+	UpdateSession(context.Context, *connect.Request[pb.UpdateSessionRequest]) (*connect.Response[pb.UpdateSessionResponse], error)
+	LinkSessionPR(context.Context, *connect.Request[pb.LinkSessionPRRequest]) (*connect.Response[pb.LinkSessionPRResponse], error)
 	RecordChat(context.Context, *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error)
 	DeleteChat(context.Context, *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error)
+	UpdateChatTitle(context.Context, *connect.Request[pb.UpdateChatTitleRequest]) (*connect.Response[pb.UpdateChatTitleResponse], error)
+	ReportChatStatus(context.Context, *connect.Request[pb.ReportChatStatusRequest]) (*connect.Response[pb.ReportChatStatusResponse], error)
 	ListRepos(context.Context, *connect.Request[pb.ListReposRequest]) (*connect.Response[pb.ListReposResponse], error)
 	ListAgents(context.Context, *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error)
 	ListAccounts(context.Context, *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error)
@@ -157,6 +162,16 @@ type SessionCommandServer interface {
 	UpdateAccount(context.Context, *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error)
 	RemoveAccount(context.Context, *connect.Request[pb.RemoveAccountRequest]) (*connect.Response[pb.RemoveAccountResponse], error)
 	TestAccount(context.Context, *connect.Request[pb.TestAccountRequest]) (*connect.Response[pb.TestAccountResponse], error)
+	ListChats(context.Context, *connect.Request[pb.ListChatsRequest]) (*connect.Response[pb.ListChatsResponse], error)
+	GetSessionStatuses(context.Context, *connect.Request[pb.GetSessionStatusesRequest]) (*connect.Response[pb.GetSessionStatusesResponse], error)
+	ListCheckSnapshots(context.Context, *connect.Request[pb.ListCheckSnapshotsRequest]) (*connect.Response[pb.ListCheckSnapshotsResponse], error)
+	ListPlugins(context.Context, *connect.Request[pb.ListPluginsRequest]) (*connect.Response[pb.ListPluginsResponse], error)
+	GetCronJob(context.Context, *connect.Request[pb.GetCronJobRequest]) (*connect.Response[pb.GetCronJobResponse], error)
+	RepairDoctor(context.Context, *connect.Request[pb.RepairDoctorRequest]) (*connect.Response[pb.RepairDoctorResponse], error)
+	CloseSession(context.Context, *connect.Request[pb.CloseSessionRequest]) (*connect.Response[pb.CloseSessionResponse], error)
+	ResurrectSession(context.Context, *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error)
+	RemoveSession(context.Context, *connect.Request[pb.RemoveSessionRequest]) (*connect.Response[pb.RemoveSessionResponse], error)
+	EmptyTrash(context.Context, *connect.Request[pb.EmptyTrashRequest]) (*connect.Response[pb.EmptyTrashResponse], error)
 }
 
 // CommandHandlerAdapter implements SessionCommandHandler by delegating
@@ -310,6 +325,118 @@ func (a *CommandHandlerAdapter) ArchiveSession(ctx context.Context, sessionID st
 	return resp.Msg.GetSession(), nil
 }
 
+// CloseSession implements SessionCommandHandler.CloseSession.
+func (a *CommandHandlerAdapter) CloseSession(ctx context.Context, sessionID string) (*pb.Session, error) {
+	if sessionID == "" {
+		return nil, errors.New("close: session_id required")
+	}
+	if a.Commands == nil {
+		return nil, errors.New("close: command server not wired")
+	}
+	resp, err := a.Commands.CloseSession(ctx, connect.NewRequest(&pb.CloseSessionRequest{Id: sessionID}))
+	if err != nil {
+		return nil, fmt.Errorf("close session: %w", err)
+	}
+	return resp.Msg.GetSession(), nil
+}
+
+// ResurrectSession implements SessionCommandHandler.ResurrectSession.
+func (a *CommandHandlerAdapter) ResurrectSession(ctx context.Context, sessionID string) (*pb.Session, error) {
+	if sessionID == "" {
+		return nil, errors.New("resurrect: session_id required")
+	}
+	if a.Commands == nil {
+		return nil, errors.New("resurrect: command server not wired")
+	}
+	resp, err := a.Commands.ResurrectSession(ctx, connect.NewRequest(&pb.ResurrectSessionRequest{Id: sessionID}))
+	if err != nil {
+		return nil, fmt.Errorf("resurrect session: %w", err)
+	}
+	return resp.Msg.GetSession(), nil
+}
+
+// RemoveSession implements SessionCommandHandler.RemoveSession.
+func (a *CommandHandlerAdapter) RemoveSession(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return errors.New("remove: session_id required")
+	}
+	if a.Commands == nil {
+		return errors.New("remove: command server not wired")
+	}
+	if _, err := a.Commands.RemoveSession(ctx, connect.NewRequest(&pb.RemoveSessionRequest{Id: sessionID})); err != nil {
+		return fmt.Errorf("remove session: %w", err)
+	}
+	return nil
+}
+
+// EmptyTrash implements SessionCommandHandler.EmptyTrash. olderThan is threaded
+// straight through (nil = delete all archived sessions).
+func (a *CommandHandlerAdapter) EmptyTrash(ctx context.Context, olderThan *timestamppb.Timestamp) (int32, error) {
+	if a.Commands == nil {
+		return 0, errors.New("empty_trash: command server not wired")
+	}
+	resp, err := a.Commands.EmptyTrash(ctx, connect.NewRequest(&pb.EmptyTrashRequest{OlderThan: olderThan}))
+	if err != nil {
+		return 0, fmt.Errorf("empty trash: %w", err)
+	}
+	return resp.Msg.GetDeletedCount(), nil
+}
+
+// RetrySession implements SessionCommandHandler.RetrySession by delegating to
+// the daemon's RetrySession connect handler. The daemon's *connect.Error is
+// wrapped with %w so classifyCommandError recovers its code.
+func (a *CommandHandlerAdapter) RetrySession(ctx context.Context, sessionID string) (*pb.Session, error) {
+	if sessionID == "" {
+		return nil, errors.New("retry: session_id required")
+	}
+	if a.Commands == nil {
+		return nil, errors.New("retry: command server not wired")
+	}
+	resp, err := a.Commands.RetrySession(ctx, connect.NewRequest(&pb.RetrySessionRequest{Id: sessionID}))
+	if err != nil {
+		return nil, fmt.Errorf("retry session: %w", err)
+	}
+	return resp.Msg.GetSession(), nil
+}
+
+// UpdateSession implements SessionCommandHandler.UpdateSession by delegating to
+// the daemon's UpdateSession connect handler. The optional title/tracker pointers
+// ride through unchanged so an unset field stays unchanged server-side.
+func (a *CommandHandlerAdapter) UpdateSession(ctx context.Context, req *pb.UpdateSessionCommand) (*pb.Session, error) {
+	if req.GetSessionId() == "" {
+		return nil, errors.New("update_session: session_id required")
+	}
+	if a.Commands == nil {
+		return nil, errors.New("update_session: command server not wired")
+	}
+	resp, err := a.Commands.UpdateSession(ctx, connect.NewRequest(&pb.UpdateSessionRequest{
+		Id:         req.GetSessionId(),
+		Title:      req.Title,
+		TrackerUrl: req.TrackerUrl,
+		TrackerId:  req.TrackerId,
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("update session: %w", err)
+	}
+	return resp.Msg.GetSession(), nil
+}
+
+// LinkSessionPR implements SessionCommandHandler.LinkSessionPR by delegating to
+// the daemon's LinkSessionPR connect handler.
+func (a *CommandHandlerAdapter) LinkSessionPR(ctx context.Context, sessionID, pr string) (*pb.Session, error) {
+	if sessionID == "" {
+		return nil, errors.New("link_session_pr: session_id required")
+	}
+	if a.Commands == nil {
+		return nil, errors.New("link_session_pr: command server not wired")
+	}
+	resp, err := a.Commands.LinkSessionPR(ctx, connect.NewRequest(&pb.LinkSessionPRRequest{Id: sessionID, Pr: pr}))
+	if err != nil {
+		return nil, fmt.Errorf("link session pr: %w", err)
+	}
+	return resp.Msg.GetSession(), nil
+}
+
 // RecordChat implements SessionCommandHandler.RecordChat.
 func (a *CommandHandlerAdapter) RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.ClaudeChat, error) {
 	if a.Commands == nil {
@@ -342,6 +469,36 @@ func (a *CommandHandlerAdapter) DeleteChat(ctx context.Context, sessionID, agent
 	}))
 	if err != nil {
 		return fmt.Errorf("delete chat: %w", err)
+	}
+	return nil
+}
+
+// UpdateChatTitle implements SessionCommandHandler.UpdateChatTitle.
+func (a *CommandHandlerAdapter) UpdateChatTitle(ctx context.Context, agentSessionID, title string) error {
+	if agentSessionID == "" {
+		return errors.New("update_chat_title: agent_session_id required")
+	}
+	if a.Commands == nil {
+		return errors.New("update_chat_title: command server not wired")
+	}
+	_, err := a.Commands.UpdateChatTitle(ctx, connect.NewRequest(&pb.UpdateChatTitleRequest{
+		AgentSessionId: agentSessionID,
+		Title:          title,
+	}))
+	if err != nil {
+		return fmt.Errorf("update chat title: %w", err)
+	}
+	return nil
+}
+
+// ReportChatStatus implements SessionCommandHandler.ReportChatStatus.
+func (a *CommandHandlerAdapter) ReportChatStatus(ctx context.Context, reports []*pb.ChatStatusReport) error {
+	if a.Commands == nil {
+		return errors.New("report_chat_status: command server not wired")
+	}
+	_, err := a.Commands.ReportChatStatus(ctx, connect.NewRequest(&pb.ReportChatStatusRequest{Reports: reports}))
+	if err != nil {
+		return fmt.Errorf("report chat status: %w", err)
 	}
 	return nil
 }
@@ -688,6 +845,84 @@ func (a *CommandHandlerAdapter) TestAccount(ctx context.Context, cmd *pb.TestAcc
 	resp, err := a.Commands.TestAccount(ctx, connect.NewRequest(&pb.TestAccountRequest{Id: cmd.GetId()}))
 	if err != nil {
 		return nil, fmt.Errorf("test account: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// ListChats implements SessionCommandHandler.ListChats by delegating to the
+// daemon's ListChats connect handler and unwrapping the response message.
+func (a *CommandHandlerAdapter) ListChats(ctx context.Context, sessionID string) (*pb.ListChatsResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("list_chats: command server not wired")
+	}
+	resp, err := a.Commands.ListChats(ctx, connect.NewRequest(&pb.ListChatsRequest{SessionId: sessionID}))
+	if err != nil {
+		return nil, fmt.Errorf("list chats: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// GetSessionStatuses implements SessionCommandHandler.GetSessionStatuses by
+// delegating to the daemon's GetSessionStatuses connect handler.
+func (a *CommandHandlerAdapter) GetSessionStatuses(ctx context.Context, sessionIDs []string) (*pb.GetSessionStatusesResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("get_session_statuses: command server not wired")
+	}
+	resp, err := a.Commands.GetSessionStatuses(ctx, connect.NewRequest(&pb.GetSessionStatusesRequest{SessionIds: sessionIDs}))
+	if err != nil {
+		return nil, fmt.Errorf("get session statuses: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// ListCheckSnapshots implements SessionCommandHandler.ListCheckSnapshots by
+// delegating to the daemon's ListCheckSnapshots connect handler.
+func (a *CommandHandlerAdapter) ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("list_check_snapshots: command server not wired")
+	}
+	resp, err := a.Commands.ListCheckSnapshots(ctx, connect.NewRequest(&pb.ListCheckSnapshotsRequest{SessionId: sessionID, Limit: limit}))
+	if err != nil {
+		return nil, fmt.Errorf("list check snapshots: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// ListPlugins implements SessionCommandHandler.ListPlugins by delegating to the
+// daemon's ListPlugins connect handler and unwrapping the response message.
+func (a *CommandHandlerAdapter) ListPlugins(ctx context.Context) (*pb.ListPluginsResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("list_plugins: command server not wired")
+	}
+	resp, err := a.Commands.ListPlugins(ctx, connect.NewRequest(&pb.ListPluginsRequest{}))
+	if err != nil {
+		return nil, fmt.Errorf("list plugins: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// GetCronJob implements SessionCommandHandler.GetCronJob by delegating to the
+// daemon's GetCronJob connect handler and unwrapping the response message.
+func (a *CommandHandlerAdapter) GetCronJob(ctx context.Context, id string) (*pb.GetCronJobResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("get_cron_job: command server not wired")
+	}
+	resp, err := a.Commands.GetCronJob(ctx, connect.NewRequest(&pb.GetCronJobRequest{Id: id}))
+	if err != nil {
+		return nil, fmt.Errorf("get cron job: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// RepairDoctor implements SessionCommandHandler.RepairDoctor by delegating to
+// the daemon's RepairDoctor connect handler and unwrapping the response message.
+func (a *CommandHandlerAdapter) RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("repair_doctor: command server not wired")
+	}
+	resp, err := a.Commands.RepairDoctor(ctx, connect.NewRequest(&pb.RepairDoctorRequest{}))
+	if err != nil {
+		return nil, fmt.Errorf("repair doctor: %w", err)
 	}
 	return resp.Msg, nil
 }

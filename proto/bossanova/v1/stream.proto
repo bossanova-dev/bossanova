@@ -145,6 +145,36 @@ message OrchestratorCommand {
     RemoveAccountCommand remove_account = 35;
     // bosso → daemon: run a live account validation. Replies CommandResult{test_account}.
     TestAccountCommand test_account = 36;
+    // bosso → daemon: list a session's chats. Replies CommandResult{list_chats}.
+    ListChatsCommand list_chats = 37;
+    // bosso → daemon: aggregate status for the given sessions. Replies CommandResult{get_session_statuses}.
+    GetSessionStatusesCommand get_session_statuses = 38;
+    // bosso → daemon: list a session's recent CI check snapshots. Replies CommandResult{list_check_snapshots}.
+    ListCheckSnapshotsCommand list_check_snapshots = 39;
+    // bosso → daemon: list the daemon's configured plugins. Replies CommandResult{list_plugins}.
+    ListPluginsCommand list_plugins = 40;
+    // bosso → daemon: read a single cron job by id. Replies CommandResult{get_cron_job}.
+    GetCronJobCommand get_cron_job = 41;
+    // bosso → daemon: run repair-doctor diagnostics. Replies CommandResult{repair_doctor}.
+    RepairDoctorCommand repair_doctor = 42;
+    // bosso → daemon: close (abandon) a session. Replies CommandResult{session}.
+    CloseSessionCommand close_session = 43;
+    // bosso → daemon: resurrect an archived session. Replies CommandResult{session}.
+    ResurrectSessionCommand resurrect_session = 44;
+    // bosso → daemon: permanently remove a session and its worktree. Replies CommandResult{Ok} with no payload.
+    RemoveSessionCommand remove_session = 45;
+    // bosso → daemon: permanently delete archived sessions. Replies CommandResult{empty_trash}.
+    EmptyTrashCommand empty_trash = 46;
+    // bosso → daemon: retry a failed session. Replies CommandResult{Session}.
+    RetrySessionCommand retry_session = 47;
+    // bosso → daemon: update a session's title/tracker. Replies CommandResult{Session}.
+    UpdateSessionCommand update_session = 48;
+    // bosso → daemon: attach an existing PR to a session. Replies CommandResult{Session}.
+    LinkSessionPRCommand link_session_pr = 49;
+    // bosso → daemon: update a chat's title. Replies CommandResult{Ok} with no payload.
+    UpdateChatTitleCommand update_chat_title = 50;
+    // bosso → daemon: report chat status heartbeats. Replies CommandResult{Ok} with no payload.
+    ReportChatStatusCommand report_chat_status = 51;
   }
 }
 
@@ -311,6 +341,21 @@ message CommandResult {
     // TestAccount returns the updated account + validation outcome (reuses
     // daemon.proto type).
     TestAccountResponse test_account = 26;
+    // ListChats returns the session's chats (reuses daemon.proto type).
+    ListChatsResponse list_chats = 27;
+    // GetSessionStatuses returns the sessions' aggregate statuses (reuses daemon.proto type).
+    GetSessionStatusesResponse get_session_statuses = 28;
+    // ListCheckSnapshots returns the session's recent CI snapshots (reuses daemon.proto type).
+    ListCheckSnapshotsResponse list_check_snapshots = 29;
+    // ListPlugins returns the daemon's configured plugins (reuses daemon.proto type).
+    ListPluginsResponse list_plugins = 30;
+    // GetCronJob returns a single cron job (reuses daemon.proto type).
+    GetCronJobResponse get_cron_job = 31;
+    // RepairDoctor returns the daemon's diagnostics report (reuses daemon.proto type).
+    RepairDoctorResponse repair_doctor = 32;
+    // EmptyTrash returns the number of archived sessions permanently deleted.
+    // CloseSession/ResurrectSession reuse session = 4; RemoveSession is Ok-only.
+    EmptyTrashResult empty_trash = 33;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -490,6 +535,18 @@ message MergeSessionCommand { string session_id = 1; }
 // Replies with CommandResult carrying the updated Session.
 message ArchiveSessionCommand { string session_id = 1; }
 
+// CloseSessionCommand asks the daemon to close (abandon) a session.
+// Replies with CommandResult carrying the updated Session (session = 4).
+message CloseSessionCommand { string session_id = 1; }
+
+// ResurrectSessionCommand asks the daemon to restore an archived session.
+// Replies with CommandResult carrying the updated Session (session = 4).
+message ResurrectSessionCommand { string session_id = 1; }
+
+// RemoveSessionCommand asks the daemon to permanently remove a session and its
+// worktree. Replies with CommandResult{ok:true} and no payload.
+message RemoveSessionCommand { string session_id = 1; }
+
 // RecordChatCommand asks the daemon to record or resume a chat.
 // Replies with CommandResult carrying a ClaudeChat payload (record_chat = 8).
 message RecordChatCommand {
@@ -666,6 +723,83 @@ message GetChatTranscriptCommand {
   string agent_session_id = 2;
   int32 max_messages = 3;
 }
+
+// ListChatsCommand asks the daemon for a session's chats. Replies with
+// CommandResult carrying a ListChatsResponse (list_chats = 27). session_id
+// scopes the read for authz, mirroring GetChatTranscriptCommand.
+message ListChatsCommand { string session_id = 1; }
+
+// GetSessionStatusesCommand asks the daemon for the aggregate status of the
+// given sessions. Replies with CommandResult carrying a
+// GetSessionStatusesResponse (get_session_statuses = 28).
+message GetSessionStatusesCommand { repeated string session_ids = 1; }
+
+// ListCheckSnapshotsCommand asks the daemon for a session's recent CI check
+// snapshots (newest-first, limit defaults to 10 when zero). Replies with
+// CommandResult carrying a ListCheckSnapshotsResponse (list_check_snapshots = 29).
+message ListCheckSnapshotsCommand {
+  string session_id = 1;
+  int32 limit = 2;
+}
+
+// ListPluginsCommand asks the daemon for its configured plugins and load
+// state. Replies with CommandResult carrying a ListPluginsResponse
+// (list_plugins = 30).
+message ListPluginsCommand {}
+
+// GetCronJobCommand asks the daemon for a single cron job by id. Replies with
+// CommandResult carrying a GetCronJobResponse (get_cron_job = 31).
+message GetCronJobCommand { string id = 1; }
+
+// RepairDoctorCommand asks the daemon to run its repair-doctor diagnostics.
+// Replies with CommandResult carrying a RepairDoctorResponse (repair_doctor = 32).
+message RepairDoctorCommand {}
+
+// EmptyTrashCommand asks the daemon to permanently delete archived sessions.
+// Replies with CommandResult carrying an EmptyTrashResult (empty_trash = 33).
+message EmptyTrashCommand {
+  // Only empty sessions archived before this timestamp.
+  optional google.protobuf.Timestamp older_than = 1;
+}
+
+// EmptyTrashResult carries the number of archived sessions permanently deleted.
+message EmptyTrashResult { int32 deleted_count = 1; }
+
+// RetrySessionCommand asks the daemon to retry a failed session. Mirrors
+// daemon.proto's RetrySessionRequest. Replies with CommandResult carrying the
+// updated Session (session = 4).
+message RetrySessionCommand { string session_id = 1; }
+
+// UpdateSessionCommand asks the daemon to update a session's title/tracker.
+// Mirrors daemon.proto's UpdateSessionRequest. Replies with CommandResult
+// carrying the updated Session (session = 4).
+message UpdateSessionCommand {
+  string session_id = 1;
+  optional string title = 2;
+  optional string tracker_url = 3;
+  optional string tracker_id = 4;
+}
+
+// LinkSessionPRCommand asks the daemon to attach an existing PR to a session.
+// Mirrors daemon.proto's LinkSessionPRRequest. Replies with CommandResult
+// carrying the updated Session (session = 4).
+message LinkSessionPRCommand {
+  string session_id = 1;
+  string pr = 2;
+}
+
+// UpdateChatTitleCommand asks the daemon to rename a chat. Mirrors
+// daemon.proto's UpdateChatTitleRequest. Replies with CommandResult{ok:true}
+// and no payload.
+message UpdateChatTitleCommand {
+  string agent_session_id = 1;
+  string title = 2;
+}
+
+// ReportChatStatusCommand forwards one or more chat status heartbeats. Mirrors
+// daemon.proto's ReportChatStatusRequest. Replies with CommandResult{ok:true}
+// and no payload.
+message ReportChatStatusCommand { repeated ChatStatusReport reports = 1; }
 
 // SendChatMessageCommand asks the daemon to deliver a user message into a chat.
 // Replies with CommandResult carrying a SendChatMessageResponse (send_chat_message = 14).

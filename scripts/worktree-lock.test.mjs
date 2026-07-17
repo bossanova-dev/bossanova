@@ -138,12 +138,15 @@ test('worktree-lock: acquire / re-entrancy / peer / stale / release / isolation 
   assert.equal((race.match(/TOOK_OVER_STALE/g) || []).length, 0, `no STALE: ${race}`)
 
   // 11. CONCURRENT STALE REVIVAL stays atomic: exactly one winner + one HELD_BY_PEER,
-  // never a double takeover. The winner usually reports TOOK_OVER_STALE, but a plain
-  // ACQUIRED is equally valid and safe: stealing a stale lock renames the lock dir aside
-  // (mv "$LOCK" "$stamp"), which briefly frees the canonical name, so the racing peer can
-  // legitimately win it with a fresh mkdir. Asserting TOOK_OVER_STALE specifically made
-  // this case flaky; the invariant that actually matters is single ownership, not which
-  // code path the winner took (the single-process takeover path is covered by case 5).
+  // never a double takeover, and never ZERO winners. The winner usually reports
+  // TOOK_OVER_STALE, but a plain ACQUIRED is equally valid and safe: stealing a stale lock
+  // renames the lock dir aside (mv "$LOCK" "$stamp"), which briefly frees the canonical
+  // name, so the racing peer can legitimately win it with a fresh mkdir. Asserting
+  // TOOK_OVER_STALE specifically made this case flaky; the invariant that actually matters
+  // is single ownership, not which code path the winner took (the single-process takeover
+  // path is covered by case 5). The residual 0-winners flake (BOS-400) was a real source
+  // bug — a `<=` stale boundary and a write_meta temp renamed out from under the winner —
+  // fixed in worktree-lock.sh, not papered over by loosening the assertions below.
   const repo5 = initRepo()
   const revival = execFileSync(
     'bash',

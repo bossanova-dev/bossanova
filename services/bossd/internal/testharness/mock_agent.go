@@ -245,7 +245,7 @@ func discoverCodexTUIRollout(workDir string, launchedAfter time.Time) (string, b
 }
 
 func readCodexRolloutMeta(path string) (codexRolloutMeta, bool) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- test-harness fixture read of a codex rollout meta file under a caller-owned temp dir (filepath.Clean sanitized); owner=@recurser; review-by=2026-10-18; issue=BOS-423
 	if err != nil {
 		return codexRolloutMeta{}, false
 	}

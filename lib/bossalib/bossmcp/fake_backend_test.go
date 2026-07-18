@@ -63,8 +63,11 @@ type fakeBackend struct {
 	switchSessionAccount func(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error)
 	listCheckSnapshots   func(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error)
 	repairDoctor         func(ctx context.Context) (*pb.RepairDoctorResponse, error)
+	startRepairWorkflow  func(ctx context.Context) (*pb.StartRepairWorkflowResponse, error)
 	listAgents           func(ctx context.Context) ([]*pb.AgentInfo, error)
 	listPlugins          func(ctx context.Context) ([]*pb.InstalledPlugin, error)
+	getSettings          func(ctx context.Context) (*pb.GlobalSettings, error)
+	updateSettings       func(ctx context.Context, req *pb.UpdateSettingsRequest) (*pb.GlobalSettings, error)
 }
 
 func (f *fakeBackend) Ping(ctx context.Context) error {
@@ -417,6 +420,13 @@ func (f *fakeBackend) RepairDoctor(ctx context.Context) (*pb.RepairDoctorRespons
 	return nil, errNotImpl
 }
 
+func (f *fakeBackend) StartRepairWorkflow(ctx context.Context) (*pb.StartRepairWorkflowResponse, error) {
+	if f.startRepairWorkflow != nil {
+		return f.startRepairWorkflow(ctx)
+	}
+	return nil, errNotImpl
+}
+
 func (f *fakeBackend) ListAgents(ctx context.Context) ([]*pb.AgentInfo, error) {
 	if f.listAgents != nil {
 		return f.listAgents(ctx)
@@ -427,6 +437,20 @@ func (f *fakeBackend) ListAgents(ctx context.Context) ([]*pb.AgentInfo, error) {
 func (f *fakeBackend) ListPlugins(ctx context.Context) ([]*pb.InstalledPlugin, error) {
 	if f.listPlugins != nil {
 		return f.listPlugins(ctx)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) GetSettings(ctx context.Context) (*pb.GlobalSettings, error) {
+	if f.getSettings != nil {
+		return f.getSettings(ctx)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) UpdateSettings(ctx context.Context, req *pb.UpdateSettingsRequest) (*pb.GlobalSettings, error) {
+	if f.updateSettings != nil {
+		return f.updateSettings(ctx, req)
 	}
 	return nil, errNotImpl
 }

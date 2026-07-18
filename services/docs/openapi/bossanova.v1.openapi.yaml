@@ -2582,6 +2582,72 @@ components:
           $ref: '#/components/schemas/bossanova.v1.PluginInfo'
       title: AgentRunnerServiceGetInfoResponse
       additionalProperties: false
+    bossanova.v1.AgentSettings:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        enabled:
+          type: boolean
+          title: enabled
+        config:
+          type: object
+          title: config
+          additionalProperties:
+            type: string
+            title: value
+      title: AgentSettings
+      additionalProperties: false
+      description: |-
+        AgentSettings mirrors a PluginConfig entry: the agent's enabled flag plus its
+         untyped dynamic config map. The map mirrors on-disk storage (bool kept as
+         "true", enum/string stored as-is; an absent key is the zero value).
+    bossanova.v1.AgentSettings.ConfigEntry:
+      type: object
+      properties:
+        key:
+          type: string
+          title: key
+        value:
+          type: string
+          title: value
+      title: ConfigEntry
+      additionalProperties: false
+    bossanova.v1.AgentSettingsUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        enabled:
+          type:
+            - boolean
+            - "null"
+          title: enabled
+        config:
+          type: object
+          title: config
+          additionalProperties:
+            type: string
+            title: value
+      title: AgentSettingsUpdate
+      additionalProperties: false
+      description: |-
+        AgentSettingsUpdate carries a per-agent partial update. enabled is applied
+         only when present; each config entry is an upsert where an empty value
+         deletes the key (matching SetPluginConfigString/Bool semantics).
+    bossanova.v1.AgentSettingsUpdate.ConfigEntry:
+      type: object
+      properties:
+        key:
+          type: string
+          title: key
+        value:
+          type: string
+          title: value
+      title: ConfigEntry
+      additionalProperties: false
     bossanova.v1.AggregatedRepo:
       type: object
       properties:
@@ -5129,6 +5195,18 @@ components:
           title: statuses
       title: GetSessionStatusesResponse
       additionalProperties: false
+    bossanova.v1.GetSettingsRequest:
+      type: object
+      title: GetSettingsRequest
+      additionalProperties: false
+    bossanova.v1.GetSettingsResponse:
+      type: object
+      properties:
+        settings:
+          title: settings
+          $ref: '#/components/schemas/bossanova.v1.GlobalSettings'
+      title: GetSettingsResponse
+      additionalProperties: false
     bossanova.v1.GetWorkflowStatusRequest:
       type: object
       properties:
@@ -5180,6 +5258,44 @@ components:
           title: last_error
       title: GitHubAppRepoStatus
       additionalProperties: false
+    bossanova.v1.GlobalSettings:
+      type: object
+      properties:
+        worktreeBaseDir:
+          type: string
+          title: worktree_base_dir
+        pollIntervalSeconds:
+          type: integer
+          title: poll_interval_seconds
+          format: int32
+          description: 0 = default (30 at read)
+        defaultAgent:
+          type: string
+          title: default_agent
+        eventTracingEnabled:
+          type: boolean
+          title: event_tracing_enabled
+        errorTrackingEnabled:
+          type: boolean
+          title: error_tracking_enabled
+        posthogProjectToken:
+          type: string
+          title: posthog_project_token
+        posthogHost:
+          type: string
+          title: posthog_host
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentSettings'
+          title: agents
+      title: GlobalSettings
+      additionalProperties: false
+      description: |-
+        GlobalSettings is the TUI-editable subset of settings.json — the fields the
+         boss settings form edits — plus one AgentSettings entry per configured agent
+         plugin. Non-editable bookkeeping fields (app_data_dir, socket_path, skills,
+         managed_accounts, …) are intentionally out of scope.
     bossanova.v1.HasQuestionPromptRequest:
       type: object
       properties:
@@ -9863,6 +9979,17 @@ components:
             Denormalized repo.archive_sessions_after_merge, populated server-side by
              GetSession so the TUI session-detail view can show an "Archiving…" status
              and know a merged session is about to be auto-archived (BOS-46 follow-up).
+        archivePending:
+          type: boolean
+          title: archive_pending
+          description: |-
+            True while an archive (ArchiveSession) is actually in flight for this
+             session. Transport-only: hydrated server-side from the in-memory
+             DisplayTracker and never persisted. Set/cleared around the single archive
+             chokepoint (Lifecycle.ArchiveSession) so the TUI renders "Archiving…" only
+             when the daemon has an archive running — not inferred from steady-state
+             MERGED + repo_archive_sessions_after_merge, which stays true forever for a
+             merged→archived→resurrected session (BOS-425). Mirrors display_merging (60).
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -11526,6 +11653,62 @@ components:
           title: session
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: UpdateSessionResponse
+      additionalProperties: false
+    bossanova.v1.UpdateSettingsRequest:
+      type: object
+      properties:
+        worktreeBaseDir:
+          type:
+            - string
+            - "null"
+          title: worktree_base_dir
+        pollIntervalSeconds:
+          type:
+            - integer
+            - "null"
+          title: poll_interval_seconds
+          format: int32
+          description: 0 = clear (default 30)
+        defaultAgent:
+          type:
+            - string
+            - "null"
+          title: default_agent
+        eventTracingEnabled:
+          type:
+            - boolean
+            - "null"
+          title: event_tracing_enabled
+        errorTrackingEnabled:
+          type:
+            - boolean
+            - "null"
+          title: error_tracking_enabled
+        posthogProjectToken:
+          type:
+            - string
+            - "null"
+          title: posthog_project_token
+        posthogHost:
+          type:
+            - string
+            - "null"
+          title: posthog_host
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentSettingsUpdate'
+          title: agents
+          description: per-agent partial updates
+      title: UpdateSettingsRequest
+      additionalProperties: false
+    bossanova.v1.UpdateSettingsResponse:
+      type: object
+      properties:
+        settings:
+          title: settings
+          $ref: '#/components/schemas/bossanova.v1.GlobalSettings'
+      title: UpdateSettingsResponse
       additionalProperties: false
     bossanova.v1.UpdateTaskStatusRequest:
       type: object

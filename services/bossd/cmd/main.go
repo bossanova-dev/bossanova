@@ -508,7 +508,7 @@ type runOpts struct {
 	onRotationSeamsWired func(live bool)
 
 	// startupStrandedCronRecovery overrides the startup stranded-cron sweep for
-	// shutdown-lifecycle tests. Nil uses Lifecycle.RecoverStrandedCronSessions.
+	// shutdown-lifecycle tests. Nil uses Lifecycle.RecoverStrandedCronSessionsAtStartup.
 	startupStrandedCronRecovery func(context.Context) (int, error)
 }
 
@@ -2175,7 +2175,7 @@ func run(opts runOpts) error {
 	// it and wait for it to stop before tearing down the process.
 	startupRecovery := opts.startupStrandedCronRecovery
 	if startupRecovery == nil {
-		startupRecovery = lifecycle.RecoverStrandedCronSessions
+		startupRecovery = lifecycle.RecoverStrandedCronSessionsAtStartup
 	}
 	trackedGo(func() {
 		if n, err := startupRecovery(pollerCtx); err != nil {
@@ -2245,6 +2245,10 @@ func run(opts runOpts) error {
 	if ps, perr := server.NewProxyServer(server.ProxyServerConfig{
 		Failover: lifecycle,
 		Logger:   log.Logger,
+		// Bind a FIXED loopback port so a frozen ANTHROPIC_BASE_URL baked into a
+		// live tmux pane survives a daemon restart (BOS-409). Falls back to an
+		// ephemeral port on a collision; 0/unset defaults to 44127.
+		Port: settings.ManagedAccounts.FailoverProxyPort(),
 	}); perr != nil {
 		log.Warn().Err(perr).Msg("failover proxy server construction failed; proxy unbound, sessions use the direct path")
 	} else if lerr := ps.Listen(); lerr != nil {
@@ -2253,8 +2257,8 @@ func run(opts runOpts) error {
 		proxySrv = ps
 		lifecycle.SetProxyPort(ps.Port())
 		lifecycle.SetProxyRegistrar(ps)
-		log.Info().Int("port", ps.Port()).
-			Msg("failover proxy listening on 127.0.0.1 (injection gated on managed_accounts.enabled + managed_accounts.failover_proxy_enabled, both default true)")
+		log.Info().Int("port", ps.Port()).Int("configured_port", settings.ManagedAccounts.FailoverProxyPort()).
+			Msg("failover proxy listening on 127.0.0.1 fixed port (survives daemon restart; falls back to ephemeral on collision; injection gated on managed_accounts.enabled + managed_accounts.failover_proxy_enabled, both default true)")
 	}
 
 	// Pre-seed the interactive REPL's one-time approval for the sentinel
@@ -2404,7 +2408,7 @@ func run(opts runOpts) error {
 			case <-pollerCtx.Done():
 				return
 			case <-ticker.C:
-				if n, err := lifecycle.RecoverStrandedCronSessions(pollerCtx); err != nil {
+				if n, err := lifecycle.RecoverStrandedCronSessionsPeriodic(pollerCtx); err != nil {
 					log.Warn().Err(err).Msg("periodic stranded-cron recovery: failed")
 				} else if n > 0 {
 					log.Info().Int("count", n).Msg("periodic stranded-cron recovery: finalized stranded cron sessions")
@@ -2715,7 +2719,7 @@ func (a attachLookupAdapter) LookupAttachTarget(ctx context.Context, sessionID s
 	if sess.AgentSessionID != nil {
 		agentSessionID = *sess.AgentSessionID
 	}
-	return agentSessionID, int32(sess.State), nil
+	return agentSessionID, clampInt32(int(sess.State)), nil
 }
 
 // claudeAttachAdapter converts claude.Runner's OutputLine channel into

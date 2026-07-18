@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -111,7 +112,7 @@ func (c *PTYCommand) Run() error {
 	// Set initial PTY size from the real terminal.
 	if f, ok := c.stdout.(*os.File); ok {
 		if rows, cols, sizeErr := creackpty.Getsize(f); sizeErr == nil {
-			_ = proc.Resize(uint16(rows), uint16(cols))
+			_ = proc.Resize(clampUint16(rows), clampUint16(cols))
 		}
 	}
 
@@ -123,7 +124,7 @@ func (c *PTYCommand) Run() error {
 		for range sigch {
 			if f, ok := c.stdout.(*os.File); ok {
 				if rows, cols, sizeErr := creackpty.Getsize(f); sizeErr == nil {
-					_ = proc.Resize(uint16(rows), uint16(cols))
+					_ = proc.Resize(clampUint16(rows), clampUint16(cols))
 				}
 			}
 		}
@@ -257,10 +258,29 @@ func containsDetachSequence(data []byte) bool {
 
 // fdSet sets a file descriptor in a syscall.FdSet.
 func fdSet(set *syscall.FdSet, fd int) {
+	if fd < 0 {
+		return
+	}
 	set.Bits[fd/64] |= 1 << (uint(fd) % 64)
 }
 
 // fdIsSet checks if a file descriptor is set in a syscall.FdSet.
 func fdIsSet(set *syscall.FdSet, fd int) bool {
+	if fd < 0 {
+		return false
+	}
 	return set.Bits[fd/64]&(1<<(uint(fd)%64)) != 0
+}
+
+// clampUint16 narrows a terminal dimension (rows/cols — always small and
+// non-negative in practice) to uint16, clamping any out-of-range value into
+// [0, math.MaxUint16] so the conversion can neither overflow nor wrap.
+func clampUint16(v int) uint16 {
+	if v < 0 {
+		return 0
+	}
+	if v > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(v)
 }

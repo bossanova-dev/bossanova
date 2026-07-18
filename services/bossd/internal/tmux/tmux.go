@@ -243,6 +243,35 @@ func (c *Client) HasSessionStatus(ctx context.Context, name string) (bool, error
 	return true, nil
 }
 
+// ShowEnv reads a single environment variable baked into a tmux session's
+// session-environment via `tmux show-environment -t <name> <key>` (BOS-409). On
+// success tmux prints `KEY=value` on stdout; ShowEnv returns (value, true). It
+// is best-effort: an absent variable (tmux exits non-zero with "unknown
+// variable"), a removal marker line ("-KEY", no value), a dead session, or any
+// tmux failure all return ("", false) so a single bad row never blocks a sweep.
+// An explicitly-empty value ("KEY=") returns ("", true).
+func (c *Client) ShowEnv(ctx context.Context, name, key string) (string, bool) {
+	cmd := c.cmdFunc(ctx, "tmux", "show-environment", "-t", name, key)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	line := strings.TrimRight(string(out), "\r\n")
+	// The first line is the only one that matters. Guard against multi-line
+	// output by taking the leading line.
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	prefix := key + "="
+	if !strings.HasPrefix(line, prefix) {
+		// "-KEY" removal marker, or anything unexpected — treat as absent.
+		return "", false
+	}
+	return strings.TrimPrefix(line, prefix), true
+}
+
 // PanePID returns the PID of the first pane in the named tmux session (the
 // login shell tmux launched the session's command under). Used by the codex
 // provider-session resolver to walk the pane's process tree to the codex

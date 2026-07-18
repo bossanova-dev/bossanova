@@ -131,7 +131,8 @@ func latestRateLimitSnapshotInFile(path string, fallback time.Time) (codexRateLi
 }
 
 func readFileTail(path string, maxBytes int64) ([]byte, error) {
-	f, err := os.Open(path)
+	cleaned := filepath.Clean(path)
+	f, err := os.Open(cleaned)
 	if err != nil {
 		return nil, err
 	}

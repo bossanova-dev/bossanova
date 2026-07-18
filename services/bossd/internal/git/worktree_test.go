@@ -1248,6 +1248,259 @@ func TestResurrect_IgnoresBossDir(t *testing.T) {
 	}
 }
 
+// TestResurrect_BranchDeletedRecreatesFromBase covers BOS-421: after BOS-180
+// safe-deletes a session's local branch on archive, resurrection must recreate
+// the branch from the base branch instead of failing with
+// `fatal: invalid reference: <branch>`.
+func TestResurrect_BranchDeletedRecreatesFromBase(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Resurrect recreate",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Commit a change on the branch, then merge it into main so the branch is
+	// an ancestor of main (mimicking a merged session that BOS-180 reaps).
+	if err := os.WriteFile(filepath.Join(result.WorktreePath, "f.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	gitOutput(t, result.WorktreePath, "add", "f.txt")
+	gitOutput(t, result.WorktreePath, "commit", "-m", "work")
+	gitOutput(t, repoDir, "merge", "--no-ff", "-m", "merge", result.BranchName)
+	// Publish the merge to origin so origin/main (the canonical base, preferred
+	// as the recreate start point) matches the local base tip.
+	gitOutput(t, repoDir, "push", "origin", "main")
+
+	// Archive, then simulate BOS-180's safe-delete: prune worktree refs and
+	// delete the local branch. initTestRepo never pushes the feature branch, so
+	// there is no origin/<branch> to DWIM to.
+	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	gitOutput(t, repoDir, "worktree", "prune")
+	gitOutput(t, repoDir, "branch", "-D", result.BranchName)
+
+	if err := mgr.Resurrect(ctx, ResurrectOpts{
+		RepoPath:     repoDir,
+		WorktreePath: result.WorktreePath,
+		BranchName:   result.BranchName,
+		BaseBranch:   "main",
+	}); err != nil {
+		t.Fatalf("Resurrect after branch delete: %v", err)
+	}
+
+	if _, err := os.Stat(result.WorktreePath); err != nil {
+		t.Errorf("worktree dir not found after resurrect: %v", err)
+	}
+	current := gitOutput(t, result.WorktreePath, "branch", "--show-current")
+	if current != result.BranchName {
+		t.Fatalf("current branch = %q, want %q", current, result.BranchName)
+	}
+	// Recreated branch tip should equal main's tip.
+	branchTip := gitOutput(t, repoDir, "rev-parse", "refs/heads/"+result.BranchName)
+	mainTip := gitOutput(t, repoDir, "rev-parse", "refs/heads/main")
+	if branchTip != mainTip {
+		t.Errorf("recreated branch tip = %q, want main tip %q", branchTip, mainTip)
+	}
+}
+
+// TestResurrect_ZeroCommitBranchRecreatesFromBase covers the second BOS-180
+// safe-delete trigger: a NO_CHANGE branch that never received a commit (its tip
+// equals base) and was never pushed, so there is no origin/<branch> to DWIM to.
+// Resurrection must recreate it purely from base.
+func TestResurrect_ZeroCommitBranchRecreatesFromBase(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Resurrect no change",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// No commits on the branch: its tip is main's tip (a zero-commit NO_CHANGE
+	// branch). Archive, then simulate BOS-180's safe-delete.
+	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	gitOutput(t, repoDir, "worktree", "prune")
+	gitOutput(t, repoDir, "branch", "-D", result.BranchName)
+
+	if err := mgr.Resurrect(ctx, ResurrectOpts{
+		RepoPath:     repoDir,
+		WorktreePath: result.WorktreePath,
+		BranchName:   result.BranchName,
+		BaseBranch:   "main",
+	}); err != nil {
+		t.Fatalf("Resurrect after zero-commit branch delete: %v", err)
+	}
+
+	current := gitOutput(t, result.WorktreePath, "branch", "--show-current")
+	if current != result.BranchName {
+		t.Fatalf("current branch = %q, want %q", current, result.BranchName)
+	}
+	branchTip := gitOutput(t, repoDir, "rev-parse", "refs/heads/"+result.BranchName)
+	mainTip := gitOutput(t, repoDir, "rev-parse", "refs/heads/main")
+	if branchTip != mainTip {
+		t.Errorf("recreated branch tip = %q, want main tip %q", branchTip, mainTip)
+	}
+}
+
+// TestResurrect_PrefersOriginBranchWhenPresent verifies that when origin still
+// has the branch (ahead of base), the recreated branch restores the exact
+// remote tip rather than falling back to base.
+func TestResurrect_PrefersOriginBranchWhenPresent(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Resurrect origin pref",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Commit a change and push the feature branch to origin so origin/<branch>
+	// exists and is ahead of main.
+	if err := os.WriteFile(filepath.Join(result.WorktreePath, "f.txt"), []byte("ahead"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	gitOutput(t, result.WorktreePath, "add", "f.txt")
+	gitOutput(t, result.WorktreePath, "commit", "-m", "ahead of main")
+	gitOutput(t, result.WorktreePath, "push", "-u", "origin", result.BranchName)
+	originTip := gitOutput(t, result.WorktreePath, "rev-parse", "HEAD")
+
+	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	gitOutput(t, repoDir, "worktree", "prune")
+	gitOutput(t, repoDir, "branch", "-D", result.BranchName)
+
+	if err := mgr.Resurrect(ctx, ResurrectOpts{
+		RepoPath:     repoDir,
+		WorktreePath: result.WorktreePath,
+		BranchName:   result.BranchName,
+		BaseBranch:   "main",
+	}); err != nil {
+		t.Fatalf("Resurrect after branch delete: %v", err)
+	}
+
+	branchTip := gitOutput(t, repoDir, "rev-parse", "refs/heads/"+result.BranchName)
+	if branchTip != originTip {
+		mainTip := gitOutput(t, repoDir, "rev-parse", "refs/heads/main")
+		t.Errorf("recreated branch tip = %q, want origin tip %q (main tip %q)", branchTip, originTip, mainTip)
+	}
+}
+
+// TestResurrect_PrefersLocalBaseOverStaleOriginBase covers the case where the
+// branch was merged into the LOCAL base but that merge has not been pushed, so
+// refs/heads/main is ahead of refs/remotes/origin/main. Because BOS-180's
+// safe-delete is judged against the local base, the local base is the only ref
+// guaranteed to carry the reaped branch's work; resurrection must recreate from
+// it rather than from the stale origin base.
+func TestResurrect_PrefersLocalBaseOverStaleOriginBase(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Resurrect local base",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Commit on the branch, then merge into local main WITHOUT pushing, so
+	// refs/heads/main advances past the (now stale) refs/remotes/origin/main.
+	// The feature branch is never pushed, so there is no origin/<branch> either.
+	if err := os.WriteFile(filepath.Join(result.WorktreePath, "f.txt"), []byte("local"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	gitOutput(t, result.WorktreePath, "add", "f.txt")
+	gitOutput(t, result.WorktreePath, "commit", "-m", "work")
+	gitOutput(t, repoDir, "merge", "--no-ff", "-m", "merge", result.BranchName)
+
+	localMainTip := gitOutput(t, repoDir, "rev-parse", "refs/heads/main")
+	originMainTip := gitOutput(t, repoDir, "rev-parse", "refs/remotes/origin/main")
+	if localMainTip == originMainTip {
+		t.Fatalf("precondition failed: local main should be ahead of origin/main")
+	}
+
+	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	gitOutput(t, repoDir, "worktree", "prune")
+	gitOutput(t, repoDir, "branch", "-D", result.BranchName)
+
+	if err := mgr.Resurrect(ctx, ResurrectOpts{
+		RepoPath:     repoDir,
+		WorktreePath: result.WorktreePath,
+		BranchName:   result.BranchName,
+		BaseBranch:   "main",
+	}); err != nil {
+		t.Fatalf("Resurrect after branch delete: %v", err)
+	}
+
+	branchTip := gitOutput(t, repoDir, "rev-parse", "refs/heads/"+result.BranchName)
+	if branchTip != localMainTip {
+		t.Errorf("recreated branch tip = %q, want local main tip %q (stale origin/main %q)", branchTip, localMainTip, originMainTip)
+	}
+}
+
+// TestResurrect_BaseMissingReturnsError verifies that when the branch is
+// missing and no start point resolves (bogus base, no origin ref), Resurrect
+// returns a clear error naming branch + base and creates no worktree.
+func TestResurrect_BaseMissingReturnsError(t *testing.T) {
+	repoDir := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	wtPath := filepath.Join(t.TempDir(), "worktrees", "gone")
+	err := mgr.Resurrect(ctx, ResurrectOpts{
+		RepoPath:     repoDir,
+		WorktreePath: wtPath,
+		BranchName:   "gone-branch",
+		BaseBranch:   "does-not-exist",
+	})
+	if err == nil {
+		t.Fatalf("expected error when branch and base are both missing, got nil")
+	}
+	if !strings.Contains(err.Error(), "gone-branch") || !strings.Contains(err.Error(), "does-not-exist") {
+		t.Errorf("error should name branch + base, got: %v", err)
+	}
+	if _, statErr := os.Stat(wtPath); statErr == nil {
+		t.Errorf("no worktree should have been created at %s", wtPath)
+	}
+}
+
 func TestEmptyTrash(t *testing.T) {
 	repoDir := initTestRepo(t)
 	wtBase := filepath.Join(t.TempDir(), "worktrees")

@@ -126,6 +126,10 @@ type Session struct {
 	// system-default account 0 (no injected env, D9).
 	AccountID      *string
 	TmuxUnattended bool
+	// Detach = this session's initial run is a durable, tmux-hosted --detach
+	// autonomous pass; drives unattended-class recovery. False for a detach run
+	// that fell back to the paneless headless path.
+	Detach bool
 	// QuickChat marks a session created via `create_session {quick_chat: true}`:
 	// a visible, no-worktree/branch/PR chat (planning, recon, plan-review). Such
 	// sessions have no implementation output by design, so finalize must not

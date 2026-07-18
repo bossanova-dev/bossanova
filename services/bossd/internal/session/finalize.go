@@ -45,7 +45,7 @@ type FinalizeResult struct {
 // CronCompletionGate (cronRunIsOver); finalizing a still-working run opens a junk
 // PR and Blocks a live session. The Stop-hook path funnels through that gate and
 // this entry, which accepts only ImplementingPlan. The
-// RecoverStrandedCronSessions sweep does NOT go through the gate: it applies its
+// recoverStrandedCronSessions sweep does NOT go through the gate: it applies its
 // own liveness gate (strandedRunIsDead) and calls finalizeSessionFrom directly
 // with the broadened reap set, so it can advance a session interrupted in
 // PushingBranch/OpeningDraftPR/etc. — states this Stop-hook entry deliberately
@@ -78,14 +78,14 @@ type FinalizeResult struct {
 func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*FinalizeResult, error) {
 	// The Stop-hook/gate path stays ImplementingPlan-only — a per-turn Stop is
 	// only meaningful there. The broadened reap set lives on the sweep's own
-	// entry (finalizeSessionFrom, via RecoverStrandedCronSessions).
+	// entry (finalizeSessionFrom, via recoverStrandedCronSessions).
 	return l.finalizeSessionFrom(ctx, sessionID, []int{int(machine.ImplementingPlan)})
 }
 
 // finalizeSessionFrom runs the finalize pipeline, advancing to Finalizing only
 // when the session's current state is one of expectedStates. It is the shared
 // body behind both finalize entries: FinalizeSession (the Stop-hook/gate path,
-// ImplementingPlan-only) and the RecoverStrandedCronSessions sweep (the
+// ImplementingPlan-only) and the recoverStrandedCronSessions sweep (the
 // broadened reap set). Everything after step 1 — classify, record outcome,
 // clear token, block-on-failure — is identical regardless of the accepted
 // from-set.
@@ -932,6 +932,18 @@ func (l *Lifecycle) hardDeleteSession(ctx context.Context, session *models.Sessi
 		if err := l.worktrees.Archive(ctx, session.WorktreePath); err != nil {
 			return fmt.Errorf("archive worktree: %w", err)
 		}
+
+		// BOS-424: reap the session's LOCAL branch on hard-delete, regardless of
+		// repo.CanAutoDeleteBranches. A no-change cron run is hard-deleted here
+		// (finalizeNoChanges), never through ArchiveSession, so BOS-180's reap
+		// never runs and the orphaned cron-* branch leaks. The session row is
+		// already being deleted — there is nothing to resurrect — so reap it
+		// unconditionally. The BranchSafeToDelete guard inside reapSafeLocalBranch
+		// still protects the shared commits-no-origin caller: an unmerged branch
+		// (commits ahead of base) reads as not-safe and is kept. Best-effort:
+		// the worktree is already gone, so a delete failure must not fail the
+		// hard-delete (outcome stays deleted_no_changes).
+		l.reapSafeLocalBranch(ctx, session.ID, repo, session)
 	}
 
 	// Tear down any per-chat tmux sessions BEFORE deleting the session row.
@@ -997,7 +1009,7 @@ func (l *Lifecycle) RecoverFinalizingSessions(ctx context.Context) (int, error) 
 
 	recovered := 0
 	for _, sess := range stuck {
-		// Skip archived sessions, symmetric with the RecoverStrandedCronSessions
+		// Skip archived sessions, symmetric with the recoverStrandedCronSessions
 		// guard. ListByState returns rows regardless of archived status
 		// (session_store.go), and a benign worktree_gone finalize (archived /
 		// removed session, worktree deleted) leaves the row in Finalizing —

@@ -624,3 +624,33 @@ func (r *recordingRecomputer) snapshot() []string {
 	copy(out, r.ids)
 	return out
 }
+
+// TestClampInt32 is the BOS-413 boundary table-test for the package-local
+// gosec-G115 clamp helper: normal values pass through; out-of-range int inputs
+// clamp to the int32 extremes instead of wrapping. int32 range is
+// [-2147483648, 2147483647].
+func TestClampInt32(t *testing.T) {
+	const (
+		maxI32 = 2147483647
+		minI32 = -2147483648
+	)
+	tests := []struct {
+		name string
+		in   int
+		want int32
+	}{
+		{"normal", 42, 42},
+		{"zero", 0, 0},
+		{"max", maxI32, maxI32},
+		{"min", minI32, minI32},
+		{"clampsHigh", maxI32 + 1, maxI32},
+		{"clampsLow", minI32 - 1, minI32},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := clampInt32(tt.in); got != tt.want {
+				t.Errorf("clampInt32(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}

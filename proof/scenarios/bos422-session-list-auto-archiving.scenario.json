@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "title": "BOS-422 session list — an auto-archiving merged session shows 'archiving', a settled merged session shows 'merged'",
+  "fixture": { "preset": "archive-signal" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the home list STATUS column shows 'archiving' for the in-flight archive and 'merged' for the settled one",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Resurrected merged session",
+            "match": "normalized",
+            "label": "home session list loaded (archive-signal preset)"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded: both merged sessions are listed"
+        },
+        {
+          "expect": {
+            "text": "✓ merged",
+            "match": "normalized",
+            "label": "the settled merged session (sess-425-resurrected, archive_pending=false) shows '✓ merged' in its STATUS column"
+          },
+          "caption": "archive_pending=false → the resurrected merged session keeps the '✓ merged' STATUS label (the ✓ glyph is status-column-only, absent from the '...merged session' titles, so this binds to the STATUS column not the row title)"
+        },
+        {
+          "expect": {
+            "text": "archiving",
+            "match": "normalized",
+            "label": "the auto-archiving merged session (sess-425-archiving, archive_pending=true) shows 'archiving' in its STATUS column"
+          },
+          "caption": "archive_pending=true → displaystatus.Compute yields DisplayLabel 'archiving' (WARNING + spinner) for the list row, winning over the stale 'merged'"
+        },
+        {
+          "key": "down",
+          "caption": "Move the cursor down onto the auto-archiving session (index 1)"
+        },
+        {
+          "expect": {
+            "text": "❯.*Archiving merged session",
+            "match": "regex",
+            "label": "chevron sits on the auto-archiving session row"
+          },
+          "caption": "Cursor on the auto-archiving row; its STATUS column reads 'archiving' while the settled merged row above still reads 'merged'"
+        },
+        {
+          "expect": {
+            "text": "archiving",
+            "match": "normalized",
+            "label": "the 'archiving' STATUS label is still shown for the selected auto-archiving row"
+          },
+          "caption": "Both distinct statuses are visible together in the home list: 'archiving' (in flight) vs 'merged' (settled)"
+        }
+      ]
+    }
+  ]
+}

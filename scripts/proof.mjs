@@ -670,6 +670,18 @@ export async function runScenarioCommand(args, overrides = {}) {
   // runTuiAgentProof's makeStdioBridge can spawn the real bridge (honoring an
   // existing BOSS_PROOF_TUI_BRIDGE_BIN via resolvePrebuiltTuiBins).
   const proofDeps = { ...(overrides.proofDeps ?? {}) }
+  // Thread the scenario's declared fixture preset (and any env overlay) to the
+  // real bridge so a scenario can select a non-demo preset. Without this the
+  // bridge always defaulted to "demo" regardless of scenario.fixture.preset;
+  // every committed scenario happens to declare "demo", so forwarding it is a
+  // no-op for them and enables purpose-built presets (e.g. BOS-425's
+  // archive-signal). Only set when the caller didn't already inject its own.
+  if (proofDeps.fixture == null && scenario.fixture?.preset != null) {
+    proofDeps.fixture = scenario.fixture.preset
+  }
+  if (proofDeps.seedEnv == null && scenario.fixture?.env != null) {
+    proofDeps.seedEnv = scenario.fixture.env
+  }
   if (overrides.bridge) {
     proofDeps.bridge = overrides.bridge
   } else if (!proofDeps.bridge) {

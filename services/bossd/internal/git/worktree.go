@@ -280,9 +280,14 @@ type CreateFromExistingBranchOpts struct {
 
 // ResurrectOpts holds the parameters for resurrecting an archived worktree.
 type ResurrectOpts struct {
-	RepoPath          string    // Path to the main repository.
-	WorktreePath      string    // Target path for the worktree directory.
-	BranchName        string    // Existing branch to check out.
+	RepoPath     string // Path to the main repository.
+	WorktreePath string // Target path for the worktree directory.
+	BranchName   string // Existing branch to check out.
+	// BaseBranch is the session's base branch, used to recreate BranchName when
+	// the local branch is missing — e.g. after a BOS-180 safe-delete on archive
+	// (merged into base, or a zero-commit NO_CHANGE branch). May be empty for
+	// legacy call sites; recreation then fails loudly rather than orphaning.
+	BaseBranch        string
 	SetupScript       *string   // Optional setup script to run after creation.
 	SetupScriptOutput io.Writer // If non-nil, setup script output is written here.
 }
@@ -389,11 +394,11 @@ func ensureGitInfoExclude(ctx context.Context, worktreePath string, patterns []s
 		commonDir = filepath.Join(worktreePath, commonDir)
 	}
 	excludePath := filepath.Join(commonDir, "info", "exclude")
-	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0o750); err != nil {
 		return fmt.Errorf("create info dir: %w", err)
 	}
 
-	existing, err := os.ReadFile(excludePath)
+	existing, err := os.ReadFile(filepath.Clean(excludePath)) // #nosec G304 -- bossd-owned worktree-internal git info/exclude path derived from git-common-dir (filepath.Clean sanitized); owner=@recurser; review-by=2026-10-18; issue=BOS-423
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read exclude: %w", err)
 	}
@@ -424,7 +429,19 @@ func ensureGitInfoExclude(ctx context.Context, worktreePath string, patterns []s
 		buf.WriteByte('\n')
 	}
 
-	return os.WriteFile(excludePath, buf.Bytes(), 0o644)
+	if err := os.WriteFile(excludePath, buf.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("write exclude: %w", err)
+	}
+	// os.WriteFile only applies the mode when it creates the file; git init
+	// pre-creates info/exclude (typically 0o644), so on that common path the
+	// write above preserves the old, world-readable mode. Explicitly chmod so
+	// the G306 tightening is actually delivered on the existing-file path too.
+	// The path is bossd-owned and single-user (git reads it as owner), so 0o600
+	// does not break any consumer.
+	if err := os.Chmod(excludePath, 0o600); err != nil {
+		return fmt.Errorf("chmod exclude: %w", err)
+	}
+	return nil
 }
 
 // runGit runs a git command in the given directory and returns stdout.
@@ -440,15 +457,41 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// branchExists checks whether a local branch ref exists.
+// branchExists checks whether a local branch ref exists. It is a thin alias
+// over refExists on the refs/heads/ namespace, so both local-ref probes share
+// one implementation.
 func branchExists(ctx context.Context, repoPath, branch string) bool {
-	_, err := runGit(ctx, repoPath, "rev-parse", "--verify", "refs/heads/"+branch)
-	return err == nil
+	return refExists(ctx, repoPath, "refs/heads/"+branch)
 }
 
 func remoteBranchExists(ctx context.Context, repoPath, branch string) bool {
 	_, err := runGit(ctx, repoPath, "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/"+branch)
 	return err == nil
+}
+
+// refExists reports whether ref resolves against the repo's already-known refs.
+// It is a purely local probe (`rev-parse --verify --quiet`) — no network fetch —
+// so it is safe on the resurrect hot path.
+func refExists(ctx context.Context, repoPath, ref string) bool {
+	_, err := runGit(ctx, repoPath, "rev-parse", "--verify", "--quiet", ref)
+	return err == nil
+}
+
+// firstExistingRef returns the first candidate ref that resolves locally, along
+// with true. If none resolve (or all are empty), it returns "", false. Empty
+// candidates (e.g. an unset base branch) are skipped rather than probed.
+func firstExistingRef(ctx context.Context, repoPath string, candidates []string) (string, bool) {
+	for _, ref := range candidates {
+		// Skip malformed candidates built from an empty branch/base name
+		// (e.g. "refs/heads/" with nothing after the slash).
+		if ref == "" || strings.HasSuffix(ref, "/") {
+			continue
+		}
+		if refExists(ctx, repoPath, ref) {
+			return ref, true
+		}
+	}
+	return "", false
 }
 
 // clearStaleWorktree removes a leftover worktree at wtPath so a fresh
@@ -535,7 +578,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	wtPath := filepath.Join(opts.WorktreeBaseDir, sanitizeDirName(opts.RepoName), branch)
 
 	// Ensure the worktree base directory exists.
-	if err := os.MkdirAll(opts.WorktreeBaseDir, 0o755); err != nil {
+	if err := os.MkdirAll(opts.WorktreeBaseDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create worktree base dir: %w", err)
 	}
 
@@ -682,15 +725,55 @@ func (m *Manager) Resurrect(ctx context.Context, opts ResurrectOpts) error {
 		Msg("resurrecting worktree")
 
 	// Ensure parent directory exists.
-	if err := os.MkdirAll(filepath.Dir(opts.WorktreePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(opts.WorktreePath), 0o750); err != nil {
 		return fmt.Errorf("create parent dir: %w", err)
 	}
 
-	// git worktree add <path> <existing-branch>
-	if _, err := runGit(ctx, opts.RepoPath,
-		"worktree", "add", opts.WorktreePath, opts.BranchName,
-	); err != nil {
-		return fmt.Errorf("worktree add: %w", err)
+	// Add the worktree. If the local branch still exists, check it out directly
+	// (unchanged path). If it was safe-deleted on archive (BOS-180), recreate it
+	// from a start point resolved locally — restoring the exact tip when a ref is
+	// still known, otherwise the base branch (equivalent for a merged/empty
+	// branch). See BOS-421.
+	if branchExists(ctx, opts.RepoPath, opts.BranchName) {
+		if _, err := runGit(ctx, opts.RepoPath,
+			"worktree", "add", opts.WorktreePath, opts.BranchName,
+		); err != nil {
+			return fmt.Errorf("worktree add: %w", err)
+		}
+	} else {
+		// Resolve a start point from already-known refs only (no network fetch on
+		// the resurrect hot path): prefer the exact remote head, then the LOCAL
+		// base, then the remote base.
+		//
+		// Local base before remote base is deliberate: BOS-180's safe-delete is
+		// judged against the local base (BranchSafeToDelete → merge-base
+		// --is-ancestor <branch> <base>, where git resolves the bare <base> to
+		// refs/heads/<base>). So refs/heads/<base> is the ONLY ref guaranteed to
+		// contain the reaped branch's merged work; refs/remotes/origin/<base> can
+		// lag it (e.g. a local merge not yet pushed, or a stale tracking ref) and
+		// would silently omit that work. origin/<base> stays as a last resort for
+		// the rare case where the local base branch is absent entirely.
+		candidates := []string{
+			"refs/remotes/origin/" + opts.BranchName,
+			"refs/heads/" + opts.BaseBranch,
+			"refs/remotes/origin/" + opts.BaseBranch,
+		}
+		startPoint, ok := firstExistingRef(ctx, opts.RepoPath, candidates)
+		if !ok {
+			return fmt.Errorf(
+				"resurrect: branch %q missing and no start point resolved (base %q)",
+				opts.BranchName, opts.BaseBranch,
+			)
+		}
+		m.logger.Info().
+			Str("branch", opts.BranchName).
+			Str("start_point", startPoint).
+			Msg("resurrect: local branch missing, recreating from start point")
+		if _, err := runGit(ctx, opts.RepoPath,
+			"worktree", "add", "-b", opts.BranchName, opts.WorktreePath, startPoint,
+		); err != nil {
+			return fmt.Errorf("worktree add (recreate branch): %w", err)
+		}
 	}
 
 	// Ensure bossd-managed paths (e.g. .boss/) are git-ignored — covers
@@ -1548,7 +1631,7 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 	wtPath := filepath.Join(opts.WorktreeBaseDir, sanitizeDirName(opts.RepoName), opts.BranchName)
 
 	// Ensure the worktree base directory exists.
-	if err := os.MkdirAll(opts.WorktreeBaseDir, 0o755); err != nil {
+	if err := os.MkdirAll(opts.WorktreeBaseDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create worktree base dir: %w", err)
 	}
 

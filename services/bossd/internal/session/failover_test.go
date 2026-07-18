@@ -651,6 +651,28 @@ func TestProxyBaseURL_gating(t *testing.T) {
 	}
 }
 
+// TestProxyBaseURL_fixedPort confirms the injection gate is unchanged by the
+// BOS-409 fixed-port change: a fixed proxyPort (44127) composes the expected
+// loopback URL, and proxyPort == 0 still suppresses injection entirely.
+func TestProxyBaseURL_fixedPort(t *testing.T) {
+	f := newRotationFixture(t)
+	enableFailoverProxy(f.lc)
+	f.lc.SetProxyRegistrar(stubRegistrar{token: "tok"})
+
+	acctID := "acct-1"
+	claude := &models.Session{ID: "s1", AgentName: "claude", AccountID: &acctID}
+
+	f.lc.SetProxyPort(44127)
+	if got := f.lc.proxyBaseURL(claude); got != "http://127.0.0.1:44127/s/tok" {
+		t.Fatalf("fixed-port base URL = %q, want http://127.0.0.1:44127/s/tok", got)
+	}
+
+	f.lc.SetProxyPort(0)
+	if got := f.lc.proxyBaseURL(claude); got != "" {
+		t.Fatalf("proxyPort==0 must still suppress injection, got %q", got)
+	}
+}
+
 type stubRegistrar struct{ token string }
 
 func (s stubRegistrar) TokenForSession(string) string { return s.token }

@@ -489,3 +489,43 @@ func strSliceEq(a, b []string) bool {
 	}
 	return true
 }
+
+// TestExecute_Legacy_ContentShebangRunsUnderSh pins the G306 invocation
+// contract for a legacy string that carries its OWN shebang: because the
+// materialized script is run via `sh <path>` (not direct-exec), the embedded
+// shebang is treated as a comment and the body runs under /bin/sh — matching
+// the documented historical `sh -c` semantics. The shebang here names a
+// non-existent interpreter, so a direct-exec that honored it would fail;
+// running successfully proves the shebang is ignored and sh interprets the body.
+func TestExecute_Legacy_ContentShebangRunsUnderSh(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shebang assumed")
+	}
+	wt := t.TempDir()
+
+	var buf bytes.Buffer
+	s := Spec{Type: TypeLegacy, LegacyScript: "#!/nonexistent/interpreter\necho shebang-ignored"}
+
+	err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Output:       &buf,
+		Timeout:      5 * time.Second,
+		Warn:         func(string) {},
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(buf.String(), "shebang-ignored") {
+		t.Fatalf("legacy script with foreign shebang didn't run under sh: %q", buf.String())
+	}
+	// The stored shebang is preserved verbatim (writeLegacyScript does not
+	// prepend #!/bin/sh when content already begins with #!), confirming it is
+	// the `sh <path>` invocation — not a rewrite — that neutralizes it.
+	body, err := os.ReadFile(filepath.Join(wt, ".boss", "setup.sh"))
+	if err != nil {
+		t.Fatalf("read setup.sh: %v", err)
+	}
+	if !strings.HasPrefix(string(body), "#!/nonexistent/interpreter\n") {
+		t.Fatalf("expected content shebang preserved, got %q", string(body))
+	}
+}

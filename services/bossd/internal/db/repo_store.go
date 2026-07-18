@@ -54,9 +54,14 @@ func (s *SQLiteRepoStore) Create(ctx context.Context, params CreateRepoParams) (
 	}
 
 	now := sqlutil.TimeNow()
+	// can_auto_delete_branches defaults OFF for new repos (BOS-424): an on-by-default
+	// destructive auto-delete is the wrong default. This INSERT literal is authoritative
+	// for app-created repos; the BOS-180 column DEFAULT 1 is a dormant fallback that Create
+	// never exercises (SQLite can't ALTER a column default in place without a table rebuild).
+	// Existing repos are intentionally left untouched (scope = new repos).
 	_, err = conn.ExecContext(ctx,
 		`INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, archive_sessions_after_merge, can_auto_delete_branches, merge_strategy, linear_api_key, sentry_api_key, sentry_org, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, 1, 1, 'merge', '', '', '', ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, 1, 0, 'merge', '', '', '', ?, ?)`,
 		id, params.DisplayName, params.LocalPath, params.OriginURL,
 		params.DefaultBaseBranch, params.WorktreeBaseDir, params.SetupScript, now, now,
 	)

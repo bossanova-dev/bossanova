@@ -1198,6 +1198,7 @@ func TestHydrateDisplayEntry(t *testing.T) {
 		IsRepairing:         true,
 		SettingUp:           true,
 		Merging:             true,
+		Archiving:           true,
 		Mergeable:           &mergeable,
 	})
 	if p.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_PASSING {
@@ -1207,10 +1208,54 @@ func TestHydrateDisplayEntry(t *testing.T) {
 		!p.GetDisplayIsRepairing() || !p.GetDisplaySettingUp() || !p.GetDisplayMerging() {
 		t.Errorf("per-axis flags not all stamped: %+v", p)
 	}
+	if !p.GetArchivePending() {
+		t.Errorf("archive_pending not stamped from entry Archiving=true: %+v", p)
+	}
 	if p.PrMergeable == nil || !p.GetPrMergeable() {
 		t.Errorf("pr_mergeable = %v, want true", p.PrMergeable)
 	}
 	if p.GetMergeBlock() == nil {
 		t.Error("merge_block not derived, want non-nil")
+	}
+
+	// An entry with Archiving=false must leave archive_pending false — the
+	// steady-state (resurrected merged) case that must NOT show "Archiving…".
+	pClear := &pb.Session{}
+	HydrateDisplayEntry(pClear, &status.DisplayEntry{
+		Status:    vcs.DisplayStatusMerged,
+		Archiving: false,
+	})
+	if pClear.GetArchivePending() {
+		t.Errorf("archive_pending = true for Archiving=false entry, want false")
+	}
+}
+
+// TestClampInt32 is the BOS-413 boundary table-test for the package-local
+// gosec-G115 clamp helper: normal values pass through; out-of-range int inputs
+// clamp to the int32 extremes instead of wrapping. int32 range is
+// [-2147483648, 2147483647].
+func TestClampInt32(t *testing.T) {
+	const (
+		maxI32 = 2147483647
+		minI32 = -2147483648
+	)
+	tests := []struct {
+		name string
+		in   int
+		want int32
+	}{
+		{"normal", 42, 42},
+		{"zero", 0, 0},
+		{"max", maxI32, maxI32},
+		{"min", minI32, minI32},
+		{"clampsHigh", maxI32 + 1, maxI32},
+		{"clampsLow", minI32 - 1, minI32},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := clampInt32(tt.in); got != tt.want {
+				t.Errorf("clampInt32(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
 	}
 }

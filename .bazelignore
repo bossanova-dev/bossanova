@@ -1,0 +1,6 @@
+# Nested git worktrees created inside the repo root (EnterWorktree / `.worktrees`).
+# They are full repo copies with their own BUILD.bazel files and node_modules
+# symlink trees; `bazel //...` would otherwise descend into them and abort on
+# cross-worktree target-visibility errors and infinite node_modules symlink loops.
+.claude/worktrees
+.worktrees

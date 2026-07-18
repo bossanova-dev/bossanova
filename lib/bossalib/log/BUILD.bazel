@@ -19,6 +19,7 @@ go_test(
     name = "log_test",
     srcs = [
         "log_test.go",
+        "perms_unix_test.go",
         "tail_test.go",
     ],
     embed = [":log"],

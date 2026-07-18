@@ -126,12 +126,13 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 	// Hydrate display tracker fields onto the proto session.
 	if c.display != nil {
 		if e := c.display.Get(sessionID); e != nil {
-			pbSess.DisplayStatus = pb.DisplayStatus(e.Status)
+			pbSess.DisplayStatus = pb.DisplayStatus(clampInt32(int(e.Status)))
 			pbSess.DisplayHasFailures = e.HasFailures
 			pbSess.DisplayHasChangesRequested = e.HasChangesRequested
 			pbSess.DisplayIsRepairing = e.IsRepairing
 			pbSess.DisplaySettingUp = e.SettingUp
 			pbSess.DisplayMerging = e.Merging
+			pbSess.ArchivePending = e.Archiving
 			pbSess.PrMergeable = e.Mergeable
 		}
 	}
@@ -153,8 +154,8 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 				if pbSess.DisplayStatus != pb.DisplayStatus_DISPLAY_STATUS_MERGED &&
 					pbSess.DisplayStatus != pb.DisplayStatus_DISPLAY_STATUS_CLOSED {
 					pbSess.WorkflowDisplayStatus = workflowStatusToProto(best.Status)
-					pbSess.WorkflowDisplayLeg = int32(best.FlightLeg)
-					pbSess.WorkflowDisplayMaxLegs = int32(best.MaxLegs)
+					pbSess.WorkflowDisplayLeg = clampInt32(best.FlightLeg)
+					pbSess.WorkflowDisplayMaxLegs = clampInt32(best.MaxLegs)
 				}
 			}
 		}
@@ -246,7 +247,7 @@ func sessionToProto(s *models.Session) *pb.Session {
 	}
 	return &pb.Session{
 		Id:             s.ID,
-		State:          pb.SessionState(s.State),
+		State:          pb.SessionState(clampInt32(int(s.State))),
 		BlockedReason:  s.BlockedReason,
 		DisplayLabel:   s.DisplayLabel,
 		DisplayIntent:  pb.DisplayIntent(s.DisplayIntent),

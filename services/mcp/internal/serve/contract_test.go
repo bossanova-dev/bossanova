@@ -12,10 +12,10 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// expectedTools is the complete set of 51 bossanova MCP tool names:
-// 18 read-only + 23 mutating + 10 destructive.
+// expectedTools is the complete set of 55 bossanova MCP tool names:
+// 19 read-only + 26 mutating + 10 destructive.
 var expectedTools = []string{
-	// read-only (18)
+	// read-only (19)
 	"list_sessions",
 	"resolve_context",
 	"validate_repo_path",
@@ -34,7 +34,8 @@ var expectedTools = []string{
 	"get_cron_job",
 	"list_accounts",
 	"get_chat_transcript",
-	// mutating (22)
+	"get_settings",
+	// mutating (26)
 	"register_repo",
 	"clone_and_register_repo",
 	"update_repo",
@@ -45,6 +46,7 @@ var expectedTools = []string{
 	"retry_session",
 	"update_session",
 	"link_session_pr",
+	"start_chat",
 	"record_chat",
 	"update_chat_title",
 	"wake_chat",
@@ -58,6 +60,8 @@ var expectedTools = []string{
 	"test_account",
 	"send_chat_message",
 	"switch_account",
+	"update_settings",
+	"start_repair_workflow",
 	// destructive (10)
 	"remove_repo",
 	"close_session",
@@ -166,7 +170,7 @@ func newContractClient(t *testing.T, backend bossmcp.Backend) *mcp.ClientSession
 	return cs
 }
 
-// TestContractFullToolSet asserts that tools/list returns exactly the 50
+// TestContractFullToolSet asserts that tools/list returns exactly the 55
 // expected bossanova tools over the in-memory transport.
 func TestContractFullToolSet(t *testing.T) {
 	t.Parallel()

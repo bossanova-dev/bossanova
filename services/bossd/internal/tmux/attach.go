@@ -178,8 +178,8 @@ func NewTerminalAttach(ctx context.Context, cfg AttachConfig) (*TerminalAttach, 
 	cmd.Env = ensureTerm(env)
 
 	ptyFd, err := creackpty.StartWithSize(cmd, &creackpty.Winsize{
-		Cols: uint16(cols),
-		Rows: uint16(rows),
+		Cols: clampUint16(cols),
+		Rows: clampUint16(rows),
 	})
 	if err != nil {
 		cancel()
@@ -265,8 +265,8 @@ func (a *TerminalAttach) Resize(cols, rows uint32) error {
 		return fmt.Errorf("resize requires non-zero cols and rows (got cols=%d rows=%d)", cols, rows)
 	}
 	err := creackpty.Setsize(a.ptyFd, &creackpty.Winsize{
-		Cols: uint16(cols),
-		Rows: uint16(rows),
+		Cols: clampUint16(cols),
+		Rows: clampUint16(rows),
 	})
 	if err != nil {
 		return fmt.Errorf("pty setsize: %w", err)
@@ -415,7 +415,7 @@ func (a *TerminalAttach) waitLoop() {
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			exitCode = int32(exitErr.ExitCode())
+			exitCode = safeInt32(exitErr.ExitCode())
 			reason = exitErr.String()
 		} else {
 			exitCode = -1

@@ -20,7 +20,7 @@ const pluginSumFile = "plugins.sum"
 // isTrustedPath); a missing, unreadable, untrusted, or malformed manifest is
 // an error so release builds can fail closed.
 func loadPluginSums(dir string) (map[string]string, error) {
-	manifestPath := filepath.Join(dir, pluginSumFile)
+	manifestPath := filepath.Clean(filepath.Join(dir, pluginSumFile))
 	if ok, reason := isTrustedPath(manifestPath); !ok {
 		return nil, fmt.Errorf("manifest %s untrusted: %s", manifestPath, reason)
 	}
@@ -66,7 +66,8 @@ func verifyPluginChecksum(path string, sums map[string]string) (bool, string) {
 	if !ok {
 		return false, "not listed in plugins.sum"
 	}
-	f, err := os.Open(path)
+	cleaned := filepath.Clean(path)
+	f, err := os.Open(cleaned)
 	if err != nil {
 		return false, fmt.Sprintf("open: %v", err)
 	}

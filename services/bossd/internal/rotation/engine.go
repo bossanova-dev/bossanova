@@ -119,9 +119,15 @@ type AccountRepository interface {
 // TxAccountView is the transactional view handed to the decide closure.
 type TxAccountView interface {
 	// ListByProvider returns all accounts for the provider (any health/status),
-	// ordered priority ASC -> health-rank ASC (ok before failed) -> last_used_at
-	// ASC (NULLS FIRST).
-	ListByProvider(ctx context.Context) ([]*models.Account, error)
+	// ordered priority ASC -> health-rank ASC (ok before failed) -> weekly-expiry
+	// rank (accounts whose usage_reset_7d is a known instant strictly after now
+	// sort first, soonest-reset first; nil/past resets fall through) -> last_used_at
+	// ASC (NULLS FIRST) -> id ASC. The weekly-expiry rank uses the same
+	// future-only rule as FutureWeeklyReset, keeping this SQL surface, the
+	// bind-time comparator (account.moreEligible), and the test fake in sync
+	// (BOS-429). now is threaded in so the "strictly future" cut is evaluated
+	// against the caller's clock.
+	ListByProvider(ctx context.Context, now time.Time) ([]*models.Account, error)
 	// SetCooldownIfNotCooling sets cooldown_until on accountID ONLY when it is
 	// not already cooling (cooldown_until IS NULL OR <= now). Returns
 	// applied=false when the row was already cooling (idempotency gate).
@@ -233,7 +239,7 @@ func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, boundAc
 	now := e.clock()
 	var chosen *models.Account
 	err := e.accounts.DecideTx(ctx, provider, func(tx TxAccountView) error {
-		accts, err := tx.ListByProvider(ctx)
+		accts, err := tx.ListByProvider(ctx, now)
 		if err != nil {
 			return fmt.Errorf("list accounts: %w", err)
 		}
@@ -277,7 +283,7 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 			}
 		}
 
-		list, err := tx.ListByProvider(ctx)
+		list, err := tx.ListByProvider(ctx, now)
 		if err != nil {
 			return fmt.Errorf("list accounts: %w", err)
 		}

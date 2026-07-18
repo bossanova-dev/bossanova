@@ -10,6 +10,7 @@ package tuidriver
 import (
 	"fmt"
 	"io"
+	"math"
 	"os/exec"
 	"strings"
 	"sync"
@@ -71,8 +72,8 @@ func New(opts Options) (*Driver, error) {
 	}
 
 	ptmx, err := creackpty.StartWithSize(cmd, &creackpty.Winsize{
-		Rows: uint16(opts.Height),
-		Cols: uint16(opts.Width),
+		Rows: clampUint16(opts.Height),
+		Cols: clampUint16(opts.Width),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start pty: %w", err)
@@ -248,4 +249,17 @@ func (d *Driver) Close() error {
 	}
 	<-d.respDone
 	return err
+}
+
+// clampUint16 narrows a terminal dimension (rows/cols — always small and
+// non-negative in practice) to uint16, clamping any out-of-range value into
+// [0, math.MaxUint16] so the conversion can neither overflow nor wrap.
+func clampUint16(v int) uint16 {
+	if v < 0 {
+		return 0
+	}
+	if v > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(v)
 }

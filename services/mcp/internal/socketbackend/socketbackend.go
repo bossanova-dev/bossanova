@@ -574,6 +574,14 @@ func (b *Backend) RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, e
 	return resp.Msg, nil
 }
 
+func (b *Backend) StartRepairWorkflow(ctx context.Context) (*pb.StartRepairWorkflowResponse, error) {
+	resp, err := b.rpc.StartRepairWorkflow(ctx, connect.NewRequest(&pb.StartRepairWorkflowRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (b *Backend) ListAgents(ctx context.Context) ([]*pb.AgentInfo, error) {
 	resp, err := b.rpc.ListAgents(ctx, connect.NewRequest(&pb.ListAgentsRequest{}))
 	if err != nil {
@@ -588,4 +596,22 @@ func (b *Backend) ListPlugins(ctx context.Context) ([]*pb.InstalledPlugin, error
 		return nil, err
 	}
 	return resp.Msg.GetPlugins(), nil
+}
+
+// --- Global Settings ---
+
+func (b *Backend) GetSettings(ctx context.Context) (*pb.GlobalSettings, error) {
+	resp, err := b.rpc.GetSettings(ctx, connect.NewRequest(&pb.GetSettingsRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSettings(), nil
+}
+
+func (b *Backend) UpdateSettings(ctx context.Context, req *pb.UpdateSettingsRequest) (*pb.GlobalSettings, error) {
+	resp, err := b.rpc.UpdateSettings(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSettings(), nil
 }

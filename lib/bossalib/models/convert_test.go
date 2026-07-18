@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -9,6 +10,45 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// TestIntToInt32 pins the G115 overflow guard: in-range values pass through,
+// boundaries are preserved, and out-of-range inputs clamp (saturate) to the
+// int32 limits rather than silently wrapping.
+func TestIntToInt32(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int
+		want int32
+	}{
+		{name: "zero", in: 0, want: 0},
+		{name: "typical", in: 42, want: 42},
+		{name: "negative", in: -7, want: -7},
+		{name: "max int32 boundary", in: math.MaxInt32, want: math.MaxInt32},
+		{name: "min int32 boundary", in: math.MinInt32, want: math.MinInt32},
+		{name: "overflow clamps to max", in: math.MaxInt32 + 1, want: math.MaxInt32},
+		{name: "large overflow clamps to max", in: math.MaxInt64, want: math.MaxInt32},
+		{name: "underflow clamps to min", in: math.MinInt32 - 1, want: math.MinInt32},
+		{name: "large underflow clamps to min", in: math.MinInt64, want: math.MinInt32},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := intToInt32(tt.in); got != tt.want {
+				t.Errorf("intToInt32(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSessionToProtoClampsAttemptCount confirms the guard is wired into the
+// proto conversion at the AttemptCount field (would wrap to a negative int32
+// without the clamp).
+func TestSessionToProtoClampsAttemptCount(t *testing.T) {
+	s := &Session{AttemptCount: math.MaxInt32 + 1}
+	p := SessionToProto(s)
+	if p.AttemptCount != math.MaxInt32 {
+		t.Errorf("AttemptCount = %d, want %d (clamped)", p.AttemptCount, int32(math.MaxInt32))
+	}
+}
 
 func TestRepoRoundTrip(t *testing.T) {
 	script := "make setup"

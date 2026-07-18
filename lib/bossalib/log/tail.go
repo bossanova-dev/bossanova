@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -21,7 +22,8 @@ func Tail(path string, maxLines int) (string, error) {
 	if maxLines <= 0 {
 		return "", nil
 	}
-	f, err := os.Open(path)
+	cleaned := filepath.Clean(path)
+	f, err := os.Open(cleaned)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", nil

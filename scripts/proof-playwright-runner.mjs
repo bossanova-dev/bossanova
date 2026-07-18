@@ -545,6 +545,10 @@ function webStageScript() {
         // Merge button — the Merge gate requires an open PR whose display
         // status is PASSING (BOS-365 item 3).
         displayStatus: 6,
+        // Owning daemon surfaced on the chat-list snapshot so the new-chat page
+        // (web-new-chat recipe) can resolve a daemon and list its agents rather
+        // than falling back to auto-creating a chat with the session agent.
+        daemonId: 'daemon-proof',
         chats: [{ id: 'chat-1', agentSessionId: 'claude-1', title: 'Proof chat', status: 'idle' }],
       }, {
         // A Quick-Chat session with no PR: the header must show New chat/Archive
@@ -557,10 +561,11 @@ function webStageScript() {
         repoDisplayName: 'bossanova',
         chats: [{ id: 'chat-2', agentSessionId: 'claude-2', title: 'Quick chat', status: 'idle' }],
       }, {
-        // A session carrying a rotation audit record so the subtle
-        // RotationHistory block renders for the web-session-detail-rotation
-        // recipe (BOS-394). Most fixtures omit rotationEvents, so the block
-        // renders nothing there.
+        // A session carrying a BOS-409 stale-failover-proxy-port audit record
+        // (UNSPECIFIED outcome, whole message in detail) so the
+        // web-session-detail-rotation recipe proves BOS-432: the row renders the
+        // FULL detail string with no generic "rotation" fallback. Most fixtures
+        // omit rotationEvents, so the block renders nothing there.
         id: 'sess-e2e-rotation',
         title: 'Proof rotated session',
         branchName: 'proof/rotation',
@@ -569,14 +574,19 @@ function webStageScript() {
         repoDisplayName: 'bossanova',
         rotationEvents: [{
           id: 'rot-e2e-1',
-          // RotationOutcome.ROTATED (=1).
-          outcome: 1,
-          fromAccount: 'yuki@kamik.ai',
-          toAccount: 'dave@kamik.ai',
-          // Fixed event time so the rendered <time> label is deterministic.
-          createdAtSeconds: 1700000100,
+          // RotationOutcome.UNSPECIFIED (=0) — no meaningful label, so the row
+          // renders "<time> <detail>" (BOS-432).
+          outcome: 0,
+          detail: 'stale failover-proxy port: pane baked 52106, live proxy on 44127 — restart this pane to reconnect (BOS-409)',
+          // Pin the event to today at 14:34 local so the date-aware timestamp
+          // renders time-only ("14:34") deterministically on any capture day.
+          createdAtSeconds: Math.floor(new Date(new Date().setHours(14, 34, 0, 0)).getTime() / 1000),
         }],
       }],
+      // Expose two registered agents so the new-chat picker (web-new-chat) and
+      // the new-session wizard's agent step actually render the AgentSelect list
+      // rather than auto-skipping past it (the page auto-advances with <=1 agent).
+      agents: ['claude', 'codex'],
       // Seed connected repos so the web-repositories recipe (/settings/repos)
       // renders the repo table (.data-table-wrap) with Disconnect buttons
       // instead of the empty state — the recipe crops to that selector.

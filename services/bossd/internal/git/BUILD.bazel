@@ -13,7 +13,10 @@ go_library(
 
 go_test(
     name = "git_test",
-    srcs = ["worktree_test.go"],
+    srcs = [
+        "worktree_perms_test.go",
+        "worktree_test.go",
+    ],
     embed = [":git"],
     deps = ["@com_github_rs_zerolog//:zerolog"],
 )

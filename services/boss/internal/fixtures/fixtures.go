@@ -251,6 +251,141 @@ func Accounts() []*pb.Account {
 	}
 }
 
+// ArchiveSignalSessions returns two merged (non-archived) sessions in an
+// archive-after-merge repo that differ only in the daemon-driven archive_pending
+// signal (BOS-425). Both have DisplayStatus=MERGED, RepoArchiveSessionsAfterMerge
+// on, and ArchivedAt nil (already resurrected once — no archive is actually in
+// flight from steady state):
+//   - index 0 (sess-425-resurrected): archive_pending=false — the regression
+//     case; the detail view must NOT show "Archiving session...", and the home
+//     list STATUS column shows "✓ merged".
+//   - index 1 (sess-425-archiving): archive_pending=true — the daemon has an
+//     archive in flight; the detail view MUST show "Archiving session...", and
+//     (post-BOS-422) the home list STATUS column shows "archiving" with a
+//     spinner, computed by displaystatus.Compute from archive_pending.
+//
+// Order is fixed: the home view preserves slice order for no-attention (merged)
+// sessions, so the ArchiveSignal scenarios navigate to index 0 / index 1
+// deterministically.
+func ArchiveSignalSessions() []*pb.Session {
+	return []*pb.Session{
+		{
+			// A resurrected session is active again (live lifecycle State) but its PR
+			// is MERGED — exactly the steady state that made the old heuristic show a
+			// permanent false spinner. State stays active so the session renders on the
+			// home list (terminal-state sessions are hidden from the default home view).
+			Id: "sess-425-resurrected", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "Resurrected merged session", BranchName: "boss/resurrected-merged",
+			State:         pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+			// DisplayLabel/Intent are normally hydrated server-side from DisplayStatus;
+			// the mock daemon returns the session verbatim, so set them here so the
+			// home STATUS column renders "✓ merged" (matches displaystatus.Compute).
+			DisplayLabel:                  "✓ merged",
+			DisplayIntent:                 pb.DisplayIntent_DISPLAY_INTENT_MUTED,
+			RepoArchiveSessionsAfterMerge: true,
+			ArchivePending:                false, // no archive in flight — must NOT show "Archiving session..."
+			PrNumber:                      i32(424), CreatedAt: ts(-2 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-app/resurrected-merged",
+		},
+		{
+			Id: "sess-425-archiving", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "Archiving merged session", BranchName: "boss/archiving-merged",
+			State:         pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+			// Post-BOS-422 the daemon feeds archive_pending into displaystatus.Compute,
+			// so an in-flight archive computes DisplayLabel="archiving" (WARNING +
+			// spinner) instead of the stale "✓ merged" — this fixture mirrors that
+			// server-side result so the home STATUS column renders "archiving" for the
+			// list, matching the detail-view "Archiving session..." spinner (BOS-425).
+			DisplayLabel:                  "archiving",
+			DisplayIntent:                 pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+			DisplaySpinner:                true,
+			RepoArchiveSessionsAfterMerge: true,
+			ArchivePending:                true, // daemon archive in flight — MUST show "archiving" (list) / "Archiving session..." (detail)
+			PrNumber:                      i32(425), CreatedAt: ts(-3 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-app/archiving-merged",
+		},
+	}
+}
+
+// ArchiveSignalChats returns one chat per ArchiveSignal session so both
+// chatpickers render populated (not "Loading chats...").
+func ArchiveSignalChats() []*pb.ClaudeChat {
+	return []*pb.ClaudeChat{
+		{Id: "chat-425-r", AgentSessionId: "claude-425-r", SessionId: "sess-425-resurrected", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
+		{Id: "chat-425-a", AgentSessionId: "claude-425-a", SessionId: "sess-425-archiving", Title: "Implement the change", CreatedAt: ts(-3 * time.Hour)},
+	}
+}
+
+// RotationHistoryWorld builds the BOS-432 chat-picker proof dataset: the demo
+// repos plus a single active session carrying rotation history (a newest-first
+// UNSPECIFIED BOS-409 stale-port event with the whole message in Detail, then a
+// ROTATED event) and one chat. Navigating into the session shows the rotation
+// block at the very bottom of the chat-picker view — below the [esc] back action
+// bar. All event timestamps derive from the pinned fixedNow (2026-01-15), which
+// is always an earlier calendar day than the real render clock, so every row
+// renders with the ISO date prefix ("2026-…") deterministically.
+func RotationHistoryWorld() World {
+	return World{
+		Repos:    Repos(),
+		Sessions: RotationHistorySessions(),
+		Chats:    RotationHistoryChats(),
+	}
+}
+
+// RotationHistorySessions returns the single BOS-432 session with rotation
+// history. The newest event is a generic (UNSPECIFIED) stale-port notice whose
+// full message lives in Detail, proving the row renders "<date> <time> <detail>"
+// with no "rotation event — " prefix.
+func RotationHistorySessions() []*pb.Session {
+	return []*pb.Session{
+		{
+			Id: "sess-432-rotation", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "Rotation history demo", BranchName: "boss/rotation-history",
+			State:        pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			PrNumber:     i32(432),
+			CreatedAt:    ts(-2 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-app/rotation-history",
+			RotationEvents: []*pb.RotationEvent{
+				{
+					Id:        "rot-432-1",
+					Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED,
+					Detail:    "stale failover-proxy port: pane baked 52106, live proxy on 44127 — restart this pane to reconnect (BOS-409)",
+					CreatedAt: ts(-90 * time.Minute),
+				},
+				{
+					Id:          "rot-432-2",
+					Outcome:     pb.RotationOutcome_ROTATION_OUTCOME_ROTATED,
+					FromAccount: "yuki@kamik.ai",
+					ToAccount:   "dave@kamik.ai",
+					Detail:      "resumed",
+					CreatedAt:   ts(-2 * time.Hour),
+				},
+			},
+		},
+	}
+}
+
+// RotationHistoryChats returns the single chat for the BOS-432 session so the
+// chat-picker renders a populated table and the full action bar.
+func RotationHistoryChats() []*pb.ClaudeChat {
+	return []*pb.ClaudeChat{
+		{Id: "chat-432", AgentSessionId: "claude-432", SessionId: "sess-432-rotation", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
+	}
+}
+
+// ArchiveSignalWorld builds the BOS-425 dataset: the demo repos (so
+// archive-after-merge is configured) plus the two ArchiveSignal sessions and
+// their chats. Used by the archive-signal proof scenarios.
+func ArchiveSignalWorld() World {
+	return World{
+		Repos:    Repos(),
+		Sessions: ArchiveSignalSessions(),
+		Chats:    ArchiveSignalChats(),
+	}
+}
+
 // DemoWorld assembles the full deterministic dataset. Sessions are ordered
 // active-first (index 0 is the default-selected home-screen entry, sess-aaa-111)
 // with archived sessions appended; downstream proof navigation depends on this.

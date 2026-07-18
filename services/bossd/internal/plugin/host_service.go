@@ -630,7 +630,7 @@ func (s *HostServiceServer) ListOpenPRs(ctx context.Context, req *bossanovav1.Li
 	pbPRs := make([]*bossanovav1.PRSummary, len(prs))
 	for i, pr := range prs {
 		pbPRs[i] = &bossanovav1.PRSummary{
-			Number:     int32(pr.Number),
+			Number:     safeInt32(pr.Number),
 			Title:      pr.Title,
 			HeadBranch: pr.HeadBranch,
 			State:      vcsPRStateToProto(pr.State),
@@ -692,7 +692,7 @@ func (s *HostServiceServer) ListClosedPRs(ctx context.Context, req *bossanovav1.
 	pbPRs := make([]*bossanovav1.PRSummary, len(prs))
 	for i, pr := range prs {
 		pbPRs[i] = &bossanovav1.PRSummary{
-			Number:     int32(pr.Number),
+			Number:     safeInt32(pr.Number),
 			Title:      pr.Title,
 			HeadBranch: pr.HeadBranch,
 			State:      vcsPRStateToProto(pr.State),
@@ -812,14 +812,14 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 				PrDisplayHeadSha:            headSHA,
 				LastRepairRunnerError:       sess.LastRepairRunnerError,
 				LastRepairExitError:         sess.LastRepairExitError,
-				LastRepairAttemptCount:      int32(sess.LastRepairAttemptCount),
+				LastRepairAttemptCount:      safeInt32(sess.LastRepairAttemptCount),
 				LastRepairHeadSha:           sess.LastRepairHeadSHA,
 				LastRepairDisplayStatus:     bossanovav1.DisplayStatus(sess.LastRepairDisplayStatus),
 				LastRepairReviewFingerprint: sess.LastRepairReviewFingerprint,
 				LastRepairBlockedReason:     sess.LastRepairBlockedReason,
 			}
 			if sess.PRNumber != nil {
-				prNumber := int32(*sess.PRNumber)
+				prNumber := safeInt32(*sess.PRNumber)
 				pbSess.PrNumber = &prNumber
 			}
 			if !sess.UpdatedAt.IsZero() {
@@ -851,7 +851,7 @@ func (s *HostServiceServer) GetReviewComments(ctx context.Context, req *bossanov
 	for i, comment := range comments {
 		var line *int32
 		if comment.Line != nil {
-			l := int32(*comment.Line)
+			l := safeInt32(*comment.Line)
 			line = &l
 		}
 		pbComments[i] = &bossanovav1.ReviewComment{
@@ -976,11 +976,11 @@ func vcsReviewStateToProto(s vcs.ReviewState) bossanovav1.ReviewState {
 }
 
 func vcsDisplayStatusToProto(s vcs.DisplayStatus) bossanovav1.DisplayStatus {
-	return bossanovav1.DisplayStatus(s)
+	return bossanovav1.DisplayStatus(safeInt32(int(s)))
 }
 
 func sessionStateToProto(s machine.State) bossanovav1.SessionState {
-	return bossanovav1.SessionState(s)
+	return bossanovav1.SessionState(safeInt32(int(s)))
 }
 
 func protoToSessionEvent(e bossanovav1.SessionEvent) machine.Event {

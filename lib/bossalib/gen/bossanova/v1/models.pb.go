@@ -1972,8 +1972,16 @@ type Session struct {
 	// GetSession so the TUI session-detail view can show an "Archiving…" status
 	// and know a merged session is about to be auto-archived (BOS-46 follow-up).
 	RepoArchiveSessionsAfterMerge bool `protobuf:"varint,61,opt,name=repo_archive_sessions_after_merge,json=repoArchiveSessionsAfterMerge,proto3" json:"repo_archive_sessions_after_merge,omitempty"`
-	unknownFields                 protoimpl.UnknownFields
-	sizeCache                     protoimpl.SizeCache
+	// True while an archive (ArchiveSession) is actually in flight for this
+	// session. Transport-only: hydrated server-side from the in-memory
+	// DisplayTracker and never persisted. Set/cleared around the single archive
+	// chokepoint (Lifecycle.ArchiveSession) so the TUI renders "Archiving…" only
+	// when the daemon has an archive running — not inferred from steady-state
+	// MERGED + repo_archive_sessions_after_merge, which stays true forever for a
+	// merged→archived→resurrected session (BOS-425). Mirrors display_merging (60).
+	ArchivePending bool `protobuf:"varint,62,opt,name=archive_pending,json=archivePending,proto3" json:"archive_pending,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -2429,6 +2437,13 @@ func (x *Session) GetDisplayMerging() bool {
 func (x *Session) GetRepoArchiveSessionsAfterMerge() bool {
 	if x != nil {
 		return x.RepoArchiveSessionsAfterMerge
+	}
+	return false
+}
+
+func (x *Session) GetArchivePending() bool {
+	if x != nil {
+		return x.ArchivePending
 	}
 	return false
 }
@@ -4344,7 +4359,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	" \x01(\bR\fhasSentryKey\x129\n" +
 	"\n" +
 	"updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\x0f\n" +
-	"\r_setup_script\"\xde\x1a\n" +
+	"\r_setup_script\"\x87\x1b\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -4419,7 +4434,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\raccount_label\x18: \x01(\tH\x0fR\faccountLabel\x88\x01\x01\x12D\n" +
 	"\x0frotation_events\x18; \x03(\v2\x1b.bossanova.v1.RotationEventR\x0erotationEvents\x12'\n" +
 	"\x0fdisplay_merging\x18< \x01(\bR\x0edisplayMerging\x12H\n" +
-	"!repo_archive_sessions_after_merge\x18= \x01(\bR\x1drepoArchiveSessionsAfterMergeB\x13\n" +
+	"!repo_archive_sessions_after_merge\x18= \x01(\bR\x1drepoArchiveSessionsAfterMerge\x12'\n" +
+	"\x0farchive_pending\x18> \x01(\bR\x0earchivePendingB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +

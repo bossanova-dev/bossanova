@@ -74,6 +74,13 @@ func transcriptPath(_ string, agentSessionID string) (string, error) {
 // freshest transcript is the one the daemon's status path should read.
 // Exposed for tests so the sessions root can be redirected to a temp dir.
 func findRolloutPath(root, agentSessionID string) (string, error) {
+	// agentSessionID is externally supplied and interpolated into the glob
+	// pattern below. A codex session id is a single UUID segment; reject any id
+	// carrying path separators or ".." so a crafted value cannot collapse the
+	// pattern out of the sessions root and read an arbitrary file.
+	if strings.ContainsAny(agentSessionID, `/\`) || strings.Contains(agentSessionID, "..") {
+		return "", fmt.Errorf("invalid codex session id %q", agentSessionID)
+	}
 	pattern := filepath.Join(root, "*", "*", "*", fmt.Sprintf("rollout-*-%s.jsonl", agentSessionID))
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
@@ -203,7 +210,8 @@ func scanInteractiveSessionCandidatesInWindow(root, workDir string, notBefore, n
 }
 
 func readSessionMeta(path string) (codexSessionMetaPayload, bool) {
-	f, err := os.Open(path)
+	cleaned := filepath.Clean(path)
+	f, err := os.Open(cleaned)
 	if err != nil {
 		return codexSessionMetaPayload{}, false
 	}
@@ -313,7 +321,8 @@ type codexResponseItemPayload struct {
 // Errors and empty tails return false — callers treat that as "don't suppress
 // the question state".
 func lastTurnIsUser(path string) bool {
-	f, err := os.Open(path)
+	cleaned := filepath.Clean(path)
+	f, err := os.Open(cleaned)
 	if err != nil {
 		return false
 	}
@@ -437,7 +446,8 @@ func sessionIndexThreadName(agentSessionID string) string {
 	if err != nil {
 		return ""
 	}
-	f, err := os.Open(filepath.Join(configDir, "session_index.jsonl"))
+	indexPath := filepath.Clean(filepath.Join(configDir, "session_index.jsonl"))
+	f, err := os.Open(indexPath)
 	if err != nil {
 		return ""
 	}
@@ -472,7 +482,8 @@ func sessionIndexThreadName(agentSessionID string) string {
 // first response_item message role:"user" input_text). Synthetic
 // `<environment_context>` messages are filtered out by the XML-tag stripper.
 func chatTitleAtPath(path string) string {
-	f, err := os.Open(path)
+	cleaned := filepath.Clean(path)
+	f, err := os.Open(cleaned)
 	if err != nil {
 		return ""
 	}
@@ -573,7 +584,8 @@ func truncate(s string) string {
 // seen across the full file (used as FinalAssistantText in
 // ReadTranscriptResponse, independent of any MaxMessages tail-cut).
 func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, error) {
-	f, err := os.Open(path)
+	cleaned := filepath.Clean(path)
+	f, err := os.Open(cleaned)
 	if err != nil {
 		return nil, "", err
 	}

@@ -390,6 +390,7 @@ func readPromptFlag(cmd *cobra.Command, required bool) (string, bool, error) {
 		}
 		return string(b), true, nil
 	}
+	// #nosec G304 -- path is the operator-named `--prompt-file` CLI argument; reading the cron prompt from the file the operator specifies is the feature, and it holds no secret. owner=@recurser review-by=2026-09-16 issue=BOS-414
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", false, fmt.Errorf("read prompt file: %w", err)

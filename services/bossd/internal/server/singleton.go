@@ -59,6 +59,7 @@ func AcquireSingletonLock(lockPath string) (*os.File, error) {
 		return nil, fmt.Errorf("create lock dir: %w", err)
 	}
 
+	// #nosec G304 -- lockPath is a daemon-internal, non-user path (the daemon singleton-lock path derived from daemon config/data dir); owner=@recurser review-by=2026-10-18 issue=BOS-413
 	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)

@@ -99,6 +99,27 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{},
 		},
+		// archive-signal: two merged sessions in an archive-after-merge repo that
+		// differ only in the daemon-driven archive_pending signal, for the BOS-425
+		// chatpicker "Archiving…" proof scenarios. Carries the same cloud-access
+		// e2e pin as demo so the boss subprocess uses the deterministic cloud-access
+		// fake and lands on the home session list (without it boss falls back to the
+		// real remote cloud client and renders a different landing screen).
+		"archive-signal": {
+			World:      ArchiveSignalWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
+		// rotation-history: one active session carrying rotation history, for the
+		// BOS-432 chat-picker proof scenario that shows the rotation block moved to
+		// the very bottom of the view (below the [esc] back action bar) with the
+		// full BOS-409 stale-port detail string and an ISO date prefix. Carries the
+		// same cloud-access e2e pin as demo so boss lands on the home session list.
+		"rotation-history": {
+			World:      RotationHistoryWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 	}
 }
 

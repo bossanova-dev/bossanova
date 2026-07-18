@@ -90,8 +90,15 @@ type Backend interface {
 	// Diagnostics
 	ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error)
 	RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, error)
+	StartRepairWorkflow(ctx context.Context) (*pb.StartRepairWorkflowResponse, error)
 	ListAgents(ctx context.Context) ([]*pb.AgentInfo, error)
 	ListPlugins(ctx context.Context) ([]*pb.InstalledPlugin, error)
+
+	// Global settings (the TUI-editable subset of settings.json). GetSettings
+	// returns the current values; UpdateSettings applies a partial update and
+	// returns the post-write values.
+	GetSettings(ctx context.Context) (*pb.GlobalSettings, error)
+	UpdateSettings(ctx context.Context, req *pb.UpdateSettingsRequest) (*pb.GlobalSettings, error)
 }
 
 // CreateSessionResult is the bounded outcome of Backend.CreateSession. Session

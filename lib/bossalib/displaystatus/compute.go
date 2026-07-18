@@ -66,6 +66,9 @@ type Output struct {
 //     3b. DisplayMerging  → "merging" / INFO / spinner (a PR merge in flight;
 //     wins over the stale PR-derived labels so a passing/approved session shows
 //     "merging" for the merge's full duration)
+//     3c. ArchivePending  → "archiving" / WARNING / spinner (an archive in
+//     flight; wins over the stale MERGED label so an auto-archiving session
+//     shows "archiving" until the archive completes or errors)
 //  4. ChatStatus WORKING  → "working"    / SUCCESS / spinner
 //  5. Active workflow     → "running L/M", "pending", "paused L/M",
 //     "failed L/M", "cancelled" with matching intents
@@ -109,6 +112,18 @@ func Compute(in Input) Output {
 	// label the merge is about to invalidate.
 	if in.Session != nil && in.Session.DisplayMerging {
 		return Output{Label: "merging", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true}
+	}
+	// An archive is in flight for this session — the daemon set the transient
+	// archive_pending flag via DisplayTracker.SetArchiving around the single
+	// Lifecycle.ArchiveSession chokepoint (any trigger: auto-after-merge, manual,
+	// dependabot). This must win over the stale MERGED PR label below (branch 7)
+	// so an auto-archiving session renders "archiving" for the archive's full
+	// duration instead of "✓ merged", matching the manual-archive list override
+	// (renderArchivingStatus) and the BOS-425 session-detail view. Placed right
+	// after merging — both are transient post-terminal overrides — so a live
+	// QUESTION above still wins, but the archive beats the merged PR label.
+	if in.Session != nil && in.Session.ArchivePending {
+		return Output{Label: "archiving", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true}
 	}
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING {
 		intent := pb.DisplayIntent_DISPLAY_INTENT_SUCCESS

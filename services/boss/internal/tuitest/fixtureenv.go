@@ -23,14 +23,14 @@ func ConfigDirForHome(home string) string {
 // the bossanova config directory under home, creating directories as needed.
 func WriteSeedSettings(home string, settings map[string]any) error {
 	configDir := ConfigDirForHome(home)
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return err
 	}
 	contents, err := json.Marshal(settings)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "settings.json"), contents, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, "settings.json"), contents, 0o600); err != nil {
 		return err
 	}
 	return nil

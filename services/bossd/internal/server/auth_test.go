@@ -78,6 +78,18 @@ func TestDaemon_AcceptsAuthenticatedClient(t *testing.T) {
 	socketPath, token, stop := startAuthedTestDaemon(t, "")
 	defer stop()
 
+	// G302: the listener socket must be owner read/write only (0o600) — no
+	// group/world bits and no unused execute bit — while still accepting an
+	// authenticated dial (below). Assert the mode here, on the same listener a
+	// real client connects over.
+	info, err := os.Stat(socketPath)
+	if err != nil {
+		t.Fatalf("stat socket: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("socket mode = %o, want 0o600", perm)
+	}
+
 	c := clientFor(t, socketPath, connect.WithInterceptors(socketauth.NewClientInterceptor(token)))
 	if _, err := c.ListRepos(context.Background(), connect.NewRequest(&pb.ListReposRequest{})); err != nil {
 		t.Fatalf("authenticated ListRepos failed: %v", err)

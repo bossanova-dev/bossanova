@@ -184,7 +184,8 @@ func loadOrCreatePassphrase(path string) (string, error) {
 // passphrase, (_, false, nil) if path does not exist, and an error otherwise
 // (including when the file exists but is empty).
 func readExisting(path string) (string, bool, error) {
-	data, err := os.ReadFile(path)
+	cleaned := filepath.Clean(path)
+	data, err := os.ReadFile(cleaned)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", false, nil

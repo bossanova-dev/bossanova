@@ -1,10 +1,26 @@
 package models
 
 import (
+	"math"
+
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// intToInt32 converts an int to int32, clamping out-of-range values to the
+// int32 bounds rather than silently wrapping (gosec G115). Domain values here
+// (attempt counts, PR numbers) never legitimately exceed int32, so clamping is
+// a safe saturation for the wire representation.
+func intToInt32(v int) int32 {
+	if v > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if v < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int32(v)
+}
 
 // --- Repo conversion ---
 
@@ -59,7 +75,7 @@ func SessionToProto(s *Session) *pb.Session {
 		PrUrl:                       s.PRURL,
 		LastCheckState:              checkStateToProto(s.LastCheckState),
 		AutomationEnabled:           s.AutomationEnabled,
-		AttemptCount:                int32(s.AttemptCount),
+		AttemptCount:                intToInt32(s.AttemptCount),
 		BlockedReason:               s.BlockedReason,
 		LastRepairReviewFingerprint: s.LastRepairReviewFingerprint,
 		CreatedAt:                   timestamppb.New(s.CreatedAt),
@@ -286,7 +302,7 @@ func intPtrToInt32Ptr(v *int) *int32 {
 	if v == nil {
 		return nil
 	}
-	i := int32(*v)
+	i := intToInt32(*v)
 	return &i
 }
 

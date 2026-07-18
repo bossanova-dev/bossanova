@@ -43,11 +43,12 @@ var (
 )
 
 // settingUpTracker is the narrow slice of *status.DisplayTracker the
-// lifecycle needs to drive the "initializing" display status. A local
-// interface keeps the session package free of a status-package import
-// dependency. *status.DisplayTracker satisfies it.
+// lifecycle needs to drive the transient "initializing" and "archiving"
+// display statuses. A local interface keeps the session package free of a
+// status-package import dependency. *status.DisplayTracker satisfies it.
 type settingUpTracker interface {
 	SetSettingUp(sessionID string, on bool)
+	SetArchiving(sessionID string, on bool)
 }
 
 // PollArmer arms a poll-fallback goroutine that drives an agent run to
@@ -113,7 +114,7 @@ type Lifecycle struct {
 	cronCompletionNotifier cronCompletionNotifier
 
 	// reapFinalizer is the finalize entry the stranded-cron sweep
-	// (RecoverStrandedCronSessions) routes dead strands through. nil means
+	// (recoverStrandedCronSessions) routes dead strands through. nil means
 	// "use the real finalizeSessionFrom"; tests inject a fake to record the
 	// (sessionID, expectedStates) it is called with without exercising the
 	// full finalize pipeline.
@@ -500,6 +501,11 @@ func (l *Lifecycle) SetBranchResolver(branches LiveBranchResolver) {
 func (l *Lifecycle) Bootstrap(ctx context.Context) {
 	l.reArmSurvivingTmuxChats(ctx)
 	l.sweepOrphanedHeadlessRuns(ctx)
+	// Flag live tmux panes whose baked ANTHROPIC_BASE_URL points at a stale
+	// failover-proxy port after this restart (BOS-409). Runs after SetProxyPort
+	// has stamped the live port (Bootstrap is called from main.go after the proxy
+	// block binds), so the comparison is against the real port.
+	l.detectStalePaneProxyPorts(ctx)
 	// Best-effort: retry any local base fast-forwards that a prior merge had to
 	// defer because the operator's base checkout was dirty at merge time.
 	l.worktrees.RetryDeferredBaseSyncs(ctx)
@@ -583,7 +589,7 @@ func (l *Lifecycle) reArmSurvivingTmuxChats(ctx context.Context) {
 			WorkDir:   sess.WorktreePath,
 			SessionId: chat.SessionID,
 			HookToken: *sess.HookToken,
-			HookPort:  int32(l.hookPort),
+			HookPort:  clampInt32(l.hookPort),
 		})
 		if err != nil {
 			l.logger.Warn().Err(err).
@@ -1117,6 +1123,16 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// Initialize state machine at CreatingWorktree.
 	sm := machine.New(machine.CreatingWorktree)
 
+	// A `boss new --detach` run is hosted in a durable tmux pane when tmux is
+	// available, so it survives a daemon restart and is re-monitored on boot
+	// (exactly like cron / tmux_unattended) instead of being orphaned. When tmux
+	// is unavailable it falls back to the paneless headless path, which still
+	// orphans on restart — so detachViaTmux (and thus the persisted Detach flag)
+	// is set ONLY on the successful tmux-hosted branch. tmuxHosted unifies every
+	// durable-tmux provenance for the routing/hook/liveness decisions below.
+	detachViaTmux := opts.Detach && l.tmux != nil && l.tmux.Available(ctx)
+	tmuxHosted := opts.CronJobID != "" || opts.TmuxUnattended || detachViaTmux
+
 	// Update session state to CreatingWorktree and stamp the cron_job_id
 	// when the cron scheduler spawned us. The cron linkage is set here
 	// (rather than by the task orchestrator) so it's guaranteed to land
@@ -1129,13 +1145,21 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		cronJobID := &opts.CronJobID
 		updateParams.CronJobID = &cronJobID
 	}
-	if opts.HookToken != "" {
+	if opts.HookToken != "" && tmuxHosted {
 		hookToken := &opts.HookToken
 		updateParams.HookToken = &hookToken
 	}
 	if opts.TmuxUnattended {
 		tmuxUnattended := true
 		updateParams.TmuxUnattended = &tmuxUnattended
+	}
+	// Persist Detach only on the durable tmux-hosted branch: a `--detach` run
+	// that fell back to the paneless headless path (tmux unavailable) must stay
+	// in the headless class so it still orphans on restart (there is genuinely no
+	// live process to recover), so it leaves Detach unset (nil → stays false).
+	if detachViaTmux {
+		detach := true
+		updateParams.Detach = &detach
 	}
 	if _, err := l.sessions.Update(ctx, sessionID, updateParams); err != nil {
 		return fmt.Errorf("set creating_worktree state: %w", err)
@@ -1241,7 +1265,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// startup). Non-cron sessions have an empty HookToken and skip this
 	// path entirely, preserving historical behaviour.
 	var hookResp *bossanovav1.ConfigureFinalizeHookResponse
-	if opts.HookToken != "" {
+	if opts.HookToken != "" && tmuxHosted {
 		if l.hookPort == 0 {
 			return fmt.Errorf("hook port not configured: SetHookPort must be called before starting sessions with a HookToken")
 		}
@@ -1253,7 +1277,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			WorkDir:   result.WorktreePath,
 			SessionId: sessionID,
 			HookToken: opts.HookToken,
-			HookPort:  int32(l.hookPort),
+			HookPort:  clampInt32(l.hookPort),
 		})
 		if err != nil {
 			return fmt.Errorf("configure finalize hook: %w", err)
@@ -1285,15 +1309,18 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		Str("worktree", result.WorktreePath).
 		Msg("starting claude")
 
-	// Start the agent. Cron-spawned sessions and tmux_unattended sessions (e.g.
-	// /boss-epic's durable tmux-hosted runs) run in a tmux-hosted Claude UI so
-	// the user can attach to the live session. Interactive sessions (the TUI's
-	// new-PR / existing-PR flows, and tracker-sourced Linear/Sentry sessions
-	// created WITHOUT detach) are created idle: no agent runs yet, and it starts
-	// interactively on first attach (RecordChat → tmux). A detached run
-	// (opts.Detach) — `boss new --detach`, or `/boss-epic`'s headless
-	// create_session fan-out — takes the headless `claude --print` / `codex
-	// exec` path, because that caller wants an autonomous pass with a prompt.
+	// Start the agent. Cron-spawned sessions, tmux_unattended sessions (e.g.
+	// /boss-epic's durable tmux-hosted runs), and `boss new --detach` runs with
+	// tmux available (detachViaTmux) run in a tmux-hosted Claude UI so the user
+	// can attach and — crucially — the pane is owned by the independent tmux
+	// server, surviving a daemon restart to be re-monitored on boot instead of
+	// orphaned (tmuxHosted). Interactive sessions (the TUI's new-PR / existing-PR
+	// flows, and tracker-sourced Linear/Sentry sessions created WITHOUT detach)
+	// are created idle: no agent runs yet, and it starts interactively on first
+	// attach (RecordChat → tmux). A detached run whose tmux is UNAVAILABLE falls
+	// back to the headless `claude --print` / `codex exec` path, because that
+	// caller still wants an autonomous pass with a prompt (it orphans on restart,
+	// with no live process to recover).
 	//
 	// Detach — NOT tracker-sourcing — is the sole signal that governs
 	// headless-vs-idle here. A tracker id only links the Linear/Sentry issue; it
@@ -1308,7 +1335,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	var claudeSessionID string
 	headlessRun := false
 	switch {
-	case opts.CronJobID != "" || opts.TmuxUnattended:
+	case tmuxHosted:
 		claudeSessionID, err = l.startTmuxChat(ctx, sessionID, opts, session, result)
 		if err != nil {
 			return fmt.Errorf("start tmux chat: %w", err)
@@ -1341,7 +1368,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	if hookResp != nil && !hookResp.GetIsSupported() {
 		l.logger.Info().Str("session", sessionID).Msg("agent does not support finalize hook")
 	}
-	hooklessTmux := (opts.CronJobID != "" || opts.TmuxUnattended) && hookResp != nil && !hookResp.GetIsSupported()
+	hooklessTmux := tmuxHosted && hookResp != nil && !hookResp.GetIsSupported()
 
 	// Update session with Claude session ID. Idle tracker sessions have no
 	// agent session yet, so leave AgentSessionID nil (matching quick chat)
@@ -2293,6 +2320,20 @@ func (l *Lifecycle) StopSession(ctx context.Context, sessionID string) error {
 // ArchiveSession stops the Claude process and removes the worktree,
 // but keeps the branch alive for later resurrection.
 func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error {
+	// Surface an explicit "archive in flight" signal on the session
+	// (Session.archive_pending, hydrated from the DisplayTracker) so the TUI
+	// renders "Archiving…" only while an archive is actually running here —
+	// rather than inferring it from steady-state MERGED + repo flag, which stays
+	// true forever for a resurrected merged session (BOS-425). Set on entry,
+	// clear on exit via defer so it clears on both the success and error paths.
+	// This is the single archive chokepoint: the ArchiveSession RPC, the
+	// dispatcher's auto-archive-after-merge, and the dependabot auto-archive all
+	// funnel through here via ArchiveSessionAndNotify.
+	if l.settingUpTracker != nil {
+		l.settingUpTracker.SetArchiving(sessionID, true)
+		defer l.settingUpTracker.SetArchiving(sessionID, false)
+	}
+
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
@@ -2336,8 +2377,8 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 		// LOCAL ONLY — never deletes or pushes the remote branch. Safety is
 		// routed through the worktree-manager interface (BranchSafeToDelete ==
 		// merge-base --is-ancestor) so this path stays testable via the mock.
-		if repo.CanAutoDeleteBranches && session.BranchName != "" {
-			l.maybeDeleteArchivedLocalBranch(ctx, sessionID, repo, session)
+		if repo.CanAutoDeleteBranches {
+			l.reapSafeLocalBranch(ctx, sessionID, repo, session)
 		}
 	}
 
@@ -2350,13 +2391,24 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 	return nil
 }
 
-// maybeDeleteArchivedLocalBranch best-effort deletes the session's LOCAL branch
-// after its worktree has been archived, when the repo opts in and the branch is
-// safe to drop (merged/fast-forwarded/NO_CHANGE per BranchSafeToDelete). It
-// never returns an error: the archive has already succeeded, so a predicate
-// failure, an "unsafe, keep it" outcome, or a delete failure is only logged.
-// LOCAL ONLY — it never touches the remote branch.
-func (l *Lifecycle) maybeDeleteArchivedLocalBranch(ctx context.Context, sessionID string, repo *models.Repo, session *models.Session) {
+// reapSafeLocalBranch best-effort deletes the session's LOCAL branch after its
+// worktree has been removed, when the branch is safe to drop
+// (merged/fast-forwarded/NO_CHANGE per BranchSafeToDelete) and is not the
+// base/default branch. It never returns an error: callers invoke it after the
+// worktree is already gone, so a predicate failure, an "unsafe, keep it"
+// outcome, or a delete failure is only logged. LOCAL ONLY — it never touches
+// the remote branch.
+//
+// Callers decide whether to gate on repo.CanAutoDeleteBranches: ArchiveSession
+// (BOS-180) reaps only when the repo opts in, while the no-change cron
+// hard-delete (BOS-424) reaps unconditionally — a throwaway no-change branch
+// has nothing to resurrect, and the shared commits-no-origin caller is
+// protected by the BranchSafeToDelete guard (unmerged commits ⇒ not safe ⇒
+// kept).
+func (l *Lifecycle) reapSafeLocalBranch(ctx context.Context, sessionID string, repo *models.Repo, session *models.Session) {
+	if session.BranchName == "" {
+		return
+	}
 	// Defensive guard: never force-delete the base branch. A ref is trivially
 	// its own ancestor, so if a session's BranchName ever equals its BaseBranch
 	// (or the repo default), BranchSafeToDelete returns true and the destructive
@@ -2367,7 +2419,7 @@ func (l *Lifecycle) maybeDeleteArchivedLocalBranch(ctx context.Context, sessionI
 		l.logger.Info().
 			Str("session", sessionID).
 			Str("branch", session.BranchName).
-			Msg("archived branch is the base branch; keeping branch")
+			Msg("reap: branch is the base branch; keeping branch")
 		return
 	}
 	safe, err := l.worktrees.BranchSafeToDelete(ctx, repo.LocalPath, session.BranchName, session.BaseBranch)
@@ -2375,27 +2427,27 @@ func (l *Lifecycle) maybeDeleteArchivedLocalBranch(ctx context.Context, sessionI
 		l.logger.Warn().Err(err).
 			Str("session", sessionID).
 			Str("branch", session.BranchName).
-			Msg("branch safe-to-delete check failed; keeping branch")
+			Msg("reap: branch safe-to-delete check failed; keeping branch")
 		return
 	}
 	if !safe {
 		l.logger.Info().
 			Str("session", sessionID).
 			Str("branch", session.BranchName).
-			Msg("archived branch not safe to auto-delete; keeping branch")
+			Msg("reap: branch not safe to auto-delete; keeping branch")
 		return
 	}
 	if err := l.worktrees.DeleteLocalBranch(ctx, repo.LocalPath, session.BranchName); err != nil {
 		l.logger.Warn().Err(err).
 			Str("session", sessionID).
 			Str("branch", session.BranchName).
-			Msg("failed to delete archived local branch; keeping branch")
+			Msg("reap: failed to delete local branch; keeping branch")
 		return
 	}
 	l.logger.Info().
 		Str("session", sessionID).
 		Str("branch", session.BranchName).
-		Msg("deleted safe local branch on archive")
+		Msg("reap: deleted safe local branch")
 }
 
 // ResurrectSession re-creates a worktree from an existing branch and
@@ -2427,7 +2479,10 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 			RepoPath:     repo.LocalPath,
 			WorktreePath: session.WorktreePath,
 			BranchName:   session.BranchName,
-			SetupScript:  repo.SetupScript,
+			// Base branch lets Resurrect recreate the branch when it was
+			// safe-deleted on archive (BOS-180). See BOS-421.
+			BaseBranch:  session.BaseBranch,
+			SetupScript: repo.SetupScript,
 		}); err != nil {
 			return fmt.Errorf("resurrect worktree: %w", err)
 		}

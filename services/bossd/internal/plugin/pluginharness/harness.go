@@ -144,13 +144,13 @@ func pluginBinEnvKey(pluginName string, tags []string) string {
 // staged/built binaries can be gathered into one scanned directory.
 func copyExecutable(t *testing.T, src, dst string) {
 	t.Helper()
-	in, err := os.Open(src)
+	in, err := os.Open(filepath.Clean(src)) // #nosec G304 -- test harness copies a caller-supplied, freshly built plugin binary path (filepath.Clean sanitized); owner=@recurser; review-by=2026-10-18; issue=BOS-423
 	if err != nil {
 		t.Fatalf("open plugin binary %q: %v", src, err)
 	}
 	defer func() { _ = in.Close() }()
 
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+	out, err := os.OpenFile(filepath.Clean(dst), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755) // #nosec G302 G304 -- copied plugin binary must be 0o755 to be executable; dst is a test-harness-owned staging path (filepath.Clean sanitized); owner=@recurser; review-by=2026-10-18; issue=BOS-423
 	if err != nil {
 		t.Fatalf("create plugin binary %q: %v", dst, err)
 	}

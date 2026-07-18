@@ -156,10 +156,20 @@ type ChatPickerModel struct {
 	width   int
 	height  int
 
-	// autoArchiving is set when a merged session's repo has archive-after-merge
-	// on and the daemon's async archive is expected imminently; it drives the
-	// "Archiving…" status until the session actually archives (archived → home).
-	autoArchiving bool
+	// optimisticArchiveLatch is a short-lived local latch set the moment a
+	// TUI-initiated merge succeeds (mergeResultMsg) on an archive-after-merge
+	// repo, so the detail view shows "Archiving…" with no flicker before the
+	// daemon's authoritative archive_pending signal round-trips. The steady-state
+	// signal is m.session.GetArchivePending() (daemon-driven); the two are OR'd
+	// where archiving is rendered. Kept distinct from the daemon signal so a
+	// steady-state poll can't overwrite the optimism. Cleared on
+	// archived/navigation, when the repo disables archive-after-merge, and — the
+	// handoff that bounds it — the moment a poll first reports archive_pending
+	// true (the daemon signal then drives the spinner), so a daemon-side archive
+	// that sets then clears archive_pending without archiving cannot leave it
+	// stuck. Replaces the old inferred autoArchiving heuristic that showed a
+	// permanent false spinner for resurrected merged sessions (BOS-425).
+	optimisticArchiveLatch bool
 
 	// newTabSupported is cached at construction so we don't re-inspect
 	// env vars on every render. The [t]erminal action is hidden when
@@ -649,7 +659,9 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// cancels or archives back to the list).
 		m.merged = true
 		if m.session.GetRepoArchiveSessionsAfterMerge() {
-			m.autoArchiving = true // daemon will archive on the merge webhook; show it
+			// Optimistic latch: the daemon will archive on the merge webhook.
+			// Show "Archiving…" immediately, before archive_pending round-trips.
+			m.optimisticArchiveLatch = true
 		}
 		return m, nil
 
@@ -663,6 +675,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.archived = true
+		m.optimisticArchiveLatch = false // archived; drop the optimistic latch
 		return m, nil
 
 	case wakeResultMsg:
@@ -732,14 +745,31 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// an external merge, or a manual archive elsewhere). Flip the same flag a
 				// TUI-initiated archive sets so the app loop returns us to the session list.
 				m.archived = true
+				m.optimisticArchiveLatch = false // archived; drop the optimistic latch
 			}
-			// Derive this from every poll, rather than latching it true: another
-			// client can disable archive-after-merge while this picker is open.
-			// A stale true value would otherwise leave the detail view claiming it
-			// is archiving forever even though the dispatcher correctly skips it.
-			m.autoArchiving = m.session.GetArchivedAt() == nil &&
-				m.session.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_MERGED &&
-				m.session.GetRepoArchiveSessionsAfterMerge()
+			// Whether an archive is actually in flight is now the daemon-driven
+			// m.session.GetArchivePending() (hydrated from the DisplayTracker), read
+			// live off every poll — no longer inferred from MERGED + repo flag, which
+			// stayed true forever for a resurrected merged session (BOS-425). Also
+			// drop the optimistic merge latch if the repo disabled archive-after-merge
+			// while this picker is open, so the latch can't get stuck showing
+			// "Archiving…" for an archive the daemon will now skip.
+			if !m.session.GetRepoArchiveSessionsAfterMerge() {
+				m.optimisticArchiveLatch = false
+			}
+			// Hand off from the optimistic bridge to the authoritative daemon
+			// signal: once the daemon reports the archive actually in flight, drop
+			// the latch. isArchiving() keeps rendering the spinner via
+			// GetArchivePending() while the archive runs, and when the daemon clears
+			// archive_pending (archive completed OR failed — the defer in
+			// Lifecycle.ArchiveSession fires on both), the spinner stops from the
+			// daemon signal alone. This bounds the latch to the pre-signal window it
+			// exists for, so a daemon-side archive that sets then clears
+			// archive_pending without archiving (a failed ArchiveSession) can no
+			// longer leave a permanently-stuck "Archiving…" spinner (BOS-425).
+			if m.session.GetArchivePending() {
+				m.optimisticArchiveLatch = false
+			}
 			if m.session.GetPrNumber() != prevPR {
 				m.repoWebLink = repoWebLink{}
 				refreshWebLink = m.fetchRepoWebLink()
@@ -1339,15 +1369,17 @@ func (m ChatPickerModel) tableHeight() int {
 }
 
 // rotationHistoryHeight returns the vertical lines the rotation-history block
-// (BOS-176) occupies above the chat list — the rendered block plus the single
-// blank line View renders below it — or 0 when the session has no rotation
-// history. Reserving these keeps the block from pushing a chat row off-screen.
+// (BOS-176) occupies at the very bottom of the chat-picker View (BOS-432) — just
+// the rendered block, since the single blank line above it is the preceding
+// action-bar/prompt's own bottom-pad line (View writes only a "\n" to close it,
+// adding no extra row) — or 0 when the session has no rotation history.
+// Reserving these keeps the block from pushing a chat row off-screen.
 func (m ChatPickerModel) rotationHistoryHeight() int {
-	block := rotationHistoryBlock(m.session, m.table.Width())
+	block := rotationHistoryBlock(m.session, m.table.Width(), time.Now())
 	if block == "" {
 		return 0
 	}
-	return lipgloss.Height(block) + 1
+	return lipgloss.Height(block)
 }
 
 // warningBlockHeight returns the number of vertical lines the session warning
@@ -1374,11 +1406,22 @@ func (m ChatPickerModel) limitedLineHeight() int {
 	return 2
 }
 
+// isArchiving reports whether the detail view should render "Archiving…". True
+// when a manual archive is in flight (m.archiving), when the daemon reports an
+// archive actually running for this session (Session.archive_pending, hydrated
+// from the DisplayTracker), or while the short-lived optimistic merge latch is
+// set right after a TUI-initiated merge. The daemon signal replaced the old
+// inferred MERGED + repo-flag heuristic that never cleared for a resurrected
+// merged session (BOS-425).
+func (m ChatPickerModel) isArchiving() bool {
+	return m.archiving || m.optimisticArchiveLatch || m.session.GetArchivePending()
+}
+
 func (m ChatPickerModel) View() tea.View {
 	if m.err != nil {
 		body := renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n"
 		switch {
-		case m.archiving || m.autoArchiving:
+		case m.isArchiving():
 			body += lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 				m.spinner.View() + "Archiving session...")
 		case m.confirm == confirmArchive:
@@ -1447,14 +1490,6 @@ func (m ChatPickerModel) View() tea.View {
 		b.WriteString("\n\n")
 	}
 
-	// Recent automatic-rotation decisions for this session (BOS-176), below the
-	// warnings and above the chat list. Empty (skipped) when there is no
-	// rotation history, so sessions that never rotated see no extra block.
-	if hist := rotationHistoryBlock(m.session, m.table.Width()); hist != "" {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(hist))
-		b.WriteString("\n\n")
-	}
-
 	// Name the usage-limited provider(s) (BOS-167) above the chat list so the
 	// operator can see at a glance which agent hit its cap without scanning the
 	// per-chat STATUS column. Only rendered when at least one chat is limited.
@@ -1473,7 +1508,7 @@ func (m ChatPickerModel) View() tea.View {
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + label))
-	} else if m.archiving || m.autoArchiving {
+	} else if m.isArchiving() {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + "Archiving session..."))
 	} else if m.switching {
@@ -1568,6 +1603,19 @@ func (m ChatPickerModel) View() tea.View {
 				[]string{"[esc] back"},
 			))
 		}
+	}
+
+	// Recent automatic-rotation decisions for this session (BOS-176), moved to
+	// the very bottom of the view (BOS-432) — below the action bar (or, during a
+	// transient confirm/merge/archive dialog, harmlessly below that prompt), with
+	// one blank line above. The preceding action-bar/prompt block ends in a
+	// styleActionBar Padding(actionBarPadY, 2) bottom-pad blank line (no trailing
+	// newline), so a single leading "\n" closes that pad line and leaves exactly
+	// one blank line above the block. Empty (skipped) when the session has no
+	// rotation history, so sessions that never rotated see nothing.
+	if hist := rotationHistoryBlock(m.session, m.table.Width(), time.Now()); hist != "" {
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(hist))
 	}
 
 	return tea.NewView(b.String())

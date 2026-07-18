@@ -79,10 +79,10 @@
       "id": "web-session-detail-rotation",
       "surface": "web",
       "title": "Web Session Detail (rotation history)",
-      "description": "Session-detail rotation history rendered subtly (BOS-394): a grey time + 'switched to <email>' line with NO 'Rotation history' heading and NO bullet dot. Cropped to the rotation-history region.",
+      "description": "Session-detail rotation history rendered below the chat list (BOS-432): a BOS-409 stale-failover-proxy-port event shows the FULL detail string in 24h date-aware time with NO 'rotation' fallback and NO 'Rotation history' heading (subtle, BOS-394). Cropped to the session-detail body so the rotation block is visibly below the CHAT table.",
       "privacy": "fixture",
       "route": "/sessions/sess-e2e-rotation",
-      "cropToSelector": "section[aria-label=\"Rotation history\"]",
+      "cropToSelector": "[data-testid='session-detail-body']",
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
@@ -491,6 +491,120 @@
       ]
     },
     {
+      "id": "web-new-chat",
+      "surface": "web",
+      "title": "Web New Chat (keyboard select)",
+      "description": "Keyboard-driven new-chat agent picker (fixture data). Focus starts neutral; ArrowDown moves the highlight down the agent list (aria-selected tracks the active row); Enter selects the highlighted agent and advances to the chat terminal.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/sessions/sess-e2e-1/chats/new",
+          "label": "Open new chat",
+          "caption": "Open the new-chat agent picker"
+        },
+        {
+          "action": "wait",
+          "selector": ".data-table-wrap .row-clickable",
+          "label": "Agent list",
+          "caption": "Agent list loads (focus starts neutral)"
+        },
+        {
+          "action": "press",
+          "key": "ArrowDown",
+          "label": "Move selection",
+          "caption": "ArrowDown moves the highlight down the agent list"
+        },
+        {
+          "action": "press",
+          "key": "Enter",
+          "label": "Select agent",
+          "caption": "Enter selects the highlighted agent"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"chat-terminal-canvas\"]",
+          "label": "Chat terminal",
+          "caption": "Advances to the chat terminal"
+        }
+      ]
+    },
+    {
+      "id": "web-new-chat-back",
+      "surface": "web",
+      "title": "Web New Chat (Esc back)",
+      "description": "Pressing Esc on the new-chat agent picker returns to the session detail page (fixture data), mirroring the visible Back button.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/sessions/sess-e2e-1/chats/new",
+          "label": "Open new chat",
+          "caption": "Open the new-chat agent picker"
+        },
+        {
+          "action": "wait",
+          "selector": ".data-table-wrap .row-clickable",
+          "label": "Agent list",
+          "caption": "Agent list visible"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Back",
+          "caption": "Esc returns to the session detail page"
+        },
+        {
+          "action": "wait",
+          "selector": ".sub-header-crumb-current",
+          "label": "Session detail",
+          "caption": "Back on the session detail page"
+        }
+      ]
+    },
+    {
+      "id": "web-shortcut-launcher-new-chat",
+      "surface": "web",
+      "title": "Web Shortcut Launcher (new chat)",
+      "description": "Keyboard-shortcut launcher on the new-chat agent picker, showing the documented Move-selection / Enter / Home-End / PgUp-PgDn / Esc-Back rows (fixture data).",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/sessions/sess-e2e-1/chats/new",
+          "label": "Open new chat",
+          "caption": "Open the new-chat agent picker"
+        },
+        {
+          "action": "wait",
+          "selector": ".data-table-wrap .row-clickable",
+          "label": "Agent list",
+          "caption": "Agent list loads"
+        },
+        {
+          "action": "press",
+          "key": "?",
+          "label": "Open launcher",
+          "caption": "Press ? to open the keyboard-shortcut launcher"
+        },
+        {
+          "action": "wait",
+          "selector": "[role=\"dialog\"]",
+          "label": "Launcher open",
+          "caption": "New-chat shortcuts: Move selection, Select agent, Esc Back"
+        }
+      ]
+    },
+    {
       "id": "marketing-home-scroll",
       "surface": "marketing",
       "title": "Marketing Home Scroll",
@@ -580,8 +694,11 @@
         "web-account",
         "web-chat-terminal",
         "web-new-session-flow",
+        "web-new-chat",
+        "web-new-chat-back",
         "web-shortcut-launcher",
-        "web-shortcut-launcher-detail"
+        "web-shortcut-launcher-detail",
+        "web-shortcut-launcher-new-chat"
       ]
     },
     {

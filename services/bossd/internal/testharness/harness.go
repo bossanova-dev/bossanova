@@ -225,7 +225,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 				safego.Go(logger, func() {
 					cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
-					if err := svc.NotifyStatusChange(cctx, sessionID, pb.DisplayStatus(newEntry.Status), newEntry.HasFailures); err != nil {
+					if err := svc.NotifyStatusChange(cctx, sessionID, pb.DisplayStatus(safeInt32(int(newEntry.Status))), newEntry.HasFailures); err != nil {
 						logger.Warn().Err(err).Str("session_id", sessionID).Msg("failed to notify workflow service of status change")
 					}
 				})
@@ -530,7 +530,7 @@ func (h *Harness) PostGitHubWebhook(t *testing.T, eventType string, payload []by
 		Payload:       payload,
 		Provider:      "github",
 		RepoOriginUrl: repoOrigin,
-		PullRequest:   int32(prScope),
+		PullRequest:   safeInt32(prScope),
 	}); err != nil {
 		t.Fatalf("PostGitHubWebhook: dispatch: %v", err)
 	}

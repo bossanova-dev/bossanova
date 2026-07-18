@@ -17,6 +17,7 @@ go_library(
 go_test(
     name = "tuidriver_test",
     srcs = [
+        "clamp_test.go",
         "driver_test.go",
         "keybytes_internal_test.go",
         "keybytes_parser_test.go",

@@ -266,7 +266,15 @@ func (s Spec) buildArgv(opts ExecuteOpts) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		return []string{scriptPath}, nil
+		// Invoke via `sh` rather than executing the file directly so the
+		// materialized script does not need an execute bit (it is written
+		// 0o600). Any shebang line (the prepended `#!/bin/sh`, or one the
+		// stored legacy string carried itself) is a no-op comment under `sh`:
+		// legacy scripts always run under `sh`, matching the documented
+		// historical `sh -c` contract (see the package doc), which likewise
+		// ignored embedded shebangs. A legacy string is a bare POSIX-sh
+		// command, so this is behaviour-preserving for real values.
+		return []string{"sh", scriptPath}, nil
 	}
 	return nil, fmt.Errorf("%w: unknown type %q", ErrInvalidSpec, s.Type)
 }
@@ -289,11 +297,11 @@ func resolveInsideWorktree(worktree, rel string) (string, error) {
 }
 
 // writeLegacyScript materializes a legacy shell string at
-// <worktree>/.boss/setup.sh with a shebang and mode 0700, then returns the
-// absolute path.
+// <worktree>/.boss/setup.sh with a shebang and mode 0600, then returns the
+// absolute path. The script is run via `sh <path>`, so it needs no exec bit.
 func writeLegacyScript(worktreePath, content string) (string, error) {
 	dir := filepath.Join(worktreePath, ".boss")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", fmt.Errorf("%w: create .boss dir: %w", ErrInvalidSpec, err)
 	}
 	path := filepath.Join(dir, "setup.sh")
@@ -301,7 +309,10 @@ func writeLegacyScript(worktreePath, content string) (string, error) {
 	if !strings.HasPrefix(body, "#!") {
 		body = "#!/bin/sh\nset -e\n" + body
 	}
-	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+	// Write owner-only (0o600, no exec bit): the script is invoked via `sh
+	// <path>` (see buildArgv), so it never needs to be executable. Keeping it
+	// non-executable satisfies gosec G306 without a follow-up chmod.
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		return "", fmt.Errorf("%w: write legacy script: %w", ErrInvalidSpec, err)
 	}
 	return path, nil

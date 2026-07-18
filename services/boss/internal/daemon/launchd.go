@@ -213,7 +213,7 @@ func platformMcpInstall(mcpBinPath string, port int, force bool) error {
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
 		return fmt.Errorf("create LaunchAgents dir: %w", err)
 	}
 
@@ -221,11 +221,11 @@ func platformMcpInstall(mcpBinPath string, port int, force bool) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(ld, 0o755); err != nil {
+	if err := os.MkdirAll(ld, 0o700); err != nil {
 		return fmt.Errorf("create log dir: %w", err)
 	}
 
-	if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil {
+	if err := os.WriteFile(plistPath, []byte(plist), 0o600); err != nil {
 		return fmt.Errorf("write plist: %w", err)
 	}
 
@@ -363,7 +363,7 @@ func platformInstall(bossdPath string, force bool) error {
 	}
 
 	// Ensure LaunchAgents directory exists.
-	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
 		return fmt.Errorf("create LaunchAgents dir: %w", err)
 	}
 
@@ -372,12 +372,12 @@ func platformInstall(bossdPath string, force bool) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(ld, 0o755); err != nil {
+	if err := os.MkdirAll(ld, 0o700); err != nil {
 		return fmt.Errorf("create log dir: %w", err)
 	}
 
 	// Write the plist file.
-	if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil {
+	if err := os.WriteFile(plistPath, []byte(plist), 0o600); err != nil {
 		return fmt.Errorf("write plist: %w", err)
 	}
 

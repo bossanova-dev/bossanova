@@ -75,7 +75,13 @@ func nextRestartBackoff(attempts int) time.Duration {
 	if attempts > 33 {
 		attempts = 33
 	}
-	d := restartBackoffBase << uint(attempts)
+	// attempts is provably in [0, 33] here (guarded above), so the shift amount
+	// is a non-negative, bounded uint — no overflow is possible.
+	var shift uint
+	if attempts > 0 {
+		shift = uint(attempts)
+	}
+	d := restartBackoffBase << shift
 	if d <= 0 || d > restartBackoffMax {
 		return restartBackoffMax
 	}
@@ -817,7 +823,7 @@ func (h *Host) SetAccountEnvResolver(r accountEnvResolver) {
 // timeout so a slow plugin cannot hold a goroutine open indefinitely.
 func (h *Host) NotifyStatusChange(ctx context.Context, sessionID string, displayStatus vcs.DisplayStatus, hasFailures bool) {
 	services := h.GetWorkflowServices()
-	pbStatus := bossanovav1.DisplayStatus(displayStatus)
+	pbStatus := bossanovav1.DisplayStatus(safeInt32(int(displayStatus)))
 	for _, svc := range services {
 		s := svc
 		safego.Go(h.logger, func() {

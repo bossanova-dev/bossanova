@@ -402,6 +402,73 @@ func TestCompute(t *testing.T) {
 			want: Output{Label: "? question", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
 		},
 
+		// --- ArchivePending (archiving) ---
+		{
+			name: "archiving shows archiving with spinner and warning intent",
+			in: Input{
+				Session: &pb.Session{ArchivePending: true},
+			},
+			want: Output{Label: "archiving", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true},
+		},
+		{
+			name: "archiving wins over a merged PR display status",
+			in: Input{
+				Session: &pb.Session{
+					ArchivePending: true,
+					DisplayStatus:  pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+				},
+			},
+			want: Output{Label: "archiving", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true},
+		},
+		{
+			name: "merging wins over archiving",
+			in: Input{
+				Session: &pb.Session{
+					DisplayMerging: true,
+					ArchivePending: true,
+				},
+			},
+			want: Output{Label: "merging", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
+		},
+		{
+			name: "chat QUESTION wins over archiving",
+			in: Input{
+				Session:    &pb.Session{ArchivePending: true, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_QUESTION,
+			},
+			want: Output{Label: "? question", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			// The archiving branch sits above WORKING, so an in-flight archive
+			// wins over a live working chat (matches merging's placement).
+			name: "archiving wins over a WORKING chat",
+			in: Input{
+				Session:    &pb.Session{ArchivePending: true},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING,
+			},
+			want: Output{Label: "archiving", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true},
+		},
+		{
+			// LIMITED ranks just below QUESTION and above archiving, so a
+			// usage-limited chat still wins over an in-flight archive.
+			name: "usage-limited chat wins over archiving",
+			in: Input{
+				Session:    &pb.Session{ArchivePending: true, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_LIMITED,
+			},
+			want: Output{Label: "usage-limited", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "merged without archive_pending stays merged",
+			in: Input{
+				Session: &pb.Session{
+					ArchivePending: false,
+					DisplayStatus:  pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+				},
+			},
+			want: Output{Label: "✓ merged", Intent: pb.DisplayIntent_DISPLAY_INTENT_MUTED},
+		},
+
 		// --- Orphaned (honest green: terminal dead run never surfaces as green) ---
 		{
 			name: "orphaned wins over a draft PR display status",

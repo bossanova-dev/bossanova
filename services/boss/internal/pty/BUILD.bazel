@@ -24,6 +24,7 @@ go_test(
     name = "pty_test",
     srcs = [
         "all_statuses_test.go",
+        "clamp_test.go",
         "command_detach_pty_test.go",
         "command_detach_test.go",
         "filter_test.go",

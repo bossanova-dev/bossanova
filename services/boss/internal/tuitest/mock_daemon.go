@@ -1311,6 +1311,14 @@ func (m *MockDaemon) ListPlugins(_ context.Context, _ *connect.Request[pb.ListPl
 	return connect.NewResponse(&pb.ListPluginsResponse{}), nil
 }
 
+func (m *MockDaemon) GetSettings(_ context.Context, _ *connect.Request[pb.GetSettingsRequest]) (*connect.Response[pb.GetSettingsResponse], error) {
+	return connect.NewResponse(&pb.GetSettingsResponse{Settings: &pb.GlobalSettings{}}), nil
+}
+
+func (m *MockDaemon) UpdateSettings(_ context.Context, _ *connect.Request[pb.UpdateSettingsRequest]) (*connect.Response[pb.UpdateSettingsResponse], error) {
+	return connect.NewResponse(&pb.UpdateSettingsResponse{Settings: &pb.GlobalSettings{}}), nil
+}
+
 // SetAgents overrides the agents returned by ListAgents. Tests use this to
 // drive multi-agent flows (onboarding, agent picker, settings render).
 func (m *MockDaemon) SetAgents(agents []*pb.AgentInfo) {

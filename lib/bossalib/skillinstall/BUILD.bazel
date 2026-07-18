@@ -12,6 +12,9 @@ go_library(
 
 go_test(
     name = "skillinstall_test",
-    srcs = ["extract_test.go"],
+    srcs = [
+        "extract_test.go",
+        "perms_unix_test.go",
+    ],
     embed = [":skillinstall"],
 )

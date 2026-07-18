@@ -114,7 +114,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 	// because os/exec dedups cmd.Env last-wins and extraEnv is appended last.
 	tmp := t.TempDir()
 	homeDir := filepath.Join(tmp, "home")
-	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+	if err := os.MkdirAll(homeDir, 0o700); err != nil {
 		t.Fatalf("create temp HOME: %v", err)
 	}
 	settingsPath := filepath.Join(tmp, "settings.json")

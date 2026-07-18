@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "status",
     srcs = [
+        "clamp_int32.go",
         "display_computer.go",
         "display_tracker.go",
         "repair_lease.go",

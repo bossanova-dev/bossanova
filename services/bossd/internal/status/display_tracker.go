@@ -20,7 +20,13 @@ type DisplayEntry struct {
 	// like SettingUp: set via SetMerging around the blocking merge and preserved
 	// across polls in Set so a mid-merge poll can't clobber it.
 	Merging bool
-	HeadSHA string
+	// Archiving is true while an archive (Lifecycle.ArchiveSession) is in flight
+	// for this session. Transient, like Merging: set via SetArchiving around the
+	// archive chokepoint and preserved across polls in Set so a mid-archive poll
+	// can't clobber it. Surfaced on Session.archive_pending so the TUI renders
+	// "Archiving…" only when the daemon actually has an archive running (BOS-425).
+	Archiving bool
+	HeadSHA   string
 	// Mergeable is the PR's last-polled mergeability (nil unknown / true
 	// mergeable / false conflicting), surfaced on Session.pr_mergeable so a
 	// conflict-after-green is readable without a merge attempt. Refreshed by
@@ -71,6 +77,10 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 	if existed {
 		merging = oldEntry.Merging
 	}
+	var archiving bool
+	if existed {
+		archiving = oldEntry.Archiving
+	}
 	newEntry := &DisplayEntry{
 		Status:              info.Status,
 		HasFailures:         info.HasFailures,
@@ -79,6 +89,7 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 		IsRepairing:         isRepairing,
 		SettingUp:           settingUp,
 		Merging:             merging,
+		Archiving:           archiving,
 		HeadSHA:             info.HeadSHA,
 		Mergeable:           info.Mergeable,
 		UpdatedAt:           time.Now(),
@@ -115,6 +126,7 @@ func (t *DisplayTracker) Get(sessionID string) *DisplayEntry {
 		IsRepairing:         e.IsRepairing,
 		SettingUp:           e.SettingUp,
 		Merging:             e.Merging,
+		Archiving:           e.Archiving,
 		HeadSHA:             e.HeadSHA,
 		Mergeable:           e.Mergeable,
 		UpdatedAt:           e.UpdatedAt,
@@ -139,6 +151,7 @@ func (t *DisplayTracker) GetBatch(sessionIDs []string) map[string]*DisplayEntry 
 			IsRepairing:         e.IsRepairing,
 			SettingUp:           e.SettingUp,
 			Merging:             e.Merging,
+			Archiving:           e.Archiving,
 			HeadSHA:             e.HeadSHA,
 			Mergeable:           e.Mergeable,
 			UpdatedAt:           e.UpdatedAt,
@@ -219,16 +232,44 @@ func (t *DisplayTracker) SetMerging(sessionID string, merging bool) {
 	t.scheduleRecompute(sessionID)
 }
 
+// SetArchiving sets or clears the transient "archiving" flag for a session
+// while an archive (Lifecycle.ArchiveSession) is in flight, mirroring SetMerging
+// exactly. Setting creates a zero-valued entry if none exists; clearing removes
+// an entry that exists ONLY because of this flag (no polled PR status), so a
+// zero-Status placeholder does not linger and mis-read a passing PR as "not
+// passing". An entry carrying real PR status (or another flag) is preserved with
+// only Archiving toggled off. Unlike SettingUp/Merging — which the display
+// computer turns into a daemon-computed label/intent — Archiving is surfaced
+// only as Session.archive_pending (convert.go / display_computer.go); the
+// "Archiving…" spinner is rendered client-side by the TUI. The synchronous
+// scheduleRecompute publishes the refreshed session (carrying archive_pending)
+// to clients before the caller continues — so an archive in flight streams the
+// signal for its full duration (BOS-425).
+func (t *DisplayTracker) SetArchiving(sessionID string, archiving bool) {
+	t.mu.Lock()
+	if e, ok := t.entries[sessionID]; ok {
+		e.Archiving = archiving
+		e.UpdatedAt = time.Now()
+		if !archiving && e.isEmpty() {
+			delete(t.entries, sessionID)
+		}
+	} else if archiving {
+		t.entries[sessionID] = &DisplayEntry{Archiving: archiving, UpdatedAt: time.Now()}
+	}
+	t.mu.Unlock()
+	t.scheduleRecompute(sessionID)
+}
+
 // isEmpty reports whether the entry carries no state at all — no polled PR
 // status and no transient flag set — so a placeholder left behind after a
-// transient flag (SettingUp/Merging) is cleared can be dropped rather than
-// lingering as a zero-Status entry that would mis-read a passing PR as "not
-// passing". Both SetSettingUp and SetMerging use it after toggling their flag
-// off, at which point the just-cleared flag is already false.
+// transient flag (SettingUp/Merging/Archiving) is cleared can be dropped rather
+// than lingering as a zero-Status entry that would mis-read a passing PR as "not
+// passing". SetSettingUp, SetMerging, and SetArchiving all use it after toggling
+// their flag off, at which point the just-cleared flag is already false.
 func (e *DisplayEntry) isEmpty() bool {
 	return e.Status == vcs.DisplayStatusUnspecified &&
 		!e.HasFailures && !e.HasChangesRequested &&
-		!e.IsRepairing && !e.SettingUp && !e.Merging && e.HeadSHA == ""
+		!e.IsRepairing && !e.SettingUp && !e.Merging && !e.Archiving && e.HeadSHA == ""
 }
 
 // SetOnChange sets the callback function that is called when a display status changes.

@@ -181,7 +181,7 @@ func cooldownFor(attemptCount int32, base time.Duration) time.Duration {
 	if shift > maxShift {
 		shift = maxShift
 	}
-	factor := time.Duration(1) << uint(shift)
+	factor := time.Duration(1) << shift
 	if base > maxCooldownDuration/factor {
 		return maxCooldownDuration
 	}

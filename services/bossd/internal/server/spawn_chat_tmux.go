@@ -369,7 +369,7 @@ func (r liveInteractiveSessionResolver) ResolveInteractiveSessionID(ctx context.
 		AllowLegacyBackfill: allowLegacyBackfill,
 	}
 	if panePID > 0 {
-		req.PanePid = int32(panePID)
+		req.PanePid = clampInt32(panePID)
 	}
 	if !launchedAfter.IsZero() {
 		req.LaunchedAfter = timestamppb.New(launchedAfter)

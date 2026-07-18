@@ -10,7 +10,10 @@ go_library(
 
 go_test(
     name = "setupscript_test",
-    srcs = ["setupscript_test.go"],
+    srcs = [
+        "perms_unix_test.go",
+        "setupscript_test.go",
+    ],
     embed = [":setupscript"],
     # keep: execs generated setup scripts via a subprocess; the macOS darwin-sandbox
     # hangs on that nested exec. Runs unsandboxed (still covered). See

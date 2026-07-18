@@ -4,6 +4,7 @@ go_library(
     name = "tmux",
     srcs = [
         "attach.go",
+        "intconv.go",
         "tmux.go",
         "tmux_submit_verify.go",
     ],
@@ -21,6 +22,7 @@ go_test(
     name = "tmux_test",
     srcs = [
         "attach_test.go",
+        "intconv_test.go",
         "tmux_e2e_test.go",
         "tmux_test.go",
     ],

@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -119,6 +120,202 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 	}
 	if cron.lastRunCalls[0].outcome != models.CronJobOutcomeDeletedNoChanges {
 		t.Errorf("recorded outcome = %q, want deleted_no_changes", cron.lastRunCalls[0].outcome)
+	}
+}
+
+// TestFinalizeSession_DeletedNoChanges_ReapsBranchWithFlagOff covers BOS-424
+// Change 2: a no-change cron hard-delete reaps the orphaned local branch even
+// when repo.CanAutoDeleteBranches is false. finalizeNoChanges → hardDeleteSession
+// never routes through ArchiveSession, so this is the only place the throwaway
+// cron-* branch is reclaimed.
+func TestFinalizeSession_DeletedNoChanges_ReapsBranchWithFlagOff(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: "", branchSafeToDelete: true} // empty = no changes; branch reapable
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                    "repo-1",
+		LocalPath:             "/tmp/repo-main", // different from worktree so Archive runs
+		DefaultBaseBranch:     "main",
+		CanAutoDeleteBranches: false, // flag OFF — reap must still happen
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-abc123",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	}
+	if len(wt.deletedLocalBranches) != 1 || wt.deletedLocalBranches[0] != "cron-abc123" {
+		t.Errorf("expected branch cron-abc123 reaped, got %v", wt.deletedLocalBranches)
+	}
+	if _, ok := sessions.sessions["sess-1"]; ok {
+		t.Error("session row should have been deleted")
+	}
+}
+
+// TestFinalizeSession_DeletedNoChanges_KeepsUnmergedBranch covers the shared
+// hardDeleteSession commits-no-origin caller (BOS-424): when the branch carries
+// unmerged commits (BranchSafeToDelete false), the reap keeps it — no data loss —
+// even though the session row is hard-deleted.
+func TestFinalizeSession_DeletedNoChanges_KeepsUnmergedBranch(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: "", branchSafeToDelete: false} // unmerged: not safe to delete
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo-main",
+		DefaultBaseBranch: "main",
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-unmerged",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	}
+	if len(wt.deletedLocalBranches) != 0 {
+		t.Errorf("unmerged branch must be kept, but DeleteLocalBranch was called: %v", wt.deletedLocalBranches)
+	}
+}
+
+// TestFinalizeSession_DeletedNoChanges_ReapErrorStillSucceeds covers the
+// best-effort contract (BOS-424): a DeleteLocalBranch failure must not fail the
+// hard-delete — the outcome stays deleted_no_changes and the session row is gone.
+func TestFinalizeSession_DeletedNoChanges_ReapErrorStillSucceeds(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:            "",
+		branchSafeToDelete:   true,
+		deleteLocalBranchErr: errors.New("git branch -D failed"),
+	}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo-main",
+		DefaultBaseBranch: "main",
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-reaperr",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q (reap error must not demote)", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	}
+	// The reap must have been ATTEMPTED (so the error path is genuinely exercised,
+	// not skipped by an earlier guard) yet still swallowed.
+	if len(wt.deletedLocalBranches) != 1 || wt.deletedLocalBranches[0] != "cron-reaperr" {
+		t.Errorf("expected DeleteLocalBranch attempted for cron-reaperr, got %v", wt.deletedLocalBranches)
+	}
+	if !res.Deleted {
+		t.Error("expected Deleted = true even when reap errored")
+	}
+	if _, ok := sessions.sessions["sess-1"]; ok {
+		t.Error("session row should have been deleted despite the reap error")
+	}
+}
+
+// TestFinalizeSession_DeletedNoChanges_NeverReapsBaseBranch covers the
+// base-branch guard (BOS-424): a session whose branch equals the base/default
+// branch is never force-deleted, even when BranchSafeToDelete would return true
+// (a ref is trivially its own ancestor).
+func TestFinalizeSession_DeletedNoChanges_NeverReapsBaseBranch(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: "", branchSafeToDelete: true} // would delete if unguarded
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo-main",
+		DefaultBaseBranch: "main",
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "main", // == base/default: must never be reaped
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	}
+	if len(wt.deletedLocalBranches) != 0 {
+		t.Errorf("base branch must never be reaped, but DeleteLocalBranch was called: %v", wt.deletedLocalBranches)
 	}
 }
 
@@ -382,6 +579,70 @@ func TestFinalizeSession_HeadlessNonCronEmptyRun_BlocksNoChanges(t *testing.T) {
 	}
 	if len(wt.injectPRNumbersCalls) != 0 {
 		t.Fatalf("empty run must not inject PR tags, got %d", len(wt.injectPRNumbersCalls))
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess == nil {
+		t.Fatal("session row should be preserved for inspection")
+	}
+	if sess.State != machine.Blocked {
+		t.Fatalf("state = %s, want blocked", sess.State)
+	}
+	if sess.BlockedReason == nil || *sess.BlockedReason == "" {
+		t.Fatalf("blocked reason = %v, want a descriptive no-changes reason", sess.BlockedReason)
+	}
+}
+
+// TestFinalizeSession_DetachNonCronEmptyRun_BlocksNoChanges is BOS-428's
+// preserved-invariant regression: a detach session (Detach=true) joins the
+// unattended class for recovery, but the no-real-commits → pr_no_changes → Block
+// gate keys on !isCronSession, NOT isUnattendedSession. A detach session never
+// sets CronJobID, so a bootstrap-only (empty) run still records pr_no_changes and
+// Blocks exactly as a non-detach non-cron run does — it must not merge an empty PR.
+func TestFinalizeSession_DetachNonCronEmptyRun_BlocksNoChanges(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	// Clean worktree, and the only commit vs base is the empty bootstrap commit.
+	wt := &mockWorktreeManager{
+		statusOut:      "",
+		commitSubjects: []string{draftPRPlaceholderCommitSubject},
+	}
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 88, HeadBranch: "bos-428-br", State: vcs.PRStateOpen},
+	}
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	// Detach=true but CronJobID nil → still non-cron: the real-work gate is active.
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "bos-428-br",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		Detach:       true,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRNoChanges)
+	}
+	if len(vp.markReadyCalls) != 0 {
+		t.Fatalf("empty detach run must not mark any PR ready, got %v", vp.markReadyCalls)
 	}
 	sess := sessions.sessions["sess-1"]
 	if sess == nil {
@@ -2328,7 +2589,7 @@ func TestRecoverFinalizingSessions(t *testing.T) {
 // outcome). ListByState returns archived rows, so without the guard this
 // restart-recovery pass would record failed_recovered and transition the row to
 // Blocked — resurrecting the exact scary framing BOS-384 kills. The pass must
-// skip archived sessions entirely, mirroring RecoverStrandedCronSessions.
+// skip archived sessions entirely, mirroring recoverStrandedCronSessions.
 func TestRecoverFinalizingSessions_Archived_Skipped(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()

@@ -11,7 +11,7 @@ import (
 )
 
 // allPresetNames is the exact, sorted set the registry must expose.
-var allPresetNames = []string{"busy", "demo", "empty", "login", "onboarding"}
+var allPresetNames = []string{"archive-signal", "busy", "demo", "empty", "login", "onboarding", "rotation-history"}
 
 func TestPresetsExactSet(t *testing.T) {
 	got := make([]string, 0, len(Presets()))
@@ -110,6 +110,32 @@ func TestBusyWorldDirect(t *testing.T) {
 	w := BusyWorld()
 	if len(w.Sessions) < 12 {
 		t.Fatalf("BusyWorld() has %d sessions, want >= 12", len(w.Sessions))
+	}
+}
+
+// TestRotationHistoryWorldSeedsRotationEvents pins the BOS-432 chat-picker proof
+// preset: a single session whose newest rotation event is a generic
+// (UNSPECIFIED) BOS-409 stale-port notice carrying the whole message in Detail,
+// plus at least one chat so the chat-picker view renders the action bar the
+// rotation block now sits beneath.
+func TestRotationHistoryWorldSeedsRotationEvents(t *testing.T) {
+	w := Presets()["rotation-history"].World()
+	if len(w.Sessions) != 1 {
+		t.Fatalf("rotation-history world has %d sessions, want 1", len(w.Sessions))
+	}
+	if len(w.Chats) == 0 {
+		t.Fatal("rotation-history world has no chats; chat-picker needs at least one")
+	}
+	evs := w.Sessions[0].GetRotationEvents()
+	if len(evs) == 0 {
+		t.Fatal("rotation-history session has no rotation events")
+	}
+	first := evs[0]
+	if first.GetOutcome() != pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED {
+		t.Errorf("newest event outcome = %v, want UNSPECIFIED", first.GetOutcome())
+	}
+	if !strings.Contains(first.GetDetail(), "stale failover-proxy port") {
+		t.Errorf("newest event detail = %q, want the BOS-409 stale-port message", first.GetDetail())
 	}
 }
 

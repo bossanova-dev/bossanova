@@ -513,6 +513,62 @@ func TestChatPicker_NoWarningBlockForCleanSession(t *testing.T) {
 	}
 }
 
+// TestChatPicker_RendersRotationHistoryBelowActionBar guards the BOS-432
+// placement: the rotation-history block moved to the very bottom of the
+// chat-picker view, so its detail line must render AFTER the "[esc] back"
+// action bar (not above the chat list as it did before). A regression that
+// restored the block to the top would place the detail before the action bar
+// and fail here. The scenario proof captures the same ordering visually; this
+// is the code-level regression guard.
+func TestChatPicker_RendersRotationHistoryBelowActionBar(t *testing.T) {
+	const detail = "stale failover-proxy port: pane baked 52106 (BOS-409)"
+	rendered := stripANSI(renderChatPickerWith(t, &pb.Session{
+		Id:    "session-1",
+		Title: "rotating",
+		RotationEvents: []*pb.RotationEvent{{
+			Id:        "rot-1",
+			Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED,
+			Detail:    detail,
+			CreatedAt: timestamppb.Now(),
+		}},
+	}))
+	actionIdx := strings.Index(rendered, "[esc] back")
+	if actionIdx == -1 {
+		t.Fatalf("chat-picker view missing the [esc] back action bar:\n%s", rendered)
+	}
+	detailIdx := strings.Index(rendered, detail)
+	if detailIdx == -1 {
+		t.Fatalf("chat-picker view missing the rotation detail %q:\n%s", detail, rendered)
+	}
+	if detailIdx < actionIdx {
+		t.Errorf("rotation history rendered above the action bar (detail idx %d < action idx %d); BOS-432 requires it below:\n%s", detailIdx, actionIdx, rendered)
+	}
+
+	// Exactly one blank line separates the action-bar line from the rotation
+	// block (BOS-432 acceptance criterion: "one blank line above"). The action
+	// bar's Padding(actionBarPadY, 2) bottom-pad already supplies that single
+	// blank line, so View writes only a "\n"; a regression back to "\n\n" would
+	// render two blank lines here.
+	lines := strings.Split(trimLineRightSpace(rendered), "\n")
+	actionLine := -1
+	for i, ln := range lines {
+		if strings.Contains(ln, "[esc] back") {
+			actionLine = i
+			break
+		}
+	}
+	if actionLine == -1 {
+		t.Fatalf("could not locate the action-bar line in:\n%s", rendered)
+	}
+	blanks := 0
+	for i := actionLine + 1; i < len(lines) && lines[i] == ""; i++ {
+		blanks++
+	}
+	if blanks != 1 {
+		t.Errorf("expected exactly one blank line between the action bar and the rotation block, got %d:\n%s", blanks, rendered)
+	}
+}
+
 // TestChatPicker_SingleBlankLineAroundSessionWarning pins the spacing around
 // the finalize/repair warning block (BOS-122). The header banner already
 // renders a single blank line below the worktree-path line, so the chat
@@ -871,12 +927,13 @@ func TestChatPicker_RefreshRefetchesWebLinkWhenPRNumberAppears(t *testing.T) {
 	}
 }
 
-// TestChatPicker_MergedWithArchiveFlagShowsArchiving guards Task 4 of the
-// BOS-46 archive-after-merge spec: when a refresh reports a merged session
-// whose repo has archive-after-merge on, the picker sets autoArchiving and
-// the detail view shows the "Archiving..." status until the session
-// actually archives.
-func TestChatPicker_MergedWithArchiveFlagShowsArchiving(t *testing.T) {
+// TestChatPicker_ArchivePendingShowsArchiving guards the BOS-425 daemon-driven
+// signal: when a refresh reports a merged session whose daemon has an archive
+// actually in flight (archive_pending=true), the detail view shows the
+// "Archiving..." status. This replaced the old BOS-46 heuristic that inferred
+// archiving from MERGED + repo flag alone (which never cleared for a
+// resurrected merged session).
+func TestChatPicker_ArchivePendingShowsArchiving(t *testing.T) {
 	stub := &chatPickerStub{}
 	m := seedChatPicker(stub, statusWorking)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
@@ -886,43 +943,47 @@ func TestChatPicker_MergedWithArchiveFlagShowsArchiving(t *testing.T) {
 		Id:                            "session-1",
 		DisplayStatus:                 pb.DisplayStatus_DISPLAY_STATUS_MERGED,
 		RepoArchiveSessionsAfterMerge: true,
+		ArchivePending:                true,
 	}})
 	cp := updated.(ChatPickerModel)
-	if !cp.autoArchiving {
-		t.Fatal("expected autoArchiving true for a merged session in an archive-after-merge repo")
+	if !cp.isArchiving() {
+		t.Fatal("expected isArchiving() true for a session with archive_pending set")
 	}
 	if !strings.Contains(cp.View().Content, "Archiving") {
 		t.Errorf("expected the detail view to show an Archiving status:\n%s", cp.View().Content)
 	}
 }
 
-// TestChatPicker_MergedWithoutArchiveFlagDoesNotShowArchiving guards that a
-// merged session in a repo WITHOUT archive-after-merge does not flip
-// autoArchiving — the merge affordance/behavior must not regress.
-func TestChatPicker_MergedWithoutArchiveFlagDoesNotShowArchiving(t *testing.T) {
+// TestChatPicker_MergedWithArchiveFlagButNotPendingDoesNotShowArchiving is the
+// BOS-425 regression guard: a merged session in an archive-after-merge repo with
+// archive_pending=false (the resurrected case) must NOT be considered archiving.
+func TestChatPicker_MergedWithArchiveFlagButNotPendingDoesNotShowArchiving(t *testing.T) {
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 	updated, _ := m.Update(chatPickerRefreshMsg{session: &pb.Session{
-		Id:            "session-1",
-		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+		Id:                            "session-1",
+		DisplayStatus:                 pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+		RepoArchiveSessionsAfterMerge: true,
+		ArchivePending:                false,
 	}})
-	if cp := updated.(ChatPickerModel); cp.autoArchiving {
-		t.Error("expected autoArchiving false when the repo flag is off")
+	if cp := updated.(ChatPickerModel); cp.isArchiving() {
+		t.Error("expected isArchiving() false for a resurrected merged session (archive_pending=false)")
 	}
 }
 
-// TestChatPicker_RefreshClearsAutoArchivingWhenArchiveSettingIsDisabled guards
+// TestChatPicker_RefreshClearsOptimisticLatchWhenArchiveSettingIsDisabled guards
 // against leaving the detail view in a permanent "Archiving..." state after
-// another client disables the repo setting between polls.
-func TestChatPicker_RefreshClearsAutoArchivingWhenArchiveSettingIsDisabled(t *testing.T) {
+// another client disables the repo setting between polls, so the optimistic
+// merge latch cannot get stuck.
+func TestChatPicker_RefreshClearsOptimisticLatchWhenArchiveSettingIsDisabled(t *testing.T) {
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
-	m.autoArchiving = true
+	m.optimisticArchiveLatch = true
 	updated, _ := m.Update(chatPickerRefreshMsg{session: &pb.Session{
 		Id:            "session-1",
 		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED,
 	}})
 	cp := updated.(ChatPickerModel)
-	if cp.autoArchiving {
-		t.Error("expected refresh with archive-after-merge disabled to clear autoArchiving")
+	if cp.optimisticArchiveLatch {
+		t.Error("expected refresh with archive-after-merge disabled to clear the optimistic latch")
 	}
 }
 

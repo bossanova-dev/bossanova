@@ -677,6 +677,63 @@ func TestSessionTmuxUnattendedRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSessionDetachRoundTrip pins the persistence contract for the detach
+// column added in BOS-428: it defaults false on creation, an explicit Update
+// sets it, and a nil-valued Update (the "don't touch this field" convention
+// used throughout UpdateSessionParams) leaves the previously-set value
+// unchanged. Detach marks a durable, tmux-hosted --detach autonomous run that
+// must survive a daemon restart via unattended-class recovery.
+func TestSessionDetachRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Detach round trip",
+		WorktreePath: "/tmp/wt/detach",
+		BranchName:   "feat/detach",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if sess.Detach {
+		t.Fatalf("Detach = true on creation, want false (default)")
+	}
+
+	detach := true
+	if _, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{
+		Detach: &detach,
+	}); err != nil {
+		t.Fatalf("update session detach: %v", err)
+	}
+	gotSess, err := sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if !gotSess.Detach {
+		t.Fatalf("Detach = false after Update(true), want true")
+	}
+
+	// An Update with a nil Detach pointer must not touch the column.
+	renamedTitle := "Detach round trip (renamed)"
+	if _, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{
+		Title: &renamedTitle,
+	}); err != nil {
+		t.Fatalf("update session title: %v", err)
+	}
+	gotSess, err = sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get session after unrelated update: %v", err)
+	}
+	if !gotSess.Detach {
+		t.Fatalf("Detach = false after unrelated Update, want true (unchanged)")
+	}
+}
+
 // TestSessionQuickChatRoundTrip pins the persistence contract for the
 // quick_chat column added in BOS-322: it defaults false on creation, an
 // explicit Update sets it, and a nil-valued Update (the "don't touch this
@@ -1122,5 +1179,35 @@ func TestSessionStore_UpdateStateConditionalFrom(t *testing.T) {
 	got, _ = store.Get(ctx, sess.ID)
 	if got.State != machine.Finalizing {
 		t.Fatalf("state = %v after no-op, want Finalizing unchanged", got.State)
+	}
+}
+
+// TestClampInt32 is the BOS-413 boundary table-test for the package-local
+// gosec-G115 clamp helper: normal values pass through; out-of-range int inputs
+// clamp to the int32 extremes instead of wrapping. int32 range is
+// [-2147483648, 2147483647].
+func TestClampInt32(t *testing.T) {
+	const (
+		maxI32 = 2147483647
+		minI32 = -2147483648
+	)
+	tests := []struct {
+		name string
+		in   int
+		want int32
+	}{
+		{"normal", 42, 42},
+		{"zero", 0, 0},
+		{"max", maxI32, maxI32},
+		{"min", minI32, minI32},
+		{"clampsHigh", maxI32 + 1, maxI32},
+		{"clampsLow", minI32 - 1, minI32},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := clampInt32(tt.in); got != tt.want {
+				t.Errorf("clampInt32(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
 	}
 }

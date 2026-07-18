@@ -164,6 +164,11 @@ type UpdateSessionParams struct {
 	// bind to that account id.
 	AccountID      **string
 	TmuxUnattended *bool
+	// Detach marks a durable, tmux-hosted --detach autonomous run (BOS-428).
+	// nil = don't touch; mirrors TmuxUnattended (set via Update on the
+	// tmux-hosted branch after create). Left false for a detach run that fell
+	// back to the paneless headless path.
+	Detach *bool
 	// QuickChat marks a visible no-worktree/branch/PR planning chat (BOS-322).
 	// nil = don't touch; mirrors TmuxUnattended (set via Update after create).
 	QuickChat *bool

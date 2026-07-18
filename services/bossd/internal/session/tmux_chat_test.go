@@ -301,6 +301,12 @@ func TestStartTmuxChat_ProvenanceDrivesSubmitIntent(t *testing.T) {
 			wantSubmit: true,
 		},
 		{
+			name:       "detach session submits",
+			mutate:     func(s *models.Session) {},
+			opts:       StartSessionOpts{Detach: true},
+			wantSubmit: true,
+		},
+		{
 			name:       "interactive session prefills only",
 			mutate:     func(s *models.Session) {},
 			wantSubmit: false,
@@ -321,6 +327,31 @@ func TestStartTmuxChat_ProvenanceDrivesSubmitIntent(t *testing.T) {
 			}
 			if !tc.wantSubmit && got != 0 {
 				t.Errorf("interactive provenance must prefill only (no Enter), got %d Enter send-keys", got)
+			}
+		})
+	}
+}
+
+// TestIsUnattendedSession_Detach pins BOS-428: a durable tmux-hosted detach run
+// (Detach=true) joins the unattended class alongside cron and tmux_unattended, so
+// the completion gate admits its finalize Stop hook and the restart orphan sweep
+// skips it. A plain interactive session (all flags false) is NOT unattended.
+func TestIsUnattendedSession_Detach(t *testing.T) {
+	cronID := "cron-1"
+	for _, tc := range []struct {
+		name string
+		sess *models.Session
+		want bool
+	}{
+		{"nil session", nil, false},
+		{"detach", &models.Session{Detach: true}, true},
+		{"tmux_unattended", &models.Session{TmuxUnattended: true}, true},
+		{"cron", &models.Session{CronJobID: &cronID}, true},
+		{"interactive", &models.Session{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isUnattendedSession(tc.sess); got != tc.want {
+				t.Errorf("isUnattendedSession = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -2597,5 +2628,35 @@ func TestMergeEnv_NilOverlayPreservesBase(t *testing.T) {
 		if merged[k] != v {
 			t.Errorf("key %q = %q, want %q", k, merged[k], v)
 		}
+	}
+}
+
+// TestClampInt32 is the BOS-413 boundary table-test for the package-local
+// gosec-G115 clamp helper: normal values pass through; out-of-range int inputs
+// clamp to the int32 extremes instead of wrapping. int32 range is
+// [-2147483648, 2147483647].
+func TestClampInt32(t *testing.T) {
+	const (
+		maxI32 = 2147483647
+		minI32 = -2147483648
+	)
+	tests := []struct {
+		name string
+		in   int
+		want int32
+	}{
+		{"normal", 42, 42},
+		{"zero", 0, 0},
+		{"max", maxI32, maxI32},
+		{"min", minI32, minI32},
+		{"clampsHigh", maxI32 + 1, maxI32},
+		{"clampsLow", minI32 - 1, minI32},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := clampInt32(tt.in); got != tt.want {
+				t.Errorf("clampInt32(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
 	}
 }

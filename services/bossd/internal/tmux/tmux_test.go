@@ -704,6 +704,71 @@ func TestHasSessionStatusDistinguishesTmuxErrors(t *testing.T) {
 	}
 }
 
+func TestShowEnv(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+
+	t.Run("returns value when the key is set", func(t *testing.T) {
+		c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c",
+				"printf '%s\\n' 'ANTHROPIC_BASE_URL=http://127.0.0.1:44127/s/tok'")
+		}))
+		got, ok := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL")
+		if !ok {
+			t.Fatal("ShowEnv ok = false, want true for a set key")
+		}
+		if got != "http://127.0.0.1:44127/s/tok" {
+			t.Fatalf("ShowEnv value = %q, want the baked URL", got)
+		}
+	})
+
+	t.Run("passes the right argv", func(t *testing.T) {
+		mock := &mockCommandFactory{}
+		c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			mock.calls = append(mock.calls, append([]string{name}, args...))
+			return exec.CommandContext(ctx, "sh", "-c", "printf '%s\\n' 'ANTHROPIC_BASE_URL=v'")
+		}))
+		_, _ = c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL")
+		want := []string{"tmux", "show-environment", "-t", "boss-sess", "ANTHROPIC_BASE_URL"}
+		if len(mock.calls) != 1 || !equalSlices(mock.calls[0], want) {
+			t.Fatalf("ShowEnv argv = %v, want %v", mock.calls, want)
+		}
+	})
+
+	t.Run("absent key returns false", func(t *testing.T) {
+		// tmux errors (exit 1, stderr) on an unknown variable.
+		c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c",
+				"printf '%s' 'unknown variable: ANTHROPIC_BASE_URL' >&2; exit 1")
+		}))
+		if got, ok := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL"); ok || got != "" {
+			t.Fatalf("ShowEnv(absent) = %q,%v, want \"\",false", got, ok)
+		}
+	})
+
+	t.Run("removal marker returns false", func(t *testing.T) {
+		// A var flagged for removal in the session env prints "-KEY", no value.
+		c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", "printf '%s\\n' '-ANTHROPIC_BASE_URL'")
+		}))
+		if got, ok := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL"); ok || got != "" {
+			t.Fatalf("ShowEnv(removal) = %q,%v, want \"\",false", got, ok)
+		}
+	})
+
+	t.Run("empty value returns empty string ok", func(t *testing.T) {
+		c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", "printf '%s\\n' 'ANTHROPIC_BASE_URL='")
+		}))
+		got, ok := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL")
+		if !ok || got != "" {
+			t.Fatalf("ShowEnv(empty) = %q,%v, want \"\",true", got, ok)
+		}
+	})
+}
+
 func TestLineStillAtPromptIgnoresScrollback(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")

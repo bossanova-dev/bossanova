@@ -36,7 +36,7 @@ func (s *Server) ListCheckSnapshots(ctx context.Context, req *connect.Request[bo
 			PolledAt:       timestamppb.New(snap.PolledAt),
 			HeadSha:        snap.HeadSHA,
 			RawJson:        snap.RawJSON,
-			ComputedStatus: bossanovav1.DisplayStatus(vcs.DisplayStatus(snap.ComputedStatus)),
+			ComputedStatus: bossanovav1.DisplayStatus(clampInt32(int(vcs.DisplayStatus(snap.ComputedStatus)))),
 		})
 	}
 	return connect.NewResponse(resp), nil

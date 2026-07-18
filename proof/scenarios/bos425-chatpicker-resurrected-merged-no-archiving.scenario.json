@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "title": "BOS-425 chatpicker — resurrected merged session shows NO false Archiving spinner",
+  "fixture": { "preset": "archive-signal" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "home list shows the resurrected merged session as merged",
+      "steps": [
+        {
+          "waitFor": "Resurrected merged session",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded (archive-signal preset)"
+        },
+        {
+          "expect": [
+            {
+              "text": "Resurrected merged session",
+              "match": "normalized",
+              "label": "the resurrected merged session (sess-425-resurrected, index 0)"
+            },
+            {
+              "text": "merged",
+              "match": "normalized",
+              "label": "STATUS column shows the session is merged"
+            }
+          ],
+          "caption": "The session is merged in an archive-after-merge repo, already resurrected (archived_at null, archive_pending=false)"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the session detail renders the normal action bar, not an Archiving spinner",
+      "steps": [
+        { "key": "enter", "caption": "Open the resurrected merged session's detail (index 0)" },
+        {
+          "waitFor": "Implement the change",
+          "timeoutMs": 10000,
+          "caption": "Chat picker for the resurrected merged session loaded"
+        },
+        {
+          "expect": [
+            {
+              "text": "[a]rchive",
+              "match": "normalized",
+              "label": "normal action bar advertises [a]rchive (the archiving spinner would replace it)"
+            },
+            {
+              "text": "[n]ew chat",
+              "match": "normalized",
+              "label": "normal action bar advertises [n]ew chat — present iff the detail is NOT showing the Archiving spinner"
+            }
+          ],
+          "caption": "archive_pending=false: the detail shows the normal action bar and NO 'Archiving session...' spinner (the BOS-425 regression is fixed)"
+        }
+      ]
+    }
+  ]
+}

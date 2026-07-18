@@ -53,19 +53,29 @@ var _ rotation.TxAccountView = (*txAccountView)(nil)
 
 // ListByProvider returns all accounts for the view's provider (any
 // health/status), ordered so the FIRST healthy row is the rotation winner:
-// priority ASC -> health-rank (ok before failed) -> LRU (NULL last_used_at
-// first) -> id ASC. The trailing id tiebreak makes selection reproducible
-// across restarts (and matches the fake store) when rows are otherwise fully
-// tied.
-func (v *txAccountView) ListByProvider(ctx context.Context) ([]*models.Account, error) {
+// priority ASC -> health-rank (ok before failed) -> weekly-expiry rank -> LRU
+// (NULL last_used_at first) -> id ASC. The weekly-expiry rank (BOS-429) sorts
+// accounts whose usage_reset_7d is a known instant strictly after now first,
+// soonest-reset first; accounts with a NULL reset (never probed) or a past
+// reset (window already rolled — a fresh full week, not urgent) tie on that key
+// and fall through to LRU. This mirrors FutureWeeklyReset's future-only rule so
+// this SQL surface, the bind-time comparator (account.moreEligible), and the
+// rotation fake never drift. now is bound in the store's fixed-width
+// isoMillisLayout so the lexical `>` comparison matches chronological order. The
+// trailing id tiebreak makes selection reproducible across restarts (and matches
+// the fake store) when rows are otherwise fully tied.
+func (v *txAccountView) ListByProvider(ctx context.Context, now time.Time) ([]*models.Account, error) {
+	nowISO := now.UTC().Format(isoMillisLayout)
 	rows, err := v.tx.QueryContext(ctx,
 		accountSelectSQL+` WHERE provider = ?
 		ORDER BY priority ASC,
 		         CASE health WHEN 'ok' THEN 0 ELSE 1 END ASC,
+		         CASE WHEN usage_reset_7d IS NOT NULL AND usage_reset_7d > ? THEN 0 ELSE 1 END ASC,
+		         CASE WHEN usage_reset_7d IS NOT NULL AND usage_reset_7d > ? THEN usage_reset_7d END ASC,
 		         (last_used_at IS NULL) DESC,
 		         last_used_at ASC,
 		         id ASC`,
-		v.provider)
+		v.provider, nowISO, nowISO)
 	if err != nil {
 		return nil, fmt.Errorf("list accounts by provider (rotation): %w", err)
 	}

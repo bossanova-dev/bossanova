@@ -202,6 +202,12 @@ const (
 	// DaemonServiceListPluginsProcedure is the fully-qualified name of the DaemonService's ListPlugins
 	// RPC.
 	DaemonServiceListPluginsProcedure = "/bossanova.v1.DaemonService/ListPlugins"
+	// DaemonServiceGetSettingsProcedure is the fully-qualified name of the DaemonService's GetSettings
+	// RPC.
+	DaemonServiceGetSettingsProcedure = "/bossanova.v1.DaemonService/GetSettings"
+	// DaemonServiceUpdateSettingsProcedure is the fully-qualified name of the DaemonService's
+	// UpdateSettings RPC.
+	DaemonServiceUpdateSettingsProcedure = "/bossanova.v1.DaemonService/UpdateSettings"
 )
 
 // DaemonServiceClient is a client for the bossanova.v1.DaemonService service.
@@ -335,6 +341,15 @@ type DaemonServiceClient interface {
 	// `boss plugin list` so operators can debug "did my plugin actually
 	// load?" without grepping daemon logs.
 	ListPlugins(context.Context, *connect.Request[v1.ListPluginsRequest]) (*connect.Response[v1.ListPluginsResponse], error)
+	// GetSettings returns the TUI-editable subset of global settings
+	// (settings.json): the top-level worktree/poll/tracing knobs plus each
+	// configured agent's enabled flag and dynamic config map.
+	GetSettings(context.Context, *connect.Request[v1.GetSettingsRequest]) (*connect.Response[v1.GetSettingsResponse], error)
+	// UpdateSettings applies a partial update to global settings. Only the
+	// optional scalar fields that are set are applied; per-agent updates upsert
+	// config keys (an empty value deletes the key). Validation mirrors the boss
+	// TUI settings form and the update is persisted atomically to settings.json.
+	UpdateSettings(context.Context, *connect.Request[v1.UpdateSettingsRequest]) (*connect.Response[v1.UpdateSettingsResponse], error)
 }
 
 // NewDaemonServiceClient constructs a client for the bossanova.v1.DaemonService service. By
@@ -690,6 +705,18 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("ListPlugins")),
 			connect.WithClientOptions(opts...),
 		),
+		getSettings: connect.NewClient[v1.GetSettingsRequest, v1.GetSettingsResponse](
+			httpClient,
+			baseURL+DaemonServiceGetSettingsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetSettings")),
+			connect.WithClientOptions(opts...),
+		),
+		updateSettings: connect.NewClient[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse](
+			httpClient,
+			baseURL+DaemonServiceUpdateSettingsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("UpdateSettings")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -752,6 +779,8 @@ type daemonServiceClient struct {
 	listCheckSnapshots   *connect.Client[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse]
 	listAgents           *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
 	listPlugins          *connect.Client[v1.ListPluginsRequest, v1.ListPluginsResponse]
+	getSettings          *connect.Client[v1.GetSettingsRequest, v1.GetSettingsResponse]
+	updateSettings       *connect.Client[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse]
 }
 
 // ResolveContext calls bossanova.v1.DaemonService.ResolveContext.
@@ -1039,6 +1068,16 @@ func (c *daemonServiceClient) ListPlugins(ctx context.Context, req *connect.Requ
 	return c.listPlugins.CallUnary(ctx, req)
 }
 
+// GetSettings calls bossanova.v1.DaemonService.GetSettings.
+func (c *daemonServiceClient) GetSettings(ctx context.Context, req *connect.Request[v1.GetSettingsRequest]) (*connect.Response[v1.GetSettingsResponse], error) {
+	return c.getSettings.CallUnary(ctx, req)
+}
+
+// UpdateSettings calls bossanova.v1.DaemonService.UpdateSettings.
+func (c *daemonServiceClient) UpdateSettings(ctx context.Context, req *connect.Request[v1.UpdateSettingsRequest]) (*connect.Response[v1.UpdateSettingsResponse], error) {
+	return c.updateSettings.CallUnary(ctx, req)
+}
+
 // DaemonServiceHandler is an implementation of the bossanova.v1.DaemonService service.
 type DaemonServiceHandler interface {
 	// Context resolution
@@ -1170,6 +1209,15 @@ type DaemonServiceHandler interface {
 	// `boss plugin list` so operators can debug "did my plugin actually
 	// load?" without grepping daemon logs.
 	ListPlugins(context.Context, *connect.Request[v1.ListPluginsRequest]) (*connect.Response[v1.ListPluginsResponse], error)
+	// GetSettings returns the TUI-editable subset of global settings
+	// (settings.json): the top-level worktree/poll/tracing knobs plus each
+	// configured agent's enabled flag and dynamic config map.
+	GetSettings(context.Context, *connect.Request[v1.GetSettingsRequest]) (*connect.Response[v1.GetSettingsResponse], error)
+	// UpdateSettings applies a partial update to global settings. Only the
+	// optional scalar fields that are set are applied; per-agent updates upsert
+	// config keys (an empty value deletes the key). Validation mirrors the boss
+	// TUI settings form and the update is persisted atomically to settings.json.
+	UpdateSettings(context.Context, *connect.Request[v1.UpdateSettingsRequest]) (*connect.Response[v1.UpdateSettingsResponse], error)
 }
 
 // NewDaemonServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -1521,6 +1569,18 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("ListPlugins")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceGetSettingsHandler := connect.NewUnaryHandler(
+		DaemonServiceGetSettingsProcedure,
+		svc.GetSettings,
+		connect.WithSchema(daemonServiceMethods.ByName("GetSettings")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceUpdateSettingsHandler := connect.NewUnaryHandler(
+		DaemonServiceUpdateSettingsProcedure,
+		svc.UpdateSettings,
+		connect.WithSchema(daemonServiceMethods.ByName("UpdateSettings")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.DaemonService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DaemonServiceResolveContextProcedure:
@@ -1637,6 +1697,10 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceListAgentsHandler.ServeHTTP(w, r)
 		case DaemonServiceListPluginsProcedure:
 			daemonServiceListPluginsHandler.ServeHTTP(w, r)
+		case DaemonServiceGetSettingsProcedure:
+			daemonServiceGetSettingsHandler.ServeHTTP(w, r)
+		case DaemonServiceUpdateSettingsProcedure:
+			daemonServiceUpdateSettingsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1872,4 +1936,12 @@ func (UnimplementedDaemonServiceHandler) ListAgents(context.Context, *connect.Re
 
 func (UnimplementedDaemonServiceHandler) ListPlugins(context.Context, *connect.Request[v1.ListPluginsRequest]) (*connect.Response[v1.ListPluginsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListPlugins is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetSettings(context.Context, *connect.Request[v1.GetSettingsRequest]) (*connect.Response[v1.GetSettingsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetSettings is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) UpdateSettings(context.Context, *connect.Request[v1.UpdateSettingsRequest]) (*connect.Response[v1.UpdateSettingsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateSettings is not implemented"))
 }

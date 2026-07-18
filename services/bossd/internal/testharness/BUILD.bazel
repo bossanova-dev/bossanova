@@ -4,6 +4,7 @@ go_library(
     name = "testharness",
     srcs = [
         "harness.go",
+        "intconv.go",
         "mock_agent.go",
         "mock_agent_runner.go",
         "mock_git.go",
@@ -50,6 +51,7 @@ go_test(
         "e2e_start_tmux_chat_start_error_test.go",
         "e2e_webhook_realtime_test.go",
         "harness_test.go",
+        "intconv_test.go",
         "seams_test.go",
     ],
     embed = [":testharness"],

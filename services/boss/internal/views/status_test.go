@@ -783,7 +783,7 @@ func TestRotationHistoryBlock(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := rotationHistoryBlock(tc.sess, 80)
+			got := rotationHistoryBlock(tc.sess, 80, time.Now())
 			if tc.wantContains == "" {
 				if got != "" {
 					t.Errorf("rotationHistoryBlock = %q, want empty", got)
@@ -823,7 +823,7 @@ func TestRotationHistoryBlockKeepsRotatedDetailSuffix(t *testing.T) {
 			CreatedAt:   timestamppb.New(time.Now()),
 		},
 	)
-	got := rotationHistoryBlock(sess, 80)
+	got := rotationHistoryBlock(sess, 80, time.Now())
 	for _, want := range []string{
 		"acct-a switched to acct-b — resumed",
 		"acct-c switched to acct-d — resets 15:04",
@@ -834,6 +834,57 @@ func TestRotationHistoryBlockKeepsRotatedDetailSuffix(t *testing.T) {
 	}
 	if strings.Contains(got, "acct-a switched to acct-b — switched to acct-b") {
 		t.Errorf("rotationHistoryBlock = %q, should not repeat the switch label", got)
+	}
+}
+
+// TestRotationEventTime pins the date-aware per-row timestamp: an event from
+// the same calendar day as now renders time-only (15:04); an event from any
+// other day is prefixed with an ISO date (2006-01-02 15:04).
+func TestRotationEventTime(t *testing.T) {
+	now := time.Date(2026, 7, 18, 14, 34, 0, 0, time.Local)
+	today := time.Date(2026, 7, 18, 9, 5, 0, 0, time.Local)
+	if got, want := rotationEventTime(today, now), "09:05"; got != want {
+		t.Errorf("today: rotationEventTime = %q, want %q", got, want)
+	}
+	older := time.Date(2026, 7, 17, 14, 34, 0, 0, time.Local)
+	if got, want := rotationEventTime(older, now), "2026-07-17 14:34"; got != want {
+		t.Errorf("not-today: rotationEventTime = %q, want %q", got, want)
+	}
+}
+
+// TestRotationHistoryBlockUnspecifiedDropsPrefix proves a BOS-409 stale-port
+// event (recorded UNSPECIFIED with the whole message in Detail) renders as
+// "<time> <detail>" with no "rotation event — " prefix and no double space.
+func TestRotationHistoryBlockUnspecifiedDropsPrefix(t *testing.T) {
+	now := time.Date(2026, 7, 18, 14, 34, 0, 0, time.Local)
+	sess := rotationSession(&pb.RotationEvent{
+		Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED,
+		Detail:    "stale failover-proxy port (BOS-409)",
+		CreatedAt: timestamppb.New(now),
+	})
+	got := rotationHistoryBlock(sess, 80, now)
+	if !strings.Contains(got, "14:34 stale failover-proxy port (BOS-409)") {
+		t.Errorf("rotationHistoryBlock = %q, want time + detail with no label", got)
+	}
+	if strings.Contains(got, "rotation event") {
+		t.Errorf("rotationHistoryBlock = %q, should not contain the dropped generic prefix", got)
+	}
+}
+
+// TestRotationHistoryBlockDatesNonTodayEvents proves a not-today event carries
+// the ISO date prefix in the assembled row.
+func TestRotationHistoryBlockDatesNonTodayEvents(t *testing.T) {
+	now := time.Date(2026, 7, 18, 14, 34, 0, 0, time.Local)
+	older := time.Date(2026, 7, 17, 8, 2, 0, 0, time.Local)
+	sess := rotationSession(&pb.RotationEvent{
+		Outcome:     pb.RotationOutcome_ROTATION_OUTCOME_ROTATED,
+		FromAccount: "acct-a",
+		ToAccount:   "acct-b",
+		CreatedAt:   timestamppb.New(older),
+	})
+	got := rotationHistoryBlock(sess, 80, now)
+	if !strings.Contains(got, "2026-07-17 08:02 acct-a switched to acct-b") {
+		t.Errorf("rotationHistoryBlock = %q, want date-prefixed not-today row", got)
 	}
 }
 
@@ -849,7 +900,7 @@ func TestRotationEventLabel(t *testing.T) {
 		{pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT, "no eligible account — status only"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED, "all accounts limited"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_FAILED, "switch to acct-b failed"},
-		{pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED, "rotation event"},
+		{pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED, ""},
 	}
 	for _, tc := range cases {
 		ev := &pb.RotationEvent{Outcome: tc.outcome, FromAccount: "acct-a", ToAccount: "acct-b"}

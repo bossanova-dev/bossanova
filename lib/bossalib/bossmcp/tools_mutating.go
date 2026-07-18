@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/protobuf/proto"
 
@@ -212,8 +213,26 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 	})
 
 	addTool(server, opts, &mcp.Tool{
+		Name:        "start_chat",
+		Description: "Start a new live agent chat inside an EXISTING session. Mints a fresh agent_session_id, spawns a live agent in the session's existing worktree/branch (a sibling of any current chats), and returns the new chat including its agent_session_id — the handle you then pass to send_chat_message, get_chat_transcript, and delete_chat. Use this to run additional agents in a session you already have; it does NOT create a new session (use create_session for that). To resume or register a chat whose agent_session_id you already hold, use record_chat instead.",
+		// Not read-only, not idempotent: each call creates a distinct new chat.
+		Annotations: &mcp.ToolAnnotations{},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args StartChatArgs) (*mcp.CallToolResult, any, error) {
+		// Mint the agent_session_id here (matching daemon + web) and reuse the
+		// existing RecordChat(resume=false) primitive, which spawns a fresh live
+		// tmux agent in the session's worktree.
+		id := uuid.NewString()
+		out, err := backend.RecordChat(ctx, args.SessionID, id, args.Title, args.AgentName, false)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
 		Name:        "record_chat",
-		Description: "Record (or resume) an agent chat against a session.",
+		Description: "Register or resume an agent chat whose agent_session_id you already have (e.g. one an agent plugin generated). Requires a valid agent_session_id. To START a brand-new chat in an existing session, use start_chat instead.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args RecordChatArgs) (*mcp.CallToolResult, any, error) {
 		out, err := backend.RecordChat(ctx, args.SessionID, args.AgentSessionID, args.Title, args.AgentName, args.Resume)
@@ -226,7 +245,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "update_chat_title",
-		Description: "Update the title of an agent chat.",
+		Description: "Update the title of one agent chat (targeted by its agent_session_id).",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args UpdateChatTitleArgs) (*mcp.CallToolResult, any, error) {
 		if err := backend.UpdateChatTitle(ctx, args.AgentSessionID, args.Title); err != nil {
@@ -403,7 +422,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "send_chat_message",
-		Description: "Deliver a user message into a chat's live agent, optionally waking it if asleep.",
+		Description: "Deliver a user message into one chat's live agent (targeted by its agent_session_id, e.g. one returned by start_chat or create_session), optionally waking it if asleep.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SendChatMessageArgs) (*mcp.CallToolResult, any, error) {
 		wakeIfAsleep := true
@@ -445,6 +464,49 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			req.AgentSessionId = proto.String(args.AgentSessionID)
 		}
 		out, err := backend.SwitchSessionAccount(ctx, req)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "update_settings",
+		Description: "Update the daemon's global settings (settings.json) with a partial update: only the fields you supply are changed. Scalars (worktree_base_dir, poll_interval_seconds, default_agent, event/error tracing, PostHog token/host) are validated exactly as the boss settings TUI validates them; per-agent updates upsert config keys (an empty value deletes the key) and toggle the agent's enabled flag. Invalid input returns an error and does not modify the file. Discover an agent's settable keys, types, and allowed values via list_agents. Some changes (poll interval, plugin enable/disable) persist immediately but only take effect on daemon restart.",
+		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args UpdateSettingsArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.UpdateSettingsRequest{
+			// Optional pointer scalars map straight through; nil stays unset (present-only).
+			WorktreeBaseDir:      args.WorktreeBaseDir,
+			PollIntervalSeconds:  args.PollIntervalSeconds,
+			DefaultAgent:         args.DefaultAgent,
+			EventTracingEnabled:  args.EventTracingEnabled,
+			ErrorTrackingEnabled: args.ErrorTrackingEnabled,
+			PosthogProjectToken:  args.PostHogProjectToken,
+			PosthogHost:          args.PostHogHost,
+		}
+		for _, a := range args.Agents {
+			req.Agents = append(req.Agents, &pb.AgentSettingsUpdate{
+				Name:    a.Name,
+				Enabled: a.Enabled,
+				Config:  a.Config,
+			})
+		}
+		out, err := backend.UpdateSettings(ctx, req)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "start_repair_workflow",
+		Description: "(Re-)arm the daemon's auto-repair workflow (equivalent to `boss repair start`). Returns already_running and a one-line detail. A RUNNING workflow is left untouched; a PAUSED one is left for the operator to resume.",
+		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ NoArgs) (*mcp.CallToolResult, any, error) {
+		out, err := backend.StartRepairWorkflow(ctx)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
@@ -549,6 +611,15 @@ type LinkSessionPRArgs struct {
 	PR        string `json:"pr" jsonschema:"an existing pull request number or URL (create it first, e.g. with gh pr create)"`
 }
 
+// StartChatArgs is the typed argument struct for start_chat. The handler mints
+// the agent_session_id itself, so callers supply only the target session and
+// optional chat metadata.
+type StartChatArgs struct {
+	SessionID string `json:"session_id" jsonschema:"the existing session to start the new chat in"`
+	Title     string `json:"title,omitempty" jsonschema:"chat title (optional; a default is derived when omitted)"`
+	AgentName string `json:"agent_name,omitempty" jsonschema:"agent runner plugin name; empty inherits the session's agent"`
+}
+
 // RecordChatArgs is the typed argument struct for record_chat.
 type RecordChatArgs struct {
 	SessionID      string `json:"session_id" jsonschema:"the session id"`
@@ -650,4 +721,28 @@ type UpdateAccountArgs struct {
 	Priority      *int32   `json:"priority,omitempty" jsonschema:"new priority (lower = preferred)"`
 	Status        *string  `json:"status,omitempty" jsonschema:"new status (active|disabled)"`
 	AllowedModels []string `json:"allowed_models,omitempty" jsonschema:"replace the allowed-models set when non-empty"`
+}
+
+// UpdateSettingsArgs is the typed argument struct for update_settings. Optional
+// pointer fields are applied only when present (partial update); agents carries
+// per-agent enabled/config updates. It maps 1:1 onto pb.UpdateSettingsRequest.
+type UpdateSettingsArgs struct {
+	WorktreeBaseDir      *string                   `json:"worktree_base_dir,omitempty" jsonschema:"new worktree base directory; must be a non-empty path that exists on disk"`
+	PollIntervalSeconds  *int32                    `json:"poll_interval_seconds,omitempty" jsonschema:"PR display poll interval in seconds; must be >= 0 (0 clears it, applying the 2-minute default)"`
+	DefaultAgent         *string                   `json:"default_agent,omitempty" jsonschema:"default agent runner; must be the name of a currently-enabled agent"`
+	EventTracingEnabled  *bool                     `json:"event_tracing_enabled,omitempty" jsonschema:"enable PostHog event tracing"`
+	ErrorTrackingEnabled *bool                     `json:"error_tracking_enabled,omitempty" jsonschema:"enable Sentry error tracking"`
+	PostHogProjectToken  *string                   `json:"posthog_project_token,omitempty" jsonschema:"PostHog project (ingestion) token"`
+	PostHogHost          *string                   `json:"posthog_host,omitempty" jsonschema:"PostHog host; empty falls back to the first-party default when tracing is enabled"`
+	Agents               []AgentSettingsUpdateArgs `json:"agents,omitempty" jsonschema:"per-agent partial updates"`
+}
+
+// AgentSettingsUpdateArgs is a single per-agent update within update_settings.
+// enabled is applied only when present; each config entry is an upsert where an
+// empty value deletes the key. Enum values are validated against the agent's
+// advertised allowed values (see list_agents).
+type AgentSettingsUpdateArgs struct {
+	Name    string            `json:"name" jsonschema:"the agent/plugin name (e.g. claude, codex)"`
+	Enabled *bool             `json:"enabled,omitempty" jsonschema:"enable or disable this agent"`
+	Config  map[string]string `json:"config,omitempty" jsonschema:"per-agent config keys to upsert; an empty value deletes the key (bool keys use \"true\"/\"false\")"`
 }

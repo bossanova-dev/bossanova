@@ -19,6 +19,7 @@ go_test(
     name = "fixtures_test",
     srcs = [
         "fixtures_test.go",
+        "overlay_g115_test.go",
         "overlay_test.go",
         "presets_test.go",
     ],

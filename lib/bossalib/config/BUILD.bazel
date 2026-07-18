@@ -26,6 +26,7 @@ go_test(
         "config_test.go",
         "env_test.go",
         "heal_test.go",
+        "perms_unix_test.go",
         "pluginsum_test.go",
         "plugintrust_test.go",
         "plugintrust_unix_test.go",

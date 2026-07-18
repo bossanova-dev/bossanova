@@ -212,15 +212,15 @@ func TestRepoStore_ArchiveSessionsAfterMerge_Update(t *testing.T) {
 	}
 }
 
-// TestRepoStore_CanAutoDeleteBranches_DefaultsTrue verifies a freshly created
-// repo has the auto-delete-branches flag ON (the double-default: migration
-// DEFAULT 1 plus the repos INSERT literal), since proto3's bool zero value is
-// false.
-func TestRepoStore_CanAutoDeleteBranches_DefaultsTrue(t *testing.T) {
+// TestRepoStore_CanAutoDeleteBranches_DefaultsFalse verifies a freshly created
+// repo has the auto-delete-branches flag OFF (BOS-424): the Create INSERT
+// literal is 0, so new repos start opted-out of the destructive auto-delete.
+// The dormant column DEFAULT 1 (BOS-180) is never exercised by Create.
+func TestRepoStore_CanAutoDeleteBranches_DefaultsFalse(t *testing.T) {
 	store := NewRepoStore(setupTestDB(t))
 	repo := createTestRepo(t, store)
-	if !repo.CanAutoDeleteBranches {
-		t.Fatal("new repos should default to auto-delete-branches ON")
+	if repo.CanAutoDeleteBranches {
+		t.Fatal("new repos should default to auto-delete-branches OFF (BOS-424)")
 	}
 }
 

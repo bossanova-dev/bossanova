@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,6 +24,15 @@ const transcriptTailSize = 32 * 1024
 
 // transcriptPath resolves ~/.claude/projects/<key>/<agentSessionID>.jsonl.
 func transcriptPath(worktreePath, agentSessionID string) (string, error) {
+	// agentSessionID is caller-supplied over the bossd↔plugin gRPC boundary
+	// (req.AgentSessionId) and is interpolated straight into the projects
+	// path below. A Claude Code session id is a single UUID segment; reject
+	// any id carrying path separators or ".." so a crafted value cannot
+	// traverse out of ~/.claude/projects and open an arbitrary .jsonl file
+	// (gosec G304). Mirrors the codex findRolloutPath guard.
+	if strings.ContainsAny(agentSessionID, `/\`) || strings.Contains(agentSessionID, "..") {
+		return "", fmt.Errorf("invalid claude session id %q", agentSessionID)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -36,7 +46,11 @@ func transcriptPath(worktreePath, agentSessionID string) (string, error) {
 // an empty tail returns false — callers treat this as "don't suppress the
 // question state", preserving pre-change behavior.
 func lastTurnIsUser(path string) bool {
-	f, err := os.Open(path)
+	// filepath.Clean as the last transform before the read normalizes the
+	// transcript path (built by transcriptPath, which rejects traversal in the
+	// caller-supplied session id) and satisfies gosec G304.
+	cleaned := filepath.Clean(path)
+	f, err := os.Open(cleaned)
 	if err != nil {
 		return false
 	}
@@ -164,6 +178,15 @@ func chatTitle(worktreePath, claudeID string) (title string, explicit bool) {
 // chatTitleInDir reads the JSONL file for a Claude session from a specific
 // directory. Used by chatTitle and useful for testing.
 func chatTitleInDir(projectDir, claudeID string) (title string, explicit bool) {
+	// claudeID is caller-supplied over the bossd↔plugin gRPC boundary
+	// (GetChatTitle's req.SessionId) and is interpolated straight into the
+	// path below. Reject any id carrying path separators or ".." so a crafted
+	// value cannot traverse out of projectDir and read an arbitrary .jsonl
+	// file (gosec G304). Fail closed (no title). Mirrors transcriptPath and the
+	// codex findRolloutPath guard.
+	if strings.ContainsAny(claudeID, `/\`) || strings.Contains(claudeID, "..") {
+		return "", false
+	}
 	path := filepath.Join(projectDir, claudeID+".jsonl")
 	summary, explicit := parseSessionMeta(path)
 	return summary, explicit
@@ -206,7 +229,11 @@ type jsonlMsg struct {
 // last Claude /rename summary line, falling back to the first user message in
 // the bounded opening window.
 func parseSessionMeta(path string) (summary string, explicit bool) {
-	f, err := os.Open(path)
+	// Clean last before the read: this ~/.claude/projects/<key>/<id>.jsonl path
+	// is built by chatTitleInDir, which rejects traversal in the caller-supplied
+	// session id before the join (G304).
+	cleaned := filepath.Clean(path)
+	f, err := os.Open(cleaned)
 	if err != nil {
 		return "", false
 	}
@@ -353,7 +380,10 @@ func extractAllText(raw json.RawMessage) string {
 // assistant turn in the full transcript regardless of maxMessages. A missing
 // file returns (nil, "", false, nil) — absent transcript is not an error.
 func readTranscript(path string, maxMessages int32) (messages []*bossanovav1.ChatMessage, finalAssistant string, exists bool, err error) {
-	f, err := os.Open(path)
+	// Clean last before the read: path is built by transcriptPath, which
+	// rejects traversal in the caller-supplied session id (G304).
+	cleaned := filepath.Clean(path)
+	f, err := os.Open(cleaned)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, "", false, nil
@@ -413,8 +443,11 @@ func readTranscript(path string, maxMessages int32) (messages []*bossanovav1.Cha
 		}
 	}
 
-	// Apply maxMessages tail.
-	if maxMessages > 0 && int32(len(all)) > maxMessages {
+	// Apply maxMessages tail. Widen maxMessages (int32 → int) rather than
+	// narrowing len(all) (int → int32): the widening conversion cannot
+	// overflow, so a transcript with more than math.MaxInt32 messages can
+	// never wrap the comparison (G115).
+	if maxMessages > 0 && len(all) > int(maxMessages) {
 		all = all[len(all)-int(maxMessages):]
 	}
 

@@ -238,7 +238,7 @@ func (r *Resolver) moreEligibleUtil(candidate, current AccountMeta, now time.Tim
 			return rotation.LowerUtilization(candUtil, curUtil)
 		}
 	}
-	return moreEligible(candidate, current)
+	return moreEligible(candidate, current, now)
 }
 
 // moreEligibleFallback ranks tier-2 candidates (active accounts tier-1 rejected):
@@ -261,7 +261,7 @@ func (r *Resolver) moreEligibleFallback(candidate, current AccountMeta, now time
 	if candKnown && !candRec.Equal(curRec) {
 		return candRec.Before(curRec)
 	}
-	return moreEligible(candidate, current)
+	return moreEligible(candidate, current, now)
 }
 
 // recoveryTime is an account's effective "available again" instant for tier-2
@@ -310,11 +310,30 @@ func healthRank(a AccountMeta) int {
 
 // moreEligible reports whether candidate should beat current, mirroring the
 // rotation engine's ORDER BY (account_decide_tx.go ListByProvider): lower
-// Priority wins, then least-recently-used (a nil LastUsedAt sorts as the zero
-// time, so never-used accounts win the tie), then lexically smaller ID.
-func moreEligible(candidate, current AccountMeta) bool {
+// Priority wins, then the weekly-expiry tiebreak (BOS-429), then
+// least-recently-used (a nil LastUsedAt sorts as the zero time, so never-used
+// accounts win the tie), then lexically smaller ID.
+//
+// The weekly-expiry tiebreak — applied only within an equal-Priority band, so it
+// never overrides the operator's explicit prioritization — prefers the account
+// whose weekly quota resets soonest in the future, so its credits are spent
+// before the window rolls over. It uses rotation.FutureWeeklyReset (the single
+// shared predicate) so bind-time selection, the SQL ListByProvider order, and
+// the rotation fake never drift: an account with a known future Reset7d beats one
+// with a nil (never probed) or past (already-rolled) reset, and among two
+// known-future resets the sooner one wins. nil/past resets tie here and fall
+// through to the LRU -> id tiebreak.
+func moreEligible(candidate, current AccountMeta, now time.Time) bool {
 	if candidate.Priority != current.Priority {
 		return candidate.Priority < current.Priority
+	}
+	candReset, candFuture := rotation.FutureWeeklyReset(candidate.Reset7d, now)
+	curReset, curFuture := rotation.FutureWeeklyReset(current.Reset7d, now)
+	if candFuture != curFuture {
+		return candFuture
+	}
+	if candFuture && !candReset.Equal(curReset) {
+		return candReset.Before(curReset)
 	}
 	if !lastUsed(candidate).Equal(lastUsed(current)) {
 		return lastUsed(candidate).Before(lastUsed(current))

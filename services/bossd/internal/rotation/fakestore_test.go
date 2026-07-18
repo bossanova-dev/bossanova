@@ -78,7 +78,7 @@ func (tx *fakeTx) find(id string) *models.Account {
 	return nil
 }
 
-func (tx *fakeTx) ListByProvider(ctx context.Context) ([]*models.Account, error) {
+func (tx *fakeTx) ListByProvider(ctx context.Context, now time.Time) ([]*models.Account, error) {
 	var out []*models.Account
 	for _, a := range tx.store.accounts {
 		if a.Provider == models.AccountProvider(tx.provider) {
@@ -94,6 +94,17 @@ func (tx *fakeTx) ListByProvider(ctx context.Context) ([]*models.Account, error)
 		if ri != rj {
 			return ri < rj
 		}
+		// Weekly-expiry rank, mirroring the SQL ORDER BY and account.moreEligible
+		// via the shared FutureWeeklyReset predicate (BOS-429): a known future
+		// reset beats a nil/past one, soonest-future first; ties fall to LRU.
+		ti, oki := FutureWeeklyReset(fakeReset7d(ai), now)
+		tj, okj := FutureWeeklyReset(fakeReset7d(aj), now)
+		if oki != okj {
+			return oki
+		}
+		if oki && !ti.Equal(tj) {
+			return ti.Before(tj)
+		}
 		if lastUsedLess(ai.LastUsedAt, aj.LastUsedAt) {
 			return true
 		}
@@ -103,6 +114,16 @@ func (tx *fakeTx) ListByProvider(ctx context.Context) ([]*models.Account, error)
 		return ai.ID < aj.ID // final deterministic tiebreak, mirrors the SQL ORDER BY
 	})
 	return out, nil
+}
+
+// fakeReset7d nil-safely reads an account's weekly-quota reset instant from its
+// usage snapshot (nil when never probed), matching the usage_reset_7d column the
+// SQL ListByProvider orders on.
+func fakeReset7d(a *models.Account) *time.Time {
+	if a.Usage == nil {
+		return nil
+	}
+	return a.Usage.Reset7d
 }
 
 func (tx *fakeTx) SetCooldownIfNotCooling(ctx context.Context, accountID string, until, now time.Time) (bool, error) {

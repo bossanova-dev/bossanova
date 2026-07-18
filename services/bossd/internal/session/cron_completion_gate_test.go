@@ -308,6 +308,33 @@ func TestCronCompletionGateFinalizesUnattendedTmuxSession(t *testing.T) {
 	waitForCount(t, "FinalizeSession", finalizer.count)
 }
 
+// TestCronCompletionGateFinalizesDetachSession proves the gate finalizes a
+// durable tmux-hosted detach session (Detach=true, CronJobID nil, TmuxUnattended
+// false) once its run is over — BOS-428's completion-routing requirement. Without
+// Detach joining the unattended class, a tmux-hosted detach run's finalize Stop
+// hook would be admitted here then dropped, stranding it in ImplementingPlan.
+func TestCronCompletionGateFinalizesDetachSession(t *testing.T) {
+	sessions := newGateSessionStore()
+	finalizer := &recordingCronFinalizer{}
+
+	agentID := "agent-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		Detach:         true,
+		AgentSessionID: &agentID,
+	}
+
+	gate := NewCronCompletionGate(CronCompletionGateDeps{
+		Sessions:   sessions,
+		Finalizer:  finalizer,
+		QuietDelay: time.Millisecond,
+		RunIsOver:  func(*models.Session) bool { return true },
+	})
+
+	gate.NotifyCronAgentStopped("sess-1")
+	waitForCount(t, "FinalizeSession", finalizer.count)
+}
+
 // TestCronCompletionGateIgnoresInteractiveSession proves the gate never
 // auto-finalizes a plain interactive session — one with a HookToken but neither
 // CronJobID nor TmuxUnattended. HookToken presence alone is NOT the autonomy

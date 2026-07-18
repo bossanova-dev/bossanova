@@ -668,7 +668,7 @@ func (l *Lifecycle) configureFinalizeHookForTmuxChat(ctx context.Context, client
 		SessionId:      sessionID,
 		AgentSessionId: agentSessionID,
 		HookToken:      hookOpts.Token,
-		HookPort:       int32(l.hookPort),
+		HookPort:       clampInt32(l.hookPort),
 	})
 	if err != nil {
 		return false, fmt.Errorf("configure finalize hook for run %s: %w", agentSessionID, err)
@@ -976,7 +976,7 @@ func (l *Lifecycle) startTmuxChat(
 	// predicate is kept as a fallback for any future caller that funnels a
 	// fully-populated session through with empty opts.
 	input := chatInputMechanicsFromPrompt(session.Plan)
-	if opts.CronJobID != "" || opts.TmuxUnattended || isUnattendedSession(session) {
+	if opts.CronJobID != "" || opts.TmuxUnattended || opts.Detach || isUnattendedSession(session) {
 		input.Delivery = DeliverySubmit
 	}
 	// Unattended/cron sessions wire their session-keyed Stop hook earlier in
@@ -1005,12 +1005,16 @@ func isCronSession(sess *models.Session) bool {
 }
 
 // isUnattendedSession reports whether a session runs autonomously with no human
-// in the loop — a scheduled cron job OR a tmux_unattended session (e.g. /boss-epic).
-// Cron-job scheduler bookkeeping stays keyed on CronJobID; this predicate governs
-// autonomy: env (BOSS_CRON), the autonomy directive, headless-finalize exclusion,
-// and completion-gate eligibility.
+// in the loop — a scheduled cron job, a tmux_unattended session (e.g. /boss-epic),
+// OR a durable tmux-hosted `boss new --detach` run (Detach). Cron-job scheduler
+// bookkeeping stays keyed on CronJobID; this predicate governs autonomy: env
+// (BOSS_CRON), the autonomy directive, headless-finalize exclusion, completion-gate
+// eligibility, and the restart orphan-sweep exclusion. Detach joins the class so a
+// tmux-hosted detach run's finalize Stop hook is admitted by the completion gate
+// and it is never swept to Orphaned; a fallback (paneless) detach run leaves Detach
+// false and stays in the headless class.
 func isUnattendedSession(sess *models.Session) bool {
-	return isCronSession(sess) || (sess != nil && sess.TmuxUnattended)
+	return isCronSession(sess) || (sess != nil && (sess.TmuxUnattended || sess.Detach))
 }
 
 // ManagedSessionEnv returns the canonical BOSS_* environment set on every

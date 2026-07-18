@@ -184,7 +184,7 @@ func (m *MockWorktreeManager) Create(ctx context.Context, opts gitpkg.CreateOpts
 	branch := sanitize(opts.Title)
 	path := fmt.Sprintf("/tmp/worktrees/%s/%s", sanitize(opts.RepoName), branch)
 	// Materialise on disk so callers that stat the path (spawnChatTmux) work.
-	_ = os.MkdirAll(path, 0o755)
+	_ = os.MkdirAll(path, 0o750)
 	return &gitpkg.CreateResult{
 		WorktreePath: path,
 		BranchName:   branch,
@@ -456,7 +456,7 @@ func (m *MockWorktreeManager) CreateFromExistingBranch(ctx context.Context, opts
 		return fn(ctx, opts)
 	}
 	path := fmt.Sprintf("/tmp/worktrees/%s", opts.BranchName)
-	_ = os.MkdirAll(path, 0o755)
+	_ = os.MkdirAll(path, 0o750)
 	return &gitpkg.CreateResult{
 		WorktreePath: path,
 		BranchName:   opts.BranchName,

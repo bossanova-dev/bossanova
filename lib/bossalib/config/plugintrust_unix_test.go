@@ -3,12 +3,43 @@
 package config
 
 import (
+	"math"
 	"os"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
+
+// TestCurrentUID pins the G115 overflow guard on os.Getuid(): valid uids
+// (including the uint32 boundary) convert, while a negative sentinel (-1 from an
+// unsupported platform) or an out-of-range value is rejected rather than
+// silently wrapping.
+func TestCurrentUID(t *testing.T) {
+	tests := []struct {
+		name   string
+		raw    int
+		want   uint32
+		wantOK bool
+	}{
+		{name: "zero (root)", raw: 0, want: 0, wantOK: true},
+		{name: "typical uid", raw: 501, want: 501, wantOK: true},
+		{name: "max uint32 boundary", raw: math.MaxUint32, want: math.MaxUint32, wantOK: true},
+		{name: "negative sentinel", raw: -1, wantOK: false},
+		{name: "above uint32", raw: math.MaxUint32 + 1, wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := currentUID(tt.raw)
+			if ok != tt.wantOK {
+				t.Fatalf("currentUID(%d) ok = %v, want %v", tt.raw, ok, tt.wantOK)
+			}
+			if ok && got != tt.want {
+				t.Fatalf("currentUID(%d) = %d, want %d", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
 
 type fakeOwnerFileInfo struct {
 	uid uint32

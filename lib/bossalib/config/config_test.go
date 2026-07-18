@@ -1251,6 +1251,48 @@ func TestManagedAccountsConfig_FailoverProxyEnabled(t *testing.T) {
 	})
 }
 
+func TestManagedAccountsConfig_FailoverProxyPort(t *testing.T) {
+	t.Run("zero value falls back to default 44127", func(t *testing.T) {
+		c := ManagedAccountsConfig{}
+		if got := c.FailoverProxyPort(); got != 44127 {
+			t.Errorf("FailoverProxyPort() = %d, want 44127 for zero value", got)
+		}
+	})
+	t.Run("negative falls back to default 44127", func(t *testing.T) {
+		c := ManagedAccountsConfig{FailoverProxyPortSetting: -1}
+		if got := c.FailoverProxyPort(); got != 44127 {
+			t.Errorf("FailoverProxyPort() = %d, want 44127 for negative value", got)
+		}
+	})
+	t.Run("returns configured value when set", func(t *testing.T) {
+		c := ManagedAccountsConfig{FailoverProxyPortSetting: 51000}
+		if got := c.FailoverProxyPort(); got != 51000 {
+			t.Errorf("FailoverProxyPort() = %d, want 51000", got)
+		}
+	})
+	t.Run("parses failover_proxy_port from JSON", func(t *testing.T) {
+		var c ManagedAccountsConfig
+		if err := json.Unmarshal([]byte(`{"failover_proxy_port":50505}`), &c); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if c.FailoverProxyPortSetting != 50505 {
+			t.Errorf("FailoverProxyPortSetting = %d, want 50505", c.FailoverProxyPortSetting)
+		}
+		if got := c.FailoverProxyPort(); got != 50505 {
+			t.Errorf("FailoverProxyPort() = %d, want 50505", got)
+		}
+	})
+	t.Run("absent JSON key defaults to 44127", func(t *testing.T) {
+		var c ManagedAccountsConfig
+		if err := json.Unmarshal([]byte(`{}`), &c); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if got := c.FailoverProxyPort(); got != 44127 {
+			t.Errorf("FailoverProxyPort() = %d, want 44127 when key absent", got)
+		}
+	})
+}
+
 func TestRepairConfig_PollInterval(t *testing.T) {
 	t.Run("returns default when unset", func(t *testing.T) {
 		c := RepairConfig{}

@@ -199,10 +199,11 @@ func rotationExhaustedHint(sess *pb.Session, now time.Time) string {
 
 // rotationHistoryBlock renders the session's recent rotation decisions
 // (newest-first, capped) as a muted block, e.g.
-// "15:02 yuki@kamik.ai switched to dave@kamik.ai — resumed". Returns "" when
-// the session has no rotation history so callers can skip rendering entirely
-// (no layout shift).
-func rotationHistoryBlock(sess *pb.Session, width int) string {
+// "15:02 yuki@kamik.ai switched to dave@kamik.ai — resumed". The per-row
+// timestamp is date-aware relative to now (see rotationEventTime). Returns ""
+// when the session has no rotation history so callers can skip rendering
+// entirely (no layout shift).
+func rotationHistoryBlock(sess *pb.Session, width int, now time.Time) string {
 	if sess == nil {
 		return ""
 	}
@@ -217,15 +218,36 @@ func rotationHistoryBlock(sess *pb.Session, width int) string {
 		if i == maxRows {
 			break
 		}
-		line := fmt.Sprintf("%s %s",
-			ev.GetCreatedAt().AsTime().Local().Format("15:04"),
-			rotationEventLabel(ev))
-		if detail := rotationEventDetail(ev); detail != "" {
-			line += " — " + detail
+		// Assemble time + label + detail, tolerating an empty label: a
+		// generic (UNSPECIFIED) event drops the label entirely and renders
+		// "<time> <detail>" with no "— " join and no double space (BOS-432).
+		label := rotationEventLabel(ev)
+		detail := rotationEventDetail(ev)
+		line := rotationEventTime(ev.GetCreatedAt().AsTime(), now)
+		switch {
+		case label != "" && detail != "":
+			line += " " + label + " — " + detail
+		case label != "":
+			line += " " + label
+		case detail != "":
+			line += " " + detail
 		}
 		lines = append(lines, line)
 	}
 	return styleStatusMuted.Width(width).Render(strings.Join(lines, "\n"))
+}
+
+// rotationEventTime renders a rotation event's timestamp for a history row:
+// time-only ("15:04") when the event falls on the same local calendar day as
+// now, otherwise ISO date + time ("2006-01-02 15:04") so older events carry a
+// date. Both sides are converted to local time before comparison (BOS-432).
+func rotationEventTime(t, now time.Time) string {
+	lt := t.Local()
+	n := now.Local()
+	if lt.Year() == n.Year() && lt.YearDay() == n.YearDay() {
+		return lt.Format("15:04")
+	}
+	return lt.Format("2006-01-02 15:04")
 }
 
 // rotationEventDetail preserves outcome-specific context. The TrimPrefix is a
@@ -266,7 +288,12 @@ func rotationEventLabel(ev *pb.RotationEvent) string {
 	case pb.RotationOutcome_ROTATION_OUTCOME_FAILED:
 		return fmt.Sprintf("switch to %s failed", ev.GetToAccount())
 	default:
-		return "rotation event"
+		// A generic/unspecified outcome (e.g. a BOS-409 stale-port notice with
+		// the whole message in Detail) carries no meaningful label. Return ""
+		// so the row renders "<time> <detail>" with no filler prefix (BOS-432).
+		// Callers that surface a label standalone (toast.go) fall back to the
+		// detail so the notice is never empty.
+		return ""
 	}
 }
 
@@ -377,7 +404,10 @@ func repairRetryRemaining(attemptCount int32, startedAt time.Time) time.Duration
 	if shift > 16 {
 		shift = 16
 	}
-	wait := base << uint(shift)
+	// shift is statically in [0,16] here (attemptCount>0 ⇒ shift>=0, clamped to
+	// <=16 above), and Go permits a signed non-negative shift count, so no
+	// int→uint conversion is needed — dropping it removes the G115 finding.
+	wait := base << shift
 	if wait <= 0 || wait > maxWait {
 		wait = maxWait
 	}

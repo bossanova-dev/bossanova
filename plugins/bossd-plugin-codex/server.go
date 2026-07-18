@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -268,7 +269,8 @@ func (s *Server) codexMcpOverrideArgs(path string) []string {
 	if path == "" {
 		return nil
 	}
-	raw, err := os.ReadFile(path)
+	cleaned := filepath.Clean(path)
+	raw, err := os.ReadFile(cleaned)
 	if err != nil {
 		s.logger.Warn().Err(err).Str("mcpConfigPath", path).
 			Msg("read mcp config failed; codex launches without mcp__boss__*")

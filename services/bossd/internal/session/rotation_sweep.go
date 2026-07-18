@@ -31,7 +31,7 @@ func (l *Lifecycle) SetClockForTest(fn func() time.Time) { l.clock = fn }
 // again. Because it is driven entirely off the persisted rotation_resume_at
 // stamp — never an in-memory timer — a daemon restart re-arms every parked run:
 // a fresh Lifecycle over the same store resumes them on its next tick (mirrors
-// RecoverStrandedCronSessions).
+// recoverStrandedCronSessions).
 //
 // The kill switch (ManagedAccountsEnabled) also disables the sweep. Returns the number
 // of sessions re-dispatched this pass.

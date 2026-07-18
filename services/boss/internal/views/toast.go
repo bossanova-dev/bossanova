@@ -88,7 +88,17 @@ func detectNewRotationEvents(prev map[string]string, sessions []*pb.Session) (ma
 			continue // seed pass: record state without toasting
 		}
 		if prev[sess.GetId()] != latest.GetId() {
-			toasts = append(toasts, sess.GetTitle()+": "+rotationEventLabel(latest))
+			// A generic (UNSPECIFIED) event has no outcome label (BOS-432), so
+			// fall back to its detail — and a bare "rotation event" only if
+			// neither is present — so the toast is never a bare "<title>: ".
+			summary := rotationEventLabel(latest)
+			if summary == "" {
+				summary = rotationEventDetail(latest)
+			}
+			if summary == "" {
+				summary = "rotation event"
+			}
+			toasts = append(toasts, sess.GetTitle()+": "+summary)
 		}
 	}
 	return next, toasts

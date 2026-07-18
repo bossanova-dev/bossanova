@@ -1566,6 +1566,11 @@ func TestCooldownFor(t *testing.T) {
 		{"fifth failure", 5, 16 * base},
 		{"sixth failure caps at 30m", 6, 30 * time.Minute},
 		{"tenth failure still capped", 10, 30 * time.Minute},
+		// shift reaches exactly maxShift (attemptCount-1 == 16) — the clamp
+		// boundary. The signed shift stays in [0, 16] so the 1<<shift factor
+		// never wraps; the cap still saturates the result at 30m.
+		{"attempt at maxShift boundary stays capped", 17, 30 * time.Minute},
+		{"attempt one past maxShift boundary stays capped", 18, 30 * time.Minute},
 		{"huge count never overflows", 1000, 30 * time.Minute},
 	}
 	for _, tc := range tests {

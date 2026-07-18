@@ -43,7 +43,7 @@ type CronCompletionGateDeps struct {
 	// a completion signal: without this check the gate would finalize mid-run,
 	// opening a junk PR and Blocking a still-working session. When RunIsOver
 	// reports the run is not over, the gate defers to the periodic
-	// RecoverStrandedCronSessions sweep, which re-evaluates the same criterion and
+	// recoverStrandedCronSessions sweep, which re-evaluates the same criterion and
 	// finalizes once the run is genuinely complete. A nil RunIsOver (partial
 	// wiring) preserves the legacy finalize-on-any-cron-Stop behavior.
 	RunIsOver func(*models.Session) bool
@@ -52,7 +52,7 @@ type CronCompletionGateDeps struct {
 // CronCompletionGate debounces cron completion signals before finalization and
 // gates finalize on the run actually being over. It is the single chokepoint both
 // finalize-trigger paths funnel through — the Claude Stop hook (per-turn) and the
-// periodic RecoverStrandedCronSessions sweep — so the run-completion criterion
+// periodic recoverStrandedCronSessions sweep — so the run-completion criterion
 // (RunIsOver → Lifecycle.cronRunIsOver) is enforced in exactly one place. A Stop
 // alone never finalizes a still-working run; see CronCompletionGateDeps.RunIsOver.
 type CronCompletionGate struct {
@@ -195,7 +195,7 @@ func (g *CronCompletionGate) checkAndFinalize(ctx context.Context, sessionID str
 	// The Stop hook fires on every turn boundary, including mid-run pauses (e.g.
 	// the agent yielding while a background subagent runs). Finalize only when the
 	// run is actually over; otherwise defer to the periodic
-	// RecoverStrandedCronSessions sweep, which re-evaluates the same criterion and
+	// recoverStrandedCronSessions sweep, which re-evaluates the same criterion and
 	// finalizes once the run genuinely completes. A nil runIsOver keeps the legacy
 	// finalize-on-any-unattended-Stop behavior for partial wiring.
 	if g.runIsOver != nil && !g.runIsOver(session) {

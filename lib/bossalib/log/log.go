@@ -44,7 +44,7 @@ func setup(service string, includeStderr bool) io.Closer {
 	path := LogPath(service)
 	fileFallback := false
 	if path != "" {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 			if includeStderr {
 				log.Warn().Err(err).Str("path", path).Msg("log: could not create log dir, falling back to stderr-only")
 			}

@@ -2,9 +2,11 @@ package bossmcp
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -368,6 +370,14 @@ func TestMutatingTools(t *testing.T) {
 			}},
 			sentinel: "sess-cs-full",
 		},
+		{
+			tool: "start_repair_workflow",
+			args: map[string]any{},
+			backend: &fakeBackend{startRepairWorkflow: func(_ context.Context) (*pb.StartRepairWorkflowResponse, error) {
+				return &pb.StartRepairWorkflowResponse{AlreadyRunning: true, Detail: "detail-srw"}, nil
+			}},
+			sentinel: "detail-srw",
+		},
 	}
 
 	for _, tc := range cases {
@@ -384,6 +394,29 @@ func TestMutatingTools(t *testing.T) {
 				t.Fatalf("%s result missing sentinel %q: %s", tc.tool, tc.sentinel, got)
 			}
 		})
+	}
+}
+
+// TestStartRepairWorkflowToolEncodesResponse proves the start_repair_workflow
+// write tool forwards to the backend and JSON-encodes already_running + detail.
+func TestStartRepairWorkflowToolEncodesResponse(t *testing.T) {
+	backend := &fakeBackend{startRepairWorkflow: func(_ context.Context) (*pb.StartRepairWorkflowResponse, error) {
+		return &pb.StartRepairWorkflowResponse{AlreadyRunning: true, Detail: "auto-repair already armed"}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "start_repair_workflow", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatalf("call start_repair_workflow: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("start_repair_workflow returned error result: %s", textOf(t, res))
+	}
+	out := textOf(t, res)
+	if !strings.Contains(out, `"already_running": true`) {
+		t.Errorf("start_repair_workflow result missing already_running=true: %s", out)
+	}
+	if !strings.Contains(out, "auto-repair already armed") {
+		t.Errorf("start_repair_workflow result missing detail: %s", out)
 	}
 }
 
@@ -643,6 +676,92 @@ func TestCreateSessionToolDescriptionWarnsPlanningOnlyCallers(t *testing.T) {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("create_session description missing %q: %s", want, desc)
 		}
+	}
+}
+
+// TestStartChatToolMintsUUIDAndCallsRecordChat proves the start_chat handler
+// mints a fresh valid UUID for the new chat's agent_session_id, invokes
+// RecordChat with resume=false (spawning a live agent), and threads
+// session_id/title/agent_name through unchanged.
+func TestStartChatToolMintsUUIDAndCallsRecordChat(t *testing.T) {
+	var gotSID, gotAID, gotTitle, gotAgent string
+	var gotResume bool
+	backend := &fakeBackend{recordChat: func(_ context.Context, sid, aid, title, agent string, resume bool) (*pb.ClaudeChat, error) {
+		gotSID, gotAID, gotTitle, gotAgent, gotResume = sid, aid, title, agent, resume
+		return &pb.ClaudeChat{Id: "chat-sc", AgentSessionId: aid}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "start_chat",
+		Arguments: map[string]any{"session_id": "s1", "title": "Second opinion", "agent_name": "codex"},
+	})
+	if err != nil {
+		t.Fatalf("call start_chat: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("start_chat returned error result: %s", textOf(t, res))
+	}
+
+	if gotSID != "s1" || gotTitle != "Second opinion" || gotAgent != "codex" {
+		t.Errorf("start_chat did not forward args: session_id=%q title=%q agent_name=%q", gotSID, gotTitle, gotAgent)
+	}
+	if gotResume {
+		t.Error("start_chat must call RecordChat with resume=false (a fresh live spawn), got resume=true")
+	}
+	if _, err := uuid.Parse(gotAID); err != nil {
+		t.Errorf("start_chat must mint a valid UUID agent_session_id, got %q: %v", gotAID, err)
+	}
+	// The minted id must surface in the returned chat so the caller can address it.
+	if !strings.Contains(textOf(t, res), gotAID) {
+		t.Errorf("start_chat result must expose the minted agent_session_id %q: %s", gotAID, textOf(t, res))
+	}
+}
+
+// TestStartChatToolSchema asserts start_chat advertises session_id as required
+// and title/agent_name as optional in its input schema over tools/list.
+func TestStartChatToolSchema(t *testing.T) {
+	cs := newConnectedClient(t, &fakeBackend{}, Options{})
+	res, err := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	var tool *mcp.Tool
+	for _, tl := range res.Tools {
+		if tl.Name == "start_chat" {
+			tool = tl
+			break
+		}
+	}
+	if tool == nil {
+		t.Fatal("start_chat tool not registered")
+	}
+
+	raw, err := json.Marshal(tool.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal start_chat input schema: %v", err)
+	}
+	var parsed struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string                   `json:"required"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("unmarshal start_chat input schema: %v", err)
+	}
+	for _, field := range []string{"session_id", "title", "agent_name"} {
+		if _, ok := parsed.Properties[field]; !ok {
+			t.Errorf("start_chat schema missing property %q", field)
+		}
+	}
+	reqSet := map[string]bool{}
+	for _, r := range parsed.Required {
+		reqSet[r] = true
+	}
+	if !reqSet["session_id"] {
+		t.Errorf("start_chat schema must mark session_id required; required=%v", parsed.Required)
+	}
+	if reqSet["title"] || reqSet["agent_name"] {
+		t.Errorf("start_chat schema must leave title/agent_name optional; required=%v", parsed.Required)
 	}
 }
 

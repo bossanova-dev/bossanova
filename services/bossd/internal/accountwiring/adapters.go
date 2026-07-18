@@ -321,10 +321,9 @@ func usageProbeCredentialEnv(mat *bossanovav1.MaterializeAccountResponse) (map[s
 		return nil, cleanup, fmt.Errorf("create usage probe home: %w", err)
 	}
 	cleanup = func() { _ = os.RemoveAll(dir) }
-	if err := os.Chmod(dir, 0o700); err != nil {
-		cleanup()
-		return nil, func() {}, fmt.Errorf("secure usage probe home: %w", err)
-	}
+	// os.MkdirTemp already creates the directory with 0o700, so an explicit
+	// re-chmod is a no-op. Dropping it clears gosec G302 without weakening the
+	// permission guarantee (BOS-423).
 	if err := seedUsageProbeHome(homeKey, dir); err != nil {
 		cleanup()
 		return nil, func() {}, err

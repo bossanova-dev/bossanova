@@ -125,113 +125,74 @@ func TestGetChatTitle_FromRenameSummary(t *testing.T) {
 	}
 }
 
-func TestGetChatTitle_FromCustomTitle(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-
-	worktree := "/Users/dave/Code/myproj"
-	claudeID := "abcd-custom-title"
-
-	projectKey := strings.NewReplacer("/", "-", ".", "-").Replace(worktree)
-	projectDir := filepath.Join(tmpHome, ".claude", "projects", projectKey)
-	if err := os.MkdirAll(projectDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	jsonl := strings.Join([]string{
-		`{"type":"custom-title","customTitle":"Rename Test","sessionId":"abcd-custom-title"}`,
-		`{"type":"agent-name","agentName":"Rename Test","sessionId":"abcd-custom-title"}`,
-		`{"type":"user","message":{"role":"user","content":"Initial prompt"}}`,
-	}, "\n") + "\n"
-	if err := os.WriteFile(filepath.Join(projectDir, claudeID+".jsonl"), []byte(jsonl), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	srv := &Server{logger: zerolog.Nop()}
-	resp, err := srv.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{
-		WorkDir: worktree, SessionId: claudeID,
-	})
-	if err != nil {
-		t.Fatalf("GetChatTitle: %v", err)
-	}
-	if resp.Title != "Rename Test" {
-		t.Errorf("Title = %q, want custom title", resp.Title)
-	}
-	if !resp.Explicit {
-		t.Error("Explicit = false, want true for custom title")
-	}
-}
-
-func TestGetChatTitle_CustomTitleOverSummary(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-
-	worktree := "/Users/dave/Code/myproj"
-	claudeID := "abcd-custom-over-summary"
-
-	projectKey := strings.NewReplacer("/", "-", ".", "-").Replace(worktree)
-	projectDir := filepath.Join(tmpHome, ".claude", "projects", projectKey)
-	if err := os.MkdirAll(projectDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// An explicit custom title must win over an auto-generated summary line.
-	jsonl := strings.Join([]string{
-		`{"type":"user","message":{"role":"user","content":"Initial prompt"}}`,
-		`{"type":"summary","summary":"auto summary"}`,
-		`{"type":"custom-title","customTitle":"User Title","sessionId":"abcd-custom-over-summary"}`,
-	}, "\n") + "\n"
-	if err := os.WriteFile(filepath.Join(projectDir, claudeID+".jsonl"), []byte(jsonl), 0o600); err != nil {
-		t.Fatal(err)
+func TestGetChatTitle_CustomTitles(t *testing.T) {
+	tests := []struct {
+		name     string
+		claudeID string
+		jsonl    []string
+		want     string
+	}{
+		{
+			name:     "from custom title",
+			claudeID: "abcd-custom-title",
+			jsonl: []string{
+				`{"type":"custom-title","customTitle":"Rename Test","sessionId":"abcd-custom-title"}`,
+				`{"type":"agent-name","agentName":"Rename Test","sessionId":"abcd-custom-title"}`,
+				`{"type":"user","message":{"role":"user","content":"Initial prompt"}}`,
+			},
+			want: "Rename Test",
+		},
+		{
+			name:     "custom title over summary",
+			claudeID: "abcd-custom-over-summary",
+			jsonl: []string{
+				`{"type":"user","message":{"role":"user","content":"Initial prompt"}}`,
+				`{"type":"summary","summary":"auto summary"}`,
+				`{"type":"custom-title","customTitle":"User Title","sessionId":"abcd-custom-over-summary"}`,
+			},
+			want: "User Title",
+		},
+		{
+			name:     "empty custom title falls back to summary",
+			claudeID: "abcd-empty-custom-title",
+			jsonl: []string{
+				`{"type":"user","message":{"role":"user","content":"Initial prompt"}}`,
+				`{"type":"custom-title","customTitle":"","sessionId":"abcd-empty-custom-title"}`,
+				`{"type":"summary","summary":"rename summary"}`,
+			},
+			want: "rename summary",
+		},
 	}
 
-	srv := &Server{logger: zerolog.Nop()}
-	resp, err := srv.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{
-		WorkDir: worktree, SessionId: claudeID,
-	})
-	if err != nil {
-		t.Fatalf("GetChatTitle: %v", err)
-	}
-	if resp.Title != "User Title" {
-		t.Errorf("Title = %q, want custom title over summary", resp.Title)
-	}
-	if !resp.Explicit {
-		t.Error("Explicit = false, want true for custom title")
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpHome := t.TempDir()
+			t.Setenv("HOME", tmpHome)
 
-func TestGetChatTitle_EmptyCustomTitleFallsBackToSummary(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+			worktree := "/Users/dave/Code/myproj"
+			projectKey := strings.NewReplacer("/", "-", ".", "-").Replace(worktree)
+			projectDir := filepath.Join(tmpHome, ".claude", "projects", projectKey)
+			if err := os.MkdirAll(projectDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(projectDir, tt.claudeID+".jsonl"), []byte(strings.Join(tt.jsonl, "\n")+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	worktree := "/Users/dave/Code/myproj"
-	claudeID := "abcd-empty-custom-title"
-
-	projectKey := strings.NewReplacer("/", "-", ".", "-").Replace(worktree)
-	projectDir := filepath.Join(tmpHome, ".claude", "projects", projectKey)
-	if err := os.MkdirAll(projectDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// An empty custom title must not shadow a real rename summary.
-	jsonl := strings.Join([]string{
-		`{"type":"user","message":{"role":"user","content":"Initial prompt"}}`,
-		`{"type":"custom-title","customTitle":"","sessionId":"abcd-empty-custom-title"}`,
-		`{"type":"summary","summary":"rename summary"}`,
-	}, "\n") + "\n"
-	if err := os.WriteFile(filepath.Join(projectDir, claudeID+".jsonl"), []byte(jsonl), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	srv := &Server{logger: zerolog.Nop()}
-	resp, err := srv.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{
-		WorkDir: worktree, SessionId: claudeID,
-	})
-	if err != nil {
-		t.Fatalf("GetChatTitle: %v", err)
-	}
-	if resp.Title != "rename summary" {
-		t.Errorf("Title = %q, want rename summary fallback", resp.Title)
-	}
-	if !resp.Explicit {
-		t.Error("Explicit = false, want true for rename summary")
+			srv := &Server{logger: zerolog.Nop()}
+			resp, err := srv.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{
+				WorkDir: worktree, SessionId: tt.claudeID,
+			})
+			if err != nil {
+				t.Fatalf("GetChatTitle: %v", err)
+			}
+			if resp.Title != tt.want {
+				t.Errorf("Title = %q, want %q", resp.Title, tt.want)
+			}
+			if !resp.Explicit {
+				t.Error("Explicit = false, want true")
+			}
+		})
 	}
 }
 
@@ -812,5 +773,131 @@ func TestReadTranscript_ViaServer_MissingFile(t *testing.T) {
 	}
 	if resp.FinalAssistantText != "" {
 		t.Errorf("FinalAssistantText should be empty, got %q", resp.FinalAssistantText)
+	}
+}
+
+// TestReadTranscript_MaxMessagesTable exercises the maxMessages tail boundary
+// (G115): the comparison widens maxMessages (int32 → int) instead of narrowing
+// len(all), so the tail cut is correct for zero, in-range, exact-boundary, and
+// larger-than-length values and can never wrap.
+func TestReadTranscript_MaxMessagesTable(t *testing.T) {
+	dir := t.TempDir()
+	// 4 real text messages: user, assistant, user, assistant.
+	jsonl := `{"type":"user","message":{"role":"user","content":"m1"}}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":"a1"}}` + "\n" +
+		`{"type":"user","message":{"role":"user","content":"m2"}}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":"a2"}}` + "\n"
+	path := filepath.Join(dir, "tail.jsonl")
+	if err := os.WriteFile(path, []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name        string
+		maxMessages int32
+		wantLen     int
+		wantFirst   string
+	}{
+		{"zero returns all", 0, 4, "m1"},
+		{"in-range tail", 2, 2, "m2"},
+		{"boundary equals length", 4, 4, "m1"},
+		{"larger than length returns all", 100, 4, "m1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			messages, finalAssistant, exists, err := readTranscript(path, tc.maxMessages)
+			if err != nil {
+				t.Fatalf("readTranscript: %v", err)
+			}
+			if !exists {
+				t.Fatal("exists = false, want true")
+			}
+			if len(messages) != tc.wantLen {
+				t.Fatalf("len(messages) = %d, want %d", len(messages), tc.wantLen)
+			}
+			if messages[0].Text != tc.wantFirst {
+				t.Errorf("messages[0].Text = %q, want %q", messages[0].Text, tc.wantFirst)
+			}
+			// finalAssistant always reflects the true last assistant turn.
+			if finalAssistant != "a2" {
+				t.Errorf("finalAssistant = %q, want %q", finalAssistant, "a2")
+			}
+		})
+	}
+}
+
+// TestReadTranscript_UncleanPathLoads confirms the filepath.Clean applied
+// before os.Open (G304) does not break loading a valid, internally-derived
+// path that arrives un-normalized (redundant separators / dot segments).
+func TestReadTranscript_UncleanPathLoads(t *testing.T) {
+	dir := t.TempDir()
+	jsonl := `{"type":"user","message":{"role":"user","content":"hi"}}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":"yo"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "u.jsonl"), []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unclean := dir + string(filepath.Separator) + "." + string(filepath.Separator) + "u.jsonl"
+	messages, _, exists, err := readTranscript(unclean, 0)
+	if err != nil {
+		t.Fatalf("readTranscript(unclean): %v", err)
+	}
+	if !exists || len(messages) != 2 {
+		t.Fatalf("unclean path load: exists=%v len=%d, want true/2", exists, len(messages))
+	}
+}
+
+// TestTranscriptPathRejectsTraversalSessionID verifies the BOS-415 G304
+// root-containment guard on the caller-supplied (req.AgentSessionId) session
+// id: an id carrying path separators or ".." is rejected before it is
+// interpolated into the ~/.claude/projects path, so a crafted value cannot
+// traverse out of the projects root. Mirrors the codex findRolloutPath guard.
+func TestTranscriptPathRejectsTraversalSessionID(t *testing.T) {
+	for _, id := range []string{"../escape", "a/b", `a\b`, "..", "../../etc/passwd"} {
+		if _, err := transcriptPath("/tmp/wt", id); err == nil {
+			t.Errorf("transcriptPath(_, %q) = nil error, want rejection", id)
+		}
+	}
+	// A well-formed UUID-shaped id still resolves.
+	got, err := transcriptPath("/tmp/wt", "0199-abcd-ef01")
+	if err != nil {
+		t.Fatalf("transcriptPath valid id: unexpected error %v", err)
+	}
+	if !strings.HasSuffix(got, "0199-abcd-ef01.jsonl") {
+		t.Errorf("transcriptPath valid id = %q, want suffix 0199-abcd-ef01.jsonl", got)
+	}
+}
+
+// TestChatTitleInDirRejectsTraversalID verifies the BOS-415 G304 guard on the
+// GetChatTitle chain: chatTitleInDir rejects a caller-supplied (req.SessionId)
+// id carrying path separators or ".." before the join, so a crafted value
+// cannot traverse out of the projects dir and read an arbitrary .jsonl file.
+// A rename summary planted one level above the projects dir must not leak.
+func TestChatTitleInDirRejectsTraversalID(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), "projects")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Plant a valid, title-bearing rollout one level above projectDir that a
+	// traversal id ("../escape") would otherwise resolve into.
+	outside := filepath.Join(filepath.Dir(projectDir), "escape.jsonl")
+	if err := os.WriteFile(outside, []byte(`{"type":"summary","summary":"leaked"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+
+	for _, id := range []string{"../escape", "a/b", `a\b`, "..", "../../etc/passwd"} {
+		title, explicit := chatTitleInDir(projectDir, id)
+		if title != "" || explicit {
+			t.Errorf("chatTitleInDir(_, %q) = (%q, %v), want empty rejection", id, title, explicit)
+		}
+	}
+
+	// A well-formed id still resolves its title normally.
+	if err := os.WriteFile(filepath.Join(projectDir, "good.jsonl"),
+		[]byte(`{"type":"summary","summary":"real title"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write good: %v", err)
+	}
+	title, explicit := chatTitleInDir(projectDir, "good")
+	if title != "real title" || !explicit {
+		t.Errorf("chatTitleInDir valid id = (%q, %v), want (real title, true)", title, explicit)
 	}
 }

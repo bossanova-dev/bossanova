@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -280,6 +281,76 @@ func TestAccountActions_BoundSessionCount(t *testing.T) {
 	}
 	if n, known := boundSessionCount(sessions, false, "a"); n != 0 || known {
 		t.Fatalf("count with unknown sessions = (%d,%v), want (0,false)", n, known)
+	}
+}
+
+// TestAccountActions_StatusLabelsAndPromptBoundaries locks the lifecycle copy
+// used by both account-management surfaces. The zero/one/many boundaries are
+// user-visible: a singular chat must not be described as plural, and a known
+// empty session list must not warn unnecessarily when removing an account.
+func TestAccountActions_StatusLabelsAndPromptBoundaries(t *testing.T) {
+	acct := &pb.Account{Id: "acc-1", Label: "Prod"}
+
+	for _, tc := range []struct {
+		name string
+		acct *pb.Account
+		want string
+	}{
+		{name: "nil defaults active", want: accountStatusActive},
+		{name: "unset defaults active", acct: acct, want: accountStatusActive},
+		{name: "disabled stays disabled", acct: &pb.Account{Status: accountStatusDisabled}, want: accountStatusDisabled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := accountStatusLabel(tc.acct); got != tc.want {
+				t.Fatalf("accountStatusLabel(%+v) = %q, want %q", tc.acct, got, tc.want)
+			}
+		})
+	}
+
+	if got := accountDisablePromptText(acct, 1, true); !strings.Contains(got, "1 running chat is") || strings.Contains(got, "1 running chats") {
+		t.Fatalf("single-session disable prompt = %q", got)
+	}
+	if got := accountDisablePromptText(acct, 2, true); !strings.Contains(got, "2 running chats are") {
+		t.Fatalf("many-session disable prompt = %q", got)
+	}
+	if got := accountRemovePromptText(acct, 0, true); strings.Contains(got, "may continue or fail") {
+		t.Fatalf("known-unbound remove prompt must omit bound-session warning: %q", got)
+	}
+	if got := accountRemovePromptText(acct, 1, true); !strings.Contains(got, "1 running chat is") || strings.Contains(got, "1 running chats") {
+		t.Fatalf("single-session remove prompt = %q", got)
+	}
+}
+
+// TestAccountActions_SpinnerRefreshesEveryInFlightState verifies that pending
+// lifecycle work keeps rebuilding the table. Without a rebuild, the user sees
+// a stale row instead of its testing, disabling, or removing status.
+func TestAccountActions_SpinnerRefreshesEveryInFlightState(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		active func(*AccountsListModel)
+	}{
+		{name: "initial load", active: func(m *AccountsListModel) { m.loading = true }},
+		{name: "usage refresh", active: func(m *AccountsListModel) { m.refreshing = true }},
+		{name: "account test", active: func(m *AccountsListModel) { m.testing["acc-claude"] = true }},
+		{name: "status update", active: func(m *AccountsListModel) { m.disabling["acc-claude"] = true }},
+		{name: "account removal", active: func(m *AccountsListModel) { m.removing["acc-claude"] = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := seedAccountsList(t, &accountsStub{accounts: accountsListFixture()})
+			m.loading = false
+			m.refreshing = false
+			m.testing = map[string]bool{}
+			m.disabling = map[string]bool{}
+			m.removing = map[string]bool{}
+			m.table.SetRows(nil) // exposes whether the tick rebuilt the view model.
+			tc.active(&m)
+
+			updated, _ := m.Update(spinner.TickMsg{})
+			got := updated.(AccountsListModel)
+			if rows := len(got.table.Rows()); rows != len(got.accounts) {
+				t.Fatalf("spinner tick rows = %d, want %d for %s", rows, len(got.accounts), tc.name)
+			}
+		})
 	}
 }
 

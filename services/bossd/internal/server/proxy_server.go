@@ -141,6 +141,10 @@ type ProxyServer struct {
 	ssePeekByteCap  int
 	ssePeekDeadline time.Duration
 
+	// port is the configured FIXED loopback port to bind (BOS-409); 0 ⇒
+	// ephemeral. Listen falls back to ephemeral if the fixed port is held.
+	port int
+
 	listener net.Listener
 	srv      *http.Server
 
@@ -174,6 +178,12 @@ type ProxyServerConfig struct {
 	// Transport overrides the outbound RoundTripper (default
 	// http.DefaultTransport, which speaks TLS to the real upstream).
 	Transport http.RoundTripper
+	// Port is the FIXED loopback port to bind (BOS-409). When > 0 Listen binds
+	// 127.0.0.1:<Port> with SO_REUSEADDR so a frozen ANTHROPIC_BASE_URL baked
+	// into a live tmux pane survives a daemon restart; on a bind collision it
+	// falls back to an ephemeral port (non-fatal). 0 keeps today's ephemeral
+	// (":0") behavior as an explicit opt-out.
+	Port int
 }
 
 // NewProxyServer constructs a ProxyServer. Call Listen to bind, then Serve
@@ -196,6 +206,7 @@ func NewProxyServer(cfg ProxyServerConfig) (*ProxyServer, error) {
 		logger:          cfg.Logger,
 		upstream:        u,
 		transport:       transport,
+		port:            cfg.Port,
 		ssePeekByteCap:  sseErrorPeekByteCap,
 		ssePeekDeadline: sseErrorPeekDeadline,
 		tokenToSession:  map[string]string{},
@@ -206,10 +217,45 @@ func NewProxyServer(cfg ProxyServerConfig) (*ProxyServer, error) {
 	}, nil
 }
 
-// Listen binds a loopback-only TCP listener on an ephemeral port and wires the
-// catch-all proxy handler. Split from Serve so Shutdown can race safely.
+// Listen binds a loopback-only TCP listener and wires the catch-all proxy
+// handler. Split from Serve so Shutdown can race safely.
+//
+// When a FIXED port is configured (p.port > 0) it binds 127.0.0.1:<port> with
+// SO_REUSEADDR (and SO_REUSEPORT on Darwin) set on the listening socket so a
+// frozen ANTHROPIC_BASE_URL baked into a live tmux pane survives a daemon
+// restart (BOS-409). SO_REUSEADDR lets the *listening socket* re-bind over
+// connections from the prior listener lingering in TIME_WAIT; on macOS that is
+// not enough for an immediate same-port re-bind, so SO_REUSEPORT is also set
+// there (load-bearing on Darwin — see reusableSocketControl). On the common
+// single-daemon restart this re-binds the same fixed port; only a genuinely
+// conflicting live bind (a non-Darwin listener, or a foreign process holding the
+// port) reaches the EADDRINUSE fallback below, which drops to an ephemeral ":0"
+// bind so bossd never fails to start over a port collision (mirrors main.go's
+// non-fatal proxy posture). (Go's net already sets SO_REUSEADDR by default on
+// unix listeners; the explicit Control makes that intent testable and adds
+// SO_REUSEPORT on Darwin.)
+//
+// p.port == 0 keeps today's OS-assigned ephemeral bind as an explicit opt-out.
 func (p *ProxyServer) Listen() error {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	lc := net.ListenConfig{Control: reusableSocketControl}
+
+	var ln net.Listener
+	var err error
+	if p.port > 0 {
+		addr := fmt.Sprintf("127.0.0.1:%d", p.port)
+		ln, err = lc.Listen(context.Background(), "tcp", addr)
+		if err != nil {
+			// Non-fatal: the fixed port is held (EADDRINUSE) or otherwise
+			// unbindable. Fall back to an ephemeral port so bossd still starts;
+			// the startup re-point sweep flags any panes baked to a now-stale
+			// port. Port() reports whatever actually bound.
+			p.logger.Warn().Err(err).Int("configured_port", p.port).
+				Msg("failover proxy: fixed port unavailable, falling back to an ephemeral port")
+			ln, err = lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+		}
+	} else {
+		ln, err = lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	}
 	if err != nil {
 		return fmt.Errorf("listen tcp 127.0.0.1: %w", err)
 	}
@@ -231,12 +277,26 @@ func (p *ProxyServer) Serve() error {
 	return p.srv.Serve(p.listener)
 }
 
-// Shutdown gracefully stops the server.
+// Shutdown gracefully stops the server and releases the listening socket.
+//
+// http.Server.Shutdown only closes listeners it is tracking — i.e. those
+// registered via Serve. When Listen ran but Serve did not (or Shutdown races
+// Serve's registration), the bound socket would otherwise stay open, so an
+// immediate re-bind of the same fixed port fails with EADDRINUSE. Closing
+// p.listener explicitly guarantees the port is fully released, which is what
+// makes the fixed-port re-bind after a daemon exit deterministic (BOS-409). The
+// close is idempotent: when Serve already ran, http.Server has closed the
+// listener and this second Close returns a benign "use of closed" error we
+// ignore.
 func (p *ProxyServer) Shutdown(ctx context.Context) error {
-	if p.srv == nil {
-		return nil
+	var srvErr error
+	if p.srv != nil {
+		srvErr = p.srv.Shutdown(ctx)
 	}
-	return p.srv.Shutdown(ctx)
+	if p.listener != nil {
+		_ = p.listener.Close()
+	}
+	return srvErr
 }
 
 // Port returns the bound port, or 0 before Listen.

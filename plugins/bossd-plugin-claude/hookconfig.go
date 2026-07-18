@@ -75,7 +75,10 @@ func WriteHookConfig(worktreePath, sessionID, agentSessionID, token string, port
 	}
 
 	claudeDir := filepath.Join(worktreePath, ".claude")
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+	// 0o700: this directory holds settings.local.json, which carries the
+	// bossd hook Bearer token (written 0o600). Keep the parent dir owner-only
+	// too (G301) rather than the world-readable 0o755.
+	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
 		return fmt.Errorf("create .claude dir: %w", err)
 	}
 	target := filepath.Join(claudeDir, "settings.local.json")
@@ -228,7 +231,10 @@ func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
 // start from a clean slate; any other read or parse error is surfaced
 // so we don't silently clobber a malformed config.
 func loadHookConfig(path string) (map[string]any, error) {
-	data, err := os.ReadFile(path)
+	// Clean last before the read: path is an internally-derived
+	// worktree/.claude/settings.local.json location, not caller input (G304).
+	cleaned := filepath.Clean(path)
+	data, err := os.ReadFile(cleaned)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return map[string]any{}, nil

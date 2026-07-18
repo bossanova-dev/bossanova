@@ -190,6 +190,30 @@ func TestLivenessChecker_UnattendedSessionWithoutProcessIdentifiersIsDead(t *tes
 	}
 }
 
+// TestLivenessChecker_DetachSessionWithoutProcessIdentifiersIsDead pins BOS-428:
+// a tmux-hosted detach run (Detach=true) is included in the raw pre-agent reap
+// disjunction, exactly like cron / tmux_unattended. With no process identifiers
+// set (a daemon restart cannot leave its pre-agent work running), it reads dead
+// so recovery can reap it rather than treating a still-initializing row as live.
+func TestLivenessChecker_DetachSessionWithoutProcessIdentifiersIsDead(t *testing.T) {
+	checker := &defaultLivenessChecker{
+		sessions: &mockSessionStoreLiveness{
+			sessions: map[string]*models.Session{
+				"detach-session": {
+					ID:     "detach-session",
+					State:  machine.CreatingWorktree,
+					Detach: true,
+				},
+			},
+		},
+		agentForSession: constAgent(&mockAgentRunnerLiveness{running: map[string]bool{}}),
+	}
+
+	if checker.IsSessionAlive(context.Background(), "detach-session") {
+		t.Error("expected detach session without process identifiers to be dead (raw pre-agent reap)")
+	}
+}
+
 func TestLivenessChecker_ClaudeDead(t *testing.T) {
 	agentSessionID := "claude-123"
 	checker := &defaultLivenessChecker{

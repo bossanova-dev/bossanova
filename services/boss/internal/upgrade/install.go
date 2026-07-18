@@ -48,6 +48,7 @@ func AssetNames(goos, goarch string) []string {
 }
 
 func VerifySHA256(path, expected string) error {
+	// #nosec G304 -- path is an installer-controlled download target (built by the Installer under plan.PluginDir); its contents are SHA256-verified here and it is never attacker-named. owner=@recurser review-by=2026-09-16 issue=BOS-414
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -148,7 +149,7 @@ func (i Installer) Install(ctx context.Context, plan InstallPlan) error {
 	if err := plan.Validate(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(plan.PluginDir, 0o755); err != nil {
+	if err := os.MkdirAll(plan.PluginDir, 0o700); err != nil {
 		return fmt.Errorf("create plugin dir: %w", err)
 	}
 	// Preflight write permissions before downloading hundreds of MB. Without
@@ -268,6 +269,7 @@ func (i Installer) downloadFile(ctx context.Context, url, path string) error {
 		}
 		defer func() { _ = resp.Body.Close() }()
 
+		// #nosec G304 -- path is the installer's own download target under plan.PluginDir, not attacker-controlled; the payload is size-capped and SHA256-verified before use. owner=@recurser review-by=2026-09-16 issue=BOS-414
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 		if err != nil {
 			return err

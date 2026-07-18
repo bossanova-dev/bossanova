@@ -26,6 +26,7 @@ go_test(
         "bugreport_test.go",
         "chatpicker_test.go",
         "cron_test.go",
+        "fixtureenv_perm_test.go",
         "fixtureenv_test.go",
         "harness_test.go",
         "home_test.go",

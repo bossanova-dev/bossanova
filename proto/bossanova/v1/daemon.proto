@@ -172,6 +172,19 @@ service DaemonService {
   // `boss plugin list` so operators can debug "did my plugin actually
   // load?" without grepping daemon logs.
   rpc ListPlugins(ListPluginsRequest) returns (ListPluginsResponse);
+
+  // --- Global Settings ---
+
+  // GetSettings returns the TUI-editable subset of global settings
+  // (settings.json): the top-level worktree/poll/tracing knobs plus each
+  // configured agent's enabled flag and dynamic config map.
+  rpc GetSettings(GetSettingsRequest) returns (GetSettingsResponse);
+
+  // UpdateSettings applies a partial update to global settings. Only the
+  // optional scalar fields that are set are applied; per-agent updates upsert
+  // config keys (an empty value deletes the key). Validation mirrors the boss
+  // TUI settings form and the update is persisted atomically to settings.json.
+  rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse);
 }
 
 // --- Context Resolution ---
@@ -974,4 +987,60 @@ message InstalledPlugin {
   // error is populated when status == STATUS_LOAD_FAILED and carries
   // the underlying go-plugin handshake / spawn error.
   string error = 6;
+}
+
+// --- Global Settings ---
+
+message GetSettingsRequest {}
+
+message GetSettingsResponse {
+  GlobalSettings settings = 1;
+}
+
+// GlobalSettings is the TUI-editable subset of settings.json — the fields the
+// boss settings form edits — plus one AgentSettings entry per configured agent
+// plugin. Non-editable bookkeeping fields (app_data_dir, socket_path, skills,
+// managed_accounts, …) are intentionally out of scope.
+message GlobalSettings {
+  string worktree_base_dir      = 1;
+  int32  poll_interval_seconds  = 2;   // 0 = default (30 at read)
+  string default_agent          = 3;
+  bool   event_tracing_enabled  = 4;
+  bool   error_tracking_enabled = 5;
+  string posthog_project_token  = 6;
+  string posthog_host           = 7;
+  repeated AgentSettings agents = 8;
+}
+
+// AgentSettings mirrors a PluginConfig entry: the agent's enabled flag plus its
+// untyped dynamic config map. The map mirrors on-disk storage (bool kept as
+// "true", enum/string stored as-is; an absent key is the zero value).
+message AgentSettings {
+  string name = 1;
+  bool   enabled = 2;
+  map<string, string> config = 3;
+}
+
+message UpdateSettingsRequest {
+  optional string worktree_base_dir      = 1;
+  optional int32  poll_interval_seconds  = 2;   // 0 = clear (default 30)
+  optional string default_agent          = 3;
+  optional bool   event_tracing_enabled  = 4;
+  optional bool   error_tracking_enabled = 5;
+  optional string posthog_project_token  = 6;
+  optional string posthog_host           = 7;
+  repeated AgentSettingsUpdate agents    = 8;   // per-agent partial updates
+}
+
+// AgentSettingsUpdate carries a per-agent partial update. enabled is applied
+// only when present; each config entry is an upsert where an empty value
+// deletes the key (matching SetPluginConfigString/Bool semantics).
+message AgentSettingsUpdate {
+  string name = 1;
+  optional bool enabled = 2;
+  map<string, string> config = 3;
+}
+
+message UpdateSettingsResponse {
+  GlobalSettings settings = 1;
 }

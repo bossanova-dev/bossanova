@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"math"
 	"strings"
 	"time"
 
@@ -16,6 +17,20 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// clampInt32 converts n to int32, clamping to the int32 range instead of
+// wrapping. bossd counts/enums/offsets never exceed int32 in practice; the
+// clamp is a gosec-G115-satisfying guard, not a behaviour change on real
+// inputs.
+func clampInt32(n int) int32 {
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if n < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int32(n)
+}
+
 // HydrateDisplayEntry stamps the per-axis display-tracker fields onto a Session
 // proto: DisplayStatus, the failure/changes-requested/repairing/setting-up/
 // merging flags, PR mergeability, and the derived MergeBlock. These live ONLY in
@@ -28,12 +43,13 @@ func HydrateDisplayEntry(p *pb.Session, e *status.DisplayEntry) {
 	if p == nil || e == nil {
 		return
 	}
-	p.DisplayStatus = pb.DisplayStatus(e.Status)
+	p.DisplayStatus = pb.DisplayStatus(clampInt32(int(e.Status)))
 	p.DisplayHasFailures = e.HasFailures
 	p.DisplayHasChangesRequested = e.HasChangesRequested
 	p.DisplayIsRepairing = e.IsRepairing
 	p.DisplaySettingUp = e.SettingUp
 	p.DisplayMerging = e.Merging
+	p.ArchivePending = e.Archiving
 	p.PrMergeable = e.Mergeable
 	p.MergeBlock = displayEntryToMergeBlock(e)
 }
@@ -47,10 +63,10 @@ func displayEntryToMergeBlock(e *status.DisplayEntry) *pb.MergeBlock {
 	}
 	mb := vcs.DeriveMergeBlock(e.Status, e.HasFailures, e.ChangesRequestedBy)
 	return &pb.MergeBlock{
-		Gate:              pb.MergeBlock_Gate(mb.Gate),
+		Gate:              pb.MergeBlock_Gate(clampInt32(int(mb.Gate))),
 		Detail:            mb.Detail,
 		BlockingReviewers: mb.BlockingReviewers,
-		DisplayStatus:     pb.DisplayStatus(mb.Status),
+		DisplayStatus:     pb.DisplayStatus(clampInt32(int(mb.Status))),
 	}
 }
 
@@ -175,11 +191,11 @@ func SessionToProto(s *models.Session) *pb.Session {
 		WorktreePath:      protoString(s.WorktreePath),
 		BranchName:        protoString(s.BranchName),
 		BaseBranch:        protoString(s.BaseBranch),
-		State:             pb.SessionState(s.State),
-		LastCheckState:    pb.ChecksOverall(s.LastCheckState),
+		State:             pb.SessionState(clampInt32(int(s.State))),
+		LastCheckState:    pb.ChecksOverall(clampInt32(int(s.LastCheckState))),
 		AgentName:         protoString(s.AgentName),
 		AutomationEnabled: s.AutomationEnabled,
-		AttemptCount:      int32(s.AttemptCount),
+		AttemptCount:      clampInt32(s.AttemptCount),
 		CreatedAt:         timestamppb.New(s.CreatedAt),
 		UpdatedAt:         timestamppb.New(s.UpdatedAt),
 		DisplayLabel:      protoString(s.DisplayLabel),
@@ -190,7 +206,7 @@ func SessionToProto(s *models.Session) *pb.Session {
 		p.AgentSessionId = protoStringPtr(s.AgentSessionID)
 	}
 	if s.PRNumber != nil {
-		n := int32(*s.PRNumber)
+		n := clampInt32(*s.PRNumber)
 		p.PrNumber = &n
 	}
 	if s.PRURL != nil {
@@ -220,7 +236,7 @@ func SessionToProto(s *models.Session) *pb.Session {
 	// PATH (3×)" hints without an extra round trip.
 	p.LastRepairRunnerError = protoString(s.LastRepairRunnerError)
 	p.LastRepairExitError = protoString(s.LastRepairExitError)
-	p.LastRepairAttemptCount = int32(s.LastRepairAttemptCount)
+	p.LastRepairAttemptCount = clampInt32(s.LastRepairAttemptCount)
 	p.LastRepairHeadSha = protoString(s.LastRepairHeadSHA)
 	p.LastRepairDisplayStatus = pb.DisplayStatus(s.LastRepairDisplayStatus)
 	p.LastRepairReviewFingerprint = s.LastRepairReviewFingerprint
@@ -330,7 +346,7 @@ func accountToProto(a *models.Account) *pb.Account {
 		Provider:      string(a.Provider),
 		Label:         a.Label,
 		Status:        string(a.Status),
-		Priority:      int32(a.Priority),
+		Priority:      clampInt32(a.Priority),
 		Health:        string(a.Health),
 		Tier:          a.Tier,
 		AllowedModels: a.AllowedModels,
@@ -481,7 +497,7 @@ func attentionStatusToProto(a vcs.AttentionStatus) *pb.AttentionStatus {
 	}
 	return &pb.AttentionStatus{
 		NeedsAttention: true,
-		Reason:         pb.AttentionReason(a.Reason),
+		Reason:         pb.AttentionReason(clampInt32(int(a.Reason))),
 		Summary:        a.Summary,
 		Since:          timestamppb.New(a.Since),
 	}

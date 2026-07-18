@@ -310,6 +310,43 @@ func TestDefaultAccountID(t *testing.T) {
 			provider: "claude",
 			want:     "edge",
 		},
+		{
+			// BOS-429: within an equal-priority band (usage unknown ⇒ no util
+			// signal), the account whose weekly quota resets soonest in the future
+			// wins even though the other account is the LRU-idler. Expiry sits above
+			// LRU: b (resets in 2h) beats a (resets in 5h) despite a being idler.
+			name: "weekly-expiry: soonest future reset beats LRU",
+			accounts: []AccountMeta{
+				{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 5, LastUsedAt: ptrTime(past), Reset7d: ptrTime(later)},
+				{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 5, LastUsedAt: ptrTime(now), Reset7d: ptrTime(soon)},
+			},
+			provider: "claude",
+			want:     "b",
+		},
+		{
+			// A known future reset outranks both a nil (never probed) and a past
+			// (already-rolled) reset, which fall together to the LRU tiebreak. "fut"
+			// wins over the idler nil/past accounts.
+			name: "weekly-expiry: future reset beats nil and past (both fall to LRU)",
+			accounts: []AccountMeta{
+				{ID: "fut", Provider: "claude", Status: "active", Health: "ok", Priority: 5, LastUsedAt: ptrTime(now), Reset7d: ptrTime(soon)},
+				{ID: "pst", Provider: "claude", Status: "active", Health: "ok", Priority: 5, LastUsedAt: ptrTime(past), Reset7d: ptrTime(past)},
+				{ID: "nul", Provider: "claude", Status: "active", Health: "ok", Priority: 5, LastUsedAt: ptrTime(past)},
+			},
+			provider: "claude",
+			want:     "fut",
+		},
+		{
+			// Explicit Priority still dominates weekly-expiry: a later-expiring
+			// priority-1 account beats a sooner-expiring priority-5 one.
+			name: "weekly-expiry: explicit priority dominates",
+			accounts: []AccountMeta{
+				{ID: "p1later", Provider: "claude", Status: "active", Health: "ok", Priority: 1, Reset7d: ptrTime(later)},
+				{ID: "p5soon", Provider: "claude", Status: "active", Health: "ok", Priority: 5, Reset7d: ptrTime(soon)},
+			},
+			provider: "claude",
+			want:     "p1later",
+		},
 	}
 
 	for _, tc := range tests {

@@ -1,6 +1,41 @@
 package rotation
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestFutureWeeklyReset(t *testing.T) {
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Hour)
+
+	cases := []struct {
+		name    string
+		reset   *time.Time
+		wantOK  bool
+		wantVal time.Time
+	}{
+		{name: "nil reset ⇒ not urgent", reset: nil, wantOK: false},
+		{name: "past reset ⇒ not urgent (window rolled)", reset: &past, wantOK: false},
+		{name: "exactly now ⇒ not urgent (strictly future only)", reset: &now, wantOK: false},
+		{name: "future reset ⇒ urgent", reset: &future, wantOK: true, wantVal: future},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := FutureWeeklyReset(c.reset, now)
+			if ok != c.wantOK {
+				t.Fatalf("FutureWeeklyReset ok = %v, want %v", ok, c.wantOK)
+			}
+			if ok && !got.Equal(c.wantVal) {
+				t.Errorf("FutureWeeklyReset t = %v, want %v", got, c.wantVal)
+			}
+			if !ok && !got.IsZero() {
+				t.Errorf("FutureWeeklyReset t = %v, want zero when ok=false", got)
+			}
+		})
+	}
+}
 
 func TestUtilizationCapped(t *testing.T) {
 	cases := []struct {

@@ -82,10 +82,10 @@ func (m *MockAgentRunner) WithChanges(filename, content string) {
 		}
 		// Write the file into the worktree.
 		dest := filepath.Join(workDir, filename)
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 			return "", fmt.Errorf("mock claude: mkdir %s: %w", filepath.Dir(dest), err)
 		}
-		if err := os.WriteFile(dest, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(dest, []byte(content), 0o600); err != nil {
 			return "", fmt.Errorf("mock claude: write %s: %w", dest, err)
 		}
 		// Register the session in completed state (not running).

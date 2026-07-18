@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "cmd_lib",
-    srcs = ["main.go"],
+    srcs = [
+        "clamp_int32.go",
+        "main.go",
+    ],
     importpath = "github.com/recurser/bossd/cmd",
     visibility = ["//visibility:private"],
     deps = [

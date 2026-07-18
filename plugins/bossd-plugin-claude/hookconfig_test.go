@@ -290,6 +290,26 @@ func TestWriteHookConfig_FilePermissions(t *testing.T) {
 	}
 }
 
+// TestWriteHookConfig_DirPermissions locks in the owner-only 0o700 mode on
+// the created .claude directory (G301) — it holds the token-bearing
+// settings.local.json, so it must not be world/group readable.
+func TestWriteHookConfig_DirPermissions(t *testing.T) {
+	worktree := t.TempDir()
+	if err := WriteHookConfig(worktree, "sess-dir", "", "tok-dir", 5678); err != nil {
+		t.Fatalf("WriteHookConfig: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(worktree, ".claude"))
+	if err != nil {
+		t.Fatalf("stat .claude dir: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf(".claude is not a directory")
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Errorf(".claude dir perm = %o, want 0700", info.Mode().Perm())
+	}
+}
+
 // TestWriteHookConfig_ValidationErrors — empty args fail fast with
 // descriptive errors before touching the filesystem.
 func TestWriteHookConfig_ValidationErrors(t *testing.T) {

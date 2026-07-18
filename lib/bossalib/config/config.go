@@ -189,6 +189,14 @@ type ManagedAccountsConfig struct {
 	// out with failover_proxy_enabled:false or managed_accounts.enabled:false.
 	FailoverProxy *bool `json:"failover_proxy_enabled,omitempty"`
 
+	// FailoverProxyPortSetting pins the loopback failover proxy to a FIXED port so
+	// a frozen ANTHROPIC_BASE_URL baked into a tmux pane survives a daemon restart
+	// (BOS-409). Exposed as a plain int (the field is named distinctly from the
+	// FailoverProxyPort() accessor because Go forbids a field and method sharing a
+	// name). 0/unset ⇒ the accessor's default (44127); a genuine ephemeral opt-out
+	// would require promoting this to a *int in a later ticket (see accessor).
+	FailoverProxyPortSetting int `json:"failover_proxy_port,omitempty"`
+
 	// AutoResumeOrphans gates auto-resume of headless runs that a daemon restart
 	// orphaned (BOS-407). Unlike the rotation bools it defaults OFF (nil ⇒ false):
 	// auto-resume reverses the deliberate "a one-shot's prompt may have side
@@ -292,6 +300,27 @@ func (c ManagedAccountsConfig) ProactiveRotationEnabled() bool {
 // managed_accounts.failover_proxy_enabled:false or managed_accounts.enabled:false.
 func (c ManagedAccountsConfig) FailoverProxyEnabled() bool {
 	return c.FailoverProxy == nil || *c.FailoverProxy
+}
+
+// defaultFailoverProxyPort is the fixed loopback failover-proxy port used when
+// none is configured. Chosen high and obscure: above common dev ranges
+// (3000/5000/8000) and below the macOS ephemeral range (49152+), so the OS
+// never hands that port to another process (BOS-409).
+const defaultFailoverProxyPort = 44127
+
+// FailoverProxyPort returns the fixed loopback failover-proxy port, or the
+// default 44127 when unset (BOS-409). A value <= 0 (absent JSON key or a
+// negative sentinel) is treated as unset and defaults to 44127 — the fix is on
+// by default so a frozen ANTHROPIC_BASE_URL survives a daemon restart. Because a
+// plain int can't distinguish "absent" from an explicit 0, this ticket keeps the
+// surface minimal (<=0 ⇒ default); a first-class "absent vs 0" ephemeral opt-out
+// is deferred to a *int only if a later UI ticket needs it. This is the
+// DEFAULTING path used at bind time.
+func (c ManagedAccountsConfig) FailoverProxyPort() int {
+	if c.FailoverProxyPortSetting > 0 {
+		return c.FailoverProxyPortSetting
+	}
+	return defaultFailoverProxyPort
 }
 
 // AutoResumeOrphansEnabled reports whether auto-resume of daemon-restart-
@@ -984,14 +1013,15 @@ func Load() (Settings, error) {
 	}
 	s, err := LoadFrom(p)
 	if s.WorktreeBaseDir != "" {
-		_ = os.MkdirAll(s.WorktreeBaseDir, 0o755)
+		_ = os.MkdirAll(s.WorktreeBaseDir, 0o750)
 	}
 	return s, err
 }
 
 // LoadFrom reads settings from a specific path, returning defaults if the file is missing.
 func LoadFrom(path string) (Settings, error) {
-	data, err := os.ReadFile(path)
+	cleaned := filepath.Clean(path)
+	data, err := os.ReadFile(cleaned)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return DefaultSettings(), nil
@@ -1035,7 +1065,7 @@ func SaveTo(path string, s Settings) error {
 		return err
 	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
@@ -1080,7 +1110,8 @@ func SaveTo(path string, s Settings) error {
 }
 
 func syncDir(dir string) error {
-	f, err := os.Open(dir)
+	cleaned := filepath.Clean(dir)
+	f, err := os.Open(cleaned)
 	if err != nil {
 		return err
 	}

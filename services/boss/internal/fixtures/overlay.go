@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -71,6 +72,9 @@ func (s OverlaySession) Build() (*pb.Session, error) {
 		CreatedAt:       ts(time.Duration(s.CreatedOffsetMins) * time.Minute),
 	}
 	if s.PRNumber != nil {
+		if *s.PRNumber < 0 || *s.PRNumber > math.MaxInt32 {
+			return nil, fmt.Errorf("session %q: prNumber %d out of int32 range", s.ID, *s.PRNumber)
+		}
 		n := int32(*s.PRNumber)
 		sess.PrNumber = &n
 	}
@@ -223,6 +227,9 @@ func (p OverlayPR) Build() (*pb.PRSummary, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pr #%d: %w", p.Number, err)
 	}
+	if p.Number < 0 || p.Number > math.MaxInt32 {
+		return nil, fmt.Errorf("pr #%d: number out of int32 range", p.Number)
+	}
 	return &pb.PRSummary{
 		Number:     int32(p.Number),
 		Title:      p.Title,
@@ -273,6 +280,9 @@ func (i OverlayTrackerIssue) Build() (*pb.TrackerIssue, error) {
 	}
 	if i.Title == "" {
 		return nil, fmt.Errorf("trackerIssue %q: title is required", i.ExternalID)
+	}
+	if i.PRNumber < 0 || i.PRNumber > math.MaxInt32 {
+		return nil, fmt.Errorf("trackerIssue %q: prNumber %d out of int32 range", i.ExternalID, i.PRNumber)
 	}
 	return &pb.TrackerIssue{
 		ExternalId: i.ExternalID,

@@ -137,6 +137,28 @@ func TestTranscriptPathPicksMostRecentOnMultiMatch(t *testing.T) {
 	}
 }
 
+// TestFindRolloutPathRejectsTraversalSessionID verifies the BOS-415
+// root-containment guard: an agentSessionID carrying path separators or ".."
+// is rejected before it can collapse the glob pattern out of the sessions
+// root, even when a matching file is planted outside the shard tree.
+func TestFindRolloutPathRejectsTraversalSessionID(t *testing.T) {
+	root := t.TempDir()
+
+	// Plant a rollout-shaped file one level above the sessions root that a
+	// traversal id would otherwise glob into.
+	outside := filepath.Join(filepath.Dir(root), "rollout-2026-05-08T07-45-47-escape.jsonl")
+	if err := os.WriteFile(outside, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(outside) })
+
+	for _, id := range []string{"../escape", "a/b", `a\b`, ".."} {
+		if _, err := findRolloutPath(root, id); err == nil {
+			t.Errorf("findRolloutPath(root, %q) = nil error, want rejection", id)
+		}
+	}
+}
+
 // TestChatTitleExtractsFirstUserMessage verifies the chat-title scan picks
 // the first event_msg/user_message text out of a real codex transcript
 // (sample.jsonl, which begins with the developer prompt + an

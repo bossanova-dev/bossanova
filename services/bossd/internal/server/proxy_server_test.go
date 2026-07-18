@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1281,5 +1282,121 @@ func TestParseProxyPath(t *testing.T) {
 		if tok != tc.wantTok || up != tc.wantUp || ok != tc.wantOK {
 			t.Errorf("parseProxyPath(%q) = %q,%q,%v want %q,%q,%v", tc.in, tok, up, ok, tc.wantTok, tc.wantUp, tc.wantOK)
 		}
+	}
+}
+
+// freeLoopbackPort grabs an OS-assigned loopback port, then releases it so the
+// caller can re-bind it. Used to parametrize the fixed-port bind tests instead
+// of hardcoding 44127 (which would flake if the host already holds it).
+func freeLoopbackPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("grab free port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("release free port: %v", err)
+	}
+	return port
+}
+
+// TestProxyListen_FixedPortBindsExactly asserts that a configured Port > 0 binds
+// that exact loopback port and Port() reports it (BOS-409 core fix).
+func TestProxyListen_FixedPortBindsExactly(t *testing.T) {
+	port := freeLoopbackPort(t)
+	ps, err := NewProxyServer(ProxyServerConfig{Logger: zerolog.Nop(), Port: port})
+	if err != nil {
+		t.Fatalf("NewProxyServer: %v", err)
+	}
+	if err := ps.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ps.Shutdown(context.Background()) }()
+	if got := ps.Port(); got != port {
+		t.Fatalf("Port() = %d, want the fixed configured port %d", got, port)
+	}
+}
+
+// TestProxyListen_ImmediateRebindSamePort is the restart-wedge regression guard:
+// bind the fixed port, shut down, then IMMEDIATELY re-bind the SAME port and
+// assert success. Without SO_REUSEADDR a lingering socket could refuse the
+// re-bind, which is exactly the daemon-restart failure BOS-409 fixes.
+func TestProxyListen_ImmediateRebindSamePort(t *testing.T) {
+	port := freeLoopbackPort(t)
+
+	ps1, err := NewProxyServer(ProxyServerConfig{Logger: zerolog.Nop(), Port: port})
+	if err != nil {
+		t.Fatalf("NewProxyServer 1: %v", err)
+	}
+	if err := ps1.Listen(); err != nil {
+		t.Fatalf("Listen 1: %v", err)
+	}
+	if got := ps1.Port(); got != port {
+		t.Fatalf("first bind Port() = %d, want %d", got, port)
+	}
+	if err := ps1.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown 1: %v", err)
+	}
+
+	// Immediately re-bind the same port — simulates a daemon restart.
+	ps2, err := NewProxyServer(ProxyServerConfig{Logger: zerolog.Nop(), Port: port})
+	if err != nil {
+		t.Fatalf("NewProxyServer 2: %v", err)
+	}
+	if err := ps2.Listen(); err != nil {
+		t.Fatalf("immediate re-bind of port %d failed (restart-wedge regression): %v", port, err)
+	}
+	defer func() { _ = ps2.Shutdown(context.Background()) }()
+	if got := ps2.Port(); got != port {
+		t.Fatalf("re-bind Port() = %d, want the SAME fixed port %d", got, port)
+	}
+}
+
+// TestProxyListen_ZeroPortEphemeral asserts Port: 0 preserves today's ephemeral
+// bind (the explicit opt-out): a non-zero OS-assigned port.
+func TestProxyListen_ZeroPortEphemeral(t *testing.T) {
+	ps, err := NewProxyServer(ProxyServerConfig{Logger: zerolog.Nop(), Port: 0})
+	if err != nil {
+		t.Fatalf("NewProxyServer: %v", err)
+	}
+	if err := ps.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ps.Shutdown(context.Background()) }()
+	if got := ps.Port(); got == 0 {
+		t.Fatal("Port() = 0 after ephemeral bind, want a non-zero OS-assigned port")
+	}
+}
+
+// TestProxyListen_InUseFallsBackToEphemeral asserts that when the fixed port is
+// already held by a live listener, Listen does not error but falls back to an
+// ephemeral bind so bossd never fails to start over a port collision.
+func TestProxyListen_InUseFallsBackToEphemeral(t *testing.T) {
+	port := freeLoopbackPort(t)
+
+	// Hold the fixed port with a plain, live listener for the whole test.
+	held, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		// Extremely unlikely given freeLoopbackPort just released it, but if the
+		// OS re-handed the port we can't run this case deterministically.
+		t.Skipf("could not hold port %d for the collision case: %v", port, err)
+	}
+	defer func() { _ = held.Close() }()
+
+	ps, err := NewProxyServer(ProxyServerConfig{Logger: zerolog.Nop(), Port: port})
+	if err != nil {
+		t.Fatalf("NewProxyServer: %v", err)
+	}
+	if err := ps.Listen(); err != nil {
+		t.Fatalf("Listen must fall back on EADDRINUSE, not error: %v", err)
+	}
+	defer func() { _ = ps.Shutdown(context.Background()) }()
+	got := ps.Port()
+	if got == 0 {
+		t.Fatal("fallback Port() = 0, want a non-zero ephemeral port")
+	}
+	if got == port {
+		t.Fatalf("fallback Port() = %d, want a DIFFERENT ephemeral port (the fixed one is held)", port)
 	}
 }

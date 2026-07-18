@@ -189,7 +189,7 @@ func TestRecoverStrandedCronSessions_IdleRun_Routed(t *testing.T) {
 	sessions.sessions["s1"] = strandedCronSession("s1", "a1")
 	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
 
-	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,9 +199,9 @@ func TestRecoverStrandedCronSessions_IdleRun_Routed(t *testing.T) {
 	if got := rec.ids(); len(got) != 1 || got[0] != "s1" {
 		t.Fatalf("reaped=%v, want [s1]", got)
 	}
-	// The reap must pass the broadened from-set to the finalize entry.
-	if got := rec.calls[0].expectedStates; !equalIntSet(got, strandedReapStateInts()) {
-		t.Fatalf("expectedStates=%v, want %v", got, strandedReapStateInts())
+	// The periodic reap passes the periodic (post-agent) set as expectedStates.
+	if got := rec.calls[0].expectedStates; !equalIntSet(got, periodicReapStateInts()) {
+		t.Fatalf("expectedStates=%v, want %v", got, periodicReapStateInts())
 	}
 }
 
@@ -231,7 +231,7 @@ func TestRecoverStrandedCronSessions_RecentlyActive_Skipped(t *testing.T) {
 	sessions.sessions["s1"] = strandedCronSession("s1", "a1")
 	seedLog(t, dir, "a1", time.Minute) // fresh -> still working
 
-	n, _ := lc.RecoverStrandedCronSessions(context.Background())
+	n, _ := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if n != 0 || rec.count() != 0 {
 		t.Fatalf("routed=%d notifier=%d, want 0/0", n, rec.count())
 	}
@@ -241,7 +241,7 @@ func TestRecoverStrandedCronSessions_NoLog_Skipped(t *testing.T) {
 	dir := t.TempDir()
 	lc, sessions, _, rec := newSweepLifecycle(t, dir)
 	sessions.sessions["s1"] = strandedCronSession("s1", "a1") // no log written
-	n, _ := lc.RecoverStrandedCronSessions(context.Background())
+	n, _ := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if n != 0 || rec.count() != 0 {
 		t.Fatalf("routed=%d notifier=%d, want 0/0 (unknown liveness=alive)", n, rec.count())
 	}
@@ -254,7 +254,7 @@ func TestRecoverStrandedCronSessions_RunnerRunning_Skipped(t *testing.T) {
 	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
 	runner.running["a1"] = true // headless run still alive
 
-	n, _ := lc.RecoverStrandedCronSessions(context.Background())
+	n, _ := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if n != 0 || rec.count() != 0 {
 		t.Fatalf("routed=%d, want 0 (runner running)", n)
 	}
@@ -268,7 +268,7 @@ func TestRecoverStrandedCronSessions_NonCron_Skipped(t *testing.T) {
 	sessions.sessions["s1"] = s
 	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
 
-	n, _ := lc.RecoverStrandedCronSessions(context.Background())
+	n, _ := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if n != 0 || rec.count() != 0 {
 		t.Fatalf("routed=%d, want 0 (non-cron)", n)
 	}
@@ -286,7 +286,7 @@ func TestRecoverStrandedCronSessions_TmuxUnattended_Routed(t *testing.T) {
 	sessions.sessions["s1"] = s
 	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute) // idle -> run over
 
-	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestRecoverStrandedCronSessions_NoLog_LivenessDead_Routed(t *testing.T) {
 	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // nothing alive
 	sessions.sessions["s1"] = strandedCronSession("s1", "a1")              // no log written
 
-	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestRecoverStrandedCronSessions_NoLog_LivenessAlive_Skipped(t *testing.T) {
 	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{"s1": true}})
 	sessions.sessions["s1"] = strandedCronSession("s1", "a1") // no log written
 
-	n, _ := lc.RecoverStrandedCronSessions(context.Background())
+	n, _ := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if n != 0 || rec.count() != 0 {
 		t.Fatalf("routed=%d notifier=%d, want 0/0 (session still alive)", n, rec.count())
 	}
@@ -343,7 +343,7 @@ func TestRecoverStrandedCronSessions_FreshLog_LivenessDead_Routed(t *testing.T) 
 	sessions.sessions["s1"] = strandedCronSession("s1", "a1")
 	seedLog(t, dir, "a1", time.Minute) // fresh -> would otherwise look "active"
 
-	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +361,7 @@ func TestRecoverStrandedCronSessions_FreshLog_LivenessAlive_Skipped(t *testing.T
 	sessions.sessions["s1"] = strandedCronSession("s1", "a1")
 	seedLog(t, dir, "a1", time.Minute) // fresh
 
-	n, _ := lc.RecoverStrandedCronSessions(context.Background())
+	n, _ := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if n != 0 || rec.count() != 0 {
 		t.Fatalf("routed=%d notifier=%d, want 0/0 (live agent, fresh log)", n, rec.count())
 	}
@@ -375,7 +375,7 @@ func TestRecoverStrandedCronSessions_NoNotifier_NoOp(t *testing.T) {
 	sessions.sessions["s2"] = strandedCronSession("s2", "a2")
 	seedLog(t, dir, "a2", cronAgentIdleThreshold+time.Minute)
 
-	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if err != nil || n != 0 {
 		t.Fatalf("routed=%d err=%v, want 0/nil", n, err)
 	}
@@ -451,7 +451,7 @@ func TestRecoverStrandedCronSessions_PostAgentPushingBranch_Routed(t *testing.T)
 	sessions.sessions["s1"] = s
 	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute) // idle -> run over
 
-	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +463,10 @@ func TestRecoverStrandedCronSessions_PostAgentPushingBranch_Routed(t *testing.T)
 	}
 }
 
-func TestRecoverStrandedCronSessions_PreAgentCreatingWorktree_LivenessDead_Routed(t *testing.T) {
+func TestRecoverStrandedCronSessions_PreAgentCreatingWorktree_Startup_Routed(t *testing.T) {
+	// A pre-agent CreatingWorktree strand (nil AgentSessionID, liveness dead) is
+	// the restart-frozen case the STARTUP sweep exists to clean up — it must
+	// still route so restart recovery is preserved (BOS-426).
 	dir := t.TempDir()
 	lc, sessions, _, rec := newSweepLifecycle(t, dir)
 	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // nothing alive
@@ -476,7 +479,7 @@ func TestRecoverStrandedCronSessions_PreAgentCreatingWorktree_LivenessDead_Route
 	}
 	sessions.sessions["s1"] = s
 
-	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	n, err := lc.RecoverStrandedCronSessionsAtStartup(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,6 +488,77 @@ func TestRecoverStrandedCronSessions_PreAgentCreatingWorktree_LivenessDead_Route
 	}
 	if got := rec.ids(); len(got) != 1 || got[0] != "s1" {
 		t.Fatalf("reaped=%v, want [s1]", got)
+	}
+}
+
+func TestRecoverStrandedCronSessions_PreAgentCreatingWorktree_Periodic_NotRouted(t *testing.T) {
+	// The SAME pre-agent CreatingWorktree strand (nil AgentSessionID, liveness
+	// dead) must NOT be reaped by the PERIODIC sweep: a running daemon owns that
+	// state through the live create path, so reaping it would delete the row out
+	// from under an in-flight `start session`. This is the primary BOS-426
+	// regression guard.
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // nothing alive
+	s := &models.Session{
+		ID:        "s1",
+		State:     machine.CreatingWorktree,
+		AgentName: "claude",
+		CronJobID: ptr("cron-s1"), // no AgentSessionID (pre-agent, mid-creation)
+		UpdatedAt: time.Now().Add(-time.Hour),
+		CreatedAt: time.Now().Add(-time.Hour),
+	}
+	sessions.sessions["s1"] = s
+
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 || rec.count() != 0 {
+		t.Fatalf("routed=%d reaped=%d, want 0/0 (periodic must not reap pre-agent)", n, rec.count())
+	}
+}
+
+func TestRecoverStrandedCronSessions_PreAgentStartingAgent_Periodic_NotRouted(t *testing.T) {
+	// StartingAgent is the other pre-agent state; the periodic sweep must leave
+	// it alone too (BOS-426).
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // nothing alive
+	s := &models.Session{
+		ID:        "s1",
+		State:     machine.StartingAgent,
+		AgentName: "claude",
+		CronJobID: ptr("cron-s1"), // no AgentSessionID (pre-agent, mid-creation)
+		UpdatedAt: time.Now().Add(-time.Hour),
+		CreatedAt: time.Now().Add(-time.Hour),
+	}
+	sessions.sessions["s1"] = s
+
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 || rec.count() != 0 {
+		t.Fatalf("routed=%d reaped=%d, want 0/0 (periodic must not reap pre-agent)", n, rec.count())
+	}
+}
+
+func TestPreAgentReapAllowed(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	// Pre-agent state younger than the grace window -> deny (protect a live
+	// creation).
+	if preAgentReapAllowed(machine.CreatingWorktree, now.Add(-time.Minute), now) {
+		t.Fatal("young pre-agent state: want not allowed")
+	}
+	// Pre-agent state older than the grace window -> allow (restart-frozen).
+	if !preAgentReapAllowed(machine.CreatingWorktree, now.Add(-10*time.Minute), now) {
+		t.Fatal("old pre-agent state: want allowed")
+	}
+	// Post-agent state -> allowed regardless of age (age 0 here).
+	if !preAgentReapAllowed(machine.ImplementingPlan, now, now) {
+		t.Fatal("post-agent state: want allowed regardless of age")
 	}
 }
 
@@ -497,7 +571,7 @@ func TestRecoverStrandedCronSessions_Orphaned_NeverReaped(t *testing.T) {
 	sessions.sessions["s1"] = s
 	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
 
-	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +602,7 @@ func TestRecoverStrandedCronSessions_LiveAndAttended_Untouched(t *testing.T) {
 	sessions.sessions["attended"] = attended
 	seedLog(t, dir, "a-att", cronAgentIdleThreshold+time.Minute)
 
-	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +625,7 @@ func TestRecoverStrandedCronSessions_Archived_Skipped(t *testing.T) {
 	sessions.sessions["s1"] = s
 	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute) // idle -> would otherwise route
 
-	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

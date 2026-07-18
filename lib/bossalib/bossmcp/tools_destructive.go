@@ -67,7 +67,7 @@ func registerDestructiveTools(server *mcp.Server, backend Backend, opts Options)
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "delete_chat",
-		Description: "Permanently delete an agent chat. Destructive — requires confirm:true.",
+		Description: "Permanently delete one agent chat (by agent_session_id), leaving sibling chats and the session itself intact. Destructive — requires confirm:true.",
 		Annotations: destructiveAnnotations(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args DeleteChatArgs) (*mcp.CallToolResult, any, error) {
 		if r := requireConfirm(args.Confirm, "delete_chat"); r != nil {

@@ -29,6 +29,13 @@ func mkAcct(id string, priority int, health models.AccountHealth, status models.
 	}
 }
 
+// withReset7d attaches a weekly-quota reset instant to an account's usage
+// snapshot, for the BOS-429 weekly-expiry ordering cases.
+func withReset7d(a *models.Account, reset *time.Time) *models.Account {
+	a.Usage = &models.UsageSnapshot{Reset7d: reset}
+	return a
+}
+
 const claude = "claude"
 
 func newEngineForTest(store *fakeStore, opts ...Option) *Engine {
@@ -95,6 +102,43 @@ func TestDecideOrdering(t *testing.T) {
 			},
 			capped:   "capped",
 			wantNext: "O",
+		},
+		{
+			// BOS-429: within one priority band the soonest FUTURE weekly reset
+			// wins even though A is the idler account (LRU would pick A). Expiry
+			// sits above LRU, so B (resets in 2h) beats A (resets in 5h).
+			name: "weekly-expiry: soonest future reset beats LRU",
+			accts: []*models.Account{
+				mkAcct("capped", 0, ok, active, nil, tp(0)),
+				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(5*time.Hour)),
+				withReset7d(mkAcct("B", 1, ok, active, nil, tp(-1*time.Hour)), tp(2*time.Hour)),
+			},
+			capped:   "capped",
+			wantNext: "B",
+		},
+		{
+			// A known future reset outranks a nil (never-probed) reset within the
+			// band, even though the nil-reset account is the idler.
+			name: "weekly-expiry: known future reset beats nil reset",
+			accts: []*models.Account{
+				mkAcct("capped", 0, ok, active, nil, tp(0)),
+				mkAcct("nilreset", 1, ok, active, nil, nil),
+				withReset7d(mkAcct("future", 1, ok, active, nil, tp(-1*time.Hour)), tp(3*time.Hour)),
+			},
+			capped:   "capped",
+			wantNext: "future",
+		},
+		{
+			// Explicit Priority still dominates: a later-expiring priority-1 account
+			// beats a sooner-expiring priority-2 one.
+			name: "weekly-expiry: explicit priority dominates",
+			accts: []*models.Account{
+				mkAcct("capped", 0, ok, active, nil, tp(0)),
+				withReset7d(mkAcct("p2soon", 2, ok, active, nil, nil), tp(1*time.Hour)),
+				withReset7d(mkAcct("p1later", 1, ok, active, nil, nil), tp(9*time.Hour)),
+			},
+			capped:   "capped",
+			wantNext: "p1later",
 		},
 	}
 

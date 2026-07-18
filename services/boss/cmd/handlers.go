@@ -841,9 +841,10 @@ func withUpgradeLock(fn func() error) error {
 	if err != nil {
 		return fmt.Errorf("upgrade lock path: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create upgrade lock dir: %w", err)
 	}
+	// #nosec G304 -- path is the internally-derived upgrade-lock file (upgradeLockPath); no operator input reaches it, and O_EXCL keeps it a single-writer lock. owner=@recurser review-by=2026-09-16 issue=BOS-414
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		if os.IsExist(err) {

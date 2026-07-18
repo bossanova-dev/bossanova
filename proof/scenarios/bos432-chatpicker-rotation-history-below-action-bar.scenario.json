@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "title": "BOS-432 chatpicker — rotation history renders below the action bar",
+  "fixture": { "preset": "rotation-history" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "navigate to the session that carries rotation history",
+      "steps": [
+        {
+          "waitFor": "Rotation history demo",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded (rotation-history preset)"
+        },
+        {
+          "expect": {
+            "text": "Rotation history demo",
+            "match": "normalized",
+            "label": "the rotation-history session is listed"
+          },
+          "caption": "The session carrying rotation history is on the home list"
+        },
+        { "key": "enter", "caption": "Open the session's chat-picker detail" }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the chat-picker shows the rotation block below the [esc] back action bar",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "stale failover-proxy port",
+            "match": "normalized",
+            "label": "rotation history block rendered in the chat-picker view"
+          },
+          "timeoutMs": 10000,
+          "caption": "The rotation-history block is present in the chat-picker view"
+        },
+        {
+          "expect": {
+            "text": "[esc] back",
+            "match": "normalized",
+            "label": "the chat-picker action bar is present"
+          },
+          "caption": "The [esc] back action bar renders above the rotation block (BOS-432)"
+        },
+        {
+          "expect": {
+            "text": "stale failover-proxy port: pane baked 52106",
+            "match": "normalized",
+            "label": "UNSPECIFIED stale-port event shows the full detail string"
+          },
+          "caption": "The BOS-409 stale-port event renders its full detail with no 'rotation event —' prefix"
+        },
+        {
+          "expect": {
+            "text": "2026-",
+            "match": "regex",
+            "label": "not-today events carry an ISO date prefix"
+          },
+          "caption": "Events not from today are prefixed with the date (2026-…)"
+        }
+      ]
+    }
+  ]
+}

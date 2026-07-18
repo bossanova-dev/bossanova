@@ -419,3 +419,73 @@ func TestSetPreservesMerging(t *testing.T) {
 		t.Fatalf("Set() clobbered Merging; got %+v", e)
 	}
 }
+
+func TestSetArchiving(t *testing.T) {
+	tr := NewDisplayTracker()
+	tr.SetArchiving("s1", true)
+	if e := tr.Get("s1"); e == nil || !e.Archiving {
+		t.Fatalf("expected Archiving=true, got %+v", e)
+	}
+	// Clearing the flag on an entry that exists ONLY because of the transient
+	// archiving flag (no polled PR status) must remove the entry entirely, so a
+	// zero-Status placeholder does not linger and mis-read a passing PR.
+	tr.SetArchiving("s1", false)
+	if e := tr.Get("s1"); e != nil {
+		t.Fatalf("expected archiving-only entry removed on clear, got %+v", e)
+	}
+}
+
+func TestSetArchivingIndependentOfMerging(t *testing.T) {
+	tr := NewDisplayTracker()
+	// Setting Archiving must not touch Merging and vice versa — they are
+	// independent transient axes.
+	tr.SetMerging("s1", true)
+	tr.SetArchiving("s1", true)
+	e := tr.Get("s1")
+	if e == nil || !e.Archiving || !e.Merging {
+		t.Fatalf("expected both Archiving and Merging true, got %+v", e)
+	}
+	// Clearing Archiving leaves Merging set (entry not empty, so not removed).
+	tr.SetArchiving("s1", false)
+	e = tr.Get("s1")
+	if e == nil || e.Archiving || !e.Merging {
+		t.Fatalf("expected Archiving cleared, Merging preserved, got %+v", e)
+	}
+}
+
+func TestSetArchivingClearKeepsRealStatus(t *testing.T) {
+	tr := NewDisplayTracker()
+	tr.SetArchiving("s1", true)
+	// A PR poll lands a real status while the archive is in flight.
+	tr.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusMerged})
+	tr.SetArchiving("s1", false)
+	e := tr.Get("s1")
+	if e == nil {
+		t.Fatalf("entry with real PR status must not be removed on clear")
+	}
+	if e.Archiving {
+		t.Fatalf("expected Archiving cleared, got %+v", e)
+	}
+	if e.Status != vcs.DisplayStatusMerged {
+		t.Fatalf("expected Status preserved as Merged, got %+v", e)
+	}
+}
+
+func TestSetArchivingClearWhenAbsentNoOp(t *testing.T) {
+	tr := NewDisplayTracker()
+	// Clearing when no entry exists must not fabricate a placeholder entry.
+	tr.SetArchiving("s1", false)
+	if e := tr.Get("s1"); e != nil {
+		t.Fatalf("clear-when-absent fabricated an entry: %+v", e)
+	}
+}
+
+func TestSetPreservesArchiving(t *testing.T) {
+	tr := NewDisplayTracker()
+	tr.SetArchiving("s1", true)
+	// A PR display poll update mid-archive must not clobber the Archiving flag.
+	tr.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusMerged})
+	if e := tr.Get("s1"); e == nil || !e.Archiving {
+		t.Fatalf("Set() clobbered Archiving; got %+v", e)
+	}
+}

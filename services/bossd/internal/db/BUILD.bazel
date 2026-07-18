@@ -8,6 +8,7 @@ go_library(
         "agent_chat_store.go",
         "attempt_store.go",
         "check_snapshot_store.go",
+        "clamp_int32.go",
         "cron_job_store.go",
         "db.go",
         "helpers.go",

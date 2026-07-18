@@ -367,8 +367,11 @@ func (s *Server) Listen(socketPath string) error {
 	}
 	s.listener = ln
 
-	// Make socket accessible only to the current user.
-	if err := os.Chmod(socketPath, 0o700); err != nil {
+	// Make socket accessible only to the current user: owner read/write only.
+	// Connecting to a Unix domain socket needs the write bit, not execute, so
+	// 0o600 is functionally equivalent for an owner-only socket and strictly
+	// more restrictive than 0o700 (drops the unused execute bit).
+	if err := os.Chmod(socketPath, 0o600); err != nil {
 		_ = ln.Close()
 		return fmt.Errorf("chmod socket: %w", err)
 	}
@@ -747,10 +750,10 @@ func (s *Server) ListRepoPRs(ctx context.Context, req *connect.Request[pb.ListRe
 	pbPRs := make([]*pb.PRSummary, len(prs))
 	for i, pr := range prs {
 		pbPRs[i] = &pb.PRSummary{
-			Number:     int32(pr.Number),
+			Number:     clampInt32(pr.Number),
 			Title:      pr.Title,
 			HeadBranch: pr.HeadBranch,
-			State:      pb.PRState(pr.State),
+			State:      pb.PRState(clampInt32(int(pr.State))),
 			Author:     pr.Author,
 		}
 	}
@@ -1325,11 +1328,15 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		pr, pw := io.Pipe()
 		defer pr.Close() //nolint:errcheck // best-effort cleanup
 
-		// Build the start options. A tmux_unattended session (e.g. /boss-epic) runs
-		// through the durable tmux-hosted path and carries a freshly-minted
-		// HookToken so its finalize Stop hook installs (and re-arms across a
-		// daemon restart). Mint it up front so a crypto/rand failure surfaces as a
-		// clean connect error rather than being swallowed inside the goroutine.
+		// Build the start options. A tmux_unattended session (e.g. /boss-epic) and
+		// a `boss new --detach` run both go through the durable tmux-hosted path
+		// (detach only when tmux is available) and carry a freshly-minted HookToken
+		// so their finalize Stop hook installs (and re-arms across a daemon
+		// restart). Mint it up front so a crypto/rand failure surfaces as a clean
+		// connect error rather than being swallowed inside the goroutine. On the
+		// detach fallback path (tmux unavailable) the token is simply unused —
+		// StartSession gates hook install on the tmux-hosted branch — which is
+		// harmless.
 		startOpts := session.StartSessionOpts{
 			ExistingBranch: headBranch,
 			ForceBranch:    msg.ForceBranch,
@@ -1337,7 +1344,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 			Detach:         msg.GetDetach(),
 			TmuxUnattended: msg.GetTmuxUnattended(),
 		}
-		if msg.GetTmuxUnattended() {
+		if msg.GetTmuxUnattended() || msg.GetDetach() {
 			token, tokenErr := newHookToken()
 			if tokenErr != nil {
 				_ = pr.Close()
@@ -1691,7 +1698,7 @@ func filterSessionRowsByStates(rows []*db.SessionWithRepo, states []pb.SessionSt
 		if row == nil || row.Session == nil {
 			continue
 		}
-		if stateSet[pb.SessionState(row.State)] {
+		if stateSet[pb.SessionState(clampInt32(int(row.State)))] {
 			filtered = append(filtered, row)
 		}
 	}
@@ -1749,8 +1756,8 @@ func (s *Server) AttachSession(ctx context.Context, req *connect.Request[pb.Atta
 	if err := stream.Send(&pb.AttachSessionResponse{
 		Event: &pb.AttachSessionResponse_StateChange{
 			StateChange: &pb.StateChange{
-				PreviousState: pb.SessionState(sess.State),
-				NewState:      pb.SessionState(sess.State),
+				PreviousState: pb.SessionState(clampInt32(int(sess.State))),
+				NewState:      pb.SessionState(clampInt32(int(sess.State))),
 			},
 		},
 	}); err != nil {
@@ -1762,7 +1769,7 @@ func (s *Server) AttachSession(ctx context.Context, req *connect.Request[pb.Atta
 		return stream.Send(&pb.AttachSessionResponse{
 			Event: &pb.AttachSessionResponse_SessionEnded{
 				SessionEnded: &pb.SessionEnded{
-					FinalState: pb.SessionState(sess.State),
+					FinalState: pb.SessionState(clampInt32(int(sess.State))),
 				},
 			},
 		})
@@ -1825,7 +1832,7 @@ func (s *Server) AttachSession(ctx context.Context, req *connect.Request[pb.Atta
 	return stream.Send(&pb.AttachSessionResponse{
 		Event: &pb.AttachSessionResponse_SessionEnded{
 			SessionEnded: &pb.SessionEnded{
-				FinalState: pb.SessionState(sess.State),
+				FinalState: pb.SessionState(clampInt32(int(sess.State))),
 			},
 		},
 	})

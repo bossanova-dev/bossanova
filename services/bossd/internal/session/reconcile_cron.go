@@ -101,7 +101,9 @@ var strandedReapStates = []machine.State{
 }
 
 // strandedReapStateInts returns strandedReapStates as ints for the store's
-// state-set queries (ListByStates / UpdateStateConditionalFrom).
+// state-set queries (ListByStates / UpdateStateConditionalFrom). This is the
+// STARTUP (full) set — it includes the pre-agent transitions a daemon restart
+// can freeze a run in.
 func strandedReapStateInts() []int {
 	out := make([]int, len(strandedReapStates))
 	for i, s := range strandedReapStates {
@@ -109,6 +111,74 @@ func strandedReapStateInts() []int {
 	}
 	return out
 }
+
+// isPreAgentState reports whether s is one of the pre-agent transitions
+// (CreatingWorktree/StartingAgent) that a live create path owns during normal
+// operation. These have no AgentSessionID and no spawned pane yet, so liveness
+// reports them not-alive even while a session is legitimately mid-creation —
+// which is exactly why the periodic sweep must never reap them.
+func isPreAgentState(s machine.State) bool {
+	return s == machine.CreatingWorktree || s == machine.StartingAgent
+}
+
+// periodicReapStates is the post-agent subset of strandedReapStates, DERIVED
+// from that single source of truth (filtering out pre-agent states) so the two
+// sets can't silently drift. The periodic (running-daemon) sweep reaps only
+// these: a running daemon owns CreatingWorktree/StartingAgent through the live
+// create path, so the periodic sweep must leave them alone (BOS-426).
+func periodicReapStates() []machine.State {
+	out := make([]machine.State, 0, len(strandedReapStates))
+	for _, s := range strandedReapStates {
+		if isPreAgentState(s) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// periodicReapStateInts returns periodicReapStates as ints for the store's
+// state-set queries. This is the PERIODIC (post-agent) set.
+func periodicReapStateInts() []int {
+	states := periodicReapStates()
+	out := make([]int, len(states))
+	for i, s := range states {
+		out[i] = int(s)
+	}
+	return out
+}
+
+// preAgentReapGrace is a defensive, periodic-only, should-be-unreachable second
+// line of defense. periodicReapStateInts already excludes pre-agent states, so
+// the periodic ListByStates query never returns a mid-creation row and this
+// grace never fires in production today. It exists so that if a future edit
+// re-adds a pre-agent state to the periodic set, a still-live (seconds-old)
+// creation is still protected while a restart-frozen (old) strand is not.
+const preAgentReapGrace = 3 * time.Minute
+
+// preAgentReapAllowed is a pure helper for the defensive periodic-only grace.
+// A non-pre-agent state is always allowed (age-independent). A pre-agent state
+// is allowed only once it is older than preAgentReapGrace, so a live creation
+// still within the grace window is never reaped.
+func preAgentReapAllowed(state machine.State, createdAt, now time.Time) bool {
+	if !isPreAgentState(state) {
+		return true
+	}
+	return now.Sub(createdAt) >= preAgentReapGrace
+}
+
+// reapPhase distinguishes the one-shot startup recovery pass from the periodic
+// running-daemon sweep. The two select different reap state-sets (BOS-426).
+type reapPhase int
+
+const (
+	// reapStartup is the one-shot post-restart recovery: full reap set including
+	// pre-agent states, which only a daemon restart can strand.
+	reapStartup reapPhase = iota
+	// reapPeriodic is the running-daemon 2-min sweep: post-agent states only,
+	// plus a defensive age grace, so it can never reap a live creation.
+	reapPeriodic
+)
 
 // strandedRunIsDead reports whether a stranded unattended run is genuinely dead
 // and safe to reap. It mirrors cronRunIsOver's fail-safe posture: any ambiguity
@@ -129,7 +199,34 @@ func (l *Lifecycle) strandedRunIsDead(sess *models.Session) bool {
 	return l.liveness != nil && !l.liveness.IsSessionAlive(context.Background(), sess.ID)
 }
 
-// RecoverStrandedCronSessions finalizes unattended sessions — cron-scheduled or
+// RecoverStrandedCronSessionsAtStartup runs the one-shot post-restart recovery
+// sweep. It reaps the FULL set (strandedReapStates) — ImplementingPlan plus the
+// pre-agent transitions (CreatingWorktree/StartingAgent) and post-agent
+// transitions (PushingBranch/OpeningDraftPR) — because a daemon restart is the
+// only thing that can strand a session in a pre-agent state, and startup is the
+// one-shot pass that follows a restart. No age grace is applied: a restart can
+// legitimately leave a young-but-dead pre-agent strand that must still be
+// reaped.
+//
+// The wrapper keeps the func(context.Context) (int, error) signature so the
+// opts.startupStrandedCronRecovery seam type is unchanged (BOS-426).
+func (l *Lifecycle) RecoverStrandedCronSessionsAtStartup(ctx context.Context) (int, error) {
+	return l.recoverStrandedCronSessions(ctx, reapStartup)
+}
+
+// RecoverStrandedCronSessionsPeriodic runs the running-daemon 2-min sweep. It
+// reaps the POST-AGENT set only (periodicReapStates) — a running daemon owns
+// CreatingWorktree/StartingAgent through the live create path, so the periodic
+// sweep must never load or reap a mid-creation row (that race deleted the row
+// out from under an in-flight `start session`, failing it with `update worktree
+// path: sql: no rows in result set`, BOS-426). A defensive periodic-only age
+// grace (preAgentReapGrace) is additionally applied as a should-be-unreachable
+// second line of defense.
+func (l *Lifecycle) RecoverStrandedCronSessionsPeriodic(ctx context.Context) (int, error) {
+	return l.recoverStrandedCronSessions(ctx, reapPeriodic)
+}
+
+// recoverStrandedCronSessions finalizes unattended sessions — cron-scheduled or
 // tmux_unattended (e.g. /boss-epic) — whose agent run has ended but whose Stop-hook
 // finalize signal never reached the daemon — e.g. the daemon restarted as the run
 // finished, so the loopback hook server's ephemeral port (baked into the
@@ -138,10 +235,12 @@ func (l *Lifecycle) strandedRunIsDead(sess *models.Session) bool {
 // trigger: RecoverFinalizingSessions only rescues sessions already in Finalizing,
 // and the hookless tmux-completion poll is both Claude-disabled and lost on restart.
 //
-// It reaps the set of interrupted states in strandedReapStates —
-// ImplementingPlan plus the pre-implementation transitions
-// (CreatingWorktree/StartingAgent/PushingBranch/OpeningDraftPR) a restart can
-// freeze a run in. Orphaned is EXCLUDED (see strandedReapStates), and the
+// The reap state-set is phase-scoped (BOS-426): the startup phase reaps the full
+// strandedReapStates (incl. pre-agent CreatingWorktree/StartingAgent that a
+// restart can freeze), while the periodic phase reaps only the post-agent subset
+// (periodicReapStates) so a running daemon's live create path is never raced. The
+// same set is used for both the ListByStates query AND the finalize expected-
+// states argument. Orphaned is EXCLUDED (see strandedReapStates), and the
 // post-implementation waiting states are out of scope (BOS-332).
 //
 // For each unattended session whose run strandedRunIsDead confirms is dead, this
@@ -157,18 +256,23 @@ func (l *Lifecycle) strandedRunIsDead(sess *models.Session) bool {
 // confirms are dead are touched; any ambiguity (missing log/id, running agent,
 // unwired liveness for a pre-agent state) leaves the session for the next sweep.
 //
-// Call once at daemon startup (alongside RecoverFinalizingSessions, after the
-// cron completion notifier is wired) and periodically thereafter. Returns the
-// number of sessions routed to finalization. A finalize error is logged at Warn
-// and the loop continues (the session still counts as routed); a failure to list
-// sessions aborts the sweep.
-func (l *Lifecycle) RecoverStrandedCronSessions(ctx context.Context) (int, error) {
+// Returns the number of sessions routed to finalization. A finalize error is
+// logged at Warn and the loop continues (the session still counts as routed); a
+// failure to list sessions aborts the sweep.
+func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapPhase) (int, error) {
 	if l.cronCompletionNotifier == nil {
 		// No gate wired (legacy/partial wiring): nothing to route to.
 		return 0, nil
 	}
 
-	stranded, err := l.sessions.ListByStates(ctx, strandedReapStateInts())
+	// Select the reap state-set by phase; use the same set for the ListByStates
+	// query and the finalize expected-states argument so they can't drift.
+	reapInts := strandedReapStateInts()
+	if phase == reapPeriodic {
+		reapInts = periodicReapStateInts()
+	}
+
+	stranded, err := l.sessions.ListByStates(ctx, reapInts)
 	if err != nil {
 		return 0, fmt.Errorf("list stranded unattended sessions: %w", err)
 	}
@@ -179,6 +283,7 @@ func (l *Lifecycle) RecoverStrandedCronSessions(ctx context.Context) (int, error
 		finalize = l.finalizeSessionFrom
 	}
 
+	now := time.Now()
 	routed := 0
 	for _, sess := range stranded {
 		// Skip archived sessions. ArchiveSession removes the worktree but leaves
@@ -194,6 +299,15 @@ func (l *Lifecycle) RecoverStrandedCronSessions(ctx context.Context) (int, error
 		// tmux_unattended session has no CronJobID, so filtering on it here would
 		// leave those sessions stranded forever.
 		if !isUnattendedSession(sess) {
+			continue
+		}
+		// Periodic-only defensive age grace (belt-and-suspenders): periodicReapStateInts
+		// already excludes pre-agent states so ListByStates won't return them, but this
+		// guard protects a future re-add of a pre-agent state to the periodic set — a
+		// live (seconds-old) creation stays protected while a restart-frozen (old) strand
+		// is not. Never applied to startup, which must reap young-but-dead pre-agent
+		// strands (BOS-426).
+		if phase == reapPeriodic && !preAgentReapAllowed(sess.State, sess.CreatedAt, now) {
 			continue
 		}
 		if !l.strandedRunIsDead(sess) {
@@ -213,7 +327,7 @@ func (l *Lifecycle) RecoverStrandedCronSessions(ctx context.Context) (int, error
 		// synchronously and bounded by a per-call timeout. cancel is called
 		// explicitly each iteration rather than deferred inside the loop.
 		fctx, cancel := context.WithTimeout(ctx, defaultCronFinalizeTimeout)
-		if _, ferr := finalize(fctx, sess.ID, strandedReapStateInts()); ferr != nil {
+		if _, ferr := finalize(fctx, sess.ID, reapInts); ferr != nil {
 			l.logger.Warn().Err(ferr).
 				Str("session", sess.ID).
 				Msg("stranded-cron reap: finalize failed")

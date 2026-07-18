@@ -52,6 +52,7 @@ go_library(
         "20260710000000_add_agent_chat_model.sql",
         "20260717000000_archive_sessions_after_merge.sql",
         "20260717000001_can_auto_delete_branches.sql",
+        "20260718000000_add_sessions_detach.sql",
     ],
     importpath = "github.com/recurser/bossd/migrations",
     visibility = ["//visibility:public"],

@@ -46,6 +46,9 @@ func RunCodexAdd(ctx context.Context, o CodexOptions) error {
 	}
 	// The dir MUST pre-exist and be private before spawn (auth.json holds live
 	// tokens). Remove it on EVERY exit path — a leaked temp dir is a leak.
+	// dir is a directory: 0700 is least-privilege and owner-execute is required
+	// to traverse the CODEX_HOME dir, so a stricter 0600 would make it unusable.
+	// #nosec G302 -- private CODEX_HOME dir; 0700 required for owner traversal, already least-privilege. owner=@recurser review-by=2026-09-16 issue=BOS-414
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return fmt.Errorf("could not secure temp CODEX_HOME %s: %w", dir, err)
 	}

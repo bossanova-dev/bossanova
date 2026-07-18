@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "title": "BOS-425 chatpicker — archive_pending=true shows the Archiving spinner",
+  "fixture": { "preset": "archive-signal" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "navigate to the session whose daemon archive is in flight",
+      "steps": [
+        {
+          "waitFor": "Resurrected merged session",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded (archive-signal preset)"
+        },
+        {
+          "expect": {
+            "text": "Archiving merged session",
+            "match": "normalized",
+            "label": "the archive-pending session (sess-425-archiving, index 1) is listed"
+          },
+          "caption": "Both merged sessions are listed; index 1 has archive_pending=true"
+        },
+        {
+          "key": "down",
+          "caption": "Move the cursor down onto the archive-pending session (index 1)"
+        },
+        {
+          "expect": {
+            "text": "❯.*Archiving merged session",
+            "match": "regex",
+            "label": "chevron on the archive-pending session"
+          },
+          "caption": "Cursor sits on the archive-pending session"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the session detail shows the Archiving spinner",
+      "steps": [
+        { "key": "enter", "caption": "Open the archive-pending session's detail (index 1)" },
+        {
+          "waitFor": {
+            "text": "Archiving session",
+            "match": "normalized",
+            "label": "detail view shows the daemon-driven Archiving spinner"
+          },
+          "timeoutMs": 10000,
+          "caption": "archive_pending=true: the detail renders 'Archiving session...' from the explicit daemon signal (BOS-425)"
+        },
+        {
+          "expect": {
+            "text": "Archiving session",
+            "match": "normalized",
+            "label": "Archiving spinner text present"
+          },
+          "caption": "The explicit archive_pending signal drives the spinner, not the old MERGED + repo-flag inference"
+        }
+      ]
+    }
+  ]
+}

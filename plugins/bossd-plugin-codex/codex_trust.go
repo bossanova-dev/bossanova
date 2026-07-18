@@ -34,7 +34,7 @@ func trustCodexWorktree(worktreePath string) error {
 	}
 	defer unlockCodexConfig(lockFile)
 
-	configPath := filepath.Join(configDir, "config.toml")
+	configPath := filepath.Clean(filepath.Join(configDir, "config.toml"))
 	var mode os.FileMode = 0o600
 	current, err := os.ReadFile(configPath)
 	if err != nil {
@@ -56,7 +56,7 @@ func trustCodexWorktree(worktreePath string) error {
 }
 
 func lockCodexConfig(configDir string) (*os.File, error) {
-	lockPath := filepath.Join(configDir, ".config.toml.lock")
+	lockPath := filepath.Clean(filepath.Join(configDir, ".config.toml.lock"))
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open codex config lock: %w", err)

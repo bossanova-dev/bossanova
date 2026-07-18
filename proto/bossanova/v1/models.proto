@@ -405,6 +405,15 @@ message Session {
   // GetSession so the TUI session-detail view can show an "Archiving…" status
   // and know a merged session is about to be auto-archived (BOS-46 follow-up).
   bool repo_archive_sessions_after_merge = 61;
+
+  // True while an archive (ArchiveSession) is actually in flight for this
+  // session. Transport-only: hydrated server-side from the in-memory
+  // DisplayTracker and never persisted. Set/cleared around the single archive
+  // chokepoint (Lifecycle.ArchiveSession) so the TUI renders "Archiving…" only
+  // when the daemon has an archive running — not inferred from steady-state
+  // MERGED + repo_archive_sessions_after_merge, which stays true forever for a
+  // merged→archived→resurrected session (BOS-425). Mirrors display_merging (60).
+  bool archive_pending = 62;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display

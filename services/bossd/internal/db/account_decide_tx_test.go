@@ -260,7 +260,7 @@ func TestDecideTx_ListByProviderOrdering(t *testing.T) {
 
 	var order []string
 	if err := store.DecideTx(ctx, string(models.AccountProviderClaude), func(tx rotation.TxAccountView) error {
-		list, e := tx.ListByProvider(ctx)
+		list, e := tx.ListByProvider(ctx, base)
 		if e != nil {
 			return e
 		}
@@ -288,5 +288,83 @@ func TestDecideTx_ListByProviderOrdering(t *testing.T) {
 	}
 	if codex.Provider != models.AccountProviderCodex {
 		t.Fatalf("codex seed provider = %q", codex.Provider)
+	}
+}
+
+// TestDecideTx_ListByProviderWeeklyExpiryOrdering verifies the BOS-429
+// weekly-expiry tiebreak in the rotation SQL ORDER BY: within one priority band,
+// accounts whose usage_reset_7d is a known instant strictly in the future sort
+// first (soonest-reset first); accounts with a nil (never probed) or past
+// (already-rolled) reset fall to the existing LRU -> id tiebreak; and explicit
+// Priority still dominates weekly-expiry.
+func TestDecideTx_ListByProviderWeeklyExpiryOrdering(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	setReset7d := func(id string, reset time.Time) {
+		fetched := now.Add(-time.Minute)
+		if err := store.RecordUsageProbe(ctx, id, models.UsageSnapshot{FetchedAt: &fetched, Reset7d: &reset}); err != nil {
+			t.Fatalf("record usage probe: %v", err)
+		}
+	}
+	setLastUsed := func(id string, t2 time.Time) {
+		v := t2
+		if _, err := store.Update(ctx, id, UpdateAccountParams{LastUsedAt: func() **time.Time { p := &v; return &p }()}); err != nil {
+			t.Fatalf("set last_used_at: %v", err)
+		}
+	}
+
+	soon := now.Add(2 * time.Hour)
+	later := now.Add(5 * time.Hour)
+	past := now.Add(-2 * time.Hour)
+
+	// One priority-5 band exercising every weekly-expiry rank. p5soon and p5later
+	// carry last_used_at values that INVERT their reset order under pure LRU
+	// (p5later is the older idler), so the expected p5soon-before-p5later order can
+	// only come from the weekly-expiry rank sitting above LRU — the test fails on
+	// pre-BOS-429 code rather than passing by an incidental id/LRU tiebreak.
+	p5soon, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p5-soon", Priority: 5})
+	setReset7d(p5soon.ID, soon)
+	setLastUsed(p5soon.ID, now.Add(-30*time.Minute))
+	p5later, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p5-later", Priority: 5})
+	setReset7d(p5later.ID, later)
+	setLastUsed(p5later.ID, now.Add(-6*time.Hour))
+	// nil reset (never probed) and past reset both fall to the LRU group; make
+	// their LRU order deterministic (p5nil older ⇒ before p5past).
+	p5nil, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p5-nil", Priority: 5})
+	setLastUsed(p5nil.ID, now.Add(-3*time.Hour))
+	p5past, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p5-past", Priority: 5})
+	setReset7d(p5past.ID, past)
+	setLastUsed(p5past.ID, now.Add(-1*time.Hour))
+	// A priority-1 account with a LATER reset must still lead: priority dominates.
+	p1later, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p1-later", Priority: 1})
+	setReset7d(p1later.ID, later)
+
+	var order []string
+	if err := store.DecideTx(ctx, string(models.AccountProviderClaude), func(tx rotation.TxAccountView) error {
+		list, e := tx.ListByProvider(ctx, now)
+		if e != nil {
+			return e
+		}
+		for _, a := range list {
+			order = append(order, a.ID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("DecideTx: %v", err)
+	}
+
+	// p1later (priority dominates) → p5soon, p5later (future, soonest-first) →
+	// p5nil, p5past (nil/past fall to LRU, older first).
+	want := []string{p1later.ID, p5soon.ID, p5later.ID, p5nil.ID, p5past.ID}
+	if len(order) != len(want) {
+		t.Fatalf("order len = %d, want %d (%v)", len(order), len(want), order)
+	}
+	for i, id := range want {
+		if order[i] != id {
+			t.Errorf("order[%d] = %q, want %q (full: %v)", i, order[i], id, order)
+		}
 	}
 }

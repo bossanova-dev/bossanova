@@ -17,7 +17,7 @@ func (h *Harness) WaitForSessionState(t *testing.T, sessionID string, want pb.Se
 		if err != nil {
 			t.Fatalf("WaitForSessionState: get session: %v", err)
 		}
-		got := pb.SessionState(sess.State)
+		got := pb.SessionState(safeInt32(int(sess.State)))
 		if got == want {
 			return
 		}

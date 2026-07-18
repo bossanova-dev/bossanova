@@ -217,6 +217,9 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	if params.TmuxUnattended != nil {
 		s.TmuxUnattended = *params.TmuxUnattended
 	}
+	if params.Detach != nil {
+		s.Detach = *params.Detach
+	}
 	if params.RotationAttemptCount != nil {
 		s.RotationAttemptCount = *params.RotationAttemptCount
 	}
@@ -741,7 +744,8 @@ type mockWorktreeManager struct {
 	createdFromExisting         []gitpkg.CreateFromExistingBranchOpts
 	createFromExistingBranchErr error // if set, CreateFromExistingBranch returns this error
 	archived                    []string
-	archiveErr                  error // if set, Archive returns this error
+	archiveErr                  error  // if set, Archive returns this error
+	archiveHook                 func() // if set, invoked inside Archive() mid-run (used to observe transient flags)
 	resurrected                 []gitpkg.ResurrectOpts
 	pushed                      []string
 	pushErr                     error    // if set, Push returns this error
@@ -810,6 +814,9 @@ func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) 
 
 func (m *mockWorktreeManager) Archive(_ context.Context, path string) error {
 	m.archived = append(m.archived, path)
+	if m.archiveHook != nil {
+		m.archiveHook()
+	}
 	return m.archiveErr
 }
 
@@ -2006,6 +2013,7 @@ func TestResurrectSession(t *testing.T) {
 			Plan:         "Do something",
 			WorktreePath: "/tmp/worktrees/test-repo/test",
 			BranchName:   "test",
+			BaseBranch:   "main",
 			State:        machine.ImplementingPlan,
 		}
 		// Set ArchivedAt to mark as archived.
@@ -2039,6 +2047,9 @@ func TestResurrectSession(t *testing.T) {
 	}
 	if wt.resurrected[0].BranchName != "test" {
 		t.Errorf("resurrect branch = %q, want test", wt.resurrected[0].BranchName)
+	}
+	if wt.resurrected[0].BaseBranch != "main" {
+		t.Errorf("resurrect base branch = %q, want main", wt.resurrected[0].BaseBranch)
 	}
 
 	// Verify Claude was started with resume.
@@ -2487,10 +2498,12 @@ func TestStartSession_SkipSetupScript_NewBranch(t *testing.T) {
 	}
 }
 
-// fakeSettingUp records SetSettingUp calls.
+// fakeSettingUp records SetSettingUp and SetArchiving calls.
 type fakeSettingUp struct {
-	mu    sync.Mutex
-	calls []bool
+	mu             sync.Mutex
+	calls          []bool
+	archivingCalls []bool
+	archiving      bool // current SetArchiving state (last value set)
 }
 
 func (f *fakeSettingUp) SetSettingUp(_ string, on bool) {
@@ -2499,12 +2512,106 @@ func (f *fakeSettingUp) SetSettingUp(_ string, on bool) {
 	f.calls = append(f.calls, on)
 }
 
+func (f *fakeSettingUp) SetArchiving(_ string, on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.archivingCalls = append(f.archivingCalls, on)
+	f.archiving = on
+}
+
 func (f *fakeSettingUp) snapshot() []bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]bool, len(f.calls))
 	copy(out, f.calls)
 	return out
+}
+
+func (f *fakeSettingUp) archivingSnapshot() []bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]bool, len(f.archivingCalls))
+	copy(out, f.archivingCalls)
+	return out
+}
+
+func (f *fakeSettingUp) isArchiving() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.archiving
+}
+
+func TestArchiveSession_SetsAndClearsArchivingFlag(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:              "repo-1",
+		LocalPath:       "/tmp/repo",
+		WorktreeBaseDir: "/tmp/worktrees",
+		DisplayName:     "test-repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Test Session",
+		BaseBranch:   "main",
+		WorktreePath: "/tmp/worktrees/test-repo/test-session",
+		State:        machine.ImplementingPlan,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	f := &fakeSettingUp{}
+	lc.SetDisplayTracker(f)
+
+	// Observe the flag mid-archive: the worktree Archive runs inside
+	// ArchiveSession, between the set-true and the deferred clear.
+	var midRunArchiving bool
+	wt.archiveHook = func() { midRunArchiving = f.isArchiving() }
+
+	if err := lc.ArchiveSession(ctx, "sess-1"); err != nil {
+		t.Fatalf("ArchiveSession: %v", err)
+	}
+
+	if !midRunArchiving {
+		t.Fatalf("expected Archiving=true during ArchiveSession run")
+	}
+	if want := []bool{true, false}; !reflect.DeepEqual(f.archivingSnapshot(), want) {
+		t.Fatalf("archiving calls = %v, want %v", f.archivingSnapshot(), want)
+	}
+	if f.isArchiving() {
+		t.Fatalf("expected Archiving cleared after ArchiveSession")
+	}
+}
+
+func TestArchiveSession_ClearsArchivingFlagOnError(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	logger := zerolog.Nop()
+
+	// No session row → l.sessions.Get fails, so ArchiveSession returns an error
+	// after the set-true. The deferred clear must still run (error path).
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	f := &fakeSettingUp{}
+	lc.SetDisplayTracker(f)
+
+	if err := lc.ArchiveSession(ctx, "missing"); err == nil {
+		t.Fatalf("expected error for missing session")
+	}
+
+	if want := []bool{true, false}; !reflect.DeepEqual(f.archivingSnapshot(), want) {
+		t.Fatalf("archiving calls = %v, want %v (flag not cleared on error)", f.archivingSnapshot(), want)
+	}
+	if f.isArchiving() {
+		t.Fatalf("expected Archiving cleared on error path")
+	}
 }
 
 func TestStartSession_SetsInitializingWhenSetupScriptPresent(t *testing.T) {
@@ -4789,6 +4896,93 @@ func TestStartSession_TmuxUnattended_HookToken_ConfiguresFinalizeHook(t *testing
 	}
 }
 
+// TestStartSession_DetachTmuxAvailable_RoutesToTmux is BOS-428's core proof: a
+// `boss new --detach` run with tmux available is hosted in a durable tmux pane
+// (routed through startTmuxChat, NOT the paneless headless StartByAgent path),
+// persists sessions.detach = true, installs its finalize Stop hook (so the
+// completion gate admits it and a restart can re-arm it), and does NOT arm the
+// headless poll fallback (the Stop hook drives completion for a hook-supporting
+// agent). This is the tmux-hosted branch that survives a daemon restart.
+func TestStartSession_DetachTmuxAvailable_RoutesToTmux(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	fake := newFakeTmux() // available by default
+	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Detached run",
+		Plan:       "Do the detached work",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		AgentName:  "claude",
+	}
+
+	fakeAgent := newFakeAgent() // IsSupported defaults true (claude owns a hook)
+	armer := &fakePollArmer{}
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fakeAgent})
+	lc.SetAgentLogsDir(t.TempDir())
+	lc.SetHookPort(45678)
+	lc.SetPollArmer(armer)
+	lc.SetDaemonCtx(ctx)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		DeferPR:   true,
+		Detach:    true,
+		HookToken: "detach-tok",
+	}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// Routed through the durable tmux path, not the paneless headless one.
+	if len(cr.started) != 0 {
+		t.Errorf("expected 0 headless StartByAgent calls on detach-via-tmux path, got %d", len(cr.started))
+	}
+	if !fake.hasSubcommand("new-session") {
+		t.Fatal("expected tmux new-session call for a tmux-hosted detach run, none recorded")
+	}
+
+	// Detach was persisted (unattended-class recovery signal).
+	if !sessions.sessions["sess-1"].Detach {
+		t.Error("expected Detach persisted on the session row for a tmux-hosted detach run")
+	}
+
+	// The finalize Stop hook was installed and its token persisted.
+	if len(fakeAgent.ConfigureHookReqs) == 0 {
+		t.Fatal("expected ConfigureFinalizeHook to fire for a tmux-hosted detach run")
+	}
+	if got := fakeAgent.ConfigureHookReqs[0].GetHookToken(); got != "detach-tok" {
+		t.Errorf("ConfigureFinalizeHook HookToken = %q, want detach-tok", got)
+	}
+	if sessions.sessions["sess-1"].HookToken == nil || *sessions.sessions["sess-1"].HookToken != "detach-tok" {
+		t.Errorf("expected HookToken persisted on session, got %v", sessions.sessions["sess-1"].HookToken)
+	}
+
+	// A hook-supporting agent's Stop hook drives completion; the headless poll
+	// fallback must NOT be armed (it would double-finalize).
+	if armer.armCalled {
+		t.Errorf("headless poll fallback must not be armed for a tmux-hosted detach run, armed=%v", armer.armedSessions)
+	}
+
+	if sessions.sessions["sess-1"].State != machine.ImplementingPlan {
+		t.Errorf("session.State = %v, want ImplementingPlan", sessions.sessions["sess-1"].State)
+	}
+}
+
 // TestStartSession_CronJobID_TmuxUnavailable_Errors verifies that when
 // tmux is not available, the cron branch returns an error before any
 // tmux session is created or any claude_chats row is written. The
@@ -5120,10 +5314,13 @@ func TestSetAgents_UnknownAgentErrors(t *testing.T) {
 }
 
 // TestStartSessionArmsPollFallbackForHooklessNonCronRun verifies that a
-// hookless (codex) non-cron headless run arms daemon-side poll fallback so the
-// session is driven out of ImplementingPlan on completion. Even when a
-// HookToken is supplied, a hookless agent installs no Stop hook (IsSupported
-// false), so PollFallback — not a hook — must drive completion.
+// detach run whose tmux is UNAVAILABLE falls back to the paneless headless path
+// and arms daemon-side poll fallback so the session is driven out of
+// ImplementingPlan on completion. Even though the server minted a HookToken,
+// StartSession gates hook install on the tmux-hosted branch, so the fallback
+// installs no Stop hook (hookResp nil) and PollFallback — not a hook — must
+// drive completion. (With tmux available a detach run is tmux-hosted instead;
+// see TestStartSession_DetachTmuxAvailable_RoutesToTmux.)
 func TestStartSessionArmsPollFallbackForHooklessNonCronRun(t *testing.T) {
 	ctx := context.Background()
 	worktreeDir := t.TempDir()
@@ -5133,7 +5330,9 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRun(t *testing.T) {
 	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{worktreePath: worktreeDir}
 	cr := newMockAgentRunner()
-	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	noTmux := newFakeTmux()
+	noTmux.available = false // tmux unavailable → detach falls back to headless
+	tx := tmux.NewClient(tmux.WithCommandFactory(noTmux.factory))
 
 	repos.repos["repo-1"] = &models.Repo{
 		ID:                "repo-1",
@@ -5183,8 +5382,9 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRun(t *testing.T) {
 }
 
 // TestStartSessionArmsPollFallbackForHooklessNonCronRunWithoutHookToken pins
-// the production boss new --detach path: no HookToken is passed, so NO Stop
-// hook is installed (hookResp == nil) for ANY agent on the headless branch.
+// the detach fallback path when tmux is unavailable AND no HookToken is passed:
+// NO Stop hook is installed (hookResp == nil) for ANY agent on the headless
+// branch, and Detach is left false (fallback stays in the headless class).
 // Without arming, the run is stranded in ImplementingPlan forever.
 func TestStartSessionArmsPollFallbackForHooklessNonCronRunWithoutHookToken(t *testing.T) {
 	ctx := context.Background()
@@ -5195,7 +5395,9 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRunWithoutHookToken(t *te
 	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{worktreePath: worktreeDir}
 	cr := newMockAgentRunner()
-	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	noTmux := newFakeTmux()
+	noTmux.available = false // tmux unavailable → detach falls back to headless
+	tx := tmux.NewClient(tmux.WithCommandFactory(noTmux.factory))
 
 	repos.repos["repo-1"] = &models.Repo{
 		ID:                "repo-1",
@@ -5233,6 +5435,11 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRunWithoutHookToken(t *te
 	}
 	if fa.LastConfigureHookReq != nil {
 		t.Error("ConfigureFinalizeHook must not be probed when no HookToken is set")
+	}
+	// The fallback (tmux-unavailable) detach run stays in the headless class:
+	// Detach must be left false so the restart orphan sweep still reaps it.
+	if sessions.sessions["sess-1"].Detach {
+		t.Error("detach fallback (tmux unavailable) must leave Detach=false")
 	}
 }
 
@@ -5586,6 +5793,44 @@ func TestBootstrapDoesNotOrphanUnattended(t *testing.T) {
 
 	if got := sessions.sessions["sess-cron"].State; got != machine.ImplementingPlan {
 		t.Fatalf("unattended session must not be orphaned by the headless sweep, got %s", got)
+	}
+}
+
+// TestBootstrapDoesNotOrphanDetach is BOS-428's restart-survival proof at the
+// sweep boundary: a tmux-hosted `boss new --detach` run (Detach=true, non-cron)
+// joins the unattended class, so sweepOrphanedHeadlessRuns skips it — it is
+// re-monitored by the re-arm loop, not orphaned — even when liveness reports it
+// dead. Contrast TestBootstrapDoesNotReArmHeadlessImplementingRuns, where a
+// Detach=false paneless fallback run IS swept to Orphaned.
+func TestBootstrapDoesNotOrphanDetach(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	runH := "run-detach"
+	sessions.sessions["sess-detach"] = &models.Session{
+		ID:             "sess-detach",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-detach",
+		BaseBranch:     "main",
+		State:          machine.ImplementingPlan,
+		AgentName:      "codex",
+		AgentSessionID: &runH,
+		Detach:         true,
+	}
+
+	chats := &mockAgentChatStore{}
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // dead
+	lc.SetDaemonCtx(ctx)
+
+	lc.Bootstrap(ctx)
+
+	if got := sessions.sessions["sess-detach"].State; got != machine.ImplementingPlan {
+		t.Fatalf("tmux-hosted detach session must not be orphaned by the headless sweep, got %s", got)
 	}
 }
 

@@ -157,10 +157,12 @@ check_smoke_script() {
 check_k8s_hardening() {
   require_file "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml"
   require_file "${KUSTOMIZE_DIR}/base/deployment-redis.yml"
+  require_file "${KUSTOMIZE_DIR}/base/deployment-mcp-gateway.yml"
 
   local workload_files=(
     "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml"
     "${KUSTOMIZE_DIR}/base/deployment-redis.yml"
+    "${KUSTOMIZE_DIR}/base/deployment-mcp-gateway.yml"
   )
   for file in "${workload_files[@]}"; do
     require_grep "$file" "runAsNonRoot: true" "workload must run as non-root"
@@ -169,6 +171,7 @@ check_k8s_hardening() {
     require_grep "$file" "allowPrivilegeEscalation: false" "container must block privilege escalation"
     require_grep "$file" "drop:" "container must drop Linux capabilities"
     require_grep "$file" "- ALL" "container must drop all Linux capabilities"
+    require_grep "$file" "readOnlyRootFilesystem: true" "container must use a read-only root filesystem"
   done
 
   require_grep "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml" "runAsUser: 65532" "Bosso workload must set numeric non-root user"

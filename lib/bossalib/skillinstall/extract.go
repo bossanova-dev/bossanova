@@ -105,7 +105,7 @@ func NeedsUpdate(dir string, fsys fs.FS) (bool, error) {
 			expectedSkills[skill] = true
 		}
 
-		installedPath := filepath.Join(dir, Namespace, filepath.FromSlash(file.rel))
+		installedPath := filepath.Clean(filepath.Join(dir, Namespace, filepath.FromSlash(file.rel)))
 		data, err := os.ReadFile(installedPath)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -280,7 +280,7 @@ func Extract(dir string, fsys fs.FS) error {
 		// Strip leading "skills/" to get "boss-build/SKILL.md"
 		rel := strings.TrimPrefix(path, "skills/")
 		destPath := filepath.Join(nsDir, rel)
-		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(destPath), 0o750); err != nil {
 			return fmt.Errorf("create skill dir: %w", err)
 		}
 		data, err := fs.ReadFile(fsys, path)

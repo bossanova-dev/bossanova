@@ -2517,7 +2517,10 @@ function gatherDiff() {
 /** Use an injected bridge if provided, else build + spawn the real Go bridge. */
 function resolveBridge(d, { localDir, rawDir }) {
   if (d.bridge) return d.bridge
-  return makeStdioBridge({ localDir, rawDir })
+  // Forward a scenario-selected fixture preset / env overlay to the real bridge.
+  // Both default to undefined (byte-identical to the pre-BOS-425 demo default)
+  // when the caller doesn't thread them.
+  return makeStdioBridge({ localDir, rawDir, fixture: d.fixture, seedEnv: d.seedEnv })
 }
 
 /**

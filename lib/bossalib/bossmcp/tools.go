@@ -195,7 +195,7 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "list_chats",
-		Description: "List agent chats for a session.",
+		Description: "List all agent chats in a session (each with its agent_session_id) — the siblings you can start with start_chat, message, read, or delete.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SessionIDArgs) (*mcp.CallToolResult, any, error) {
 		out, err := backend.ListChats(ctx, args.SessionID)
@@ -234,7 +234,7 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "get_chat_transcript",
-		Description: "Return the conversation transcript and final assistant text for a chat.",
+		Description: "Return the conversation transcript and final assistant text for one chat (by agent_session_id) — read or interrogate any chat in a session.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args GetChatTranscriptArgs) (*mcp.CallToolResult, any, error) {
 		req := &pb.GetChatTranscriptRequest{
@@ -334,6 +334,19 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListAccountsArgs) (*mcp.CallToolResult, any, error) {
 		out, err := backend.ListAccounts(ctx, args.Provider, args.Refresh)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "get_settings",
+		Description: "Get the daemon's global settings: the TUI-editable subset of settings.json (worktree base dir, poll interval, default agent, event/error tracing, PostHog token/host) plus each configured agent's enabled flag and dynamic config map. Per-agent allowed values/types for update_settings are discoverable via list_agents.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ NoArgs) (*mcp.CallToolResult, any, error) {
+		out, err := backend.GetSettings(ctx)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}

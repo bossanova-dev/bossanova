@@ -129,6 +129,8 @@ func (f *CronReadyTmuxFake) cmd(ctx context.Context, name string, args ...string
 		// message as $1 to `sh -c` avoids any shell quoting of its contents.
 		if f.FailNewSession != "" {
 			f.mu.Unlock()
+			// #nosec G204 -- test-only tmux fake; message passed as $1 to `sh -c`, no shell interpolation of its contents
+			// owner=@recurser review-by=2027-01-18 issue=BOS-28
 			return exec.CommandContext(ctx, "sh", "-c",
 				`printf '%s' "$1" >&2; exit 1`, "sh", f.FailNewSession)
 		}

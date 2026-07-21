@@ -44,7 +44,9 @@ func probeDuplex(baseURL string, wait time.Duration, insecure bool) (Result, err
 	req.Header.Set("Content-Type", "application/connect+proto")
 
 	transport := &http.Transport{
-		TLSClientConfig:   &tls.Config{InsecureSkipVerify: insecure}, //nolint:gosec // Diagnostic flag intentionally supports probing self-signed endpoints.
+		// #nosec G402 -- diagnostic stream-probe tool intentionally sets InsecureSkipVerify to probe self-signed endpoints; not production traffic; MinVersion pinned to TLS1.2
+		// owner=@recurser review-by=2027-01-18 issue=BOS-28
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: insecure, MinVersion: tls.VersionTLS12},
 		ForceAttemptHTTP2: true,
 	}
 	defer transport.CloseIdleConnections()

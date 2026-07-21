@@ -198,6 +198,8 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 	// model). Full openat/O_NOFOLLOW traversal is out of scope for a data dir
 	// bossd itself creates 0700 (services/bossd/internal/db/db.go).
 	for _, d := range []string{m.accountsRoot(), filepath.Dir(dir), dir} {
+		// #nosec G302 -- Chmod(d, 0o700) on the credential dir chain; 0700 is the tightest usable dir mode
+		// owner=@recurser review-by=2027-01-18 issue=BOS-28
 		if err := os.Chmod(d, 0o700); err != nil {
 			return Materialized{}, nil, fmt.Errorf("enforce 0700 on codex dir %q: %w", d, err)
 		}
@@ -248,6 +250,8 @@ func (m *Materializer) persistBack(ctx context.Context, accountID, authPath stri
 	unlock := m.locks.Lock(lockKey(providerCodex, accountID))
 	defer unlock()
 
+	// #nosec G304 -- reads codex `auth.json` under the account lock; internally-derived materialize path (secret-adjacent)
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	current, err := os.ReadFile(authPath)
 	if err != nil {
 		return fmt.Errorf("read codex auth.json at %q for persist-back: %w", authPath, err)
@@ -384,6 +388,8 @@ func (m *Materializer) writeCacheDirTag() {
 	// content, a prior build's wrong tag, a malformed signature line, or manual
 	// precreation) is silently ignored by backup tools, so rewrite it to the
 	// canonical body rather than trusting its mere existence.
+	// #nosec G304 -- internal cache-dir path + const `CACHEDIR.TAG` filename; non-secret marker file
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	if existing, err := os.ReadFile(tagPath); err == nil &&
 		hasCanonicalCacheTagSignature(existing) {
 		return

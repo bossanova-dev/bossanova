@@ -668,6 +668,36 @@
       "route": "/guides/account-rotation",
       "selector": "article",
       "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-agent-runners-guide",
+      "surface": "docs",
+      "title": "Docs — Agent Plugins Guide",
+      "description": "Rendered Agent Plugins guide page (services/docs/docs/guides/agent-plugins.md).",
+      "privacy": "fixture",
+      "route": "/guides/agent-runners",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-skills-overview",
+      "surface": "docs",
+      "title": "Docs — Skills Overview",
+      "description": "Rendered Skills overview documentation page (services/docs/docs/skills/overview.md).",
+      "privacy": "fixture",
+      "route": "/skills",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-skills-extensions",
+      "surface": "docs",
+      "title": "Docs — Skills Extension System",
+      "description": "Rendered Extension System documentation page (services/docs/docs/skills/extensions.md).",
+      "privacy": "fixture",
+      "route": "/skills/extensions",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
     }
   ],
   "pathRules": [
@@ -735,6 +765,21 @@
       "name": "Docs Account Rotation guide",
       "patterns": ["services/docs/docs/guides/account-rotation"],
       "recipeIds": ["docs-account-rotation"]
+    },
+    {
+      "name": "Docs Agent Plugins guide",
+      "patterns": ["services/docs/docs/guides/agent-plugins"],
+      "recipeIds": ["docs-agent-runners-guide"]
+    },
+    {
+      "name": "Docs Skills overview",
+      "patterns": ["services/docs/docs/skills/overview"],
+      "recipeIds": ["docs-skills-overview"]
+    },
+    {
+      "name": "Docs Skills extension system",
+      "patterns": ["services/docs/docs/skills/extensions"],
+      "recipeIds": ["docs-skills-extensions"]
     }
   ]
 }

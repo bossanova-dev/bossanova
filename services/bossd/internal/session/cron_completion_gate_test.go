@@ -284,7 +284,7 @@ func TestCronCompletionGateFinalizesWhenRunIsOverUnwired(t *testing.T) {
 }
 
 // TestCronCompletionGateFinalizesUnattendedTmuxSession proves the gate finalizes
-// a tmux_unattended session (TmuxUnattended=true, CronJobID nil) once its run is
+// a tmux_unattended session (IsTmuxUnattended=true, CronJobID nil) once its run is
 // over — the durable-tmux completion path for /boss-epic — mirroring the cron path.
 func TestCronCompletionGateFinalizesUnattendedTmuxSession(t *testing.T) {
 	sessions := newGateSessionStore()
@@ -292,9 +292,9 @@ func TestCronCompletionGateFinalizesUnattendedTmuxSession(t *testing.T) {
 
 	agentID := "agent-1"
 	sessions.sessions["sess-1"] = &models.Session{
-		ID:             "sess-1",
-		TmuxUnattended: true,
-		AgentSessionID: &agentID,
+		ID:               "sess-1",
+		IsTmuxUnattended: true,
+		AgentSessionID:   &agentID,
 	}
 
 	gate := NewCronCompletionGate(CronCompletionGateDeps{
@@ -309,7 +309,7 @@ func TestCronCompletionGateFinalizesUnattendedTmuxSession(t *testing.T) {
 }
 
 // TestCronCompletionGateFinalizesDetachSession proves the gate finalizes a
-// durable tmux-hosted detach session (Detach=true, CronJobID nil, TmuxUnattended
+// durable tmux-hosted detach session (Detach=true, CronJobID nil, IsTmuxUnattended
 // false) once its run is over — BOS-428's completion-routing requirement. Without
 // Detach joining the unattended class, a tmux-hosted detach run's finalize Stop
 // hook would be admitted here then dropped, stranding it in ImplementingPlan.
@@ -337,8 +337,8 @@ func TestCronCompletionGateFinalizesDetachSession(t *testing.T) {
 
 // TestCronCompletionGateIgnoresInteractiveSession proves the gate never
 // auto-finalizes a plain interactive session — one with a HookToken but neither
-// CronJobID nor TmuxUnattended. HookToken presence alone is NOT the autonomy
-// signal; the persisted TmuxUnattended flag is.
+// CronJobID nor IsTmuxUnattended. HookToken presence alone is NOT the autonomy
+// signal; the persisted IsTmuxUnattended flag is.
 func TestCronCompletionGateIgnoresInteractiveSession(t *testing.T) {
 	sessions := newGateSessionStore()
 	finalizer := &recordingCronFinalizer{}
@@ -349,7 +349,7 @@ func TestCronCompletionGateIgnoresInteractiveSession(t *testing.T) {
 		ID:             "sess-1",
 		AgentSessionID: &agentID,
 		HookToken:      &hookToken,
-		// CronJobID nil, TmuxUnattended false.
+		// CronJobID nil, IsTmuxUnattended false.
 	}
 
 	gate := NewCronCompletionGate(CronCompletionGateDeps{

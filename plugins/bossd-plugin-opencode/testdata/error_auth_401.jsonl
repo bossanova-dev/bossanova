@@ -1,0 +1,2 @@
+{"type":"step_start","sessionID":"ses_9f8e7d6c5b4a3f2e1d0c","part":{"sessionID":"ses_9f8e7d6c5b4a3f2e1d0c","type":"step-start"}}
+{"type":"error","sessionID":"ses_9f8e7d6c5b4a3f2e1d0c","error":{"name":"ProviderAuthError","statusCode":401,"message":"401 Unauthorized: authentication credentials were rejected by the provider"}}

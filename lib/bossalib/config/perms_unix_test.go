@@ -40,10 +40,9 @@ func TestSaveToCreatesDirWith0750(t *testing.T) {
 	}
 }
 
-// TestLoadCreatesWorktreeBaseDirWith0750 pins the G301 tightening at the Load
-// path: the worktree base directory is materialized with 0o750.
-func TestLoadCreatesWorktreeBaseDirWith0750(t *testing.T) {
-	withZeroUmask(t)
+// TestLoadDoesNotCreateWorktreeBaseDir keeps settings loading side-effect free.
+// Worktree creation validates and materializes this directory when it is used.
+func TestLoadDoesNotCreateWorktreeBaseDir(t *testing.T) {
 	tmp := t.TempDir()
 	settingsFile := filepath.Join(tmp, "settings.json")
 	wtDir := filepath.Join(tmp, "worktrees") // does not exist yet
@@ -63,11 +62,38 @@ func TestLoadCreatesWorktreeBaseDirWith0750(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	info, err := os.Stat(wtDir)
-	if err != nil {
-		t.Fatalf("stat %s: %v", wtDir, err)
+	if _, err := os.Stat(wtDir); !os.IsNotExist(err) {
+		t.Fatalf("Load created WorktreeBaseDir %q", wtDir)
 	}
-	if got := info.Mode().Perm(); got != 0o750 {
-		t.Errorf("worktree base dir mode = %o, want 0750", got)
+}
+
+// TestLoadAllowsInvalidWorktreeBaseDir lets callers replace an invalid saved
+// worktree directory before attempting an operation that uses it.
+func TestLoadAllowsInvalidWorktreeBaseDir(t *testing.T) {
+	tmp := t.TempDir()
+	settingsFile := filepath.Join(tmp, "settings.json")
+	worktreeBaseFile := filepath.Join(tmp, "worktrees")
+	t.Setenv(settingsPathEnv, settingsFile)
+
+	if err := os.WriteFile(worktreeBaseFile, nil, 0o600); err != nil {
+		t.Fatalf("write worktree base file: %v", err)
+	}
+
+	s := DefaultSettings()
+	s.WorktreeBaseDir = filepath.Join(worktreeBaseFile, "nested")
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(settingsFile, data, 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.WorktreeBaseDir != s.WorktreeBaseDir {
+		t.Errorf("WorktreeBaseDir = %q, want %q", loaded.WorktreeBaseDir, s.WorktreeBaseDir)
 	}
 }

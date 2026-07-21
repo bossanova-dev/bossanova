@@ -483,6 +483,8 @@ func (h *Host) EnsureWorkflowRunning(ctx context.Context, name string) (bossanov
 func (h *Host) launchPlugin(ctx context.Context, cfg config.PluginConfig) (managedPlugin, error) {
 	cfg = preparePluginConfigForStart(cfg, h.settings)
 
+	// #nosec G204 -- runs an operator-configured plugin binary path (cfg.Path); local-trust, not attacker-controlled
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command(cfg.Path)
 	// Project per-plugin Config entries into the subprocess environment
 	// (BOSS_PLUGIN_<key>=<value>). Plugins are separate binaries that

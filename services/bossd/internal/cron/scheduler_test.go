@@ -75,7 +75,7 @@ func (f *fakeStore) ListEnabled(ctx context.Context) ([]*models.CronJob, error) 
 	defer f.mu.Unlock()
 	var out []*models.CronJob
 	for _, j := range f.jobs {
-		if j.Enabled {
+		if j.IsEnabled {
 			clone := *j
 			out = append(out, &clone)
 		}
@@ -345,12 +345,12 @@ func newTestSchedulerWithRepos(t *testing.T, store *fakeStore, sessions *fakeSes
 
 func makeJob(id, schedule string, enabled bool) *models.CronJob {
 	return &models.CronJob{
-		ID:       id,
-		RepoID:   "repo-1",
-		Name:     "job-" + id,
-		Prompt:   "do the thing",
-		Schedule: schedule,
-		Enabled:  enabled,
+		ID:        id,
+		RepoID:    "repo-1",
+		Name:      "job-" + id,
+		Prompt:    "do the thing",
+		Schedule:  schedule,
+		IsEnabled: enabled,
 	}
 }
 
@@ -1295,7 +1295,7 @@ func TestFire_EmptyGateCommand(t *testing.T) {
 }
 
 // TestFire_SkipSetupScript_Toggle verifies that SkipSetupScript in
-// CreateSessionOpts reflects job.RunSetupCommand (inverted).
+// CreateSessionOpts reflects job.ShouldRunSetupCommand (inverted).
 func TestFire_SkipSetupScript_Toggle(t *testing.T) {
 	cases := []struct {
 		name            string
@@ -1309,7 +1309,7 @@ func TestFire_SkipSetupScript_Toggle(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			store := newFakeStore()
 			job := makeJob("j", "@every 1m", true)
-			job.RunSetupCommand = c.runSetupCommand
+			job.ShouldRunSetupCommand = c.runSetupCommand
 			store.put(job)
 
 			creator := newFakeCreator()
@@ -1325,7 +1325,7 @@ func TestFire_SkipSetupScript_Toggle(t *testing.T) {
 				t.Fatalf("creator calls = %d, want 1", len(creator.calls))
 			}
 			if got := creator.calls[0].SkipSetupScript; got != c.wantSkip {
-				t.Errorf("SkipSetupScript = %v, want %v (RunSetupCommand=%v)",
+				t.Errorf("SkipSetupScript = %v, want %v (ShouldRunSetupCommand=%v)",
 					got, c.wantSkip, c.runSetupCommand)
 			}
 		})

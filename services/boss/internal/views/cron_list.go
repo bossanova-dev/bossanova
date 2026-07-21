@@ -288,11 +288,11 @@ func (m CronListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if job == nil {
 			return m, nil
 		}
-		newEnabled := !job.Enabled
+		newEnabled := !job.IsEnabled
 		return m, func() tea.Msg {
 			updated, err := m.client.UpdateCronJob(m.ctx, &pb.UpdateCronJobRequest{
-				Id:      job.Id,
-				Enabled: &newEnabled,
+				Id:        job.Id,
+				IsEnabled: &newEnabled,
 			})
 			return cronJobUpdatedMsg{job: updated, err: err}
 		}
@@ -391,7 +391,7 @@ func (m *CronListModel) rebuildTable() {
 		}
 		agents[i] = cronDisplayAgentName(job.AgentName)
 
-		if job.Enabled {
+		if job.IsEnabled {
 			enableds[i] = "yes"
 		} else {
 			enableds[i] = "no"
@@ -424,9 +424,9 @@ func (m *CronListModel) rebuildTable() {
 		case job.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_GATING:
 			statuses[i] = m.spinner.View() + "gating"
 		case job.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_FAILED:
-			statuses[i] = cronStatusLabel(job.Enabled, styleStatusDanger, "failed")
+			statuses[i] = cronStatusLabel(job.IsEnabled, styleStatusDanger, "failed")
 		case job.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_GATED:
-			statuses[i] = cronStatusLabel(job.Enabled, styleStatusWarning, "gated")
+			statuses[i] = cronStatusLabel(job.IsEnabled, styleStatusWarning, "gated")
 		default:
 			statuses[i] = styleSubtle.Render("idle")
 		}
@@ -455,7 +455,7 @@ func (m *CronListModel) rebuildTable() {
 		}
 		schedule, name, repo, agent, enabled := schedules[i], names[i], repoNames[i], agents[i], enableds[i]
 		lastRun, nextRun, status := lastRuns[i], nextRuns[i], statuses[i]
-		if !job.Enabled {
+		if !job.IsEnabled {
 			schedule = muted.Render(schedule)
 			name = muted.Render(name)
 			repo = muted.Render(repo)

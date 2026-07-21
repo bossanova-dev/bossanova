@@ -317,7 +317,7 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 		evt := l.logger.Warn().
 			Str("session", sess.ID).
 			Str("state", sess.State.String()).
-			Bool("tmuxUnattended", sess.TmuxUnattended)
+			Bool("tmuxUnattended", sess.IsTmuxUnattended)
 		if sess.CronJobID != nil && *sess.CronJobID != "" {
 			evt = evt.Str("cronJob", *sess.CronJobID)
 		}

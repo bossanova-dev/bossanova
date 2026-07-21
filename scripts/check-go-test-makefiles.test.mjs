@@ -17,6 +17,7 @@ const goModuleMakefiles = [
   'plugins/bossd-plugin-codex/Makefile',
   'plugins/bossd-plugin-dependabot/Makefile',
   'plugins/bossd-plugin-linear/Makefile',
+  'plugins/bossd-plugin-opencode/Makefile',
   'plugins/bossd-plugin-repair/Makefile',
   'plugins/bossd-plugin-sentry/Makefile',
 ]

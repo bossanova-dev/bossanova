@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Cron gate for boss-build.
 //
-// Exit 0 (run the implementer) iff at least one Linear issue is in the `Todo`
-// state, carries the `agent-friendly` label, AND is not blocked by an uncleared
+// Exit 0 (run the implementer) iff at least one Linear issue is in the configured
+// planned state (`trackerConfigFor(config).states.planned`), carries the
+// `agent-friendly` label, AND is not blocked by an uncleared
 // blocker (a blocker whose PR is unmerged — state not Done/Canceled). This keeps
 // the cron from waking to find every candidate blocked and exiting with no work.
 //
@@ -21,11 +22,22 @@
 
 import { gateExit } from '../linear-gate-lib.mjs'
 import { resolveTrackerAdapter } from '../tracker/adapter.mjs'
+import { loadSkillConfig, trackerConfigFor } from '../../skills-toolbox/skill-config.mjs'
 
 try {
+  // The planned state is repo-private data (config-driven, never hard-coded here) so the gate
+  // matches the skill's own selection filter in any adopting repo, not just one whose planned
+  // state is literally named `Todo`. Fail-closed (skip) when it is not configured.
+  const plannedState = trackerConfigFor(loadSkillConfig())?.states?.planned
+  if (!plannedState) {
+    throw new Error('no planned state configured (.boss-skills.json trackerConfig.<tracker>.states.planned)')
+  }
   const tracker = resolveTrackerAdapter()
-  const hasWork = await tracker.hasUnblockedWork({ state: 'Todo', label: 'agent-friendly' })
-  gateExit(hasWork, hasWork ? null : 'boss-build gate: no unblocked Todo agent-friendly issues')
+  const hasWork = await tracker.hasUnblockedWork({ state: plannedState, label: 'agent-friendly' })
+  gateExit(
+    hasWork,
+    hasWork ? null : `boss-build gate: no unblocked ${plannedState} agent-friendly issues`,
+  )
 } catch (err) {
   gateExit(false, `boss-build gate: ${err.message}`)
 }

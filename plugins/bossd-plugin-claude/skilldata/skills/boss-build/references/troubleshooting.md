@@ -13,7 +13,7 @@ defers to.
 | Foreign real work (2.5) / HELD_BY_PEER lock at start (1)    | unchanged                  | existing, untouched     | none                            |
 | Claim lost                                                  | unchanged (winner owns it) | none                    | delete own claim comment        |
 | Adopt own PR (resume / bootstrap-only)                      | **In Progress**            | reused (not re-created) | (proceeds to Success/BLOCKED)   |
-| No committable change after claim                           | restore **Todo**           | none                    | delete claim comment            |
+| No committable change after claim                           | restore planned            | none                    | delete claim comment            |
 | Hard-abort / stale plan / red after cap                     | **In Progress**            | draft or none           | blocker comment + delete claim  |
 | Required item deferred at cap (API version / open must-fix) | **In Progress**            | draft or none           | blocker names the required item |
 | Success                                                     | **In Review**              | ready, green            | PR URL comment + delete claim   |

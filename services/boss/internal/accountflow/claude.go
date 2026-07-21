@@ -377,7 +377,8 @@ func tempDir(pattern string) (string, error) {
 	}
 	// dir is a directory: 0700 is least-privilege (owner rwx, group/other none)
 	// and the owner-execute bit is required to traverse it, so 0600 is unusable.
-	// #nosec G302 -- private temp dir; 0700 required for owner traversal, already least-privilege. owner=@recurser review-by=2026-09-16 issue=BOS-414
+	// #nosec G302 -- Chmod(dir,0o700) on a private temp dir; least-privilege
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	if err := os.Chmod(dir, 0o700); err != nil {
 		_ = os.RemoveAll(dir)
 		return "", err

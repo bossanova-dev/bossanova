@@ -776,11 +776,11 @@ type UpdateRepoRequest struct {
 	SentryKey *SecretUpdate `protobuf:"bytes,17,opt,name=sentry_key,json=sentryKey,proto3" json:"sentry_key,omitempty"`
 	// Optimistic-concurrency token: when set, the update is rejected (CodeAborted)
 	// unless it still equals the repo's stored updated_at.
-	ExpectedUpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=expected_updated_at,json=expectedUpdatedAt,proto3" json:"expected_updated_at,omitempty"`
-	ArchiveSessionsAfterMerge *bool                  `protobuf:"varint,19,opt,name=archive_sessions_after_merge,json=archiveSessionsAfterMerge,proto3,oneof" json:"archive_sessions_after_merge,omitempty"`
-	CanAutoDeleteBranches     *bool                  `protobuf:"varint,20,opt,name=can_auto_delete_branches,json=canAutoDeleteBranches,proto3,oneof" json:"can_auto_delete_branches,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	ExpectedUpdatedAt               *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=expected_updated_at,json=expectedUpdatedAt,proto3" json:"expected_updated_at,omitempty"`
+	ShouldArchiveSessionsAfterMerge *bool                  `protobuf:"varint,19,opt,name=should_archive_sessions_after_merge,json=shouldArchiveSessionsAfterMerge,proto3,oneof" json:"should_archive_sessions_after_merge,omitempty"`
+	CanAutoDeleteBranches           *bool                  `protobuf:"varint,20,opt,name=can_auto_delete_branches,json=canAutoDeleteBranches,proto3,oneof" json:"can_auto_delete_branches,omitempty"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
 }
 
 func (x *UpdateRepoRequest) Reset() {
@@ -904,9 +904,9 @@ func (x *UpdateRepoRequest) GetExpectedUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
-func (x *UpdateRepoRequest) GetArchiveSessionsAfterMerge() bool {
-	if x != nil && x.ArchiveSessionsAfterMerge != nil {
-		return *x.ArchiveSessionsAfterMerge
+func (x *UpdateRepoRequest) GetShouldArchiveSessionsAfterMerge() bool {
+	if x != nil && x.ShouldArchiveSessionsAfterMerge != nil {
+		return *x.ShouldArchiveSessionsAfterMerge
 	}
 	return false
 }
@@ -1254,7 +1254,7 @@ type CreateSessionRequest struct {
 	// If true, remove any existing branch with the same name before creating.
 	ForceBranch bool `protobuf:"varint,6,opt,name=force_branch,json=forceBranch,proto3" json:"force_branch,omitempty"`
 	// If true, run as a quick chat session (no worktree, no branch, no PR).
-	QuickChat bool `protobuf:"varint,7,opt,name=quick_chat,json=quickChat,proto3" json:"quick_chat,omitempty"`
+	IsQuickChat bool `protobuf:"varint,7,opt,name=is_quick_chat,json=isQuickChat,proto3" json:"is_quick_chat,omitempty"`
 	// Optional branch name (eg. from Linear's suggested branch name).
 	BranchName *string `protobuf:"bytes,8,opt,name=branch_name,json=branchName,proto3,oneof" json:"branch_name,omitempty"`
 	// External issue tracker fields.
@@ -1274,8 +1274,8 @@ type CreateSessionRequest struct {
 	// Opaque agent model id to run this session under (e.g. an Opus id).
 	// Empty → the agent plugin's default model. Mirrors `boss cron add --model`;
 	// set by `boss new --model` and the MCP create_session tool.
-	Model          *string `protobuf:"bytes,15,opt,name=model,proto3,oneof" json:"model,omitempty"`
-	TmuxUnattended bool    `protobuf:"varint,16,opt,name=tmux_unattended,json=tmuxUnattended,proto3" json:"tmux_unattended,omitempty"`
+	Model            *string `protobuf:"bytes,15,opt,name=model,proto3,oneof" json:"model,omitempty"`
+	IsTmuxUnattended bool    `protobuf:"varint,16,opt,name=is_tmux_unattended,json=isTmuxUnattended,proto3" json:"is_tmux_unattended,omitempty"`
 	// If true, bypass the tracker-issue dedup guard and create a second session
 	// for a tracker/PR/branch that already has an active one (BOS-236 escape hatch).
 	Force bool `protobuf:"varint,17,opt,name=force,proto3" json:"force,omitempty"`
@@ -1360,9 +1360,9 @@ func (x *CreateSessionRequest) GetForceBranch() bool {
 	return false
 }
 
-func (x *CreateSessionRequest) GetQuickChat() bool {
+func (x *CreateSessionRequest) GetIsQuickChat() bool {
 	if x != nil {
-		return x.QuickChat
+		return x.IsQuickChat
 	}
 	return false
 }
@@ -1423,9 +1423,9 @@ func (x *CreateSessionRequest) GetModel() string {
 	return ""
 }
 
-func (x *CreateSessionRequest) GetTmuxUnattended() bool {
+func (x *CreateSessionRequest) GetIsTmuxUnattended() bool {
 	if x != nil {
-		return x.TmuxUnattended
+		return x.IsTmuxUnattended
 	}
 	return false
 }
@@ -4846,16 +4846,16 @@ type CreateCronJobRequest struct {
 	Prompt      string                 `protobuf:"bytes,3,opt,name=prompt,proto3" json:"prompt,omitempty"`
 	Schedule    string                 `protobuf:"bytes,4,opt,name=schedule,proto3" json:"schedule,omitempty"`
 	Timezone    string                 `protobuf:"bytes,5,opt,name=timezone,proto3" json:"timezone,omitempty"` // optional IANA tz; empty = daemon-local
-	Enabled     bool                   `protobuf:"varint,6,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	IsEnabled   bool                   `protobuf:"varint,6,opt,name=is_enabled,json=isEnabled,proto3" json:"is_enabled,omitempty"`
 	AgentName   string                 `protobuf:"bytes,7,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`       // optional agent runner plugin name; empty = claude
 	Model       string                 `protobuf:"bytes,8,opt,name=model,proto3" json:"model,omitempty"`                                // opaque agent model id; "" = plugin default. Never enumerated by bossd.
 	GateCommand string                 `protobuf:"bytes,9,opt,name=gate_command,json=gateCommand,proto3" json:"gate_command,omitempty"` // optional gate command run before each fire; empty = no gate
 	// run the repo setup script before the agent. optional so the server can
 	// default it to true when a client omits it (a plain bool can't tell
 	// "omitted" from "explicit false").
-	RunSetupCommand *bool `protobuf:"varint,10,opt,name=run_setup_command,json=runSetupCommand,proto3,oneof" json:"run_setup_command,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	ShouldRunSetupCommand *bool `protobuf:"varint,10,opt,name=should_run_setup_command,json=shouldRunSetupCommand,proto3,oneof" json:"should_run_setup_command,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *CreateCronJobRequest) Reset() {
@@ -4923,9 +4923,9 @@ func (x *CreateCronJobRequest) GetTimezone() string {
 	return ""
 }
 
-func (x *CreateCronJobRequest) GetEnabled() bool {
+func (x *CreateCronJobRequest) GetIsEnabled() bool {
 	if x != nil {
-		return x.Enabled
+		return x.IsEnabled
 	}
 	return false
 }
@@ -4951,9 +4951,9 @@ func (x *CreateCronJobRequest) GetGateCommand() string {
 	return ""
 }
 
-func (x *CreateCronJobRequest) GetRunSetupCommand() bool {
-	if x != nil && x.RunSetupCommand != nil {
-		return *x.RunSetupCommand
+func (x *CreateCronJobRequest) GetShouldRunSetupCommand() bool {
+	if x != nil && x.ShouldRunSetupCommand != nil {
+		return *x.ShouldRunSetupCommand
 	}
 	return false
 }
@@ -5180,19 +5180,19 @@ func (x *GetCronJobResponse) GetCronJob() *CronJob {
 }
 
 type UpdateCronJobRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Id              string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name            *string                `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
-	Prompt          *string                `protobuf:"bytes,3,opt,name=prompt,proto3,oneof" json:"prompt,omitempty"`
-	Schedule        *string                `protobuf:"bytes,4,opt,name=schedule,proto3,oneof" json:"schedule,omitempty"`
-	Timezone        *string                `protobuf:"bytes,5,opt,name=timezone,proto3,oneof" json:"timezone,omitempty"`
-	Enabled         *bool                  `protobuf:"varint,6,opt,name=enabled,proto3,oneof" json:"enabled,omitempty"`
-	AgentName       *string                `protobuf:"bytes,7,opt,name=agent_name,json=agentName,proto3,oneof" json:"agent_name,omitempty"`
-	Model           *string                `protobuf:"bytes,8,opt,name=model,proto3,oneof" json:"model,omitempty"`                                                // opaque agent model id; "" = plugin default.
-	GateCommand     *string                `protobuf:"bytes,9,opt,name=gate_command,json=gateCommand,proto3,oneof" json:"gate_command,omitempty"`                 // optional gate command; empty = no gate
-	RunSetupCommand *bool                  `protobuf:"varint,10,opt,name=run_setup_command,json=runSetupCommand,proto3,oneof" json:"run_setup_command,omitempty"` // run the repo setup script before the agent
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Id                    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name                  *string                `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	Prompt                *string                `protobuf:"bytes,3,opt,name=prompt,proto3,oneof" json:"prompt,omitempty"`
+	Schedule              *string                `protobuf:"bytes,4,opt,name=schedule,proto3,oneof" json:"schedule,omitempty"`
+	Timezone              *string                `protobuf:"bytes,5,opt,name=timezone,proto3,oneof" json:"timezone,omitempty"`
+	IsEnabled             *bool                  `protobuf:"varint,6,opt,name=is_enabled,json=isEnabled,proto3,oneof" json:"is_enabled,omitempty"`
+	AgentName             *string                `protobuf:"bytes,7,opt,name=agent_name,json=agentName,proto3,oneof" json:"agent_name,omitempty"`
+	Model                 *string                `protobuf:"bytes,8,opt,name=model,proto3,oneof" json:"model,omitempty"`                                                                    // opaque agent model id; "" = plugin default.
+	GateCommand           *string                `protobuf:"bytes,9,opt,name=gate_command,json=gateCommand,proto3,oneof" json:"gate_command,omitempty"`                                     // optional gate command; empty = no gate
+	ShouldRunSetupCommand *bool                  `protobuf:"varint,10,opt,name=should_run_setup_command,json=shouldRunSetupCommand,proto3,oneof" json:"should_run_setup_command,omitempty"` // run the repo setup script before the agent
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *UpdateCronJobRequest) Reset() {
@@ -5260,9 +5260,9 @@ func (x *UpdateCronJobRequest) GetTimezone() string {
 	return ""
 }
 
-func (x *UpdateCronJobRequest) GetEnabled() bool {
-	if x != nil && x.Enabled != nil {
-		return *x.Enabled
+func (x *UpdateCronJobRequest) GetIsEnabled() bool {
+	if x != nil && x.IsEnabled != nil {
+		return *x.IsEnabled
 	}
 	return false
 }
@@ -5288,9 +5288,9 @@ func (x *UpdateCronJobRequest) GetGateCommand() string {
 	return ""
 }
 
-func (x *UpdateCronJobRequest) GetRunSetupCommand() bool {
-	if x != nil && x.RunSetupCommand != nil {
-		return *x.RunSetupCommand
+func (x *UpdateCronJobRequest) GetShouldRunSetupCommand() bool {
+	if x != nil && x.ShouldRunSetupCommand != nil {
+		return *x.ShouldRunSetupCommand
 	}
 	return false
 }
@@ -7460,7 +7460,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x05repos\x18\x01 \x03(\v2\x12.bossanova.v1.RepoR\x05repos\"#\n" +
 	"\x11RemoveRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x14\n" +
-	"\x12RemoveRepoResponse\"\x82\b\n" +
+	"\x12RemoveRepoResponse\"\x96\b\n" +
 	"\x11UpdateRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12&\n" +
 	"\fdisplay_name\x18\x02 \x01(\tH\x00R\vdisplayName\x88\x01\x01\x12)\n" +
@@ -7477,8 +7477,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"linear_key\x18\x10 \x01(\v2\x1a.bossanova.v1.SecretUpdateR\tlinearKey\x129\n" +
 	"\n" +
 	"sentry_key\x18\x11 \x01(\v2\x1a.bossanova.v1.SecretUpdateR\tsentryKey\x12J\n" +
-	"\x13expected_updated_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\x11expectedUpdatedAt\x12D\n" +
-	"\x1carchive_sessions_after_merge\x18\x13 \x01(\bH\tR\x19archiveSessionsAfterMerge\x88\x01\x01\x12<\n" +
+	"\x13expected_updated_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\x11expectedUpdatedAt\x12Q\n" +
+	"#should_archive_sessions_after_merge\x18\x13 \x01(\bH\tR\x1fshouldArchiveSessionsAfterMerge\x88\x01\x01\x12<\n" +
 	"\x18can_auto_delete_branches\x18\x14 \x01(\bH\n" +
 	"R\x15canAutoDeleteBranches\x88\x01\x01B\x0f\n" +
 	"\r_display_nameB\x11\n" +
@@ -7489,8 +7489,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x0f_linear_api_keyB\x11\n" +
 	"\x0f_sentry_api_keyB\r\n" +
 	"\v_sentry_orgB\x12\n" +
-	"\x10_can_auto_repairB\x1f\n" +
-	"\x1d_archive_sessions_after_mergeB\x1b\n" +
+	"\x10_can_auto_repairB&\n" +
+	"$_should_archive_sessions_after_mergeB\x1b\n" +
 	"\x19_can_auto_delete_branchesJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\x0e\x10\x0fJ\x04\b\n" +
 	"\x10\vJ\x04\b\r\x10\x0e\"<\n" +
 	"\x12UpdateRepoResponse\x12&\n" +
@@ -7509,7 +7509,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x06source\x18\x03 \x01(\tH\x00R\x06source\x88\x01\x01B\t\n" +
 	"\a_source\"O\n" +
 	"\x19ListTrackerIssuesResponse\x122\n" +
-	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"\x84\x06\n" +
+	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"\x8e\x06\n" +
 	"\x14CreateSessionRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
@@ -7517,9 +7517,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\vbase_branch\x18\x04 \x01(\tR\n" +
 	"baseBranch\x12 \n" +
 	"\tpr_number\x18\x05 \x01(\x05H\x00R\bprNumber\x88\x01\x01\x12!\n" +
-	"\fforce_branch\x18\x06 \x01(\bR\vforceBranch\x12\x1d\n" +
-	"\n" +
-	"quick_chat\x18\a \x01(\bR\tquickChat\x12$\n" +
+	"\fforce_branch\x18\x06 \x01(\bR\vforceBranch\x12\"\n" +
+	"\ris_quick_chat\x18\a \x01(\bR\visQuickChat\x12$\n" +
 	"\vbranch_name\x18\b \x01(\tH\x01R\n" +
 	"branchName\x88\x01\x01\x12\"\n" +
 	"\n" +
@@ -7532,8 +7531,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\rtracker_issue\x18\f \x01(\v2\x1a.bossanova.v1.TrackerIssueH\x05R\ftrackerIssue\x88\x01\x01\x12*\n" +
 	"\x0etracker_source\x18\r \x01(\tH\x06R\rtrackerSource\x88\x01\x01\x12\x16\n" +
 	"\x06detach\x18\x0e \x01(\bR\x06detach\x12\x19\n" +
-	"\x05model\x18\x0f \x01(\tH\aR\x05model\x88\x01\x01\x12'\n" +
-	"\x0ftmux_unattended\x18\x10 \x01(\bR\x0etmuxUnattended\x12\x14\n" +
+	"\x05model\x18\x0f \x01(\tH\aR\x05model\x88\x01\x01\x12,\n" +
+	"\x12is_tmux_unattended\x18\x10 \x01(\bR\x10isTmuxUnattended\x12\x14\n" +
 	"\x05force\x18\x11 \x01(\bR\x05force\x12\"\n" +
 	"\n" +
 	"account_id\x18\x12 \x01(\tH\bR\taccountId\x88\x01\x01B\f\n" +
@@ -7757,21 +7756,22 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x17DeliverVCSEventResponse\"1\n" +
 	"\x17NotifyAuthChangeRequest\x12\x16\n" +
 	"\x06action\x18\x01 \x01(\tR\x06action\"\x1a\n" +
-	"\x18NotifyAuthChangeResponse\"\xcc\x02\n" +
+	"\x18NotifyAuthChangeResponse\"\xe5\x02\n" +
 	"\x14CreateCronJobRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
 	"\x06prompt\x18\x03 \x01(\tR\x06prompt\x12\x1a\n" +
 	"\bschedule\x18\x04 \x01(\tR\bschedule\x12\x1a\n" +
-	"\btimezone\x18\x05 \x01(\tR\btimezone\x12\x18\n" +
-	"\aenabled\x18\x06 \x01(\bR\aenabled\x12\x1d\n" +
+	"\btimezone\x18\x05 \x01(\tR\btimezone\x12\x1d\n" +
+	"\n" +
+	"is_enabled\x18\x06 \x01(\bR\tisEnabled\x12\x1d\n" +
 	"\n" +
 	"agent_name\x18\a \x01(\tR\tagentName\x12\x14\n" +
 	"\x05model\x18\b \x01(\tR\x05model\x12!\n" +
-	"\fgate_command\x18\t \x01(\tR\vgateCommand\x12/\n" +
-	"\x11run_setup_command\x18\n" +
-	" \x01(\bH\x00R\x0frunSetupCommand\x88\x01\x01B\x14\n" +
-	"\x12_run_setup_command\"I\n" +
+	"\fgate_command\x18\t \x01(\tR\vgateCommand\x12<\n" +
+	"\x18should_run_setup_command\x18\n" +
+	" \x01(\bH\x00R\x15shouldRunSetupCommand\x88\x01\x01B\x1b\n" +
+	"\x19_should_run_setup_command\"I\n" +
 	"\x15CreateCronJobResponse\x120\n" +
 	"\bcron_job\x18\x01 \x01(\v2\x15.bossanova.v1.CronJobR\acronJob\"?\n" +
 	"\x13ListCronJobsRequest\x12\x1c\n" +
@@ -7783,30 +7783,30 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x11GetCronJobRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"F\n" +
 	"\x12GetCronJobResponse\x120\n" +
-	"\bcron_job\x18\x01 \x01(\v2\x15.bossanova.v1.CronJobR\acronJob\"\xcf\x03\n" +
+	"\bcron_job\x18\x01 \x01(\v2\x15.bossanova.v1.CronJobR\acronJob\"\xeb\x03\n" +
 	"\x14UpdateCronJobRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x1b\n" +
 	"\x06prompt\x18\x03 \x01(\tH\x01R\x06prompt\x88\x01\x01\x12\x1f\n" +
 	"\bschedule\x18\x04 \x01(\tH\x02R\bschedule\x88\x01\x01\x12\x1f\n" +
-	"\btimezone\x18\x05 \x01(\tH\x03R\btimezone\x88\x01\x01\x12\x1d\n" +
-	"\aenabled\x18\x06 \x01(\bH\x04R\aenabled\x88\x01\x01\x12\"\n" +
+	"\btimezone\x18\x05 \x01(\tH\x03R\btimezone\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"is_enabled\x18\x06 \x01(\bH\x04R\tisEnabled\x88\x01\x01\x12\"\n" +
 	"\n" +
 	"agent_name\x18\a \x01(\tH\x05R\tagentName\x88\x01\x01\x12\x19\n" +
 	"\x05model\x18\b \x01(\tH\x06R\x05model\x88\x01\x01\x12&\n" +
-	"\fgate_command\x18\t \x01(\tH\aR\vgateCommand\x88\x01\x01\x12/\n" +
-	"\x11run_setup_command\x18\n" +
-	" \x01(\bH\bR\x0frunSetupCommand\x88\x01\x01B\a\n" +
+	"\fgate_command\x18\t \x01(\tH\aR\vgateCommand\x88\x01\x01\x12<\n" +
+	"\x18should_run_setup_command\x18\n" +
+	" \x01(\bH\bR\x15shouldRunSetupCommand\x88\x01\x01B\a\n" +
 	"\x05_nameB\t\n" +
 	"\a_promptB\v\n" +
 	"\t_scheduleB\v\n" +
-	"\t_timezoneB\n" +
-	"\n" +
-	"\b_enabledB\r\n" +
+	"\t_timezoneB\r\n" +
+	"\v_is_enabledB\r\n" +
 	"\v_agent_nameB\b\n" +
 	"\x06_modelB\x0f\n" +
-	"\r_gate_commandB\x14\n" +
-	"\x12_run_setup_command\"I\n" +
+	"\r_gate_commandB\x1b\n" +
+	"\x19_should_run_setup_command\"I\n" +
 	"\x15UpdateCronJobResponse\x120\n" +
 	"\bcron_job\x18\x01 \x01(\v2\x15.bossanova.v1.CronJobR\acronJob\"&\n" +
 	"\x14DeleteCronJobRequest\x12\x0e\n" +

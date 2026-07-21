@@ -538,7 +538,7 @@ func (f *fakeArchiver) ArchiveSession(_ context.Context, id string) error {
 	return nil
 }
 
-// When a PR merges and the repo has ArchiveSessionsAfterMerge on, the session is
+// When a PR merges and the repo has ShouldArchiveSessionsAfterMerge on, the session is
 // archived exactly once, asynchronously, after reaching Merged.
 func TestDispatcherPRMerged_ArchivesWhenEnabled(t *testing.T) {
 	ctx := context.Background()
@@ -547,7 +547,7 @@ func TestDispatcherPRMerged_ArchivesWhenEnabled(t *testing.T) {
 	vp := newMockVCSProvider()
 	logger := zerolog.Nop()
 
-	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", ArchiveSessionsAfterMerge: true}
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", ShouldArchiveSessionsAfterMerge: true}
 	sessions.sessions["sess-1"] = &models.Session{
 		ID:     "sess-1",
 		RepoID: "repo-1",
@@ -591,7 +591,7 @@ func TestDispatcherPRMerged_DoesNotArchiveWhenDisabled(t *testing.T) {
 	vp := newMockVCSProvider()
 	logger := zerolog.Nop()
 
-	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", ArchiveSessionsAfterMerge: false}
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", ShouldArchiveSessionsAfterMerge: false}
 	sessions.sessions["sess-1"] = &models.Session{
 		ID:     "sess-1",
 		RepoID: "repo-1",
@@ -626,7 +626,7 @@ func TestDispatcherPRMerged_NilArchiverIsSafe(t *testing.T) {
 	vp := newMockVCSProvider()
 	logger := zerolog.Nop()
 
-	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", ArchiveSessionsAfterMerge: true}
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", ShouldArchiveSessionsAfterMerge: true}
 	sessions.sessions["sess-1"] = &models.Session{
 		ID:     "sess-1",
 		RepoID: "repo-1",

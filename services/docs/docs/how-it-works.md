@@ -58,4 +58,6 @@ flowchart TD
    plugins.
 5. When you close the session, the worktree is removed.
 
-See [Plugins](./plugins.md) for what each plugin does.
+See [Plugins](./plugins.md) for what each plugin does, and
+[Skills](/skills) for the `boss-*` skill suite that automates the
+ticket-to-merged-PR lifecycle on top of this machinery.

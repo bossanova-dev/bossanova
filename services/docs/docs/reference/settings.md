@@ -249,13 +249,13 @@ BOSSO_ROUTING_PROVIDER=kubernetes
 BOSSO_WEBHOOK_ROUTING_URL=http://bs-bosso-service.<namespace>.svc.cluster.local:80
 ```
 
-Generate each `BOSSO_INTERNAL_WEBHOOK_TOKEN` as a high-entropy secret, for
+Generate each `BOSSO_INTERNAL_ROUTING_TOKEN` as a high-entropy secret, for
 example with `openssl rand -base64 32`, and set the same value on every bosso
-instance in that environment. The token authenticates internal routed webhook
-delivery when one bosso instance forwards webhook work to the instance that owns
-the target daemon stream.
+instance in that environment. The token authenticates internal routed delivery
+when one bosso instance forwards webhook or command work to the instance that
+owns the target daemon stream.
 
-Use this token only for internal routed webhook delivery between bosso
+Use this token only for internal routed delivery between bosso
 instances; it is separate from the GitHub App webhook secret.
 
 Kubernetes sets `BOSSO_INSTANCE_ID` from the pod name. Local or manual

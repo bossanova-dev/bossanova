@@ -64,9 +64,9 @@ type Repo struct {
 	CanAutoMergeDependabot bool
 	CanAutoRepair          bool
 	CanAutoRotate          bool
-	// ArchiveSessionsAfterMerge controls whether the daemon archives a session
+	// ShouldArchiveSessionsAfterMerge controls whether the daemon archives a session
 	// once its PR is detected as merged. Defaults true.
-	ArchiveSessionsAfterMerge bool
+	ShouldArchiveSessionsAfterMerge bool
 	// CanAutoDeleteBranches controls whether the daemon deletes a session's git
 	// branch once its session is archived. Defaults true.
 	CanAutoDeleteBranches bool
@@ -98,7 +98,7 @@ type Session struct {
 	TmuxSessionName         *string
 	LastCheckState          machine.CheckState
 	LastObservedReviewState int
-	AutomationEnabled       bool
+	IsAutomationEnabled     bool
 	AttemptCount            int
 	BlockedReason           *string
 
@@ -124,21 +124,21 @@ type Session struct {
 	HookToken  *string
 	// AccountID binds the session to a rotation account; nil/empty = the
 	// system-default account 0 (no injected env, D9).
-	AccountID      *string
-	TmuxUnattended bool
+	AccountID        *string
+	IsTmuxUnattended bool
 	// Detach = this session's initial run is a durable, tmux-hosted --detach
 	// autonomous pass; drives unattended-class recovery. False for a detach run
 	// that fell back to the paneless headless path.
 	Detach bool
-	// QuickChat marks a session created via `create_session {quick_chat: true}`:
+	// IsQuickChat marks a session created via `create_session {quick_chat: true}`:
 	// a visible, no-worktree/branch/PR chat (planning, recon, plan-review). Such
 	// sessions have no implementation output by design, so finalize must not
 	// surface their expected no-change result as a failed implementation run
 	// (BOS-322). Real quick chats skip finalize entirely; this persisted flag is
 	// the defensive backstop for any path that reaches FinalizeSession.
-	QuickChat bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	IsQuickChat bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 
 	// Composite display fields, persisted so every client renders the same
 	// label/intent/spinner verbatim. Populated by the DisplayStatusComputer in

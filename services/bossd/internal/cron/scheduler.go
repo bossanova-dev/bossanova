@@ -384,7 +384,7 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (*models.Session, st
 		logger.Warn().Err(err).Msg("fire: could not fetch cron job; skipping")
 		return nil, "db_fetch_error", nil
 	}
-	if !job.Enabled {
+	if !job.IsEnabled {
 		logger.Info().Msg("fire: job disabled between tick and fire; skipping")
 		return nil, "disabled", nil
 	}
@@ -471,7 +471,7 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (*models.Session, st
 		BaseBranch:      repo.DefaultBaseBranch,
 		AgentName:       job.AgentName,
 		Model:           job.Model,
-		SkipSetupScript: !job.RunSetupCommand,
+		SkipSetupScript: !job.ShouldRunSetupCommand,
 		// Per-fire branch name. Without this, every fire of the same cron
 		// job tries to create the same branch (e.g. cron-test) and the
 		// second fire trips ErrBranchExists once the first run's branch

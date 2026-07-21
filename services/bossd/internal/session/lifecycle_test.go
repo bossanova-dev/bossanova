@@ -214,8 +214,8 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	if params.AccountID != nil {
 		s.AccountID = *params.AccountID
 	}
-	if params.TmuxUnattended != nil {
-		s.TmuxUnattended = *params.TmuxUnattended
+	if params.IsTmuxUnattended != nil {
+		s.IsTmuxUnattended = *params.IsTmuxUnattended
 	}
 	if params.Detach != nil {
 		s.Detach = *params.Detach
@@ -4763,7 +4763,7 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 }
 
 // TestStartSession_TmuxUnattended_RoutesToTmux verifies that a tmux_unattended
-// session (opts.TmuxUnattended=true, NO CronJobID) routes through the durable
+// session (opts.IsTmuxUnattended=true, NO CronJobID) routes through the durable
 // tmux-hosted path — a tmux new-session spawning claude, an agent_chats row with
 // the PLAIN session title (not the cron `Run "<name>"` title) — and NOT the
 // headless StartByAgent path.
@@ -4800,8 +4800,8 @@ func TestStartSession_TmuxUnattended_RoutesToTmux(t *testing.T) {
 	lc.SetAgentLogsDir(t.TempDir())
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
-		DeferPR:        true,
-		TmuxUnattended: true,
+		DeferPR:          true,
+		IsTmuxUnattended: true,
 	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
@@ -4825,9 +4825,9 @@ func TestStartSession_TmuxUnattended_RoutesToTmux(t *testing.T) {
 		t.Errorf("Title = %q, want plain session title %q", got, want)
 	}
 
-	// The TmuxUnattended flag was persisted.
-	if !sessions.sessions["sess-1"].TmuxUnattended {
-		t.Error("expected TmuxUnattended persisted on the session row")
+	// The IsTmuxUnattended flag was persisted.
+	if !sessions.sessions["sess-1"].IsTmuxUnattended {
+		t.Error("expected IsTmuxUnattended persisted on the session row")
 	}
 	if sessions.sessions["sess-1"].State != machine.ImplementingPlan {
 		t.Errorf("session.State = %v, want ImplementingPlan", sessions.sessions["sess-1"].State)
@@ -4874,9 +4874,9 @@ func TestStartSession_TmuxUnattended_HookToken_ConfiguresFinalizeHook(t *testing
 	lc.SetHookPort(45678)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
-		DeferPR:        true,
-		TmuxUnattended: true,
-		HookToken:      "hooktok-123",
+		DeferPR:          true,
+		IsTmuxUnattended: true,
+		HookToken:        "hooktok-123",
 	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
@@ -6048,29 +6048,29 @@ func TestBootstrapReArmsTmuxUnattendedButNotHeadless(t *testing.T) {
 	tokA := "tok-a"
 	runA := "run-a"
 	sessions.sessions["sess-tu"] = &models.Session{
-		ID:             "sess-tu",
-		RepoID:         "repo-1",
-		WorktreePath:   "/tmp/wt-tu",
-		BaseBranch:     "main",
-		State:          machine.ImplementingPlan,
-		AgentName:      "claude",
-		HookToken:      &tokA,
-		AgentSessionID: &runA,
-		TmuxUnattended: true,
+		ID:               "sess-tu",
+		RepoID:           "repo-1",
+		WorktreePath:     "/tmp/wt-tu",
+		BaseBranch:       "main",
+		State:            machine.ImplementingPlan,
+		AgentName:        "claude",
+		HookToken:        &tokA,
+		AgentSessionID:   &runA,
+		IsTmuxUnattended: true,
 	}
 
 	// Session B: headless (boss new, non-cron, non-tmux_unattended) run — no
 	// HookToken, no live tmux pane to survive the restart.
 	runB := "run-b"
 	sessions.sessions["sess-headless"] = &models.Session{
-		ID:             "sess-headless",
-		RepoID:         "repo-1",
-		WorktreePath:   "/tmp/wt-headless",
-		BaseBranch:     "main",
-		State:          machine.ImplementingPlan,
-		AgentName:      "claude",
-		AgentSessionID: &runB,
-		TmuxUnattended: false,
+		ID:               "sess-headless",
+		RepoID:           "repo-1",
+		WorktreePath:     "/tmp/wt-headless",
+		BaseBranch:       "main",
+		State:            machine.ImplementingPlan,
+		AgentName:        "claude",
+		AgentSessionID:   &runB,
+		IsTmuxUnattended: false,
 	}
 
 	tmuxA := "tmux-tu"

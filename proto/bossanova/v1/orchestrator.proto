@@ -308,7 +308,7 @@ message ProxyCreateSessionRequest {
   string plan = 4;
   string base_branch = 5;
   string agent_name = 6;
-  bool quick_chat = 7;
+  bool is_quick_chat = 7;
   optional int32 pr_number = 8;
   optional string branch_name = 9;
   optional string tracker_id = 10;
@@ -323,11 +323,11 @@ message ProxyCreateSessionRequest {
   // Unattended-session fields carried through the hosted gateway so a hosted
   // MCP client (e.g. /boss-epic) gets the same create_session behavior as the
   // local socket backend. Mirror CreateSessionRequest.{detach,model,
-  // tmux_unattended}; without them a hosted create silently runs interactively
+  // is_tmux_unattended}; without them a hosted create silently runs interactively
   // on the daemon's default model and never fires the unattended prompt.
   bool detach = 15;
   optional string model = 16;
-  bool tmux_unattended = 17;
+  bool is_tmux_unattended = 17;
   optional string account_id = 18;
   // Mirror CreateSessionRequest.force_branch so hosted MCP create_session can
   // intentionally replace an existing branch, matching the local socket path.
@@ -629,7 +629,7 @@ message ProxyUpdateRepoRequest {
   optional bool can_auto_merge = 6;
   optional bool can_auto_merge_dependabot = 7;
   optional bool can_auto_repair = 8;
-  optional bool archive_sessions_after_merge = 13;
+  optional bool should_archive_sessions_after_merge = 13;
   optional string sentry_org = 9;
   SecretUpdate linear_key = 10;
   SecretUpdate sentry_key = 11;
@@ -690,11 +690,11 @@ message ProxyCreateCronJobRequest {
   string prompt = 4;
   string schedule = 5;
   string timezone = 6;
-  bool enabled = 7;
+  bool is_enabled = 7;
   string agent_name = 8;
   string model = 9;
   string gate_command = 10;
-  optional bool run_setup_command = 11;
+  optional bool should_run_setup_command = 11;
 }
 message ProxyCreateCronJobResponse { CronJob job = 1; }
 
@@ -707,11 +707,11 @@ message ProxyUpdateCronJobRequest {
   optional string prompt = 4;
   optional string schedule = 5;
   optional string timezone = 6;
-  optional bool enabled = 7;
+  optional bool is_enabled = 7;
   optional string agent_name = 8;
   optional string model = 9;
   optional string gate_command = 10;
-  optional bool run_setup_command = 11;
+  optional bool should_run_setup_command = 11;
 }
 message ProxyUpdateCronJobResponse { CronJob job = 1; }
 

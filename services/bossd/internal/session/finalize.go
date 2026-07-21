@@ -632,10 +632,10 @@ func (l *Lifecycle) attachBranchPRAfterEnsurePRError(ctx context.Context, sessio
 // planning-only quick chat (BOS-322). Such sessions open no worktree/branch/PR
 // and are expected to make no repository changes, so finalize must treat their
 // no-change result as a benign success rather than a failed implementation run.
-// Keyed on the persisted QuickChat flag — never on title/prompt text, which are
+// Keyed on the persisted IsQuickChat flag — never on title/prompt text, which are
 // user-editable and would make the gate fragile.
 func isPlanningOnlyNoChangeSession(session *models.Session) bool {
-	return session != nil && session.QuickChat
+	return session != nil && session.IsQuickChat
 }
 
 // attachExistingPRIfCleanBranchHasOne attaches a pre-existing open PR for a
@@ -701,7 +701,7 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 			// implementation run. Divert them to the deleted_no_changes cleanup
 			// path instead of pr_no_changes/Blocked (BOS-322). Real quick chats
 			// skip finalize entirely; this is the defensive backstop for any that
-			// reach it. True empty /boss-build runs (QuickChat false) still
+			// reach it. True empty /boss-build runs (IsQuickChat false) still
 			// fall through to pr_no_changes and Block.
 			if isPlanningOnlyNoChangeSession(session) {
 				l.logger.Info().

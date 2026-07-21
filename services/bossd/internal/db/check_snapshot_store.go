@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/recurser/bossalib/sqlutil"
 )
 
 // CheckSnapshot is a single per-poll record of what the DisplayPoller saw
@@ -38,7 +40,7 @@ func NewCheckSnapshotStore(db *sql.DB) *SQLiteCheckSnapshotStore {
 	return &SQLiteCheckSnapshotStore{db: db}
 }
 
-// Insert appends a snapshot row. PolledAt is stored as a Unix timestamp.
+// Insert appends a snapshot row. PolledAt is stored as an ISO-8601 TEXT.
 // We keep every row — there's no vacuum here. The volume is bounded by the
 // poll interval (default 30s) × number of active sessions, which is fine
 // for ops-debugging timelines and trivially purgeable later.
@@ -53,7 +55,7 @@ func (s *SQLiteCheckSnapshotStore) Insert(ctx context.Context, snap CheckSnapsho
 		`INSERT INTO session_check_snapshots
 		   (session_id, polled_at, head_sha, raw_json, computed_status)
 		 VALUES (?, ?, ?, ?, ?)`,
-		snap.SessionID, snap.PolledAt.Unix(), snap.HeadSHA, snap.RawJSON, snap.ComputedStatus)
+		snap.SessionID, sqlutil.FormatTime(snap.PolledAt), snap.HeadSHA, snap.RawJSON, snap.ComputedStatus)
 	if err != nil {
 		return fmt.Errorf("insert check snapshot: %w", err)
 	}
@@ -80,11 +82,11 @@ func (s *SQLiteCheckSnapshotStore) RecentBySession(ctx context.Context, sessionI
 	var out []CheckSnapshot
 	for rows.Next() {
 		var snap CheckSnapshot
-		var polledUnix int64
-		if err := rows.Scan(&snap.ID, &snap.SessionID, &polledUnix, &snap.HeadSHA, &snap.RawJSON, &snap.ComputedStatus); err != nil {
+		var polledAt string
+		if err := rows.Scan(&snap.ID, &snap.SessionID, &polledAt, &snap.HeadSHA, &snap.RawJSON, &snap.ComputedStatus); err != nil {
 			return nil, fmt.Errorf("scan check snapshot: %w", err)
 		}
-		snap.PolledAt = time.Unix(polledUnix, 0)
+		snap.PolledAt = sqlutil.ParseTime(polledAt)
 		out = append(out, snap)
 	}
 	return out, rows.Err()

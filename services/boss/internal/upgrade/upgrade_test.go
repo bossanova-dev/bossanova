@@ -851,6 +851,7 @@ func TestAssetNames(t *testing.T) {
 		"bossd-plugin-codex-darwin-arm64",
 		"bossd-plugin-dependabot-darwin-arm64",
 		"bossd-plugin-linear-darwin-arm64",
+		"bossd-plugin-opencode-darwin-arm64",
 		"bossd-plugin-repair-darwin-arm64",
 		"bossd-plugin-sentry-darwin-arm64",
 	}

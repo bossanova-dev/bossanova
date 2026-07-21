@@ -91,7 +91,7 @@ func (c *defaultLivenessChecker) IsSessionAlive(ctx context.Context, sessionID s
 	// the exception: a daemon restart cannot leave their pre-agent work running,
 	// so recovery must be able to reap them rather than treating them as live.
 	if !hasAgentID && !hasTmuxName {
-		if (sess.CronJobID != nil && *sess.CronJobID != "") || sess.TmuxUnattended || sess.Detach {
+		if (sess.CronJobID != nil && *sess.CronJobID != "") || sess.IsTmuxUnattended || sess.Detach {
 			return false
 		}
 		if c.chats != nil {

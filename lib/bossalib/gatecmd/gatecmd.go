@@ -79,6 +79,8 @@ func Run(ctx context.Context, o Options) (passed bool, err error) {
 func buildCommand(ctx context.Context, cmd string) *exec.Cmd {
 	if strings.HasPrefix(cmd, "/") || strings.HasPrefix(cmd, "./") || strings.HasPrefix(cmd, "../") {
 		argv := strings.Fields(cmd)
+		// #nosec G204 -- executes an operator config-supplied gate command (sibling branch intentionally uses sh -c); operator-trust boundary, not attacker-controlled
+		// owner=@recurser review-by=2027-01-18 issue=BOS-28
 		return exec.CommandContext(ctx, argv[0], argv[1:]...)
 	}
 	return exec.CommandContext(ctx, "sh", "-c", cmd)

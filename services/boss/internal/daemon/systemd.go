@@ -39,6 +39,7 @@ After=network.target
 
 [Service]
 ExecStart={{.BossdPath}}
+LimitNOFILE=65536
 Restart=always
 RestartSec=5
 
@@ -143,11 +144,15 @@ func platformInstall(bossdPath string, force bool) error {
 	}
 
 	// Ensure systemd user directory exists.
+	// #nosec G301 -- ~/.config/systemd/user unit dir; 0o755 is the XDG/systemd-conventional mode for a non-secret user-config dir.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
 		return fmt.Errorf("create systemd user dir: %w", err)
 	}
 
 	// Write the unit file.
+	// #nosec G306 -- non-secret systemd user unit file (holds the bossd exec path, already visible via ps); 0o644 is the conventional unit-file mode.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write unit file: %w", err)
 	}
@@ -332,9 +337,13 @@ func platformMcpInstall(mcpBinPath string, port int, force bool) error {
 		return err
 	}
 
+	// #nosec G301 -- ~/.config/systemd/user unit dir; 0o755 is the XDG/systemd-conventional mode for a non-secret user-config dir.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
 		return fmt.Errorf("create systemd user dir: %w", err)
 	}
+	// #nosec G306 -- non-secret systemd user unit file (holds the mcp binary path); 0o644 is the conventional unit-file mode.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write unit file: %w", err)
 	}
@@ -457,6 +466,8 @@ func platformEnsureRunning(socketPath string) error {
 		return nil
 	}
 
+	// #nosec G204 -- self-spawn of the discovered bossd binary (bossdPath); literal args, no shell; local-trust, not attacker-controlled.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command(bossdPath)
 	cmd.Stdout = nil
 	cmd.Stderr = nil

@@ -234,7 +234,7 @@ func (f *fakeSessionCommandServer) RepairDoctor(_ context.Context, _ *connect.Re
 	return connect.NewResponse(&pb.RepairDoctorResponse{}), nil
 }
 
-// fakeAutomationToggler records the last SetAutomationEnabled call and returns
+// fakeAutomationToggler records the last SetIsAutomationEnabled call and returns
 // the configured error, driving the pause/resume adapter paths.
 type fakeAutomationToggler struct {
 	gotEnabled bool
@@ -242,7 +242,7 @@ type fakeAutomationToggler struct {
 	err        error
 }
 
-func (f *fakeAutomationToggler) SetAutomationEnabled(_ context.Context, id string, enabled bool) error {
+func (f *fakeAutomationToggler) SetIsAutomationEnabled(_ context.Context, id string, enabled bool) error {
 	f.gotID = id
 	f.gotEnabled = enabled
 	return f.err
@@ -483,12 +483,12 @@ func TestSessionCreatorAdapter_Create_TranslatesAndCloses(t *testing.T) {
 	adapter := &SessionCreatorAdapter{Server: fake, Logger: zerolog.Nop()}
 
 	ch, err := adapter.Create(context.Background(), &pb.CreateSessionCommand{
-		RepoId:     "r1",
-		Title:      "x",
-		Plan:       "p",
-		BaseBranch: "main",
-		QuickChat:  true,
-		AgentName:  "claude",
+		RepoId:      "r1",
+		Title:       "x",
+		Plan:        "p",
+		BaseBranch:  "main",
+		IsQuickChat: true,
+		AgentName:   "claude",
 	}, "cmd-1")
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -514,7 +514,7 @@ func TestSessionCreatorAdapter_Create_TranslatesAndCloses(t *testing.T) {
 	if fake.lastReq.GetRepoId() != "r1" || fake.lastReq.GetTitle() != "x" || fake.lastReq.GetPlan() != "p" {
 		t.Fatalf("request fields not mapped: %+v", fake.lastReq)
 	}
-	if fake.lastReq.GetBaseBranch() != "main" || !fake.lastReq.GetQuickChat() {
+	if fake.lastReq.GetBaseBranch() != "main" || !fake.lastReq.GetIsQuickChat() {
 		t.Fatalf("base_branch/quick_chat not mapped: %+v", fake.lastReq)
 	}
 	if fake.lastReq.AgentName == nil || *fake.lastReq.AgentName != "claude" {
@@ -579,20 +579,20 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 	adapter := &SessionCreatorAdapter{Server: fake, Logger: zerolog.Nop()}
 
 	ch, err := adapter.Create(context.Background(), &pb.CreateSessionCommand{
-		RepoId:         "r1",
-		Title:          "x",
-		PrNumber:       &pr,
-		BranchName:     &branch,
-		TrackerId:      &trackerID,
-		TrackerUrl:     &trackerURL,
-		TrackerIssue:   &pb.TrackerIssue{Title: issueTitle},
-		TrackerSource:  &source,
-		AccountId:      &accountID,
-		Force:          true,
-		ForceBranch:    true,
-		Detach:         true,
-		Model:          &model,
-		TmuxUnattended: true,
+		RepoId:           "r1",
+		Title:            "x",
+		PrNumber:         &pr,
+		BranchName:       &branch,
+		TrackerId:        &trackerID,
+		TrackerUrl:       &trackerURL,
+		TrackerIssue:     &pb.TrackerIssue{Title: issueTitle},
+		TrackerSource:    &source,
+		AccountId:        &accountID,
+		Force:            true,
+		ForceBranch:      true,
+		Detach:           true,
+		Model:            &model,
+		IsTmuxUnattended: true,
 	}, "cmd-rt")
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -636,8 +636,8 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 	if !req.GetDetach() {
 		t.Errorf("Detach: got false, want true")
 	}
-	if !req.GetTmuxUnattended() {
-		t.Errorf("TmuxUnattended: got false, want true")
+	if !req.GetIsTmuxUnattended() {
+		t.Errorf("IsTmuxUnattended: got false, want true")
 	}
 	if req.GetModel() != model {
 		t.Errorf("Model: got %q, want %q", req.GetModel(), model)
@@ -780,10 +780,10 @@ func TestCommandHandlerAdapter_Pause(t *testing.T) {
 			t.Fatalf("Pause session = %v, want nil when no reader wired", sess)
 		}
 		if tog.gotEnabled {
-			t.Errorf("SetAutomationEnabled enabled = true, want false for pause")
+			t.Errorf("SetIsAutomationEnabled enabled = true, want false for pause")
 		}
 		if tog.gotID != "s1" {
-			t.Errorf("SetAutomationEnabled id = %q, want s1", tog.gotID)
+			t.Errorf("SetIsAutomationEnabled id = %q, want s1", tog.gotID)
 		}
 	})
 
@@ -840,7 +840,7 @@ func TestCommandHandlerAdapter_Resume(t *testing.T) {
 			t.Fatalf("Resume session = %v, want nil when no reader wired", sess)
 		}
 		if !tog.gotEnabled {
-			t.Errorf("SetAutomationEnabled enabled = false, want true for resume")
+			t.Errorf("SetIsAutomationEnabled enabled = false, want true for resume")
 		}
 	})
 
@@ -1751,16 +1751,16 @@ func TestCommandHandlerAdapter_CronJobs(t *testing.T) {
 		adapter := &CommandHandlerAdapter{Commands: fake}
 		runSetup := false
 		resp, err := adapter.CreateCronJob(context.Background(), &pb.CreateCronJobCommand{
-			RepoId:          "repo-1",
-			Name:            "nightly",
-			Prompt:          "do the thing",
-			Schedule:        "0 3 * * *",
-			Timezone:        "UTC",
-			Enabled:         true,
-			AgentName:       "claude",
-			Model:           "opus",
-			GateCommand:     "true",
-			RunSetupCommand: &runSetup,
+			RepoId:                "repo-1",
+			Name:                  "nightly",
+			Prompt:                "do the thing",
+			Schedule:              "0 3 * * *",
+			Timezone:              "UTC",
+			IsEnabled:             true,
+			AgentName:             "claude",
+			Model:                 "opus",
+			GateCommand:           "true",
+			ShouldRunSetupCommand: &runSetup,
 		})
 		if err != nil {
 			t.Fatalf("CreateCronJob returned error: %v", err)
@@ -1773,14 +1773,14 @@ func TestCommandHandlerAdapter_CronJobs(t *testing.T) {
 			t.Fatal("no CreateCronJobRequest captured by the fake")
 		}
 		if got.GetRepoId() != "repo-1" || got.GetName() != "nightly" || got.GetPrompt() != "do the thing" ||
-			got.GetSchedule() != "0 3 * * *" || got.GetTimezone() != "UTC" || !got.GetEnabled() ||
+			got.GetSchedule() != "0 3 * * *" || got.GetTimezone() != "UTC" || !got.GetIsEnabled() ||
 			got.GetAgentName() != "claude" || got.GetModel() != "opus" || got.GetGateCommand() != "true" {
 			t.Fatalf("create fields not forwarded: %+v", got)
 		}
 		// The optional tri-state pointer must reach the daemon by reference, not
 		// be flattened by a Get accessor.
-		if got.RunSetupCommand == nil || got.GetRunSetupCommand() != false {
-			t.Fatalf("run_setup_command pointer not forwarded: %v", got.RunSetupCommand)
+		if got.ShouldRunSetupCommand == nil || got.GetShouldRunSetupCommand() != false {
+			t.Fatalf("run_setup_command pointer not forwarded: %v", got.ShouldRunSetupCommand)
 		}
 	})
 
@@ -1791,9 +1791,9 @@ func TestCommandHandlerAdapter_CronJobs(t *testing.T) {
 		name := "renamed"
 		enabled := false
 		resp, err := adapter.UpdateCronJob(context.Background(), &pb.UpdateCronJobCommand{
-			Id:      "cj-1",
-			Name:    &name,
-			Enabled: &enabled,
+			Id:        "cj-1",
+			Name:      &name,
+			IsEnabled: &enabled,
 		})
 		if err != nil {
 			t.Fatalf("UpdateCronJob returned error: %v", err)
@@ -1811,13 +1811,13 @@ func TestCommandHandlerAdapter_CronJobs(t *testing.T) {
 		if got.Name == nil || got.GetName() != "renamed" {
 			t.Fatalf("name not forwarded: %v", got.Name)
 		}
-		if got.Enabled == nil || got.GetEnabled() != false {
-			t.Fatalf("enabled not forwarded: %v", got.Enabled)
+		if got.IsEnabled == nil || got.GetIsEnabled() != false {
+			t.Fatalf("enabled not forwarded: %v", got.IsEnabled)
 		}
 		// A partial update must leave every untouched field nil so the daemon
 		// preserves its stored value.
 		if got.Prompt != nil || got.Schedule != nil || got.Timezone != nil ||
-			got.AgentName != nil || got.Model != nil || got.GateCommand != nil || got.RunSetupCommand != nil {
+			got.AgentName != nil || got.Model != nil || got.GateCommand != nil || got.ShouldRunSetupCommand != nil {
 			t.Fatalf("unset fields leaked non-nil: %+v", got)
 		}
 	})

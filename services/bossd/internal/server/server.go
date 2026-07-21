@@ -116,17 +116,25 @@ type Server struct {
 	// RPC and the SendChatMessage "/boss switch" interception. It defaults to
 	// lifecycle.SwitchAccount (see executeAccountSwitch); tests inject a spy so the
 	// interception can be exercised without a real Lifecycle.
-	switchAccountFn    func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error)
-	agent              agent.AgentRunner
-	agentClients       map[string]agent.AgentRunnerClient
-	worktrees          gitpkg.WorktreeManager
-	provider           vcs.Provider
-	prResolver         PRAssociationResolver
-	pluginHost         *plugin.Host
-	tmux               *tmux.Client
-	chatWakeGroup      singleflight.Group // per-chat idempotency for WakeChat
-	branchStartMu      sync.Mutex
-	branchStartLocks   map[string]*branchStartLock
+	switchAccountFn  func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error)
+	agent            agent.AgentRunner
+	agentClients     map[string]agent.AgentRunnerClient
+	worktrees        gitpkg.WorktreeManager
+	provider         vcs.Provider
+	prResolver       PRAssociationResolver
+	pluginHost       *plugin.Host
+	tmux             *tmux.Client
+	chatWakeGroup    singleflight.Group // per-chat idempotency for WakeChat
+	branchStartMu    sync.Mutex
+	branchStartLocks map[string]*branchStartLock
+	// mergeMu guards repoMergeGates. repoMergeGates serializes user-initiated
+	// merges per repo (BOS-439): concurrent MergeSession calls for the same repo
+	// share one local clone (.git/index.lock, refs/heads/<base>), so they must
+	// not run at once. Mirrors the ref-counted-map lifecycle of branchStartLocks,
+	// but acquisition is context-aware (see acquireRepoMerge) so a queued merge
+	// whose caller cancels can bail without merging.
+	mergeMu            sync.Mutex
+	repoMergeGates     map[string]*repoMergeGate
 	wakeHook           wakeHook // test-only: zero in production; see wake_chat.go
 	completionNotifier session.SessionCompletionNotifier
 	authNotifier       AuthNotifier
@@ -141,6 +149,15 @@ type Server struct {
 
 type branchStartLock struct {
 	mu   sync.Mutex
+	refs int
+}
+
+// repoMergeGate is a per-repo, capacity-1 serialization gate for user-initiated
+// merges (BOS-439). sem is a buffered channel of capacity 1 used as a
+// context-aware mutex; refs counts live acquirers so the map entry can be reaped
+// when the last releases (same lifecycle as branchStartLock).
+type repoMergeGate struct {
+	sem  chan struct{}
 	refs int
 }
 
@@ -313,6 +330,7 @@ func New(cfg Config) *Server {
 		pluginHost:         cfg.PluginHost,
 		tmux:               cfg.Tmux,
 		branchStartLocks:   map[string]*branchStartLock{},
+		repoMergeGates:     map[string]*repoMergeGate{},
 		completionNotifier: cfg.CompletionNotifier,
 		authNotifier:       cfg.AuthNotifier,
 		onSessionDeleted:   cfg.OnSessionDeleted,
@@ -629,8 +647,8 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 	if msg.CanAutoRepair != nil {
 		params.CanAutoRepair = msg.CanAutoRepair
 	}
-	if msg.ArchiveSessionsAfterMerge != nil {
-		params.ArchiveSessionsAfterMerge = msg.ArchiveSessionsAfterMerge
+	if msg.ShouldArchiveSessionsAfterMerge != nil {
+		params.ShouldArchiveSessionsAfterMerge = msg.ShouldArchiveSessionsAfterMerge
 	}
 	if msg.CanAutoDeleteBranches != nil {
 		params.CanAutoDeleteBranches = msg.CanAutoDeleteBranches
@@ -992,6 +1010,70 @@ func (s *Server) lockBranchStart(repoID, branch string) func() {
 	}
 }
 
+// acquireRepoMerge serializes user-initiated merges per repo (BOS-439). It
+// blocks until it holds the repo's capacity-1 gate, then returns a release func
+// the caller must defer. Acquisition is context-aware: if ctx is cancelled while
+// the gate is held by another merge, it abandons the wait (decrementing its
+// ref/reaping the entry) and returns ctx.Err() with a nil release — the caller
+// must not merge. An empty repoID (no repo to guard) returns a no-op release and
+// nil error. Mirrors lockBranchStart's ref-counted-map lifecycle; the select on
+// a buffered channel mirrors taskorchestrator.autoMergeSem.
+func (s *Server) acquireRepoMerge(ctx context.Context, repoID string) (release func(), err error) {
+	if repoID == "" {
+		return func() {}, nil
+	}
+
+	// Honor an already-cancelled/expired context before contending: a caller
+	// that has given up must never acquire the gate. Without this, the select
+	// below can pick the (ready) sem-send over a (ready) ctx.Done and proceed.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mergeMu.Lock()
+	if s.repoMergeGates == nil {
+		s.repoMergeGates = map[string]*repoMergeGate{}
+	}
+	gate := s.repoMergeGates[repoID]
+	if gate == nil {
+		gate = &repoMergeGate{sem: make(chan struct{}, 1)}
+		s.repoMergeGates[repoID] = gate
+	}
+	gate.refs++
+	s.mergeMu.Unlock()
+
+	// Decrement the ref (and reap the entry when it hits zero) — used both when
+	// acquisition is abandoned and inside the successful-acquisition release.
+	unref := func() {
+		s.mergeMu.Lock()
+		gate.refs--
+		if gate.refs == 0 {
+			delete(s.repoMergeGates, repoID)
+		}
+		s.mergeMu.Unlock()
+	}
+
+	select {
+	case gate.sem <- struct{}{}:
+		// select picks a ready case at random, so the sem-send can win even when
+		// ctx is already done (holder released at the same instant the caller's
+		// deadline fired). Re-check so an abandoned merge releases the gate and
+		// bails instead of proceeding into the live gate + MergePR.
+		if err := ctx.Err(); err != nil {
+			<-gate.sem
+			unref()
+			return nil, err
+		}
+		return func() {
+			<-gate.sem
+			unref()
+		}, nil
+	case <-ctx.Done():
+		unref()
+		return nil, ctx.Err()
+	}
+}
+
 // activeSessionOwnsBranch reports whether an active session already owns branch
 // in repo. The BOS-289 already-shipped scan uses it to skip when the create is
 // an attach/resume to a live session (sendExistingSessionForBranch attaches
@@ -1124,7 +1206,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		return connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
 	}
 
-	if !msg.QuickChat && strings.TrimSpace(repo.WorktreeBaseDir) == "" {
+	if !msg.IsQuickChat && strings.TrimSpace(repo.WorktreeBaseDir) == "" {
 		return connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("repo %s (%s) has no worktree base directory configured; set one with 'boss repo update %s' before creating a session",
 				repo.ID, repo.DisplayName, repo.ID))
@@ -1159,7 +1241,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		// Use the branch name from the request (e.g., from Linear's suggested branch name).
 		headBranch = *msg.BranchName
 	}
-	if !msg.QuickChat && strings.TrimSpace(baseBranch) == "" {
+	if !msg.IsQuickChat && strings.TrimSpace(baseBranch) == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo %s has no default base branch; update repo settings before creating a session", repo.ID))
 	}
 
@@ -1179,7 +1261,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	// in-flight local dedup (BOS-236) still runs atomically under that lock
 	// below. Fail open on scan error so a transient GitHub outage cannot wedge
 	// the daemon's whole create path.
-	if !msg.Force && !msg.QuickChat && msg.PrNumber == nil && msg.TrackerId != nil && *msg.TrackerId != "" &&
+	if !msg.Force && !msg.IsQuickChat && msg.PrNumber == nil && msg.TrackerId != nil && *msg.TrackerId != "" &&
 		repo.OriginURL != "" && !s.activeSessionOwnsBranch(ctx, msg.RepoId, headBranch) {
 		prs, scanErr := s.provider.SearchPRsByTitleTag(ctx, repo.OriginURL, *msg.TrackerId)
 		if scanErr != nil {
@@ -1237,7 +1319,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	// the duplicate session an old client wanted. `force` is a wire-additive
 	// field, so no deployed client breaks at the protocol level; the only
 	// behavior removed — dispatch-N-get-N-sessions — was the BOS-229 defect.
-	if !msg.Force && !msg.QuickChat {
+	if !msg.Force && !msg.IsQuickChat {
 		keys, err := s.activeSessionKeysForRepo(ctx, msg.RepoId)
 		if err != nil {
 			return connect.NewError(connect.CodeInternal, fmt.Errorf("dedup active sessions: %w", err))
@@ -1308,14 +1390,14 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	// Start the session lifecycle: create worktree, start Claude, fire state machine.
 	// Quick chat sessions skip worktree/branch/PR creation entirely.
 	var startErr error
-	if msg.QuickChat {
+	if msg.IsQuickChat {
 		// Persist the planning-only signal (BOS-322). Quick chats have no
 		// worktree/branch/PR and skip finalize by design; the flag is the
 		// defensive backstop so any path that does reach FinalizeSession treats
 		// the expected no-change result as benign rather than a failed
 		// implementation run. Mirrors how tmux_unattended is set post-create.
 		quickChat := true
-		if _, updErr := s.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{QuickChat: &quickChat}); updErr != nil {
+		if _, updErr := s.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{IsQuickChat: &quickChat}); updErr != nil {
 			// Match the other post-Create early returns in this function: a
 			// persisted-but-never-started session row must be cleaned up rather
 			// than left orphaned in CreatingWorktree.
@@ -1338,13 +1420,13 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		// StartSession gates hook install on the tmux-hosted branch — which is
 		// harmless.
 		startOpts := session.StartSessionOpts{
-			ExistingBranch: headBranch,
-			ForceBranch:    msg.ForceBranch,
-			SetupOutput:    pw,
-			Detach:         msg.GetDetach(),
-			TmuxUnattended: msg.GetTmuxUnattended(),
+			ExistingBranch:   headBranch,
+			ForceBranch:      msg.ForceBranch,
+			SetupOutput:      pw,
+			Detach:           msg.GetDetach(),
+			IsTmuxUnattended: msg.GetIsTmuxUnattended(),
 		}
-		if msg.GetTmuxUnattended() || msg.GetDetach() {
+		if msg.GetIsTmuxUnattended() || msg.GetDetach() {
 			token, tokenErr := newHookToken()
 			if tokenErr != nil {
 				_ = pr.Close()
@@ -1473,7 +1555,7 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 	if repo, err := s.repos.Get(ctx, session.RepoID); err == nil {
 		p.RepoDisplayName = repo.DisplayName
 		p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
-		p.RepoArchiveSessionsAfterMerge = repo.ArchiveSessionsAfterMerge
+		p.RepoShouldArchiveSessionsAfterMerge = repo.ShouldArchiveSessionsAfterMerge
 		p.AttentionStatus = attentionStatusToProto(vcs.ComputeAttentionStatus(session, repo))
 	}
 
@@ -1870,7 +1952,7 @@ func (s *Server) setSessionAutomation(ctx context.Context, id string, enabled bo
 	}
 
 	if _, err := s.sessions.Update(ctx, id, db.UpdateSessionParams{
-		AutomationEnabled: &enabled,
+		IsAutomationEnabled: &enabled,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("%s session: %w", action, err))
 	}
@@ -1909,8 +1991,8 @@ func (s *Server) RetrySession(ctx context.Context, req *connect.Request[pb.Retry
 	blockedReason := &nilStr // double pointer: set to NULL
 	automationEnabled := true
 	if _, err := s.sessions.Update(ctx, req.Msg.Id, db.UpdateSessionParams{
-		BlockedReason:     blockedReason,
-		AutomationEnabled: &automationEnabled,
+		BlockedReason:       blockedReason,
+		IsAutomationEnabled: &automationEnabled,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("retry session: %w", err))
 	}
@@ -1993,6 +2075,29 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 			}
 		}()
 	}
+
+	// Serialize user-initiated merges per repo (BOS-439): concurrent merges on
+	// the same repo share one local clone and would race on .git/index.lock and
+	// refs/heads/<base>. Acquire AFTER SetMerging (a queued merge still shows the
+	// "merging" status while it waits) but BEFORE the live gate, so a merge that
+	// queued behind another re-reads the PR fresh once the base has advanced.
+	// A cancelled/timed-out queued merge bails here without merging.
+	release, err := s.acquireRepoMerge(ctx, sess.RepoID)
+	if err != nil {
+		// Only reachable when the caller's ctx carries a deadline/cancel (a
+		// direct-connect/TUI client) and it fires while queued. The reverse-stream
+		// (web) path runs this handler on the long-lived stream ctx, so bosso's
+		// mergeCommandDeadline bounds only bosso's wait for the reply, not this
+		// ctx. Preserve timeout-vs-cancel semantics for the callers that do carry
+		// a deadline: map DeadlineExceeded distinctly from a client cancel.
+		code := connect.CodeCanceled
+		if errors.Is(err, context.DeadlineExceeded) {
+			code = connect.CodeDeadlineExceeded
+		}
+		return nil, connect.NewError(code,
+			fmt.Errorf("merge abandoned while queued: %w", err))
+	}
+	defer release()
 
 	// Guard against merging a truly red/conflicted/rejected PR, but gate on a
 	// LIVE read of the PR rather than the possibly-stale display tracker. A

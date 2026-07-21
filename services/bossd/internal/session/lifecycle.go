@@ -1092,10 +1092,10 @@ type StartSessionOpts struct {
 	// and wants an autonomous pass) from a plain interactive `boss new`.
 	Detach bool
 
-	// TmuxUnattended routes this session through the durable tmux-hosted path
+	// IsTmuxUnattended routes this session through the durable tmux-hosted path
 	// (like a cron session) instead of the headless detach path, and is
 	// persisted so the completion gate and restart re-adoption recognise it.
-	TmuxUnattended bool
+	IsTmuxUnattended bool
 }
 
 // StartSession creates a worktree, starts a Claude process, and fires
@@ -1131,7 +1131,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// is set ONLY on the successful tmux-hosted branch. tmuxHosted unifies every
 	// durable-tmux provenance for the routing/hook/liveness decisions below.
 	detachViaTmux := opts.Detach && l.tmux != nil && l.tmux.Available(ctx)
-	tmuxHosted := opts.CronJobID != "" || opts.TmuxUnattended || detachViaTmux
+	tmuxHosted := opts.CronJobID != "" || opts.IsTmuxUnattended || detachViaTmux
 
 	// Update session state to CreatingWorktree and stamp the cron_job_id
 	// when the cron scheduler spawned us. The cron linkage is set here
@@ -1149,9 +1149,9 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		hookToken := &opts.HookToken
 		updateParams.HookToken = &hookToken
 	}
-	if opts.TmuxUnattended {
+	if opts.IsTmuxUnattended {
 		tmuxUnattended := true
-		updateParams.TmuxUnattended = &tmuxUnattended
+		updateParams.IsTmuxUnattended = &tmuxUnattended
 	}
 	// Persist Detach only on the durable tmux-hosted branch: a `--detach` run
 	// that fell back to the paneless headless path (tmux unavailable) must stay

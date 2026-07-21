@@ -288,6 +288,8 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 	// 7. Optional .cast capture.
 	var castWriter *castWriter
 	if castPath != "" {
+		// #nosec G304 -- operator-supplied -cast output path for a local proof/test harness; not attacker-controlled.
+		// owner=@recurser review-by=2027-01-18 issue=BOS-28
 		castFile, err = os.Create(castPath)
 		if err != nil {
 			return fmt.Errorf("create cast file: %w", err)
@@ -334,6 +336,8 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 // maxSeedBytes. Parsing uses fixtures.ParseOverlay (DisallowUnknownFields), so a
 // typo'd field aborts boot naming the field.
 func readSeedOverlay(path string) (fixtures.Overlay, error) {
+	// #nosec G304 -- operator-supplied -seed overlay path for a local proof/test harness; read is capped at maxSeedBytes.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	f, err := os.Open(path)
 	if err != nil {
 		return fixtures.Overlay{}, fmt.Errorf("open -seed file: %w", err)
@@ -382,6 +386,8 @@ func buildBoss() (path string, cleanup func(), err error) {
 		return "", func() {}, fmt.Errorf("mkdtemp boss: %w", err)
 	}
 	binPath := filepath.Join(dir, "boss")
+	// #nosec G204 -- test-only e2e build; constant argv except binPath (a mktemp path); no shell.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command("go", "build", "-tags", "e2e", "-o", binPath, "./cmd")
 	cmd.Dir = serviceDir()
 	out, berr := cmd.CombinedOutput()

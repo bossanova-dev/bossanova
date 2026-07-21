@@ -150,7 +150,9 @@ func copyExecutable(t *testing.T, src, dst string) {
 	}
 	defer func() { _ = in.Close() }()
 
-	out, err := os.OpenFile(filepath.Clean(dst), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755) // #nosec G302 G304 -- copied plugin binary must be 0o755 to be executable; dst is a test-harness-owned staging path (filepath.Clean sanitized); owner=@recurser; review-by=2026-10-18; issue=BOS-423
+	// #nosec G302 G304 -- copied plugin binary must be 0o755 to be executable; dst is a test-harness-owned staging path (filepath.Clean sanitized)
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
+	out, err := os.OpenFile(filepath.Clean(dst), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
 	if err != nil {
 		t.Fatalf("create plugin binary %q: %v", dst, err)
 	}

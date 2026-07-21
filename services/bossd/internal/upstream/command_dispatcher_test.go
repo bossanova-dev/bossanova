@@ -493,9 +493,9 @@ func TestDispatch_UpdateCronJob(t *testing.T) {
 	if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
 		CommandId: "c1",
 		Cmd: &pb.OrchestratorCommand_UpdateCronJob{UpdateCronJob: &pb.UpdateCronJobCommand{
-			Id:      "cj1",
-			Name:    &name,
-			Enabled: &enabled,
+			Id:        "cj1",
+			Name:      &name,
+			IsEnabled: &enabled,
 		}},
 	}, out); ev != nil {
 		t.Fatalf("expected nil synchronous result for async command, got %+v", ev)
@@ -516,12 +516,12 @@ func TestDispatch_UpdateCronJob(t *testing.T) {
 	if got.Name == nil || got.GetName() != "renamed" {
 		t.Fatalf("name not forwarded: %v", got.Name)
 	}
-	if got.Enabled == nil || got.GetEnabled() != false {
-		t.Fatalf("enabled not forwarded: %v", got.Enabled)
+	if got.IsEnabled == nil || got.GetIsEnabled() != false {
+		t.Fatalf("enabled not forwarded: %v", got.IsEnabled)
 	}
 	// Unset optional fields must stay nil so the daemon leaves the stored
 	// values untouched on a partial update.
-	if got.Prompt != nil || got.Schedule != nil || got.Model != nil || got.RunSetupCommand != nil {
+	if got.Prompt != nil || got.Schedule != nil || got.Model != nil || got.ShouldRunSetupCommand != nil {
 		t.Fatalf("unset fields leaked non-nil: %+v", got)
 	}
 	if job := res.GetUpdateCronJob().GetCronJob(); job.GetName() != "renamed" {
@@ -1501,11 +1501,18 @@ func TestDispatchCommand_Merge_CallsHandler(t *testing.T) {
 	sess := &pb.Session{Id: "s-merge"}
 	handler := &fakeCommandHandler{mergeSession: sess}
 	client := newDispatcherClient(handler, nil, nil)
-	ev := client.dispatchCommand(context.Background(),
+	out := make(chan *pb.DaemonEvent, 4)
+	// Merge is dispatched asynchronously (it can queue behind another merge on
+	// the same repo), so dispatchCommand returns nil and the result arrives on
+	// outbound.
+	if ev := client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-m1",
 			Cmd:       &pb.OrchestratorCommand_Merge{Merge: &pb.MergeSessionCommand{SessionId: "s-merge"}},
-		}, make(chan *pb.DaemonEvent, 4))
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async merge command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
 	if handler.mergeCalls.Load() != 1 {
 		t.Fatalf("merge calls = %d, want 1", handler.mergeCalls.Load())
 	}
@@ -1534,11 +1541,15 @@ func TestDispatchCommand_Merge_MapsConnectCodeToErrorCode(t *testing.T) {
 			// dispatcher's connect.CodeOf still recovers the code.
 			handler := &fakeCommandHandler{returnErr: fmt.Errorf("merge session: %w", tc.err)}
 			client := newDispatcherClient(handler, nil, nil)
-			ev := client.dispatchCommand(context.Background(),
+			out := make(chan *pb.DaemonEvent, 4)
+			if ev := client.dispatchCommand(context.Background(),
 				&pb.OrchestratorCommand{
 					CommandId: "c-merr",
 					Cmd:       &pb.OrchestratorCommand_Merge{Merge: &pb.MergeSessionCommand{SessionId: "s1"}},
-				}, make(chan *pb.DaemonEvent, 4))
+				}, out); ev != nil {
+				t.Fatalf("expected nil synchronous result for async merge command, got %+v", ev)
+			}
+			ev := recvEvent(t, out)
 			r := ev.GetResult()
 			if r == nil || r.GetOk() {
 				t.Fatalf("expected failed result, got %+v", ev)
@@ -2197,11 +2208,15 @@ func TestDispatchCommand_AccountCommands_HandlerNotWired(t *testing.T) {
 func TestDispatchCommand_Merge_HandlerError_ReturnsCommandErr(t *testing.T) {
 	handler := &fakeCommandHandler{returnErr: errors.New("merge failed: conflict")}
 	client := newDispatcherClient(handler, nil, nil)
-	ev := client.dispatchCommand(context.Background(),
+	out := make(chan *pb.DaemonEvent, 4)
+	if ev := client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-m-err",
 			Cmd:       &pb.OrchestratorCommand_Merge{Merge: &pb.MergeSessionCommand{SessionId: "s1"}},
-		}, make(chan *pb.DaemonEvent, 4))
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async merge command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
 	r := ev.GetResult()
 	if r == nil || r.GetOk() {
 		t.Fatalf("expected error result, got %+v", ev)

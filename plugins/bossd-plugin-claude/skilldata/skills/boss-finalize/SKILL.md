@@ -48,7 +48,7 @@ The orchestrator does not run Steps 1–8 inline on its own context. Instead it 
 
 Pass the `model: "sonnet"` alias (not a pinned date-suffixed id) so it follows the current Sonnet target
 selected by the agent runtime. This intentionally accepts alias drift; when the alias target changes,
-rerun the BOS-133 tiered-vs-Opus artifact diff before relying on prior proof.
+rerun the <TICKET-ID> tiered-vs-Opus artifact diff before relying on prior proof.
 
 **Keep judgment off Sonnet (stop-and-report).** The tiered subagent runs only the mechanical happy
 path. If it hits a genuine **merge conflict requiring 3-way resolution** (BLOCKING REQUIREMENT 7) or a

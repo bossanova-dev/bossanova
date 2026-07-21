@@ -33,6 +33,8 @@ import (
 // stripping (a secret may legitimately contain `#`). Lines without `=` or
 // with a non-identifier key are skipped.
 func Load(dir string) map[string]string {
+	// #nosec G304 -- loads a worktree `.env` (may hold secrets); dir is an internally-derived worktree path (secret-adjacent)
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	data, err := os.ReadFile(filepath.Join(dir, ".env"))
 	if err != nil {
 		return nil

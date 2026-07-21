@@ -34,7 +34,7 @@ emit_owner() { printf '%s\n%s\n%s\n%s\n' "$1" "$PPID" "$(now)" "$2"; }
 # a racing reader never sees half-written meta, and robust against a concurrent reviver
 # transiently renaming $LOCK aside then restoring it: the whole `ensure $LOCK -> write temp ->
 # rename onto owner` retries a bounded number of times instead of aborting mid-claim under
-# `set -e` when $LOCK is momentarily gone (BOS-400 Defect B). Recreate-on-vanish is safe HERE
+# `set -e` when $LOCK is momentarily gone (the lock-vanish race). Recreate-on-vanish is safe HERE
 # because a stale-observation peer that grabs our freshly-mkdir'd lock never matches what it
 # observed, so its guard RESTORES our lock rather than taking ownership — it can never become a
 # rival owner for us to clobber. This must NOT be used to refresh a lock we did not just create
@@ -56,7 +56,7 @@ write_meta() {
 # recreates a vanished $LOCK and NEVER overwrites a different owner: if a genuine stale-steal
 # took our lock over between the caller's ownership check and here, `mv -f` lands on the moved
 # temp / foreign dir and fails -> return non-zero, so we can never resurrect-and-clobber a
-# successor into a double-takeover (BOS-400 orphan-resume race). Ownership is re-checked first.
+# successor into a double-takeover (the orphan-resume race). Ownership is re-checked first.
 refresh_meta() {
   [ "$(owner_field 1)" = "$1" ] || return 1
   local tmp="$LOCK/.owner.$$"
@@ -101,7 +101,7 @@ case "$cmd" in
     # Decisively-stale boundary: live is strictly age < STALE_SECS, so an age exactly
     # equal to the threshold STEALS. `date +%s` truncates to whole seconds, so with a
     # `<=` gate two racers computing age == STALE_SECS both read live and both back off,
-    # yielding zero winners (BOS-400). `-lt` makes the boundary decisively stealable.
+    # yielding zero winners (the stale-boundary tie). `-lt` makes the boundary decisively stealable.
     if [ "$age" -lt "$STALE_SECS" ]; then
       echo "HELD_BY_PEER runid=${o_runid:-unknown} age=${age}s"; exit 3
     fi
@@ -123,8 +123,8 @@ case "$cmd" in
         # "$LOCK"` succeeds, so there is never a double-takeover. (Publishing with `mv "$stamp"
         # "$LOCK"` cannot select a winner safely: portable `mv` silently NESTS into an existing
         # dir instead of failing, so two processes can both "succeed".) On a win, write_meta
-        # publishes robustly (it now retries a transiently-renamed-aside $LOCK, so BOS-400
-        # Defect B can no longer abort the winner's meta write); on a loss (another reviver or
+        # publishes robustly (it now retries a transiently-renamed-aside $LOCK, so the
+        # lock-vanish race can no longer abort the winner's meta write); on a loss (another reviver or
         # fresh acquirer already recreated $LOCK) fall through to the re-read tail below.
         rm -rf "$stamp" 2>/dev/null || true
         if mkdir "$LOCK" 2>/dev/null; then

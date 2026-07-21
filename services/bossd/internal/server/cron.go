@@ -60,14 +60,14 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 		// rather than a hardcoded "claude" that may not be loaded.
 		AgentName:   s.resolveAgentName(agentName),
 		Model:       model,
-		Enabled:     msg.Enabled,
+		IsEnabled:   msg.IsEnabled,
 		GateCommand: strings.TrimSpace(msg.GateCommand),
 	}
 	runSetup := true
-	if msg.RunSetupCommand != nil {
-		runSetup = *msg.RunSetupCommand
+	if msg.ShouldRunSetupCommand != nil {
+		runSetup = *msg.ShouldRunSetupCommand
 	}
-	params.RunSetupCommand = runSetup
+	params.ShouldRunSetupCommand = runSetup
 	if tz := strings.TrimSpace(msg.Timezone); tz != "" {
 		params.Timezone = &tz
 	}
@@ -77,7 +77,7 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create cron job: %w", err))
 	}
 
-	if job.Enabled {
+	if job.IsEnabled {
 		if err := s.cronScheduler.AddJob(job); err != nil {
 			// Roll back so the DB doesn't keep an unparseable schedule that
 			// the scheduler refuses to load on next startup.
@@ -149,7 +149,7 @@ func (s *Server) UpdateCronJob(ctx context.Context, req *connect.Request[pb.Upda
 
 	params := db.UpdateCronJobParams{}
 	nextAgentName := existing.AgentName
-	nextEnabled := existing.Enabled
+	nextIsEnabled := existing.IsEnabled
 	if msg.Name != nil {
 		v := strings.TrimSpace(*msg.Name)
 		if v == "" {
@@ -191,18 +191,18 @@ func (s *Server) UpdateCronJob(ctx context.Context, req *connect.Request[pb.Upda
 		}
 		params.Model = &v
 	}
-	if msg.Enabled != nil {
-		params.Enabled = msg.Enabled
-		nextEnabled = *msg.Enabled
+	if msg.IsEnabled != nil {
+		params.IsEnabled = msg.IsEnabled
+		nextIsEnabled = *msg.IsEnabled
 	}
 	if msg.GateCommand != nil {
 		v := strings.TrimSpace(*msg.GateCommand)
 		params.GateCommand = &v
 	}
-	if msg.RunSetupCommand != nil {
-		params.RunSetupCommand = msg.RunSetupCommand
+	if msg.ShouldRunSetupCommand != nil {
+		params.ShouldRunSetupCommand = msg.ShouldRunSetupCommand
 	}
-	if nextEnabled {
+	if nextIsEnabled {
 		if err := s.validateExplicitAgentName(nextAgentName); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
@@ -220,7 +220,7 @@ func (s *Server) UpdateCronJob(ctx context.Context, req *connect.Request[pb.Upda
 	// UpdateJob would also work but keeping the two steps explicit makes the
 	// disabled-job case (no AddJob, no spurious schedule parse error) obvious.
 	s.cronScheduler.RemoveJob(job.ID)
-	if job.Enabled {
+	if job.IsEnabled {
 		if err := s.cronScheduler.AddJob(job); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("schedule cron job: %w", err))
 		}

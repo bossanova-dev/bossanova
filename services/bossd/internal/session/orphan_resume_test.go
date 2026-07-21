@@ -508,7 +508,7 @@ func TestResumeOrphanedHeadlessRuns_RetryAfterClaimReleasesMarkerlessClaim(t *te
 	f := newOrphanResumeFixture(t)
 	f.sessions.orphanResumeCommitHook = func(id string) {
 		f.sessions.sessions[id].BlockedReason = nil
-		f.sessions.sessions[id].AutomationEnabled = true
+		f.sessions.sessions[id].IsAutomationEnabled = true
 	}
 
 	if n := f.lc.ResumeOrphanedHeadlessRuns(context.Background()); n != 0 {

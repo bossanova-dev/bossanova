@@ -19,7 +19,7 @@ func testCronJob() *pb.CronJob {
 		Prompt:    "Run the daily update script.",
 		Schedule:  "0 9 * * 1-5",
 		Timezone:  "",
-		Enabled:   true,
+		IsEnabled: true,
 		CreatedAt: timestamppb.Now(),
 		UpdatedAt: timestamppb.Now(),
 	}
@@ -622,8 +622,8 @@ func TestCron_EditRoundtrip(t *testing.T) {
 	if req.Timezone != nil {
 		t.Fatalf("expected Timezone to be nil (unchanged) in UpdateCronJob request, got %q", *req.Timezone)
 	}
-	if req.Enabled != nil {
-		t.Fatalf("expected Enabled to be nil (unchanged) in UpdateCronJob request, got %v", *req.Enabled)
+	if req.IsEnabled != nil {
+		t.Fatalf("expected Enabled to be nil (unchanged) in UpdateCronJob request, got %v", *req.IsEnabled)
 	}
 }
 
@@ -651,7 +651,7 @@ func TestCron_EditHighlightsEditedRow(t *testing.T) {
 		Name:      "Alpha job",
 		Prompt:    "Run alpha.",
 		Schedule:  "0 9 * * 1-5",
-		Enabled:   true,
+		IsEnabled: true,
 		CreatedAt: timestamppb.Now(),
 		UpdatedAt: timestamppb.Now(),
 	}
@@ -661,7 +661,7 @@ func TestCron_EditHighlightsEditedRow(t *testing.T) {
 		Name:      "Bravo job",
 		Prompt:    "Run bravo.",
 		Schedule:  "0 9 * * 1-5",
-		Enabled:   true,
+		IsEnabled: true,
 		CreatedAt: timestamppb.Now(),
 		UpdatedAt: timestamppb.Now(),
 	}
@@ -776,8 +776,8 @@ func TestCron_ToggleEnabled(t *testing.T) {
 		t.Fatalf("UpdateCronJob called %d times after first toggle, want 1", len(calls))
 	}
 	// Verify the enabled field was toggled to false.
-	if calls[0].Enabled == nil || *calls[0].Enabled != false {
-		t.Fatalf("expected Enabled=false in first UpdateCronJob call, got %v", calls[0].Enabled)
+	if calls[0].IsEnabled == nil || *calls[0].IsEnabled != false {
+		t.Fatalf("expected Enabled=false in first UpdateCronJob call, got %v", calls[0].IsEnabled)
 	}
 
 	// Wait for the view to process the response and re-render the row with
@@ -808,8 +808,8 @@ func TestCron_ToggleEnabled(t *testing.T) {
 		t.Fatalf("UpdateCronJob called %d times after second toggle, want 2", len(calls))
 	}
 	// Verify the enabled field was toggled back to true.
-	if calls[1].Enabled == nil || *calls[1].Enabled != true {
-		t.Fatalf("expected Enabled=true in second UpdateCronJob call, got %v", calls[1].Enabled)
+	if calls[1].IsEnabled == nil || *calls[1].IsEnabled != true {
+		t.Fatalf("expected Enabled=true in second UpdateCronJob call, got %v", calls[1].IsEnabled)
 	}
 }
 
@@ -884,7 +884,7 @@ func cronJobWithStatus(id, name string, status pb.CronJobStatus) *pb.CronJob {
 		Name:          name,
 		Prompt:        "Run something.",
 		Schedule:      "0 9 * * 1-5",
-		Enabled:       true,
+		IsEnabled:     true,
 		LastRunStatus: status,
 		CreatedAt:     timestamppb.Now(),
 		UpdatedAt:     timestamppb.Now(),

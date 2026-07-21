@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version — so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-07-11**. The engineering procedure for adding a new
+The current version is **2026-07-18**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -70,7 +70,7 @@ Two transforms shipped in this version:
   older clients. In other words, the new **chat status** value is hidden from
   clients that predate it.
 
-### 2026-07-11 — No-eligible-account rotation outcome (Current)
+### 2026-07-11 — No-eligible-account rotation outcome
 
 The OrchestratorService began serving `RotationOutcome` value
 `ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT` on
@@ -78,6 +78,18 @@ The OrchestratorService began serving `RotationOutcome` value
 to" from the prior "agent cannot rotate". Clients pinned to an older version are
 down-converted back to `ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY`, the prior
 observable value.
+
+### 2026-07-18 — Errored session display recolor (Current)
+
+The OrchestratorService began serving the errored-recolor display shape for
+orphaned/blocked sessions on `Session.display_label` / `display_intent` /
+`display_spinner`. An errored session now keeps its real underlying status label
+and spinner (a live "working" spinner, a pending "? question") but has its intent
+recolored to `DISPLAY_INTENT_DANGER` so the error stays visible; a legitimate
+terminal muted PR ("✓ merged" / "closed") is exempt and stays muted. Clients
+pinned to an older version were built against the prior shapes — a fixed
+"orphaned"/`DANGER`/no-spinner tuple for orphaned sessions and an un-recolored
+base cascade for blocked sessions — so they are down-converted back to those.
 
 ## See also
 

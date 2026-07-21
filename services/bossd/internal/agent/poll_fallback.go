@@ -55,6 +55,8 @@ func (p *PollFallback) Arm(ctx context.Context, sessionID, agentSessionID string
 		for {
 			d := p.cadence
 			if p.jitter > 0 {
+				// #nosec G404 -- math/rand jitter for poll cadence; timing jitter needs no crypto-grade randomness and gates no security decision
+				// owner=@recurser review-by=2027-01-18 issue=BOS-28
 				d += time.Duration(rand.Int63n(int64(p.jitter*2))) - p.jitter //nolint:gosec // jitter doesn't need crypto-grade randomness
 				if d < time.Millisecond {
 					d = time.Millisecond

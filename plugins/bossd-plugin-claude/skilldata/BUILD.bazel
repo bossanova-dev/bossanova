@@ -32,6 +32,7 @@ go_library(
         "skills/boss-plan/references/headless-drafting-brief.md",
         "skills/boss-plan/references/interactive-mode.md",
         "skills/boss-plan/toolbox/bs-run-sentinel.mjs",
+        "skills/boss-plan/toolbox/skill-config.mjs",
         "skills/boss-repair/SKILL.md",
         "skills/boss-repair/scripts/review-feedback-probe.js",
         "skills/boss-review/SKILL.md",

@@ -73,7 +73,13 @@ test('size ratchet', () => {
   // placeholder" Edge-cases bullet (adopt the existing branch/session and
   // continue, distinct from the settled BOS-179 no-op) — the empty-placeholder
   // guidance addition, trimmed to one KiB above actual.
-  const RATCHET = 33792
+  // Bumped 33792 → 34816 for BOS-456 (epic BOS-449 capstone): the classify
+  // snippet now resolves the tracker's CONFIGURED planned-state name from
+  // .boss-skills.json and passes it to classifyTickets(tickets, plannedState),
+  // so the last hard-coded `Todo` state literal leaves the published boss-epic
+  // core (bs-epic-lib.mjs) and knownIdentityLeaks reaches empty — the epic's
+  // core deliverable; the added resolver is the minimal viable de-identification.
+  const RATCHET = 34816
   const bytes = Buffer.byteLength(CLAUDE, 'utf8')
   assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
 })
@@ -312,4 +318,19 @@ test('phase 0 runs a deterministic boss MCP tool-discovery preflight (BOS-301)',
     'missing tools must produce a concise diagnostic naming them',
   )
   assert.match(CLAUDE, /before scheduling/i, 'the tool-discovery preflight runs before scheduling')
+})
+
+test('BOS-458: the published core carries no hard-coded ${TRACKER:-…} shell default', () => {
+  // Direct regression guard for the BOS-458 fix. The bug was a shell `${TRACKER:-linear}`
+  // literal in the planned-state diagnostic that baked `linear` in when the TRACKER env was
+  // unset — misnaming the config key for a non-linear repo. The runtime resolution already
+  // honors adapters.tracker in JS (`process.env.TRACKER || c.adapters?.tracker || "linear"`);
+  // the diagnostic now uses a generic `<tracker>` placeholder. Assert the shell
+  // `${TRACKER:-<default>}` form is absent so it cannot be reintroduced into this published
+  // core (the Go identity-leak guard permits `linear` as the default adapter and misses it).
+  assert.equal(
+    CLAUDE.split('${TRACKER:-').length - 1,
+    0,
+    'boss-epic SKILL.md must not hard-code a ${TRACKER:-<default>} shell fallback; resolve the tracker from adapters.tracker instead',
+  )
 })

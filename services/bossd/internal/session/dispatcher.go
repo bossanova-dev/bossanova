@@ -103,7 +103,7 @@ func (d *Dispatcher) SetDisplayStatusSetter(s DisplayStatusSetter) {
 }
 
 // SetArchiver wires the archiver invoked after a PR merges when the repo's
-// ArchiveSessionsAfterMerge flag is on. Uses a setter (not a constructor param)
+// ShouldArchiveSessionsAfterMerge flag is on. Uses a setter (not a constructor param)
 // because the dispatcher is created before the archiver is wired in main.go.
 // nil-safe: leaving it unset disables the post-merge archive automation.
 func (d *Dispatcher) SetArchiver(a SessionArchiver) {
@@ -439,7 +439,7 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 }
 
 // archiveAfterMergeIfEnabled archives the just-merged session when its repo has
-// the ArchiveSessionsAfterMerge flag on. The archive runs asynchronously — it
+// the ShouldArchiveSessionsAfterMerge flag on. The archive runs asynchronously — it
 // stops the agent, kills tmux, and removes the worktree, none of which must
 // block the dispatcher's single event goroutine — and is best-effort: the
 // underlying archive is idempotent, so re-archiving an already-archived session
@@ -453,7 +453,7 @@ func (d *Dispatcher) archiveAfterMergeIfEnabled(ctx context.Context, sess *model
 		d.logger.Warn().Err(err).Str("session", sess.ID).Msg("archive-after-merge: repo lookup failed")
 		return
 	}
-	if !repo.ArchiveSessionsAfterMerge {
+	if !repo.ShouldArchiveSessionsAfterMerge {
 		return
 	}
 	sessionID := sess.ID

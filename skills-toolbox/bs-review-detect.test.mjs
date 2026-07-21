@@ -27,6 +27,7 @@ const LENSES = [
   { id: 'go', skill: 'golang-pro', glob: '**/*.go', fallbackRubric: 'go rubric' },
   { id: 'tui', skill: 'tui-design', glob: 'services/boss/**', fallbackRubric: 'tui rubric' },
   { id: 'web', skill: 'impeccable', glob: 'services/web/**', fallbackRubric: 'web rubric' },
+  { id: 'db', skill: 'database-review', glob: '**/migrations/**', fallbackRubric: 'db rubric' },
 ]
 
 test('matchLenses selects the go lens with its skill and fallback for a .go change', () => {
@@ -49,6 +50,26 @@ test('matchLenses matches tui and web by path prefix (and go by suffix)', () => 
 
 test('matchLenses on a docs-only diff returns no lenses (always-on rounds still cover it)', () => {
   assert.deepEqual(matchLenses(['docs/foo.md', 'CONCEPTS.md'], LENSES), [])
+})
+
+test('matchLenses selects the db lens for a migration path with skill database-review', () => {
+  const m = matchLenses(
+    ['services/bossd/migrations/20260101000000_add_x.sql', 'internal/store/store.go'],
+    LENSES,
+  )
+  const db = m.find((x) => x.lens === 'db')
+  assert.ok(db, 'db lens matched')
+  assert.equal(db.skill, 'database-review')
+  assert.equal(db.fallbackRubric, 'db rubric')
+  assert.deepEqual(db.files, ['services/bossd/migrations/20260101000000_add_x.sql'])
+})
+
+test('matchLenses does NOT select the db lens for a non-migration diff', () => {
+  const m = matchLenses(['internal/store/store.go', 'docs/schema.md'], LENSES)
+  assert.ok(
+    !m.some((x) => x.lens === 'db'),
+    'no db lens for a .go/docs diff outside migrations/',
+  )
 })
 
 test('matchLenses with an empty/absent registry degrades to no lenses', () => {

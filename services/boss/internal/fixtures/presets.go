@@ -120,6 +120,17 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// errored-status: two errored (orphaned + blocked) sessions whose live
+		// chat is working, for the BOS-430 session-list proof scenario. The home
+		// STATUS column must show the real "working" status recolored red (danger)
+		// with a spinner, plus the red subtext hint, rather than a static
+		// "orphaned"/"blocked" label. Carries the same cloud-access e2e pin as demo
+		// so the boss subprocess lands on the home session list.
+		"errored-status": {
+			World:      ErroredStatusWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 	}
 }
 

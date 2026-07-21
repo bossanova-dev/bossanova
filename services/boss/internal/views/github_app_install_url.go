@@ -54,6 +54,8 @@ func lookupGitHubAppInstallTargetWithGH(ctx context.Context, nwo string) (github
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
+	// #nosec G204 -- gh api repos/<nwo>; user-selected repo passed as a single argv arg; no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.CommandContext(ctx, "gh", "api", "repos/"+nwo, "--jq", ".owner | [.id, .type] | @tsv")
 	out, err := cmd.Output()
 	if err != nil {

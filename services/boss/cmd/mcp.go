@@ -185,7 +185,8 @@ func fetchOnDiskMcpBuildInfo() string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	// mcpPath comes from daemon.ResolveMcpPath (next to boss or on PATH); args fixed.
+	// #nosec G204 -- <mcpPath> --version on a resolved local binary (daemon.ResolveMcpPath, next-to-boss/PATH); literal args, local-trust.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	out, err := exec.CommandContext(ctx, mcpPath, "--version").Output()
 	if err != nil {
 		return ""

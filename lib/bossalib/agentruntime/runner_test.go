@@ -98,6 +98,58 @@ func TestRunnerStartCapturesOutputToLog(t *testing.T) {
 	}
 }
 
+// TestRunnerStartRedactsPromptFromArgvLog proves the spawn preamble never
+// persists the run prompt. An agent whose BuildArgv puts in.Plan on argv (as
+// opencode must, having no stdin prompt path) has that element replaced with a
+// length-only placeholder in the per-session log, while the non-prompt flags
+// stay visible for debugging.
+func TestRunnerStartRedactsPromptFromArgvLog(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "agent.log")
+	const secret = "SECRET_PROMPT_SENTINEL do not persist this task text"
+
+	r := agentruntime.NewRunner(zerolog.Nop(),
+		agentruntime.Options{
+			BuildArgv: func(in agentruntime.BuildArgvInput) []string {
+				return []string{"opencode", "run", "--auto", in.Plan}
+			},
+			BinaryName: "opencode",
+		},
+		agentruntime.WithCommandFactory(fakeCmd(t, "true")),
+	)
+
+	sid, err := r.Start(context.Background(), dir, secret, nil, "sess-redact", logPath, "", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	deadline := time.After(runnerExitTimeout)
+	for r.IsRunning(sid) {
+		select {
+		case <-deadline:
+			t.Fatal("runner never exited")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	body := string(data)
+	if strings.Contains(body, secret) {
+		t.Errorf("run prompt leaked into the per-session log: %s", body)
+	}
+	// The NDJSON writer HTML-escapes the angle brackets (`<` → `<`), so match
+	// the escape-surviving core of the placeholder rather than the literal `<`.
+	if !strings.Contains(body, "prompt redacted:") {
+		t.Errorf("expected redaction placeholder in spawn preamble; log=%s", body)
+	}
+	// Non-prompt argv (the flags) must remain visible for debugging.
+	if !strings.Contains(body, "--auto") {
+		t.Errorf("expected non-prompt argv (--auto) to remain in the log; log=%s", body)
+	}
+}
+
 // runnerLogTexts runs a fake command that echoes environment markers, waits
 // for exit, and returns the parsed NDJSON "text" lines from the run log.
 func runnerLogTexts(t *testing.T, r *agentruntime.Runner, dir, logPath, sid string, extraEnv map[string]string) []string {

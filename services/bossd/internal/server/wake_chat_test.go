@@ -299,7 +299,7 @@ func TestWakeChatStream_HeadlessRunActive_FailedPrecondition(t *testing.T) {
 // waking it returns AlreadyLive rather than the headless-active error.
 func TestWakeChatInternal_TmuxUnattended_LivePane_NotHeadlessActive(t *testing.T) {
 	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1"}
-	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), TmuxUnattended: true}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), IsTmuxUnattended: true}
 	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
 	s := newWakeTestServer(t, chat, sess, tmuxer)
 	s.chatStatus = status.NewTracker()

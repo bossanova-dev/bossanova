@@ -2,8 +2,8 @@
 // review-lens registry and pick the cross-agent "second voice". Node built-ins
 // only (cron worktrees are dependency-free). The lens registry lives in the
 // declarative skill-config surface (.boss-skills.json) via the sibling
-// skill-config.mjs (BOS-192); glob matching reuses that module's globToRegExp
-// (no new dependency). Vendored into the boss-review skill toolbox (BOS-196).
+// skill-config.mjs; glob matching reuses that module's globToRegExp
+// (no new dependency). Vendored into the boss-review skill toolbox.
 
 import { loadSkillConfig, globToRegExp } from './skill-config.mjs'
 

@@ -1,7 +1,7 @@
 // bs-run-sentinel.mjs
 //
-// Generic run-file sentinel mechanics for the bs-* skills (BOS-143 epic
-// convention-setter). A skill orchestrator dispatches an awaited subagent that
+// Generic run-file sentinel mechanics for the bs-* skills (the bs-* run-sentinel
+// epic convention-setter). A skill orchestrator dispatches an awaited subagent that
 // writes its terminal decision to a run file; the orchestrator then classifies
 // **from that file only** — never from returned prose. The file is keyed by a
 // run id so a leftover sentinel from a crashed prior run reads as `stale`

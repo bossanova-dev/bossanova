@@ -4,7 +4,7 @@
 // wrapper for the merge-time external-blocker re-check. The pure, tracker-
 // agnostic scheduling core (graph construction, ready-set, transitive cascade-
 // skip, merge-order tie-breaking) now lives in dag-scheduler.mjs and is
-// re-exported here so every existing importer is unchanged (BOS-197). All
+// re-exported here so every existing importer is unchanged (a prior refactor). All
 // functions here operate on plain data (no I/O, no Linear client). node
 // builtins only (mirrors linear-deps-lib.mjs — the cron worktree is
 // dependency-free).
@@ -16,7 +16,7 @@ export { buildGraph, transitiveDependents, readyTickets, nextToMerge } from './d
 import { mergeBlockedExternalBlockers as mergeBlockedExternalBlockersPure } from './dag-scheduler.mjs'
 
 // Inlined from the former scripts/linear-deps-lib.mjs so this toolbox module is
-// self-contained (BOS-191). Linear state.type values that mean a blocker no
+// self-contained (a prior inlining). Linear state.type values that mean a blocker no
 // longer blocks — the one tracker-vocabulary seam the pure module refuses to know.
 const BLOCKER_CLEARED_STATE_TYPES = new Set(['completed', 'canceled'])
 
@@ -93,15 +93,26 @@ export function normalizeTicket(issue) {
 }
 
 /**
- * Splits normalized tickets into three buckets:
- *   - `eligible`: stateName Todo AND labels include `agent-friendly` AND
- *     `planUrl` present AND NOT `needs-human`.
+ * Splits normalized tickets into three buckets against the tracker's configured
+ * planned-state name (`plannedState`, e.g. the reference impl's
+ * `trackerConfigFor(config).states.planned`) — the one workflow-state word this
+ * pure module refuses to bake in, so the published core stays project-agnostic:
+ *   - `eligible`: stateName is the planned state AND labels include
+ *     `agent-friendly` AND `planUrl` present AND NOT `needs-human`.
  *   - `done`: state is Done/Canceled (`stateType` in BLOCKER_CLEARED_STATE_TYPES)
  *     — counts as already merged for scheduling purposes.
- *   - `skipped`: everything else (`{ticket, reason}`), e.g. Unplanned,
+ *   - `skipped`: everything else (`{ticket, reason}`), e.g. not-yet-planned,
  *     In Progress, In Review, missing plan, `needs-human`.
+ *
+ * `plannedState` must be a non-empty string (the caller resolves it from the
+ * tracker adapter config); an unresolved value throws rather than silently
+ * marking every ticket eligible or none — a mis-configured repo must not spawn
+ * sessions for unplanned work.
  */
-export function classifyTickets(tickets) {
+export function classifyTickets(tickets, plannedState) {
+  if (typeof plannedState !== 'string' || plannedState.length === 0) {
+    throw new Error('classifyTickets: plannedState (the configured planned-state name) is required')
+  }
   const eligible = []
   const done = []
   const skipped = []
@@ -119,8 +130,11 @@ export function classifyTickets(tickets) {
       skipped.push({ ticket, reason: `${ticket.id}: missing Implementation plan link` })
       continue
     }
-    if (ticket.stateName !== 'Todo') {
-      skipped.push({ ticket, reason: `${ticket.id}: state is ${ticket.stateName}, expected Todo` })
+    if (ticket.stateName !== plannedState) {
+      skipped.push({
+        ticket,
+        reason: `${ticket.id}: state is ${ticket.stateName}, expected ${plannedState}`,
+      })
       continue
     }
     if (!labels.includes('agent-friendly')) {
@@ -133,14 +147,14 @@ export function classifyTickets(tickets) {
 }
 
 const TICKET_ID_RE = /^[A-Za-z]+-\d+$/i
-// A pasted Linear issue URL: https://linear.app/<workspace>/issue/BOS-179/<slug>.
+// A pasted Linear issue URL: https://linear.app/<workspace>/issue/<KEY>-123/<slug>.
 // The captured group is the ticket id; the trailing slug/query/hash is ignored.
 const LINEAR_ISSUE_URL_RE = /^https?:\/\/linear\.app\/[^/]+\/issue\/([A-Za-z]+-\d+)(?:[/?#]|$)/i
 
 /**
  * Resolves a single CLI token to a ticket id, accepting either a bare id
- * (`BOS-179`) or a pasted Linear issue URL
- * (`https://linear.app/<workspace>/issue/BOS-179/<slug>`). Returns the ticket
+ * (`<issue-id>`) or a pasted Linear issue URL
+ * (`https://linear.app/<workspace>/issue/<KEY>-123/<slug>`). Returns the ticket
  * id verbatim, or null when the token is neither (so callers can reject typo'd
  * flags / stray args).
  */
@@ -157,7 +171,7 @@ export function parseTicketRef(arg) {
  * the epic PARENT (`{parentId: id, ids: []}`) — its sub-issues are the work
  * items. Two or more positional refs are an explicit list of work items
  * (`{parentId: null, ids: [...]}`) with no separate parent. Each positional may
- * be a bare ticket id (`BOS-179`) OR a pasted Linear issue URL.
+ * be a bare ticket id (`<issue-id>`) OR a pasted Linear issue URL.
  *
  * Flags: `--parallel N` (integer 1..8, default 4), `--agent <name>` (default
  * 'claude'), and two repeatable operator overrides that treat a named external

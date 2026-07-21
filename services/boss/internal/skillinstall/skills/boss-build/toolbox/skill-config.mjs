@@ -1,9 +1,9 @@
-// Declarative skill-config convention for the boss-* skills (BOS-192).
+// Declarative skill-config convention for the boss-* skills.
 // A single surface (.boss-skills.json at the repo root) that holds the
 // path-glob -> lens map, build/test commands, test-manifest path, headless
 // env-detection signals, and adapter selection the skills used to hard-code.
 // Node builtins ONLY: this module is vendored into the reusable toolbox
-// (BOS-191) and runs in dependency-free cron worktrees.
+// and runs in dependency-free cron worktrees.
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join, dirname, parse as parsePath } from 'node:path'
@@ -72,6 +72,13 @@ export const DEFAULT_CONFIG = Object.freeze({
       fallbackRubric:
         'review through an inline React/TypeScript/web-UI rubric: component correctness, hook/effect races, accessibility, type-boundary cleanliness, dead/duplicated code',
     },
+    {
+      id: 'db',
+      skill: 'database-review',
+      glob: '**/migrations/**',
+      fallbackRubric:
+        'review through an inline schema/migration rubric: audit each changed column/table against the database-design standard — boolean prefixes (is_/has_/should_/can_), count form ({noun}_count not num_*), timestamp form ({event}_at as TEXT ISO-8601, never an epoch integer in an _at column), date form ({event}_on), snake_case identifiers, and foreign-key naming ({singular_table}_id)',
+    },
   ],
   commands: {
     build: 'make build',
@@ -92,8 +99,18 @@ export const DEFAULT_CONFIG = Object.freeze({
     headlessWhenNoTty: true,
   },
   adapters: { tracker: 'linear', publish: 'proof', sessionRunner: 'bossd' },
+  // Concrete tracker / publish identity, keyed by the selected adapter. These blocks
+  // deliberately DEFAULT TO EMPTY: the real values (MCP server name, team, project key, workflow
+  // state names, publish bucket, public base URL) are repo-private data that lives ONLY in a
+  // checkout's own .boss-skills.json, never as a literal in this vendored module — that is what
+  // keeps the published cores project-agnostic. An unconfigured repo (no .boss-skills.json, or one
+  // without a trackerConfig block for its selected tracker) therefore resolves to {} here and
+  // isConfiguredForRepo() returns false, so a core invoked in such a repo self-disables cleanly
+  // instead of demanding an MCP server that does not exist there.
+  trackerConfig: {},
+  publishConfig: {},
   // Versioned wire contract for the `##`-section plan description that boss-plan emits and
-  // boss-build / bs-sweep-plan consume (BOS-204). `version` is the integer contract
+  // boss-build / bs-sweep-plan consume. `version` is the integer contract
   // version stamped in-band as `- Contract: v<N>` under `## Planning`; `sections` is the
   // ordered heading set as emitted, each classed `always` (every plan carries it) or
   // conditional (`needs-human` / `open-questions`). v1 == today's exact section set —
@@ -148,7 +165,7 @@ export function mergeConfig(base, override) {
 
 export const ADAPTER_KINDS = new Set(['tracker', 'publish', 'sessionRunner'])
 
-// The `required` classifications a planContract section may carry (BOS-204).
+// The `required` classifications a planContract section may carry.
 export const PLAN_SECTION_REQUIRED_KINDS = new Set(['always', 'needs-human', 'open-questions'])
 
 export function validateConfig(config, source) {
@@ -229,6 +246,61 @@ export function validateConfig(config, source) {
     // selection yields undefined downstream, so require a non-empty string here.
     if (typeof config.adapters[kind] !== 'string' || config.adapters[kind].length === 0) {
       fail(`adapters.${kind} must be a non-empty string`)
+    }
+  }
+  // trackerConfig / publishConfig: optional per-adapter identity blocks. Absent or
+  // empty is the norm (DEFAULT_CONFIG ships them as {}), so only a present-but-malformed override
+  // fails here — a raw TypeError deep in isConfiguredForRepo()/trackerConfigFor() would otherwise
+  // surface as an opaque crash mid-run instead of the promised skill-config: error.
+  if (
+    config.trackerConfig == null ||
+    typeof config.trackerConfig !== 'object' ||
+    Array.isArray(config.trackerConfig)
+  ) {
+    fail('trackerConfig must be an object')
+  }
+  for (const [adapter, tc] of Object.entries(config.trackerConfig)) {
+    if (!tc || typeof tc !== 'object' || Array.isArray(tc)) {
+      fail(`trackerConfig.${adapter} must be an object`)
+    }
+    // mcpServer + team are the load-bearing identity a core needs to reach a real tracker;
+    // isConfiguredForRepo() keys on them, so an entry missing either is not a usable config.
+    for (const field of ['mcpServer', 'team']) {
+      if (typeof tc[field] !== 'string' || tc[field].length === 0) {
+        fail(`trackerConfig.${adapter}.${field} must be a non-empty string`)
+      }
+    }
+    for (const field of ['teamKey', 'workspace']) {
+      if (field in tc && (typeof tc[field] !== 'string' || tc[field].length === 0)) {
+        fail(`trackerConfig.${adapter}.${field} must be a non-empty string when present`)
+      }
+    }
+    if ('states' in tc) {
+      if (!tc.states || typeof tc.states !== 'object' || Array.isArray(tc.states)) {
+        fail(`trackerConfig.${adapter}.states must be an object when present`)
+      }
+      for (const [role, name] of Object.entries(tc.states)) {
+        if (typeof name !== 'string' || name.length === 0) {
+          fail(`trackerConfig.${adapter}.states.${role} must be a non-empty string`)
+        }
+      }
+    }
+  }
+  if (
+    config.publishConfig == null ||
+    typeof config.publishConfig !== 'object' ||
+    Array.isArray(config.publishConfig)
+  ) {
+    fail('publishConfig must be an object')
+  }
+  for (const [adapter, pc] of Object.entries(config.publishConfig)) {
+    if (!pc || typeof pc !== 'object' || Array.isArray(pc)) {
+      fail(`publishConfig.${adapter} must be an object`)
+    }
+    for (const field of ['bucket', 'baseUrl']) {
+      if (typeof pc[field] !== 'string' || pc[field].length === 0) {
+        fail(`publishConfig.${adapter}.${field} must be a non-empty string`)
+      }
     }
   }
   // planContract is the extension point this feature exists for (a consuming repo overrides
@@ -350,7 +422,66 @@ export function adapterFor(config, kind) {
   return config.adapters[kind]
 }
 
-// --- Plan-description contract (BOS-204) -----------------------------------
+// --- Per-adapter identity resolution + configured-repo probe ---------------
+
+/**
+ * The concrete tracker identity block for the selected (or named) tracker adapter, or null when
+ * the repo carries none. Defaults the adapter to the tracker selection in `adapters.tracker` so a
+ * core can call `trackerConfigFor(config)` without re-deriving it.
+ * @returns {{ mcpServer: string, team: string, teamKey?: string, workspace?: string, states?: Record<string,string> } | null}
+ */
+export function trackerConfigFor(config, adapter = adapterFor(config, 'tracker')) {
+  const tc = config.trackerConfig?.[adapter]
+  return tc && typeof tc === 'object' ? tc : null
+}
+
+/**
+ * The concrete publish-store identity block for the selected (or named) publish adapter, or null.
+ * @returns {{ bucket: string, baseUrl: string } | null}
+ */
+export function publishConfigFor(config, adapter = adapterFor(config, 'publish')) {
+  const pc = config.publishConfig?.[adapter]
+  return pc && typeof pc === 'object' ? pc : null
+}
+
+/**
+ * Is this checkout wired to a concrete tracker? True iff the selected tracker adapter has an
+ * identity block carrying the load-bearing fields (a non-empty mcpServer + team). This is the
+ * preflight self-disable probe: a repo with no .boss-skills.json (or one without a trackerConfig
+ * block for its tracker) resolves false, and a core invoked there stops with one clear line and
+ * makes no tracker write instead of demanding an MCP server that does not exist in that repo.
+ * validateConfig() already rejects a present-but-partial block, so a truthy resolve is a usable one.
+ */
+export function isConfiguredForRepo(config) {
+  const tc = trackerConfigFor(config)
+  return Boolean(
+    tc &&
+    typeof tc.mcpServer === 'string' &&
+    tc.mcpServer.length > 0 &&
+    typeof tc.team === 'string' &&
+    tc.team.length > 0,
+  )
+}
+
+/**
+ * Stricter planning-readiness probe for boss-plan's preflight. isConfiguredForRepo() only proves the
+ * tracker identity (mcpServer + team); boss-plan additionally resolves state by role — the unplanned
+ * and planned states for selection and write-back, plus inProgress/inReview for the active-backlog
+ * reads — from trackerConfigFor(config).states. validateConfig() leaves the states map optional (other
+ * cores need only the identity), so a repo configured for those cores but missing boss-plan's state
+ * roles would pass isConfiguredForRepo() and then read/write with undefined state names. Require the
+ * full role map here so boss-plan self-disables cleanly in such a repo instead of failing mid-run
+ * after drafting work.
+ */
+export function isConfiguredForPlanning(config) {
+  if (!isConfiguredForRepo(config)) return false
+  const states = (trackerConfigFor(config) || {}).states || {}
+  return ['unplanned', 'planned', 'inProgress', 'inReview'].every(
+    (role) => typeof states[role] === 'string' && states[role].length > 0,
+  )
+}
+
+// --- Plan-description contract ---------------------------------------------
 
 /** The integer version of the plan-description section contract (default 1). */
 export function planContractVersion(config) {

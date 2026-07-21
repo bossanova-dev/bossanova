@@ -1,0 +1,8 @@
+{
+  "label": "Skills",
+  "collapsed": false,
+  "link": {
+    "type": "generated-index",
+    "description": "The boss-* skill suite that automates the ticket-to-merged-PR lifecycle, and the extension system that adapts it per repo."
+  }
+}

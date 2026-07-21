@@ -35,7 +35,11 @@ export const VENDOR_MAP = {
   // `./dag-scheduler.mjs` import resolves. Its test file stays in skills-toolbox/
   // only (test files are not vendored, matching bs-epic-lib.test.mjs).
   'boss-epic': ['bs-run-sentinel.mjs', 'bs-epic-lib.mjs', 'dag-scheduler.mjs'],
-  'boss-plan': ['bs-run-sentinel.mjs'],
+  // skill-config.mjs exposes loadSkillConfig + isConfiguredForRepo, the direct deps of
+  // boss-plan's Phase 0 preflight self-disable. boss-plan ships to user repos via the
+  // embedded skillinstall payload (no repo-root skills-toolbox/), so the helper must be
+  // co-located in this skill's own toolbox rather than referenced from another copy.
+  'boss-plan': ['bs-run-sentinel.mjs', 'skill-config.mjs'],
   'bs-sweep-debt': ['bs-run-sentinel.mjs'],
   'bs-sweep-mutation': ['bs-run-sentinel.mjs'],
   'bs-sweep-security': ['bs-run-sentinel.mjs'],

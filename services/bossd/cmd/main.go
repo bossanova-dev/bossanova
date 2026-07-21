@@ -443,6 +443,11 @@ const (
 )
 
 func main() {
+	// Raise RLIMIT_NOFILE before spawning anything so every child (setup
+	// scripts, agent runners, git, codegen) inherits the higher limit and
+	// FD-heavy steps don't die with EMFILE. Best-effort; never fails the daemon.
+	raiseFileLimit()
+
 	showVersion := flag.Bool("version", false, "Print version information and exit")
 	flag.Parse()
 
@@ -2135,7 +2140,7 @@ func run(opts runOpts) error {
 	orchestrator.SetSessionArchiver(taskorchestrator.SessionArchiverFunc(srv.ArchiveSessionAndNotify))
 
 	// Auto-archive a session when its PR merges, if the repo has the
-	// ArchiveSessionsAfterMerge flag on (BOS-46). Reuses the same
+	// ShouldArchiveSessionsAfterMerge flag on (BOS-46). Reuses the same
 	// archive-and-notify path as the dependabot auto-archive above.
 	dispatcher.SetArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify))
 
@@ -2670,14 +2675,14 @@ func (a sessionGetterAdapter) GetSession(ctx context.Context, id string) (*bossa
 }
 
 // automationToggleAdapter exposes db.SessionStore.Update's
-// AutomationEnabled field as a narrow interface so the pause/resume
+// IsAutomationEnabled field as a narrow interface so the pause/resume
 // command path doesn't need the full update surface.
 type automationToggleAdapter struct {
 	sessions db.SessionStore
 }
 
-func (a automationToggleAdapter) SetAutomationEnabled(ctx context.Context, sessionID string, enabled bool) error {
-	_, err := a.sessions.Update(ctx, sessionID, db.UpdateSessionParams{AutomationEnabled: &enabled})
+func (a automationToggleAdapter) SetIsAutomationEnabled(ctx context.Context, sessionID string, enabled bool) error {
+	_, err := a.sessions.Update(ctx, sessionID, db.UpdateSessionParams{IsAutomationEnabled: &enabled})
 	return err
 }
 

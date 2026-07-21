@@ -150,16 +150,16 @@ func (c *RemoteClient) UpdateRepo(ctx context.Context, req *pb.UpdateRepoRequest
 		return nil, err
 	}
 	proxyReq := &pb.ProxyUpdateRepoRequest{
-		DaemonId:                  daemonID,
-		RepoId:                    req.GetId(),
-		DisplayName:               req.DisplayName,
-		SetupScript:               req.SetupScript,
-		CanAutoMerge:              req.CanAutoMerge,
-		CanAutoMergeDependabot:    req.CanAutoMergeDependabot,
-		CanAutoRepair:             req.CanAutoRepair,
-		ArchiveSessionsAfterMerge: req.ArchiveSessionsAfterMerge,
-		SentryOrg:                 req.SentryOrg,
-		ExpectedUpdatedAt:         req.GetExpectedUpdatedAt(),
+		DaemonId:                        daemonID,
+		RepoId:                          req.GetId(),
+		DisplayName:                     req.DisplayName,
+		SetupScript:                     req.SetupScript,
+		CanAutoMerge:                    req.CanAutoMerge,
+		CanAutoMergeDependabot:          req.CanAutoMergeDependabot,
+		CanAutoRepair:                   req.CanAutoRepair,
+		ShouldArchiveSessionsAfterMerge: req.ShouldArchiveSessionsAfterMerge,
+		SentryOrg:                       req.SentryOrg,
+		ExpectedUpdatedAt:               req.GetExpectedUpdatedAt(),
 	}
 	if req.MergeStrategy != nil {
 		ms := remoteMergeStrategyStringToEnum(req.GetMergeStrategy())
@@ -236,15 +236,15 @@ func remoteSettingsToRepo(s *pb.RepoSettings) *pb.Repo {
 		return nil
 	}
 	repo := &pb.Repo{
-		Id:                        s.GetId(),
-		DisplayName:               s.GetDisplayName(),
-		MergeStrategy:             remoteMergeStrategyEnumToString(s.GetMergeStrategy()),
-		CanAutoMerge:              s.GetCanAutoMerge(),
-		CanAutoMergeDependabot:    s.GetCanAutoMergeDependabot(),
-		CanAutoRepair:             s.GetCanAutoRepair(),
-		ArchiveSessionsAfterMerge: s.GetArchiveSessionsAfterMerge(),
-		SentryOrg:                 s.GetSentryOrg(),
-		UpdatedAt:                 s.GetUpdatedAt(),
+		Id:                              s.GetId(),
+		DisplayName:                     s.GetDisplayName(),
+		MergeStrategy:                   remoteMergeStrategyEnumToString(s.GetMergeStrategy()),
+		CanAutoMerge:                    s.GetCanAutoMerge(),
+		CanAutoMergeDependabot:          s.GetCanAutoMergeDependabot(),
+		CanAutoRepair:                   s.GetCanAutoRepair(),
+		ShouldArchiveSessionsAfterMerge: s.GetShouldArchiveSessionsAfterMerge(),
+		SentryOrg:                       s.GetSentryOrg(),
+		UpdatedAt:                       s.GetUpdatedAt(),
 	}
 	if s.SetupScript != nil {
 		repo.SetupScript = s.SetupScript
@@ -609,16 +609,16 @@ func (c *RemoteClient) ListGitHubAppRepos(ctx context.Context) ([]*pb.GitHubAppR
 // when the caller has more than one — never a silent guess).
 func (c *RemoteClient) CreateCronJob(ctx context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
 	resp, err := c.rpc.ProxyCreateCronJob(ctx, connect.NewRequest(&pb.ProxyCreateCronJobRequest{
-		RepoId:          req.GetRepoId(),
-		Name:            req.GetName(),
-		Prompt:          req.GetPrompt(),
-		Schedule:        req.GetSchedule(),
-		Timezone:        req.GetTimezone(),
-		Enabled:         req.GetEnabled(),
-		AgentName:       req.GetAgentName(),
-		Model:           req.GetModel(),
-		GateCommand:     req.GetGateCommand(),
-		RunSetupCommand: req.RunSetupCommand,
+		RepoId:                req.GetRepoId(),
+		Name:                  req.GetName(),
+		Prompt:                req.GetPrompt(),
+		Schedule:              req.GetSchedule(),
+		Timezone:              req.GetTimezone(),
+		IsEnabled:             req.GetIsEnabled(),
+		AgentName:             req.GetAgentName(),
+		Model:                 req.GetModel(),
+		GateCommand:           req.GetGateCommand(),
+		ShouldRunSetupCommand: req.ShouldRunSetupCommand,
 	}))
 	if err != nil {
 		return nil, err
@@ -661,16 +661,16 @@ func (c *RemoteClient) ListCronJobs(ctx context.Context, repoID string) ([]*pb.C
 // pointers pass straight through so an unset field leaves the value untouched.
 func (c *RemoteClient) UpdateCronJob(ctx context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
 	resp, err := c.rpc.ProxyUpdateCronJob(ctx, connect.NewRequest(&pb.ProxyUpdateCronJobRequest{
-		Id:              req.GetId(),
-		Name:            req.Name,
-		Prompt:          req.Prompt,
-		Schedule:        req.Schedule,
-		Timezone:        req.Timezone,
-		Enabled:         req.Enabled,
-		AgentName:       req.AgentName,
-		Model:           req.Model,
-		GateCommand:     req.GateCommand,
-		RunSetupCommand: req.RunSetupCommand,
+		Id:                    req.GetId(),
+		Name:                  req.Name,
+		Prompt:                req.Prompt,
+		Schedule:              req.Schedule,
+		Timezone:              req.Timezone,
+		IsEnabled:             req.IsEnabled,
+		AgentName:             req.AgentName,
+		Model:                 req.Model,
+		GateCommand:           req.GateCommand,
+		ShouldRunSetupCommand: req.ShouldRunSetupCommand,
 	}))
 	if err != nil {
 		return nil, err

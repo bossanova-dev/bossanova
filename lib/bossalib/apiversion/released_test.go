@@ -53,7 +53,7 @@ func TestMissingReleased_DetectsSimulatedRemoval(t *testing.T) {
 	// reported missing, in ReleasedVersions order.
 	shrunk := []apiversion.Version{apiversion.Baseline}
 	missing := apiversion.MissingReleased(shrunk)
-	want := []apiversion.Version{apiversion.V20260704, apiversion.V20260705, apiversion.V20260706, apiversion.V20260711}
+	want := []apiversion.Version{apiversion.V20260704, apiversion.V20260705, apiversion.V20260706, apiversion.V20260711, apiversion.V20260718}
 	if len(missing) != len(want) {
 		t.Fatalf("MissingReleased(%v) = %v, want %v — the append-only guard must detect every dropped shipped version",
 			shrunk, missing, want)

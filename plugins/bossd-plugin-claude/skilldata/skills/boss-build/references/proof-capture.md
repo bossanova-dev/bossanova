@@ -18,8 +18,8 @@ it post the honest structured note. It classifies the outcome for you:
 - **env-unavailable** — a required key or toolchain is missing; the note embeds the doctor report
   naming exactly what is absent, and exits 0 so a human can provision it.
 - **scenario-missing** — a TUI change shipped without a committed `proof/scenarios/*.scenario.json`
-  demonstrating it; the note names the missing scenario and exits 1 — proof is required for TUI
-  (BOS-226). Author a scenario (below) so the deterministic TUI proof can run.
+  demonstrating it; the note names the missing scenario and exits 1 — proof is required for TUI.
+  Author a scenario (below) so the deterministic TUI proof can run.
 - **pipeline-error** — a proof-pipeline bug (render/encode/bridge crash); the note names the failing
   stage and never blames the environment; exits 1 as an internal retry signal only.
 - **agent-incomplete** — a real surface the agent could not demonstrate; exits 1 (internal signal).
@@ -62,7 +62,7 @@ flaky live-agent TUI capture: it drives the real TUI through named scenes over t
 asserts what each settled screen shows — so the proof is reproducible with **no** `PROOF_ANTHROPIC_API_KEY`.
 
 If the diff ships without one, the pipeline posts a single **scenario-missing** deferred note and
-exits 1 — proof is required for TUI (BOS-226) — so author the scenario now, as part of
+exits 1 — proof is required for TUI — so author the scenario now, as part of
 the change, not as an afterthought. A scenario gates **only its own PR** — never add path rules, and
 never edit another PR's scenario.
 

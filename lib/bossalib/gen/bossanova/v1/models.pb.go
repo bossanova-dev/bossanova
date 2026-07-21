@@ -1465,7 +1465,7 @@ type Repo struct {
 	CanAutoRepair bool `protobuf:"varint,21,opt,name=can_auto_repair,json=canAutoRepair,proto3" json:"can_auto_repair,omitempty"`
 	// Whether the daemon automatically archives a session once its PR is merged.
 	// Honored by the session dispatcher on the PR-merged transition. Defaults on.
-	ArchiveSessionsAfterMerge bool `protobuf:"varint,22,opt,name=archive_sessions_after_merge,json=archiveSessionsAfterMerge,proto3" json:"archive_sessions_after_merge,omitempty"`
+	ShouldArchiveSessionsAfterMerge bool `protobuf:"varint,22,opt,name=should_archive_sessions_after_merge,json=shouldArchiveSessionsAfterMerge,proto3" json:"should_archive_sessions_after_merge,omitempty"`
 	// Whether the daemon automatically deletes a session's git branch once its
 	// session is archived. Honored by the session dispatcher. Defaults on.
 	CanAutoDeleteBranches bool   `protobuf:"varint,23,opt,name=can_auto_delete_branches,json=canAutoDeleteBranches,proto3" json:"can_auto_delete_branches,omitempty"`
@@ -1600,9 +1600,9 @@ func (x *Repo) GetCanAutoRepair() bool {
 	return false
 }
 
-func (x *Repo) GetArchiveSessionsAfterMerge() bool {
+func (x *Repo) GetShouldArchiveSessionsAfterMerge() bool {
 	if x != nil {
-		return x.ArchiveSessionsAfterMerge
+		return x.ShouldArchiveSessionsAfterMerge
 	}
 	return false
 }
@@ -1704,13 +1704,13 @@ type RepoSettings struct {
 	// Whether the daemon auto-archives a session once its PR is merged (BOS-46).
 	// Projected here so web/cloud repo settings can see and toggle it, matching the
 	// local daemon UpdateRepo surface. Defaults on.
-	ArchiveSessionsAfterMerge bool                   `protobuf:"varint,12,opt,name=archive_sessions_after_merge,json=archiveSessionsAfterMerge,proto3" json:"archive_sessions_after_merge,omitempty"`
-	SentryOrg                 string                 `protobuf:"bytes,8,opt,name=sentry_org,json=sentryOrg,proto3" json:"sentry_org,omitempty"`
-	HasLinearKey              bool                   `protobuf:"varint,9,opt,name=has_linear_key,json=hasLinearKey,proto3" json:"has_linear_key,omitempty"`
-	HasSentryKey              bool                   `protobuf:"varint,10,opt,name=has_sentry_key,json=hasSentryKey,proto3" json:"has_sentry_key,omitempty"`
-	UpdatedAt                 *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // echoed for optimistic concurrency
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	ShouldArchiveSessionsAfterMerge bool                   `protobuf:"varint,12,opt,name=should_archive_sessions_after_merge,json=shouldArchiveSessionsAfterMerge,proto3" json:"should_archive_sessions_after_merge,omitempty"`
+	SentryOrg                       string                 `protobuf:"bytes,8,opt,name=sentry_org,json=sentryOrg,proto3" json:"sentry_org,omitempty"`
+	HasLinearKey                    bool                   `protobuf:"varint,9,opt,name=has_linear_key,json=hasLinearKey,proto3" json:"has_linear_key,omitempty"`
+	HasSentryKey                    bool                   `protobuf:"varint,10,opt,name=has_sentry_key,json=hasSentryKey,proto3" json:"has_sentry_key,omitempty"`
+	UpdatedAt                       *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // echoed for optimistic concurrency
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
 }
 
 func (x *RepoSettings) Reset() {
@@ -1792,9 +1792,9 @@ func (x *RepoSettings) GetCanAutoRepair() bool {
 	return false
 }
 
-func (x *RepoSettings) GetArchiveSessionsAfterMerge() bool {
+func (x *RepoSettings) GetShouldArchiveSessionsAfterMerge() bool {
 	if x != nil {
-		return x.ArchiveSessionsAfterMerge
+		return x.ShouldArchiveSessionsAfterMerge
 	}
 	return false
 }
@@ -1829,25 +1829,25 @@ func (x *RepoSettings) GetUpdatedAt() *timestamppb.Timestamp {
 
 // Session represents a coding-agent session.
 type Session struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Id                string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	RepoId            string                 `protobuf:"bytes,2,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
-	Title             string                 `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
-	Plan              string                 `protobuf:"bytes,4,opt,name=plan,proto3" json:"plan,omitempty"`
-	WorktreePath      string                 `protobuf:"bytes,5,opt,name=worktree_path,json=worktreePath,proto3" json:"worktree_path,omitempty"`
-	BranchName        string                 `protobuf:"bytes,6,opt,name=branch_name,json=branchName,proto3" json:"branch_name,omitempty"`
-	BaseBranch        string                 `protobuf:"bytes,7,opt,name=base_branch,json=baseBranch,proto3" json:"base_branch,omitempty"`
-	State             SessionState           `protobuf:"varint,8,opt,name=state,proto3,enum=bossanova.v1.SessionState" json:"state,omitempty"`
-	AgentSessionId    *string                `protobuf:"bytes,9,opt,name=agent_session_id,json=agentSessionId,proto3,oneof" json:"agent_session_id,omitempty"`
-	PrNumber          *int32                 `protobuf:"varint,10,opt,name=pr_number,json=prNumber,proto3,oneof" json:"pr_number,omitempty"`
-	PrUrl             *string                `protobuf:"bytes,11,opt,name=pr_url,json=prUrl,proto3,oneof" json:"pr_url,omitempty"`
-	LastCheckState    ChecksOverall          `protobuf:"varint,12,opt,name=last_check_state,json=lastCheckState,proto3,enum=bossanova.v1.ChecksOverall" json:"last_check_state,omitempty"`
-	AutomationEnabled bool                   `protobuf:"varint,13,opt,name=automation_enabled,json=automationEnabled,proto3" json:"automation_enabled,omitempty"`
-	AttemptCount      int32                  `protobuf:"varint,14,opt,name=attempt_count,json=attemptCount,proto3" json:"attempt_count,omitempty"`
-	BlockedReason     *string                `protobuf:"bytes,15,opt,name=blocked_reason,json=blockedReason,proto3,oneof" json:"blocked_reason,omitempty"`
-	ArchivedAt        *timestamppb.Timestamp `protobuf:"bytes,16,opt,name=archived_at,json=archivedAt,proto3,oneof" json:"archived_at,omitempty"`
-	CreatedAt         *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Id                  string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	RepoId              string                 `protobuf:"bytes,2,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
+	Title               string                 `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
+	Plan                string                 `protobuf:"bytes,4,opt,name=plan,proto3" json:"plan,omitempty"`
+	WorktreePath        string                 `protobuf:"bytes,5,opt,name=worktree_path,json=worktreePath,proto3" json:"worktree_path,omitempty"`
+	BranchName          string                 `protobuf:"bytes,6,opt,name=branch_name,json=branchName,proto3" json:"branch_name,omitempty"`
+	BaseBranch          string                 `protobuf:"bytes,7,opt,name=base_branch,json=baseBranch,proto3" json:"base_branch,omitempty"`
+	State               SessionState           `protobuf:"varint,8,opt,name=state,proto3,enum=bossanova.v1.SessionState" json:"state,omitempty"`
+	AgentSessionId      *string                `protobuf:"bytes,9,opt,name=agent_session_id,json=agentSessionId,proto3,oneof" json:"agent_session_id,omitempty"`
+	PrNumber            *int32                 `protobuf:"varint,10,opt,name=pr_number,json=prNumber,proto3,oneof" json:"pr_number,omitempty"`
+	PrUrl               *string                `protobuf:"bytes,11,opt,name=pr_url,json=prUrl,proto3,oneof" json:"pr_url,omitempty"`
+	LastCheckState      ChecksOverall          `protobuf:"varint,12,opt,name=last_check_state,json=lastCheckState,proto3,enum=bossanova.v1.ChecksOverall" json:"last_check_state,omitempty"`
+	IsAutomationEnabled bool                   `protobuf:"varint,13,opt,name=is_automation_enabled,json=isAutomationEnabled,proto3" json:"is_automation_enabled,omitempty"`
+	AttemptCount        int32                  `protobuf:"varint,14,opt,name=attempt_count,json=attemptCount,proto3" json:"attempt_count,omitempty"`
+	BlockedReason       *string                `protobuf:"bytes,15,opt,name=blocked_reason,json=blockedReason,proto3,oneof" json:"blocked_reason,omitempty"`
+	ArchivedAt          *timestamppb.Timestamp `protobuf:"bytes,16,opt,name=archived_at,json=archivedAt,proto3,oneof" json:"archived_at,omitempty"`
+	CreatedAt           *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt           *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	// Denormalized repo display name, populated server-side for convenience.
 	RepoDisplayName string `protobuf:"bytes,19,opt,name=repo_display_name,json=repoDisplayName,proto3" json:"repo_display_name,omitempty"`
 	// PR display status, hydrated server-side from the PR display tracker.
@@ -1968,16 +1968,16 @@ type Session struct {
 	// the transient blue "merging" display status. Distinct from
 	// display_is_repairing (24) / display_setting_up (48).
 	DisplayMerging bool `protobuf:"varint,60,opt,name=display_merging,json=displayMerging,proto3" json:"display_merging,omitempty"`
-	// Denormalized repo.archive_sessions_after_merge, populated server-side by
+	// Denormalized repo.should_archive_sessions_after_merge, populated server-side by
 	// GetSession so the TUI session-detail view can show an "Archiving…" status
 	// and know a merged session is about to be auto-archived (BOS-46 follow-up).
-	RepoArchiveSessionsAfterMerge bool `protobuf:"varint,61,opt,name=repo_archive_sessions_after_merge,json=repoArchiveSessionsAfterMerge,proto3" json:"repo_archive_sessions_after_merge,omitempty"`
+	RepoShouldArchiveSessionsAfterMerge bool `protobuf:"varint,61,opt,name=repo_should_archive_sessions_after_merge,json=repoShouldArchiveSessionsAfterMerge,proto3" json:"repo_should_archive_sessions_after_merge,omitempty"`
 	// True while an archive (ArchiveSession) is actually in flight for this
 	// session. Transport-only: hydrated server-side from the in-memory
 	// DisplayTracker and never persisted. Set/cleared around the single archive
 	// chokepoint (Lifecycle.ArchiveSession) so the TUI renders "Archiving…" only
 	// when the daemon has an archive running — not inferred from steady-state
-	// MERGED + repo_archive_sessions_after_merge, which stays true forever for a
+	// MERGED + repo_should_archive_sessions_after_merge, which stays true forever for a
 	// merged→archived→resurrected session (BOS-425). Mirrors display_merging (60).
 	ArchivePending bool `protobuf:"varint,62,opt,name=archive_pending,json=archivePending,proto3" json:"archive_pending,omitempty"`
 	unknownFields  protoimpl.UnknownFields
@@ -2098,9 +2098,9 @@ func (x *Session) GetLastCheckState() ChecksOverall {
 	return ChecksOverall_CHECKS_OVERALL_UNSPECIFIED
 }
 
-func (x *Session) GetAutomationEnabled() bool {
+func (x *Session) GetIsAutomationEnabled() bool {
 	if x != nil {
-		return x.AutomationEnabled
+		return x.IsAutomationEnabled
 	}
 	return false
 }
@@ -2434,9 +2434,9 @@ func (x *Session) GetDisplayMerging() bool {
 	return false
 }
 
-func (x *Session) GetRepoArchiveSessionsAfterMerge() bool {
+func (x *Session) GetRepoShouldArchiveSessionsAfterMerge() bool {
 	if x != nil {
-		return x.RepoArchiveSessionsAfterMerge
+		return x.RepoShouldArchiveSessionsAfterMerge
 	}
 	return false
 }
@@ -3786,23 +3786,23 @@ type CronJob struct {
 	Prompt           string                 `protobuf:"bytes,4,opt,name=prompt,proto3" json:"prompt,omitempty"`
 	Schedule         string                 `protobuf:"bytes,5,opt,name=schedule,proto3" json:"schedule,omitempty"` // 5-field cron expression (or @daily, @hourly, etc.)
 	Timezone         string                 `protobuf:"bytes,6,opt,name=timezone,proto3" json:"timezone,omitempty"` // optional IANA tz name; empty = daemon-local
-	Enabled          bool                   `protobuf:"varint,7,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	IsEnabled        bool                   `protobuf:"varint,7,opt,name=is_enabled,json=isEnabled,proto3" json:"is_enabled,omitempty"`
 	LastRunSessionId string                 `protobuf:"bytes,8,opt,name=last_run_session_id,json=lastRunSessionId,proto3" json:"last_run_session_id,omitempty"` // empty if never run
 	LastRunAt        *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=last_run_at,json=lastRunAt,proto3" json:"last_run_at,omitempty"`
 	LastRunOutcome   string                 `protobuf:"bytes,10,opt,name=last_run_outcome,json=lastRunOutcome,proto3" json:"last_run_outcome,omitempty"` // one of: deleted_no_changes, pr_created,
 	// pr_skipped_no_github, pr_failed,
 	// chat_spawn_failed, cleanup_failed,
 	// failed_recovered, fire_failed
-	NextRunAt       *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=next_run_at,json=nextRunAt,proto3" json:"next_run_at,omitempty"`
-	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	LastRunStatus   CronJobStatus          `protobuf:"varint,14,opt,name=last_run_status,json=lastRunStatus,proto3,enum=bossanova.v1.CronJobStatus" json:"last_run_status,omitempty"` // derived; not persisted
-	AgentName       string                 `protobuf:"bytes,15,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`                                                // agent runner plugin name; empty legacy data defaults to claude
-	Model           string                 `protobuf:"bytes,16,opt,name=model,proto3" json:"model,omitempty"`                                                                         // opaque agent model id; "" = plugin default. Never enumerated by bossd.
-	GateCommand     string                 `protobuf:"bytes,17,opt,name=gate_command,json=gateCommand,proto3" json:"gate_command,omitempty"`                                          // optional gate command run before each fire; empty = no gate
-	RunSetupCommand bool                   `protobuf:"varint,18,opt,name=run_setup_command,json=runSetupCommand,proto3" json:"run_setup_command,omitempty"`                           // run the repo setup script before the agent; default true
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	NextRunAt             *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=next_run_at,json=nextRunAt,proto3" json:"next_run_at,omitempty"`
+	CreatedAt             *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt             *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	LastRunStatus         CronJobStatus          `protobuf:"varint,14,opt,name=last_run_status,json=lastRunStatus,proto3,enum=bossanova.v1.CronJobStatus" json:"last_run_status,omitempty"` // derived; not persisted
+	AgentName             string                 `protobuf:"bytes,15,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`                                                // agent runner plugin name; empty legacy data defaults to claude
+	Model                 string                 `protobuf:"bytes,16,opt,name=model,proto3" json:"model,omitempty"`                                                                         // opaque agent model id; "" = plugin default. Never enumerated by bossd.
+	GateCommand           string                 `protobuf:"bytes,17,opt,name=gate_command,json=gateCommand,proto3" json:"gate_command,omitempty"`                                          // optional gate command run before each fire; empty = no gate
+	ShouldRunSetupCommand bool                   `protobuf:"varint,18,opt,name=should_run_setup_command,json=shouldRunSetupCommand,proto3" json:"should_run_setup_command,omitempty"`       // run the repo setup script before the agent; default true
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *CronJob) Reset() {
@@ -3877,9 +3877,9 @@ func (x *CronJob) GetTimezone() string {
 	return ""
 }
 
-func (x *CronJob) GetEnabled() bool {
+func (x *CronJob) GetIsEnabled() bool {
 	if x != nil {
-		return x.Enabled
+		return x.IsEnabled
 	}
 	return false
 }
@@ -3954,9 +3954,9 @@ func (x *CronJob) GetGateCommand() string {
 	return ""
 }
 
-func (x *CronJob) GetRunSetupCommand() bool {
+func (x *CronJob) GetShouldRunSetupCommand() bool {
 	if x != nil {
-		return x.RunSetupCommand
+		return x.ShouldRunSetupCommand
 	}
 	return false
 }
@@ -4312,7 +4312,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	" \x01(\tR\x06detail\x129\n" +
 	"\n" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAtB\v\n" +
-	"\t_reset_at\"\xb5\x06\n" +
+	"\t_reset_at\"\xc2\x06\n" +
 	"\x04Repo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x1d\n" +
@@ -4331,8 +4331,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	" \x01(\bR\fcanAutoMerge\x129\n" +
 	"\x19can_auto_merge_dependabot\x18\v \x01(\bR\x16canAutoMergeDependabot\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategy\x12&\n" +
-	"\x0fcan_auto_repair\x18\x15 \x01(\bR\rcanAutoRepair\x12?\n" +
-	"\x1carchive_sessions_after_merge\x18\x16 \x01(\bR\x19archiveSessionsAfterMerge\x127\n" +
+	"\x0fcan_auto_repair\x18\x15 \x01(\bR\rcanAutoRepair\x12L\n" +
+	"#should_archive_sessions_after_merge\x18\x16 \x01(\bR\x1fshouldArchiveSessionsAfterMerge\x127\n" +
 	"\x18can_auto_delete_branches\x18\x17 \x01(\bR\x15canAutoDeleteBranches\x12$\n" +
 	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKey\x12$\n" +
 	"\x0esentry_api_key\x18\x11 \x01(\tR\fsentryApiKey\x12\x1d\n" +
@@ -4342,7 +4342,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\fSecretUpdate\x122\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x1a.bossanova.v1.SecretActionR\x06action\x12\x19\n" +
 	"\x05value\x18\x02 \x01(\tH\x00R\x05value\x88\x01\x01B\b\n" +
-	"\x06_value\"\xae\x04\n" +
+	"\x06_value\"\xbb\x04\n" +
 	"\fRepoSettings\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12&\n" +
@@ -4350,8 +4350,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0emerge_strategy\x18\x04 \x01(\x0e2\x1b.bossanova.v1.MergeStrategyR\rmergeStrategy\x12$\n" +
 	"\x0ecan_auto_merge\x18\x05 \x01(\bR\fcanAutoMerge\x129\n" +
 	"\x19can_auto_merge_dependabot\x18\x06 \x01(\bR\x16canAutoMergeDependabot\x12&\n" +
-	"\x0fcan_auto_repair\x18\a \x01(\bR\rcanAutoRepair\x12?\n" +
-	"\x1carchive_sessions_after_merge\x18\f \x01(\bR\x19archiveSessionsAfterMerge\x12\x1d\n" +
+	"\x0fcan_auto_repair\x18\a \x01(\bR\rcanAutoRepair\x12L\n" +
+	"#should_archive_sessions_after_merge\x18\f \x01(\bR\x1fshouldArchiveSessionsAfterMerge\x12\x1d\n" +
 	"\n" +
 	"sentry_org\x18\b \x01(\tR\tsentryOrg\x12$\n" +
 	"\x0ehas_linear_key\x18\t \x01(\bR\fhasLinearKey\x12$\n" +
@@ -4359,7 +4359,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	" \x01(\bR\fhasSentryKey\x129\n" +
 	"\n" +
 	"updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\x0f\n" +
-	"\r_setup_script\"\x87\x1b\n" +
+	"\r_setup_script\"\x99\x1b\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -4375,8 +4375,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\tpr_number\x18\n" +
 	" \x01(\x05H\x01R\bprNumber\x88\x01\x01\x12\x1a\n" +
 	"\x06pr_url\x18\v \x01(\tH\x02R\x05prUrl\x88\x01\x01\x12E\n" +
-	"\x10last_check_state\x18\f \x01(\x0e2\x1b.bossanova.v1.ChecksOverallR\x0elastCheckState\x12-\n" +
-	"\x12automation_enabled\x18\r \x01(\bR\x11automationEnabled\x12#\n" +
+	"\x10last_check_state\x18\f \x01(\x0e2\x1b.bossanova.v1.ChecksOverallR\x0elastCheckState\x122\n" +
+	"\x15is_automation_enabled\x18\r \x01(\bR\x13isAutomationEnabled\x12#\n" +
 	"\rattempt_count\x18\x0e \x01(\x05R\fattemptCount\x12*\n" +
 	"\x0eblocked_reason\x18\x0f \x01(\tH\x03R\rblockedReason\x88\x01\x01\x12@\n" +
 	"\varchived_at\x18\x10 \x01(\v2\x1a.google.protobuf.TimestampH\x04R\n" +
@@ -4433,8 +4433,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"account_id\x189 \x01(\tH\x0eR\taccountId\x88\x01\x01\x12(\n" +
 	"\raccount_label\x18: \x01(\tH\x0fR\faccountLabel\x88\x01\x01\x12D\n" +
 	"\x0frotation_events\x18; \x03(\v2\x1b.bossanova.v1.RotationEventR\x0erotationEvents\x12'\n" +
-	"\x0fdisplay_merging\x18< \x01(\bR\x0edisplayMerging\x12H\n" +
-	"!repo_archive_sessions_after_merge\x18= \x01(\bR\x1drepoArchiveSessionsAfterMerge\x12'\n" +
+	"\x0fdisplay_merging\x18< \x01(\bR\x0edisplayMerging\x12U\n" +
+	"(repo_should_archive_sessions_after_merge\x18= \x01(\bR#repoShouldArchiveSessionsAfterMerge\x12'\n" +
 	"\x0farchive_pending\x18> \x01(\bR\x0earchivePendingB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
@@ -4580,15 +4580,16 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x13provider_session_id\x18\t \x01(\tR\x11providerSessionId\x12\x1f\n" +
 	"\vstart_error\x18\n" +
 	" \x01(\tR\n" +
-	"startError\"\xc0\x05\n" +
+	"startError\"\xd2\x05\n" +
 	"\aCronJob\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x12\n" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12\x16\n" +
 	"\x06prompt\x18\x04 \x01(\tR\x06prompt\x12\x1a\n" +
 	"\bschedule\x18\x05 \x01(\tR\bschedule\x12\x1a\n" +
-	"\btimezone\x18\x06 \x01(\tR\btimezone\x12\x18\n" +
-	"\aenabled\x18\a \x01(\bR\aenabled\x12-\n" +
+	"\btimezone\x18\x06 \x01(\tR\btimezone\x12\x1d\n" +
+	"\n" +
+	"is_enabled\x18\a \x01(\bR\tisEnabled\x12-\n" +
 	"\x13last_run_session_id\x18\b \x01(\tR\x10lastRunSessionId\x12:\n" +
 	"\vlast_run_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tlastRunAt\x12(\n" +
 	"\x10last_run_outcome\x18\n" +
@@ -4602,8 +4603,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
 	"agent_name\x18\x0f \x01(\tR\tagentName\x12\x14\n" +
 	"\x05model\x18\x10 \x01(\tR\x05model\x12!\n" +
-	"\fgate_command\x18\x11 \x01(\tR\vgateCommand\x12*\n" +
-	"\x11run_setup_command\x18\x12 \x01(\bR\x0frunSetupCommand\"\xf4\x04\n" +
+	"\fgate_command\x18\x11 \x01(\tR\vgateCommand\x127\n" +
+	"\x18should_run_setup_command\x18\x12 \x01(\bR\x15shouldRunSetupCommand\"\xf4\x04\n" +
 	"\aAccount\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +

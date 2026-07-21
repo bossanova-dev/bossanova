@@ -162,6 +162,8 @@ func (s *SQLiteSessionStore) UpdateStateConditionalFrom(ctx context.Context, id 
 		placeholders[i] = "?"
 		args = append(args, st)
 	}
+	// #nosec G202 -- `... IN (` + static `?` placeholder builder + `)`; states bound via ?, not user text
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET state = ?, updated_at = ? WHERE id = ? AND state IN (`+strings.Join(placeholders, ", ")+`)`,
 		args...)
@@ -366,9 +368,9 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "last_observed_review_state = ?")
 		args = append(args, *params.LastObservedReviewState)
 	}
-	if params.AutomationEnabled != nil {
-		sets = append(sets, "automation_enabled = ?")
-		args = append(args, sqlutil.BoolToInt(*params.AutomationEnabled))
+	if params.IsAutomationEnabled != nil {
+		sets = append(sets, "is_automation_enabled = ?")
+		args = append(args, sqlutil.BoolToInt(*params.IsAutomationEnabled))
 	}
 	if params.AttemptCount != nil {
 		sets = append(sets, "attempt_count = ?")
@@ -406,17 +408,17 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "account_id = ?")
 		args = append(args, *params.AccountID)
 	}
-	if params.TmuxUnattended != nil {
-		sets = append(sets, "tmux_unattended = ?")
-		args = append(args, sqlutil.BoolToInt(*params.TmuxUnattended))
+	if params.IsTmuxUnattended != nil {
+		sets = append(sets, "is_tmux_unattended = ?")
+		args = append(args, sqlutil.BoolToInt(*params.IsTmuxUnattended))
 	}
 	if params.Detach != nil {
-		sets = append(sets, "detach = ?")
+		sets = append(sets, "is_detached = ?")
 		args = append(args, sqlutil.BoolToInt(*params.Detach))
 	}
-	if params.QuickChat != nil {
-		sets = append(sets, "quick_chat = ?")
-		args = append(args, sqlutil.BoolToInt(*params.QuickChat))
+	if params.IsQuickChat != nil {
+		sets = append(sets, "is_quick_chat = ?")
+		args = append(args, sqlutil.BoolToInt(*params.IsQuickChat))
 	}
 	if params.DisplayLabel != nil {
 		sets = append(sets, "display_label = ?")
@@ -427,7 +429,7 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		args = append(args, int(*params.DisplayIntent))
 	}
 	if params.DisplaySpinner != nil {
-		sets = append(sets, "display_spinner = ?")
+		sets = append(sets, "has_display_spinner = ?")
 		args = append(args, sqlutil.BoolToInt(*params.DisplaySpinner))
 	}
 	if params.SetupError != nil {
@@ -436,6 +438,8 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 	}
 
 	args = append(args, id)
+	// #nosec G202 -- dynamic UPDATE...SET builder; concatenated fragments are code-literal `col = ?` set-clauses; every value is bound via ?, not user text
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	query := "UPDATE sessions SET " + strings.Join(sets, ", ") + " WHERE id = ?"
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -513,11 +517,13 @@ func (s *SQLiteSessionStore) UpdateRepairDiagnostics(ctx context.Context, params
 	if params.SessionID == "" {
 		return fmt.Errorf("update repair diagnostics: session ID required")
 	}
-	startedAt := params.StartedAt.Unix()
+	startedAt := sqlutil.FormatTime(params.StartedAt)
 	countExpr := "0"
 	if params.RunnerError != "" || params.ExitError != "" {
 		countExpr = "last_repair_attempt_count + 1"
 	}
+	// #nosec G202 -- countExpr is a static literal (`0` / `last_repair_attempt_count + 1`), not user text; all values bound via ?
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions
 		 SET last_repair_started_at    = ?,
@@ -557,7 +563,7 @@ func (s *SQLiteSessionStore) UpdateRepairBlocked(ctx context.Context, sessionID 
 		 SET last_repair_blocked_reason = ?,
 		     last_repair_blocked_at     = ?
 		 WHERE id = ?`,
-		reason, at.Unix(), sessionID)
+		reason, sqlutil.FormatTime(at), sessionID)
 	if err != nil {
 		return fmt.Errorf("update repair blocked: %w", err)
 	}
@@ -631,8 +637,8 @@ func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string,
 
 const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
-	s.last_check_state, s.last_observed_review_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.tmux_unattended, s.quick_chat, s.detach, s.created_at, s.updated_at,
-	s.display_label, s.display_intent, s.display_spinner, s.agent_name, s.model,
+	s.last_check_state, s.last_observed_review_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.is_tmux_unattended, s.is_quick_chat, s.is_detached, s.created_at, s.updated_at,
+	s.display_label, s.display_intent, s.has_display_spinner, s.agent_name, s.model,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
 	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
@@ -645,8 +651,8 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 // still appears with an empty display name.
 const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
-	s.last_check_state, s.last_observed_review_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.tmux_unattended, s.quick_chat, s.detach, s.created_at, s.updated_at,
-	s.display_label, s.display_intent, s.display_spinner, s.agent_name, s.model,
+	s.last_check_state, s.last_observed_review_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.is_tmux_unattended, s.is_quick_chat, s.is_detached, s.created_at, s.updated_at,
+	s.display_label, s.display_intent, s.has_display_spinner, s.agent_name, s.model,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
 	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
@@ -675,8 +681,8 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 	var archivedAt, createdAt, updatedAt *string
 	var displayIntent int
 	var displaySpinner int
-	var lastRepairStartedAt *int64
-	var lastRepairBlockedAt *int64
+	var lastRepairStartedAt *string
+	var lastRepairBlockedAt *string
 	var rotationResumeAt *string
 	var repoDisplayName, repoOriginURL string
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
@@ -697,9 +703,9 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 	sess.State = machine.State(state)
 	sess.LastCheckState = machine.CheckState(lastCheckState)
 	sess.LastObservedReviewState = lastObservedReviewState
-	sess.AutomationEnabled = automationEnabled != 0
-	sess.TmuxUnattended = tmuxUnattended != 0
-	sess.QuickChat = quickChat != 0
+	sess.IsAutomationEnabled = automationEnabled != 0
+	sess.IsTmuxUnattended = tmuxUnattended != 0
+	sess.IsQuickChat = quickChat != 0
 	sess.Detach = detach != 0
 	sess.DisplayIntent = clampInt32(displayIntent)
 	sess.DisplaySpinner = displaySpinner != 0
@@ -713,14 +719,8 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 	if updatedAt != nil {
 		sess.UpdatedAt = sqlutil.ParseTime(*updatedAt)
 	}
-	if lastRepairStartedAt != nil {
-		t := time.Unix(*lastRepairStartedAt, 0)
-		sess.LastRepairStartedAt = &t
-	}
-	if lastRepairBlockedAt != nil {
-		t := time.Unix(*lastRepairBlockedAt, 0)
-		sess.LastRepairBlockedAt = &t
-	}
+	sess.LastRepairStartedAt = sqlutil.ParseOptionalTime(lastRepairStartedAt)
+	sess.LastRepairBlockedAt = sqlutil.ParseOptionalTime(lastRepairBlockedAt)
 	return &sess, repoDisplayName, repoOriginURL, nil
 }
 
@@ -730,8 +730,8 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var archivedAt, createdAt, updatedAt *string
 	var displayIntent int
 	var displaySpinner int
-	var lastRepairStartedAt *int64
-	var lastRepairBlockedAt *int64
+	var lastRepairStartedAt *string
+	var lastRepairBlockedAt *string
 	var rotationResumeAt *string
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
@@ -751,9 +751,9 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	sess.State = machine.State(state)
 	sess.LastCheckState = machine.CheckState(lastCheckState)
 	sess.LastObservedReviewState = lastObservedReviewState
-	sess.AutomationEnabled = automationEnabled != 0
-	sess.TmuxUnattended = tmuxUnattended != 0
-	sess.QuickChat = quickChat != 0
+	sess.IsAutomationEnabled = automationEnabled != 0
+	sess.IsTmuxUnattended = tmuxUnattended != 0
+	sess.IsQuickChat = quickChat != 0
 	sess.Detach = detach != 0
 	sess.DisplayIntent = clampInt32(displayIntent)
 	sess.DisplaySpinner = displaySpinner != 0
@@ -767,13 +767,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	if updatedAt != nil {
 		sess.UpdatedAt = sqlutil.ParseTime(*updatedAt)
 	}
-	if lastRepairStartedAt != nil {
-		t := time.Unix(*lastRepairStartedAt, 0)
-		sess.LastRepairStartedAt = &t
-	}
-	if lastRepairBlockedAt != nil {
-		t := time.Unix(*lastRepairBlockedAt, 0)
-		sess.LastRepairBlockedAt = &t
-	}
+	sess.LastRepairStartedAt = sqlutil.ParseOptionalTime(lastRepairStartedAt)
+	sess.LastRepairBlockedAt = sqlutil.ParseOptionalTime(lastRepairBlockedAt)
 	return &sess, nil
 }

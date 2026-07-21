@@ -145,12 +145,20 @@ func TestUpdateSettings_Validation(t *testing.T) {
 		}
 	}
 
+	// A regular file so a worktree base *under* it is uncreatable (MkdirAll can
+	// not turn a file into a directory) — the residual invalid-path case now that
+	// a merely-absent directory is created rather than rejected.
+	regularFile := filepath.Join(existingDir, "a-file")
+	if err := os.WriteFile(regularFile, []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed regular file: %v", err)
+	}
+
 	cases := []struct {
 		name string
 		req  *pb.UpdateSettingsRequest
 	}{
 		{"empty worktree", &pb.UpdateSettingsRequest{WorktreeBaseDir: strptr("")}},
-		{"nonexistent worktree", &pb.UpdateSettingsRequest{WorktreeBaseDir: strptr(filepath.Join(existingDir, "does-not-exist"))}},
+		{"uncreatable worktree", &pb.UpdateSettingsRequest{WorktreeBaseDir: strptr(filepath.Join(regularFile, "sub"))}},
 		{"negative poll", &pb.UpdateSettingsRequest{PollIntervalSeconds: i32ptr(-5)}},
 		{"default_agent not enabled", &pb.UpdateSettingsRequest{DefaultAgent: strptr("codex")}},
 	}
@@ -172,6 +180,30 @@ func TestUpdateSettings_Validation(t *testing.T) {
 				t.Errorf("file was modified on a rejected update:\nbefore=%s\nafter=%s", before, after)
 			}
 		})
+	}
+}
+
+// TestUpdateSettings_CreatesFreshWorktreeBaseDir proves the RPC mirrors the
+// settings TUI: pointing worktree_base_dir at a not-yet-existing directory is
+// accepted and the directory is created (the TUI relies on config.Load() to
+// MkdirAll it), rather than being rejected for not existing.
+func TestUpdateSettings_CreatesFreshWorktreeBaseDir(t *testing.T) {
+	seedSettings(t, config.Settings{
+		WorktreeBaseDir: t.TempDir(),
+		DefaultAgent:    "claude",
+		Plugins:         []config.PluginConfig{{Name: "claude", Enabled: true}},
+	})
+	srv := newSettingsServer(nil)
+
+	fresh := filepath.Join(t.TempDir(), "new", "worktrees")
+	got := mustUpdateSettings(t, srv, &pb.UpdateSettingsRequest{
+		WorktreeBaseDir: strptr(fresh),
+	})
+	if got.GetWorktreeBaseDir() != fresh {
+		t.Errorf("worktree = %q, want %q", got.GetWorktreeBaseDir(), fresh)
+	}
+	if info, err := os.Stat(fresh); err != nil || !info.IsDir() {
+		t.Errorf("worktree_base_dir %q was not created as a directory (err=%v)", fresh, err)
 	}
 }
 

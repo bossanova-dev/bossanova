@@ -448,7 +448,7 @@ message CreateSessionCommand {
   string title = 2;
   string plan = 3;
   string base_branch = 4;
-  bool quick_chat = 5;
+  bool is_quick_chat = 5;
   string agent_name = 6;
   // PR/tracker fields (wizard "existing PR" / "Linear" / "Sentry" flows).
   optional int32 pr_number = 7;
@@ -464,12 +464,12 @@ message CreateSessionCommand {
   bool force = 13;
   // Unattended-session fields carried over the reverse stream so a hosted
   // create (bosso → daemon) reproduces the local socket create. Mirror
-  // CreateSessionRequest.{detach,model,tmux_unattended}; without them the
+  // CreateSessionRequest.{detach,model,is_tmux_unattended}; without them the
   // daemon builds an interactive/default-model session and skips the
   // unattended prompt.
   bool detach = 14;
   optional string model = 15;
-  bool tmux_unattended = 16;
+  bool is_tmux_unattended = 16;
   optional string account_id = 17;
   // Mirror CreateSessionRequest.force_branch so reverse-stream hosted creates
   // preserve the local socket path's branch replacement behavior.
@@ -590,11 +590,11 @@ message CreateCronJobCommand {
   string prompt = 3;
   string schedule = 4;
   string timezone = 5;
-  bool enabled = 6;
+  bool is_enabled = 6;
   string agent_name = 7;
   string model = 8;
   string gate_command = 9;
-  optional bool run_setup_command = 10;
+  optional bool should_run_setup_command = 10;
 }
 
 // UpdateCronJobCommand asks the daemon to mutate an existing cron job. Mutable
@@ -606,11 +606,11 @@ message UpdateCronJobCommand {
   optional string prompt = 3;
   optional string schedule = 4;
   optional string timezone = 5;
-  optional bool enabled = 6;
+  optional bool is_enabled = 6;
   optional string agent_name = 7;
   optional string model = 8;
   optional string gate_command = 9;
-  optional bool run_setup_command = 10;
+  optional bool should_run_setup_command = 10;
 }
 
 // DeleteCronJobCommand asks the daemon to remove a cron job.
@@ -691,7 +691,7 @@ message UpdateRepoCommand {
   optional bool can_auto_merge = 5;
   optional bool can_auto_merge_dependabot = 6;
   optional bool can_auto_repair = 7;
-  optional bool archive_sessions_after_merge = 12;
+  optional bool should_archive_sessions_after_merge = 12;
   optional string sentry_org = 8;
   SecretUpdate linear_key = 9;
   SecretUpdate sentry_key = 10;

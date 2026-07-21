@@ -40,7 +40,7 @@ func newPauseResumeServer(t *testing.T) (*Server, string) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	if !sess.AutomationEnabled {
+	if !sess.IsAutomationEnabled {
 		t.Fatalf("precondition: expected automation enabled by default")
 	}
 
@@ -58,7 +58,7 @@ func TestPauseSessionDisablesAutomation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PauseSession: %v", err)
 	}
-	if got := resp.Msg.Session.GetAutomationEnabled(); got {
+	if got := resp.Msg.Session.GetIsAutomationEnabled(); got {
 		t.Fatalf("response automation_enabled = %v, want false", got)
 	}
 	if resp.Msg.Session.GetId() != id {
@@ -69,7 +69,7 @@ func TestPauseSessionDisablesAutomation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if stored.AutomationEnabled {
+	if stored.IsAutomationEnabled {
 		t.Fatalf("stored automation_enabled = true, want false")
 	}
 }
@@ -88,7 +88,7 @@ func TestResumeSessionEnablesAutomation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResumeSession: %v", err)
 	}
-	if got := resp.Msg.Session.GetAutomationEnabled(); !got {
+	if got := resp.Msg.Session.GetIsAutomationEnabled(); !got {
 		t.Fatalf("response automation_enabled = %v, want true", got)
 	}
 
@@ -96,7 +96,7 @@ func TestResumeSessionEnablesAutomation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !stored.AutomationEnabled {
+	if !stored.IsAutomationEnabled {
 		t.Fatalf("stored automation_enabled = false, want true")
 	}
 }

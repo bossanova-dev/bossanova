@@ -26,12 +26,12 @@ func TestCronJobAPIsRoundTripModel(t *testing.T) {
 	srv, repoID, ctx := newCronTestServer(t)
 
 	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
-		RepoId:   repoID,
-		Name:     "Daily",
-		Prompt:   "Run daily checks",
-		Schedule: "@daily",
-		Model:    "sonnet",
-		Enabled:  false,
+		RepoId:    repoID,
+		Name:      "Daily",
+		Prompt:    "Run daily checks",
+		Schedule:  "@daily",
+		Model:     "sonnet",
+		IsEnabled: false,
 	}))
 	if err != nil {
 		t.Fatalf("CreateCronJob: %v", err)
@@ -80,12 +80,12 @@ func TestCreateCronJob_AcceptsBogusModel(t *testing.T) {
 	srv, repoID, ctx := newCronTestServer(t)
 
 	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
-		RepoId:   repoID,
-		Name:     "Bogus",
-		Prompt:   "x",
-		Schedule: "@daily",
-		Model:    "totally-not-a-real-model-9000",
-		Enabled:  false,
+		RepoId:    repoID,
+		Name:      "Bogus",
+		Prompt:    "x",
+		Schedule:  "@daily",
+		Model:     "totally-not-a-real-model-9000",
+		IsEnabled: false,
 	}))
 	if err != nil {
 		t.Fatalf("CreateCronJob with bogus model should succeed, got: %v", err)

@@ -126,8 +126,8 @@ func TestPauseSession(t *testing.T) {
 		if resp.Msg.GetSession().GetId() != "s1" {
 			t.Errorf("session id = %q, want s1", resp.Msg.GetSession().GetId())
 		}
-		if store.lastUpdate.AutomationEnabled == nil || *store.lastUpdate.AutomationEnabled {
-			t.Errorf("AutomationEnabled = %v, want pointer to false", store.lastUpdate.AutomationEnabled)
+		if store.lastUpdate.IsAutomationEnabled == nil || *store.lastUpdate.IsAutomationEnabled {
+			t.Errorf("IsAutomationEnabled = %v, want pointer to false", store.lastUpdate.IsAutomationEnabled)
 		}
 	})
 }
@@ -167,8 +167,8 @@ func TestResumeSession(t *testing.T) {
 		if resp.Msg.GetSession().GetId() != "s1" {
 			t.Errorf("session id = %q, want s1", resp.Msg.GetSession().GetId())
 		}
-		if store.lastUpdate.AutomationEnabled == nil || !*store.lastUpdate.AutomationEnabled {
-			t.Errorf("AutomationEnabled = %v, want pointer to true", store.lastUpdate.AutomationEnabled)
+		if store.lastUpdate.IsAutomationEnabled == nil || !*store.lastUpdate.IsAutomationEnabled {
+			t.Errorf("IsAutomationEnabled = %v, want pointer to true", store.lastUpdate.IsAutomationEnabled)
 		}
 	})
 }
@@ -208,8 +208,8 @@ func TestRetrySession(t *testing.T) {
 		if resp.Msg.GetSession().GetId() != "s1" {
 			t.Errorf("session id = %q, want s1", resp.Msg.GetSession().GetId())
 		}
-		if store.lastUpdate.AutomationEnabled == nil || !*store.lastUpdate.AutomationEnabled {
-			t.Errorf("AutomationEnabled = %v, want pointer to true", store.lastUpdate.AutomationEnabled)
+		if store.lastUpdate.IsAutomationEnabled == nil || !*store.lastUpdate.IsAutomationEnabled {
+			t.Errorf("IsAutomationEnabled = %v, want pointer to true", store.lastUpdate.IsAutomationEnabled)
 		}
 		// BlockedReason is a double pointer set to clear the column (*nil).
 		if store.lastUpdate.BlockedReason == nil {

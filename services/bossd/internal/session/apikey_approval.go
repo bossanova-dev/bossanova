@@ -17,6 +17,8 @@ import (
 // (the approval just won't be pre-seeded and the first session may prompt once).
 func SeedAPIKeyApproval(claudeJSONPath, suffix string) error {
 	doc := map[string]any{}
+	// #nosec G304 -- reads ~/.claude.json to merge API-key approval into Claude REPL state; internal $HOME path (secret-adjacent)
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	if b, err := os.ReadFile(claudeJSONPath); err == nil {
 		if err := json.Unmarshal(b, &doc); err != nil {
 			return fmt.Errorf("parse %s: %w", claudeJSONPath, err)

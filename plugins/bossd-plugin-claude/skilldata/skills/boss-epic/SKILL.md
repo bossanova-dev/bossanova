@@ -1,6 +1,6 @@
 ---
 name: boss-epic
-description: Orchestrate an entire epic of planned Linear tickets to merged PRs, unattended. Assembles the epic's sub-issues (or an explicit ticket list), computes a dependency-ordered schedule, spawns parallel boss-build sessions, drives repair on failures, serializes merges, and reports progress on the parent issue. Use when asked to "implement an epic", "run this epic", "boss-epic", or given an epic parent ticket like BOS-177 to ship end-to-end.
+description: Orchestrate an entire epic of planned Linear tickets to merged PRs, unattended. Assembles the epic's sub-issues (or an explicit ticket list), computes a dependency-ordered schedule, spawns parallel boss-build sessions, drives repair on failures, serializes merges, and reports progress on the parent issue. Use when asked to "implement an epic", "run this epic", "boss-epic", or given an epic parent ticket to ship end-to-end.
 allowed-tools: Bash, Read, Glob, Grep, Skill
 ---
 
@@ -10,7 +10,7 @@ allowed-tools: Bash, Read, Glob, Grep, Skill
 
 Take a whole **epic** — a Linear parent issue whose sub-issues are already
 planned, agent-friendly tickets, or an explicit list of such tickets — and drive
-every eligible ticket from `Todo` to a **merged PR**, with **no human present**.
+every eligible ticket from its planned state to a **merged PR**, with **no human present**.
 This is the fan-out sibling of `boss-build`: where `boss-build` ships one
 ticket, `boss-epic` schedules a fleet of them, respecting dependency order,
 capping concurrency, running repair on red PRs, and serializing merges so the
@@ -19,13 +19,13 @@ base branch never races itself.
 This skill is **prose driving tested primitives**. All scheduling, eligibility,
 dependency-graph, cascade-skip, and merge-ordering decisions are computed by the
 pure, unit-tested DAG scheduler in the installed `boss-epic/toolbox/dag-scheduler.mjs`
-(BOS-197) — re-exported through `bs-epic-lib.mjs`, which adds the tracker-coupled
+— re-exported through `bs-epic-lib.mjs`, which adds the tracker-coupled
 classify/normalize/parse surface — this skill never re-derives them inline. The
 skill's own job is the I/O, and it reaches every Bossanova coupling through the
 **adapter seams** below: the tracker adapter (assembly, state, progress comment)
 and the session-runner adapter (spawn/poll/merge sessions, per-ticket dispatch).
 
-The unit of work per ticket is a `subSkills.implement` (`/boss-build BOS-NN`)
+The unit of work per ticket is a `subSkills.implement` (`/boss-build <TICKET>`)
 session. Do **not** re-implement boss-build's pipeline here; boss-epic only
 schedules and merges.
 
@@ -50,17 +50,21 @@ schedules and merges.
   - Visible planning chat uses the session-runner `createPlanningChat` capability (`create_session` with `quick_chat: true`, no worktree/branch/PR).
   - It must not use `create_session` with `tmux_unattended`; that path is for PR-backed implementation runs only.
 
-Workspace facts (do not re-discover):
+Workspace facts (resolve at runtime, do not hard-code):
 
-- Linear MCP: `bossanova-linear`. Team **Bossanova** (key `BOS`). Statuses by
-  name: `Todo` (eligible queue), `In Review`, `Done`, `Canceled`.
+- Tracker identity — the tracker MCP server, the backlog team and its key, and
+  the workflow state names — is supplied by the **tracker adapter** (see Adapter
+  seams), never hard-coded here: the adapter's `operationMap.selectPlanned` owns
+  the eligible (planned-state) queue and knows the review state. Terminal `Done` /
+  `Canceled` are matched by state _type_ (`BLOCKER_CLEARED_STATE_TYPES`), not by
+  literal name.
 - boss MCP tools used: `create_session` (with `tmux_unattended`+`model` — the
   durable tmux-hosted run path), `get_session`, `list_sessions`,
   `list_check_snapshots`, `get_chat_statuses`, `merge_session`,
   `resolve_context`, `list_agents`, and for repair rounds `record_chat` +
   `send_chat_message` (start a fresh chat in the ticket's own session — see
   Phase 3c). `get_session_statuses` is session-aggregate only.
-- Session-title convention (the resume anchor): `boss-epic BOS-NN: <ticket title>`.
+- Session-title convention (the resume anchor): `boss-epic <TICKET>: <ticket title>`.
 
 ## Adapter seams (the pluggable boundary)
 
@@ -69,12 +73,12 @@ tracker or session runner can slot in without touching the phase logic. The
 Bossanova reference impls resolve to today's exact tools and sub-skills —
 **zero behaviour change**.
 
-- **Pure DAG decisions** — `dag-scheduler.mjs` (BOS-197): `buildGraph`,
+- **Pure DAG decisions** — `dag-scheduler.mjs`: `buildGraph`,
   `readyTickets`, `transitiveDependents`, `nextToMerge`,
   `mergeBlockedExternalBlockers`. Tracker-agnostic; re-exported through
   `bs-epic-lib.mjs`, so the runnable import shape below is unchanged.
-- **Tracker** — `resolveTrackerAdapter(env)` (`scripts/tracker/adapter.mjs`,
-  BOS-190). Epic/children assembly (`operationMap.selectPlanned` / `getIssue`),
+- **Tracker** — `resolveTrackerAdapter(env)` (`scripts/tracker/adapter.mjs`).
+  Epic/children assembly (`operationMap.selectPlanned` / `getIssue`),
   ticket-state writeback (`moveState`), and the single progress comment
   (`readComments` / `writeComment`) route through its `operationMap`;
   `normalizeTicket` + `classifyTickets` (in `bs-epic-lib.mjs`) shape and bucket
@@ -104,13 +108,29 @@ fi
 test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed bossanova skills not found"; exit 1; }
 BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"
 export BOSS_EPIC_TOOLBOX
+# Eligibility is gated on the tracker's CONFIGURED planned state (never a baked-in
+# word): resolve it from .boss-skills.json and pass it to classifyTickets below.
+BOSS_EPIC_PLANNED_STATE="$(node --input-type=module -e '
+  import { readFileSync } from "node:fs"; import { dirname, join } from "node:path"
+  for (let d = process.cwd(); ; d = dirname(d)) {
+    try { const c = JSON.parse(readFileSync(join(d, ".boss-skills.json")))
+      const a = process.env.TRACKER || c.adapters?.tracker || "linear"
+      process.stdout.write(c.trackerConfig?.[a]?.states?.planned ?? ""); break } catch {}
+    if (dirname(d) === d) break
+  }' 2>/dev/null)"
+export BOSS_EPIC_PLANNED_STATE
+# Fail closed with an actionable message (symmetric with the BOSS_SKILLS_HOME guard above)
+# rather than a buried exception: a repo with no .boss-skills.json (or one lacking
+# trackerConfig.<tracker>.states.planned) must self-disable cleanly, never spawn sessions for
+# unplanned work. classifyTickets also throws on an empty state as a library-level backstop.
+test -n "$BOSS_EPIC_PLANNED_STATE" || { echo "BLOCKED: no planned state configured in .boss-skills.json (trackerConfig.<tracker>.states.planned)"; exit 1; }
 echo "$TICKETS_JSON" | node --input-type=module -e '
   const { classifyTickets, normalizeTicket } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/bs-epic-lib.mjs`)
   const raw = JSON.parse(await new Promise((r) => {
     let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => r(s))
   }))
   const tickets = raw.map(normalizeTicket)
-  process.stdout.write(JSON.stringify(classifyTickets(tickets)))
+  process.stdout.write(JSON.stringify(classifyTickets(tickets, process.env.BOSS_EPIC_PLANNED_STATE)))
 '
 ```
 
@@ -129,8 +149,8 @@ persist a `Map`/`Set` across processes — persist the ticket JSON + the id list
 
 1. **Parse args** via `parseEpicArgs`. A single positional is the epic
    **parent**; two or more are an **explicit list**. Each positional may be a
-   bare ticket id (`BOS-177`) **or a pasted Linear issue URL**
-   (`https://linear.app/<workspace>/issue/BOS-177/<slug>`) — both resolve to the
+   bare ticket id (`<TICKET>`) **or a pasted Linear issue URL**
+   (`https://linear.app/<workspace>/issue/<TICKET>/<slug>`) — both resolve to the
    id. `--parallel N` is an integer 1..8 (default 4); `--agent <name>` defaults
    to `claude`. Two repeatable operator overrides clear a named external blocker:
    `--assume-cleared <ref>` unblocks a parked dependent for **launch only**, and
@@ -143,7 +163,7 @@ assumeCleared, assumeClearedAndMerge}`.
    node --input-type=module -e '
      const { parseEpicArgs } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/bs-epic-lib.mjs`)
      process.stdout.write(JSON.stringify(parseEpicArgs(process.argv.slice(1))))
-   ' -- BOS-177 --parallel 4 --agent claude
+   ' -- <TICKET> --parallel 4 --agent claude
    ```
 
    `parseEpicArgs` throws on zero ids, a positional that is neither a ticket id
@@ -160,16 +180,18 @@ assumeCleared, assumeClearedAndMerge}`.
    (`make build` if missing). Use `"$BOSS"` at every call-site so a driver chat
    without `boss` on `PATH` still works.
 
-2. **Verify Linear MCP** with a cheap read (`list_issue_statuses team=Bossanova`).
-   Unreachable → stop `BLOCKED: Linear MCP unreachable`.
+2. **Verify the tracker MCP** with a cheap read — the adapter's `selectPlanned`
+   capability (`operationMap.selectPlanned`), the same planned-queue list the epic
+   assembly uses (an empty result still proves reachability).
+   Unreachable → stop `BLOCKED: tracker MCP unreachable`.
 
 3. **Verify boss MCP + discover every required tool (deterministic preflight).**
    Call `list_agents`: the chosen `--agent` runner **must** appear; if the daemon
    is down or the runner is not loaded, stop
    `BLOCKED: boss daemon unreachable or agent '<name>' not loaded`. Then prove
    **every** boss MCP tool this run can invoke is discoverable _before scheduling_
-   — the BOS-301 failure was `list_check_snapshots` surfacing only after a
-   targeted search mid-run. The required set is derived from the session-adapter
+   — a prior preflight-gap failure was `list_check_snapshots` surfacing only after
+   a targeted search mid-run. The required set is derived from the session-adapter
    source of truth, never hand-listed here:
 
    ```bash
@@ -217,11 +239,11 @@ assumeCleared, assumeClearedAndMerge}`.
      are present, then `normalizeTicket` each payload.
 
 2. **Classify** via `classifyTickets` → `{eligible, done, skipped}`:
-   - `eligible`: `Todo` + `agent-friendly` label + has an Implementation-plan
-     link + not `needs-human`.
+   - `eligible`: the planned state + `agent-friendly` label +
+     has an Implementation-plan link + not `needs-human`.
    - `done`: state Done/Canceled — already merged for scheduling purposes.
-   - `skipped`: everything else, each with a `{ticket, reason}` (Unplanned, In
-     Progress, In Review, missing plan, `needs-human`, …).
+   - `skipped`: everything else, each with a `{ticket, reason}` (not-yet-planned,
+     In Progress, In Review, missing plan, `needs-human`, …).
 
    Immediately print the classification table in the driver chat. **When the
    eligible set is non-empty** (sessions will spawn), also post the initial
@@ -246,7 +268,7 @@ assumeCleared, assumeClearedAndMerge}`.
    the **`classifyTickets(...).eligible`** list **plus** fold every `done`
    ticket's id into the `externallyCleared` Set — **never** the raw full ticket
    list. `readyTickets` trusts every graph node to be eligible; handing it
-   unclassified tickets would surface Unplanned / In Progress / In Review
+   unclassified tickets would surface not-yet-planned / In Progress / In Review
    tickets as ready and spawn sessions for unplanned work. A `done` sibling is
    **not** a graph node, so its `blockedBy` edge is _external_ and clears
    against `externallyCleared` — never against `merged`. Seeding it with the
@@ -255,7 +277,7 @@ assumeCleared, assumeClearedAndMerge}`.
 
    ```bash
    # inside the single scheduling process:
-   #   const { eligible, done } = classifyTickets(tickets)
+   #   const { eligible, done } = classifyTickets(tickets, plannedState)
    #   const graph = buildGraph(eligible)                       // eligible-only nodes
    #   // done siblings clear, PLUS both operator override sets clear for LAUNCH:
    #   const externallyCleared = new Set([
@@ -289,7 +311,7 @@ adopts rather than duplicates:
    further is owed.
 
 2. **Adopt open sessions.** `list_sessions {repo_id}` and match sessions to epic
-   tickets by the title convention `boss-epic BOS-NN: …` or by `tracker_id`. A live
+   tickets by the title convention `boss-epic <TICKET>: …` or by `tracker_id`. A live
    session for a ticket is **adopted** into the in-flight table with its recorded
    `session_id` + `chat_id` — never a second session for the same ticket.
 
@@ -326,8 +348,8 @@ Compute the ready set via `readyTickets` and launch up to
 #   process.stdout.write(JSON.stringify(ready.map((t) => t.id)))
 ```
 
-The `readyTickets` set is drawn only from the eligible `Todo` implementation
-tickets classified in Phase 1, so this `createSession` block is for
+The `readyTickets` set is drawn only from the eligible (planned-state)
+implementation tickets classified in Phase 1, so this `createSession` block is for
 implementation fan-out **only** — never for planning/recon/plan-review subtasks
 (route those per the Operating Contract: subagent, or `createPlanningChat`).
 
@@ -335,7 +357,7 @@ For each ready id, up to the concurrency headroom (highest-priority first — th
 array is already sorted), dispatch **one tmux-hosted unattended run** (the
 session-runner `createSession` capability, prompt = `subSkills.implement`): the
 prompt is auto-injected and submitted into a dedicated tmux pane (cron-style
-delivery — BOS-179/BOS-208), so the agent runs with no TUI attach and the pane
+delivery), so the agent runs with no TUI attach and the pane
 survives a `bossd` restart:
 
 ```
@@ -343,10 +365,10 @@ create_session {
   repo_id,
   tmux_unattended: true,        // durable, restart-surviving, attach-safe
   model:  "claude-opus-4-8",   // MODEL from Phase 0 — no /model two-step
-  prompt: "/boss-build BOS-NN",   // BARE single-line command — see below
-  title:  "boss-epic BOS-NN: <ticket title>",
+  prompt: "/boss-build <TICKET>",   // BARE single-line command — see below
+  title:  "boss-epic <TICKET>: <ticket title>",
   agent,                       // from Phase 0
-  tracker_id:     "BOS-NN",
+  tracker_id:     "<TICKET>",
   tracker_source: "linear",
   tracker_url:    <ticket url>
 }
@@ -386,14 +408,14 @@ IDLE/STOPPED + passing.
 - **GREEN_DRAFT or READY_FOR_REVIEW + DisplayStatus Passing + chat SETTLED**
   (tracked `chat_id` is `IDLE` stale, or `STOPPED` stale/missing) → add to the
   **greens** (merge queue). Do not add a ticket to `greens` while that chat is
-  WORKING, QUESTION, or LIMITED. BOS-179 makes the daemon Block an empty/no-op
+  WORKING, QUESTION, or LIMITED. The daemon Blocks an empty/no-op
   run (a bootstrap-only branch is **not** surfaced as green), so a green here
   genuinely means real work landed — safe to merge.
 - **Passing but chat still WORKING/QUESTION/LIMITED** → **hold**: neither green
   nor repair; re-poll while the tracked `chat_id` finalizes review/comments.
 - **BLOCKED, or tracked `chat_id` status IDLE/STOPPED + Failing / Conflict /
   Rejected** → **repair
-  round**. First read `get_session` `repair_active` (BOS-234): if a repairer
+  round**. First read `get_session` `repair_active`: if a repairer
   holds the lease (the auto-repair plugin is engaged), do **not** dispatch a
   second chat — two repairers on one worktree collide; count it as a round and
   re-poll. Otherwise run `subSkills.repair` (`/boss-repair watch`) in a **new
@@ -406,14 +428,14 @@ IDLE/STOPPED + passing.
 
   ```
   record_chat       {session_id, agent_session_id: <fresh uuidgen UUID>,
-                     agent_name: agent, title: "boss-epic repair BOS-NN (round N)"}
+                     agent_name: agent, title: "boss-epic repair <TICKET> (round N)"}
   send_chat_message {agent_session_id: <same UUID>, wake_if_asleep: true,
                      submit: true, message: "/boss-repair watch"}  // submits
   ```
 
   Cap at **4 repair rounds per ticket** (a plugin-held round counts too; each
-  capped at 5 passes). A conflicted green (Passing but `pr_mergeable=false`,
-  BOS-234) needs a repair round, not a merge. Track the repair chat in place of
+  capped at 5 passes). A conflicted green (Passing but `pr_mergeable=false`)
+  needs a repair round, not a merge. Track the repair chat in place of
   the original in `inFlight`; still red after round 4 → fail-isolate.
 
 - **Wall clock exceeded** (default **90 min**) → fail-isolate. Do **not**
@@ -449,7 +471,7 @@ already in `merged`, tie-broken by priority then oldest), or `null`. If non-null
 `mergeBlockedExternalBlockers` returns the still-open external blocker ids —
 neither resolved (Done/Canceled) nor cleared by `--assume-cleared-and-merge`. If
 non-empty, **skip the merge this cycle with a progress-comment note** (e.g.
-`BOS-NN held: external blocker <ID> still open`) and re-check next cycle; a plain
+`<TICKET> held: external blocker <ID> still open`) and re-check next cycle; a plain
 `--assume-cleared` (launch-only) does **not** clear this gate. If empty:
 
 1. `merge_session {id: <session_id>, confirm: true}`. The `confirm: true` is
@@ -570,7 +592,7 @@ State and honor these explicitly:
   exists — a PR number alone is not completion or merge-readiness. Contrast the
   settled no-op below.
 - Empty/no-op run → a run that genuinely _settled_ with no changes: the daemon
-  Blocks it (BOS-179), so the driver sees BLOCKED and fail-isolates — it never
+  Blocks it, so the driver sees BLOCKED and fail-isolates — it never
   merges an empty PR.
 - Non-`claude` agent → runs unattended the same way (tmux-hosted run + repair in
   a fresh chat), but the settled-green gate is mandatory. A runner without
@@ -579,9 +601,10 @@ State and honor these explicitly:
 
 ## Setup (one-time, outside this skill)
 
-- Plan the epic's children first (each needs `Todo` + `agent-friendly` + an
-  Implementation-plan link), e.g. via `boss-plan` / `bs-sweep-plan`.
-- Invoke `/boss-epic BOS-NN` (parent, id or pasted Linear URL) or
-  `/boss-epic BOS-1 BOS-2 …` (explicit list), optionally `--parallel N`,
+- Plan the epic's children first (each needs the planned state +
+  `agent-friendly` + an Implementation-plan link), e.g. via
+  `boss-plan` / `bs-sweep-plan`.
+- Invoke `/boss-epic <TICKET>` (parent, id or pasted Linear URL) or
+  `/boss-epic <TICKET-A> <TICKET-B> …` (explicit list), optionally `--parallel N`,
   `--agent <name>`, and the `--assume-cleared` / `--assume-cleared-and-merge`
   operator overrides.

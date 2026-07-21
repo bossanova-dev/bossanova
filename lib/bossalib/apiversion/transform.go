@@ -99,19 +99,21 @@ type RefMsg struct {
 }
 
 // ProductionChanges returns the Changes wired into bosso, built against
-// DefaultRegistry. It ships five live transforms in non-decreasing version
+// DefaultRegistry. It ships six live transforms in non-decreasing version
 // order: OrphanedStateChange (introduced at V20260704), which down-converts
 // SESSION_STATE_ORPHANED on Session.state; AgentAuthFailedChange (introduced at
 // V20260705), which neutralizes the ATTENTION_REASON_AGENT_AUTH_FAILED attention
 // reason; UnmanagedLabelChange (introduced at V20260706), which restores the
 // "System default" account label for the unbound case; LimitedChatStatusChange
 // (introduced at V20260706), which maps CHAT_STATUS_LIMITED and its session
-// display shape back to the prior idle-style behavior; and
-// NoEligibleAccountChange (introduced at V20260711), which down-converts
+// display shape back to the prior idle-style behavior; NoEligibleAccountChange
+// (introduced at V20260711), which down-converts
 // ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT on Session.rotation_events
-// back to ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY. Each is applied to clients
-// pinned to a version older than the change; a request resolved to V20260711
-// (Current) runs zero transforms.
+// back to ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY; and ErroredStatusChange
+// (introduced at V20260718), which restores the pre-BOS-430 orphaned/blocked
+// display shape on Session.display_label / display_intent / display_spinner.
+// Each is applied to clients pinned to a version older than the change; a
+// request resolved to V20260718 (Current) runs zero transforms.
 //
 // Future API behavior changes should:
 //  1. Append the new Version to DefaultRegistry (see version.go).
@@ -120,7 +122,7 @@ type RefMsg struct {
 //
 // See docs/api-versioning.md for the full procedure.
 func ProductionChanges() *Changes {
-	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{})
+	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{})
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
 	}
@@ -519,7 +521,12 @@ func downconvertLimitedSession(s *pb.Session) *pb.Session {
 	if !ok {
 		return s
 	}
-	out := displaystatus.Compute(displaystatus.Input{
+	// Recompute through ComputeBase, NOT Compute: a client older than V20260706
+	// predates BOS-430's errored-recolor overlay (V20260718), so for a BLOCKED
+	// (or ORPHANED) session the idle-style fallback must be the un-recolored base
+	// cascade. Using Compute here would re-apply the DANGER recolor and leak the
+	// new errored shape into a down-convert that is supposed to hide it.
+	out := displaystatus.ComputeBase(displaystatus.Input{
 		Session:    clone,
 		ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE,
 	})
@@ -728,6 +735,149 @@ func (NoEligibleAccountChange) TransformResponse(method string, msg any) {
 	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
 		if m, ok := msg.(*pb.TransferSessionResponse); ok {
 			m.Session = downconvertNoEligibleSession(m.GetSession())
+		}
+	}
+}
+
+// ErroredStatusChange is the production VersionChange introduced at V20260718.
+//
+// At V20260718 the OrchestratorService began serving the BOS-430 errored-recolor
+// display shape for orphaned/blocked sessions on Session.display_label /
+// display_intent / display_spinner. An errored session now keeps its REAL
+// underlying status label and spinner (a live "working"/spinner, a pending
+// "? question") but has its intent recolored to DANGER. Before this change an
+// ORPHANED session collapsed to a fixed "orphaned" / DANGER / no-spinner tuple
+// (which won over even a merged/closed PR), and a BLOCKED session had no overlay
+// at all — it showed the plain base cascade with the base intent.
+//
+// A client pinned to an older version was built against those prior shapes, so
+// for any request resolved older than V20260718 this change restores them via
+// displaystatus.PreErroredOutput: the fixed "orphaned"/DANGER tuple for ORPHANED
+// and the un-recolored base intent for BLOCKED (label and spinner are already
+// the base values there).
+//
+// It targets every OrchestratorService response that embeds one or more
+// *pb.Session messages, keyed by the Connect procedure path: the read/lifecycle
+// set OrphanedStateChange handles (ListSessions, GetSession, Stop, Pause, Resume,
+// Merge, Archive, TransferSession), the remaining Session-returning procedures
+// (RetrySession, UpdateSession, LinkSessionPR, RunCronJobNow, CloseSession,
+// ResurrectSession), and the created message in the ProxyCreateSession stream —
+// so an errored session crossing the version boundary is down-converted no
+// matter which RPC served it. Because Apply runs newest→oldest, this change runs
+// BEFORE OrphanedStateChange for a Baseline client, so it observes the still-
+// ORPHANED state before that older transform rewrites it to IMPLEMENTING_PLAN.
+// All other methods and message types are no-ops.
+type ErroredStatusChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260718, so
+// it is applied to any request resolved to a strictly older version.
+func (ErroredStatusChange) Version() Version { return V20260718 }
+
+// downconvertErroredSession returns the Session to place in the response for a
+// pre-V20260718 client. For an orphaned/blocked session it returns a CLONE whose
+// Display* fields are reset to the pre-BOS-430 shape (displaystatus.PreErroredOutput);
+// otherwise, or when the shape is already the prior one (e.g. an un-computed
+// empty label, or a blocked muted-terminal PR that was never recolored), it
+// returns s unchanged. Cloning is essential and mirrors downconvertOrphanedSession:
+// bosso's single-instance registry path holds the same *pb.Session pointers cached
+// in memory, so mutating in place would corrupt the cached session and race other
+// readers. Only sessions that actually change allocate, keeping the common path
+// clone-free.
+func downconvertErroredSession(s *pb.Session) *pb.Session {
+	if s == nil {
+		return s
+	}
+	state := s.GetState()
+	if state != pb.SessionState_SESSION_STATE_ORPHANED &&
+		state != pb.SessionState_SESSION_STATE_BLOCKED {
+		return s
+	}
+	out := displaystatus.PreErroredOutput(s)
+	if out.Label == s.GetDisplayLabel() &&
+		out.Intent == s.GetDisplayIntent() &&
+		out.Spinner == s.GetDisplaySpinner() {
+		return s
+	}
+	clone, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	clone.DisplayLabel = out.Label
+	clone.DisplayIntent = out.Intent
+	clone.DisplaySpinner = out.Spinner
+	return clone
+}
+
+// TransformResponse implements VersionChange. It down-converts the errored
+// display shape on each OrchestratorService response type that carries one or
+// more Sessions, matched by procedure path, rewriting only response-local
+// (cloned) copies so a shared registry pointer is never mutated. It is a no-op
+// for any other method or payload type.
+func (ErroredStatusChange) TransformResponse(method string, msg any) {
+	switch method {
+	case bossanovav1connect.OrchestratorServiceProxyCreateSessionProcedure:
+		if m, ok := msg.(*pb.ProxyCreateSessionResponse); ok {
+			if created, ok := m.Body.(*pb.ProxyCreateSessionResponse_Created); ok {
+				created.Created = downconvertErroredSession(created.Created)
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
+		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
+			for i := range m.Sessions {
+				m.Sessions[i] = downconvertErroredSession(m.Sessions[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
+		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
+			m.Session = downconvertErroredSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
+		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
+			m.Session = downconvertErroredSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
+		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
+			m.Session = downconvertErroredSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
+		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
+			m.Session = downconvertErroredSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
+		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
+			m.Session = downconvertErroredSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
+		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
+			m.Session = downconvertErroredSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
+		if m, ok := msg.(*pb.TransferSessionResponse); ok {
+			m.Session = downconvertErroredSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRetrySessionProcedure:
+		if m, ok := msg.(*pb.ProxyRetrySessionResponse); ok {
+			m.Session = downconvertErroredSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure:
+		if m, ok := msg.(*pb.ProxyUpdateSessionResponse); ok {
+			m.Session = downconvertErroredSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
+		if m, ok := msg.(*pb.ProxyLinkSessionPRResponse); ok {
+			m.Session = downconvertErroredSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure:
+		if m, ok := msg.(*pb.ProxyRunCronJobNowResponse); ok {
+			m.Session = downconvertErroredSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyCloseSessionProcedure:
+		if m, ok := msg.(*pb.ProxyCloseSessionResponse); ok {
+			m.Session = downconvertErroredSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure:
+		if m, ok := msg.(*pb.ProxyResurrectSessionResponse); ok {
+			m.Session = downconvertErroredSession(m.GetSession())
 		}
 	}
 }

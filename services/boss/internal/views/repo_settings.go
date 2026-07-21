@@ -58,7 +58,7 @@ const (
 	repoSettingsRowCanAutoMerge
 	repoSettingsRowCanAutoMergeDependabot
 	repoSettingsRowCanAutoRepair
-	repoSettingsRowArchiveSessionsAfterMerge
+	repoSettingsRowShouldArchiveSessionsAfterMerge
 	repoSettingsRowCanAutoDeleteBranches
 	repoSettingsRowLinearHeader
 	repoSettingsRowLinearApiKey
@@ -210,7 +210,7 @@ func (m RepoSettingsModel) visibleRows() []rowID {
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
-		repoSettingsRowArchiveSessionsAfterMerge,
+		repoSettingsRowShouldArchiveSessionsAfterMerge,
 		repoSettingsRowCanAutoDeleteBranches,
 		repoSettingsRowLinearHeader,
 	}
@@ -578,12 +578,12 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 			Id:            m.repoID,
 			CanAutoRepair: &v,
 		})
-	case repoSettingsRowArchiveSessionsAfterMerge:
-		v := !m.repo.ArchiveSessionsAfterMerge
-		m.repo.ArchiveSessionsAfterMerge = v
+	case repoSettingsRowShouldArchiveSessionsAfterMerge:
+		v := !m.repo.ShouldArchiveSessionsAfterMerge
+		m.repo.ShouldArchiveSessionsAfterMerge = v
 		return m, m.saveSettings(&pb.UpdateRepoRequest{
-			Id:                        m.repoID,
-			ArchiveSessionsAfterMerge: &v,
+			Id:                              m.repoID,
+			ShouldArchiveSessionsAfterMerge: &v,
 		})
 	case repoSettingsRowCanAutoDeleteBranches:
 		v := !m.repo.CanAutoDeleteBranches
@@ -863,7 +863,7 @@ func (m RepoSettingsModel) View() tea.View {
 		{"Mark ready for review when checks pass", m.repo.CanAutoMerge, repoSettingsRowCanAutoMerge},
 		{"Auto-merge Dependabot PRs", m.repo.CanAutoMergeDependabot, repoSettingsRowCanAutoMergeDependabot},
 		{"Automatic repair (failing checks, conflicts, review feedback)", m.repo.CanAutoRepair, repoSettingsRowCanAutoRepair},
-		{"Archive sessions after merging PRs", m.repo.ArchiveSessionsAfterMerge, repoSettingsRowArchiveSessionsAfterMerge},
+		{"Archive sessions after merging PRs", m.repo.ShouldArchiveSessionsAfterMerge, repoSettingsRowShouldArchiveSessionsAfterMerge},
 		{"Delete branches after archiving", m.repo.CanAutoDeleteBranches, repoSettingsRowCanAutoDeleteBranches},
 	} {
 		renderCheckbox(cb)

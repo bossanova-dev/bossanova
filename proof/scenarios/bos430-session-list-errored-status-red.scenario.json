@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "title": "BOS-430 session list — an orphaned/blocked run whose chat is working shows the real 'working' status (recolored red), not a static 'orphaned'/'blocked'",
+  "fixture": { "preset": "errored-status" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the home list STATUS column shows the real 'working' status for the orphaned and the blocked run, with the orphaned 'why' still visible as red subtext",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Orphaned dark-mode run",
+            "match": "normalized",
+            "label": "home session list loaded (errored-status preset)"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded: the orphaned and blocked working sessions are listed"
+        },
+        {
+          "expect": {
+            "text": "Blocked login-fix run",
+            "match": "normalized",
+            "label": "both errored sessions are listed"
+          },
+          "caption": "The blocked run is listed alongside the orphaned run"
+        },
+        {
+          "expect": {
+            "text": "working",
+            "match": "normalized",
+            "label": "the STATUS column shows the real 'working' status (neither row title contains 'working', so this binds to the STATUS column) rather than a static 'orphaned'/'blocked' label"
+          },
+          "caption": "displaystatus.Compute yields DisplayLabel 'working' (recolored DANGER + spinner) for the orphaned/blocked rows — the live working chat is no longer hidden behind a static 'orphaned' label"
+        },
+        {
+          "expect": {
+            "text": "orphaned — headless run killed",
+            "match": "normalized",
+            "label": "the orphaned 'why' is still surfaced as the red subtext hint under the row"
+          },
+          "caption": "The orphaned reason remains visible via the red subtext hint (attention summary), so recoloring the status did not hide the 'why'"
+        },
+        {
+          "key": "down",
+          "caption": "Move the cursor down onto the blocked run (index 1)"
+        },
+        {
+          "expect": {
+            "text": "❯.*Blocked login-fix run",
+            "match": "regex",
+            "label": "chevron sits on the blocked run row"
+          },
+          "caption": "Cursor on the blocked row; its STATUS column reads 'working' (recolored red) — the blocked run's live working chat is shown, not a static 'blocked' label"
+        },
+        {
+          "expect": {
+            "text": "working",
+            "match": "normalized",
+            "label": "the 'working' STATUS label is still shown for the selected blocked row"
+          },
+          "caption": "Both errored rows show the real 'working' status together in the home list, recolored red rather than hidden behind 'orphaned'/'blocked'"
+        }
+      ]
+    }
+  ]
+}

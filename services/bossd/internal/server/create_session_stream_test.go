@@ -443,7 +443,7 @@ func TestCreateSessionQuickChatAllowsEmptyDefaultBaseBranch(t *testing.T) {
 	}
 	h.repo = repo
 
-	events, err := h.createQuickChat(t, "quick chat")
+	events, err := h.createIsQuickChat(t, "quick chat")
 	if err != nil {
 		t.Fatalf("CreateSession quick chat error = %v", err)
 	}
@@ -458,7 +458,7 @@ func TestCreateSessionQuickChatAllowsEmptyDefaultBaseBranch(t *testing.T) {
 // TestCreateSessionEmptyWorktreeBaseDirReturnsInvalidArgument pins the BOS-286
 // guard: a worktree session against a repo with no worktree base directory
 // fails fast with InvalidArgument (naming the repo id) instead of failing
-// obscurely deep in worktree setup, while a QuickChat — which runs directly in
+// obscurely deep in worktree setup, while a IsQuickChat — which runs directly in
 // the repo base and never uses the worktree base — still succeeds.
 func TestCreateSessionEmptyWorktreeBaseDirReturnsInvalidArgument(t *testing.T) {
 	t.Parallel()
@@ -484,9 +484,9 @@ func TestCreateSessionEmptyWorktreeBaseDirReturnsInvalidArgument(t *testing.T) {
 		}
 	}
 
-	// The guard is gated on !QuickChat: a QuickChat create still succeeds with
+	// The guard is gated on !IsQuickChat: a IsQuickChat create still succeeds with
 	// the empty worktree base.
-	events, err := h.createQuickChat(t, "quick chat")
+	events, err := h.createIsQuickChat(t, "quick chat")
 	if err != nil {
 		t.Fatalf("CreateSession quick chat error = %v, want success despite empty worktree base", err)
 	}
@@ -613,16 +613,16 @@ func (h *createSessionStreamHarness) createSession(t *testing.T, title string) (
 	return events, stream.Err()
 }
 
-func (h *createSessionStreamHarness) createQuickChat(t *testing.T, title string) ([]*pb.CreateSessionResponse, error) {
+func (h *createSessionStreamHarness) createIsQuickChat(t *testing.T, title string) ([]*pb.CreateSessionResponse, error) {
 	t.Helper()
 
 	agentName := "claude"
 	stream, err := h.client.CreateSession(context.Background(), connect.NewRequest(&pb.CreateSessionRequest{
-		RepoId:    h.repo.ID,
-		Title:     title,
-		Plan:      "quick question",
-		QuickChat: true,
-		AgentName: &agentName,
+		RepoId:      h.repo.ID,
+		Title:       title,
+		Plan:        "quick question",
+		IsQuickChat: true,
+		AgentName:   &agentName,
 	}))
 	if err != nil {
 		return nil, err

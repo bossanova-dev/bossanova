@@ -8,7 +8,7 @@ PR #870) so the run only fires when there is a candidate, spending **zero** agen
 node scripts/cron-gates/boss-build.mjs
 ```
 
-It exits `0` (run) iff at least one Linear issue is in the **`Todo`** state, carries the
+It exits `0` (run) iff at least one Linear issue is in the **planned** state, carries the
 **`agent-friendly`** label, **and is not blocked by an uncleared blocker** (a blocker whose
 state is not `Done`/`Canceled` — i.e. its PR is unmerged), and non-zero (skip) otherwise. This
 keeps the cron from waking to a fully-blocked backlog and burning a run that only exits

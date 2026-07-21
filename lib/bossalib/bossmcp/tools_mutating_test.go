@@ -256,7 +256,7 @@ func TestMutatingTools(t *testing.T) {
 			tool: "create_cron_job",
 			args: map[string]any{"repo_id": "r1", "name": "nightly", "prompt": "p", "schedule": "0 0 * * *", "enabled": true},
 			backend: &fakeBackend{createCronJob: func(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
-				if req.GetRepoId() != "r1" || req.GetName() != "nightly" || req.GetSchedule() != "0 0 * * *" || !req.GetEnabled() {
+				if req.GetRepoId() != "r1" || req.GetName() != "nightly" || req.GetSchedule() != "0 0 * * *" || !req.GetIsEnabled() {
 					t.Errorf("create_cron_job args not forwarded: %+v", req)
 				}
 				return &pb.CronJob{Id: "cron-ccj"}, nil
@@ -267,7 +267,7 @@ func TestMutatingTools(t *testing.T) {
 			tool: "update_cron_job",
 			args: map[string]any{"id": "c1", "name": "renamed", "enabled": false},
 			backend: &fakeBackend{updateCronJob: func(_ context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
-				if req.GetId() != "c1" || req.GetName() != "renamed" || req.GetEnabled() {
+				if req.GetId() != "c1" || req.GetName() != "renamed" || req.GetIsEnabled() {
 					t.Errorf("update_cron_job args not forwarded: %+v", req)
 				}
 				return &pb.CronJob{Id: "cron-ucj"}, nil
@@ -322,7 +322,7 @@ func TestMutatingTools(t *testing.T) {
 			tool: "create_cron_job",
 			args: map[string]any{"repo_id": "r1", "name": "nightly", "prompt": "p", "schedule": "0 0 * * *", "model": "opus", "gate_command": "node gate.mjs", "run_setup_command": true},
 			backend: &fakeBackend{createCronJob: func(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
-				if req.GetModel() != "opus" || req.GetGateCommand() != "node gate.mjs" || !req.GetRunSetupCommand() {
+				if req.GetModel() != "opus" || req.GetGateCommand() != "node gate.mjs" || !req.GetShouldRunSetupCommand() {
 					t.Errorf("create_cron_job new fields not forwarded: %+v", req)
 				}
 				return &pb.CronJob{Id: "cron-ccj-full"}, nil
@@ -333,7 +333,7 @@ func TestMutatingTools(t *testing.T) {
 			tool: "update_cron_job",
 			args: map[string]any{"id": "c1", "model": "sonnet", "gate_command": "g", "run_setup_command": false},
 			backend: &fakeBackend{updateCronJob: func(_ context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
-				if req.GetModel() != "sonnet" || req.GetGateCommand() != "g" || req.RunSetupCommand == nil || req.GetRunSetupCommand() {
+				if req.GetModel() != "sonnet" || req.GetGateCommand() != "g" || req.ShouldRunSetupCommand == nil || req.GetShouldRunSetupCommand() {
 					t.Errorf("update_cron_job new fields not forwarded: %+v", req)
 				}
 				return &pb.CronJob{Id: "cron-ucj-full"}, nil
@@ -361,7 +361,7 @@ func TestMutatingTools(t *testing.T) {
 			},
 			backend: &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error) {
 				if req.GetBaseBranch() != "develop" || req.GetBranchName() != "feat/x" || !req.GetForceBranch() ||
-					!req.GetQuickChat() || req.GetPrNumber() != 42 || req.GetTrackerId() != "BOS-1" ||
+					!req.GetIsQuickChat() || req.GetPrNumber() != 42 || req.GetTrackerId() != "BOS-1" ||
 					req.GetTrackerUrl() != "https://linear.app/x" || req.GetTrackerSource() != "linear" ||
 					!req.GetDetach() || req.GetModel() != "claude-opus-4-8" {
 					t.Errorf("create_session full field set not forwarded: %+v", req)
@@ -437,8 +437,8 @@ func TestUpdateCronJobOmitRunSetupLeavesUnset(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("update_cron_job error: %s", textOf(t, res))
 	}
-	if captured.RunSetupCommand != nil {
-		t.Errorf("omitted run_setup_command should leave proto field nil, got %v", *captured.RunSetupCommand)
+	if captured.ShouldRunSetupCommand != nil {
+		t.Errorf("omitted run_setup_command should leave proto field nil, got %v", *captured.ShouldRunSetupCommand)
 	}
 }
 
@@ -459,8 +459,8 @@ func TestCreateCronJobOmitRunSetupLeavesUnset(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("create_cron_job error: %s", textOf(t, res))
 	}
-	if captured.RunSetupCommand != nil {
-		t.Errorf("omitted run_setup_command should leave proto field nil, got %v", *captured.RunSetupCommand)
+	if captured.ShouldRunSetupCommand != nil {
+		t.Errorf("omitted run_setup_command should leave proto field nil, got %v", *captured.ShouldRunSetupCommand)
 	}
 }
 
@@ -688,7 +688,8 @@ func TestStartChatToolMintsUUIDAndCallsRecordChat(t *testing.T) {
 	var gotResume bool
 	backend := &fakeBackend{recordChat: func(_ context.Context, sid, aid, title, agent string, resume bool) (*pb.ClaudeChat, error) {
 		gotSID, gotAID, gotTitle, gotAgent, gotResume = sid, aid, title, agent, resume
-		return &pb.ClaudeChat{Id: "chat-sc", AgentSessionId: aid}, nil
+		// A live spawn populates tmux_session_name; start_chat requires it.
+		return &pb.ClaudeChat{Id: "chat-sc", AgentSessionId: aid, TmuxSessionName: "boss-chat-" + aid}, nil
 	}}
 	cs := newConnectedClient(t, backend, Options{})
 
@@ -715,6 +716,30 @@ func TestStartChatToolMintsUUIDAndCallsRecordChat(t *testing.T) {
 	// The minted id must surface in the returned chat so the caller can address it.
 	if !strings.Contains(textOf(t, res), gotAID) {
 		t.Errorf("start_chat result must expose the minted agent_session_id %q: %s", gotAID, textOf(t, res))
+	}
+}
+
+// TestStartChatToolRejectsWhenNoLiveTmux proves start_chat fails instead of
+// returning a misleading agent_session_id when RecordChat records a chat but no
+// live agent was spawned (tmux unavailable on the daemon host → empty
+// tmux_session_name). Otherwise a caller would be told to send_chat_message to a
+// chat with no pane behind it.
+func TestStartChatToolRejectsWhenNoLiveTmux(t *testing.T) {
+	backend := &fakeBackend{recordChat: func(_ context.Context, _, aid, _, _ string, _ bool) (*pb.ClaudeChat, error) {
+		// No TmuxSessionName: the daemon's spawn step no-oped (no tmux).
+		return &pb.ClaudeChat{Id: "chat-sc", AgentSessionId: aid}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "start_chat",
+		Arguments: map[string]any{"session_id": "s1"},
+	})
+	if err != nil {
+		t.Fatalf("call start_chat: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("start_chat must return an error result when no live tmux chat was created, got: %s", textOf(t, res))
 	}
 }
 

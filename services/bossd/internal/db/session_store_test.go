@@ -571,11 +571,11 @@ func TestSessionPRMetadataAndCronLastRunRoundTrip(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 	cron, err := cronStore.Create(ctx, CreateCronJobParams{
-		RepoID:   repo.ID,
-		Name:     "cron-pr-repair",
-		Prompt:   "repair",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repo.ID,
+		Name:      "cron-pr-repair",
+		Prompt:    "repair",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -643,13 +643,13 @@ func TestSessionTmuxUnattendedRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	if sess.TmuxUnattended {
-		t.Fatalf("TmuxUnattended = true on creation, want false (default)")
+	if sess.IsTmuxUnattended {
+		t.Fatalf("IsTmuxUnattended = true on creation, want false (default)")
 	}
 
 	tmuxUnattended := true
 	if _, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{
-		TmuxUnattended: &tmuxUnattended,
+		IsTmuxUnattended: &tmuxUnattended,
 	}); err != nil {
 		t.Fatalf("update session tmux_unattended: %v", err)
 	}
@@ -657,11 +657,11 @@ func TestSessionTmuxUnattendedRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	if !gotSess.TmuxUnattended {
-		t.Fatalf("TmuxUnattended = false after Update(true), want true")
+	if !gotSess.IsTmuxUnattended {
+		t.Fatalf("IsTmuxUnattended = false after Update(true), want true")
 	}
 
-	// An Update with a nil TmuxUnattended pointer must not touch the column.
+	// An Update with a nil IsTmuxUnattended pointer must not touch the column.
 	renamedTitle := "Tmux unattended round trip (renamed)"
 	if _, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{
 		Title: &renamedTitle,
@@ -672,8 +672,8 @@ func TestSessionTmuxUnattendedRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session after unrelated update: %v", err)
 	}
-	if !gotSess.TmuxUnattended {
-		t.Fatalf("TmuxUnattended = false after unrelated Update, want true (unchanged)")
+	if !gotSess.IsTmuxUnattended {
+		t.Fatalf("IsTmuxUnattended = false after unrelated Update, want true (unchanged)")
 	}
 }
 
@@ -757,13 +757,13 @@ func TestSessionQuickChatRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	if sess.QuickChat {
-		t.Fatalf("QuickChat = true on creation, want false (default)")
+	if sess.IsQuickChat {
+		t.Fatalf("IsQuickChat = true on creation, want false (default)")
 	}
 
 	quickChat := true
 	if _, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{
-		QuickChat: &quickChat,
+		IsQuickChat: &quickChat,
 	}); err != nil {
 		t.Fatalf("update session quick_chat: %v", err)
 	}
@@ -771,11 +771,11 @@ func TestSessionQuickChatRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	if !gotSess.QuickChat {
-		t.Fatalf("QuickChat = false after Update(true), want true")
+	if !gotSess.IsQuickChat {
+		t.Fatalf("IsQuickChat = false after Update(true), want true")
 	}
 
-	// An Update with a nil QuickChat pointer must not touch the column.
+	// An Update with a nil IsQuickChat pointer must not touch the column.
 	renamedTitle := "Quick chat round trip (renamed)"
 	if _, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{
 		Title: &renamedTitle,
@@ -786,8 +786,8 @@ func TestSessionQuickChatRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session after unrelated update: %v", err)
 	}
-	if !gotSess.QuickChat {
-		t.Fatalf("QuickChat = false after unrelated Update, want true (unchanged)")
+	if !gotSess.IsQuickChat {
+		t.Fatalf("IsQuickChat = false after unrelated Update, want true (unchanged)")
 	}
 }
 

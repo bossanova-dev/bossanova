@@ -44,7 +44,7 @@ test('the review-specific helpers route only to boss-review (BOS-196)', () => {
   // transitive dep of bs-review-detect.mjs, and boss-build vendors it as a direct
   // dep of the Step 4 plan-contract check (validatePlanDescription, BOS-204). It must
   // still not leak into any skill that consumes neither.
-  const skillConfigConsumers = new Set(['boss-review', 'boss-build'])
+  const skillConfigConsumers = new Set(['boss-review', 'boss-build', 'boss-plan'])
   for (const [skill, files] of Object.entries(VENDOR_MAP)) {
     if (skillConfigConsumers.has(skill)) {
       assert.ok(files.includes('skill-config.mjs'), `${skill} must vendor skill-config.mjs`)

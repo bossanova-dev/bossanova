@@ -38,6 +38,7 @@ go_library(
 
 go_test(
     name = "db_test",
+    size = "large",  # keep: race-instrumented modernc SQLite runs the full migration chain per test; medium (300s) is too tight under --config=race
     srcs = [
         "account_decide_tx_test.go",
         "account_store_test.go",
@@ -49,6 +50,7 @@ go_test(
         "recomputing_stores_test.go",
         "repo_store_test.go",
         "rotation_event_store_test.go",
+        "schema_naming_migration_test.go",
         "session_store_test.go",
         "sqlite_pool_test.go",
         "task_mapping_store_test.go",
@@ -57,6 +59,7 @@ go_test(
     data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller
     embed = [":db"],
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
+    shard_count = 8,  # keep: split the 170 independent in-memory store tests so per-shard wall-clock stays low under --config=race (~580s serial)
     deps = [
         "//lib/bossalib/config",
         "//lib/bossalib/machine",

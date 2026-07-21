@@ -258,6 +258,8 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// this synchronously so that, by the time the launching-display
 		// delay elapses, the manager already knows about the session and
 		// the user's Ctrl+X intercept has somewhere to land.
+		// #nosec G204 -- tmux attach -t <name>; const argv, app-generated session id; no shell
+		// owner=@recurser review-by=2027-01-18 issue=BOS-28
 		agentCmd := exec.Command("tmux", "attach", "-t", tmuxName)
 		agentCmd.Dir = msg.session.GetWorktreePath()
 		env, effTERM := attachTmuxEnv(os.Environ())

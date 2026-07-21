@@ -1,6 +1,9 @@
 package vcs
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestConstructPRURL(t *testing.T) {
 	tests := []struct {
@@ -449,5 +452,26 @@ func TestPullRequestWebLink_PRNumberBoundary(t *testing.T) {
 	if !ok || provider != "github" || url != "https://github.com/owner/repo/pull/1" {
 		t.Errorf("PullRequestWebLink with prNumber=1 = (%q, %q, %v), want (github, .../pull/1, true)",
 			provider, url, ok)
+	}
+}
+
+// TestPullRequestWebLink_RejectsZeroBeforeProvider ensures the helper owns its
+// PR-number validation instead of relying on each provider to reject zero.
+func TestPullRequestWebLink_RejectsZeroBeforeProvider(t *testing.T) {
+	originalProviders := webLinkProviders
+	webLinkProviders = []webLinkProvider{{
+		name: "zero-friendly",
+		matchesHost: func(host string) bool {
+			return host == "example.test"
+		},
+		pullRequestURL: func(_ string, slug string, prNumber int) string {
+			return fmt.Sprintf("https://example.test/%s/pulls/%d", slug, prNumber)
+		},
+	}}
+	t.Cleanup(func() { webLinkProviders = originalProviders })
+
+	provider, webURL, ok := PullRequestWebLink("https://example.test/owner/repo.git", 0)
+	if provider != "" || webURL != "" || ok {
+		t.Errorf("PullRequestWebLink with prNumber=0 = (%q, %q, %v), want empty values and false", provider, webURL, ok)
 	}
 }

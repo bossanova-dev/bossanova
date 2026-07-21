@@ -192,7 +192,7 @@ func (j OverlayCronJob) Build() (*pb.CronJob, error) {
 		Prompt:      j.Prompt,
 		Schedule:    schedule,
 		Timezone:    timezone,
-		Enabled:     enabled,
+		IsEnabled:   enabled,
 		AgentName:   agent,
 		GateCommand: j.GateCommand,
 	}, nil

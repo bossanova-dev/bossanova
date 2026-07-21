@@ -282,7 +282,7 @@ func TestRecoverStrandedCronSessions_TmuxUnattended_Routed(t *testing.T) {
 	lc, sessions, _, rec := newSweepLifecycle(t, dir)
 	s := strandedCronSession("s1", "a1")
 	s.CronJobID = nil
-	s.TmuxUnattended = true
+	s.IsTmuxUnattended = true
 	sessions.sessions["s1"] = s
 	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute) // idle -> run over
 
@@ -598,7 +598,7 @@ func TestRecoverStrandedCronSessions_LiveAndAttended_Untouched(t *testing.T) {
 	attended := strandedCronSession("attended", "a-att")
 	attended.State = machine.PushingBranch
 	attended.CronJobID = nil
-	attended.TmuxUnattended = false
+	attended.IsTmuxUnattended = false
 	sessions.sessions["attended"] = attended
 	seedLog(t, dir, "a-att", cronAgentIdleThreshold+time.Minute)
 

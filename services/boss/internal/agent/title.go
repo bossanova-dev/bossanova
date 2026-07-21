@@ -102,6 +102,8 @@ type jsonlMsg struct {
 // parseSessionMeta scans the first maxScanLines of a JSONL file to extract
 // the slug and first user message text.
 func parseSessionMeta(path string) (slug, summary string) {
+	// #nosec G304 -- reads a Claude Code session JSONL transcript at an internally-derived path; not attacker-controlled
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	f, err := os.Open(path)
 	if err != nil {
 		return "", ""

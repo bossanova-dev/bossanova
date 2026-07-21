@@ -57,8 +57,8 @@ const V20260705 Version = "2026-07-05"
 // for older clients.
 const V20260706 Version = "2026-07-06"
 
-// V20260711 is the current production API version. It ships the
-// NoEligibleAccountChange transform: the OrchestratorService began serving the
+// V20260711 ships the NoEligibleAccountChange transform (it was current until
+// V20260718 superseded it). The OrchestratorService began serving the
 // RotationOutcome value ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT (6) on
 // Session.rotation_events[].outcome, a new terminal state distinguishing "no
 // active account to rotate to" from the prior "agent cannot rotate"
@@ -66,6 +66,19 @@ const V20260706 Version = "2026-07-06"
 // version were built before this value existed, so they are down-converted back
 // to ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY (the prior observable value).
 const V20260711 Version = "2026-07-11"
+
+// V20260718 is the current production API version. It ships the
+// ErroredStatusChange transform: at V20260718 the OrchestratorService began
+// serving the BOS-430 errored-recolor display shape for orphaned/blocked
+// sessions on Session.display_label / display_intent / display_spinner. An
+// errored session now keeps its real underlying status label and spinner but
+// has its intent recolored to DANGER (an orphaned session no longer collapses to
+// a static "orphaned"/no-spinner tuple, and a blocked session's green/neutral
+// status is recolored red). Clients pinned to an older version were built
+// against the prior shapes — a fixed "orphaned"/DANGER tuple for ORPHANED and an
+// un-recolored base cascade for BLOCKED — so they are down-converted back to
+// those (see displaystatus.PreErroredOutput).
+const V20260718 Version = "2026-07-18"
 
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
@@ -167,11 +180,11 @@ func (r *Registry) Newer(a, b Version) bool {
 }
 
 // DefaultRegistry returns a Registry seeded with the known production API
-// versions, ordered oldest→newest: Baseline, V20260704, V20260705, V20260706 and
-// V20260711. Current is V20260711 (the newest released behavior) while Default
-// stays Baseline (the oldest supported version), so a header-less caller is
-// pinned to Baseline and is down-converted by ProductionChanges, and a client
-// that negotiates V20260711 runs zero transforms.
+// versions, ordered oldest→newest: Baseline, V20260704, V20260705, V20260706,
+// V20260711 and V20260718. Current is V20260718 (the newest released behavior)
+// while Default stays Baseline (the oldest supported version), so a header-less
+// caller is pinned to Baseline and is down-converted by ProductionChanges, and a
+// client that negotiates V20260718 runs zero transforms.
 //
 // V20260701 is intentionally NOT a member of the production registry — it
 // exists as an exported const for example and test use only (it is exercised
@@ -182,8 +195,8 @@ func (r *Registry) Newer(a, b Version) bool {
 // the full procedure.
 func DefaultRegistry() *Registry {
 	reg, err := NewRegistry(
-		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711},
-		V20260711,
+		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718},
+		V20260718,
 		Baseline,
 	)
 	if err != nil {

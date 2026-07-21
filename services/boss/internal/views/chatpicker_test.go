@@ -940,10 +940,10 @@ func TestChatPicker_ArchivePendingShowsArchiving(t *testing.T) {
 	m = updated.(ChatPickerModel)
 
 	updated, _ = m.Update(chatPickerRefreshMsg{session: &pb.Session{
-		Id:                            "session-1",
-		DisplayStatus:                 pb.DisplayStatus_DISPLAY_STATUS_MERGED,
-		RepoArchiveSessionsAfterMerge: true,
-		ArchivePending:                true,
+		Id:                                  "session-1",
+		DisplayStatus:                       pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+		RepoShouldArchiveSessionsAfterMerge: true,
+		ArchivePending:                      true,
 	}})
 	cp := updated.(ChatPickerModel)
 	if !cp.isArchiving() {
@@ -960,10 +960,10 @@ func TestChatPicker_ArchivePendingShowsArchiving(t *testing.T) {
 func TestChatPicker_MergedWithArchiveFlagButNotPendingDoesNotShowArchiving(t *testing.T) {
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 	updated, _ := m.Update(chatPickerRefreshMsg{session: &pb.Session{
-		Id:                            "session-1",
-		DisplayStatus:                 pb.DisplayStatus_DISPLAY_STATUS_MERGED,
-		RepoArchiveSessionsAfterMerge: true,
-		ArchivePending:                false,
+		Id:                                  "session-1",
+		DisplayStatus:                       pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+		RepoShouldArchiveSessionsAfterMerge: true,
+		ArchivePending:                      false,
 	}})
 	if cp := updated.(ChatPickerModel); cp.isArchiving() {
 		t.Error("expected isArchiving() false for a resurrected merged session (archive_pending=false)")

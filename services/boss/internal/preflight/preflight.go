@@ -140,6 +140,8 @@ func runShellWithTimeout(shell, worktree, line string, timeout time.Duration) er
 
 func runShellContext(ctx context.Context, shell, worktree, line string) error {
 	args := append(loginshell.Flags(shell), loginshell.CommandLine(shell, line))
+	// #nosec G204 -- operator/env login shell running a configured command line; local-trust
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.CommandContext(ctx, shell, args...)
 	cmd.Dir = worktree
 	return cmd.Run()

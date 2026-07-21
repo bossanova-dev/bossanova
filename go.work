@@ -6,6 +6,7 @@ use (
 	./plugins/bossd-plugin-codex
 	./plugins/bossd-plugin-dependabot
 	./plugins/bossd-plugin-linear
+	./plugins/bossd-plugin-opencode
 	./plugins/bossd-plugin-repair
 	./plugins/bossd-plugin-sentry
 	./plugins/bossd-plugin-stub-runner

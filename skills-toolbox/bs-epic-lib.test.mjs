@@ -139,23 +139,53 @@ test('normalizeTicket: planUrl is null when no matching attachment/link exists',
 
 // --- classifyTickets --------------------------------------------------------
 
-test('classifyTickets: Todo+agent-friendly+plan is eligible', () => {
-  const { eligible } = classifyTickets([t('BOS-1')])
+test('classifyTickets: planned-state + agent-friendly + plan is eligible', () => {
+  const { eligible } = classifyTickets([t('BOS-1')], 'Todo')
   assert.equal(eligible.length, 1)
 })
-test('classifyTickets: needs-human, missing plan, Unplanned, In Progress all skip with reasons', () => {
-  const { skipped } = classifyTickets([
-    t('BOS-1', { labels: ['needs-human'] }),
-    t('BOS-2', { planUrl: null }),
-    t('BOS-3', { stateName: 'Unplanned' }),
-    t('BOS-4', { stateName: 'In Progress' }),
-  ])
+test('classifyTickets: needs-human, missing plan, not-planned, In Progress all skip with reasons', () => {
+  const { skipped } = classifyTickets(
+    [
+      t('BOS-1', { labels: ['needs-human'] }),
+      t('BOS-2', { planUrl: null }),
+      t('BOS-3', { stateName: 'Unplanned' }),
+      t('BOS-4', { stateName: 'In Progress' }),
+    ],
+    'Todo',
+  )
   assert.equal(skipped.length, 4)
   for (const s of skipped) assert.ok(s.reason.length > 0)
 })
 test('classifyTickets: Done child counts as done, not skipped', () => {
-  const { done } = classifyTickets([t('BOS-1', { stateName: 'Done', stateType: 'completed' })])
+  const { done } = classifyTickets(
+    [t('BOS-1', { stateName: 'Done', stateType: 'completed' })],
+    'Todo',
+  )
   assert.equal(done.length, 1)
+})
+test('classifyTickets: planned state is config-driven, not hard-coded', () => {
+  // A repo whose configured planned state is a different word: the ticket in that
+  // state is eligible, and one named "Todo" is skipped as not-yet-planned. Proves
+  // the eligibility gate reads the passed planned-state name, never a baked literal.
+  const tickets = [t('BOS-1', { stateName: 'Ready' }), t('BOS-2', { stateName: 'Todo' })]
+  const { eligible, skipped } = classifyTickets(tickets, 'Ready')
+  assert.deepEqual(
+    eligible.map((tk) => tk.id),
+    ['BOS-1'],
+  )
+  assert.deepEqual(
+    skipped.map((s) => s.ticket.id),
+    ['BOS-2'],
+  )
+  assert.match(skipped[0].reason, /expected Ready/)
+})
+test('classifyTickets: a missing planned-state name fails closed', () => {
+  // Rather than silently marking every ticket eligible (or none), an unresolved
+  // planned-state config surfaces loudly so a mis-configured repo cannot spawn
+  // sessions for unplanned work.
+  for (const bad of [undefined, null, '']) {
+    assert.throws(() => classifyTickets([t('BOS-1')], bad), /plannedState/)
+  }
 })
 
 // --- readyTickets / buildGraph / transitiveDependents -----------------------

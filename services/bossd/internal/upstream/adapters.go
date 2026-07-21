@@ -125,7 +125,7 @@ type SessionReader interface {
 
 // AutomationToggler flips the automation_enabled flag — pause/resume.
 type AutomationToggler interface {
-	SetAutomationEnabled(ctx context.Context, sessionID string, enabled bool) error
+	SetIsAutomationEnabled(ctx context.Context, sessionID string, enabled bool) error
 }
 
 // SessionCommandServer is the slice of *server.Server the merge/archive/
@@ -229,7 +229,7 @@ func (a *CommandHandlerAdapter) Pause(ctx context.Context, sessionID string) (*p
 	if a.Automation == nil {
 		return nil, errors.New("pause: automation toggler not wired")
 	}
-	if err := a.Automation.SetAutomationEnabled(ctx, sessionID, false); err != nil {
+	if err := a.Automation.SetIsAutomationEnabled(ctx, sessionID, false); err != nil {
 		return nil, fmt.Errorf("pause session: %w", err)
 	}
 	if a.Sessions == nil {
@@ -286,7 +286,7 @@ func (a *CommandHandlerAdapter) Resume(ctx context.Context, sessionID string) (*
 	if a.Automation == nil {
 		return nil, errors.New("resume: automation toggler not wired")
 	}
-	if err := a.Automation.SetAutomationEnabled(ctx, sessionID, true); err != nil {
+	if err := a.Automation.SetIsAutomationEnabled(ctx, sessionID, true); err != nil {
 		return nil, fmt.Errorf("resume session: %w", err)
 	}
 	if a.Sessions == nil {
@@ -569,17 +569,17 @@ func (a *CommandHandlerAdapter) UpdateRepo(ctx context.Context, msg *pb.UpdateRe
 		return nil, errors.New("update_repo: command server not wired")
 	}
 	req := &pb.UpdateRepoRequest{
-		Id:                        msg.GetRepoId(),
-		DisplayName:               msg.DisplayName,
-		SetupScript:               msg.SetupScript,
-		CanAutoMerge:              msg.CanAutoMerge,
-		CanAutoMergeDependabot:    msg.CanAutoMergeDependabot,
-		CanAutoRepair:             msg.CanAutoRepair,
-		ArchiveSessionsAfterMerge: msg.ArchiveSessionsAfterMerge,
-		SentryOrg:                 msg.SentryOrg,
-		LinearKey:                 msg.LinearKey,
-		SentryKey:                 msg.SentryKey,
-		ExpectedUpdatedAt:         msg.ExpectedUpdatedAt,
+		Id:                              msg.GetRepoId(),
+		DisplayName:                     msg.DisplayName,
+		SetupScript:                     msg.SetupScript,
+		CanAutoMerge:                    msg.CanAutoMerge,
+		CanAutoMergeDependabot:          msg.CanAutoMergeDependabot,
+		CanAutoRepair:                   msg.CanAutoRepair,
+		ShouldArchiveSessionsAfterMerge: msg.ShouldArchiveSessionsAfterMerge,
+		SentryOrg:                       msg.SentryOrg,
+		LinearKey:                       msg.LinearKey,
+		SentryKey:                       msg.SentryKey,
+		ExpectedUpdatedAt:               msg.ExpectedUpdatedAt,
 	}
 	if msg.MergeStrategy != nil {
 		strategy := "merge"
@@ -695,16 +695,16 @@ func (a *CommandHandlerAdapter) CreateCronJob(ctx context.Context, cmd *pb.Creat
 		return nil, errors.New("create_cron_job: command server not wired")
 	}
 	resp, err := a.Commands.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
-		RepoId:          cmd.GetRepoId(),
-		Name:            cmd.GetName(),
-		Prompt:          cmd.GetPrompt(),
-		Schedule:        cmd.GetSchedule(),
-		Timezone:        cmd.GetTimezone(),
-		Enabled:         cmd.GetEnabled(),
-		AgentName:       cmd.GetAgentName(),
-		Model:           cmd.GetModel(),
-		GateCommand:     cmd.GetGateCommand(),
-		RunSetupCommand: cmd.RunSetupCommand,
+		RepoId:                cmd.GetRepoId(),
+		Name:                  cmd.GetName(),
+		Prompt:                cmd.GetPrompt(),
+		Schedule:              cmd.GetSchedule(),
+		Timezone:              cmd.GetTimezone(),
+		IsEnabled:             cmd.GetIsEnabled(),
+		AgentName:             cmd.GetAgentName(),
+		Model:                 cmd.GetModel(),
+		GateCommand:           cmd.GetGateCommand(),
+		ShouldRunSetupCommand: cmd.ShouldRunSetupCommand,
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("create cron job: %w", err)
@@ -721,16 +721,16 @@ func (a *CommandHandlerAdapter) UpdateCronJob(ctx context.Context, cmd *pb.Updat
 		return nil, errors.New("update_cron_job: command server not wired")
 	}
 	resp, err := a.Commands.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{
-		Id:              cmd.GetId(),
-		Name:            cmd.Name,
-		Prompt:          cmd.Prompt,
-		Schedule:        cmd.Schedule,
-		Timezone:        cmd.Timezone,
-		Enabled:         cmd.Enabled,
-		AgentName:       cmd.AgentName,
-		Model:           cmd.Model,
-		GateCommand:     cmd.GateCommand,
-		RunSetupCommand: cmd.RunSetupCommand,
+		Id:                    cmd.GetId(),
+		Name:                  cmd.Name,
+		Prompt:                cmd.Prompt,
+		Schedule:              cmd.Schedule,
+		Timezone:              cmd.Timezone,
+		IsEnabled:             cmd.IsEnabled,
+		AgentName:             cmd.AgentName,
+		Model:                 cmd.Model,
+		GateCommand:           cmd.GateCommand,
+		ShouldRunSetupCommand: cmd.ShouldRunSetupCommand,
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("update cron job: %w", err)
@@ -1147,7 +1147,7 @@ func (a *SessionCreatorAdapter) Create(ctx context.Context, cmd *pb.CreateSessio
 		Title:         cmd.GetTitle(),
 		Plan:          cmd.GetPlan(),
 		BaseBranch:    cmd.GetBaseBranch(),
-		QuickChat:     cmd.GetQuickChat(),
+		IsQuickChat:   cmd.GetIsQuickChat(),
 		PrNumber:      cmd.PrNumber,
 		BranchName:    cmd.BranchName,
 		TrackerId:     cmd.TrackerId,
@@ -1160,9 +1160,9 @@ func (a *SessionCreatorAdapter) Create(ctx context.Context, cmd *pb.CreateSessio
 		// Unattended-session fields carried over the reverse stream so a hosted
 		// create runs the same headless/unattended flow as a direct socket
 		// create rather than starting interactive on the default model.
-		Detach:         cmd.GetDetach(),
-		Model:          cmd.Model,
-		TmuxUnattended: cmd.GetTmuxUnattended(),
+		Detach:           cmd.GetDetach(),
+		Model:            cmd.Model,
+		IsTmuxUnattended: cmd.GetIsTmuxUnattended(),
 	}
 	if name := cmd.GetAgentName(); name != "" {
 		req.AgentName = &name

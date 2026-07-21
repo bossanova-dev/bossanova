@@ -1291,7 +1291,7 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 			title = "Quick Chat " + time.Now().Format("2006-01-02 15:04")
 		}
 		req.Title = title
-		req.QuickChat = true
+		req.IsQuickChat = true
 	case sessionTypeNewPR:
 		req.Title = m.fd.title
 	case sessionTypeExistingPR:

@@ -487,7 +487,8 @@ func recentRepairLogs(dir string) []*bossanovav1.RepairLogSnapshot {
 // Used to surface the runner's [runner] spawning preamble in the doctor
 // report.
 func readFirstNonEmptyLine(path string) string {
-	// #nosec G304 -- path is a daemon-internal, non-user path (a runner-log file path enumerated from the daemon's own log dir); owner=@recurser review-by=2026-10-18 issue=BOS-413
+	// #nosec G304 -- reads a runner-log path enumerated from the daemon's own log dir; non-user input
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	f, err := os.Open(path)
 	if err != nil {
 		return ""

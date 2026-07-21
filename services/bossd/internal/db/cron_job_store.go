@@ -42,11 +42,11 @@ func (s *SQLiteCronJobStore) Create(ctx context.Context, params CreateCronJobPar
 		gateCommandVal = params.GateCommand
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, timezone, agent_name, model, enabled, gate_command, run_setup_command, created_at, updated_at)
+		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled, gate_command, should_run_setup_command, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.RepoID, params.Name, params.Prompt, params.Schedule, params.Timezone,
-		agentName, params.Model, sqlutil.BoolToInt(params.Enabled),
-		gateCommandVal, sqlutil.BoolToInt(params.RunSetupCommand), now, now,
+		agentName, params.Model, sqlutil.BoolToInt(params.IsEnabled),
+		gateCommandVal, sqlutil.BoolToInt(params.ShouldRunSetupCommand), now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert cron job: %w", err)
@@ -78,7 +78,7 @@ func (s *SQLiteCronJobStore) ListByRepo(ctx context.Context, repoID string) ([]*
 
 func (s *SQLiteCronJobStore) ListEnabled(ctx context.Context) ([]*models.CronJob, error) {
 	rows, err := s.db.QueryContext(ctx,
-		cronJobSelectSQL+" WHERE enabled = 1 ORDER BY created_at ASC")
+		cronJobSelectSQL+" WHERE is_enabled = 1 ORDER BY created_at ASC")
 	if err != nil {
 		return nil, fmt.Errorf("list enabled cron jobs: %w", err)
 	}
@@ -118,9 +118,9 @@ func (s *SQLiteCronJobStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "model = ?")
 		args = append(args, *params.Model)
 	}
-	if params.Enabled != nil {
-		sets = append(sets, "enabled = ?")
-		args = append(args, sqlutil.BoolToInt(*params.Enabled))
+	if params.IsEnabled != nil {
+		sets = append(sets, "is_enabled = ?")
+		args = append(args, sqlutil.BoolToInt(*params.IsEnabled))
 	}
 	if params.NextRunAt != nil {
 		if *params.NextRunAt == nil {
@@ -134,12 +134,14 @@ func (s *SQLiteCronJobStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "gate_command = ?")
 		args = append(args, *params.GateCommand)
 	}
-	if params.RunSetupCommand != nil {
-		sets = append(sets, "run_setup_command = ?")
-		args = append(args, sqlutil.BoolToInt(*params.RunSetupCommand))
+	if params.ShouldRunSetupCommand != nil {
+		sets = append(sets, "should_run_setup_command = ?")
+		args = append(args, sqlutil.BoolToInt(*params.ShouldRunSetupCommand))
 	}
 
 	args = append(args, id)
+	// #nosec G202 -- dynamic UPDATE...SET builder; concatenated fragments are code-literal `col = ?` set-clauses; every value is bound via ?, not user text
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	query := "UPDATE cron_jobs SET " + strings.Join(sets, ", ") + " WHERE id = ?"
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -171,6 +173,8 @@ func (s *SQLiteCronJobStore) MarkFireStarted(ctx context.Context, id string, ses
 	}
 
 	args = append(args, id)
+	// #nosec G202 -- dynamic UPDATE...SET builder; concatenated fragments are code-literal `col = ?` set-clauses; every value is bound via ?, not user text
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	query := "UPDATE cron_jobs SET " + strings.Join(sets, ", ") + " WHERE id = ?"
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -214,6 +218,8 @@ func (s *SQLiteCronJobStore) UpdateLastRun(ctx context.Context, id string, param
 		}
 		args = append(args, *params.ExpectedSessionID)
 	}
+	// #nosec G202 -- dynamic UPDATE...SET builder; `where` is a static `id = ?` (+static guard); values bound via ?, not user text
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	query := "UPDATE cron_jobs SET " + strings.Join(sets, ", ") + " WHERE " + where
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -242,8 +248,8 @@ func (s *SQLiteCronJobStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-const cronJobSelectSQL = `SELECT id, repo_id, name, prompt, schedule, timezone, agent_name, model, enabled,
-	gate_command, run_setup_command,
+const cronJobSelectSQL = `SELECT id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled,
+	gate_command, should_run_setup_command,
 	last_run_session_id, last_run_at, last_run_outcome, next_run_at,
 	created_at, updated_at
 	FROM cron_jobs`
@@ -276,9 +282,9 @@ func scanCronJob(s sqlutil.Scanner) (*models.CronJob, error) {
 	if err != nil {
 		return nil, err
 	}
-	j.Enabled = enabledInt != 0
+	j.IsEnabled = enabledInt != 0
 	j.GateCommand = gateCommand.String
-	j.RunSetupCommand = runSetupInt != 0
+	j.ShouldRunSetupCommand = runSetupInt != 0
 	if timezone.Valid {
 		s := timezone.String
 		j.Timezone = &s

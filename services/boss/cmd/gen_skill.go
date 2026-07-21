@@ -33,7 +33,8 @@ func runGenSkill(root *cobra.Command, path string, check bool, out io.Writer) er
 	if err != nil {
 		return err
 	}
-	// #nosec G304 -- path is the skill-doc target of the hidden dev-only `gen-skill` CLI; it is a non-secret repo markdown the developer names, and reading the named file is the command's purpose. owner=@recurser review-by=2026-09-16 issue=BOS-414
+	// #nosec G304 -- hidden dev-only gen-skill command reading a repo SKILL.md; path kept as a test seam, non-secret.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	existing, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read skill: %w", err)

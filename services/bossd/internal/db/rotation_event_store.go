@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/recurser/bossalib/sqlutil"
 )
 
 // RotationEvent is one persisted rotation-decision audit record (BOS-176).
@@ -39,7 +41,7 @@ func NewRotationEventStore(db *sql.DB) *SQLiteRotationEventStore {
 	return &SQLiteRotationEventStore{db: db}
 }
 
-// Insert appends one audit row. Times are stored as Unix seconds; reset_at is
+// Insert appends one audit row. Times are stored as ISO-8601 TEXT; reset_at is
 // NULL when the event carried no reset. CreatedAt defaults to now when unset.
 func (s *SQLiteRotationEventStore) Insert(ctx context.Context, ev RotationEvent) error {
 	if ev.SessionID == "" {
@@ -48,10 +50,10 @@ func (s *SQLiteRotationEventStore) Insert(ctx context.Context, ev RotationEvent)
 	if ev.CreatedAt.IsZero() {
 		ev.CreatedAt = time.Now()
 	}
-	var resetUnix *int64
+	var resetAt *string
 	if ev.ResetAt != nil {
-		u := ev.ResetAt.Unix()
-		resetUnix = &u
+		s := sqlutil.FormatTime(*ev.ResetAt)
+		resetAt = &s
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO rotation_events
@@ -59,7 +61,7 @@ func (s *SQLiteRotationEventStore) Insert(ctx context.Context, ev RotationEvent)
 		    to_account, reset_at, outcome, detail, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ev.ID, ev.SessionID, ev.ChatID, ev.Provider, ev.Trigger, ev.FromAccount,
-		ev.ToAccount, resetUnix, ev.Outcome, ev.Detail, ev.CreatedAt.Unix())
+		ev.ToAccount, resetAt, ev.Outcome, ev.Detail, sqlutil.FormatTime(ev.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("insert rotation event: %w", err)
 	}
@@ -87,20 +89,19 @@ func (s *SQLiteRotationEventStore) RecentBySession(ctx context.Context, sessionI
 	var out []RotationEvent
 	for rows.Next() {
 		var (
-			ev         RotationEvent
-			resetUnix  sql.NullInt64
-			createUnix int64
+			ev        RotationEvent
+			resetAt   sql.NullString
+			createdAt string
 		)
 		if err := rows.Scan(&ev.ID, &ev.SessionID, &ev.ChatID, &ev.Provider,
-			&ev.Trigger, &ev.FromAccount, &ev.ToAccount, &resetUnix,
-			&ev.Outcome, &ev.Detail, &createUnix); err != nil {
+			&ev.Trigger, &ev.FromAccount, &ev.ToAccount, &resetAt,
+			&ev.Outcome, &ev.Detail, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan rotation event: %w", err)
 		}
-		if resetUnix.Valid {
-			t := time.Unix(resetUnix.Int64, 0).UTC()
-			ev.ResetAt = &t
+		if resetAt.Valid {
+			ev.ResetAt = sqlutil.ParseOptionalTime(&resetAt.String)
 		}
-		ev.CreatedAt = time.Unix(createUnix, 0).UTC()
+		ev.CreatedAt = sqlutil.ParseTime(createdAt)
 		out = append(out, ev)
 	}
 	return out, rows.Err()

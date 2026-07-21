@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -297,6 +298,9 @@ var _ WorktreeManager = (*Manager)(nil)
 // Manager is the default WorktreeManager implementation backed by real git commands.
 type Manager struct {
 	logger zerolog.Logger
+	// removeAll is injectable so teardown failure paths can be tested without
+	// relying on platform-specific directory permission behavior.
+	removeAll func(string) error
 	// LoginShell is the user's login shell ($SHELL, captured in settings). When
 	// set, the repo setup script runs through it so per-project version-manager
 	// shims (nodenv/asdf/…) land on PATH — otherwise the daemon's restricted
@@ -310,7 +314,7 @@ type Manager struct {
 
 // NewManager creates a new git WorktreeManager.
 func NewManager(logger zerolog.Logger) *Manager {
-	return &Manager{logger: logger}
+	return &Manager{logger: logger, removeAll: os.RemoveAll}
 }
 
 // sanitizeBranchName converts a session title into a valid git branch name.
@@ -494,6 +498,180 @@ func firstExistingRef(ctx context.Context, repoPath string, candidates []string)
 	return "", false
 }
 
+// bazelOutputBaseForWorktree resolves the Bazel output base that a built
+// worktree keyed, by reading the worktree's `bazel-out` convenience symlink.
+// Bazel keys exactly one output base per workspace path under $OUTPUT_USER_ROOT
+// (default /var/tmp/_bazel_<user>/<key>), and points the in-worktree `bazel-out`
+// symlink at <base>/execroot/_main/bazel-out. Splitting the target on the LAST
+// "/execroot/" yields the output base — the prefix up to <key> — regardless of
+// where $OUTPUT_USER_ROOT lives. The last occurrence (not the first) is used so
+// that a base path which itself embeds "/execroot/" still resolves to the true
+// base rather than a parent directory — the Bazel-appended
+// "/execroot/_main/bazel-out" suffix is always the final occurrence. This
+// deliberately never reconstructs the key via md5(path): Bazel's key is not
+// reproducible that way (verified in BOS-447).
+//
+// It returns "" when the worktree was never built (no symlink), when the
+// symlink cannot be read, or when the resolved target fails any of the defensive
+// guards below — the caller must never RemoveAll an unexpected path. The symlink
+// lives INSIDE the worktree, so callers must capture the base BEFORE removing the
+// worktree dir.
+//
+// SECURITY: `bazel-out` lives inside an agent-writable worktree, so its target is
+// untrusted input about to be handed to os.RemoveAll by the daemon. The guards
+// below bind a reaped base to this worktree. The base must contain "/execroot/",
+// be absolute, and sit directly under a Bazel output-user-root (a dir named
+// `_bazel_<user>`); its execroot must also point back to this worktree's marker.
+// This confines a malicious or corrupted target — an arbitrary absolute path, a
+// relative target, or a `..`-escape (the base is filepath.Clean'd before the
+// check) — to "" (a safe leak, never a wrong delete), and bounds any successful
+// reap to the single Bazel output base bound to this worktree. The marker may be
+// MODULE.bazel for bzlmod workspaces, or WORKSPACE(.bazel) for legacy workspaces.
+//
+// The `_bazel_<user>` anchor is load-bearing, not cosmetic: the marker check
+// alone is FORGEABLE. An agent can point bazel-out at any same-user-writable
+// directory and plant `<dir>/execroot/<name>/MODULE.bazel` as a symlink back to
+// this worktree's marker, making that directory's marker resolve to ours. Without
+// the anchor, teardown would then chmod+RemoveAll an arbitrary directory such as
+// $HOME/important. Requiring base's parent dir to be `_bazel_*` confines even a
+// fully-bound forgery to a child of a Bazel scratch root. The cost is that bases
+// under a non-default `--output_user_root` are not reaped (they leak to "", so
+// the orphan persists exactly as before this feature) rather than trusted — a
+// deliberate trade of speculative custom-root support for a closed deletion hole.
+// We never reconstruct Bazel's non-reproducible md5 key.
+func (m *Manager) bazelOutputBaseForWorktree(worktreePath string) string {
+	// A symlinked worktree path can point at another live workspace. RemoveAll
+	// only removes that symlink, while os.Readlink below would follow its parent
+	// and nominate the target workspace's output base for reaping. Reject it
+	// before resolving anything under the supplied path.
+	info, err := os.Lstat(worktreePath)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return ""
+	}
+	target, err := os.Readlink(filepath.Join(worktreePath, "bazel-out"))
+	if err != nil {
+		return ""
+	}
+	// Split on the LAST "/execroot/": if the base path itself embeds that
+	// segment, the first-occurrence split would truncate to a parent directory
+	// and reap far too much. idx <= 0 covers both "not found" (-1) and a target
+	// that starts with "/execroot/" (0 → empty base), preserving the defensive
+	// "" return.
+	idx := strings.LastIndex(target, "/execroot/")
+	if idx <= 0 {
+		return ""
+	}
+	base := filepath.Clean(target[:idx])
+	execrootPath := target[idx+len("/execroot/"):]
+	execrootName, bazelOut, ok := strings.Cut(execrootPath, "/")
+	if !ok || execrootName == "" || execrootName == "." || execrootName == ".." || strings.ContainsAny(execrootName, `/\\`) || bazelOut != "bazel-out" {
+		return ""
+	}
+	// Defensive anchoring (see SECURITY note above): reject a relative target.
+	if !filepath.IsAbs(base) {
+		return ""
+	}
+	// Bind to a Bazel output-user-root: base must be a direct child of a dir
+	// named `_bazel_<user>`. This is the non-forgeable half of the guard — the
+	// marker check below is defeatable by a planted symlink, so the base's
+	// location, which the agent cannot make point at a sensitive directory, is
+	// what confines a forged target to a Bazel scratch root. (See SECURITY note.)
+	//
+	// The parent chain is resolved before the name check: a purely lexical
+	// basename check is defeated by a symlinked ancestor (e.g. an agent creates
+	// `/tmp/_bazel_fake -> $HOME` and a base of `/tmp/_bazel_fake/important` —
+	// lexically the parent is `_bazel_fake`, but RemoveAll follows the ancestor
+	// symlink and deletes `$HOME/important`). EvalSymlinks collapses the chain so
+	// we test the REAL output-user-root's name. A parent that cannot be resolved
+	// (e.g. it does not exist) is rejected.
+	realParent, err := filepath.EvalSymlinks(filepath.Dir(base))
+	if err != nil || !strings.HasPrefix(filepath.Base(realParent), "_bazel_") {
+		return ""
+	}
+	for _, marker := range []string{"MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel"} {
+		worktreeMarker := filepath.Join(worktreePath, marker)
+		info, err := os.Lstat(worktreeMarker)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		resolvedWorktreeMarker, err := filepath.EvalSymlinks(worktreeMarker)
+		if err != nil {
+			continue
+		}
+		baseMarker := filepath.Join(base, "execroot", execrootName, marker)
+		resolvedMarker, err := filepath.EvalSymlinks(baseMarker)
+		if err == nil && filepath.Clean(resolvedMarker) == filepath.Clean(resolvedWorktreeMarker) {
+			return base
+		}
+	}
+	return ""
+}
+
+// reapBazelOutputBase best-effort removes a worktree's Bazel output base after
+// the worktree directory itself is gone. Bazel never garbage-collects a base
+// when its worktree is deleted, so without this they accumulate (1.5-4 GB each)
+// until the disk fills (BOS-447). It NEVER returns an error and NEVER fails
+// teardown — every failure is logged at Debug and swallowed, so the worst case
+// is an orphan base persisting exactly as before.
+//
+// base == "" (nothing to reap) and a base that no longer exists are clean
+// no-ops. The shared content-addressed --disk_cache is a different directory and
+// is never touched here.
+func (m *Manager) reapBazelOutputBase(base string) {
+	if base == "" {
+		return
+	}
+	base = filepath.Clean(base)
+	if _, err := os.Stat(base); err != nil {
+		// Not-exist (nothing to reap) or unreadable — either way, best-effort.
+		return
+	}
+
+	// We deliberately do NOT signal the base's Bazel server before removing it.
+	// server.pid.txt records a pid, but that pid cannot be reliably tied back to
+	// THIS output base: after an unclean death the OS recycles the pid, and a
+	// recycled pid may belong to an unrelated process or — worse — a *different*
+	// live worktree's Bazel server, whose active build a stray SIGTERM would
+	// interrupt. There is no portable way to confirm the tie: the output base
+	// appears in neither the server's `ps` argv (its title is only
+	// `bazel(<workspace>)`) nor its `lsof` open files (an idle server holds
+	// nothing under the base; its cwd is the worktree, which teardown has already
+	// removed by the time we reap). Per that ambiguity we skip signalling
+	// entirely. It costs nothing: an idle server isn't writing, so RemoveAll does
+	// not race it (it just unlinks the server's already-closed files); an active
+	// server is precisely what we must not kill. RemoveAll below fully reaps the
+	// tree on its own — the pid file is one more file it deletes.
+	//
+	// chmod -R u+w is MANDATORY: Bazel marks the output tree read-only
+	// (0555 dirs / 0444 files); on macOS os.RemoveAll otherwise fails because a
+	// child cannot be unlinked from a non-writable parent. A pure-Go walk keeps
+	// this dependency-free and testable. Per-entry chmod errors are ignored.
+	// Symlink entries are skipped: WalkDir does not descend into them, they need
+	// no write bit to be unlinked from their parent, and chmod'ing one would
+	// follow it to its target outside the base — the TOCTOU that G122 warns of.
+	_ = filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // best-effort: keep walking past unreadable entries.
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil // never chmod through a symlink (see comment above).
+		}
+		info, statErr := d.Info()
+		if statErr != nil {
+			return nil
+		}
+		// #nosec G122 -- best-effort chmod of a bossd-owned Bazel output base being torn down; `base` came from splitting a real in-worktree `bazel-out` /execroot/ symlink target (never md5-reconstructed) and symlink entries are skipped above, so no traversal escapes the captured base; owner=@recurser; review-by=2027-01-19; issue=BOS-447
+		_ = os.Chmod(path, info.Mode()|0o200)
+		return nil
+	})
+
+	if err := os.RemoveAll(base); err != nil {
+		m.logger.Debug().Err(err).Str("base", base).Msg("reap bazel output base (best effort)")
+		return
+	}
+	m.logger.Debug().Str("base", base).Msg("reaped bazel output base on worktree teardown")
+}
+
 // clearStaleWorktree removes a leftover worktree at wtPath so a fresh
 // `git worktree add` can succeed. A directory can be left behind when a prior
 // session was orphaned (daemon crash/restart, or a duplicate daemon stealing
@@ -506,6 +684,12 @@ func firstExistingRef(ctx context.Context, repoPath string, candidates []string)
 // session for a branch before reaching worktree creation, so reaching here
 // means no live session owns wtPath. All steps are best-effort.
 func (m *Manager) clearStaleWorktree(ctx context.Context, repoPath, wtPath string) {
+	// Capture the Bazel output base BEFORE the worktree dir (and its in-worktree
+	// `bazel-out` symlink) is removed, then reap it AFTER. Typically a no-op here:
+	// PurgeWorktree (which delegates to this) runs after a FAILED session start,
+	// where the worktree was usually never built, so the symlink is absent.
+	base := m.bazelOutputBaseForWorktree(wtPath)
+
 	if _, err := os.Stat(wtPath); err == nil {
 		m.logger.Warn().
 			Str("path", wtPath).
@@ -532,9 +716,14 @@ func (m *Manager) clearStaleWorktree(ctx context.Context, repoPath, wtPath strin
 	if _, err := runGit(ctx, repoPath, "worktree", "prune"); err != nil {
 		m.logger.Debug().Err(err).Msg("worktree prune (best effort)")
 	}
-	if err := os.RemoveAll(wtPath); err != nil {
+	if err := m.removeAll(wtPath); err != nil {
 		m.logger.Warn().Err(err).Str("path", wtPath).Msg("remove stale worktree dir (best effort)")
+		// Do not tear down this worktree's Bazel server/output base while its
+		// directory remains usable. A later cleanup attempt can reap it after
+		// successful removal.
+		return
 	}
+	m.reapBazelOutputBase(base)
 }
 
 // PurgeWorktree removes any worktree (git registration + on-disk directory) for
@@ -592,6 +781,12 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 			Str("branch", branch).
 			Msg("force-removing existing branch")
 
+		// Capture the Bazel output base BEFORE the worktree dir (and its
+		// in-worktree `bazel-out` symlink) is removed, so force-recreating a
+		// previously-built worktree does not leak the base it replaces — the exact
+		// orphan BOS-447 targets. base=="" (never built) is a clean no-op.
+		staleBase := m.bazelOutputBaseForWorktree(wtPath)
+
 		// Remove any worktree that references this branch.
 		if _, err := runGit(ctx, opts.RepoPath, "worktree", "remove", "--force", wtPath); err != nil {
 			// Worktree may not exist — that's fine.
@@ -606,6 +801,13 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 		// Delete the local branch.
 		if _, err := runGit(ctx, opts.RepoPath, "branch", "-D", branch); err != nil {
 			return nil, fmt.Errorf("delete existing branch: %w", err)
+		}
+
+		// Reap only after git removed the worktree directory. If removal failed
+		// for an unregistered stale directory, clearStaleWorktree below owns the
+		// direct removal and reaps only after that succeeds.
+		if _, err := os.Lstat(wtPath); os.IsNotExist(err) {
+			m.reapBazelOutputBase(staleBase)
 		}
 	}
 
@@ -685,6 +887,18 @@ func (m *Manager) availableNewBranchName(ctx context.Context, repoPath, branch s
 func (m *Manager) Archive(ctx context.Context, worktreePath string) error {
 	m.logger.Info().Str("path", worktreePath).Msg("archiving worktree")
 
+	// Capture the Bazel output base from the in-worktree `bazel-out` symlink
+	// BEFORE any removal path runs, and reap it only AFTER a removal path
+	// succeeds. base=="" (worktree never built) is a clean no-op.
+	base := m.bazelOutputBaseForWorktree(worktreePath)
+	removeAndReap := func() error {
+		if err := removeWorktreeDir(worktreePath); err != nil {
+			return err
+		}
+		m.reapBazelOutputBase(base)
+		return nil
+	}
+
 	// Use the worktree path itself to find its parent repo.
 	// git worktree remove needs to be run from the main repo, but we can
 	// find it via the .git file in the worktree.
@@ -695,7 +909,7 @@ func (m *Manager) Archive(ctx context.Context, worktreePath string) error {
 		// cleaned up by `git worktree prune` during EmptyTrash.
 		m.logger.Warn().Err(err).Str("path", worktreePath).
 			Msg("worktree is not a valid git repo, removing directory directly")
-		return removeWorktreeDir(worktreePath)
+		return removeAndReap()
 	}
 	// --git-common-dir returns the .git dir; we want the repo root.
 	repoPath = filepath.Dir(repoPath)
@@ -704,8 +918,9 @@ func (m *Manager) Archive(ctx context.Context, worktreePath string) error {
 		// git worktree remove failed — fall back to direct removal.
 		m.logger.Warn().Err(err).Str("path", worktreePath).
 			Msg("git worktree remove failed, removing directory directly")
-		return removeWorktreeDir(worktreePath)
+		return removeAndReap()
 	}
+	m.reapBazelOutputBase(base)
 	return nil
 }
 

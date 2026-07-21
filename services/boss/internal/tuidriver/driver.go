@@ -63,6 +63,8 @@ func New(opts Options) (*Driver, error) {
 		opts.Height = 30
 	}
 
+	// #nosec G204 -- generic PTY driver runs caller-supplied command; local/test-trust
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command(opts.Command, opts.Args...)
 	if opts.Env != nil {
 		cmd.Env = opts.Env

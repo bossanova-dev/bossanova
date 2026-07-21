@@ -183,7 +183,7 @@ func TestRepoStore_OptimisticConcurrency_MissingRow(t *testing.T) {
 func TestRepoStore_ArchiveSessionsAfterMerge_DefaultsTrue(t *testing.T) {
 	store := NewRepoStore(setupTestDB(t))
 	repo := createTestRepo(t, store)
-	if !repo.ArchiveSessionsAfterMerge {
+	if !repo.ShouldArchiveSessionsAfterMerge {
 		t.Fatal("new repos should default to archive-after-merge ON")
 	}
 }
@@ -196,18 +196,18 @@ func TestRepoStore_ArchiveSessionsAfterMerge_Update(t *testing.T) {
 	repo := createTestRepo(t, store)
 
 	off := false
-	updated, err := store.Update(ctx, repo.ID, UpdateRepoParams{ArchiveSessionsAfterMerge: &off})
+	updated, err := store.Update(ctx, repo.ID, UpdateRepoParams{ShouldArchiveSessionsAfterMerge: &off})
 	if err != nil {
 		t.Fatalf("update archive_sessions_after_merge: %v", err)
 	}
-	if updated.ArchiveSessionsAfterMerge {
+	if updated.ShouldArchiveSessionsAfterMerge {
 		t.Error("update returned archive_sessions_after_merge = true, want false")
 	}
 	got, err := store.Get(ctx, repo.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.ArchiveSessionsAfterMerge {
+	if got.ShouldArchiveSessionsAfterMerge {
 		t.Error("stored archive_sessions_after_merge = true, want false")
 	}
 }

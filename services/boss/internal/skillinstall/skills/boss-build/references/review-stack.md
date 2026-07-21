@@ -13,7 +13,7 @@ markdown captured in Step 6c, leading with the `<!-- bs-review -->` marker), the
 transcripts, diffs, Codex output, `boss-review` lens output — stays in the subagent's context and is
 **NOT** pasted back.
 
-**Write your terminal verdict to the run file (BOS-144 convention) — this, not your returned prose, is
+**Write your terminal verdict to the run file (the run-file sentinel convention) — this, not your returned prose, is
 what the orchestrator routes on.** The orchestrator provisioned a per-run sentinel context and passed
 you `RUN_DIR` and `RUN_ID`. As your **last action**, write the terminal sentinel line to that run
 file:

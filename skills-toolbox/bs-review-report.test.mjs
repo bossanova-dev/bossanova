@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { renderReport, MARKER, VERDICT_OK } from './bs-review-report.mjs'
 
@@ -168,10 +171,64 @@ test('the follow-up block summary counts suggestions with singular/plural', () =
 })
 
 test('the copyable prompt refers to issues, not tickets', () => {
-  const md = renderReport(cleanFixture())
-  assert.match(md, /create one Bossanova issue per item/)
-  assert.match(md, /existing Todo\/In Progress issues\./)
+  const md = renderReport({
+    ...cleanFixture(),
+    tracker: {
+      mcpServer: 'acme-tracker',
+      team: 'Acme',
+      states: { planned: 'Ready', inProgress: 'Doing' },
+    },
+  })
+  assert.match(md, /create one Acme issue per item/)
+  assert.match(md, /existing Ready\/Doing issues\./)
   assert.doesNotMatch(md, /ticket/i)
+})
+
+test('a configured tracker drives the follow-up prompt server/team/state names', () => {
+  const md = renderReport({
+    suggestions: [{ title: 'X', file: 'a.ts', line: 1 }],
+    tracker: {
+      mcpServer: 'acme-tracker',
+      team: 'Acme',
+      states: { planned: 'Ready', inProgress: 'Doing' },
+    },
+  })
+  assert.match(md, /Using the acme-tracker MCP/)
+  assert.match(md, /create one Acme issue/)
+  assert.match(md, /existing Ready\/Doing issues/)
+})
+
+test('an unconfigured repo (tracker null) emits a generic project-agnostic prompt', () => {
+  const md = renderReport({
+    suggestions: [{ title: 'X', file: 'a.ts', line: 1 }],
+    tracker: null,
+  })
+  assert.match(md, /Using the configured issue tracker MCP/)
+  assert.match(md, /create one issue per item/)
+  assert.match(md, /existing open issues/)
+  assert.doesNotMatch(md, /bossanova/i)
+})
+
+test('the default path (no injected tracker) reads config from cwd and stays generic when unconfigured', () => {
+  // Exercise the REAL production glue that the injected-tracker cases above skip:
+  // renderReport with no `tracker` key falls back to
+  // trackerConfigFor(loadSkillConfig()), which resolves .boss-skills.json from
+  // cwd. From a scratch dir with no config anywhere above it the tracker resolves
+  // null, so the generic project-agnostic prompt must render — proving the seam
+  // self-disables cleanly in an unconfigured checkout (not just when null is
+  // hand-injected).
+  const scratch = mkdtempSync(join(tmpdir(), 'bs-review-report-'))
+  const prevCwd = process.cwd()
+  try {
+    process.chdir(scratch)
+    const md = renderReport({ suggestions: [{ title: 'X', file: 'a.ts', line: 1 }] })
+    assert.match(md, /Using the configured issue tracker MCP/)
+    assert.match(md, /existing open issues/)
+    assert.doesNotMatch(md, /bossanova/i)
+  } finally {
+    process.chdir(prevCwd)
+    rmSync(scratch, { recursive: true, force: true })
+  }
 })
 
 test('Test Coverage <details> renders when verdict.testing_detail is present', () => {
@@ -253,8 +310,15 @@ test('must-fix items badge each disposition', () => {
 })
 
 test('suggestions render a fence-guarded follow-up prompt', () => {
-  const md = renderReport(cleanFixture())
-  assert.match(md, /Using the bossanova-linear MCP/)
+  const md = renderReport({
+    ...cleanFixture(),
+    tracker: {
+      mcpServer: 'acme-tracker',
+      team: 'Acme',
+      states: { planned: 'Ready', inProgress: 'Doing' },
+    },
+  })
+  assert.match(md, /Using the acme-tracker MCP/)
   assert.match(md, /- Cover the isTTY CLI branch \(`scripts\/bs-review-detect\.mjs:44`\)/)
 })
 

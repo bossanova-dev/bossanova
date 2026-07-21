@@ -11,6 +11,7 @@ const moduleRules = [
   { root: 'plugins/bossd-plugin-codex/', target: 'test-codex' },
   { root: 'plugins/bossd-plugin-dependabot/', target: 'test-dependabot' },
   { root: 'plugins/bossd-plugin-linear/', target: 'test-linear' },
+  { root: 'plugins/bossd-plugin-opencode/', target: 'test-opencode' },
   { root: 'plugins/bossd-plugin-repair/', target: 'test-repair' },
   { root: 'plugins/bossd-plugin-sentry/', target: 'test-sentry' },
 ]
@@ -21,7 +22,7 @@ const protoTargets = ['test-bossalib', 'test-boss', 'test-bossd', 'test-bosso']
 // This is a SEPARATE map from the make `moduleRules` above: it maps a changed
 // file to the set of `//<module>/...` bazel patterns the PR CI job runs instead
 // of the whole `//...` graph. It includes mcp / mcp-gateway / stub-runner (which
-// the local make map omits) because all 13 Go modules have `go_test` targets, so
+// the local make map omits) because all 14 Go modules have `go_test` targets, so
 // `bazel test //<module>/...` is always a SAFE (never exit-4) selection.
 //
 // Fail-safe posture: err toward MORE testing, never less. Any file that cannot be
@@ -40,6 +41,7 @@ const bazelGoModuleRules = [
   { root: 'plugins/bossd-plugin-codex/', pattern: '//plugins/bossd-plugin-codex/...' },
   { root: 'plugins/bossd-plugin-dependabot/', pattern: '//plugins/bossd-plugin-dependabot/...' },
   { root: 'plugins/bossd-plugin-linear/', pattern: '//plugins/bossd-plugin-linear/...' },
+  { root: 'plugins/bossd-plugin-opencode/', pattern: '//plugins/bossd-plugin-opencode/...' },
   { root: 'plugins/bossd-plugin-repair/', pattern: '//plugins/bossd-plugin-repair/...' },
   { root: 'plugins/bossd-plugin-sentry/', pattern: '//plugins/bossd-plugin-sentry/...' },
   { root: 'plugins/bossd-plugin-stub-runner/', pattern: '//plugins/bossd-plugin-stub-runner/...' },

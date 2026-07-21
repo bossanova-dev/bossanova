@@ -65,9 +65,9 @@ func TestCronListUpdate_JobsLoaded(t *testing.T) {
 // editing/creating a cron job the list returns with the caret on that job.
 func TestCronListUpdate_HighlightJobID(t *testing.T) {
 	jobs := []*pb.CronJob{
-		{Id: "a", Name: "Job A", Schedule: "* * * * *", Enabled: true},
-		{Id: "b", Name: "Job B", Schedule: "0 * * * *", Enabled: true},
-		{Id: "c", Name: "Job C", Schedule: "0 0 * * *", Enabled: true},
+		{Id: "a", Name: "Job A", Schedule: "* * * * *", IsEnabled: true},
+		{Id: "b", Name: "Job B", Schedule: "0 * * * *", IsEnabled: true},
+		{Id: "c", Name: "Job C", Schedule: "0 0 * * *", IsEnabled: true},
 	}
 
 	m := newCronListForUpdate(nil)
@@ -95,8 +95,8 @@ func TestCronListUpdate_HighlightJobID(t *testing.T) {
 // 2s poll.
 func TestCronListUpdate_HighlightJobIDMissing(t *testing.T) {
 	jobs := []*pb.CronJob{
-		{Id: "a", Name: "Job A", Schedule: "* * * * *", Enabled: true},
-		{Id: "b", Name: "Job B", Schedule: "0 * * * *", Enabled: true},
+		{Id: "a", Name: "Job A", Schedule: "* * * * *", IsEnabled: true},
+		{Id: "b", Name: "Job B", Schedule: "0 * * * *", IsEnabled: true},
 	}
 
 	m := newCronListForUpdate(nil)
@@ -290,9 +290,9 @@ func TestCronListUpdate_ConfirmDelete(t *testing.T) {
 // updateCursorColumn(&m.table) immediately after m.table = updated.
 func TestCronListUpdate_ChevronNavigation(t *testing.T) {
 	jobs := []*pb.CronJob{
-		{Id: "a", Name: "Job A", Schedule: "* * * * *", Enabled: true},
-		{Id: "b", Name: "Job B", Schedule: "0 * * * *", Enabled: true},
-		{Id: "c", Name: "Job C", Schedule: "0 0 * * *", Enabled: true},
+		{Id: "a", Name: "Job A", Schedule: "* * * * *", IsEnabled: true},
+		{Id: "b", Name: "Job B", Schedule: "0 * * * *", IsEnabled: true},
+		{Id: "c", Name: "Job C", Schedule: "0 0 * * *", IsEnabled: true},
 	}
 	m := newCronListForUpdate(jobs)
 

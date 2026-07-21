@@ -42,21 +42,21 @@ const (
 
 // CronJob represents a scheduled prompt that fires on a cron expression.
 type CronJob struct {
-	ID               string
-	RepoID           string
-	Name             string
-	Prompt           string
-	Schedule         string
-	Timezone         *string // IANA name; nil = daemon-local
-	AgentName        string
-	Model            string // opaque agent model id; "" = plugin default.
-	Enabled          bool
-	GateCommand      string // shell command run before firing; non-zero exit skips the run
-	RunSetupCommand  bool   // whether to run the repo setup script before the agent session
-	LastRunSessionID *string
-	LastRunAt        *time.Time
-	LastRunOutcome   *CronJobOutcome
-	NextRunAt        *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                    string
+	RepoID                string
+	Name                  string
+	Prompt                string
+	Schedule              string
+	Timezone              *string // IANA name; nil = daemon-local
+	AgentName             string
+	Model                 string // opaque agent model id; "" = plugin default.
+	IsEnabled             bool
+	GateCommand           string // shell command run before firing; non-zero exit skips the run
+	ShouldRunSetupCommand bool   // whether to run the repo setup script before the agent session
+	LastRunSessionID      *string
+	LastRunAt             *time.Time
+	LastRunOutcome        *CronJobOutcome
+	NextRunAt             *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }

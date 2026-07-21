@@ -166,11 +166,11 @@ func (m *CronFormModel) buildForm() {
 		m.fd.prompt = m.job.Prompt
 		m.fd.schedule = m.job.Schedule
 		m.fd.timezone = m.job.Timezone
-		m.fd.enabled = m.job.Enabled
+		m.fd.enabled = m.job.IsEnabled
 		m.fd.agentName = cronDisplayAgentName(m.job.AgentName)
 		m.fd.model = m.job.Model
 		m.fd.gateCommand = m.job.GateCommand
-		m.fd.runSetupCommand = m.job.RunSetupCommand
+		m.fd.runSetupCommand = m.job.ShouldRunSetupCommand
 		m.fd.confirm = true
 		m.fdPopulated = true
 	}
@@ -519,16 +519,16 @@ func (m CronFormModel) handleSubmit() (tea.Model, tea.Cmd) {
 		// Create mode.
 		return m, func() tea.Msg {
 			job, err := c.CreateCronJob(ctx, &pb.CreateCronJobRequest{
-				RepoId:          fd.repoID,
-				Name:            strings.TrimSpace(fd.name),
-				Prompt:          strings.TrimSpace(fd.prompt),
-				Schedule:        strings.TrimSpace(fd.schedule),
-				Timezone:        strings.TrimSpace(fd.timezone),
-				Enabled:         fd.enabled,
-				AgentName:       strings.TrimSpace(fd.agentName),
-				Model:           strings.TrimSpace(fd.model),
-				GateCommand:     strings.TrimSpace(fd.gateCommand),
-				RunSetupCommand: &fd.runSetupCommand,
+				RepoId:                fd.repoID,
+				Name:                  strings.TrimSpace(fd.name),
+				Prompt:                strings.TrimSpace(fd.prompt),
+				Schedule:              strings.TrimSpace(fd.schedule),
+				Timezone:              strings.TrimSpace(fd.timezone),
+				IsEnabled:             fd.enabled,
+				AgentName:             strings.TrimSpace(fd.agentName),
+				Model:                 strings.TrimSpace(fd.model),
+				GateCommand:           strings.TrimSpace(fd.gateCommand),
+				ShouldRunSetupCommand: &fd.runSetupCommand,
 			})
 			return cronFormSavedMsg{job: job, err: err}
 		}
@@ -554,9 +554,9 @@ func (m CronFormModel) handleSubmit() (tea.Model, tea.Cmd) {
 	if timezone != original.Timezone {
 		req.Timezone = &timezone
 	}
-	if fd.enabled != original.Enabled {
+	if fd.enabled != original.IsEnabled {
 		enabled := fd.enabled
-		req.Enabled = &enabled
+		req.IsEnabled = &enabled
 	}
 	agentName := strings.TrimSpace(fd.agentName)
 	if cronDisplayAgentName(agentName) != cronDisplayAgentName(original.AgentName) {
@@ -570,9 +570,9 @@ func (m CronFormModel) handleSubmit() (tea.Model, tea.Cmd) {
 	if gateCommand != original.GateCommand {
 		req.GateCommand = &gateCommand
 	}
-	if fd.runSetupCommand != original.RunSetupCommand {
+	if fd.runSetupCommand != original.ShouldRunSetupCommand {
 		rsc := fd.runSetupCommand
-		req.RunSetupCommand = &rsc
+		req.ShouldRunSetupCommand = &rsc
 	}
 
 	return m, func() tea.Msg {

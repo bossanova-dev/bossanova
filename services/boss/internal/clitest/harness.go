@@ -189,6 +189,8 @@ func (h *Harness) run(stdin io.Reader, args []string) Result {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// #nosec G204 -- test-only harness runs the compiled boss binary with test-controlled args
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.CommandContext(ctx, h.binPath, args...)
 	cmd.Env = h.env
 	if stdin != nil {

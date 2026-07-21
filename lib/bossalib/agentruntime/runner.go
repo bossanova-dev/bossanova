@@ -328,6 +328,8 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 	// then open with O_NOFOLLOW to refuse a symlink at the final path
 	// component (defends against a hostile or buggy agent process planting a
 	// symlink at our log path).
+	// #nosec G301 -- bossd-created agent log dir; 0o755 is standard traversable perms, the security control is the O_NOFOLLOW 0o600 log-file open (openLogNoFollow below).
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		cancel()
 		return "", fmt.Errorf("create log dir: %w", err)
@@ -369,10 +371,14 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 	locked = false
 
 	// Write the spawn preamble before cmd.Start so even an immediate exec
-	// failure leaves a useful trace.
+	// failure leaves a useful trace. The prompt is redacted from the logged argv:
+	// agents whose CLI takes the prompt positionally (e.g. opencode, which has no
+	// stdin prompt path) put the full user task on argv, and that task may carry
+	// credentials, customer data, or private issue text we must not persist in the
+	// per-session debug log.
 	writeRunnerEntry(logFile, fmt.Sprintf(
 		"[runner] spawning %s: argv=%v cwd=%s sessionID=%s PATH=%s",
-		r.binName, argv, workDir, sessionID, truncatePath(os.Getenv("PATH")),
+		r.binName, redactArgvForLog(argv, plan), workDir, sessionID, truncatePath(os.Getenv("PATH")),
 	))
 
 	r.logger.Info().
@@ -512,6 +518,8 @@ func (p *process) stopEarlyOutputCapture() {
 // Returns nil on any error (best-effort: the PostExit hook either has
 // content to inspect or has none).
 func readLogTail(path string, n int64) []byte {
+	// #nosec G304 -- best-effort read of bossd's own agent log tail; internal daemon-controlled path, not attacker-named.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
@@ -557,6 +565,30 @@ func writeRunnerEntry(f *os.File, text string) {
 	}
 	_, _ = f.Write(data)
 	_, _ = f.Write([]byte{'\n'})
+}
+
+// redactArgvForLog returns a copy of argv safe to write to the per-session log:
+// any element equal to secret (the run prompt) is replaced with a length-only
+// placeholder. Agents whose prompt rides argv (opencode has no stdin prompt
+// path) would otherwise persist the full user task — which may carry
+// credentials, customer data, or private issue text — in the debug log the
+// repair workflow reads. An empty secret disables redaction, so agents that pass
+// the prompt via stdin (codex, claude) log their argv unchanged. Process argv
+// visibility (e.g. `ps`) is inherent to an argv-only CLI and outside our
+// control; this bounds only the persistent (on-disk) exposure.
+func redactArgvForLog(argv []string, secret string) []string {
+	if secret == "" {
+		return argv
+	}
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		if a == secret {
+			out[i] = fmt.Sprintf("<prompt redacted:%dB>", len(secret))
+			continue
+		}
+		out[i] = a
+	}
+	return out
 }
 
 // truncatePath shortens a PATH-like string for log output. Full PATH values
@@ -783,6 +815,8 @@ var ErrLogPathSymlink = errors.New("log path is a symlink; refusing to follow")
 // openLogNoFollow opens path for writing, creating it if needed,
 // refusing to follow a symlink at the final path component.
 func openLogNoFollow(path string) (*os.File, error) {
+	// #nosec G304 -- caller-supplied (bossd) agent log path; O_NOFOLLOW refuses a symlink at the final component and the file is opened 0o600 owner-only.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		// Linux returns ELOOP, BSD/Darwin returns EMLINK for O_NOFOLLOW.

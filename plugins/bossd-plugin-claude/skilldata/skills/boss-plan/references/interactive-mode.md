@@ -9,7 +9,7 @@ interactive behaviour cannot silently drift.
 
 ## Phase 1 — Confirm the selection (interactive only)
 
-The resident body ranks the Unplanned queue. Interactively, before spending a long interview on the
+The resident body ranks the unplanned queue. Interactively, before spending a long interview on the
 wrong ticket, confirm the head of the ranked queue:
 
 - Show the issue at the head of the ranked queue (`id`, `title`, `priority`, full `description`) and
@@ -17,12 +17,12 @@ wrong ticket, confirm the head of the ranked queue:
   a different one** / **cancel**. This guards against spending a long interview on the wrong ticket.
   - **skip this one** → drop this issue from consideration and show the **next** issue in the ranked
     queue, then ask again. Repeat for each skip. Skipping does not modify the issue in Linear (it
-    stays Unplanned); it only advances your local selection. If the queue runs out, report that
-    every Unplanned ticket was skipped and stop.
+    stays unplanned); it only advances your local selection. If the queue runs out, report that
+    every unplanned ticket was skipped and stop.
   - **pick a different one** → ask which ticket (ID or "show me the list") and select that one
     instead.
 
-When the user gave a ticket ID and it is already `Todo`/`In Progress`/`Done`/`Canceled`, warn and
+When the user gave a ticket ID and it is already planned/in-progress/`Done`/`Canceled`, warn and
 ask (AskUserQuestion) whether to re-plan before continuing.
 
 ## Phase 2 — Triage triviality (interactive)
@@ -33,6 +33,37 @@ informs the estimate:
 - **TRIVIAL** — copy/doc tweak, a single obvious one-liner, no design decisions (e.g. "Mention setup
   scripts on the home page"). Use a short interview and a lightweight plan.
 - **SUBSTANTIAL** — anything with design choices, multiple files, or unknowns.
+- **EPIC** — the work spans **multiple independently-shippable PRs**, each a coherent deliverable
+  reviewable and mergeable on its own. The bar is "any multi-PR judgment," but an epic requires
+  **≥ 2** genuinely separable children — if you cannot articulate ≥ 2 independent PR-sized pieces it
+  is `SUBSTANTIAL`, not EPIC. When EPIC, run the decomposition flow below instead of a single plan.
+
+## Phase 2.5 — Epic decomposition (interactive: propose → confirm → create)
+
+When triage is EPIC, decompose the ticket into a parent + N fully-planned children (SKILL.md Phase
+2.5 owns the guards and ordering discipline; the deterministic core is `scripts/plan-epic-lib.mjs`).
+Interactively:
+
+1. **Draft the decomposition spec** and validate it locally (`validateDecomposition` +
+   `assertAcyclic`). If it fails a guard (fewer than 2 or more than 8 children, a `blockedByKeys`
+   cycle, dangling refs), either re-ask the user to reshape it or fall back to a single
+   `SUBSTANTIAL` plan.
+2. **Fully plan every child locally** through the normal draft path with the child as a synthetic
+   ticket, passing `allowEpic: false` in the context (the recursion guard — a child is never itself
+   decomposed). Run the secret + image-parity gates on each child plan before any write.
+3. **Confirm before any Linear write** via `AskUserQuestion`, presenting the parent goal, the N
+   child titles/goals, and the DAG edges. Offer exactly: **create this epic** / **plan as one ticket
+   instead** / **cancel**. `AskUserQuestion` is approve/adjust/cancel only — there is no per-child
+   editing; cancel + re-run to iterate.
+4. On **create this epic**, publish + create children in `topoOrderChildren` order, wire the DAG via
+   `epicWiringPlan`, add external conflict links, and repurpose the original ticket as the epic
+   parent (SKILL.md Phase 2.5 steps 4–7). The repurpose is **last** — SKILL.md step 7's
+   unplanned → planned flip under the parent-label exception (**neither** `agent-friendly` **nor**
+   `needs-human`, **stripping** any pre-existing build label + stale single-ticket `Implementation
+plan (…)` link a previously-planned ticket carried, so the epic parent isn't `boss-build`-
+   selectable); do not stop after wiring/exposure and leave the parent unplanned, or the next
+   boss-plan sweep will keep re-selecting the already-created epic container. Re-running on a
+   partially-built parent **adopts** existing children rather than duplicating them.
 
 ## Phase 3 — Seed a design doc (auto-skip office-hours; interactive only)
 
@@ -112,8 +143,8 @@ saving the plan file. Do not continue into subagent-driven-development or execut
 notes`, copy every image reference the ticket carried — inline markdown `![alt](…)`, HTML `<img …>`
 tags, and bare `uploads.linear.app`/attachment URLs — byte-for-byte, URLs intact. **Never** replace
 an image with a `[screenshot: …]` text placeholder or any paraphrase: Linear does not expose
-description history, so the rewritten description is the only surviving copy of those URLs (the
-BOS-364 data loss). You MAY additionally list them under a `## Screenshots` bullet list in the plan
+description history, so the rewritten description is the only surviving copy of those URLs (a prior
+screenshot-dropping data-loss incident). You MAY additionally list them under a `## Screenshots` bullet list in the plan
 body, but the URLs must stay intact in `## Original notes`. The orchestrator's mechanical guard
 (`scripts/plan-image-guard.mjs`, Phase 4) aborts the Linear write if any source image is dropped.
 

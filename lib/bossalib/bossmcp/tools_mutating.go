@@ -2,6 +2,7 @@ package bossmcp
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -119,7 +120,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			Title:       deriveSessionTitle(args.Title, args.Prompt),
 			BaseBranch:  args.BaseBranch,
 			ForceBranch: args.ForceBranch,
-			QuickChat:   args.QuickChat,
+			IsQuickChat: args.IsQuickChat,
 			// Force bypasses the BOS-236 tracker-issue dedup guard so a caller
 			// can intentionally create a second session for a tracker/PR/branch
 			// that already has an active one.
@@ -128,10 +129,10 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			// codex exec) instead of leaving the session idle until attach —
 			// what an unattended /boss-epic fan-out needs.
 			Detach: args.Detach,
-			// TmuxUnattended runs the session in a durable tmux-hosted pane that
+			// IsTmuxUnattended runs the session in a durable tmux-hosted pane that
 			// survives a daemon restart and is attach-safe — the /boss-epic fan-out
 			// path, distinct from Detach's headless runs.
-			TmuxUnattended: args.TmuxUnattended,
+			IsTmuxUnattended: args.IsTmuxUnattended,
 			// Optional pointer args map straight through; nil stays unset.
 			BranchName:    args.BranchName,
 			PrNumber:      args.PRNumber,
@@ -226,6 +227,15 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
+		// RecordChat still succeeds when the daemon host has no tmux available:
+		// its spawn step no-ops, persisting a chat row but never starting a live
+		// agent, and the resulting tmux_session_name comes back empty. start_chat
+		// promises a live chat the caller can immediately send_chat_message to, so
+		// a missing pane is a failure — reject rather than hand back an
+		// agent_session_id with nothing listening behind it.
+		if out.GetTmuxSessionName() == "" {
+			return errorResult(fmt.Errorf("start_chat could not spawn a live agent: no tmux session was created for chat %s (is tmux available on the daemon host?)", id)), nil, nil
+		}
 		r, err := jsonResult(out)
 		return r, nil, err
 	})
@@ -295,12 +305,12 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			Prompt:      args.Prompt,
 			Schedule:    args.Schedule,
 			Timezone:    args.Timezone,
-			Enabled:     args.Enabled,
+			IsEnabled:   args.IsEnabled,
 			AgentName:   args.AgentName,
 			Model:       args.Model,
 			GateCommand: args.GateCommand,
 			// *bool: nil stays unset so the server applies its own default.
-			RunSetupCommand: args.RunSetupCommand,
+			ShouldRunSetupCommand: args.ShouldRunSetupCommand,
 		}
 		out, err := backend.CreateCronJob(ctx, req)
 		if err != nil {
@@ -321,12 +331,12 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			Prompt:    args.Prompt,
 			Schedule:  args.Schedule,
 			Timezone:  args.Timezone,
-			Enabled:   args.Enabled,
+			IsEnabled: args.IsEnabled,
 			AgentName: args.AgentName,
 			// Optional fields map straight through; nil stays unset (present-only).
-			Model:           args.Model,
-			GateCommand:     args.GateCommand,
-			RunSetupCommand: args.RunSetupCommand,
+			Model:                 args.Model,
+			GateCommand:           args.GateCommand,
+			ShouldRunSetupCommand: args.ShouldRunSetupCommand,
 		}
 		out, err := backend.UpdateCronJob(ctx, req)
 		if err != nil {
@@ -578,23 +588,23 @@ type createSessionOutput struct {
 // CreateSessionRequest surface is exposed except tracker_issue, the composite
 // message used only for web server-side plan formatting (intentionally omitted).
 type CreateSessionArgs struct {
-	RepoID         string  `json:"repo_id" jsonschema:"the repo id to create the session under"`
-	Prompt         string  `json:"prompt" jsonschema:"the plan/prompt for the session"`
-	Title          string  `json:"title,omitempty" jsonschema:"session title; auto-derived from the first line of the prompt when omitted"`
-	Agent          string  `json:"agent,omitempty" jsonschema:"agent runner plugin name (empty = server default)"`
-	Account        *string `json:"account,omitempty" jsonschema:"Account id or label to run this session under; empty = system default"`
-	BaseBranch     string  `json:"base_branch,omitempty" jsonschema:"base branch to create the session from (empty = repo default)"`
-	BranchName     *string `json:"branch_name,omitempty" jsonschema:"explicit branch name (e.g. a tracker's suggested branch)"`
-	ForceBranch    bool    `json:"force_branch,omitempty" jsonschema:"remove any existing branch with the same name before creating"`
-	Force          bool    `json:"force,omitempty" jsonschema:"bypass tracker-issue dedup and create a second session for a tracker/PR/branch that already has an active one"`
-	QuickChat      bool    `json:"quick_chat,omitempty" jsonschema:"quick chat session: no worktree, branch, or PR"`
-	Detach         bool    `json:"detach,omitempty" jsonschema:"run the initial agent pass headlessly (claude --print / codex exec) instead of leaving the session idle until attach; set true for unattended orchestration"`
-	TmuxUnattended bool    `json:"tmux_unattended,omitempty" jsonschema:"run the session in a durable tmux-hosted pane that survives a daemon restart and is attach-safe (used by /boss-epic); a distinct autonomous-unattended path from detach's headless runs"`
-	Model          string  `json:"model,omitempty" jsonschema:"opaque agent model id to run this session under (e.g. an Opus id); empty = the agent plugin's default"`
-	PRNumber       *int32  `json:"pr_number,omitempty" jsonschema:"target an existing PR. If an active session already owns that PR's branch, create_session ATTACHES to it and returns attached_existing=true WITHOUT running prompt — run the prompt in that session (send_chat_message with the returned agent_session_id). force does NOT bypass this branch attach"`
-	TrackerID      *string `json:"tracker_id,omitempty" jsonschema:"external issue id (e.g. FRE-1176). If an active session already owns this tracker id (with no branch collision), create_session fails with AlreadyExists — pass force:true to create a second session for the same tracker"`
-	TrackerURL     *string `json:"tracker_url,omitempty" jsonschema:"URL to the issue in the external tracker"`
-	TrackerSource  *string `json:"tracker_source,omitempty" jsonschema:"tracker source: linear or sentry"`
+	RepoID           string  `json:"repo_id" jsonschema:"the repo id to create the session under"`
+	Prompt           string  `json:"prompt" jsonschema:"the plan/prompt for the session"`
+	Title            string  `json:"title,omitempty" jsonschema:"session title; auto-derived from the first line of the prompt when omitted"`
+	Agent            string  `json:"agent,omitempty" jsonschema:"agent runner plugin name (empty = server default)"`
+	Account          *string `json:"account,omitempty" jsonschema:"Account id or label to run this session under; empty = system default"`
+	BaseBranch       string  `json:"base_branch,omitempty" jsonschema:"base branch to create the session from (empty = repo default)"`
+	BranchName       *string `json:"branch_name,omitempty" jsonschema:"explicit branch name (e.g. a tracker's suggested branch)"`
+	ForceBranch      bool    `json:"force_branch,omitempty" jsonschema:"remove any existing branch with the same name before creating"`
+	Force            bool    `json:"force,omitempty" jsonschema:"bypass tracker-issue dedup and create a second session for a tracker/PR/branch that already has an active one"`
+	IsQuickChat      bool    `json:"quick_chat,omitempty" jsonschema:"quick chat session: no worktree, branch, or PR"`
+	Detach           bool    `json:"detach,omitempty" jsonschema:"run the initial agent pass headlessly (claude --print / codex exec) instead of leaving the session idle until attach; set true for unattended orchestration"`
+	IsTmuxUnattended bool    `json:"tmux_unattended,omitempty" jsonschema:"run the session in a durable tmux-hosted pane that survives a daemon restart and is attach-safe (used by /boss-epic); a distinct autonomous-unattended path from detach's headless runs"`
+	Model            string  `json:"model,omitempty" jsonschema:"opaque agent model id to run this session under (e.g. an Opus id); empty = the agent plugin's default"`
+	PRNumber         *int32  `json:"pr_number,omitempty" jsonschema:"target an existing PR. If an active session already owns that PR's branch, create_session ATTACHES to it and returns attached_existing=true WITHOUT running prompt — run the prompt in that session (send_chat_message with the returned agent_session_id). force does NOT bypass this branch attach"`
+	TrackerID        *string `json:"tracker_id,omitempty" jsonschema:"external issue id (e.g. FRE-1176). If an active session already owns this tracker id (with no branch collision), create_session fails with AlreadyExists — pass force:true to create a second session for the same tracker"`
+	TrackerURL       *string `json:"tracker_url,omitempty" jsonschema:"URL to the issue in the external tracker"`
+	TrackerSource    *string `json:"tracker_source,omitempty" jsonschema:"tracker source: linear or sentry"`
 }
 
 // UpdateSessionArgs is the typed argument struct for update_session.
@@ -650,16 +660,16 @@ type ReportChatStatusArgs struct {
 
 // CreateCronJobArgs is the typed argument struct for create_cron_job.
 type CreateCronJobArgs struct {
-	RepoID          string `json:"repo_id" jsonschema:"the repo id"`
-	Name            string `json:"name" jsonschema:"cron job name"`
-	Prompt          string `json:"prompt" jsonschema:"the prompt to run each fire"`
-	Schedule        string `json:"schedule" jsonschema:"cron schedule expression"`
-	Timezone        string `json:"timezone,omitempty" jsonschema:"IANA timezone (empty = daemon-local)"`
-	Enabled         bool   `json:"enabled,omitempty" jsonschema:"whether the job is enabled"`
-	AgentName       string `json:"agent_name,omitempty" jsonschema:"agent runner plugin name (empty = claude)"`
-	Model           string `json:"model,omitempty" jsonschema:"opaque agent model id (empty = plugin default)"`
-	GateCommand     string `json:"gate_command,omitempty" jsonschema:"command run before each fire; non-zero exit skips the run, empty = no gate"`
-	RunSetupCommand *bool  `json:"run_setup_command,omitempty" jsonschema:"run the repo setup script before the agent; omitted = server default"`
+	RepoID                string `json:"repo_id" jsonschema:"the repo id"`
+	Name                  string `json:"name" jsonschema:"cron job name"`
+	Prompt                string `json:"prompt" jsonschema:"the prompt to run each fire"`
+	Schedule              string `json:"schedule" jsonschema:"cron schedule expression"`
+	Timezone              string `json:"timezone,omitempty" jsonschema:"IANA timezone (empty = daemon-local)"`
+	IsEnabled             bool   `json:"enabled,omitempty" jsonschema:"whether the job is enabled"`
+	AgentName             string `json:"agent_name,omitempty" jsonschema:"agent runner plugin name (empty = claude)"`
+	Model                 string `json:"model,omitempty" jsonschema:"opaque agent model id (empty = plugin default)"`
+	GateCommand           string `json:"gate_command,omitempty" jsonschema:"command run before each fire; non-zero exit skips the run, empty = no gate"`
+	ShouldRunSetupCommand *bool  `json:"run_setup_command,omitempty" jsonschema:"run the repo setup script before the agent; omitted = server default"`
 }
 
 // SendChatMessageArgs is the typed argument struct for send_chat_message.
@@ -681,16 +691,16 @@ type SwitchAccountArgs struct {
 // UpdateCronJobArgs is the typed argument struct for update_cron_job. Optional
 // pointer fields are only applied when present.
 type UpdateCronJobArgs struct {
-	ID              string  `json:"id" jsonschema:"the cron job id"`
-	Name            *string `json:"name,omitempty" jsonschema:"new name"`
-	Prompt          *string `json:"prompt,omitempty" jsonschema:"new prompt"`
-	Schedule        *string `json:"schedule,omitempty" jsonschema:"new cron schedule expression"`
-	Timezone        *string `json:"timezone,omitempty" jsonschema:"new IANA timezone"`
-	Enabled         *bool   `json:"enabled,omitempty" jsonschema:"enable or disable the job"`
-	AgentName       *string `json:"agent_name,omitempty" jsonschema:"new agent runner plugin name"`
-	Model           *string `json:"model,omitempty" jsonschema:"new opaque agent model id (empty = plugin default)"`
-	GateCommand     *string `json:"gate_command,omitempty" jsonschema:"new gate command; empty = no gate"`
-	RunSetupCommand *bool   `json:"run_setup_command,omitempty" jsonschema:"run the repo setup script before the agent"`
+	ID                    string  `json:"id" jsonschema:"the cron job id"`
+	Name                  *string `json:"name,omitempty" jsonschema:"new name"`
+	Prompt                *string `json:"prompt,omitempty" jsonschema:"new prompt"`
+	Schedule              *string `json:"schedule,omitempty" jsonschema:"new cron schedule expression"`
+	Timezone              *string `json:"timezone,omitempty" jsonschema:"new IANA timezone"`
+	IsEnabled             *bool   `json:"enabled,omitempty" jsonschema:"enable or disable the job"`
+	AgentName             *string `json:"agent_name,omitempty" jsonschema:"new agent runner plugin name"`
+	Model                 *string `json:"model,omitempty" jsonschema:"new opaque agent model id (empty = plugin default)"`
+	GateCommand           *string `json:"gate_command,omitempty" jsonschema:"new gate command; empty = no gate"`
+	ShouldRunSetupCommand *bool   `json:"run_setup_command,omitempty" jsonschema:"run the repo setup script before the agent"`
 }
 
 // AddAccountArgs is the typed argument struct for add_account. It maps 1:1 onto

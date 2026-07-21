@@ -92,6 +92,7 @@ test('linearOperationMap names the agent-driven MCP tools', () => {
   assert.equal(linearOperationMap.readComments.tool, 'mcp__bossanova-linear__list_comments')
   assert.equal(linearOperationMap.writeComment.tool, 'mcp__bossanova-linear__save_comment')
   assert.equal(linearOperationMap.readLabels.tool, 'mcp__bossanova-linear__get_issue')
+  assert.equal(linearOperationMap.extractImages.tool, 'mcp__bossanova-linear__extract_images')
   assert.equal(linearOperationMap.createLabel.tool, 'mcp__bossanova-linear__create_issue_label')
   assert.equal(linearOperationMap.setPriorityEstimate.tool, 'mcp__bossanova-linear__save_issue')
   assert.equal(linearOperationMap.appendDependency.tool, 'mcp__bossanova-linear__save_issue')

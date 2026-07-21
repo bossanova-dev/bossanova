@@ -97,7 +97,7 @@ func TestCronFormHandleSubmit_UpdateIncludesChangedAgentName(t *testing.T) {
 			RepoId:    "repo-1",
 			Prompt:    "Run with selected agent.",
 			Schedule:  "@daily",
-			Enabled:   true,
+			IsEnabled: true,
 			AgentName: "claude",
 		},
 		fd: &cronFormData{
@@ -162,13 +162,13 @@ func TestCronFormHandleSubmit_UpdateIncludesChangedModel(t *testing.T) {
 		client: c,
 		ctx:    context.Background(),
 		job: &pb.CronJob{
-			Id:       "cron-1",
-			Name:     "Model job",
-			RepoId:   "repo-1",
-			Prompt:   "Run on a specific model.",
-			Schedule: "@daily",
-			Enabled:  true,
-			Model:    "opus",
+			Id:        "cron-1",
+			Name:      "Model job",
+			RepoId:    "repo-1",
+			Prompt:    "Run on a specific model.",
+			Schedule:  "@daily",
+			IsEnabled: true,
+			Model:     "opus",
 		},
 		fd: &cronFormData{
 			name:     "Model job",
@@ -411,11 +411,11 @@ func TestCronFormHandleSubmit_CreateIncludesGateCommandAndRunSetup(t *testing.T)
 	if got, want := c.createdCronReq.GateCommand, "/usr/local/bin/check-ok"; got != want {
 		t.Fatalf("CreateCronJob.GateCommand = %q, want %q", got, want)
 	}
-	if c.createdCronReq.RunSetupCommand == nil {
-		t.Fatal("CreateCronJob.RunSetupCommand = nil, want non-nil pointer")
+	if c.createdCronReq.ShouldRunSetupCommand == nil {
+		t.Fatal("CreateCronJob.ShouldRunSetupCommand = nil, want non-nil pointer")
 	}
-	if got := *c.createdCronReq.RunSetupCommand; got != rsc {
-		t.Fatalf("CreateCronJob.RunSetupCommand = %v, want %v", got, rsc)
+	if got := *c.createdCronReq.ShouldRunSetupCommand; got != rsc {
+		t.Fatalf("CreateCronJob.ShouldRunSetupCommand = %v, want %v", got, rsc)
 	}
 }
 
@@ -432,7 +432,7 @@ func TestCronFormHandleSubmit_UpdateIncludesChangedGateCommand(t *testing.T) {
 			RepoId:      "repo-1",
 			Prompt:      "Do the thing.",
 			Schedule:    "@daily",
-			Enabled:     true,
+			IsEnabled:   true,
 			GateCommand: "/old/check",
 		},
 		fd: &cronFormData{
@@ -470,13 +470,13 @@ func TestCronFormHandleSubmit_UpdateIncludesChangedRunSetup(t *testing.T) {
 		client: c,
 		ctx:    context.Background(),
 		job: &pb.CronJob{
-			Id:              "cron-1",
-			Name:            "Setup job",
-			RepoId:          "repo-1",
-			Prompt:          "Do the thing.",
-			Schedule:        "@daily",
-			Enabled:         true,
-			RunSetupCommand: true,
+			Id:                    "cron-1",
+			Name:                  "Setup job",
+			RepoId:                "repo-1",
+			Prompt:                "Do the thing.",
+			Schedule:              "@daily",
+			IsEnabled:             true,
+			ShouldRunSetupCommand: true,
 		},
 		fd: &cronFormData{
 			name:            "Setup job",
@@ -497,11 +497,11 @@ func TestCronFormHandleSubmit_UpdateIncludesChangedRunSetup(t *testing.T) {
 	if c.updatedCronReq == nil {
 		t.Fatal("UpdateCronJob was not called")
 	}
-	if c.updatedCronReq.RunSetupCommand == nil {
-		t.Fatal("UpdateCronJob.RunSetupCommand = nil, want changed flag")
+	if c.updatedCronReq.ShouldRunSetupCommand == nil {
+		t.Fatal("UpdateCronJob.ShouldRunSetupCommand = nil, want changed flag")
 	}
-	if got := *c.updatedCronReq.RunSetupCommand; got != false {
-		t.Fatalf("UpdateCronJob.RunSetupCommand = %v, want false", got)
+	if got := *c.updatedCronReq.ShouldRunSetupCommand; got != false {
+		t.Fatalf("UpdateCronJob.ShouldRunSetupCommand = %v, want false", got)
 	}
 }
 
@@ -511,13 +511,13 @@ func TestCronFormBuildForm_PrefillsGateCommandOnEdit(t *testing.T) {
 	m := CronFormModel{
 		ctx: context.Background(),
 		job: &pb.CronJob{
-			Id:              "cron-1",
-			Name:            "Gate job",
-			RepoId:          "repo-1",
-			Prompt:          "p",
-			Schedule:        "@daily",
-			GateCommand:     "/usr/local/bin/check",
-			RunSetupCommand: false,
+			Id:                    "cron-1",
+			Name:                  "Gate job",
+			RepoId:                "repo-1",
+			Prompt:                "p",
+			Schedule:              "@daily",
+			GateCommand:           "/usr/local/bin/check",
+			ShouldRunSetupCommand: false,
 		},
 	}
 

@@ -66,6 +66,7 @@ go_library(
 
 go_test(
     name = "server_test",
+    size = "large",  # keep: race-instrumented server suite runs ~233s under --config=race, close to the medium (300s) ceiling
     srcs = [
         "account_binding_test.go",
         "account_env_test.go",
@@ -90,6 +91,7 @@ go_test(
         "list_sessions_display_status_test.go",
         "merge_session_display_test.go",
         "merge_session_live_test.go",
+        "merge_session_serialize_test.go",
         "model_resolution_test.go",
         "path_test.go",
         "pause_resume_test.go",

@@ -136,10 +136,10 @@ func TestChatPicker_ResurrectedMerged_NoArchivingSpinner(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = updated.(ChatPickerModel)
 	m.session = &pb.Session{
-		Id:                            "session-1",
-		DisplayStatus:                 pb.DisplayStatus_DISPLAY_STATUS_MERGED,
-		RepoArchiveSessionsAfterMerge: true,
-		ArchivePending:                false, // daemon is NOT archiving (resurrected)
+		Id:                                  "session-1",
+		DisplayStatus:                       pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+		RepoShouldArchiveSessionsAfterMerge: true,
+		ArchivePending:                      false, // daemon is NOT archiving (resurrected)
 		// ArchivedAt nil — the session is live again after resurrection.
 	}
 
@@ -159,10 +159,10 @@ func TestChatPicker_ArchivePending_ShowsArchivingSpinner(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = updated.(ChatPickerModel)
 	m.session = &pb.Session{
-		Id:                            "session-1",
-		DisplayStatus:                 pb.DisplayStatus_DISPLAY_STATUS_MERGED,
-		RepoArchiveSessionsAfterMerge: true,
-		ArchivePending:                true, // daemon has an archive in flight
+		Id:                                  "session-1",
+		DisplayStatus:                       pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+		RepoShouldArchiveSessionsAfterMerge: true,
+		ArchivePending:                      true, // daemon has an archive in flight
 	}
 
 	if !m.isArchiving() {
@@ -185,9 +185,9 @@ func TestChatPicker_OptimisticLatchAfterMerge_ShowsArchivingSpinner(t *testing.T
 	// Session with archive-after-merge on but archive_pending still false (webhook
 	// not yet processed by the daemon).
 	m.session = &pb.Session{
-		Id:                            "session-1",
-		RepoArchiveSessionsAfterMerge: true,
-		ArchivePending:                false,
+		Id:                                  "session-1",
+		RepoShouldArchiveSessionsAfterMerge: true,
+		ArchivePending:                      false,
 	}
 
 	updated, _ = m.Update(mergeResultMsg{sessionID: "session-1"})
@@ -214,7 +214,7 @@ func TestChatPicker_OptimisticLatch_ClearedWhenRepoDisablesArchive(t *testing.T)
 
 	// A refresh poll lands a session with archive-after-merge now OFF.
 	updated, _ := m.Update(chatPickerRefreshMsg{
-		session: &pb.Session{Id: "session-1", RepoArchiveSessionsAfterMerge: false},
+		session: &pb.Session{Id: "session-1", RepoShouldArchiveSessionsAfterMerge: false},
 	})
 	m = updated.(ChatPickerModel)
 
@@ -237,7 +237,7 @@ func TestChatPicker_OptimisticLatch_HandsOffToDaemonAndCannotStick(t *testing.T)
 	m := seedChatPicker(&chatPickerStub{}, "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = updated.(ChatPickerModel)
-	m.session = &pb.Session{Id: "session-1", RepoArchiveSessionsAfterMerge: true, ArchivePending: false}
+	m.session = &pb.Session{Id: "session-1", RepoShouldArchiveSessionsAfterMerge: true, ArchivePending: false}
 
 	// TUI-initiated merge sets the optimistic latch (pre-signal bridge).
 	updated, _ = m.Update(mergeResultMsg{sessionID: "session-1"})
@@ -248,7 +248,7 @@ func TestChatPicker_OptimisticLatch_HandsOffToDaemonAndCannotStick(t *testing.T)
 
 	// First poll reports the daemon archive actually in flight: hand off.
 	updated, _ = m.Update(chatPickerRefreshMsg{session: &pb.Session{
-		Id: "session-1", RepoArchiveSessionsAfterMerge: true, ArchivePending: true,
+		Id: "session-1", RepoShouldArchiveSessionsAfterMerge: true, ArchivePending: true,
 	}})
 	m = updated.(ChatPickerModel)
 	if m.optimisticArchiveLatch {
@@ -261,7 +261,7 @@ func TestChatPicker_OptimisticLatch_HandsOffToDaemonAndCannotStick(t *testing.T)
 	// The daemon's ArchiveSession fails: archive_pending clears, archived_at stays
 	// nil. With the latch already handed off, the spinner must stop — not stick.
 	updated, _ = m.Update(chatPickerRefreshMsg{session: &pb.Session{
-		Id: "session-1", RepoArchiveSessionsAfterMerge: true, ArchivePending: false,
+		Id: "session-1", RepoShouldArchiveSessionsAfterMerge: true, ArchivePending: false,
 	}})
 	m = updated.(ChatPickerModel)
 	if m.optimisticArchiveLatch {

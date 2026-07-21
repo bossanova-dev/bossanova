@@ -75,6 +75,16 @@ const (
 	<string>{{.LogDir}}/bossd.stdout.log</string>
 	<key>StandardErrorPath</key>
 	<string>{{.LogDir}}/bossd.stderr.log</string>
+	<key>SoftResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>65536</integer>
+	</dict>
+	<key>HardResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>65536</integer>
+	</dict>
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>PATH</key>
@@ -233,6 +243,8 @@ func platformMcpInstall(mcpBinPath string, port int, force bool) error {
 		return nil
 	}
 
+	// #nosec G204 -- launchctl load; const argv, derived $HOME plist path; no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command("launchctl", "load", plistPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl load: %w\n%s", err, strings.TrimSpace(string(out)))
@@ -248,6 +260,8 @@ func platformMcpUninstall() error {
 	}
 
 	if !skipLaunchctl() {
+		// #nosec G204 -- launchctl unload; const argv, derived $HOME plist path; no shell
+		// owner=@recurser review-by=2027-01-18 issue=BOS-28
 		_ = exec.Command("launchctl", "unload", plistPath).Run()
 	}
 
@@ -269,8 +283,12 @@ func platformMcpStart() error {
 	}
 
 	target := "gui/" + strconv.Itoa(os.Getuid())
+	// #nosec G204 -- launchctl bootout; const argv, derived $HOME plist path, int uid target; no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	_ = exec.Command("launchctl", "bootout", target, plistPath).Run()
 
+	// #nosec G204 -- launchctl bootstrap; const argv, derived $HOME plist path, int uid target; no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command("launchctl", "bootstrap", target, plistPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl bootstrap: %w: %s", err, strings.TrimSpace(string(out)))
@@ -292,6 +310,8 @@ func platformMcpStop() error {
 	}
 
 	target := "gui/" + strconv.Itoa(os.Getuid())
+	// #nosec G204 -- launchctl bootout; const argv, derived $HOME plist path, int uid target; no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	out, err := exec.Command("launchctl", "bootout", target, plistPath).CombinedOutput()
 	if err == nil {
 		return nil
@@ -386,6 +406,8 @@ func platformInstall(bossdPath string, force bool) error {
 	}
 
 	// Load the agent.
+	// #nosec G204 -- launchctl load; const argv, derived $HOME plist path; no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command("launchctl", "load", plistPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl load: %w\n%s", err, strings.TrimSpace(string(out)))
@@ -403,6 +425,8 @@ func platformUninstall() error {
 
 	// Unload the agent (ignore error if not loaded).
 	if !skipLaunchctl() {
+		// #nosec G204 -- launchctl unload; const argv, derived $HOME plist path; no shell
+		// owner=@recurser review-by=2027-01-18 issue=BOS-28
 		cmd := exec.Command("launchctl", "unload", plistPath)
 		_ = cmd.Run()
 	}
@@ -426,8 +450,12 @@ func platformRestart() error {
 	}
 
 	target := "gui/" + strconv.Itoa(os.Getuid())
+	// #nosec G204 -- launchctl bootout; const argv, derived $HOME plist path, int uid target; no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	_ = exec.Command("launchctl", "bootout", target, plistPath).Run()
 
+	// #nosec G204 -- launchctl bootstrap; const argv, derived $HOME plist path, int uid target; no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command("launchctl", "bootstrap", target, plistPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl bootstrap: %w: %s", err, strings.TrimSpace(string(out)))
@@ -450,6 +478,8 @@ func platformStop() error {
 	}
 
 	target := "gui/" + strconv.Itoa(os.Getuid())
+	// #nosec G204 -- launchctl bootout; const argv, derived $HOME plist path, int uid target; no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	out, err := exec.Command("launchctl", "bootout", target, plistPath).CombinedOutput()
 	if err == nil {
 		return nil
@@ -534,6 +564,8 @@ func platformEnsureRunning(socketPath string) error {
 	st, err := platformGetStatus()
 	if err == nil && st.Installed && !st.Running {
 		plistPath, _ := platformServicePath()
+		// #nosec G204 -- launchctl load; const argv, derived $HOME plist path; no shell
+		// owner=@recurser review-by=2027-01-18 issue=BOS-28
 		if cmd := exec.Command("launchctl", "load", plistPath); cmd.Run() == nil {
 			if waitForSocket(socketPath, LifecycleStartupTimeout) {
 				return nil
@@ -552,6 +584,8 @@ func platformEnsureRunning(socketPath string) error {
 		return nil
 	}
 
+	// #nosec G204 -- self-spawn of ResolveBossdPath()-discovered bossd binary; literal args; local-trust
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command(bossdPath)
 	cmd.Stdout = nil
 	cmd.Stderr = nil

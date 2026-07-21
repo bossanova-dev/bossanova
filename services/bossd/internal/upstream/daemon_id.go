@@ -38,7 +38,8 @@ func ResolveDaemonID(getenv func(string) string, dataDir, hostname string) (stri
 	}
 
 	path := filepath.Join(dataDir, daemonIDFileName)
-	// #nosec G304 -- path is a daemon-internal, non-user path (const daemonIDFileName joined onto the daemon data dir); owner=@recurser review-by=2026-10-18 issue=BOS-413
+	// #nosec G304 -- const filename joined onto the daemon data dir; non-user input
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	if data, err := os.ReadFile(path); err == nil {
 		if id := strings.TrimSpace(string(data)); id != "" {
 			return id, nil

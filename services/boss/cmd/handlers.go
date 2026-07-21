@@ -463,11 +463,15 @@ var installUpgrade = func(ctx context.Context, plan upgrade.InstallPlan) error {
 
 var brewUpgradeBossanova = func(ctx context.Context, binDir string) (string, error) {
 	brew := brewExecutableForBinDir(binDir)
+	// #nosec G204 -- brew upgrade runs the brew binary discovered from binDir; args are literal, operator/local-trust not attacker-controlled.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.CommandContext(ctx, brew, "upgrade", "bossanova-dev/tap/bossanova")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("brew upgrade bossanova-dev/tap/bossanova failed: %w\noutput:\n%s\nRun manually: brew upgrade bossanova-dev/tap/bossanova", err, strings.TrimSpace(string(out)))
 	}
 
+	// #nosec G204 -- brew --prefix runs the same discovered brew binary; literal args, local-trust.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	prefixCmd := exec.CommandContext(ctx, brew, "--prefix", "bossanova-dev/tap/bossanova")
 	out, err := prefixCmd.CombinedOutput()
 	if err != nil {
@@ -844,7 +848,8 @@ func withUpgradeLock(fn func() error) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create upgrade lock dir: %w", err)
 	}
-	// #nosec G304 -- path is the internally-derived upgrade-lock file (upgradeLockPath); no operator input reaches it, and O_EXCL keeps it a single-writer lock. owner=@recurser review-by=2026-09-16 issue=BOS-414
+	// #nosec G304 -- internally-derived upgrade-lock path (upgradeLockPath); O_EXCL single-writer lock, no operator input.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
@@ -1840,6 +1845,8 @@ func metadataMatchesRunningProcess(metadata daemonstate.Metadata) bool {
 }
 
 func processCommandLine(pid int) (string, error) {
+	// #nosec G204 -- ps -p <pid> -o command=; const argv plus an int pid, no shell.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
 	if err != nil {
 		return "", err
@@ -1915,6 +1922,8 @@ func printPluginCleanup(n int) {
 var findBossdPluginPIDs = findBossdPluginPIDsFromPgrep
 
 func findBossdPluginPIDsFromPgrep() ([]int, error) {
+	// #nosec G204 -- pgrep -u <euid> -f bossd-plugin-; const args plus an int euid, no shell.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	out, err := exec.Command("pgrep", bossdPluginPgrepArgs()...).Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
@@ -2043,6 +2052,8 @@ func signalBossdPluginProcesses(pids []int, matches func(string) bool, findProce
 // whose program name is exactly "bossd". Uses pgrep, which is available on
 // macOS and Linux.
 func findBossdPIDs() ([]int, error) {
+	// #nosec G204 -- pgrep -u <euid> -x bossd; const args plus an int euid, no shell.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	out, err := exec.Command("pgrep", bossdPgrepArgs()...).Output()
 	if err != nil {
 		// pgrep exits 1 when there are no matches — treat as empty result.

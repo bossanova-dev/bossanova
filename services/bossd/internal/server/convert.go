@@ -104,23 +104,23 @@ func CanonicalRepoOriginURL(originURL string) string {
 // repoToProto converts a domain Repo to its protobuf representation.
 func repoToProto(r *models.Repo) *pb.Repo {
 	p := &pb.Repo{
-		Id:                        protoString(r.ID),
-		DisplayName:               protoString(r.DisplayName),
-		LocalPath:                 protoString(r.LocalPath),
-		OriginUrl:                 protoString(r.OriginURL),
-		DefaultBaseBranch:         protoString(r.DefaultBaseBranch),
-		WorktreeBaseDir:           protoString(r.WorktreeBaseDir),
-		CanAutoMerge:              r.CanAutoMerge,
-		CanAutoMergeDependabot:    r.CanAutoMergeDependabot,
-		CanAutoRepair:             r.CanAutoRepair,
-		ArchiveSessionsAfterMerge: r.ArchiveSessionsAfterMerge,
-		CanAutoDeleteBranches:     r.CanAutoDeleteBranches,
-		MergeStrategy:             protoString(string(r.MergeStrategy)),
-		LinearApiKey:              protoString(r.LinearAPIKey),
-		SentryApiKey:              protoString(r.SentryAPIKey),
-		SentryOrg:                 protoString(r.SentryOrg),
-		CreatedAt:                 timestamppb.New(r.CreatedAt),
-		UpdatedAt:                 timestamppb.New(r.UpdatedAt),
+		Id:                              protoString(r.ID),
+		DisplayName:                     protoString(r.DisplayName),
+		LocalPath:                       protoString(r.LocalPath),
+		OriginUrl:                       protoString(r.OriginURL),
+		DefaultBaseBranch:               protoString(r.DefaultBaseBranch),
+		WorktreeBaseDir:                 protoString(r.WorktreeBaseDir),
+		CanAutoMerge:                    r.CanAutoMerge,
+		CanAutoMergeDependabot:          r.CanAutoMergeDependabot,
+		CanAutoRepair:                   r.CanAutoRepair,
+		ShouldArchiveSessionsAfterMerge: r.ShouldArchiveSessionsAfterMerge,
+		CanAutoDeleteBranches:           r.CanAutoDeleteBranches,
+		MergeStrategy:                   protoString(string(r.MergeStrategy)),
+		LinearApiKey:                    protoString(r.LinearAPIKey),
+		SentryApiKey:                    protoString(r.SentryAPIKey),
+		SentryOrg:                       protoString(r.SentryOrg),
+		CreatedAt:                       timestamppb.New(r.CreatedAt),
+		UpdatedAt:                       timestamppb.New(r.UpdatedAt),
 	}
 	if r.SetupScript != nil {
 		p.SetupScript = protoStringPtr(r.SetupScript)
@@ -163,17 +163,17 @@ func mergeStrategyFromProtoEnum(m pb.MergeStrategy) models.MergeStrategy {
 // next UpdateRepo.
 func repoToRepoSettings(r *models.Repo) *pb.RepoSettings {
 	settings := &pb.RepoSettings{
-		Id:                        protoString(r.ID),
-		DisplayName:               protoString(r.DisplayName),
-		MergeStrategy:             mergeStrategyToProtoEnum(r.MergeStrategy),
-		CanAutoMerge:              r.CanAutoMerge,
-		CanAutoMergeDependabot:    r.CanAutoMergeDependabot,
-		CanAutoRepair:             r.CanAutoRepair,
-		ArchiveSessionsAfterMerge: r.ArchiveSessionsAfterMerge,
-		SentryOrg:                 protoString(r.SentryOrg),
-		HasLinearKey:              r.LinearAPIKey != "",
-		HasSentryKey:              r.SentryAPIKey != "",
-		UpdatedAt:                 timestamppb.New(r.UpdatedAt),
+		Id:                              protoString(r.ID),
+		DisplayName:                     protoString(r.DisplayName),
+		MergeStrategy:                   mergeStrategyToProtoEnum(r.MergeStrategy),
+		CanAutoMerge:                    r.CanAutoMerge,
+		CanAutoMergeDependabot:          r.CanAutoMergeDependabot,
+		CanAutoRepair:                   r.CanAutoRepair,
+		ShouldArchiveSessionsAfterMerge: r.ShouldArchiveSessionsAfterMerge,
+		SentryOrg:                       protoString(r.SentryOrg),
+		HasLinearKey:                    r.LinearAPIKey != "",
+		HasSentryKey:                    r.SentryAPIKey != "",
+		UpdatedAt:                       timestamppb.New(r.UpdatedAt),
 	}
 	if r.SetupScript != nil {
 		settings.SetupScript = protoStringPtr(r.SetupScript)
@@ -184,23 +184,23 @@ func repoToRepoSettings(r *models.Repo) *pb.RepoSettings {
 // SessionToProto converts a domain Session to its protobuf representation.
 func SessionToProto(s *models.Session) *pb.Session {
 	p := &pb.Session{
-		Id:                protoString(s.ID),
-		RepoId:            protoString(s.RepoID),
-		Title:             protoString(s.Title),
-		Plan:              protoString(s.Plan),
-		WorktreePath:      protoString(s.WorktreePath),
-		BranchName:        protoString(s.BranchName),
-		BaseBranch:        protoString(s.BaseBranch),
-		State:             pb.SessionState(clampInt32(int(s.State))),
-		LastCheckState:    pb.ChecksOverall(clampInt32(int(s.LastCheckState))),
-		AgentName:         protoString(s.AgentName),
-		AutomationEnabled: s.AutomationEnabled,
-		AttemptCount:      clampInt32(s.AttemptCount),
-		CreatedAt:         timestamppb.New(s.CreatedAt),
-		UpdatedAt:         timestamppb.New(s.UpdatedAt),
-		DisplayLabel:      protoString(s.DisplayLabel),
-		DisplayIntent:     pb.DisplayIntent(s.DisplayIntent),
-		DisplaySpinner:    s.DisplaySpinner,
+		Id:                  protoString(s.ID),
+		RepoId:              protoString(s.RepoID),
+		Title:               protoString(s.Title),
+		Plan:                protoString(s.Plan),
+		WorktreePath:        protoString(s.WorktreePath),
+		BranchName:          protoString(s.BranchName),
+		BaseBranch:          protoString(s.BaseBranch),
+		State:               pb.SessionState(clampInt32(int(s.State))),
+		LastCheckState:      pb.ChecksOverall(clampInt32(int(s.LastCheckState))),
+		AgentName:           protoString(s.AgentName),
+		IsAutomationEnabled: s.IsAutomationEnabled,
+		AttemptCount:        clampInt32(s.AttemptCount),
+		CreatedAt:           timestamppb.New(s.CreatedAt),
+		UpdatedAt:           timestamppb.New(s.UpdatedAt),
+		DisplayLabel:        protoString(s.DisplayLabel),
+		DisplayIntent:       pb.DisplayIntent(s.DisplayIntent),
+		DisplaySpinner:      s.DisplaySpinner,
 	}
 	if s.AgentSessionID != nil {
 		p.AgentSessionId = protoStringPtr(s.AgentSessionID)
@@ -305,19 +305,19 @@ func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionS
 		}
 	}
 	p := &pb.CronJob{
-		Id:              c.ID,
-		RepoId:          c.RepoID,
-		Name:            c.Name,
-		Prompt:          c.Prompt,
-		Schedule:        c.Schedule,
-		AgentName:       protoString(c.AgentName),
-		Model:           c.Model,
-		Enabled:         c.Enabled,
-		GateCommand:     c.GateCommand,
-		RunSetupCommand: c.RunSetupCommand,
-		CreatedAt:       timestamppb.New(c.CreatedAt),
-		UpdatedAt:       timestamppb.New(c.UpdatedAt),
-		LastRunStatus:   status,
+		Id:                    c.ID,
+		RepoId:                c.RepoID,
+		Name:                  c.Name,
+		Prompt:                c.Prompt,
+		Schedule:              c.Schedule,
+		AgentName:             protoString(c.AgentName),
+		Model:                 c.Model,
+		IsEnabled:             c.IsEnabled,
+		GateCommand:           c.GateCommand,
+		ShouldRunSetupCommand: c.ShouldRunSetupCommand,
+		CreatedAt:             timestamppb.New(c.CreatedAt),
+		UpdatedAt:             timestamppb.New(c.UpdatedAt),
+		LastRunStatus:         status,
 	}
 	if c.Timezone != nil {
 		p.Timezone = *c.Timezone

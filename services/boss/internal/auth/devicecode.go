@@ -267,6 +267,8 @@ func openBrowserCommand(rawURL, goos string, wsl bool, lookPath func(string) (st
 				return exec.Command("wslview", rawURL), nil
 			}
 			if _, err := lookPath("cmd.exe"); err == nil {
+				// #nosec G204 -- WSL cmd.exe /c start "" <url>; app-generated OAuth URL; argv + quoteCmdURL guards metachars
+				// owner=@recurser review-by=2027-01-18 issue=BOS-28
 				return exec.Command("cmd.exe", "/c", "start", "", quoteCmdURL(rawURL)), nil
 			}
 		}

@@ -115,7 +115,7 @@ func TestSessionRoundTrip(t *testing.T) {
 		PRNumber:                    &prNum,
 		PRURL:                       &prURL,
 		LastCheckState:              machine.CheckStateFailed,
-		AutomationEnabled:           true,
+		IsAutomationEnabled:         true,
 		AttemptCount:                3,
 		BlockedReason:               &blocked,
 		LastRepairReviewFingerprint: "review-fingerprint-123",
@@ -140,8 +140,8 @@ func TestSessionRoundTrip(t *testing.T) {
 	if back.LastCheckState != orig.LastCheckState {
 		t.Errorf("LastCheckState = %v, want %v", back.LastCheckState, orig.LastCheckState)
 	}
-	if back.AutomationEnabled != orig.AutomationEnabled {
-		t.Errorf("AutomationEnabled = %v, want %v", back.AutomationEnabled, orig.AutomationEnabled)
+	if back.IsAutomationEnabled != orig.IsAutomationEnabled {
+		t.Errorf("IsAutomationEnabled = %v, want %v", back.IsAutomationEnabled, orig.IsAutomationEnabled)
 	}
 	if back.AttemptCount != orig.AttemptCount {
 		t.Errorf("AttemptCount = %d, want %d", back.AttemptCount, orig.AttemptCount)

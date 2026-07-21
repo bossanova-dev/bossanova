@@ -134,7 +134,7 @@ func TestApplyOverlayAllEntitiesWithDefaults(t *testing.T) {
 		t.Fatalf("want 1 cron, got %d", len(target.crons))
 	}
 	j := target.crons[0]
-	if j.Schedule != "@daily" || j.Timezone != "UTC" || j.AgentName != "claude" || !j.Enabled {
+	if j.Schedule != "@daily" || j.Timezone != "UTC" || j.AgentName != "claude" || !j.IsEnabled {
 		t.Fatalf("cron defaults wrong (enabled should default true): %+v", j)
 	}
 	prs := target.prs["repo-x"]
@@ -156,7 +156,7 @@ func TestApplyOverlayCronEnabledExplicitFalse(t *testing.T) {
 	if err := ApplyOverlay(target, o); err != nil {
 		t.Fatalf("ApplyOverlay: %v", err)
 	}
-	if target.crons[0].Enabled {
+	if target.crons[0].IsEnabled {
 		t.Fatal("explicit enabled:false must stay false")
 	}
 }

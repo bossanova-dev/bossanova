@@ -46,8 +46,8 @@ type UpdateRepoParams struct {
 	CanAutoMergeDependabot *bool
 	CanAutoRepair          *bool
 	CanAutoRotate          *bool
-	// ArchiveSessionsAfterMerge toggles the post-merge auto-archive automation.
-	ArchiveSessionsAfterMerge *bool
+	// ShouldArchiveSessionsAfterMerge toggles the post-merge auto-archive automation.
+	ShouldArchiveSessionsAfterMerge *bool
 	// CanAutoDeleteBranches toggles the auto-delete-branch-on-archive automation.
 	CanAutoDeleteBranches *bool
 	MergeStrategy         *models.MergeStrategy
@@ -138,7 +138,7 @@ type UpdateSessionParams struct {
 	TmuxSessionName         **string
 	LastCheckState          *int
 	LastObservedReviewState *int
-	AutomationEnabled       *bool
+	IsAutomationEnabled     *bool
 	AttemptCount            *int
 	BlockedReason           **string
 	// LastAttemptHeadSHA follows the nullable-string double-pointer convention:
@@ -162,16 +162,16 @@ type UpdateSessionParams struct {
 	// switch). Follows the nullable-string double-pointer convention: nil =
 	// don't touch, *nil = clear to NULL (system-default account 0), *val =
 	// bind to that account id.
-	AccountID      **string
-	TmuxUnattended *bool
+	AccountID        **string
+	IsTmuxUnattended *bool
 	// Detach marks a durable, tmux-hosted --detach autonomous run (BOS-428).
-	// nil = don't touch; mirrors TmuxUnattended (set via Update on the
+	// nil = don't touch; mirrors IsTmuxUnattended (set via Update on the
 	// tmux-hosted branch after create). Left false for a detach run that fell
 	// back to the paneless headless path.
 	Detach *bool
-	// QuickChat marks a visible no-worktree/branch/PR planning chat (BOS-322).
-	// nil = don't touch; mirrors TmuxUnattended (set via Update after create).
-	QuickChat *bool
+	// IsQuickChat marks a visible no-worktree/branch/PR planning chat (BOS-322).
+	// nil = don't touch; mirrors IsTmuxUnattended (set via Update after create).
+	IsQuickChat *bool
 
 	// Composite display fields, updated by the DisplayStatusComputer (Step 2).
 	// Pointer-typed so a nil value means "don't touch" and a zero value means
@@ -375,31 +375,31 @@ type WorkflowStore interface {
 
 // CreateCronJobParams holds the parameters for creating a new cron job.
 type CreateCronJobParams struct {
-	RepoID          string
-	Name            string
-	Prompt          string
-	Schedule        string
-	Timezone        *string
-	AgentName       string // Agent plugin name; empty falls back to "claude".
-	Model           string // Opaque agent model id; "" = plugin default.
-	Enabled         bool
-	GateCommand     string // shell command to run before firing; "" = no gate
-	RunSetupCommand bool   // whether to run the repo setup script before the agent session
+	RepoID                string
+	Name                  string
+	Prompt                string
+	Schedule              string
+	Timezone              *string
+	AgentName             string // Agent plugin name; empty falls back to "claude".
+	Model                 string // Opaque agent model id; "" = plugin default.
+	IsEnabled             bool
+	GateCommand           string // shell command to run before firing; "" = no gate
+	ShouldRunSetupCommand bool   // whether to run the repo setup script before the agent session
 }
 
 // UpdateCronJobParams holds the fields that can be updated on a cron job.
 // Nil fields are not updated.
 type UpdateCronJobParams struct {
-	Name            *string
-	Prompt          *string
-	Schedule        *string
-	Timezone        **string // double pointer: nil = don't update, *nil = set to NULL
-	AgentName       *string
-	Model           *string // nil = don't update; "" is a real value (plugin default)
-	Enabled         *bool
-	NextRunAt       **time.Time // double pointer: nil = don't update, *nil = clear
-	GateCommand     *string     // nil = don't update; "" = clear gate
-	RunSetupCommand *bool       // nil = don't update
+	Name                  *string
+	Prompt                *string
+	Schedule              *string
+	Timezone              **string // double pointer: nil = don't update, *nil = set to NULL
+	AgentName             *string
+	Model                 *string // nil = don't update; "" is a real value (plugin default)
+	IsEnabled             *bool
+	NextRunAt             **time.Time // double pointer: nil = don't update, *nil = clear
+	GateCommand           *string     // nil = don't update; "" = clear gate
+	ShouldRunSetupCommand *bool       // nil = don't update
 }
 
 // UpdateCronJobLastRunParams records the outcome of a cron job fire.

@@ -200,7 +200,7 @@ func TestCronListRebuildTable_DisabledStatusLabelsAreMuted(t *testing.T) {
 	for _, tc := range cases {
 		t.Run("disabled "+tc.name+" is muted", func(t *testing.T) {
 			m := newCronListForUpdate([]*pb.CronJob{
-				{Id: "x", Name: "Job", Schedule: "@daily", Enabled: false, LastRunStatus: tc.status},
+				{Id: "x", Name: "Job", Schedule: "@daily", IsEnabled: false, LastRunStatus: tc.status},
 			})
 			m.width = 120
 			m.height = 40
@@ -219,7 +219,7 @@ func TestCronListRebuildTable_DisabledStatusLabelsAreMuted(t *testing.T) {
 
 		t.Run("enabled "+tc.name+" keeps its color", func(t *testing.T) {
 			m := newCronListForUpdate([]*pb.CronJob{
-				{Id: "x", Name: "Job", Schedule: "@daily", Enabled: true, LastRunStatus: tc.status},
+				{Id: "x", Name: "Job", Schedule: "@daily", IsEnabled: true, LastRunStatus: tc.status},
 			})
 			m.width = 120
 			m.height = 40

@@ -657,12 +657,12 @@ func TestFinalizeSession_DetachNonCronEmptyRun_BlocksNoChanges(t *testing.T) {
 }
 
 // TestFinalizeSession_PlanningOnlyNoChanges_DoesNotBlockAsImplementationFailure
-// pins the BOS-322 planning-only escape: a session explicitly marked QuickChat
+// pins the BOS-322 planning-only escape: a session explicitly marked IsQuickChat
 // (a visible planning/recon/plan-review chat) whose branch made no real changes
 // must NOT be surfaced as a failed implementation run with pr_no_changes/Blocked.
 // It is expected to produce no repository output, so finalize diverts it to the
 // benign deleted_no_changes cleanup path. Same no-real-commits setup as the
-// empty-implementation test above — only QuickChat differs, proving the persisted
+// empty-implementation test above — only IsQuickChat differs, proving the persisted
 // flag (not the branch state) is what flips the classification.
 func TestFinalizeSession_PlanningOnlyNoChanges_DoesNotBlockAsImplementationFailure(t *testing.T) {
 	ctx := context.Background()
@@ -693,7 +693,7 @@ func TestFinalizeSession_PlanningOnlyNoChanges_DoesNotBlockAsImplementationFailu
 		BranchName:   "bos-322-planning",
 		BaseBranch:   "main",
 		State:        machine.ImplementingPlan,
-		QuickChat:    true,
+		IsQuickChat:  true,
 	}
 
 	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)

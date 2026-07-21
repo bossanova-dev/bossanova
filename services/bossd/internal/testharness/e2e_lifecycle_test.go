@@ -1100,8 +1100,8 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		if retryResp.Msg.Session.BlockedReason != nil && *retryResp.Msg.Session.BlockedReason != "" {
 			t.Fatalf("expected BlockedReason cleared after retry, got %q", *retryResp.Msg.Session.BlockedReason)
 		}
-		if !retryResp.Msg.Session.AutomationEnabled {
-			t.Fatal("expected AutomationEnabled=true after retry")
+		if !retryResp.Msg.Session.IsAutomationEnabled {
+			t.Fatal("expected IsAutomationEnabled=true after retry")
 		}
 
 		// Neither Claude nor VCS should have been touched.
@@ -1500,8 +1500,8 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get session: %v", err)
 		}
-		if !getResp.Msg.Session.AutomationEnabled {
-			t.Fatal("expected AutomationEnabled=true before pause")
+		if !getResp.Msg.Session.IsAutomationEnabled {
+			t.Fatal("expected IsAutomationEnabled=true before pause")
 		}
 		startState := getResp.Msg.Session.State
 
@@ -1510,8 +1510,8 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("pause session: %v", err)
 		}
-		if pauseResp.Msg.Session.AutomationEnabled {
-			t.Fatal("expected AutomationEnabled=false after pause")
+		if pauseResp.Msg.Session.IsAutomationEnabled {
+			t.Fatal("expected IsAutomationEnabled=false after pause")
 		}
 		if pauseResp.Msg.Session.State != startState {
 			t.Fatalf("pause changed state: %v -> %v", startState, pauseResp.Msg.Session.State)
@@ -1522,8 +1522,8 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resume session: %v", err)
 		}
-		if !resumeResp.Msg.Session.AutomationEnabled {
-			t.Fatal("expected AutomationEnabled=true after resume")
+		if !resumeResp.Msg.Session.IsAutomationEnabled {
+			t.Fatal("expected IsAutomationEnabled=true after resume")
 		}
 		if resumeResp.Msg.Session.State != startState {
 			t.Fatalf("resume changed state: %v -> %v", startState, resumeResp.Msg.Session.State)
@@ -1637,12 +1637,12 @@ func TestE2E_AttachSession_StreamsEvents(t *testing.T) {
 	}
 }
 
-// TestE2E_CreateSession_QuickChat verifies that QuickChat=true skips all
+// TestE2E_CreateSession_IsQuickChat verifies that IsQuickChat=true skips all
 // side-effects that a normal session triggers: no worktree is created, no
 // branch is pushed, no draft PR is opened. The session lands in
 // ImplementingPlan pointing at the repo's base directory with an empty
 // branch name.
-func TestE2E_CreateSession_QuickChat(t *testing.T) {
+func TestE2E_CreateSession_IsQuickChat(t *testing.T) {
 	h := testharness.New(t)
 	ctx := context.Background()
 	repoDir := testharness.TempRepoDir(t)
@@ -1659,10 +1659,10 @@ func TestE2E_CreateSession_QuickChat(t *testing.T) {
 	repoID := repoResp.Msg.Repo.Id
 
 	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
-		RepoId:    repoID,
-		Title:     "Ask a quick question",
-		Plan:      "",
-		QuickChat: true,
+		RepoId:      repoID,
+		Title:       "Ask a quick question",
+		Plan:        "",
+		IsQuickChat: true,
 	})
 
 	if len(h.Git.CreateCalls) != 0 {

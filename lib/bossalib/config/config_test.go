@@ -854,6 +854,32 @@ func TestFilterNonDiscoverablePluginsDropsStubRunner(t *testing.T) {
 	}
 }
 
+// TestFilterNonDiscoverablePluginsKeepsOpencode guards the BOS-437 completion of
+// the OpenCode epic: with the launch path wired and live-validated, the opencode
+// binary is a functional agent runner and must NO LONGER be filtered out of a
+// persisted/auto-discovered config — it is discovered like claude/codex.
+func TestFilterNonDiscoverablePluginsKeepsOpencode(t *testing.T) {
+	cfgs := []PluginConfig{{Name: "claude"}, {Name: "opencode"}, {Name: "codex"}}
+
+	filtered, dropped := FilterNonDiscoverablePlugins(cfgs)
+
+	if len(dropped) != 0 {
+		t.Errorf("dropped = %v, want none (opencode is now discoverable)", dropped)
+	}
+	if len(filtered) != 3 {
+		t.Fatalf("filtered has %d entries, want 3: %+v", len(filtered), filtered)
+	}
+	var sawOpencode bool
+	for _, c := range filtered {
+		if c.Name == "opencode" {
+			sawOpencode = true
+		}
+	}
+	if !sawOpencode {
+		t.Errorf("opencode was filtered out, want it to survive: %+v", filtered)
+	}
+}
+
 func TestFilterNonDiscoverablePluginsNoChangeWhenClean(t *testing.T) {
 	cfgs := []PluginConfig{{Name: "claude"}, {Name: "sentry"}}
 

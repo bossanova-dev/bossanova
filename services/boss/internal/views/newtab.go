@@ -36,6 +36,8 @@ func newTabCmd(env func(string) string, goos string, cwd string) (*exec.Cmd, err
 	termProgram := env("TERM_PROGRAM")
 
 	if termProgram == "iTerm.app" || env("ITERM_SESSION_ID") != "" {
+		// #nosec G204 -- osascript -e <script>; cwd embedded via shell-single-quote + AppleScript escaping; local cwd
+		// owner=@recurser review-by=2027-01-18 issue=BOS-28
 		return exec.Command("osascript", "-e", buildITermScript(cwd)), nil
 	}
 

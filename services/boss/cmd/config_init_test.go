@@ -92,6 +92,7 @@ func TestConfigInitValidPlugins(t *testing.T) {
 func TestConfigInitPreservesExistingSettings(t *testing.T) {
 	settingsPath, cleanup := setupTestConfigEnv(t)
 	defer cleanup()
+	worktreeBaseDir := filepath.Join(t.TempDir(), "worktrees")
 
 	// Create temp plugin directory with 2 plugins
 	pluginDir := t.TempDir()
@@ -108,7 +109,7 @@ func TestConfigInitPreservesExistingSettings(t *testing.T) {
 
 	// Create existing settings with non-plugin config
 	existingSettings := config.Settings{
-		WorktreeBaseDir:     "/custom/worktrees",
+		WorktreeBaseDir:     worktreeBaseDir,
 		PollIntervalSeconds: 120,
 		Plugins: []config.PluginConfig{
 			{
@@ -139,8 +140,8 @@ func TestConfigInitPreservesExistingSettings(t *testing.T) {
 		t.Fatalf("LoadFrom: %v", err)
 	}
 
-	if s.WorktreeBaseDir != "/custom/worktrees" {
-		t.Errorf("WorktreeBaseDir: got %q, want %q (preserved)", s.WorktreeBaseDir, "/custom/worktrees")
+	if s.WorktreeBaseDir != worktreeBaseDir {
+		t.Errorf("WorktreeBaseDir: got %q, want %q (preserved)", s.WorktreeBaseDir, worktreeBaseDir)
 	}
 	if s.PollIntervalSeconds != 120 {
 		t.Errorf("PollIntervalSeconds: got %d, want 120 (preserved)", s.PollIntervalSeconds)

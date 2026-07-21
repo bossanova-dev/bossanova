@@ -16,6 +16,7 @@
     "bossd-plugin-codex": "//plugins/bossd-plugin-codex:bossd-plugin-codex",
     "bossd-plugin-dependabot": "//plugins/bossd-plugin-dependabot:bossd-plugin-dependabot",
     "bossd-plugin-linear": "//plugins/bossd-plugin-linear:bossd-plugin-linear",
+    "bossd-plugin-opencode": "//plugins/bossd-plugin-opencode:bossd-plugin-opencode",
     "bossd-plugin-repair": "//plugins/bossd-plugin-repair:bossd-plugin-repair",
     "bossd-plugin-sentry": "//plugins/bossd-plugin-sentry:bossd-plugin-sentry",
     "bossd-plugin-stub-runner": "//plugins/bossd-plugin-stub-runner:bossd-plugin-stub-runner"

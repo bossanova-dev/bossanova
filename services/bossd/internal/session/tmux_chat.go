@@ -971,12 +971,12 @@ func (l *Lifecycle) startTmuxChat(
 	// opts is the authoritative provenance signal here: this is the same
 	// cron/tmux_unattended routing that steered StartSession into startTmuxChat,
 	// and it is reliable even though the caller's `session` snapshot is read
-	// before StartSession stamps CronJobID/TmuxUnattended onto the row (so
+	// before StartSession stamps CronJobID/IsTmuxUnattended onto the row (so
 	// isUnattendedSession(session) can still be false on this path). The session
 	// predicate is kept as a fallback for any future caller that funnels a
 	// fully-populated session through with empty opts.
 	input := chatInputMechanicsFromPrompt(session.Plan)
-	if opts.CronJobID != "" || opts.TmuxUnattended || opts.Detach || isUnattendedSession(session) {
+	if opts.CronJobID != "" || opts.IsTmuxUnattended || opts.Detach || isUnattendedSession(session) {
 		input.Delivery = DeliverySubmit
 	}
 	// Unattended/cron sessions wire their session-keyed Stop hook earlier in
@@ -1014,7 +1014,7 @@ func isCronSession(sess *models.Session) bool {
 // and it is never swept to Orphaned; a fallback (paneless) detach run leaves Detach
 // false and stays in the headless class.
 func isUnattendedSession(sess *models.Session) bool {
-	return isCronSession(sess) || (sess != nil && (sess.TmuxUnattended || sess.Detach))
+	return isCronSession(sess) || (sess != nil && (sess.IsTmuxUnattended || sess.Detach))
 }
 
 // ManagedSessionEnv returns the canonical BOSS_* environment set on every

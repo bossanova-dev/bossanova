@@ -2935,13 +2935,13 @@ func (x *AttachSessionCommand) GetSessionId() string {
 // AttachSessionCommand/SessionAttachChunk. Fields are a wizard-relevant subset
 // of daemon.proto's CreateSessionRequest.
 type CreateSessionCommand struct {
-	state      protoimpl.MessageState `protogen:"open.v1"`
-	RepoId     string                 `protobuf:"bytes,1,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
-	Title      string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
-	Plan       string                 `protobuf:"bytes,3,opt,name=plan,proto3" json:"plan,omitempty"`
-	BaseBranch string                 `protobuf:"bytes,4,opt,name=base_branch,json=baseBranch,proto3" json:"base_branch,omitempty"`
-	QuickChat  bool                   `protobuf:"varint,5,opt,name=quick_chat,json=quickChat,proto3" json:"quick_chat,omitempty"`
-	AgentName  string                 `protobuf:"bytes,6,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	RepoId      string                 `protobuf:"bytes,1,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
+	Title       string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	Plan        string                 `protobuf:"bytes,3,opt,name=plan,proto3" json:"plan,omitempty"`
+	BaseBranch  string                 `protobuf:"bytes,4,opt,name=base_branch,json=baseBranch,proto3" json:"base_branch,omitempty"`
+	IsQuickChat bool                   `protobuf:"varint,5,opt,name=is_quick_chat,json=isQuickChat,proto3" json:"is_quick_chat,omitempty"`
+	AgentName   string                 `protobuf:"bytes,6,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`
 	// PR/tracker fields (wizard "existing PR" / "Linear" / "Sentry" flows).
 	PrNumber   *int32  `protobuf:"varint,7,opt,name=pr_number,json=prNumber,proto3,oneof" json:"pr_number,omitempty"`
 	BranchName *string `protobuf:"bytes,8,opt,name=branch_name,json=branchName,proto3,oneof" json:"branch_name,omitempty"`
@@ -2956,13 +2956,13 @@ type CreateSessionCommand struct {
 	Force bool `protobuf:"varint,13,opt,name=force,proto3" json:"force,omitempty"`
 	// Unattended-session fields carried over the reverse stream so a hosted
 	// create (bosso → daemon) reproduces the local socket create. Mirror
-	// CreateSessionRequest.{detach,model,tmux_unattended}; without them the
+	// CreateSessionRequest.{detach,model,is_tmux_unattended}; without them the
 	// daemon builds an interactive/default-model session and skips the
 	// unattended prompt.
-	Detach         bool    `protobuf:"varint,14,opt,name=detach,proto3" json:"detach,omitempty"`
-	Model          *string `protobuf:"bytes,15,opt,name=model,proto3,oneof" json:"model,omitempty"`
-	TmuxUnattended bool    `protobuf:"varint,16,opt,name=tmux_unattended,json=tmuxUnattended,proto3" json:"tmux_unattended,omitempty"`
-	AccountId      *string `protobuf:"bytes,17,opt,name=account_id,json=accountId,proto3,oneof" json:"account_id,omitempty"`
+	Detach           bool    `protobuf:"varint,14,opt,name=detach,proto3" json:"detach,omitempty"`
+	Model            *string `protobuf:"bytes,15,opt,name=model,proto3,oneof" json:"model,omitempty"`
+	IsTmuxUnattended bool    `protobuf:"varint,16,opt,name=is_tmux_unattended,json=isTmuxUnattended,proto3" json:"is_tmux_unattended,omitempty"`
+	AccountId        *string `protobuf:"bytes,17,opt,name=account_id,json=accountId,proto3,oneof" json:"account_id,omitempty"`
 	// Mirror CreateSessionRequest.force_branch so reverse-stream hosted creates
 	// preserve the local socket path's branch replacement behavior.
 	ForceBranch   bool `protobuf:"varint,18,opt,name=force_branch,json=forceBranch,proto3" json:"force_branch,omitempty"`
@@ -3028,9 +3028,9 @@ func (x *CreateSessionCommand) GetBaseBranch() string {
 	return ""
 }
 
-func (x *CreateSessionCommand) GetQuickChat() bool {
+func (x *CreateSessionCommand) GetIsQuickChat() bool {
 	if x != nil {
-		return x.QuickChat
+		return x.IsQuickChat
 	}
 	return false
 }
@@ -3105,9 +3105,9 @@ func (x *CreateSessionCommand) GetModel() string {
 	return ""
 }
 
-func (x *CreateSessionCommand) GetTmuxUnattended() bool {
+func (x *CreateSessionCommand) GetIsTmuxUnattended() bool {
 	if x != nil {
-		return x.TmuxUnattended
+		return x.IsTmuxUnattended
 	}
 	return false
 }
@@ -3872,19 +3872,19 @@ func (*ListCronJobsCommand) Descriptor() ([]byte, []int) {
 // repo. Fields mirror daemon.proto's CreateCronJobRequest. Replies with
 // CommandResult carrying a CreateCronJobResponse (create_cron_job = 20).
 type CreateCronJobCommand struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	RepoId          string                 `protobuf:"bytes,1,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
-	Name            string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Prompt          string                 `protobuf:"bytes,3,opt,name=prompt,proto3" json:"prompt,omitempty"`
-	Schedule        string                 `protobuf:"bytes,4,opt,name=schedule,proto3" json:"schedule,omitempty"`
-	Timezone        string                 `protobuf:"bytes,5,opt,name=timezone,proto3" json:"timezone,omitempty"`
-	Enabled         bool                   `protobuf:"varint,6,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	AgentName       string                 `protobuf:"bytes,7,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`
-	Model           string                 `protobuf:"bytes,8,opt,name=model,proto3" json:"model,omitempty"`
-	GateCommand     string                 `protobuf:"bytes,9,opt,name=gate_command,json=gateCommand,proto3" json:"gate_command,omitempty"`
-	RunSetupCommand *bool                  `protobuf:"varint,10,opt,name=run_setup_command,json=runSetupCommand,proto3,oneof" json:"run_setup_command,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	RepoId                string                 `protobuf:"bytes,1,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
+	Name                  string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Prompt                string                 `protobuf:"bytes,3,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	Schedule              string                 `protobuf:"bytes,4,opt,name=schedule,proto3" json:"schedule,omitempty"`
+	Timezone              string                 `protobuf:"bytes,5,opt,name=timezone,proto3" json:"timezone,omitempty"`
+	IsEnabled             bool                   `protobuf:"varint,6,opt,name=is_enabled,json=isEnabled,proto3" json:"is_enabled,omitempty"`
+	AgentName             string                 `protobuf:"bytes,7,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`
+	Model                 string                 `protobuf:"bytes,8,opt,name=model,proto3" json:"model,omitempty"`
+	GateCommand           string                 `protobuf:"bytes,9,opt,name=gate_command,json=gateCommand,proto3" json:"gate_command,omitempty"`
+	ShouldRunSetupCommand *bool                  `protobuf:"varint,10,opt,name=should_run_setup_command,json=shouldRunSetupCommand,proto3,oneof" json:"should_run_setup_command,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *CreateCronJobCommand) Reset() {
@@ -3952,9 +3952,9 @@ func (x *CreateCronJobCommand) GetTimezone() string {
 	return ""
 }
 
-func (x *CreateCronJobCommand) GetEnabled() bool {
+func (x *CreateCronJobCommand) GetIsEnabled() bool {
 	if x != nil {
-		return x.Enabled
+		return x.IsEnabled
 	}
 	return false
 }
@@ -3980,9 +3980,9 @@ func (x *CreateCronJobCommand) GetGateCommand() string {
 	return ""
 }
 
-func (x *CreateCronJobCommand) GetRunSetupCommand() bool {
-	if x != nil && x.RunSetupCommand != nil {
-		return *x.RunSetupCommand
+func (x *CreateCronJobCommand) GetShouldRunSetupCommand() bool {
+	if x != nil && x.ShouldRunSetupCommand != nil {
+		return *x.ShouldRunSetupCommand
 	}
 	return false
 }
@@ -3991,19 +3991,19 @@ func (x *CreateCronJobCommand) GetRunSetupCommand() bool {
 // fields are optional. Fields mirror daemon.proto's UpdateCronJobRequest.
 // Replies with CommandResult carrying an UpdateCronJobResponse (update_cron_job = 21).
 type UpdateCronJobCommand struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Id              string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name            *string                `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
-	Prompt          *string                `protobuf:"bytes,3,opt,name=prompt,proto3,oneof" json:"prompt,omitempty"`
-	Schedule        *string                `protobuf:"bytes,4,opt,name=schedule,proto3,oneof" json:"schedule,omitempty"`
-	Timezone        *string                `protobuf:"bytes,5,opt,name=timezone,proto3,oneof" json:"timezone,omitempty"`
-	Enabled         *bool                  `protobuf:"varint,6,opt,name=enabled,proto3,oneof" json:"enabled,omitempty"`
-	AgentName       *string                `protobuf:"bytes,7,opt,name=agent_name,json=agentName,proto3,oneof" json:"agent_name,omitempty"`
-	Model           *string                `protobuf:"bytes,8,opt,name=model,proto3,oneof" json:"model,omitempty"`
-	GateCommand     *string                `protobuf:"bytes,9,opt,name=gate_command,json=gateCommand,proto3,oneof" json:"gate_command,omitempty"`
-	RunSetupCommand *bool                  `protobuf:"varint,10,opt,name=run_setup_command,json=runSetupCommand,proto3,oneof" json:"run_setup_command,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Id                    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name                  *string                `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	Prompt                *string                `protobuf:"bytes,3,opt,name=prompt,proto3,oneof" json:"prompt,omitempty"`
+	Schedule              *string                `protobuf:"bytes,4,opt,name=schedule,proto3,oneof" json:"schedule,omitempty"`
+	Timezone              *string                `protobuf:"bytes,5,opt,name=timezone,proto3,oneof" json:"timezone,omitempty"`
+	IsEnabled             *bool                  `protobuf:"varint,6,opt,name=is_enabled,json=isEnabled,proto3,oneof" json:"is_enabled,omitempty"`
+	AgentName             *string                `protobuf:"bytes,7,opt,name=agent_name,json=agentName,proto3,oneof" json:"agent_name,omitempty"`
+	Model                 *string                `protobuf:"bytes,8,opt,name=model,proto3,oneof" json:"model,omitempty"`
+	GateCommand           *string                `protobuf:"bytes,9,opt,name=gate_command,json=gateCommand,proto3,oneof" json:"gate_command,omitempty"`
+	ShouldRunSetupCommand *bool                  `protobuf:"varint,10,opt,name=should_run_setup_command,json=shouldRunSetupCommand,proto3,oneof" json:"should_run_setup_command,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *UpdateCronJobCommand) Reset() {
@@ -4071,9 +4071,9 @@ func (x *UpdateCronJobCommand) GetTimezone() string {
 	return ""
 }
 
-func (x *UpdateCronJobCommand) GetEnabled() bool {
-	if x != nil && x.Enabled != nil {
-		return *x.Enabled
+func (x *UpdateCronJobCommand) GetIsEnabled() bool {
+	if x != nil && x.IsEnabled != nil {
+		return *x.IsEnabled
 	}
 	return false
 }
@@ -4099,9 +4099,9 @@ func (x *UpdateCronJobCommand) GetGateCommand() string {
 	return ""
 }
 
-func (x *UpdateCronJobCommand) GetRunSetupCommand() bool {
-	if x != nil && x.RunSetupCommand != nil {
-		return *x.RunSetupCommand
+func (x *UpdateCronJobCommand) GetShouldRunSetupCommand() bool {
+	if x != nil && x.ShouldRunSetupCommand != nil {
+		return *x.ShouldRunSetupCommand
 	}
 	return false
 }
@@ -4602,21 +4602,21 @@ func (x *GetRepoCommand) GetRepoId() string {
 // UpdateRepoCommand mirrors the browser-safe proxy update surface. SecretUpdate
 // values are forwarded unchanged to the daemon's existing UpdateRepo handler.
 type UpdateRepoCommand struct {
-	state                     protoimpl.MessageState `protogen:"open.v1"`
-	RepoId                    string                 `protobuf:"bytes,1,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
-	DisplayName               *string                `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3,oneof" json:"display_name,omitempty"`
-	SetupScript               *string                `protobuf:"bytes,3,opt,name=setup_script,json=setupScript,proto3,oneof" json:"setup_script,omitempty"`
-	MergeStrategy             *MergeStrategy         `protobuf:"varint,4,opt,name=merge_strategy,json=mergeStrategy,proto3,enum=bossanova.v1.MergeStrategy,oneof" json:"merge_strategy,omitempty"`
-	CanAutoMerge              *bool                  `protobuf:"varint,5,opt,name=can_auto_merge,json=canAutoMerge,proto3,oneof" json:"can_auto_merge,omitempty"`
-	CanAutoMergeDependabot    *bool                  `protobuf:"varint,6,opt,name=can_auto_merge_dependabot,json=canAutoMergeDependabot,proto3,oneof" json:"can_auto_merge_dependabot,omitempty"`
-	CanAutoRepair             *bool                  `protobuf:"varint,7,opt,name=can_auto_repair,json=canAutoRepair,proto3,oneof" json:"can_auto_repair,omitempty"`
-	ArchiveSessionsAfterMerge *bool                  `protobuf:"varint,12,opt,name=archive_sessions_after_merge,json=archiveSessionsAfterMerge,proto3,oneof" json:"archive_sessions_after_merge,omitempty"`
-	SentryOrg                 *string                `protobuf:"bytes,8,opt,name=sentry_org,json=sentryOrg,proto3,oneof" json:"sentry_org,omitempty"`
-	LinearKey                 *SecretUpdate          `protobuf:"bytes,9,opt,name=linear_key,json=linearKey,proto3" json:"linear_key,omitempty"`
-	SentryKey                 *SecretUpdate          `protobuf:"bytes,10,opt,name=sentry_key,json=sentryKey,proto3" json:"sentry_key,omitempty"`
-	ExpectedUpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=expected_updated_at,json=expectedUpdatedAt,proto3" json:"expected_updated_at,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	state                           protoimpl.MessageState `protogen:"open.v1"`
+	RepoId                          string                 `protobuf:"bytes,1,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
+	DisplayName                     *string                `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3,oneof" json:"display_name,omitempty"`
+	SetupScript                     *string                `protobuf:"bytes,3,opt,name=setup_script,json=setupScript,proto3,oneof" json:"setup_script,omitempty"`
+	MergeStrategy                   *MergeStrategy         `protobuf:"varint,4,opt,name=merge_strategy,json=mergeStrategy,proto3,enum=bossanova.v1.MergeStrategy,oneof" json:"merge_strategy,omitempty"`
+	CanAutoMerge                    *bool                  `protobuf:"varint,5,opt,name=can_auto_merge,json=canAutoMerge,proto3,oneof" json:"can_auto_merge,omitempty"`
+	CanAutoMergeDependabot          *bool                  `protobuf:"varint,6,opt,name=can_auto_merge_dependabot,json=canAutoMergeDependabot,proto3,oneof" json:"can_auto_merge_dependabot,omitempty"`
+	CanAutoRepair                   *bool                  `protobuf:"varint,7,opt,name=can_auto_repair,json=canAutoRepair,proto3,oneof" json:"can_auto_repair,omitempty"`
+	ShouldArchiveSessionsAfterMerge *bool                  `protobuf:"varint,12,opt,name=should_archive_sessions_after_merge,json=shouldArchiveSessionsAfterMerge,proto3,oneof" json:"should_archive_sessions_after_merge,omitempty"`
+	SentryOrg                       *string                `protobuf:"bytes,8,opt,name=sentry_org,json=sentryOrg,proto3,oneof" json:"sentry_org,omitempty"`
+	LinearKey                       *SecretUpdate          `protobuf:"bytes,9,opt,name=linear_key,json=linearKey,proto3" json:"linear_key,omitempty"`
+	SentryKey                       *SecretUpdate          `protobuf:"bytes,10,opt,name=sentry_key,json=sentryKey,proto3" json:"sentry_key,omitempty"`
+	ExpectedUpdatedAt               *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=expected_updated_at,json=expectedUpdatedAt,proto3" json:"expected_updated_at,omitempty"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
 }
 
 func (x *UpdateRepoCommand) Reset() {
@@ -4698,9 +4698,9 @@ func (x *UpdateRepoCommand) GetCanAutoRepair() bool {
 	return false
 }
 
-func (x *UpdateRepoCommand) GetArchiveSessionsAfterMerge() bool {
-	if x != nil && x.ArchiveSessionsAfterMerge != nil {
-		return *x.ArchiveSessionsAfterMerge
+func (x *UpdateRepoCommand) GetShouldArchiveSessionsAfterMerge() bool {
+	if x != nil && x.ShouldArchiveSessionsAfterMerge != nil {
+		return *x.ShouldArchiveSessionsAfterMerge
 	}
 	return false
 }
@@ -6924,15 +6924,14 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"5\n" +
 	"\x14AttachSessionCommand\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\xf0\x05\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xfa\x05\n" +
 	"\x14CreateSessionCommand\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
 	"\x04plan\x18\x03 \x01(\tR\x04plan\x12\x1f\n" +
 	"\vbase_branch\x18\x04 \x01(\tR\n" +
-	"baseBranch\x12\x1d\n" +
-	"\n" +
-	"quick_chat\x18\x05 \x01(\bR\tquickChat\x12\x1d\n" +
+	"baseBranch\x12\"\n" +
+	"\ris_quick_chat\x18\x05 \x01(\bR\visQuickChat\x12\x1d\n" +
 	"\n" +
 	"agent_name\x18\x06 \x01(\tR\tagentName\x12 \n" +
 	"\tpr_number\x18\a \x01(\x05H\x00R\bprNumber\x88\x01\x01\x12$\n" +
@@ -6947,8 +6946,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x0etracker_source\x18\f \x01(\tH\x05R\rtrackerSource\x88\x01\x01\x12\x14\n" +
 	"\x05force\x18\r \x01(\bR\x05force\x12\x16\n" +
 	"\x06detach\x18\x0e \x01(\bR\x06detach\x12\x19\n" +
-	"\x05model\x18\x0f \x01(\tH\x06R\x05model\x88\x01\x01\x12'\n" +
-	"\x0ftmux_unattended\x18\x10 \x01(\bR\x0etmuxUnattended\x12\"\n" +
+	"\x05model\x18\x0f \x01(\tH\x06R\x05model\x88\x01\x01\x12,\n" +
+	"\x12is_tmux_unattended\x18\x10 \x01(\bR\x10isTmuxUnattended\x12\"\n" +
 	"\n" +
 	"account_id\x18\x11 \x01(\tH\aR\taccountId\x88\x01\x01\x12!\n" +
 	"\fforce_branch\x18\x12 \x01(\bR\vforceBranchB\f\n" +
@@ -7015,44 +7014,45 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\"\x12\n" +
 	"\x10ListReposCommand\"\x13\n" +
 	"\x11ListAgentsCommand\"\x15\n" +
-	"\x13ListCronJobsCommand\"\xcc\x02\n" +
+	"\x13ListCronJobsCommand\"\xe5\x02\n" +
 	"\x14CreateCronJobCommand\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
 	"\x06prompt\x18\x03 \x01(\tR\x06prompt\x12\x1a\n" +
 	"\bschedule\x18\x04 \x01(\tR\bschedule\x12\x1a\n" +
-	"\btimezone\x18\x05 \x01(\tR\btimezone\x12\x18\n" +
-	"\aenabled\x18\x06 \x01(\bR\aenabled\x12\x1d\n" +
+	"\btimezone\x18\x05 \x01(\tR\btimezone\x12\x1d\n" +
+	"\n" +
+	"is_enabled\x18\x06 \x01(\bR\tisEnabled\x12\x1d\n" +
 	"\n" +
 	"agent_name\x18\a \x01(\tR\tagentName\x12\x14\n" +
 	"\x05model\x18\b \x01(\tR\x05model\x12!\n" +
-	"\fgate_command\x18\t \x01(\tR\vgateCommand\x12/\n" +
-	"\x11run_setup_command\x18\n" +
-	" \x01(\bH\x00R\x0frunSetupCommand\x88\x01\x01B\x14\n" +
-	"\x12_run_setup_command\"\xcf\x03\n" +
+	"\fgate_command\x18\t \x01(\tR\vgateCommand\x12<\n" +
+	"\x18should_run_setup_command\x18\n" +
+	" \x01(\bH\x00R\x15shouldRunSetupCommand\x88\x01\x01B\x1b\n" +
+	"\x19_should_run_setup_command\"\xeb\x03\n" +
 	"\x14UpdateCronJobCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x1b\n" +
 	"\x06prompt\x18\x03 \x01(\tH\x01R\x06prompt\x88\x01\x01\x12\x1f\n" +
 	"\bschedule\x18\x04 \x01(\tH\x02R\bschedule\x88\x01\x01\x12\x1f\n" +
-	"\btimezone\x18\x05 \x01(\tH\x03R\btimezone\x88\x01\x01\x12\x1d\n" +
-	"\aenabled\x18\x06 \x01(\bH\x04R\aenabled\x88\x01\x01\x12\"\n" +
+	"\btimezone\x18\x05 \x01(\tH\x03R\btimezone\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"is_enabled\x18\x06 \x01(\bH\x04R\tisEnabled\x88\x01\x01\x12\"\n" +
 	"\n" +
 	"agent_name\x18\a \x01(\tH\x05R\tagentName\x88\x01\x01\x12\x19\n" +
 	"\x05model\x18\b \x01(\tH\x06R\x05model\x88\x01\x01\x12&\n" +
-	"\fgate_command\x18\t \x01(\tH\aR\vgateCommand\x88\x01\x01\x12/\n" +
-	"\x11run_setup_command\x18\n" +
-	" \x01(\bH\bR\x0frunSetupCommand\x88\x01\x01B\a\n" +
+	"\fgate_command\x18\t \x01(\tH\aR\vgateCommand\x88\x01\x01\x12<\n" +
+	"\x18should_run_setup_command\x18\n" +
+	" \x01(\bH\bR\x15shouldRunSetupCommand\x88\x01\x01B\a\n" +
 	"\x05_nameB\t\n" +
 	"\a_promptB\v\n" +
 	"\t_scheduleB\v\n" +
-	"\t_timezoneB\n" +
-	"\n" +
-	"\b_enabledB\r\n" +
+	"\t_timezoneB\r\n" +
+	"\v_is_enabledB\r\n" +
 	"\v_agent_nameB\b\n" +
 	"\x06_modelB\x0f\n" +
-	"\r_gate_commandB\x14\n" +
-	"\x12_run_setup_command\"&\n" +
+	"\r_gate_commandB\x1b\n" +
+	"\x19_should_run_setup_command\"&\n" +
 	"\x14DeleteCronJobCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"&\n" +
 	"\x14RunCronJobNowCommand\x12\x0e\n" +
@@ -7086,7 +7086,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x13ListAccountsCommand\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\")\n" +
 	"\x0eGetRepoCommand\x12\x17\n" +
-	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"\xb3\x06\n" +
+	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"\xc7\x06\n" +
 	"\x11UpdateRepoCommand\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12&\n" +
 	"\fdisplay_name\x18\x02 \x01(\tH\x00R\vdisplayName\x88\x01\x01\x12&\n" +
@@ -7094,8 +7094,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x0emerge_strategy\x18\x04 \x01(\x0e2\x1b.bossanova.v1.MergeStrategyH\x02R\rmergeStrategy\x88\x01\x01\x12)\n" +
 	"\x0ecan_auto_merge\x18\x05 \x01(\bH\x03R\fcanAutoMerge\x88\x01\x01\x12>\n" +
 	"\x19can_auto_merge_dependabot\x18\x06 \x01(\bH\x04R\x16canAutoMergeDependabot\x88\x01\x01\x12+\n" +
-	"\x0fcan_auto_repair\x18\a \x01(\bH\x05R\rcanAutoRepair\x88\x01\x01\x12D\n" +
-	"\x1carchive_sessions_after_merge\x18\f \x01(\bH\x06R\x19archiveSessionsAfterMerge\x88\x01\x01\x12\"\n" +
+	"\x0fcan_auto_repair\x18\a \x01(\bH\x05R\rcanAutoRepair\x88\x01\x01\x12Q\n" +
+	"#should_archive_sessions_after_merge\x18\f \x01(\bH\x06R\x1fshouldArchiveSessionsAfterMerge\x88\x01\x01\x12\"\n" +
 	"\n" +
 	"sentry_org\x18\b \x01(\tH\aR\tsentryOrg\x88\x01\x01\x129\n" +
 	"\n" +
@@ -7109,8 +7109,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x0f_merge_strategyB\x11\n" +
 	"\x0f_can_auto_mergeB\x1c\n" +
 	"\x1a_can_auto_merge_dependabotB\x12\n" +
-	"\x10_can_auto_repairB\x1f\n" +
-	"\x1d_archive_sessions_after_mergeB\r\n" +
+	"\x10_can_auto_repairB&\n" +
+	"$_should_archive_sessions_after_mergeB\r\n" +
 	"\v_sentry_org\",\n" +
 	"\x11RemoveRepoCommand\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"-\n" +

@@ -1,6 +1,6 @@
 ---
 name: boss-review
-description: Multi-lens, subagent-driven code review for a Bossanova branch. Runs conditional golang-pro / tui-design / impeccable lenses, discovered whole-branch round extensions with a host/inline fallback contract, fixes every must-fix finding locally, and emits an Assessment/Evidence/Confidence report plus a copy-able follow-up-ticket prompt. Used by boss-build. Use when asked to "review this branch", "boss-review", or to run automated review before a PR.
+description: Multi-lens, subagent-driven code review for the current branch. Runs conditional golang-pro / tui-design / impeccable lenses, discovered whole-branch round extensions with a host/inline fallback contract, fixes every must-fix finding locally, and emits an Assessment/Evidence/Confidence report plus a copy-able follow-up-ticket prompt. Used by boss-build. Use when asked to "review this branch", "boss-review", or to run automated review before a PR.
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Task, Skill
 ---
 
@@ -337,7 +337,7 @@ independent-voice round was skipped on an infra flake while every required whole
 clean; `High` if all rounds ran and the branch converged.
 
 The `suggestions` pool renders as the collapsible **"Create N Linear issues"** toggle — a fenced,
-copy-able agent prompt the human copies/runs against the Bossanova Linear MCP (never auto-create);
+copy-able agent prompt the human copies/runs against the configured issue tracker's MCP (never auto-create);
 `mustfix.items` and `leaveAsIs` render as collapsible detail. Populate the optional
 `verdict.testing_detail` with a short prose summary of the coverage this run added/verified for the
 changed logic (drawn from the `## Fixed` coverage-gap items and the test gates) — it renders as an

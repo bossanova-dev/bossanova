@@ -594,6 +594,8 @@ var runBossDaemonRestart = func() error {
 	if err != nil {
 		return err
 	}
+	// #nosec G204 -- <os.Executable()> daemon restart; self path, literal args; no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command(executable, "daemon", "restart")
 	output, err := cmd.CombinedOutput()
 	if err != nil {

@@ -10,7 +10,7 @@ reference is the full narrative for the four daemon-coupled points.
 `scripts/bossd-present.mjs` is the single source of truth: bossd injects `BOSS_SESSION_ID` into every
 managed session's env and forbids `.env` from shadowing it, so its presence is the reliable
 "a daemon owns this session" signal (CLI exit `0` = managed, `3` = standalone). Absence ⇒ standalone.
-If BOS-192 later lands a canonical config/env detector, `bossd-present.mjs` delegates to it rather than
+If a canonical config/env detector later lands, `bossd-present.mjs` delegates to it rather than
 reading the var directly.
 
 ## Preflight — soften the empty-branch assertion

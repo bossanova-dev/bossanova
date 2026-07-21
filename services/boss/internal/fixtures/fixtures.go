@@ -35,15 +35,15 @@ type World struct {
 // matches the legacy tuitest data so existing tests keep passing when they
 // delegate here. Five entries fill the repo list for a realistic capture.
 func Repos() []*pb.Repo {
-	// ArchiveSessionsAfterMerge and CanAutoDeleteBranches are true on every demo
+	// ShouldArchiveSessionsAfterMerge and CanAutoDeleteBranches are true on every demo
 	// repo to mirror the real default-on (the double-default the DB layer enforces
 	// on Create), so the repo-settings Automations section renders both checkboxes
 	// checked in proof.
 	return []*pb.Repo{
-		{Id: "repo-1", DisplayName: "my-app", LocalPath: "/tmp/my-app", DefaultBaseBranch: "main", MergeStrategy: "merge", ArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true},
-		{Id: "repo-2", DisplayName: "my-api", LocalPath: "/tmp/my-api", DefaultBaseBranch: "main", MergeStrategy: "squash", ArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true},
-		{Id: "repo-3", DisplayName: "my-web", LocalPath: "/tmp/my-web", DefaultBaseBranch: "main", MergeStrategy: "squash", ArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true},
-		{Id: "repo-4", DisplayName: "mobile-app", LocalPath: "/tmp/mobile-app", DefaultBaseBranch: "main", MergeStrategy: "merge", ArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true},
+		{Id: "repo-1", DisplayName: "my-app", LocalPath: "/tmp/my-app", DefaultBaseBranch: "main", MergeStrategy: "merge", ShouldArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true},
+		{Id: "repo-2", DisplayName: "my-api", LocalPath: "/tmp/my-api", DefaultBaseBranch: "main", MergeStrategy: "squash", ShouldArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true},
+		{Id: "repo-3", DisplayName: "my-web", LocalPath: "/tmp/my-web", DefaultBaseBranch: "main", MergeStrategy: "squash", ShouldArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true},
+		{Id: "repo-4", DisplayName: "mobile-app", LocalPath: "/tmp/mobile-app", DefaultBaseBranch: "main", MergeStrategy: "merge", ShouldArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true},
 		{
 			// design-system sorts first alphabetically, so it is the default-selected
 			// repo in both the repo-settings and new-session pickers. Made-up Sentry
@@ -51,7 +51,7 @@ func Repos() []*pb.Repo {
 			// new-session "Fix a Sentry issue" option in proof captures. The API key
 			// renders masked (last 4 only), so the demo token is safe to publish.
 			Id: "repo-5", DisplayName: "design-system", LocalPath: "/tmp/design-system", DefaultBaseBranch: "main", MergeStrategy: "merge",
-			SentryApiKey: "sntryu_0f4d2c9a1b6e8740demo3a5c", SentryOrg: "acme-engineering", ArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true,
+			SentryApiKey: "sntryu_0f4d2c9a1b6e8740demo3a5c", SentryOrg: "acme-engineering", ShouldArchiveSessionsAfterMerge: true, CanAutoDeleteBranches: true,
 		},
 	}
 }
@@ -165,20 +165,20 @@ func Chats() []*pb.ClaudeChat {
 // never a red FAILED framing.
 func CronJobs() []*pb.CronJob {
 	return []*pb.CronJob{
-		{Id: "cron-1", RepoId: "repo-1", Name: "Daily dependency update", Prompt: "Update dependencies and open a PR", Schedule: "@daily", Timezone: "UTC", Enabled: true, AgentName: "claude", RunSetupCommand: true},
-		{Id: "cron-2", RepoId: "repo-2", Name: "Nightly mutation tests", Prompt: "Run mutation tests and add coverage for survivors", Schedule: "0 3 * * *", Timezone: "UTC", Enabled: true, AgentName: "claude", RunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATING},
-		{Id: "cron-3", RepoId: "repo-1", Name: "Weekly tech-debt sweep", Prompt: "Find and fix one unit of technical debt", Schedule: "@weekly", Timezone: "UTC", Enabled: true, AgentName: "claude", RunSetupCommand: true},
-		{Id: "cron-4", RepoId: "repo-3", Name: "Hourly broken-link check", Prompt: "Scan the marketing site for broken links", Schedule: "@hourly", Timezone: "UTC", Enabled: false, AgentName: "claude", RunSetupCommand: true},
-		{Id: "cron-5", RepoId: "repo-2", Name: "Morning PR triage", Prompt: "Triage open PRs and summarize review state", Schedule: "0 9 * * 1-5", Timezone: "UTC", Enabled: true, AgentName: "codex", GateCommand: "gh pr list --label needs-triage --state open | grep .", RunSetupCommand: false, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATED, LastRunOutcome: "gated"},
+		{Id: "cron-1", RepoId: "repo-1", Name: "Daily dependency update", Prompt: "Update dependencies and open a PR", Schedule: "@daily", Timezone: "UTC", IsEnabled: true, AgentName: "claude", ShouldRunSetupCommand: true},
+		{Id: "cron-2", RepoId: "repo-2", Name: "Nightly mutation tests", Prompt: "Run mutation tests and add coverage for survivors", Schedule: "0 3 * * *", Timezone: "UTC", IsEnabled: true, AgentName: "claude", ShouldRunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATING},
+		{Id: "cron-3", RepoId: "repo-1", Name: "Weekly tech-debt sweep", Prompt: "Find and fix one unit of technical debt", Schedule: "@weekly", Timezone: "UTC", IsEnabled: true, AgentName: "claude", ShouldRunSetupCommand: true},
+		{Id: "cron-4", RepoId: "repo-3", Name: "Hourly broken-link check", Prompt: "Scan the marketing site for broken links", Schedule: "@hourly", Timezone: "UTC", IsEnabled: false, AgentName: "claude", ShouldRunSetupCommand: true},
+		{Id: "cron-5", RepoId: "repo-2", Name: "Morning PR triage", Prompt: "Triage open PRs and summarize review state", Schedule: "0 9 * * 1-5", Timezone: "UTC", IsEnabled: true, AgentName: "codex", GateCommand: "gh pr list --label needs-triage --state open | grep .", ShouldRunSetupCommand: false, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATED, LastRunOutcome: "gated"},
 		// Disabled jobs carrying a colored last-run status (gated / failed): the
 		// muted-row rendering states BOS-313 fixed are otherwise unreachable in
 		// the demo world, so TUI proofs could never show them (BOS-251).
-		{Id: "cron-6", RepoId: "repo-4", Name: "Paused release gate", Prompt: "Cut a release when the gate opens", Schedule: "@daily", Timezone: "UTC", Enabled: false, AgentName: "claude", GateCommand: "test -f RELEASE_READY", RunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATED, LastRunOutcome: "gated"},
-		{Id: "cron-7", RepoId: "repo-5", Name: "Paused visual regression", Prompt: "Run the visual regression suite", Schedule: "@weekly", Timezone: "UTC", Enabled: false, AgentName: "claude", RunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_FAILED, LastRunOutcome: "failed"},
+		{Id: "cron-6", RepoId: "repo-4", Name: "Paused release gate", Prompt: "Cut a release when the gate opens", Schedule: "@daily", Timezone: "UTC", IsEnabled: false, AgentName: "claude", GateCommand: "test -f RELEASE_READY", ShouldRunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATED, LastRunOutcome: "gated"},
+		{Id: "cron-7", RepoId: "repo-5", Name: "Paused visual regression", Prompt: "Run the visual regression suite", Schedule: "@weekly", Timezone: "UTC", IsEnabled: false, AgentName: "claude", ShouldRunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_FAILED, LastRunOutcome: "failed"},
 		// cron-8 (BOS-384): a benign worktree_gone outcome — finalize ran against
 		// an already-removed worktree (archived/deleted session). It renders with
 		// a plain IDLE status, never a red FAILED framing.
-		{Id: "cron-8", RepoId: "repo-1", Name: "Stale branch cleanup", Prompt: "Prune merged branches and open a cleanup PR", Schedule: "@daily", Timezone: "UTC", Enabled: true, AgentName: "claude", RunSetupCommand: true, LastRunAt: ts(-2 * time.Hour), LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_IDLE, LastRunOutcome: "worktree_gone"},
+		{Id: "cron-8", RepoId: "repo-1", Name: "Stale branch cleanup", Prompt: "Prune merged branches and open a cleanup PR", Schedule: "@daily", Timezone: "UTC", IsEnabled: true, AgentName: "claude", ShouldRunSetupCommand: true, LastRunAt: ts(-2 * time.Hour), LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_IDLE, LastRunOutcome: "worktree_gone"},
 	}
 }
 
@@ -253,7 +253,7 @@ func Accounts() []*pb.Account {
 
 // ArchiveSignalSessions returns two merged (non-archived) sessions in an
 // archive-after-merge repo that differ only in the daemon-driven archive_pending
-// signal (BOS-425). Both have DisplayStatus=MERGED, RepoArchiveSessionsAfterMerge
+// signal (BOS-425). Both have DisplayStatus=MERGED, RepoShouldArchiveSessionsAfterMerge
 // on, and ArchivedAt nil (already resurrected once — no archive is actually in
 // flight from steady state):
 //   - index 0 (sess-425-resurrected): archive_pending=false — the regression
@@ -281,11 +281,11 @@ func ArchiveSignalSessions() []*pb.Session {
 			// DisplayLabel/Intent are normally hydrated server-side from DisplayStatus;
 			// the mock daemon returns the session verbatim, so set them here so the
 			// home STATUS column renders "✓ merged" (matches displaystatus.Compute).
-			DisplayLabel:                  "✓ merged",
-			DisplayIntent:                 pb.DisplayIntent_DISPLAY_INTENT_MUTED,
-			RepoArchiveSessionsAfterMerge: true,
-			ArchivePending:                false, // no archive in flight — must NOT show "Archiving session..."
-			PrNumber:                      i32(424), CreatedAt: ts(-2 * time.Hour),
+			DisplayLabel:                        "✓ merged",
+			DisplayIntent:                       pb.DisplayIntent_DISPLAY_INTENT_MUTED,
+			RepoShouldArchiveSessionsAfterMerge: true,
+			ArchivePending:                      false, // no archive in flight — must NOT show "Archiving session..."
+			PrNumber:                            i32(424), CreatedAt: ts(-2 * time.Hour),
 			WorktreePath: "/Users/demo/worktrees/my-app/resurrected-merged",
 		},
 		{
@@ -298,12 +298,12 @@ func ArchiveSignalSessions() []*pb.Session {
 			// spinner) instead of the stale "✓ merged" — this fixture mirrors that
 			// server-side result so the home STATUS column renders "archiving" for the
 			// list, matching the detail-view "Archiving session..." spinner (BOS-425).
-			DisplayLabel:                  "archiving",
-			DisplayIntent:                 pb.DisplayIntent_DISPLAY_INTENT_WARNING,
-			DisplaySpinner:                true,
-			RepoArchiveSessionsAfterMerge: true,
-			ArchivePending:                true, // daemon archive in flight — MUST show "archiving" (list) / "Archiving session..." (detail)
-			PrNumber:                      i32(425), CreatedAt: ts(-3 * time.Hour),
+			DisplayLabel:                        "archiving",
+			DisplayIntent:                       pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+			DisplaySpinner:                      true,
+			RepoShouldArchiveSessionsAfterMerge: true,
+			ArchivePending:                      true, // daemon archive in flight — MUST show "archiving" (list) / "Archiving session..." (detail)
+			PrNumber:                            i32(425), CreatedAt: ts(-3 * time.Hour),
 			WorktreePath: "/Users/demo/worktrees/my-app/archiving-merged",
 		},
 	}
@@ -383,6 +383,85 @@ func ArchiveSignalWorld() World {
 		Repos:    Repos(),
 		Sessions: ArchiveSignalSessions(),
 		Chats:    ArchiveSignalChats(),
+	}
+}
+
+// ErroredStatusSessions returns two errored sessions (BOS-430) whose live chat
+// is working, so the home list STATUS column must show the REAL underlying
+// status recolored red (danger) rather than a static "orphaned"/"blocked"
+// label. The mock daemon returns sessions verbatim, so the Display* fields are
+// set here to exactly what displaystatus.Compute now produces for each — a
+// working chat recolored DANGER with its spinner kept — plus the AttentionStatus
+// that drives the "!" marker and the red subtext hint under the row:
+//   - index 0 (sess-430-orphaned): State=ORPHANED — a headless run killed by a
+//     daemon restart whose chat is still working; STATUS shows "working" (DANGER,
+//     spinner) and the subtext explains the orphaned "why".
+//   - index 1 (sess-430-blocked): State=BLOCKED — a blocked run whose chat is
+//     working; STATUS shows "working" (DANGER, spinner) with a blocked subtext.
+//
+// Neither sets ArchivedAt, so both render on the default home list (the busy
+// preset already lists ORPHANED/BLOCKED sessions, confirming they are not
+// filtered out).
+func ErroredStatusSessions() []*pb.Session {
+	return []*pb.Session{
+		{
+			Id: "sess-430-orphaned", RepoId: "repo-1", RepoDisplayName: "my-app",
+			// Title deliberately excludes the word "working" so the STATUS-column
+			// "working" label binds uniquely in the proof scenario (it must not also
+			// match a row title).
+			Title: "Orphaned dark-mode run", BranchName: "boss/orphaned-working",
+			State: pb.SessionState_SESSION_STATE_ORPHANED,
+			// displaystatus.Compute: orphaned + WORKING chat → "working", DANGER,
+			// spinner (the real status recolored red, not a static "orphaned").
+			DisplayLabel:   "working",
+			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+			DisplaySpinner: true,
+			AttentionStatus: &pb.AttentionStatus{
+				NeedsAttention: true,
+				Reason:         pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+				Summary:        "orphaned — headless run killed by daemon restart; needs human",
+			},
+			CreatedAt:    ts(-2 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-app/orphaned-working",
+		},
+		{
+			Id: "sess-430-blocked", RepoId: "repo-1", RepoDisplayName: "my-app",
+			// Title excludes "working" for the same STATUS-column binding reason.
+			Title: "Blocked login-fix run", BranchName: "boss/blocked-working",
+			State: pb.SessionState_SESSION_STATE_BLOCKED,
+			// displaystatus.Compute: blocked + WORKING chat → "working", DANGER,
+			// spinner (symmetric with orphaned).
+			DisplayLabel:   "working",
+			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+			DisplaySpinner: true,
+			AttentionStatus: &pb.AttentionStatus{
+				NeedsAttention: true,
+				Reason:         pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
+				Summary:        "blocked — needs human intervention",
+			},
+			CreatedAt:    ts(-3 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-app/blocked-working",
+		},
+	}
+}
+
+// ErroredStatusChats returns one chat per ErroredStatus session so both
+// chatpickers render populated (not "Loading chats...").
+func ErroredStatusChats() []*pb.ClaudeChat {
+	return []*pb.ClaudeChat{
+		{Id: "chat-430-o", AgentSessionId: "claude-430-o", SessionId: "sess-430-orphaned", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
+		{Id: "chat-430-b", AgentSessionId: "claude-430-b", SessionId: "sess-430-blocked", Title: "Implement the change", CreatedAt: ts(-3 * time.Hour)},
+	}
+}
+
+// ErroredStatusWorld builds the BOS-430 dataset: the demo repos plus the two
+// errored (orphaned/blocked) working sessions and their chats. Used by the
+// errored-status proof scenario.
+func ErroredStatusWorld() World {
+	return World{
+		Repos:    Repos(),
+		Sessions: ErroredStatusSessions(),
+		Chats:    ErroredStatusChats(),
 	}
 }
 

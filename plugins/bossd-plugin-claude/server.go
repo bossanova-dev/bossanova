@@ -273,6 +273,8 @@ func (s *Server) runClaudeOneShot(ctx context.Context, workDir, prompt string) (
 	}
 	argv := loginshell.Wrap(loginShell, loginshell.Flags(loginShell),
 		[]string{"claude", "-p", "--permission-mode", "plan"})
+	// #nosec G204 -- claude -p --permission-mode plan invoked via the operator-configured login shell (argv[0]); inner argv constant; local-trust
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = workDir
 	cmd.Stdin = strings.NewReader(prompt)

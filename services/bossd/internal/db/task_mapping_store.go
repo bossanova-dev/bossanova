@@ -93,6 +93,8 @@ func (s *SQLiteTaskMappingStore) Update(ctx context.Context, id string, params U
 	}
 
 	args = append(args, id)
+	// #nosec G202 -- dynamic UPDATE...SET builder; concatenated fragments are code-literal `col = ?` set-clauses; every value is bound via ?, not user text
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	query := "UPDATE task_mappings SET " + strings.Join(sets, ", ") + " WHERE id = ?"
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {

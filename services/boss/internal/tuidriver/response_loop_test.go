@@ -1,12 +1,22 @@
 package tuidriver
 
 import (
+	"io"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/x/vt"
 )
+
+type responseWriteRecorder struct{ writes []int }
+
+func (p *responseWriteRecorder) Read(_ []byte) (int, error) { return 0, io.EOF }
+func (p *responseWriteRecorder) Write(b []byte) (int, error) {
+	p.writes = append(p.writes, len(b))
+	return len(b), nil
+}
+func (p *responseWriteRecorder) Close() error { return nil }
 
 // TestResponseLoopForwardsTerminalResponses verifies that responseLoop sends
 // emulator-generated terminal capability responses back to the PTY.
@@ -49,6 +59,27 @@ func TestResponseLoopForwardsTerminalResponses(t *testing.T) {
 	const want = "\x1b[?62;1;6;22c"
 	if got := string(buf[:n]); got != want {
 		t.Errorf("forwarded response = %q, want %q", got, want)
+	}
+}
+
+func TestResponseLoopDoesNotForwardEmptyTerminalResponse(t *testing.T) {
+	// A closed emulator returns (0, io.EOF). responseLoop must exit without
+	// forwarding an empty response to the PTY.
+	emulator := vt.NewEmulator(80, 24)
+	if err := emulator.Close(); err != nil {
+		t.Fatalf("Close emulator: %v", err)
+	}
+	pty := &responseWriteRecorder{}
+	d := &Driver{
+		pty:      pty,
+		vt:       emulator,
+		respDone: make(chan struct{}),
+	}
+
+	d.responseLoop()
+
+	if len(pty.writes) != 0 {
+		t.Fatalf("PTY received empty terminal response: write sizes %v", pty.writes)
 	}
 }
 

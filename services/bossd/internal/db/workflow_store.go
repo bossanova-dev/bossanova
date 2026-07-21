@@ -72,6 +72,8 @@ func (s *SQLiteWorkflowStore) Update(ctx context.Context, id string, params Upda
 	}
 
 	args = append(args, id)
+	// #nosec G202 -- dynamic UPDATE...SET builder; concatenated fragments are code-literal `col = ?` set-clauses; every value is bound via ?, not user text
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	query := "UPDATE workflows SET " + strings.Join(sets, ", ") + " WHERE id = ?"
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -130,6 +132,8 @@ func (s *SQLiteWorkflowStore) ListActiveBySessionIDs(ctx context.Context, sessio
 		placeholders[i] = "?"
 		args[i] = id
 	}
+	// #nosec G202 -- static `?` placeholder IN-builder; session ids bound via ?, status clause is a code literal
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	query := workflowSelectSQL +
 		" WHERE session_id IN (" + strings.Join(placeholders, ",") + ")" +
 		" AND status IN ('pending', 'running', 'paused')" +

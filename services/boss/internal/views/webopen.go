@@ -27,6 +27,8 @@ func openURLCmd(env func(string) string, lookPath func(string) (string, error), 
 				return exec.Command("wslview", rawURL), nil
 			}
 			if _, err := lookPath("cmd.exe"); err == nil {
+				// #nosec G204 -- cmd.exe /c start "" <url>; URL validated + quoteCmdURL-escaped; runtime URL unavoidable
+				// owner=@recurser review-by=2027-01-18 issue=BOS-28
 				return exec.Command("cmd.exe", "/c", "start", "", quoteCmdURL(rawURL)), nil
 			}
 		}

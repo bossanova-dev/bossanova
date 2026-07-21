@@ -509,12 +509,22 @@ var platformSuffixes = []string{
 }
 
 // nonDiscoverablePlugins lists plugin binaries that must never be picked up by
-// auto-discovery. bossd-plugin-stub-runner is a deterministic AgentRunnerService
-// used only by E2E tests (it launches no real agent subprocess) and is
-// NO_DISTRIBUTE. The E2E harness loads it via an explicit plugins config entry;
-// auto-discovering it would surface a non-functional "stub" agent in real and
-// dev daemons' agent pickers.
-var nonDiscoverablePlugins = []string{"bossd-plugin-stub-runner"}
+// auto-discovery.
+//
+// bossd-plugin-stub-runner is a deterministic AgentRunnerService used only by
+// E2E tests (it launches no real agent subprocess) and is NO_DISTRIBUTE. The
+// E2E harness loads it via an explicit plugins config entry; auto-discovering
+// it would surface a non-functional "stub" agent in real and dev daemons'
+// agent pickers.
+//
+// bossd-plugin-opencode was excluded through the BOS-433..436 epic slices while
+// its run/launch RPCs returned codes.Unimplemented; BOS-437 wired and
+// live-validated the launch path (StartRun/StopRun/IsRunning/ExitStatus drive a
+// real opencode session), so the binary is now a functional agent runner and is
+// discovered like claude/codex. It is intentionally NO LONGER listed here.
+var nonDiscoverablePlugins = []string{
+	"bossd-plugin-stub-runner",
+}
 
 func isNonDiscoverablePlugin(name string) bool {
 	return slices.Contains(nonDiscoverablePlugins, name)
@@ -1005,17 +1015,12 @@ func ConfiguredSocketPath(s Settings) (string, bool, error) {
 }
 
 // Load reads settings from the default path, returning defaults if the file is missing.
-// It ensures the worktree base directory exists.
 func Load() (Settings, error) {
 	p, err := Path()
 	if err != nil {
 		return DefaultSettings(), err
 	}
-	s, err := LoadFrom(p)
-	if s.WorktreeBaseDir != "" {
-		_ = os.MkdirAll(s.WorktreeBaseDir, 0o750)
-	}
-	return s, err
+	return LoadFrom(p)
 }
 
 // LoadFrom reads settings from a specific path, returning defaults if the file is missing.

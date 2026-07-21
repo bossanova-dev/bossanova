@@ -209,3 +209,148 @@ func TestEmbeddedSkillMetadataUsesPublishedBossNames(t *testing.T) {
 		}
 	}
 }
+
+// identityRule matches a class of project-specific identity a PUBLISHED core must not contain.
+// Each rule records a leak token per (core, file): when normalize is set the stable `token` is
+// recorded (used where the concrete text varies, e.g. the backlog team query written both as
+// `team=Bossanova` and `team **Bossanova**`); otherwise each distinct literal match is recorded, so
+// a generic server pattern captures `bossanova-linear` and `bossanova-dev` as separate tokens. The
+// guard is absolute (zero tolerance): any recorded token in any core fails the build.
+type identityRule struct {
+	token     string // stable leak token recorded when normalize is true
+	normalize bool
+	re        *regexp.Regexp
+}
+
+// forbiddenIdentity are the project-specific identity patterns a PUBLISHED, globally-installed
+// boss-* core must never contain. Every published core is extracted into each user's global
+// skill directory (~/.claude/skills, ~/.codex/skills — see lib/bossalib/skillinstall/extract.go),
+// so it surfaces in EVERY project on the machine and must be project-agnostic
+// (docs/skills/README.md: "a suite of portable, config-driven skills … they ship publicly").
+// A published core must reach the issue tracker and plan-publish store ONLY through the
+// config-selected adapters in .boss-skills.json, never a hard-coded Bossanova identifier —
+// naming one here is exactly the leak that made /boss-plan unusable from unrelated repos.
+//
+// Coverage matches the invariant documented in CLAUDE.md ("boss-* skills are published globally"):
+// project MCP servers / tool namespaces, the plan-publish store, the "internal" self-label, and the
+// BOS backlog — its team, project key, direct ticket identifiers (BOS-123), and the hard-coded
+// `Unplanned`/`Todo` state names. Patterns are precise on purpose: the backlog-team rule anchors on
+// `team … Bossanova` so it does not sweep in incidental prose that merely names the product
+// (e.g. "Bossanova cloud login").
+var forbiddenIdentity = []identityRule{
+	// Any project MCP server / workspace slug: bossanova-linear, bossanova-sentry,
+	// bossanova-dev (Linear workspace), bossanova-proof-production (R2 bucket), etc.
+	{re: regexp.MustCompile(`bossanova-[a-z0-9-]+`)},
+	// Any project MCP tool namespace (mcp__bossanova-*).
+	{re: regexp.MustCompile(`mcp__bossanova`)},
+	// Project plan-publish base URL.
+	{re: regexp.MustCompile(`proof\.bossanova\.dev`)},
+	// "internal project skill" self-label.
+	{re: regexp.MustCompile(`Internal Bossanova`)},
+	// BOS backlog team identity, written `team=Bossanova` or `Team **Bossanova**`
+	// (sentence-cased "Team" included).
+	{token: "team=Bossanova", normalize: true, re: regexp.MustCompile(`[Tt]eam[\s=*]+Bossanova`)},
+	// BOS backlog project key, written (key `BOS`).
+	{token: "key BOS", normalize: true, re: regexp.MustCompile("key\\s+`?BOS`?")},
+	// BOS backlog ticket identifiers: BOS-123 and the BOS-NN/BOS-Y placeholder forms.
+	{token: "BOS-<id>", normalize: true, re: regexp.MustCompile(`\bBOS-[0-9A-Za-z]+`)},
+	// Hard-coded Linear state names baked into the portable core.
+	{token: "Unplanned", normalize: true, re: regexp.MustCompile(`\bUnplanned\b`)},
+	{token: "Todo", normalize: true, re: regexp.MustCompile(`\bTodo\b`)},
+}
+
+// knownIdentityLeaks is the tolerated-leak allowlist. The de-hard-code epic (BOS-449) migrated
+// every project-specific identity in the published cores onto the .boss-skills.json tracker/publish
+// adapters, so this map is now EMPTY: no leak is tolerated and the guard is absolute. Keep it empty
+// — do NOT add an entry to make a new leak pass; route the skill through the config-selected adapter
+// instead (see CLAUDE.md "boss-* skills are published globally"). Emptiness is the whole contract
+// and is enforced mechanically by the len(knownIdentityLeaks) check in
+// TestPublishedCoresAreProjectAgnostic, so re-adding an entry fails the build. (The nested map[…]int
+// value type is retained from the retired occurrence-count ratchet; only presence/emptiness is read
+// now.)
+var knownIdentityLeaks = map[string]map[string]int{}
+
+// identityLeaks walks a skill payload (an fs.FS rooted so that "skills/<core>/..." resolves) and
+// returns, per top-level core, a representative file (the first seen) for each forbidden identity
+// token found. An empty result means the payload is project-agnostic.
+func identityLeaks(t *testing.T, fsys fs.FS) map[string]map[string]string {
+	t.Helper()
+	out := map[string]map[string]string{}
+	err := fs.WalkDir(fsys, "skills", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel := strings.TrimPrefix(path, "skills/")
+		core, _, _ := strings.Cut(rel, "/")
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return err
+		}
+		content := string(data)
+		record := func(tok string) {
+			if out[core] == nil {
+				out[core] = map[string]string{}
+			}
+			if _, seen := out[core][tok]; !seen {
+				out[core][tok] = rel
+			}
+		}
+		for _, rule := range forbiddenIdentity {
+			matches := rule.re.FindAllString(content, -1)
+			if len(matches) == 0 {
+				continue
+			}
+			if rule.normalize {
+				record(rule.token)
+				continue
+			}
+			for _, m := range matches {
+				record(m)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk skills payload: %v", err)
+	}
+	return out
+}
+
+// TestPublishedCoresAreProjectAgnostic is the hard, ZERO-TOLERANCE gate keeping project-specific
+// identity out of the globally-installed boss-* cores. It scans both shipped payloads (the embedded
+// skillinstall FS the boss CLI extracts, and the on-disk claude plugin mirror bossd ships) for
+// forbidden Bossanova identifiers — project MCP servers / tool namespaces (bossanova-*,
+// mcp__bossanova-*), the R2 publish store, the "Internal Bossanova" self-label, and the BOS backlog
+// (team=Bossanova, key BOS, BOS-123 ticket ids, and the hard-coded Unplanned/Todo state names). Any
+// such token in any core fails the build; knownIdentityLeaks (the tolerated-leak allowlist) is
+// empty, so nothing is tolerated.
+func TestPublishedCoresAreProjectAgnostic(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed; cannot locate repo root")
+	}
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..")
+	// The guard is absolute: the tolerated-leak allowlist must stay empty. Enforce that
+	// mechanically so a future edit cannot re-open the escape hatch by adding an entry to
+	// knownIdentityLeaks (which would silently make a new leak pass). Route the skill through the
+	// .boss-skills.json adapter instead (see CLAUDE.md "boss-* skills are published globally").
+	if len(knownIdentityLeaks) != 0 {
+		t.Fatalf("knownIdentityLeaks must stay empty (zero-tolerance guard): the de-hard-code epic migrated every project-specific identity onto the .boss-skills.json tracker/publish adapters; do NOT add an entry to tolerate a leak — fix the skill to go through an adapter instead")
+	}
+	payloads := map[string]fs.FS{
+		"embedded skillinstall payload": SkillsFS,
+		"claude plugin mirror":          os.DirFS(filepath.Join(repoRoot, "plugins", "bossd-plugin-claude", "skilldata")),
+	}
+	for label, fsys := range payloads {
+		// knownIdentityLeaks is asserted empty above, so every recorded token is a failure —
+		// no per-token allowlist consultation is needed (it would be dead code).
+		for core, tokens := range identityLeaks(t, fsys) {
+			for tok, file := range tokens {
+				t.Errorf("%s: published core %q references project-specific identity %q (in skills/%s) — a boss-* core installs into every user's ~/.claude/skills and must reach the tracker/publish store via the .boss-skills.json adapter, never a hard-coded Bossanova identifier (see CLAUDE.md \"boss-* skills are published globally\")", label, core, tok, file)
+			}
+		}
+	}
+}

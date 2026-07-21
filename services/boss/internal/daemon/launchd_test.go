@@ -21,6 +21,12 @@ func TestGeneratePlist(t *testing.T) {
 		"<key>KeepAlive</key>",
 		"bossd.stdout.log",
 		"bossd.stderr.log",
+		// BOS-457: raise the FD limit so setup scripts bossd spawns don't
+		// inherit macOS's low default (256) and die with EMFILE.
+		"<key>SoftResourceLimits</key>",
+		"<key>HardResourceLimits</key>",
+		"<key>NumberOfFiles</key>",
+		"<integer>65536</integer>",
 	}
 
 	for _, check := range checks {
@@ -60,6 +66,12 @@ func TestGenerateMcpPlist(t *testing.T) {
 	}
 	if !strings.Contains(plist, "/.local/bin") {
 		t.Error("MCP plist PATH missing ~/.local/bin")
+	}
+
+	// BOS-457: the FD-limit raise is scoped to bossd only; the MCP server does
+	// not spawn FD-hungry setup scripts, so its plist must not carry the keys.
+	if strings.Contains(plist, "NumberOfFiles") {
+		t.Error("MCP plist should not contain NumberOfFiles (bossd-only FD raise)")
 	}
 }
 

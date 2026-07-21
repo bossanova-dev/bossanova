@@ -117,7 +117,7 @@ func TestRepoSettings_CollapsedNavigationSkipsChildRows(t *testing.T) {
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
-		repoSettingsRowArchiveSessionsAfterMerge,
+		repoSettingsRowShouldArchiveSessionsAfterMerge,
 		repoSettingsRowCanAutoDeleteBranches,
 		repoSettingsRowLinearHeader,
 		repoSettingsRowSentryHeader,
@@ -166,7 +166,7 @@ func TestRepoSettings_ExpandedNavigationIncludesChildRows(t *testing.T) {
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
-		repoSettingsRowArchiveSessionsAfterMerge,
+		repoSettingsRowShouldArchiveSessionsAfterMerge,
 		repoSettingsRowCanAutoDeleteBranches,
 		repoSettingsRowLinearHeader,
 		repoSettingsRowLinearApiKey,
@@ -507,12 +507,12 @@ func TestRepoSettings_AutomationTogglesUnderAutomationsHeading(t *testing.T) {
 
 // TestRepoSettings_ArchiveSessionsAfterMergeToggle verifies the new Automations
 // checkbox renders (default-checked) and that activating its row emits an
-// UpdateRepoRequest carrying the negated ArchiveSessionsAfterMerge value.
+// UpdateRepoRequest carrying the negated ShouldArchiveSessionsAfterMerge value.
 func TestRepoSettings_ArchiveSessionsAfterMergeToggle(t *testing.T) {
 	stub := &stubRepoClient{repos: []*pb.Repo{{
-		Id:                        "repo-1",
-		DisplayName:               "Test Repo",
-		ArchiveSessionsAfterMerge: true, // default on
+		Id:                              "repo-1",
+		DisplayName:                     "Test Repo",
+		ShouldArchiveSessionsAfterMerge: true, // default on
 	}}}
 	m := initSettings(t, stub)
 
@@ -527,7 +527,7 @@ func TestRepoSettings_ArchiveSessionsAfterMergeToggle(t *testing.T) {
 	}
 
 	// Navigate to the row and toggle it off.
-	cursorToRow(t, &m, repoSettingsRowArchiveSessionsAfterMerge)
+	cursorToRow(t, &m, repoSettingsRowShouldArchiveSessionsAfterMerge)
 	updatedModel, cmd := m.activateRow()
 	m = updatedModel.(RepoSettingsModel)
 	if cmd == nil {
@@ -538,11 +538,11 @@ func TestRepoSettings_ArchiveSessionsAfterMergeToggle(t *testing.T) {
 	if stub.updateReq == nil {
 		t.Fatal("no UpdateRepoRequest was captured")
 	}
-	if stub.updateReq.ArchiveSessionsAfterMerge == nil {
-		t.Fatal("UpdateRepoRequest.ArchiveSessionsAfterMerge is nil, want a value")
+	if stub.updateReq.ShouldArchiveSessionsAfterMerge == nil {
+		t.Fatal("UpdateRepoRequest.ShouldArchiveSessionsAfterMerge is nil, want a value")
 	}
-	if *stub.updateReq.ArchiveSessionsAfterMerge {
-		t.Errorf("toggled request ArchiveSessionsAfterMerge = true, want false (negation of the prior true)")
+	if *stub.updateReq.ShouldArchiveSessionsAfterMerge {
+		t.Errorf("toggled request ShouldArchiveSessionsAfterMerge = true, want false (negation of the prior true)")
 	}
 }
 
@@ -601,7 +601,7 @@ func TestRepoSettings_VisibleRowsOrderMatchesRender(t *testing.T) {
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
-		repoSettingsRowArchiveSessionsAfterMerge,
+		repoSettingsRowShouldArchiveSessionsAfterMerge,
 		repoSettingsRowCanAutoDeleteBranches,
 		repoSettingsRowLinearHeader,
 		repoSettingsRowSentryHeader,

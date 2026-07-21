@@ -14,21 +14,21 @@ import (
 func testCronJobs() []*pb.CronJob {
 	return []*pb.CronJob{
 		{
-			Id:               "cron-aaa",
-			RepoId:           "repo-1",
-			Name:             "nightly-debt",
-			Prompt:           "sweep technical debt",
-			Schedule:         "0 3 * * *",
-			Timezone:         "UTC",
-			Enabled:          true,
-			AgentName:        "claude",
-			Model:            "opus",
-			GateCommand:      "make lint",
-			RunSetupCommand:  true,
-			LastRunSessionId: "sess-aaa-111",
-			LastRunAt:        timestamppb.New(timestampDaysAgo(1)),
-			LastRunOutcome:   "pr_created",
-			NextRunAt:        timestamppb.New(timestampDaysAgo(-1)),
+			Id:                    "cron-aaa",
+			RepoId:                "repo-1",
+			Name:                  "nightly-debt",
+			Prompt:                "sweep technical debt",
+			Schedule:              "0 3 * * *",
+			Timezone:              "UTC",
+			IsEnabled:             true,
+			AgentName:             "claude",
+			Model:                 "opus",
+			GateCommand:           "make lint",
+			ShouldRunSetupCommand: true,
+			LastRunSessionId:      "sess-aaa-111",
+			LastRunAt:             timestamppb.New(timestampDaysAgo(1)),
+			LastRunOutcome:        "pr_created",
+			NextRunAt:             timestamppb.New(timestampDaysAgo(-1)),
 		},
 		{
 			Id:        "cron-bbb",
@@ -37,7 +37,7 @@ func testCronJobs() []*pb.CronJob {
 			Prompt:    "run mutation tests",
 			Schedule:  "0 4 * * 1",
 			Timezone:  "America/New_York",
-			Enabled:   false,
+			IsEnabled: false,
 			AgentName: "codex",
 		},
 	}
@@ -45,21 +45,21 @@ func testCronJobs() []*pb.CronJob {
 
 // cronJSON mirrors the stable schema emitted by `boss cron ls/show --json`.
 type cronJSON struct {
-	ID               string `json:"id"`
-	RepoID           string `json:"repo_id"`
-	Name             string `json:"name"`
-	Prompt           string `json:"prompt"`
-	Schedule         string `json:"schedule"`
-	Timezone         string `json:"timezone"`
-	Enabled          bool   `json:"enabled"`
-	AgentName        string `json:"agent_name"`
-	Model            string `json:"model"`
-	GateCommand      string `json:"gate_command"`
-	RunSetupCommand  bool   `json:"run_setup_command"`
-	LastRunSessionID string `json:"last_run_session_id"`
-	LastRunAt        string `json:"last_run_at"`
-	LastRunOutcome   string `json:"last_run_outcome"`
-	NextRunAt        string `json:"next_run_at"`
+	ID                    string `json:"id"`
+	RepoID                string `json:"repo_id"`
+	Name                  string `json:"name"`
+	Prompt                string `json:"prompt"`
+	Schedule              string `json:"schedule"`
+	Timezone              string `json:"timezone"`
+	Enabled               bool   `json:"enabled"`
+	AgentName             string `json:"agent_name"`
+	Model                 string `json:"model"`
+	GateCommand           string `json:"gate_command"`
+	ShouldRunSetupCommand bool   `json:"run_setup_command"`
+	LastRunSessionID      string `json:"last_run_session_id"`
+	LastRunAt             string `json:"last_run_at"`
+	LastRunOutcome        string `json:"last_run_outcome"`
+	NextRunAt             string `json:"next_run_at"`
 }
 
 func TestCLI_Cron_Ls(t *testing.T) {
@@ -129,7 +129,7 @@ func TestCLI_Cron_Ls_JSON(t *testing.T) {
 	if first.Name != "nightly-debt" || first.RepoID != "repo-1" || first.Schedule != "0 3 * * *" {
 		t.Errorf("unexpected fields: %+v", first)
 	}
-	if !first.Enabled || !first.RunSetupCommand {
+	if !first.Enabled || !first.ShouldRunSetupCommand {
 		t.Errorf("expected enabled+run_setup_command true: %+v", first)
 	}
 	if first.Model != "opus" || first.GateCommand != "make lint" || first.AgentName != "claude" {
@@ -221,12 +221,12 @@ func TestCLI_Cron_Add(t *testing.T) {
 	if req.Model != "opus" || req.Timezone != "UTC" {
 		t.Errorf("unexpected model/tz: %+v", req)
 	}
-	if !req.Enabled {
+	if !req.IsEnabled {
 		t.Errorf("expected Enabled default true")
 	}
-	// --run-setup not given: RunSetupCommand stays nil so server default applies.
-	if req.RunSetupCommand != nil {
-		t.Errorf("expected RunSetupCommand nil when --run-setup omitted, got %v", *req.RunSetupCommand)
+	// --run-setup not given: ShouldRunSetupCommand stays nil so server default applies.
+	if req.ShouldRunSetupCommand != nil {
+		t.Errorf("expected ShouldRunSetupCommand nil when --run-setup omitted, got %v", *req.ShouldRunSetupCommand)
 	}
 }
 
@@ -244,11 +244,11 @@ func TestCLI_Cron_Add_RunSetupFalse(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 create call, got %d", len(calls))
 	}
-	if calls[0].RunSetupCommand == nil {
-		t.Fatalf("expected non-nil RunSetupCommand")
+	if calls[0].ShouldRunSetupCommand == nil {
+		t.Fatalf("expected non-nil ShouldRunSetupCommand")
 	}
-	if *calls[0].RunSetupCommand {
-		t.Errorf("expected RunSetupCommand false, got true")
+	if *calls[0].ShouldRunSetupCommand {
+		t.Errorf("expected ShouldRunSetupCommand false, got true")
 	}
 }
 
@@ -354,7 +354,7 @@ func TestCLI_Cron_Update(t *testing.T) {
 		t.Errorf("expected Schedule set, got %v", req.Schedule)
 	}
 	// Untouched fields stay nil.
-	if req.Name != nil || req.Prompt != nil || req.Enabled != nil || req.Model != nil {
+	if req.Name != nil || req.Prompt != nil || req.IsEnabled != nil || req.Model != nil {
 		t.Errorf("expected unchanged fields nil, got %+v", req)
 	}
 }
@@ -377,8 +377,8 @@ func TestCLI_Cron_Enable_Disable(t *testing.T) {
 			if len(calls) != 1 {
 				t.Fatalf("expected 1 update call, got %d", len(calls))
 			}
-			if calls[0].Enabled == nil || *calls[0].Enabled != tc.want {
-				t.Errorf("expected Enabled=%v, got %v", tc.want, calls[0].Enabled)
+			if calls[0].IsEnabled == nil || *calls[0].IsEnabled != tc.want {
+				t.Errorf("expected Enabled=%v, got %v", tc.want, calls[0].IsEnabled)
 			}
 		})
 	}

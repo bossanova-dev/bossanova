@@ -135,13 +135,13 @@ func TestCreateSessionAlreadyShippedGuard(t *testing.T) {
 			h := newCreateSessionStreamHarnessWithProvider(t, &setupStreamWorktree{}, &setupStreamAgent{}, provider, zerolog.Nop())
 
 			req := &pb.CreateSessionRequest{
-				RepoId:    h.repo.ID,
-				Title:     "dispatch",
-				Plan:      "do work",
-				AgentName: &agentName,
-				Detach:    true,
-				Force:     tt.force,
-				QuickChat: tt.quickChat,
+				RepoId:      h.repo.ID,
+				Title:       "dispatch",
+				Plan:        "do work",
+				AgentName:   &agentName,
+				Detach:      true,
+				Force:       tt.force,
+				IsQuickChat: tt.quickChat,
 			}
 			if !tt.omitTracker {
 				req.TrackerId = ptr(trackerID)

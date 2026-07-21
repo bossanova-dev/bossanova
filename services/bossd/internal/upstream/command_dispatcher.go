@@ -56,7 +56,7 @@ func (c *StreamClient) dispatchCommand(
 	case *pb.OrchestratorCommand_SwitchAccount:
 		return c.dispatchSwitchAccount(ctx, cmdID, cmd.GetSwitchAccount())
 	case *pb.OrchestratorCommand_Merge:
-		return c.dispatchMerge(ctx, cmdID, cmd.GetMerge())
+		return c.dispatchMerge(ctx, cmdID, cmd.GetMerge(), outbound)
 	case *pb.OrchestratorCommand_Archive:
 		return c.dispatchArchive(ctx, cmdID, cmd.GetArchive())
 	case *pb.OrchestratorCommand_RetrySession:
@@ -411,15 +411,24 @@ func (c *StreamClient) dispatchSwitchAccount(ctx context.Context, cmdID string, 
 	}}
 }
 
-func (c *StreamClient) dispatchMerge(ctx context.Context, cmdID string, req *pb.MergeSessionCommand) *pb.DaemonEvent {
+// dispatchMerge routes a MergeSessionCommand to the handler. Dispatched
+// asynchronously (BOS-439): a merge can queue behind another merge on the same
+// repo inside Server.MergeSession, and the single-threaded command reader must
+// keep draining other commands rather than wedge behind that wait. On success
+// it emits commandOK(sess); on failure commandErrCode — identical payload/codes
+// to the old synchronous path, delivered via outbound (mirrors
+// dispatchRemoveSession).
+func (c *StreamClient) dispatchMerge(ctx context.Context, cmdID string, req *pb.MergeSessionCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
-	sess, err := c.commandHandler.MergeSession(ctx, req.GetSessionId())
-	if err != nil {
-		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
-	}
-	return commandOK(cmdID, sess)
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		sess, err := c.commandHandler.MergeSession(ctx, req.GetSessionId())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return commandOK(cmdID, sess)
+	})
 }
 
 func (c *StreamClient) dispatchArchive(ctx context.Context, cmdID string, req *pb.ArchiveSessionCommand) *pb.DaemonEvent {
@@ -496,7 +505,7 @@ func (c *StreamClient) dispatchEmptyTrash(ctx context.Context, cmdID string, req
 }
 
 // dispatchRetrySession / dispatchUpdateSession / dispatchLinkSessionPR are
-// synchronous session-scoped mutations (mirroring dispatchMerge/dispatchArchive):
+// synchronous session-scoped mutations (mirroring dispatchArchive):
 // they call the handler, echo the updated Session on success, and attach a typed
 // error code on failure so bosso maps it back to the right ConnectRPC code.
 func (c *StreamClient) dispatchRetrySession(ctx context.Context, cmdID string, req *pb.RetrySessionCommand) *pb.DaemonEvent {

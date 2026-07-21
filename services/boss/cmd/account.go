@@ -640,6 +640,8 @@ func readCredentialFlag(cmd *cobra.Command) ([]byte, error) {
 		}
 		return b, nil
 	}
+	// #nosec G304 -- reads the operator-supplied --credential-file; reading the named file is the feature, operator/local-trust, secret-adjacent.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read credential file: %w", err)

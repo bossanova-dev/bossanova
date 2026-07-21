@@ -282,7 +282,7 @@ message UpdateRepoRequest {
   // Optimistic-concurrency token: when set, the update is rejected (CodeAborted)
   // unless it still equals the repo's stored updated_at.
   google.protobuf.Timestamp expected_updated_at = 18;
-  optional bool archive_sessions_after_merge = 19;
+  optional bool should_archive_sessions_after_merge = 19;
   optional bool can_auto_delete_branches = 20;
 }
 
@@ -324,7 +324,7 @@ message CreateSessionRequest {
   // If true, remove any existing branch with the same name before creating.
   bool force_branch = 6;
   // If true, run as a quick chat session (no worktree, no branch, no PR).
-  bool quick_chat = 7;
+  bool is_quick_chat = 7;
   // Optional branch name (eg. from Linear's suggested branch name).
   optional string branch_name = 8;
   // External issue tracker fields.
@@ -345,7 +345,7 @@ message CreateSessionRequest {
   // Empty → the agent plugin's default model. Mirrors `boss cron add --model`;
   // set by `boss new --model` and the MCP create_session tool.
   optional string model = 15;
-  bool tmux_unattended = 16;
+  bool is_tmux_unattended = 16;
   // If true, bypass the tracker-issue dedup guard and create a second session
   // for a tracker/PR/branch that already has an active one (BOS-236 escape hatch).
   bool force = 17;
@@ -735,14 +735,14 @@ message CreateCronJobRequest {
   string prompt   = 3;
   string schedule = 4;
   string timezone = 5;   // optional IANA tz; empty = daemon-local
-  bool   enabled  = 6;
+  bool   is_enabled  = 6;
   string agent_name = 7; // optional agent runner plugin name; empty = claude
   string model = 8;      // opaque agent model id; "" = plugin default. Never enumerated by bossd.
   string gate_command = 9; // optional gate command run before each fire; empty = no gate
   // run the repo setup script before the agent. optional so the server can
   // default it to true when a client omits it (a plain bool can't tell
   // "omitted" from "explicit false").
-  optional bool run_setup_command = 10;
+  optional bool should_run_setup_command = 10;
 }
 
 message CreateCronJobResponse {
@@ -772,11 +772,11 @@ message UpdateCronJobRequest {
   optional string prompt   = 3;
   optional string schedule = 4;
   optional string timezone = 5;
-  optional bool   enabled  = 6;
+  optional bool   is_enabled  = 6;
   optional string agent_name = 7;
   optional string model = 8; // opaque agent model id; "" = plugin default.
   optional string gate_command = 9; // optional gate command; empty = no gate
-  optional bool   run_setup_command = 10; // run the repo setup script before the agent
+  optional bool   should_run_setup_command = 10; // run the repo setup script before the agent
 }
 
 message UpdateCronJobResponse {

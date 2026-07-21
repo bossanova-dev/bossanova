@@ -186,7 +186,7 @@ func (g *CronCompletionGate) checkAndFinalize(ctx context.Context, sessionID str
 	// Finalize sessions that run autonomously — a scheduled cron job OR a
 	// tmux_unattended session (e.g. /boss-epic). Interactive/wake/repair sessions
 	// also carry a HookToken (so their Stop hook fires here too), but they must
-	// never auto-finalize; the persisted TmuxUnattended flag, not HookToken
+	// never auto-finalize; the persisted IsTmuxUnattended flag, not HookToken
 	// presence, is the autonomy signal.
 	if !isUnattendedSession(session) {
 		return cronCompletionGateCheckDone

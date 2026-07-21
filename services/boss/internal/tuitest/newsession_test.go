@@ -217,8 +217,8 @@ func TestTUI_NewSessionView_SubmitCreatesSession(t *testing.T) {
 	if req.BaseBranch != "main" {
 		t.Fatalf("CreateSession.BaseBranch = %q, want %q", req.BaseBranch, "main")
 	}
-	if req.QuickChat {
-		t.Fatalf("CreateSession.QuickChat = true, want false for NewPR flow")
+	if req.IsQuickChat {
+		t.Fatalf("CreateSession.IsQuickChat = true, want false for NewPR flow")
 	}
 	if req.PrNumber != nil {
 		t.Fatalf("CreateSession.PrNumber = %v, want nil for NewPR flow", req.PrNumber)
@@ -240,7 +240,7 @@ func navigateToQuickChatForm(t *testing.T, h *tuitest.Harness) {
 	if err := h.Driver.WaitForText(waitTimeout, "Quick Chat"); err != nil {
 		t.Fatalf("expected type select; screen:\n%s", h.Driver.Screen())
 	}
-	// Quick Chat is the third row (index 2): NewPR, ExistingPR, QuickChat.
+	// Quick Chat is the third row (index 2): NewPR, ExistingPR, IsQuickChat.
 	if err := h.Driver.SendKey('j'); err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func navigateToQuickChatForm(t *testing.T, h *tuitest.Harness) {
 // TestTUI_NewSessionView_QuickChat_NameTyped walks the full Quick Chat flow
 // with a user-supplied name: repo (auto-picked, single repo), type select
 // → Quick Chat, name entry, submit. Asserts the captured CreateSessionRequest
-// has the typed Title and QuickChat == true.
+// has the typed Title and IsQuickChat == true.
 func TestTUI_NewSessionView_QuickChat_NameTyped(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
@@ -290,8 +290,8 @@ func TestTUI_NewSessionView_QuickChat_NameTyped(t *testing.T) {
 	if req.Title != "fixing the auth bug" {
 		t.Fatalf("CreateSession.Title = %q, want %q", req.Title, "fixing the auth bug")
 	}
-	if !req.QuickChat {
-		t.Fatalf("CreateSession.QuickChat = false, want true for Quick Chat flow")
+	if !req.IsQuickChat {
+		t.Fatalf("CreateSession.IsQuickChat = false, want true for Quick Chat flow")
 	}
 }
 
@@ -323,8 +323,8 @@ func TestTUI_NewSessionView_QuickChat_EmptyName(t *testing.T) {
 	if req == nil {
 		t.Fatalf("CreateSession was never called; screen:\n%s", h.Driver.Screen())
 	}
-	if !req.QuickChat {
-		t.Fatalf("CreateSession.QuickChat = false, want true for Quick Chat flow")
+	if !req.IsQuickChat {
+		t.Fatalf("CreateSession.IsQuickChat = false, want true for Quick Chat flow")
 	}
 	matched, err := regexp.MatchString(`^Quick Chat \d{4}-\d{2}-\d{2} \d{2}:\d{2}$`, req.Title)
 	if err != nil {
@@ -672,7 +672,7 @@ func TestTUI_NewSessionView_IssueSelect_FilterNarrows(t *testing.T) {
 	if err := h.Driver.WaitForText(waitTimeout, "Work on a Linear issue"); err != nil {
 		t.Fatalf("expected Linear option; screen:\n%s", h.Driver.Screen())
 	}
-	// "Work on a Linear issue" is the 3rd row (index 2): NewPR, ExistingPR, Linear, QuickChat.
+	// "Work on a Linear issue" is the 3rd row (index 2): NewPR, ExistingPR, Linear, IsQuickChat.
 	if err := h.Driver.SendKey('j'); err != nil {
 		t.Fatal(err)
 	}

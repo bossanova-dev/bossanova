@@ -658,7 +658,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// MERGED optimistically until the daemon reconciles (if the user then
 		// cancels or archives back to the list).
 		m.merged = true
-		if m.session.GetRepoArchiveSessionsAfterMerge() {
+		if m.session.GetRepoShouldArchiveSessionsAfterMerge() {
 			// Optimistic latch: the daemon will archive on the merge webhook.
 			// Show "Archiving…" immediately, before archive_pending round-trips.
 			m.optimisticArchiveLatch = true
@@ -754,7 +754,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// drop the optimistic merge latch if the repo disabled archive-after-merge
 			// while this picker is open, so the latch can't get stuck showing
 			// "Archiving…" for an archive the daemon will now skip.
-			if !m.session.GetRepoArchiveSessionsAfterMerge() {
+			if !m.session.GetRepoShouldArchiveSessionsAfterMerge() {
 				m.optimisticArchiveLatch = false
 			}
 			// Hand off from the optimistic bridge to the authoritative daemon

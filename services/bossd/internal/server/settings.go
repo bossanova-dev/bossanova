@@ -68,9 +68,14 @@ func (s *Server) UpdateSettings(ctx context.Context, req *connect.Request[pb.Upd
 		if dir == "" {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worktree_base_dir cannot be empty"))
 		}
-		info, statErr := os.Stat(dir)
-		if statErr != nil || !info.IsDir() {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worktree_base_dir does not exist: %s", dir))
+		// Mirror the settings TUI, which accepts any non-empty path and relies on
+		// config.Load() to MkdirAll the configured base — the normal "point the
+		// worktree base at a fresh directory" case must work here too, not only
+		// when the caller pre-creates the directory. Create it now (same 0o750 as
+		// config.Load) so an invalid path — e.g. a component that is a regular
+		// file — is rejected, but a merely-absent directory is created.
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worktree_base_dir %q cannot be created: %w", dir, err))
 		}
 		settings.WorktreeBaseDir = dir
 	}

@@ -44,7 +44,8 @@ func ReadFreshCache(path, current string, now time.Time, ttl time.Duration) (Cac
 // match. Returns (zero, false, nil) when the file does not exist or contains
 // unparsable JSON. The caller is responsible for any freshness checks.
 func ReadCache(path string) (CacheEntry, bool, error) {
-	// #nosec G304 -- path is the internally-derived update-banner cache file (non-secret, 24h-TTL JSON) whose location is a fixed config path, not attacker-influenced. owner=@recurser review-by=2026-09-16 issue=BOS-414
+	// #nosec G304 -- fixed-config-path update-banner cache JSON; non-secret
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	body, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

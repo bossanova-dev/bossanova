@@ -44,8 +44,8 @@ func TestCronListRebuildTable_ShowsDeletingStatusForMatchingJob(t *testing.T) {
 			"repo-1": {Id: "repo-1", DisplayName: "repo"},
 		},
 		jobs: []*pb.CronJob{
-			{Id: "cron-1", RepoId: "repo-1", Name: "first", Schedule: "0 9 * * 1-5", Enabled: true},
-			{Id: "cron-2", RepoId: "repo-1", Name: "second", Schedule: "0 10 * * 1-5", Enabled: true},
+			{Id: "cron-1", RepoId: "repo-1", Name: "first", Schedule: "0 9 * * 1-5", IsEnabled: true},
+			{Id: "cron-2", RepoId: "repo-1", Name: "second", Schedule: "0 10 * * 1-5", IsEnabled: true},
 		},
 		table: newBossTable(nil, nil, 0),
 	}
@@ -73,7 +73,7 @@ func TestCronListRebuildTable_ShowsStoredAgentName(t *testing.T) {
 			"repo-1": {Id: "repo-1", DisplayName: "repo"},
 		},
 		jobs: []*pb.CronJob{
-			{Id: "cron-1", RepoId: "repo-1", Name: "first", Schedule: "@daily", Enabled: true, AgentName: "opencode"},
+			{Id: "cron-1", RepoId: "repo-1", Name: "first", Schedule: "@daily", IsEnabled: true, AgentName: "opencode"},
 		},
 		table: newBossTable(nil, nil, 0),
 	}

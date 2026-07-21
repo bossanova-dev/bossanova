@@ -1,0 +1,64 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "bossd-plugin-opencode_lib",
+    srcs = [
+        "auth.go",
+        "cap.go",
+        "dirty_files.go",
+        "host.go",
+        "main.go",
+        "opencodedb.go",
+        "plugin.go",
+        "runner.go",
+        "server.go",
+    ],
+    importpath = "github.com/recurser/bossd-plugin-opencode",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//lib/bossalib/agenterr",
+        "//lib/bossalib/agentruntime",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/loginshell",
+        "//lib/bossalib/plugin",
+        "//lib/bossalib/plugin/hostclient",
+        "@com_github_hashicorp_go_plugin//:go-plugin",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+        "@org_modernc_sqlite//:sqlite",
+    ],
+)
+
+go_binary(
+    name = "bossd-plugin-opencode",
+    embed = [":bossd-plugin-opencode_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "bossd-plugin-opencode_test",
+    srcs = [
+        "auth_test.go",
+        "cap_test.go",
+        "exitstatus_test.go",
+        "live_test.go",
+        "main_test.go",
+        "opencodedb_test.go",
+        "runner_test.go",
+        "server_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":bossd-plugin-opencode_lib"],
+    deps = [
+        "//lib/bossalib/agenterr",
+        "//lib/bossalib/agentruntime",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_modernc_sqlite//:sqlite",
+    ],
+)

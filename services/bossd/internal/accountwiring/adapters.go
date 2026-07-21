@@ -420,11 +420,15 @@ func copyProbeSeedFile(src, dst string, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return fmt.Errorf("create usage probe seed file dir: %w", err)
 	}
+	// #nosec G304 -- reads a daemon-controlled usage-probe seed; src is under its own WalkDir root, not attacker-named (secret-adjacent)
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	in, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("open usage probe seed file: %w", err)
 	}
 	defer func() { _ = in.Close() }()
+	// #nosec G304 -- writes probe-seed copy to filepath.Join(dst, rel) where rel is from filepath.Rel of a walked file; internal, not attacker-named (secret-adjacent)
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode.Perm())
 	if err != nil {
 		return fmt.Errorf("create usage probe seed file: %w", err)

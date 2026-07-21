@@ -360,7 +360,7 @@ func TestE2E_Resilience_RetryAfterBlocked(t *testing.T) {
 		t.Fatalf("retry session: %v", err)
 	}
 	sess := retryResp.Msg.Session
-	if !sess.AutomationEnabled {
+	if !sess.IsAutomationEnabled {
 		t.Error("RetrySession must re-enable automation")
 	}
 	if sess.BlockedReason != nil && *sess.BlockedReason != "" {

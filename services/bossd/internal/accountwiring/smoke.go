@@ -210,6 +210,8 @@ func appendSmokeDiagnostic(err error, logPath string) error {
 }
 
 func smokeDiagnostic(logPath string) string {
+	// #nosec G304 -- reads a daemon-internal smoke-test log path; output is agenterr.Redact'ed before use
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	data, err := os.ReadFile(logPath)
 	if err != nil || len(data) == 0 {
 		return ""

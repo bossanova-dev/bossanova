@@ -65,11 +65,11 @@ func TestE2ESessionEnvReachesTmux(t *testing.T) {
 	useTempWorktrees(t, h)
 
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "env-probe",
-		Prompt:   "do the thing",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "env-probe",
+		Prompt:    "do the thing",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -150,11 +150,11 @@ func TestE2ESessionEnvIncludesWorktreeDotenv(t *testing.T) {
 	})
 
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "dotenv-probe",
-		Prompt:   "do the thing",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "dotenv-probe",
+		Prompt:    "do the thing",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -197,11 +197,11 @@ func TestE2ESessionEnvIncludesRepoConfigLinearKey(t *testing.T) {
 	useTempWorktrees(t, h) // no .env seeded
 
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "repo-key-probe",
-		Prompt:   "do the thing",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "repo-key-probe",
+		Prompt:    "do the thing",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -240,11 +240,11 @@ func TestE2ESessionEnvWorktreeDotenvOverridesRepoConfig(t *testing.T) {
 	})
 
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "override-probe",
-		Prompt:   "do the thing",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "override-probe",
+		Prompt:    "do the thing",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -274,11 +274,11 @@ func TestE2ESessionEnvFailsCleanWithoutAnyLinearKey(t *testing.T) {
 	useTempWorktrees(t, h) // no repo key, no .env
 
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "failclean-probe",
-		Prompt:   "do the thing",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "failclean-probe",
+		Prompt:    "do the thing",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)

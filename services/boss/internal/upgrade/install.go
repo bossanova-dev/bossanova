@@ -23,6 +23,7 @@ var pluginBins = []string{
 	"bossd-plugin-codex",
 	"bossd-plugin-dependabot",
 	"bossd-plugin-linear",
+	"bossd-plugin-opencode",
 	"bossd-plugin-repair",
 	"bossd-plugin-sentry",
 }
@@ -48,7 +49,8 @@ func AssetNames(goos, goarch string) []string {
 }
 
 func VerifySHA256(path, expected string) error {
-	// #nosec G304 -- path is an installer-controlled download target (built by the Installer under plan.PluginDir); its contents are SHA256-verified here and it is never attacker-named. owner=@recurser review-by=2026-09-16 issue=BOS-414
+	// #nosec G304 -- installer-built path under plan.PluginDir; contents SHA256-verified
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -269,7 +271,8 @@ func (i Installer) downloadFile(ctx context.Context, url, path string) error {
 		}
 		defer func() { _ = resp.Body.Close() }()
 
-		// #nosec G304 -- path is the installer's own download target under plan.PluginDir, not attacker-controlled; the payload is size-capped and SHA256-verified before use. owner=@recurser review-by=2026-09-16 issue=BOS-414
+		// #nosec G304 -- installer's own download path; payload size-capped + SHA256-verified
+		// owner=@recurser review-by=2027-01-18 issue=BOS-28
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 		if err != nil {
 			return err

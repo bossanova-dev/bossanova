@@ -19,7 +19,7 @@ import {
 // Shells out to the Codex CLI (`codex exec`) read-only over a git diff and
 // returns sanitized review text.  The agent-agnostic machinery lives in
 // the sibling cross-review-lib.mjs; this file is the thin codex adapter + the
-// CLI entrypoint.  Vendored into the boss-review skill toolbox (BOS-196).
+// CLI entrypoint.  Vendored into the boss-review skill toolbox.
 //
 // Pinned surface: codex-cli 0.142.0
 // `codex login status` exits 0 when authenticated, non-zero when not.

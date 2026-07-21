@@ -206,6 +206,8 @@ func (s Spec) Execute(ctx context.Context, opts ExecuteOpts) error {
 	if opts.LoginShell != "" && loginshell.IsSupported(opts.LoginShell) {
 		argv = loginshell.Wrap(opts.LoginShell, loginshell.Flags(opts.LoginShell), argv)
 	}
+	// #nosec G204 -- runs the operator-configured setup_script, optionally wrapped in a login shell; local-trust
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = opts.WorktreePath
 	cmd.Env = append(os.Environ(),

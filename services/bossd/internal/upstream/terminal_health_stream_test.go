@@ -196,6 +196,24 @@ func TestTerminalStreamHealth_ReadyTimeoutBudgetForcesReRegister(t *testing.T) {
 	}
 }
 
+// TestTerminalStreamHealth_EscalationRetiresStaleConnectionFirst guards the
+// recovery ordering: re-registration must not reuse the idle HTTP/2 connection
+// that just routed TerminalStream to the wrong bosso pod.
+func TestTerminalStreamHealth_EscalationRetiresStaleConnectionFirst(t *testing.T) {
+	t.Parallel()
+	var calls []string
+	h := newHealthHarness(t, func(c *TerminalStreamClientConfig) {
+		c.CloseIdle = func() { calls = append(calls, "close-idle") }
+		c.ReRegister = func(context.Context) { calls = append(calls, "re-register") }
+	})
+
+	h.client.escalateWedged(context.Background())
+
+	if len(calls) != 2 || calls[0] != "close-idle" || calls[1] != "re-register" {
+		t.Fatalf("recovery calls = %v, want [close-idle re-register]", calls)
+	}
+}
+
 // TestTerminalStreamHealth_NotColocatedRejectionCountsTowardEscalation
 // asserts that bosso's co-location-tagged CodeFailedPrecondition rejection
 // (the daemon's TerminalStream landed on a pod whose DaemonStream is not

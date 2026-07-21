@@ -22,41 +22,41 @@ import (
 // scripts depend on: renames are breaking changes. Timestamps are RFC3339
 // strings, empty when the underlying timestamp is nil/zero.
 type cronJobJSON struct {
-	ID               string `json:"id"`
-	RepoID           string `json:"repo_id"`
-	Name             string `json:"name"`
-	Prompt           string `json:"prompt"`
-	Schedule         string `json:"schedule"`
-	Timezone         string `json:"timezone"`
-	Enabled          bool   `json:"enabled"`
-	AgentName        string `json:"agent_name"`
-	Model            string `json:"model"`
-	GateCommand      string `json:"gate_command"`
-	RunSetupCommand  bool   `json:"run_setup_command"`
-	LastRunSessionID string `json:"last_run_session_id"`
-	LastRunAt        string `json:"last_run_at"`
-	LastRunOutcome   string `json:"last_run_outcome"`
-	NextRunAt        string `json:"next_run_at"`
+	ID                    string `json:"id"`
+	RepoID                string `json:"repo_id"`
+	Name                  string `json:"name"`
+	Prompt                string `json:"prompt"`
+	Schedule              string `json:"schedule"`
+	Timezone              string `json:"timezone"`
+	IsEnabled             bool   `json:"enabled"`
+	AgentName             string `json:"agent_name"`
+	Model                 string `json:"model"`
+	GateCommand           string `json:"gate_command"`
+	ShouldRunSetupCommand bool   `json:"run_setup_command"`
+	LastRunSessionID      string `json:"last_run_session_id"`
+	LastRunAt             string `json:"last_run_at"`
+	LastRunOutcome        string `json:"last_run_outcome"`
+	NextRunAt             string `json:"next_run_at"`
 }
 
 // cronJobToJSON maps a proto CronJob to the stable JSON schema.
 func cronJobToJSON(j *pb.CronJob) cronJobJSON {
 	return cronJobJSON{
-		ID:               j.GetId(),
-		RepoID:           j.GetRepoId(),
-		Name:             j.GetName(),
-		Prompt:           j.GetPrompt(),
-		Schedule:         j.GetSchedule(),
-		Timezone:         j.GetTimezone(),
-		Enabled:          j.GetEnabled(),
-		AgentName:        j.GetAgentName(),
-		Model:            j.GetModel(),
-		GateCommand:      j.GetGateCommand(),
-		RunSetupCommand:  j.GetRunSetupCommand(),
-		LastRunSessionID: j.GetLastRunSessionId(),
-		LastRunAt:        rfc3339OrEmpty(j.GetLastRunAt()),
-		LastRunOutcome:   j.GetLastRunOutcome(),
-		NextRunAt:        rfc3339OrEmpty(j.GetNextRunAt()),
+		ID:                    j.GetId(),
+		RepoID:                j.GetRepoId(),
+		Name:                  j.GetName(),
+		Prompt:                j.GetPrompt(),
+		Schedule:              j.GetSchedule(),
+		Timezone:              j.GetTimezone(),
+		IsEnabled:             j.GetIsEnabled(),
+		AgentName:             j.GetAgentName(),
+		Model:                 j.GetModel(),
+		GateCommand:           j.GetGateCommand(),
+		ShouldRunSetupCommand: j.GetShouldRunSetupCommand(),
+		LastRunSessionID:      j.GetLastRunSessionId(),
+		LastRunAt:             rfc3339OrEmpty(j.GetLastRunAt()),
+		LastRunOutcome:        j.GetLastRunOutcome(),
+		NextRunAt:             rfc3339OrEmpty(j.GetNextRunAt()),
 	}
 }
 
@@ -115,7 +115,7 @@ func runCronLS(cmd *cobra.Command) error {
 		schedules[i] = j.GetSchedule()
 		tzs[i] = orDash(j.GetTimezone())
 		agents[i] = orDash(j.GetAgentName())
-		enabled[i] = boolLabel(j.GetEnabled())
+		enabled[i] = boolLabel(j.GetIsEnabled())
 	}
 
 	cols := []table.Column{
@@ -174,11 +174,11 @@ func runCronShow(cmd *cobra.Command, id string) error {
 	fmt.Fprintf(&b, "Prompt:              %s\n", job.GetPrompt())
 	fmt.Fprintf(&b, "Schedule:            %s\n", job.GetSchedule())
 	fmt.Fprintf(&b, "Timezone:            %s\n", orDash(job.GetTimezone()))
-	fmt.Fprintf(&b, "Enabled:             %s\n", boolLabel(job.GetEnabled()))
+	fmt.Fprintf(&b, "Enabled:             %s\n", boolLabel(job.GetIsEnabled()))
 	fmt.Fprintf(&b, "Agent:               %s\n", orDash(job.GetAgentName()))
 	fmt.Fprintf(&b, "Model:               %s\n", orDash(job.GetModel()))
 	fmt.Fprintf(&b, "Gate command:        %s\n", orDash(job.GetGateCommand()))
-	fmt.Fprintf(&b, "Run setup command:   %s\n", boolLabel(job.GetRunSetupCommand()))
+	fmt.Fprintf(&b, "Run setup command:   %s\n", boolLabel(job.GetShouldRunSetupCommand()))
 	fmt.Fprintf(&b, "Last run session ID: %s\n", orDash(job.GetLastRunSessionId()))
 	fmt.Fprintf(&b, "Last run at:         %s\n", orDash(rfc3339OrEmpty(job.GetLastRunAt())))
 	fmt.Fprintf(&b, "Last run outcome:    %s\n", orDash(job.GetLastRunOutcome()))
@@ -218,14 +218,14 @@ func runCronAdd(cmd *cobra.Command) error {
 		Prompt:      prompt,
 		Schedule:    schedule,
 		Timezone:    tz,
-		Enabled:     enabled,
+		IsEnabled:   enabled,
 		AgentName:   agent,
 		Model:       model,
 		GateCommand: gate,
 	}
 	if cmd.Flags().Changed("run-setup") {
 		v, _ := cmd.Flags().GetBool("run-setup")
-		req.RunSetupCommand = &v
+		req.ShouldRunSetupCommand = &v
 	}
 
 	c, err := newClient(cmd)
@@ -265,12 +265,12 @@ func runCronUpdate(cmd *cobra.Command, id string) error {
 
 	if cmd.Flags().Changed("enabled") {
 		v, _ := cmd.Flags().GetBool("enabled")
-		req.Enabled = proto.Bool(v)
+		req.IsEnabled = proto.Bool(v)
 		anyChanged = true
 	}
 	if cmd.Flags().Changed("run-setup") {
 		v, _ := cmd.Flags().GetBool("run-setup")
-		req.RunSetupCommand = proto.Bool(v)
+		req.ShouldRunSetupCommand = proto.Bool(v)
 		anyChanged = true
 	}
 
@@ -346,7 +346,7 @@ func setCronEnabled(cmd *cobra.Command, id string, enabled bool) error {
 	if err != nil {
 		return err
 	}
-	req := &pb.UpdateCronJobRequest{Id: id, Enabled: proto.Bool(enabled)}
+	req := &pb.UpdateCronJobRequest{Id: id, IsEnabled: proto.Bool(enabled)}
 	if _, err := c.UpdateCronJob(cmd.Context(), req); err != nil {
 		return fmt.Errorf("update cron job: %w", err)
 	}
@@ -390,7 +390,8 @@ func readPromptFlag(cmd *cobra.Command, required bool) (string, bool, error) {
 		}
 		return string(b), true, nil
 	}
-	// #nosec G304 -- path is the operator-named `--prompt-file` CLI argument; reading the cron prompt from the file the operator specifies is the feature, and it holds no secret. owner=@recurser review-by=2026-09-16 issue=BOS-414
+	// #nosec G304 -- operator-supplied --prompt-file path; trusted runtime value, holds no secret.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", false, fmt.Errorf("read prompt file: %w", err)

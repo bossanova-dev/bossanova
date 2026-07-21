@@ -227,7 +227,7 @@ message ScheduledJob {
   // Repo origin URL this job targets.
   string repo_origin_url = 4;
   // Whether this job is currently enabled.
-  bool enabled = 5;
+  bool is_enabled = 5;
   // When this job last ran.
   optional google.protobuf.Timestamp last_run = 6;
   // When this job is next scheduled to run.

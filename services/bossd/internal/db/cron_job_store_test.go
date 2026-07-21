@@ -14,11 +14,11 @@ import (
 func createTestCronJob(t *testing.T, store *SQLiteCronJobStore, repoID, name string) *models.CronJob {
 	t.Helper()
 	job, err := store.Create(context.Background(), CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     name,
-		Prompt:   "Run health checks and report failures",
-		Schedule: "0 9 * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      name,
+		Prompt:    "Run health checks and report failures",
+		Schedule:  "0 9 * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -43,7 +43,7 @@ func TestCronJobStore_CreateAndGet(t *testing.T) {
 		Schedule:  "0 9 * * *",
 		Timezone:  &tz,
 		AgentName: agentName,
-		Enabled:   true,
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -69,7 +69,7 @@ func TestCronJobStore_CreateAndGet(t *testing.T) {
 	if job.AgentName != "codex" {
 		t.Errorf("agent_name = %q, want codex", job.AgentName)
 	}
-	if !job.Enabled {
+	if !job.IsEnabled {
 		t.Error("enabled should be true")
 	}
 	if job.LastRunSessionID != nil {
@@ -110,7 +110,7 @@ func TestCronJobStore_PersistsModel(t *testing.T) {
 
 	job, err := store.Create(ctx, CreateCronJobParams{
 		RepoID: repo.ID, Name: "m", Prompt: "/x", Schedule: "@hourly",
-		AgentName: "claude", Model: "sonnet", Enabled: true,
+		AgentName: "claude", Model: "sonnet", IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -157,11 +157,11 @@ func TestCronJobStore_Create_DefaultsBlankAgentToClaude(t *testing.T) {
 	repo := createTestRepo(t, repoStore)
 
 	job, err := store.Create(ctx, CreateCronJobParams{
-		RepoID:   repo.ID,
-		Name:     "Disabled job",
-		Prompt:   "noop",
-		Schedule: "@daily",
-		Enabled:  false,
+		RepoID:    repo.ID,
+		Name:      "Disabled job",
+		Prompt:    "noop",
+		Schedule:  "@daily",
+		IsEnabled: false,
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -169,7 +169,7 @@ func TestCronJobStore_Create_DefaultsBlankAgentToClaude(t *testing.T) {
 	if job.Timezone != nil {
 		t.Errorf("timezone = %v, want nil", job.Timezone)
 	}
-	if job.Enabled {
+	if job.IsEnabled {
 		t.Error("enabled should be false")
 	}
 	if job.AgentName != "claude" {
@@ -185,7 +185,7 @@ func TestCronJobStore_Get_DefaultsLegacyRowAgentToClaude(t *testing.T) {
 
 	repo := createTestRepo(t, repoStore)
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, enabled, created_at, updated_at)
+		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, is_enabled, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		"cron-legacy", repo.ID, "Legacy", "Run checks", "@daily", 1,
 		"2026-06-04T00:00:00.000Z", "2026-06-04T00:00:00.000Z",
@@ -213,11 +213,11 @@ func TestCronJobStore_Create_UniqueRepoName(t *testing.T) {
 	createTestCronJob(t, store, repo.ID, "duplicate")
 
 	_, err := store.Create(ctx, CreateCronJobParams{
-		RepoID:   repo.ID,
-		Name:     "duplicate",
-		Prompt:   "second",
-		Schedule: "@hourly",
-		Enabled:  true,
+		RepoID:    repo.ID,
+		Name:      "duplicate",
+		Prompt:    "second",
+		Schedule:  "@hourly",
+		IsEnabled: true,
 	})
 	if err == nil {
 		t.Fatal("expected UNIQUE constraint failure")
@@ -247,11 +247,11 @@ func TestCronJobStore_Create_SameNameDifferentRepo(t *testing.T) {
 
 	createTestCronJob(t, store, repoA.ID, "shared-name")
 	if _, err := store.Create(ctx, CreateCronJobParams{
-		RepoID:   repoB.ID,
-		Name:     "shared-name",
-		Prompt:   "ok",
-		Schedule: "@hourly",
-		Enabled:  true,
+		RepoID:    repoB.ID,
+		Name:      "shared-name",
+		Prompt:    "ok",
+		Schedule:  "@hourly",
+		IsEnabled: true,
 	}); err != nil {
 		t.Fatalf("create in second repo: %v", err)
 	}
@@ -352,11 +352,11 @@ func TestCronJobStore_ListEnabled(t *testing.T) {
 	repo := createTestRepo(t, repoStore)
 	createTestCronJob(t, store, repo.ID, "enabled-1")
 	disabled, _ := store.Create(ctx, CreateCronJobParams{
-		RepoID:   repo.ID,
-		Name:     "disabled-1",
-		Prompt:   "noop",
-		Schedule: "@daily",
-		Enabled:  false,
+		RepoID:    repo.ID,
+		Name:      "disabled-1",
+		Prompt:    "noop",
+		Schedule:  "@daily",
+		IsEnabled: false,
 	})
 
 	got, err := store.ListEnabled(ctx)
@@ -396,7 +396,7 @@ func TestCronJobStore_Update(t *testing.T) {
 		Schedule:  &newSchedule,
 		Timezone:  &tzPtr,
 		AgentName: &agentName,
-		Enabled:   &disabled,
+		IsEnabled: &disabled,
 		NextRunAt: &nextRunPtr,
 	})
 	if err != nil {
@@ -417,7 +417,7 @@ func TestCronJobStore_Update(t *testing.T) {
 	if updated.AgentName != "codex" {
 		t.Errorf("agent_name = %q, want codex", updated.AgentName)
 	}
-	if updated.Enabled {
+	if updated.IsEnabled {
 		t.Error("enabled should be false")
 	}
 	if updated.NextRunAt == nil || !updated.NextRunAt.Equal(nextRun) {
@@ -867,13 +867,13 @@ func TestCronJobStore_GateCommandAndRunSetupCommand_RoundTrip(t *testing.T) {
 	repo := createTestRepo(t, repoStore)
 
 	job, err := store.Create(ctx, CreateCronJobParams{
-		RepoID:          repo.ID,
-		Name:            "gated-job",
-		Prompt:          "Run checks",
-		Schedule:        "@daily",
-		Enabled:         true,
-		GateCommand:     "make gate-check",
-		RunSetupCommand: false,
+		RepoID:                repo.ID,
+		Name:                  "gated-job",
+		Prompt:                "Run checks",
+		Schedule:              "@daily",
+		IsEnabled:             true,
+		GateCommand:           "make gate-check",
+		ShouldRunSetupCommand: false,
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -881,8 +881,8 @@ func TestCronJobStore_GateCommandAndRunSetupCommand_RoundTrip(t *testing.T) {
 	if job.GateCommand != "make gate-check" {
 		t.Errorf("create: GateCommand = %q, want %q", job.GateCommand, "make gate-check")
 	}
-	if job.RunSetupCommand != false {
-		t.Errorf("create: RunSetupCommand = %v, want false", job.RunSetupCommand)
+	if job.ShouldRunSetupCommand != false {
+		t.Errorf("create: ShouldRunSetupCommand = %v, want false", job.ShouldRunSetupCommand)
 	}
 
 	got, err := store.Get(ctx, job.ID)
@@ -892,14 +892,14 @@ func TestCronJobStore_GateCommandAndRunSetupCommand_RoundTrip(t *testing.T) {
 	if got.GateCommand != "make gate-check" {
 		t.Errorf("get: GateCommand = %q, want %q", got.GateCommand, "make gate-check")
 	}
-	if got.RunSetupCommand != false {
-		t.Errorf("get: RunSetupCommand = %v, want false", got.RunSetupCommand)
+	if got.ShouldRunSetupCommand != false {
+		t.Errorf("get: ShouldRunSetupCommand = %v, want false", got.ShouldRunSetupCommand)
 	}
 }
 
 // TestCronJobStore_GateCommand_DefaultRow verifies that a row inserted without
 // gate_command/run_setup_command (simulating a pre-migration row) is read back
-// with empty GateCommand and RunSetupCommand=true (from the column DEFAULT 1).
+// with empty GateCommand and ShouldRunSetupCommand=true (from the column DEFAULT 1).
 func TestCronJobStore_GateCommand_DefaultRow(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
@@ -908,7 +908,7 @@ func TestCronJobStore_GateCommand_DefaultRow(t *testing.T) {
 
 	repo := createTestRepo(t, repoStore)
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, enabled, created_at, updated_at)
+		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, is_enabled, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		"cron-gate-legacy", repo.ID, "Legacy Gate", "Run checks", "@daily", 1,
 		"2026-06-27T00:00:00.000Z", "2026-06-27T00:00:00.000Z",
@@ -924,13 +924,13 @@ func TestCronJobStore_GateCommand_DefaultRow(t *testing.T) {
 	if got.GateCommand != "" {
 		t.Errorf("GateCommand = %q, want empty", got.GateCommand)
 	}
-	if !got.RunSetupCommand {
-		t.Errorf("RunSetupCommand = false, want true (migration default 1)")
+	if !got.ShouldRunSetupCommand {
+		t.Errorf("ShouldRunSetupCommand = false, want true (migration default 1)")
 	}
 }
 
 // TestCronJobStore_GateCommand_Update verifies that Update can set, change, and
-// leave-unchanged GateCommand and RunSetupCommand.
+// leave-unchanged GateCommand and ShouldRunSetupCommand.
 func TestCronJobStore_GateCommand_Update(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
@@ -939,24 +939,24 @@ func TestCronJobStore_GateCommand_Update(t *testing.T) {
 
 	repo := createTestRepo(t, repoStore)
 	job, err := store.Create(ctx, CreateCronJobParams{
-		RepoID:          repo.ID,
-		Name:            "update-gate-job",
-		Prompt:          "noop",
-		Schedule:        "@daily",
-		Enabled:         true,
-		GateCommand:     "make old-gate",
-		RunSetupCommand: true,
+		RepoID:                repo.ID,
+		Name:                  "update-gate-job",
+		Prompt:                "noop",
+		Schedule:              "@daily",
+		IsEnabled:             true,
+		GateCommand:           "make old-gate",
+		ShouldRunSetupCommand: true,
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Set GateCommand and toggle RunSetupCommand.
+	// Set GateCommand and toggle ShouldRunSetupCommand.
 	newGate := "make new-gate"
 	disableSetup := false
 	updated, err := store.Update(ctx, job.ID, UpdateCronJobParams{
-		GateCommand:     &newGate,
-		RunSetupCommand: &disableSetup,
+		GateCommand:           &newGate,
+		ShouldRunSetupCommand: &disableSetup,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -964,8 +964,8 @@ func TestCronJobStore_GateCommand_Update(t *testing.T) {
 	if updated.GateCommand != "make new-gate" {
 		t.Errorf("after update: GateCommand = %q, want %q", updated.GateCommand, "make new-gate")
 	}
-	if updated.RunSetupCommand != false {
-		t.Errorf("after update: RunSetupCommand = %v, want false", updated.RunSetupCommand)
+	if updated.ShouldRunSetupCommand != false {
+		t.Errorf("after update: ShouldRunSetupCommand = %v, want false", updated.ShouldRunSetupCommand)
 	}
 
 	// Nil params leave them unchanged.
@@ -976,8 +976,8 @@ func TestCronJobStore_GateCommand_Update(t *testing.T) {
 	if unchanged.GateCommand != "make new-gate" {
 		t.Errorf("no-op: GateCommand = %q, want %q", unchanged.GateCommand, "make new-gate")
 	}
-	if unchanged.RunSetupCommand != false {
-		t.Errorf("no-op: RunSetupCommand = %v, want false", unchanged.RunSetupCommand)
+	if unchanged.ShouldRunSetupCommand != false {
+		t.Errorf("no-op: ShouldRunSetupCommand = %v, want false", unchanged.ShouldRunSetupCommand)
 	}
 
 	// Clear GateCommand by setting to empty string.

@@ -4,6 +4,8 @@ go_library(
     name = "cmd_lib",
     srcs = [
         "clamp_int32.go",
+        "filelimit_other.go",
+        "filelimit_unix.go",
         "main.go",
     ],
     importpath = "github.com/recurser/bossd/cmd",
@@ -62,6 +64,7 @@ go_test(
     srcs = [
         "auth_failed_stream_test.go",
         "dispatcher_lookup_test.go",
+        "filelimit_unix_test.go",
         "init_order_test.go",
         "login_reregister_test.go",
         "main_task12_test.go",

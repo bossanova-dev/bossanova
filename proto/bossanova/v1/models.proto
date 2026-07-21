@@ -171,7 +171,7 @@ message Repo {
   bool can_auto_repair = 21;
   // Whether the daemon automatically archives a session once its PR is merged.
   // Honored by the session dispatcher on the PR-merged transition. Defaults on.
-  bool archive_sessions_after_merge = 22;
+  bool should_archive_sessions_after_merge = 22;
   // Whether the daemon automatically deletes a session's git branch once its
   // session is archived. Honored by the session dispatcher. Defaults on.
   bool can_auto_delete_branches = 23;
@@ -225,7 +225,7 @@ message RepoSettings {
   // Whether the daemon auto-archives a session once its PR is merged (BOS-46).
   // Projected here so web/cloud repo settings can see and toggle it, matching the
   // local daemon UpdateRepo surface. Defaults on.
-  bool archive_sessions_after_merge = 12;
+  bool should_archive_sessions_after_merge = 12;
   string sentry_org = 8;
   bool has_linear_key = 9;
   bool has_sentry_key = 10;
@@ -246,7 +246,7 @@ message Session {
   optional int32 pr_number = 10;
   optional string pr_url = 11;
   ChecksOverall last_check_state = 12;
-  bool automation_enabled = 13;
+  bool is_automation_enabled = 13;
   int32 attempt_count = 14;
   optional string blocked_reason = 15;
   optional google.protobuf.Timestamp archived_at = 16;
@@ -401,17 +401,17 @@ message Session {
   // display_is_repairing (24) / display_setting_up (48).
   bool display_merging = 60;
 
-  // Denormalized repo.archive_sessions_after_merge, populated server-side by
+  // Denormalized repo.should_archive_sessions_after_merge, populated server-side by
   // GetSession so the TUI session-detail view can show an "Archiving…" status
   // and know a merged session is about to be auto-archived (BOS-46 follow-up).
-  bool repo_archive_sessions_after_merge = 61;
+  bool repo_should_archive_sessions_after_merge = 61;
 
   // True while an archive (ArchiveSession) is actually in flight for this
   // session. Transport-only: hydrated server-side from the in-memory
   // DisplayTracker and never persisted. Set/cleared around the single archive
   // chokepoint (Lifecycle.ArchiveSession) so the TUI renders "Archiving…" only
   // when the daemon has an archive running — not inferred from steady-state
-  // MERGED + repo_archive_sessions_after_merge, which stays true forever for a
+  // MERGED + repo_should_archive_sessions_after_merge, which stays true forever for a
   // merged→archived→resurrected session (BOS-425). Mirrors display_merging (60).
   bool archive_pending = 62;
 }
@@ -679,7 +679,7 @@ message CronJob {
   string prompt              = 4;
   string schedule            = 5;   // 5-field cron expression (or @daily, @hourly, etc.)
   string timezone            = 6;   // optional IANA tz name; empty = daemon-local
-  bool   enabled             = 7;
+  bool   is_enabled             = 7;
   string last_run_session_id = 8;   // empty if never run
   google.protobuf.Timestamp last_run_at  = 9;
   string last_run_outcome    = 10;  // one of: deleted_no_changes, pr_created,
@@ -693,7 +693,7 @@ message CronJob {
   string agent_name = 15;              // agent runner plugin name; empty legacy data defaults to claude
   string model = 16;                   // opaque agent model id; "" = plugin default. Never enumerated by bossd.
   string gate_command = 17;            // optional gate command run before each fire; empty = no gate
-  bool   run_setup_command = 18;       // run the repo setup script before the agent; default true
+  bool   should_run_setup_command = 18;       // run the repo setup script before the agent; default true
 }
 
 // Account is registry metadata for one provider login used by account

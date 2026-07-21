@@ -249,11 +249,11 @@ func TestRepoStore_DeleteCleansDependents(t *testing.T) {
 		t.Fatalf("insert check snapshot: %v", err)
 	}
 	cron, err := cronJobs.Create(ctx, CreateCronJobParams{
-		RepoID:   repo.ID,
-		Name:     "delete-test",
-		Prompt:   "run",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repo.ID,
+		Name:      "delete-test",
+		Prompt:    "run",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -405,7 +405,7 @@ func TestSessionStore_CRUD(t *testing.T) {
 	if sess.State != machine.CreatingWorktree {
 		t.Errorf("state = %v, want CreatingWorktree", sess.State)
 	}
-	if !sess.AutomationEnabled {
+	if !sess.IsAutomationEnabled {
 		t.Error("automation_enabled should default to true")
 	}
 
@@ -469,11 +469,11 @@ func TestSessionStore_DeleteCleansDependents(t *testing.T) {
 		t.Fatalf("insert check snapshot: %v", err)
 	}
 	cron, err := cronJobs.Create(ctx, CreateCronJobParams{
-		RepoID:   repo.ID,
-		Name:     "session-delete-test",
-		Prompt:   "run",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repo.ID,
+		Name:      "session-delete-test",
+		Prompt:    "run",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)

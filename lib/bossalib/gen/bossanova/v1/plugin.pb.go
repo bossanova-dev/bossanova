@@ -1590,7 +1590,7 @@ type ScheduledJob struct {
 	// Repo origin URL this job targets.
 	RepoOriginUrl string `protobuf:"bytes,4,opt,name=repo_origin_url,json=repoOriginUrl,proto3" json:"repo_origin_url,omitempty"`
 	// Whether this job is currently enabled.
-	Enabled bool `protobuf:"varint,5,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	IsEnabled bool `protobuf:"varint,5,opt,name=is_enabled,json=isEnabled,proto3" json:"is_enabled,omitempty"`
 	// When this job last ran.
 	LastRun *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=last_run,json=lastRun,proto3,oneof" json:"last_run,omitempty"`
 	// When this job is next scheduled to run.
@@ -1657,9 +1657,9 @@ func (x *ScheduledJob) GetRepoOriginUrl() string {
 	return ""
 }
 
-func (x *ScheduledJob) GetEnabled() bool {
+func (x *ScheduledJob) GetIsEnabled() bool {
 	if x != nil {
-		return x.Enabled
+		return x.IsEnabled
 	}
 	return false
 }
@@ -5366,13 +5366,14 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\apayload\x18\x02 \x01(\tR\apayload\"\x14\n" +
 	"\x12GetScheduleRequest\"E\n" +
 	"\x13GetScheduleResponse\x12.\n" +
-	"\x04jobs\x18\x01 \x03(\v2\x1a.bossanova.v1.ScheduledJobR\x04jobs\"\xa3\x02\n" +
+	"\x04jobs\x18\x01 \x03(\v2\x1a.bossanova.v1.ScheduledJobR\x04jobs\"\xa8\x02\n" +
 	"\fScheduledJob\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1b\n" +
 	"\tcron_expr\x18\x03 \x01(\tR\bcronExpr\x12&\n" +
-	"\x0frepo_origin_url\x18\x04 \x01(\tR\rrepoOriginUrl\x12\x18\n" +
-	"\aenabled\x18\x05 \x01(\bR\aenabled\x12:\n" +
+	"\x0frepo_origin_url\x18\x04 \x01(\tR\rrepoOriginUrl\x12\x1d\n" +
+	"\n" +
+	"is_enabled\x18\x05 \x01(\bR\tisEnabled\x12:\n" +
 	"\blast_run\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\alastRun\x88\x01\x01\x12:\n" +
 	"\bnext_run\x18\a \x01(\v2\x1a.google.protobuf.TimestampH\x01R\anextRun\x88\x01\x01B\v\n" +
 	"\t_last_runB\v\n" +

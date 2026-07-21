@@ -1120,6 +1120,38 @@ func TestLimitedChatStatusChange_RecomputesOlderDisplayInsteadOfForcingIdle(t *t
 	}
 }
 
+// A BLOCKED session displaying "usage-limited…" is served (at Current) recolored
+// DANGER by BOS-430. For a client older than V20260706 BOTH ErroredStatusChange
+// (V20260718) and LimitedChatStatusChange (V20260706) run. The limited transform
+// recomputes the idle fallback while the session state is still BLOCKED; if it
+// recomputed through displaystatus.Compute the errored-recolor overlay would
+// re-apply DANGER, leaking the new shape into a down-convert meant to hide it.
+// The whole ProductionChanges chain must instead yield the un-recolored base
+// cascade ("✓ passing"/SUCCESS here), preserving the limited down-convert.
+func TestLimitedChatStatusChange_PreservesLimitedDownConvertOnBlockedSession(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	// The served (Current) shape: BLOCKED + LIMITED → base "usage-limited"/WARNING
+	// recolored to DANGER by the errored overlay.
+	msg := &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{{
+		State:          pb.SessionState_SESSION_STATE_BLOCKED,
+		DisplayStatus:  pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+		DisplayLabel:   "usage-limited (resets ~15:00)",
+		DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+		DisplaySpinner: false,
+	}}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, msg, apiversion.V20260705)
+	sess := msg.GetSessions()[0]
+	if got := sess.GetDisplayLabel(); got != "✓ passing" {
+		t.Fatalf("display_label = %q, want ✓ passing", got)
+	}
+	if got := sess.GetDisplayIntent(); got != pb.DisplayIntent_DISPLAY_INTENT_SUCCESS {
+		t.Fatalf("display_intent = %v, want SUCCESS (not the BOS-430 DANGER recolor)", got)
+	}
+	if sess.GetDisplaySpinner() {
+		t.Fatal("display_spinner = true, want false")
+	}
+}
+
 func TestLimitedChatStatusChange_DownConvertsStatusResponsesForOlderVersions(t *testing.T) {
 	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.LimitedChatStatusChange{})
 	if err != nil {
@@ -1231,8 +1263,8 @@ func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
 
 func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20260711 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260711)
+	if got := reg.Current(); got != apiversion.V20260718 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260718)
 	}
 	msg := &pb.ProxyListAccountsResponse{
 		Accounts: []*pb.Account{{
@@ -1425,5 +1457,222 @@ func TestProductionChanges_IncludesNoEligibleTransform(t *testing.T) {
 	changes.Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, apiversion.Baseline)
 	if got := msg.GetSession().GetRotationEvents()[0].GetOutcome(); got != pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY {
 		t.Errorf("ProductionChanges did not down-convert NO_ELIGIBLE_ACCOUNT for Baseline: got %v", got)
+	}
+}
+
+// --- ErroredStatusChange (V20260718) ---
+
+// erroredResponseCases mirrors limitedResponseCases but takes a session factory
+// so each errored scenario can supply its own served Session shape across every
+// Session-bearing OrchestratorService procedure, including the create stream.
+func erroredResponseCases(mk func() *pb.Session) []struct {
+	name   string
+	method string
+	build  func() any
+	get    func(any) *pb.Session
+} {
+	return []struct {
+		name   string
+		method string
+		build  func() any
+		get    func(any) *pb.Session
+	}{
+		{"ProxyCreateSession", bossanovav1connect.OrchestratorServiceProxyCreateSessionProcedure,
+			func() any {
+				return &pb.ProxyCreateSessionResponse{Body: &pb.ProxyCreateSessionResponse_Created{Created: mk()}}
+			},
+			func(m any) *pb.Session { return m.(*pb.ProxyCreateSessionResponse).GetCreated() }},
+		{"ProxyListSessions", bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure,
+			func() any { return &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{mk()}} },
+			func(m any) *pb.Session { return m.(*pb.ProxyListSessionsResponse).GetSessions()[0] }},
+		{"ProxyGetSession", bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure,
+			func() any { return &pb.ProxyGetSessionResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyGetSessionResponse).GetSession() }},
+		{"ProxyStopSession", bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure,
+			func() any { return &pb.ProxyStopSessionResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyStopSessionResponse).GetSession() }},
+		{"ProxyPauseSession", bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure,
+			func() any { return &pb.ProxyPauseSessionResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyPauseSessionResponse).GetSession() }},
+		{"ProxyResumeSession", bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure,
+			func() any { return &pb.ProxyResumeSessionResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyResumeSessionResponse).GetSession() }},
+		{"ProxyMergeSession", bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure,
+			func() any { return &pb.ProxyMergeSessionResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyMergeSessionResponse).GetSession() }},
+		{"ProxyArchiveSession", bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure,
+			func() any { return &pb.ProxyArchiveSessionResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyArchiveSessionResponse).GetSession() }},
+		{"TransferSession", bossanovav1connect.OrchestratorServiceTransferSessionProcedure,
+			func() any { return &pb.TransferSessionResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.TransferSessionResponse).GetSession() }},
+		{"ProxyRetrySession", bossanovav1connect.OrchestratorServiceProxyRetrySessionProcedure,
+			func() any { return &pb.ProxyRetrySessionResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyRetrySessionResponse).GetSession() }},
+		{"ProxyUpdateSession", bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure,
+			func() any { return &pb.ProxyUpdateSessionResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyUpdateSessionResponse).GetSession() }},
+		{"ProxyLinkSessionPR", bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure,
+			func() any { return &pb.ProxyLinkSessionPRResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyLinkSessionPRResponse).GetSession() }},
+		{"ProxyRunCronJobNow", bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure,
+			func() any { return &pb.ProxyRunCronJobNowResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyRunCronJobNowResponse).GetSession() }},
+		{"ProxyCloseSession", bossanovav1connect.OrchestratorServiceProxyCloseSessionProcedure,
+			func() any { return &pb.ProxyCloseSessionResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyCloseSessionResponse).GetSession() }},
+		{"ProxyResurrectSession", bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure,
+			func() any { return &pb.ProxyResurrectSessionResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyResurrectSessionResponse).GetSession() }},
+	}
+}
+
+// olderThanErrored is every production version strictly older than V20260718.
+var olderThanErrored = []apiversion.Version{
+	apiversion.Baseline,
+	apiversion.V20260704,
+	apiversion.V20260705,
+	apiversion.V20260706,
+	apiversion.V20260711,
+}
+
+func TestErroredStatusChange_Version(t *testing.T) {
+	if got := (apiversion.ErroredStatusChange{}).Version(); got != apiversion.V20260718 {
+		t.Errorf("ErroredStatusChange.Version() = %q, want %q", got, apiversion.V20260718)
+	}
+}
+
+// A post-BOS-430 ORPHANED session shows its real base label + spinner recolored
+// DANGER (e.g. a stale WORKING chat → "working"/DANGER/spinner). Older clients
+// were built against the fixed "orphaned"/DANGER/no-spinner short-circuit, so
+// the transform restores exactly that across every procedure and older version.
+func TestErroredStatusChange_DownConvertsOrphanedForOlderVersions(t *testing.T) {
+	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.ErroredStatusChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	mk := func() *pb.Session {
+		return &pb.Session{
+			State:          pb.SessionState_SESSION_STATE_ORPHANED,
+			DisplayLabel:   "working",
+			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+			DisplaySpinner: true,
+		}
+	}
+	for _, version := range olderThanErrored {
+		for _, tc := range erroredResponseCases(mk) {
+			t.Run(string(version)+"/"+tc.name, func(t *testing.T) {
+				msg := tc.build()
+				changes.Apply(tc.method, msg, version)
+				sess := tc.get(msg)
+				if got := sess.GetDisplayLabel(); got != "orphaned" {
+					t.Errorf("%s: display_label = %q, want orphaned", tc.name, got)
+				}
+				if got := sess.GetDisplayIntent(); got != pb.DisplayIntent_DISPLAY_INTENT_DANGER {
+					t.Errorf("%s: display_intent = %v, want DANGER", tc.name, got)
+				}
+				if sess.GetDisplaySpinner() {
+					t.Errorf("%s: display_spinner = true, want false", tc.name)
+				}
+			})
+		}
+	}
+}
+
+// A post-BOS-430 BLOCKED session with a green PR is recolored DANGER; older
+// clients expect the un-recolored base cascade, so only the intent is restored
+// (label + spinner are already the base values).
+func TestErroredStatusChange_DownConvertsBlockedIntentForOlderVersions(t *testing.T) {
+	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.ErroredStatusChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	mk := func() *pb.Session {
+		return &pb.Session{
+			State:         pb.SessionState_SESSION_STATE_BLOCKED,
+			DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+			DisplayLabel:  "✓ passing",
+			DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+		}
+	}
+	for _, version := range olderThanErrored {
+		for _, tc := range erroredResponseCases(mk) {
+			t.Run(string(version)+"/"+tc.name, func(t *testing.T) {
+				msg := tc.build()
+				changes.Apply(tc.method, msg, version)
+				sess := tc.get(msg)
+				if got := sess.GetDisplayLabel(); got != "✓ passing" {
+					t.Errorf("%s: display_label = %q, want ✓ passing", tc.name, got)
+				}
+				if got := sess.GetDisplayIntent(); got != pb.DisplayIntent_DISPLAY_INTENT_SUCCESS {
+					t.Errorf("%s: display_intent = %v, want SUCCESS", tc.name, got)
+				}
+			})
+		}
+	}
+}
+
+// A BLOCKED session whose real status is a merged PR was never recolored (the
+// muted-terminal exemption), so the down-convert must leave it MUTED.
+func TestErroredStatusChange_LeavesBlockedMergedUntouched(t *testing.T) {
+	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.ErroredStatusChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	msg := &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{{
+		State:         pb.SessionState_SESSION_STATE_BLOCKED,
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+		DisplayLabel:  "✓ merged",
+		DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_MUTED,
+	}}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, msg, apiversion.Baseline)
+	sess := msg.GetSessions()[0]
+	if got := sess.GetDisplayLabel(); got != "✓ merged" {
+		t.Fatalf("display_label = %q, want ✓ merged", got)
+	}
+	if got := sess.GetDisplayIntent(); got != pb.DisplayIntent_DISPLAY_INTENT_MUTED {
+		t.Fatalf("display_intent = %v, want MUTED", got)
+	}
+}
+
+// A non-errored session (implementing plan, etc.) must be untouched — the
+// errored-recolor overlay never applied to it.
+func TestErroredStatusChange_LeavesNonErroredUntouched(t *testing.T) {
+	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.ErroredStatusChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	msg := &pb.ProxyGetSessionResponse{Session: &pb.Session{
+		State:         pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		DisplayLabel:  "✓ passing",
+		DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+	}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, apiversion.Baseline)
+	sess := msg.GetSession()
+	if got := sess.GetDisplayLabel(); got != "✓ passing" {
+		t.Fatalf("display_label = %q, want ✓ passing (unchanged)", got)
+	}
+	if got := sess.GetDisplayIntent(); got != pb.DisplayIntent_DISPLAY_INTENT_SUCCESS {
+		t.Fatalf("display_intent = %v, want SUCCESS (unchanged)", got)
+	}
+}
+
+// A request resolved to Current (V20260718) runs zero transforms: an orphaned
+// session keeps its new recolored shape.
+func TestErroredStatusChange_NoOpAtCurrent(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	msg := &pb.ProxyGetSessionResponse{Session: &pb.Session{
+		State:          pb.SessionState_SESSION_STATE_ORPHANED,
+		DisplayLabel:   "working",
+		DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+		DisplaySpinner: true,
+	}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, apiversion.DefaultRegistry().Current())
+	sess := msg.GetSession()
+	if got := sess.GetDisplayLabel(); got != "working" {
+		t.Fatalf("display_label = %q, want working (unchanged at Current)", got)
+	}
+	if !sess.GetDisplaySpinner() {
+		t.Fatal("display_spinner = false, want true (unchanged at Current)")
 	}
 }

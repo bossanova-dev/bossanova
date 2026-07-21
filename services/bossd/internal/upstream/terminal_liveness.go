@@ -106,9 +106,10 @@ func (c *TerminalStreamClient) runHeartbeat(ctx context.Context, sess *terminalS
 }
 
 // escalateWedged is the watchdog's forced self-heal: after K consecutive
-// ready-timeouts it rotates the DaemonStream registration (reRegister) and
-// drops pooled HTTP/2 connections (closeIdle) so both reverse streams
-// re-dial together on a fresh connection and co-locate on one bosso pod.
+// ready-timeouts it first drops pooled HTTP/2 connections (closeIdle), then
+// rotates the DaemonStream registration (reRegister), so registration cannot
+// reuse the idle connection that routed TerminalStream to the wrong bosso pod.
+// Both reverse streams then re-dial together and co-locate on one bosso pod.
 // "Instigate restart until they know they are connected."
 func (c *TerminalStreamClient) escalateWedged(ctx context.Context) {
 	if c.health != nil {
@@ -124,11 +125,11 @@ func (c *TerminalStreamClient) escalateWedged(ctx context.Context) {
 		Uint64("ready_timeouts", snap.ReadyTimeouts).
 		Uint64("forced_re_registers", snap.ForcedReRegisters).
 		Msg("terminal stream: ready-timeout budget exceeded; forcing paired DaemonStream re-register and fresh-connection re-dial")
-	if c.reRegister != nil {
-		c.reRegister(ctx)
-	}
 	if c.closeIdle != nil {
 		c.closeIdle()
+	}
+	if c.reRegister != nil {
+		c.reRegister(ctx)
 	}
 }
 

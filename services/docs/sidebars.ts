@@ -30,6 +30,12 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Skills',
+      collapsed: false,
+      items: ['skills/overview', 'skills/extensions'],
+    },
+    {
+      type: 'category',
       label: 'Configuration',
       collapsed: false,
       items: ['reference/settings', 'reference/cli-reference'],

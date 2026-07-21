@@ -17,6 +17,12 @@
       "skill": "impeccable",
       "glob": "services/web/**",
       "fallbackRubric": "review through an inline React/TypeScript/web-UI rubric: component correctness, hook/effect races, accessibility, type-boundary cleanliness, dead/duplicated code"
+    },
+    {
+      "id": "db",
+      "skill": "database-review",
+      "glob": "**/migrations/**",
+      "fallbackRubric": "review through an inline schema/migration rubric: audit each changed column/table against the database-design standard — boolean prefixes (is_/has_/should_/can_), count form ({noun}_count not num_*), timestamp form ({event}_at as TEXT ISO-8601, never an epoch integer in an _at column), date form ({event}_on), snake_case identifiers, and foreign-key naming ({singular_table}_id)"
     }
   ],
   "commands": {
@@ -42,6 +48,26 @@
     "finalize": "boss-finalize",
     "publish": "proof",
     "sessionRunner": "bossd"
+  },
+  "trackerConfig": {
+    "linear": {
+      "mcpServer": "bossanova-linear",
+      "workspace": "bossanova-dev",
+      "team": "Bossanova",
+      "teamKey": "BOS",
+      "states": {
+        "unplanned": "Unplanned",
+        "planned": "Todo",
+        "inProgress": "In Progress",
+        "inReview": "In Review"
+      }
+    }
+  },
+  "publishConfig": {
+    "proof": {
+      "bucket": "bossanova-proof-production",
+      "baseUrl": "https://proof.bossanova.dev"
+    }
   },
   "planContract": {
     "version": 1,

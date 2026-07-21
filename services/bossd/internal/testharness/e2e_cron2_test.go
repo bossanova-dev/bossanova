@@ -55,11 +55,11 @@ func TestE2ECron_DaemonRestart_ReloadsAndFires(t *testing.T) {
 	repoID := registerTestRepo(t, h1, ctx, withWorktreeBaseDir(t.TempDir()))
 
 	job, err := h1.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "restart-job",
-		Prompt:   "do something after restart",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "restart-job",
+		Prompt:    "do something after restart",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -133,11 +133,11 @@ func TestE2ECron_FinalizingRecovery(t *testing.T) {
 
 	// Create a cron job.
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "recovery-job",
-		Prompt:   "something",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "recovery-job",
+		Prompt:    "something",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -248,11 +248,11 @@ func TestE2ECron_HookAuth(t *testing.T) {
 
 	// Create a cron job and fire it to get a session with a valid hook token.
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "hookauth-job",
-		Prompt:   "do stuff",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "hookauth-job",
+		Prompt:    "do stuff",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -333,11 +333,11 @@ func TestE2ECron_HookAuth(t *testing.T) {
 		}
 
 		job2, err := h2.CronJobs.Create(ctx2, db.CreateCronJobParams{
-			RepoID:   repoID2,
-			Name:     "concurrent-hookauth-job",
-			Prompt:   "concurrent",
-			Schedule: "* * * * *",
-			Enabled:  true,
+			RepoID:    repoID2,
+			Name:      "concurrent-hookauth-job",
+			Prompt:    "concurrent",
+			Schedule:  "* * * * *",
+			IsEnabled: true,
 		})
 		if err != nil {
 			t.Fatalf("create job2: %v", err)
@@ -401,11 +401,11 @@ func TestE2ECron_CleanWorktreeExistingPRStaysVisible(t *testing.T) {
 	}
 
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "clean-existing-pr",
-		Prompt:   "open PR externally",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "clean-existing-pr",
+		Prompt:    "open PR externally",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -496,11 +496,11 @@ func TestE2ECron_ConcurrencyCap(t *testing.T) {
 	const numJobs = 5
 	for i := 0; i < numJobs; i++ {
 		job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-			RepoID:   repoID,
-			Name:     fmt.Sprintf("cap-job-%d", i),
-			Prompt:   "cap test",
-			Schedule: "* * * * *",
-			Enabled:  true,
+			RepoID:    repoID,
+			Name:      fmt.Sprintf("cap-job-%d", i),
+			Prompt:    "cap test",
+			Schedule:  "* * * * *",
+			IsEnabled: true,
 		})
 		if err != nil {
 			t.Fatalf("create job %d: %v", i, err)
@@ -572,11 +572,11 @@ func TestE2ECron_FailureModes(t *testing.T) {
 		h.SetVCSMode(testharness.VCSModePushFail)
 
 		job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-			RepoID:   repoID,
-			Name:     "push-fail-job",
-			Prompt:   "do stuff",
-			Schedule: "* * * * *",
-			Enabled:  true,
+			RepoID:    repoID,
+			Name:      "push-fail-job",
+			Prompt:    "do stuff",
+			Schedule:  "* * * * *",
+			IsEnabled: true,
 		})
 		if err != nil {
 			t.Fatalf("create job: %v", err)
@@ -636,11 +636,11 @@ func TestE2ECron_FailureModes(t *testing.T) {
 		h.SetVCSMode(testharness.VCSModeCreatePRFail)
 
 		job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-			RepoID:   repoID,
-			Name:     "create-pr-fail-job",
-			Prompt:   "do stuff",
-			Schedule: "* * * * *",
-			Enabled:  true,
+			RepoID:    repoID,
+			Name:      "create-pr-fail-job",
+			Prompt:    "do stuff",
+			Schedule:  "* * * * *",
+			IsEnabled: true,
 		})
 		if err != nil {
 			t.Fatalf("create job: %v", err)

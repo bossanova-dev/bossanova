@@ -11,6 +11,7 @@
 // Node built-ins only — cron worktrees are dependency-free.
 
 import { readFileSync } from 'node:fs'
+import { loadSkillConfig, trackerConfigFor } from './skill-config.mjs'
 
 // The idempotency marker: bs-implement upserts the single PR comment that
 // carries this string, so a re-run edits the same comment instead of stacking.
@@ -152,15 +153,26 @@ function renderLeaveAsIs(leaveAsIs = []) {
 // paste to file each suggestion as a Linear issue. '' when there are no
 // suggestions. The fenced code block is what gives GitHub the copy-to-clipboard
 // button.
-function renderSuggestions(suggestions = []) {
+function renderSuggestions(suggestions = [], tracker = null) {
   if (!suggestions.length) return ''
   const list = suggestions
     .map((s) => `- ${s.title}${loc(s)}${s.detail ? ` — ${s.detail}` : ''}`)
     .join('\n')
+  let header, dedupe
+  if (tracker) {
+    const planned = tracker.states?.planned ?? 'planned'
+    const inProgress = tracker.states?.inProgress ?? 'in-progress'
+    header = `Using the ${tracker.mcpServer} MCP, create one ${tracker.team} issue per item below (priority None,`
+    dedupe = `Do not create duplicates of existing ${planned}/${inProgress} issues.`
+  } else {
+    header =
+      'Using the configured issue tracker MCP, create one issue per item below (priority None,'
+    dedupe = 'Do not create duplicates of existing open issues.'
+  }
   const prompt = [
-    'Using the bossanova-linear MCP, create one Bossanova issue per item below (priority None,',
+    header,
     'no project filter). Title = the item title; description = the detail + originating file:line.',
-    'Do not create duplicates of existing Todo/In Progress issues.',
+    dedupe,
     '',
     list,
   ].join('\n')
@@ -194,6 +206,8 @@ export function renderReport(data = {}) {
     suggestions = [],
   } = data
 
+  const tracker = data.tracker !== undefined ? data.tracker : trackerConfigFor(loadSkillConfig())
+
   const blocks = []
   blocks.push(`${MARKER}\n${renderHeader(data)}`)
   blocks.push('---')
@@ -219,7 +233,7 @@ export function renderReport(data = {}) {
   blocks.push(
     detailsSection(
       `<strong>Create ${n} Linear ${n === 1 ? 'issue' : 'issues'}</strong>`,
-      renderSuggestions(suggestions),
+      renderSuggestions(suggestions, tracker),
     ),
   )
 

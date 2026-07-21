@@ -10,6 +10,12 @@ import (
 )
 
 func TestCompute(t *testing.T) {
+	// blockedPRFailure is a draft-PR-creation-failure BlockedReason, built the
+	// same way as TestComputeDraftPRFailureShowsWarningWithoutSpinner. Paired
+	// with State=BLOCKED it exercises the errored-recolor overlay turning the
+	// normally-WARNING "? PR failed" label DANGER.
+	blockedPRFailure := sessionreason.DraftPRCreationFailure(errors.New("create draft PR: gh pr create: authentication required"))
+
 	tests := []struct {
 		name string
 		in   Input
@@ -469,34 +475,207 @@ func TestCompute(t *testing.T) {
 			want: Output{Label: "✓ merged", Intent: pb.DisplayIntent_DISPLAY_INTENT_MUTED},
 		},
 
-		// --- Orphaned (honest green: terminal dead run never surfaces as green) ---
+		// --- Errored recolor overlay (BOS-430) ---
+		//
+		// An orphaned/blocked session keeps its REAL underlying status label and
+		// spinner (so a live working chat or a pending question is never hidden
+		// behind a static "orphaned"), but its intent is recolored to DANGER so the
+		// error stays visible. Honest-green is preserved: a dead run's bootstrap-only
+		// passing/draft PR is shown in red, never green. The one exception is a
+		// terminal muted PR label ("✓ merged" / "closed"), left MUTED.
 		{
-			name: "orphaned wins over a draft PR display status",
+			name: "orphaned + draft PR recolors draft to danger, keeping real label",
 			in: Input{
 				Session: &pb.Session{
 					State:         pb.SessionState_SESSION_STATE_ORPHANED,
 					DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_DRAFT,
 				},
 			},
-			want: Output{Label: "orphaned", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+			// draft is normally MUTED → recolored DANGER.
+			want: Output{Label: "draft", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
 		},
 		{
-			name: "orphaned wins over a passing (green) PR display status",
+			name: "orphaned + passing PR recolors ✓ passing to danger (honest green: red check, never green)",
 			in: Input{
 				Session: &pb.Session{
 					State:         pb.SessionState_SESSION_STATE_ORPHANED,
 					DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING,
 				},
 			},
-			want: Output{Label: "orphaned", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+			want: Output{Label: "✓ passing", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
 		},
 		{
-			name: "orphaned wins over a stale WORKING chat status",
+			name: "orphaned + stale WORKING chat recolors working to danger, keeping spinner",
 			in: Input{
 				Session:    &pb.Session{State: pb.SessionState_SESSION_STATE_ORPHANED},
 				ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING,
 			},
-			want: Output{Label: "orphaned", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+			want: Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER, Spinner: true},
+		},
+		{
+			name: "orphaned + QUESTION chat recolors ? question to danger (pending question not hidden)",
+			in: Input{
+				Session:    &pb.Session{State: pb.SessionState_SESSION_STATE_ORPHANED},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_QUESTION,
+			},
+			want: Output{Label: "? question", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			name: "orphaned + IDLE chat recolors idle to danger",
+			in: Input{
+				Session:    &pb.Session{State: pb.SessionState_SESSION_STATE_ORPHANED},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE,
+			},
+			want: Output{Label: "idle", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			name: "orphaned + CHECKING PR recolors checking to danger, keeping spinner",
+			in: Input{
+				Session: &pb.Session{
+					State:         pb.SessionState_SESSION_STATE_ORPHANED,
+					DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
+				},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED,
+			},
+			// checking is normally WARNING+spinner → recolored DANGER.
+			want: Output{Label: "checking", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER, Spinner: true},
+		},
+		{
+			name: "orphaned + nothing recolors stopped to danger",
+			in: Input{
+				Session:    &pb.Session{State: pb.SessionState_SESSION_STATE_ORPHANED},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED,
+			},
+			want: Output{Label: "stopped", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			// Guard: a merged PR is a legitimate terminal end state, so an orphaned
+			// session whose real status is merged stays MUTED, not alarmed red.
+			name: "orphaned + MERGED PR is NOT recolored (terminal muted end state)",
+			in: Input{
+				Session: &pb.Session{
+					State:         pb.SessionState_SESSION_STATE_ORPHANED,
+					DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+				},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED,
+			},
+			want: Output{Label: "✓ merged", Intent: pb.DisplayIntent_DISPLAY_INTENT_MUTED},
+		},
+		{
+			name: "orphaned + CLOSED PR is NOT recolored (terminal muted end state)",
+			in: Input{
+				Session: &pb.Session{
+					State:         pb.SessionState_SESSION_STATE_ORPHANED,
+					DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CLOSED,
+				},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED,
+			},
+			want: Output{Label: "closed", Intent: pb.DisplayIntent_DISPLAY_INTENT_MUTED},
+		},
+		{
+			// BLOCKED is symmetric with ORPHANED: a blocked session with a live
+			// working chat has the identical hidden-state bug, so it is recolored too.
+			name: "blocked + WORKING chat recolors working to danger, keeping spinner",
+			in: Input{
+				Session:    &pb.Session{State: pb.SessionState_SESSION_STATE_BLOCKED},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING,
+			},
+			want: Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER, Spinner: true},
+		},
+		{
+			// A blocked session's "? PR failed" is recolored WARNING→DANGER. This is
+			// intended: a blocked session is an error state, so its real status is
+			// alarmed red even though the standalone draft-PR-failure label is WARNING
+			// (see TestComputeDraftPRFailureShowsWarningWithoutSpinner, State=IMPLEMENTING_PLAN).
+			name: "blocked + draft-PR-failure recolors ? PR failed to danger",
+			in: Input{
+				Session: &pb.Session{
+					State:         pb.SessionState_SESSION_STATE_BLOCKED,
+					BlockedReason: &blockedPRFailure,
+				},
+			},
+			want: Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			name: "blocked + QUESTION chat recolors ? question to danger (pending question not hidden)",
+			in: Input{
+				Session:    &pb.Session{State: pb.SessionState_SESSION_STATE_BLOCKED},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_QUESTION,
+			},
+			want: Output{Label: "? question", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			name: "blocked + IDLE chat recolors idle to danger",
+			in: Input{
+				Session:    &pb.Session{State: pb.SessionState_SESSION_STATE_BLOCKED},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE,
+			},
+			want: Output{Label: "idle", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			name: "blocked + CHECKING PR recolors checking to danger, keeping spinner",
+			in: Input{
+				Session: &pb.Session{
+					State:         pb.SessionState_SESSION_STATE_BLOCKED,
+					DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
+				},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED,
+			},
+			want: Output{Label: "checking", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER, Spinner: true},
+		},
+		{
+			name: "blocked + passing PR recolors ✓ passing to danger (honest green: red check, never green)",
+			in: Input{
+				Session: &pb.Session{
+					State:         pb.SessionState_SESSION_STATE_BLOCKED,
+					DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+				},
+			},
+			want: Output{Label: "✓ passing", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			name: "blocked + draft PR recolors draft to danger, keeping real label",
+			in: Input{
+				Session: &pb.Session{
+					State:         pb.SessionState_SESSION_STATE_BLOCKED,
+					DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_DRAFT,
+				},
+			},
+			want: Output{Label: "draft", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			name: "blocked + nothing recolors stopped to danger",
+			in: Input{
+				Session:    &pb.Session{State: pb.SessionState_SESSION_STATE_BLOCKED},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED,
+			},
+			want: Output{Label: "stopped", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			// Guard, symmetric with the orphaned cases: the muted-terminal exemption
+			// (isMutedTerminalPR) must hold on the BLOCKED path too. A regression that
+			// recolored a blocked + merged/closed session red would otherwise slip
+			// through, since errored() treats BLOCKED and ORPHANED identically.
+			name: "blocked + MERGED PR is NOT recolored (terminal muted end state)",
+			in: Input{
+				Session: &pb.Session{
+					State:         pb.SessionState_SESSION_STATE_BLOCKED,
+					DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+				},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED,
+			},
+			want: Output{Label: "✓ merged", Intent: pb.DisplayIntent_DISPLAY_INTENT_MUTED},
+		},
+		{
+			name: "blocked + CLOSED PR is NOT recolored (terminal muted end state)",
+			in: Input{
+				Session: &pb.Session{
+					State:         pb.SessionState_SESSION_STATE_BLOCKED,
+					DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CLOSED,
+				},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED,
+			},
+			want: Output{Label: "closed", Intent: pb.DisplayIntent_DISPLAY_INTENT_MUTED},
 		},
 	}
 
@@ -530,5 +709,133 @@ func TestComputeDraftPRFailureShowsWarningWithoutSpinner(t *testing.T) {
 	}
 	if got.Spinner {
 		t.Fatal("Spinner = true, want false")
+	}
+}
+
+// TestPreErroredOutputInvertsRecolor locks the apiversion down-convert
+// (ErroredStatusChange, V20260718): for every base cascade branch, feeding a
+// served (post-BOS-430) errored Session back through PreErroredOutput must
+// reproduce the exact pre-BOS-430 Output — for ORPHANED the fixed
+// "orphaned"/DANGER short-circuit, for BLOCKED the un-recolored base cascade.
+// Iterating every branch means the reuse of prOutput/workflowOutput plus the
+// fixed-intent switch in preErroredBlockedIntent cannot drift from the cascade
+// without failing here.
+func TestPreErroredOutputInvertsRecolor(t *testing.T) {
+	reset := time.Date(2026, 1, 1, 9, 30, 0, 0, time.UTC)
+	prFailure := sessionreason.DraftPRCreationFailure(errors.New("create draft PR: gh pr create: authentication required"))
+
+	// Each case is the non-state part of an Input exercising one base branch.
+	// The loop runs it under both errored states.
+	cases := []struct {
+		name string
+		in   Input
+	}{
+		{"question", Input{Session: &pb.Session{}, ChatStatus: pb.ChatStatus_CHAT_STATUS_QUESTION}},
+		{"limited-no-reset", Input{Session: &pb.Session{}, ChatStatus: pb.ChatStatus_CHAT_STATUS_LIMITED}},
+		{"limited-reset", Input{Session: &pb.Session{}, ChatStatus: pb.ChatStatus_CHAT_STATUS_LIMITED, ChatResetAt: reset}},
+		{"pr-failed", Input{Session: &pb.Session{BlockedReason: &prFailure}}},
+		{"initializing", Input{Session: &pb.Session{DisplaySettingUp: true}}},
+		{"merging", Input{Session: &pb.Session{DisplayMerging: true}}},
+		{"archiving", Input{Session: &pb.Session{ArchivePending: true}}},
+		{"working-ok", Input{Session: &pb.Session{}, ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING}},
+		{"working-needsfix", Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_FAILING}, ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING}},
+		{"workflow-running", Input{Session: &pb.Session{WorkflowDisplayStatus: pb.WorkflowStatus_WORKFLOW_STATUS_RUNNING, WorkflowDisplayLeg: 2, WorkflowDisplayMaxLegs: 4}}},
+		{"workflow-pending", Input{Session: &pb.Session{WorkflowDisplayStatus: pb.WorkflowStatus_WORKFLOW_STATUS_PENDING}}},
+		{"workflow-paused", Input{Session: &pb.Session{WorkflowDisplayStatus: pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED, WorkflowDisplayLeg: 1, WorkflowDisplayMaxLegs: 3}}},
+		{"workflow-failed", Input{Session: &pb.Session{WorkflowDisplayStatus: pb.WorkflowStatus_WORKFLOW_STATUS_FAILED, WorkflowDisplayLeg: 2, WorkflowDisplayMaxLegs: 3}}},
+		{"workflow-cancelled", Input{Session: &pb.Session{WorkflowDisplayStatus: pb.WorkflowStatus_WORKFLOW_STATUS_CANCELLED}}},
+		{"repairing", Input{Session: &pb.Session{DisplayIsRepairing: true}}},
+		{"pr-merged", Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED}}},
+		{"pr-closed", Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CLOSED}}},
+		{"pr-approved", Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_APPROVED}}},
+		{"pr-passing", Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING}}},
+		{"pr-review", Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_REVIEW}}},
+		{"pr-failing", Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_FAILING}}},
+		{"pr-conflict", Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CONFLICT}}},
+		{"pr-rejected", Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_REJECTED}}},
+		{"pr-draft", Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_DRAFT}}},
+		{"pr-checking-clean", Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING}}},
+		{"pr-checking-failures", Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING, DisplayHasFailures: true}}},
+		{"idle", Input{Session: &pb.Session{}, ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE}},
+		{"stopped", Input{Session: &pb.Session{}, ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED}},
+	}
+
+	states := []struct {
+		name  string
+		state pb.SessionState
+	}{
+		{"orphaned", pb.SessionState_SESSION_STATE_ORPHANED},
+		{"blocked", pb.SessionState_SESSION_STATE_BLOCKED},
+	}
+
+	for _, st := range states {
+		for _, tc := range cases {
+			t.Run(st.name+"/"+tc.name, func(t *testing.T) {
+				in := tc.in
+				in.Session.State = st.state
+
+				// Pre-BOS-430 behavior: ORPHANED short-circuited to a fixed
+				// tuple; BLOCKED had no overlay, so it equals the base cascade.
+				wantOld := baseStatus(in)
+				if st.state == pb.SessionState_SESSION_STATE_ORPHANED {
+					wantOld = Output{Label: "orphaned", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER}
+				}
+
+				// Simulate the served Session: bossd writes Compute's output onto
+				// the Session's Display* fields, exactly what bosso then serves.
+				served := Compute(in)
+				in.Session.DisplayLabel = served.Label
+				in.Session.DisplayIntent = served.Intent
+				in.Session.DisplaySpinner = served.Spinner
+
+				got := PreErroredOutput(in.Session)
+				if got != wantOld {
+					t.Errorf("PreErroredOutput() = %+v, want %+v (served %+v)", got, wantOld, served)
+				}
+			})
+		}
+	}
+}
+
+// TestPreErroredOutputEmptyLabelUnchanged verifies an errored session whose
+// display was never computed (empty label) is returned unchanged — there is
+// nothing to invert.
+func TestPreErroredOutputEmptyLabelUnchanged(t *testing.T) {
+	sess := &pb.Session{State: pb.SessionState_SESSION_STATE_ORPHANED}
+	got := PreErroredOutput(sess)
+	if got != (Output{}) {
+		t.Errorf("PreErroredOutput() = %+v, want zero Output", got)
+	}
+}
+
+// ComputeBase omits the errored-recolor overlay: a BLOCKED session that Compute
+// recolors DANGER keeps its base intent under ComputeBase, while for a
+// non-errored session the two agree.
+func TestComputeBaseOmitsErroredOverlay(t *testing.T) {
+	blocked := Input{
+		Session: &pb.Session{
+			State:         pb.SessionState_SESSION_STATE_BLOCKED,
+			DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+		},
+		ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE,
+	}
+	if got := Compute(blocked); got.Intent != pb.DisplayIntent_DISPLAY_INTENT_DANGER {
+		t.Fatalf("Compute() intent = %v, want DANGER (overlay applied)", got.Intent)
+	}
+	base := ComputeBase(blocked)
+	if base.Label != "✓ passing" {
+		t.Errorf("ComputeBase() label = %q, want ✓ passing", base.Label)
+	}
+	if base.Intent != pb.DisplayIntent_DISPLAY_INTENT_SUCCESS {
+		t.Errorf("ComputeBase() intent = %v, want SUCCESS (no recolor)", base.Intent)
+	}
+
+	// For a non-errored session ComputeBase and Compute must agree.
+	normal := Input{
+		Session:    &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
+		ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE,
+	}
+	if ComputeBase(normal) != Compute(normal) {
+		t.Errorf("ComputeBase(%+v) = %+v, want equal to Compute() %+v", normal, ComputeBase(normal), Compute(normal))
 	}
 }

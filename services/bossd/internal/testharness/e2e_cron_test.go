@@ -199,11 +199,11 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 
 	// Create the cron job.
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "happy-path",
-		Prompt:   "do the thing",
-		Schedule: "* * * * *", // every minute
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "happy-path",
+		Prompt:    "do the thing",
+		Schedule:  "* * * * *", // every minute
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -313,11 +313,11 @@ func TestE2ECron_NoChanges_DeletesSession(t *testing.T) {
 
 	// Create the cron job.
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "no-changes",
-		Prompt:   "do nothing",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "no-changes",
+		Prompt:    "do nothing",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -430,11 +430,11 @@ func TestE2ECron_NoGitHub_DeletesSession(t *testing.T) {
 	}
 
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "no-github",
-		Prompt:   "do stuff",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "no-github",
+		Prompt:    "do stuff",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -515,11 +515,11 @@ func TestE2ECron_NoGitHubCleanCommitted_DeletesSession(t *testing.T) {
 	}
 
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "no-github-clean",
-		Prompt:   "do stuff and commit",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "no-github-clean",
+		Prompt:    "do stuff and commit",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)
@@ -586,11 +586,11 @@ func TestE2ECron_Overlap_SkipsSecondTick(t *testing.T) {
 	// No StartFunc override → h.Agent has StartFunc=nil by default.
 
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-		RepoID:   repoID,
-		Name:     "overlap",
-		Prompt:   "do something",
-		Schedule: "* * * * *",
-		Enabled:  true,
+		RepoID:    repoID,
+		Name:      "overlap",
+		Prompt:    "do something",
+		Schedule:  "* * * * *",
+		IsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create cron job: %v", err)

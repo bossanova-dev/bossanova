@@ -176,6 +176,8 @@ func (tl *tail) run(ctx context.Context, logger zerolog.Logger) {
 
 // openLogNoFollowReadOnly opens path read-only with O_NOFOLLOW.
 func openLogNoFollowReadOnly(path string) (*os.File, error) {
+	// #nosec G304 -- opens a daemon-internal agent log path read-only with O_NOFOLLOW symlink hardening; path derived from the daemon log dir, not user input
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		var pe *os.PathError

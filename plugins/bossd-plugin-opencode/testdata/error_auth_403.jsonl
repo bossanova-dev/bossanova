@@ -1,0 +1,2 @@
+{"type":"step_start","sessionID":"ses_0c1d2e3f4a5b6c7d8e9f","part":{"sessionID":"ses_0c1d2e3f4a5b6c7d8e9f","type":"step-start"}}
+{"type":"error","sessionID":"ses_0c1d2e3f4a5b6c7d8e9f","error":{"name":"ProviderAuthError","statusCode":403,"message":"403 Forbidden: this API key does not have access to the requested model"}}

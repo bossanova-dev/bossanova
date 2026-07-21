@@ -297,7 +297,7 @@ func TestStartTmuxChat_ProvenanceDrivesSubmitIntent(t *testing.T) {
 		},
 		{
 			name:       "tmux_unattended session submits",
-			mutate:     func(s *models.Session) { s.TmuxUnattended = true },
+			mutate:     func(s *models.Session) { s.IsTmuxUnattended = true },
 			wantSubmit: true,
 		},
 		{
@@ -345,7 +345,7 @@ func TestIsUnattendedSession_Detach(t *testing.T) {
 	}{
 		{"nil session", nil, false},
 		{"detach", &models.Session{Detach: true}, true},
-		{"tmux_unattended", &models.Session{TmuxUnattended: true}, true},
+		{"tmux_unattended", &models.Session{IsTmuxUnattended: true}, true},
 		{"cron", &models.Session{CronJobID: &cronID}, true},
 		{"interactive", &models.Session{}, false},
 	} {
@@ -2502,12 +2502,12 @@ func TestManagedSessionEnv(t *testing.T) {
 	}
 }
 
-// TestManagedSessionEnv_TmuxUnattended proves a tmux_unattended session (no
+// TestManagedSessionEnv_IsTmuxUnattended proves a tmux_unattended session (no
 // CronJobID) gets BOSS_CRON=true — so shell-mode/autonomy detection fires — but
 // NOT BOSS_CRON_JOB_ID/BOSS_CRON_NAME, which are meaningless without a real
 // scheduled job.
-func TestManagedSessionEnv_TmuxUnattended(t *testing.T) {
-	sess := &models.Session{ID: "s9", Title: "Epic child", TmuxUnattended: true}
+func TestManagedSessionEnv_IsTmuxUnattended(t *testing.T) {
+	sess := &models.Session{ID: "s9", Title: "Epic child", IsTmuxUnattended: true}
 	env := ManagedSessionEnv(sess, "agent-9", "claude")
 	if env["BOSS_CRON"] != "true" {
 		t.Fatalf("tmux_unattended session must set BOSS_CRON=true, got %q", env["BOSS_CRON"])
@@ -2520,10 +2520,10 @@ func TestManagedSessionEnv_TmuxUnattended(t *testing.T) {
 	}
 }
 
-// TestAppendSystemPromptFor_TmuxUnattended proves the autonomy directive is
+// TestAppendSystemPromptFor_IsTmuxUnattended proves the autonomy directive is
 // appended for a tmux_unattended session (no CronJobID), just as for cron.
-func TestAppendSystemPromptFor_TmuxUnattended(t *testing.T) {
-	sess := &models.Session{ID: "s9", Title: "Epic child", TmuxUnattended: true}
+func TestAppendSystemPromptFor_IsTmuxUnattended(t *testing.T) {
+	sess := &models.Session{ID: "s9", Title: "Epic child", IsTmuxUnattended: true}
 	prompt := AppendSystemPromptFor(sess, "agent-9", "claude", "")
 	if !strings.Contains(prompt, cronAutonomyDirective) {
 		t.Fatal("tmux_unattended session must get the autonomy directive")

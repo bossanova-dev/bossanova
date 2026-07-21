@@ -45,6 +45,11 @@ export const linearOperationMap = {
     tool: 'mcp__bossanova-linear__get_issue',
     summary: 'id -> current labels to MERGE with (never overwrite)',
   },
+  extractImages: {
+    tool: 'mcp__bossanova-linear__extract_images',
+    summary:
+      '{markdown} -> renders embedded reporter screenshots (image markdown / attachment URLs)',
+  },
   createLabel: {
     tool: 'mcp__bossanova-linear__create_issue_label',
     summary: '{name} -> ensure a label exists before applying it',

@@ -47,6 +47,8 @@ func BuildBoss() (cleanup func()) {
 	// Build with the e2e tag so test-only overrides compile in (auth token
 	// store override, etc). The production build omits the tag and therefore
 	// never reaches these hooks.
+	// #nosec G204 -- test-only go build -tags e2e -o <tmp> ./cmd; only tmp out-path varies
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command("go", "build", "-tags", "e2e", "-o", bossBinaryPath, "./cmd")
 	cmd.Dir = serviceDir()
 	out, err := cmd.CombinedOutput()

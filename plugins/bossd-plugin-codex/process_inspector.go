@@ -299,6 +299,8 @@ func openFilesFromLsof(pid int) []string {
 	ctx, cancel := context.WithTimeout(context.Background(), processInspectTimeout)
 	defer cancel()
 	// -Fn emits one field per line; name lines are prefixed with 'n'.
+	// #nosec G204 -- lsof -p <pid> -Fn; const cmd + int pid; no shell; not attacker-controllable
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	out, err := exec.CommandContext(ctx, "lsof", "-p", strconv.Itoa(pid), "-Fn").Output()
 	if err != nil {
 		// lsof exits non-zero when some fds are unreachable even though it

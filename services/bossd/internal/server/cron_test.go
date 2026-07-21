@@ -52,7 +52,7 @@ func TestCronJobAPIsPreserveAgentName(t *testing.T) {
 		Prompt:    "Run daily checks",
 		Schedule:  "@daily",
 		AgentName: "codex",
-		Enabled:   false,
+		IsEnabled: false,
 	}))
 	if err != nil {
 		t.Fatalf("CreateCronJob: %v", err)
@@ -140,7 +140,7 @@ func mustCreateDisabledCronJob(t *testing.T, srv *Server, ctx context.Context, r
 		Prompt:    "do it",
 		Schedule:  "@daily",
 		AgentName: "codex",
-		Enabled:   false,
+		IsEnabled: false,
 	}))
 	if err != nil {
 		t.Fatalf("CreateCronJob: %v", err)
@@ -161,7 +161,7 @@ func TestCreateCronJobRejectsUnschedulableExpression(t *testing.T) {
 		Prompt:    "do it",
 		Schedule:  "this is not a cron expression",
 		AgentName: "codex",
-		Enabled:   true,
+		IsEnabled: true,
 	}))
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("err code = %v, want InvalidArgument (err=%v)", connect.CodeOf(err), err)
@@ -230,9 +230,9 @@ func TestUpdateCronJobRejectsEnableWithUnschedulableExpression(t *testing.T) {
 	enable := true
 	badSchedule := "not a real schedule"
 	if _, err := srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{
-		Id:       id,
-		Schedule: &badSchedule,
-		Enabled:  &enable,
+		Id:        id,
+		Schedule:  &badSchedule,
+		IsEnabled: &enable,
 	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("err code = %v, want InvalidArgument (err=%v)", connect.CodeOf(err), err)
 	}
@@ -334,7 +334,7 @@ func TestCronJobAPIsRejectUnknownAgentName(t *testing.T) {
 		Prompt:    "Run daily checks",
 		Schedule:  "@daily",
 		AgentName: "missing",
-		Enabled:   false,
+		IsEnabled: false,
 	}))
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("CreateCronJob error code = %v, want %v (err=%v)", connect.CodeOf(err), connect.CodeInvalidArgument, err)
@@ -346,7 +346,7 @@ func TestCronJobAPIsRejectUnknownAgentName(t *testing.T) {
 		Prompt:    "Run daily checks",
 		Schedule:  "@daily",
 		AgentName: "codex",
-		Enabled:   false,
+		IsEnabled: false,
 	}))
 	if err != nil {
 		t.Fatalf("CreateCronJob valid: %v", err)
@@ -367,7 +367,7 @@ func TestCronJobAPIsRejectUnknownAgentName(t *testing.T) {
 		Prompt:    "Run daily checks",
 		Schedule:  "@daily",
 		AgentName: "missing",
-		Enabled:   false,
+		IsEnabled: false,
 	})
 	if err != nil {
 		t.Fatalf("create stale cron job: %v", err)
@@ -375,15 +375,15 @@ func TestCronJobAPIsRejectUnknownAgentName(t *testing.T) {
 
 	enable := true
 	_, err = srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{
-		Id:      stale.ID,
-		Enabled: &enable,
+		Id:        stale.ID,
+		IsEnabled: &enable,
 	}))
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("UpdateCronJob re-enable error code = %v, want %v (err=%v)", connect.CodeOf(err), connect.CodeInvalidArgument, err)
 	}
 }
 
-// TestCreateCronJobRunSetupCommandDefault verifies that omitting RunSetupCommand
+// TestCreateCronJobRunSetupCommandDefault verifies that omitting ShouldRunSetupCommand
 // (nil) defaults to true: setup should run by default.
 func TestCreateCronJobRunSetupCommandDefault(t *testing.T) {
 	srv, repoID, ctx := newCronTestServer(t)
@@ -394,37 +394,37 @@ func TestCreateCronJobRunSetupCommandDefault(t *testing.T) {
 		Prompt:    "do it",
 		Schedule:  "@daily",
 		AgentName: "codex",
-		Enabled:   false,
-		// RunSetupCommand intentionally omitted (nil).
+		IsEnabled: false,
+		// ShouldRunSetupCommand intentionally omitted (nil).
 	}))
 	if err != nil {
 		t.Fatalf("CreateCronJob: %v", err)
 	}
-	if !created.Msg.CronJob.RunSetupCommand {
-		t.Fatalf("RunSetupCommand = false, want true (default)")
+	if !created.Msg.CronJob.ShouldRunSetupCommand {
+		t.Fatalf("ShouldRunSetupCommand = false, want true (default)")
 	}
 }
 
 // TestCreateCronJobRunSetupCommandExplicitFalse verifies that passing
-// RunSetupCommand=false is honoured (opt-out of setup).
+// ShouldRunSetupCommand=false is honoured (opt-out of setup).
 func TestCreateCronJobRunSetupCommandExplicitFalse(t *testing.T) {
 	srv, repoID, ctx := newCronTestServer(t)
 	falseVal := false
 
 	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
-		RepoId:          repoID,
-		Name:            "No setup",
-		Prompt:          "do it",
-		Schedule:        "@daily",
-		AgentName:       "codex",
-		Enabled:         false,
-		RunSetupCommand: &falseVal,
+		RepoId:                repoID,
+		Name:                  "No setup",
+		Prompt:                "do it",
+		Schedule:              "@daily",
+		AgentName:             "codex",
+		IsEnabled:             false,
+		ShouldRunSetupCommand: &falseVal,
 	}))
 	if err != nil {
 		t.Fatalf("CreateCronJob: %v", err)
 	}
-	if created.Msg.CronJob.RunSetupCommand {
-		t.Fatalf("RunSetupCommand = true, want false (explicit opt-out)")
+	if created.Msg.CronJob.ShouldRunSetupCommand {
+		t.Fatalf("ShouldRunSetupCommand = true, want false (explicit opt-out)")
 	}
 }
 
@@ -439,7 +439,7 @@ func TestCreateCronJobGateCommand(t *testing.T) {
 		Prompt:      "do it",
 		Schedule:    "@daily",
 		AgentName:   "codex",
-		Enabled:     false,
+		IsEnabled:   false,
 		GateCommand: "make gate-check",
 	}))
 	if err != nil {
@@ -451,7 +451,7 @@ func TestCreateCronJobGateCommand(t *testing.T) {
 }
 
 // TestUpdateCronJobGateCommandAndRunSetupCommand verifies that UpdateCronJob
-// correctly maps and persists GateCommand and RunSetupCommand changes.
+// correctly maps and persists GateCommand and ShouldRunSetupCommand changes.
 func TestUpdateCronJobGateCommandAndRunSetupCommand(t *testing.T) {
 	srv, repoID, ctx := newCronTestServer(t)
 
@@ -462,7 +462,7 @@ func TestUpdateCronJobGateCommandAndRunSetupCommand(t *testing.T) {
 		Prompt:    "do it",
 		Schedule:  "@daily",
 		AgentName: "codex",
-		Enabled:   false,
+		IsEnabled: false,
 	}))
 	if err != nil {
 		t.Fatalf("CreateCronJob: %v", err)
@@ -472,9 +472,9 @@ func TestUpdateCronJobGateCommandAndRunSetupCommand(t *testing.T) {
 	gateCmd := "make ci-gate"
 	falseVal := false
 	updated, err := srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{
-		Id:              jobID,
-		GateCommand:     &gateCmd,
-		RunSetupCommand: &falseVal,
+		Id:                    jobID,
+		GateCommand:           &gateCmd,
+		ShouldRunSetupCommand: &falseVal,
 	}))
 	if err != nil {
 		t.Fatalf("UpdateCronJob: %v", err)
@@ -482,7 +482,7 @@ func TestUpdateCronJobGateCommandAndRunSetupCommand(t *testing.T) {
 	if got := updated.Msg.CronJob.GateCommand; got != "make ci-gate" {
 		t.Fatalf("GateCommand = %q, want %q", got, "make ci-gate")
 	}
-	if updated.Msg.CronJob.RunSetupCommand {
-		t.Fatalf("RunSetupCommand = true, want false after update")
+	if updated.Msg.CronJob.ShouldRunSetupCommand {
+		t.Fatalf("ShouldRunSetupCommand = true, want false after update")
 	}
 }

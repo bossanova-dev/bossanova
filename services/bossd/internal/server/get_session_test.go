@@ -9,10 +9,10 @@ import (
 	dbpkg "github.com/recurser/bossd/internal/db"
 )
 
-// TestGetSession_HydratesArchiveSessionsAfterMerge verifies GetSession carries
+// TestGetSession_HydratesShouldArchiveSessionsAfterMerge verifies GetSession carries
 // the repo's archive-after-merge flag onto the session proto: true when the
 // repo defaults on, and false once the repo is toggled off.
-func TestGetSession_HydratesArchiveSessionsAfterMerge(t *testing.T) {
+func TestGetSession_HydratesShouldArchiveSessionsAfterMerge(t *testing.T) {
 	sqlDB := setupServerTestDB(t)
 	repos := dbpkg.NewRepoStore(sqlDB)
 	sessions := dbpkg.NewSessionStore(sqlDB)
@@ -30,8 +30,8 @@ func TestGetSession_HydratesArchiveSessionsAfterMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create repo: %v", err)
 	}
-	if !repo.ArchiveSessionsAfterMerge {
-		t.Fatalf("precondition: new repo ArchiveSessionsAfterMerge = false, want default true")
+	if !repo.ShouldArchiveSessionsAfterMerge {
+		t.Fatalf("precondition: new repo ShouldArchiveSessionsAfterMerge = false, want default true")
 	}
 
 	sess, err := sessions.Create(ctx, dbpkg.CreateSessionParams{
@@ -49,12 +49,12 @@ func TestGetSession_HydratesArchiveSessionsAfterMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if !resp.Msg.Session.GetRepoArchiveSessionsAfterMerge() {
-		t.Error("expected RepoArchiveSessionsAfterMerge true (repo default on)")
+	if !resp.Msg.Session.GetRepoShouldArchiveSessionsAfterMerge() {
+		t.Error("expected RepoShouldArchiveSessionsAfterMerge true (repo default on)")
 	}
 
 	off := false
-	if _, err := repos.Update(ctx, repo.ID, dbpkg.UpdateRepoParams{ArchiveSessionsAfterMerge: &off}); err != nil {
+	if _, err := repos.Update(ctx, repo.ID, dbpkg.UpdateRepoParams{ShouldArchiveSessionsAfterMerge: &off}); err != nil {
 		t.Fatalf("update repo: %v", err)
 	}
 
@@ -62,7 +62,7 @@ func TestGetSession_HydratesArchiveSessionsAfterMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession (after toggle): %v", err)
 	}
-	if resp2.Msg.Session.GetRepoArchiveSessionsAfterMerge() {
-		t.Error("expected RepoArchiveSessionsAfterMerge false after toggling off")
+	if resp2.Msg.Session.GetRepoShouldArchiveSessionsAfterMerge() {
+		t.Error("expected RepoShouldArchiveSessionsAfterMerge false after toggling off")
 	}
 }

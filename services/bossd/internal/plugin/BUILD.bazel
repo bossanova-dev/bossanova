@@ -63,6 +63,7 @@ go_test(
         "intconv_test.go",
         "integration_test.go",
         "linear_integration_test.go",
+        "opencode_integration_test.go",
         "plugin_binary_test.go",
         "repair_chat_visibility_test.go",
         "repair_workflow_integration_test.go",

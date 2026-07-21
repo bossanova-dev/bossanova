@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-07-11'
+  version: '2026-07-18'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -3811,9 +3811,9 @@ components:
         timezone:
           type: string
           title: timezone
-        enabled:
+        isEnabled:
           type: boolean
-          title: enabled
+          title: is_enabled
         agentName:
           type: string
           title: agent_name
@@ -3823,11 +3823,11 @@ components:
         gateCommand:
           type: string
           title: gate_command
-        runSetupCommand:
+        shouldRunSetupCommand:
           type:
             - boolean
             - "null"
-          title: run_setup_command
+          title: should_run_setup_command
       title: CreateCronJobCommand
       additionalProperties: false
       description: |-
@@ -3853,9 +3853,9 @@ components:
           type: string
           title: timezone
           description: optional IANA tz; empty = daemon-local
-        enabled:
+        isEnabled:
           type: boolean
-          title: enabled
+          title: is_enabled
         agentName:
           type: string
           title: agent_name
@@ -3868,11 +3868,11 @@ components:
           type: string
           title: gate_command
           description: optional gate command run before each fire; empty = no gate
-        runSetupCommand:
+        shouldRunSetupCommand:
           type:
             - boolean
             - "null"
-          title: run_setup_command
+          title: should_run_setup_command
           description: |-
             run the repo setup script before the agent. optional so the server can
              default it to true when a client omits it (a plain bool can't tell
@@ -3955,9 +3955,9 @@ components:
         baseBranch:
           type: string
           title: base_branch
-        quickChat:
+        isQuickChat:
           type: boolean
-          title: quick_chat
+          title: is_quick_chat
         agentName:
           type: string
           title: agent_name
@@ -4007,7 +4007,7 @@ components:
           description: |-
             Unattended-session fields carried over the reverse stream so a hosted
              create (bosso → daemon) reproduces the local socket create. Mirror
-             CreateSessionRequest.{detach,model,tmux_unattended}; without them the
+             CreateSessionRequest.{detach,model,is_tmux_unattended}; without them the
              daemon builds an interactive/default-model session and skips the
              unattended prompt.
         model:
@@ -4015,9 +4015,9 @@ components:
             - string
             - "null"
           title: model
-        tmuxUnattended:
+        isTmuxUnattended:
           type: boolean
-          title: tmux_unattended
+          title: is_tmux_unattended
         accountId:
           type:
             - string
@@ -4063,9 +4063,9 @@ components:
           type: boolean
           title: force_branch
           description: If true, remove any existing branch with the same name before creating.
-        quickChat:
+        isQuickChat:
           type: boolean
-          title: quick_chat
+          title: is_quick_chat
           description: If true, run as a quick chat session (no worktree, no branch, no PR).
         branchName:
           type:
@@ -4122,9 +4122,9 @@ components:
             Opaque agent model id to run this session under (e.g. an Opus id).
              Empty → the agent plugin's default model. Mirrors `boss cron add --model`;
              set by `boss new --model` and the MCP create_session tool.
-        tmuxUnattended:
+        isTmuxUnattended:
           type: boolean
-          title: tmux_unattended
+          title: is_tmux_unattended
         force:
           type: boolean
           title: force
@@ -4210,9 +4210,9 @@ components:
           type: string
           title: timezone
           description: optional IANA tz name; empty = daemon-local
-        enabled:
+        isEnabled:
           type: boolean
-          title: enabled
+          title: is_enabled
         lastRunSessionId:
           type: string
           title: last_run_session_id
@@ -4253,9 +4253,9 @@ components:
           type: string
           title: gate_command
           description: optional gate command run before each fire; empty = no gate
-        runSetupCommand:
+        shouldRunSetupCommand:
           type: boolean
-          title: run_setup_command
+          title: should_run_setup_command
           description: run the repo setup script before the agent; default true
       title: CronJob
       additionalProperties: false
@@ -7084,9 +7084,9 @@ components:
         timezone:
           type: string
           title: timezone
-        enabled:
+        isEnabled:
           type: boolean
-          title: enabled
+          title: is_enabled
         agentName:
           type: string
           title: agent_name
@@ -7096,11 +7096,11 @@ components:
         gateCommand:
           type: string
           title: gate_command
-        runSetupCommand:
+        shouldRunSetupCommand:
           type:
             - boolean
             - "null"
-          title: run_setup_command
+          title: should_run_setup_command
       title: ProxyCreateCronJobRequest
       additionalProperties: false
       description: |-
@@ -7135,9 +7135,9 @@ components:
         agentName:
           type: string
           title: agent_name
-        quickChat:
+        isQuickChat:
           type: boolean
-          title: quick_chat
+          title: is_quick_chat
         prNumber:
           type:
             - integer
@@ -7184,16 +7184,16 @@ components:
             Unattended-session fields carried through the hosted gateway so a hosted
              MCP client (e.g. /boss-epic) gets the same create_session behavior as the
              local socket backend. Mirror CreateSessionRequest.{detach,model,
-             tmux_unattended}; without them a hosted create silently runs interactively
+             is_tmux_unattended}; without them a hosted create silently runs interactively
              on the daemon's default model and never fires the unattended prompt.
         model:
           type:
             - string
             - "null"
           title: model
-        tmuxUnattended:
+        isTmuxUnattended:
           type: boolean
-          title: tmux_unattended
+          title: is_tmux_unattended
         accountId:
           type:
             - string
@@ -8190,11 +8190,11 @@ components:
             - string
             - "null"
           title: timezone
-        enabled:
+        isEnabled:
           type:
             - boolean
             - "null"
-          title: enabled
+          title: is_enabled
         agentName:
           type:
             - string
@@ -8210,11 +8210,11 @@ components:
             - string
             - "null"
           title: gate_command
-        runSetupCommand:
+        shouldRunSetupCommand:
           type:
             - boolean
             - "null"
-          title: run_setup_command
+          title: should_run_setup_command
       title: ProxyUpdateCronJobRequest
       additionalProperties: false
       description: |-
@@ -8267,11 +8267,11 @@ components:
             - boolean
             - "null"
           title: can_auto_repair
-        archiveSessionsAfterMerge:
+        shouldArchiveSessionsAfterMerge:
           type:
             - boolean
             - "null"
-          title: archive_sessions_after_merge
+          title: should_archive_sessions_after_merge
         sentryOrg:
           type:
             - string
@@ -8971,9 +8971,9 @@ components:
             Whether the daemon's repair plugin may automatically repair this repo's PRs
              (failing checks, merge conflicts, review feedback). Honored by the plugin.
              Defaults on.
-        archiveSessionsAfterMerge:
+        shouldArchiveSessionsAfterMerge:
           type: boolean
-          title: archive_sessions_after_merge
+          title: should_archive_sessions_after_merge
           description: |-
             Whether the daemon automatically archives a session once its PR is merged.
              Honored by the session dispatcher on the PR-merged transition. Defaults on.
@@ -9025,9 +9025,9 @@ components:
         canAutoRepair:
           type: boolean
           title: can_auto_repair
-        archiveSessionsAfterMerge:
+        shouldArchiveSessionsAfterMerge:
           type: boolean
-          title: archive_sessions_after_merge
+          title: should_archive_sessions_after_merge
           description: |-
             Whether the daemon auto-archives a session once its PR is merged (BOS-46).
              Projected here so web/cloud repo settings can see and toggle it, matching the
@@ -9529,9 +9529,9 @@ components:
           type: string
           title: repo_origin_url
           description: Repo origin URL this job targets.
-        enabled:
+        isEnabled:
           type: boolean
-          title: enabled
+          title: is_enabled
           description: Whether this job is currently enabled.
         lastRun:
           oneOf:
@@ -9697,9 +9697,9 @@ components:
         lastCheckState:
           title: last_check_state
           $ref: '#/components/schemas/bossanova.v1.ChecksOverall'
-        automationEnabled:
+        isAutomationEnabled:
           type: boolean
-          title: automation_enabled
+          title: is_automation_enabled
         attemptCount:
           type: integer
           title: attempt_count
@@ -9972,11 +9972,11 @@ components:
              server-side from the in-memory DisplayTracker and never persisted. Drives
              the transient blue "merging" display status. Distinct from
              display_is_repairing (24) / display_setting_up (48).
-        repoArchiveSessionsAfterMerge:
+        repoShouldArchiveSessionsAfterMerge:
           type: boolean
-          title: repo_archive_sessions_after_merge
+          title: repo_should_archive_sessions_after_merge
           description: |-
-            Denormalized repo.archive_sessions_after_merge, populated server-side by
+            Denormalized repo.should_archive_sessions_after_merge, populated server-side by
              GetSession so the TUI session-detail view can show an "Archiving…" status
              and know a merged session is about to be auto-archived (BOS-46 follow-up).
         archivePending:
@@ -9988,7 +9988,7 @@ components:
              DisplayTracker and never persisted. Set/cleared around the single archive
              chokepoint (Lifecycle.ArchiveSession) so the TUI renders "Archiving…" only
              when the daemon has an archive running — not inferred from steady-state
-             MERGED + repo_archive_sessions_after_merge, which stays true forever for a
+             MERGED + repo_should_archive_sessions_after_merge, which stays true forever for a
              merged→archived→resurrected session (BOS-425). Mirrors display_merging (60).
       title: Session
       additionalProperties: false
@@ -11348,11 +11348,11 @@ components:
             - string
             - "null"
           title: timezone
-        enabled:
+        isEnabled:
           type:
             - boolean
             - "null"
-          title: enabled
+          title: is_enabled
         agentName:
           type:
             - string
@@ -11368,11 +11368,11 @@ components:
             - string
             - "null"
           title: gate_command
-        runSetupCommand:
+        shouldRunSetupCommand:
           type:
             - boolean
             - "null"
-          title: run_setup_command
+          title: should_run_setup_command
       title: UpdateCronJobCommand
       additionalProperties: false
       description: |-
@@ -11405,11 +11405,11 @@ components:
             - string
             - "null"
           title: timezone
-        enabled:
+        isEnabled:
           type:
             - boolean
             - "null"
-          title: enabled
+          title: is_enabled
         agentName:
           type:
             - string
@@ -11427,11 +11427,11 @@ components:
             - "null"
           title: gate_command
           description: optional gate command; empty = no gate
-        runSetupCommand:
+        shouldRunSetupCommand:
           type:
             - boolean
             - "null"
-          title: run_setup_command
+          title: should_run_setup_command
           description: run the repo setup script before the agent
       title: UpdateCronJobRequest
       additionalProperties: false
@@ -11479,11 +11479,11 @@ components:
             - boolean
             - "null"
           title: can_auto_repair
-        archiveSessionsAfterMerge:
+        shouldArchiveSessionsAfterMerge:
           type:
             - boolean
             - "null"
-          title: archive_sessions_after_merge
+          title: should_archive_sessions_after_merge
         sentryOrg:
           type:
             - string
@@ -11574,11 +11574,11 @@ components:
             Optimistic-concurrency token: when set, the update is rejected (CodeAborted)
              unless it still equals the repo's stored updated_at.
           $ref: '#/components/schemas/google.protobuf.Timestamp'
-        archiveSessionsAfterMerge:
+        shouldArchiveSessionsAfterMerge:
           type:
             - boolean
             - "null"
-          title: archive_sessions_after_merge
+          title: should_archive_sessions_after_merge
         canAutoDeleteBranches:
           type:
             - boolean

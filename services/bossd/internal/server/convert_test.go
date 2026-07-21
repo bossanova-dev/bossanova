@@ -186,19 +186,19 @@ func TestRepoToProto(t *testing.T) {
 	script := "make install"
 
 	repo := &models.Repo{
-		ID:                        "repo-1",
-		DisplayName:               "my-app",
-		LocalPath:                 "/home/user/my-app",
-		OriginURL:                 "https://github.com/user/my-app.git",
-		DefaultBaseBranch:         "main",
-		WorktreeBaseDir:           "/home/user/.worktrees",
-		SetupScript:               &script,
-		CanAutoMerge:              true,
-		CanAutoMergeDependabot:    true,
-		CanAutoRepair:             true,
-		ArchiveSessionsAfterMerge: true,
-		CreatedAt:                 now,
-		UpdatedAt:                 now,
+		ID:                              "repo-1",
+		DisplayName:                     "my-app",
+		LocalPath:                       "/home/user/my-app",
+		OriginURL:                       "https://github.com/user/my-app.git",
+		DefaultBaseBranch:               "main",
+		WorktreeBaseDir:                 "/home/user/.worktrees",
+		SetupScript:                     &script,
+		CanAutoMerge:                    true,
+		CanAutoMergeDependabot:          true,
+		CanAutoRepair:                   true,
+		ShouldArchiveSessionsAfterMerge: true,
+		CreatedAt:                       now,
+		UpdatedAt:                       now,
 	}
 
 	p := repoToProto(repo)
@@ -232,8 +232,8 @@ func TestRepoToProto(t *testing.T) {
 	if !p.CanAutoRepair {
 		t.Error("CanAutoRepair should be true")
 	}
-	if !p.ArchiveSessionsAfterMerge {
-		t.Error("ArchiveSessionsAfterMerge should be true")
+	if !p.ShouldArchiveSessionsAfterMerge {
+		t.Error("ShouldArchiveSessionsAfterMerge should be true")
 	}
 	if p.CreatedAt == nil {
 		t.Error("CreatedAt should not be nil")
@@ -244,13 +244,13 @@ func TestRepoToProto(t *testing.T) {
 // projection carries archive_sessions_after_merge so cloud/web repo settings can
 // read and toggle it (mirrors the can_auto_repair projection).
 func TestRepoToRepoSettings_ArchiveAfterMerge(t *testing.T) {
-	on := repoToRepoSettings(&models.Repo{ID: "r", ArchiveSessionsAfterMerge: true})
-	if !on.GetArchiveSessionsAfterMerge() {
-		t.Error("ArchiveSessionsAfterMerge should project true")
+	on := repoToRepoSettings(&models.Repo{ID: "r", ShouldArchiveSessionsAfterMerge: true})
+	if !on.GetShouldArchiveSessionsAfterMerge() {
+		t.Error("ShouldArchiveSessionsAfterMerge should project true")
 	}
-	off := repoToRepoSettings(&models.Repo{ID: "r", ArchiveSessionsAfterMerge: false})
-	if off.GetArchiveSessionsAfterMerge() {
-		t.Error("ArchiveSessionsAfterMerge should project false")
+	off := repoToRepoSettings(&models.Repo{ID: "r", ShouldArchiveSessionsAfterMerge: false})
+	if off.GetShouldArchiveSessionsAfterMerge() {
+		t.Error("ShouldArchiveSessionsAfterMerge should project false")
 	}
 }
 
@@ -274,26 +274,26 @@ func TestSessionToProto(t *testing.T) {
 	acct := "a1"
 
 	sess := &models.Session{
-		ID:                "sess-1",
-		RepoID:            "repo-1",
-		Title:             "Fix bug",
-		Plan:              "Fix the thing",
-		WorktreePath:      "/tmp/wt",
-		BranchName:        "fix-bug",
-		BaseBranch:        "main",
-		State:             machine.ImplementingPlan,
-		AgentSessionID:    &agentSessionID,
-		AgentName:         "codex",
-		PRNumber:          &prNum,
-		PRURL:             &prURL,
-		LastCheckState:    machine.CheckStatePassed,
-		AutomationEnabled: true,
-		AttemptCount:      3,
-		BlockedReason:     &blocked,
-		AccountID:         &acct,
-		ArchivedAt:        &now,
-		CreatedAt:         now,
-		UpdatedAt:         now,
+		ID:                  "sess-1",
+		RepoID:              "repo-1",
+		Title:               "Fix bug",
+		Plan:                "Fix the thing",
+		WorktreePath:        "/tmp/wt",
+		BranchName:          "fix-bug",
+		BaseBranch:          "main",
+		State:               machine.ImplementingPlan,
+		AgentSessionID:      &agentSessionID,
+		AgentName:           "codex",
+		PRNumber:            &prNum,
+		PRURL:               &prURL,
+		LastCheckState:      machine.CheckStatePassed,
+		IsAutomationEnabled: true,
+		AttemptCount:        3,
+		BlockedReason:       &blocked,
+		AccountID:           &acct,
+		ArchivedAt:          &now,
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 
 	p := SessionToProto(sess)
@@ -324,8 +324,8 @@ func TestSessionToProto(t *testing.T) {
 	if p.ArchivedAt == nil {
 		t.Error("ArchivedAt should not be nil")
 	}
-	if !p.AutomationEnabled {
-		t.Error("AutomationEnabled should be true")
+	if !p.IsAutomationEnabled {
+		t.Error("IsAutomationEnabled should be true")
 	}
 	if p.AttemptCount != 3 {
 		t.Errorf("AttemptCount = %d, want 3", p.AttemptCount)
@@ -941,7 +941,7 @@ func TestCronJobToProtoIncludesAgentName(t *testing.T) {
 		Prompt:    "Run daily checks",
 		Schedule:  "@daily",
 		AgentName: "codex",
-		Enabled:   true,
+		IsEnabled: true,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -1032,23 +1032,23 @@ func TestCronJobToProtoRunningNotAffectedByGatingSet(t *testing.T) {
 func TestCronJobToProtoGateCommandAndRunSetupCommandRoundTrip(t *testing.T) {
 	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
 	job := &models.CronJob{
-		ID:              "job-4",
-		RepoID:          "repo-1",
-		Name:            "Gate fields",
-		Prompt:          "check",
-		Schedule:        "@daily",
-		GateCommand:     "make gate-check",
-		RunSetupCommand: true,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:                    "job-4",
+		RepoID:                "repo-1",
+		Name:                  "Gate fields",
+		Prompt:                "check",
+		Schedule:              "@daily",
+		GateCommand:           "make gate-check",
+		ShouldRunSetupCommand: true,
+		CreatedAt:             now,
+		UpdatedAt:             now,
 	}
 
 	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), nil, nil)
 	if got.GateCommand != "make gate-check" {
 		t.Fatalf("GateCommand = %q, want %q", got.GateCommand, "make gate-check")
 	}
-	if !got.RunSetupCommand {
-		t.Fatalf("RunSetupCommand = false, want true")
+	if !got.ShouldRunSetupCommand {
+		t.Fatalf("ShouldRunSetupCommand = false, want true")
 	}
 }
 

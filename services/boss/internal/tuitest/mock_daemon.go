@@ -1059,7 +1059,7 @@ func (m *MockDaemon) CreateCronJob(_ context.Context, req *connect.Request[pb.Cr
 		Prompt:    req.Msg.Prompt,
 		Schedule:  req.Msg.Schedule,
 		Timezone:  req.Msg.Timezone,
-		Enabled:   req.Msg.Enabled,
+		IsEnabled: req.Msg.IsEnabled,
 		AgentName: req.Msg.AgentName,
 		CreatedAt: timestamppb.Now(),
 		UpdatedAt: timestamppb.Now(),
@@ -1119,8 +1119,8 @@ func (m *MockDaemon) UpdateCronJob(_ context.Context, req *connect.Request[pb.Up
 	if req.Msg.Timezone != nil {
 		job.Timezone = *req.Msg.Timezone
 	}
-	if req.Msg.Enabled != nil {
-		job.Enabled = *req.Msg.Enabled
+	if req.Msg.IsEnabled != nil {
+		job.IsEnabled = *req.Msg.IsEnabled
 	}
 	if req.Msg.AgentName != nil {
 		job.AgentName = *req.Msg.AgentName

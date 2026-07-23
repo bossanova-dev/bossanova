@@ -423,3 +423,47 @@ func TestShortID(t *testing.T) {
 		}
 	})
 }
+
+// TestFileDescriptorLimitCheck verifies the BOS-465 FD-limit doctor check:
+// unknown (0) and at/above the floor pass; below the floor fails with an
+// actionable EMFILE/ulimit remedy naming the achieved value.
+func TestFileDescriptorLimitCheck(t *testing.T) {
+	t.Run("unknown soft limit passes", func(t *testing.T) {
+		c := fileDescriptorLimitCheck(0)
+		if !c.Ok {
+			t.Errorf("Ok = false, want true for unknown limit")
+		}
+		if !strings.Contains(c.Detail, "unknown") {
+			t.Errorf("detail = %q, want mention of %q", c.Detail, "unknown")
+		}
+	})
+
+	t.Run("below floor fails with actionable detail", func(t *testing.T) {
+		c := fileDescriptorLimitCheck(4096)
+		if c.Ok {
+			t.Errorf("Ok = true, want false for soft below floor")
+		}
+		for _, want := range []string{"4096", "EMFILE", "ulimit"} {
+			if !strings.Contains(c.Detail, want) {
+				t.Errorf("detail = %q, want substring %q", c.Detail, want)
+			}
+		}
+	})
+
+	t.Run("at floor passes", func(t *testing.T) {
+		c := fileDescriptorLimitCheck(fileLimitSoftFloor)
+		if !c.Ok {
+			t.Errorf("Ok = false, want true for soft == floor")
+		}
+	})
+
+	t.Run("above floor passes with value", func(t *testing.T) {
+		c := fileDescriptorLimitCheck(65536)
+		if !c.Ok {
+			t.Errorf("Ok = false, want true for soft above floor")
+		}
+		if !strings.Contains(c.Detail, "65536") {
+			t.Errorf("detail = %q, want mention of %q", c.Detail, "65536")
+		}
+	})
+}

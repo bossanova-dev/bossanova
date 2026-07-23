@@ -32,6 +32,12 @@ const recentRepairLogsLimit = 10
 // keeps the doctor command responsive on a misbehaving install.
 const claudeVersionTimeout = 5 * time.Second
 
+// fileLimitSoftFloor mirrors the daemon-startup floor in
+// services/bossd/cmd/filelimit_unix.go. A soft RLIMIT_NOFILE below this is too
+// low for FD-heavy setup scripts (prisma codegen) and RepairDoctor surfaces a
+// WARN so the operator sees it without grepping logs (BOS-465).
+const fileLimitSoftFloor = 8192
+
 // RepairDoctor returns a structured health report for the auto-repair
 // pipeline. The checks intentionally each fail independently — the
 // CLI renders the full list so the operator sees what's healthy alongside
@@ -132,6 +138,15 @@ func (s *Server) RepairDoctor(ctx context.Context, _ *connect.Request[bossanovav
 	// colliding sibling chats so they re-resolve via process fd (BOS-290).
 	resp.Checks = append(resp.Checks, s.duplicateCodexProviderSessionCheck(ctx))
 
+	// Check 11: file-descriptor soft limit healthy? (BOS-465)
+	resp.Checks = append(resp.Checks, fileDescriptorLimitCheck(s.fileLimitSoft))
+
+	// Check 12: failover-proxy pass-through error tally (BOS-483). Purely
+	// informational — always Ok=true; it surfaces the recent per-session upstream
+	// error rate the proxy passed through un-rotated, so an operator can spot a
+	// session drowning in 5xx/overloaded errors without grepping logs.
+	resp.Checks = append(resp.Checks, passthroughStatsCheck(s.passthroughStats))
+
 	// Recent repair logs (seeded into the response so the CLI
 	// can render the file list independent of the pass/fail check).
 	if logsDir != "" {
@@ -139,6 +154,84 @@ func (s *Server) RepairDoctor(ctx context.Context, _ *connect.Request[bossanovav
 	}
 
 	return connect.NewResponse(resp), nil
+}
+
+// fileDescriptorLimitCheck reports a WARN when the daemon's achieved soft
+// RLIMIT_NOFILE is below fileLimitSoftFloor. A zero value means the limit was
+// unknown/unreadable (non-unix) and is treated as a pass — never a false alarm.
+func fileDescriptorLimitCheck(soft uint64) *bossanovav1.RepairDoctorCheck {
+	if soft == 0 {
+		return &bossanovav1.RepairDoctorCheck{
+			Name:   "file descriptor limit",
+			Ok:     true,
+			Detail: "RLIMIT_NOFILE soft limit unknown (non-unix or unreadable) — skipping",
+		}
+	}
+	if soft < fileLimitSoftFloor {
+		return &bossanovav1.RepairDoctorCheck{
+			Name: "file descriptor limit",
+			Ok:   false,
+			Detail: fmt.Sprintf("RLIMIT_NOFILE soft limit is %d (< %d); FD-heavy setup scripts "+
+				"(e.g. prisma codegen) may fail with EMFILE. Restart bossd from a shell without a "+
+				"lowered `ulimit -n` hard cap (avoid `ulimit -n`; prefer `ulimit -Sn`).", soft, fileLimitSoftFloor),
+		}
+	}
+	return &bossanovav1.RepairDoctorCheck{
+		Name:   "file descriptor limit",
+		Ok:     true,
+		Detail: fmt.Sprintf("RLIMIT_NOFILE soft limit is %d (>= %d)", soft, fileLimitSoftFloor),
+	}
+}
+
+// passthroughStatsCheck renders the failover proxy's bounded pass-through error
+// tally as an INFORMATIONAL doctor check. It is always Ok=true: a pass-through
+// error is the upstream's or a declined-rotation's outcome, not a daemon fault,
+// so it must never redden the doctor run — it only makes the recent per-session
+// error rate visible. The provider is nil when no proxy is wired (e.g. a daemon
+// with rotation disabled), which reports cleanly rather than erroring.
+func passthroughStatsCheck(provider passthroughStatsProvider) *bossanovav1.RepairDoctorCheck {
+	if provider == nil {
+		return &bossanovav1.RepairDoctorCheck{
+			Name:   "failover proxy pass-through errors",
+			Ok:     true,
+			Detail: "failover proxy not wired (rotation disabled) — no pass-through tally",
+		}
+	}
+	sessions := provider.PassthroughStatsSnapshot()
+	if len(sessions) == 0 {
+		return &bossanovav1.RepairDoctorCheck{
+			Name:   "failover proxy pass-through errors",
+			Ok:     true,
+			Detail: "no upstream errors passed through un-rotated in the last hour",
+		}
+	}
+	// Render the top few sessions by total; the snapshot is already sorted by
+	// total desc then display id. Cap the rendered set so a wide fan-out cannot
+	// bloat the doctor output.
+	const maxRendered = 5
+	var total int
+	parts := make([]string, 0, maxRendered)
+	for i, sess := range sessions {
+		total += sess.Total
+		if i >= maxRendered {
+			continue
+		}
+		classParts := make([]string, 0, len(sess.Classes))
+		for _, c := range sess.Classes {
+			classParts = append(classParts, fmt.Sprintf("%s=%d", c.Class, c.Count))
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s", shortID(sess.DisplayID), strings.Join(classParts, ",")))
+	}
+	detail := fmt.Sprintf("%d session(s), %d pass-through error(s) in the last hour: %s",
+		len(sessions), total, strings.Join(parts, "; "))
+	if len(sessions) > maxRendered {
+		detail += fmt.Sprintf(" (+%d more)", len(sessions)-maxRendered)
+	}
+	return &bossanovav1.RepairDoctorCheck{
+		Name:   "failover proxy pass-through errors",
+		Ok:     true,
+		Detail: detail,
+	}
 }
 
 // findRepairWorkflow walks the loaded WorkflowService plugins and returns

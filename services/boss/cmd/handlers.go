@@ -236,6 +236,11 @@ func launchTUIWithOptions(cmd *cobra.Command, opts launchTUIOptions) error {
 	if opts.configure != nil {
 		opts.configure(&app)
 	}
+	// Under tmux, enable the session options boss needs to deliver desktop
+	// notifications (allow-passthrough) and receive focus events (focus-events),
+	// restoring them on exit. No-op outside tmux or when notifications are off.
+	restoreTmux := views.EnableTmuxNotificationOptions(config.NotificationsEnabled(settings))
+	defer restoreTmux()
 	p := tea.NewProgram(app)
 	_, err = p.Run()
 	return err

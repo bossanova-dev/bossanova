@@ -45,6 +45,23 @@ func (s *captureAuditStore) all() []rotation.AuditEvent {
 	return out
 }
 
+// recentAuditStore is a captureAuditStore whose RecentBySession returns the
+// most-recently-inserted events, so per-episode dedup (RecordExhausted /
+// RecordNoEligible) can be exercised end to end.
+type recentAuditStore struct{ captureAuditStore }
+
+func (s *recentAuditStore) RecentBySession(_ context.Context, sessionID string, limit int) ([]rotation.AuditEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []rotation.AuditEvent
+	for i := len(s.events) - 1; i >= 0 && len(out) < limit; i-- {
+		if s.events[i].SessionID == sessionID {
+			out = append(out, s.events[i])
+		}
+	}
+	return out, nil
+}
+
 // enableFailoverProxy flips the opt-in toggle on for a fixture's lifecycle.
 func enableFailoverProxy(lc *Lifecycle) {
 	on := true
@@ -204,6 +221,165 @@ func TestPrepareFailover(t *testing.T) {
 				t.Fatalf("decider consulted=%v, want %v", f.decider.calls > 0, got)
 			}
 		})
+	}
+}
+
+// --- proxy-path non-rotate decline audits (BOS-484) ---
+
+// TestPrepareFailover_SurfacesExhaustedDecline proves an all-exhausted proxy
+// 429 (no swap target) is surfaced as a single EXHAUSTED audit row carrying the
+// resolved session, from-account label, reset time, and usage-limited trigger,
+// and that a repeat within the same reset minute dedups to one row.
+func TestPrepareFailover_SurfacesExhaustedDecline(t *testing.T) {
+	f := newRotationFixture(t)
+	enableFailoverProxy(f.lc)
+	store := &recentAuditStore{}
+	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
+	f.lc.accountSwitchRegistry = mapSwitchRegistry{
+		"acct-capped": switchAccount{Label: "capped-label"},
+	}
+	f.binding.bound = true
+	resumeAt := time.Date(2026, 7, 23, 15, 30, 0, 0, time.UTC)
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeAllExhausted, ResumeAt: resumeAt}
+
+	res, err := f.lc.PrepareFailover(context.Background(), f.sessionID, 429)
+	if err != nil {
+		t.Fatalf("PrepareFailover: %v", err)
+	}
+	if res.Rotate {
+		t.Fatalf("Rotate = true, want false on exhausted pool")
+	}
+	events := store.all()
+	if len(events) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(events))
+	}
+	ev := events[0]
+	if ev.SessionID != f.sessionID || ev.ChatID != "" {
+		t.Fatalf("session/chat = %q/%q, want %q/\"\"", ev.SessionID, ev.ChatID, f.sessionID)
+	}
+	if ev.Outcome != "ROTATION_OUTCOME_EXHAUSTED" {
+		t.Fatalf("Outcome = %q, want ROTATION_OUTCOME_EXHAUSTED", ev.Outcome)
+	}
+	if ev.Trigger != "ROTATION_TRIGGER_USAGE_LIMITED" {
+		t.Fatalf("Trigger = %q, want ROTATION_TRIGGER_USAGE_LIMITED", ev.Trigger)
+	}
+	if ev.Provider != "claude" || ev.FromAccount != "capped-label" {
+		t.Fatalf("provider/from = %q/%q, want claude/capped-label", ev.Provider, ev.FromAccount)
+	}
+	if ev.ResetAt == nil || !ev.ResetAt.Equal(resumeAt) {
+		t.Fatalf("ResetAt = %v, want %v", ev.ResetAt, resumeAt)
+	}
+
+	// Repeat within the same reset minute dedups to one row (per-episode).
+	if _, err := f.lc.PrepareFailover(context.Background(), f.sessionID, 429); err != nil {
+		t.Fatalf("PrepareFailover (repeat): %v", err)
+	}
+	if got := len(store.all()); got != 1 {
+		t.Fatalf("audit events after repeat = %d, want 1 (dedup)", got)
+	}
+
+	// A new reset minute is a new episode and records again.
+	f.decider.outcome = rotation.Outcome{
+		Kind:     rotation.OutcomeAllExhausted,
+		ResumeAt: resumeAt.Add(2 * time.Minute),
+	}
+	if _, err := f.lc.PrepareFailover(context.Background(), f.sessionID, 429); err != nil {
+		t.Fatalf("PrepareFailover (new episode): %v", err)
+	}
+	if got := len(store.all()); got != 2 {
+		t.Fatalf("audit events after new episode = %d, want 2", got)
+	}
+}
+
+// TestPrepareFailover_SurfacesNoEligibleDecline proves a no-eligible-account
+// proxy 429 is surfaced as a STATUS_ONLY_NO_ELIGIBLE_ACCOUNT audit row with the
+// actionable detail, distinct from the exhausted outcome.
+func TestPrepareFailover_SurfacesNoEligibleDecline(t *testing.T) {
+	f := newRotationFixture(t)
+	enableFailoverProxy(f.lc)
+	store := &recentAuditStore{}
+	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
+	f.binding.bound = true
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeNoEligibleAccount}
+
+	if _, err := f.lc.PrepareFailover(context.Background(), f.sessionID, 429); err != nil {
+		t.Fatalf("PrepareFailover: %v", err)
+	}
+	events := store.all()
+	if len(events) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(events))
+	}
+	ev := events[0]
+	if ev.Outcome != "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT" {
+		t.Fatalf("Outcome = %q, want STATUS_ONLY_NO_ELIGIBLE_ACCOUNT", ev.Outcome)
+	}
+	if ev.Detail != rotation.NoEligibleAccountDetail {
+		t.Fatalf("Detail = %q, want NoEligibleAccountDetail", ev.Detail)
+	}
+	if ev.ResetAt != nil {
+		t.Fatalf("ResetAt = %v, want nil for no-eligible", ev.ResetAt)
+	}
+}
+
+// TestPrepareFailover_StatusOnlyDeclineNotAudited proves a capability-only
+// decline (OutcomeStatusOnly) is NOT surfaced as an audit row — it is not an
+// exhausted-pool 429.
+func TestPrepareFailover_StatusOnlyDeclineNotAudited(t *testing.T) {
+	f := newRotationFixture(t)
+	enableFailoverProxy(f.lc)
+	store := &recentAuditStore{}
+	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
+	f.binding.bound = true
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeStatusOnly}
+
+	if _, err := f.lc.PrepareFailover(context.Background(), f.sessionID, 429); err != nil {
+		t.Fatalf("PrepareFailover: %v", err)
+	}
+	if got := len(store.all()); got != 0 {
+		t.Fatalf("audit events = %d, want 0 (status-only not surfaced)", got)
+	}
+}
+
+// TestPrepareFailover_ChatTargetSurfacesDeclineWithResolvedIDs proves the chat
+// proxy path records the decline against the RESOLVED session id plus the chat
+// id (the ids hydration reads), not the raw proxy target.
+func TestPrepareFailover_ChatTargetSurfacesDeclineWithResolvedIDs(t *testing.T) {
+	f := newRotationFixture(t)
+	enableFailoverProxy(f.lc)
+	store := &recentAuditStore{}
+	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
+	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+		f.sessionID: {{
+			SessionID:      f.sessionID,
+			AgentSessionID: "chat-1",
+			AgentName:      "claude",
+			AccountID:      stringPtr("acct-chat"),
+		}},
+	}}
+	f.binding.binding.CappedAccountID = "acct-chat"
+	resumeAt := time.Date(2026, 7, 23, 16, 0, 0, 0, time.UTC)
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeAllExhausted, ResumeAt: resumeAt}
+
+	res, err := f.lc.PrepareFailover(context.Background(), ProxyTargetForChat("chat-1", "acct-default"), 429)
+	if err != nil {
+		t.Fatalf("PrepareFailover: %v", err)
+	}
+	if res.Rotate {
+		t.Fatalf("Rotate = true, want false on exhausted pool")
+	}
+	events := store.all()
+	if len(events) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(events))
+	}
+	ev := events[0]
+	if ev.SessionID != f.sessionID {
+		t.Fatalf("SessionID = %q, want resolved %q", ev.SessionID, f.sessionID)
+	}
+	if ev.ChatID != "chat-1" {
+		t.Fatalf("ChatID = %q, want chat-1", ev.ChatID)
+	}
+	if ev.Outcome != "ROTATION_OUTCOME_EXHAUSTED" {
+		t.Fatalf("Outcome = %q, want ROTATION_OUTCOME_EXHAUSTED", ev.Outcome)
 	}
 }
 
@@ -677,6 +853,9 @@ type stubRegistrar struct{ token string }
 
 func (s stubRegistrar) TokenForSession(string) string { return s.token }
 func (s stubRegistrar) ForgetBearer(string)           {}
+func (s stubRegistrar) ForgetAllBearers()             {}
 func (s stubRegistrar) TokenForChat(string, string, string) string {
 	return s.token
 }
+func (s stubRegistrar) AdoptToken(string, string)                        {}
+func (s stubRegistrar) AdoptTokenForChat(string, string, string, string) {}

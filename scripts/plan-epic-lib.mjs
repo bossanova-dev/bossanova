@@ -14,7 +14,7 @@
 //   {
 //     parent:   { title, goal, keyChanges[] },              // the epic overview
 //     children: [
-//       { key, title, goal, keyChanges[], blockedByKeys[], estimate, priority, agentFriendly?, openQuestions? },
+//       { key, title, goal, keyChanges[], blockedByKeys[], estimate, priority, layer?, agentFriendly?, openQuestions? },
 //       ...
 //     ]
 //
@@ -28,6 +28,12 @@
 //   (the Phase 4 contract). The marker persists it as a derived boolean
 //   `agentQuestion` so a fresh-worktree resume re-applies the label without the
 //   `.linear-plans/` scratch.
+// - `layer` is the child's architectural seam in a vertical/pipeline feature
+//   (optional; one of contract|persistence|producer|read|ui). It drives the
+//   producer-before-consumer soft check (`validateLayering`): a `read`/`ui` child
+//   must be gated by a `producer` sibling (or an external upstream — see R5a
+//   recon). Advisory only — it is persisted in the spec marker but never blocks
+//   decomposition (`validateLayering` returns warnings, not `errors`).
 //   }
 //
 // - `key` is a STABLE, title-derived slug (see `stableChildKey`) used to express
@@ -60,10 +66,23 @@
 //     `{parent, children:[…]}`, or null when the marker is absent or garbled
 //     (recovers the ORIGINAL spec on a fresh worktree so resume finishes it).
 
-// Guard constants. MAX mirrors the `boss-epic --parallel` ceiling and keeps
-// epics tractable; MIN is the "fewer ⇒ not an epic, plan as one ticket" floor.
+// Guard constants. MIN is the "fewer ⇒ not an epic, plan as one ticket" floor.
+// MAX is the child-count cap: forcing every child to CHILD_MAX_ESTIMATE points
+// (below) means a big feature decomposes into MORE small children, so the cap is
+// set above the old 8 to give honest ≥5 features room to land as ≤3-pt children
+// before the escape valve trips. Over the cap ⇒ `needs-human` ("too large to
+// auto-plan; split by hand") — NEVER a single oversized ticket, which is the
+// exact monolith this decomposition exists to avoid.
 export const EPIC_MIN_CHILDREN = 2
-export const EPIC_MAX_CHILDREN = 8
+export const EPIC_MAX_CHILDREN = 12
+// A single buildable child must land in one reviewable PR, so its estimate is
+// hard-capped here: an honest ≥5 unit is not a child, it is decomposed further.
+// This is the forcing function — a `5`/`8` child is REJECTED by
+// validateDecomposition, so a would-be monolith cannot survive as one epic child.
+export const CHILD_MAX_ESTIMATE = 3
+// Stable tracker-label role. The skill resolves its display name through
+// skill-config.mjs's labelName(config, EPIC_LABEL) accessor.
+export const EPIC_LABEL = 'epic'
 
 // `createdIdByKey` reserves this entry for the epic parent's tracker id, so a
 // child may not claim it — otherwise its childId would silently resolve to the
@@ -78,18 +97,33 @@ const asArray = (v) => (Array.isArray(v) ? v : [])
 // priority) — matching the SKILL.md Phase 4 estimate + priority guidance.
 const FIB_ESTIMATES = new Set([0, 1, 2, 3, 5, 8])
 const TODO_PRIORITIES = new Set([1, 2, 3, 4])
+// The architectural seams a vertical/pipeline feature decomposes along, ordered
+// producer-before-consumer: contract → persistence → producer → read → ui. A
+// child's `layer` is optional, but when present must be one of these — it drives
+// the producer-before-consumer soft check (validateLayering). `read`/`ui` are the
+// consumer layers gated on a `producer`.
+const CHILD_LAYERS = new Set(['contract', 'persistence', 'producer', 'read', 'ui'])
+const CONSUMER_LAYERS = new Set(['read', 'ui'])
+
+/** Return the exact total complexity of an epic's children. */
+export function epicParentEstimate(spec) {
+  return asArray(spec?.children).reduce((total, child) => total + child?.estimate, 0)
+}
 
 /**
  * Structural validation of a decomposition spec. Returns `{ ok, errors }`:
  * `ok` is true iff `errors` is empty (matches the repo's structured-result
  * style; never throws so a caller can surface every problem at once). Rejects:
  *   - fewer than EPIC_MIN_CHILDREN or more than EPIC_MAX_CHILDREN children
- *   - a missing parent overview (parent.title / parent.goal empty)
+ *   - a missing parent overview (parent.title / parent.goal empty) or priority
  *   - duplicate child `key`s
  *   - empty child title/goal (or empty/missing `key`)
  *   - an empty/missing `keyChanges` (must be a non-empty array of non-empty strings)
  *   - an `estimate` outside the Fibonacci set {0,1,2,3,5,8}
+ *   - an `estimate` above CHILD_MAX_ESTIMATE (a child must land in one PR; an
+ *     honest 5/8 is decomposed further, never carried as one child)
  *   - a `priority` outside {1,2,3,4} (0=None is not a planned Todo priority)
+ *   - a `layer`, when present, outside {contract,persistence,producer,read,ui}
  *   - a `blockedByKeys` entry referencing an unknown child key (dangling ref)
  * Cycle detection is NOT done here — that is `assertAcyclic`'s job (a dangling
  * ref is structural; a cycle is graph-shaped).
@@ -106,6 +140,9 @@ export function validateDecomposition(spec) {
   } else {
     if (!isNonEmptyString(parent.title)) errors.push('parent overview is missing a title')
     if (!isNonEmptyString(parent.goal)) errors.push('parent overview is missing a goal')
+    if (!TODO_PRIORITIES.has(parent.priority)) {
+      errors.push('parent overview has an invalid priority (must be 1, 2, 3, or 4)')
+    }
   }
 
   const children = spec.children
@@ -164,9 +201,26 @@ export function validateDecomposition(spec) {
       errors.push(
         `${where} has an invalid estimate (must be a Fibonacci value: 0, 1, 2, 3, 5, or 8)`,
       )
+    } else if (child.estimate > CHILD_MAX_ESTIMATE) {
+      // The forcing function: a child must land in one reviewable PR. An honest
+      // 5/8 is a monolith-in-disguise — reject it so the planner decomposes it
+      // further into ≤CHILD_MAX_ESTIMATE-pt children rather than smuggling the
+      // oversized unit through as a single epic child.
+      errors.push(
+        `${where} has estimate ${child.estimate}, above the single-PR ceiling of ${CHILD_MAX_ESTIMATE}; decompose it further`,
+      )
     }
     if (!TODO_PRIORITIES.has(child.priority)) {
       errors.push(`${where} has an invalid priority (must be 1, 2, 3, or 4)`)
+    }
+    // `layer` is optional (a non-pipeline child may omit it), but when present it
+    // must name a real architectural seam so the producer-before-consumer soft
+    // check (validateLayering) can reason about it. An unknown layer is a spec
+    // bug — reject it rather than silently ignore a mislabelled seam.
+    if (child.layer != null && !CHILD_LAYERS.has(child.layer)) {
+      errors.push(
+        `${where} has an unknown layer "${child.layer}" (must be one of contract, persistence, producer, read, ui, or omitted)`,
+      )
     }
     // `agentFriendly` is optional (omitted ⇒ agent-friendly default), but when
     // present it must be a real boolean. epicSpecMarker persists it as
@@ -192,6 +246,46 @@ export function validateDecomposition(spec) {
   })
 
   return { ok: errors.length === 0, errors }
+}
+
+/**
+ * Producer-before-consumer SOFT check over a decomposition's `layer` tags.
+ * Returns `{ warnings }` — never `errors` and never throws — so a layering
+ * heuristic can NEVER block decomposition or trip validate-before-write. Two
+ * warnings, both advisory:
+ *   - a `read`/`ui` child that has a `producer` sibling it does NOT list in
+ *     `blockedByKeys` (the consumer would run before its rows are written); and
+ *   - a `read`/`ui` child with NO `producer` sibling at all — which MAY be legit
+ *     when the producer already exists in the merged tree (R5a recon confirms the
+ *     upstream contract), so it is surfaced for the planner to confirm, not blocked.
+ * Children without a `layer` tag are ignored (non-pipeline features opt out).
+ * @param {object} spec
+ * @returns {{ warnings: string[] }}
+ */
+export function validateLayering(spec) {
+  const warnings = []
+  const children = asArray(spec?.children).filter((c) => c && typeof c === 'object')
+  const producerKeys = children
+    .filter((c) => c.layer === 'producer' && isNonEmptyString(c.key))
+    .map((c) => c.key)
+  const hasProducer = producerKeys.length > 0
+  for (const child of children) {
+    if (!CONSUMER_LAYERS.has(child.layer)) continue
+    const where = isNonEmptyString(child.key) ? `child "${child.key}"` : 'a read/ui child'
+    if (!hasProducer) {
+      warnings.push(
+        `${where} is a ${child.layer} layer with no producer sibling; confirm its rows are written by an already-merged upstream producer (verify the upstream contract exists) or add a producer child`,
+      )
+      continue
+    }
+    const gatedByProducer = asArray(child.blockedByKeys).some((dep) => producerKeys.includes(dep))
+    if (!gatedByProducer) {
+      warnings.push(
+        `${where} is a ${child.layer} layer not blockedBy any producer sibling (${producerKeys.join(', ')}); a read/ui child must be gated by the producer that writes its rows`,
+      )
+    }
+  }
+  return { warnings }
 }
 
 // Adjacency: child key -> the keys it is blocked by (intra-epic edges only).
@@ -385,7 +479,7 @@ const EPIC_SPEC_MARKER_LEGACY_RE = /<!--\s*boss-plan-epic-spec:(\{[\s\S]*?\})\s*
  * Serialize the FULL decomposition spec into the durable `boss-plan-epic-spec`
  * parent-description marker: the `parent` overview (title, goal, keyChanges) AND
  * every child's full metadata (key, title, goal, keyChanges, blockedByKeys,
- * estimate, priority, agentFriendly) — everything needed to finish the original
+ * estimate, priority, layer, agentFriendly) — everything needed to finish the original
  * epic WITHOUT re-decomposing, INCLUDING each child's deferred-exposure
  * agent-friendliness call so a resume re-stamps an already-created child
  * correctly. Compact JSON inside the same marker.
@@ -398,6 +492,7 @@ export function epicSpecMarker(spec) {
     title: parentSrc.title,
     goal: parentSrc.goal,
     keyChanges: asArray(parentSrc.keyChanges),
+    priority: parentSrc.priority,
   }
   const children = asArray(spec?.children).map((c) => ({
     key: c?.key,
@@ -407,6 +502,11 @@ export function epicSpecMarker(spec) {
     blockedByKeys: asArray(c?.blockedByKeys),
     estimate: c?.estimate,
     priority: c?.priority,
+    // Persist the architectural seam so a fresh-worktree resume re-derives the
+    // producer-before-consumer wiring for a MISSING child from the recovered
+    // spec. Only a known layer is persisted; an absent/unknown one is dropped
+    // (JSON omits undefined) and normalizes back to undefined on parse.
+    layer: CHILD_LAYERS.has(c?.layer) ? c.layer : undefined,
     // Persist the per-child agent-friendliness decision so a fresh-worktree
     // resume (whose `.linear-plans/` child plans are gone) exposes each
     // ALREADY-created-but-unexposed child correctly — a child whose plan
@@ -479,8 +579,16 @@ export function parseEpicSpecMarker(description) {
         // marker lacks it and degrades to false (no `agent-question`); only an
         // explicit `true` re-applies the label on resume.
         child.agentQuestion = child.agentQuestion === true
+        // Normalize the architectural seam: keep a known layer, drop anything
+        // else. An OLD marker (or a garbled value) simply carries no `layer` key,
+        // so the child opts out of the producer-before-consumer soft check on
+        // resume (delete, not set-undefined, so a recovered child stays minimal).
+        if (!CHILD_LAYERS.has(child.layer)) delete child.layer
       }
     }
+    // Markers written before BOS-475 carry no parent priority. Choose the
+    // defined Medium default so an older in-progress epic can resume safely.
+    if (!TODO_PRIORITIES.has(parsed.parent?.priority)) parsed.parent.priority = 3
     return parsed
   } catch {
     return null

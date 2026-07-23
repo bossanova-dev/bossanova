@@ -583,24 +583,23 @@ func (c *Client) PrefillLineWithReadyMarker(ctx context.Context, sessionName, li
 }
 
 // SendMessage delivers text into an existing chat's live agent composer,
-// routing on submit intent and payload shape (BOS-242 Gap 1). readyMarker is
+// routing purely on submit intent (BOS-242 Gap 1, BOS-488). readyMarker is
 // the agent's input-box prompt glyph (e.g. claude "❯", codex "›"); an empty
 // marker defaults to the legacy Claude marker.
 //
 // Routing (honoring the send_chat_message submit contract exactly):
 //
-//   - submit && single-line (a lone slash-command, "$…", or one line of text):
-//     deliver the text, press Enter, and run the BOS-228 submit-verifier so a
-//     swallowed Enter is retried once and a false "submitted" cannot happen —
-//     a delivery that never executes surfaces as a loud error, not a silent
-//     no-op. Routes through SendLineWithReadyMarker.
-//   - submit && multi-line: paste-only, NO Enter. A multi-line payload is never
-//     auto-submitted — the swallowed-Enter failure mode makes a bare Enter
-//     unsafe — so it is pasted into the composer for the owner to submit.
-//     Routes through PrefillPlanWithReadyMarker.
-//   - !submit (prefill, the default): paste/type into the composer, NO Enter.
-//     Single-line prefills via PrefillLineWithReadyMarker, multi-line via
-//     PrefillPlanWithReadyMarker.
+//   - submit && non-empty: deliver the text, press Enter, and run the BOS-228
+//     submit-verifier so a swallowed Enter is retried once and a false
+//     "submitted" cannot happen — a delivery that never executes surfaces as a
+//     loud error, not a silent no-op. This holds for BOTH single- and
+//     multi-line payloads: SendPlanWithReadyMarker (sendPlan) picks the reliable
+//     literal-keystroke delivery for a single line and bracketed paste for a
+//     multi-line plan, and verifies each shape against the matching signal one
+//     layer down.
+//   - !submit (prefill, the default): paste/type into the composer, NO Enter,
+//     for the composer owner (a human, or a later explicit-submit step) to
+//     submit. Routes through PrefillPlanWithReadyMarker.
 //
 // An empty/whitespace-only payload has nothing to submit, so it is always
 // treated as a prefill (no Enter, no verification) regardless of submit.
@@ -609,25 +608,15 @@ func (c *Client) SendMessage(ctx context.Context, sessionName, text string, subm
 		return fmt.Errorf("session name is required")
 	}
 
-	trimmed := strings.TrimSpace(text)
-	multiLine := strings.ContainsAny(trimmed, "\r\n")
-
-	switch {
-	case submit && trimmed != "" && !multiLine:
-		// Single-line submit: deliver + Enter + verify (fails toward "still
-		// pending"). Pass the trimmed text so a trailing newline can't be typed
-		// as a literal keystroke that submits prematurely on the send-keys -l path.
-		return c.SendLineWithReadyMarker(ctx, sessionName, trimmed, readyMarker)
-	case multiLine:
-		// Multi-line (submit or prefill): paste-only, never auto-submit.
-		return c.PrefillPlanWithReadyMarker(ctx, sessionName, text, readyMarker)
-	case trimmed == "":
-		// Nothing meaningful to submit; paste the (possibly empty) buffer.
-		return c.PrefillPlanWithReadyMarker(ctx, sessionName, text, readyMarker)
-	default:
-		// Single-line prefill (submit=false): type into the composer, no Enter.
-		return c.PrefillLineWithReadyMarker(ctx, sessionName, trimmed, readyMarker)
+	if submit && strings.TrimSpace(text) != "" {
+		// Submit: deliver + Enter + verify (fails toward "still pending").
+		// sendPlan picks literal-type vs bracketed paste by payload shape and
+		// verifies each shape one layer down.
+		return c.SendPlanWithReadyMarker(ctx, sessionName, text, readyMarker)
 	}
+	// Prefill (submit=false, or nothing meaningful to submit): deliver into the
+	// composer with no Enter and no verification.
+	return c.PrefillPlanWithReadyMarker(ctx, sessionName, text, readyMarker)
 }
 
 // sendPlan is the test-injectable variant of SendPlan that accepts custom

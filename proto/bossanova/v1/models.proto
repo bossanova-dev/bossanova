@@ -66,6 +66,8 @@ enum RotationOutcome {
   ROTATION_OUTCOME_EXHAUSTED = 4;                 // all accounts cooling: parked until reset_at
   ROTATION_OUTCOME_FAILED = 5;                    // swap attempted and failed
   ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT = 6; // no eligible account to rotate to (enable/re-auth one)
+  ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT = 7;    // pane auth-failed but account healthy; respawned in place to refresh auth wiring (BOS-482)
+  ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED = 8;     // respawn-in-place cap hit for this chat/window; needs attention (BOS-482)
 }
 
 // RotationEvent is one audit record of a rotation decision (BOS-176).
@@ -694,6 +696,34 @@ message CronJob {
   string model = 16;                   // opaque agent model id; "" = plugin default. Never enumerated by bossd.
   string gate_command = 17;            // optional gate command run before each fire; empty = no gate
   bool   should_run_setup_command = 18;       // run the repo setup script before the agent; default true
+}
+
+// GithubCallback is a durable one-shot registration that delivers a chat
+// message when a pull-request event fires (BOS-467). It mirrors the daemon's
+// domain model; timestamps use google.protobuf.Timestamp and enum-like fields
+// are stable lowercase strings. The message body is a secret payload — it is
+// carried here for the registering owner but must never be logged.
+message GithubCallback {
+  string id             = 1;
+  string group_id       = 2;   // empty = ungrouped (a group of one)
+  string target_chat_id = 3;
+  string repo_owner     = 4;
+  string repo_name      = 5;
+  int32  pr_number      = 6;
+  string trigger        = 7;   // merged | closed | checks_passed | checks_failed
+  string state          = 8;   // active | leased | triggered | delivered | canceled | expired
+  string message        = 9;   // registered prompt body; secret — never logged
+  string lease_owner    = 10;  // empty = no active lease
+  int32  attempt_count  = 11;
+  string last_error     = 12;  // delivery diagnostic; empty = none. Never the message body.
+  string last_event     = 13;  // last matched event label; empty = none. Never the message body.
+  google.protobuf.Timestamp lease_deadline_at = 14;
+  google.protobuf.Timestamp next_attempt_at   = 15;
+  google.protobuf.Timestamp triggered_at      = 16;
+  google.protobuf.Timestamp delivered_at      = 17;
+  google.protobuf.Timestamp expires_at        = 18;
+  google.protobuf.Timestamp created_at        = 19;
+  google.protobuf.Timestamp updated_at        = 20;
 }
 
 // Account is registry metadata for one provider login used by account

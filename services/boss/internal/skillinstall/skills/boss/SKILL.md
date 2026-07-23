@@ -282,6 +282,74 @@ Update cron job settings
 - `--schedule` — Set the cron schedule
 - `--tz` — Set the IANA timezone (empty string clears it)
 
+## GitHub Callbacks
+
+### `boss callback`
+
+Manage GitHub PR callbacks (durable one-shot event notifications)
+
+A GitHub callback is a durable, one-shot notification: it fires a prompt into a chat once a pull request reaches a chosen state, then retires. Use it to answer natural-language asks like "tell me when PR #123 is merged", "ping this chat when PR #123 goes green", "let me know if PR #123's checks fail", or "notify me when PR #123 is closed". Triggers map to those phrasings: `merged`, `checks_passed` (green), `checks_failed` (red), and `closed`. Delivery only signals that the event fired — always verify the PR's actual state before acting on it. Callbacks expire after 24h by default and may not outlive 30 days.
+
+### `boss callback add <pr> <trigger> [flags]`
+
+Register a callback for a pull request event
+
+Register a one-shot callback. `<pr>` is a bare PR number (resolved against the current repository) or a full `https://github.com/owner/repo/pull/N` URL. `<trigger>` is one of `merged`, `closed`, `checks_passed`, or `checks_failed`. The `--message` prompt is delivered verbatim to the target chat when the callback fires and is treated as a secret — it is never echoed back on any surface. Expiry defaults to 24h and may not exceed 30 days.
+
+**Flags:**
+
+- `--chat` — Target agent-session (chat) id to notify (default: $BOSS_AGENT_SESSION_ID)
+- `--expires-in` — Expiry as a duration (e.g. 30m, 24h, 7d, 2w); default 24h, max 30d
+- `--group` — Optional group id; siblings in a group cancel each other on first fire
+- `--json` — Emit the created callback as a stable JSON schema
+- `--message` — Prompt delivered to the chat when the callback fires (required)
+- `--repo` — Repository as owner/repo (default: the current repository's origin)
+
+```bash
+# "tell me when PR #123 is merged"
+boss callback add 123 merged --message "PR #123 merged — pull main and redeploy"
+# "ping this chat when PR #123 goes green"
+boss callback add 123 checks_passed --message "PR #123 is green — start the release"
+# "let me know if PR #123's checks fail"
+boss callback add 123 checks_failed --message "PR #123 is red — investigate the failing checks"
+# "notify me when PR #123 is closed" (full URL, longer expiry)
+boss callback add https://github.com/acme/widget/pull/123 closed --message "PR #123 was closed" --expires-in 7d
+```
+
+### `boss callback list [flags]`
+
+Alias: `boss callback ls`
+
+List registered GitHub callbacks
+
+**Flags:**
+
+- `--chat` — Filter by target agent-session (chat) id
+- `--json` — Emit a stable JSON schema instead of a table
+- `--repo` — Filter by repository as owner/repo
+- `--state` — Filter by state (active, leased, triggered, delivered, canceled, expired)
+- `--trigger` — Filter by trigger (merged, closed, checks_passed, checks_failed)
+
+```bash
+boss callback list
+boss callback list --repo acme/widget --trigger merged
+boss callback list --json
+```
+
+### `boss callback remove <callback-id> [flags]`
+
+Alias: `boss callback rm`
+
+Remove a GitHub callback by id
+
+**Flags:**
+
+- `--chat` — Owning chat id for remote routing (default: $BOSS_AGENT_SESSION_ID; ignored locally)
+
+```bash
+boss callback remove cb_abc123
+```
+
 ## Account Management
 
 ### `boss account`
@@ -770,3 +838,22 @@ Note that `boss rename` also best-effort renames the linked GitHub PR.
 boss session link-pr <session-id> 477
 boss rename <session-id> Fix flaky login test
 ```
+
+## GitHub PR callbacks
+
+A GitHub callback is a durable, one-shot notification that fires a prompt into a chat when a pull request reaches a chosen state, then retires. Reach for one whenever a request maps to "let me know when this PR does X":
+
+- "tell me when PR #123 is merged" → trigger `merged`
+- "ping this chat when PR #123 goes green" → trigger `checks_passed`
+- "let me know if PR #123's checks fail" → trigger `checks_failed`
+- "notify me when PR #123 is closed" → trigger `closed`
+
+From a shell, use the CLI (`boss callback add|list|remove`, documented above). From an MCP-aware host, the same operations are exposed as tools:
+
+- `register_github_callback` — create a callback. Give it the PR (a bare number with repo context, or a full `https://github.com/owner/repo/pull/N` URL), a `trigger`, the `target_chat_id` to notify, and the `message` prompt to deliver. Expiry defaults to 24h and may not exceed 30 days.
+- `list_github_callbacks` — list callbacks, optionally filtered by chat, repo, PR, trigger, or state.
+- `delete_github_callback` — remove a callback by id (requires `confirm: true`).
+
+The `message` you register is a secret: it is delivered verbatim to the target chat when the callback fires, and is never echoed back by any list/inspect surface.
+
+**Delivery is a signal, not proof.** A fired callback tells you the event was observed — it does not guarantee the PR is still in that state by the time you act. Always re-verify the PR's actual state (e.g. `gh pr view <n> --json state,mergeStateStatus,statusCheckRollup`) before taking an irreversible step such as deploying or merging.

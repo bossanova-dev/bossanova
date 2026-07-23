@@ -912,6 +912,76 @@ func TestLineStillAtPromptScansThroughCustomStatusline(t *testing.T) {
 	}
 }
 
+// TestLineStillAtPromptWrappedSingleLine is the BOS-489 regression guard: a
+// single-line payload wider than the pane wraps across rows, so the live input
+// box never sits as one matchable row. The historical text-match
+// (strings.Contains(oneRow, fullLine)) could therefore never match a wrapped
+// payload, reported it as "left the prompt", and suppressed the swallowed-Enter
+// retry — a false delivered:true. The verifier must instead read the wrapping-
+// robust composer signal: a still-visible (non-empty) input box is still-at-prompt,
+// while a cleared composer / agent activity below the marker is submitted.
+func TestLineStillAtPromptWrappedSingleLine(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+
+	// A payload comfortably wider than a pane row, so the input box wraps.
+	longLine := strings.Repeat("verify the wide single-line payload wraps and still resolves ", 3)
+	const paneWidth = 78
+	markerRow := "❯ " + longLine[:paneWidth]
+	continuation := longLine[paneWidth:]
+	const rule = "────────────────────────────────────────────────────────────────────────────────"
+
+	// Fixture sanity: the marker row genuinely cannot contain the whole payload —
+	// the exact condition that produced the BOS-489 false positive.
+	if strings.Contains(strings.TrimSpace(markerRow), longLine) {
+		t.Fatal("invalid fixture: marker row unexpectedly contains the full wrapped line")
+	}
+
+	// Wrapped payload still sitting in the composer (input box non-empty, no agent
+	// activity), footer chrome below → still-at-prompt (true). The old text-match
+	// wrongly reported this submitted.
+	pending := strings.Join([]string{
+		markerRow,
+		continuation,
+		rule,
+		"  Opus 4.8 (1M context) | /Users/dave/.bossanova/worktrees/bossanova/x",
+	}, "\n")
+	if !lineStillAtPrompt(pending, longLine) {
+		t.Fatalf("wrapped single line still in the composer must report still-at-prompt (true)")
+	}
+
+	// Same wrapped payload, now actually submitted: composer cleared to a bare
+	// glyph → submitted (false).
+	cleared := strings.Join([]string{
+		"⏺ working on the wide payload above",
+		"❯",
+		rule,
+		"  Opus 4.8 (1M context) | /Users/dave/.bossanova/worktrees/bossanova/x",
+	}, "\n")
+	if lineStillAtPrompt(cleared, longLine) {
+		t.Fatalf("cleared composer after a wide single line must report submitted (false)")
+	}
+
+	// Submitted with the wrapped prompt still echoed but agent activity rendered
+	// below it → submitted (false).
+	working := strings.Join([]string{
+		markerRow,
+		continuation,
+		"⏺ working",
+	}, "\n")
+	if lineStillAtPrompt(working, longLine) {
+		t.Fatalf("agent activity below a wrapped echoed prompt must report submitted (false)")
+	}
+
+	// Agent working full-screen with no input box drawn at all → submitted (false):
+	// the single-line no-marker early return must survive the wrap-robust rewrite.
+	noMarker := "⏺ working on the wide payload\n  ⎿  still going\n"
+	if lineStillAtPrompt(noMarker, longLine) {
+		t.Fatalf("agent working with no input box must report submitted (false)")
+	}
+}
+
 func TestKillSession_NotExist(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
@@ -1915,6 +1985,79 @@ func TestSendLine_RetrySucceedsAfterSwallowedEnter(t *testing.T) {
 	}
 }
 
+// TestSendLine_LongSingleLineRetrySucceedsAfterSwallowedEnter is the BOS-489
+// end-to-end guard: a single-line payload wider than the pane, whose first Enter
+// is swallowed (the delivery landed before the input box settled), must be caught
+// as still-pending and retried — not falsely reported submitted. Before the fix,
+// the wrapped payload could never text-match one captured row, so the verifier
+// passed on the first try and no retry fired (a silent false delivered:true). The
+// composer keeps showing the wrapped payload through the first verify window, then
+// after exactly one additional Enter the pane clears with agent activity.
+func TestSendLine_LongSingleLineRetrySucceedsAfterSwallowedEnter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	// Wider than the simulated pane, so the input box wraps across rows.
+	longLine := strings.Repeat("deliver this wide single-line instruction to the agent ", 3)
+	const paneWidth = 70
+	// Still-pending pane: the wrapped payload sits in a non-empty input box.
+	pendingPane := "ready\n❯ " + longLine[:paneWidth] + "\n" + longLine[paneWidth:] + "\n"
+	// Submitted pane after the retry Enter: cleared composer + agent activity.
+	submittedPane := "ready\n❯\n⏺ working\n"
+
+	var mu sync.Mutex
+	enterCount := 0
+	var calls []sendPlanCall
+	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		mu.Lock()
+		defer mu.Unlock()
+		subcommand := ""
+		if len(args) > 0 {
+			subcommand = args[0]
+		}
+		calls = append(calls, sendPlanCall{subcommand: subcommand, args: append([]string(nil), args[1:]...)})
+		switch subcommand {
+		case "capture-pane":
+			// Still pending until the retry Enter (2nd Enter) lands, then the
+			// agent starts working below a cleared marker.
+			if enterCount < 2 {
+				return exec.CommandContext(ctx, "printf", "%s", pendingPane)
+			}
+			return exec.CommandContext(ctx, "printf", "%s", submittedPane)
+		case "send-keys":
+			if len(args) > 1 && args[len(args)-1] == "Enter" {
+				enterCount++
+			}
+			return exec.CommandContext(ctx, "true")
+		default:
+			return exec.CommandContext(ctx, "true")
+		}
+	}
+
+	c := NewClient(WithCommandFactory(factory))
+	if err := c.sendLine(context.Background(), "boss-test-sess", longLine, sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 20 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	}); err != nil {
+		t.Fatalf("sendLine long single-line retry: unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	enters := 0
+	for _, call := range calls {
+		if call.subcommand == "send-keys" && len(call.args) > 0 && call.args[len(call.args)-1] == "Enter" {
+			enters++
+		}
+	}
+	if enters != 2 {
+		t.Fatalf("expected exactly two send-keys Enter (initial + one retry), got %d", enters)
+	}
+}
+
 // TestPrefillPlanWithReadyMarker_MultiLineNoEnterNoVerify asserts prefill-only
 // multi-line delivery: the payload is pasted into the composer, but NO Enter is
 // ever sent and NO post-delivery verification capture-pane runs.
@@ -2518,23 +2661,108 @@ func TestSendMessage_CodexSubmit_WaitsForReadyMarkerBeforeEnter(t *testing.T) {
 	})
 }
 
-// TestSendMessage_SubmitMultiLine_PastesNoEnter verifies that a multi-line
-// payload is pasted into the composer with NO Enter even when submit=true — the
-// swallowed-Enter failure mode makes auto-submitting multi-line unsafe.
-func TestSendMessage_SubmitMultiLine_PastesNoEnter(t *testing.T) {
+// TestSendMessage_Submit_DeliversEntersAndVerifies verifies that submit=true
+// delivers, presses Enter once, and runs the verifier for BOTH payload shapes
+// (BOS-488): a single-line message is typed via literal keystrokes, a multi-line
+// message is bracketed-pasted, and each is auto-submitted and verified one layer
+// down. This locks the collapsed two-branch routing — submit no longer forks on
+// payload shape, so a multi-line submit is no longer silently downgraded to a
+// paste-only prefill.
+func TestSendMessage_Submit_DeliversEntersAndVerifies(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	cases := []struct {
+		name     string
+		text     string
+		wantType bool // literal send-keys -l delivery (single-line); else paste
+	}{
+		{"single-line types", "run the thing", true},
+		{"multi-line pastes", "line one\nline two", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Ready marker on the first poll; a cleared (submitted) prompt on the
+			// verify poll so verification passes without waiting the full budget —
+			// "❯\n" clears the single-line literal row AND reads as a submitted
+			// multi-line composer (empty marker row, no payload lines below).
+			fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{"❯\n", "❯\n"}}
+			c := NewClient(WithCommandFactory(fake.factory))
+
+			if err := c.SendMessage(context.Background(), "boss-test-sess", tc.text, true, "❯"); err != nil {
+				t.Fatalf("SendMessage: unexpected error: %v", err)
+			}
+
+			calls := fake.callsCopy()
+
+			// Exactly one Enter submits the payload.
+			if n := countEnterSendKeys(calls); n != 1 {
+				t.Errorf("submit pressed Enter %d times, want 1", n)
+			}
+
+			// Delivery shape: single-line types (send-keys -l), multi-line pastes
+			// (load-buffer + paste-buffer).
+			var sawLiteral, sawLoad, sawPaste bool
+			enterIdx := -1
+			for i, call := range calls {
+				switch call.subcommand {
+				case "send-keys":
+					if len(call.args) >= 3 && call.args[2] == "-l" {
+						sawLiteral = true
+					}
+					if len(call.args) > 0 && call.args[len(call.args)-1] == "Enter" {
+						enterIdx = i
+					}
+				case "load-buffer":
+					sawLoad = true
+				case "paste-buffer":
+					sawPaste = true
+				}
+			}
+			if tc.wantType {
+				if !sawLiteral {
+					t.Errorf("expected literal send-keys -l delivery for single-line, calls = %+v", calls)
+				}
+			} else if !sawLoad || !sawPaste {
+				t.Errorf("expected load-buffer+paste-buffer for multi-line, got load=%v paste=%v", sawLoad, sawPaste)
+			}
+
+			// A verifier capture-pane poll ran AFTER the Enter, proving submission
+			// was verified rather than fired blind.
+			if enterIdx == -1 {
+				t.Fatalf("expected a send-keys Enter, calls = %+v", calls)
+			}
+			sawCaptureAfterEnter := false
+			for i := enterIdx + 1; i < len(calls); i++ {
+				if calls[i].subcommand == "capture-pane" {
+					sawCaptureAfterEnter = true
+					break
+				}
+			}
+			if !sawCaptureAfterEnter {
+				t.Errorf("expected a verifier capture-pane after Enter, calls = %+v", calls)
+			}
+		})
+	}
+}
+
+// TestSendMessage_PrefillMultiLine_PastesNoEnter verifies the default
+// (submit=false) path prefills a multi-line payload into the composer with NO
+// Enter — the prefill contract is unchanged by the BOS-488 collapse.
+func TestSendMessage_PrefillMultiLine_PastesNoEnter(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
 	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{"❯\n"}}
 	c := NewClient(WithCommandFactory(fake.factory))
 
-	if err := c.SendMessage(context.Background(), "boss-test-sess", "line one\nline two", true, "❯"); err != nil {
+	if err := c.SendMessage(context.Background(), "boss-test-sess", "line one\nline two", false, "❯"); err != nil {
 		t.Fatalf("SendMessage: unexpected error: %v", err)
 	}
 
 	calls := fake.callsCopy()
 	if n := countEnterSendKeys(calls); n != 0 {
-		t.Errorf("multi-line submit pressed Enter %d times, want 0", n)
+		t.Errorf("multi-line prefill pressed Enter %d times, want 0", n)
 	}
 	// Must paste (load-buffer + paste-buffer), not type.
 	var sawLoad, sawPaste bool
@@ -2547,7 +2775,7 @@ func TestSendMessage_SubmitMultiLine_PastesNoEnter(t *testing.T) {
 		}
 	}
 	if !sawLoad || !sawPaste {
-		t.Errorf("expected load-buffer+paste-buffer for multi-line, got load=%v paste=%v", sawLoad, sawPaste)
+		t.Errorf("expected load-buffer+paste-buffer for multi-line prefill, got load=%v paste=%v", sawLoad, sawPaste)
 	}
 }
 

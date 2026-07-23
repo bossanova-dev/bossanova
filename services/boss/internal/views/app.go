@@ -264,6 +264,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.toast, _ = a.toast.Update(msg)
 		return a, nil
 	case sessionListMsg:
+		// A recreated HomeModel starts poll IDs at one again. Reject results
+		// from the replaced model before they can mutate App-level rotation
+		// state or Home's question rising-edge state.
+		if msg.homeGeneration != 0 && msg.homeGeneration != a.home.generation {
+			return a, nil
+		}
 		// Surface a non-blocking toast when a new automatic rotation lands.
 		// Seeded silently on first observation so a fresh TUI doesn't replay
 		// history. Session rotation state only flows into the Home model, so
@@ -694,6 +700,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := a.settings.Update(msg)
 		if m, ok := updated.(SettingsModel); ok {
 			a.settings = m
+			if m.err == nil {
+				a.userSettings = m.settings
+				a.home.SetSettings(m.settings)
+			}
 		}
 		if a.settings.Cancelled() {
 			return a, a.switchToHome()
@@ -914,11 +924,19 @@ func (a *App) newHomeModel() HomeModel {
 	home.SetCloudSubscription(a.cloudAccess, a.checkoutReturnURL, a.checkoutCancelURL)
 	home.width = a.width
 	home.height = a.height
+	// Preserve the prior poll snapshot so an existing question remains
+	// acknowledged after Home is rebuilt. Copy the slice because the replacement
+	// model owns future poll updates.
+	home.sessions = append([]*pb.Session(nil), a.home.sessions...)
 	// Preserve all optimistic archive state across rebuilds without sharing map
 	// storage with the prior model. Both lingering success overrides and active
 	// RPCs must survive until the next poll or result reconciles each session.
 	home.archivingOverrideIDs = cloneSessionIDSet(a.home.archivingOverrideIDs)
 	home.archiveInFlightIDs = cloneSessionIDSet(a.home.archiveInFlightIDs)
+	// Preserve focus state and any pending question so a rebuild between the
+	// notification and the user's click doesn't drop the auto-open (BOS-459).
+	home.focused = a.home.focused
+	home.pendingAttentionSessionID = a.home.pendingAttentionSessionID
 	return home
 }
 
@@ -1029,5 +1047,9 @@ func (a App) View() tea.View {
 	}
 
 	v.AltScreen = true
+	// Enable terminal focus reporting so Home can auto-open a chat that started
+	// waiting while boss was in the background, the moment the user clicks its
+	// OS notification and the terminal regains focus (BOS-459).
+	v.ReportFocus = true
 	return v
 }

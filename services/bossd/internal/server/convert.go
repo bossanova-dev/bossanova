@@ -337,6 +337,52 @@ func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionS
 	return p
 }
 
+// githubCallbackToProto converts a domain GithubCallback to its protobuf
+// representation (BOS-467). Nullable timestamp/string columns map to unset
+// proto fields. The message body is copied through for the registering owner;
+// it is a secret and must never be logged by callers of this converter.
+func githubCallbackToProto(c *models.GithubCallback) *pb.GithubCallback {
+	p := &pb.GithubCallback{
+		Id:           c.ID,
+		TargetChatId: c.TargetChatID,
+		RepoOwner:    c.RepoOwner,
+		RepoName:     c.RepoName,
+		PrNumber:     clampInt32(c.PRNumber),
+		Trigger:      string(c.Trigger),
+		State:        string(c.State),
+		Message:      c.Message,
+		AttemptCount: clampInt32(c.AttemptCount),
+		ExpiresAt:    timestamppb.New(c.ExpiresAt),
+		CreatedAt:    timestamppb.New(c.CreatedAt),
+		UpdatedAt:    timestamppb.New(c.UpdatedAt),
+	}
+	if c.GroupID != nil {
+		p.GroupId = *c.GroupID
+	}
+	if c.LeaseOwner != nil {
+		p.LeaseOwner = *c.LeaseOwner
+	}
+	if c.LastError != nil {
+		p.LastError = *c.LastError
+	}
+	if c.LastEvent != nil {
+		p.LastEvent = *c.LastEvent
+	}
+	if c.LeaseDeadlineAt != nil {
+		p.LeaseDeadlineAt = timestamppb.New(*c.LeaseDeadlineAt)
+	}
+	if c.NextAttemptAt != nil {
+		p.NextAttemptAt = timestamppb.New(*c.NextAttemptAt)
+	}
+	if c.TriggeredAt != nil {
+		p.TriggeredAt = timestamppb.New(*c.TriggeredAt)
+	}
+	if c.DeliveredAt != nil {
+		p.DeliveredAt = timestamppb.New(*c.DeliveredAt)
+	}
+	return p
+}
+
 // accountToProto converts a domain Account to its protobuf representation.
 // It maps METADATA ONLY — the credential blob is never a field on either side
 // (locked decision D3) and is never read here.

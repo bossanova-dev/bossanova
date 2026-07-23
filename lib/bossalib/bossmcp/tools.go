@@ -7,6 +7,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/githubcallback"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -57,6 +58,36 @@ func redactRepos(rs []*pb.Repo) []*pb.Repo {
 	out := make([]*pb.Repo, len(rs))
 	for i, r := range rs {
 		out[i] = redactRepo(r)
+	}
+	return out
+}
+
+// redactCallback returns a copy of cb with the secret message body cleared, so
+// no MCP tool ever echoes a callback's delivery prompt back to the caller. The
+// GithubCallback proto carries `message` as a plain field and every
+// callback-returning tool serializes the message directly, so redaction must
+// happen at the MCP layer — exactly like redactRepo does for repo API keys. The
+// source message is never mutated (proto.Clone makes a copy).
+func redactCallback(cb *pb.GithubCallback) *pb.GithubCallback {
+	if cb == nil {
+		return nil
+	}
+	clone, ok := proto.Clone(cb).(*pb.GithubCallback)
+	if !ok {
+		// Unreachable (proto.Clone of a *pb.GithubCallback always yields
+		// *pb.GithubCallback), but fail closed for a secret scrubber: never
+		// return the unredacted source.
+		return &pb.GithubCallback{Id: cb.GetId()}
+	}
+	clone.Message = ""
+	return clone
+}
+
+// redactCallbacks applies redactCallback to every element, returning a new slice.
+func redactCallbacks(cbs []*pb.GithubCallback) []*pb.GithubCallback {
+	out := make([]*pb.GithubCallback, len(cbs))
+	for i, cb := range cbs {
+		out[i] = redactCallback(cb)
 	}
 	return out
 }
@@ -353,6 +384,49 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		r, err := jsonResult(out)
 		return r, nil, err
 	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "list_github_callbacks",
+		Description: "List registered GitHub PR callbacks, optionally filtered by target chat, repository, PR number, trigger, or state. The delivery message body is a secret and is never included in the output.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListGithubCallbacksArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.ListGithubCallbacksRequest{}
+		if args.TargetChatID != "" {
+			v := args.TargetChatID
+			req.TargetChatId = &v
+		}
+		if args.RepoOwner != "" {
+			v := args.RepoOwner
+			req.RepoOwner = &v
+		}
+		if args.RepoName != "" {
+			v := args.RepoName
+			req.RepoName = &v
+		}
+		if args.PRNumber != 0 {
+			v := args.PRNumber
+			req.PrNumber = &v
+		}
+		if args.Trigger != "" {
+			trigger, err := githubcallback.ValidateTrigger(args.Trigger)
+			if err != nil {
+				return errorResult(err), nil, nil
+			}
+			s := string(trigger)
+			req.Trigger = &s
+		}
+		if args.State != "" {
+			v := args.State
+			req.State = &v
+		}
+		out, err := backend.ListGithubCallbacks(ctx, req)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		// The message body is a secret: scrub it from every returned callback.
+		r, err := jsonResult(redactCallbacks(out))
+		return r, nil, err
+	})
 }
 
 // ListAccountsArgs is the typed argument struct for list_accounts.
@@ -366,6 +440,18 @@ type ListSessionsArgs struct {
 	RepoID          string   `json:"repo_id,omitempty" jsonschema:"the repo id to filter by"`
 	States          []string `json:"states,omitempty" jsonschema:"session state enum names to filter by (e.g. SESSION_STATE_RUNNING)"`
 	IncludeArchived bool     `json:"include_archived,omitempty" jsonschema:"include archived sessions"`
+}
+
+// ListGithubCallbacksArgs is the typed argument struct for list_github_callbacks.
+// Every field is an optional filter; an unset field is not constrained. The
+// delivery message body is a secret and is never a filter or an output field.
+type ListGithubCallbacksArgs struct {
+	TargetChatID string `json:"target_chat_id,omitempty" jsonschema:"only callbacks targeting this chat id"`
+	RepoOwner    string `json:"repo_owner,omitempty" jsonschema:"only callbacks on this repository owner (lowercase)"`
+	RepoName     string `json:"repo_name,omitempty" jsonschema:"only callbacks on this repository name (lowercase)"`
+	PRNumber     int32  `json:"pr_number,omitempty" jsonschema:"only callbacks watching this PR number"`
+	Trigger      string `json:"trigger,omitempty" jsonschema:"only callbacks with this trigger; one of merged, closed, checks_passed, checks_failed"`
+	State        string `json:"state,omitempty" jsonschema:"only callbacks in this lifecycle state (e.g. active, delivered, expired)"`
 }
 
 // NoArgs is the typed argument struct for tools that take no input.

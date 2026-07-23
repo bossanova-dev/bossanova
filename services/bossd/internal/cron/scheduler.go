@@ -33,6 +33,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/taskorchestrator"
 )
 
@@ -49,15 +50,26 @@ type ActivityChecker interface {
 	RunActive(sess *models.Session) bool
 }
 
+// GateProofEnvResolver resolves the allowlisted proof env overlay from which
+// the cron gate takes ONLY PROOF_ANTHROPIC_API_KEY. Kept as an interface so
+// tests inject a fake without a real keyring. Backed in production by
+// proofenvkeyring.Resolver.
+type GateProofEnvResolver interface {
+	Resolve() map[string]string
+}
+
 // Config bundles Scheduler dependencies. Store and Sessions are used for
 // load/overlap checks; Repos resolves the per-job base branch; Creator spawns
 // the actual session.
 type Config struct {
-	Store         db.CronJobStore
-	Sessions      db.SessionStore
-	Repos         db.RepoStore
-	Creator       taskorchestrator.SessionCreator
-	Activity      ActivityChecker
+	Store    db.CronJobStore
+	Sessions db.SessionStore
+	Repos    db.RepoStore
+	Creator  taskorchestrator.SessionCreator
+	Activity ActivityChecker
+	// GateProofEnv resolves the proof overlay for the single credential that
+	// pre-session gates may receive. Nil means no proof injection.
+	GateProofEnv  GateProofEnvResolver
 	MaxConcurrent int
 	Logger        zerolog.Logger
 
@@ -68,12 +80,13 @@ type Config struct {
 
 // Scheduler runs scheduled prompt jobs.
 type Scheduler struct {
-	store    db.CronJobStore
-	sessions db.SessionStore
-	repos    db.RepoStore
-	creator  taskorchestrator.SessionCreator
-	activity ActivityChecker
-	logger   zerolog.Logger
+	store        db.CronJobStore
+	sessions     db.SessionStore
+	repos        db.RepoStore
+	creator      taskorchestrator.SessionCreator
+	activity     ActivityChecker
+	gateProofEnv GateProofEnvResolver
+	logger       zerolog.Logger
 
 	cron *cron.Cron
 	sem  chan struct{}
@@ -118,12 +131,13 @@ func New(cfg Config) *Scheduler {
 	}
 	logger := cfg.Logger.With().Str("component", "cron-scheduler").Logger()
 	return &Scheduler{
-		store:    cfg.Store,
-		sessions: cfg.Sessions,
-		repos:    cfg.Repos,
-		creator:  cfg.Creator,
-		activity: cfg.Activity,
-		logger:   logger,
+		store:        cfg.Store,
+		sessions:     cfg.Sessions,
+		repos:        cfg.Repos,
+		creator:      cfg.Creator,
+		activity:     cfg.Activity,
+		gateProofEnv: cfg.GateProofEnv,
+		logger:       logger,
 		cron: cron.New(
 			cron.WithLocation(time.UTC),
 			cron.WithChain(cron.Recover(cronLogger{logger})),
@@ -429,12 +443,29 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (*models.Session, st
 		passed, gateErr := func() (bool, error) {
 			s.markGating(job.ID)
 			defer s.unmarkGating(job.ID)
+			proofKey := ""
+			if s.gateProofEnv != nil {
+				if overlay := s.gateProofEnv.Resolve(); overlay != nil {
+					proofKey = strings.TrimSpace(overlay[proofenv.EnvAnthropicAPIKey])
+				}
+			}
+			unsetEnv := []string{
+				proofenv.EnvCloudflareAPIToken,
+				proofenv.EnvR2Bucket,
+				proofenv.EnvPublicBaseURL,
+				proofenv.EnvCloudflareAccountID,
+			}
+			if proofKey != "" {
+				unsetEnv = append(unsetEnv, "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL")
+			}
 			return gatecmd.Run(ctx, gatecmd.Options{
-				Command:      job.GateCommand,
-				RepoPath:     repo.LocalPath,
-				LinearAPIKey: repo.LinearAPIKey,
-				SentryAPIKey: repo.SentryAPIKey,
-				SentryOrg:    repo.SentryOrg,
+				Command:              job.GateCommand,
+				RepoPath:             repo.LocalPath,
+				LinearAPIKey:         repo.LinearAPIKey,
+				SentryAPIKey:         repo.SentryAPIKey,
+				SentryOrg:            repo.SentryOrg,
+				ProofAnthropicAPIKey: proofKey,
+				UnsetEnv:             unsetEnv,
 				// Timeout left zero → gatecmd.DefaultTimeout (60s)
 				Output: &buf,
 			})

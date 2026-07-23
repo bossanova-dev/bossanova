@@ -9,7 +9,11 @@ import { test } from 'node:test'
 import {
   EPIC_MIN_CHILDREN,
   EPIC_MAX_CHILDREN,
+  CHILD_MAX_ESTIMATE,
+  EPIC_LABEL,
+  epicParentEstimate,
   validateDecomposition,
+  validateLayering,
   assertAcyclic,
   topoOrderChildren,
   epicWiringPlan,
@@ -32,7 +36,12 @@ const child = (key, over = {}) => ({
 
 // A well-formed spec with `n` linearly-ordered children (c2 blocked by c1, ...).
 const linearSpec = (n) => ({
-  parent: { title: 'Epic parent', goal: 'Ship the big thing', keyChanges: ['services/x'] },
+  parent: {
+    title: 'Epic parent',
+    goal: 'Ship the big thing',
+    keyChanges: ['services/x'],
+    priority: 2,
+  },
   children: Array.from({ length: n }, (_, i) =>
     child(`c${i + 1}`, { blockedByKeys: i === 0 ? [] : [`c${i}`] }),
   ),
@@ -42,9 +51,24 @@ const linearSpec = (n) => ({
 // Guard constants
 // ---------------------------------------------------------------------------
 
-test('guard constants are 2 and 8', () => {
+test('guard constants are 2, 12, and a single-PR child ceiling of 3', () => {
   assert.equal(EPIC_MIN_CHILDREN, 2)
-  assert.equal(EPIC_MAX_CHILDREN, 8)
+  assert.equal(EPIC_MAX_CHILDREN, 12)
+  assert.equal(CHILD_MAX_ESTIMATE, 3)
+})
+
+test('EPIC_LABEL identifies the epic label role', () => {
+  assert.equal(EPIC_LABEL, 'epic')
+})
+
+test('epicParentEstimate sums every child estimate', () => {
+  assert.equal(epicParentEstimate(linearSpec(2)), 6)
+  assert.equal(
+    epicParentEstimate({
+      children: [child('small', { estimate: 1 }), child('large', { estimate: 8 })],
+    }),
+    9,
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -56,6 +80,21 @@ test('validateDecomposition: a well-formed 2-child epic is ok with no errors', (
   assert.deepEqual(res, { ok: true, errors: [] })
 })
 
+test('validateDecomposition: a parent priority must be a planned priority', () => {
+  const missing = linearSpec(2)
+  delete missing.parent.priority
+  const invalid = linearSpec(2)
+  invalid.parent.priority = 0
+  assert.match(
+    validateDecomposition(missing).errors.join('\n'),
+    /parent overview has an invalid priority/,
+  )
+  assert.match(
+    validateDecomposition(invalid).errors.join('\n'),
+    /parent overview has an invalid priority/,
+  )
+})
+
 test('validateDecomposition: the max-size epic is accepted', () => {
   const res = validateDecomposition(linearSpec(EPIC_MAX_CHILDREN))
   assert.equal(res.ok, true)
@@ -63,7 +102,7 @@ test('validateDecomposition: the max-size epic is accepted', () => {
 
 test('validateDecomposition: fewer than MIN children is rejected', () => {
   const res = validateDecomposition({
-    parent: { title: 't', goal: 'g' },
+    parent: { title: 't', goal: 'g', priority: 2 },
     children: [child('c1')],
   })
   assert.equal(res.ok, false)
@@ -73,7 +112,7 @@ test('validateDecomposition: fewer than MIN children is rejected', () => {
 test('validateDecomposition: more than MAX children is rejected', () => {
   const res = validateDecomposition(linearSpec(EPIC_MAX_CHILDREN + 1))
   assert.equal(res.ok, false)
-  assert.match(res.errors.join('\n'), /exceeds the 8-child cap/)
+  assert.match(res.errors.join('\n'), /exceeds the 12-child cap/)
 })
 
 test('validateDecomposition: duplicate keys are rejected', () => {
@@ -124,7 +163,7 @@ test('validateDecomposition: empty title or goal is rejected', () => {
 
 test('validateDecomposition: missing or empty keyChanges is rejected', () => {
   const res = validateDecomposition({
-    parent: { title: 't', goal: 'g', keyChanges: ['x'] },
+    parent: { title: 't', goal: 'g', keyChanges: ['x'], priority: 2 },
     children: [child('c1', { keyChanges: [] }), child('c2', { keyChanges: ['  '] })],
   })
   assert.equal(res.ok, false)
@@ -140,6 +179,50 @@ test('validateDecomposition: an out-of-range estimate is rejected', () => {
   assert.equal(res.ok, false)
   assert.match(res.errors.join('\n'), /child "c1" has an invalid estimate/)
   assert.match(res.errors.join('\n'), /child "c2" has an invalid estimate/)
+})
+
+test('validateDecomposition: a child estimate above the single-PR ceiling (5 or 8) is rejected', () => {
+  // The forcing function: a Fibonacci-valid but oversized child (5/8) must be
+  // decomposed further, never carried as one epic child — this is what prevents
+  // the monolith-as-one-child failure mode.
+  const res = validateDecomposition({
+    parent: { title: 't', goal: 'g', priority: 2 },
+    children: [child('c1', { estimate: 5 }), child('c2', { estimate: 8 })],
+  })
+  assert.equal(res.ok, false)
+  assert.match(res.errors.join('\n'), /child "c1" has estimate 5, above the single-PR ceiling of 3/)
+  assert.match(res.errors.join('\n'), /child "c2" has estimate 8, above the single-PR ceiling of 3/)
+})
+
+test('validateDecomposition: children at or below the ceiling (0..3) are accepted', () => {
+  const res = validateDecomposition({
+    parent: { title: 't', goal: 'g', keyChanges: ['x'], priority: 2 },
+    children: [
+      child('c1', { estimate: 0 }),
+      child('c2', { estimate: 1 }),
+      child('c3', { estimate: 2 }),
+      child('c4', { estimate: 3 }),
+    ],
+  })
+  assert.deepEqual(res, { ok: true, errors: [] })
+})
+
+test('validateDecomposition: an unknown layer is rejected; a known layer (or omitted) is accepted', () => {
+  const bad = validateDecomposition({
+    parent: { title: 't', goal: 'g', priority: 2 },
+    children: [child('c1', { layer: 'frontend' }), child('c2')],
+  })
+  assert.equal(bad.ok, false)
+  assert.match(bad.errors.join('\n'), /child "c1" has an unknown layer "frontend"/)
+
+  const good = validateDecomposition({
+    parent: { title: 't', goal: 'g', keyChanges: ['x'], priority: 2 },
+    children: [
+      child('c1', { layer: 'producer' }),
+      child('c2', { layer: 'read', blockedByKeys: ['c1'] }),
+    ],
+  })
+  assert.deepEqual(good, { ok: true, errors: [] })
 })
 
 test('validateDecomposition: an out-of-range priority is rejected', () => {
@@ -167,7 +250,7 @@ test('validateDecomposition: a non-boolean agentFriendly is rejected (not coerce
 
 test('validateDecomposition: a real boolean agentFriendly (or omitted) is accepted', () => {
   const res = validateDecomposition({
-    parent: { title: 't', goal: 'g' },
+    parent: { title: 't', goal: 'g', priority: 2 },
     children: [child('c1', { agentFriendly: false }), child('c2', { agentFriendly: true })],
   })
   assert.deepEqual(res, { ok: true, errors: [] })
@@ -177,10 +260,10 @@ test('validateDecomposition: a real boolean agentFriendly (or omitted) is accept
 
 test('validateDecomposition: a fully-valid spec with metadata is ok', () => {
   const res = validateDecomposition({
-    parent: { title: 't', goal: 'g', keyChanges: ['x'] },
+    parent: { title: 't', goal: 'g', keyChanges: ['x'], priority: 2 },
     children: [
       child('c1', { keyChanges: ['services/a'], estimate: 0, priority: 4 }),
-      child('c2', { keyChanges: ['services/b'], estimate: 8, priority: 1 }),
+      child('c2', { keyChanges: ['services/b'], estimate: 3, priority: 1 }),
     ],
   })
   assert.deepEqual(res, { ok: true, errors: [] })
@@ -205,6 +288,53 @@ test('validateDecomposition: a non-object spec is rejected without throwing', ()
   assert.equal(validateDecomposition(null).ok, false)
   assert.equal(validateDecomposition(undefined).ok, false)
   assert.equal(validateDecomposition('x').ok, false)
+})
+
+// ---------------------------------------------------------------------------
+// validateLayering — producer-before-consumer SOFT check (warnings, not errors)
+// ---------------------------------------------------------------------------
+
+test('validateLayering: a read/ui child gated on its producer sibling yields no warnings', () => {
+  const spec = {
+    parent: { title: 't', goal: 'g', priority: 2 },
+    children: [
+      child('write', { layer: 'producer' }),
+      child('api', { layer: 'read', blockedByKeys: ['write'] }),
+      child('ui', { layer: 'ui', blockedByKeys: ['write'] }),
+    ],
+  }
+  assert.deepEqual(validateLayering(spec), { warnings: [] })
+})
+
+test('validateLayering: a read/ui child NOT blockedBy the producer warns (but never errors)', () => {
+  const spec = {
+    parent: { title: 't', goal: 'g', priority: 2 },
+    children: [child('write', { layer: 'producer' }), child('api', { layer: 'read' })],
+  }
+  const { warnings } = validateLayering(spec)
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /child "api" is a read layer not blockedBy any producer sibling/)
+  // It is advisory only — decomposition itself still validates.
+  assert.equal(validateDecomposition(spec).ok, true)
+})
+
+test('validateLayering: a read/ui child with NO producer sibling warns to confirm the upstream', () => {
+  const spec = {
+    parent: { title: 't', goal: 'g', priority: 2 },
+    children: [
+      child('api', { layer: 'read' }),
+      child('ui', { layer: 'ui', blockedByKeys: ['api'] }),
+    ],
+  }
+  const { warnings } = validateLayering(spec)
+  assert.equal(warnings.length, 2)
+  assert.match(warnings.join('\n'), /child "api" is a read layer with no producer sibling/)
+  assert.match(warnings.join('\n'), /child "ui" is a ui layer with no producer sibling/)
+})
+
+test('validateLayering: children without a layer tag are ignored (non-pipeline features opt out)', () => {
+  assert.deepEqual(validateLayering(linearSpec(3)), { warnings: [] })
+  assert.deepEqual(validateLayering(null), { warnings: [] })
 })
 
 // ---------------------------------------------------------------------------
@@ -396,7 +526,7 @@ test('stableChildKey: never returns the reserved "parent" key', () => {
 
 test('epicSpecMarker + parseEpicSpecMarker: round-trips the full parent + children spec', () => {
   const spec = {
-    parent: { title: 'Epic parent', goal: 'Ship it', keyChanges: ['services/x'] },
+    parent: { title: 'Epic parent', goal: 'Ship it', keyChanges: ['services/x'], priority: 3 },
     children: [
       child('add-api'),
       child('wire-dag', { blockedByKeys: ['add-api'] }),
@@ -409,6 +539,7 @@ test('epicSpecMarker + parseEpicSpecMarker: round-trips the full parent + childr
     title: 'Epic parent',
     goal: 'Ship it',
     keyChanges: ['services/x'],
+    priority: 3,
   })
   // …and so does every child's FULL metadata (so resume finishes the ORIGINAL
   // epic without re-decomposing).
@@ -481,6 +612,13 @@ test('parseEpicSpecMarker: an OLD marker without agentQuestion degrades to false
   assert.equal(parsed.children[0].agentQuestion, false)
 })
 
+test('parseEpicSpecMarker: an OLD marker without parent priority degrades to a defined priority', () => {
+  const legacy =
+    '<!-- boss-plan-epic-spec:{"parent":{"title":"t","goal":"g","keyChanges":[]},' +
+    '"children":[{"key":"c1","title":"t1","goal":"g1","keyChanges":["x"],"blockedByKeys":[],"estimate":3,"priority":2}]} -->'
+  assert.equal(parseEpicSpecMarker(legacy).parent.priority, 3)
+})
+
 test('parseEpicSpecMarker: an OLD marker without agentFriendly degrades to agent-friendly (backward-compat)', () => {
   // A marker written before the field was persisted: no agentFriendly key. It
   // must still parse and degrade to the plan-contract default (true), never null.
@@ -491,6 +629,29 @@ test('parseEpicSpecMarker: an OLD marker without agentFriendly degrades to agent
   const parsed = parseEpicSpecMarker(legacy)
   assert.ok(parsed, 'a legacy marker must still parse')
   assert.equal(parsed.children[0].agentFriendly, true)
+})
+
+test('epicSpecMarker + parseEpicSpecMarker: round-trips a child architectural layer', () => {
+  const spec = {
+    parent: { title: 'Epic parent', goal: 'Ship it', keyChanges: ['x'], priority: 2 },
+    children: [
+      child('write', { layer: 'producer' }),
+      child('api', { layer: 'read', blockedByKeys: ['write'] }),
+    ],
+  }
+  const parsed = parseEpicSpecMarker(epicSpecMarker(spec))
+  assert.equal(parsed.children[0].layer, 'producer')
+  assert.equal(parsed.children[1].layer, 'read')
+})
+
+test('parseEpicSpecMarker: an OLD marker without layer parses and carries no layer key', () => {
+  const legacy =
+    '<!-- boss-plan-epic-spec:{"parent":{"title":"t","goal":"g","keyChanges":[],"priority":2},' +
+    '"children":[{"key":"c1","title":"t1","goal":"g1","keyChanges":["x"],' +
+    '"blockedByKeys":[],"estimate":3,"priority":2}]} -->'
+  const parsed = parseEpicSpecMarker(legacy)
+  assert.ok(parsed, 'a legacy marker must still parse')
+  assert.equal('layer' in parsed.children[0], false)
 })
 
 test('epicSpecMarker + parseEpicSpecMarker: round-trips text containing an HTML-comment terminator', () => {

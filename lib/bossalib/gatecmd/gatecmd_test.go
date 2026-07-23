@@ -162,6 +162,108 @@ exit 0
 	}
 }
 
+func TestRun_ProofAnthropicAPIKeyOverridesAmbientValue(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PROOF_ANTHROPIC_API_KEY", "ambient-key")
+
+	const body = `#!/bin/sh
+[ "$PROOF_ANTHROPIC_API_KEY" = "injected-key" ] || exit 1
+exit 0
+`
+	script := filepath.Join(dir, "check-proof-key.sh")
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	passed, err := Run(context.Background(), Options{
+		Command:              "./check-proof-key.sh",
+		RepoPath:             dir,
+		ProofAnthropicAPIKey: "injected-key",
+		Timeout:              5 * time.Second,
+	})
+	if !passed || err != nil {
+		t.Fatalf("Run = %v, %v; want pass", passed, err)
+	}
+}
+
+func TestRun_ProofAnthropicAPIKeyEmptyDoesNotOverrideAmbientValue(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PROOF_ANTHROPIC_API_KEY", "ambient-key")
+
+	const body = `#!/bin/sh
+[ "$PROOF_ANTHROPIC_API_KEY" = "ambient-key" ] || exit 1
+exit 0
+`
+	script := filepath.Join(dir, "check-proof-key.sh")
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	passed, err := Run(context.Background(), Options{
+		Command:  "./check-proof-key.sh",
+		RepoPath: dir,
+		Timeout:  5 * time.Second,
+	})
+	if !passed || err != nil {
+		t.Fatalf("Run = %v, %v; want pass", passed, err)
+	}
+}
+
+func TestRun_ProofAnthropicAPIKeyEmptyLeavesKeyUnsetWithoutAmbientValue(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PROOF_ANTHROPIC_API_KEY", "")
+	if err := os.Unsetenv("PROOF_ANTHROPIC_API_KEY"); err != nil {
+		t.Fatal(err)
+	}
+
+	const body = `#!/bin/sh
+[ "${PROOF_ANTHROPIC_API_KEY+x}" != "x" ] || exit 1
+exit 0
+`
+	script := filepath.Join(dir, "check-proof-key-unset.sh")
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	passed, err := Run(context.Background(), Options{
+		Command:  "./check-proof-key-unset.sh",
+		RepoPath: dir,
+		Timeout:  5 * time.Second,
+	})
+	if !passed || err != nil {
+		t.Fatalf("Run = %v, %v; want pass", passed, err)
+	}
+}
+
+func TestRun_ExtraEnvOverridesAndUnsetEnvRemovesInheritedValues(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("GATE_OVERLAY_TEST", "inherited-value")
+	t.Setenv("GATE_REMOVE_TEST", "must-not-reach-child")
+
+	const body = `#!/bin/sh
+[ "$GATE_OVERLAY_TEST" = "daemon-value" ] || exit 1
+[ "${GATE_REMOVE_TEST+x}" != "x" ] || exit 2
+exit 0
+`
+	script := filepath.Join(dir, "check-overlay.sh")
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	passed, err := Run(context.Background(), Options{
+		Command:  "./check-overlay.sh",
+		RepoPath: dir,
+		ExtraEnv: map[string]string{
+			"GATE_OVERLAY_TEST": "daemon-value",
+		},
+		UnsetEnv: []string{"GATE_REMOVE_TEST"},
+		Timeout:  5 * time.Second,
+	})
+	if !passed || err != nil {
+		t.Fatalf("Run = %v, %v; want pass", passed, err)
+	}
+}
+
 func TestRun_Timeout(t *testing.T) {
 	passed, err := Run(context.Background(), Options{
 		Command: "sleep 5",

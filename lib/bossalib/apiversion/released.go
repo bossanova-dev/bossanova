@@ -30,6 +30,7 @@ var ReleasedVersions = []Version{
 	"2026-07-06", // V20260706 — UnmanagedLabelChange + LimitedChatStatusChange.
 	"2026-07-11", // V20260711 — NoEligibleAccountChange (ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT).
 	"2026-07-18", // V20260718 — ErroredStatusChange (BOS-430 orphaned/blocked display recolor).
+	"2026-07-23", // V20260723 — RespawnSameAccountOutcomeChange (ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT + RESPAWN_CAP_EXHAUSTED).
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

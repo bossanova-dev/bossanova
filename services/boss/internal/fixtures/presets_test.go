@@ -11,7 +11,7 @@ import (
 )
 
 // allPresetNames is the exact, sorted set the registry must expose.
-var allPresetNames = []string{"archive-signal", "busy", "demo", "empty", "errored-status", "login", "onboarding", "rotation-history"}
+var allPresetNames = []string{"archive-signal", "busy", "demo", "empty", "errored-status", "login", "onboarding", "respawn-history", "rotation-history"}
 
 func TestPresetsExactSet(t *testing.T) {
 	got := make([]string, 0, len(Presets()))

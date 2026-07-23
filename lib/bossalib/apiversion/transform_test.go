@@ -1263,8 +1263,8 @@ func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
 
 func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20260718 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260718)
+	if got := reg.Current(); got != apiversion.V20260723 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260723)
 	}
 	msg := &pb.ProxyListAccountsResponse{
 		Accounts: []*pb.Account{{
@@ -1457,6 +1457,190 @@ func TestProductionChanges_IncludesNoEligibleTransform(t *testing.T) {
 	changes.Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, apiversion.Baseline)
 	if got := msg.GetSession().GetRotationEvents()[0].GetOutcome(); got != pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY {
 		t.Errorf("ProductionChanges did not down-convert NO_ELIGIBLE_ACCOUNT for Baseline: got %v", got)
+	}
+}
+
+// --- RespawnSameAccountOutcomeChange (V20260723) ---
+
+// respawnSession builds a Session carrying one rotation event with the given
+// outcome, mirroring what bossd hydrates onto Session.rotation_events.
+func respawnSession(outcome pb.RotationOutcome) *pb.Session {
+	return &pb.Session{
+		RotationEvents: []*pb.RotationEvent{{
+			Id:      "rot-1",
+			Outcome: outcome,
+		}},
+	}
+}
+
+// respawnResponseCases enumerates every OrchestratorService response type that
+// embeds one or more *pb.Session, paired with its Connect procedure path.
+func respawnResponseCases() []struct {
+	name    string
+	method  string
+	build   func(pb.RotationOutcome) any
+	outcome func(any) pb.RotationOutcome
+} {
+	first := func(s *pb.Session) pb.RotationOutcome { return s.GetRotationEvents()[0].GetOutcome() }
+	return []struct {
+		name    string
+		method  string
+		build   func(pb.RotationOutcome) any
+		outcome func(any) pb.RotationOutcome
+	}{
+		{"ProxyListSessions", bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure,
+			func(o pb.RotationOutcome) any {
+				return &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{respawnSession(o)}}
+			},
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyListSessionsResponse).GetSessions()[0]) }},
+		{"ProxyGetSession", bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.ProxyGetSessionResponse{Session: respawnSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyGetSessionResponse).GetSession()) }},
+		{"ProxyStopSession", bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.ProxyStopSessionResponse{Session: respawnSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyStopSessionResponse).GetSession()) }},
+		{"ProxyPauseSession", bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.ProxyPauseSessionResponse{Session: respawnSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyPauseSessionResponse).GetSession()) }},
+		{"ProxyResumeSession", bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.ProxyResumeSessionResponse{Session: respawnSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyResumeSessionResponse).GetSession()) }},
+		{"ProxyMergeSession", bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.ProxyMergeSessionResponse{Session: respawnSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyMergeSessionResponse).GetSession()) }},
+		{"ProxyArchiveSession", bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.ProxyArchiveSessionResponse{Session: respawnSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.ProxyArchiveSessionResponse).GetSession()) }},
+		{"TransferSession", bossanovav1connect.OrchestratorServiceTransferSessionProcedure,
+			func(o pb.RotationOutcome) any { return &pb.TransferSessionResponse{Session: respawnSession(o)} },
+			func(m any) pb.RotationOutcome { return first(m.(*pb.TransferSessionResponse).GetSession()) }},
+	}
+}
+
+// respawnProdRegistry builds a 2-version registry (Baseline + V20260723) so the
+// RespawnSameAccountOutcomeChange (at V20260723) is valid in NewChanges.
+func respawnProdRegistry(t *testing.T) *apiversion.Registry {
+	t.Helper()
+	reg, err := apiversion.NewRegistry(
+		[]apiversion.Version{apiversion.Baseline, apiversion.V20260723},
+		apiversion.V20260723,
+		apiversion.Baseline,
+	)
+	if err != nil {
+		t.Fatalf("respawnProdRegistry: %v", err)
+	}
+	return reg
+}
+
+// respawnOutcomes is the set of new outcomes that must both down-convert.
+var respawnOutcomes = []pb.RotationOutcome{
+	pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT,
+	pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED,
+}
+
+func TestRespawnSameAccountOutcomeChange_Version(t *testing.T) {
+	if got := (apiversion.RespawnSameAccountOutcomeChange{}).Version(); got != apiversion.V20260723 {
+		t.Errorf("RespawnSameAccountOutcomeChange.Version() = %q, want %q", got, apiversion.V20260723)
+	}
+}
+
+func TestRespawnSameAccountOutcomeChange_DownConvertsForBaseline(t *testing.T) {
+	reg := respawnProdRegistry(t)
+	changes, err := apiversion.NewChanges(reg, apiversion.RespawnSameAccountOutcomeChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	for _, outcome := range respawnOutcomes {
+		for _, tc := range respawnResponseCases() {
+			t.Run(outcome.String()+"/"+tc.name, func(t *testing.T) {
+				msg := tc.build(outcome)
+				changes.Apply(tc.method, msg, apiversion.Baseline)
+				if got := tc.outcome(msg); got != pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY {
+					t.Errorf("%s: outcome = %v, want STATUS_ONLY_NO_CAPABILITY", tc.name, got)
+				}
+			})
+		}
+	}
+}
+
+func TestRespawnSameAccountOutcomeChange_NoOpAtCurrent(t *testing.T) {
+	reg := respawnProdRegistry(t)
+	changes, err := apiversion.NewChanges(reg, apiversion.RespawnSameAccountOutcomeChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	for _, outcome := range respawnOutcomes {
+		for _, tc := range respawnResponseCases() {
+			t.Run(outcome.String()+"/"+tc.name, func(t *testing.T) {
+				msg := tc.build(outcome)
+				changes.Apply(tc.method, msg, reg.Current())
+				if got := tc.outcome(msg); got != outcome {
+					t.Errorf("%s: outcome = %v, want %v (unchanged at Current)", tc.name, got, outcome)
+				}
+			})
+		}
+	}
+}
+
+func TestRespawnSameAccountOutcomeChange_LeavesOtherOutcomesUntouched(t *testing.T) {
+	rc := apiversion.RespawnSameAccountOutcomeChange{}
+	// A different outcome must be left exactly as-is even for Baseline callers.
+	msg := &pb.ProxyGetSessionResponse{Session: respawnSession(pb.RotationOutcome_ROTATION_OUTCOME_ROTATED)}
+	rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg)
+	if got := msg.GetSession().GetRotationEvents()[0].GetOutcome(); got != pb.RotationOutcome_ROTATION_OUTCOME_ROTATED {
+		t.Errorf("unrelated outcome mutated: got %v, want ROTATED", got)
+	}
+}
+
+// TestRespawnSameAccountOutcomeChange_DoesNotMutateSharedSession pins that the
+// down-convert clones rather than mutating the caller's cached Session in place.
+func TestRespawnSameAccountOutcomeChange_DoesNotMutateSharedSession(t *testing.T) {
+	rc := apiversion.RespawnSameAccountOutcomeChange{}
+
+	shared := respawnSession(pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT)
+	listMsg := &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{shared}}
+	rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, listMsg)
+	if got := shared.GetRotationEvents()[0].GetOutcome(); got != pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT {
+		t.Fatalf("shared session mutated in place: got %v, want RESPAWNED_SAME_ACCOUNT", got)
+	}
+	if got := listMsg.GetSessions()[0].GetRotationEvents()[0].GetOutcome(); got != pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY {
+		t.Fatalf("response session not down-converted: got %v, want NO_CAPABILITY", got)
+	}
+	if listMsg.GetSessions()[0] == shared {
+		t.Fatal("response session must be a clone, not the shared pointer")
+	}
+}
+
+func TestRespawnSameAccountOutcomeChange_NonTargetedMethod_NoOp(t *testing.T) {
+	rc := apiversion.RespawnSameAccountOutcomeChange{}
+	msg := &pb.ProxyGetSessionResponse{Session: respawnSession(pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT)}
+	rc.TransformResponse(bossanovav1connect.OrchestratorServiceListDaemonsProcedure, msg)
+	if got := msg.GetSession().GetRotationEvents()[0].GetOutcome(); got != pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT {
+		t.Errorf("untargeted method mutated payload: got %v, want RESPAWNED_SAME_ACCOUNT", got)
+	}
+}
+
+func TestRespawnSameAccountOutcomeChange_WrongType_NoOp(t *testing.T) {
+	rc := apiversion.RespawnSameAccountOutcomeChange{}
+	rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, "not a response")
+	rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, &pb.ProxyGetSessionResponse{})
+}
+
+func TestRespawnSameAccountOutcomeChange_NilSession_NoPanic(t *testing.T) {
+	rc := apiversion.RespawnSameAccountOutcomeChange{}
+	rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, &pb.ProxyGetSessionResponse{})
+	rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, &pb.ProxyListSessionsResponse{})
+}
+
+func TestProductionChanges_IncludesRespawnTransform(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	for _, outcome := range respawnOutcomes {
+		// Header-less (Baseline) traffic must be down-converted by the shipped chain.
+		msg := &pb.ProxyGetSessionResponse{Session: respawnSession(outcome)}
+		changes.Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, apiversion.Baseline)
+		if got := msg.GetSession().GetRotationEvents()[0].GetOutcome(); got != pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY {
+			t.Errorf("ProductionChanges did not down-convert %v for Baseline: got %v", outcome, got)
+		}
 	}
 }
 

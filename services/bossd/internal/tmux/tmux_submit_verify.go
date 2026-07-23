@@ -55,12 +55,14 @@ func (c *Client) verifyWithEnterRetry(ctx context.Context, sessionName, payload 
 
 // waitForSubmission polls capture-pane until the payload is confirmed submitted
 // or the wait budget elapses, at which point it returns a loud error. The
-// confirmation predicate is shape-aware: a single-line payload is submitted when
-// its trimmed text has left the bottom-most prompt row (lineStillAtPrompt), and
-// a multi-line payload — which never sits as one matchable row — is submitted
-// when multiLineSubmitted reads a positive signal off the pane. Both fail toward
-// "still pending" so a delivery that loaded but never executed surfaces as an
-// error rather than a silent no-op.
+// confirmation predicate is shape-aware but shares one wrapping-robust submission
+// signal: a single-line payload is submitted when it has left the live input box
+// (lineStillAtPrompt) and a multi-line payload — which never sits as one matchable
+// row — when multiLineSubmitted reads a positive signal off the pane. Neither
+// depends on matching the payload text against a single captured row, so a payload
+// wider than the pane (which wraps across rows) is not mistaken for submitted
+// (BOS-489). Both fail toward "still pending" so a delivery that loaded but never
+// executed surfaces as an error rather than a silent no-op.
 func (c *Client) waitForSubmission(ctx context.Context, sessionName, payload string, waitFor, tickEvery time.Duration) error {
 	if tickEvery <= 0 {
 		tickEvery = 100 * time.Millisecond
@@ -165,32 +167,27 @@ func multiLineSubmitted(pane, payload string) bool {
 	return promptRowIsEmpty(strings.TrimSpace(lines[markerIdx]))
 }
 
+// lineStillAtPrompt reports whether a single-line payload is still sitting in the
+// live input box (not yet submitted). It shares the shape-agnostic submission
+// signal used for multi-line payloads (multiLineSubmitted) rather than matching
+// the payload against one captured pane row: a single line wider than the pane
+// wraps across rows, so the bottom-most prompt row can never Contains the whole
+// line — the historical text-match returned false for any wrapped payload and
+// reported it as submitted, suppressing the swallowed-Enter retry (BOS-489). A
+// wrapped line behaves exactly like a multi-line payload here — it is never one
+// matchable row — so the same wrapping-immune signal (cleared composer OR agent
+// activity below the marker) is the right predicate for both.
+//
+// The one single-line-specific rule preserved from the original: when no prompt
+// marker is present at all (the agent is working full-screen with no input box
+// drawn), the payload has left the prompt, so report submitted. multiLineSubmitted
+// fails that case toward "still pending"; the single-line path must not, so the
+// no-marker check stays here.
 func lineStillAtPrompt(pane, line string) bool {
-	lines := strings.Split(pane, "\n")
-
-	// Locate the bottom-most prompt-marker row: the live input box. Everything
-	// below it is footer — a separator rule, the "model | cwd" line, and any
-	// custom statusline rows, which are arbitrary user text (e.g. "PR #133",
-	// "◉ xhigh · /effort") that no fixed predicate can enumerate — so the scan
-	// skips all of it while finding the marker. The empty prompt ("❯" with no
-	// text) is a marker too, so a cleared/submitted input reports false below.
-	markerIdx := bottomMostPromptMarkerIdx(lines)
-	if markerIdx == -1 {
+	if bottomMostPromptMarkerIdx(strings.Split(pane, "\n")) == -1 {
 		return false
 	}
-
-	// If agent activity appears below that marker, the marker is a submitted
-	// prompt echoed into the transcript ("❯ do the thing" above the agent's
-	// response or working spinner) with no fresh input box drawn yet, so the
-	// payload has already left the prompt. Footer and statusline rows are not
-	// agent activity, so a still-pending payload beneath a custom statusline is
-	// never mistaken for a submitted one.
-	for _, l := range lines[markerIdx+1:] {
-		if isAgentActivity(strings.TrimSpace(l)) {
-			return false
-		}
-	}
-	return strings.Contains(strings.TrimSpace(lines[markerIdx]), line)
+	return !multiLineSubmitted(pane, line)
 }
 
 // promptMarkers are the leading glyphs an agent's input box renders. Shared by

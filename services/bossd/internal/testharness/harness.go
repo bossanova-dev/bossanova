@@ -64,20 +64,21 @@ type Options struct {
 
 // Harness provides a fully wired bossd daemon for E2E tests.
 type Harness struct {
-	DB         *sql.DB
-	Repos      db.RepoStore
-	Sessions   db.SessionStore
-	Attempts   db.AttemptStore
-	AgentChats db.AgentChatStore
-	CronJobs   db.CronJobStore
-	Lifecycle  *session.Lifecycle
-	Server     *server.Server
-	Provider   *StubProvider
-	Dispatcher *upstream.WebhookDispatcher
-	Tmux       *tmux.Client
-	Git        *MockWorktreeManager
-	Agent      *MockAgentRunner
-	VCS        *MockVCSProvider
+	DB              *sql.DB
+	Repos           db.RepoStore
+	Sessions        db.SessionStore
+	Attempts        db.AttemptStore
+	AgentChats      db.AgentChatStore
+	CronJobs        db.CronJobStore
+	GithubCallbacks db.GithubCallbackStore
+	Lifecycle       *session.Lifecycle
+	Server          *server.Server
+	Provider        *StubProvider
+	Dispatcher      *upstream.WebhookDispatcher
+	Tmux            *tmux.Client
+	Git             *MockWorktreeManager
+	Agent           *MockAgentRunner
+	VCS             *MockVCSProvider
 	// DisplayTracker backs the MergeSession "PR is not passing" guard. Leave
 	// entries empty to let merges through (the guard skips when no entry
 	// exists); call DisplayTracker.Set with a non-passing status to block.
@@ -184,6 +185,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	attempts := db.NewAttemptStore(database)
 	agentChats := db.NewAgentChatStore(database)
 	cronJobs := db.NewCronJobStore(database)
+	githubCallbacks := db.NewGithubCallbackStore(database)
 	accounts := db.NewAccountStore(database)
 
 	// Mocks.
@@ -221,7 +223,6 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		workflowServices := append([]pluginpkg.WorkflowService(nil), opts.WorkflowServices...)
 		display.SetOnChange(func(sessionID string, _ *status.DisplayEntry, newEntry *status.DisplayEntry) {
 			for _, svc := range workflowServices {
-				svc := svc
 				safego.Go(logger, func() {
 					cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
@@ -254,11 +255,12 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	mockAgentClient := &MockAgentClient{Name: "claude"}
 	mockCodexClient := &MockAgentClient{Name: "codex"}
 	srv := server.New(server.Config{
-		Repos:      repos,
-		Sessions:   sessions,
-		Attempts:   attempts,
-		AgentChats: agentChats,
-		Accounts:   accounts,
+		Repos:           repos,
+		Sessions:        sessions,
+		Attempts:        attempts,
+		AgentChats:      agentChats,
+		Accounts:        accounts,
+		GithubCallbacks: githubCallbacks,
 		// In-memory credential store so account RPCs are exercisable without
 		// touching the real OS keyring. AccountSmokeRunner stays nil.
 		AccountCredentials: newMemAccountCreds(),
@@ -380,6 +382,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	h.Attempts = attempts
 	h.AgentChats = agentChats
 	h.CronJobs = cronJobs
+	h.GithubCallbacks = githubCallbacks
 	h.Lifecycle = lifecycle
 	h.Server = srv
 	h.Provider = realtimeProvider

@@ -108,6 +108,27 @@ func (a *statusSnapshotAdapter) SnapshotStatuses(ctx context.Context) ([]*pb.Cha
 	return a.fn(ctx)
 }
 
+// CallbackInterestsFn returns the daemon's current GitHub callback-interest set
+// as the proto projection used by the snapshot. The bossd wiring adapts
+// callback.DeriveInterests over the callback store.
+type CallbackInterestsFn func(ctx context.Context) ([]*pb.CallbackInterest, error)
+
+type callbackInterestAdapter struct {
+	fn CallbackInterestsFn
+}
+
+// NewCallbackInterestReader wraps a CallbackInterestsFn.
+func NewCallbackInterestReader(fn CallbackInterestsFn) CallbackInterestReader {
+	return &callbackInterestAdapter{fn: fn}
+}
+
+func (a *callbackInterestAdapter) SnapshotCallbackInterests(ctx context.Context) ([]*pb.CallbackInterest, error) {
+	if a.fn == nil {
+		return nil, nil
+	}
+	return a.fn(ctx)
+}
+
 // --- Command handler adapter ---
 
 // LifecycleStopper is the slice of *session.Lifecycle the stop path
@@ -157,6 +178,9 @@ type SessionCommandServer interface {
 	UpdateCronJob(context.Context, *connect.Request[pb.UpdateCronJobRequest]) (*connect.Response[pb.UpdateCronJobResponse], error)
 	DeleteCronJob(context.Context, *connect.Request[pb.DeleteCronJobRequest]) (*connect.Response[pb.DeleteCronJobResponse], error)
 	RunCronJobNow(context.Context, *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error)
+	CreateGithubCallback(context.Context, *connect.Request[pb.CreateGithubCallbackRequest]) (*connect.Response[pb.CreateGithubCallbackResponse], error)
+	ListGithubCallbacks(context.Context, *connect.Request[pb.ListGithubCallbacksRequest]) (*connect.Response[pb.ListGithubCallbacksResponse], error)
+	DeleteGithubCallback(context.Context, *connect.Request[pb.DeleteGithubCallbackRequest]) (*connect.Response[pb.DeleteGithubCallbackResponse], error)
 	AddAccount(context.Context, *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error)
 	RefreshAccount(context.Context, *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error)
 	UpdateAccount(context.Context, *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error)
@@ -750,6 +774,66 @@ func (a *CommandHandlerAdapter) DeleteCronJob(ctx context.Context, id string) er
 	return nil
 }
 
+// CreateGithubCallback implements SessionCommandHandler.CreateGithubCallback,
+// translating the stream command into the daemon's CreateGithubCallbackRequest
+// field-for-field. GroupId and ExpiresAt are copied as pointers so their
+// unset state reaches the daemon unchanged. The Message field is a secret and
+// is never logged.
+func (a *CommandHandlerAdapter) CreateGithubCallback(ctx context.Context, cmd *pb.CreateGithubCallbackCommand) (*pb.CreateGithubCallbackResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("create_github_callback: command server not wired")
+	}
+	resp, err := a.Commands.CreateGithubCallback(ctx, connect.NewRequest(&pb.CreateGithubCallbackRequest{
+		GroupId:      cmd.GroupId,
+		TargetChatId: cmd.GetTargetChatId(),
+		RepoOwner:    cmd.GetRepoOwner(),
+		RepoName:     cmd.GetRepoName(),
+		PrNumber:     cmd.GetPrNumber(),
+		Trigger:      cmd.GetTrigger(),
+		Message:      cmd.GetMessage(),
+		ExpiresAt:    cmd.ExpiresAt,
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("create github callback: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// ListGithubCallbacks implements SessionCommandHandler.ListGithubCallbacks,
+// translating the stream command into the daemon's ListGithubCallbacksRequest.
+// Every filter is an optional pointer copied straight through so the daemon
+// applies only the filters the caller set.
+func (a *CommandHandlerAdapter) ListGithubCallbacks(ctx context.Context, cmd *pb.ListGithubCallbacksCommand) (*pb.ListGithubCallbacksResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("list_github_callbacks: command server not wired")
+	}
+	resp, err := a.Commands.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{
+		TargetChatId: cmd.TargetChatId,
+		RepoOwner:    cmd.RepoOwner,
+		RepoName:     cmd.RepoName,
+		PrNumber:     cmd.PrNumber,
+		Trigger:      cmd.Trigger,
+		State:        cmd.State,
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("list github callbacks: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// DeleteGithubCallback implements SessionCommandHandler.DeleteGithubCallback.
+// The daemon's DeleteGithubCallbackResponse carries no payload, so the response
+// is discarded.
+func (a *CommandHandlerAdapter) DeleteGithubCallback(ctx context.Context, id string) error {
+	if a.Commands == nil {
+		return errors.New("delete_github_callback: command server not wired")
+	}
+	if _, err := a.Commands.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{Id: id})); err != nil {
+		return fmt.Errorf("delete github callback: %w", err)
+	}
+	return nil
+}
+
 // RunCronJobNow implements SessionCommandHandler.RunCronJobNow by delegating to
 // the daemon's RunCronJobNow connect handler.
 func (a *CommandHandlerAdapter) RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error) {
@@ -1163,6 +1247,10 @@ func (a *SessionCreatorAdapter) Create(ctx context.Context, cmd *pb.CreateSessio
 		Detach:           cmd.GetDetach(),
 		Model:            cmd.Model,
 		IsTmuxUnattended: cmd.GetIsTmuxUnattended(),
+		// Carry defer_pr so the rebuilt request preserves the hosted create's
+		// skip-up-front-draft-PR behavior (PR opened at finalize only if commits
+		// land); dropping it here would silently re-enable the eager draft PR.
+		DeferPr: cmd.GetDeferPr(),
 	}
 	if name := cmd.GetAgentName(); name != "" {
 		req.AgentName = &name

@@ -100,6 +100,14 @@ func (c *StreamClient) forwardEvent(
 		case outbound <- out:
 		case <-ctx.Done():
 		}
+	case ev.Interests != nil:
+		out := &pb.DaemonEvent{Event: &pb.DaemonEvent_CallbackInterests{
+			CallbackInterests: &pb.CallbackInterestSet{Interests: ev.Interests.Interests},
+		}}
+		select {
+		case outbound <- out:
+		case <-ctx.Done():
+		}
 	case ev.Status != nil:
 		// Route through the coalescer. statusCh has a buffered 64 slots
 		// so a burst fits; if full we drop (the coalescer holds the

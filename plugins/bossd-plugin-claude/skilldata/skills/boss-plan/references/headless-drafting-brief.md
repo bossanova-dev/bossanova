@@ -30,15 +30,21 @@ Read the title + description and classify:
 - **TRIVIAL** — copy/doc tweak, a single obvious one-liner, no design decisions (e.g. "Mention
   setup scripts on the home page"). Use a lightweight plan.
 - **SUBSTANTIAL** — anything with design choices, multiple files, or unknowns.
-- **EPIC** — the work spans **multiple independently-shippable PRs**, each a coherent deliverable
-  mergeable on its own. The bar is "any multi-PR judgment," but an epic requires **≥ 2** genuinely
-  separable children; if you cannot articulate ≥ 2 independent PR-sized pieces it is `SUBSTANTIAL`,
-  not EPIC. When EPIC, follow the decompose-and-auto-create flow below **unless** `allowEpic: false`
-  was passed in your context (you are drafting a child of an epic — the recursion guard: never
-  decompose again; draft this child as a normal single-ticket plan).
+- **EPIC** — the honest Fibonacci estimate is **≥ 5**, or the work otherwise spans **multiple
+  independently-shippable PRs**, each a coherent deliverable mergeable on its own. **Estimate is the
+  forcing function:** a single ticket may be estimated only `0/1/2/3`; an honest `5` is EPIC unless
+  it is genuinely atomic & un-splittable (then it survives as one ticket with a recorded `- Atomic-5:`
+  justification under `## Planning`); an `8` is **never** a single-ticket estimate. An epic still
+  requires **≥ 2** genuinely separable children; if the honest estimate is `≤ 3` and you cannot
+  articulate ≥ 2 independent PR-sized pieces it is `SUBSTANTIAL`, not EPIC. When EPIC, follow the
+  decompose-and-auto-create flow below **unless** `allowEpic: false` was passed in your context (you
+  are drafting a child of an epic — the recursion guard: never decompose again; draft this child as a
+  normal single-ticket plan).
 
-This classification sets how deep your recon and plan go, and informs the estimate. If the ticket
-is TRIVIAL, keep the plan proportionate; do not manufacture complexity.
+Compute the honest estimate **first** — it drives the triage above — then let it set how deep your
+recon and plan go. Every planned ticket gets a non-null estimate. Honor a reporter-set priority; otherwise rank the ticket (and an
+epic parent) against the current config-resolved planned (`stateName(config, 'planned')`) backlog. If the ticket is TRIVIAL, keep the plan
+proportionate; do not manufacture complexity.
 
 ### Epic decompose-and-auto-create (headless, triage = EPIC)
 
@@ -58,14 +64,25 @@ non-unplanned source **with no epic marker** falls back to a single-ticket `SUBS
 the reason). A non-unplanned parent would be invisible to the unplanned sweep and stranded on a
 crash before the final flip.
 
-1. **Draft a decomposition spec**
-   `{ parent:{title,goal,keyChanges[]}, children:[{key,title,goal,keyChanges[],blockedByKeys[],estimate,priority,agentFriendly,openQuestions[]}] }`
+1. **Draft a decomposition spec.** Decompose the feature along its **architectural seams,
+   producer-before-consumer**: `contract → persistence → producer → read → ui`. Tag each child with
+   its `layer` and set every `read`/`ui` child `blockedBy` the **producer** child that writes its rows
+   — a read/ui child is not plannable without a producer that populates it (its own sibling child, or,
+   when the producer already exists in the merged tree, an external `blockedBy`; the Step 2 recon
+   confirms which). Never bundle "persistence + read" such that the producer can be dropped. Each child
+   estimate must be **≤ `CHILD_MAX_ESTIMATE`=3** (a `5`/`8` child is rejected — decompose it further).
+   `{ parent:{title,goal,keyChanges[],priority}, children:[{key,title,goal,keyChanges[],blockedByKeys[],estimate,priority,layer,agentFriendly,openQuestions[]}] }`
    — set each child `key` with `stableChildKey(child, seen)` (a deterministic title-derived slug, so a
    fresh-worktree retry re-derives the same keys and its resume markers still match) — and validate it
-   locally: `validateDecomposition` + `assertAcyclic`. **On any guard failure**
-   (fewer than `EPIC_MIN_CHILDREN`=2 or more than `EPIC_MAX_CHILDREN`=8 children, a `blockedByKeys`
-   cycle, or dangling refs) **fall back to a single-ticket plan and record the reason** — never emit
-   a broken epic.
+   locally: `validateDecomposition` + `assertAcyclic`, then run `validateLayering` (the soft
+   producer-before-consumer check: its **warnings** are advisory — confirm each read/ui child's rows
+   are written by a producer, or add the missing producer — but they never block the epic).
+   **A drafting-bug guard failure** (a `blockedByKeys` cycle or a dangling ref) ⇒
+   **fall back to a single-ticket plan and record the reason** — never emit a broken epic.
+   **A size failure is different:** more than `EPIC_MAX_CHILDREN`=12 children, a child you cannot get to
+   ≤ `CHILD_MAX_ESTIMATE`=3, or an honest ≥ 5 that will not separate into ≥ `EPIC_MIN_CHILDREN`=2
+   PR-sized children ⇒ **`needs-human`** ("too large to auto-plan; split by hand"), **never** a single
+   oversized ticket — the exact monolith this flow exists to avoid.
 2. **Fully plan every child** by drafting each as a synthetic single ticket **with `allowEpic:
 false`** (the recursion guard — a child is never itself decomposed), writing a full
    planContract-v1 plan per child. **Copy each child plan's own `agentFriendly` verdict AND its
@@ -174,8 +191,11 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    an agent-friendly child becomes `boss-build`-eligible, and `boss-build`'s "skip a
    candidate whose blocker relations exist" then keeps blocked children from starting out of DAG order
    (any crash before exposure leaves children unexposed — no `agent-friendly`/`needs-human`, unbuildable;
-   resume completes wiring + exposure). **Only then**, as the very last write, flip the parent
-   unplanned → planned to finish the repurpose (parent carries neither `agent-friendly` nor `needs-human`)
+   resume completes wiring + exposure). **Only then**, as the very last write, resolve the `epic` label
+   through `labelName(config, 'epic')`, union it into the parent, and flip unplanned → planned with
+   `estimate = epicParentEstimate(spec)` (the sum of its children's estimates) and
+   `priority = parent.priority`. If the tracker rejects that non-Fibonacci sum, retry without estimate
+   and warn. The parent carries neither `agent-friendly` nor `needs-human`
    — the overview + marker were already saved above. **Strip stale build metadata with this flip:** a
    headless sweep can pick an explicitly-named planned/in-progress ticket that was **already planned**,
    so the original may already carry `agent-friendly` **and** a single-ticket `Implementation plan (…)`
@@ -231,6 +251,20 @@ markdown as text does **not** see the pixels. Call the tracker adapter's image-e
 the description markdown to actually view the reporter's screenshots — they often disambiguate what the
 words alone leave ambiguous (a prior web-vs-TUI mix-up would have been resolved on sight).
 
+**Verify every cited upstream contract exists.** For each upstream artifact this plan will build
+against — a GraphQL/proto field, a DB column or migration, a service method, a config key, a data
+pipeline stage, another ticket's output — confirm it **already exists in the merged tree** (grep/read
+it). If it is absent, either pull it into this ticket's scope or add a hard `blockedBy` on the ticket
+that must deliver it. **Never author a step against an artifact you did not confirm exists** — a
+`Done` upstream ticket is not proof its contract actually landed; the code in the merged tree is. This
+is what stops a consumer plan from being written against an assumed-but-absent column/field/service.
+
+**Re-triage after recon.** Recon is where the true size surfaces. Recompute the honest estimate now;
+if it is **≥ 5** and you are not already on the EPIC path, **re-triage to EPIC** (Step 1's
+decompose-and-auto-create) — or, only for a genuinely atomic & un-splittable 5, record the
+`- Atomic-5:` justification. A ticket that looked SUBSTANTIAL but recon proved is a 5+ must not be
+planned as one oversized ticket.
+
 ## Step 3 — Work the self-review dimensions yourself
 
 The Bossanova interactive path gets these dimensions from its draft extension; headless has no
@@ -276,8 +310,16 @@ not continue into subagent-driven-development or executing-plans. We only want t
 here.
 
 This section is the **shared drafting spec** for both modes — the interactive path
-(`references/interactive-mode.md`) points here too. Include, in the plan body, all of the following
-(scaled to triage):
+(`references/interactive-mode.md`) points here too.
+
+**One ticket = one atomic PR.** A single-ticket plan describes **one** atomically-shippable change.
+If the plan you are drafting naturally enumerates **≥ 2** independently-landable tasks (a `Task 1..N`
+list whose tasks could each merge on their own), that is the EPIC signal — stop and **re-triage to
+EPIC** (Step 1's decompose-and-auto-create), do not emit the multi-task single ticket. Multi-task
+scaffolding is legal only **across epic children**, never inside one ticket's plan. This is what stops
+`boss-build` from landing the cheap slice of a "Task 1..N" ticket and closing it partial.
+
+Include, in the plan body, all of the following (scaled to triage):
 
 - A first development step: **"Copy this plan to `docs/plans/<ISSUE-ID>-<slug>.md` and commit it in
   the implementation PR."**
@@ -400,6 +442,7 @@ contract so consumers (boss-build, bs-sweep-plan) can validate compatibility. Ke
 
 - Contract: v1
 - Complexity: <fib> · Priority: <label> · Agent-friendly: <yes | needs-human (see "Why this needs a human")>
+- Atomic-5: <ONLY when a single ticket is estimated `5` — the explicit reason it is atomic & un-splittable and cannot be an epic. Omit this bullet for `0/1/2/3` tickets.>
 - Full plan: [<ISSUE-ID>-<slug>.md](URL)
 - On implementation: copy the plan to `docs/plans/<ISSUE-ID>-<slug>.md` and commit it in the PR.
 
@@ -468,7 +511,7 @@ return, and it is bounded (a summary, not the plan):
   planPath:      "<PLAN_PATH>",              // path only, never content
   labels:        ["improvement", ...],       // relevant content labels to union (NOT agent-friendly/needs-human/agent-question)
   agentFriendly: true | false,               // false => needs-human; drives the mutually-exclusive label
-  estimate:      <fib 0|1|2|3|5|8>,
+  estimate:      <fib 0|1|2|3; a bare 5 ONLY for a recorded atomic & un-splittable single ticket — an 8 is never a single ticket, it becomes an epic or needs-human>,
   priority:      <1|2|3|4>,
   openQuestions: ["<one line per recorded controversial fork>", ...],  // may be empty
   descriptionSummary: "<the composed `## Summary … ## Original notes` markdown block>"

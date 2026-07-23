@@ -16,9 +16,48 @@ import (
 	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/session"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/proto"
 )
+
+// eventRecorder is a shared, ordered log used by the refresh-ordering test to
+// prove Save → ForgetAllBearers → TestAccount(smoke) happen in that sequence.
+type eventRecorder struct {
+	mu  sync.Mutex
+	log []string
+}
+
+func (e *eventRecorder) record(step string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.log = append(e.log, step)
+}
+
+func (e *eventRecorder) steps() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.log...)
+}
+
+// recordingProxyRegistrar implements session.proxyTokenRegistrar and logs the
+// ForgetAllBearers call into a shared eventRecorder.
+type recordingProxyRegistrar struct{ rec *eventRecorder }
+
+func (r recordingProxyRegistrar) TokenForSession(string) string                    { return "" }
+func (r recordingProxyRegistrar) TokenForChat(string, string, string) string       { return "" }
+func (r recordingProxyRegistrar) ForgetBearer(string)                              {}
+func (r recordingProxyRegistrar) ForgetAllBearers()                                { r.rec.record("forget") }
+func (r recordingProxyRegistrar) AdoptToken(string, string)                        {}
+func (r recordingProxyRegistrar) AdoptTokenForChat(string, string, string, string) {}
+
+// recordingSmoke logs the TestAccount live-smoke into a shared eventRecorder.
+type recordingSmoke struct{ rec *eventRecorder }
+
+func (s recordingSmoke) Smoke(context.Context, string, string, []byte) error {
+	s.rec.record("test")
+	return nil
+}
 
 // fakeCredStore is an in-memory AccountCredentialStore for handler tests. It
 // mirrors accountcred.Store's not-found semantics and can be forced to fail
@@ -495,6 +534,62 @@ func TestRefreshAccountReplacesCredentialAndReturnsMetadataOnly(t *testing.T) {
 	}
 	if bytes.Contains(raw, secret) {
 		t.Fatalf("RefreshAccount response wire form leaked the credential")
+	}
+}
+
+// TestRefreshAccountForgetsProxyBearersAfterSaveBeforeTest proves the BOS-484
+// wiring: RefreshAccount drops every sticky failover-proxy bearer AFTER the new
+// credential is saved and BEFORE the optional TestAccount live-smoke, so the
+// smoke (and every later request) authenticates against the freshly-saved
+// secret rather than a stale swapped bearer.
+func TestRefreshAccountForgetsProxyBearersAfterSaveBeforeTest(t *testing.T) {
+	rec := &eventRecorder{}
+	creds := newFakeCredStore()
+	creds.saveHook = func(string, []byte) { rec.record("save") }
+	srv, _ := newAccountServer(t, creds, recordingSmoke{rec: rec})
+	lc := &session.Lifecycle{}
+	lc.SetProxyRegistrar(recordingProxyRegistrar{rec: rec})
+	srv.lifecycle = lc
+	acct := mustAddClaude(t, srv, "refresh-forget", []byte("old-token"))
+	// The add above also saved; reset the log to isolate the refresh sequence.
+	rec.log = nil
+
+	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:            acct.Id,
+		Credential:    []byte("new-token"),
+		TestAfterSave: true,
+	})); err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+
+	got := rec.steps()
+	want := []string{"save", "forget", "test"}
+	if len(got) != len(want) {
+		t.Fatalf("event order = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("event order = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestRefreshAccountWithoutLifecycleDoesNotPanic proves the dual-nil-safe
+// wrapper: a Server with no Lifecycle wired (s.lifecycle == nil) refreshes a
+// credential without panicking on the ForgetAllProxyBearers call.
+func TestRefreshAccountWithoutLifecycleDoesNotPanic(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, _ := newAccountServer(t, creds, nil) // no lifecycle wired
+	acct := mustAddClaude(t, srv, "refresh-nolc", []byte("old-token"))
+
+	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:         acct.Id,
+		Credential: []byte("new-token"),
+	})); err != nil {
+		t.Fatalf("RefreshAccount without lifecycle: %v", err)
+	}
+	if got := string(creds.blobs[acct.Id]); got != "new-token" {
+		t.Fatalf("stored credential = %q, want new-token", got)
 	}
 }
 

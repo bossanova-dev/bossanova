@@ -4,6 +4,8 @@ go_library(
     name = "cmd_lib",
     srcs = [
         "clamp_int32.go",
+        "filelimit_darwin.go",
+        "filelimit_nondarwin.go",
         "filelimit_other.go",
         "filelimit_unix.go",
         "main.go",
@@ -28,6 +30,7 @@ go_library(
         "//services/bossd/internal/accountcred",
         "//services/bossd/internal/accountwiring",
         "//services/bossd/internal/agent",
+        "//services/bossd/internal/callback",
         "//services/bossd/internal/cron",
         "//services/bossd/internal/db",
         "//services/bossd/internal/git",
@@ -50,7 +53,15 @@ go_library(
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
         "@org_golang_google_protobuf//types/known/timestamppb",
-    ],
+    ] + select({
+        "@rules_go//go/platform:darwin": [
+            "@org_golang_x_sys//unix",
+        ],
+        "@rules_go//go/platform:ios": [
+            "@org_golang_x_sys//unix",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 go_binary(

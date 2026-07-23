@@ -74,6 +74,7 @@ type serverStubRegistrar struct {
 
 func (s *serverStubRegistrar) TokenForSession(string) string { return s.token }
 func (s *serverStubRegistrar) ForgetBearer(string)           {}
+func (s *serverStubRegistrar) ForgetAllBearers()             {}
 func (s *serverStubRegistrar) TokenForChat(sessionID, agentSessionID, fallbackAccountID string) string {
 	s.chatCalls++
 	s.lastChatSession = sessionID
@@ -81,6 +82,8 @@ func (s *serverStubRegistrar) TokenForChat(sessionID, agentSessionID, fallbackAc
 	s.lastChatAccount = fallbackAccountID
 	return s.token
 }
+func (s *serverStubRegistrar) AdoptToken(string, string)                        {}
+func (s *serverStubRegistrar) AdoptTokenForChat(string, string, string, string) {}
 
 // TestResolveAccountEnv_BoundVsAccountZero proves the Fix #1 attach-path account
 // env resolution: a bound session materializes its account's spawn env, while an

@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -704,6 +705,35 @@ func TestProxy_forgetBearer(t *testing.T) {
 	ps.ForgetBearer("unknown-session") // no panic for an unknown session
 }
 
+// TestProxy_forgetAllBearers proves ForgetAllBearers drops every session's
+// sticky swapped bearer (so a credential refresh cannot let a stale swapped
+// bearer silently override the freshly-saved credential) while keeping every
+// path token registered.
+func TestProxy_forgetAllBearers(t *testing.T) {
+	_, srv := newFakeUpstream(t)
+	ps, _ := startProxy(t, &fakeFailover{}, srv.URL, zerolog.Nop())
+	tok1 := ps.TokenForSession("sess-1")
+	tok2 := ps.TokenForSession("sess-2")
+	ps.rememberBearer("sess-1", "swapped-1")
+	ps.rememberBearer("sess-2", "swapped-2")
+
+	ps.ForgetAllBearers()
+
+	if got := ps.bearerForSession("sess-1"); got != "" {
+		t.Fatalf("sticky bearer for sess-1 not cleared: %q", got)
+	}
+	if got := ps.bearerForSession("sess-2"); got != "" {
+		t.Fatalf("sticky bearer for sess-2 not cleared: %q", got)
+	}
+	if sid, ok := ps.sessionForToken(tok1); !ok || sid != "sess-1" {
+		t.Fatalf("path token 1 must survive ForgetAllBearers: %q,%v", sid, ok)
+	}
+	if sid, ok := ps.sessionForToken(tok2); !ok || sid != "sess-2" {
+		t.Fatalf("path token 2 must survive ForgetAllBearers: %q,%v", sid, ok)
+	}
+	ps.ForgetAllBearers() // idempotent; no panic when already empty
+}
+
 func TestProxy_401_swapsAndReplays(t *testing.T) {
 	up, srv := newFakeUpstream(t)
 	f := &fakeFailover{result: session.FailoverResult{Rotate: true, Token: "second-token", NextAccountID: "acct-2", Trigger: "ROTATION_TRIGGER_AUTH_INVALIDATED"}}
@@ -1240,24 +1270,29 @@ func TestParseSSEFrame(t *testing.T) {
 
 func TestClassifySSEFrame(t *testing.T) {
 	cases := []struct {
-		name  string
-		frame string
-		want  sseDecision
+		name        string
+		frame       string
+		want        sseDecision
+		wantErrType string // BOS-483: the classified SSE error type surfaced for observability
 	}{
-		{"rate_limit_error rotates", "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}", sseRotate},
-		{"overloaded_error passes", "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}", ssePassthrough},
-		{"content_block_delta passes", "event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}", ssePassthrough},
-		{"message_start undecided", "event: message_start\ndata: {\"type\":\"message_start\"}", sseUndecided},
-		{"ping undecided", "event: ping\ndata: {\"type\":\"ping\"}", sseUndecided},
-		{"malformed data on error frame does not rotate", "event: error\ndata: {not json", ssePassthrough},
-		{"malformed data no event is undecided", "data: {not json", sseUndecided},
-		{"event name only content_block_delta passes", "event: content_block_delta", ssePassthrough},
-		{"data-type wins over event name", "event: message_start\ndata: {\"type\":\"content_block_delta\"}", ssePassthrough},
+		{"rate_limit_error rotates", "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}", sseRotate, "rate_limit_error"},
+		{"overloaded_error passes", "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}", ssePassthrough, "overloaded_error"},
+		{"content_block_delta passes", "event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}", ssePassthrough, ""},
+		{"message_start undecided", "event: message_start\ndata: {\"type\":\"message_start\"}", sseUndecided, ""},
+		{"ping undecided", "event: ping\ndata: {\"type\":\"ping\"}", sseUndecided, ""},
+		{"malformed data on error frame does not rotate", "event: error\ndata: {not json", ssePassthrough, ""},
+		{"malformed data no event is undecided", "data: {not json", sseUndecided, ""},
+		{"event name only content_block_delta passes", "event: content_block_delta", ssePassthrough, ""},
+		{"data-type wins over event name", "event: message_start\ndata: {\"type\":\"content_block_delta\"}", ssePassthrough, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifySSEFrame([]byte(tc.frame)); got != tc.want {
+			got, errType := classifySSEFrame([]byte(tc.frame))
+			if got != tc.want {
 				t.Fatalf("classifySSEFrame(%q) = %v, want %v", tc.frame, got, tc.want)
+			}
+			if errType != tc.wantErrType {
+				t.Fatalf("classifySSEFrame(%q) errType = %q, want %q", tc.frame, errType, tc.wantErrType)
 			}
 		})
 	}
@@ -1398,5 +1433,461 @@ func TestProxyListen_InUseFallsBackToEphemeral(t *testing.T) {
 	}
 	if got == port {
 		t.Fatalf("fallback Port() = %d, want a DIFFERENT ephemeral port (the fixed one is held)", port)
+	}
+}
+
+// --- BOS-483 pass-through observability ---
+
+// ptClock is a monotonic, race-safe injectable clock for the pass-through
+// observability tests (Warn rate-limiting and minute-bucket counters are both
+// time-driven, so a real clock would make them flaky).
+type ptClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newPTClock() *ptClock { return &ptClock{t: time.Unix(1_700_000_000, 0)} }
+func (c *ptClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+func (c *ptClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// newStatusUpstream answers every request with a fixed status + body regardless
+// of bearer, so a test can drive an arbitrary un-rotated error response.
+func newStatusUpstream(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// ptEvents parses zerolog JSON lines from raw and returns those whose "event"
+// field equals want.
+func ptEvents(t *testing.T, raw, want string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(raw), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			continue
+		}
+		if m["event"] == want {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// withClock returns a startProxyConfigured hook that pins BOTH the Warn
+// rate-limiter clock and the counter clock to clk (they must agree).
+func withClock(clk *ptClock) func(*ProxyServer) {
+	return func(ps *ProxyServer) {
+		ps.now = clk.now
+		ps.ptStats.now = clk.now
+	}
+}
+
+func TestProxy_passthrough_statusNotIntercepted(t *testing.T) {
+	var buf bytes.Buffer
+	srv := newStatusUpstream(t, http.StatusInternalServerError, "boom")
+	f := &fakeFailover{} // Rotate=false
+	ps, base := startProxy(t, f, srv.URL, zerolog.New(&buf))
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "self-bearer", `{"prompt":"x"}`)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 passed through", resp.StatusCode)
+	}
+	// A 500 is never an intercept target, so failover is never consulted.
+	if f.prepareCalls != 0 {
+		t.Fatalf("prepareCalls = %d, want 0 for a 500", f.prepareCalls)
+	}
+	evs := ptEvents(t, buf.String(), "failover_proxy_passthrough")
+	if len(evs) != 1 {
+		t.Fatalf("passthrough events = %d, want exactly 1:\n%s", len(evs), buf.String())
+	}
+	e := evs[0]
+	if e["reason"] != passthroughReasonStatusNotIntercepted {
+		t.Fatalf("reason = %v, want %s", e["reason"], passthroughReasonStatusNotIntercepted)
+	}
+	if e["status"].(float64) != 500 || e["method"] != "POST" || e["path"] != "/v1/messages" || e["session"] != "sess-1" {
+		t.Fatalf("fields mismatch: %+v", e)
+	}
+}
+
+func TestProxy_passthrough_failoverDeclined_401(t *testing.T) {
+	var buf bytes.Buffer
+	// newFakeUpstream returns 401 for any bearer that is not first/second-token.
+	_, srv := newFakeUpstream(t)
+	f := &fakeFailover{} // PrepareFailover returns Rotate=false
+	ps, base := startProxy(t, f, srv.URL, zerolog.New(&buf))
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "unknown-bearer", `{"prompt":"x"}`)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 passed through", resp.StatusCode)
+	}
+	// A 401 with client auth IS an intercept target, so failover is consulted…
+	if f.prepareCalls != 1 {
+		t.Fatalf("prepareCalls = %d, want 1 (401 attempts failover)", f.prepareCalls)
+	}
+	// …but declined (Rotate=false), so it passes through as failover_declined.
+	evs := ptEvents(t, buf.String(), "failover_proxy_passthrough")
+	if len(evs) != 1 || evs[0]["reason"] != passthroughReasonFailoverDeclined {
+		t.Fatalf("want 1 failover_declined event, got:\n%s", buf.String())
+	}
+}
+
+func TestProxy_passthrough_suspensionNotMatched(t *testing.T) {
+	var buf bytes.Buffer
+	srv := newStatusUpstream(t, http.StatusForbidden, "scope refused")
+	f := &fakeFailover{}
+	ps, base := startProxy(t, f, srv.URL, zerolog.New(&buf))
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "self-bearer", `{"prompt":"x"}`)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 passed through", resp.StatusCode)
+	}
+	// A benign (non-suspension) 403 never rotates.
+	if f.prepareCalls != 0 {
+		t.Fatalf("prepareCalls = %d, want 0 for a benign 403", f.prepareCalls)
+	}
+	evs := ptEvents(t, buf.String(), "failover_proxy_passthrough")
+	if len(evs) != 1 || evs[0]["reason"] != passthroughReasonSuspensionNotMatched {
+		t.Fatalf("want 1 suspension_not_matched event, got:\n%s", buf.String())
+	}
+}
+
+func TestProxy_passthrough_sseErrorPassthrough(t *testing.T) {
+	var buf bytes.Buffer
+	overloaded := sseMessageStart + sseOverloadedError
+	_, srv := newSSEUpstream(t, "text/event-stream", overloaded)
+	f := &fakeFailover{} // Rotate=false even if consulted
+	ps, base := startProxy(t, f, srv.URL, zerolog.New(&buf))
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "first-token", `{"prompt":"x"}`)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != overloaded {
+		t.Fatalf("status=%d body=%q, want overloaded stream passed through", resp.StatusCode, body)
+	}
+	evs := ptEvents(t, buf.String(), "failover_proxy_passthrough")
+	if len(evs) != 1 {
+		t.Fatalf("passthrough events = %d, want 1:\n%s", len(evs), buf.String())
+	}
+	e := evs[0]
+	if e["reason"] != passthroughReasonSSEErrorPassthrough || e["sse_error"] != "overloaded_error" || e["status"].(float64) != 200 {
+		t.Fatalf("sse passthrough fields mismatch: %+v", e)
+	}
+}
+
+func TestProxy_passthrough_silentOnSuccess(t *testing.T) {
+	var buf bytes.Buffer
+	_, srv := newFakeUpstream(t)
+	f := &fakeFailover{}
+	ps, base := startProxy(t, f, srv.URL, zerolog.New(&buf))
+	tok := ps.TokenForSession("sess-1")
+
+	resp := doMessages(t, base, tok, "second-token", `{"prompt":"x"}`) // 200
+	_ = resp.Body.Close()
+	if evs := ptEvents(t, buf.String(), "failover_proxy_passthrough"); len(evs) != 0 {
+		t.Fatalf("a 2xx must stay silent, got %d passthrough events:\n%s", len(evs), buf.String())
+	}
+}
+
+func TestProxy_passthrough_warnRateLimited(t *testing.T) {
+	var buf bytes.Buffer
+	clk := newPTClock()
+	srv := newStatusUpstream(t, http.StatusInternalServerError, "boom")
+	f := &fakeFailover{}
+	ps, base := startProxyConfigured(t, f, srv.URL, zerolog.New(&buf), withClock(clk))
+	tok := ps.TokenForSession("sess-1")
+
+	// Two 500s inside the same minute → one Warn, but BOTH counted.
+	_ = doMessages(t, base, tok, "b", `{}`).Body.Close()
+	_ = doMessages(t, base, tok, "b", `{}`).Body.Close()
+	if evs := ptEvents(t, buf.String(), "failover_proxy_passthrough"); len(evs) != 1 {
+		t.Fatalf("within-window repeats must collapse to 1 Warn, got %d", len(evs))
+	}
+	snap := ps.PassthroughStatsSnapshot()
+	if len(snap) != 1 || snap[0].Total != 2 {
+		t.Fatalf("counters must record BOTH suppressed + emitted events, got %+v", snap)
+	}
+
+	// Past the window → a second Warn emits.
+	clk.advance(passthroughWarnWindow + time.Second)
+	_ = doMessages(t, base, tok, "b", `{}`).Body.Close()
+	if evs := ptEvents(t, buf.String(), "failover_proxy_passthrough"); len(evs) != 2 {
+		t.Fatalf("a repeat past the window must emit a 2nd Warn, got %d", len(evs))
+	}
+	if snap := ps.PassthroughStatsSnapshot(); snap[0].Total != 3 {
+		t.Fatalf("total after 3 events = %d, want 3", snap[0].Total)
+	}
+}
+
+func TestProxy_passthrough_chatDisplayIDRedaction(t *testing.T) {
+	var buf bytes.Buffer
+	srv := newStatusUpstream(t, http.StatusInternalServerError, "boom")
+	f := &fakeFailover{}
+	ps, base := startProxy(t, f, srv.URL, zerolog.New(&buf))
+	// A chat target is chat\x00<agentSessionID>\x00<fallbackAccountID>.
+	tok := ps.TokenForChat("sess-1", "chat-77", "acct-secret")
+
+	resp := doMessages(t, base, tok, "self", `{}`)
+	_ = resp.Body.Close()
+
+	logs := buf.String()
+	evs := ptEvents(t, logs, "failover_proxy_passthrough")
+	if len(evs) != 1 || evs[0]["session"] != "chat-77" {
+		t.Fatalf("display id must be the agentSessionID only, got:\n%s", logs)
+	}
+	if strings.Contains(logs, "acct-secret") {
+		t.Fatalf("fallback account id leaked into logs:\n%s", logs)
+	}
+	if strings.Contains(logs, "\x00") {
+		t.Fatalf("raw NUL-delimited chat target leaked into logs:\n%s", logs)
+	}
+	if strings.Contains(logs, tok) {
+		t.Fatalf("per-chat proxy token leaked into logs:\n%s", logs)
+	}
+}
+
+func TestProxy_unknownToken_selfIdentifying(t *testing.T) {
+	var buf bytes.Buffer
+	_, srv := newFakeUpstream(t)
+	ps, base := startProxy(t, &fakeFailover{}, srv.URL, zerolog.New(&buf))
+	_ = ps // no token registered → any token is unknown
+
+	const bogus = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	resp := doMessages(t, base, bogus, "b", `{}`)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	if string(body) != unknownTokenBody+"\n" {
+		t.Fatalf("body = %q, want the self-identifying constant + newline", body)
+	}
+	evs := ptEvents(t, buf.String(), "failover_proxy_unknown_token")
+	if len(evs) != 1 {
+		t.Fatalf("unknown_token events = %d, want 1:\n%s", len(evs), buf.String())
+	}
+	e := evs[0]
+	if e["token_fingerprint"] != tokenFingerprint(bogus) {
+		t.Fatalf("fingerprint = %v, want %s", e["token_fingerprint"], tokenFingerprint(bogus))
+	}
+	if e["path"] != "/v1/messages" {
+		t.Fatalf("path = %v, want the upstream path only (never the token-bearing request path)", e["path"])
+	}
+	logs := buf.String()
+	if strings.Contains(logs, bogus) {
+		t.Fatalf("raw unknown token leaked into logs:\n%s", logs)
+	}
+	if strings.Contains(logs, "/s/"+bogus) {
+		t.Fatalf("token-bearing request path leaked into logs:\n%s", logs)
+	}
+}
+
+func TestProxy_unknownToken_warnRateLimited(t *testing.T) {
+	var buf bytes.Buffer
+	clk := newPTClock()
+	_, srv := newFakeUpstream(t)
+	ps, base := startProxyConfigured(t, &fakeFailover{}, srv.URL, zerolog.New(&buf), withClock(clk))
+	_ = ps
+	const bogus = "cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe"
+
+	_ = doMessages(t, base, bogus, "b", `{}`).Body.Close()
+	_ = doMessages(t, base, bogus, "b", `{}`).Body.Close()
+	if evs := ptEvents(t, buf.String(), "failover_proxy_unknown_token"); len(evs) != 1 {
+		t.Fatalf("repeated unknown-token rejections must collapse to 1 Warn, got %d", len(evs))
+	}
+}
+
+func TestProxy_tokenlessProbe_noUnknownTokenWarn(t *testing.T) {
+	var buf bytes.Buffer
+	_, srv := newFakeUpstream(t)
+	_, base := startProxy(t, &fakeFailover{}, srv.URL, zerolog.New(&buf))
+
+	// A path with no /s/<token>/ prefix is a reachability probe → 404, not an
+	// unknown-token rejection (which would over-count and mis-attribute).
+	req, _ := http.NewRequest(http.MethodHead, base+"/", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for tokenless probe", resp.StatusCode)
+	}
+	if evs := ptEvents(t, buf.String(), "failover_proxy_unknown_token"); len(evs) != 0 {
+		t.Fatalf("tokenless probe must not log an unknown-token Warn, got %d", len(evs))
+	}
+}
+
+func TestProxy_Deregister_forgetsStats(t *testing.T) {
+	srv := newStatusUpstream(t, http.StatusInternalServerError, "boom")
+	ps, base := startProxy(t, &fakeFailover{}, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	_ = doMessages(t, base, tok, "b", `{}`).Body.Close()
+	if len(ps.PassthroughStatsSnapshot()) != 1 {
+		t.Fatalf("expected 1 tracked session before Deregister")
+	}
+	ps.Deregister("sess-1")
+	if snap := ps.PassthroughStatsSnapshot(); len(snap) != 0 {
+		t.Fatalf("Deregister must forget the session's pass-through counters, got %+v", snap)
+	}
+}
+
+func TestProxy_passthroughWarn_mapHardBackstop(t *testing.T) {
+	clk := newPTClock()
+	srv := newStatusUpstream(t, http.StatusInternalServerError, "boom")
+	ps, _ := startProxyConfigured(t, &fakeFailover{}, srv.URL, zerolog.Nop(), withClock(clk))
+	// Flood the dedupe map with > cap DISTINCT keys inside a single window (clock
+	// frozen), so the age-based sweep frees nothing and the wholesale-clear
+	// backstop must fire to keep the map bounded.
+	for i := range passthroughWarnMapCap + 50 {
+		ps.allowPassthroughWarn(fmt.Sprintf("sess-%d", i), "500")
+	}
+	if got := len(ps.ptLogLast); got > passthroughWarnMapCap {
+		t.Fatalf("dedupe map size = %d, want <= %d (hard backstop must bound it)", got, passthroughWarnMapCap)
+	}
+}
+
+// --- passthroughStats unit tests (direct, package-internal) ---
+
+func TestPassthroughStats_recordAndSnapshot(t *testing.T) {
+	clk := newPTClock()
+	s := newPassthroughStats(clk.now)
+	s.record("sess-a", "500")
+	s.record("sess-a", "500")
+	s.record("sess-a", "429")
+	s.record("sess-b", "500")
+
+	snap := s.snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("sessions = %d, want 2", len(snap))
+	}
+	// sess-a has the higher total (3) so it sorts first.
+	if snap[0].DisplayID != "sess-a" || snap[0].Total != 3 {
+		t.Fatalf("snap[0] = %+v, want sess-a total 3", snap[0])
+	}
+	// Classes sorted by count desc: 500(2) before 429(1).
+	if len(snap[0].Classes) != 2 || snap[0].Classes[0].Class != "500" || snap[0].Classes[0].Count != 2 {
+		t.Fatalf("classes = %+v, want 500=2 first", snap[0].Classes)
+	}
+	if snap[1].DisplayID != "sess-b" || snap[1].Total != 1 {
+		t.Fatalf("snap[1] = %+v, want sess-b total 1", snap[1])
+	}
+}
+
+func TestPassthroughStats_emptyDisplayIDIgnored(t *testing.T) {
+	s := newPassthroughStats(newPTClock().now)
+	s.record("", "500")
+	if len(s.snapshot()) != 0 {
+		t.Fatalf("empty display id must not be recorded")
+	}
+}
+
+func TestPassthroughStats_classFoldsToOther(t *testing.T) {
+	s := newPassthroughStats(newPTClock().now)
+	for i := range passthroughStatsMaxClasses + 5 {
+		s.record("sess-a", fmt.Sprintf("class-%d", i))
+	}
+	snap := s.snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(snap))
+	}
+	// The cap bounds distinct REAL classes to maxClasses; the "other" fold bucket
+	// is one extra entry, so the hard ceiling is maxClasses+1.
+	if len(snap[0].Classes) > passthroughStatsMaxClasses+1 {
+		t.Fatalf("distinct classes = %d, want ≤ %d (excess folds to other)", len(snap[0].Classes), passthroughStatsMaxClasses+1)
+	}
+	var foundOther bool
+	for _, c := range snap[0].Classes {
+		if c.Class == passthroughStatsOtherClass {
+			foundOther = true
+		}
+	}
+	if !foundOther {
+		t.Fatalf("excess classes must fold into %q: %+v", passthroughStatsOtherClass, snap[0].Classes)
+	}
+}
+
+func TestPassthroughStats_sessionLRUEviction(t *testing.T) {
+	clk := newPTClock()
+	s := newPassthroughStats(clk.now)
+	// Fill to the cap, each in its own minute so the LRU anchor is well-ordered.
+	for i := range passthroughStatsMaxSessions {
+		s.record(fmt.Sprintf("sess-%d", i), "500")
+		clk.advance(time.Minute)
+	}
+	// One more distinct session evicts the least-recently-active (sess-0).
+	s.record("sess-new", "500")
+	for _, entry := range s.snapshot() {
+		if entry.DisplayID == "sess-0" {
+			t.Fatalf("least-recently-active session must have been LRU-evicted")
+		}
+	}
+	if len(s.snapshot()) > passthroughStatsMaxSessions {
+		t.Fatalf("session count exceeded the cap")
+	}
+}
+
+func TestPassthroughStats_windowExpiry(t *testing.T) {
+	clk := newPTClock()
+	s := newPassthroughStats(clk.now)
+	s.record("sess-a", "500")
+	// Advance beyond the retention window; the old bucket must age out.
+	clk.advance((passthroughStatsWindow + 1) * time.Minute)
+	if snap := s.snapshot(); len(snap) != 0 {
+		t.Fatalf("buckets older than the window must be omitted, got %+v", snap)
+	}
+}
+
+// --- RepairDoctor informational check ---
+
+type fakePTProvider struct{ snap []passthroughSessionSnapshot }
+
+func (f fakePTProvider) PassthroughStatsSnapshot() []passthroughSessionSnapshot { return f.snap }
+
+func TestPassthroughStatsCheck_alwaysOk(t *testing.T) {
+	// nil provider (proxy unwired) → Ok, names the disabled state.
+	c := passthroughStatsCheck(nil)
+	if !c.Ok || !strings.Contains(c.Detail, "not wired") {
+		t.Fatalf("nil provider check = %+v, want Ok + 'not wired'", c)
+	}
+	// empty snapshot → Ok, clean detail.
+	c = passthroughStatsCheck(fakePTProvider{})
+	if !c.Ok || !strings.Contains(c.Detail, "no upstream errors") {
+		t.Fatalf("empty check = %+v, want Ok + clean detail", c)
+	}
+	// populated → STILL Ok (informational only), detail summarizes.
+	c = passthroughStatsCheck(fakePTProvider{snap: []passthroughSessionSnapshot{
+		{DisplayID: "sess-a", Total: 5, Classes: []passthroughClassCount{{Class: "500", Count: 5}}},
+	}})
+	if !c.Ok {
+		t.Fatalf("a populated tally must NOT redden the doctor: %+v", c)
+	}
+	if !strings.Contains(c.Detail, "500=5") {
+		t.Fatalf("detail must summarize the classes: %q", c.Detail)
 	}
 }

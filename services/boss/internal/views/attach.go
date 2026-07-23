@@ -561,9 +561,13 @@ func (m AttachModel) displayAgentName() string {
 
 // renderLaunchDiagnostic formats a copy-pasteable reproduction command from the
 // daemon's launch description, shown under the bare exit error so the user can
-// run the agent themselves and see the underlying failure (usually a PATH or
-// login-shell problem on the daemon host). Returns "" when no description is
-// available so the caller renders just the bare error.
+// run the agent themselves and see the underlying failure. The cause is NOT
+// always a PATH/login-shell problem — the agent binary may resolve fine and then
+// exit non-zero on its own (e.g. `--session-id <id>` colliding with an existing
+// transcript: "Session ID already in use"), and bossd often can't capture that
+// stderr before the pane dies. So the prose stays neutral and points the user at
+// the reproduction command rather than asserting a single cause. Returns "" when
+// no description is available so the caller renders just the bare error.
 func renderLaunchDiagnostic(info *pb.DescribeChatLaunchResponse, agentLabel string) string {
 	if info == nil || len(info.GetArgv()) == 0 {
 		return ""
@@ -583,8 +587,10 @@ func renderLaunchDiagnostic(info *pb.DescribeChatLaunchResponse, agentLabel stri
 
 	var b strings.Builder
 	b.WriteString(prose.Render(fmt.Sprintf(
-		"This usually means the %s CLI could not be launched — often a PATH or\n"+
-			"login-shell problem that only reproduces where the agent runs.", agentLabel)))
+		"The %s CLI exited before its pane came up. This is often a PATH or\n"+
+			"login-shell problem that only reproduces where the agent runs, but it\n"+
+			"can also be the agent itself refusing to start. Run the command to see\n"+
+			"the underlying error.", agentLabel)))
 	b.WriteString("\n\n")
 	b.WriteString(prose.Render("bossd ran this on " + where + ":"))
 	b.WriteString("\n\n")

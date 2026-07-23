@@ -15,29 +15,41 @@
 //      parent is never moved backward.
 
 import { linearRequest } from './linear-gate-lib.mjs'
+import { labelName, loadSkillConfig, stateName } from '../skills-toolbox/skill-config.mjs'
 
 // --- State model -----------------------------------------------------------
 
 // Linear's API exposes no position for a workflow status, so the ordering lives
-// here, keyed by status *display name* — the `state.type` cannot distinguish
-// `Unplanned` from `Todo` (both `unstarted`), the same lesson as
-// linear-gate-lib.mjs. Update this list if the team's workflow states change;
-// the total-order + membership invariants are guarded by a unit test.
+// here, keyed by stable state *role* — the `state.type` cannot distinguish the
+// two unstarted planning states, the same lesson as linear-gate-lib.mjs.
+// Display names resolve from the repo-local config.
+const CONFIG = loadSkillConfig()
 export const STATE_RANK = Object.freeze({
-  Backlog: 0,
-  Unplanned: 1,
-  Todo: 2,
-  'In Progress': 3,
-  'In Review': 4,
-  Done: 5,
+  backlog: 0,
+  unplanned: 1,
+  planned: 2,
+  inProgress: 3,
+  inReview: 4,
+  done: 5,
+})
+const STATE_NAMES = Object.freeze(
+  Object.fromEntries(Object.keys(STATE_RANK).map((role) => [role, stateName(CONFIG, role)])),
+)
+const LABEL_NAMES = Object.freeze({
+  agentPlan: labelName(CONFIG, 'agentPlan'),
+  agentFriendly: labelName(CONFIG, 'agentFriendly'),
+  needsHuman: labelName(CONFIG, 'needsHuman'),
 })
 
 // States that mean "no further tidy applies": a ticket here is never auto-closed
 // and, as a child, is ignored when computing a parent rollup target.
-export const TERMINAL_STATE_NAMES = new Set(['Done', 'Canceled', 'Duplicate'])
+const TERMINAL_STATE_NAMES = new Set(
+  ['done', 'canceled', 'duplicate'].map((role) => stateName(CONFIG, role)),
+)
 
 export function rankOf(stateName) {
-  return Object.prototype.hasOwnProperty.call(STATE_RANK, stateName) ? STATE_RANK[stateName] : null
+  const role = Object.keys(STATE_NAMES).find((key) => STATE_NAMES[key] === stateName)
+  return role == null ? null : STATE_RANK[role]
 }
 
 export function isTerminalStateName(stateName) {
@@ -47,7 +59,7 @@ export function isTerminalStateName(stateName) {
 // The rank at/above which a workflow state means "work has started" — matches
 // Linear's `started` state type (In Progress, In Review). Below this (Backlog,
 // Unplanned, Todo) the item has not started.
-export const STARTED_RANK = STATE_RANK['In Progress']
+export const STARTED_RANK = STATE_RANK.inProgress
 
 // True for a started, non-terminal state (In Progress / In Review). Used by the
 // rollup: a not-started child must not drag a parent below a started sibling.
@@ -250,14 +262,6 @@ export function computeRollups(parents) {
 
 // --- Behaviour 3: planning-queue reconcile ---------------------------------
 
-// Label names that drive the reconcile. `agent-friendly` marks the working set;
-// `needs-human` (mutually exclusive with agent-friendly) and an already-present
-// `agent-plan` exclude a ticket; `agent-plan` is what a no-plan ticket gains.
-export const AGENT_FRIENDLY_LABEL = 'agent-friendly'
-export const NEEDS_HUMAN_LABEL = 'needs-human'
-export const AGENT_PLAN_LABEL = 'agent-plan'
-const RECONCILE_STATE_NAME = 'Unplanned'
-
 // True when an issue carries a boss-plan implementation-plan attachment: boss-plan
 // attaches it as `links: [{ url, title: "Implementation plan (BOS-NN)" }]`, which
 // Linear surfaces as an Attachment. Match the canonical title prefix OR the public
@@ -296,10 +300,10 @@ export function computePlanningReconcile(
     blockedIdentifiers instanceof Set ? blockedIdentifiers : new Set(blockedIdentifiers ?? [])
 
   for (const ticket of Array.isArray(tickets) ? tickets : []) {
-    if (ticket?.state?.name !== RECONCILE_STATE_NAME) continue
-    if (!hasLabel(ticket, AGENT_FRIENDLY_LABEL)) continue
-    if (hasLabel(ticket, NEEDS_HUMAN_LABEL)) continue // never auto-plan a needs-human ticket
-    if (hasLabel(ticket, AGENT_PLAN_LABEL)) continue // already queued → no-op
+    if (ticket?.state?.name !== STATE_NAMES.unplanned) continue
+    if (!hasLabel(ticket, LABEL_NAMES.agentFriendly)) continue
+    if (hasLabel(ticket, LABEL_NAMES.needsHuman)) continue // never auto-plan a needs-human ticket
+    if (hasLabel(ticket, LABEL_NAMES.agentPlan)) continue // already queued → no-op
     if (blocked.has(ticket.identifier)) continue // epic parent → don't auto-plan an epic
 
     if (hasImplementationPlan(ticket.attachments)) {
@@ -307,7 +311,7 @@ export function computePlanningReconcile(
         escalate.push({
           kind: 'no-todo-state',
           identifier: ticket.identifier,
-          reason: 'planned Unplanned ticket but workspace exposes no Todo workflow state',
+          reason: `planned ${STATE_NAMES.unplanned} ticket but workspace exposes no ${STATE_NAMES.planned} workflow state`,
         })
         continue
       }
@@ -319,7 +323,7 @@ export function computePlanningReconcile(
       escalate.push({
         kind: 'no-agent-plan-label',
         identifier: ticket.identifier,
-        reason: 'agent-friendly Unplanned ticket to queue but the agent-plan label does not exist',
+        reason: `${LABEL_NAMES.agentFriendly} ${STATE_NAMES.unplanned} ticket to queue but the ${LABEL_NAMES.agentPlan} label does not exist`,
       })
       continue
     }
@@ -359,7 +363,7 @@ export const TIDY_READ_QUERY = `
     workflowStates(first: 100) {
       nodes { id name type }
     }
-    issueLabels(first: 50, filter: { name: { in: ["agent-plan", "agent-friendly"] } }) {
+    issueLabels(first: 50, filter: { name: { in: ${JSON.stringify([LABEL_NAMES.agentPlan, LABEL_NAMES.agentFriendly])} } }) {
       nodes { id name }
     }
     issues(first: $first, filter: { state: { type: { in: ["backlog", "unstarted", "started"] } } }) {
@@ -407,7 +411,8 @@ const LABELS_MUTATION = `
 export function parseTidyData(data) {
   const stateNodes = data?.workflowStates?.nodes ?? []
   const statesByName = new Map(stateNodes.map((s) => [s.name, s]))
-  const doneState = statesByName.get('Done') ?? stateNodes.find((s) => s?.type === 'completed')
+  const doneState =
+    statesByName.get(STATE_NAMES.done) ?? stateNodes.find((s) => s?.type === 'completed')
 
   const labelNodes = data?.issueLabels?.nodes ?? []
   const labelIdsByName = new Map(labelNodes.map((l) => [l.name, l.id]))
@@ -443,7 +448,7 @@ export function parseTidyData(data) {
     parents,
     statesByName,
     doneStateId: doneState?.id ?? null,
-    todoStateId: statesByName.get('Todo')?.id ?? null,
+    todoStateId: statesByName.get(STATE_NAMES.planned)?.id ?? null,
     labelIdsByName,
     hasNextPage: Boolean(data?.issues?.pageInfo?.hasNextPage),
   }
@@ -537,8 +542,8 @@ export async function runTidy({
     toAgentPlan,
     escalate: reconcileEscalate,
   } = computePlanningReconcile(tickets, {
-    agentPlanId: labelIdsByName.get(AGENT_PLAN_LABEL),
-    agentFriendlyId: labelIdsByName.get(AGENT_FRIENDLY_LABEL),
+    agentPlanId: labelIdsByName.get(LABEL_NAMES.agentPlan),
+    agentFriendlyId: labelIdsByName.get(LABEL_NAMES.agentFriendly),
     todoStateId,
     blockedIdentifiers: blockedFromClose,
   })
@@ -567,7 +572,7 @@ export async function runTidy({
       escalations.push({
         kind: 'no-done-state',
         identifier: c.identifier,
-        reason: 'workspace exposes no Done workflow state',
+        reason: `workspace exposes no ${STATE_NAMES.done} workflow state`,
       })
   }
 
@@ -587,7 +592,7 @@ export async function runTidy({
         variables: { id: c.id, stateId: doneStateId },
       })
       if (res?.issueUpdate?.success === false) throw new Error(`failed to close ${c.identifier}`)
-      closed.push({ ...c, to: 'Done' })
+      closed.push({ ...c, to: STATE_NAMES.done })
     }
     for (const m of move) {
       counts.writes += 1
@@ -607,7 +612,7 @@ export async function runTidy({
       })
       if (res?.issueUpdate?.success === false)
         throw new Error(`failed to move ${t.identifier} to Todo`)
-      movedToTodo.push({ ...t, to: 'Todo' })
+      movedToTodo.push({ ...t, to: STATE_NAMES.planned })
     }
     for (const t of toAgentPlan) {
       counts.writes += 1
@@ -617,13 +622,13 @@ export async function runTidy({
       })
       if (res?.issueUpdate?.success === false)
         throw new Error(`failed to queue ${t.identifier} for planning`)
-      queuedForPlan.push({ ...t, to: 'agent-plan' })
+      queuedForPlan.push({ ...t, to: LABEL_NAMES.agentPlan })
     }
   } else {
-    closed.push(...closeable.map((c) => ({ ...c, to: 'Done' })))
+    closed.push(...closeable.map((c) => ({ ...c, to: STATE_NAMES.done })))
     rolledUp.push(...move)
-    movedToTodo.push(...toTodo.map((t) => ({ ...t, to: 'Todo' })))
-    queuedForPlan.push(...toAgentPlan.map((t) => ({ ...t, to: 'agent-plan' })))
+    movedToTodo.push(...toTodo.map((t) => ({ ...t, to: STATE_NAMES.planned })))
+    queuedForPlan.push(...toAgentPlan.map((t) => ({ ...t, to: LABEL_NAMES.agentPlan })))
   }
 
   return {

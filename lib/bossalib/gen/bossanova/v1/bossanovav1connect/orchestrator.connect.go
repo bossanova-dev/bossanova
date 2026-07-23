@@ -199,6 +199,15 @@ const (
 	// OrchestratorServiceProxyReportChatStatusProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyReportChatStatus RPC.
 	OrchestratorServiceProxyReportChatStatusProcedure = "/bossanova.v1.OrchestratorService/ProxyReportChatStatus"
+	// OrchestratorServiceProxyCreateGithubCallbackProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyCreateGithubCallback RPC.
+	OrchestratorServiceProxyCreateGithubCallbackProcedure = "/bossanova.v1.OrchestratorService/ProxyCreateGithubCallback"
+	// OrchestratorServiceProxyListGithubCallbacksProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListGithubCallbacks RPC.
+	OrchestratorServiceProxyListGithubCallbacksProcedure = "/bossanova.v1.OrchestratorService/ProxyListGithubCallbacks"
+	// OrchestratorServiceProxyDeleteGithubCallbackProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyDeleteGithubCallback RPC.
+	OrchestratorServiceProxyDeleteGithubCallbackProcedure = "/bossanova.v1.OrchestratorService/ProxyDeleteGithubCallback"
 	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStreamChats RPC.
 	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
@@ -382,6 +391,14 @@ type OrchestratorServiceClient interface {
 	// ProxyReportChatStatus forwards chat status heartbeats. All reports must
 	// resolve to the caller's own chats on a single daemon.
 	ProxyReportChatStatus(context.Context, *connect.Request[v1.ProxyReportChatStatusRequest]) (*connect.Response[v1.ProxyReportChatStatusResponse], error)
+	// GitHub-callback proxies for remote-CLI callback management (BOS-469). All
+	// route to the owning daemon by target_chat_id via FindDaemonForChat, reusing
+	// the caller's own auth — a foreign chat resolves to NotFound so no cross-user
+	// registration can dispatch. Create/Delete require target_chat_id; List routes
+	// by target_chat_id when set, else aggregates across the caller's Ready daemons.
+	ProxyCreateGithubCallback(context.Context, *connect.Request[v1.ProxyCreateGithubCallbackRequest]) (*connect.Response[v1.ProxyCreateGithubCallbackResponse], error)
+	ProxyListGithubCallbacks(context.Context, *connect.Request[v1.ProxyListGithubCallbacksRequest]) (*connect.Response[v1.ProxyListGithubCallbacksResponse], error)
+	ProxyDeleteGithubCallback(context.Context, *connect.Request[v1.ProxyDeleteGithubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGithubCallbackResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -765,6 +782,24 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyReportChatStatus")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyCreateGithubCallback: connect.NewClient[v1.ProxyCreateGithubCallbackRequest, v1.ProxyCreateGithubCallbackResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyCreateGithubCallbackProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateGithubCallback")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyListGithubCallbacks: connect.NewClient[v1.ProxyListGithubCallbacksRequest, v1.ProxyListGithubCallbacksResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListGithubCallbacksProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListGithubCallbacks")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyDeleteGithubCallback: connect.NewClient[v1.ProxyDeleteGithubCallbackRequest, v1.ProxyDeleteGithubCallbackResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyDeleteGithubCallbackProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteGithubCallback")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyStreamChats: connect.NewClient[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent](
 			httpClient,
 			baseURL+OrchestratorServiceProxyStreamChatsProcedure,
@@ -915,6 +950,9 @@ type orchestratorServiceClient struct {
 	proxyLinkSessionPR         *connect.Client[v1.ProxyLinkSessionPRRequest, v1.ProxyLinkSessionPRResponse]
 	proxyUpdateChatTitle       *connect.Client[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse]
 	proxyReportChatStatus      *connect.Client[v1.ProxyReportChatStatusRequest, v1.ProxyReportChatStatusResponse]
+	proxyCreateGithubCallback  *connect.Client[v1.ProxyCreateGithubCallbackRequest, v1.ProxyCreateGithubCallbackResponse]
+	proxyListGithubCallbacks   *connect.Client[v1.ProxyListGithubCallbacksRequest, v1.ProxyListGithubCallbacksResponse]
+	proxyDeleteGithubCallback  *connect.Client[v1.ProxyDeleteGithubCallbackRequest, v1.ProxyDeleteGithubCallbackResponse]
 	proxyStreamChats           *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken           *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
 	terminalStream             *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
@@ -1207,6 +1245,21 @@ func (c *orchestratorServiceClient) ProxyReportChatStatus(ctx context.Context, r
 	return c.proxyReportChatStatus.CallUnary(ctx, req)
 }
 
+// ProxyCreateGithubCallback calls bossanova.v1.OrchestratorService.ProxyCreateGithubCallback.
+func (c *orchestratorServiceClient) ProxyCreateGithubCallback(ctx context.Context, req *connect.Request[v1.ProxyCreateGithubCallbackRequest]) (*connect.Response[v1.ProxyCreateGithubCallbackResponse], error) {
+	return c.proxyCreateGithubCallback.CallUnary(ctx, req)
+}
+
+// ProxyListGithubCallbacks calls bossanova.v1.OrchestratorService.ProxyListGithubCallbacks.
+func (c *orchestratorServiceClient) ProxyListGithubCallbacks(ctx context.Context, req *connect.Request[v1.ProxyListGithubCallbacksRequest]) (*connect.Response[v1.ProxyListGithubCallbacksResponse], error) {
+	return c.proxyListGithubCallbacks.CallUnary(ctx, req)
+}
+
+// ProxyDeleteGithubCallback calls bossanova.v1.OrchestratorService.ProxyDeleteGithubCallback.
+func (c *orchestratorServiceClient) ProxyDeleteGithubCallback(ctx context.Context, req *connect.Request[v1.ProxyDeleteGithubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGithubCallbackResponse], error) {
+	return c.proxyDeleteGithubCallback.CallUnary(ctx, req)
+}
+
 // ProxyStreamChats calls bossanova.v1.OrchestratorService.ProxyStreamChats.
 func (c *orchestratorServiceClient) ProxyStreamChats(ctx context.Context, req *connect.Request[v1.ProxyStreamChatsRequest]) (*connect.ServerStreamForClient[v1.ProxyChatListEvent], error) {
 	return c.proxyStreamChats.CallServerStream(ctx, req)
@@ -1418,6 +1471,14 @@ type OrchestratorServiceHandler interface {
 	// ProxyReportChatStatus forwards chat status heartbeats. All reports must
 	// resolve to the caller's own chats on a single daemon.
 	ProxyReportChatStatus(context.Context, *connect.Request[v1.ProxyReportChatStatusRequest]) (*connect.Response[v1.ProxyReportChatStatusResponse], error)
+	// GitHub-callback proxies for remote-CLI callback management (BOS-469). All
+	// route to the owning daemon by target_chat_id via FindDaemonForChat, reusing
+	// the caller's own auth — a foreign chat resolves to NotFound so no cross-user
+	// registration can dispatch. Create/Delete require target_chat_id; List routes
+	// by target_chat_id when set, else aggregates across the caller's Ready daemons.
+	ProxyCreateGithubCallback(context.Context, *connect.Request[v1.ProxyCreateGithubCallbackRequest]) (*connect.Response[v1.ProxyCreateGithubCallbackResponse], error)
+	ProxyListGithubCallbacks(context.Context, *connect.Request[v1.ProxyListGithubCallbacksRequest]) (*connect.Response[v1.ProxyListGithubCallbacksResponse], error)
+	ProxyDeleteGithubCallback(context.Context, *connect.Request[v1.ProxyDeleteGithubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGithubCallbackResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -1797,6 +1858,24 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyReportChatStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyCreateGithubCallbackHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyCreateGithubCallbackProcedure,
+		svc.ProxyCreateGithubCallback,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateGithubCallback")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyListGithubCallbacksHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListGithubCallbacksProcedure,
+		svc.ProxyListGithubCallbacks,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListGithubCallbacks")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyDeleteGithubCallbackHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyDeleteGithubCallbackProcedure,
+		svc.ProxyDeleteGithubCallback,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteGithubCallback")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyStreamChatsHandler := connect.NewServerStreamHandler(
 		OrchestratorServiceProxyStreamChatsProcedure,
 		svc.ProxyStreamChats,
@@ -1999,6 +2078,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyUpdateChatTitleHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyReportChatStatusProcedure:
 			orchestratorServiceProxyReportChatStatusHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyCreateGithubCallbackProcedure:
+			orchestratorServiceProxyCreateGithubCallbackHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListGithubCallbacksProcedure:
+			orchestratorServiceProxyListGithubCallbacksHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyDeleteGithubCallbackProcedure:
+			orchestratorServiceProxyDeleteGithubCallbackHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
 			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceIssueAttachTokenProcedure:
@@ -2256,6 +2341,18 @@ func (UnimplementedOrchestratorServiceHandler) ProxyUpdateChatTitle(context.Cont
 
 func (UnimplementedOrchestratorServiceHandler) ProxyReportChatStatus(context.Context, *connect.Request[v1.ProxyReportChatStatusRequest]) (*connect.Response[v1.ProxyReportChatStatusResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyReportChatStatus is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyCreateGithubCallback(context.Context, *connect.Request[v1.ProxyCreateGithubCallbackRequest]) (*connect.Response[v1.ProxyCreateGithubCallbackResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyCreateGithubCallback is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListGithubCallbacks(context.Context, *connect.Request[v1.ProxyListGithubCallbacksRequest]) (*connect.Response[v1.ProxyListGithubCallbacksResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListGithubCallbacks is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyDeleteGithubCallback(context.Context, *connect.Request[v1.ProxyDeleteGithubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGithubCallbackResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyDeleteGithubCallback is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {

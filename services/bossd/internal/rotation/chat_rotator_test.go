@@ -38,10 +38,71 @@ type fakeDeps struct {
 	provider string
 
 	// Auth-path (BOS-316) knobs, read by the authRotator seams.
-	authFailed     bool  // what CurrentAuthFailed reports at dispatch time
-	authConfirmed  bool  // what AuthProbe reports (true = typed 401 confirmed)
-	authProbeErr   error // AuthProbe error (probe failed)
+	authFailed     bool            // what CurrentAuthFailed reports at dispatch time
+	authResult     AuthProbeResult // what AuthProbe classifies (Unknown/Confirmed401/Healthy) (BOS-482)
 	authProbeCalls int
+
+	// Fake re-probe scheduler (BOS-482): captures scheduled funcs so a test can fire
+	// them deterministically instead of waiting on a real timer.
+	sched fakeScheduler
+}
+
+// fakeScheduler is a deterministic stand-in for the Schedule dep seam. It records
+// scheduled callbacks (never invoking them synchronously) and lets a test fire the
+// most-recent still-armed one. (BOS-482)
+type fakeScheduler struct {
+	mu      sync.Mutex
+	pending []*scheduledCall
+}
+
+type scheduledCall struct {
+	fn        func()
+	cancelled bool
+}
+
+func (s *fakeScheduler) schedule(_ time.Duration, f func()) (cancel func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	call := &scheduledCall{fn: f}
+	s.pending = append(s.pending, call)
+	return func() {
+		s.mu.Lock()
+		call.cancelled = true
+		s.mu.Unlock()
+	}
+}
+
+// fire runs the most-recently scheduled callback that has not been cancelled, marking
+// it cancelled so it fires at most once. Returns false when there is nothing armed.
+func (s *fakeScheduler) fire() bool {
+	s.mu.Lock()
+	var call *scheduledCall
+	for i := len(s.pending) - 1; i >= 0; i-- {
+		if !s.pending[i].cancelled {
+			call = s.pending[i]
+			call.cancelled = true
+			break
+		}
+	}
+	s.mu.Unlock()
+	if call == nil {
+		return false
+	}
+	call.fn()
+	return true
+}
+
+// pendingCount reports how many armed (not-yet-cancelled) callbacks remain.
+func (s *fakeScheduler) pendingCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, c := range s.pending {
+		if !c.cancelled {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *fakeDeps) rotator(now *time.Time) *ChatRotator {
@@ -115,13 +176,14 @@ func (f *fakeDeps) authRotator(now *time.Time, store AuditStore) *ChatRotator {
 			defer f.mu.Unlock()
 			return f.authFailed
 		},
-		AuthProbe: func(_ context.Context, _ string) (bool, error) {
+		AuthProbe: func(_ context.Context, _ string) AuthProbeResult {
 			f.mu.Lock()
 			f.authProbeCalls++
-			confirmed, err := f.authConfirmed, f.authProbeErr
+			res := f.authResult
 			f.mu.Unlock()
-			return confirmed, err
+			return res
 		},
+		Schedule: f.sched.schedule,
 		Decide: func(_ context.Context, req DecideRequest) (Decision, error) {
 			f.mu.Lock()
 			f.decideCalls++
@@ -727,9 +789,9 @@ func TestChatRotator_RecordsNoEligibleAccount(t *testing.T) {
 	t.Run("auth-invalidated path", func(t *testing.T) {
 		now := time.Now()
 		f := &fakeDeps{
-			authFailed:    true,
-			authConfirmed: true,
-			decision:      Decision{Kind: DecisionNoEligibleAccount},
+			authFailed: true,
+			authResult: AuthProbeConfirmed401,
+			decision:   Decision{Kind: DecisionNoEligibleAccount},
 		}
 		store := &lockedAuditStore{}
 		r := f.authRotator(&now, store)
@@ -938,9 +1000,9 @@ func TestChatRotator_RecordsDisabledWhenOptedOut(t *testing.T) {
 func TestChatRotator_AuthFailedConfirmedRotates(t *testing.T) {
 	now := time.Now()
 	f := &fakeDeps{
-		authFailed:    true,
-		authConfirmed: true,
-		decision:      Decision{Kind: DecisionSwitch, AccountID: "acct-b-id", Label: "acct-b"},
+		authFailed: true,
+		authResult: AuthProbeConfirmed401,
+		decision:   Decision{Kind: DecisionSwitch, AccountID: "acct-b-id", Label: "acct-b"},
 	}
 	store := &lockedAuditStore{}
 	r := f.authRotator(&now, store)
@@ -976,26 +1038,25 @@ func TestChatRotator_AuthFailedConfirmedRotates(t *testing.T) {
 // leave the chat as-is with no Switch and no false-positive Decide.
 func TestChatRotator_AuthProbeGate(t *testing.T) {
 	tests := []struct {
-		name          string
-		authFailed    bool
-		authConfirmed bool
-		authProbeErr  error
-		wantProbe     bool
-		wantDecide    bool
+		name       string
+		authFailed bool
+		authResult AuthProbeResult
+		wantProbe  bool
+		wantDecide bool
 	}{
 		{
-			name:          "healthy probe no-ops without decide",
-			authFailed:    true,
-			authConfirmed: false,
-			wantProbe:     true,
-			wantDecide:    false,
+			name:       "healthy probe no-ops without decide",
+			authFailed: true,
+			authResult: AuthProbeHealthy,
+			wantProbe:  true,
+			wantDecide: false,
 		},
 		{
-			name:         "probe error suppresses rotation",
-			authFailed:   true,
-			authProbeErr: status.Error(codes.Unauthenticated, "probe transport failed"),
-			wantProbe:    true,
-			wantDecide:   false,
+			name:       "inconclusive probe suppresses rotation",
+			authFailed: true,
+			authResult: AuthProbeUnknown,
+			wantProbe:  true,
+			wantDecide: false,
 		},
 		{
 			name:       "pane recovered before dispatch aborts",
@@ -1008,10 +1069,9 @@ func TestChatRotator_AuthProbeGate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now()
 			f := &fakeDeps{
-				authFailed:    tt.authFailed,
-				authConfirmed: tt.authConfirmed,
-				authProbeErr:  tt.authProbeErr,
-				decision:      Decision{Kind: DecisionSwitch, AccountID: "acct-b-id"},
+				authFailed: tt.authFailed,
+				authResult: tt.authResult,
+				decision:   Decision{Kind: DecisionSwitch, AccountID: "acct-b-id"},
 			}
 			r := f.authRotator(&now, nil)
 
@@ -1039,21 +1099,19 @@ func TestChatRotator_AuthProbeGate(t *testing.T) {
 // paths TestChatRotator_AuthProbeGate exercises with a nil store.
 func TestChatRotator_AuthProbeGateRecordsAudit(t *testing.T) {
 	tests := []struct {
-		name          string
-		authConfirmed bool
-		authProbeErr  error
+		name       string
+		authResult AuthProbeResult
 	}{
-		{name: "healthy probe records probe-unconfirmed", authConfirmed: false},
-		{name: "probe error records probe-unconfirmed", authProbeErr: status.Error(codes.Unauthenticated, "probe transport failed")},
+		{name: "healthy probe records probe-unconfirmed", authResult: AuthProbeHealthy},
+		{name: "inconclusive probe records probe-unconfirmed", authResult: AuthProbeUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now()
 			f := &fakeDeps{
-				authFailed:    true,
-				authConfirmed: tt.authConfirmed,
-				authProbeErr:  tt.authProbeErr,
-				decision:      Decision{Kind: DecisionSwitch, AccountID: "acct-b-id"},
+				authFailed: true,
+				authResult: tt.authResult,
+				decision:   Decision{Kind: DecisionSwitch, AccountID: "acct-b-id"},
 			}
 			store := &lockedAuditStore{}
 			r := f.authRotator(&now, store)
@@ -1085,9 +1143,9 @@ func TestChatRotator_AuthProbeGateRecordsAudit(t *testing.T) {
 func TestChatRotator_AuthAllFailedParksWithoutLoop(t *testing.T) {
 	now := time.Now()
 	f := &fakeDeps{
-		authFailed:    true,
-		authConfirmed: true,
-		decision:      Decision{Kind: DecisionStatusOnly},
+		authFailed: true,
+		authResult: AuthProbeConfirmed401,
+		decision:   Decision{Kind: DecisionStatusOnly},
 	}
 	store := &lockedAuditStore{}
 	r := f.authRotator(&now, store)
@@ -1124,9 +1182,9 @@ func TestChatRotator_AuthAllFailedParksWithoutLoop(t *testing.T) {
 func TestChatRotator_AuthExhaustedRecordsExhausted(t *testing.T) {
 	now := time.Now()
 	f := &fakeDeps{
-		authFailed:    true,
-		authConfirmed: true,
-		decision:      Decision{Kind: DecisionAllExhausted, ResumeAt: now.Add(2 * time.Hour)},
+		authFailed: true,
+		authResult: AuthProbeConfirmed401,
+		decision:   Decision{Kind: DecisionAllExhausted, ResumeAt: now.Add(2 * time.Hour)},
 	}
 	store := &lockedAuditStore{}
 	r := f.authRotator(&now, store)
@@ -1149,7 +1207,7 @@ func TestChatRotator_AuthExhaustedRecordsExhausted(t *testing.T) {
 // switch (shared inFlight guard with the LIMITED path).
 func TestChatRotator_AuthConcurrentSignalsSingleAttempt(t *testing.T) {
 	now := time.Now()
-	f := &fakeDeps{authFailed: true, authConfirmed: true, decision: Decision{Kind: DecisionSwitch, AccountID: "x"}}
+	f := &fakeDeps{authFailed: true, authResult: AuthProbeConfirmed401, decision: Decision{Kind: DecisionSwitch, AccountID: "x"}}
 	r := f.authRotator(&now, nil)
 
 	var wg sync.WaitGroup
@@ -1164,5 +1222,232 @@ func TestChatRotator_AuthConcurrentSignalsSingleAttempt(t *testing.T) {
 	waitIdle(t, r)
 	if got := len(f.switched()); got != 1 {
 		t.Fatalf("concurrent auth signals produced %d switches, want 1", got)
+	}
+}
+
+// --- Respawn-in-place on healthy-probe auth wedge (BOS-482) ---
+
+// TestChatRotator_HealthyProbeRespawnsInPlace pins the core BOS-482 behavior: a pane
+// that is auth-failed while its bound account probes HEALTHY does not rotate; instead,
+// after healthyRespawnThreshold consecutive Healthy confirmations it respawns in place
+// on the SAME account (Switch with RespawnSameAccount=true) and records
+// ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT. The first (below-threshold) probe only
+// records STATUS_ONLY_PROBE_UNCONFIRMED and arms a re-probe.
+func TestChatRotator_HealthyProbeRespawnsInPlace(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{authFailed: true, authResult: AuthProbeHealthy}
+	store := &lockedAuditStore{}
+	r := f.authRotator(&now, store)
+
+	// First auth-failed edge: streak → 1, below threshold, no switch, re-probe armed.
+	r.OnAuthFailed(testChatID)
+	waitIdle(t, r)
+	if len(f.switched()) != 0 {
+		t.Fatalf("below-threshold healthy probe must not switch, got %d", len(f.switched()))
+	}
+	if out := store.outcomes(); len(out) != 1 || out[0] != "ROTATION_OUTCOME_STATUS_ONLY_PROBE_UNCONFIRMED" {
+		t.Fatalf("outcomes after first probe = %v, want one STATUS_ONLY_PROBE_UNCONFIRMED", out)
+	}
+	if n := f.sched.pendingCount(); n != 1 {
+		t.Fatalf("pending re-probe timers = %d, want 1", n)
+	}
+
+	// Fire the re-probe: streak → 2 (threshold) → respawn-in-place on the same account.
+	if !f.sched.fire() {
+		t.Fatal("expected an armed re-probe to fire")
+	}
+	waitIdle(t, r)
+
+	calls := f.switched()
+	if len(calls) != 1 {
+		t.Fatalf("switch calls = %d, want 1 (the respawn)", len(calls))
+	}
+	c := calls[0]
+	if !c.RespawnSameAccount {
+		t.Fatal("respawn Switch must set RespawnSameAccount=true")
+	}
+	if c.AccountID != "acct-capped" || !c.Auto {
+		t.Fatalf("respawn Switch bound wrong account or not Auto: %+v", c)
+	}
+	if got := f.decides(); got != 0 {
+		t.Fatalf("respawn-in-place must NOT consult Decide, got %d decides", got)
+	}
+	out := store.outcomes()
+	if len(out) != 2 || out[1] != "ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT" {
+		t.Fatalf("outcomes = %v, want [..., RESPAWNED_SAME_ACCOUNT]", out)
+	}
+	if trig := store.triggers(); trig[1] != "ROTATION_TRIGGER_AUTH_INVALIDATED" {
+		t.Fatalf("respawn audit trigger = %q, want ROTATION_TRIGGER_AUTH_INVALIDATED", trig[1])
+	}
+	// Success clears the streak and cancels any pending re-probe.
+	if n := f.sched.pendingCount(); n != 0 {
+		t.Fatalf("pending re-probe timers after respawn = %d, want 0", n)
+	}
+}
+
+// TestChatRotator_InconclusiveProbeNeverRespawns pins that an Unknown (inconclusive)
+// probe never advances the respawn streak: repeated re-probes that stay inconclusive
+// keep recording STATUS_ONLY_PROBE_UNCONFIRMED and never respawn, no matter how many
+// times the timer fires.
+func TestChatRotator_InconclusiveProbeNeverRespawns(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{authFailed: true, authResult: AuthProbeUnknown}
+	store := &lockedAuditStore{}
+	r := f.authRotator(&now, store)
+
+	r.OnAuthFailed(testChatID)
+	waitIdle(t, r)
+	// Fire the armed re-probe several times; each stays inconclusive and re-arms.
+	for i := 0; i < 4; i++ {
+		if !f.sched.fire() {
+			t.Fatalf("iteration %d: expected an armed re-probe", i)
+		}
+		waitIdle(t, r)
+	}
+	if len(f.switched()) != 0 {
+		t.Fatalf("inconclusive probe must never respawn/switch, got %d", len(f.switched()))
+	}
+	for _, o := range store.outcomes() {
+		if o != "ROTATION_OUTCOME_STATUS_ONLY_PROBE_UNCONFIRMED" {
+			t.Fatalf("unexpected outcome %q; every inconclusive probe must be STATUS_ONLY_PROBE_UNCONFIRMED", o)
+		}
+	}
+}
+
+// TestChatRotator_HealthyStreakTTLResets pins the streak TTL: two Healthy probes
+// separated by more than healthyCountTTL do NOT reach the threshold (the stale first
+// confirmation is discarded), so no respawn occurs.
+func TestChatRotator_HealthyStreakTTLResets(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{authFailed: true, authResult: AuthProbeHealthy}
+	store := &lockedAuditStore{}
+	r := f.authRotator(&now, store)
+
+	r.OnAuthFailed(testChatID) // streak → 1
+	waitIdle(t, r)
+
+	// Advance the clock past the TTL, then fire the re-probe: the stale count is reset
+	// to 1 rather than incremented to 2, so no respawn.
+	now = now.Add(healthyCountTTL + time.Minute)
+	if !f.sched.fire() {
+		t.Fatal("expected an armed re-probe")
+	}
+	waitIdle(t, r)
+
+	if len(f.switched()) != 0 {
+		t.Fatalf("TTL-expired streak must not respawn, got %d switches", len(f.switched()))
+	}
+	for _, o := range store.outcomes() {
+		if o == "ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT" {
+			t.Fatal("TTL-expired streak respawned; the stale confirmation must be discarded")
+		}
+	}
+}
+
+// TestChatRotator_RespawnCapExhausted pins the per-chat respawn cap. With the Switch
+// failing (so the healthy streak is preserved across re-probes) the pane keeps trying
+// to respawn; the cap is charged BEFORE the Switch, so after respawnCap real attempts
+// the next one records ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED and no further Switch is
+// attempted.
+func TestChatRotator_RespawnCapExhausted(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{authFailed: true, authResult: AuthProbeHealthy, switchErr: errors.New("respawn boom")}
+	store := &lockedAuditStore{}
+	r := f.authRotator(&now, store)
+
+	r.OnAuthFailed(testChatID) // streak → 1 (no switch yet)
+	waitIdle(t, r)
+	// Fire re-probes until the cap is hit. Each fire advances the streak (already at/above
+	// threshold) and attempts a respawn; the failing Switch keeps the streak alive.
+	for i := 0; i < respawnCap+1; i++ {
+		if !f.sched.fire() {
+			t.Fatalf("iteration %d: expected an armed re-probe", i)
+		}
+		waitIdle(t, r)
+	}
+
+	if got := len(f.switched()); got != respawnCap {
+		t.Fatalf("Switch attempts = %d, want respawnCap=%d (cap charged before Switch)", got, respawnCap)
+	}
+	out := store.outcomes()
+	if last := out[len(out)-1]; last != "ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED" {
+		t.Fatalf("final outcome = %q, want ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED", last)
+	}
+	// Cap-exhausted goes quiet: the re-probe is cancelled.
+	if n := f.sched.pendingCount(); n != 0 {
+		t.Fatalf("pending re-probe timers after cap-exhausted = %d, want 0", n)
+	}
+}
+
+// TestChatRotator_RespawnAbortedIsFailSafe pins that an ErrSwitchAborted refusal (the
+// chat went WORKING / mid-turn) is NOT a failure: no FAILED or RESPAWNED audit is
+// written, the streak is preserved, and a re-probe stays armed to retry later.
+func TestChatRotator_RespawnAbortedIsFailSafe(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{authFailed: true, authResult: AuthProbeHealthy, switchErr: ErrSwitchAborted}
+	store := &lockedAuditStore{}
+	r := f.authRotator(&now, store)
+
+	r.OnAuthFailed(testChatID) // streak → 1
+	waitIdle(t, r)
+	if !f.sched.fire() { // streak → 2 → respawn attempt → aborted
+		t.Fatal("expected an armed re-probe")
+	}
+	waitIdle(t, r)
+
+	if len(f.switched()) != 1 {
+		t.Fatalf("aborted respawn should still have attempted exactly one Switch, got %d", len(f.switched()))
+	}
+	for _, o := range store.outcomes() {
+		if o == "ROTATION_OUTCOME_FAILED" || o == "ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT" {
+			t.Fatalf("aborted respawn must not record %q (fail-safe leaves chat as-is)", o)
+		}
+	}
+	// Fail-safe re-arms a re-probe so the pane is retried once it is idle again.
+	if n := f.sched.pendingCount(); n != 1 {
+		t.Fatalf("pending re-probe timers after abort = %d, want 1", n)
+	}
+}
+
+// TestChatRotator_RespawnGenericErrorRecordsFailed pins that a non-abort Switch error
+// records exactly one ROTATION_OUTCOME_FAILED audit and re-arms a re-probe.
+func TestChatRotator_RespawnGenericErrorRecordsFailed(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{authFailed: true, authResult: AuthProbeHealthy, switchErr: errors.New("boom")}
+	store := &lockedAuditStore{}
+	r := f.authRotator(&now, store)
+
+	r.OnAuthFailed(testChatID) // streak → 1
+	waitIdle(t, r)
+	if !f.sched.fire() { // streak → 2 → respawn → generic error
+		t.Fatal("expected an armed re-probe")
+	}
+	waitIdle(t, r)
+
+	out := store.outcomes()
+	if len(out) != 2 || out[1] != "ROTATION_OUTCOME_FAILED" {
+		t.Fatalf("outcomes = %v, want [..., FAILED]", out)
+	}
+	if n := f.sched.pendingCount(); n != 1 {
+		t.Fatalf("pending re-probe timers after FAILED = %d, want 1", n)
+	}
+}
+
+// TestChatRotator_DeregisterCancelsReprobe pins that Deregister tears down the pending
+// re-probe timer for a chat that is going away, so no orphaned timer can re-drive the
+// auth path after the pane is gone.
+func TestChatRotator_DeregisterCancelsReprobe(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{authFailed: true, authResult: AuthProbeHealthy}
+	r := f.authRotator(&now, nil)
+
+	r.OnAuthFailed(testChatID) // arms a re-probe
+	waitIdle(t, r)
+	if n := f.sched.pendingCount(); n != 1 {
+		t.Fatalf("pending re-probe timers = %d, want 1", n)
+	}
+	r.Deregister(testChatID)
+	if n := f.sched.pendingCount(); n != 0 {
+		t.Fatalf("Deregister must cancel the pending re-probe; pending = %d, want 0", n)
 	}
 }

@@ -48,6 +48,15 @@ type Output struct {
 	Spinner bool
 }
 
+// QuestionLabel is the display label emitted when a chat requires a response.
+const QuestionLabel = "? question"
+
+// IsQuestionLabel reports whether label is the display status used for a chat
+// that requires a response.
+func IsQuestionLabel(label string) bool {
+	return label == QuestionLabel
+}
+
 // Package-level label constants shared between the base cascade producer
 // (prOutput) and the errored-recolor guard (isMutedTerminalPR) so the literal
 // text lives in exactly one place.
@@ -172,7 +181,7 @@ func preErroredBlockedIntent(sess *pb.Session, servedLabel string, servedIntent 
 		return pb.DisplayIntent_DISPLAY_INTENT_SUCCESS
 	}
 	switch {
-	case servedLabel == "? question",
+	case IsQuestionLabel(servedLabel),
 		servedLabel == "? PR failed",
 		servedLabel == "archiving",
 		servedLabel == "repairing",
@@ -217,7 +226,7 @@ func preErroredBlockedIntent(sess *pb.Session, servedLabel string, servedIntent 
 //  9. default             → "stopped" / MUTED
 func baseStatus(in Input) Output {
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_QUESTION {
-		return Output{Label: "? question", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
+		return Output{Label: QuestionLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
 	}
 	// A usage-limit banner ranks immediately below QUESTION: a limited chat
 	// wins over WORKING/IDLE/the PR-derived labels but a live question still

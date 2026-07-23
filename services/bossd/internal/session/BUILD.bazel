@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "session",
     srcs = [
+        "adopt_pane_proxy.go",
         "already_shipped.go",
         "apikey_approval.go",
         "auto_rotate_notice.go",
@@ -62,6 +63,7 @@ go_test(
     name = "session_test",
     srcs = [
         "account_env_merge_test.go",
+        "adopt_pane_proxy_test.go",
         "already_shipped_test.go",
         "apikey_approval_test.go",
         "auto_rotate_notice_test.go",

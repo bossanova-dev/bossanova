@@ -17,29 +17,32 @@ import (
 // stub response. The other three methods return zero-value responses; they are
 // unused by these tests but required to satisfy SessionCommandServer.
 type fakeSessionCommandServer struct {
-	lastRecordChat       *pb.RecordChatRequest
-	lastTranscriptID     string
-	lastSendReq          *pb.SendChatMessageRequest
-	lastSwitchReq        *pb.SwitchSessionAccountRequest
-	switchResp           *pb.SwitchSessionAccountResponse
-	lastCreateCron       *pb.CreateCronJobRequest
-	lastUpdateCron       *pb.UpdateCronJobRequest
-	lastDeleteCronID     string
-	lastRunCronID        string
-	lastAddAccount       *pb.AddAccountRequest
-	lastRefreshAcct      *pb.RefreshAccountRequest
-	lastUpdateAcct       *pb.UpdateAccountRequest
-	lastRemoveAcctID     string
-	lastTestAcctID       string
-	lastCloseID          string
-	lastResurrectID      string
-	lastRemoveSessionID  string
-	lastEmptyTrashReq    *pb.EmptyTrashRequest
-	lastRetryID          string
-	lastUpdateReq        *pb.UpdateSessionRequest
-	lastLinkReq          *pb.LinkSessionPRRequest
-	lastUpdateChatTitle  *pb.UpdateChatTitleRequest
-	lastReportChatStatus *pb.ReportChatStatusRequest
+	lastRecordChat             *pb.RecordChatRequest
+	lastTranscriptID           string
+	lastSendReq                *pb.SendChatMessageRequest
+	lastSwitchReq              *pb.SwitchSessionAccountRequest
+	switchResp                 *pb.SwitchSessionAccountResponse
+	lastCreateCron             *pb.CreateCronJobRequest
+	lastUpdateCron             *pb.UpdateCronJobRequest
+	lastDeleteCronID           string
+	lastRunCronID              string
+	lastCreateGithubCallback   *pb.CreateGithubCallbackRequest
+	lastListGithubCallbacks    *pb.ListGithubCallbacksRequest
+	lastDeleteGithubCallbackID string
+	lastAddAccount             *pb.AddAccountRequest
+	lastRefreshAcct            *pb.RefreshAccountRequest
+	lastUpdateAcct             *pb.UpdateAccountRequest
+	lastRemoveAcctID           string
+	lastTestAcctID             string
+	lastCloseID                string
+	lastResurrectID            string
+	lastRemoveSessionID        string
+	lastEmptyTrashReq          *pb.EmptyTrashRequest
+	lastRetryID                string
+	lastUpdateReq              *pb.UpdateSessionRequest
+	lastLinkReq                *pb.LinkSessionPRRequest
+	lastUpdateChatTitle        *pb.UpdateChatTitleRequest
+	lastReportChatStatus       *pb.ReportChatStatusRequest
 }
 
 func (f *fakeSessionCommandServer) MergeSession(_ context.Context, _ *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
@@ -183,6 +186,21 @@ func (f *fakeSessionCommandServer) DeleteCronJob(_ context.Context, req *connect
 func (f *fakeSessionCommandServer) RunCronJobNow(_ context.Context, req *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error) {
 	f.lastRunCronID = req.Msg.GetId()
 	return connect.NewResponse(&pb.RunCronJobNowResponse{SkippedReason: "skip"}), nil
+}
+
+func (f *fakeSessionCommandServer) CreateGithubCallback(_ context.Context, req *connect.Request[pb.CreateGithubCallbackRequest]) (*connect.Response[pb.CreateGithubCallbackResponse], error) {
+	f.lastCreateGithubCallback = req.Msg
+	return connect.NewResponse(&pb.CreateGithubCallbackResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) ListGithubCallbacks(_ context.Context, req *connect.Request[pb.ListGithubCallbacksRequest]) (*connect.Response[pb.ListGithubCallbacksResponse], error) {
+	f.lastListGithubCallbacks = req.Msg
+	return connect.NewResponse(&pb.ListGithubCallbacksResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) DeleteGithubCallback(_ context.Context, req *connect.Request[pb.DeleteGithubCallbackRequest]) (*connect.Response[pb.DeleteGithubCallbackResponse], error) {
+	f.lastDeleteGithubCallbackID = req.Msg.GetId()
+	return connect.NewResponse(&pb.DeleteGithubCallbackResponse{}), nil
 }
 
 func (f *fakeSessionCommandServer) AddAccount(_ context.Context, req *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error) {
@@ -374,6 +392,18 @@ func (e *errCommandServer) DeleteCronJob(context.Context, *connect.Request[pb.De
 }
 
 func (e *errCommandServer) RunCronJobNow(context.Context, *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) CreateGithubCallback(context.Context, *connect.Request[pb.CreateGithubCallbackRequest]) (*connect.Response[pb.CreateGithubCallbackResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ListGithubCallbacks(context.Context, *connect.Request[pb.ListGithubCallbacksRequest]) (*connect.Response[pb.ListGithubCallbacksResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) DeleteGithubCallback(context.Context, *connect.Request[pb.DeleteGithubCallbackRequest]) (*connect.Response[pb.DeleteGithubCallbackResponse], error) {
 	return nil, e.err
 }
 
@@ -593,6 +623,7 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 		Detach:           true,
 		Model:            &model,
 		IsTmuxUnattended: true,
+		DeferPr:          true,
 	}, "cmd-rt")
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -638,6 +669,11 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 	}
 	if !req.GetIsTmuxUnattended() {
 		t.Errorf("IsTmuxUnattended: got false, want true")
+	}
+	// defer_pr must survive the reverse-stream Command→Request rebuild, else a
+	// hosted defer_pr:true create silently re-enables the eager up-front draft PR.
+	if !req.GetDeferPr() {
+		t.Errorf("DeferPr: got false, want true")
 	}
 	if req.GetModel() != model {
 		t.Errorf("Model: got %q, want %q", req.GetModel(), model)

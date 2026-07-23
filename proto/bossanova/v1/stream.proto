@@ -48,6 +48,13 @@ message DaemonEvent {
     // Streaming frame from an in-flight CreateSession (setup output, then a
     // terminal created/error).
     SessionCreateChunk create_chunk = 9;
+    // The daemon's complete current GitHub callback-interest set, re-advertised
+    // whenever a callback is created, deleted, triggered, or expires. bosso
+    // replaces the daemon's interest set on receipt (snapshot semantics), so
+    // withdrawal after a terminal transition is automatic — an empty set means
+    // the daemon holds no callbacks. The connect-time set rides DaemonSnapshot
+    // (field 7); this delta refreshes it while the stream stays up.
+    CallbackInterestSet callback_interests = 10;
   }
 }
 
@@ -175,6 +182,12 @@ message OrchestratorCommand {
     UpdateChatTitleCommand update_chat_title = 50;
     // bosso → daemon: report chat status heartbeats. Replies CommandResult{Ok} with no payload.
     ReportChatStatusCommand report_chat_status = 51;
+    // bosso → daemon: register a GitHub callback. Replies CommandResult{create_github_callback}.
+    CreateGithubCallbackCommand create_github_callback = 52;
+    // bosso → daemon: list GitHub callbacks. Replies CommandResult{list_github_callbacks}.
+    ListGithubCallbacksCommand list_github_callbacks = 53;
+    // bosso → daemon: delete a GitHub callback by id. Replies CommandResult{Ok} with no payload.
+    DeleteGithubCallbackCommand delete_github_callback = 54;
   }
 }
 
@@ -193,6 +206,29 @@ message DaemonSnapshot {
   repeated ClaudeChatMetadata chats = 5;
   // Live chat statuses keyed by agent_session_id (reuses ChatStatusEntry from daemon.proto).
   repeated ChatStatusEntry statuses = 6;
+  // The daemon's GitHub callback interests at connect time (repo + PR). Carried
+  // on the snapshot so a (re)connect reconciles interests atomically with the
+  // rest of the read model; steady-state changes arrive as CallbackInterestSet
+  // deltas (DaemonEvent field 10).
+  repeated CallbackInterest callback_interests = 7;
+}
+
+// CallbackInterest advertises that a daemon holds one or more active GitHub
+// callbacks awaiting a verified state change on a repository + pull request.
+// bosso routes matching verified webhook signals to the advertising daemon even
+// when it owns no live session for that PR — interests are additive to session
+// ownership, never modeled as synthetic sessions.
+message CallbackInterest {
+  // Canonical repository origin URL (matches WebhookEvent.repo_origin_url).
+  string repo_origin_url = 1;
+  // Pull request number the daemon holds callbacks for.
+  int32 pr_number = 2;
+}
+
+// CallbackInterestSet is a daemon's complete current callback-interest set,
+// carried on the DaemonEvent stream to refresh interests while connected.
+message CallbackInterestSet {
+  repeated CallbackInterest interests = 1;
 }
 
 // --- Deltas ---
@@ -356,6 +392,11 @@ message CommandResult {
     // EmptyTrash returns the number of archived sessions permanently deleted.
     // CloseSession/ResurrectSession reuse session = 4; RemoveSession is Ok-only.
     EmptyTrashResult empty_trash = 33;
+    // CreateGithubCallback returns the registered callback (reuses daemon.proto type).
+    CreateGithubCallbackResponse create_github_callback = 34;
+    // ListGithubCallbacks returns the matching callbacks (reuses daemon.proto type).
+    // DeleteGithubCallback is Ok-only (no payload).
+    ListGithubCallbacksResponse list_github_callbacks = 35;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -474,6 +515,10 @@ message CreateSessionCommand {
   // Mirror CreateSessionRequest.force_branch so reverse-stream hosted creates
   // preserve the local socket path's branch replacement behavior.
   bool force_branch = 18;
+  // Mirror CreateSessionRequest.defer_pr so reverse-stream hosted creates skip
+  // the up-front draft PR (PR opened at finalize only if commits land), matching
+  // the local socket path. Default false = unchanged eager draft-PR behavior.
+  bool defer_pr = 19;
 }
 
 // WakeChatCommand asks the daemon to bring a chat's tmux+claude back to
@@ -800,6 +845,37 @@ message UpdateChatTitleCommand {
 // daemon.proto's ReportChatStatusRequest. Replies with CommandResult{ok:true}
 // and no payload.
 message ReportChatStatusCommand { repeated ChatStatusReport reports = 1; }
+
+// CreateGithubCallbackCommand registers a GitHub callback. Mirrors daemon.proto's
+// CreateGithubCallbackRequest. Replies with CommandResult carrying a
+// CreateGithubCallbackResponse (create_github_callback = 34).
+message CreateGithubCallbackCommand {
+  optional string group_id = 1;
+  string target_chat_id    = 2;
+  string repo_owner        = 3;
+  string repo_name         = 4;
+  int32  pr_number         = 5;
+  string trigger           = 6;
+  string message           = 7;
+  optional google.protobuf.Timestamp expires_at = 8;
+}
+
+// ListGithubCallbacksCommand lists GitHub callbacks. Mirrors daemon.proto's
+// ListGithubCallbacksRequest. Replies with CommandResult carrying a
+// ListGithubCallbacksResponse (list_github_callbacks = 35).
+message ListGithubCallbacksCommand {
+  optional string target_chat_id = 1;
+  optional string repo_owner     = 2;
+  optional string repo_name      = 3;
+  optional int32  pr_number      = 4;
+  optional string trigger        = 5;
+  optional string state          = 6;
+}
+
+// DeleteGithubCallbackCommand deletes a GitHub callback by id. Mirrors
+// daemon.proto's DeleteGithubCallbackRequest. Replies with CommandResult{ok:true}
+// and no payload.
+message DeleteGithubCallbackCommand { string id = 1; }
 
 // SendChatMessageCommand asks the daemon to deliver a user message into a chat.
 // Replies with CommandResult carrying a SendChatMessageResponse (send_chat_message = 14).

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
@@ -22,6 +23,7 @@ import (
 	"github.com/recurser/boss/internal/upgrade"
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -59,10 +61,17 @@ var upgradeCachePath = func() string {
 // sessionListMsg carries the result of a ListSessions RPC call,
 // along with daemon-side heartbeat statuses for cross-instance display.
 type sessionListMsg struct {
+	homeGeneration uint64
+	pollID         uint64
 	sessions       []*pb.Session
 	daemonStatuses map[string]string // session_id → status string
 	err            error
 }
+
+// homeGenerationSequence gives each HomeModel a process-unique identity. It
+// prevents a command started by a replaced HomeModel from mutating its
+// successor when both happen to issue the same poll ID.
+var homeGenerationSequence uint64
 
 // repoCountMsg carries the number of registered repos.
 type repoCountMsg struct {
@@ -135,9 +144,24 @@ type HomeModel struct {
 	// busy) keeps the last-good session list on screen instead of flashing the
 	// error view every 2s. Reset to 0 on any successful poll.
 	pollFailures int
+	// nextSessionPollID identifies outgoing session-list requests. Results from
+	// an older request are ignored once a newer result has been applied, so a
+	// slow poll cannot reset question-edge notification state.
+	nextSessionPollID   uint64
+	latestSessionPollID uint64
+	generation          uint64
 
 	// Navigation
 	highlightSessionID string // session to auto-highlight after returning from chat picker
+
+	// focused tracks whether boss's terminal currently has focus, updated from
+	// tea.FocusMsg/BlurMsg. Assumed true at startup (the user just launched it).
+	focused bool
+	// pendingAttentionSessionID is the session boss most recently notified about
+	// while unfocused. When the terminal regains focus (e.g. the user clicked the
+	// OS notification), Home jumps into this session's chat if it is still
+	// waiting, then clears it. Empty when there is nothing pending. See BOS-459.
+	pendingAttentionSessionID string
 
 	// mergedOptimisticID is set when the user returns from a successful merge
 	// in the chat picker. While set, the matching session's DisplayStatus
@@ -197,6 +221,9 @@ func NewHomeModel(c client.BossClient, ctx context.Context, authMgr *auth.Manage
 		authMgr:              authMgr,
 		spinner:              newStatusSpinner(),
 		loading:              true,
+		focused:              true,
+		nextSessionPollID:    1,
+		generation:           atomic.AddUint64(&homeGenerationSequence, 1),
 		table:                newBossTable(nil, nil, 0),
 		upgradeChecking:      true,
 		settings:             config.DefaultSettings(),
@@ -266,6 +293,30 @@ func (h HomeModel) currentTime() time.Time {
 		return h.now()
 	}
 	return time.Now()
+}
+
+func sessionNeedsAttention(sess *pb.Session) bool {
+	return sess != nil && displaystatus.IsQuestionLabel(sess.GetDisplayLabel())
+}
+
+// newlyQuestionSessions identifies question-state rising edges between two
+// successful session polls. An empty prior slice deliberately makes the first
+// successful poll notify for already-waiting questions.
+func newlyQuestionSessions(previous, incoming []*pb.Session) []*pb.Session {
+	previousQuestions := make(map[string]bool, len(previous))
+	for _, sess := range previous {
+		if sessionNeedsAttention(sess) {
+			previousQuestions[sess.GetId()] = true
+		}
+	}
+
+	newlyQuestion := make([]*pb.Session, 0)
+	for _, sess := range incoming {
+		if sessionNeedsAttention(sess) && !previousQuestions[sess.GetId()] {
+			newlyQuestion = append(newlyQuestion, sess)
+		}
+	}
+	return newlyQuestion
 }
 
 // valueDelivered reports whether the user has received real value: a repo,
@@ -339,6 +390,20 @@ func (h *HomeModel) applyMergedOptimisticOverride() {
 		}
 		return
 	}
+}
+
+// sessionByID returns the session with the given id, or nil when none matches
+// (including the empty id). Callers pass the result to nil-safe helpers.
+func sessionByID(sessions []*pb.Session, id string) *pb.Session {
+	if id == "" {
+		return nil
+	}
+	for _, s := range sessions {
+		if s.GetId() == id {
+			return s
+		}
+	}
+	return nil
 }
 
 // sessionsContainID reports whether any session in the slice has the given id.
@@ -507,7 +572,7 @@ func (h *HomeModel) normalizeTableCursor(previousCursor int) {
 }
 
 func (h HomeModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{fetchSessions(h.client, h.ctx), fetchRepoCount(h.client, h.ctx), tickCmd(), h.spinner.Tick, checkUpgradeCmd(h.ctx)}
+	cmds := []tea.Cmd{fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID), fetchRepoCount(h.client, h.ctx), tickCmd(), h.spinner.Tick, checkUpgradeCmd(h.ctx)}
 	if h.authMgr != nil {
 		cmds = append(cmds, fetchAuthStatus(h.authMgr))
 	}
@@ -820,6 +885,26 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.table.SetWidth(msg.Width)
 		return h, nil
 
+	case tea.FocusMsg:
+		h.focused = true
+		// The terminal just regained focus — likely because the user clicked the
+		// OS notification for a waiting chat. Open that session's chat if it is
+		// still waiting, then clear the pending marker so we only jump once.
+		target := h.pendingAttentionSessionID
+		h.pendingAttentionSessionID = ""
+		if target != "" {
+			if sess := sessionByID(h.sessions, target); sessionNeedsAttention(sess) {
+				return h, func() tea.Msg {
+					return switchViewMsg{view: ViewChatPicker, sessionID: target}
+				}
+			}
+		}
+		return h, nil
+
+	case tea.BlurMsg:
+		h.focused = false
+		return h, nil
+
 	case repoCountMsg:
 		if msg.err == nil {
 			h.repoCount = msg.count
@@ -923,6 +1008,15 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case sessionListMsg:
+		if msg.homeGeneration != 0 && msg.homeGeneration != h.generation {
+			return h, nil
+		}
+		if msg.pollID != 0 {
+			if msg.pollID < h.latestSessionPollID {
+				return h, nil
+			}
+			h.latestSessionPollID = msg.pollID
+		}
 		h.loading = false
 		if msg.err != nil {
 			if h.restarting {
@@ -950,6 +1044,19 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (e.g. a sibling session finished archiving). Empty when nothing is
 		// selected. See BOS-367.
 		selectedID := h.selectedSessionID()
+		var notifyCmd tea.Cmd
+		if config.NotificationsEnabled(h.settings) {
+			if newlyQuestion := newlyQuestionSessions(h.sessions, msg.sessions); len(newlyQuestion) > 0 {
+				notifyCmd = notifyForSessions(newlyQuestion)
+				// Remember the most recent question only when boss is in the
+				// background, so a subsequent focus (e.g. the user clicking the OS
+				// notification) can jump straight into it. If boss is focused the
+				// user is already here — don't hijack their view.
+				if !h.focused {
+					h.pendingAttentionSessionID = newlyQuestion[len(newlyQuestion)-1].GetId()
+				}
+			}
+		}
 		h.sessions = msg.sessions
 		h.latchValueDeliveredIfNeeded()
 		h.daemonStatuses = msg.daemonStatuses
@@ -972,7 +1079,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.normalizeTableCursor(h.table.Cursor())
 			updateCursorColumn(&h.table)
 		}
-		return h, nil
+		return h, notifyCmd
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -989,7 +1096,8 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// clears the keychain on a terminal refresh failure
 		// (invalid_grant). Without this, the TUI keeps showing the
 		// pre-expiry label until the user navigates away and back.
-		cmds := []tea.Cmd{fetchSessions(h.client, h.ctx), tickCmd()}
+		h.nextSessionPollID++
+		cmds := []tea.Cmd{fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID), tickCmd()}
 		if h.authMgr != nil {
 			cmds = append(cmds, fetchAuthStatus(h.authMgr))
 		}
@@ -1518,11 +1626,11 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-func fetchSessions(c client.BossClient, ctx context.Context) tea.Cmd {
+func fetchSessions(c client.BossClient, ctx context.Context, homeGeneration, pollID uint64) tea.Cmd {
 	return func() tea.Msg {
 		sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{})
 		if err != nil {
-			return sessionListMsg{err: err}
+			return sessionListMsg{homeGeneration: homeGeneration, pollID: pollID, err: err}
 		}
 
 		// Fetch daemon-side heartbeat statuses for cross-instance display.
@@ -1542,6 +1650,8 @@ func fetchSessions(c client.BossClient, ctx context.Context) tea.Cmd {
 		}
 
 		return sessionListMsg{
+			homeGeneration: homeGeneration,
+			pollID:         pollID,
 			sessions:       sessions,
 			daemonStatuses: daemonStatuses,
 		}

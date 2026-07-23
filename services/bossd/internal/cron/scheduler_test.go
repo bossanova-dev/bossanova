@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +19,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/taskorchestrator"
 )
 
@@ -32,6 +35,10 @@ type fakeStore struct {
 	markStartedCalls []markStartedCall
 	lastRunCalls     []lastRunCall
 }
+
+type fakeGateProofEnv struct{ env map[string]string }
+
+func (r fakeGateProofEnv) Resolve() map[string]string { return r.env }
 
 type markStartedCall struct {
 	id        string
@@ -1150,9 +1157,9 @@ func TestRunNow_OverlapSkip(t *testing.T) {
 
 // --- Gate command tests --------------------------------------------------
 
-// TestFire_GatePasses verifies that a gate command with exit 0 allows the
-// fire to proceed and CreateSession is called exactly once.
-func TestFire_GatePasses(t *testing.T) {
+// TestFire_GatePassesWithNilGateProofEnv verifies that a nil proof resolver
+// preserves the existing gate behavior: a passing gate creates one session.
+func TestFire_GatePassesWithNilGateProofEnv(t *testing.T) {
 	store := newFakeStore()
 	job := makeJob("j", "@every 1m", true)
 	job.GateCommand = "true"
@@ -1163,6 +1170,9 @@ func TestFire_GatePasses(t *testing.T) {
 
 	creator := newFakeCreator()
 	s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
+	if s.gateProofEnv != nil {
+		t.Fatal("gateProofEnv should default to nil")
+	}
 	if err := s.AddJob(job); err != nil {
 		t.Fatalf("AddJob: %v", err)
 	}
@@ -1221,6 +1231,145 @@ func TestFire_GateFails(t *testing.T) {
 	}
 	if lrc.nextRunAt == nil {
 		t.Error("UpdateLastRun.NextRunAt was nil; expected non-nil (job is registered with a schedule)")
+	}
+}
+
+func TestFire_ProofGateReceivesScopedKeyWithoutUploadToken(t *testing.T) {
+	store := newFakeStore()
+	job := makeJob("j", "@every 1m", true)
+	store.put(job)
+	t.Setenv("ANTHROPIC_API_KEY", "inherited-account-key")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://inherited-proxy.example.test")
+	t.Setenv(proofenv.EnvCloudflareAPIToken, "proof-upload-key")
+	t.Setenv(proofenv.EnvR2Bucket, "proof-bucket")
+	t.Setenv(proofenv.EnvPublicBaseURL, "https://proof.example.test")
+	t.Setenv(proofenv.EnvCloudflareAccountID, "proof-account")
+
+	repoPath := t.TempDir()
+	const body = `#!/bin/sh
+[ "$PROOF_ANTHROPIC_API_KEY" = "proof-key" ] || exit 1
+[ "${CLOUDFLARE_API_TOKEN+x}" != "x" ] || exit 2
+[ "${ANTHROPIC_API_KEY+x}" != "x" ] || exit 3
+[ "${ANTHROPIC_BASE_URL+x}" != "x" ] || exit 4
+[ "${BOSS_PROOF_R2_BUCKET+x}" != "x" ] || exit 5
+[ "${BOSS_PROOF_PUBLIC_BASE_URL+x}" != "x" ] || exit 6
+[ "${CLOUDFLARE_ACCOUNT_ID+x}" != "x" ] || exit 7
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(repoPath, "check-proof-env.sh"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	job.GateCommand = "./check-proof-env.sh"
+
+	repos := newFakeRepoStore()
+	repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: repoPath})
+	creator := newFakeCreator()
+	s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
+	s.gateProofEnv = fakeGateProofEnv{env: map[string]string{
+		proofenv.EnvAnthropicAPIKey:     "proof-key",
+		proofenv.EnvCloudflareAPIToken:  "proof-upload-key",
+		proofenv.EnvR2Bucket:            "proof-bucket",
+		proofenv.EnvPublicBaseURL:       "https://proof.example.test",
+		proofenv.EnvCloudflareAccountID: "proof-account",
+	}}
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	sess, skipped, err := s.fire(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	if skipped != "" || sess == nil {
+		t.Fatalf("fire = (%v, %q), want created session", sess, skipped)
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("creator calls = %d, want 1", len(creator.calls))
+	}
+}
+
+func TestFire_GateWithoutProofKeyPreservesAmbientAnthropicEnv(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		resolver GateProofEnvResolver
+	}{
+		{name: "nil resolver"},
+		{name: "resolver without key", resolver: fakeGateProofEnv{env: map[string]string{}}},
+		{name: "resolver with whitespace key", resolver: fakeGateProofEnv{env: map[string]string{proofenv.EnvAnthropicAPIKey: " \n\t "}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			job := makeJob("j", "@every 1m", true)
+			store.put(job)
+			t.Setenv("ANTHROPIC_API_KEY", "ambient-account-key")
+			t.Setenv("ANTHROPIC_BASE_URL", "https://ambient-proxy.example.test")
+
+			repoPath := t.TempDir()
+			const body = `#!/bin/sh
+[ "$ANTHROPIC_API_KEY" = "ambient-account-key" ] || exit 1
+[ "$ANTHROPIC_BASE_URL" = "https://ambient-proxy.example.test" ] || exit 2
+exit 0
+`
+			if err := os.WriteFile(filepath.Join(repoPath, "check-ambient-env.sh"), []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			job.GateCommand = "./check-ambient-env.sh"
+
+			repos := newFakeRepoStore()
+			repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: repoPath})
+			creator := newFakeCreator()
+			s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
+			s.gateProofEnv = tc.resolver
+			if err := s.AddJob(job); err != nil {
+				t.Fatalf("AddJob: %v", err)
+			}
+
+			sess, skipped, err := s.fire(context.Background(), job.ID)
+			if err != nil {
+				t.Fatalf("fire: %v", err)
+			}
+			if skipped != "" || sess == nil {
+				t.Fatalf("fire = (%v, %q), want created session", sess, skipped)
+			}
+		})
+	}
+}
+
+func TestFire_ProofGateWithoutResolvedKeyPreventsSessionCreation(t *testing.T) {
+	store := newFakeStore()
+	job := makeJob("j", "@every 1m", true)
+	store.put(job)
+
+	repoPath := t.TempDir()
+	const body = `#!/bin/sh
+[ "$PROOF_ANTHROPIC_API_KEY" = "proof-key" ] || exit 1
+`
+	if err := os.WriteFile(filepath.Join(repoPath, "fail-proof-gate.sh"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	job.GateCommand = "./fail-proof-gate.sh"
+
+	repos := newFakeRepoStore()
+	repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: repoPath})
+	creator := newFakeCreator()
+	s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
+	s.gateProofEnv = fakeGateProofEnv{env: map[string]string{}}
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	sess, skipped, err := s.fire(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	if sess != nil || skipped != "gated" {
+		t.Fatalf("fire = (%v, %q), want (nil, gated)", sess, skipped)
+	}
+	if len(creator.calls) != 0 {
+		t.Fatalf("creator calls = %d, want 0", len(creator.calls))
+	}
+	if got := store.lastRunCalls[0].outcome; got != models.CronJobOutcomeGated {
+		t.Fatalf("outcome = %q, want %q", got, models.CronJobOutcomeGated)
 	}
 }
 

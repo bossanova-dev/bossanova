@@ -9,6 +9,23 @@ import (
 	"github.com/recurser/bossalib/sessionreason"
 )
 
+func TestQuestionLabel(t *testing.T) {
+	if QuestionLabel != "? question" {
+		t.Fatalf("QuestionLabel = %q, want %q", QuestionLabel, "? question")
+	}
+	if !IsQuestionLabel(QuestionLabel) {
+		t.Fatalf("IsQuestionLabel(%q) = false, want true", QuestionLabel)
+	}
+	if IsQuestionLabel("? PR failed") {
+		t.Fatal("IsQuestionLabel(? PR failed) = true, want false")
+	}
+
+	got := Compute(Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_QUESTION})
+	if got.Label != QuestionLabel {
+		t.Fatalf("Compute(QUESTION).Label = %q, want %q", got.Label, QuestionLabel)
+	}
+}
+
 func TestCompute(t *testing.T) {
 	// blockedPRFailure is a draft-PR-creation-failure BlockedReason, built the
 	// same way as TestComputeDraftPRFailureShowsWarningWithoutSpinner. Paired

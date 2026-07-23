@@ -3,6 +3,8 @@ package views
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -144,6 +146,107 @@ func TestAppWithSettingsPassesSettingsToHome(t *testing.T) {
 
 	if !a.home.settings.BossCloudGuestOfferHidden {
 		t.Fatal("home.settings.BossCloudGuestOfferHidden = false, want true")
+	}
+}
+
+func TestAppSettingsNotificationToggleAppliesToHomeImmediately(t *testing.T) {
+	withTempConfigHome(t)
+
+	a := NewApp(nil, nil)
+	a.activeView = ViewSettings
+	a.settings = NewSettingsModel(nil, a.ctx)
+
+	for i, row := range a.settings.rows {
+		if row.Kind == settingsRowKindNotifications {
+			a.settings.cursor = i
+			break
+		}
+	}
+	if !config.NotificationsEnabled(a.home.settings) {
+		t.Fatal("precondition: home notifications should default to enabled")
+	}
+
+	model, _ := a.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	got := model.(App)
+	if config.NotificationsEnabled(got.userSettings) {
+		t.Fatal("settings toggle did not update App.userSettings")
+	}
+	if config.NotificationsEnabled(got.home.settings) {
+		t.Fatal("settings toggle did not update HomeModel immediately")
+	}
+}
+
+func TestAppSettingsSuccessfulOtherSaveAfterNotificationFailureAppliesToHome(t *testing.T) {
+	withTempConfigHome(t)
+
+	a := NewApp(nil, nil)
+	a.activeView = ViewSettings
+	a.settings = NewSettingsModel(nil, a.ctx)
+	for i, row := range a.settings.rows {
+		if row.Kind == settingsRowKindNotifications {
+			a.settings.cursor = i
+			break
+		}
+	}
+
+	badPath := filepath.Join(t.TempDir(), "settings-dir")
+	if err := os.Mkdir(badPath, 0o755); err != nil {
+		t.Fatalf("os.Mkdir(%q): %v", badPath, err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", badPath)
+	model, _ := a.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	a = model.(App)
+	if a.settings.err == nil {
+		t.Fatal("failed notification save did not retain an error")
+	}
+
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
+	for i, row := range a.settings.rows {
+		if row.Kind == settingsRowKindErrorTracking {
+			a.settings.cursor = i
+			break
+		}
+	}
+	model, _ = a.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := model.(App)
+	if got.settings.err != nil {
+		t.Fatalf("successful other save retained stale error: %v", got.settings.err)
+	}
+	if config.NotificationsEnabled(got.userSettings) {
+		t.Fatal("successful other save did not update App.userSettings notification setting")
+	}
+	if config.NotificationsEnabled(got.home.settings) {
+		t.Fatal("successful other save did not update HomeModel notification setting")
+	}
+	if !got.home.settings.ErrorTrackingEnabled {
+		t.Fatal("successful other save did not update HomeModel changed setting")
+	}
+}
+
+func TestAppDiscardsSessionPollFromReplacedHome(t *testing.T) {
+	a := NewApp(nil, nil)
+	oldGeneration := a.home.generation
+	oldPollID := a.home.nextSessionPollID
+
+	a.switchToHome()
+	if a.home.generation == oldGeneration {
+		t.Fatal("replacement HomeModel reused its generation")
+	}
+
+	model, _ := a.Update(sessionListMsg{
+		homeGeneration: oldGeneration,
+		pollID:         oldPollID,
+		sessions:       []*pb.Session{{Id: "old-session", HasActiveChat: true}},
+	})
+	got := model.(App)
+	if !got.home.loading {
+		t.Fatal("stale poll cleared replacement HomeModel loading state")
+	}
+	if len(got.home.sessions) != 0 {
+		t.Fatalf("stale poll populated replacement HomeModel sessions: %+v", got.home.sessions)
+	}
+	if got.rotationSeen != nil {
+		t.Fatalf("stale poll mutated App rotation state: %+v", got.rotationSeen)
 	}
 }
 

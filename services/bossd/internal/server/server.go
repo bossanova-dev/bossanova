@@ -81,23 +81,24 @@ func DefaultSocketPathForSettings(settings config.Settings) (string, error) {
 
 // Server wraps the ConnectRPC DaemonService handler and a Unix socket listener.
 type Server struct {
-	repos          db.RepoStore
-	sessions       db.SessionStore
-	attempts       db.AttemptStore
-	agentChats     db.AgentChatStore
-	workflows      db.WorkflowStore
-	taskMappings   db.TaskMappingStore
-	cronJobs       db.CronJobStore
-	accounts       db.AccountStore
-	rotationEngine *rotation.Engine
-	resolver       *account.Resolver
-	accountCreds   AccountCredentialStore
-	addAccountMu   sync.Mutex
-	accountSmoke   AccountSmokeRunner
-	usageProbe     UsageProbeRecorder
-	checkSnapshots db.CheckSnapshotStore
-	rotationEvents db.RotationEventStore
-	cronScheduler  *cron.Scheduler
+	repos           db.RepoStore
+	sessions        db.SessionStore
+	attempts        db.AttemptStore
+	agentChats      db.AgentChatStore
+	workflows       db.WorkflowStore
+	taskMappings    db.TaskMappingStore
+	cronJobs        db.CronJobStore
+	githubCallbacks db.GithubCallbackStore
+	accounts        db.AccountStore
+	rotationEngine  *rotation.Engine
+	resolver        *account.Resolver
+	accountCreds    AccountCredentialStore
+	addAccountMu    sync.Mutex
+	accountSmoke    AccountSmokeRunner
+	usageProbe      UsageProbeRecorder
+	checkSnapshots  db.CheckSnapshotStore
+	rotationEvents  db.RotationEventStore
+	cronScheduler   *cron.Scheduler
 	// cronActivity is the agent-liveness seam used to derive cron STATUS
 	// (RUNNING only when the last-run agent is actively working). Shares the
 	// same instance as the scheduler's overlap check (cmd/main.go). Optional,
@@ -141,6 +142,8 @@ type Server struct {
 	onSessionDeleted   func(context.Context, string)
 	onSessionUpdated   func(context.Context, *pb.Session)
 	logger             zerolog.Logger
+	fileLimitSoft      uint64
+	passthroughStats   passthroughStatsProvider // nil until SetPassthroughStatsProvider; BOS-483
 	listener           net.Listener
 	srv                *http.Server
 
@@ -181,7 +184,10 @@ type Config struct {
 	Workflows    db.WorkflowStore
 	TaskMappings db.TaskMappingStore
 	CronJobs     db.CronJobStore
-	Accounts     db.AccountStore
+	// GithubCallbacks persists one-shot GitHub callback registrations (BOS-467).
+	// May be nil in tests/contexts that do not exercise the callback surface.
+	GithubCallbacks db.GithubCallbackStore
+	Accounts        db.AccountStore
 	// RotationEngine is the account-rotation policy engine, held on the daemon
 	// for future auto-rotate consumers (BOS-174/175). Optional, may be nil.
 	RotationEngine *rotation.Engine
@@ -243,6 +249,10 @@ type Config struct {
 	// rows in the default web session list without deleting the DB row.
 	OnSessionUpdated func(context.Context, *pb.Session)
 	Logger           zerolog.Logger
+	// FileLimitSoft is the RLIMIT_NOFILE soft limit the daemon achieved at
+	// startup (0 = unknown/non-unix). RepairDoctor surfaces a WARN when it is
+	// below the safe floor (BOS-465).
+	FileLimitSoft uint64
 }
 
 // AuthNotifier is the narrow interface the NotifyAuthChange RPC
@@ -298,33 +308,34 @@ type UsageProbeRecorder interface {
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
 func New(cfg Config) *Server {
 	return &Server{
-		repos:          cfg.Repos,
-		sessions:       cfg.Sessions,
-		attempts:       cfg.Attempts,
-		agentChats:     cfg.AgentChats,
-		workflows:      cfg.Workflows,
-		taskMappings:   cfg.TaskMappings,
-		cronJobs:       cfg.CronJobs,
-		accounts:       cfg.Accounts,
-		rotationEngine: cfg.RotationEngine,
-		resolver:       cfg.Resolver,
-		accountCreds:   cfg.AccountCredentials,
-		accountSmoke:   cfg.AccountSmokeRunner,
-		usageProbe:     cfg.UsageProbe,
-		checkSnapshots: cfg.CheckSnapshots,
-		rotationEvents: cfg.RotationEvents,
-		cronScheduler:  cfg.CronScheduler,
-		cronActivity:   cfg.CronActivity,
-		chatStatus:     cfg.ChatStatus,
-		displayTracker: cfg.DisplayTracker,
-		prRefresher:    cfg.PRRefresher,
-		repairLease:    cfg.RepairLease,
-		tmuxPoller:     cfg.TmuxPoller,
-		lifecycle:      cfg.Lifecycle,
-		agent:          cfg.Agent,
-		agentClients:   cfg.AgentClients,
-		worktrees:      cfg.Worktrees,
-		provider:       cfg.Provider,
+		repos:           cfg.Repos,
+		sessions:        cfg.Sessions,
+		attempts:        cfg.Attempts,
+		agentChats:      cfg.AgentChats,
+		workflows:       cfg.Workflows,
+		taskMappings:    cfg.TaskMappings,
+		cronJobs:        cfg.CronJobs,
+		githubCallbacks: cfg.GithubCallbacks,
+		accounts:        cfg.Accounts,
+		rotationEngine:  cfg.RotationEngine,
+		resolver:        cfg.Resolver,
+		accountCreds:    cfg.AccountCredentials,
+		accountSmoke:    cfg.AccountSmokeRunner,
+		usageProbe:      cfg.UsageProbe,
+		checkSnapshots:  cfg.CheckSnapshots,
+		rotationEvents:  cfg.RotationEvents,
+		cronScheduler:   cfg.CronScheduler,
+		cronActivity:    cfg.CronActivity,
+		chatStatus:      cfg.ChatStatus,
+		displayTracker:  cfg.DisplayTracker,
+		prRefresher:     cfg.PRRefresher,
+		repairLease:     cfg.RepairLease,
+		tmuxPoller:      cfg.TmuxPoller,
+		lifecycle:       cfg.Lifecycle,
+		agent:           cfg.Agent,
+		agentClients:    cfg.AgentClients,
+		worktrees:       cfg.Worktrees,
+		provider:        cfg.Provider,
 
 		prResolver:         cfg.PRResolver,
 		pluginHost:         cfg.PluginHost,
@@ -336,13 +347,35 @@ func New(cfg Config) *Server {
 		onSessionDeleted:   cfg.OnSessionDeleted,
 		onSessionUpdated:   cfg.OnSessionUpdated,
 		logger:             cfg.Logger,
+		fileLimitSoft:      cfg.FileLimitSoft,
 	}
+}
+
+// passthroughStatsProvider exposes the failover proxy's bounded pass-through
+// error tally to RepairDoctor. *ProxyServer satisfies it; the seam is a setter
+// (SetPassthroughStatsProvider) because the ProxyServer is constructed AFTER
+// server.New (main.go), so it cannot arrive through server.Config (BOS-483).
+type passthroughStatsProvider interface {
+	PassthroughStatsSnapshot() []passthroughSessionSnapshot
+}
+
+// SetPassthroughStatsProvider wires the failover proxy's pass-through counters
+// into the daemon so RepairDoctor can surface them as an informational check.
+// Nil-safe on the read side; a daemon with no proxy simply omits the tally.
+func (s *Server) SetPassthroughStatsProvider(p passthroughStatsProvider) {
+	s.passthroughStats = p
 }
 
 // RotationEngine returns the account-rotation policy engine held on the
 // daemon. It is wired but not yet invoked on any cap signal (BOS-174/175
 // own the live rotation flow). May be nil if no account store was configured.
 func (s *Server) RotationEngine() *rotation.Engine { return s.rotationEngine }
+
+// GithubCallbacks returns the one-shot GitHub callback store held on the daemon
+// (BOS-467). It is wired at startup and exposed through the Create/List/Delete
+// GithubCallback RPC handlers. May be nil in contexts that did not configure a
+// callback store.
+func (s *Server) GithubCallbacks() db.GithubCallbackStore { return s.githubCallbacks }
 
 // Listen binds a Unix socket and initializes the underlying http.Server
 // synchronously. After Listen returns the server is fully configured and
@@ -1425,6 +1458,10 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 			SetupOutput:      pw,
 			Detach:           msg.GetDetach(),
 			IsTmuxUnattended: msg.GetIsTmuxUnattended(),
+			// DeferPR suppresses the up-front draft PR; StartSession gates
+			// createDraftPR on !opts.DeferPR, and the finalize EnsurePR hook
+			// opens a PR later only if the run produces commits.
+			DeferPR: msg.GetDeferPr(),
 		}
 		if msg.GetIsTmuxUnattended() || msg.GetDetach() {
 			token, tokenErr := newHookToken()

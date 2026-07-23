@@ -42,6 +42,7 @@ import (
 	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/agent"
+	"github.com/recurser/bossd/internal/callback"
 	cronpkg "github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
@@ -442,11 +443,16 @@ const (
 	snapshotFallbackInterval = 30 * time.Second
 )
 
+// achievedFileLimitSoft is the RLIMIT_NOFILE soft limit raiseFileLimit achieved
+// at startup (0 when unknown/non-unix). Recorded into daemon state and surfaced
+// by the RepairDoctor FD check (BOS-465).
+var achievedFileLimitSoft uint64
+
 func main() {
 	// Raise RLIMIT_NOFILE before spawning anything so every child (setup
 	// scripts, agent runners, git, codegen) inherits the higher limit and
 	// FD-heavy steps don't die with EMFILE. Best-effort; never fails the daemon.
-	raiseFileLimit()
+	achievedFileLimitSoft = raiseFileLimit()
 
 	showVersion := flag.Bool("version", false, "Print version information and exit")
 	flag.Parse()
@@ -607,6 +613,7 @@ func run(opts runOpts) error {
 		SettingsPath:   settingsPath,
 		SocketPath:     socketPath,
 		StartedAt:      time.Now().UTC(),
+		FileLimitSoft:  achievedFileLimitSoft,
 	}); err != nil {
 		return err
 	}
@@ -640,6 +647,7 @@ func run(opts runOpts) error {
 	taskMappings := db.NewTaskMappingStore(database)
 	rawWorkflows := db.NewWorkflowStore(database)
 	cronJobs := db.NewCronJobStore(database)
+	githubCallbacks := db.NewGithubCallbackStore(database)
 	accounts := db.NewAccountStore(database)
 	// Account-rotation policy engine (BOS-173). Held on the daemon for the
 	// headless/interactive auto-rotate consumers (BOS-174/175) to call; no cap
@@ -791,6 +799,14 @@ func run(opts runOpts) error {
 			pbKind = bossanovav1.ChatDelta_KIND_UPDATED
 		case db.ChatChangeDeleted:
 			pbKind = bossanovav1.ChatDelta_KIND_DELETED
+			// Tear down any in-memory respawn-in-place state (healthy streak, pending
+			// re-probe timer, respawn-cap window) for a chat that is going away, so no
+			// orphaned re-probe timer can re-drive the auth path after the pane is gone
+			// (BOS-482). Nil-guarded like the rotate hook: the rotator is constructed
+			// after this closure is installed.
+			if chatRotator != nil {
+				chatRotator.Deregister(chat.AgentSessionID)
+			}
 		default:
 			return
 		}
@@ -891,6 +907,12 @@ func run(opts runOpts) error {
 	dispatcher.SetDisplayStatusSetter(displayTracker)
 	poller := session.NewPoller(sessions, repos, ghProvider, session.DefaultPollInterval, session.DefaultPollTimeout, log.Logger)
 
+	// GitHub callback evaluator (BOS-468): verifies authoritative PR/check state
+	// and fires durable callbacks. Wired into the webhook dispatcher below, run
+	// at startup for reconciliation, and used as the delivery worker's periodic
+	// reconcile safety net.
+	callbackEvaluator := callback.NewEvaluator(githubCallbacks, ghProvider, time.Now, log.Logger)
+
 	// --- Settings + Display Poller ---
 
 	bossEnv := config.EnvOr("BOSS_ENV", "local")
@@ -943,7 +965,8 @@ func run(opts runOpts) error {
 	// The plugin host's HostServiceServer defaults to a hermetic no-op proof env
 	// resolver (keeps unit tests off the OS keyring); the daemon injects the real
 	// keyring-backed resolver so proof credentials reach plugin-side repair spawns.
-	pluginHost.SetProofEnvResolver(proofenvkeyring.New(log.Logger))
+	proofEnv := proofenvkeyring.New(log.Logger)
+	pluginHost.SetProofEnvResolver(proofEnv)
 
 	// Register DisplayTracker onChange callback to notify plugins of status changes
 	displayTracker.SetOnChange(func(sessionID string, oldEntry, newEntry *status.DisplayEntry) {
@@ -1117,7 +1140,7 @@ func run(opts runOpts) error {
 	// The lifecycle constructor defaults to a hermetic no-op proof env resolver
 	// (keeps unit tests off the OS keyring); the daemon must inject the real
 	// keyring-backed resolver so proof credentials reach managed session spawns.
-	lifecycle.SetProofEnvResolver(proofenvkeyring.New(log.Logger))
+	lifecycle.SetProofEnvResolver(proofEnv)
 	lifecycle.SetAccountEnvResolver(accountSpawnEnv)
 	lifecycle.SetSessionDeletedNotifier(func(_ context.Context, sessionID string) {
 		streamBus.Publish(upstream.StreamEvent{
@@ -1218,21 +1241,25 @@ func run(opts runOpts) error {
 		// confirmed=false (non-auth errors are logged, never surfaced as rotation), so
 		// the path proceeds only on a real auth invalidation.
 		CurrentAuthFailed: chatStatusTracker.AuthFailed,
-		AuthProbe: func(ctx context.Context, accountID string) (bool, error) {
+		AuthProbe: func(ctx context.Context, accountID string) rotation.AuthProbeResult {
 			prober, ok := accountMaterializer.(usageSnapshotProber)
 			if !ok || accountID == "" {
-				return false, nil
+				// No probe capability: inconclusive, never rotate on the loose trigger.
+				return rotation.AuthProbeUnknown
 			}
 			_, err := prober.ProbeUsageSnapshot(ctx, accountID)
 			if err == nil {
-				return false, nil
+				// The bound account itself probes healthy — the pane is auth-failed for a
+				// plumbing reason (a stale in-proxy token after a daemon restart), not an
+				// invalid credential. Signals the respawn-in-place path (BOS-482).
+				return rotation.AuthProbeHealthy
 			}
 			if authProbeConfirmsInvalidation(err) {
-				return true, nil
+				return rotation.AuthProbeConfirmed401
 			}
 			log.Warn().Err(err).Str("account_id", accountID).
-				Msg("auto-rotate(auth): probe returned non-auth error; not rotating")
-			return false, nil
+				Msg("auto-rotate(auth): probe returned non-auth error; inconclusive")
+			return rotation.AuthProbeUnknown
 		},
 		// Decide adapter: build the BOS-173 engine's real Signal (the currently
 		// bound account is the "capped" account; capability is probed live via the
@@ -1286,13 +1313,20 @@ func run(opts runOpts) error {
 		// Switch adapter: the BOS-171 manual-switch primitive on its Auto path.
 		Switch: func(ctx context.Context, req rotation.SwitchRequest) (rotation.SwitchResult, error) {
 			res, err := lifecycle.SwitchAccount(ctx, session.SwitchAccountParams{
-				SessionID:       req.SessionID,
-				AgentSessionID:  req.AgentSessionID,
-				TargetAccountID: req.AccountID,
-				Auto:            true,
-				PreviousResetAt: req.PreviousResetAt,
+				SessionID:          req.SessionID,
+				AgentSessionID:     req.AgentSessionID,
+				TargetAccountID:    req.AccountID,
+				Auto:               true,
+				RespawnSameAccount: req.RespawnSameAccount,
+				PreviousResetAt:    req.PreviousResetAt,
 			})
 			if err != nil {
+				// Map the mid-turn refusal onto the rotator's fail-safe sentinel so the
+				// respawn-in-place path leaves the chat as-is (no FAILED audit) and re-probes
+				// later, rather than treating a deliberately-skipped live turn as a failure.
+				if errors.Is(err, session.ErrChatMidTurn) {
+					return rotation.SwitchResult{}, rotation.ErrSwitchAborted
+				}
 				return rotation.SwitchResult{}, err
 			}
 			return rotation.SwitchResult{SwitchedToLabel: res.TargetLabel, Fresh: !res.Resumed}, nil
@@ -1405,6 +1439,10 @@ func run(opts runOpts) error {
 	// Account-by-id getter for CurrentBearer's first-leg sentinel→bearer
 	// translation (BOS-326): resolves the bound account the materializer needs.
 	lifecycle.SetAccountGetter(accounts.Get)
+	// Managed-default account resolver for the startup pane-token adoption sweep
+	// (BOS-481): mirrors the spawn's DefaultAccountID for a surviving pane whose
+	// chat and session both lack a persisted binding.
+	lifecycle.SetDefaultAccountResolver(accountResolver.DefaultAccountID)
 	if opts.onRotationSeamsWired != nil {
 		opts.onRotationSeamsWired(lifecycle.HasLiveRotationSeams())
 	}
@@ -1555,7 +1593,9 @@ func run(opts runOpts) error {
 		Repos:    repos,
 		Creator:  sessionCreator,
 		Activity: cronActivity,
-		Logger:   log.Logger,
+		// Cron gates receive only the scoped proof model key, never the upload token.
+		GateProofEnv: proofenvkeyring.New(log.Logger),
+		Logger:       log.Logger,
 	})
 	// NOTE: cronScheduler.Start is intentionally deferred until after the hook
 	// server is bound and lifecycle.SetHookPort has run (below). A tick that
@@ -1816,6 +1856,15 @@ func run(opts runOpts) error {
 			}
 			return out, nil
 		})
+		// Snapshot the daemon's live GitHub callback-interest set (distinct
+		// repo_origin_url + pr_number over every non-terminal callback) so bosso
+		// can reconcile which daemon to route a PR webhook to on every reconnect.
+		// The repo_origin_url is the canonical https://github.com/<owner>/<repo>
+		// form (callback.RepoOriginURL), matching the repo snapshot above and the
+		// identifier bosso's webhook dispatcher routes by (vcs.GitHubNWO).
+		snapshotInterests := upstream.NewCallbackInterestReader(func(ctx context.Context) ([]*bossanovav1.CallbackInterest, error) {
+			return callback.DeriveInterests(ctx, githubCallbacks)
+		})
 		snapshotChats := upstream.NewChatSnapshotReader(func(ctx context.Context) ([]*bossanovav1.ClaudeChatMetadata, error) {
 			// Routable (not tmux-only): headless runs have no tmux session
 			// name, so the old ListWithTmuxSession snapshot dropped them and
@@ -1970,15 +2019,16 @@ func run(opts runOpts) error {
 			DaemonID:     cfg.DaemonID,
 			Hostname:     cfg.Hostname,
 			Stores: upstream.StreamStores{
-				Sessions: snapshotSessions,
-				Chats:    snapshotChats,
-				Repos:    snapshotRepos,
-				Statuses: snapshotStatuses,
+				Sessions:  snapshotSessions,
+				Chats:     snapshotChats,
+				Repos:     snapshotRepos,
+				Statuses:  snapshotStatuses,
+				Interests: snapshotInterests,
 			},
 			Events:         streamBus,
 			TokenProvider:  tokenProvider,
 			CommandHandler: cmdHandler,
-			Webhooks:       upstream.NewWebhookDispatcherWithEmitterAndReviewComments(displayPoller, emitter, ghProvider, log.Logger),
+			Webhooks:       upstream.NewWebhookDispatcherWithEmitterAndReviewComments(displayPoller, emitter, ghProvider, log.Logger).WithEvaluator(callbackEvaluator),
 			Attacher:       attacher,
 			Creator:        creatorAdapter,
 			ReRegister:     reRegister,
@@ -2014,10 +2064,11 @@ func run(opts runOpts) error {
 			}
 			snapshotPublisher = func(ctx context.Context) {
 				runSnapshotPublisher(ctx, client, sessionTokenHolder, upstream.StreamStores{
-					Sessions: snapshotSessions,
-					Chats:    snapshotChats,
-					Repos:    snapshotRepos,
-					Statuses: snapshotStatuses,
+					Sessions:  snapshotSessions,
+					Chats:     snapshotChats,
+					Repos:     snapshotRepos,
+					Statuses:  snapshotStatuses,
+					Interests: snapshotInterests,
 				}, cfg.DaemonID, cfg.Hostname, reRegister, closeIdle, interval, log.Logger)
 			}
 		}
@@ -2076,6 +2127,7 @@ func run(opts runOpts) error {
 		Workflows:          workflows,
 		TaskMappings:       taskMappings,
 		CronJobs:           cronJobs,
+		GithubCallbacks:    githubCallbacks,
 		Accounts:           accounts,
 		RotationEngine:     rotationEngine,
 		Resolver:           accountResolver,
@@ -2131,7 +2183,8 @@ func run(opts runOpts) error {
 				},
 			})
 		},
-		Logger: log.Logger,
+		Logger:        log.Logger,
+		FileLimitSoft: achievedFileLimitSoft,
 	})
 
 	// Auto-archive dependabot repair sessions when their PR merges (BOS-101).
@@ -2198,6 +2251,61 @@ func run(opts runOpts) error {
 	displayPoller.Run(pollerCtx)
 	trackDone(displayPoller.Done())
 
+	// --- GitHub callback delivery worker (BOS-468) ---
+	//
+	// Leases triggered callbacks and delivers their registered message through
+	// the verified wake+submit path (Server.SendChatMessage). ScheduleRetry with
+	// capped backoff on failure; ExpireOverdue sweeps past-expiry rows. The
+	// evaluator (wired into the webhook dispatcher) advances callbacks to
+	// triggered; this worker owns triggered -> delivered.
+	callbackDeliverer := callback.DelivererFunc(func(ctx context.Context, agentSessionID, message string) error {
+		_, err := srv.SendChatMessage(ctx, connect.NewRequest(&bossanovav1.SendChatMessageRequest{
+			AgentSessionId: agentSessionID,
+			Message:        message,
+			Submit:         true,
+			WakeIfAsleep:   true,
+		}))
+		return err
+	})
+	callbackWorker := callback.NewDeliveryWorker(callback.WorkerConfig{
+		Store:      githubCallbacks,
+		Deliverer:  callbackDeliverer,
+		Reconciler: callbackEvaluator,
+		Logger:     log.Logger,
+	})
+	callbackWorkerDone := safego.Go(log.Logger, func() { callbackWorker.Run(pollerCtx) })
+	trackDone(callbackWorkerDone)
+
+	// Advertises the daemon's live GitHub callback-interest set to bosso as a
+	// steady-state delta on the reverse-stream bus whenever it changes (snapshot
+	// semantics: the full set each publish, empty = withdraw all). The
+	// connect/reconnect DaemonSnapshot carries the guaranteed-first full set; this
+	// advertiser keeps bosso's routing table current between reconnects.
+	interestAdvertiser := callback.NewInterestAdvertiser(callback.AdvertiserConfig{
+		Store: githubCallbacks,
+		Publisher: callback.InterestPublisherFunc(func(interests []*bossanovav1.CallbackInterest) {
+			streamBus.Publish(upstream.StreamEvent{Interests: &upstream.InterestsEvent{Interests: interests}})
+		}),
+		Logger: log.Logger,
+	})
+	interestAdvertiserDone := safego.Go(log.Logger, func() { interestAdvertiser.Run(pollerCtx) })
+	trackDone(interestAdvertiserDone)
+
+	// Startup reconciliation: fire callbacks whose enduring PR state
+	// (merged/closed/checks) was reached while the daemon was disconnected, so
+	// the triggering webhook was never delivered. Best-effort; non-fatal.
+	trackedGo(func() {
+		if err := callbackEvaluator.ReconcileAll(pollerCtx); err != nil && pollerCtx.Err() == nil {
+			log.Warn().Err(err).Msg("startup github callback reconciliation failed")
+		}
+		// Advertise the freshly-reconciled interest set promptly rather than
+		// waiting for the advertiser's first tick (reconcile may have advanced
+		// callbacks active -> triggered, changing the set).
+		if _, err := interestAdvertiser.Publish(pollerCtx); err != nil && pollerCtx.Err() == nil {
+			log.Warn().Err(err).Msg("startup github callback interest advertisement failed")
+		}
+	})
+
 	// --- Hook Server (loopback HTTP for Claude Stop-hook notifications) ---
 	//
 	// Created and bound BEFORE lifecycle.Bootstrap: Bootstrap re-issues
@@ -2262,6 +2370,10 @@ func run(opts runOpts) error {
 		proxySrv = ps
 		lifecycle.SetProxyPort(ps.Port())
 		lifecycle.SetProxyRegistrar(ps)
+		// Expose the proxy's bounded pass-through error tally to RepairDoctor as
+		// an informational check (BOS-483). server.New ran above before the proxy
+		// existed, so wire the provider now via a setter.
+		srv.SetPassthroughStatsProvider(ps)
 		log.Info().Int("port", ps.Port()).Int("configured_port", settings.ManagedAccounts.FailoverProxyPort()).
 			Msg("failover proxy listening on 127.0.0.1 fixed port (survives daemon restart; falls back to ephemeral on collision; injection gated on managed_accounts.enabled + managed_accounts.failover_proxy_enabled, both default true)")
 	}

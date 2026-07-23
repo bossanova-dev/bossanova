@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -552,6 +553,25 @@ func TestNewHomeModelCopiesArchiveStateWithoutAliasing(t *testing.T) {
 	rebuilt.resolveArchive("s1", errors.New("boom"))
 	if !a.home.isArchiving("s1") || !a.home.archiveInFlight("s1") {
 		t.Fatal("rebuilt Home aliases archive state from prior Home")
+	}
+}
+
+// TestNewHomeModelPreservesQuestionState ensures returning to Home does not
+// treat an already-notified question as a new notification edge.
+func TestNewHomeModelPreservesQuestionState(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.sessions = []*pb.Session{{
+		Id:           "s1",
+		DisplayLabel: displaystatus.QuestionLabel,
+	}}
+
+	rebuilt := a.newHomeModel()
+	_, cmd := rebuilt.Update(sessionListMsg{sessions: []*pb.Session{{
+		Id:           "s1",
+		DisplayLabel: displaystatus.QuestionLabel,
+	}}})
+	if cmd != nil {
+		t.Fatal("recreated Home returned a notification command for an unchanged question")
 	}
 }
 

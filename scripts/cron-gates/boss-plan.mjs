@@ -14,11 +14,13 @@
 
 import { gateExit } from '../linear-gate-lib.mjs'
 import { resolveTrackerAdapter } from '../tracker/adapter.mjs'
+import { loadSkillConfig, stateName } from '../../skills-toolbox/skill-config.mjs'
 
 try {
+  const unplannedState = stateName(loadSkillConfig(), 'unplanned')
   const tracker = resolveTrackerAdapter()
-  const hasWork = await tracker.hasWork({ state: 'Unplanned' })
-  gateExit(hasWork, hasWork ? null : 'boss-plan gate: no Unplanned issues')
+  const hasWork = await tracker.hasWork({ state: unplannedState })
+  gateExit(hasWork, hasWork ? null : `boss-plan gate: no ${unplannedState} issues`)
 } catch (err) {
   gateExit(false, `boss-plan gate: ${err.message}`)
 }

@@ -77,6 +77,15 @@ type Backend interface {
 	DeleteCronJob(ctx context.Context, id string) error
 	RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
 
+	// GitHub callbacks (deferred one-shot delivery when a PR reaches a trigger
+	// state). DeleteGithubCallback takes the owning target chat id alongside the
+	// callback id so the hosted gateway can route the delete to the daemon that
+	// owns the callback; the local socket adapter ignores it (its own daemon owns
+	// every callback in its registry, so the id alone resolves it).
+	CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error)
+	ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error)
+	DeleteGithubCallback(ctx context.Context, targetChatID, id string) error
+
 	// Accounts (agent credential registry). AddAccount consumes an inbound
 	// credential blob straight into the keyring; no method ever returns it.
 	ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error)

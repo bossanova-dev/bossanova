@@ -20,6 +20,12 @@ format:
 GO_TEST_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 include $(dir $(lastword $(MAKEFILE_LIST)))../../mk/go-test.mk
 
+## BOSSD_DEV_LOG: file the `dev` target appends bossd's stdout+stderr to, so a
+## dev-mode daemon (which otherwise logs only to the terminal) leaves a durable
+## record to post-mortem after a session wedges or the terminal scrolls away.
+## Override to relocate, e.g. `make dev BOSSD_DEV_LOG=/tmp/bossd.log`.
+BOSSD_DEV_LOG ?= $(HOME)/.bossanova/logs/bossd-dev.log
+
 ## dev: Run the bossd daemon in dev mode (generates protos first if needed).
 ## Builds bossd AND the co-located `mcp` binary into ../../bin, then runs the
 ## built bossd from there rather than via `go run`. The daemon resolves the
@@ -29,11 +35,23 @@ include $(dir $(lastword $(MAKEFILE_LIST)))../../mk/go-test.mk
 ## spawned agent session launches with no mcp__boss__* tools. `go run` puts the
 ## executable in a temp dir with no sibling `mcp`, which silently disables the
 ## boss MCP wiring for all sessions the dev daemon spawns.
+##
+## Output is tee'd to $(BOSSD_DEV_LOG) (appended, so a crash's log survives the
+## next start) while still streaming to the terminal. Without this, dev-mode
+## logs vanish with the terminal and failures like a wedged chat cannot be
+## diagnosed after the fact.
 dev:
 	$(MAKE) -C ../.. generate
 	$(MAKE) -C ../mcp build
 	go build -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd
-	$(BIN)
+	@mkdir -p $(dir $(BOSSD_DEV_LOG))
+	@echo "bossd dev log → $(BOSSD_DEV_LOG)"
+	@hard=$$(ulimit -Hn); \
+	if [ "$$hard" != "unlimited" ] && [ "$$hard" -lt 65536 ]; then \
+		printf 'WARNING: hard FD limit is %s; this terminal was likely started under an old `ulimit -n` cap. bossd cannot exceed it (non-root). Start `make dev` from a fresh terminal to get the full 65536.\n' "$$hard" >&2; \
+	fi; \
+	ulimit -Sn 65536 2>/dev/null || true; \
+	$(BIN) 2>&1 | tee -a $(BOSSD_DEV_LOG)
 
 ## build: Build the bossd binary
 build:

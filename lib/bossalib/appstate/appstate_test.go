@@ -107,6 +107,103 @@ func TestBaseDirLinuxFallsBackToHome(t *testing.T) {
 	}
 }
 
+func TestBaseDirDarwinRequiresUsableHome(t *testing.T) {
+	tests := []struct {
+		name       string
+		home       func() (string, error)
+		wantErrMsg string
+	}{
+		{
+			name:       "home lookup fails",
+			home:       func() (string, error) { return "", os.ErrPermission },
+			wantErrMsg: "resolve home directory: permission denied",
+		},
+		{
+			name:       "home lookup error is not ignored when it includes a path",
+			home:       func() (string, error) { return "/Users/alice", os.ErrPermission },
+			wantErrMsg: "resolve home directory: permission denied",
+		},
+		{
+			name:       "home path is empty",
+			home:       func() (string, error) { return "", nil },
+			wantErrMsg: "resolve home directory: %!w(<nil>)",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := baseDir("darwin", nil, tc.home, nil)
+			if err == nil {
+				t.Fatal("expected home directory error")
+			}
+			if got := err.Error(); got != tc.wantErrMsg {
+				t.Fatalf("baseDir error = %q, want %q", got, tc.wantErrMsg)
+			}
+		})
+	}
+}
+
+func TestBaseDirWindowsUsesLocalAppDataOrUsableConfigDirectory(t *testing.T) {
+	tests := []struct {
+		name       string
+		localApp   string
+		configDir  func() (string, error)
+		want       string
+		wantErrMsg string
+	}{
+		{
+			name:     "uses local app data without config lookup",
+			localApp: "/var/local-app-data",
+			configDir: func() (string, error) {
+				t.Fatal("user config directory should not be used")
+				return "", nil
+			},
+			want: "/var/local-app-data",
+		},
+		{
+			name:       "config lookup fails when local app data is unset",
+			configDir:  func() (string, error) { return "", os.ErrPermission },
+			wantErrMsg: "resolve user config directory: permission denied",
+		},
+		{
+			name:       "config lookup error is not ignored when it includes a path",
+			configDir:  func() (string, error) { return "/var/config", os.ErrPermission },
+			wantErrMsg: "resolve user config directory: permission denied",
+		},
+		{
+			name:       "config path is empty when local app data is unset",
+			configDir:  func() (string, error) { return "", nil },
+			wantErrMsg: "resolve user config directory: %!w(<nil>)",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := baseDir("windows", func(key string) string {
+				if key != "LOCALAPPDATA" {
+					t.Fatalf("getenv(%q), want LOCALAPPDATA", key)
+				}
+				return tc.localApp
+			}, nil, tc.configDir)
+			if tc.wantErrMsg != "" {
+				if err == nil {
+					t.Fatal("expected config directory error")
+				}
+				if got := err.Error(); got != tc.wantErrMsg {
+					t.Fatalf("baseDir error = %q, want %q", got, tc.wantErrMsg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("baseDir returned error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("baseDir = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBaseDirRejectsRelativeBase(t *testing.T) {
 	_, err := baseDir("linux", func(key string) string {
 		if key == "XDG_STATE_HOME" {

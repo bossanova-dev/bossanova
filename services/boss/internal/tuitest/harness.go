@@ -112,6 +112,7 @@ type harnessConfig struct {
 	sessions                      []*pb.Session
 	chats                         []*pb.ClaudeChat
 	cronJobs                      []*pb.CronJob
+	githubCallbacks               []*pb.GithubCallback
 	prs                           map[string][]*pb.PRSummary
 	trackerIssues                 map[string][]*pb.TrackerIssue
 	agents                        []*pb.AgentInfo
@@ -220,6 +221,13 @@ func WithPRs(repoID string, prs ...*pb.PRSummary) Option {
 func WithCronJobs(jobs ...*pb.CronJob) Option {
 	return func(c *harnessConfig) {
 		c.cronJobs = append(c.cronJobs, jobs...)
+	}
+}
+
+// WithGithubCallbacks seeds the mock daemon with GitHub callbacks.
+func WithGithubCallbacks(cbs ...*pb.GithubCallback) Option {
+	return func(c *harnessConfig) {
+		c.githubCallbacks = append(c.githubCallbacks, cbs...)
 	}
 }
 
@@ -378,6 +386,9 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 	for _, j := range cfg.cronJobs {
 		daemon.AddCronJob(j)
+	}
+	for _, cb := range cfg.githubCallbacks {
+		daemon.AddGithubCallback(cb)
 	}
 	for repoID, prs := range cfg.prs {
 		daemon.AddPRs(repoID, prs)

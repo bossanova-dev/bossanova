@@ -1,0 +1,44 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "callback",
+    srcs = [
+        "evaluator.go",
+        "intconv.go",
+        "interests.go",
+        "prompt.go",
+        "worker.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/callback",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/models",
+        "//lib/bossalib/sqlutil",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/db",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "callback_test",
+    srcs = [
+        "evaluator_test.go",
+        "helpers_test.go",
+        "interests_test.go",
+        "prompt_test.go",
+        "worker_test.go",
+    ],
+    data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller
+    embed = [":callback"],
+    rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/migrate",
+        "//lib/bossalib/models",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/db",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

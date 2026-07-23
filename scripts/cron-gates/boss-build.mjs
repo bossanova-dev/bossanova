@@ -22,21 +22,20 @@
 
 import { gateExit } from '../linear-gate-lib.mjs'
 import { resolveTrackerAdapter } from '../tracker/adapter.mjs'
-import { loadSkillConfig, trackerConfigFor } from '../../skills-toolbox/skill-config.mjs'
+import { labelName, loadSkillConfig, stateName } from '../../skills-toolbox/skill-config.mjs'
 
 try {
   // The planned state is repo-private data (config-driven, never hard-coded here) so the gate
   // matches the skill's own selection filter in any adopting repo, not just one whose planned
   // state is literally named `Todo`. Fail-closed (skip) when it is not configured.
-  const plannedState = trackerConfigFor(loadSkillConfig())?.states?.planned
-  if (!plannedState) {
-    throw new Error('no planned state configured (.boss-skills.json trackerConfig.<tracker>.states.planned)')
-  }
+  const config = loadSkillConfig()
+  const plannedState = stateName(config, 'planned')
+  const agentFriendlyLabel = labelName(config, 'agentFriendly')
   const tracker = resolveTrackerAdapter()
-  const hasWork = await tracker.hasUnblockedWork({ state: plannedState, label: 'agent-friendly' })
+  const hasWork = await tracker.hasUnblockedWork({ state: plannedState, label: agentFriendlyLabel })
   gateExit(
     hasWork,
-    hasWork ? null : `boss-build gate: no unblocked ${plannedState} agent-friendly issues`,
+    hasWork ? null : `boss-build gate: no unblocked ${plannedState} ${agentFriendlyLabel} issues`,
   )
 } catch (err) {
   gateExit(false, `boss-build gate: ${err.message}`)

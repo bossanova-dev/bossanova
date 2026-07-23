@@ -27,16 +27,20 @@ ask (AskUserQuestion) whether to re-plan before continuing.
 
 ## Phase 2 — Triage triviality (interactive)
 
-Read the title + description and classify — this sets how deep the interview and plan go, and
-informs the estimate:
+Read the title + description and compute an honest estimate, which drives the classification — this
+sets how deep the interview and plan go:
 
 - **TRIVIAL** — copy/doc tweak, a single obvious one-liner, no design decisions (e.g. "Mention setup
   scripts on the home page"). Use a short interview and a lightweight plan.
 - **SUBSTANTIAL** — anything with design choices, multiple files, or unknowns.
-- **EPIC** — the work spans **multiple independently-shippable PRs**, each a coherent deliverable
-  reviewable and mergeable on its own. The bar is "any multi-PR judgment," but an epic requires
-  **≥ 2** genuinely separable children — if you cannot articulate ≥ 2 independent PR-sized pieces it
-  is `SUBSTANTIAL`, not EPIC. When EPIC, run the decomposition flow below instead of a single plan.
+- **EPIC** — the honest Fibonacci estimate is **≥ 5**, or the work otherwise spans **multiple
+  independently-shippable PRs**, each a coherent deliverable reviewable and mergeable on its own.
+  **Estimate is the forcing function:** a single ticket may be estimated only `0/1/2/3`; an honest `5`
+  is EPIC unless genuinely atomic & un-splittable (then it stays one ticket with a recorded
+  `- Atomic-5:` justification); an `8` is **never** a single-ticket estimate. An epic still requires
+  **≥ 2** genuinely separable children — if the honest estimate is `≤ 3` and you cannot articulate ≥ 2
+  independent PR-sized pieces it is `SUBSTANTIAL`, not EPIC. When EPIC, run the decomposition flow
+  below instead of a single plan.
 
 ## Phase 2.5 — Epic decomposition (interactive: propose → confirm → create)
 
@@ -44,10 +48,17 @@ When triage is EPIC, decompose the ticket into a parent + N fully-planned childr
 2.5 owns the guards and ordering discipline; the deterministic core is `scripts/plan-epic-lib.mjs`).
 Interactively:
 
-1. **Draft the decomposition spec** and validate it locally (`validateDecomposition` +
-   `assertAcyclic`). If it fails a guard (fewer than 2 or more than 8 children, a `blockedByKeys`
-   cycle, dangling refs), either re-ask the user to reshape it or fall back to a single
-   `SUBSTANTIAL` plan.
+1. **Draft the decomposition spec** — decompose along architectural seams, producer-before-consumer
+   (`contract → persistence → producer → read → ui`), tagging each child's `layer`, keeping every
+   child estimate **≤ `CHILD_MAX_ESTIMATE`=3**, and setting each `read`/`ui` child `blockedBy` its
+   `producer` (or an external upstream when the producer already exists in the merged tree). Validate
+   locally (`validateDecomposition` + `assertAcyclic`), then run `validateLayering` (advisory
+   producer-before-consumer warnings — confirm or fix each, they never block). A **drafting-bug**
+   failure (a `blockedByKeys` cycle, dangling refs) → re-ask the user to reshape it or fall back to a
+   single `SUBSTANTIAL` plan. A **size** failure (more than `EPIC_MAX_CHILDREN`=12 children, a child
+   stuck above the estimate ceiling, or an honest ≥ 5 that will not separate into ≥ 2 PR-sized
+   children) → surface it as too-large (mark `needs-human` / split by hand), **never** a single
+   oversized ticket.
 2. **Fully plan every child locally** through the normal draft path with the child as a synthetic
    ticket, passing `allowEpic: false` in the context (the recursion guard — a child is never itself
    decomposed). Run the secret + image-parity gates on each child plan before any write.

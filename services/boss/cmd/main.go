@@ -124,6 +124,7 @@ func rootCmd() *cobra.Command {
 	addGrouped("chat", chatCmd())
 	addGrouped("repo", repoCmd())
 	addGrouped("cron", cronCmd())
+	addGrouped("callback", callbackCmd())
 	addGrouped("account", accountCmd())
 	addGrouped("trash", trashCmd())
 	addGrouped("daemon", daemonCmd())

@@ -268,6 +268,8 @@ const (
 	RotationOutcome_ROTATION_OUTCOME_EXHAUSTED                       RotationOutcome = 4 // all accounts cooling: parked until reset_at
 	RotationOutcome_ROTATION_OUTCOME_FAILED                          RotationOutcome = 5 // swap attempted and failed
 	RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT RotationOutcome = 6 // no eligible account to rotate to (enable/re-auth one)
+	RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT          RotationOutcome = 7 // pane auth-failed but account healthy; respawned in place to refresh auth wiring (BOS-482)
+	RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED           RotationOutcome = 8 // respawn-in-place cap hit for this chat/window; needs attention (BOS-482)
 )
 
 // Enum value maps for RotationOutcome.
@@ -280,6 +282,8 @@ var (
 		4: "ROTATION_OUTCOME_EXHAUSTED",
 		5: "ROTATION_OUTCOME_FAILED",
 		6: "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT",
+		7: "ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT",
+		8: "ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED",
 	}
 	RotationOutcome_value = map[string]int32{
 		"ROTATION_OUTCOME_UNSPECIFIED":                     0,
@@ -289,6 +293,8 @@ var (
 		"ROTATION_OUTCOME_EXHAUSTED":                       4,
 		"ROTATION_OUTCOME_FAILED":                          5,
 		"ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT": 6,
+		"ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT":          7,
+		"ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED":           8,
 	}
 )
 
@@ -3961,6 +3967,207 @@ func (x *CronJob) GetShouldRunSetupCommand() bool {
 	return false
 }
 
+// GithubCallback is a durable one-shot registration that delivers a chat
+// message when a pull-request event fires (BOS-467). It mirrors the daemon's
+// domain model; timestamps use google.protobuf.Timestamp and enum-like fields
+// are stable lowercase strings. The message body is a secret payload — it is
+// carried here for the registering owner but must never be logged.
+type GithubCallback struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Id              string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	GroupId         string                 `protobuf:"bytes,2,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"` // empty = ungrouped (a group of one)
+	TargetChatId    string                 `protobuf:"bytes,3,opt,name=target_chat_id,json=targetChatId,proto3" json:"target_chat_id,omitempty"`
+	RepoOwner       string                 `protobuf:"bytes,4,opt,name=repo_owner,json=repoOwner,proto3" json:"repo_owner,omitempty"`
+	RepoName        string                 `protobuf:"bytes,5,opt,name=repo_name,json=repoName,proto3" json:"repo_name,omitempty"`
+	PrNumber        int32                  `protobuf:"varint,6,opt,name=pr_number,json=prNumber,proto3" json:"pr_number,omitempty"`
+	Trigger         string                 `protobuf:"bytes,7,opt,name=trigger,proto3" json:"trigger,omitempty"`                          // merged | closed | checks_passed | checks_failed
+	State           string                 `protobuf:"bytes,8,opt,name=state,proto3" json:"state,omitempty"`                              // active | leased | triggered | delivered | canceled | expired
+	Message         string                 `protobuf:"bytes,9,opt,name=message,proto3" json:"message,omitempty"`                          // registered prompt body; secret — never logged
+	LeaseOwner      string                 `protobuf:"bytes,10,opt,name=lease_owner,json=leaseOwner,proto3" json:"lease_owner,omitempty"` // empty = no active lease
+	AttemptCount    int32                  `protobuf:"varint,11,opt,name=attempt_count,json=attemptCount,proto3" json:"attempt_count,omitempty"`
+	LastError       string                 `protobuf:"bytes,12,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"` // delivery diagnostic; empty = none. Never the message body.
+	LastEvent       string                 `protobuf:"bytes,13,opt,name=last_event,json=lastEvent,proto3" json:"last_event,omitempty"` // last matched event label; empty = none. Never the message body.
+	LeaseDeadlineAt *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=lease_deadline_at,json=leaseDeadlineAt,proto3" json:"lease_deadline_at,omitempty"`
+	NextAttemptAt   *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=next_attempt_at,json=nextAttemptAt,proto3" json:"next_attempt_at,omitempty"`
+	TriggeredAt     *timestamppb.Timestamp `protobuf:"bytes,16,opt,name=triggered_at,json=triggeredAt,proto3" json:"triggered_at,omitempty"`
+	DeliveredAt     *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=delivered_at,json=deliveredAt,proto3" json:"delivered_at,omitempty"`
+	ExpiresAt       *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,19,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *GithubCallback) Reset() {
+	*x = GithubCallback{}
+	mi := &file_bossanova_v1_models_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GithubCallback) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GithubCallback) ProtoMessage() {}
+
+func (x *GithubCallback) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_models_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GithubCallback.ProtoReflect.Descriptor instead.
+func (*GithubCallback) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *GithubCallback) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *GithubCallback) GetGroupId() string {
+	if x != nil {
+		return x.GroupId
+	}
+	return ""
+}
+
+func (x *GithubCallback) GetTargetChatId() string {
+	if x != nil {
+		return x.TargetChatId
+	}
+	return ""
+}
+
+func (x *GithubCallback) GetRepoOwner() string {
+	if x != nil {
+		return x.RepoOwner
+	}
+	return ""
+}
+
+func (x *GithubCallback) GetRepoName() string {
+	if x != nil {
+		return x.RepoName
+	}
+	return ""
+}
+
+func (x *GithubCallback) GetPrNumber() int32 {
+	if x != nil {
+		return x.PrNumber
+	}
+	return 0
+}
+
+func (x *GithubCallback) GetTrigger() string {
+	if x != nil {
+		return x.Trigger
+	}
+	return ""
+}
+
+func (x *GithubCallback) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *GithubCallback) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *GithubCallback) GetLeaseOwner() string {
+	if x != nil {
+		return x.LeaseOwner
+	}
+	return ""
+}
+
+func (x *GithubCallback) GetAttemptCount() int32 {
+	if x != nil {
+		return x.AttemptCount
+	}
+	return 0
+}
+
+func (x *GithubCallback) GetLastError() string {
+	if x != nil {
+		return x.LastError
+	}
+	return ""
+}
+
+func (x *GithubCallback) GetLastEvent() string {
+	if x != nil {
+		return x.LastEvent
+	}
+	return ""
+}
+
+func (x *GithubCallback) GetLeaseDeadlineAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LeaseDeadlineAt
+	}
+	return nil
+}
+
+func (x *GithubCallback) GetNextAttemptAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.NextAttemptAt
+	}
+	return nil
+}
+
+func (x *GithubCallback) GetTriggeredAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.TriggeredAt
+	}
+	return nil
+}
+
+func (x *GithubCallback) GetDeliveredAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.DeliveredAt
+	}
+	return nil
+}
+
+func (x *GithubCallback) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+func (x *GithubCallback) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
+func (x *GithubCallback) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
 // Account is registry metadata for one provider login used by account
 // rotation (BOS-157). It carries METADATA ONLY — the credential blob is never
 // a field here and never crosses this message (locked decision D3); secrets
@@ -3990,7 +4197,7 @@ type Account struct {
 
 func (x *Account) Reset() {
 	*x = Account{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[24]
+	mi := &file_bossanova_v1_models_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4002,7 +4209,7 @@ func (x *Account) String() string {
 func (*Account) ProtoMessage() {}
 
 func (x *Account) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[24]
+	mi := &file_bossanova_v1_models_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4015,7 +4222,7 @@ func (x *Account) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Account.ProtoReflect.Descriptor instead.
 func (*Account) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{24}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *Account) GetId() string {
@@ -4142,7 +4349,7 @@ type UsageSnapshot struct {
 
 func (x *UsageSnapshot) Reset() {
 	*x = UsageSnapshot{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[25]
+	mi := &file_bossanova_v1_models_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4154,7 +4361,7 @@ func (x *UsageSnapshot) String() string {
 func (*UsageSnapshot) ProtoMessage() {}
 
 func (x *UsageSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[25]
+	mi := &file_bossanova_v1_models_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4167,7 +4374,7 @@ func (x *UsageSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UsageSnapshot.ProtoReflect.Descriptor instead.
 func (*UsageSnapshot) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{25}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *UsageSnapshot) GetUtil_5H() float64 {
@@ -4235,7 +4442,7 @@ type ChatMessage struct {
 
 func (x *ChatMessage) Reset() {
 	*x = ChatMessage{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[26]
+	mi := &file_bossanova_v1_models_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4247,7 +4454,7 @@ func (x *ChatMessage) String() string {
 func (*ChatMessage) ProtoMessage() {}
 
 func (x *ChatMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[26]
+	mi := &file_bossanova_v1_models_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4260,7 +4467,7 @@ func (x *ChatMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatMessage.ProtoReflect.Descriptor instead.
 func (*ChatMessage) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{26}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ChatMessage) GetRole() string {
@@ -4604,7 +4811,36 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"agent_name\x18\x0f \x01(\tR\tagentName\x12\x14\n" +
 	"\x05model\x18\x10 \x01(\tR\x05model\x12!\n" +
 	"\fgate_command\x18\x11 \x01(\tR\vgateCommand\x127\n" +
-	"\x18should_run_setup_command\x18\x12 \x01(\bR\x15shouldRunSetupCommand\"\xf4\x04\n" +
+	"\x18should_run_setup_command\x18\x12 \x01(\bR\x15shouldRunSetupCommand\"\xc3\x06\n" +
+	"\x0eGithubCallback\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
+	"\bgroup_id\x18\x02 \x01(\tR\agroupId\x12$\n" +
+	"\x0etarget_chat_id\x18\x03 \x01(\tR\ftargetChatId\x12\x1d\n" +
+	"\n" +
+	"repo_owner\x18\x04 \x01(\tR\trepoOwner\x12\x1b\n" +
+	"\trepo_name\x18\x05 \x01(\tR\brepoName\x12\x1b\n" +
+	"\tpr_number\x18\x06 \x01(\x05R\bprNumber\x12\x18\n" +
+	"\atrigger\x18\a \x01(\tR\atrigger\x12\x14\n" +
+	"\x05state\x18\b \x01(\tR\x05state\x12\x18\n" +
+	"\amessage\x18\t \x01(\tR\amessage\x12\x1f\n" +
+	"\vlease_owner\x18\n" +
+	" \x01(\tR\n" +
+	"leaseOwner\x12#\n" +
+	"\rattempt_count\x18\v \x01(\x05R\fattemptCount\x12\x1d\n" +
+	"\n" +
+	"last_error\x18\f \x01(\tR\tlastError\x12\x1d\n" +
+	"\n" +
+	"last_event\x18\r \x01(\tR\tlastEvent\x12F\n" +
+	"\x11lease_deadline_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\x0fleaseDeadlineAt\x12B\n" +
+	"\x0fnext_attempt_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\rnextAttemptAt\x12=\n" +
+	"\ftriggered_at\x18\x10 \x01(\v2\x1a.google.protobuf.TimestampR\vtriggeredAt\x12=\n" +
+	"\fdelivered_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\vdeliveredAt\x129\n" +
+	"\n" +
+	"expires_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x129\n" +
+	"\n" +
+	"created_at\x18\x13 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
+	"\n" +
+	"updated_at\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xf4\x04\n" +
 	"\aAccount\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
@@ -4679,7 +4915,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x1cROTATION_TRIGGER_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eROTATION_TRIGGER_USAGE_LIMITED\x10\x01\x12%\n" +
 	"!ROTATION_TRIGGER_AUTH_INVALIDATED\x10\x02\x12\x1b\n" +
-	"\x17ROTATION_TRIGGER_MANUAL\x10\x03*\x9f\x02\n" +
+	"\x17ROTATION_TRIGGER_MANUAL\x10\x03*\xf8\x02\n" +
 	"\x0fRotationOutcome\x12 \n" +
 	"\x1cROTATION_OUTCOME_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18ROTATION_OUTCOME_ROTATED\x10\x01\x12)\n" +
@@ -4687,7 +4923,9 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"*ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY\x10\x03\x12\x1e\n" +
 	"\x1aROTATION_OUTCOME_EXHAUSTED\x10\x04\x12\x1b\n" +
 	"\x17ROTATION_OUTCOME_FAILED\x10\x05\x124\n" +
-	"0ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT\x10\x06*~\n" +
+	"0ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT\x10\x06\x12+\n" +
+	"'ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT\x10\a\x12*\n" +
+	"&ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED\x10\b*~\n" +
 	"\vCheckStatus\x12\x1c\n" +
 	"\x18CHECK_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13CHECK_STATUS_QUEUED\x10\x01\x12\x1c\n" +
@@ -4810,7 +5048,7 @@ func file_bossanova_v1_models_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_models_proto_enumTypes = make([]protoimpl.EnumInfo, 21)
-var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
 var file_bossanova_v1_models_proto_goTypes = []any{
 	(SessionState)(0),             // 0: bossanova.v1.SessionState
 	(SessionEvent)(0),             // 1: bossanova.v1.SessionEvent
@@ -4857,41 +5095,42 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(*MergeBlock)(nil),            // 42: bossanova.v1.MergeBlock
 	(*ClaudeChat)(nil),            // 43: bossanova.v1.ClaudeChat
 	(*CronJob)(nil),               // 44: bossanova.v1.CronJob
-	(*Account)(nil),               // 45: bossanova.v1.Account
-	(*UsageSnapshot)(nil),         // 46: bossanova.v1.UsageSnapshot
-	(*ChatMessage)(nil),           // 47: bossanova.v1.ChatMessage
-	(*timestamppb.Timestamp)(nil), // 48: google.protobuf.Timestamp
+	(*GithubCallback)(nil),        // 45: bossanova.v1.GithubCallback
+	(*Account)(nil),               // 46: bossanova.v1.Account
+	(*UsageSnapshot)(nil),         // 47: bossanova.v1.UsageSnapshot
+	(*ChatMessage)(nil),           // 48: bossanova.v1.ChatMessage
+	(*timestamppb.Timestamp)(nil), // 49: google.protobuf.Timestamp
 }
 var file_bossanova_v1_models_proto_depIdxs = []int32{
 	2,  // 0: bossanova.v1.RotationEvent.trigger:type_name -> bossanova.v1.RotationTrigger
-	48, // 1: bossanova.v1.RotationEvent.reset_at:type_name -> google.protobuf.Timestamp
+	49, // 1: bossanova.v1.RotationEvent.reset_at:type_name -> google.protobuf.Timestamp
 	3,  // 2: bossanova.v1.RotationEvent.outcome:type_name -> bossanova.v1.RotationOutcome
-	48, // 3: bossanova.v1.RotationEvent.created_at:type_name -> google.protobuf.Timestamp
-	48, // 4: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
-	48, // 5: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
+	49, // 3: bossanova.v1.RotationEvent.created_at:type_name -> google.protobuf.Timestamp
+	49, // 4: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
+	49, // 5: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
 	12, // 6: bossanova.v1.SecretUpdate.action:type_name -> bossanova.v1.SecretAction
 	11, // 7: bossanova.v1.RepoSettings.merge_strategy:type_name -> bossanova.v1.MergeStrategy
-	48, // 8: bossanova.v1.RepoSettings.updated_at:type_name -> google.protobuf.Timestamp
+	49, // 8: bossanova.v1.RepoSettings.updated_at:type_name -> google.protobuf.Timestamp
 	0,  // 9: bossanova.v1.Session.state:type_name -> bossanova.v1.SessionState
 	6,  // 10: bossanova.v1.Session.last_check_state:type_name -> bossanova.v1.ChecksOverall
-	48, // 11: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
-	48, // 12: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	48, // 13: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
+	49, // 11: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
+	49, // 12: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	49, // 13: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
 	15, // 14: bossanova.v1.Session.display_status:type_name -> bossanova.v1.DisplayStatus
 	41, // 15: bossanova.v1.Session.attention_status:type_name -> bossanova.v1.AttentionStatus
 	16, // 16: bossanova.v1.Session.workflow_display_status:type_name -> bossanova.v1.WorkflowStatus
 	13, // 17: bossanova.v1.Session.display_intent:type_name -> bossanova.v1.DisplayIntent
-	48, // 18: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
+	49, // 18: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
 	15, // 19: bossanova.v1.Session.last_repair_display_status:type_name -> bossanova.v1.DisplayStatus
-	48, // 20: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
-	48, // 21: bossanova.v1.Session.last_repair_blocked_at:type_name -> google.protobuf.Timestamp
+	49, // 20: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
+	49, // 21: bossanova.v1.Session.last_repair_blocked_at:type_name -> google.protobuf.Timestamp
 	42, // 22: bossanova.v1.Session.merge_block:type_name -> bossanova.v1.MergeBlock
-	48, // 23: bossanova.v1.Session.last_agent_activity_at:type_name -> google.protobuf.Timestamp
+	49, // 23: bossanova.v1.Session.last_agent_activity_at:type_name -> google.protobuf.Timestamp
 	21, // 24: bossanova.v1.Session.rotation_events:type_name -> bossanova.v1.RotationEvent
 	9,  // 25: bossanova.v1.Attempt.trigger:type_name -> bossanova.v1.AttemptTrigger
 	10, // 26: bossanova.v1.Attempt.result:type_name -> bossanova.v1.AttemptResult
-	48, // 27: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
-	48, // 28: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
+	49, // 27: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
+	49, // 28: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
 	7,  // 29: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
 	4,  // 30: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
 	5,  // 31: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
@@ -4906,29 +5145,36 @@ var file_bossanova_v1_models_proto_depIdxs = []int32{
 	28, // 40: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
 	29, // 41: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
 	14, // 42: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
-	48, // 43: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
+	49, // 43: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
 	20, // 44: bossanova.v1.MergeBlock.gate:type_name -> bossanova.v1.MergeBlock.Gate
 	15, // 45: bossanova.v1.MergeBlock.display_status:type_name -> bossanova.v1.DisplayStatus
-	48, // 46: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
-	48, // 47: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
-	48, // 48: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
-	48, // 49: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
-	48, // 50: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
+	49, // 46: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
+	49, // 47: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
+	49, // 48: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
+	49, // 49: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
+	49, // 50: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
 	19, // 51: bossanova.v1.CronJob.last_run_status:type_name -> bossanova.v1.CronJobStatus
-	48, // 52: bossanova.v1.Account.cooldown_until:type_name -> google.protobuf.Timestamp
-	48, // 53: bossanova.v1.Account.last_used_at:type_name -> google.protobuf.Timestamp
-	48, // 54: bossanova.v1.Account.last_test_ok_at:type_name -> google.protobuf.Timestamp
-	48, // 55: bossanova.v1.Account.created_at:type_name -> google.protobuf.Timestamp
-	48, // 56: bossanova.v1.Account.updated_at:type_name -> google.protobuf.Timestamp
-	46, // 57: bossanova.v1.Account.usage:type_name -> bossanova.v1.UsageSnapshot
-	48, // 58: bossanova.v1.UsageSnapshot.reset_5h:type_name -> google.protobuf.Timestamp
-	48, // 59: bossanova.v1.UsageSnapshot.reset_7d:type_name -> google.protobuf.Timestamp
-	48, // 60: bossanova.v1.UsageSnapshot.fetched_at:type_name -> google.protobuf.Timestamp
-	61, // [61:61] is the sub-list for method output_type
-	61, // [61:61] is the sub-list for method input_type
-	61, // [61:61] is the sub-list for extension type_name
-	61, // [61:61] is the sub-list for extension extendee
-	0,  // [0:61] is the sub-list for field type_name
+	49, // 52: bossanova.v1.GithubCallback.lease_deadline_at:type_name -> google.protobuf.Timestamp
+	49, // 53: bossanova.v1.GithubCallback.next_attempt_at:type_name -> google.protobuf.Timestamp
+	49, // 54: bossanova.v1.GithubCallback.triggered_at:type_name -> google.protobuf.Timestamp
+	49, // 55: bossanova.v1.GithubCallback.delivered_at:type_name -> google.protobuf.Timestamp
+	49, // 56: bossanova.v1.GithubCallback.expires_at:type_name -> google.protobuf.Timestamp
+	49, // 57: bossanova.v1.GithubCallback.created_at:type_name -> google.protobuf.Timestamp
+	49, // 58: bossanova.v1.GithubCallback.updated_at:type_name -> google.protobuf.Timestamp
+	49, // 59: bossanova.v1.Account.cooldown_until:type_name -> google.protobuf.Timestamp
+	49, // 60: bossanova.v1.Account.last_used_at:type_name -> google.protobuf.Timestamp
+	49, // 61: bossanova.v1.Account.last_test_ok_at:type_name -> google.protobuf.Timestamp
+	49, // 62: bossanova.v1.Account.created_at:type_name -> google.protobuf.Timestamp
+	49, // 63: bossanova.v1.Account.updated_at:type_name -> google.protobuf.Timestamp
+	47, // 64: bossanova.v1.Account.usage:type_name -> bossanova.v1.UsageSnapshot
+	49, // 65: bossanova.v1.UsageSnapshot.reset_5h:type_name -> google.protobuf.Timestamp
+	49, // 66: bossanova.v1.UsageSnapshot.reset_7d:type_name -> google.protobuf.Timestamp
+	49, // 67: bossanova.v1.UsageSnapshot.fetched_at:type_name -> google.protobuf.Timestamp
+	68, // [68:68] is the sub-list for method output_type
+	68, // [68:68] is the sub-list for method input_type
+	68, // [68:68] is the sub-list for extension type_name
+	68, // [68:68] is the sub-list for extension extendee
+	0,  // [0:68] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_models_proto_init() }
@@ -4959,7 +5205,7 @@ func file_bossanova_v1_models_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_models_proto_rawDesc), len(file_bossanova_v1_models_proto_rawDesc)),
 			NumEnums:      21,
-			NumMessages:   27,
+			NumMessages:   28,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

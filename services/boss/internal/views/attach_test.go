@@ -69,6 +69,24 @@ func TestRenderLaunchDiagnostic_ShowsCommandHostAndWorktree(t *testing.T) {
 	}
 }
 
+func TestRenderLaunchDiagnostic_DoesNotAssertSingleCause(t *testing.T) {
+	info := &pb.DescribeChatLaunchResponse{
+		Argv:      []string{"claude", "--session-id", "abc"},
+		AgentName: "claude",
+	}
+	out := renderLaunchDiagnostic(info, "Claude Code")
+	// Regression: the old prose asserted the CLI "could not be launched" — a
+	// PATH/login-shell verdict that misdiagnosed an agent which DID launch and
+	// then exited on its own (e.g. "Session ID already in use"). The diagnostic
+	// must name the agent-refused-to-start possibility and not claim one cause.
+	if strings.Contains(out, "could not be launched") {
+		t.Errorf("diagnostic still asserts the CLI could not be launched:\n%s", out)
+	}
+	if !strings.Contains(out, "refusing to start") {
+		t.Errorf("diagnostic should mention the agent may refuse to start:\n%s", out)
+	}
+}
+
 // TestTmuxSessionAlive_EmptyName verifies the empty-name fast path so the
 // helper never spawns a `tmux has-session` for a never-set chat row.
 func TestTmuxSessionAlive_EmptyName(t *testing.T) {

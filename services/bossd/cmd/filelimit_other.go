@@ -2,7 +2,6 @@
 
 package main
 
-// raiseFileLimit is a no-op on platforms without RLIMIT_NOFILE (e.g. Windows).
-// The unix build carries the real implementation; this stub keeps main.go
-// platform-agnostic so every cross-build compiles.
-func raiseFileLimit() {}
+// raiseFileLimit is a no-op on platforms without RLIMIT_NOFILE (e.g. Windows)
+// and reports 0 (unknown) so the daemon records no FD-limit health signal.
+func raiseFileLimit() uint64 { return 0 }

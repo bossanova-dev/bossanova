@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 )
@@ -24,8 +25,19 @@ type Options struct {
 	LinearAPIKey string
 	SentryAPIKey string
 	SentryOrg    string
-	Timeout      time.Duration // <=0 → use DefaultTimeout
-	Output       io.Writer     // combined stdout+stderr sink; nil → io.Discard
+	// ProofAnthropicAPIKey is the keyring-resolved proof model credential
+	// exposed to the gate as PROOF_ANTHROPIC_API_KEY; empty means omitted.
+	ProofAnthropicAPIKey string
+	// ExtraEnv is an allowlisted overlay applied to the gate process after its
+	// inherited environment. It is intended for daemon-resolved credentials;
+	// values are never logged by this package.
+	ExtraEnv map[string]string
+	// UnsetEnv names inherited variables to omit from the gate process. An
+	// ExtraEnv value for the same name wins, which keeps the composed
+	// environment deterministic and free of duplicate keys.
+	UnsetEnv []string
+	Timeout  time.Duration // <=0 → use DefaultTimeout
+	Output   io.Writer     // combined stdout+stderr sink; nil → io.Discard
 }
 
 // Run executes the gate command and reports whether the job may proceed.
@@ -53,14 +65,7 @@ func Run(ctx context.Context, o Options) (passed bool, err error) {
 
 	c := buildCommand(ctx, cmd)
 	c.Dir = o.RepoPath
-	c.Env = append(os.Environ(),
-		"REPO_DIR="+o.RepoPath,
-		"WORKTREE_DIR="+o.RepoPath,
-		"BOSS_WORKTREE_DIR="+o.RepoPath,
-		"LINEAR_API_KEY="+o.LinearAPIKey,
-		"SENTRY_API_KEY="+o.SentryAPIKey,
-		"SENTRY_ORG="+o.SentryOrg,
-	)
+	c.Env = commandEnv(o)
 	c.Stdout = output
 	c.Stderr = output
 
@@ -71,6 +76,56 @@ func Run(ctx context.Context, o Options) (passed bool, err error) {
 		return false, fmt.Errorf("gate command failed: %w", runErr)
 	}
 	return true, nil
+}
+
+// commandEnv returns the gate environment with inherited values filtered before
+// daemon-owned values are appended. os/exec keeps the last duplicate, but
+// removing duplicates here makes override and removal behavior explicit.
+func commandEnv(o Options) []string {
+	overlay := map[string]string{
+		"REPO_DIR":          o.RepoPath,
+		"WORKTREE_DIR":      o.RepoPath,
+		"BOSS_WORKTREE_DIR": o.RepoPath,
+		"LINEAR_API_KEY":    o.LinearAPIKey,
+		"SENTRY_API_KEY":    o.SentryAPIKey,
+		"SENTRY_ORG":        o.SentryOrg,
+	}
+	if o.ProofAnthropicAPIKey != "" {
+		overlay["PROOF_ANTHROPIC_API_KEY"] = o.ProofAnthropicAPIKey
+	}
+	for key, value := range o.ExtraEnv {
+		overlay[key] = value
+	}
+
+	unset := make(map[string]struct{}, len(o.UnsetEnv))
+	for _, key := range o.UnsetEnv {
+		unset[key] = struct{}{}
+	}
+
+	env := make([]string, 0, len(os.Environ())+len(overlay))
+	for _, entry := range os.Environ() {
+		key, _, found := strings.Cut(entry, "=")
+		if !found {
+			continue
+		}
+		if _, overridden := overlay[key]; overridden {
+			continue
+		}
+		if _, removed := unset[key]; removed {
+			continue
+		}
+		env = append(env, entry)
+	}
+
+	keys := make([]string, 0, len(overlay))
+	for key := range overlay {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		env = append(env, key+"="+overlay[key])
+	}
+	return env
 }
 
 // buildCommand constructs the *exec.Cmd for the given (pre-trimmed) command.

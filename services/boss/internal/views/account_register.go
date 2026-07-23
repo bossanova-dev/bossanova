@@ -75,6 +75,8 @@ type AccountRegisterModel struct {
 
 	// provider chooser cursor.
 	providerCursor int
+	// confirmCursor selects Yes (0) or No (1) for the active confirmation.
+	confirmCursor int
 
 	// flow plumbing, created when a provider is chosen.
 	flowCtx  context.Context
@@ -146,9 +148,9 @@ func (m AccountRegisterModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	}
 
-	// Forward everything else (paste/IME) to the active input while a prompt is
-	// showing so text entry behaves normally.
-	if m.state == registerStateAwaitText || m.state == registerStateAwaitSecret || m.state == registerStateAwaitConfirm {
+	// Forward everything else (paste/IME) to the active input while a text or
+	// secret prompt is showing so text entry behaves normally.
+	if m.state == registerStateAwaitText || m.state == registerStateAwaitSecret {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
@@ -174,11 +176,17 @@ func (m AccountRegisterModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
 	case registerStateAwaitConfirm:
-		// A y/N confirm accepts a single keypress (y/Y → yes, n/N → no) matching
-		// the shared confirm idiom, while [enter] still resolves to the default.
+		// Keep direct y/n shortcuts while making the visible Yes/No controls fully
+		// keyboard selectable.
 		switch msg.String() {
-		case "enter":
-			return m.answerConfirm()
+		case "left", "h":
+			m.confirmCursor = 0
+		case "right", "l":
+			m.confirmCursor = 1
+		case "tab":
+			m.confirmCursor = 1 - m.confirmCursor
+		case "enter", "space":
+			return m.answerConfirmValue(m.confirmCursor == 0)
 		case "y", "Y":
 			return m.answerConfirmValue(true)
 		case "n", "N":
@@ -267,21 +275,28 @@ func readDoneCmd(donec chan error) tea.Cmd {
 }
 
 // handlePromptRequest switches to the matching awaiting-state and configures the
-// input widget for the incoming blocking prompt.
+// text input only for prompts that accept free-form text.
 func (m AccountRegisterModel) handlePromptRequest(req promptRequest) (tea.Model, tea.Cmd) {
 	m.pending = req
-	m.input.SetValue("")
-	m.input.EchoMode = textinput.EchoNormal
 	switch req.kind {
 	case promptKindSecret:
 		m.state = registerStateAwaitSecret
+		m.input.SetValue("")
 		m.input.EchoMode = textinput.EchoPassword
+		return m, m.input.Focus()
 	case promptKindConfirm:
 		m.state = registerStateAwaitConfirm
+		m.confirmCursor = 1
+		if req.defBool {
+			m.confirmCursor = 0
+		}
+		return m, nil
 	default:
 		m.state = registerStateAwaitText
+		m.input.SetValue("")
+		m.input.EchoMode = textinput.EchoNormal
+		return m, m.input.Focus()
 	}
-	return m, m.input.Focus()
 }
 
 // answerText resolves an Ask / AskSecret prompt: an empty entry falls back to
@@ -296,25 +311,8 @@ func (m AccountRegisterModel) answerText() (tea.Model, tea.Cmd) {
 	return m.resumeProgress()
 }
 
-// answerConfirm resolves a Confirm prompt: empty falls back to the default,
-// otherwise y/yes → true and anything else → false.
-func (m AccountRegisterModel) answerConfirm() (tea.Model, tea.Cmd) {
-	raw := strings.ToLower(strings.TrimSpace(m.input.Value()))
-	ok := m.pending.defBool
-	switch raw {
-	case "":
-		// keep default
-	case "y", "yes":
-		ok = true
-	default:
-		ok = false
-	}
-	m.reply(promptResponse{ok: ok})
-	return m.resumeProgress()
-}
-
 // answerConfirmValue resolves a Confirm prompt from a single y/n keypress,
-// bypassing the text field.
+// or the selected button.
 func (m AccountRegisterModel) answerConfirmValue(ok bool) (tea.Model, tea.Cmd) {
 	m.reply(promptResponse{ok: ok})
 	return m.resumeProgress()
@@ -425,13 +423,12 @@ func (m AccountRegisterModel) View() tea.View {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.input.View()))
 		b.WriteString("\n")
 	case registerStateAwaitConfirm:
-		hint := "y/N"
-		if m.pending.defBool {
-			hint = "Y/n"
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("%s [%s]:", m.pending.text, hint)))
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(m.pending.text + ":"))
 		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.input.View()))
+		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(renderButtonRow([]button{
+			{label: "Yes", primary: true},
+			{label: "No"},
+		}, m.confirmCursor)))
 		b.WriteString("\n")
 	case registerStateDone:
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusSuccess.Render("Account registered.")))
@@ -444,7 +441,7 @@ func (m AccountRegisterModel) View() tea.View {
 	b.WriteString("\n")
 	switch m.state {
 	case registerStateAwaitConfirm:
-		b.WriteString(actionBar([]string{"[y/enter] confirm"}, []string{"[n/esc] cancel"}))
+		b.WriteString(actionBar([]string{"[←/→] select", "[enter] confirm"}, []string{"[esc] cancel"}))
 	case registerStateAwaitText, registerStateAwaitSecret:
 		b.WriteString(actionBar([]string{"[enter] submit"}, []string{"[esc] cancel"}))
 	case registerStateError:

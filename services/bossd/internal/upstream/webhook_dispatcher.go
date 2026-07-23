@@ -4,11 +4,18 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/rs/zerolog"
 )
+
+// callbackEvalTimeout bounds a detached callback-evaluation goroutine so a hung
+// GitHub round-trip cannot leak indefinitely. Generous relative to normal API
+// latency; the acknowledgement path never waits on it regardless.
+const callbackEvalTimeout = 30 * time.Second
 
 // PRRefresher refreshes display state for sessions associated with one PR.
 type PRRefresher interface {
@@ -32,12 +39,24 @@ type ReviewInlineCommentProvider interface {
 	GetReviewInlineComments(ctx context.Context, repoPath string, prID int, reviewID int64) ([]vcs.ReviewComment, error)
 }
 
+// CallbackEvaluator verifies authoritative GitHub state for a PR and fires any
+// matching durable callbacks. The dispatcher invokes it after resolving the
+// affected PR from a webhook. Implemented by callback.Evaluator; optional.
+type CallbackEvaluator interface {
+	EvaluatePR(ctx context.Context, repoOwner, repoName string, prNumber int) error
+}
+
 // WebhookDispatcher routes PR-scoped webhook events to the display poller.
 type WebhookDispatcher struct {
 	refresher      PRRefresher
 	emitter        SessionEventEmitter
 	reviewComments ReviewCommentProvider
+	evaluator      CallbackEvaluator
 	logger         zerolog.Logger
+	// evalDoneHook, when set (tests only), receives the done channel of each
+	// detached callback-evaluation goroutine so a test can await completion.
+	// The production acknowledgement path never blocks on it.
+	evalDoneHook func(done <-chan struct{})
 }
 
 func NewWebhookDispatcher(refresher PRRefresher, logger zerolog.Logger) *WebhookDispatcher {
@@ -55,6 +74,14 @@ func NewWebhookDispatcherWithEmitterAndReviewComments(refresher PRRefresher, emi
 		reviewComments: reviewComments,
 		logger:         logger,
 	}
+}
+
+// WithEvaluator attaches a CallbackEvaluator invoked for the affected PR after a
+// webhook resolves. Additive: existing call sites that never call this keep a
+// nil evaluator (no callback evaluation). Returns d for chaining.
+func (d *WebhookDispatcher) WithEvaluator(evaluator CallbackEvaluator) *WebhookDispatcher {
+	d.evaluator = evaluator
+	return d
 }
 
 // eventTypeRequiresPR reports whether a GitHub webhook event type is
@@ -109,6 +136,14 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 		return nil
 	}
 
+	// Fire durable GitHub callbacks for the affected PR by verifying
+	// authoritative state. Launched detached (see evaluateCallbacks): the
+	// webhook ACK bosso returns to GitHub waits on this Dispatch completing, and
+	// EvaluatePR makes GitHub round-trips, so it must never run on the
+	// acknowledgement path. Returns immediately; failures are logged in the
+	// background goroutine.
+	d.evaluateCallbacks(ctx, ev.GetRepoOriginUrl(), prNumber)
+
 	if err := d.refresher.RefreshPR(ctx, ev.RepoOriginUrl, prNumber); err != nil {
 		return fmt.Errorf("refresh PR %s#%d from webhook: %w", ev.RepoOriginUrl, prNumber, err)
 	}
@@ -119,6 +154,43 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 		Int("pull_request", prNumber).
 		Msg("refreshed PR from webhook")
 	return nil
+}
+
+// evaluateCallbacks verifies authoritative GitHub state and fires durable
+// callbacks for repoOriginURL#prNumber. It derives owner/name from the origin
+// URL (reusing vcs.GitHubNWO) and is a no-op when no evaluator is wired or the
+// URL is not a parseable GitHub NWO.
+//
+// The evaluation is launched detached and returns immediately: EvaluatePR makes
+// GitHub round-trips, and the webhook acknowledgement bosso returns to GitHub
+// waits on Dispatch completing (command_dispatcher awaits Dispatch before
+// WebhookAck), so running inline would put GitHub latency on the ACK path — the
+// design forbids it. context.WithoutCancel keeps request-scoped values but
+// survives Dispatch returning; a timeout bounds a hung call. safego.Go recovers
+// panics so a callback bug can never crash the daemon.
+func (d *WebhookDispatcher) evaluateCallbacks(ctx context.Context, repoOriginURL string, prNumber int) {
+	if d.evaluator == nil || prNumber <= 0 {
+		return
+	}
+	nwo := vcs.GitHubNWO(repoOriginURL)
+	owner, name, ok := strings.Cut(nwo, "/")
+	if !ok || owner == "" || name == "" {
+		return
+	}
+	evalCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), callbackEvalTimeout)
+	done := safego.Go(d.logger, func() {
+		defer cancel()
+		if err := d.evaluator.EvaluatePR(evalCtx, owner, name, prNumber); err != nil {
+			d.logger.Warn().
+				Err(err).
+				Str("repo_origin_url", repoOriginURL).
+				Int("pull_request", prNumber).
+				Msg("callback evaluation failed")
+		}
+	})
+	if d.evalDoneHook != nil {
+		d.evalDoneHook(done)
+	}
 }
 
 func (d *WebhookDispatcher) maybeEmitRealtime(ctx context.Context, ev *pb.WebhookEvent) int {

@@ -50,6 +50,15 @@ func (f *fakeStatusReader) SnapshotStatuses(_ context.Context) ([]*pb.ChatStatus
 	return f.statuses, f.err
 }
 
+type fakeInterestReader struct {
+	interests []*pb.CallbackInterest
+	err       error
+}
+
+func (f *fakeInterestReader) SnapshotCallbackInterests(_ context.Context) ([]*pb.CallbackInterest, error) {
+	return f.interests, f.err
+}
+
 // newTestClient returns a StreamClient wired with the supplied stores
 // and nothing else. Enough for buildSnapshot to run without touching
 // the stream / event / token plumbing.
@@ -236,6 +245,38 @@ func TestBuildSnapshot_SizeUnder100KBWithRealisticLoad(t *testing.T) {
 	size := proto.Size(snap)
 	if size >= 100_000 {
 		t.Fatalf("snapshot size = %d bytes, want < 100000 (add previews to the budget or remove fields)", size)
+	}
+}
+
+func TestBuildSnapshot_CallbackInterestsPopulated(t *testing.T) {
+	interests := []*pb.CallbackInterest{
+		{RepoOriginUrl: "https://github.com/acme/widget", PrNumber: 7},
+		{RepoOriginUrl: "https://github.com/acme/widget", PrNumber: 9},
+	}
+	client := newTestClient(StreamStores{
+		Interests: &fakeInterestReader{interests: interests},
+	})
+	snap, err := client.buildSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("buildSnapshot: %v", err)
+	}
+	got := snap.GetCallbackInterests()
+	if len(got) != 2 {
+		t.Fatalf("callback_interests = %v, want len 2", got)
+	}
+	if got[0].GetRepoOriginUrl() != "https://github.com/acme/widget" || got[0].GetPrNumber() != 7 {
+		t.Errorf("interest[0] = {%q, %d}, want {acme/widget, 7}", got[0].GetRepoOriginUrl(), got[0].GetPrNumber())
+	}
+}
+
+func TestBuildSnapshot_NilInterestReader_NoInterests(t *testing.T) {
+	client := newTestClient(StreamStores{})
+	snap, err := client.buildSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("buildSnapshot: %v", err)
+	}
+	if len(snap.GetCallbackInterests()) != 0 {
+		t.Fatalf("want no interests, got %v", snap.GetCallbackInterests())
 	}
 }
 

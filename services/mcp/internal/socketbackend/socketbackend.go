@@ -491,6 +491,32 @@ func (b *Backend) RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobN
 	return resp.Msg, nil
 }
 
+// --- GitHub callbacks ---
+
+func (b *Backend) CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error) {
+	resp, err := b.rpc.CreateGithubCallback(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetGithubCallback(), nil
+}
+
+func (b *Backend) ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
+	resp, err := b.rpc.ListGithubCallbacks(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetGithubCallbacks(), nil
+}
+
+// DeleteGithubCallback ignores targetChatID: this adapter's own daemon owns
+// every callback in its registry, so the id alone resolves it. The parameter
+// exists for the hosted gateway, which uses it to route the delete.
+func (b *Backend) DeleteGithubCallback(ctx context.Context, _ string, id string) error {
+	_, err := b.rpc.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{Id: id}))
+	return err
+}
+
 // --- Accounts ---
 
 func (b *Backend) ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error) {

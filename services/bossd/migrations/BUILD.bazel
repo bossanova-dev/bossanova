@@ -54,6 +54,7 @@ go_library(
         "20260717000001_can_auto_delete_branches.sql",
         "20260718000000_add_sessions_detach.sql",
         "20260719000000_bossd_schema_naming_standard.sql",
+        "20260722000000_github_callbacks.sql",
     ],
     importpath = "github.com/recurser/bossd/migrations",
     visibility = ["//visibility:public"],

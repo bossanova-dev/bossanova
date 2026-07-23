@@ -102,3 +102,124 @@ func TestRaiseFileLimit(t *testing.T) {
 		}
 	})
 }
+
+// fakeRlimit is an in-memory RLIMIT_NOFILE used to drive raiseFileLimitWith
+// deterministically. hardCeiling models the highest Max value a set is allowed
+// to reach: a set that tries to raise Max above it fails with EPERM (an
+// unprivileged process under a lowered hard cap); 0 means no ceiling
+// (privileged / unlimited, so any hard raise succeeds).
+type fakeRlimit struct {
+	cur, max    uint64
+	hardCeiling uint64
+	getErr      error
+}
+
+func (f *fakeRlimit) get(_ int, lim *syscall.Rlimit) error {
+	if f.getErr != nil {
+		return f.getErr
+	}
+	lim.Cur = f.cur
+	lim.Max = f.max
+	return nil
+}
+
+func (f *fakeRlimit) set(_ int, lim *syscall.Rlimit) error {
+	if f.hardCeiling != 0 && lim.Max > f.hardCeiling {
+		return syscall.EPERM
+	}
+	f.cur = lim.Cur
+	f.max = lim.Max
+	return nil
+}
+
+func constMaxPerProc(v uint64, ok bool) func() (uint64, bool) {
+	return func() (uint64, bool) { return v, ok }
+}
+
+// TestRaiseFileLimitWith exercises every branch of the pure core against a fake
+// syscall backend: high/unlimited hard, a raisable finite hard, an EPERM hard
+// (soft-only fallback), an already-high soft, the sysctl clamp path (both above
+// and below the warn floor), and a Getrlimit error.
+func TestRaiseFileLimitWith(t *testing.T) {
+	tests := []struct {
+		name       string
+		fake       fakeRlimit
+		maxPerProc func() (uint64, bool)
+		wantSoft   uint64
+		wantHardUp bool
+		wantWarn   bool
+	}{
+		{
+			name:       "low soft, unlimited hard",
+			fake:       fakeRlimit{cur: 128, max: 0},
+			maxPerProc: constMaxPerProc(0, false),
+			wantSoft:   65536,
+			wantHardUp: false,
+			wantWarn:   false,
+		},
+		{
+			name:       "finite hard raisable",
+			fake:       fakeRlimit{cur: 128, max: 4096, hardCeiling: 0},
+			maxPerProc: constMaxPerProc(0, false),
+			wantSoft:   65536,
+			wantHardUp: true,
+			wantWarn:   false,
+		},
+		{
+			name:       "finite hard EPERM, soft-only fallback below floor",
+			fake:       fakeRlimit{cur: 128, max: 4096, hardCeiling: 4096},
+			maxPerProc: constMaxPerProc(0, false),
+			wantSoft:   4096,
+			wantHardUp: false,
+			wantWarn:   true,
+		},
+		{
+			name:       "already-high soft unchanged",
+			fake:       fakeRlimit{cur: 65536, max: 0},
+			maxPerProc: constMaxPerProc(0, false),
+			wantSoft:   65536,
+			wantHardUp: false,
+			wantWarn:   false,
+		},
+		{
+			name:       "sysctl clamp above floor",
+			fake:       fakeRlimit{cur: 128, max: 0},
+			maxPerProc: constMaxPerProc(20000, true),
+			wantSoft:   20000,
+			wantHardUp: false,
+			wantWarn:   false,
+		},
+		{
+			name:       "sysctl clamp triggers floor warn",
+			fake:       fakeRlimit{cur: 128, max: 0},
+			maxPerProc: constMaxPerProc(4000, true),
+			wantSoft:   4000,
+			wantHardUp: false,
+			wantWarn:   true,
+		},
+		{
+			name:       "getrlimit error yields zero outcome",
+			fake:       fakeRlimit{getErr: syscall.EPERM},
+			maxPerProc: constMaxPerProc(0, false),
+			wantSoft:   0,
+			wantHardUp: false,
+			wantWarn:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := tt.fake
+			out := raiseFileLimitWith(f.get, f.set, tt.maxPerProc)
+			if out.achievedSoft != tt.wantSoft {
+				t.Errorf("achievedSoft = %d, want %d", out.achievedSoft, tt.wantSoft)
+			}
+			if out.hardRaised != tt.wantHardUp {
+				t.Errorf("hardRaised = %v, want %v", out.hardRaised, tt.wantHardUp)
+			}
+			if out.warn != tt.wantWarn {
+				t.Errorf("warn = %v, want %v", out.warn, tt.wantWarn)
+			}
+		})
+	}
+}

@@ -169,6 +169,15 @@ const (
 	// DaemonServiceRunCronJobNowProcedure is the fully-qualified name of the DaemonService's
 	// RunCronJobNow RPC.
 	DaemonServiceRunCronJobNowProcedure = "/bossanova.v1.DaemonService/RunCronJobNow"
+	// DaemonServiceCreateGithubCallbackProcedure is the fully-qualified name of the DaemonService's
+	// CreateGithubCallback RPC.
+	DaemonServiceCreateGithubCallbackProcedure = "/bossanova.v1.DaemonService/CreateGithubCallback"
+	// DaemonServiceListGithubCallbacksProcedure is the fully-qualified name of the DaemonService's
+	// ListGithubCallbacks RPC.
+	DaemonServiceListGithubCallbacksProcedure = "/bossanova.v1.DaemonService/ListGithubCallbacks"
+	// DaemonServiceDeleteGithubCallbackProcedure is the fully-qualified name of the DaemonService's
+	// DeleteGithubCallback RPC.
+	DaemonServiceDeleteGithubCallbackProcedure = "/bossanova.v1.DaemonService/DeleteGithubCallback"
 	// DaemonServiceListAccountsProcedure is the fully-qualified name of the DaemonService's
 	// ListAccounts RPC.
 	DaemonServiceListAccountsProcedure = "/bossanova.v1.DaemonService/ListAccounts"
@@ -294,6 +303,16 @@ type DaemonServiceClient interface {
 	// RunCronJobNow fires a cron job immediately, ignoring its schedule.
 	// Subject to the same overlap and concurrency-cap rules as scheduled fires.
 	RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error)
+	// CreateGithubCallback registers a durable one-shot PR-event callback. The
+	// server applies defaults (24h expiry, active state, lowercased repo) and
+	// validates the request; lease/trigger/deliver primitives are not exposed.
+	CreateGithubCallback(context.Context, *connect.Request[v1.CreateGithubCallbackRequest]) (*connect.Response[v1.CreateGithubCallbackResponse], error)
+	// ListGithubCallbacks returns callbacks matching the optional filters,
+	// ordered by creation time then id for a deterministic listing.
+	ListGithubCallbacks(context.Context, *connect.Request[v1.ListGithubCallbacksRequest]) (*connect.Response[v1.ListGithubCallbacksResponse], error)
+	// DeleteGithubCallback removes a callback by id. Idempotent: deleting an
+	// absent id succeeds.
+	DeleteGithubCallback(context.Context, *connect.Request[v1.DeleteGithubCallbackRequest]) (*connect.Response[v1.DeleteGithubCallbackResponse], error)
 	// ListAccounts returns registry accounts, optionally filtered by provider.
 	// Metadata only — credential blobs never cross the wire.
 	ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error)
@@ -639,6 +658,24 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("RunCronJobNow")),
 			connect.WithClientOptions(opts...),
 		),
+		createGithubCallback: connect.NewClient[v1.CreateGithubCallbackRequest, v1.CreateGithubCallbackResponse](
+			httpClient,
+			baseURL+DaemonServiceCreateGithubCallbackProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("CreateGithubCallback")),
+			connect.WithClientOptions(opts...),
+		),
+		listGithubCallbacks: connect.NewClient[v1.ListGithubCallbacksRequest, v1.ListGithubCallbacksResponse](
+			httpClient,
+			baseURL+DaemonServiceListGithubCallbacksProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListGithubCallbacks")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteGithubCallback: connect.NewClient[v1.DeleteGithubCallbackRequest, v1.DeleteGithubCallbackResponse](
+			httpClient,
+			baseURL+DaemonServiceDeleteGithubCallbackProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DeleteGithubCallback")),
+			connect.WithClientOptions(opts...),
+		),
 		listAccounts: connect.NewClient[v1.ListAccountsRequest, v1.ListAccountsResponse](
 			httpClient,
 			baseURL+DaemonServiceListAccountsProcedure,
@@ -768,6 +805,9 @@ type daemonServiceClient struct {
 	updateCronJob        *connect.Client[v1.UpdateCronJobRequest, v1.UpdateCronJobResponse]
 	deleteCronJob        *connect.Client[v1.DeleteCronJobRequest, v1.DeleteCronJobResponse]
 	runCronJobNow        *connect.Client[v1.RunCronJobNowRequest, v1.RunCronJobNowResponse]
+	createGithubCallback *connect.Client[v1.CreateGithubCallbackRequest, v1.CreateGithubCallbackResponse]
+	listGithubCallbacks  *connect.Client[v1.ListGithubCallbacksRequest, v1.ListGithubCallbacksResponse]
+	deleteGithubCallback *connect.Client[v1.DeleteGithubCallbackRequest, v1.DeleteGithubCallbackResponse]
 	listAccounts         *connect.Client[v1.ListAccountsRequest, v1.ListAccountsResponse]
 	addAccount           *connect.Client[v1.AddAccountRequest, v1.AddAccountResponse]
 	refreshAccount       *connect.Client[v1.RefreshAccountRequest, v1.RefreshAccountResponse]
@@ -1013,6 +1053,21 @@ func (c *daemonServiceClient) RunCronJobNow(ctx context.Context, req *connect.Re
 	return c.runCronJobNow.CallUnary(ctx, req)
 }
 
+// CreateGithubCallback calls bossanova.v1.DaemonService.CreateGithubCallback.
+func (c *daemonServiceClient) CreateGithubCallback(ctx context.Context, req *connect.Request[v1.CreateGithubCallbackRequest]) (*connect.Response[v1.CreateGithubCallbackResponse], error) {
+	return c.createGithubCallback.CallUnary(ctx, req)
+}
+
+// ListGithubCallbacks calls bossanova.v1.DaemonService.ListGithubCallbacks.
+func (c *daemonServiceClient) ListGithubCallbacks(ctx context.Context, req *connect.Request[v1.ListGithubCallbacksRequest]) (*connect.Response[v1.ListGithubCallbacksResponse], error) {
+	return c.listGithubCallbacks.CallUnary(ctx, req)
+}
+
+// DeleteGithubCallback calls bossanova.v1.DaemonService.DeleteGithubCallback.
+func (c *daemonServiceClient) DeleteGithubCallback(ctx context.Context, req *connect.Request[v1.DeleteGithubCallbackRequest]) (*connect.Response[v1.DeleteGithubCallbackResponse], error) {
+	return c.deleteGithubCallback.CallUnary(ctx, req)
+}
+
 // ListAccounts calls bossanova.v1.DaemonService.ListAccounts.
 func (c *daemonServiceClient) ListAccounts(ctx context.Context, req *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error) {
 	return c.listAccounts.CallUnary(ctx, req)
@@ -1162,6 +1217,16 @@ type DaemonServiceHandler interface {
 	// RunCronJobNow fires a cron job immediately, ignoring its schedule.
 	// Subject to the same overlap and concurrency-cap rules as scheduled fires.
 	RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error)
+	// CreateGithubCallback registers a durable one-shot PR-event callback. The
+	// server applies defaults (24h expiry, active state, lowercased repo) and
+	// validates the request; lease/trigger/deliver primitives are not exposed.
+	CreateGithubCallback(context.Context, *connect.Request[v1.CreateGithubCallbackRequest]) (*connect.Response[v1.CreateGithubCallbackResponse], error)
+	// ListGithubCallbacks returns callbacks matching the optional filters,
+	// ordered by creation time then id for a deterministic listing.
+	ListGithubCallbacks(context.Context, *connect.Request[v1.ListGithubCallbacksRequest]) (*connect.Response[v1.ListGithubCallbacksResponse], error)
+	// DeleteGithubCallback removes a callback by id. Idempotent: deleting an
+	// absent id succeeds.
+	DeleteGithubCallback(context.Context, *connect.Request[v1.DeleteGithubCallbackRequest]) (*connect.Response[v1.DeleteGithubCallbackResponse], error)
 	// ListAccounts returns registry accounts, optionally filtered by provider.
 	// Metadata only — credential blobs never cross the wire.
 	ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error)
@@ -1503,6 +1568,24 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("RunCronJobNow")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceCreateGithubCallbackHandler := connect.NewUnaryHandler(
+		DaemonServiceCreateGithubCallbackProcedure,
+		svc.CreateGithubCallback,
+		connect.WithSchema(daemonServiceMethods.ByName("CreateGithubCallback")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListGithubCallbacksHandler := connect.NewUnaryHandler(
+		DaemonServiceListGithubCallbacksProcedure,
+		svc.ListGithubCallbacks,
+		connect.WithSchema(daemonServiceMethods.ByName("ListGithubCallbacks")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceDeleteGithubCallbackHandler := connect.NewUnaryHandler(
+		DaemonServiceDeleteGithubCallbackProcedure,
+		svc.DeleteGithubCallback,
+		connect.WithSchema(daemonServiceMethods.ByName("DeleteGithubCallback")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceListAccountsHandler := connect.NewUnaryHandler(
 		DaemonServiceListAccountsProcedure,
 		svc.ListAccounts,
@@ -1675,6 +1758,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceDeleteCronJobHandler.ServeHTTP(w, r)
 		case DaemonServiceRunCronJobNowProcedure:
 			daemonServiceRunCronJobNowHandler.ServeHTTP(w, r)
+		case DaemonServiceCreateGithubCallbackProcedure:
+			daemonServiceCreateGithubCallbackHandler.ServeHTTP(w, r)
+		case DaemonServiceListGithubCallbacksProcedure:
+			daemonServiceListGithubCallbacksHandler.ServeHTTP(w, r)
+		case DaemonServiceDeleteGithubCallbackProcedure:
+			daemonServiceDeleteGithubCallbackHandler.ServeHTTP(w, r)
 		case DaemonServiceListAccountsProcedure:
 			daemonServiceListAccountsHandler.ServeHTTP(w, r)
 		case DaemonServiceAddAccountProcedure:
@@ -1892,6 +1981,18 @@ func (UnimplementedDaemonServiceHandler) DeleteCronJob(context.Context, *connect
 
 func (UnimplementedDaemonServiceHandler) RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RunCronJobNow is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) CreateGithubCallback(context.Context, *connect.Request[v1.CreateGithubCallbackRequest]) (*connect.Response[v1.CreateGithubCallbackResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.CreateGithubCallback is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListGithubCallbacks(context.Context, *connect.Request[v1.ListGithubCallbacksRequest]) (*connect.Response[v1.ListGithubCallbacksResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListGithubCallbacks is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) DeleteGithubCallback(context.Context, *connect.Request[v1.DeleteGithubCallbackRequest]) (*connect.Response[v1.DeleteGithubCallbackResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteGithubCallback is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error) {

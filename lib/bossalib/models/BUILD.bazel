@@ -6,6 +6,7 @@ go_library(
         "account.go",
         "convert.go",
         "cron_job.go",
+        "github_callback.go",
         "models.go",
         "workflow.go",
     ],

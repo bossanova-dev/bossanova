@@ -13,17 +13,23 @@
 
 import {
   validateDecomposition,
+  validateLayering,
   assertAcyclic,
   topoOrderChildren,
   epicWiringPlan,
 } from './plan-epic-lib.mjs'
 
 // A synthetic oversized ticket the planner judged to span multiple PRs.
+// Every child is <= CHILD_MAX_ESTIMATE (3) so the whole feature lands as small,
+// one-atomic-PR children, and the pipeline is decomposed producer-before-consumer
+// along its architectural seams (persistence -> producer -> read -> ui) so the
+// read/ui children are gated on the producer that writes their rows.
 const spec = {
   parent: {
     title: 'Add multi-tenant billing',
-    goal: 'Ship org-scoped billing across schema, API, UI, and docs',
+    goal: 'Ship org-scoped billing across schema, producer, API, UI, and docs',
     keyChanges: ['services/bosso/billing', 'services/web', 'docs'],
+    priority: 2,
   },
   children: [
     {
@@ -32,26 +38,39 @@ const spec = {
       goal: 'Org-scoped billing tables',
       keyChanges: ['services/bosso/db'],
       blockedByKeys: [],
-      estimate: 5,
+      estimate: 3,
       priority: 2,
+      layer: 'persistence',
+    },
+    {
+      key: 'billing-writer',
+      title: 'Billing usage writer',
+      goal: 'The worker that writes billing rows from usage events',
+      keyChanges: ['services/bosso/billing'],
+      blockedByKeys: ['schema'],
+      estimate: 3,
+      priority: 2,
+      layer: 'producer',
     },
     {
       key: 'api',
       title: 'Billing API endpoints',
-      goal: 'CRUD over billing entities',
+      goal: 'Read over billing entities the writer populates',
       keyChanges: ['services/bosso/billing'],
-      blockedByKeys: ['schema'],
-      estimate: 5,
+      blockedByKeys: ['billing-writer'],
+      estimate: 3,
       priority: 2,
+      layer: 'read',
     },
     {
       key: 'ui',
       title: 'Billing settings UI',
       goal: 'Web billing surface',
       keyChanges: ['services/web'],
-      blockedByKeys: ['api'],
+      blockedByKeys: ['api', 'billing-writer'],
       estimate: 3,
       priority: 3,
+      layer: 'ui',
     },
     {
       key: 'docs',
@@ -111,6 +130,11 @@ function runEpicPass(label, tracker) {
     console.log(`NOT acyclic — abort with zero writes: ${err.message}`)
     return {}
   }
+
+  // Producer-before-consumer soft check (advisory — warnings never block).
+  const { warnings } = validateLayering(spec)
+  console.log(`layering: ${warnings.length} warning(s) (producer-before-consumer soft check)`)
+  for (const w of warnings) console.log(`  warn: ${w}`)
 
   const order = topoOrderChildren(spec)
   console.log(`children: ${order.length} (topo order: ${order.map((c) => c.key).join(' -> ')})`)

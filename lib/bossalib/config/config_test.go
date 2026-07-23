@@ -14,10 +14,69 @@ import (
 	"time"
 )
 
+func boolPtr(value bool) *bool {
+	return &value
+}
+
 func TestDefaultSettings(t *testing.T) {
 	s := DefaultSettings()
 	if s.WorktreeBaseDir == "" {
 		t.Error("expected non-empty WorktreeBaseDir")
+	}
+}
+
+func TestNotificationsEnabled(t *testing.T) {
+	tests := []struct {
+		name  string
+		value *bool
+		want  bool
+	}{
+		{name: "nil defaults to enabled", want: true},
+		{name: "true remains enabled", value: boolPtr(true), want: true},
+		{name: "false disables", value: boolPtr(false), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NotificationsEnabled(Settings{NotificationsEnabled: tt.value}); got != tt.want {
+				t.Errorf("NotificationsEnabled() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSettingsNotificationsEnabledJSON(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         []byte
+		want          *bool
+		wantJSONField bool
+	}{
+		{name: "absent defaults to enabled", input: []byte(`{}`), wantJSONField: false},
+		{name: "false round trips", input: []byte(`{"notifications_enabled":false}`), want: boolPtr(false), wantJSONField: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var settings Settings
+			if err := json.Unmarshal(tt.input, &settings); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if (settings.NotificationsEnabled == nil) != (tt.want == nil) {
+				t.Fatalf("NotificationsEnabled = %v, want %v", settings.NotificationsEnabled, tt.want)
+			}
+			if tt.want != nil && *settings.NotificationsEnabled != *tt.want {
+				t.Fatalf("NotificationsEnabled = %t, want %t", *settings.NotificationsEnabled, *tt.want)
+			}
+
+			data, err := json.Marshal(settings)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if got := strings.Contains(string(data), `"notifications_enabled":false`); got != tt.wantJSONField {
+				t.Fatalf("notifications_enabled false JSON field = %t, want %t: %s", got, tt.wantJSONField, data)
+			}
+		})
 	}
 }
 

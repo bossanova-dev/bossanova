@@ -148,6 +148,14 @@ service OrchestratorService {
   // ProxyReportChatStatus forwards chat status heartbeats. All reports must
   // resolve to the caller's own chats on a single daemon.
   rpc ProxyReportChatStatus(ProxyReportChatStatusRequest) returns (ProxyReportChatStatusResponse);
+  // GitHub-callback proxies for remote-CLI callback management (BOS-469). All
+  // route to the owning daemon by target_chat_id via FindDaemonForChat, reusing
+  // the caller's own auth — a foreign chat resolves to NotFound so no cross-user
+  // registration can dispatch. Create/Delete require target_chat_id; List routes
+  // by target_chat_id when set, else aggregates across the caller's Ready daemons.
+  rpc ProxyCreateGithubCallback(ProxyCreateGithubCallbackRequest) returns (ProxyCreateGithubCallbackResponse);
+  rpc ProxyListGithubCallbacks(ProxyListGithubCallbacksRequest) returns (ProxyListGithubCallbacksResponse);
+  rpc ProxyDeleteGithubCallback(ProxyDeleteGithubCallbackRequest) returns (ProxyDeleteGithubCallbackResponse);
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -332,6 +340,10 @@ message ProxyCreateSessionRequest {
   // Mirror CreateSessionRequest.force_branch so hosted MCP create_session can
   // intentionally replace an existing branch, matching the local socket path.
   bool force_branch = 19;
+  // Mirror CreateSessionRequest.defer_pr so hosted MCP create_session can skip
+  // the up-front draft PR (PR opened at finalize only if commits land), matching
+  // the local socket path. Default false = unchanged eager draft-PR behavior.
+  bool defer_pr = 20;
 }
 
 // ProxyCreateSessionResponse is streamed from orchestrator to the client as
@@ -717,6 +729,37 @@ message ProxyUpdateCronJobResponse { CronJob job = 1; }
 
 message ProxyDeleteCronJobRequest { string daemon_id = 1; string id = 2; }
 message ProxyDeleteCronJobResponse {}
+
+// GitHub-callback proxy messages (BOS-469). The create/list requests mirror the
+// daemon.proto field sets; target_chat_id is the routing key. Delete carries
+// target_chat_id purely for routing (the daemon addresses the callback by id).
+message ProxyCreateGithubCallbackRequest {
+  optional string group_id = 1;
+  string target_chat_id    = 2;
+  string repo_owner        = 3;
+  string repo_name         = 4;
+  int32  pr_number         = 5;
+  string trigger           = 6;
+  string message           = 7;
+  optional google.protobuf.Timestamp expires_at = 8;
+}
+message ProxyCreateGithubCallbackResponse { GithubCallback github_callback = 1; }
+
+message ProxyListGithubCallbacksRequest {
+  optional string target_chat_id = 1;
+  optional string repo_owner     = 2;
+  optional string repo_name      = 3;
+  optional int32  pr_number      = 4;
+  optional string trigger        = 5;
+  optional string state          = 6;
+}
+message ProxyListGithubCallbacksResponse { repeated GithubCallback github_callbacks = 1; }
+
+message ProxyDeleteGithubCallbackRequest {
+  string target_chat_id = 1; // routing key (FindDaemonForChat)
+  string id             = 2;
+}
+message ProxyDeleteGithubCallbackResponse {}
 
 message ProxyRunCronJobNowRequest { string daemon_id = 1; string id = 2; }
 message ProxyRunCronJobNowResponse { Session session = 1; string skipped_reason = 2; }

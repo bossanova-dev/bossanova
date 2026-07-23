@@ -56,11 +56,24 @@
       "team": "Bossanova",
       "teamKey": "BOS",
       "states": {
+        "backlog": "Backlog",
         "unplanned": "Unplanned",
         "planned": "Todo",
         "inProgress": "In Progress",
-        "inReview": "In Review"
-      }
+        "inReview": "In Review",
+        "done": "Done",
+        "canceled": "Canceled",
+        "duplicate": "Duplicate"
+      },
+      "labels": {
+        "agentPlan": "agent-plan",
+        "agentFriendly": "agent-friendly",
+        "needsHuman": "needs-human",
+        "agentQuestion": "agent-question",
+        "epic": "epic",
+        "bug": "bug"
+      },
+      "githubLabels": { "proofInvalid": "proof-invalid" }
     }
   },
   "publishConfig": {

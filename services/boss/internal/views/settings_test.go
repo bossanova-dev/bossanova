@@ -3,6 +3,8 @@ package views
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -42,6 +44,104 @@ func TestSettings_RendersBuiltInRowsWithoutAgents(t *testing.T) {
 		if strings.Contains(out, hidden) {
 			t.Errorf("settings unexpectedly showed %q in:\n%s", hidden, out)
 		}
+	}
+}
+
+func TestSettings_NotificationsTogglePersistsAndRenders(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+
+	idx := -1
+	for i, row := range m.rows {
+		if row.Label == "Enable desktop notifications for questions" {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("desktop notifications row not found")
+	}
+	m.cursor = idx
+
+	if !config.NotificationsEnabled(m.settings) {
+		t.Fatal("precondition: desktop notifications should default to enabled")
+	}
+	if !strings.Contains(m.View().Content, "[x] Enable desktop notifications for questions") {
+		t.Fatalf("desktop notifications should render checked by default. Got:\n%s", m.View().Content)
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	m = updated.(SettingsModel)
+	if config.NotificationsEnabled(m.settings) {
+		t.Error("space did not disable desktop notifications")
+	}
+	if !strings.Contains(m.View().Content, "[ ] Enable desktop notifications for questions") {
+		t.Fatalf("desktop notifications should render unchecked after toggle. Got:\n%s", m.View().Content)
+	}
+	persisted, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if config.NotificationsEnabled(persisted) {
+		t.Error("disabled desktop notifications were not persisted")
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(SettingsModel)
+	if !config.NotificationsEnabled(m.settings) {
+		t.Error("enter did not re-enable desktop notifications")
+	}
+	if !strings.Contains(m.View().Content, "[x] Enable desktop notifications for questions") {
+		t.Fatalf("desktop notifications should render checked after second toggle. Got:\n%s", m.View().Content)
+	}
+}
+
+func TestSettings_SuccessfulOtherSaveClearsFailedNotificationSaveError(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+
+	for i, row := range m.rows {
+		if row.Kind == settingsRowKindNotifications {
+			m.cursor = i
+			break
+		}
+	}
+	badPath := filepath.Join(t.TempDir(), "settings-dir")
+	if err := os.Mkdir(badPath, 0o755); err != nil {
+		t.Fatalf("os.Mkdir(%q): %v", badPath, err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", badPath)
+	updated, _ := m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	m = updated.(SettingsModel)
+	if m.err == nil {
+		t.Fatal("failed notification save did not retain an error")
+	}
+	if config.NotificationsEnabled(m.settings) {
+		t.Fatal("failed notification save did not retain the requested toggle")
+	}
+
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
+	for i, row := range m.rows {
+		if row.Kind == settingsRowKindErrorTracking {
+			m.cursor = i
+			break
+		}
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(SettingsModel)
+	if m.err != nil {
+		t.Fatalf("successful non-notification save retained stale error: %v", m.err)
+	}
+
+	persisted, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if config.NotificationsEnabled(persisted) {
+		t.Fatal("successful other save did not persist notification toggle")
+	}
+	if !persisted.ErrorTrackingEnabled {
+		t.Fatal("successful other save did not persist its own setting")
 	}
 }
 

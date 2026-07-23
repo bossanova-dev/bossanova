@@ -22,6 +22,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
+import { githubLabelName, loadSkillConfig } from '../skills-toolbox/skill-config.mjs'
 import { normalizeScenes, scopeRequiredProof } from './proof-brief.mjs'
 import { displayText, normalizeExpectation } from './proof-evidence-matcher.mjs'
 
@@ -692,14 +693,17 @@ export async function judgeProof({ surfaceRuns, manifest, localDir, deps = {} } 
 // spawn + try/catch swallowing lives in the finalize orchestrator's
 // `applyJudgeLabel` dep, never here.
 
-/** argv to (idempotently) create the `proof-invalid` label if it doesn't exist yet. */
-export function ensureLabelCommand() {
+const proofInvalidLabel = (config) => githubLabelName(config, 'proofInvalid')
+
+/** argv to (idempotently) create the configured proof-invalid label if it doesn't exist yet. */
+export function ensureLabelCommand({ config = loadSkillConfig() } = {}) {
+  const label = proofInvalidLabel(config)
   return [
     'gh',
     [
       'label',
       'create',
-      'proof-invalid',
+      label,
       '--color',
       'd93f0b',
       '--description',
@@ -709,14 +713,14 @@ export function ensureLabelCommand() {
   ]
 }
 
-/** argv to add the `proof-invalid` label to a PR. */
-export function addLabelCommand({ prNumber }) {
-  return ['gh', ['pr', 'edit', String(prNumber), '--add-label', 'proof-invalid']]
+/** argv to add the configured proof-invalid label to a PR. */
+export function addLabelCommand({ prNumber, config = loadSkillConfig() }) {
+  return ['gh', ['pr', 'edit', String(prNumber), '--add-label', proofInvalidLabel(config)]]
 }
 
-/** argv to remove the `proof-invalid` label from a PR. */
-export function removeLabelCommand({ prNumber }) {
-  return ['gh', ['pr', 'edit', String(prNumber), '--remove-label', 'proof-invalid']]
+/** argv to remove the configured proof-invalid label from a PR. */
+export function removeLabelCommand({ prNumber, config = loadSkillConfig() }) {
+  return ['gh', ['pr', 'edit', String(prNumber), '--remove-label', proofInvalidLabel(config)]]
 }
 
 /**

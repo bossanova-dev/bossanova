@@ -759,6 +759,29 @@ func TestRotationExhaustedHint_WiredIntoWarnings(t *testing.T) {
 	}
 }
 
+// TestRotationRespawnCapHint_WiredIntoWarnings proves a respawn-cap-exhausted
+// newest event surfaces a needs-attention warning line (BOS-482), while a
+// benign respawned-same-account event does not (it is a self-heal, not a wedge).
+func TestRotationRespawnCapHint_WiredIntoWarnings(t *testing.T) {
+	capped := rotationSession(&pb.RotationEvent{
+		Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED,
+		CreatedAt: timestamppb.New(time.Now()),
+	})
+	got := selectedSessionWarningBlock(capped, nil, 80)
+	if !strings.Contains(got, "respawn cap reached") {
+		t.Errorf("warning block missing respawn-cap hint: %q", got)
+	}
+
+	healed := rotationSession(&pb.RotationEvent{
+		Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT,
+		ToAccount: "acct-b",
+		CreatedAt: timestamppb.New(time.Now()),
+	})
+	if hint := rotationRespawnCapHint(healed); hint != "" {
+		t.Errorf("respawned-same-account should not warn, got %q", hint)
+	}
+}
+
 // TestRotationHistoryBlock covers the rendered rotation-history block: a
 // rotated event shows the account transition, and a session with no history
 // renders nothing.
@@ -899,6 +922,8 @@ func TestRotationEventLabel(t *testing.T) {
 		{pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY, "agent cannot rotate — status only"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT, "no eligible account — status only"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED, "all accounts limited"},
+		{pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT, "refreshed auth in place on acct-b"},
+		{pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, "auth-wedge respawn cap reached"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_FAILED, "switch to acct-b failed"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED, ""},
 	}

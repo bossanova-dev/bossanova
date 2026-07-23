@@ -34,6 +34,7 @@ const LINT_DIRS = [
   ['scripts/tracker', ['.mjs']],
   ['scripts/finalize', ['.mjs']],
   ['scripts/session', ['.mjs']],
+  ['scripts/callback', ['.mjs']],
   ['scripts/changelog', ['.mjs']],
   ['scripts/skill-parity', ['.mjs']],
   ['skills-toolbox', ['.mjs']],

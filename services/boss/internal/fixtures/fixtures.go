@@ -375,6 +375,67 @@ func RotationHistoryChats() []*pb.ClaudeChat {
 	}
 }
 
+// RespawnHistoryWorld builds the BOS-482 dataset: one session whose rotation
+// history carries the two new respawn-in-place outcomes (RESPAWNED_SAME_ACCOUNT
+// and, as the newest event, RESPAWN_CAP_EXHAUSTED). It proves both the
+// chat-picker rotation-history labels and the home-list needs-attention hint
+// that fires when the cap is reached.
+func RespawnHistoryWorld() World {
+	return World{
+		Repos:    Repos(),
+		Sessions: RespawnHistorySessions(),
+		Chats:    RespawnHistoryChats(),
+	}
+}
+
+// RespawnHistorySessions returns the single BOS-482 session. Its newest rotation
+// event is RESPAWN_CAP_EXHAUSTED, so the home-list warning hint
+// ("auth wedge unresolved — respawn cap reached, may need /login") fires; the two
+// older RESPAWNED_SAME_ACCOUNT events exercise both label shapes ("refreshed auth
+// in place on <acct>" when to_account is set, and the bare "refreshed auth in
+// place" otherwise).
+func RespawnHistorySessions() []*pb.Session {
+	return []*pb.Session{
+		{
+			Id: "sess-482-respawn", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "Auth-wedge respawn demo", BranchName: "boss/respawn-history",
+			State:        pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			PrNumber:     i32(482),
+			CreatedAt:    ts(-2 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-app/respawn-history",
+			RotationEvents: []*pb.RotationEvent{
+				{
+					Id:        "rot-482-1",
+					Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED,
+					Detail:    "respawn cap reached (2/hour) — auth wedge persists",
+					CreatedAt: ts(-10 * time.Minute),
+				},
+				{
+					Id:        "rot-482-2",
+					Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT,
+					ToAccount: "dave@kamik.ai",
+					Detail:    "resumed",
+					CreatedAt: ts(-40 * time.Minute),
+				},
+				{
+					Id:        "rot-482-3",
+					Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT,
+					Detail:    "started fresh",
+					CreatedAt: ts(-70 * time.Minute),
+				},
+			},
+		},
+	}
+}
+
+// RespawnHistoryChats returns the single chat for the BOS-482 session so the
+// chat-picker renders a populated table and the full action bar.
+func RespawnHistoryChats() []*pb.ClaudeChat {
+	return []*pb.ClaudeChat{
+		{Id: "chat-482", AgentSessionId: "claude-482", SessionId: "sess-482-respawn", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
+	}
+}
+
 // ArchiveSignalWorld builds the BOS-425 dataset: the demo repos (so
 // archive-after-merge is configured) plus the two ArchiveSignal sessions and
 // their chats. Used by the archive-signal proof scenarios.

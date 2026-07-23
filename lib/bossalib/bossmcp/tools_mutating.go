@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/githubcallback"
 )
 
 // maxDerivedTitleLen bounds titles auto-derived from a prompt so a long
@@ -111,7 +114,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "create_session",
-		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session (its agent_session_id is the primary chat id — no sqlite read needed). DEDUP: if an active session already owns the target branch or PR (via pr_number/branch_name), the daemon ATTACHES to that existing session instead of creating one — the result then has attached_existing=true and the supplied prompt is NOT run; deliver it yourself via send_chat_message with the returned agent_session_id (force does NOT bypass this branch/PR attach — two active sessions cannot share one branch). If instead an active session already owns the same tracker_id with no branch collision, the create fails with AlreadyExists; pass force:true to create a second session for that tracker. Supports running the initial agent pass headlessly (detach) or in a durable tmux-hosted pane that survives a daemon restart (tmux_unattended, used by /boss-epic) under a chosen model (model), under a specific rotation account (account, an account id or label; empty = system default), attaching to an existing PR (pr_number), quick chats (quick_chat), explicit base/branch names, and linking an external tracker issue (tracker_id/tracker_url/tracker_source). Planning-only work should use a subagent; use quick_chat for a visible no-worktree/no-PR conversation, not tmux_unattended. The composite tracker_issue field is web-only and not exposed here.",
+		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session (its agent_session_id is the primary chat id — no sqlite read needed). DEDUP: if an active session already owns the target branch or PR (via pr_number/branch_name), the daemon ATTACHES to that existing session instead of creating one — the result then has attached_existing=true and the supplied prompt is NOT run; deliver it yourself via send_chat_message with the returned agent_session_id (force does NOT bypass this branch/PR attach — two active sessions cannot share one branch). If instead an active session already owns the same tracker_id with no branch collision, the create fails with AlreadyExists; pass force:true to create a second session for that tracker. Supports running the initial agent pass headlessly (detach) or in a durable tmux-hosted pane that survives a daemon restart (tmux_unattended, used by /boss-epic) under a chosen model (model), under a specific rotation account (account, an account id or label; empty = system default), attaching to an existing PR (pr_number), quick chats (quick_chat), explicit base/branch names, and linking an external tracker issue (tracker_id/tracker_url/tracker_source). Planning-only work should use a subagent; use quick_chat for a visible no-worktree/no-PR conversation, not tmux_unattended. For a read-only/planning worktree session that should NOT get an up-front draft PR, set defer_pr:true (best paired with detach/tmux_unattended, which open a PR at finalize only if commits land). The composite tracker_issue field is web-only and not exposed here.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args CreateSessionArgs) (*mcp.CallToolResult, any, error) {
 		req := &pb.CreateSessionRequest{
@@ -133,6 +136,10 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			// survives a daemon restart and is attach-safe — the /boss-epic fan-out
 			// path, distinct from Detach's headless runs.
 			IsTmuxUnattended: args.IsTmuxUnattended,
+			// DeferPR skips the up-front draft PR; the finalize EnsurePR hook opens
+			// one only if commits land. Meaningful only alongside detach/tmux
+			// (which install that hook) — for read-only/planning sessions.
+			DeferPr: args.DeferPR,
 			// Optional pointer args map straight through; nil stays unset.
 			BranchName:    args.BranchName,
 			PrNumber:      args.PRNumber,
@@ -523,6 +530,59 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		r, err := jsonResult(out)
 		return r, nil, err
 	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "register_github_callback",
+		Description: "Register a durable one-shot GitHub PR callback: when the given PR reaches the trigger state, the message is delivered once as a prompt to the target chat. Delivery is a signal, not proof — the receiving agent must still verify the PR's actual state. The message body is stored verbatim and is a secret: it is never echoed back in this tool's output. Expiry defaults to 24h and may not exceed 30 days.",
+		Annotations: &mcp.ToolAnnotations{},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args RegisterGithubCallbackArgs) (*mcp.CallToolResult, any, error) {
+		if strings.TrimSpace(args.Message) == "" {
+			return errorResult(fmt.Errorf("message is required (the prompt delivered to the chat when the callback fires)")), nil, nil
+		}
+		if strings.TrimSpace(args.TargetChatID) == "" {
+			return errorResult(fmt.Errorf("target_chat_id is required (the chat to notify when the callback fires)")), nil, nil
+		}
+		trigger, err := githubcallback.ValidateTrigger(args.Trigger)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		// Resolve repository context from the optional owner/repo slug so a bare
+		// PR number can be anchored; a full github.com URL needs no context.
+		var ctxOwner, ctxRepo string
+		if strings.TrimSpace(args.Repo) != "" {
+			ctxOwner, ctxRepo, err = githubcallback.SplitRepo(args.Repo)
+			if err != nil {
+				return errorResult(err), nil, nil
+			}
+		}
+		ref, err := githubcallback.ParsePRRef(args.PR, ctxOwner, ctxRepo)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		expiresAt, err := githubcallback.ParseExpiresIn(args.ExpiresIn, time.Now().UTC())
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		req := &pb.CreateGithubCallbackRequest{
+			TargetChatId: strings.TrimSpace(args.TargetChatID),
+			RepoOwner:    ref.Owner,
+			RepoName:     ref.Repo,
+			PrNumber:     ref.PRNumber,
+			Trigger:      string(trigger),
+			Message:      args.Message,
+			ExpiresAt:    timestamppb.New(expiresAt),
+		}
+		if g := strings.TrimSpace(args.Group); g != "" {
+			req.GroupId = &g
+		}
+		cb, err := backend.CreateGithubCallback(ctx, req)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		// Never surface the message body: scrub it before returning.
+		r, err := jsonResult(redactCallback(cb))
+		return r, nil, err
+	})
 }
 
 // registerSessionStateTool installs a simple id-keyed session lifecycle tool.
@@ -539,6 +599,19 @@ func registerSessionStateTool(server *mcp.Server, opts Options, name, desc strin
 		r, err := jsonResult(out)
 		return r, nil, err
 	})
+}
+
+// RegisterGithubCallbackArgs is the typed argument struct for
+// register_github_callback. The message is required and is a secret — it is
+// stored verbatim and never returned by any tool.
+type RegisterGithubCallbackArgs struct {
+	PR           string `json:"pr" jsonschema:"the PR to watch: a bare number like 123 (requires repo context) or a full https://github.com/owner/repo/pull/123 URL"`
+	Trigger      string `json:"trigger" jsonschema:"the PR event to fire on; one of merged, closed, checks_passed, checks_failed"`
+	TargetChatID string `json:"target_chat_id" jsonschema:"the agent-session (chat) id to deliver the message to when the callback fires"`
+	Message      string `json:"message" jsonschema:"the prompt delivered to the chat when the callback fires (required; stored verbatim and never echoed back)"`
+	Repo         string `json:"repo,omitempty" jsonschema:"repository as owner/repo; required to anchor a bare PR number, ignored when pr is a full URL"`
+	ExpiresIn    string `json:"expires_in,omitempty" jsonschema:"expiry as a duration like 30m, 24h, 7d, 2w; default 24h, maximum 30d"`
+	Group        string `json:"group,omitempty" jsonschema:"optional group id; siblings in a group cancel each other on first fire"`
 }
 
 // RegisterRepoArgs is the typed argument struct for register_repo.
@@ -600,6 +673,7 @@ type CreateSessionArgs struct {
 	IsQuickChat      bool    `json:"quick_chat,omitempty" jsonschema:"quick chat session: no worktree, branch, or PR"`
 	Detach           bool    `json:"detach,omitempty" jsonschema:"run the initial agent pass headlessly (claude --print / codex exec) instead of leaving the session idle until attach; set true for unattended orchestration"`
 	IsTmuxUnattended bool    `json:"tmux_unattended,omitempty" jsonschema:"run the session in a durable tmux-hosted pane that survives a daemon restart and is attach-safe (used by /boss-epic); a distinct autonomous-unattended path from detach's headless runs"`
+	DeferPR          bool    `json:"defer_pr,omitempty" jsonschema:"create a worktree-backed session but do NOT open a draft PR up front; a PR is opened at finalize only if the run produces commits. Meaningful only alongside detach/tmux_unattended (which install the finalize hook); use for read-only/planning sessions"`
 	Model            string  `json:"model,omitempty" jsonschema:"opaque agent model id to run this session under (e.g. an Opus id); empty = the agent plugin's default"`
 	PRNumber         *int32  `json:"pr_number,omitempty" jsonschema:"target an existing PR. If an active session already owns that PR's branch, create_session ATTACHES to it and returns attached_existing=true WITHOUT running prompt — run the prompt in that session (send_chat_message with the returned agent_session_id). force does NOT bypass this branch attach"`
 	TrackerID        *string `json:"tracker_id,omitempty" jsonschema:"external issue id (e.g. FRE-1176). If an active session already owns this tracker id (with no branch collision), create_session fails with AlreadyExists — pass force:true to create a second session for the same tracker"`
@@ -677,7 +751,7 @@ type SendChatMessageArgs struct {
 	AgentSessionID string `json:"agent_session_id" jsonschema:"the agent session UUID"`
 	Message        string `json:"message" jsonschema:"the user message to deliver"`
 	WakeIfAsleep   *bool  `json:"wake_if_asleep,omitempty" jsonschema:"wake the agent if it is currently asleep; defaults to true when omitted"`
-	Submit         *bool  `json:"submit,omitempty" jsonschema:"submit a single-line message (press Enter and verify) instead of only prefilling the composer; a multi-line message is never auto-submitted; defaults to false (prefill) when omitted"`
+	Submit         *bool  `json:"submit,omitempty" jsonschema:"submit the message (press Enter and verify) instead of only prefilling the composer; works for single- and multi-line messages alike; defaults to false (prefill) when omitted"`
 }
 
 // SwitchAccountArgs is the typed argument struct for switch_account.

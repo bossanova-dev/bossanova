@@ -8,6 +8,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
+import { DEFAULT_CONFIG, mergeConfig } from '../skills-toolbox/skill-config.mjs'
+
 import {
   addLabelCommand,
   buildJudgePrompt,
@@ -1066,6 +1068,20 @@ test('createJudgeModel: forwards PROOF_ANTHROPIC_API_KEY, the JUDGE_SCHEMA struc
 })
 
 // ── proof-invalid label (BOS-141 D12, Task 5) ───────────────────────────────
+
+const githubLabelFixture = mergeConfig(DEFAULT_CONFIG, {
+  adapters: { tracker: 'demo' },
+  trackerConfig: {
+    demo: { mcpServer: 'demo-tracker', team: 'Demo', githubLabels: { proofInvalid: 'bad-proof' } },
+  },
+})
+
+test('label commands resolve the configured GitHub label role', () => {
+  assert.deepEqual(addLabelCommand({ prNumber: '123', config: githubLabelFixture }), [
+    'gh',
+    ['pr', 'edit', '123', '--add-label', 'bad-proof'],
+  ])
+})
 
 test('ensureLabelCommand: exact argv', () => {
   assert.deepEqual(ensureLabelCommand(), [

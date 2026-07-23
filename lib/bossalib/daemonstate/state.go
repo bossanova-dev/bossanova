@@ -17,6 +17,11 @@ type Metadata struct {
 	SettingsPath   string    `json:"settings_path"`
 	SocketPath     string    `json:"socket_path"`
 	StartedAt      time.Time `json:"started_at"`
+	// FileLimitSoft is the RLIMIT_NOFILE soft limit bossd achieved at startup
+	// (0 when unknown / non-unix). Recorded so a low FD cap that would make
+	// FD-heavy setup scripts fail with EMFILE is visible without grepping logs
+	// (BOS-465).
+	FileLimitSoft uint64 `json:"file_limit_soft,omitempty"`
 }
 
 func Path(appDataDir string) string {

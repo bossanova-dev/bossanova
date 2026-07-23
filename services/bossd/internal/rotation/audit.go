@@ -91,6 +91,23 @@ func (r *Recorder) Record(ctx context.Context, ev AuditEvent) {
 // when a new episode event was recorded — callers gate the single per-episode
 // user notification/toast on this. (BOS-176)
 func (r *Recorder) RecordExhausted(ctx context.Context, ev AuditEvent) bool {
+	return r.recordIfNewEpisode(ctx, ev)
+}
+
+// RecordNoEligible records a no-eligible-account (status-only) rotation decline
+// at most once per episode, with the identical newest-row/same-reset-minute
+// dedup as RecordExhausted. Surfaces the exhausted-pool 429 the proxy path sees
+// when every account is disabled/unauthenticated and none can be rotated to.
+// Returns true when a new episode event was recorded. (BOS-484)
+func (r *Recorder) RecordNoEligible(ctx context.Context, ev AuditEvent) bool {
+	return r.recordIfNewEpisode(ctx, ev)
+}
+
+// recordIfNewEpisode persists ev unless the newest row for the session is
+// already the same outcome in the same reset minute (a still-running episode).
+// Returns true when a new episode event was recorded. Shared by the exhausted
+// and no-eligible sibling recorders so both dedup identically. (BOS-176/484)
+func (r *Recorder) recordIfNewEpisode(ctx context.Context, ev AuditEvent) bool {
 	if r == nil {
 		return false
 	}

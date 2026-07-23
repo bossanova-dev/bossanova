@@ -36,12 +36,13 @@ type Harness struct {
 type Option func(*harnessConfig)
 
 type harnessConfig struct {
-	repos    []*pb.Repo
-	sessions []*pb.Session
-	chats    []*pb.ClaudeChat
-	cronJobs []*pb.CronJob
-	accounts []*pb.Account
-	extraEnv []string
+	repos           []*pb.Repo
+	sessions        []*pb.Session
+	chats           []*pb.ClaudeChat
+	cronJobs        []*pb.CronJob
+	githubCallbacks []*pb.GithubCallback
+	accounts        []*pb.Account
+	extraEnv        []string
 }
 
 // WithRepos seeds the mock daemon with repos.
@@ -62,6 +63,11 @@ func WithChats(chats ...*pb.ClaudeChat) Option {
 // WithCronJobs seeds the mock daemon with cron jobs.
 func WithCronJobs(jobs ...*pb.CronJob) Option {
 	return func(c *harnessConfig) { c.cronJobs = append(c.cronJobs, jobs...) }
+}
+
+// WithGithubCallbacks seeds the mock daemon with GitHub callbacks.
+func WithGithubCallbacks(cbs ...*pb.GithubCallback) Option {
+	return func(c *harnessConfig) { c.githubCallbacks = append(c.githubCallbacks, cbs...) }
 }
 
 // WithAccounts seeds the mock daemon with accounts.
@@ -103,6 +109,9 @@ func New(t *testing.T, opts ...Option) *Harness {
 	for _, j := range cfg.cronJobs {
 		daemon.AddCronJob(j)
 	}
+	for _, cb := range cfg.githubCallbacks {
+		daemon.AddGithubCallback(cb)
+	}
 	for _, a := range cfg.accounts {
 		daemon.SeedAccount(a, []byte("seed-credential"))
 	}
@@ -131,6 +140,13 @@ func New(t *testing.T, opts ...Option) *Harness {
 			strings.HasPrefix(e, "BOSS_DAEMON_SKIP_LAUNCHCTL=") ||
 			strings.HasPrefix(e, "BOSS_SETTINGS_PATH=") ||
 			strings.HasPrefix(e, "BOSS_REFUSE_DEFAULT_SETTINGS=") ||
+			// Strip the ambient session/chat/repo context vars so tests default
+			// deterministically (e.g. `callback add` with no --chat must fail when
+			// BOSS_AGENT_SESSION_ID is unset). Tests that need them set their own
+			// values via WithEnv, which is appended last and wins.
+			strings.HasPrefix(e, "BOSS_AGENT_SESSION_ID=") ||
+			strings.HasPrefix(e, "BOSS_SESSION_ID=") ||
+			strings.HasPrefix(e, "BOSS_REPO_ID=") ||
 			strings.HasPrefix(e, "HOME=") ||
 			strings.HasPrefix(e, "XDG_CONFIG_HOME=") {
 			continue

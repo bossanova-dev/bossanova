@@ -93,3 +93,48 @@ func TestRecorder_RecordExhaustedDedupsPerEpisode(t *testing.T) {
 		t.Fatal("exhausted after a rotation is a new episode and must record")
 	}
 }
+
+func TestRecorder_RecordNoEligibleDedupsPerEpisode(t *testing.T) {
+	t.Parallel()
+	ev := AuditEvent{
+		SessionID: "s1", Provider: "claude",
+		Trigger: "ROTATION_TRIGGER_USAGE_LIMITED",
+		Outcome: "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT",
+		Detail:  NoEligibleAccountDetail,
+	}
+
+	// Empty history: records (nil ResetAt is a valid episode key).
+	fs := &fakeAuditStore{}
+	r := NewRecorder(fs, zerolog.Nop())
+	if !r.RecordNoEligible(context.Background(), ev) {
+		t.Fatal("first no-eligible event of an episode must record")
+	}
+	if len(fs.inserted) != 1 {
+		t.Fatalf("first no-eligible must insert once, got %d", len(fs.inserted))
+	}
+
+	// Latest event is the same no-eligible episode (both ResetAt nil): dedup.
+	fs2 := &fakeAuditStore{recent: []AuditEvent{{
+		Outcome: "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT",
+	}}}
+	r2 := NewRecorder(fs2, zerolog.Nop())
+	if r2.RecordNoEligible(context.Background(), ev) {
+		t.Fatal("duplicate no-eligible signal within an episode must dedup")
+	}
+	if len(fs2.inserted) != 0 {
+		t.Fatalf("dedup must not insert, got %d", len(fs2.inserted))
+	}
+
+	// A different outcome newest starts a new episode: records again.
+	fs3 := &fakeAuditStore{recent: []AuditEvent{{Outcome: "ROTATION_OUTCOME_ROTATED"}}}
+	r3 := NewRecorder(fs3, zerolog.Nop())
+	if !r3.RecordNoEligible(context.Background(), ev) {
+		t.Fatal("no-eligible after a rotation is a new episode and must record")
+	}
+
+	// A nil recorder is a safe no-op.
+	var nilRec *Recorder
+	if nilRec.RecordNoEligible(context.Background(), ev) {
+		t.Fatal("nil recorder RecordNoEligible must report false")
+	}
+}

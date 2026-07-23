@@ -79,7 +79,13 @@ test('size ratchet', () => {
   // so the last hard-coded `Todo` state literal leaves the published boss-epic
   // core (bs-epic-lib.mjs) and knownIdentityLeaks reaches empty — the epic's
   // core deliverable; the added resolver is the minimal viable de-identification.
-  const RATCHET = 34816
+  // Bumped 34816 → 35840 for BOS-470: Phase 3 now adopts one-shot GitHub callbacks
+  // — a "Callback notifier" adapter seam (resolveCallbackAdapter, watchTriggers
+  // checks_passed/checks_failed/merged armed as a per-child group) plus a Phase 3b
+  // note that a callback wake trims the poll cadence but still routes through
+  // authoritative reconciliation (dedup by id, re-arm while in flight, poll as
+  // bounded fallback) — the core deliverable, trimmed to one KiB above actual.
+  const RATCHET = 35840
   const bytes = Buffer.byteLength(CLAUDE, 'utf8')
   assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
 })
@@ -106,6 +112,39 @@ test('contract tokens present in the canonical skill', () => {
       assert.ok(body.includes(token), `missing token: ${token}`)
     }
   }
+})
+
+test('Phase 3 adopts one-shot callbacks with authoritative reconciliation (BOS-470)', () => {
+  // The callback-notifier seam + the Phase-3b reconciliation contract: a callback
+  // wake trims the poll cadence but never replaces the authoritative state read,
+  // is deduped, re-armed while in flight, and degrades to the poll when callbacks
+  // are unavailable. Pin the tokens so it can never regress to a naked poll.
+  for (const token of [
+    'resolveCallbackAdapter',
+    'scripts/callback/adapter.mjs',
+    'boss callback',
+    'policy.watchTriggers',
+    'policy.fallbackPoll',
+  ]) {
+    assert.ok(CLAUDE.includes(token), `boss-epic SKILL.md must document callback token: ${token}`)
+  }
+  assert.match(
+    CLAUDE,
+    /callback wake[\s\S]*reconcil/i,
+    'a callback wake must route through authoritative reconciliation, not act on the trigger name',
+  )
+  // The two at-least-once safeguards must survive verbatim: a duplicate delivery is a
+  // no-op (dedup by id) and a consumed one-shot watch is re-armed while work continues.
+  assert.match(
+    CLAUDE,
+    /dedup by callback id/i,
+    'boss-epic must dedup callback deliveries by id (at-least-once delivery)',
+  )
+  assert.match(
+    CLAUDE,
+    /re-arm the child's group while it\s+is still in flight/i,
+    'boss-epic must re-arm the consumed one-shot watch while the child is still in flight',
+  )
 })
 
 test('zero-launch no-ready run has an explicit single-comment branch (BOS-302)', () => {

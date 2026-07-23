@@ -181,6 +181,13 @@ func (s *Server) RefreshAccount(ctx context.Context, req *connect.Request[pb.Ref
 	if err := s.accountCreds.Save(id, credential); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save account credential: %w", err))
 	}
+	// The credential just changed on disk, but any session that already failed
+	// over to this account still holds a sticky swapped bearer for the OLD
+	// secret in the failover proxy. Drop every sticky bearer now — after the
+	// Save committed, before the optional TestAccount live-smoke — so the next
+	// request re-derives the bearer from the freshly-saved credential instead of
+	// silently replaying the stale one. Dual-nil-safe (no-op without a proxy).
+	s.lifecycle.ForgetAllProxyBearers()
 	if msg.GetTestAfterSave() {
 		testResp, err := s.TestAccount(ctx, connect.NewRequest(&pb.TestAccountRequest{Id: id}))
 		if err != nil {

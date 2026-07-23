@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -149,6 +150,13 @@ type Lifecycle struct {
 	// proxy is strictly additive and opt-in. Never logs the token.
 	proxyRegistrar proxyTokenRegistrar
 
+	// defaultAccountResolver resolves a provider's managed default account id at
+	// startup-adoption time (BOS-481), mirroring the spawn's DefaultAccountID
+	// resolution for a surviving pane whose chat AND session both lack a
+	// persisted account binding. Nil (default) ⇒ such both-nil rows resolve to ""
+	// and are skipped. Wired in production to account.Resolver.DefaultAccountID.
+	defaultAccountResolver func(ctx context.Context, provider string, now time.Time) (string, error)
+
 	// agents maps an agent plugin name (matching session.AgentName) to its
 	// AgentRunnerClient — used for ConfigureFinalizeHook,
 	// BuildInteractiveCommand, and other RPCs that aren't on AgentRunner.
@@ -243,6 +251,13 @@ type Lifecycle struct {
 	// safe: the Recorder's methods no-op on a nil receiver, so an unwired daemon
 	// simply records nothing. Injected via SetRotationRecorder.
 	rotationRecorder *rotation.Recorder
+
+	// proxyAuditMu serializes the failover proxy path's non-rotate decline audit
+	// writes (all-exhausted / no-eligible). Those recorders dedup per episode by
+	// reading the session's newest audit row, so concurrent replays for the same
+	// session must not interleave the read-then-write or both would slip the
+	// dedup and double-record. Scoped to the proxy decline path (BOS-484).
+	proxyAuditMu sync.Mutex
 
 	// rotationConfigLoader re-reads rotation policy for decisions and parked
 	// sweeps so policy changes take effect without a daemon restart (BOS-176).
@@ -501,6 +516,13 @@ func (l *Lifecycle) SetBranchResolver(branches LiveBranchResolver) {
 func (l *Lifecycle) Bootstrap(ctx context.Context) {
 	l.reArmSurvivingTmuxChats(ctx)
 	l.sweepOrphanedHeadlessRuns(ctx)
+	// Re-adopt each surviving tmux pane's baked failover-proxy path token onto
+	// the fresh ProxyServer (BOS-481), so a pane whose port still matches (the
+	// fixed port of BOS-409) reconnects in place instead of wedging on a 401.
+	// MUST run before detectStalePaneProxyPorts: adoption handles the
+	// same-port panes, and the stale-port sweep then only surfaces the residual
+	// panes whose baked port genuinely no longer matches.
+	l.adoptSurvivingPaneProxyTokens(ctx)
 	// Flag live tmux panes whose baked ANTHROPIC_BASE_URL points at a stale
 	// failover-proxy port after this restart (BOS-409). Runs after SetProxyPort
 	// has stamped the live port (Bootstrap is called from main.go after the proxy

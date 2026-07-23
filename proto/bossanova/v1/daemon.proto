@@ -111,6 +111,21 @@ service DaemonService {
   // Subject to the same overlap and concurrency-cap rules as scheduled fires.
   rpc RunCronJobNow(RunCronJobNowRequest) returns (RunCronJobNowResponse);
 
+  // --- GitHub callbacks (BOS-467) ---
+
+  // CreateGithubCallback registers a durable one-shot PR-event callback. The
+  // server applies defaults (24h expiry, active state, lowercased repo) and
+  // validates the request; lease/trigger/deliver primitives are not exposed.
+  rpc CreateGithubCallback(CreateGithubCallbackRequest) returns (CreateGithubCallbackResponse);
+
+  // ListGithubCallbacks returns callbacks matching the optional filters,
+  // ordered by creation time then id for a deterministic listing.
+  rpc ListGithubCallbacks(ListGithubCallbacksRequest) returns (ListGithubCallbacksResponse);
+
+  // DeleteGithubCallback removes a callback by id. Idempotent: deleting an
+  // absent id succeeds.
+  rpc DeleteGithubCallback(DeleteGithubCallbackRequest) returns (DeleteGithubCallbackResponse);
+
   // --- Accounts (BOS-157 rotation registry) ---
 
   // ListAccounts returns registry accounts, optionally filtered by provider.
@@ -354,6 +369,13 @@ message CreateSessionRequest {
   // system-default account 0 opt-out (no injected env, D9); present-and-non-empty
   // binds that account.
   optional string account_id = 18;
+  // If true, create the worktree-backed session but do NOT open a draft PR up
+  // front. A PR is opened only at finalize (the Stop-hook EnsurePR path) if the
+  // run produces commits. Default false = unchanged eager behavior: an empty
+  // draft PR is opened at session start. Meaningful only alongside
+  // detach/is_tmux_unattended, which install the finalize hook; useful for
+  // read-only/planning sessions. Mirrors StartSessionOpts.DeferPR (used by cron).
+  bool defer_pr = 19;
 }
 
 message CreateSessionResponse {
@@ -800,6 +822,47 @@ message RunCronJobNowResponse {
   // Reason the fire was skipped, when session is unset.
   string skipped_reason = 2;
 }
+
+// --- GitHub callbacks (BOS-467) ---
+
+message CreateGithubCallbackRequest {
+  // Optional group id; unset/empty = ungrouped (a group of one). Callbacks in
+  // one group are siblings: the first to trigger cancels the rest.
+  optional string group_id = 1;
+  string target_chat_id    = 2;
+  string repo_owner        = 3;
+  string repo_name         = 4;
+  int32  pr_number         = 5;
+  string trigger           = 6; // merged | closed | checks_passed | checks_failed
+  string message           = 7; // prompt body delivered on fire; stored verbatim
+  // Optional explicit expiry. Unset = server default (24h). Must be in the
+  // future and within 30 days, else InvalidArgument.
+  optional google.protobuf.Timestamp expires_at = 8;
+}
+
+message CreateGithubCallbackResponse {
+  GithubCallback github_callback = 1;
+}
+
+message ListGithubCallbacksRequest {
+  // All filters optional; an unset field is not constrained.
+  optional string target_chat_id = 1;
+  optional string repo_owner     = 2;
+  optional string repo_name      = 3;
+  optional int32  pr_number      = 4;
+  optional string trigger        = 5;
+  optional string state          = 6;
+}
+
+message ListGithubCallbacksResponse {
+  repeated GithubCallback github_callbacks = 1;
+}
+
+message DeleteGithubCallbackRequest {
+  string id = 1;
+}
+
+message DeleteGithubCallbackResponse {}
 
 // --- Accounts (BOS-157 rotation registry) ---
 

@@ -92,6 +92,15 @@ Bossanova reference impls resolve to today's exact tools and sub-skills —
   boss MCP tools; `subSkills.implement` = `/boss-build`, `subSkills.repair`
   = `/boss-repair`. The tool/arg names named across Phases 3–4 are exactly this
   map's entries (`merge_session` carries the mandatory `confirm`).
+- **Callback notifier** — `resolveCallbackAdapter(env)`
+  (`scripts/callback/adapter.mjs`). One-shot GitHub PR-event watches
+  (`registerWatch` / `listWatches` / `removeWatch` over `boss callback
+add|list|remove`); `policy.watchTriggers` = `checks_passed` / `checks_failed`
+  / `merged`, armed as a group per in-flight child. A resolved/merged child PR
+  then wakes the epic promptly; every wake **reconciles real session/PR state
+  before acting** (Phase 3b) and re-arms one-shot watches while still waiting,
+  with the poll as the bounded fallback (`policy.fallbackPoll`) when callbacks
+  are unavailable.
 
 ## The library: how to compute a decision
 
@@ -389,9 +398,14 @@ per-ticket wall clock.
 
 ### 3b. Poll
 
-Every 2–5 minutes, for each in-flight ticket read `get_session` (state,
-`last_agent_activity_at`, `AGENT_AUTH_FAILED`), `list_check_snapshots`
-(DisplayStatus), and `get_chat_statuses {session_id}` for the entry whose
+A callback wake (child PR `checks_passed`/`checks_failed`/`merged`, armed via the
+callback notifier when each child enters flight) trims the poll cadence but never
+replaces this reconciliation — a wake means _re-read the state below_, never _act
+on the trigger name_; dedup by callback id, and re-arm the child's group while it
+is still in flight. When callbacks are unavailable, the poll alone drives Phase 3.
+Every 2–5 minutes (or on a callback wake), for each in-flight ticket read
+`get_session` (state, `last_agent_activity_at`, `AGENT_AUTH_FAILED`),
+`list_check_snapshots` (DisplayStatus), and `get_chat_statuses {session_id}` for the entry whose
 `agent_session_id` equals the ticket's recorded `chat_id`. A green is trustworthy
 only once that tracked chat has **settled**: `IDLE` + stale
 `last_agent_activity_at`, or `STOPPED` + stale/missing activity.

@@ -1,0 +1,304 @@
+package callback
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/rs/zerolog"
+
+	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/db"
+)
+
+// clock is a deterministic, advanceable, concurrency-safe time source.
+type clock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newClock(t time.Time) *clock { return &clock{t: t.UTC()} }
+
+func (c *clock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *clock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+// triggerActive drives a freshly created callback into the triggered state via
+// the store's atomic group transition (as the evaluator would).
+func triggerActive(t *testing.T, store db.GithubCallbackStore, id string, now time.Time) {
+	t.Helper()
+	if _, err := store.TriggerGroup(context.Background(), id, "merged", now); err != nil {
+		t.Fatalf("TriggerGroup %s: %v", id, err)
+	}
+}
+
+func newWorker(store workerStore, deliverer ChatDeliverer, now func() time.Time, owner string) *DeliveryWorker {
+	return NewDeliveryWorker(WorkerConfig{
+		Store:     store,
+		Deliverer: deliverer,
+		Now:       now,
+		Owner:     owner,
+		Logger:    zerolog.Nop(),
+	})
+}
+
+// TestWorker_HappyPath verifies lease -> deliver -> MarkDelivered, and that the
+// deliverer received the rendered prompt (with the verbatim message).
+func TestWorker_HappyPath(t *testing.T) {
+	store := newStore(t)
+	clk := newClock(time.Now())
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerMerged, Message: "ship it now",
+	})
+	triggerActive(t, store, cb.ID, clk.now())
+
+	deliverer := newCaptureDeliverer(nil)
+	w := newWorker(store, deliverer, clk.now, "worker-1")
+	w.scan(context.Background())
+
+	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateDelivered {
+		t.Fatalf("state = %q, want delivered", got)
+	}
+	if deliverer.count() != 1 {
+		t.Fatalf("deliverer called %d times, want 1", deliverer.count())
+	}
+	msg := deliverer.lastMessage()
+	if !strings.Contains(msg, "ship it now") {
+		t.Errorf("delivered message missing verbatim body:\n%s", msg)
+	}
+	if !strings.Contains(msg, cb.ID) {
+		t.Errorf("delivered message missing callback id %q", cb.ID)
+	}
+}
+
+// TestWorker_RetryOnDeliveryFailure verifies a failed delivery increments the
+// attempt count, keeps the callback triggered, and schedules the next attempt at
+// now + baseRetryBackoff.
+func TestWorker_RetryOnDeliveryFailure(t *testing.T) {
+	store := newStore(t)
+	base := time.Now().UTC()
+	clk := newClock(base)
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerMerged, Message: "m",
+	})
+	triggerActive(t, store, cb.ID, clk.now())
+
+	failing := newCaptureDeliverer(errors.New("chat offline"))
+	w := newWorker(store, failing, clk.now, "worker-1")
+	w.scan(context.Background())
+
+	got, err := store.Get(context.Background(), cb.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.State != models.GithubCallbackStateTriggered {
+		t.Errorf("state = %q, want triggered (retryable)", got.State)
+	}
+	if got.AttemptCount != 1 {
+		t.Errorf("attempt_count = %d, want 1", got.AttemptCount)
+	}
+	if got.NextAttemptAt == nil {
+		t.Fatal("next_attempt_at not set")
+	}
+	wantNext := base.Add(baseRetryBackoff)
+	if got.NextAttemptAt.Sub(wantNext).Abs() > time.Second {
+		t.Errorf("next_attempt_at = %v, want ~%v", got.NextAttemptAt, wantNext)
+	}
+	// Lease was released, so the row is not held by the failed worker.
+	if got.LeaseOwner != nil {
+		t.Errorf("lease still held by %v, want released", *got.LeaseOwner)
+	}
+}
+
+// TestBackoffFor_DoublesAndCaps verifies the exponential backoff schedule and
+// its 15-minute ceiling.
+func TestBackoffFor_DoublesAndCaps(t *testing.T) {
+	cases := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{0, 30 * time.Second},
+		{1, 60 * time.Second},
+		{2, 2 * time.Minute},
+		{3, 4 * time.Minute},
+		{4, 8 * time.Minute},
+		{5, maxRetryBackoff},  // 16m -> capped
+		{6, maxRetryBackoff},  // stays capped
+		{20, maxRetryBackoff}, // far past cap
+	}
+	for _, tc := range cases {
+		if got := backoffFor(tc.attempt); got != tc.want {
+			t.Errorf("backoffFor(%d) = %v, want %v", tc.attempt, got, tc.want)
+		}
+	}
+}
+
+// TestWorker_PastExpiryLetsExpire verifies that when the next retry would land at
+// or after expiry, the callback is left to expire rather than retried forever.
+func TestWorker_PastExpiryLetsExpire(t *testing.T) {
+	store := newStore(t)
+	base := time.Now().UTC()
+	clk := newClock(base)
+	expires := base.Add(10 * time.Second) // sooner than baseRetryBackoff (30s)
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerMerged, Message: "m", ExpiresAt: &expires,
+	})
+	triggerActive(t, store, cb.ID, clk.now())
+
+	failing := newCaptureDeliverer(errors.New("chat offline"))
+	w := newWorker(store, failing, clk.now, "worker-1")
+
+	// First scan: delivery fails; retry would exceed expiry so it's pinned to
+	// ExpiresAt (kept out of contention).
+	w.scan(context.Background())
+	got, err := store.Get(context.Background(), cb.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	// Pinned to ExpiresAt (millisecond storage precision), well short of the
+	// unpinned base+30s backoff.
+	if got.NextAttemptAt == nil || got.NextAttemptAt.Before(expires.Add(-time.Second)) {
+		t.Errorf("next_attempt_at = %v, want pinned to ~expiry %v", got.NextAttemptAt, expires)
+	}
+	if got.NextAttemptAt != nil && got.NextAttemptAt.After(base.Add(baseRetryBackoff)) {
+		t.Errorf("next_attempt_at = %v, want <= unpinned backoff %v", got.NextAttemptAt, base.Add(baseRetryBackoff))
+	}
+
+	// Advance past expiry and scan again: the lazy sweep reaps it.
+	clk.advance(20 * time.Second)
+	w.scan(context.Background())
+	if st := getState(t, store, cb.ID); st != models.GithubCallbackStateExpired {
+		t.Errorf("state = %q, want expired", st)
+	}
+	if failing.count() != 0 {
+		t.Errorf("deliverer recorded %d successful deliveries, want 0", failing.count())
+	}
+}
+
+// TestWorker_LeaseContention runs two workers concurrently against a file-backed
+// store and asserts exactly one delivery (no double-delivery).
+func TestWorker_LeaseContention(t *testing.T) {
+	store := newFileStore(t)
+	clk := newClock(time.Now())
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerMerged, Message: "once",
+	})
+	triggerActive(t, store, cb.ID, clk.now())
+
+	deliverer := newCaptureDeliverer(nil) // shared, concurrency-safe
+	wA := newWorker(store, deliverer, clk.now, "worker-A")
+	wB := newWorker(store, deliverer, clk.now, "worker-B")
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); wA.deliverOne(context.Background(), cb.ID) }()
+	go func() { defer wg.Done(); wB.deliverOne(context.Background(), cb.ID) }()
+	wg.Wait()
+
+	if deliverer.count() != 1 {
+		t.Errorf("delivered %d times, want exactly 1", deliverer.count())
+	}
+	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateDelivered {
+		t.Errorf("state = %q, want delivered", got)
+	}
+}
+
+// TestWorker_RecoversExpiredLease verifies restart recovery: a lease held by a
+// dead worker is re-acquired by another worker once its deadline passes, and the
+// callback is delivered.
+func TestWorker_RecoversExpiredLease(t *testing.T) {
+	store := newStore(t)
+	base := time.Now().UTC()
+	clk := newClock(base)
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerMerged, Message: "recover me",
+	})
+	triggerActive(t, store, cb.ID, clk.now())
+
+	// Worker A leases the callback then "dies" without delivering.
+	if _, err := store.AcquireLease(context.Background(), cb.ID, "worker-A", clk.now(), DefaultLeaseDuration); err != nil {
+		t.Fatalf("A acquire lease: %v", err)
+	}
+
+	// Worker B, after the lease deadline passes, recovers and delivers.
+	clk.advance(DefaultLeaseDuration + time.Minute)
+	deliverer := newCaptureDeliverer(nil)
+	wB := newWorker(store, deliverer, clk.now, "worker-B")
+	wB.scan(context.Background())
+
+	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateDelivered {
+		t.Errorf("state = %q, want delivered after recovery", got)
+	}
+	if deliverer.count() != 1 {
+		t.Errorf("deliverer called %d times, want 1", deliverer.count())
+	}
+}
+
+// TestWorker_ConcurrentEvaluateAndDeliver exercises an evaluator and a delivery
+// worker against one shared file-backed store to surface races under -race.
+func TestWorker_ConcurrentEvaluateAndDeliver(t *testing.T) {
+	store := newFileStore(t)
+	clk := newClock(time.Now())
+
+	const n = 12
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+			TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: i + 1,
+			Trigger: models.GithubCallbackTriggerMerged, Message: "m",
+		})
+		ids = append(ids, cb.ID)
+	}
+
+	prov := &fakeProvider{status: prStatus(vcs.PRStateMerged)}
+	ev := NewEvaluator(store, prov, clk.now, zerolog.Nop())
+	deliverer := newCaptureDeliverer(nil)
+	w := newWorker(store, deliverer, clk.now, "worker-1")
+
+	var wg sync.WaitGroup
+	// Evaluator fires each PR (concurrently), advancing active -> triggered.
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(pr int) {
+			defer wg.Done()
+			_ = ev.EvaluatePR(context.Background(), "acme", "widgets", pr)
+		}(i + 1)
+	}
+	// Worker scans repeatedly, delivering triggered callbacks.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 20; i++ {
+			w.scan(context.Background())
+		}
+	}()
+	wg.Wait()
+	// Final drain to deliver any triggered after the last evaluate.
+	w.scan(context.Background())
+
+	if deliverer.count() != n {
+		t.Errorf("delivered %d, want %d", deliverer.count(), n)
+	}
+	for _, id := range ids {
+		if got := getState(t, store, id); got != models.GithubCallbackStateDelivered {
+			t.Errorf("callback %s state = %q, want delivered", id, got)
+		}
+	}
+}

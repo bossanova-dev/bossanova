@@ -31,6 +31,7 @@ test('every moved reference is reachable: a body pointer plus an existing file',
     'references/receiving-code-review.md',
     'references/review-stack.md',
     'references/proof-capture.md',
+    'references/callback-watches.md',
     'references/cron-gate.md',
     'references/troubleshooting.md',
     'references/resume-assessment.md',
@@ -448,6 +449,69 @@ test('BOS-303: an empty/bootstrap draft PR placeholder is adopted and resumed, n
     step25,
     /the bootstrap PR \(no create\)/,
     'Step 2.5 must route a bootstrap-only PR to fresh-reuse (adopt), not restart',
+  )
+})
+
+test('BOS-470: CI/PR waits adopt one-shot callbacks with authoritative reconciliation + safe fallback', () => {
+  // The wait steps (green gate Step 8, re-inject Step 9) must arm a grouped one-shot GitHub
+  // callback, reconcile against real PR state before acting, dedup at-least-once delivery, re-arm
+  // while still waiting, and degrade to a bounded poll when callbacks are unavailable. Pin the
+  // contract in the resident body + the deep-dive reference so it can never regress to a naked poll.
+  const skill = claudeBody()
+  const bodyTokens = [
+    'resolveCallbackAdapter', // the callback-notifier adapter seam
+    'scripts/callback/adapter.mjs', // its path
+    'boss callback add', // the generic register CLI (project-agnostic host interface)
+    'policy.watchTriggers', // the grouped trigger set lives in policy, not hard-coded prose
+    'reconcile against real', // authoritative reconciliation before acting
+    'policy.fallbackPoll', // bounded fallback when callbacks are unavailable
+  ]
+  for (const token of bodyTokens) {
+    assert.ok(skill.includes(token), `boss-build SKILL.md must document callback token "${token}"`)
+  }
+  // Both wait points (Step 8 green gate, Step 9 re-inject) point at the callback reference.
+  const step8 = skill.slice(skill.indexOf('## Step 8:'), skill.indexOf('## Step 9:'))
+  const step9 = skill.slice(skill.indexOf('## Step 9:'), skill.indexOf('## Step 10:'))
+  for (const [name, step] of [
+    ['Step 8', step8],
+    ['Step 9', step9],
+  ]) {
+    assert.match(
+      step,
+      /references\/callback-watches\.md/,
+      `${name} must point the CI/PR wait at references/callback-watches.md`,
+    )
+  }
+
+  // The reference nails the four hard invariants: grouped triggers, reconcile-before-act,
+  // idempotent under duplicate delivery, and graceful degradation to the poll.
+  const ref = fs.readFileSync(path.join(rootDir, CORE, 'references/callback-watches.md'), 'utf8')
+  assert.match(
+    ref,
+    /checks_passed[\s\S]*checks_failed[\s\S]*merged/,
+    'reference must name the grouped triggers',
+  )
+  assert.match(ref, /Reconcile before act/i, 'reference must state reconcile-before-act')
+  assert.match(
+    ref,
+    /Idempotent under duplicate/i,
+    'reference must state idempotent-under-duplicate delivery',
+  )
+  assert.match(
+    ref,
+    /Graceful degradation/i,
+    'reference must state graceful degradation to the poll',
+  )
+  assert.match(
+    ref,
+    /gh pr checks .*--watch --fail-fast/,
+    'reference must keep the bounded fallback poll',
+  )
+  // Published-core invariant: no host-specific tracker/MCP identity leaks into the reference.
+  assert.doesNotMatch(
+    ref,
+    /bossanova-(linear|sentry)/,
+    'reference must stay project-agnostic (no project MCP names)',
   )
 })
 

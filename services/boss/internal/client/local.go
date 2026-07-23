@@ -557,6 +557,31 @@ func (c *LocalClient) RunCronJobNow(ctx context.Context, id string) (*pb.RunCron
 	return resp.Msg, nil
 }
 
+// --- GitHub Callbacks ---
+
+func (c *LocalClient) CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error) {
+	resp, err := c.rpc.CreateGithubCallback(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetGithubCallback(), nil
+}
+
+func (c *LocalClient) ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
+	resp, err := c.rpc.ListGithubCallbacks(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetGithubCallbacks(), nil
+}
+
+// DeleteGithubCallback ignores targetChatID: the local daemon owns every
+// callback in its own registry, so the id alone resolves it.
+func (c *LocalClient) DeleteGithubCallback(ctx context.Context, _ string, id string) error {
+	_, err := c.rpc.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{Id: id}))
+	return err
+}
+
 // --- Accounts ---
 
 func (c *LocalClient) ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error) {

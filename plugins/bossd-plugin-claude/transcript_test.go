@@ -281,6 +281,57 @@ func TestTranscriptExistsReturnsFalseForMissing(t *testing.T) {
 	}
 }
 
+func TestPathToProjectKey(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		// Regression (the "Session ID already in use" bug): Claude folds "_" to
+		// "-" like every other non-alphanumeric char. Missing this made a
+		// worktree ".../rlimit_nofile-..." key to ".../rlimit_nofile-..." while
+		// Claude wrote ".../rlimit-nofile-...", so TranscriptExists missed the
+		// file and the attach used --session-id (create) → collision.
+		{name: "underscore folds to dash", path: "/Users/dave/wt/rlimit_nofile-dev", want: "-Users-dave-wt-rlimit-nofile-dev"},
+		{name: "dotdir and separators", path: "/Users/dave/.wt/foo", want: "-Users-dave--wt-foo"},
+		{name: "assorted non-alphanumerics", path: "/a/b_c d@e", want: "-a-b-c-d-e"},
+		{name: "trailing slash cleaned", path: "/Users/dave/wt/", want: "-Users-dave-wt"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pathToProjectKey(tt.path); got != tt.want {
+				t.Errorf("pathToProjectKey(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTranscriptExistsFindsUnderscoreWorktreeTranscript is the end-to-end
+// regression for the reopen bug: the transcript is written at Claude's
+// canonical key (which folds "_"→"-"), and transcriptExists — which derives its
+// lookup path from pathToProjectKey — must still find it for a worktree path
+// containing "_". The expected key is hard-coded so a regression in
+// pathToProjectKey (dropping the "_" fold) makes this fail rather than silently
+// agreeing with the fixture.
+func TestTranscriptExistsFindsUnderscoreWorktreeTranscript(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	work := "/tmp/wt/bos-465-rlimit_nofile-dev"
+	const claudeKey = "-tmp-wt-bos-465-rlimit-nofile-dev" // "_" folded to "-", as Claude writes it
+	dir := filepath.Join(home, ".claude", "projects", claudeKey)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sess.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if !transcriptExists(work, "sess") {
+		t.Error("expected transcriptExists=true for a worktree path containing '_'")
+	}
+}
+
 func TestStripXMLTags(t *testing.T) {
 	tests := []struct {
 		name string

@@ -41,7 +41,7 @@ Workspace facts (do not re-discover). Load the config once in Phase 0 —
 - Statuses by role: the **unplanned** state (start) and the **planned** state (end), resolved from
   `trackerConfigFor(config).states.{unplanned,planned}` (with `inProgress`/`inReview` for the
   active-backlog reads).
-- Existing labels: `agent-friendly`, `needs-human`, `agent-plan`, `agent-question`, `docs`, `bug`, `improvement`, `feature`. Never create labels. `agent-friendly` and `needs-human` are mutually exclusive (every plan gets exactly one).
+- Existing label roles resolve through `labelName(config, '<role>')`: `agent-friendly`, `needs-human`, `agent-plan`, `agent-question`, `epic`, `docs`, `bug`, `improvement`, `feature`. Never create labels. `agent-friendly` and `needs-human` are mutually exclusive (every plan gets exactly one).
 - Tracker priority numeric: `1=Urgent, 2=High, 3=Medium, 4=Low, 0=None`.
 - Dependency links use the tracker's `blocks`/`blocked by` relations. A blocker is "cleared" only
   when its state is `Done` or `Canceled` (PR merged / work dropped); the
@@ -289,16 +289,21 @@ for the Phase 4 secret gate.
 
 ## Phase 2.5 — Epic decomposition (triage = EPIC only)
 
-When triage classifies the ticket **EPIC** — the work spans **multiple independently-shippable
-PRs** and the planner can articulate **≥ 2** genuinely separable PR-sized pieces (fewer ⇒ it is
-`SUBSTANTIAL`, plan as one ticket) — decompose it into a Linear **parent + N fully-planned
-children** wired by an intra-epic `blockedBy` DAG, the exact shape `boss-epic` consumes. The
+When triage classifies the ticket **EPIC** — the honest estimate is **≥ 5**, or the work spans
+**multiple independently-shippable
+PRs** with **≥ 2** genuinely separable PR-sized pieces (an honest `≤ 3` single-PR ticket is
+`SUBSTANTIAL`, plan as one) — decompose it into a Linear **parent + N fully-planned
+children** wired by an intra-epic `blockedBy` DAG, the exact shape `boss-epic` consumes.
+**Estimate is the forcing function:** a single ticket may be estimated only `0/1/2/3`; an honest `5`
+triages EPIC (unless genuinely atomic & un-splittable — then it survives as one ticket with a
+recorded `- Atomic-5:` justification under `## Planning`); an `8` is never a single-ticket estimate. The
 interactive propose → confirm → create flow lives in `references/interactive-mode.md`; the headless
 decompose-and-auto-create flow in `references/headless-drafting-brief.md`. The deterministic core —
 validation, cycle safety, stable creation order, and the tracker-write plan — is the unit-tested
-`scripts/plan-epic-lib.mjs` (`validateDecomposition`, `assertAcyclic`, `topoOrderChildren`,
-`epicWiringPlan`, `stableChildKey`, `epicSpecMarker`, `parseEpicSpecMarker`, `EPIC_MIN_CHILDREN`,
-`EPIC_MAX_CHILDREN`); never re-derive it inline.
+`scripts/plan-epic-lib.mjs` (`validateDecomposition`, `validateLayering`, `assertAcyclic`,
+`topoOrderChildren`, `epicWiringPlan`, `epicParentEstimate`, `stableChildKey`, `epicSpecMarker`,
+`parseEpicSpecMarker`, `EPIC_LABEL`, `EPIC_MIN_CHILDREN`, `EPIC_MAX_CHILDREN`, `CHILD_MAX_ESTIMATE`);
+never re-derive it inline.
 
 **Precondition — the source ticket MUST be unplanned.** The whole epic model depends on it:
 parent-repurpose-last keeps the original in unplanned until the epic is fully built, and idempotent
@@ -433,6 +438,10 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    gates run in step 6, BEFORE child exposure**, so a deterministic parent-gate failure aborts with the
    children still unexposed/unbuildable. So step 7 is the final unplanned → planned
    flip (the last write), the overview + marker already saved above.
+   **Parent estimate, priority, and label:** resolve `EPIC_LABEL` through
+   `labelName(config, 'epic')`, then union that result into the parent labels. The final flip writes
+   `estimate = epicParentEstimate(spec)` and `priority = parent.priority`. The sum can be non-Fibonacci:
+   if `estimate` is rejected, retry without `estimate` and warn, matching Phase 4.
    **Parent-label exception:** the parent carries
    **neither** `agent-friendly` **nor** `needs-human` (it is a `boss-epic` container, not a
    `boss-build` target); each **child** carries exactly one of `agent-friendly`/`needs-human`
@@ -446,8 +455,11 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    `agent-friendly`/`needs-human` label from the parent and drop any stale single-ticket
    `Implementation plan (…)` link** (the parent's only plan link is the epic-overview publish from step 6) with — or immediately before — the final flip.
 
-**Guards (load-bearing — the trigger bar is low + headless auto-creates):** child-count cap
-`EPIC_MAX_CHILDREN = 8` (over ⇒ headless single-ticket fallback), minimum `EPIC_MIN_CHILDREN = 2`
+**Guards (load-bearing — the trigger bar is low + headless auto-creates):** per-child estimate ceiling
+`CHILD_MAX_ESTIMATE = 3` (a `5`/`8` child is rejected ⇒ decompose further; the producer-before-consumer
+soft check `validateLayering` warns on a read/ui child not gated by its producer), child-count cap
+`EPIC_MAX_CHILDREN = 12` (over ⇒ **`needs-human`**, **never** a single oversized ticket — the exact
+monolith this avoids), minimum `EPIC_MIN_CHILDREN = 2`
 (under ⇒ one ticket), **recursion guard** (`allowEpic: false`, no child recursion), **cycle safety**
 (`assertAcyclic` rejects any `blockedByKeys` cycle before writes), **validate-before-write** (zero
 Linear writes on any spec/gate failure), **parent-repurpose-last** (the write-atomicity guard:
@@ -591,8 +603,8 @@ subagent → validate its envelope → fold or skip), against
      `descriptionSummary`, verbatim; interactive: composed per the drafting spec in
      `references/headless-drafting-brief.md` § "Step 7", matching the Phase 3 section contract).
    - **labels**: union of existing labels + relevant ones (`bug`/`feature`/`improvement`/`docs`). **Agent-friendly is the default:** add **`agent-friendly`** to every plan **unless** an autonomous agent genuinely could not complete the task (headless: `agentFriendly == false`) — in that case add **`needs-human`** **instead** (never both) and ensure the plan body carries the **## Why this needs a human** section (see Phase 3). Complexity alone is not a reason for `needs-human` — a large but well-specced ticket is still `agent-friendly`. Add **`agent-question`** (headless only) **if and only if** ≥1 open question was recorded (`openQuestions` non-empty); union it in, never clobber — it is independent of the agent-friendly/needs-human call. When there are none, do not add it. Note: `bs-sweep-plan` strips only `agent-plan` after a successful plan and leaves `agent-question` in place — that persistence is intentional, so do not strip it.
-   - **estimate** (Fibonacci): `0` trivial/minimal · `1`/`2`/`3` well-defined, clear path, no major unknowns · `5` some unknowns, factors discovered during implementation, larger effort · `8` many unknowns, vague/poorly-specced, large.
-   - **priority** (`1-4`): start from the urgency discerned in the interview/recon, then modulate by simplicity (cheap, high-value wins can rank up), positive/business impact, and security (security concerns bias toward Urgent/High). A planned ticket should not stay `0=None`.
+   - **estimate** (Fibonacci): `0` trivial/minimal · `1`/`2`/`3` well-defined single-PR ticket, clear path · `5`/`8` too big for one PR ⇒ **triage EPIC** (Phase 2.5), never a single-ticket estimate (sole exception: a genuinely atomic, un-splittable `5` with a recorded `- Atomic-5:` justification under `## Planning`). Every planned ticket gets a non-null estimate.
+   - **priority** (`1-4`): honor a reporter-set priority. Otherwise rank against the current config-resolved planned (`stateName(config, 'planned')`) backlog, considering urgency, simplicity, positive/business impact, and security (security concerns bias toward Urgent/High). A planned ticket should not stay `0=None`.
 4. Single tracker save op (ops `moveState`/`setPriorityEstimate`; Linear uses `save_issue`, and the
    plan link uses `links` directly — no `linearOperationMap` plan-link op yet) updating the issue by
    `id`:

@@ -22,6 +22,9 @@ import {
   adapterFor,
   trackerConfigFor,
   publishConfigFor,
+  stateName,
+  labelName,
+  githubLabelName,
   isConfiguredForRepo,
   isConfiguredForPlanning,
   planContractVersion,
@@ -532,6 +535,14 @@ function configuredFixture() {
           inProgress: 'Doing',
           inReview: 'Reviewing',
         },
+        labels: {
+          agentPlan: 'planning',
+          agentFriendly: 'friendly',
+          needsHuman: 'human-review',
+          agentQuestion: 'question',
+          bug: 'defect',
+        },
+        githubLabels: { proofInvalid: 'invalid-proof' },
       },
     },
     publishConfig: { store: { bucket: 'demo-bucket', baseUrl: 'https://demo.example.com' } },
@@ -606,6 +617,43 @@ test('trackerConfigFor / publishConfigFor resolve the selected adapter, and acce
   // explicit adapter override
   assert.equal(trackerConfigFor(cfg, 'demo').teamKey, 'DEMO')
   assert.equal(trackerConfigFor(cfg, 'missing'), null)
+})
+
+test('stateName, labelName, and githubLabelName resolve tracker roles', () => {
+  const cfg = configuredFixture()
+  assert.equal(stateName(cfg, 'planned'), 'Ready')
+  assert.equal(labelName(cfg, 'agentFriendly'), 'friendly')
+  assert.equal(githubLabelName(cfg, 'proofInvalid'), 'invalid-proof')
+})
+
+test('stateName, labelName, and githubLabelName fail closed for missing roles', () => {
+  const cfg = configuredFixture()
+  assert.throws(() => stateName(cfg, 'done'), /skill-config:.*states\.done must be configured/)
+  assert.throws(() => labelName(cfg, 'bugfix'), /skill-config:.*labels\.bugfix must be configured/)
+  assert.throws(
+    () => githubLabelName(cfg, 'release'),
+    /skill-config:.*githubLabels\.release must be configured/,
+  )
+})
+
+test('the committed tracker config supplies every operational state and label role', () => {
+  const cfg = loadSkillConfig({ cwd: REPO_ROOT })
+  for (const role of [
+    'backlog',
+    'unplanned',
+    'planned',
+    'inProgress',
+    'inReview',
+    'done',
+    'canceled',
+    'duplicate',
+  ]) {
+    assert.ok(stateName(cfg, role).length > 0, `missing state role ${role}`)
+  }
+  for (const role of ['agentPlan', 'agentFriendly', 'needsHuman', 'agentQuestion', 'epic', 'bug']) {
+    assert.ok(labelName(cfg, role).length > 0, `missing label role ${role}`)
+  }
+  assert.ok(githubLabelName(cfg, 'proofInvalid').length > 0)
 })
 
 test('BOS-458: adapters.tracker selects the config with TRACKER env unset (no baked-in linear)', () => {
@@ -698,6 +746,38 @@ test('validateConfig rejects malformed states / publishConfig', () => {
   )
 })
 
+test('validateConfig rejects malformed tracker label maps', () => {
+  const tracker = { mcpServer: 'x', team: 'T' }
+  assert.throws(
+    () =>
+      validateConfig(
+        mergeConfig(DEFAULT_CONFIG, { trackerConfig: { demo: { ...tracker, labels: [] } } }),
+        't',
+      ),
+    /skill-config:.*trackerConfig\.demo\.labels must be an object when present/,
+  )
+  assert.throws(
+    () =>
+      validateConfig(
+        mergeConfig(DEFAULT_CONFIG, {
+          trackerConfig: { demo: { ...tracker, labels: { agentPlan: '' } } },
+        }),
+        't',
+      ),
+    /skill-config:.*trackerConfig\.demo\.labels\.agentPlan must be a non-empty string/,
+  )
+  assert.throws(
+    () =>
+      validateConfig(
+        mergeConfig(DEFAULT_CONFIG, {
+          trackerConfig: { demo: { ...tracker, githubLabels: { proofInvalid: 7 } } },
+        }),
+        't',
+      ),
+    /skill-config:.*trackerConfig\.demo\.githubLabels\.proofInvalid must be a non-empty string/,
+  )
+})
+
 test('validateConfig accepts a minimal tracker block (mcpServer + team only)', () => {
   // teamKey / workspace / states are optional; a block with just the two load-bearing
   // fields must validate (and read as configured).
@@ -758,11 +838,24 @@ test('the committed .boss-skills.json reproduces the current hard-coded values',
   const tc = trackerConfigFor(cfg)
   assert.ok(tc.mcpServer.length > 0 && tc.team.length > 0 && tc.teamKey.length > 0)
   assert.deepEqual(Object.keys(tc.states).sort(), [
+    'backlog',
+    'canceled',
+    'done',
+    'duplicate',
     'inProgress',
     'inReview',
     'planned',
     'unplanned',
   ])
+  assert.deepEqual(Object.keys(tc.labels).sort(), [
+    'agentFriendly',
+    'agentPlan',
+    'agentQuestion',
+    'bug',
+    'epic',
+    'needsHuman',
+  ])
+  assert.deepEqual(Object.keys(tc.githubLabels), ['proofInvalid'])
   const pc = publishConfigFor(cfg)
   assert.ok(pc.bucket.length > 0)
   assert.match(pc.baseUrl, /^https:\/\//)

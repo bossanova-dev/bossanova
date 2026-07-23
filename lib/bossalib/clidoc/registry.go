@@ -122,6 +122,57 @@ func newRegistry() map[string]Prose {
 			},
 		},
 
+		// --- GitHub Callbacks ---
+		"boss callback": {
+			Long: "A GitHub callback is a durable, one-shot notification: it fires a " +
+				"prompt into a chat once a pull request reaches a chosen state, then " +
+				"retires. Use it to answer natural-language asks like \"tell me when PR " +
+				"#123 is merged\", \"ping this chat when PR #123 goes green\", \"let me " +
+				"know if PR #123's checks fail\", or \"notify me when PR #123 is closed\". " +
+				"Triggers map to those phrasings: `merged`, `checks_passed` (green), " +
+				"`checks_failed` (red), and `closed`. Delivery only signals that the " +
+				"event fired — always verify the PR's actual state before acting on it. " +
+				"Callbacks expire after 24h by default and may not outlive 30 days.",
+		},
+		"boss callback add": {
+			Long: "Register a one-shot callback. `<pr>` is a bare PR number (resolved " +
+				"against the current repository) or a full " +
+				"`https://github.com/owner/repo/pull/N` URL. `<trigger>` is one of " +
+				"`merged`, `closed`, `checks_passed`, or `checks_failed`. The `--message` " +
+				"prompt is delivered verbatim to the target chat when the callback fires " +
+				"and is treated as a secret — it is never echoed back on any surface. " +
+				"Expiry defaults to 24h and may not exceed 30 days.",
+			Examples: []Example{
+				{
+					Command:     `boss callback add 123 merged --message "PR #123 merged — pull main and redeploy"`,
+					Explanation: `"tell me when PR #123 is merged"`,
+				},
+				{
+					Command:     `boss callback add 123 checks_passed --message "PR #123 is green — start the release"`,
+					Explanation: `"ping this chat when PR #123 goes green"`,
+				},
+				{
+					Command:     `boss callback add 123 checks_failed --message "PR #123 is red — investigate the failing checks"`,
+					Explanation: `"let me know if PR #123's checks fail"`,
+				},
+				{
+					Command: `boss callback add https://github.com/acme/widget/pull/123 closed ` +
+						`--message "PR #123 was closed" --expires-in 7d`,
+					Explanation: `"notify me when PR #123 is closed" (full URL, longer expiry)`,
+				},
+			},
+		},
+		"boss callback list": {
+			Examples: []Example{
+				{Command: "boss callback list"},
+				{Command: "boss callback list --repo acme/widget --trigger merged"},
+				{Command: "boss callback list --json"},
+			},
+		},
+		"boss callback remove": {
+			Examples: []Example{{Command: "boss callback remove cb_abc123"}},
+		},
+
 		// --- Trash Management ---
 		"boss trash ls": {
 			Examples: []Example{{Command: "boss trash ls"}},

@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "title": "BOS-482 respawn-in-place — refreshed-auth outcomes and cap-exhausted hint render",
+  "fixture": { "preset": "respawn-history" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the home list warns that the in-place respawn cap was reached",
+      "steps": [
+        {
+          "waitFor": "Auth-wedge respawn demo",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded (respawn-history preset)"
+        },
+        {
+          "expect": {
+            "text": "Auth-wedge respawn demo",
+            "match": "normalized",
+            "label": "the respawn-history session is listed"
+          },
+          "caption": "The session carrying respawn-in-place history is on the home list"
+        },
+        {
+          "expect": {
+            "text": "respawn cap reached, may need /login",
+            "match": "normalized",
+            "label": "the cap-exhausted needs-attention hint renders on the home list"
+          },
+          "caption": "The newest RESPAWN_CAP_EXHAUSTED event fires the danger-styled home-list warning hint (BOS-482)"
+        },
+        { "key": "enter", "caption": "Open the session's chat-picker detail" }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the chat-picker rotation block shows both refreshed-auth outcomes",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "refreshed auth in place",
+            "match": "normalized",
+            "label": "respawn-in-place rotation history rendered in the chat-picker view"
+          },
+          "timeoutMs": 10000,
+          "caption": "The respawn-in-place rotation block is present in the chat-picker view"
+        },
+        {
+          "expect": {
+            "text": "refreshed auth in place on dave@kamik.ai",
+            "match": "normalized",
+            "label": "RESPAWNED_SAME_ACCOUNT with a to_account renders the account-scoped label"
+          },
+          "caption": "A respawn that re-bound an account shows 'refreshed auth in place on <account>'"
+        },
+        {
+          "expect": {
+            "text": "auth-wedge respawn cap reached",
+            "match": "normalized",
+            "label": "RESPAWN_CAP_EXHAUSTED renders its rotation-history label"
+          },
+          "caption": "The cap-exhausted event renders 'auth-wedge respawn cap reached' in the history block (BOS-482)"
+        },
+        {
+          "expect": {
+            "text": "[esc] back",
+            "match": "normalized",
+            "label": "the chat-picker action bar is present"
+          },
+          "caption": "The [esc] back action bar renders with the populated chat table"
+        }
+      ]
+    }
+  ]
+}

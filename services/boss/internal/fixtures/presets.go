@@ -120,6 +120,18 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// respawn-history: one active session whose rotation history carries the
+		// two BOS-482 respawn-in-place outcomes, for the chat-picker proof scenario
+		// that shows both RESPAWNED_SAME_ACCOUNT label shapes ("refreshed auth in
+		// place" and "…on <account>") plus the newest RESPAWN_CAP_EXHAUSTED event
+		// ("auth-wedge respawn cap reached"), which also fires the home-list
+		// needs-attention hint. Carries the same cloud-access e2e pin as demo so
+		// boss lands on the home session list.
+		"respawn-history": {
+			World:      RespawnHistoryWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		// errored-status: two errored (orphaned + blocked) sessions whose live
 		// chat is working, for the BOS-430 session-list proof scenario. The home
 		// STATUS column must show the real "working" status recolored red (danger)

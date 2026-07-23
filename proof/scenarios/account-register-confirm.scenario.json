@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "title": "BOS-476 add-account confirmation uses selectable Yes and No buttons",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "Claude account setup presents a focused Yes button beside No",
+      "steps": [
+        { "key": "s", "caption": "Open Settings" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        { "key": "a", "caption": "Open Accounts" },
+        {
+          "waitFor": { "text": "Accounts", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Accounts list visible"
+        },
+        { "key": "a", "caption": "Start adding an account" },
+        {
+          "waitFor": { "text": "Choose a provider", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Provider chooser visible"
+        },
+        { "key": "enter", "caption": "Choose Claude" },
+        {
+          "waitFor": { "text": "walkthrough now?", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Claude walkthrough confirmation visible"
+        },
+        {
+          "expect": [
+            {
+              "text": "walkthrough now?",
+              "match": "normalized",
+              "label": "walkthrough confirmation prompt"
+            },
+            { "text": "Yes", "match": "normalized", "label": "Yes button" },
+            { "text": "No", "match": "normalized", "label": "No button" },
+            {
+              "text": "[←/→] select",
+              "match": "normalized",
+              "label": "button selection action bar"
+            }
+          ],
+          "caption": "The default Yes button and dim No button replace a typed prompt"
+        },
+        { "key": "right", "caption": "Move focus from Yes to No" },
+        {
+          "expect": [
+            { "text": "Yes", "match": "normalized", "label": "Yes remains visible" },
+            { "text": "No", "match": "normalized", "label": "No remains visible" }
+          ],
+          "caption": "Video replay captures focus moving to No"
+        }
+      ]
+    }
+  ]
+}

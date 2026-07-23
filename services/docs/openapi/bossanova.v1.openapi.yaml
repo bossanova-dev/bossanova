@@ -583,6 +583,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyCreateCronJobResponse'
+  /bossanova.v1.OrchestratorService/ProxyCreateGithubCallback:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyCreateGithubCallback
+      description: |-
+        GitHub-callback proxies for remote-CLI callback management (BOS-469). All
+         route to the owning daemon by target_chat_id via FindDaemonForChat, reusing
+         the caller's own auth — a foreign chat resolves to NotFound so no cross-user
+         registration can dispatch. Create/Delete require target_chat_id; List routes
+         by target_chat_id when set, else aggregates across the caller's Ready daemons.
+      operationId: bossanova.v1.OrchestratorService.ProxyCreateGithubCallback
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyCreateGithubCallbackRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyCreateGithubCallbackResponse'
   /bossanova.v1.OrchestratorService/ProxyCreateSession: {}
   /bossanova.v1.OrchestratorService/ProxyDeleteChat:
     post:
@@ -655,6 +696,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyDeleteCronJobResponse'
+  /bossanova.v1.OrchestratorService/ProxyDeleteGithubCallback:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyDeleteGithubCallback
+      operationId: bossanova.v1.OrchestratorService.ProxyDeleteGithubCallback
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyDeleteGithubCallbackRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyDeleteGithubCallbackResponse'
   /bossanova.v1.OrchestratorService/ProxyEmptyTrash:
     post:
       tags:
@@ -1144,6 +1220,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyListCronJobsResponse'
+  /bossanova.v1.OrchestratorService/ProxyListGithubCallbacks:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyListGithubCallbacks
+      operationId: bossanova.v1.OrchestratorService.ProxyListGithubCallbacks
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyListGithubCallbacksRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyListGithubCallbacksResponse'
   /bossanova.v1.OrchestratorService/ProxyListPlugins:
     post:
       tags:
@@ -2933,6 +3044,39 @@ components:
              not inject input into the tmux pane after launch.
       title: BuildInteractiveCommandResponse
       additionalProperties: false
+    bossanova.v1.CallbackInterest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: Canonical repository origin URL (matches WebhookEvent.repo_origin_url).
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+          description: Pull request number the daemon holds callbacks for.
+      title: CallbackInterest
+      additionalProperties: false
+      description: |-
+        CallbackInterest advertises that a daemon holds one or more active GitHub
+         callbacks awaiting a verified state change on a repository + pull request.
+         bosso routes matching verified webhook signals to the advertising daemon even
+         when it owns no live session for that PR — interests are additive to session
+         ownership, never modeled as synthetic sessions.
+    bossanova.v1.CallbackInterestSet:
+      type: object
+      properties:
+        interests:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.CallbackInterest'
+          title: interests
+      title: CallbackInterestSet
+      additionalProperties: false
+      description: |-
+        CallbackInterestSet is a daemon's complete current callback-interest set,
+         carried on the DaemonEvent stream to refresh interests while connected.
     bossanova.v1.CancelWorkflowRequest:
       type: object
       properties:
@@ -3412,6 +3556,15 @@ components:
                 - createCronJob
             - type: object
               properties:
+                createGithubCallback:
+                  title: create_github_callback
+                  description: CreateGithubCallback returns the registered callback (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.CreateGithubCallbackResponse'
+              title: create_github_callback
+              required:
+                - createGithubCallback
+            - type: object
+              properties:
                 emptyTrash:
                   title: empty_trash
                   description: |-
@@ -3504,6 +3657,17 @@ components:
               title: list_cron_jobs
               required:
                 - listCronJobs
+            - type: object
+              properties:
+                listGithubCallbacks:
+                  title: list_github_callbacks
+                  description: |-
+                    ListGithubCallbacks returns the matching callbacks (reuses daemon.proto type).
+                     DeleteGithubCallback is Ok-only (no payload).
+                  $ref: '#/components/schemas/bossanova.v1.ListGithubCallbacksResponse'
+              title: list_github_callbacks
+              required:
+                - listGithubCallbacks
             - type: object
               properties:
                 listPlugins:
@@ -3898,6 +4062,94 @@ components:
       description: |-
         CreateError carries a human-readable failure reason for a CreateSession that
          could not complete. It is the terminal frame on the error path.
+    bossanova.v1.CreateGithubCallbackCommand:
+      type: object
+      properties:
+        groupId:
+          type:
+            - string
+            - "null"
+          title: group_id
+        targetChatId:
+          type: string
+          title: target_chat_id
+        repoOwner:
+          type: string
+          title: repo_owner
+        repoName:
+          type: string
+          title: repo_name
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+        trigger:
+          type: string
+          title: trigger
+        message:
+          type: string
+          title: message
+        expiresAt:
+          oneOf:
+            - $ref: '#/components/schemas/google.protobuf.Timestamp'
+            - type: "null"
+          title: expires_at
+      title: CreateGithubCallbackCommand
+      additionalProperties: false
+      description: |-
+        CreateGithubCallbackCommand registers a GitHub callback. Mirrors daemon.proto's
+         CreateGithubCallbackRequest. Replies with CommandResult carrying a
+         CreateGithubCallbackResponse (create_github_callback = 34).
+    bossanova.v1.CreateGithubCallbackRequest:
+      type: object
+      properties:
+        groupId:
+          type:
+            - string
+            - "null"
+          title: group_id
+          description: |-
+            Optional group id; unset/empty = ungrouped (a group of one). Callbacks in
+             one group are siblings: the first to trigger cancels the rest.
+        targetChatId:
+          type: string
+          title: target_chat_id
+        repoOwner:
+          type: string
+          title: repo_owner
+        repoName:
+          type: string
+          title: repo_name
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+        trigger:
+          type: string
+          title: trigger
+          description: merged | closed | checks_passed | checks_failed
+        message:
+          type: string
+          title: message
+          description: prompt body delivered on fire; stored verbatim
+        expiresAt:
+          oneOf:
+            - $ref: '#/components/schemas/google.protobuf.Timestamp'
+            - type: "null"
+          title: expires_at
+          description: |-
+            Optional explicit expiry. Unset = server default (24h). Must be in the
+             future and within 30 days, else InvalidArgument.
+      title: CreateGithubCallbackRequest
+      additionalProperties: false
+    bossanova.v1.CreateGithubCallbackResponse:
+      type: object
+      properties:
+        githubCallback:
+          title: github_callback
+          $ref: '#/components/schemas/bossanova.v1.GithubCallback'
+      title: CreateGithubCallbackResponse
+      additionalProperties: false
     bossanova.v1.CreatePROpts:
       type: object
       properties:
@@ -4029,6 +4281,13 @@ components:
           description: |-
             Mirror CreateSessionRequest.force_branch so reverse-stream hosted creates
              preserve the local socket path's branch replacement behavior.
+        deferPr:
+          type: boolean
+          title: defer_pr
+          description: |-
+            Mirror CreateSessionRequest.defer_pr so reverse-stream hosted creates skip
+             the up-front draft PR (PR opened at finalize only if commits land), matching
+             the local socket path. Default false = unchanged eager draft-PR behavior.
       title: CreateSessionCommand
       additionalProperties: false
       description: |-
@@ -4141,6 +4400,16 @@ components:
              applies the default-account policy; present-and-empty ("") is an explicit
              system-default account 0 opt-out (no injected env, D9); present-and-non-empty
              binds that account.
+        deferPr:
+          type: boolean
+          title: defer_pr
+          description: |-
+            If true, create the worktree-backed session but do NOT open a draft PR up
+             front. A PR is opened only at finalize (the Stop-hook EnsurePR path) if the
+             run produces commits. Default false = unchanged eager behavior: an empty
+             draft PR is opened at session start. Meaningful only alongside
+             detach/is_tmux_unattended, which install the finalize hook; useful for
+             read-only/planning sessions. Mirrors StartSessionOpts.DeferPR (used by cron).
       title: CreateSessionRequest
       additionalProperties: false
     bossanova.v1.CreateSessionResponse:
@@ -4333,6 +4602,21 @@ components:
             - attachChunk
         - type: object
           properties:
+            callbackInterests:
+              title: callback_interests
+              description: |-
+                The daemon's complete current GitHub callback-interest set, re-advertised
+                 whenever a callback is created, deleted, triggered, or expires. bosso
+                 replaces the daemon's interest set on receipt (snapshot semantics), so
+                 withdrawal after a terminal transition is automatic — an empty set means
+                 the daemon holds no callbacks. The connect-time set rides DaemonSnapshot
+                 (field 7); this delta refreshes it while the stream stays up.
+              $ref: '#/components/schemas/bossanova.v1.CallbackInterestSet'
+          title: callback_interests
+          required:
+            - callbackInterests
+        - type: object
+          properties:
             chat:
               title: chat
               $ref: '#/components/schemas/bossanova.v1.ChatDelta'
@@ -4500,6 +4784,16 @@ components:
             $ref: '#/components/schemas/bossanova.v1.ChatStatusEntry'
           title: statuses
           description: Live chat statuses keyed by agent_session_id (reuses ChatStatusEntry from daemon.proto).
+        callbackInterests:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.CallbackInterest'
+          title: callback_interests
+          description: |-
+            The daemon's GitHub callback interests at connect time (repo + PR). Carried
+             on the snapshot so a (re)connect reconciles interests atomically with the
+             rest of the read model; steady-state changes arrive as CallbackInterestSet
+             deltas (DaemonEvent field 10).
       title: DaemonSnapshot
       additionalProperties: false
       description: |-
@@ -4568,6 +4862,30 @@ components:
     bossanova.v1.DeleteCronJobResponse:
       type: object
       title: DeleteCronJobResponse
+      additionalProperties: false
+    bossanova.v1.DeleteGithubCallbackCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: DeleteGithubCallbackCommand
+      additionalProperties: false
+      description: |-
+        DeleteGithubCallbackCommand deletes a GitHub callback by id. Mirrors
+         daemon.proto's DeleteGithubCallbackRequest. Replies with CommandResult{ok:true}
+         and no payload.
+    bossanova.v1.DeleteGithubCallbackRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: DeleteGithubCallbackRequest
+      additionalProperties: false
+    bossanova.v1.DeleteGithubCallbackResponse:
+      type: object
+      title: DeleteGithubCallbackResponse
       additionalProperties: false
     bossanova.v1.DeleteWebhookConfigRequest:
       type: object
@@ -5258,6 +5576,86 @@ components:
           title: last_error
       title: GitHubAppRepoStatus
       additionalProperties: false
+    bossanova.v1.GithubCallback:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        groupId:
+          type: string
+          title: group_id
+          description: empty = ungrouped (a group of one)
+        targetChatId:
+          type: string
+          title: target_chat_id
+        repoOwner:
+          type: string
+          title: repo_owner
+        repoName:
+          type: string
+          title: repo_name
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+        trigger:
+          type: string
+          title: trigger
+          description: merged | closed | checks_passed | checks_failed
+        state:
+          type: string
+          title: state
+          description: active | leased | triggered | delivered | canceled | expired
+        message:
+          type: string
+          title: message
+          description: registered prompt body; secret — never logged
+        leaseOwner:
+          type: string
+          title: lease_owner
+          description: empty = no active lease
+        attemptCount:
+          type: integer
+          title: attempt_count
+          format: int32
+        lastError:
+          type: string
+          title: last_error
+          description: delivery diagnostic; empty = none. Never the message body.
+        lastEvent:
+          type: string
+          title: last_event
+          description: last matched event label; empty = none. Never the message body.
+        leaseDeadlineAt:
+          title: lease_deadline_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        nextAttemptAt:
+          title: next_attempt_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        triggeredAt:
+          title: triggered_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        deliveredAt:
+          title: delivered_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        expiresAt:
+          title: expires_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        updatedAt:
+          title: updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: GithubCallback
+      additionalProperties: false
+      description: |-
+        GithubCallback is a durable one-shot registration that delivers a chat
+         message when a pull-request event fires (BOS-467). It mirrors the daemon's
+         domain model; timestamps use google.protobuf.Timestamp and enum-like fields
+         are stable lowercase strings. The message body is a secret payload — it is
+         carried here for the registering owner but must never be logged.
     bossanova.v1.GlobalSettings:
       type: object
       properties:
@@ -5762,6 +6160,93 @@ components:
           title: repos
       title: ListGitHubAppReposResponse
       additionalProperties: false
+    bossanova.v1.ListGithubCallbacksCommand:
+      type: object
+      properties:
+        targetChatId:
+          type:
+            - string
+            - "null"
+          title: target_chat_id
+        repoOwner:
+          type:
+            - string
+            - "null"
+          title: repo_owner
+        repoName:
+          type:
+            - string
+            - "null"
+          title: repo_name
+        prNumber:
+          type:
+            - integer
+            - "null"
+          title: pr_number
+          format: int32
+        trigger:
+          type:
+            - string
+            - "null"
+          title: trigger
+        state:
+          type:
+            - string
+            - "null"
+          title: state
+      title: ListGithubCallbacksCommand
+      additionalProperties: false
+      description: |-
+        ListGithubCallbacksCommand lists GitHub callbacks. Mirrors daemon.proto's
+         ListGithubCallbacksRequest. Replies with CommandResult carrying a
+         ListGithubCallbacksResponse (list_github_callbacks = 35).
+    bossanova.v1.ListGithubCallbacksRequest:
+      type: object
+      properties:
+        targetChatId:
+          type:
+            - string
+            - "null"
+          title: target_chat_id
+          description: All filters optional; an unset field is not constrained.
+        repoOwner:
+          type:
+            - string
+            - "null"
+          title: repo_owner
+        repoName:
+          type:
+            - string
+            - "null"
+          title: repo_name
+        prNumber:
+          type:
+            - integer
+            - "null"
+          title: pr_number
+          format: int32
+        trigger:
+          type:
+            - string
+            - "null"
+          title: trigger
+        state:
+          type:
+            - string
+            - "null"
+          title: state
+      title: ListGithubCallbacksRequest
+      additionalProperties: false
+    bossanova.v1.ListGithubCallbacksResponse:
+      type: object
+      properties:
+        githubCallbacks:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.GithubCallback'
+          title: github_callbacks
+      title: ListGithubCallbacksResponse
+      additionalProperties: false
     bossanova.v1.ListIgnoredDirtyFilesRequest:
       type: object
       properties:
@@ -6212,6 +6697,15 @@ components:
                 - createCronJob
             - type: object
               properties:
+                createGithubCallback:
+                  title: create_github_callback
+                  description: 'bosso → daemon: register a GitHub callback. Replies CommandResult{create_github_callback}.'
+                  $ref: '#/components/schemas/bossanova.v1.CreateGithubCallbackCommand'
+              title: create_github_callback
+              required:
+                - createGithubCallback
+            - type: object
+              properties:
                 createSession:
                   title: create_session
                   description: |-
@@ -6240,6 +6734,15 @@ components:
               title: delete_cron_job
               required:
                 - deleteCronJob
+            - type: object
+              properties:
+                deleteGithubCallback:
+                  title: delete_github_callback
+                  description: 'bosso → daemon: delete a GitHub callback by id. Replies CommandResult{Ok} with no payload.'
+                  $ref: '#/components/schemas/bossanova.v1.DeleteGithubCallbackCommand'
+              title: delete_github_callback
+              required:
+                - deleteGithubCallback
             - type: object
               properties:
                 emptyTrash:
@@ -6343,6 +6846,15 @@ components:
               title: list_cron_jobs
               required:
                 - listCronJobs
+            - type: object
+              properties:
+                listGithubCallbacks:
+                  title: list_github_callbacks
+                  description: 'bosso → daemon: list GitHub callbacks. Replies CommandResult{list_github_callbacks}.'
+                  $ref: '#/components/schemas/bossanova.v1.ListGithubCallbacksCommand'
+              title: list_github_callbacks
+              required:
+                - listGithubCallbacks
             - type: object
               properties:
                 listPlugins:
@@ -7114,6 +7626,52 @@ components:
           $ref: '#/components/schemas/bossanova.v1.CronJob'
       title: ProxyCreateCronJobResponse
       additionalProperties: false
+    bossanova.v1.ProxyCreateGithubCallbackRequest:
+      type: object
+      properties:
+        groupId:
+          type:
+            - string
+            - "null"
+          title: group_id
+        targetChatId:
+          type: string
+          title: target_chat_id
+        repoOwner:
+          type: string
+          title: repo_owner
+        repoName:
+          type: string
+          title: repo_name
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+        trigger:
+          type: string
+          title: trigger
+        message:
+          type: string
+          title: message
+        expiresAt:
+          oneOf:
+            - $ref: '#/components/schemas/google.protobuf.Timestamp'
+            - type: "null"
+          title: expires_at
+      title: ProxyCreateGithubCallbackRequest
+      additionalProperties: false
+      description: |-
+        GitHub-callback proxy messages (BOS-469). The create/list requests mirror the
+         daemon.proto field sets; target_chat_id is the routing key. Delete carries
+         target_chat_id purely for routing (the daemon addresses the callback by id).
+    bossanova.v1.ProxyCreateGithubCallbackResponse:
+      type: object
+      properties:
+        githubCallback:
+          title: github_callback
+          $ref: '#/components/schemas/bossanova.v1.GithubCallback'
+      title: ProxyCreateGithubCallbackResponse
+      additionalProperties: false
     bossanova.v1.ProxyCreateSessionRequest:
       type: object
       properties:
@@ -7205,6 +7763,13 @@ components:
           description: |-
             Mirror CreateSessionRequest.force_branch so hosted MCP create_session can
              intentionally replace an existing branch, matching the local socket path.
+        deferPr:
+          type: boolean
+          title: defer_pr
+          description: |-
+            Mirror CreateSessionRequest.defer_pr so hosted MCP create_session can skip
+             the up-front draft PR (PR opened at finalize only if commits land), matching
+             the local socket path. Default false = unchanged eager draft-PR behavior.
       title: ProxyCreateSessionRequest
       additionalProperties: false
       description: |-
@@ -7283,6 +7848,22 @@ components:
     bossanova.v1.ProxyDeleteCronJobResponse:
       type: object
       title: ProxyDeleteCronJobResponse
+      additionalProperties: false
+    bossanova.v1.ProxyDeleteGithubCallbackRequest:
+      type: object
+      properties:
+        targetChatId:
+          type: string
+          title: target_chat_id
+          description: routing key (FindDaemonForChat)
+        id:
+          type: string
+          title: id
+      title: ProxyDeleteGithubCallbackRequest
+      additionalProperties: false
+    bossanova.v1.ProxyDeleteGithubCallbackResponse:
+      type: object
+      title: ProxyDeleteGithubCallbackResponse
       additionalProperties: false
     bossanova.v1.ProxyEmptyTrashRequest:
       type: object
@@ -7568,6 +8149,52 @@ components:
             $ref: '#/components/schemas/bossanova.v1.CronJobWithDaemon'
           title: jobs
       title: ProxyListCronJobsResponse
+      additionalProperties: false
+    bossanova.v1.ProxyListGithubCallbacksRequest:
+      type: object
+      properties:
+        targetChatId:
+          type:
+            - string
+            - "null"
+          title: target_chat_id
+        repoOwner:
+          type:
+            - string
+            - "null"
+          title: repo_owner
+        repoName:
+          type:
+            - string
+            - "null"
+          title: repo_name
+        prNumber:
+          type:
+            - integer
+            - "null"
+          title: pr_number
+          format: int32
+        trigger:
+          type:
+            - string
+            - "null"
+          title: trigger
+        state:
+          type:
+            - string
+            - "null"
+          title: state
+      title: ProxyListGithubCallbacksRequest
+      additionalProperties: false
+    bossanova.v1.ProxyListGithubCallbacksResponse:
+      type: object
+      properties:
+        githubCallbacks:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.GithubCallback'
+          title: github_callbacks
+      title: ProxyListGithubCallbacksResponse
       additionalProperties: false
     bossanova.v1.ProxyListPluginsRequest:
       type: object
@@ -9463,6 +10090,8 @@ components:
         - ROTATION_OUTCOME_EXHAUSTED
         - ROTATION_OUTCOME_FAILED
         - ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT
+        - ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT
+        - ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED
       description: RotationOutcome says what the rotation engine decided. (BOS-176)
     bossanova.v1.RotationTrigger:
       type: string

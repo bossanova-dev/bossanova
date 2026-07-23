@@ -22,6 +22,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/socketauth"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -43,13 +44,14 @@ func cloneMsg[T proto.Message](m T) T {
 // interface with in-memory data. Only the RPCs actually used by the TUI are
 // implemented; the rest return Unimplemented.
 type MockDaemon struct {
-	mu            sync.RWMutex
-	repos         []*pb.Repo
-	sessions      []*pb.Session
-	chats         []*pb.ClaudeChat
-	cronJobs      map[string]*pb.CronJob        // keyed by cron job ID
-	prs           map[string][]*pb.PRSummary    // keyed by repo ID
-	trackerIssues map[string][]*pb.TrackerIssue // keyed by repo ID
+	mu              sync.RWMutex
+	repos           []*pb.Repo
+	sessions        []*pb.Session
+	chats           []*pb.ClaudeChat
+	cronJobs        map[string]*pb.CronJob        // keyed by cron job ID
+	githubCallbacks map[string]*pb.GithubCallback // keyed by callback ID
+	prs             map[string][]*pb.PRSummary    // keyed by repo ID
+	trackerIssues   map[string][]*pb.TrackerIssue // keyed by repo ID
 
 	// lastCreateSession records the most recent CreateSession request so tests
 	// can assert on what the TUI sent (e.g. that filter-narrowed selection uses
@@ -105,6 +107,18 @@ type MockDaemon struct {
 
 	// runCronJobNowCalls records every RunCronJobNow id.
 	runCronJobNowCalls []string
+
+	// githubCallbackCounter generates deterministic callback IDs.
+	githubCallbackCounter int
+
+	// createGithubCallbackCalls records every CreateGithubCallback request.
+	createGithubCallbackCalls []*pb.CreateGithubCallbackRequest
+
+	// listGithubCallbackCalls records every ListGithubCallbacks request.
+	listGithubCallbackCalls []*pb.ListGithubCallbacksRequest
+
+	// deleteGithubCallbackCalls records every DeleteGithubCallback id.
+	deleteGithubCallbackCalls []string
 
 	// runCronJobNowMode controls RunCronJobNow behaviour.
 	// "" or "alwaysRun" → return a synthesized Session.
@@ -163,6 +177,7 @@ func StartMockDaemon(socketPath string) (*MockDaemon, func() error, error) {
 		socketPath:         socketPath,
 		listener:           ln,
 		cronJobs:           make(map[string]*pb.CronJob),
+		githubCallbacks:    make(map[string]*pb.GithubCallback),
 		accounts:           make(map[string]*pb.Account),
 		accountCredentials: make(map[string][]byte),
 		prs:                make(map[string][]*pb.PRSummary),
@@ -286,6 +301,40 @@ func (m *MockDaemon) AddCronJob(job *pb.CronJob) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cronJobs[job.Id] = job
+}
+
+// AddGithubCallback seeds the mock daemon with a GitHub callback.
+func (m *MockDaemon) AddGithubCallback(cb *pb.GithubCallback) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.githubCallbacks[cb.Id] = cb
+}
+
+// CreateGithubCallbackCalls returns a copy of every CreateGithubCallback request.
+func (m *MockDaemon) CreateGithubCallbackCalls() []*pb.CreateGithubCallbackRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.CreateGithubCallbackRequest, len(m.createGithubCallbackCalls))
+	copy(out, m.createGithubCallbackCalls)
+	return out
+}
+
+// ListGithubCallbackCalls returns a copy of every ListGithubCallbacks request.
+func (m *MockDaemon) ListGithubCallbackCalls() []*pb.ListGithubCallbacksRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.ListGithubCallbacksRequest, len(m.listGithubCallbackCalls))
+	copy(out, m.listGithubCallbackCalls)
+	return out
+}
+
+// DeleteGithubCallbackCalls returns a copy of every DeleteGithubCallback id.
+func (m *MockDaemon) DeleteGithubCallbackCalls() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]string, len(m.deleteGithubCallbackCalls))
+	copy(out, m.deleteGithubCallbackCalls)
+	return out
 }
 
 // CronJobs returns a snapshot of all cron jobs in the mock.
@@ -1141,6 +1190,68 @@ func (m *MockDaemon) DeleteCronJob(_ context.Context, req *connect.Request[pb.De
 	}
 	delete(m.cronJobs, req.Msg.Id)
 	return connect.NewResponse(&pb.DeleteCronJobResponse{}), nil
+}
+
+func (m *MockDaemon) CreateGithubCallback(_ context.Context, req *connect.Request[pb.CreateGithubCallbackRequest]) (*connect.Response[pb.CreateGithubCallbackResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.createGithubCallbackCalls = append(m.createGithubCallbackCalls, cloneMsg(req.Msg))
+	m.githubCallbackCounter++
+	cb := &pb.GithubCallback{
+		Id:           fmt.Sprintf("cb-%d", m.githubCallbackCounter),
+		TargetChatId: req.Msg.TargetChatId,
+		RepoOwner:    req.Msg.RepoOwner,
+		RepoName:     req.Msg.RepoName,
+		PrNumber:     req.Msg.PrNumber,
+		Trigger:      req.Msg.Trigger,
+		State:        string(models.GithubCallbackStateActive),
+		ExpiresAt:    req.Msg.ExpiresAt,
+	}
+	if req.Msg.GroupId != nil {
+		cb.GroupId = req.Msg.GetGroupId()
+	}
+	m.githubCallbacks[cb.Id] = cb
+	return connect.NewResponse(&pb.CreateGithubCallbackResponse{GithubCallback: cloneMsg(cb)}), nil
+}
+
+func (m *MockDaemon) ListGithubCallbacks(_ context.Context, req *connect.Request[pb.ListGithubCallbacksRequest]) (*connect.Response[pb.ListGithubCallbacksResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.listGithubCallbackCalls = append(m.listGithubCallbackCalls, cloneMsg(req.Msg))
+	ids := make([]string, 0, len(m.githubCallbacks))
+	for id := range m.githubCallbacks {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]*pb.GithubCallback, 0, len(ids))
+	for _, id := range ids {
+		cb := m.githubCallbacks[id]
+		if req.Msg.TargetChatId != nil && cb.TargetChatId != req.Msg.GetTargetChatId() {
+			continue
+		}
+		if req.Msg.RepoOwner != nil && cb.RepoOwner != req.Msg.GetRepoOwner() {
+			continue
+		}
+		if req.Msg.RepoName != nil && cb.RepoName != req.Msg.GetRepoName() {
+			continue
+		}
+		if req.Msg.Trigger != nil && cb.Trigger != req.Msg.GetTrigger() {
+			continue
+		}
+		if req.Msg.State != nil && cb.State != req.Msg.GetState() {
+			continue
+		}
+		out = append(out, cloneMsg(cb))
+	}
+	return connect.NewResponse(&pb.ListGithubCallbacksResponse{GithubCallbacks: out}), nil
+}
+
+func (m *MockDaemon) DeleteGithubCallback(_ context.Context, req *connect.Request[pb.DeleteGithubCallbackRequest]) (*connect.Response[pb.DeleteGithubCallbackResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deleteGithubCallbackCalls = append(m.deleteGithubCallbackCalls, req.Msg.Id)
+	delete(m.githubCallbacks, req.Msg.Id)
+	return connect.NewResponse(&pb.DeleteGithubCallbackResponse{}), nil
 }
 
 func (m *MockDaemon) RepairDoctor(_ context.Context, _ *connect.Request[pb.RepairDoctorRequest]) (*connect.Response[pb.RepairDoctorResponse], error) {

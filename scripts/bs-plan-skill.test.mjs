@@ -529,6 +529,22 @@ test('the SKILL documents the EPIC decomposition phase and its plan-epic-lib cor
     /≥ 2\*\*\s+genuinely separable/,
     'the phase must require >=2 separable children',
   )
+  // The estimate-as-forcing-function trigger: honest >=5 auto-triages EPIC.
+  assert.match(
+    EPIC_PHASE,
+    /honest estimate is \*\*≥ 5\*\*/,
+    'the phase must make an honest >=5 estimate auto-trigger EPIC',
+  )
+  assert.match(
+    EPIC_PHASE,
+    /Estimate is the forcing function/,
+    'the phase must name estimate as the forcing function',
+  )
+  assert.match(
+    EPIC_PHASE,
+    /`8` is never a single-ticket estimate/,
+    'the phase must state that 8 is never a single-ticket estimate',
+  )
   for (const sym of [
     'scripts/plan-epic-lib.mjs',
     'validateDecomposition',
@@ -543,9 +559,20 @@ test('the SKILL documents the EPIC decomposition phase and its plan-epic-lib cor
 })
 
 test('the SKILL documents every load-bearing epic guard', () => {
-  // >=2 & <=8 children
-  assert.match(EPIC_PHASE, /EPIC_MAX_CHILDREN = 8/, 'must state the 8-child cap')
+  // >=2 & <=12 children
+  assert.match(EPIC_PHASE, /EPIC_MAX_CHILDREN = 12/, 'must state the 12-child cap')
   assert.match(EPIC_PHASE, /EPIC_MIN_CHILDREN = 2/, 'must state the 2-child minimum')
+  // per-child single-PR estimate ceiling (the forcing function) + never-a-monolith escape valve
+  assert.match(
+    EPIC_PHASE,
+    /CHILD_MAX_ESTIMATE = 3/,
+    'must state the per-child single-PR estimate ceiling',
+  )
+  assert.match(
+    EPIC_PHASE,
+    /never\*\*\s*a single oversized ticket|needs-human/i,
+    'over the child cap must fall to needs-human, never a single oversized ticket',
+  )
   // recursion guard
   assert.match(EPIC_PHASE, /allowEpic: false/, 'must state the allowEpic:false recursion guard')
   assert.match(
@@ -621,6 +648,50 @@ test('both references carry the EPIC triage tier and flow', () => {
   )
 })
 
+test('BOS-475: epic parents carry configured label, summed estimate, and backlog-calibrated priority', () => {
+  assert.match(
+    SKILL,
+    /labelName\(config, 'epic'\)/,
+    'the epic label must resolve through skill-config',
+  )
+  assert.match(SKILL, /epicParentEstimate\(spec\)/, 'the parent estimate must sum child complexity')
+  assert.match(
+    SKILL,
+    /estimate.*rejected[\s\S]{0,180}retry without.*estimate/i,
+    'a rejected summed estimate must retain the existing fallback',
+  )
+  assert.match(
+    SKILL,
+    /priority\s*=\s*parent\.priority/,
+    'the parent flip must persist the drafted priority',
+  )
+  assert.match(
+    SKILL,
+    /reporter.{0,80}priority[\s\S]{0,180}planned.{0,80}backlog/i,
+    'priority guidance must honor reporter input or calibrate against Todo',
+  )
+  assert.match(
+    SKILL,
+    /every planned ticket.{0,80}non-null estimate/i,
+    'all planned tickets must carry an estimate',
+  )
+  assert.match(
+    BRIEF,
+    /parent:\{title,goal,keyChanges\[\],priority\}/,
+    'the epic draft shape must include parent priority',
+  )
+  assert.match(
+    BRIEF,
+    /sum of its children.?s estimates/i,
+    'the brief must specify the summed parent estimate',
+  )
+  assert.match(
+    BRIEF,
+    /reporter.{0,80}priority[\s\S]{0,180}planned.{0,80}backlog/i,
+    'the brief must carry backlog-relative priority guidance',
+  )
+})
+
 // ---------------------------------------------------------------------------
 // Mirror parity — the plugin SKILL.md mirror is byte-identical to the canonical
 // (make copy-skills committed in sync). Follows the MIRROR_BRIEF pattern above.
@@ -653,8 +724,8 @@ test('the resident SKILL.md body stays under the ratchet, below the pre-split ba
   // references split) and is re-baselined upward as Phase-4 prose legitimately grows. The
   // RATCHET < PRE_SPLIT_BASELINE invariant preserves that explicit margin so an accidental
   // bulk regrow in one edit trips the guard instead of sliding both constants up together.
-  const PRE_SPLIT_BASELINE = 58435
-  const RATCHET = 58379 // pinned exact byte ceiling: re-baselined +55 for BOS-458 generalizing the Phase-4 write-back `TRACKER` default to the configured tracker adapter (`adapters.tracker`, default `linear`) so a non-linear repo that omits the `TRACKER` env no longer routes write-back through the linear op map — removing the last `${TRACKER:-linear}` literal in any published core per the ticket audit; +889 for the codex-review P2 round making the Phase 0 r2-publish preflight abort resolve and NAME the concrete `adapters.publish` key (and state the publish config is keyed on `adapters.publish`, default `proof` — the destination block — NOT `PLAN_PUBLISH`, default `r2` — the upload transport) instead of the opaque `publishConfig.<adapter>` placeholder, so a consuming repo that stored its bucket/baseUrl under a `publishConfig` key other than the one `adapters.publish` selects gets a diagnosable failure rather than a bare "config missing"; +604 for the codex-review P2 round failing the Phase 0 preflight EARLY (before issue selection + the drafting subagent) when the r2 publish path lacks publishConfig.<adapter>.{bucket,baseUrl}, instead of skipping the export and throwing late inside Phase 4 publish; +275 for the codex-review P2 round gating the Phase 0 preflight on `isConfiguredForPlanning` (requires the full `states.{unplanned,planned,inProgress,inReview}` role map, not just tracker identity) so a repo configured only for a stateless core self-disables cleanly instead of running boss-plan with undefined state names; +632 for the codex-review P2 round making the Phase 0 preflight distinguish a `.boss-skills.json` loader failure (loadSkillConfig throws `skill-config:` → 'error'/empty → abort exit 1) from a valid unconfigured repo ('no' → clean self-disable exit 0), so a malformed config no longer masquerades as "no tracker" and silently skips planning; +874 for the codex-review P1 round replacing the three `eval "$(node -e …)"` publish-config emitters (Phase 0 §3, Phase 4, headless brief) with injection-safe command-substitution assignments so a `.boss-skills.json` bucket/baseUrl containing shell metacharacters is captured literally, never executed; was 55050 for BOS-455 de-identification + Phase 0 preflight self-disable (config-driven tracker/publish refs, generic state-role words, dropped BOS-NN citations); was 52064 for BOS-442's Phase 2.5 epic-decomposition phase (parent + N children + blockedBy DAG guards; +154 for the resume-marker embed + prefer-marker-over-title clause, +516 for the earlier codex-review fixes — parent-repurpose-last write-atomicity guard + `list_issues parentId` child enumeration for idempotent resume, +2192 for the second round of codex-review P1 fixes: a distinct epic sentinel outcome branch in Phase 2 §3 that skips Phase 3.5/Phase 4, plus stableChildKey-based durable resume that persists a `boss-plan-epic-spec` child-key marker in the parent description before any child write, +3013 for the third round of codex-review fixes: an epic-specific reverify in Phase 2 §3 that re-reads Linear (parent now `Todo` + child count matches) before accepting the epic sentinel, the two Phase 4 secret + image-parity gates run against the repurposed PARENT overview, and excluding the epic's own child+parent ids from the external conflict-link backlog set, +433 for the FULL-spec resume fixes, +1553 for the earlier deferred-exposure + preserve-original-notes fixes, +1086 for the latest codex-review round: step 6 now stamps each child with ITS OWN plan's agent-friendliness call (a `needs-human`/`agentFriendly:false` child gets `needs-human`, never `agent-friendly`, matching boss-epic's Todo+agent-friendly+plan-link+not-needs-human eligibility) instead of unconditionally stamping `agent-friendly`, and step 7 re-appends the `boss-plan-epic-spec` marker to the repurposed parent so idempotent resume can recover the FULL spec from a fully-built parent instead of re-decomposing into duplicate children), +523 for persisting each child's `agentFriendly` call in the `boss-plan-epic-spec` marker (spec-shape + marker field enumerations and a step-6/resume clause so an already-created-but-unexposed child adopted on a fresh-worktree resume re-derives its deferred-exposure label — `needs-human` vs `agent-friendly` — from the recovered spec rather than the vanished `.linear-plans/` plan), +739 for the codex-review review-thread fixes (an R2 publish bootstrap reminder in Phase 2.5 step 4 — `scripts/plan-upload.mjs` throws when `BOSS_PROOF_R2_BUCKET` is unset, so each fresh-shell child/parent publish must re-run the Phase 4 `.env`/bucket setup — and gating the parent-overview secret + image-parity gates BEFORE step 6 child exposure so a deterministic parent-gate failure never leaves a child `agent-friendly`/buildable while the parent aborts `Unplanned`), +1632 for the codex-review-thread round: Phase 5 now globs the epic child-plan + image-guard scratch (`.linear-plans/<ISSUE-ID>-child-*.md`) so a successful epic or a mid-child abort leaves no scratch, Phase 2.5 step 6 now PUBLISHES + SAVES the parent overview onto the still-`Unplanned` parent BEFORE any child is exposed (the failure-prone R2 publish + Linear save move ahead of exposure so an exposed child is always backed by an already-published parent; step 7 is the final state-only `Unplanned → Todo` flip), and idempotent resume now detects an already-saved parent overview and reuses it verbatim rather than recomposing `## Original notes` from the transformed description, on top of BOS-111's Phase 3 `## Proof harness analysis` readiness-pass baseline, +205 for the codex-review round adding each child spec's validated `estimate` + `priority` to the Phase 2.5 step-4 child `save_issue` contract (so `boss-epic` schedules children by their intended priority, not default/None), +782 for the codex-review round making step 7's parent repurpose STRIP any pre-existing `agent-friendly`/`needs-human` label + stale single-ticket `Implementation plan (…)` link when a previously-planned (explicitly-named `Todo`/`In Progress`) ticket is turned into an epic, so the repurposed epic parent is not itself `boss-build`-selectable despite the parent-label exception, +767 for the codex-review round wiring the Phase 5 epic child-plan + image-guard cleanup globs into BOTH Phase 2 dispatch-failure exits (missing/stale sentinel AND epic reverify-fail), so a headless EPIC subagent that writes `.linear-plans/<ISSUE-ID>-child-*.md` (carrying `## Original notes`) then dies without an ok sentinel no longer leaves that scratch in the cron worktree, +1059 for the codex-review round: step 2 now RE-runs `validateDecomposition` after copying each child plan's `agentFriendly` verdict (so the non-boolean guard bites on values that did not exist at the step-1 validate), and step 4's first `save_issue` now STRIPS any pre-existing `agent-friendly`/`needs-human` label + stale single-ticket `Implementation plan (…)` link from the parent (an explicitly-named already-planned `Todo` source would otherwise stay `boss-build`-selectable through the whole build window and after a crash, not just until the step-7 flip), +1290 for the codex-review round adding the **Unplanned-source precondition** (an explicitly-named `Todo`/`In Progress` source that triages EPIC falls back to a single-ticket plan — a non-`Unplanned` parent is invisible to the `Unplanned` resume sweep and stranded on a crash; the step-4 strip is reframed as defense-in-depth) and pinning the child plan-link title to `Implementation plan (<child id>)` (boss-epic's `normalizeTicket` only recognizes a link whose title starts with `Implementation plan`, else the child is exposed agent-friendly but skipped as missing a plan), +656 for the codex-review P1 fix initializing `EPIC_REVERIFIED=false` and spelling out that the two Linear MCP reverify reads (parent now `Todo` + child count matches) must SET it true before the guard tests it — an unset flag would abort even a fully-successful epic and, with the parent already flipped off `Unplanned`, strand it from the resume sweep, +404 for the codex-review round carrying each child plan's `openQuestions` decision through creation + the epic spec marker (persisted as a derived `agentQuestion` boolean) so an epic child with controversial open questions gets the `agent-question` label at creation and re-gets it on a fresh-worktree resume, matching the single-ticket Phase 4 contract, +571 for the codex-review round making the Unplanned-source precondition `parseEpicSpecMarker` FIRST: a non-`Unplanned` source that already carries a `boss-plan-epic-spec` marker (a completed epic parent, flipped to `Todo` but keeping the marker) routes to the idempotent resume/no-op path, never the single-ticket fallback that would re-plan a finished epic as a normal buildable ticket, +1045 for the codex-review round deferring the Phase 4 step-5 external conflict links until AFTER the step-6 parent-overview commit — previously the external pass ran in the step-5 wiring, so a deterministic parent-gate abort (e.g. a persistently failing image-parity gate) could leave non-epic backlog tickets blocked behind an epic child that never becomes buildable; now external edges are only written once the parent overview has committed, so a parent-gate abort writes zero external edges and strands no existing backlog work, +452 for the codex-review follow-up making the idempotent-resume "already-saved parent overview" path re-run the deferred external conflict links BEFORE stamping children buildable (a crash after the parent save but before the deferred external pass would otherwise resume straight to child exposure and skip the links, exposing an agent-friendly root child without blocking overlapping active backlog work; the links are append-only so re-running is a safe no-op)
+  const PRE_SPLIT_BASELINE = 59667
+  const RATCHET = 59651 // pinned exact byte ceiling: re-baselined +725 for the estimate-as-forcing-function auto-epic (CHILD_MAX_ESTIMATE=3, cap→12, layer/validateLayering, estimate-driven EPIC trigger); was 58926.
   assert.ok(
     RATCHET < PRE_SPLIT_BASELINE,
     'the ratchet ceiling must sit below the pre-split baseline',

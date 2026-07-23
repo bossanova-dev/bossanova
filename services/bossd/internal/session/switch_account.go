@@ -100,6 +100,14 @@ type SwitchAccountParams struct {
 	// the window between the rotator's LIMITED re-check and this switch is left
 	// untouched rather than having its live turn killed.
 	Auto bool
+	// RespawnSameAccount marks the BOS-482 respawn-in-place path: the switch's
+	// TargetAccountID equals the currently-bound account and the sole intent is to
+	// stop and respawn the chat under freshly-injected env (to clear a stale
+	// in-proxy auth token after a daemon restart). It bypasses the no-op
+	// short-circuit that a same-account switch would otherwise take, and — because
+	// the account does not change — resume feasibility skips the cross-account gate
+	// (resume iff a resume id and transcript exist). Only ever set on the Auto path.
+	RespawnSameAccount bool
 	// PreviousResetAt is the parsed usage-limit reset time of the account being
 	// rotated away from, used only on the Auto path for the notice wording. Zero
 	// when the banner carried no parseable reset time.
@@ -209,8 +217,11 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	if err != nil {
 		return SwitchAccountResult{}, fmt.Errorf("read current session account: %w", err)
 	}
-	if current == p.TargetAccountID {
-		// Already on the target: no stop, no rebind, no respawn.
+	if current == p.TargetAccountID && !p.RespawnSameAccount {
+		// Already on the target: no stop, no rebind, no respawn. The BOS-482
+		// respawn-in-place path deliberately targets the current account, so it opts
+		// OUT of this short-circuit — its whole purpose is to stop and respawn the pane
+		// under the same account to refresh stale injected auth wiring.
 		return SwitchAccountResult{
 			TargetLabel: target.Label,
 			NoticeText:  "already on " + target.Label,
@@ -245,7 +256,18 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 		}
 	}
 	resumeID, hasResume := switchResumeID(chat)
-	resumable := resumeFeasibleCrossAccount(provider) && hasResume &&
+	// A same-account respawn (BOS-482) is only in effect when the flag is set AND the
+	// switch actually targets the currently bound account. Keying the resume and
+	// notice branches on the flag ALONE would let a misused request (flag set with a
+	// DIFFERENT target) bypass the cross-account resume-feasibility gate and inherit
+	// same-account wording; conjoining current==target makes the flag's semantics
+	// self-enforcing rather than a caller convention.
+	isSameAccountRespawn := p.RespawnSameAccount && current == p.TargetAccountID
+	// A same-account respawn is not a cross-account move, so the cross-account
+	// resume-feasibility gate does not apply: resume whenever a resume id and a
+	// transcript exist. A genuine cross-account switch still gates on it.
+	resumeFeasible := isSameAccountRespawn || resumeFeasibleCrossAccount(provider)
+	resumable := resumeFeasible && hasResume &&
 		l.switchTranscriptExists(ctx, chat.AgentName, session.WorktreePath, resumeID)
 
 	// 5. STOP the current chat pane. A headless chat (no tmux name) is a no-op.
@@ -272,6 +294,16 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 		if !resumable {
 			notice += " (started fresh)"
 		}
+	}
+	// BOS-482 respawn-in-place: the account did not change, so "switched to <label>"
+	// wording would mislead. Describe what actually happened — a same-account respawn
+	// to refresh the injected auth wiring — and note fresh vs resumed.
+	if isSameAccountRespawn {
+		respawnDetail := "resumed"
+		if !resumable {
+			respawnDetail = "started fresh"
+		}
+		notice = "refreshed auth for " + target.Label + " (respawned in place — " + respawnDetail + ")"
 	}
 
 	// 7. REBIND the session to the target account. StartTmuxChat below resolves

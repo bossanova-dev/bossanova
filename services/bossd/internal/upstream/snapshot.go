@@ -52,6 +52,14 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 		snap.Statuses = statuses
 	}
 
+	if c.stores.Interests != nil {
+		interests, err := c.stores.Interests.SnapshotCallbackInterests(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot callback interests: %w", err)
+		}
+		snap.CallbackInterests = interests
+	}
+
 	return snap, nil
 }
 

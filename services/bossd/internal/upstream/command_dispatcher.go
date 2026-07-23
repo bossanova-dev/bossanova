@@ -103,6 +103,12 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchDeleteCronJob(ctx, cmdID, cmd.GetDeleteCronJob(), outbound)
 	case *pb.OrchestratorCommand_RunCronJobNow:
 		return c.dispatchRunCronJobNow(ctx, cmdID, cmd.GetRunCronJobNow(), outbound)
+	case *pb.OrchestratorCommand_CreateGithubCallback:
+		return c.dispatchCreateGithubCallback(ctx, cmdID, cmd.GetCreateGithubCallback(), outbound)
+	case *pb.OrchestratorCommand_ListGithubCallbacks:
+		return c.dispatchListGithubCallbacks(ctx, cmdID, cmd.GetListGithubCallbacks(), outbound)
+	case *pb.OrchestratorCommand_DeleteGithubCallback:
+		return c.dispatchDeleteGithubCallback(ctx, cmdID, cmd.GetDeleteGithubCallback(), outbound)
 	case *pb.OrchestratorCommand_AddAccount:
 		return c.dispatchAddAccount(ctx, cmdID, cmd.GetAddAccount(), outbound)
 	case *pb.OrchestratorCommand_RefreshAccount:
@@ -1037,6 +1043,61 @@ func (c *StreamClient) dispatchRunCronJobNow(ctx context.Context, cmdID string, 
 			CommandId: cmdID, Ok: true,
 			Payload: &pb.CommandResult_RunCronJobNow{RunCronJobNow: out},
 		}}}
+	})
+}
+
+// dispatchCreateGithubCallback routes a CreateGithubCallbackCommand to the
+// handler and wraps the created callback in a
+// CommandResult{create_github_callback}. Validation errors from the daemon
+// surface via CommandResult.error. Dispatched async: creating a callback touches
+// the store. The Message field is a secret and is never logged.
+func (c *StreamClient) dispatchCreateGithubCallback(ctx context.Context, cmdID string, cmd *pb.CreateGithubCallbackCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.CreateGithubCallback(ctx, cmd)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_CreateGithubCallback{CreateGithubCallback: out},
+		}}}
+	})
+}
+
+// dispatchListGithubCallbacks routes a ListGithubCallbacksCommand to the handler
+// and wraps the matching callbacks in a CommandResult{list_github_callbacks}.
+// Dispatched async: callback store reads must not block the command reader.
+func (c *StreamClient) dispatchListGithubCallbacks(ctx context.Context, cmdID string, cmd *pb.ListGithubCallbacksCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.ListGithubCallbacks(ctx, cmd)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_ListGithubCallbacks{ListGithubCallbacks: out},
+		}}}
+	})
+}
+
+// dispatchDeleteGithubCallback routes a DeleteGithubCallbackCommand to the
+// handler and replies with a success CommandResult carrying no payload (mirrors
+// dispatchDeleteCronJob). Dispatched async.
+func (c *StreamClient) dispatchDeleteGithubCallback(ctx context.Context, cmdID string, cmd *pb.DeleteGithubCallbackCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		if err := c.commandHandler.DeleteGithubCallback(ctx, cmd.GetId()); err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return commandOK(cmdID, nil)
 	})
 }
 

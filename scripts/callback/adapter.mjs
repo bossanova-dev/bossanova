@@ -1,0 +1,71 @@
+// scripts/callback/adapter.mjs
+// Pluggable callback-notifier adapter for the boss-build / boss-epic skills.
+// Abstracts one-shot GitHub PR-event callbacks (register / list / remove a durable
+// watch) so any host exposing a `boss callback`-style interface (BOS-469) can slot
+// in behind resolveCallbackAdapter. This is the fourth instance of the adapter
+// pattern (tracker BOS-190, finalize, session-runner BOS-198). Like the
+// session-runner adapter it is DECLARATIVE: the boss reference records the CLI
+// sub-command + arg/response shape per capability; the agent issues the calls.
+// node builtins only (the cron worktree is dependency-free).
+
+import { createBossCallbackAdapter } from './boss.mjs'
+
+// Capabilities every callback notifier must document.
+export const CALLBACK_CAPABILITIES = ['registerWatch', 'listWatches', 'removeWatch']
+
+// name -> factory. Add a host by implementing the same operationMap + policy shape.
+const REGISTRY = {
+  boss: createBossCallbackAdapter,
+}
+
+/**
+ * Resolve the active callback-notifier adapter from the environment.
+ * Selection: env.CALLBACK (default 'boss'). Throws on an unknown notifier or a
+ * non-conforming adapter so a misconfigured host fails fast rather than silently
+ * skipping callbacks.
+ * @param {Record<string,string|undefined>} [env]
+ */
+export function resolveCallbackAdapter(env = process.env) {
+  const name = env.CALLBACK || 'boss'
+  const factory = REGISTRY[name]
+  if (!factory) {
+    throw new Error(
+      `unknown callback notifier: ${name} (known: ${Object.keys(REGISTRY).join(', ')})`,
+    )
+  }
+  return assertConforms(factory())
+}
+
+/**
+ * Validate that an adapter exposes every callback capability plus the callback-watch
+ * policy the spine depends on (grouped triggers, reconcile-before-act, re-arm).
+ * @returns the adapter, for chaining.
+ */
+export function assertConforms(adapter) {
+  if (typeof adapter?.notifier !== 'string') {
+    throw new Error('callback adapter: missing notifier name')
+  }
+  const map = adapter.operationMap ?? {}
+  for (const cap of CALLBACK_CAPABILITIES) {
+    if (!(cap in map)) {
+      throw new Error(`callback adapter '${adapter.notifier}': missing capability ${cap}`)
+    }
+  }
+  const policy = adapter.policy
+  if (!policy || !Array.isArray(policy.watchTriggers) || policy.watchTriggers.length === 0) {
+    throw new Error(`callback adapter '${adapter.notifier}': missing policy.watchTriggers`)
+  }
+  if (
+    typeof policy.reconcileBeforeAct !== 'boolean' ||
+    typeof policy.rearmWhileWaiting !== 'boolean'
+  ) {
+    throw new Error(`callback adapter '${adapter.notifier}': missing reconcile/re-arm policy`)
+  }
+  // The shipped SKILL prose leans on both of these (dedup-by-id under at-least-once
+  // delivery, and a bounded poll when callbacks are unavailable), so a conforming
+  // adapter must document them too — otherwise the prose contract can silently drift.
+  if (typeof policy.dedupById !== 'boolean' || typeof policy.fallbackPoll !== 'string') {
+    throw new Error(`callback adapter '${adapter.notifier}': missing dedup/fallback policy`)
+  }
+  return adapter
+}

@@ -71,6 +71,27 @@ Suggestion to must-fix) are defined in
 The `lens` value is the specialist skill for a Phase 1 lens (from the `lensMap` registry), or the
 stable reviewer id attached to a whole-branch round finding.
 
+## Acceptance-criteria certification (always-on when criteria are supplied)
+
+`boss-build` passes this review the ticket's `## Acceptance criteria` and `## Required proof` sections
+(from the plan/ticket). When they are supplied, run a standing certification as part of the
+whole-branch rounds — it is the enforcement half of **"partial implementation is not complete"**:
+
+- For **every** criterion in the supplied `## Acceptance criteria`, verify the **branch diff + tests
+  actually demonstrate it**. A criterion the change does not evidence is a **must-fix** finding
+  (`severity: Warning`, `lens: acceptance-criteria`) — either the implementation is a partial slice,
+  or the plan mis-scoped a criterion this ticket cannot satisfy; say which. Same promote-to-must-fix
+  teeth as the coverage override.
+- A supplied `## Required proof` artifact whose evidence is absent — or whose acceptance checkbox is
+  ticked `- [x]` without the branch demonstrating it — is likewise a must-fix: a ticked-but-unproven
+  claim is not truthful.
+- Certify only what is supplied; **never invent scope**. When no criteria are supplied (a caller
+  other than boss-build), skip this certification.
+
+This closes the loop where a green build could ready a partial slice: an unproven or open in-scope
+criterion becomes an open must-fix, so this review returns `capped` (not `clean`) and boss-build's
+Step 9 gate keeps the ticket out of In Review until it is genuinely satisfied.
+
 ## Phase 0 — Setup
 
 Resolve the branch, base, diff, change types, and host agent; initialise the ledger.

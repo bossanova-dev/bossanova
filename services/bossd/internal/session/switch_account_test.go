@@ -634,6 +634,79 @@ func TestSwitchAccount_IdempotentNoop(t *testing.T) {
 	}
 }
 
+// TestSwitchAccount_RespawnSameAccountBypassesNoop pins the BOS-482 respawn-in-place
+// path: with RespawnSameAccount set, a switch whose target IS the currently-bound
+// account does NOT take the idempotent no-op — it stops and respawns the pane on the
+// same account (resuming the prior id) to refresh stale injected auth wiring, and the
+// notice describes a refresh rather than a switch.
+func TestSwitchAccount_RespawnSameAccountBypassesNoop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newSwitchHarness(t)
+	bound := "acct-2"
+	h.chats.chatsBySession["sess-1"][0].AccountID = &bound
+
+	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+		Auto: true, RespawnSameAccount: true,
+	})
+	if err != nil {
+		t.Fatalf("SwitchAccount(respawn): %v", err)
+	}
+	// It must NOT short-circuit as a no-op.
+	if strings.Contains(res.NoticeText, "already on") {
+		t.Fatalf("respawn-in-place took the no-op path: NoticeText = %q", res.NoticeText)
+	}
+	if !res.Resumed {
+		t.Errorf("Resumed = false, want true (same-account respawn resumes when a transcript exists)")
+	}
+	if !strings.Contains(res.NoticeText, "refreshed auth") || !strings.Contains(res.NoticeText, "respawned in place") {
+		t.Errorf("NoticeText = %q, want respawn-in-place wording", res.NoticeText)
+	}
+	// STOP + RESPAWN actually happened.
+	if h.findCall("kill-session") == nil {
+		t.Error("respawn-in-place must stop the pane")
+	}
+	last := h.agentFake.LastBuildInteractiveCommand
+	if last == nil {
+		t.Fatal("respawn-in-place must respawn the chat")
+	}
+	if !last.GetResume() || last.GetSessionId() != "agent-1" {
+		t.Errorf("respawn should resume prior id agent-1, got resume=%v id=%q", last.GetResume(), last.GetSessionId())
+	}
+}
+
+// TestSwitchAccount_RespawnSameAccountResumesWithoutCrossAccountGate pins that the
+// same-account respawn resume rule skips the cross-account feasibility gate: even when
+// resumeFeasibleCrossAccount reports false, a same-account respawn still resumes
+// (there is no cross-account move to be infeasible).
+func TestSwitchAccount_RespawnSameAccountResumesWithoutCrossAccountGate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newSwitchHarness(t)
+	bound := "acct-2"
+	h.chats.chatsBySession["sess-1"][0].AccountID = &bound
+
+	// Force the cross-account gate closed; a genuine cross-account switch would start
+	// fresh, but a same-account respawn must ignore it.
+	orig := resumeFeasibleCrossAccount
+	resumeFeasibleCrossAccount = func(string) bool { return false }
+	t.Cleanup(func() { resumeFeasibleCrossAccount = orig })
+
+	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+		Auto: true, RespawnSameAccount: true,
+	})
+	if err != nil {
+		t.Fatalf("SwitchAccount(respawn): %v", err)
+	}
+	if !res.Resumed {
+		t.Errorf("Resumed = false, want true (same-account respawn ignores the cross-account gate)")
+	}
+}
+
 // TestSwitchAccount_FailureAfterStopStampsStartError: a rebind failure after
 // STOP stamps the chat row start-error and returns the wrapped error (the chat
 // is not left silently vanished). Uses a headless chat (no tmux name) so STOP is

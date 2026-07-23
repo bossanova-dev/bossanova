@@ -275,13 +275,14 @@ export function validateConfig(config, source) {
         fail(`trackerConfig.${adapter}.${field} must be a non-empty string when present`)
       }
     }
-    if ('states' in tc) {
-      if (!tc.states || typeof tc.states !== 'object' || Array.isArray(tc.states)) {
-        fail(`trackerConfig.${adapter}.states must be an object when present`)
+    for (const field of ['states', 'labels', 'githubLabels']) {
+      if (!(field in tc)) continue
+      if (!tc[field] || typeof tc[field] !== 'object' || Array.isArray(tc[field])) {
+        fail(`trackerConfig.${adapter}.${field} must be an object when present`)
       }
-      for (const [role, name] of Object.entries(tc.states)) {
+      for (const [role, name] of Object.entries(tc[field])) {
         if (typeof name !== 'string' || name.length === 0) {
-          fail(`trackerConfig.${adapter}.states.${role} must be a non-empty string`)
+          fail(`trackerConfig.${adapter}.${field}.${role} must be a non-empty string`)
         }
       }
     }
@@ -433,6 +434,32 @@ export function adapterFor(config, kind) {
 export function trackerConfigFor(config, adapter = adapterFor(config, 'tracker')) {
   const tc = config.trackerConfig?.[adapter]
   return tc && typeof tc === 'object' ? tc : null
+}
+
+function trackerRoleName(config, field, role) {
+  const adapter = adapterFor(config, 'tracker')
+  const value = trackerConfigFor(config, adapter)?.[field]?.[role]
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(
+      `skill-config: trackerConfig.${adapter}.${field}.${role} must be configured as a non-empty string`,
+    )
+  }
+  return value
+}
+
+/** Resolve a configured Linear workflow-state display name by its stable role. */
+export function stateName(config, role) {
+  return trackerRoleName(config, 'states', role)
+}
+
+/** Resolve a configured Linear issue-label display name by its stable role. */
+export function labelName(config, role) {
+  return trackerRoleName(config, 'labels', role)
+}
+
+/** Resolve a configured GitHub PR-label display name by its stable role. */
+export function githubLabelName(config, role) {
+  return trackerRoleName(config, 'githubLabels', role)
 }
 
 /**

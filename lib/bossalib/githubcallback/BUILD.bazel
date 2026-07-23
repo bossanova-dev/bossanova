@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "githubcallback",
+    srcs = ["callbackref.go"],
+    importpath = "github.com/recurser/bossalib/githubcallback",
+    visibility = ["//visibility:public"],
+    deps = ["//lib/bossalib/models"],
+)
+
+go_test(
+    name = "githubcallback_test",
+    srcs = ["callbackref_test.go"],
+    embed = [":githubcallback"],
+    deps = ["//lib/bossalib/models"],
+)

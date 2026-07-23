@@ -217,15 +217,15 @@ func drivePump(t *testing.T, m AccountRegisterModel, ans *regAnswers) (AccountRe
 			upd, _ := m.Update(promptRequestMsg{req: req})
 			m = upd.(AccountRegisterModel)
 			if req.kind == promptKindConfirm {
-				v := "n"
+				key := tea.KeyPressMsg{Code: 'n', Text: "n"}
 				if ans.nextConfirm() {
-					v = "y"
+					key = tea.KeyPressMsg{Code: 'y', Text: "y"}
 				}
-				m.input.SetValue(v)
+				upd, _ = m.Update(key)
 			} else {
 				m.input.SetValue(ans.nextText())
+				upd, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 			}
-			upd, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 			m = upd.(AccountRegisterModel)
 		case err := <-m.donec:
 			// Drain any buffered progress emitted before the flow returned so the
@@ -456,6 +456,73 @@ func TestAccountRegisterConfirmSingleKey(t *testing.T) {
 				t.Fatalf("after single-key confirm, state=%d want progress", m.state)
 			}
 		})
+	}
+}
+
+func TestAccountRegisterConfirmArrowAndEnter(t *testing.T) {
+	reply := make(chan promptResponse, 1)
+	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m.prompter = newTUIPrompter(context.Background())
+	m.state = registerStateAwaitConfirm
+	m.pending = promptRequest{
+		kind:    promptKindConfirm,
+		text:    "Run the walkthrough now?",
+		defBool: true,
+		reply:   reply,
+	}
+
+	upd, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m = upd.(AccountRegisterModel)
+	upd, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = upd.(AccountRegisterModel)
+
+	select {
+	case resp := <-reply:
+		if resp.ok {
+			t.Fatal("right then enter answered yes, want No")
+		}
+	default:
+		t.Fatal("right then enter did not answer the confirm")
+	}
+	if m.state != registerStateProgress {
+		t.Fatalf("after button confirm, state=%d want progress", m.state)
+	}
+}
+
+func TestAccountRegisterConfirmDefaultFocus(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		defBool bool
+		want    int
+	}{
+		{name: "yes", defBool: true, want: 0},
+		{name: "no", defBool: false, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+			model, _ := m.handlePromptRequest(promptRequest{kind: promptKindConfirm, defBool: tc.defBool})
+			m = model.(AccountRegisterModel)
+			if m.confirmCursor != tc.want {
+				t.Fatalf("default %v focused button %d, want %d", tc.defBool, m.confirmCursor, tc.want)
+			}
+		})
+	}
+}
+
+func TestAccountRegisterConfirmViewRendersButtonsWithoutTextInput(t *testing.T) {
+	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m.provider = "claude"
+	m.state = registerStateAwaitConfirm
+	m.pending = promptRequest{kind: promptKindConfirm, text: "Run the walkthrough now?", defBool: true}
+
+	view := m.View().Content
+	for _, label := range []string{"Yes", "No", "Run the walkthrough now?"} {
+		if !strings.Contains(view, label) {
+			t.Fatalf("confirm view missing %q:\n%s", label, view)
+		}
+	}
+	if strings.Contains(view, ">") {
+		t.Fatalf("confirm view still renders text input cursor:\n%s", view)
 	}
 }
 

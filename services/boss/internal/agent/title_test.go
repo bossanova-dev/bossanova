@@ -62,6 +62,20 @@ func TestPathToProjectKey(t *testing.T) {
 			path: "/Users/dave//Code/foo",
 			want: "-Users-dave-Code-foo",
 		},
+		{
+			// Regression (the "Session ID already in use" bug): Claude folds "_"
+			// to "-", so a worktree containing an underscore must too, or
+			// TranscriptExists misses the file and the attach picks --session-id
+			// (create) over --resume and collides with the existing transcript.
+			name: "underscore in path",
+			path: "/Users/dave/.bossanova/worktrees/bossanova/dave/bos-465-harden-bossd-rlimit_nofile-so-dev-mode",
+			want: "-Users-dave--bossanova-worktrees-bossanova-dave-bos-465-harden-bossd-rlimit-nofile-so-dev-mode",
+		},
+		{
+			name: "assorted non-alphanumerics all fold to dash",
+			path: "/Users/dave/Code/a_b c@d~e",
+			want: "-Users-dave-Code-a-b-c-d-e",
+		},
 	}
 
 	for _, tt := range tests {

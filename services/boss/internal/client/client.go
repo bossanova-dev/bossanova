@@ -109,6 +109,17 @@ type BossClient interface {
 	DeleteCronJob(ctx context.Context, id string) error
 	RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
 
+	// GitHub callbacks (durable one-shot PR-event registrations). Routed by
+	// target chat id: local goes straight to the daemon; remote proxies through
+	// the orchestrator to the owning bossd (reusing the caller's own auth).
+	CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error)
+	// ListGithubCallbacks returns callbacks matching the optional filters in req.
+	// Remote: an unset target_chat_id fans out across the caller's Ready daemons.
+	ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error)
+	// DeleteGithubCallback removes a callback by id. Idempotent. targetChatID is
+	// the remote routing key (owning daemon); LocalClient ignores it.
+	DeleteGithubCallback(ctx context.Context, targetChatID, id string) error
+
 	// Accounts (agent credential registry). Local-daemon only, like cron jobs.
 	ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error)
 	AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error)

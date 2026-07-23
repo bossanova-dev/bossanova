@@ -755,3 +755,131 @@ func TestWebhookDispatcherRejectsPREventWithNilRefresher(t *testing.T) {
 		t.Fatalf("Dispatch error = %v, want refresher not wired error", err)
 	}
 }
+
+// blockingEvaluator blocks EvaluatePR until release is closed, so a test can
+// assert Dispatch (and thus the webhook ACK path) does not wait for it.
+type blockingEvaluator struct {
+	started  chan struct{}
+	release  chan struct{}
+	finished chan struct{}
+	calls    []evalCall
+}
+
+type evalCall struct {
+	owner    string
+	name     string
+	prNumber int
+}
+
+func (e *blockingEvaluator) EvaluatePR(_ context.Context, owner, name string, prNumber int) error {
+	e.calls = append(e.calls, evalCall{owner: owner, name: name, prNumber: prNumber})
+	close(e.started)
+	<-e.release
+	close(e.finished)
+	return nil
+}
+
+// captureEvalDone returns a hook that records each detached evaluation's done
+// channel, letting a test await goroutine completion without the production
+// path ever blocking on it.
+func captureEvalDone(t *testing.T) (func(<-chan struct{}), func()) {
+	t.Helper()
+	var done <-chan struct{}
+	set := make(chan struct{})
+	hook := func(d <-chan struct{}) {
+		done = d
+		close(set)
+	}
+	wait := func() {
+		<-set
+		<-done
+	}
+	return hook, wait
+}
+
+func TestDispatch_EvaluatorRunsDetachedOffAckPath(t *testing.T) {
+	refresher := &fakePRRefresher{}
+	ev := &blockingEvaluator{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}),
+	}
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop()).WithEvaluator(ev)
+	hook, waitEval := captureEvalDone(t)
+	dispatcher.evalDoneHook = hook
+
+	// Dispatch must return before the (blocked) evaluator finishes: the
+	// evaluation is off the acknowledgement path.
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request",
+		RepoOriginUrl: "https://github.com/owner/repo",
+		PullRequest:   42,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+
+	// The evaluator has begun but is still blocked — proving Dispatch did not
+	// wait for it. RefreshPR (the rest of Dispatch) already ran.
+	<-ev.started
+	select {
+	case <-ev.finished:
+		t.Fatal("evaluator finished before release; Dispatch blocked on the ACK path")
+	default:
+	}
+	if len(refresher.calls) != 1 {
+		t.Fatalf("RefreshPR call count = %d, want 1", len(refresher.calls))
+	}
+
+	close(ev.release)
+	waitEval()
+	if len(ev.calls) != 1 || ev.calls[0].owner != "owner" || ev.calls[0].name != "repo" || ev.calls[0].prNumber != 42 {
+		t.Fatalf("evaluator calls = %+v, want one owner/repo#42 call", ev.calls)
+	}
+}
+
+func TestDispatch_NoEvaluatorSkipsEvaluation(t *testing.T) {
+	refresher := &fakePRRefresher{}
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop())
+	called := false
+	dispatcher.evalDoneHook = func(<-chan struct{}) { called = true }
+
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request",
+		RepoOriginUrl: "https://github.com/owner/repo",
+		PullRequest:   42,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if called {
+		t.Fatal("evalDoneHook fired with no evaluator wired")
+	}
+}
+
+func TestDispatch_NonGitHubOriginSkipsEvaluation(t *testing.T) {
+	refresher := &fakePRRefresher{}
+	ev := &blockingEvaluator{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}),
+	}
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop()).WithEvaluator(ev)
+	called := false
+	dispatcher.evalDoneHook = func(<-chan struct{}) { called = true }
+
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request",
+		RepoOriginUrl: "https://gitlab.example.com/owner/repo",
+		PullRequest:   42,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if called {
+		t.Fatal("evalDoneHook fired for a non-GitHub origin URL")
+	}
+	if len(ev.calls) != 0 {
+		t.Fatalf("evaluator calls = %d, want 0 for non-GitHub origin", len(ev.calls))
+	}
+}

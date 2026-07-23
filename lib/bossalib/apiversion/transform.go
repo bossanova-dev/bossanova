@@ -99,7 +99,7 @@ type RefMsg struct {
 }
 
 // ProductionChanges returns the Changes wired into bosso, built against
-// DefaultRegistry. It ships six live transforms in non-decreasing version
+// DefaultRegistry. It ships seven live transforms in non-decreasing version
 // order: OrphanedStateChange (introduced at V20260704), which down-converts
 // SESSION_STATE_ORPHANED on Session.state; AgentAuthFailedChange (introduced at
 // V20260705), which neutralizes the ATTENTION_REASON_AGENT_AUTH_FAILED attention
@@ -109,11 +109,14 @@ type RefMsg struct {
 // display shape back to the prior idle-style behavior; NoEligibleAccountChange
 // (introduced at V20260711), which down-converts
 // ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT on Session.rotation_events
-// back to ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY; and ErroredStatusChange
+// back to ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY; ErroredStatusChange
 // (introduced at V20260718), which restores the pre-BOS-430 orphaned/blocked
-// display shape on Session.display_label / display_intent / display_spinner.
+// display shape on Session.display_label / display_intent / display_spinner; and
+// RespawnSameAccountOutcomeChange (introduced at V20260723), which down-converts
+// ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT and ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED
+// on Session.rotation_events back to ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY.
 // Each is applied to clients pinned to a version older than the change; a
-// request resolved to V20260718 (Current) runs zero transforms.
+// request resolved to V20260723 (Current) runs zero transforms.
 //
 // Future API behavior changes should:
 //  1. Append the new Version to DefaultRegistry (see version.go).
@@ -122,7 +125,7 @@ type RefMsg struct {
 //
 // See docs/api-versioning.md for the full procedure.
 func ProductionChanges() *Changes {
-	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{})
+	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{})
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
 	}
@@ -878,6 +881,121 @@ func (ErroredStatusChange) TransformResponse(method string, msg any) {
 	case bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure:
 		if m, ok := msg.(*pb.ProxyResurrectSessionResponse); ok {
 			m.Session = downconvertErroredSession(m.GetSession())
+		}
+	}
+}
+
+// RespawnSameAccountOutcomeChange is the production VersionChange introduced at
+// V20260723.
+//
+// At V20260723 the OrchestratorService began serving two new RotationOutcome
+// values on Session.rotation_events[].outcome:
+// ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT (7), audited when the BOS-482 healer
+// stops and respawns a pane in place under its SAME account (pane auth-failed
+// but the bound account probes healthy), and
+// ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED (8), audited when the per-chat
+// respawn-in-place budget is spent for the window. A client pinned to an older
+// version was built before these values existed, so for any request resolved
+// older than V20260723 this change rewrites BOTH back to the prior observable
+// value, ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY.
+//
+// It targets the same OrchestratorService unary Session-bearing procedures
+// OrphanedStateChange handles, keyed by the Connect procedure path. All other
+// methods and message types are no-ops.
+type RespawnSameAccountOutcomeChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260723, so
+// it is applied to any request resolved to a strictly older version (Baseline,
+// V20260704, V20260705, V20260706, V20260711, V20260718).
+func (RespawnSameAccountOutcomeChange) Version() Version { return V20260723 }
+
+// downconvertRespawnSession returns the Session to place in the response for a
+// pre-V20260723 client. If no rotation event carries outcome
+// ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT or ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED
+// it returns s unchanged; otherwise it returns a CLONE whose every such event's
+// outcome is reset to the prior observable value
+// ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY. Cloning is essential: bosso's
+// single-instance registry path holds the same *pb.Session pointers it caches, so
+// mutating in place would corrupt the cached session (and race other readers);
+// proto.Clone deep-copies the nested rotation_events so the clone's events are
+// safe to mutate. Only sessions that actually carry a new outcome allocate,
+// keeping the common path clone-free.
+func downconvertRespawnSession(s *pb.Session) *pb.Session {
+	if s == nil || !rotationEventsHaveRespawn(s.GetRotationEvents()) {
+		return s
+	}
+	clone, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	for _, ev := range clone.GetRotationEvents() {
+		switch ev.GetOutcome() {
+		case pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT,
+			pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED:
+			ev.Outcome = pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY
+		default:
+			// Every other outcome predates V20260723 and is passed through
+			// unchanged.
+		}
+	}
+	return clone
+}
+
+// rotationEventsHaveRespawn reports whether any event carries one of the new
+// BOS-482 respawn outcomes.
+func rotationEventsHaveRespawn(evs []*pb.RotationEvent) bool {
+	for _, ev := range evs {
+		switch ev.GetOutcome() {
+		case pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT,
+			pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED:
+			return true
+		default:
+			// Not a respawn outcome — keep scanning.
+		}
+	}
+	return false
+}
+
+// TransformResponse implements VersionChange. It down-converts the new
+// respawn/cap-exhausted rotation outcomes on each OrchestratorService response
+// type that carries one or more Sessions, matched by procedure path, rewriting
+// only response-local (cloned) copies so a shared registry pointer is never
+// mutated. It is a no-op for any other method or payload type.
+func (RespawnSameAccountOutcomeChange) TransformResponse(method string, msg any) {
+	switch method {
+	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
+		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
+			for i := range m.Sessions {
+				m.Sessions[i] = downconvertRespawnSession(m.Sessions[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
+		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
+			m.Session = downconvertRespawnSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
+		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
+			m.Session = downconvertRespawnSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
+		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
+			m.Session = downconvertRespawnSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
+		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
+			m.Session = downconvertRespawnSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
+		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
+			m.Session = downconvertRespawnSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
+		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
+			m.Session = downconvertRespawnSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
+		if m, ok := msg.(*pb.TransferSessionResponse); ok {
+			m.Session = downconvertRespawnSession(m.GetSession())
 		}
 	}
 }

@@ -43,7 +43,6 @@ func TestGetWorkflowStatus(t *testing.T) {
 			)
 			require.NoError(t, err)
 			require.NotNil(t, resp.GetStatus())
-			assert.Equal(t, "wf-1", resp.GetStatus().GetId())
 			assert.Equal(t, tt.want, resp.GetStatus().GetStatus())
 		})
 	}

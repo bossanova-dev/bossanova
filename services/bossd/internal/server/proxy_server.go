@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -166,6 +169,23 @@ type ProxyServer struct {
 	// request. The cached bearer is a SECRET, held only in memory and never
 	// logged; it is dropped on Deregister.
 	sessionBearer map[string]string
+
+	// now is the clock used by the pass-through Warn rate-limiter and the
+	// minute-bucket counters. Defaults to time.Now; tests override it (via
+	// ProxyServerConfig.Now) to drive the one-minute window deterministically
+	// without wall-clock sleeps.
+	now func() time.Time
+
+	// ptLogMu guards ptLogLast, the (displayID\x00class) → last-emit map that
+	// collapses repeated pass-through Warns to one line per minute. Suppressed
+	// events are still counted in ptStats — only the log line is rate-limited.
+	ptLogMu   sync.Mutex
+	ptLogLast map[string]time.Time
+
+	// ptStats is the bounded minute-bucket tally of pass-through error events,
+	// surfaced through RepairDoctor as an informational check. It holds no token,
+	// body, or auth material — only display ids, class labels, and counts.
+	ptStats *passthroughStats
 }
 
 // ProxyServerConfig gathers the ProxyServer dependencies.
@@ -184,6 +204,10 @@ type ProxyServerConfig struct {
 	// falls back to an ephemeral port (non-fatal). 0 keeps today's ephemeral
 	// (":0") behavior as an explicit opt-out.
 	Port int
+	// Now overrides the clock used by the pass-through Warn rate-limiter and the
+	// minute-bucket counters. Defaults to time.Now; set by tests to advance the
+	// one-minute window deterministically. Production leaves it nil.
+	Now func() time.Time
 }
 
 // NewProxyServer constructs a ProxyServer. Call Listen to bind, then Serve
@@ -201,6 +225,10 @@ func NewProxyServer(cfg ProxyServerConfig) (*ProxyServer, error) {
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &ProxyServer{
 		failover:        cfg.Failover,
 		logger:          cfg.Logger,
@@ -214,6 +242,9 @@ func NewProxyServer(cfg ProxyServerConfig) (*ProxyServer, error) {
 		chatToToken:     map[string]string{},
 		sessionChats:    map[string]map[string]string{},
 		sessionBearer:   map[string]string{},
+		now:             now,
+		ptLogLast:       map[string]time.Time{},
+		ptStats:         newPassthroughStats(now),
 	}, nil
 }
 
@@ -366,11 +397,17 @@ func (p *ProxyServer) Deregister(sessionID string) {
 		delete(p.sessionToToken, sessionID)
 	}
 	delete(p.sessionBearer, sessionID)
+	// Evict this session's pass-through counters too, so an ended session's
+	// history does not linger until the sweep (bounds memory on churn) and its
+	// display id is freed. The display id for a plain session is the session id;
+	// for a chat it is the agentSessionID (see passthroughDisplayID).
+	p.ptStats.forget(sessionID)
 	for agentSessionID, tok := range p.sessionChats[sessionID] {
 		targetID := p.tokenToSession[tok]
 		delete(p.tokenToSession, tok)
 		delete(p.chatToToken, agentSessionID)
 		delete(p.sessionBearer, targetID)
+		p.ptStats.forget(agentSessionID)
 	}
 	delete(p.sessionChats, sessionID)
 }
@@ -387,6 +424,450 @@ func (p *ProxyServer) ForgetBearer(sessionID string) {
 	for _, tok := range p.sessionChats[sessionID] {
 		delete(p.sessionBearer, p.tokenToSession[tok])
 	}
+}
+
+// ForgetAllBearers drops every session's sticky swapped bearer (but keeps all
+// path tokens registered) so the next request on each session forwards the
+// subprocess's own bearer. Called after an account credential refresh, where a
+// stale swapped bearer for the refreshed credential must not silently override
+// the freshly-saved secret. Implements session.proxyTokenRegistrar.
+func (p *ProxyServer) ForgetAllBearers() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sessionBearer = map[string]string{}
+}
+
+// tokenPrefix returns a short, non-reversible prefix of a proxy token (at most 8
+// hex chars) safe to put in a diagnostic log line. Full proxy tokens are secrets
+// and must never be logged; a conflict can be diagnosed from the prefix alone.
+func tokenPrefix(token string) string {
+	if len(token) > 8 {
+		return token[:8]
+	}
+	return token
+}
+
+// --- pass-through observability (BOS-483) -----------------------------------
+//
+// The proxy intercepts only a narrow set of upstream errors (429/401, a
+// suspension 403, a pre-content SSE rate_limit_error) for account failover;
+// EVERYTHING else it forwards byte-for-byte and, historically, SILENTLY. That
+// silence made an operator blind to the upstream error rate a session actually
+// saw. The helpers below add PURELY ADDITIVE observability: they never change a
+// rotation decision or an upstream response — they emit one structured Warn per
+// un-rotated error response (with a TRUTHFUL, locally-derivable decline reason),
+// rate-limit repeats, and keep a bounded in-memory tally for RepairDoctor. No
+// token, body, or auth header is ever read or logged here.
+
+// Pass-through decline reasons. Each is something the proxy can prove LOCALLY
+// about why it did not rotate a given error response — never a guess about the
+// upstream's intent. A PrepareFailover* that simply returned Rotate=false
+// collapses to the coarse passthroughReasonFailoverDeclined: the proxy cannot
+// truthfully attribute a finer cause, so it does not fabricate one.
+const (
+	// passthroughReasonStatusNotIntercepted: an error status the failover logic
+	// never attempts (e.g. 410/500, or a benign 4xx that is not 401/403/429).
+	passthroughReasonStatusNotIntercepted = "status_not_intercepted"
+	// passthroughReasonBodyTooLarge: the request body exceeded maxBufferedBody, so
+	// the proxy streamed through without buffering and could not offer failover.
+	passthroughReasonBodyTooLarge = "body_too_large"
+	// passthroughReasonCredentiallessSentinel: a managed-sentinel session whose
+	// bearer was unresolved got a 401 the proxy deliberately does NOT rotate on
+	// (rotating a self-inflicted credentialless 401 would cool a healthy account).
+	passthroughReasonCredentiallessSentinel = "credentialless_sentinel"
+	// passthroughReasonSuspensionNotMatched: a 403 whose body did NOT carry the
+	// account-suspension signature — a benign scope refusal passed through.
+	passthroughReasonSuspensionNotMatched = "suspension_not_matched"
+	// passthroughReasonReplayStillErroring: a post-rotation replay leg itself
+	// returned ≥400 (the rotated account did not clear the error).
+	passthroughReasonReplayStillErroring = "replay_still_erroring"
+	// passthroughReasonSSEErrorPassthrough: a 200 SSE stream that opened with a
+	// non-rate-limit `error` frame (e.g. overloaded_error) before any content.
+	passthroughReasonSSEErrorPassthrough = "sse_error_passthrough"
+	// passthroughReasonFailoverDeclined: a 401/429 where PrepareFailover returned
+	// Rotate=false (no eligible next account / rotation disabled). Deliberately
+	// coarse — the proxy has no truthful sub-reason to report.
+	passthroughReasonFailoverDeclined = "failover_declined"
+)
+
+// unknownTokenBody is the self-identifying 401 body the proxy returns for a path
+// token it does not recognise (BOS-483). The old opaque "unauthorized" gave an
+// operator staring at a pane's failed request no clue the proxy itself — not the
+// upstream — rejected it; this names the component and the most likely cause (a
+// pane whose baked /s/<token> predates a daemon restart that wiped the in-memory
+// token map, the BOS-481 failure mode). Tests compare against this constant plus
+// the trailing newline http.Error appends.
+const unknownTokenBody = "bossd failover proxy: unknown session token (pane likely predates a daemon restart — see BOS-481)"
+
+// passthroughWarnWindow is the minimum spacing between repeated pass-through
+// Warns for the same (displayID, class): repeats within a minute collapse to one
+// line while the counters still record every event.
+const passthroughWarnWindow = time.Minute
+
+// passthroughWarnMapCap bounds the rate-limit dedupe map before an opportunistic
+// sweep drops entries older than the window. It is a soft cap: the map is
+// naturally bounded by the live (displayID, class) set, and the sweep keeps a
+// burst of distinct unknown-token fingerprints from growing it without bound.
+const passthroughWarnMapCap = 1024
+
+// passthroughDisplayID derives a log-SAFE display id from an internal proxy
+// target. A chat target is chat\x00<agentSessionID>\x00<fallbackAccountID>: the
+// raw form carries NUL control bytes and an account id, so only the
+// agentSessionID is surfaced. A plain session target is already safe and is
+// returned unchanged.
+func passthroughDisplayID(targetID string) string {
+	if agentSessionID, _, ok := session.ParseProxyChatTarget(targetID); ok {
+		return agentSessionID
+	}
+	return targetID
+}
+
+// passthroughClass labels an un-rotated error response for counting/logging. An
+// HTTP error is its status code ("410"); a 200 SSE error pass-through is
+// "sse_<type>" (e.g. "sse_overloaded_error") so the 200 status and the in-stream
+// error are not conflated in the tally.
+func passthroughClass(status int, sseErrorType string) string {
+	if sseErrorType != "" {
+		return "sse_" + sseErrorType
+	}
+	return strconv.Itoa(status)
+}
+
+// tokenFingerprint returns the first 8 hex chars of SHA-256(token) — a stable,
+// non-reversible fingerprint safe to log so repeated unknown-token rejections
+// from the SAME baked pane can be correlated WITHOUT ever logging token bytes.
+// (tokenPrefix logs a raw 8-char slice, fine for a token WE minted this run and
+// hold; an unknown token is attacker-influenceable input, so it is hashed.)
+func tokenFingerprint(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
+// allowPassthroughWarn reports whether a Warn keyed by (displayID, class) should
+// emit now, collapsing repeats to one line per passthroughWarnWindow. Suppressed
+// events are still counted by the caller — only the log line is rate-limited.
+// The map is swept opportunistically past passthroughWarnMapCap so a burst of
+// distinct keys (e.g. rotating unknown-token fingerprints) cannot grow it
+// without bound.
+func (p *ProxyServer) allowPassthroughWarn(displayID, class string) bool {
+	key := displayID + "\x00" + class
+	now := p.now()
+	p.ptLogMu.Lock()
+	defer p.ptLogMu.Unlock()
+	if last, ok := p.ptLogLast[key]; ok && now.Sub(last) < passthroughWarnWindow {
+		return false
+	}
+	p.ptLogLast[key] = now
+	if len(p.ptLogLast) > passthroughWarnMapCap {
+		// Cheap common case: drop entries past the window.
+		for k, t := range p.ptLogLast {
+			if now.Sub(t) >= passthroughWarnWindow {
+				delete(p.ptLogLast, k)
+			}
+		}
+		// Hard backstop: a burst of > cap DISTINCT keys inside one window ages out
+		// nothing above, so clear wholesale to keep the map truly bounded. The only
+		// cost is that in-flight (displayID,class) rate-limits reset, so at most a
+		// few extra Warn lines may print — far cheaper than unbounded growth.
+		if len(p.ptLogLast) > passthroughWarnMapCap {
+			clear(p.ptLogLast)
+		}
+	}
+	return true
+}
+
+// logPassthrough records and (rate-limited) logs one un-rotated error response.
+// It ALWAYS increments the bounded counters (so a suppressed Warn is still
+// counted), then emits at most one Warn per (displayID, class) per minute. All
+// fields are log-safe: a derived display id, the class, method, the upstream API
+// path (never the token-bearing request path), a truthful reason, and — for a
+// 200 SSE error pass-through — the classified error type.
+func (p *ProxyServer) logPassthrough(targetID, method, upstreamPath string, status int, reason, sseErrorType string) {
+	displayID := passthroughDisplayID(targetID)
+	class := passthroughClass(status, sseErrorType)
+	p.ptStats.record(displayID, class)
+	if !p.allowPassthroughWarn(displayID, class) {
+		return
+	}
+	ev := p.logger.Warn().
+		Str("event", "failover_proxy_passthrough").
+		Str("session", displayID).
+		Int("status", status).
+		Str("method", method).
+		Str("path", upstreamPath).
+		Str("reason", reason)
+	if sseErrorType != "" {
+		ev = ev.Str("sse_error", sseErrorType)
+	}
+	ev.Msg("failover proxy: passed upstream error through un-rotated")
+}
+
+// logUnknownToken logs a rejected request whose path token the proxy does not
+// recognise. It logs a SHA-256 fingerprint (never token bytes) and the upstream
+// API path (never the token-bearing request path), rate-limited per fingerprint
+// because the volume is unauthenticated and attacker-influenceable.
+func (p *ProxyServer) logUnknownToken(token, method, upstreamPath string) {
+	fp := tokenFingerprint(token)
+	if !p.allowPassthroughWarn("unknown-token", fp) {
+		return
+	}
+	p.logger.Warn().
+		Str("event", "failover_proxy_unknown_token").
+		Str("token_fingerprint", fp).
+		Str("method", method).
+		Str("path", upstreamPath).
+		Msg("failover proxy: rejected request with unknown session token")
+}
+
+// passthroughStatsWindow is how many one-minute buckets (→ last hour) of
+// pass-through error history the counters retain per display session.
+const passthroughStatsWindow = 60
+
+// passthroughStatsMaxClasses caps the distinct error classes tracked per session
+// in-window; a further new class folds into passthroughStatsOtherClass so a
+// pathological status/error-type spread cannot grow a session's map without
+// bound.
+const passthroughStatsMaxClasses = 16
+
+// passthroughStatsMaxSessions caps how many display sessions are tracked at once;
+// past it the least-recently-active session is evicted (LRU).
+const passthroughStatsMaxSessions = 256
+
+// passthroughStatsOtherClass is the fold-in label for classes beyond the cap.
+const passthroughStatsOtherClass = "other"
+
+// passthroughStats is a bounded, in-memory tally of pass-through error events
+// per display session, surfaced through RepairDoctor. It records EVERY
+// qualifying event (including Warn-suppressed repeats) and is bounded three
+// ways: at most passthroughStatsWindow one-minute buckets per session (older
+// pruned lazily), at most passthroughStatsMaxClasses distinct classes per
+// session (further classes fold into "other"), and at most
+// passthroughStatsMaxSessions sessions (LRU-evicted). It holds only display ids,
+// class labels, and counts — never a token, body, or auth header.
+type passthroughStats struct {
+	now      func() time.Time
+	mu       sync.Mutex
+	sessions map[string]*ptSessionCounter
+}
+
+// ptSessionCounter holds one display session's minute buckets.
+type ptSessionCounter struct {
+	buckets    map[int64]map[string]int // unix-minute → class → count
+	lastMinute int64                    // most recent event minute (LRU anchor)
+}
+
+func newPassthroughStats(now func() time.Time) *passthroughStats {
+	if now == nil {
+		now = time.Now
+	}
+	return &passthroughStats{now: now, sessions: map[string]*ptSessionCounter{}}
+}
+
+// record increments the current-minute bucket for (displayID, class), pruning
+// stale buckets, capping distinct classes, and LRU-evicting sessions past the
+// global cap. Never blocks the request path meaningfully (O(buckets×classes)
+// with both ≤ their small caps).
+func (s *passthroughStats) record(displayID, class string) {
+	if displayID == "" {
+		return
+	}
+	minute := s.now().Unix() / 60
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sc := s.sessions[displayID]
+	if sc == nil {
+		if len(s.sessions) >= passthroughStatsMaxSessions {
+			s.evictLRULocked()
+		}
+		sc = &ptSessionCounter{buckets: map[int64]map[string]int{}}
+		s.sessions[displayID] = sc
+	}
+	sc.lastMinute = minute
+
+	// Prune buckets older than the window.
+	for m := range sc.buckets {
+		if minute-m >= passthroughStatsWindow {
+			delete(sc.buckets, m)
+		}
+	}
+
+	// Cap distinct classes per session (across the retained window). Recomputed
+	// from the surviving buckets so a class that aged out frees a slot.
+	distinct := map[string]struct{}{}
+	for _, b := range sc.buckets {
+		for c := range b {
+			distinct[c] = struct{}{}
+		}
+	}
+	if _, seen := distinct[class]; !seen && len(distinct) >= passthroughStatsMaxClasses {
+		class = passthroughStatsOtherClass
+	}
+
+	b := sc.buckets[minute]
+	if b == nil {
+		b = map[string]int{}
+		sc.buckets[minute] = b
+	}
+	b[class]++
+}
+
+// forget drops a display session's counters (called from Deregister so an ended
+// session's history does not linger until the sweep).
+func (s *passthroughStats) forget(displayID string) {
+	s.mu.Lock()
+	delete(s.sessions, displayID)
+	s.mu.Unlock()
+}
+
+// evictLRULocked removes the least-recently-active session. Caller holds s.mu.
+func (s *passthroughStats) evictLRULocked() {
+	var oldestID string
+	var oldest int64
+	first := true
+	for id, sc := range s.sessions {
+		if first || sc.lastMinute < oldest {
+			oldest, oldestID, first = sc.lastMinute, id, false
+		}
+	}
+	if oldestID != "" {
+		delete(s.sessions, oldestID)
+	}
+}
+
+// passthroughClassCount is one (class, count) pair in a snapshot.
+type passthroughClassCount struct {
+	Class string
+	Count int
+}
+
+// passthroughSessionSnapshot is one display session's pass-through error totals
+// over the retained window, classes sorted by count (desc) then name.
+type passthroughSessionSnapshot struct {
+	DisplayID string
+	Total     int
+	Classes   []passthroughClassCount
+}
+
+// snapshot returns a deterministic, per-session view of the in-window counters,
+// sorted by total (desc) then display id. Sessions whose buckets have all aged
+// out are omitted (they are pruned lazily on the next record).
+func (s *passthroughStats) snapshot() []passthroughSessionSnapshot {
+	minute := s.now().Unix() / 60
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var out []passthroughSessionSnapshot
+	for id, sc := range s.sessions {
+		classTotals := map[string]int{}
+		for m, b := range sc.buckets {
+			if minute-m >= passthroughStatsWindow {
+				continue
+			}
+			for c, n := range b {
+				classTotals[c] += n
+			}
+		}
+		if len(classTotals) == 0 {
+			continue
+		}
+		entry := passthroughSessionSnapshot{DisplayID: id}
+		for c, n := range classTotals {
+			entry.Classes = append(entry.Classes, passthroughClassCount{Class: c, Count: n})
+			entry.Total += n
+		}
+		sort.Slice(entry.Classes, func(i, j int) bool {
+			if entry.Classes[i].Count != entry.Classes[j].Count {
+				return entry.Classes[i].Count > entry.Classes[j].Count
+			}
+			return entry.Classes[i].Class < entry.Classes[j].Class
+		})
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Total != out[j].Total {
+			return out[i].Total > out[j].Total
+		}
+		return out[i].DisplayID < out[j].DisplayID
+	})
+	return out
+}
+
+// PassthroughStatsSnapshot exposes the bounded pass-through error tally for the
+// RepairDoctor informational check. It satisfies the unexported
+// passthroughStatsProvider seam consumed in repair_doctor.go.
+func (p *ProxyServer) PassthroughStatsSnapshot() []passthroughSessionSnapshot {
+	return p.ptStats.snapshot()
+}
+
+// AdoptToken re-registers an EXISTING session-shaped path token reconstructed
+// from a surviving tmux pane's baked ANTHROPIC_BASE_URL after a daemon restart
+// (BOS-481), so the pane's frozen /s/<token> keeps resolving to sessionID with
+// no respawn. It NEVER mints — the token is supplied by the caller from the pane
+// env, so the pane's own already-frozen URL is what starts routing again.
+// Implements session.proxyTokenRegistrar. Idempotent and conflict-safe:
+//   - session already holds a DIFFERENT (fresh-spawn) token ⇒ the live spawn
+//     wins; adoption is skipped SILENTLY (a newer pane already re-registered).
+//   - token already registered to the SAME target ⇒ no-op (re-adopt / sibling).
+//   - token already registered to a DIFFERENT target ⇒ first registration wins;
+//     adoption is skipped with a single Warn (token shown only as an ≤8-hex
+//     prefix). The full token is never logged.
+func (p *ProxyServer) AdoptToken(token, sessionID string) {
+	if token == "" || sessionID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if existing, ok := p.sessionToToken[sessionID]; ok && existing != token {
+		// A live fresh spawn already minted a different token for this session:
+		// defer to it silently, leaving the spawn's registration intact.
+		return
+	}
+	if existingTarget, ok := p.tokenToSession[token]; ok {
+		if existingTarget != sessionID {
+			p.logger.Warn().
+				Str("token_prefix", tokenPrefix(token)).
+				Msg("failover proxy: adopt token already registered to a different target; keeping first registration")
+		}
+		return
+	}
+	p.sessionToToken[sessionID] = token
+	p.tokenToSession[token] = sessionID
+}
+
+// AdoptTokenForChat re-registers an EXISTING chat-shaped path token reconstructed
+// from a surviving tmux pane after a daemon restart (BOS-481), filling the
+// chat/session bookkeeping so Deregister and ForgetBearer keep working exactly
+// as for a freshly-minted chat token. It NEVER mints. accountID is the account
+// resolved at adoption time; it seeds the target's fallbackAccountID for the
+// small window before the durable chat binding is observed. Idempotent and
+// conflict-safe with the same precedence as AdoptToken (spawn wins silently;
+// same target no-op; different target keeps first + single ≤8-hex-prefix Warn).
+func (p *ProxyServer) AdoptTokenForChat(sessionID, agentSessionID, accountID, token string) {
+	if token == "" || sessionID == "" || agentSessionID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	target := session.ProxyTargetForChat(agentSessionID, accountID)
+	if existing, ok := p.chatToToken[agentSessionID]; ok && existing != token {
+		// A live fresh spawn already minted a different token for this chat.
+		return
+	}
+	if existingTarget, ok := p.tokenToSession[token]; ok {
+		if existingTarget != target {
+			p.logger.Warn().
+				Str("token_prefix", tokenPrefix(token)).
+				Msg("failover proxy: adopt chat token already registered to a different target; keeping first registration")
+		}
+		return
+	}
+	p.chatToToken[agentSessionID] = token
+	if p.sessionChats[sessionID] == nil {
+		p.sessionChats[sessionID] = map[string]string{}
+	}
+	p.sessionChats[sessionID][agentSessionID] = token
+	p.tokenToSession[token] = target
 }
 
 // bearerForSession returns the session's sticky swapped bearer, or "" before
@@ -459,7 +940,12 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionID, ok := p.sessionForToken(token)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		// Self-identifying 401 (BOS-483): name the proxy and the most likely cause
+		// (a pane whose baked token predates a daemon restart) instead of an opaque
+		// "unauthorized". Log a SHA-256 fingerprint (never the token) and the
+		// upstream path (never r.URL.Path, which carries the token).
+		p.logUnknownToken(token, r.Method, upstreamPath)
+		http.Error(w, unknownTokenBody, http.StatusUnauthorized)
 		return
 	}
 
@@ -547,7 +1033,8 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			io.Reader
 			io.Closer
 		}{io.MultiReader(bytes.NewReader(prefix), origBody), origBody}
-		if _, suspended := agenterr.SuspensionReason(string(prefix)); suspended {
+		_, suspended := agenterr.SuspensionReason(string(prefix))
+		if suspended {
 			// Trigger mirrors the SignalKind: suspension is modeled as an
 			// AuthInvalidated rotation, so it audits under the matching proto
 			// enum ROTATION_TRIGGER_AUTH_INVALIDATED. Using a string without a
@@ -555,8 +1042,10 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			// via pb.RotationTrigger_value in account_binding.go.
 			res, ferr := p.failover.PrepareFailoverKind(r.Context(), sessionID, rotation.AuthInvalidated, "ROTATION_TRIGGER_AUTH_INVALIDATED")
 			if ferr != nil {
-				// Redaction-safe: the error never carries the token.
-				p.logger.Warn().Err(ferr).Str("session", sessionID).Msg("failover proxy: prepare suspension failover failed; returning original response")
+				// Redaction-safe: the error never carries the token. Not double-logged:
+				// with Rotate=false this response falls through to the single
+				// logPassthrough(failover_declined) line below.
+				_ = ferr
 			}
 			if res.Rotate {
 				_ = resp.Body.Close()
@@ -564,7 +1053,13 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		// Not a suspension, or no rotation target: pass the buffered 403 through.
+		// A matched suspension that could not rotate (no target / prepare errored) is
+		// a coarse failover_declined; an unmatched 403 is a benign suspension_not_matched.
+		reason := passthroughReasonSuspensionNotMatched
+		if suspended {
+			reason = passthroughReasonFailoverDeclined
+		}
+		p.logPassthrough(sessionID, r.Method, upstreamPath, resp.StatusCode, reason, "")
 		p.copyResponse(w, resp)
 		return
 	}
@@ -572,8 +1067,10 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if canAttemptFailover && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusUnauthorized) {
 		res, ferr := p.failover.PrepareFailover(r.Context(), sessionID, resp.StatusCode)
 		if ferr != nil {
-			// Redaction-safe: PrepareFailover's error never carries the token.
-			p.logger.Warn().Err(ferr).Str("session", sessionID).Msg("failover proxy: prepare failover failed; returning original response")
+			// Redaction-safe: PrepareFailover's error never carries the token. Not
+			// double-logged: with Rotate=false this response falls through to the
+			// single logPassthrough(failover_declined) line at the tail of handleProxy.
+			_ = ferr
 		}
 		if res.Rotate {
 			// Discard the rejected response; replay with the next bearer.
@@ -593,12 +1090,14 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// content / a backstop) is reconstructed byte-for-byte and passes through, so
 	// behaviour is unchanged outside this narrow, failover-capable case.
 	if canAttemptFailover && resp.StatusCode == http.StatusOK && isSSEContentType(resp.Header.Get("Content-Type")) {
-		rotate, reconstructed := p.peekSSEForRateLimit(resp)
+		rotate, sseErrType, reconstructed := p.peekSSEForRateLimit(resp)
 		if rotate {
 			res, ferr := p.failover.PrepareFailoverKind(r.Context(), sessionID, rotation.UsageLimited, "ROTATION_TRIGGER_USAGE_LIMITED")
 			if ferr != nil {
-				// Redaction-safe: the error never carries the token.
-				p.logger.Warn().Err(ferr).Str("session", sessionID).Msg("failover proxy: prepare SSE rate-limit failover failed; returning original response")
+				// Redaction-safe: the error never carries the token. Not double-logged:
+				// with Rotate=false this stream falls through to the single
+				// logPassthrough(sse_error_passthrough) line below.
+				_ = ferr
 			}
 			if res.Rotate {
 				// Discard the rejected stream (nothing shipped); replay with the next
@@ -610,9 +1109,34 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		// No decisive rate_limit_error, or no rotation target: stream the
-		// reconstructed (buffered prefix + remainder) response through unchanged.
+		// reconstructed (buffered prefix + remainder) response through unchanged. A
+		// pre-content error frame we could not rotate on (sseErrType != "") is a
+		// 200-status pass-through worth surfacing; a normal content stream stays silent.
+		if sseErrType != "" {
+			p.logPassthrough(sessionID, r.Method, upstreamPath, resp.StatusCode, passthroughReasonSSEErrorPassthrough, sseErrType)
+		}
 		p.copyResponse(w, reconstructed)
 		return
+	}
+	// Final pass-through for any other response. Only ERROR statuses (≥400) are
+	// logged (the silence guard keeps successful responses quiet); the reason is
+	// whatever the proxy can prove locally about why it did not rotate.
+	if resp.StatusCode >= http.StatusBadRequest {
+		reason := passthroughReasonStatusNotIntercepted
+		switch {
+		case !canFailover:
+			// The oversized body was streamed through, so no failover was possible.
+			reason = passthroughReasonBodyTooLarge
+		case credentiallessManagedSentinel && resp.StatusCode == http.StatusUnauthorized:
+			// A managed sentinel whose bearer was unresolved: a 401 we deliberately
+			// do not rotate on (would cool a healthy account for a self-inflicted 401).
+			reason = passthroughReasonCredentiallessSentinel
+		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusUnauthorized:
+			// A 401/429 the failover machinery saw but declined to rotate (no eligible
+			// next account / prepare errored). Coarse by design — no truthful sub-reason.
+			reason = passthroughReasonFailoverDeclined
+		}
+		p.logPassthrough(sessionID, r.Method, upstreamPath, resp.StatusCode, reason, "")
 	}
 	p.copyResponse(w, resp)
 }
@@ -662,7 +1186,13 @@ type sseEventData struct {
 // frames (message_start / content_block_start / ping) are held rather than
 // flushed per-read; the first content_block_delta (or a backstop) flushes the
 // whole buffered prefix, so visible tokens are never delayed beyond the deadline.
-func (p *ProxyServer) peekSSEForRateLimit(resp *http.Response) (bool, *http.Response) {
+//
+// It also returns the classified SSE error type (e.g. "rate_limit_error" when
+// rotating, or "overloaded_error" for a non-rotating pre-content error frame)
+// so a 200-status stream that opened with an error the proxy passes through can
+// be logged as status=200 sse_error=<type> (BOS-483). The type is "" when the
+// peek reached content or a backstop without a decisive error frame.
+func (p *ProxyServer) peekSSEForRateLimit(resp *http.Response) (bool, string, *http.Response) {
 	origBody := resp.Body
 	byteCap := p.ssePeekByteCap
 	if byteCap <= 0 {
@@ -674,6 +1204,7 @@ func (p *ProxyServer) peekSSEForRateLimit(resp *http.Response) (bool, *http.Resp
 	chunk := make([]byte, 4096)
 	scanned := 0 // bytes of prefix already scanned for frame boundaries
 	rotate := false
+	sseErrType := ""
 
 peekLoop:
 	// Stop once the byte cap or the deadline is reached (fail safe to
@@ -696,11 +1227,16 @@ peekLoop:
 				}
 				frame := buf[scanned : scanned+rel]
 				scanned = frameEnd
-				switch classifySSEFrame(frame) {
+				dec, errType := classifySSEFrame(frame)
+				switch dec {
 				case sseRotate:
 					rotate = true
+					sseErrType = errType
 					break peekLoop
 				case ssePassthrough:
+					// errType is "" for a content_block_delta (normal stream), or the
+					// non-rotating error type for a pre-content error frame.
+					sseErrType = errType
 					break peekLoop
 				case sseUndecided:
 					// keep scanning subsequent frames
@@ -716,7 +1252,7 @@ peekLoop:
 		io.Reader
 		io.Closer
 	}{io.MultiReader(bytes.NewReader(prefix.Bytes()), origBody), origBody}
-	return rotate, resp
+	return rotate, sseErrType, resp
 }
 
 // classifySSEFrame decides whether a single SSE frame is a rate_limit_error
@@ -724,7 +1260,10 @@ peekLoop:
 // pass through), or a pre-content opening frame (undecided → keep peeking). It is
 // tolerant: a malformed/partial `data:` payload falls back to the `event:` name
 // and never rotates unless it POSITIVELY reads error.type == "rate_limit_error".
-func classifySSEFrame(frame []byte) sseDecision {
+// It also returns the classified error type: for an `error` frame this is
+// payload.Error.Type (e.g. "rate_limit_error" or "overloaded_error"); for a
+// content or undecided frame it is "".
+func classifySSEFrame(frame []byte) (sseDecision, string) {
 	eventName, dataJSON := parseSSEFrame(frame)
 	var payload sseEventData
 	_ = json.Unmarshal([]byte(dataJSON), &payload) // tolerant: err ⇒ empty payload
@@ -734,14 +1273,14 @@ func classifySSEFrame(frame []byte) sseDecision {
 	}
 	switch typ {
 	case "content_block_delta":
-		return ssePassthrough
+		return ssePassthrough, ""
 	case "error":
 		if payload.Error.Type == "rate_limit_error" {
-			return sseRotate
+			return sseRotate, payload.Error.Type
 		}
-		return ssePassthrough
+		return ssePassthrough, payload.Error.Type
 	default:
-		return sseUndecided
+		return sseUndecided, ""
 	}
 }
 
@@ -789,8 +1328,18 @@ func (p *ProxyServer) replayAndCommit(w http.ResponseWriter, r *http.Request, up
 	// stream through unchanged, leaving the swap unstuck so the next request
 	// cleanly re-tries failover (mirroring the commit-failure fallback below).
 	replayRateLimited := false
+	replaySSEErrType := ""
 	if replay.StatusCode == http.StatusOK && isSSEContentType(replay.Header.Get("Content-Type")) {
-		replayRateLimited, replay = p.peekSSEForRateLimit(replay)
+		replayRateLimited, replaySSEErrType, replay = p.peekSSEForRateLimit(replay)
+	}
+
+	// The rotated account did not clear the error: the replay leg itself returned
+	// ≥400, or opened with a pre-content SSE error. Surface it as replay_still_erroring
+	// (BOS-483) so a rotation that fails to help is visible, not silently swallowed.
+	if replay.StatusCode >= http.StatusBadRequest {
+		p.logPassthrough(sessionID, r.Method, upstreamPath, replay.StatusCode, passthroughReasonReplayStillErroring, "")
+	} else if replaySSEErrType != "" {
+		p.logPassthrough(sessionID, r.Method, upstreamPath, replay.StatusCode, passthroughReasonReplayStillErroring, replaySSEErrType)
 	}
 
 	if replay.StatusCode < http.StatusBadRequest && !replayRateLimited {

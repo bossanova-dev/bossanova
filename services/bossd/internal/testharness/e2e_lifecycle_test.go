@@ -1694,6 +1694,91 @@ func TestE2E_CreateSession_IsQuickChat(t *testing.T) {
 	}
 }
 
+// TestE2E_CreateSession_DeferPR pins the BOS-478 wiring: CreateSessionRequest.
+// defer_pr threads through the server handler into StartSessionOpts.DeferPR,
+// which gates the up-front draft PR in lifecycle.StartSession
+// (`if session.PRNumber == nil && !opts.DeferPR { createDraftPR }`).
+//
+// Unlike a quick chat, a defer_pr session is still a *real* worktree-backed
+// session (a worktree is created and a branch pushed) — it only suppresses the
+// eager draft PR at start. The finalize EnsurePR path (already covered by the
+// session-package finalize tests, e.g.
+// TestFinalizeSession_CleanCommittedBranchNoPR_CreatesPR) opens the PR later if
+// the run produces commits. The two subtests contrast defer_pr true vs unset on
+// the same worktree path to prove true→no draft PR and unset→unchanged eager PR.
+func TestE2E_CreateSession_DeferPR(t *testing.T) {
+	t.Run("defer_pr=true suppresses the up-front draft PR", func(t *testing.T) {
+		h := testharness.New(t)
+		ctx := context.Background()
+		repoDir := testharness.TempRepoDir(t)
+
+		repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
+			DisplayName:       "defer-pr-app",
+			LocalPath:         repoDir,
+			DefaultBaseBranch: "main",
+			WorktreeBaseDir:   "/tmp/worktrees",
+		}))
+		if err != nil {
+			t.Fatalf("register repo: %v", err)
+		}
+
+		sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+			RepoId: repoResp.Msg.Repo.Id,
+			Title:  "Read-only planning sweep",
+			Plan:   "Investigate; do not change code",
+			// Detach mints the HookToken so the finalize EnsurePR path is armed;
+			// defer_pr on its own suppresses only the up-front draft PR.
+			Detach:  true,
+			DeferPr: true,
+		})
+
+		// It is still a real worktree session (contrast with quick chat).
+		if len(h.Git.CreateCalls) != 1 {
+			t.Fatalf("defer_pr session must still create a worktree, got %d calls", len(h.Git.CreateCalls))
+		}
+		if sess.BranchName == "" {
+			t.Error("defer_pr session should have a branch name")
+		}
+		// The load-bearing assertion: no draft PR opened up front.
+		if len(h.VCS.CreateDraftPRCalls) != 0 {
+			t.Fatalf("defer_pr=true must not open an up-front draft PR, got %d calls: %+v",
+				len(h.VCS.CreateDraftPRCalls), h.VCS.CreateDraftPRCalls)
+		}
+	})
+
+	t.Run("defer_pr unset opens the eager draft PR unchanged", func(t *testing.T) {
+		h := testharness.New(t)
+		ctx := context.Background()
+		repoDir := testharness.TempRepoDir(t)
+
+		repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
+			DisplayName:       "eager-pr-app",
+			LocalPath:         repoDir,
+			DefaultBaseBranch: "main",
+			WorktreeBaseDir:   "/tmp/worktrees",
+		}))
+		if err != nil {
+			t.Fatalf("register repo: %v", err)
+		}
+
+		createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+			RepoId: repoResp.Msg.Repo.Id,
+			Title:  "Normal implementation",
+			Plan:   "Add a feature",
+			Detach: true,
+			// DeferPr omitted → defaults false → eager draft PR at start.
+		})
+
+		if len(h.VCS.CreateDraftPRCalls) != 1 {
+			t.Fatalf("defer_pr unset must open exactly one up-front draft PR, got %d calls: %+v",
+				len(h.VCS.CreateDraftPRCalls), h.VCS.CreateDraftPRCalls)
+		}
+		if !h.VCS.CreateDraftPRCalls[0].Draft {
+			t.Error("expected draft=true for the eager up-front PR")
+		}
+	})
+}
+
 // TestE2E_CreateSession_ForceBranch verifies that the ForceBranch flag on
 // CreateSession propagates all the way through lifecycle.StartSession to
 // worktrees.Create as CreateOpts.Force. The server exposes no direct

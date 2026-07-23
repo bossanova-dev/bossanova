@@ -124,6 +124,15 @@ test('triage subagent output is validated before jq field parsing', () => {
   assert.match(SKILL, /\.batch \| type == "array"/)
 })
 
+test('classify CLI outcome is decoded before shell branching', () => {
+  assert.ok(
+    SKILL.includes(
+      'OUTCOME="$(node "$GATE" classify "$REPAIR_RESULT" "$MERGEABLE" "$REVIEW_DECISION" | jq -r \'.\')"',
+    ),
+    'classify emits a JSON string, so the shell must decode it before case handling',
+  )
+})
+
 // ---------------------------------------------------------------------------
 // Byte-identical external contracts (unchanged from baseline).
 // ---------------------------------------------------------------------------

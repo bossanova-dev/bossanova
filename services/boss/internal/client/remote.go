@@ -698,6 +698,59 @@ func (c *RemoteClient) RunCronJobNow(ctx context.Context, id string) (*pb.RunCro
 	}, nil
 }
 
+// --- GitHub Callbacks ---
+
+// CreateGithubCallback proxies a callback registration through the orchestrator,
+// which routes to the owning bossd by target_chat_id (FindDaemonForChat) and
+// reuses the caller's own auth — no service credential. The message body is
+// carried verbatim and never logged on either hop.
+func (c *RemoteClient) CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error) {
+	resp, err := c.rpc.ProxyCreateGithubCallback(ctx, connect.NewRequest(&pb.ProxyCreateGithubCallbackRequest{
+		GroupId:      req.GroupId,
+		TargetChatId: req.GetTargetChatId(),
+		RepoOwner:    req.GetRepoOwner(),
+		RepoName:     req.GetRepoName(),
+		PrNumber:     req.GetPrNumber(),
+		Trigger:      req.GetTrigger(),
+		Message:      req.GetMessage(),
+		ExpiresAt:    req.GetExpiresAt(),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetGithubCallback(), nil
+}
+
+// ListGithubCallbacks proxies the callback list through the orchestrator. When
+// req carries a target_chat_id it routes to that chat's owning daemon; otherwise
+// bosso fans out across the caller's Ready daemons and concatenates the results.
+// The optional filter pointers pass straight through so an unset field is not
+// constrained.
+func (c *RemoteClient) ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
+	resp, err := c.rpc.ProxyListGithubCallbacks(ctx, connect.NewRequest(&pb.ProxyListGithubCallbacksRequest{
+		TargetChatId: req.TargetChatId,
+		RepoOwner:    req.RepoOwner,
+		RepoName:     req.RepoName,
+		PrNumber:     req.PrNumber,
+		Trigger:      req.Trigger,
+		State:        req.State,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetGithubCallbacks(), nil
+}
+
+// DeleteGithubCallback proxies a callback delete through the orchestrator,
+// routing to the owning daemon by target_chat_id.
+func (c *RemoteClient) DeleteGithubCallback(ctx context.Context, targetChatID, id string) error {
+	_, err := c.rpc.ProxyDeleteGithubCallback(ctx, connect.NewRequest(&pb.ProxyDeleteGithubCallbackRequest{
+		TargetChatId: targetChatID,
+		Id:           id,
+	}))
+	return err
+}
+
 // --- Accounts (local only) ---
 
 func (c *RemoteClient) ListAccounts(_ context.Context, _ string, _ bool) ([]*pb.Account, error) {

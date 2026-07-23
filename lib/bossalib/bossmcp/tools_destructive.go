@@ -133,6 +133,23 @@ func registerDestructiveTools(server *mcp.Server, backend Backend, opts Options)
 		r, err := jsonResult(map[string]string{"removed_account": args.ID})
 		return r, nil, err
 	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "delete_github_callback",
+		Description: "Permanently delete a registered GitHub PR callback by id, before it fires. Destructive — requires confirm:true.",
+		Annotations: destructiveAnnotations(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args DeleteGithubCallbackArgs) (*mcp.CallToolResult, any, error) {
+		if r := requireConfirm(args.Confirm, "delete_github_callback"); r != nil {
+			return r, nil, nil
+		}
+		// target_chat_id lets the hosted gateway route the delete to the daemon
+		// that owns the callback; the local socket adapter ignores it.
+		if err := backend.DeleteGithubCallback(ctx, args.TargetChatID, args.ID); err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(map[string]string{"deleted_github_callback": args.ID})
+		return r, nil, err
+	})
 }
 
 // registerDestructiveSessionTool installs a confirm-gated id-keyed session tool
@@ -159,6 +176,17 @@ func registerDestructiveSessionTool(server *mcp.Server, opts Options, name, desc
 type ConfirmIDArgs struct {
 	ID      string `json:"id" jsonschema:"the resource id"`
 	Confirm bool   `json:"confirm,omitempty" jsonschema:"must be true to actually perform the destructive action"`
+}
+
+// DeleteGithubCallbackArgs is the typed argument struct for
+// delete_github_callback. target_chat_id is the owning chat id; the hosted
+// gateway uses it to route the delete to the daemon that owns the callback,
+// while the local socket adapter ignores it (its own daemon owns every
+// callback in its registry, so the id alone resolves it).
+type DeleteGithubCallbackArgs struct {
+	ID           string `json:"id" jsonschema:"the callback id to delete"`
+	TargetChatID string `json:"target_chat_id,omitempty" jsonschema:"the callback's owning chat id (used for hosted routing; ignored for a local daemon)"`
+	Confirm      bool   `json:"confirm,omitempty" jsonschema:"must be true to actually delete the callback"`
 }
 
 // DeleteChatArgs is the typed argument struct for delete_chat.

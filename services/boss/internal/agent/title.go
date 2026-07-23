@@ -69,16 +69,30 @@ func transcriptAbsentOrEmptyInDir(projectDir, agentSessionID string) bool {
 }
 
 // PathToProjectKey converts a filesystem path to a Claude Code project key.
-// Claude Code replaces path separators and "." with "-".
-// e.g. "/Users/dave/Code/.worktrees/foo" → "-Users-dave-Code--worktrees-foo"
+// Claude Code replaces EVERY non-alphanumeric character (path separators, ".",
+// "_", ":", spaces, …) with "-".
+// e.g. "/Users/dave/Code/.worktrees/rlimit_nofile" → "-Users-dave-Code--worktrees-rlimit-nofile"
 func PathToProjectKey(path string) string {
 	// Claude Code derives the key from the process working directory (getcwd),
 	// which is always normalized, so Clean first. Without this a stored path
 	// with a trailing slash (e.g. a repo registered as ".../bossanova/")
 	// encodes to "...-bossanova-" and never matches Claude's "...-bossanova"
 	// key, silently defeating --resume and forcing a --session-id fresh start.
-	return strings.NewReplacer("/", "-", "\\", "-", ".", "-", ":", "-").Replace(filepath.Clean(path))
+	//
+	// Claude folds ANY non-alphanumeric char to "-", not just separators and ".".
+	// An earlier version enumerated "/ \\ . :" and missed "_", so a worktree like
+	// ".../rlimit_nofile-..." keyed to ".../rlimit_nofile-..." while Claude wrote
+	// ".../rlimit-nofile-...": TranscriptExists missed the file, the attach fell
+	// back to --session-id (create), and it collided with the existing transcript
+	// ("Session ID already in use"). Matching Claude's full rule fixes the whole
+	// class. Keep in sync with plugins/bossd-plugin-claude/transcript.go
+	// pathToProjectKey (module boundaries forbid sharing one copy).
+	return projectKeyNonAlnum.ReplaceAllString(filepath.Clean(path), "-")
 }
+
+// projectKeyNonAlnum matches every character Claude Code folds to "-" when
+// deriving a project key: anything that is not an ASCII letter or digit.
+var projectKeyNonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
 
 // jsonlLine is a minimal representation of a JSONL line for parsing.
 //

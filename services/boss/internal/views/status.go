@@ -110,6 +110,9 @@ func sessionWarningHints(sess *pb.Session) []string {
 	if hint := rotationExhaustedHint(sess, time.Now()); hint != "" {
 		hints = append(hints, hint)
 	}
+	if hint := rotationRespawnCapHint(sess); hint != "" {
+		hints = append(hints, hint)
+	}
 	if hint := setupErrorHint(sess); hint != "" {
 		hints = append(hints, hint)
 	}
@@ -195,6 +198,27 @@ func rotationExhaustedHint(sess *pb.Session, now time.Time) string {
 		return ""
 	}
 	return fmt.Sprintf("all accounts limited, resumes in ~%s", shortDuration(remaining))
+}
+
+// rotationRespawnCapHint surfaces a needs-attention warning when the session's
+// newest rotation event is a respawn-cap-exhausted episode: the bound account
+// keeps probing healthy while the pane stays auth-wedged, and we have hit the
+// per-hour in-place respawn cap without clearing the wedge (BOS-482). Unlike an
+// EXHAUSTED park (every account usage-limited) this is a plumbing wedge the
+// operator likely needs to intervene on — hence a danger-styled warning rather
+// than a muted history row. Empty unless the newest event is that outcome.
+func rotationRespawnCapHint(sess *pb.Session) string {
+	if sess == nil {
+		return ""
+	}
+	evs := sess.GetRotationEvents()
+	if len(evs) == 0 {
+		return ""
+	}
+	if evs[0].GetOutcome() != pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED {
+		return ""
+	}
+	return "auth wedge unresolved — respawn cap reached, may need /login"
 }
 
 // rotationHistoryBlock renders the session's recent rotation decisions
@@ -285,6 +309,16 @@ func rotationEventLabel(ev *pb.RotationEvent) string {
 		return "no eligible account — status only"
 	case pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED:
 		return "all accounts limited"
+	case pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT:
+		// The bound account probed healthy but the pane stayed auth-wedged
+		// (stale injected proxy token) — we respawned it in place on the same
+		// account rather than rotate away (BOS-482).
+		if ev.GetToAccount() == "" {
+			return "refreshed auth in place"
+		}
+		return fmt.Sprintf("refreshed auth in place on %s", ev.GetToAccount())
+	case pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED:
+		return "auth-wedge respawn cap reached"
 	case pb.RotationOutcome_ROTATION_OUTCOME_FAILED:
 		return fmt.Sprintf("switch to %s failed", ev.GetToAccount())
 	default:

@@ -191,6 +191,46 @@ func TestSubscribeDeltas_StatusChanged_EmitsChatStatus(t *testing.T) {
 	}
 }
 
+func TestSubscribeDeltas_InterestsEvent_EmitsCallbackInterestSet(t *testing.T) {
+	src := &staticEventSource{events: []StreamEvent{{
+		Interests: &InterestsEvent{Interests: []*pb.CallbackInterest{
+			{RepoOriginUrl: "https://github.com/acme/widget", PrNumber: 7},
+		}},
+	}}}
+	got := drainFor(t, newForwarderClient(t, src, 0), 200*time.Millisecond)
+	found := false
+	for _, ev := range got {
+		if set := ev.GetCallbackInterests(); set != nil {
+			ints := set.GetInterests()
+			if len(ints) == 1 &&
+				ints[0].GetRepoOriginUrl() == "https://github.com/acme/widget" &&
+				ints[0].GetPrNumber() == 7 {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected callback-interest set delta; got %v", got)
+	}
+}
+
+func TestSubscribeDeltas_InterestsEvent_EmptySetIsWithdrawal(t *testing.T) {
+	// Snapshot semantics: an empty set is a valid message (withdraw all).
+	src := &staticEventSource{events: []StreamEvent{{
+		Interests: &InterestsEvent{Interests: nil},
+	}}}
+	got := drainFor(t, newForwarderClient(t, src, 0), 200*time.Millisecond)
+	found := false
+	for _, ev := range got {
+		if set := ev.GetCallbackInterests(); set != nil && len(set.GetInterests()) == 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected empty callback-interest set delta; got %v", got)
+	}
+}
+
 func TestSubscribeDeltas_ContextCancelled_ReturnsCleanly(t *testing.T) {
 	// A source that never closes — the forwarder must exit only when
 	// ctx is cancelled, not by draining the channel.

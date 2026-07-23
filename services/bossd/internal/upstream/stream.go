@@ -369,6 +369,16 @@ type SessionCommandHandler interface {
 	// RunCronJobNow fires a cron job immediately, honoring the same overlap and
 	// concurrency-cap rules as scheduled fires. Async.
 	RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
+	// CreateGithubCallback registers a pending GitHub-callback that delivers a
+	// message to a chat when a PR trigger fires. Validation happens in the
+	// daemon handler; its connect-coded error surfaces via CommandResult.error.
+	// The Message field is a secret and is never logged. Async.
+	CreateGithubCallback(ctx context.Context, cmd *pb.CreateGithubCallbackCommand) (*pb.CreateGithubCallbackResponse, error)
+	// ListGithubCallbacks returns pending GitHub-callbacks, filtered by the
+	// optional fields the command sets. Store-bound — dispatched async.
+	ListGithubCallbacks(ctx context.Context, cmd *pb.ListGithubCallbacksCommand) (*pb.ListGithubCallbacksResponse, error)
+	// DeleteGithubCallback removes a pending GitHub-callback by ID. Async.
+	DeleteGithubCallback(ctx context.Context, id string) error
 	// AddAccount registers a new provider login. The credential blob is
 	// inbound-only (consumed into the keyring, never echoed); the response
 	// carries account metadata only. Store/keyring-bound — dispatched async.
@@ -471,10 +481,11 @@ type SessionCreator interface {
 // the caller site adds another store (repo store, workflow store) — new
 // fields land here rather than widening the constructor signature.
 type StreamStores struct {
-	Sessions SessionSnapshotReader
-	Chats    ChatSnapshotReader
-	Repos    RepoSnapshotReader
-	Statuses StatusSnapshotReader
+	Sessions  SessionSnapshotReader
+	Chats     ChatSnapshotReader
+	Repos     RepoSnapshotReader
+	Statuses  StatusSnapshotReader
+	Interests CallbackInterestReader
 }
 
 // SessionSnapshotReader returns the slim projection of every active
@@ -504,6 +515,15 @@ type StatusSnapshotReader interface {
 	SnapshotStatuses(ctx context.Context) ([]*pb.ChatStatusEntry, error)
 }
 
+// CallbackInterestReader returns the daemon's complete current GitHub
+// callback-interest set (distinct repo_origin_url + pr_number over every
+// non-terminal callback). Carried on the DaemonSnapshot so bosso can reconcile
+// callback interests atomically on every (re)connect. The bossd wiring adapts
+// callback.DeriveInterests.
+type CallbackInterestReader interface {
+	SnapshotCallbackInterests(ctx context.Context) ([]*pb.CallbackInterest, error)
+}
+
 // StreamEvent is the union of session/chat/status events the daemon
 // publishes internally for the reverse stream. It intentionally does not
 // reuse the plugin-facing EventNotification (which has a disjoint oneof
@@ -511,9 +531,19 @@ type StatusSnapshotReader interface {
 // proto for a purely internal pipeline.
 type StreamEvent struct {
 	// Exactly one of the following is non-nil.
-	Session *SessionEvent
-	Chat    *ChatEvent
-	Status  *StatusEvent
+	Session   *SessionEvent
+	Chat      *ChatEvent
+	Status    *StatusEvent
+	Interests *InterestsEvent
+}
+
+// InterestsEvent carries the daemon's complete current GitHub callback-interest
+// set as a steady-state refresh. It has snapshot semantics: the full set every
+// time, and an empty slice is a valid message meaning "withdraw all" (the daemon
+// holds no live callbacks). The connect/reconnect DaemonSnapshot carries the
+// guaranteed-first full set; this event carries subsequent changes.
+type InterestsEvent struct {
+	Interests []*pb.CallbackInterest
 }
 
 // SessionEvent describes a session lifecycle change. Kind mirrors the

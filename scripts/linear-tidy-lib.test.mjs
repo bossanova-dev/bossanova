@@ -7,7 +7,6 @@ import { test } from 'node:test'
 
 import {
   STATE_RANK,
-  TERMINAL_STATE_NAMES,
   STARTED_RANK,
   rankOf,
   isTerminalStateName,
@@ -27,14 +26,14 @@ const pr = (number, title, state) => ({ number, title, state, url: `https://gh/p
 
 // --- STATE_RANK -------------------------------------------------------------
 
-test('STATE_RANK enumerates exactly the expected states in a strict total order', () => {
+test('STATE_RANK enumerates state roles in a strict total order', () => {
   assert.deepEqual(Object.keys(STATE_RANK), [
-    'Backlog',
-    'Unplanned',
-    'Todo',
-    'In Progress',
-    'In Review',
-    'Done',
+    'backlog',
+    'unplanned',
+    'planned',
+    'inProgress',
+    'inReview',
+    'done',
   ])
   const values = Object.values(STATE_RANK)
   // Strictly increasing → total order, no ties.
@@ -47,12 +46,11 @@ test('rankOf / isTerminalStateName', () => {
   assert.equal(rankOf('Nonsense'), null)
   assert.equal(rankOf(undefined), null)
   for (const t of ['Done', 'Canceled', 'Duplicate']) assert.ok(isTerminalStateName(t))
-  assert.ok(TERMINAL_STATE_NAMES.has('Duplicate'))
   assert.equal(isTerminalStateName('Todo'), false)
 })
 
 test('isStartedStateName / STARTED_RANK: true only for non-terminal started states', () => {
-  assert.equal(STARTED_RANK, STATE_RANK['In Progress'])
+  assert.equal(STARTED_RANK, STATE_RANK.inProgress)
   // Started, non-terminal → true.
   assert.equal(isStartedStateName('In Progress'), true)
   assert.equal(isStartedStateName('In Review'), true)

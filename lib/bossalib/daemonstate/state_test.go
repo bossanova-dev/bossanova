@@ -18,6 +18,7 @@ func TestWriteReadAndRemoveMetadata(t *testing.T) {
 		SettingsPath:   "/tmp/profile/settings.json",
 		SocketPath:     "/tmp/profile/bossd.sock",
 		StartedAt:      startedAt,
+		FileLimitSoft:  4096,
 	}
 
 	if err := Write(dir, want); err != nil {
@@ -31,6 +32,11 @@ func TestWriteReadAndRemoveMetadata(t *testing.T) {
 	if got != want {
 		t.Fatalf("Read() = %#v, want %#v", got, want)
 	}
+	// The achieved FD soft limit must survive the round-trip so a low cap is
+	// visible in daemon state without grepping logs (BOS-465).
+	if got.FileLimitSoft != 4096 {
+		t.Fatalf("Read().FileLimitSoft = %d, want 4096", got.FileLimitSoft)
+	}
 
 	raw, err := os.ReadFile(filepath.Join(dir, MetadataFileName))
 	if err != nil {
@@ -42,6 +48,9 @@ func TestWriteReadAndRemoveMetadata(t *testing.T) {
 	}
 	if decoded["pid"] == nil || decoded["executable_path"] == nil || decoded["settings_path"] == nil || decoded["socket_path"] == nil {
 		t.Fatalf("metadata JSON missing expected fields: %s", string(raw))
+	}
+	if decoded["file_limit_soft"] == nil {
+		t.Fatalf("metadata JSON missing file_limit_soft: %s", string(raw))
 	}
 
 	if err := Remove(dir); err != nil {

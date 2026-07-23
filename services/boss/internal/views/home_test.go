@@ -15,6 +15,7 @@ import (
 	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/boss/internal/upgrade"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -34,6 +35,166 @@ type fakeHomeCloudAccessClient struct {
 	checkouts        int
 	portals          int
 	refreshes        int
+}
+
+func boolPtr(value bool) *bool { return &value }
+
+func TestHomeQuestionNotifications(t *testing.T) {
+	question := func(id string) *pb.Session {
+		return &pb.Session{Id: id, Title: "BOS-459 alert", DisplayLabel: displaystatus.QuestionLabel}
+	}
+	notQuestion := func(id string) *pb.Session {
+		return &pb.Session{Id: id, Title: "BOS-459 alert", DisplayLabel: "working"}
+	}
+
+	tests := []struct {
+		name     string
+		settings config.Settings
+		polls    []sessionListMsg
+		want     int
+		wantCmds int
+	}{
+		{
+			name: "rising edge notifies once",
+			polls: []sessionListMsg{
+				{sessions: []*pb.Session{notQuestion("s1")}},
+				{sessions: []*pb.Session{question("s1")}},
+			},
+			want: 1, wantCmds: 1,
+		},
+		{
+			name: "persistent question does not re-notify",
+			polls: []sessionListMsg{
+				{sessions: []*pb.Session{question("s1")}},
+				{sessions: []*pb.Session{question("s1")}},
+			},
+			want: 1, wantCmds: 1,
+		},
+		{
+			name:     "disabled notifications suppresses question",
+			settings: config.Settings{NotificationsEnabled: boolPtr(false)},
+			polls:    []sessionListMsg{{sessions: []*pb.Session{question("s1")}}},
+			want:     0, wantCmds: 0,
+		},
+		{
+			name: "leaving and re-entering question notifies again",
+			polls: []sessionListMsg{
+				{sessions: []*pb.Session{question("s1")}},
+				{sessions: []*pb.Session{notQuestion("s1")}},
+				{sessions: []*pb.Session{question("s1")}},
+			},
+			want: 2, wantCmds: 2,
+		},
+		{
+			name: "first successful poll notifies waiting question",
+			polls: []sessionListMsg{
+				{sessions: []*pb.Session{question("s1")}},
+			},
+			want: 1, wantCmds: 1,
+		},
+		{
+			name: "transient poll error retains prior question state",
+			polls: []sessionListMsg{
+				{sessions: []*pb.Session{question("s1")}},
+				{err: errors.New("temporary daemon error")},
+				{sessions: []*pb.Session{question("s1")}},
+			},
+			want: 1, wantCmds: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalRunNotify := runNotify
+			defer func() { runNotify = originalRunNotify }()
+
+			var requests []notifyRequest
+			runNotify = func(req notifyRequest) error {
+				requests = append(requests, req)
+				return nil
+			}
+
+			h := NewHomeModel(nil, context.Background(), nil)
+			h.SetSettings(tt.settings)
+			cmds := 0
+			for _, poll := range tt.polls {
+				model, cmd := h.Update(poll)
+				h = model.(HomeModel)
+				if cmd != nil {
+					cmds++
+					cmd()
+				}
+			}
+
+			if got := len(requests); got != tt.want {
+				t.Errorf("notification count = %d, want %d", got, tt.want)
+			}
+			if cmds != tt.wantCmds {
+				t.Errorf("notification command count = %d, want %d", cmds, tt.wantCmds)
+			}
+		})
+	}
+}
+
+func TestHomeQuestionNotificationsDiscardOutOfOrderPolls(t *testing.T) {
+	question := func() *pb.Session {
+		return &pb.Session{Id: "s1", Title: "BOS-459 alert", DisplayLabel: displaystatus.QuestionLabel}
+	}
+	working := func() *pb.Session {
+		return &pb.Session{Id: "s1", Title: "BOS-459 alert", DisplayLabel: "working"}
+	}
+
+	originalRunNotify := runNotify
+	defer func() { runNotify = originalRunNotify }()
+	requests := 0
+	runNotify = func(notifyRequest) error {
+		requests++
+		return nil
+	}
+
+	h := NewHomeModel(nil, context.Background(), nil)
+	for _, poll := range []sessionListMsg{
+		{pollID: 1, sessions: []*pb.Session{working()}},
+		{pollID: 2, sessions: []*pb.Session{question()}},
+		// The initial fetch can finish after a newer timer poll. Its stale
+		// snapshot must not reset the question edge state.
+		{pollID: 1, sessions: []*pb.Session{working()}},
+		{pollID: 3, sessions: []*pb.Session{question()}},
+	} {
+		model, cmd := h.Update(poll)
+		h = model.(HomeModel)
+		if cmd != nil {
+			cmd()
+		}
+	}
+
+	if requests != 1 {
+		t.Fatalf("notification count = %d, want 1 after stale poll is discarded", requests)
+	}
+}
+
+func TestHomeDiscardsSessionPollFromAnotherGeneration(t *testing.T) {
+	oldHome := NewHomeModel(nil, context.Background(), nil)
+	h := NewHomeModel(nil, context.Background(), nil)
+	if oldHome.generation == h.generation {
+		t.Fatal("separate HomeModels reused their generation")
+	}
+
+	model, cmd := h.Update(sessionListMsg{
+		homeGeneration: oldHome.generation,
+		pollID:         1,
+		sessions:       []*pb.Session{{Id: "old-session"}},
+	})
+	got := model.(HomeModel)
+	if cmd != nil {
+		t.Fatal("discarded session poll returned a command")
+	}
+	if !got.loading {
+		t.Fatal("discarded session poll cleared loading state")
+	}
+	if len(got.sessions) != 0 {
+		t.Fatalf("discarded session poll populated sessions: %+v", got.sessions)
+	}
 }
 
 func (f *fakeHomeCloudAccessClient) GetCloudAccessStatus(context.Context) (*pb.CloudAccessStatus, error) {

@@ -104,12 +104,13 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 	// pass through unchanged.
 	message := session.RenderBossCommandPrefix(req.Msg.GetMessage(), chatCommandPrefix(chat.AgentName), sess.WorktreePath)
 
-	// submit routes the delivery: true submits a single-line message (Enter +
-	// BOS-228 verifier) and pastes-only a multi-line one; false (default)
-	// prefills the composer. The verifier fails toward "still pending", so a
-	// swallowed Enter surfaces as an error here rather than a silent false
-	// "submitted". The ready marker is resolved from the chat's agent so the
-	// submit path waits for the correct composer glyph (claude "❯", codex "›").
+	// submit routes the delivery: true submits the message (Enter + BOS-228
+	// verifier) for both single- and multi-line payloads (BOS-488); false
+	// (default) prefills the composer. The verifier fails toward "still
+	// pending", so a swallowed Enter surfaces as an error here rather than a
+	// silent false "submitted". The ready marker is resolved from the chat's
+	// agent so the submit path waits for the correct composer glyph (claude
+	// "❯", codex "›").
 	if err := spawner.SendMessage(ctx, tmuxName, message, req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send message: %w", err))
 	}

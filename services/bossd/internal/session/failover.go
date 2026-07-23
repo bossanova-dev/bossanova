@@ -77,6 +77,17 @@ func parseProxyChatTarget(targetID string) (agentSessionID, fallbackAccountID st
 	return agentSessionID, fallbackAccountID, ok && agentSessionID != ""
 }
 
+// ParseProxyChatTarget is the exported counterpart to ProxyTargetForChat: it
+// decodes a chat proxy target back into its agentSessionID + fallbackAccountID,
+// reporting ok=false for a plain (non-chat) session target. The server package
+// uses it to derive a log-SAFE display id from a proxy target — the raw target
+// carries NUL control bytes and an account id, so only the agentSessionID is
+// ever surfaced to a log line. Keeping one parser here avoids duplicating the
+// wire format across packages.
+func ParseProxyChatTarget(targetID string) (agentSessionID, fallbackAccountID string, ok bool) {
+	return parseProxyChatTarget(targetID)
+}
+
 // proxyTokenRegistrar mints and registers the per-session path token used in
 // the ANTHROPIC_BASE_URL the failover proxy injects. The concrete implementer
 // is the loopback proxy server (server package); the session package depends
@@ -98,6 +109,22 @@ type proxyTokenRegistrar interface {
 	// pane (manual or automatic switch), keeping the forwarded account in sync
 	// with the just-persisted account_id. Safe to call for an unknown session.
 	ForgetBearer(sessionID string)
+	// ForgetAllBearers drops every session's sticky failover bearer (keeping all
+	// path tokens registered), so the next request on each session forwards the
+	// subprocess's own bearer. Called after an account credential refresh, where
+	// a stale swapped bearer must not silently override the freshly-saved secret.
+	ForgetAllBearers()
+	// AdoptToken re-registers an EXISTING session-shaped token reconstructed from
+	// a surviving tmux pane's baked ANTHROPIC_BASE_URL after a daemon restart
+	// (BOS-481), so the pane's frozen /s/<token> resolves to sessionID again with
+	// no respawn. It NEVER mints — the token comes from the pane env. Idempotent
+	// and conflict-safe (a live spawn's token always wins). Secret; never logged.
+	AdoptToken(token, sessionID string)
+	// AdoptTokenForChat re-registers an EXISTING chat-shaped token, filling the
+	// same chat/session bookkeeping a fresh TokenForChat would, so Deregister and
+	// ForgetBearer keep working. accountID is the account resolved at adoption
+	// time, seeding the target's fallbackAccountID. Never mints. Secret.
+	AdoptTokenForChat(sessionID, agentSessionID, accountID, token string)
 }
 
 // forgetProxyBearer clears the failover proxy's sticky bearer for a session
@@ -109,6 +136,19 @@ func (l *Lifecycle) forgetProxyBearer(sessionID string) {
 		return
 	}
 	l.proxyRegistrar.ForgetBearer(sessionID)
+}
+
+// ForgetAllProxyBearers clears every session's sticky failover-proxy bearer
+// after an account credential refresh, so no session keeps forwarding a stale
+// swapped bearer for the just-changed credential. Dual-nil-safe: a no-op both
+// when the Lifecycle receiver is nil (proxy stack never constructed — e.g. a
+// test server without a Lifecycle) and when no registrar is wired (proxy
+// disabled). Path tokens are left untouched.
+func (l *Lifecycle) ForgetAllProxyBearers() {
+	if l == nil || l.proxyRegistrar == nil {
+		return
+	}
+	l.proxyRegistrar.ForgetAllBearers()
 }
 
 // SetProxyPort records the S7 failover proxy's bound loopback port (BOS-320),
@@ -527,7 +567,10 @@ func (l *Lifecycle) PrepareFailoverKind(ctx context.Context, sessionID string, k
 	}
 	if outcome.Kind != rotation.OutcomeRotate || outcome.NextAccount == nil {
 		// No rotation target (all cooling / not rotation-capable): original
-		// upstream response returned unchanged.
+		// upstream response returned unchanged, but surface an exhausted-pool /
+		// no-eligible-account decline as an audit row so the 429 the client sees
+		// is visible in rotation history (BOS-484).
+		l.recordNonRotateAudit(ctx, session.ID, "", b.Provider, trigger, b.CappedAccountID, outcome)
 		return FailoverResult{}, nil
 	}
 	envOverlay, err := l.accountMaterializer.Materialize(ctx, outcome.NextAccount)
@@ -581,6 +624,9 @@ func (l *Lifecycle) prepareChatFailover(ctx context.Context, agentSessionID, fal
 		return FailoverResult{}, fmt.Errorf("failover: decide chat: %w", err)
 	}
 	if outcome.Kind != rotation.OutcomeRotate || outcome.NextAccount == nil {
+		// Surface the exhausted-pool / no-eligible decline for the chat target
+		// against its resolved session + chat ids (BOS-484).
+		l.recordNonRotateAudit(ctx, cb.SessionID, agentSessionID, b.Provider, trigger, b.CappedAccountID, outcome)
 		return FailoverResult{}, nil
 	}
 	envOverlay, err := l.accountMaterializer.Materialize(ctx, outcome.NextAccount)
@@ -601,6 +647,47 @@ func (l *Lifecycle) prepareChatFailover(ctx context.Context, agentSessionID, fal
 		Provider:      b.Provider,
 		Trigger:       trigger,
 	}, nil
+}
+
+// recordNonRotateAudit surfaces a proxy-path rotation decline (no swap target)
+// as an audit row so the 429 the client still receives is visible in rotation
+// history. It records only the two account-pool exhaustion outcomes:
+//   - OutcomeAllExhausted  → EXHAUSTED (every account cooling; ResetAt set),
+//   - OutcomeNoEligibleAccount → STATUS_ONLY_NO_ELIGIBLE_ACCOUNT (all disabled/
+//     failed, none recoverable).
+//
+// A capability-only decline (OutcomeStatusOnly) and any other kind are left
+// unrecorded here — they are not exhausted-pool 429s. Both siblings dedup per
+// episode off the session's newest row, so the whole read-then-write runs under
+// proxyAuditMu to keep concurrent same-session replays from double-recording.
+// No-op when no recorder is wired. (BOS-484)
+func (l *Lifecycle) recordNonRotateAudit(ctx context.Context, sessionID, chatID, provider, trigger, fromAccountID string, outcome rotation.Outcome) {
+	if l.rotationRecorder == nil {
+		return
+	}
+	ev := rotation.AuditEvent{
+		SessionID:   sessionID,
+		ChatID:      chatID,
+		Provider:    provider,
+		Trigger:     trigger,
+		FromAccount: l.resolveAccountLabel(ctx, fromAccountID),
+	}
+	l.proxyAuditMu.Lock()
+	defer l.proxyAuditMu.Unlock()
+	switch outcome.Kind {
+	case rotation.OutcomeAllExhausted:
+		resetAt := outcome.ResumeAt
+		ev.ResetAt = &resetAt
+		ev.Outcome = "ROTATION_OUTCOME_EXHAUSTED"
+		ev.Detail = "all accounts cooling until " + resetAt.Format("15:04")
+		l.rotationRecorder.RecordExhausted(ctx, ev)
+	case rotation.OutcomeNoEligibleAccount:
+		ev.Outcome = "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT"
+		ev.Detail = rotation.NoEligibleAccountDetail
+		l.rotationRecorder.RecordNoEligible(ctx, ev)
+	default:
+		// Capability-only or unexpected decline: not an exhausted-pool 429.
+	}
 }
 
 // CommitFailover persists the session→account rebind and records the rotation

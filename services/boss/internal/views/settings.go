@@ -49,6 +49,7 @@ const (
 	settingsRowKindPostHogToken                         // built-in PostHog project token
 	settingsRowKindPostHogHost                          // built-in PostHog host
 	settingsRowKindRotation                             // built-in automatic account rotation kill-switch
+	settingsRowKindNotifications                        // built-in desktop notifications toggle
 )
 
 // settingsRow is a single addressable line in the settings TUI. Header
@@ -350,6 +351,7 @@ func (m *SettingsModel) rebuildRows() {
 		settingsRow{Kind: settingsRowKindWorktree, Label: "Worktree base directory"},
 		settingsRow{Kind: settingsRowKindPollInterval, Label: "Poll interval (seconds)"},
 		settingsRow{Kind: settingsRowKindRotation, Label: "Enable automatic account rotation"},
+		settingsRow{Kind: settingsRowKindNotifications, Label: "Enable desktop notifications for questions"},
 	)
 
 	// Default agent picker — only meaningful when >1 agent is enabled.
@@ -533,6 +535,18 @@ func (m *SettingsModel) moveCursor(delta int) {
 	m.cursor = c
 }
 
+// persistSettings saves the complete settings document and makes its result
+// authoritative for the error banner. A later successful save can persist an
+// earlier failed mutation, so it must also clear that stale failure.
+func (m *SettingsModel) persistSettings() bool {
+	if err := config.Save(m.settings); err != nil {
+		m.err = err
+		return false
+	}
+	m.err = nil
+	return true
+}
+
 func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 	if m.cursor < 0 || m.cursor >= len(m.rows) {
 		return m, nil
@@ -546,9 +560,7 @@ func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 	case settingsRowKindBool:
 		current := config.PluginConfigBool(&m.settings, row.Plugin, row.Key)
 		config.SetPluginConfigBool(&m.settings, row.Plugin, row.Key, !current)
-		if err := config.Save(m.settings); err != nil {
-			m.err = err
-		}
+		m.persistSettings()
 	case settingsRowKindAgentEnabled:
 		current := pluginEnabled(m.settings, row.Plugin)
 		if current && len(enabledAgentNames(m.settings, m.agents)) <= 1 {
@@ -567,11 +579,7 @@ func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 				m.settings.DefaultAgent = ""
 			}
 		}
-		if err := config.Save(m.settings); err != nil {
-			m.err = err
-		} else {
-			m.err = nil
-		}
+		m.persistSettings()
 		m.rebuildRows()
 	case settingsRowKindEnum:
 		// Cycle to the next allowed value.
@@ -584,9 +592,7 @@ func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 			m.err = err
 			return m, nil
 		}
-		if err := config.Save(m.settings); err != nil {
-			m.err = err
-		}
+		m.persistSettings()
 	case settingsRowKindString:
 		m.editingRow = m.cursor
 		m.stringInput.SetValue(config.PluginConfigString(&m.settings, row.Plugin, row.Key))
@@ -601,22 +607,22 @@ func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 				m.settings.PostHogHost = telemetry.DefaultHost
 			}
 		}
-		if err := config.Save(m.settings); err != nil {
-			m.err = err
-		} else {
+		if m.persistSettings() {
 			m.rebuildRows()
 		}
 	case settingsRowKindErrorTracking:
 		m.settings.ErrorTrackingEnabled = !m.settings.ErrorTrackingEnabled
-		if err := config.Save(m.settings); err != nil {
-			m.err = err
-		}
+		m.persistSettings()
 	case settingsRowKindRotation:
 		next := !m.settings.ManagedAccounts.ManagedAccountsEnabled()
 		m.settings.ManagedAccounts.Enabled = &next
-		if err := config.Save(m.settings); err != nil {
-			m.err = err
-		} else {
+		if m.persistSettings() {
+			m.rebuildRows()
+		}
+	case settingsRowKindNotifications:
+		next := !config.NotificationsEnabled(m.settings)
+		m.settings.NotificationsEnabled = &next
+		if m.persistSettings() {
 			m.rebuildRows()
 		}
 	case settingsRowKindPostHogToken:
@@ -639,9 +645,7 @@ func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 		}
 		next := nextEnumValue(row.Allowed, m.settings.DefaultAgent)
 		m.settings.DefaultAgent = next
-		if err := config.Save(m.settings); err != nil {
-			m.err = err
-		}
+		m.persistSettings()
 	}
 	return m, nil
 }
@@ -696,9 +700,7 @@ func (m SettingsModel) commitEdit() (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.worktreeDirInput.Blur()
 		m.settings.WorktreeBaseDir = dir
-		if err := config.Save(m.settings); err != nil {
-			m.err = err
-		}
+		m.persistSettings()
 
 	case settingsRowKindPollInterval:
 		val := m.pollIntervalInput.Value()
@@ -707,9 +709,7 @@ func (m SettingsModel) commitEdit() (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.pollIntervalInput.Blur()
 			m.settings.PollIntervalSeconds = 0
-			if err := config.Save(m.settings); err != nil {
-				m.err = err
-			}
+			m.persistSettings()
 			return m, nil
 		}
 		n, err := strconv.Atoi(val)
@@ -721,28 +721,22 @@ func (m SettingsModel) commitEdit() (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.pollIntervalInput.Blur()
 		m.settings.PollIntervalSeconds = n
-		if err := config.Save(m.settings); err != nil {
-			m.err = err
-		}
+		m.persistSettings()
 
 	case settingsRowKindString:
 		val := m.stringInput.Value()
 		config.SetPluginConfigString(&m.settings, row.Plugin, row.Key, val)
-		if err := config.Save(m.settings); err != nil {
-			m.err = err
+		if !m.persistSettings() {
 			return m, nil
 		}
 		m.editingRow = -1
-		m.err = nil
 		m.stringInput.Blur()
 	case settingsRowKindPostHogToken:
 		m.settings.PostHogProjectToken = strings.TrimSpace(m.stringInput.Value())
-		if err := config.Save(m.settings); err != nil {
-			m.err = err
+		if !m.persistSettings() {
 			return m, nil
 		}
 		m.editingRow = -1
-		m.err = nil
 		m.stringInput.Blur()
 	case settingsRowKindPostHogHost:
 		host := strings.TrimSpace(m.stringInput.Value())
@@ -750,12 +744,10 @@ func (m SettingsModel) commitEdit() (tea.Model, tea.Cmd) {
 			host = telemetry.DefaultHost
 		}
 		m.settings.PostHogHost = host
-		if err := config.Save(m.settings); err != nil {
-			m.err = err
+		if !m.persistSettings() {
 			return m, nil
 		}
 		m.editingRow = -1
-		m.err = nil
 		m.stringInput.Blur()
 	}
 	return m, nil
@@ -929,6 +921,12 @@ func (m SettingsModel) renderRow(b *strings.Builder, i int, row settingsRow, edi
 	case settingsRowKindRotation:
 		check := " "
 		if m.settings.ManagedAccounts.ManagedAccountsEnabled() {
+			check = "x"
+		}
+		line = fmt.Sprintf("%s[%s] %s", cursor, check, row.Label)
+	case settingsRowKindNotifications:
+		check := " "
+		if config.NotificationsEnabled(m.settings) {
 			check = "x"
 		}
 		line = fmt.Sprintf("%s[%s] %s", cursor, check, row.Label)

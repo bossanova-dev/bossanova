@@ -756,6 +756,7 @@ type Settings struct {
 	SkillsDeclinedManifestByAgent  map[string]string     `json:"skills_declined_manifest_by_agent,omitempty"`
 	SkillsInstalledManifestByAgent map[string]string     `json:"skills_installed_manifest_by_agent,omitempty"`
 	PollIntervalSeconds            int                   `json:"poll_interval_seconds,omitempty"`
+	NotificationsEnabled           *bool                 `json:"notifications_enabled,omitempty"`
 	EventTracingEnabled            bool                  `json:"event_tracing_enabled,omitempty"`
 	ErrorTrackingEnabled           bool                  `json:"error_tracking_enabled,omitempty"`
 	PostHogProjectToken            string                `json:"posthog_project_token,omitempty"`
@@ -908,6 +909,12 @@ func (s Settings) DisplayPollInterval() time.Duration {
 		return time.Duration(s.PollIntervalSeconds) * time.Second
 	}
 	return 2 * time.Minute
+}
+
+// NotificationsEnabled reports whether OS-level notifications are enabled.
+// Notifications default to enabled unless explicitly disabled.
+func NotificationsEnabled(s Settings) bool {
+	return s.NotificationsEnabled == nil || *s.NotificationsEnabled
 }
 
 // DefaultSettings returns settings with sensible defaults.

@@ -99,6 +99,12 @@ type fakeCommandHandler struct {
 	runCronResult    *pb.RunCronJobNowResponse
 	deleteCronID     string // last id passed to DeleteCronJob
 	runCronID        string // last id passed to RunCronJobNow
+	// GitHub-callback knobs.
+	createGithubCallbackResult *pb.CreateGithubCallbackResponse
+	createGithubCallbackCmd    *pb.CreateGithubCallbackCommand // last command passed to CreateGithubCallback
+	listGithubCallbacksResult  *pb.ListGithubCallbacksResponse
+	listGithubCallbacksCmd     *pb.ListGithubCallbacksCommand // last command passed to ListGithubCallbacks
+	deleteGithubCallbackID     string                         // last id passed to DeleteGithubCallback
 	// Account-management knobs.
 	addAccountResult     *pb.AddAccountResponse
 	addAccountCmd        *pb.AddAccountCommand // last command passed to AddAccount
@@ -266,6 +272,18 @@ func (f *fakeCommandHandler) DeleteCronJob(_ context.Context, id string) error {
 func (f *fakeCommandHandler) RunCronJobNow(_ context.Context, id string) (*pb.RunCronJobNowResponse, error) {
 	f.runCronID = id
 	return f.runCronResult, f.returnErr
+}
+func (f *fakeCommandHandler) CreateGithubCallback(_ context.Context, cmd *pb.CreateGithubCallbackCommand) (*pb.CreateGithubCallbackResponse, error) {
+	f.createGithubCallbackCmd = cmd
+	return f.createGithubCallbackResult, f.returnErr
+}
+func (f *fakeCommandHandler) ListGithubCallbacks(_ context.Context, cmd *pb.ListGithubCallbacksCommand) (*pb.ListGithubCallbacksResponse, error) {
+	f.listGithubCallbacksCmd = cmd
+	return f.listGithubCallbacksResult, f.returnErr
+}
+func (f *fakeCommandHandler) DeleteGithubCallback(_ context.Context, id string) error {
+	f.deleteGithubCallbackID = id
+	return f.returnErr
 }
 func (f *fakeCommandHandler) AddAccount(_ context.Context, cmd *pb.AddAccountCommand) (*pb.AddAccountResponse, error) {
 	f.addAccountCmd = cmd

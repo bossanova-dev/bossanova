@@ -90,6 +90,15 @@ func TestParseResetTime(t *testing.T) {
 			},
 		},
 		{
+			name:   "weekly with concrete weekday+time anchor, next week",
+			text:   "resets Monday at 9am",
+			now:    fixedNow, // Wednesday 2026-07-08; Monday is five days away
+			wantOK: true,
+			wantFn: func(now time.Time) time.Time {
+				return time.Date(2026, 7, 13, 9, 0, 0, 0, now.Location())
+			},
+		},
+		{
 			name:   "time-before-weekday form, later this week",
 			text:   "resets at 9am on Friday",
 			now:    fixedNow, // Wednesday 2026-07-08

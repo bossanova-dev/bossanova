@@ -218,19 +218,26 @@ export const MARKED_ISSUES_QUERY = `query Marked($filter: IssueFilter!, $after: 
 }`
 
 /**
- * Fetch every Linear issue whose description carries a "Sentry: " marker.
- * `linearRequest` is injected (scripts/linear-gate-lib.mjs's export in
- * production) so this module keeps its no-local-imports contract and the loop
- * is unit-testable. Bounded pagination (default 20 pages) so a pathological
+ * Fetch every Linear issue whose description carries a marker with the given
+ * `markerPrefix` (default "Sentry: "; bs-sweep-security's main-gate probe passes
+ * "MainGate: " to reuse this same paginated, fail-closed scan rather than
+ * re-implementing it). `linearRequest` is injected (scripts/linear-gate-lib.mjs's
+ * export in production) so this module keeps its no-local-imports contract and the
+ * loop is unit-testable. Bounded pagination (default 20 pages) so a pathological
  * workspace cannot hang the gate — but a TRUNCATED scan is an error, not a
  * result: triaging a partial dedupe snapshot could select an already-tracked
  * issue, so hitting the bound with pages left throws (fail-closed).
  */
-export async function fetchMarkedLinearIssues({ apiKey, linearRequest, maxPages = 20 } = {}) {
+export async function fetchMarkedLinearIssues({
+  apiKey,
+  linearRequest,
+  maxPages = 20,
+  markerPrefix = 'Sentry: ',
+} = {}) {
   if (typeof linearRequest !== 'function') {
     throw new Error('fetchMarkedLinearIssues requires a linearRequest implementation')
   }
-  const filter = { description: { contains: 'Sentry: ' } }
+  const filter = { description: { contains: markerPrefix } }
   const nodes = []
   let after = null
   for (let page = 0; page < maxPages; page++) {

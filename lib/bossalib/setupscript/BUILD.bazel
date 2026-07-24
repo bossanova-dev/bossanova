@@ -18,5 +18,5 @@ go_test(
     # keep: execs generated setup scripts via a subprocess; the macOS darwin-sandbox
     # hangs on that nested exec. Runs unsandboxed (still covered). See
     # docs/solutions/build-systems/bazel-sandbox-patterns.md.
-    tags = ["local"],
+    tags = ["local", "no-sandbox"],
 )

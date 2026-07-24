@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -97,6 +98,11 @@ func TestRunUpgradeYesInstallsWithResolvedExecutableDir(t *testing.T) {
 	}
 
 	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	// Disable the shared upgrade cache so these tests exercise the live check
+	// path deterministically, independent of any on-disk banner cache.
+	oldActionCachePath := upgradeActionCachePath
+	upgradeActionCachePath = func() string { return "" }
+	t.Cleanup(func() { upgradeActionCachePath = oldActionCachePath })
 	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
 		return upgrade.CheckResult{
 			Available:      true,
@@ -229,6 +235,11 @@ func TestRunUpgradeHomebrewRoutesToBrewUpgrade(t *testing.T) {
 	dir := t.TempDir()
 	exe := testHomebrewExecutable(t, dir)
 	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	// Disable the shared upgrade cache so these tests exercise the live check
+	// path deterministically, independent of any on-disk banner cache.
+	oldActionCachePath := upgradeActionCachePath
+	upgradeActionCachePath = func() string { return "" }
+	t.Cleanup(func() { upgradeActionCachePath = oldActionCachePath })
 	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
 		return upgrade.CheckResult{Available: true, CurrentVersion: "v1.2.3", LatestVersion: "v1.2.4"}, nil
 	}
@@ -296,6 +307,11 @@ func TestRunUpgradeHomebrewPersistsPostUpgradePluginPaths(t *testing.T) {
 	newPluginDir := filepath.Join(dir, "opt", "homebrew", "opt", "bossanova", "libexec", "plugins")
 	executablePath = func() (string, error) { return testHomebrewExecutable(t, dir), nil }
 	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	// Disable the shared upgrade cache so these tests exercise the live check
+	// path deterministically, independent of any on-disk banner cache.
+	oldActionCachePath := upgradeActionCachePath
+	upgradeActionCachePath = func() string { return "" }
+	t.Cleanup(func() { upgradeActionCachePath = oldActionCachePath })
 	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
 		return upgrade.CheckResult{Available: true, CurrentVersion: "v1.2.3", LatestVersion: "v1.2.4"}, nil
 	}
@@ -357,6 +373,11 @@ func TestRunUpgradeHomebrewNoRestartSkipsDaemonRestart(t *testing.T) {
 	dir := t.TempDir()
 	executablePath = func() (string, error) { return testHomebrewExecutable(t, dir), nil }
 	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	// Disable the shared upgrade cache so these tests exercise the live check
+	// path deterministically, independent of any on-disk banner cache.
+	oldActionCachePath := upgradeActionCachePath
+	upgradeActionCachePath = func() string { return "" }
+	t.Cleanup(func() { upgradeActionCachePath = oldActionCachePath })
 	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
 		return upgrade.CheckResult{Available: true, CurrentVersion: "v1.2.3", LatestVersion: "v1.2.4"}, nil
 	}
@@ -397,6 +418,11 @@ func TestRunUpgradeHomebrewBrewFailureIsActionable(t *testing.T) {
 	dir := t.TempDir()
 	executablePath = func() (string, error) { return testHomebrewExecutable(t, dir), nil }
 	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	// Disable the shared upgrade cache so these tests exercise the live check
+	// path deterministically, independent of any on-disk banner cache.
+	oldActionCachePath := upgradeActionCachePath
+	upgradeActionCachePath = func() string { return "" }
+	t.Cleanup(func() { upgradeActionCachePath = oldActionCachePath })
 	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
 		return upgrade.CheckResult{Available: true, CurrentVersion: "v1.2.3", LatestVersion: "v1.2.4"}, nil
 	}
@@ -625,6 +651,11 @@ func TestRunUpgradeNoRestartChangesOutput(t *testing.T) {
 	dir := t.TempDir()
 	exe := testExecutable(t, dir)
 	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	// Disable the shared upgrade cache so these tests exercise the live check
+	// path deterministically, independent of any on-disk banner cache.
+	oldActionCachePath := upgradeActionCachePath
+	upgradeActionCachePath = func() string { return "" }
+	t.Cleanup(func() { upgradeActionCachePath = oldActionCachePath })
 	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
 		return upgrade.CheckResult{
 			Available:      true,
@@ -669,6 +700,11 @@ func TestRunUpgradeReportsRestartError(t *testing.T) {
 	dir := t.TempDir()
 	exe := testExecutable(t, dir)
 	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	// Disable the shared upgrade cache so these tests exercise the live check
+	// path deterministically, independent of any on-disk banner cache.
+	oldActionCachePath := upgradeActionCachePath
+	upgradeActionCachePath = func() string { return "" }
+	t.Cleanup(func() { upgradeActionCachePath = oldActionCachePath })
 	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
 		return upgrade.CheckResult{
 			Available:      true,
@@ -1038,4 +1074,119 @@ func testHomebrewExecutable(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	return exe
+}
+
+func TestRunUpgradeReusesFreshCacheWithoutChecking(t *testing.T) {
+	oldCurrentVersion := upgradeCurrentVersion
+	oldCheck := checkUpgrade
+	oldActionCache := upgradeActionCachePath
+	defer func() {
+		upgradeCurrentVersion = oldCurrentVersion
+		checkUpgrade = oldCheck
+		upgradeActionCachePath = oldActionCache
+	}()
+
+	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
+		t.Fatal("runUpgrade() hit the network despite a fresh cache entry")
+		return upgrade.CheckResult{}, nil
+	}
+
+	cachePath := filepath.Join(t.TempDir(), "upgrade-cache.json")
+	if err := upgrade.WriteCache(cachePath, upgrade.CacheEntry{
+		CheckedAt:      time.Now(),
+		CurrentVersion: "v1.2.3",
+		LatestVersion:  "v1.2.4",
+		ReleaseURL:     "https://example.test/v1.2.4",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	upgradeActionCachePath = func() string { return cachePath }
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	if err := runUpgrade(cmd, upgradeOptions{CheckOnly: true}); err != nil {
+		t.Fatalf("runUpgrade() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "upgrade available: v1.2.3 -> v1.2.4") {
+		t.Fatalf("runUpgrade() output = %q, want cached upgrade-available line", out.String())
+	}
+}
+
+func TestRunUpgradeStaleCacheFallsThroughToCheck(t *testing.T) {
+	oldCurrentVersion := upgradeCurrentVersion
+	oldCheck := checkUpgrade
+	oldActionCache := upgradeActionCachePath
+	defer func() {
+		upgradeCurrentVersion = oldCurrentVersion
+		checkUpgrade = oldCheck
+		upgradeActionCachePath = oldActionCache
+	}()
+
+	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	checkCalled := false
+	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
+		checkCalled = true
+		return upgrade.CheckResult{CurrentVersion: "v1.2.3", LatestVersion: "v1.2.5", Available: true}, nil
+	}
+
+	cachePath := filepath.Join(t.TempDir(), "upgrade-cache.json")
+	if err := upgrade.WriteCache(cachePath, upgrade.CacheEntry{
+		CheckedAt:      time.Now().Add(-48 * time.Hour), // stale, beyond CacheTTL
+		CurrentVersion: "v1.2.3",
+		LatestVersion:  "v1.2.4",
+		ReleaseURL:     "https://example.test/v1.2.4",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	upgradeActionCachePath = func() string { return cachePath }
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	if err := runUpgrade(cmd, upgradeOptions{CheckOnly: true}); err != nil {
+		t.Fatalf("runUpgrade() error = %v", err)
+	}
+	if !checkCalled {
+		t.Fatal("runUpgrade() did not fall through to checkUpgrade on a stale cache")
+	}
+	if !strings.Contains(out.String(), "v1.2.5") {
+		t.Fatalf("runUpgrade() output = %q, want fresh check result v1.2.5", out.String())
+	}
+}
+
+func TestRunUpgradeRateLimitPrintsFriendlyMessage(t *testing.T) {
+	oldCurrentVersion := upgradeCurrentVersion
+	oldCheck := checkUpgrade
+	oldActionCache := upgradeActionCachePath
+	defer func() {
+		upgradeCurrentVersion = oldCurrentVersion
+		checkUpgrade = oldCheck
+		upgradeActionCachePath = oldActionCache
+	}()
+
+	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	upgradeActionCachePath = func() string { return "" } // force the network path
+	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
+		return upgrade.CheckResult{}, &upgrade.RateLimitError{Resets: time.Now().Add(30 * time.Minute)}
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	if err := runUpgrade(cmd, upgradeOptions{CheckOnly: true}); err != nil {
+		t.Fatalf("runUpgrade() error = %v, want nil (friendly message, not fatal)", err)
+	}
+	for _, want := range []string{"rate limit", "resets at", "gh auth login"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("runUpgrade() output = %q, want containing %q", out.String(), want)
+		}
+	}
+	if strings.Contains(out.String(), "HTTP 403") {
+		t.Fatalf("runUpgrade() output = %q, should not contain raw HTTP 403", out.String())
+	}
 }

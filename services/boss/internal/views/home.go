@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -30,7 +29,7 @@ import (
 const (
 	pollInterval        = 2 * time.Second
 	upgradeCheckTimeout = 5 * time.Second
-	upgradeCacheTTL     = 24 * time.Hour
+	upgradeCacheTTL     = upgrade.CacheTTL
 
 	// pollFailureThreshold is how many consecutive failed session polls must
 	// occur before the TUI shows the "Cannot connect to daemon" screen. At a 2s
@@ -47,16 +46,12 @@ var upgradeNow = time.Now
 // writing real config files.
 var saveSettings = config.Save
 
-// upgradeCachePath returns the on-disk path for the upgrade banner cache.
-// Returns "" if the user's cache directory is unavailable; callers treat an
-// empty path as "cache disabled" and skip both reads and writes.
-var upgradeCachePath = func() string {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "bossanova", "upgrade-cache.json")
-}
+// upgradeCachePath returns the on-disk path for the upgrade banner cache,
+// shared with the `boss upgrade` action via upgrade.DefaultCachePath. Returns
+// "" if the user's cache directory is unavailable; callers treat an empty path
+// as "cache disabled" and skip both reads and writes. Kept as a var so tests
+// can point it at a temp file.
+var upgradeCachePath = upgrade.DefaultCachePath
 
 // sessionListMsg carries the result of a ListSessions RPC call,
 // along with daemon-side heartbeat statuses for cross-instance display.
@@ -579,9 +574,27 @@ func (h HomeModel) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// proofUpgradeRateLimit, when set via BOSS_PROOF_UPGRADE_RATE_LIMIT (proof
+// scenarios only), makes the upgrade check yield a synthetic
+// *upgrade.RateLimitError so the friendly rate-limit banner can be captured
+// deterministically — without draining a real GitHub quota. Mirrors the
+// BOSS_PROOF_HIDE_GUEST_OFFER seam in cloudpromo.go.
+var proofUpgradeRateLimit = os.Getenv("BOSS_PROOF_UPGRADE_RATE_LIMIT") != ""
+
 func checkUpgradeCmd(ctx context.Context) tea.Cmd {
-	checker := upgrade.Checker{}
-	return checkUpgradeCmdForVersion(ctx, buildinfo.Version, checker.Check)
+	if proofUpgradeRateLimit {
+		return func() tea.Msg {
+			return upgradeCheckMsg{err: &upgrade.RateLimitError{Resets: upgradeNow().Add(30 * time.Minute)}}
+		}
+	}
+	// Resolve the token lazily, inside the check, so a warm cache skips both the
+	// network request and the `gh auth token` subprocess — and Init never blocks
+	// on gh. The token authenticates the release check (5000/hr) so the banner
+	// no longer 403s when the anonymous 60/hr/IP pool is drained.
+	check := func(ctx context.Context, current string) (upgrade.CheckResult, error) {
+		return upgrade.Checker{Token: upgrade.ResolveGitHubToken(ctx)}.Check(ctx, current)
+	}
+	return checkUpgradeCmdForVersion(ctx, buildinfo.Version, check)
 }
 
 func checkUpgradeCmdForVersion(ctx context.Context, current string, check upgradeCheckFunc) tea.Cmd {
@@ -974,8 +987,16 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case upgradeCheckMsg:
 		h.upgradeChecking = false
 		if msg.err != nil {
+			// A drained anonymous rate limit is actionable, not a transient
+			// blip: surface a short hint pointing at a token. Other check
+			// errors stay silent (today's behavior) to avoid banner noise.
+			var rlErr *upgrade.RateLimitError
+			if errors.As(msg.err, &rlErr) {
+				h.upgradeError = rlErr.Error()
+			}
 			return h, nil
 		}
+		h.upgradeError = ""
 		h.upgradeAvailable = msg.available
 		h.upgradeCurrent = msg.current
 		h.upgradeLatest = msg.latest

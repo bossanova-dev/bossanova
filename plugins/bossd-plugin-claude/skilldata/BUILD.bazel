@@ -46,6 +46,7 @@ go_library(
         "skills/boss-review/toolbox/skill-config.mjs",
         "skills/boss-verify/SKILL.md",
         "skills/boss/SKILL.md",
+        "skills/boss-build/references/callback-watches.md",
     ],
     importpath = "github.com/recurser/bossd-plugin-claude/skilldata",
     visibility = ["//visibility:public"],

@@ -457,7 +457,35 @@ var upgradeCurrentVersion = func() string {
 }
 
 var checkUpgrade = func(ctx context.Context, current string) (upgrade.CheckResult, error) {
-	return upgrade.Checker{}.Check(ctx, current)
+	return upgrade.Checker{Token: upgrade.ResolveGitHubToken(ctx)}.Check(ctx, current)
+}
+
+// upgradeActionCachePath resolves the shared upgrade-check cache path for the
+// `boss upgrade` action so pressing [u] reuses a fresh (<24h) banner check
+// instead of spending another (often anonymous, rate-limited) API request.
+// Indirected so tests can point it at a temp file or disable it with "".
+var upgradeActionCachePath = upgrade.DefaultCachePath
+
+// freshUpgradeResultFromCache returns a CheckResult reconstructed from a fresh
+// (<CacheTTL) cache entry matching current, letting `boss upgrade` skip the
+// network call the TUI banner already made. Snooze state is intentionally
+// ignored: the user explicitly asked to upgrade. Returns ok=false when the
+// cache is disabled, missing, stale, or for a different version.
+func freshUpgradeResultFromCache(current string) (upgrade.CheckResult, bool) {
+	path := upgradeActionCachePath()
+	if path == "" {
+		return upgrade.CheckResult{}, false
+	}
+	entry, ok, err := upgrade.ReadFreshCache(path, current, time.Now(), upgrade.CacheTTL)
+	if err != nil || !ok {
+		return upgrade.CheckResult{}, false
+	}
+	return upgrade.CheckResult{
+		CurrentVersion: entry.CurrentVersion,
+		LatestVersion:  entry.LatestVersion,
+		ReleaseURL:     entry.ReleaseURL,
+		Available:      upgrade.CompareStableVersions(entry.CurrentVersion, entry.LatestVersion) == upgrade.CompareOlder,
+	}, true
 }
 
 var executablePath = os.Executable
@@ -493,7 +521,7 @@ var brewUpgradeBossanova = func(ctx context.Context, binDir string) (string, err
 // GitHub. Indirected through a var so tests can stub it without hitting the
 // network.
 var verifyUpgradeVersion = func(ctx context.Context, version string) error {
-	return upgrade.VerifyReleaseTag(ctx, nil, "", version)
+	return upgrade.VerifyReleaseTag(ctx, nil, "", version, upgrade.ResolveGitHubToken(ctx))
 }
 
 var restartDaemon = daemon.Restart
@@ -753,9 +781,18 @@ func runUpgrade(cmd *cobra.Command, opts upgradeOptions) error {
 			return nil
 		}
 
-		result, err := checkUpgrade(ctx, current)
-		if err != nil {
-			return fmt.Errorf("check upgrade: %w", err)
+		result, ok := freshUpgradeResultFromCache(current)
+		if !ok {
+			var err error
+			result, err = checkUpgrade(ctx, current)
+			if err != nil {
+				var rlErr *upgrade.RateLimitError
+				if errors.As(err, &rlErr) {
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "cannot check for upgrades: %s\n", rlErr.Error())
+					return nil
+				}
+				return fmt.Errorf("check upgrade: %w", err)
+			}
 		}
 		if !result.Available {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "boss is up to date (%s)\n", current)

@@ -2171,6 +2171,24 @@ func TestHomeUpgradeCheckFailureIsSilent(t *testing.T) {
 	}
 }
 
+func TestHomeUpgradeCheckRateLimitShowsFriendlyBanner(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 100
+
+	model, _ := h.Update(upgradeCheckMsg{err: &upgrade.RateLimitError{Resets: time.Now().Add(30 * time.Minute)}})
+	h = model.(HomeModel)
+
+	content := h.View().Content
+	for _, want := range []string{"rate limit", "resets at", "gh auth login"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("rate-limit upgrade banner missing %q, got: %s", want, content)
+		}
+	}
+	if strings.Contains(content, "HTTP 403") {
+		t.Fatalf("rate-limit banner leaked raw HTTP 403: %s", content)
+	}
+}
+
 func TestHomePollFailureDebounce(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.width = 100

@@ -40,6 +40,14 @@ type Tracker struct {
 	// that logged back in (or died) stops flagging — fail toward NOT flagging.
 	authFailed map[string]time.Time // agent_session_id -> last observed
 
+	// capturedOutput holds, per agent session ID, the bounded final tail the
+	// tmux poller grabbed from a chat pane at process death before reaping it
+	// (BOS-477). It is an ephemeral diagnostic — not durable state — read by the
+	// DescribeChatLaunch RPC to surface a fast-exiting agent's own error in the
+	// attach view. Guarded by mu like authFailed because the poller (writer) and
+	// the server (reader) share the Tracker.
+	capturedOutput map[string]string // agent_session_id -> bounded final tail
+
 	// onUpdate, when non-nil, is invoked after every Update with the
 	// claude_id whose status changed. The hook resolves claude_id →
 	// sessionID and triggers DisplayStatusComputer.Recompute. Kept as a
@@ -71,9 +79,33 @@ type Tracker struct {
 // NewTracker creates a new empty Tracker.
 func NewTracker() *Tracker {
 	return &Tracker{
-		entries:    make(map[string]*Entry),
-		authFailed: make(map[string]time.Time),
+		entries:        make(map[string]*Entry),
+		authFailed:     make(map[string]time.Time),
+		capturedOutput: make(map[string]string),
 	}
+}
+
+// SetCapturedOutput stores (or, when tail is empty, clears) the bounded final
+// output the poller captured from a chat pane at process death, keyed by agent
+// session ID (BOS-477). Guarded by mu because the poller writes it while the
+// server reads it.
+func (t *Tracker) SetCapturedOutput(agentSessionID, tail string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if tail == "" {
+		delete(t.capturedOutput, agentSessionID)
+		return
+	}
+	t.capturedOutput[agentSessionID] = tail
+}
+
+// CapturedOutput returns the stored final tail for the chat, or "" when none
+// was captured. Read by the DescribeChatLaunch RPC to surface a fast-exiting
+// agent's own error in the attach diagnostic.
+func (t *Tracker) CapturedOutput(agentSessionID string) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.capturedOutput[agentSessionID]
 }
 
 // Update upserts a heartbeat for the given claude ID. ResetAt is cleared —
@@ -270,6 +302,7 @@ func (t *Tracker) Remove(agentSessionID string) {
 	_, hadAuthMarker := t.authFailed[agentSessionID]
 	delete(t.entries, agentSessionID)
 	delete(t.authFailed, agentSessionID)
+	delete(t.capturedOutput, agentSessionID)
 	hook := t.onAuthChange
 	t.mu.Unlock()
 
@@ -285,6 +318,11 @@ func (t *Tracker) Cleanup() {
 	for id, e := range t.entries {
 		if now.Sub(e.ReceivedAt) > StaleThreshold {
 			delete(t.entries, id)
+			// The captured tail (BOS-477) is set alongside the STOPPED heartbeat
+			// at pane death, so once that entry goes stale its ephemeral
+			// diagnostic is stale too — drop it here rather than leak it for the
+			// daemon's lifetime.
+			delete(t.capturedOutput, id)
 		}
 	}
 	var clearedAuthMarkers []string

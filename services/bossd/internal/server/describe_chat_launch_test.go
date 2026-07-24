@@ -8,6 +8,7 @@ import (
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/status"
 )
 
 // newDescribeTestServer wires a Server with the wakeHook seam so the handler
@@ -70,6 +71,43 @@ func TestDescribeChatLaunch_UsesResumeArgvWhenTranscriptExists(t *testing.T) {
 	}
 	if len(resp.Msg.GetArgv()) == 0 || resp.Msg.GetArgv()[1] != "--resume" {
 		t.Fatalf("argv = %#v, want a --resume command", resp.Msg.GetArgv())
+	}
+}
+
+func TestDescribeChatLaunch_ReturnsCapturedOutputWhenPresent(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-3", AgentName: "claude"}
+	sess := &models.Session{ID: "s1", WorktreePath: "/work/tree"}
+	srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, claudeArgvBuilder())
+
+	tracker := status.NewTracker()
+	tracker.SetCapturedOutput("agent-3", "Error: Session ID agent-3 is already in use")
+	srv.chatStatus = tracker
+
+	resp, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+		AgentSessionId: "agent-3",
+	}))
+	if err != nil {
+		t.Fatalf("DescribeChatLaunch: %v", err)
+	}
+	if got := resp.Msg.GetCapturedOutput(); got != "Error: Session ID agent-3 is already in use" {
+		t.Fatalf("captured_output = %q, want the stored tail", got)
+	}
+}
+
+func TestDescribeChatLaunch_CapturedOutputEmptyWhenNoneStored(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-4", AgentName: "claude"}
+	sess := &models.Session{ID: "s1", WorktreePath: "/work/tree"}
+	srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, claudeArgvBuilder())
+	srv.chatStatus = status.NewTracker()
+
+	resp, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+		AgentSessionId: "agent-4",
+	}))
+	if err != nil {
+		t.Fatalf("DescribeChatLaunch: %v", err)
+	}
+	if got := resp.Msg.GetCapturedOutput(); got != "" {
+		t.Fatalf("captured_output = %q, want empty when none stored", got)
 	}
 }
 

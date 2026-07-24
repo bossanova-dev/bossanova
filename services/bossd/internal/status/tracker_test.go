@@ -492,3 +492,53 @@ func TestCleanup_FiresOnAuthChangeForRemovedStaleAuthMarkers(t *testing.T) {
 		t.Fatalf("cleanup clear fired for %q, want stale", got[2])
 	}
 }
+
+// TestCapturedOutput covers the BOS-477 ephemeral store: set then get returns
+// the tail; an unseen key returns ""; and setting "" clears a prior value.
+func TestCapturedOutput(t *testing.T) {
+	tr := NewTracker()
+
+	if got := tr.CapturedOutput("agent-1"); got != "" {
+		t.Fatalf("unseen key CapturedOutput = %q, want \"\"", got)
+	}
+
+	tr.SetCapturedOutput("agent-1", "Error: Session ID abc is already in use")
+	if got := tr.CapturedOutput("agent-1"); got != "Error: Session ID abc is already in use" {
+		t.Fatalf("CapturedOutput = %q, want the stored tail", got)
+	}
+
+	tr.SetCapturedOutput("agent-1", "")
+	if got := tr.CapturedOutput("agent-1"); got != "" {
+		t.Fatalf("after clear CapturedOutput = %q, want \"\"", got)
+	}
+}
+
+// TestCapturedOutput_RemovedOnRemove verifies Remove drops the ephemeral tail so
+// it does not outlive the chat (BOS-477), matching the authFailed treatment.
+func TestCapturedOutput_RemovedOnRemove(t *testing.T) {
+	tr := NewTracker()
+	tr.SetCapturedOutput("agent-1", "boom")
+	tr.Remove("agent-1")
+	if got := tr.CapturedOutput("agent-1"); got != "" {
+		t.Fatalf("after Remove CapturedOutput = %q, want \"\"", got)
+	}
+}
+
+// TestCapturedOutput_CleanedWhenEntryStale verifies Cleanup GCs a captured tail
+// once its companion STOPPED entry ages past StaleThreshold, so the ephemeral
+// diagnostic store cannot leak for the daemon's lifetime (BOS-477).
+func TestCapturedOutput_CleanedWhenEntryStale(t *testing.T) {
+	tr := NewTracker()
+	now := time.Now()
+	// The poller sets the tail alongside a STOPPED heartbeat at pane death.
+	tr.Update("agent-1", pb.ChatStatus_CHAT_STATUS_STOPPED, now)
+	tr.SetCapturedOutput("agent-1", "Error: Session ID abc is already in use")
+	// Backdate the entry so Cleanup treats it (and its captured tail) as stale.
+	tr.entries["agent-1"].ReceivedAt = now.Add(-StaleThreshold - time.Second)
+
+	tr.Cleanup()
+
+	if got := tr.CapturedOutput("agent-1"); got != "" {
+		t.Fatalf("after Cleanup CapturedOutput = %q, want \"\" (GC'd with stale entry)", got)
+	}
+}

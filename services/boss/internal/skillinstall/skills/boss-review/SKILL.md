@@ -333,6 +333,9 @@ survives Phase 8 cleanup. Source every field from the ledger and gate results:
   "summary": "1–3 sentences: what was reviewed (range + file count) and the headline outcome",
   "security": [],                 // [{severity,title,file,line,fix}] — usually empty
   "issuesHeadline": "<found> must-fix found and fixed this run across <M> files",
+  "reviewers": [ {"name": "golang-pro", "status": "clean", "note": "…?"} ],  // one per lens/round run; renders as the "N Reviewers" block
+  "prUrl": "https://github.com/<owner>/<repo>/pull/<N>",   // optional — the follow-up prompt's Related PR link; omit when no PR exists
+  "issueUrl": "https://…/issue/<ID>",                      // optional — the follow-up prompt's Related issue link; omit when unknown
   "verdict": {
     "assessment": "Sound" | "Unsound",         // Sound iff zero open must-fix at exit
     "evidence": "All gates green" | "<which gate failed>",
@@ -347,7 +350,7 @@ survives Phase 8 cleanup. Source every field from the ledger and gate results:
                "items": [ {"disposition": "fixed"|"verified"|"unresolved",
                            "title": "…", "file": "…", "line": N, "detail": "…", "commit": "<sha>"} ] },
   "leaveAsIs": [ {"title": "…", "file": "…", "line": N, "rationale": "…"} ],   // verified-finding rationales
-  "suggestions": [ {"title": "…", "file": "…", "line": N, "detail": "…"} ]     // the open suggestion pool
+  "suggestions": [ {"title": "…", "file": "…", "line": N, "detail": "…", "priority": "Low"} ]  // open suggestion pool; priority optional (defaults Low)
 }
 ```
 
@@ -357,9 +360,20 @@ mapped to reviewer tags and Phase R evidence: `Low` if the round cap was hit, a 
 independent-voice round was skipped on an infra flake while every required whole-branch round ran
 clean; `High` if all rounds ran and the branch converged.
 
-The `suggestions` pool renders as the collapsible **"Create N Linear issues"** toggle — a fenced,
-copy-able agent prompt the human copies/runs against the configured issue tracker's MCP (never auto-create);
-`mustfix.items` and `leaveAsIs` render as collapsible detail. Populate the optional
+The `suggestions` pool renders as the collapsible **"Create N follow-up issues"** toggle — a
+fenced, copy-able agent prompt the human pastes into an agent to file each suggestion as a tracker
+issue (never auto-create). The prompt emits one `<ticket><title>…</title><body>…</body><priority>…
+</priority></ticket>` block per suggestion and, when the tracker is configured, a `Label all issues
+with: …` line whose label set comes **verbatim from `trackerConfig.<adapter>.followUpLabels`** — so
+the choice of which labels a follow-up issue gets (including any label a later planning sweep keys
+on) lives in config, not in this published core, and an unconfigured repo simply omits the line.
+The prompt only creates the issues; it does not itself plan them. Set `prUrl` / `issueUrl` (from
+`gh pr view --json url` and the tracker-issue URL recorded in the PR body) when a PR exists so the
+prompt carries **Related PR** / **Related issue** links and a report-back instruction; omit them on
+a standalone run with no PR (the prompt degrades cleanly).
+Build `reviewers` with one entry per lens/round actually run (name + a short
+status such as `clean`, and an optional `note`) — it renders as the collapsible **"N Reviewers"**
+roster. `mustfix.items` and `leaveAsIs` render as collapsible detail. Populate the optional
 `verdict.testing_detail` with a short prose summary of the coverage this run added/verified for the
 changed logic (drawn from the `## Fixed` coverage-gap items and the test gates) — it renders as an
 expandable **Test Coverage** `<details>` body alongside the badge; omit it when there is nothing

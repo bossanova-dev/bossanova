@@ -3918,12 +3918,18 @@ type DescribeChatLaunchResponse struct {
 	// system prompt and MCP config flags are intentionally omitted so the command
 	// stays readable; they do not affect whether the agent binary resolves, which
 	// is the failure this command helps diagnose.
-	Argv          []string `protobuf:"bytes,1,rep,name=argv,proto3" json:"argv,omitempty"`
-	WorktreePath  string   `protobuf:"bytes,2,opt,name=worktree_path,json=worktreePath,proto3" json:"worktree_path,omitempty"` // working directory bossd launches it in
-	Host          string   `protobuf:"bytes,3,opt,name=host,proto3" json:"host,omitempty"`                                     // daemon hostname — where to run argv
-	AgentName     string   `protobuf:"bytes,4,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`          // resolved agent (claude, codex, …)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Argv         []string `protobuf:"bytes,1,rep,name=argv,proto3" json:"argv,omitempty"`
+	WorktreePath string   `protobuf:"bytes,2,opt,name=worktree_path,json=worktreePath,proto3" json:"worktree_path,omitempty"` // working directory bossd launches it in
+	Host         string   `protobuf:"bytes,3,opt,name=host,proto3" json:"host,omitempty"`                                     // daemon hostname — where to run argv
+	AgentName    string   `protobuf:"bytes,4,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`          // resolved agent (claude, codex, …)
+	// captured_output is the agent's own final output, captured by bossd at pane
+	// death for a chat that exited before its pane came up (e.g. "Session ID …
+	// already in use"). Empty when nothing was captured. Additive daemon-RPC field
+	// (BOS-477) — not the bossanova.v1 orchestrator surface — so no apiversion
+	// bump. Shown verbatim (sanitized) in the attach diagnostic.
+	CapturedOutput string `protobuf:"bytes,5,opt,name=captured_output,json=capturedOutput,proto3" json:"captured_output,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DescribeChatLaunchResponse) Reset() {
@@ -3980,6 +3986,13 @@ func (x *DescribeChatLaunchResponse) GetHost() string {
 func (x *DescribeChatLaunchResponse) GetAgentName() string {
 	if x != nil {
 		return x.AgentName
+	}
+	return ""
+}
+
+func (x *DescribeChatLaunchResponse) GetCapturedOutput() string {
+	if x != nil {
+		return x.CapturedOutput
 	}
 	return ""
 }
@@ -8070,13 +8083,14 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x0fOUTCOME_RESUMED\x10\x02\x12\x1a\n" +
 	"\x16OUTCOME_FRESH_FALLBACK\x10\x03\"E\n" +
 	"\x19DescribeChatLaunchRequest\x12(\n" +
-	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"\x88\x01\n" +
+	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"\xb1\x01\n" +
 	"\x1aDescribeChatLaunchResponse\x12\x12\n" +
 	"\x04argv\x18\x01 \x03(\tR\x04argv\x12#\n" +
 	"\rworktree_path\x18\x02 \x01(\tR\fworktreePath\x12\x12\n" +
 	"\x04host\x18\x03 \x01(\tR\x04host\x12\x1d\n" +
 	"\n" +
-	"agent_name\x18\x04 \x01(\tR\tagentName\"\x86\x01\n" +
+	"agent_name\x18\x04 \x01(\tR\tagentName\x12'\n" +
+	"\x0fcaptured_output\x18\x05 \x01(\tR\x0ecapturedOutput\"\x86\x01\n" +
 	"\x18GetChatTranscriptRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x1d\n" +
 	"\n" +

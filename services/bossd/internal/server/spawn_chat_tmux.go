@@ -333,7 +333,11 @@ func (l liveTmuxSpawner) HasSession(ctx context.Context, name string) bool {
 // env carries the cron session-environment (BOSS_CRON et al.) so cron
 // record/wake spawns match StartTmuxChat; it is nil for non-cron sessions.
 func (l liveTmuxSpawner) NewSessionWithCmd(ctx context.Context, name, workDir string, cmd []string, env map[string]string) error {
-	return l.c.NewSession(ctx, tmux.NewSessionOpts{Name: name, WorkDir: workDir, Command: cmd, Env: env})
+	// RemainOnExit keeps a chat pane present after its agent process exits so
+	// the status poller can capture a fast-exiting agent's final output at death
+	// before reaping the pane (BOS-477). This spawner hosts only chat panes, so
+	// arming it unconditionally is correct.
+	return l.c.NewSession(ctx, tmux.NewSessionOpts{Name: name, WorkDir: workDir, Command: cmd, Env: env, RemainOnExit: true})
 }
 
 // SendMessage delivers text into a live chat composer, routing on submit intent

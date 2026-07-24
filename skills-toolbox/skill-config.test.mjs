@@ -856,6 +856,7 @@ test('the committed .boss-skills.json reproduces the current hard-coded values',
     'needsHuman',
   ])
   assert.deepEqual(Object.keys(tc.githubLabels), ['proofInvalid'])
+  assert.deepEqual(tc.followUpLabels, ['follow-up', 'agent-plan'])
   const pc = publishConfigFor(cfg)
   assert.ok(pc.bucket.length > 0)
   assert.match(pc.baseUrl, /^https:\/\//)

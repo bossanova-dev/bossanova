@@ -91,6 +91,12 @@ type NewSessionOpts struct {
 	// so the launched command — and any later window opened in the session —
 	// inherits them. Used to mark cron-spawned sessions with BOSS_CRON=true.
 	Env map[string]string
+	// RemainOnExit arms `remain-on-exit on` on the session after creation so a
+	// pane whose process exits stays present (marked pane_dead) with its final
+	// screen intact rather than collapsing the session. bossd uses this for chat
+	// panes so a fast-exiting agent's output can be captured at death before the
+	// pane is reaped (BOS-477).
+	RemainOnExit bool
 }
 
 // NewSession creates a new detached tmux session.
@@ -152,6 +158,15 @@ func (c *Client) NewSession(ctx context.Context, opts NewSessionOpts) error {
 
 	// Bind Ctrl+X and Ctrl+] as additional detach keys scoped to this session.
 	c.bindDetachKeys(ctx, opts.Name)
+
+	// Arm remain-on-exit so a pane whose process exits stays present (pane_dead)
+	// with its final screen intact, letting bossd capture a fast-exiting agent's
+	// output at death before reaping it (BOS-477). Best-effort like the other
+	// session options in bindDetachKeys — losing it must not abort a chat launch.
+	if opts.RemainOnExit {
+		cmd := c.cmdFunc(ctx, "tmux", "set-option", "-t", opts.Name, "remain-on-exit", "on")
+		_ = cmd.Run()
+	}
 
 	return nil
 }
@@ -295,6 +310,21 @@ func (c *Client) PanePID(ctx context.Context, sessionName string) (int, error) {
 		return pid, nil
 	}
 	return 0, fmt.Errorf("no pane pid for session %q", sessionName)
+}
+
+// PaneDead reports whether the named session's active pane has exited its
+// process but is being held present by `remain-on-exit on`. It runs
+// `tmux display-message -p -t <name> '#{pane_dead}'` and returns true iff the
+// trimmed stdout is "1". A tmux command failure returns (false, err) so callers
+// can distinguish a definitely-alive pane from an inability to tell — the
+// BOS-477 capture-then-reap path only acts on a definite dead result.
+func (c *Client) PaneDead(ctx context.Context, sessionName string) (bool, error) {
+	cmd := c.cmdFunc(ctx, "tmux", "display-message", "-p", "-t", sessionName, "#{pane_dead}")
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("display-message pane_dead %q: %w", sessionName, err)
+	}
+	return strings.TrimSpace(string(out)) == "1", nil
 }
 
 // KillSession kills a tmux session.

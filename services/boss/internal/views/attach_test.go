@@ -87,6 +87,51 @@ func TestRenderLaunchDiagnostic_DoesNotAssertSingleCause(t *testing.T) {
 	}
 }
 
+// TestRenderLaunchDiagnostic_ShowsCapturedOutput verifies that when bossd
+// captured the agent's own final output (BOS-477), the diagnostic leads with it
+// verbatim under a "reported:" heading, and still shows the reproduction command.
+func TestRenderLaunchDiagnostic_ShowsCapturedOutput(t *testing.T) {
+	info := &pb.DescribeChatLaunchResponse{
+		Argv:           []string{"claude", "--session-id", "abc"},
+		WorktreePath:   "/work/tree",
+		Host:           "tomo",
+		AgentName:      "claude",
+		CapturedOutput: "Error: Session ID abc is already in use",
+	}
+	out := renderLaunchDiagnostic(info, "Claude Code")
+	for _, want := range []string{
+		"Claude Code reported:",
+		"Session ID abc is already in use",
+		"bossd ran this on host 'tomo':",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("diagnostic missing %q in:\n%s", want, out)
+		}
+	}
+	// The neutral PATH/login-shell fallback prose must NOT appear when we have
+	// the agent's real error.
+	if strings.Contains(out, "refusing to start") {
+		t.Fatalf("captured-output diagnostic should not show the fallback prose:\n%s", out)
+	}
+}
+
+// TestRenderLaunchDiagnostic_FallsBackWhenCapturedEmpty verifies the empty-capture
+// case still renders the neutral fallback prose (acceptance criterion 3).
+func TestRenderLaunchDiagnostic_FallsBackWhenCapturedEmpty(t *testing.T) {
+	info := &pb.DescribeChatLaunchResponse{
+		Argv:      []string{"claude", "--session-id", "abc"},
+		AgentName: "claude",
+		// CapturedOutput deliberately empty.
+	}
+	out := renderLaunchDiagnostic(info, "Claude Code")
+	if !strings.Contains(out, "refusing to start") {
+		t.Fatalf("empty-capture diagnostic should fall back to neutral prose:\n%s", out)
+	}
+	if strings.Contains(out, "reported:") {
+		t.Fatalf("empty-capture diagnostic should not show a reported: block:\n%s", out)
+	}
+}
+
 // TestTmuxSessionAlive_EmptyName verifies the empty-name fast path so the
 // helper never spawns a `tmux has-session` for a never-set chat row.
 func TestTmuxSessionAlive_EmptyName(t *testing.T) {

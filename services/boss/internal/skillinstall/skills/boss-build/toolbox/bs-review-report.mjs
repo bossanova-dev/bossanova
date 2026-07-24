@@ -3,10 +3,10 @@
 // Mirrors the wondercanvas `wc-auto-review` layout so the report is easy to
 // skim: a one-line header + horizontal rule, a ✅/❌ verdict block where the
 // badge signals pass/fail at a glance, and collapsible <details> sections for
-// the long material (test-coverage prose, round-by-round evidence, must-fix
-// detail, leave-as-is rationales, the "Create N Linear issues" prompt). The
-// renderer OWNS the layout and the ✅/❌ classification so a hand-written report
-// can't drift per run.
+// the long material (test-coverage prose, the reviewer roster, round-by-round
+// evidence, must-fix detail, leave-as-is rationales, the "Create N follow-up
+// issues" prompt). The renderer OWNS the layout and the ✅/❌ classification so a
+// hand-written report can't drift per run.
 //
 // Node built-ins only — cron worktrees are dependency-free.
 
@@ -81,11 +81,14 @@ function renderHeader({ rounds = 1, status = 'clean', mustfix = {} } = {}) {
   return `bs-review completed after ${r}. All must-fix findings fixed; required gates green.`
 }
 
-// The always-visible verdict block: one combined issue-count + security line,
-// then Assessment / Evidence / Confidence / Test Coverage / Recommendation, one
-// per paragraph. Evidence / Test Coverage / Recommendation are optional.
+// The always-visible verdict block, split into `lead` (the combined issue-count
+// + security line, plus any security bullets — each its own paragraph) and
+// `badges` (Assessment / Evidence / Confidence / Test Coverage / Recommendation).
+// The badge lines are returned as a list so the caller can join them with single
+// newlines and render them as one tight, consecutive block. Evidence / Test
+// Coverage / Recommendation are optional.
 function renderVerdictBlock({ verdict = {}, issuesHeadline = '', security = [] } = {}) {
-  const lines = []
+  const lead = []
   const n = Array.isArray(security) ? security.length : 0
   const securityStatus =
     n > 0
@@ -94,9 +97,9 @@ function renderVerdictBlock({ verdict = {}, issuesHeadline = '', security = [] }
   const headline = issuesHeadline
     ? `**${esc(String(issuesHeadline).replace(/\.\s*$/, ''))}.** `
     : ''
-  lines.push(`${headline}${securityStatus}`)
+  lead.push(`${headline}${securityStatus}`)
   if (n > 0) {
-    lines.push(
+    lead.push(
       security
         .map(
           (s) =>
@@ -105,15 +108,28 @@ function renderVerdictBlock({ verdict = {}, issuesHeadline = '', security = [] }
         .join('\n'),
     )
   }
-  lines.push(verdictLine('assessment', 'Assessment', verdict.assessment ?? 'N/A'))
-  if (verdict.evidence) lines.push(verdictLine('evidence', 'Evidence', verdict.evidence))
-  lines.push(verdictLine('confidence', 'Confidence', verdict.confidence ?? 'N/A'))
+  const badges = []
+  badges.push(verdictLine('assessment', 'Assessment', verdict.assessment ?? 'N/A'))
+  if (verdict.evidence) badges.push(verdictLine('evidence', 'Evidence', verdict.evidence))
+  badges.push(verdictLine('confidence', 'Confidence', verdict.confidence ?? 'N/A'))
   if (verdict.testing_assessment) {
-    lines.push(verdictLine('testing_assessment', 'Test Coverage', verdict.testing_assessment))
+    badges.push(verdictLine('testing_assessment', 'Test Coverage', verdict.testing_assessment))
   }
   if (verdict.recommendation)
-    lines.push(verdictLine('recommendation', 'Recommendation', verdict.recommendation))
-  return lines
+    badges.push(verdictLine('recommendation', 'Recommendation', verdict.recommendation))
+  return { lead, badges }
+}
+
+// "N Reviewers": the per-lens / per-round reviewer roster as bullets
+// (`- **golang-pro** — clean`), rendered inside a collapsible section by the
+// caller. '' when there are no reviewers, so detailsSection omits the toggle
+// entirely.
+function renderReviewers(reviewers = []) {
+  const items = Array.isArray(reviewers) ? reviewers : []
+  if (!items.length) return ''
+  return items
+    .map((r) => `- **${esc(r.name)}** — ${esc(r.status)}${r.note ? ` (${esc(r.note)})` : ''}`)
+    .join('\n')
 }
 
 // "Evidence — rounds & gates": the per-round result table plus the gate roster.
@@ -149,33 +165,44 @@ function renderLeaveAsIs(leaveAsIs = []) {
   return leaveAsIs.map((l) => `- **${esc(l.title)}**${loc(l)} — ${esc(l.rationale)}`).join('\n')
 }
 
-// "Create N Linear issues": a single copyable, fence-guarded block an agent can
-// paste to file each suggestion as a Linear issue. '' when there are no
+// "Create N follow-up issues": a single copyable, fence-guarded prompt an agent
+// can paste to file each suggestion as a tracker issue. '' when there are no
 // suggestions. The fenced code block is what gives GitHub the copy-to-clipboard
-// button.
-function renderSuggestions(suggestions = [], tracker = null) {
+// button. The label set is sourced verbatim from the configured tracker's
+// `followUpLabels` list, so the published core carries no project-specific
+// literal and the choice of which labels a follow-up issue gets lives in config,
+// not here; an unconfigured repo (tracker null / no list) drops the label line
+// and stays generic. `prUrl` / `issueUrl` are optional related links — each line
+// (and the related-issue instruction + trailing report-back line) is omitted
+// when its URL is absent, so a standalone run with no PR degrades cleanly.
+function renderSuggestions(suggestions = [], tracker = null, { prUrl = '', issueUrl = '' } = {}) {
   if (!suggestions.length) return ''
-  const list = suggestions
-    .map((s) => `- ${s.title}${loc(s)}${s.detail ? ` — ${s.detail}` : ''}`)
-    .join('\n')
-  let header, dedupe
-  if (tracker) {
-    const planned = tracker.states?.planned ?? 'planned'
-    const inProgress = tracker.states?.inProgress ?? 'in-progress'
-    header = `Using the ${tracker.mcpServer} MCP, create one ${tracker.team} issue per item below (priority None,`
-    dedupe = `Do not create duplicates of existing ${planned}/${inProgress} issues.`
-  } else {
-    header =
-      'Using the configured issue tracker MCP, create one issue per item below (priority None,'
-    dedupe = 'Do not create duplicates of existing open issues.'
+  const lines = [
+    'Please create the following follow-up issues from the automated code review of this PR.',
+  ]
+  if (issueUrl) lines.push('Create each in the same project/team as the related issue below.')
+  const labels = Array.isArray(tracker?.followUpLabels) ? tracker.followUpLabels : []
+  if (labels.length) lines.push(`Label all issues with: ${labels.join(', ')}.`)
+  if (prUrl || issueUrl) lines.push('')
+  if (prUrl) lines.push(`Related PR: ${prUrl}`)
+  if (issueUrl) lines.push(`Related issue: ${issueUrl}`)
+  for (const s of suggestions) {
+    const originating = s.file ? ` (originating: ${s.file}${s.line ? `:${s.line}` : ''})` : ''
+    const body = `${s.detail || s.title}${originating}`
+    lines.push('')
+    lines.push('<ticket>')
+    lines.push(`<title>${s.title}</title>`)
+    lines.push(`<body>${body}</body>`)
+    lines.push(`<priority>${s.priority ?? 'Low'}</priority>`)
+    lines.push('</ticket>')
   }
-  const prompt = [
-    header,
-    'no project filter). Title = the item title; description = the detail + originating file:line.',
-    dedupe,
-    '',
-    list,
-  ].join('\n')
+  if (prUrl) {
+    lines.push('')
+    lines.push(
+      `Once you have created the issues, add a comment to the related PR (${prUrl}) listing every follow-up issue you created as a bullet list, with each bullet linking to the created issue.`,
+    )
+  }
+  const prompt = lines.join('\n')
   const fence = codeFence(prompt)
   return `${fence}\n${prompt}\n${fence}`
 }
@@ -199,11 +226,14 @@ export function renderReport(data = {}) {
     verdict = {},
     issuesHeadline = '',
     security = [],
+    reviewers = [],
     evidenceRows = [],
     gates = [],
     mustfix = {},
     leaveAsIs = [],
     suggestions = [],
+    prUrl = '',
+    issueUrl = '',
   } = data
 
   const tracker = data.tracker !== undefined ? data.tracker : trackerConfigFor(loadSkillConfig())
@@ -211,11 +241,17 @@ export function renderReport(data = {}) {
   const blocks = []
   blocks.push(`${MARKER}\n${renderHeader(data)}`)
   blocks.push('---')
-  blocks.push('### bs-review report')
+  blocks.push('#### Code Review')
   if (summary) blocks.push(esc(summary))
-  blocks.push(...renderVerdictBlock({ verdict, issuesHeadline, security }))
+  const { lead, badges } = renderVerdictBlock({ verdict, issuesHeadline, security })
+  blocks.push(...lead)
+  blocks.push(badges.join('\n'))
 
   blocks.push(detailsSection('Test Coverage', renderTestCoverage(verdict)))
+
+  const reviewerList = Array.isArray(reviewers) ? reviewers : []
+  const nr = reviewerList.length
+  blocks.push(detailsSection(`${nr} Reviewer${nr === 1 ? '' : 's'}`, renderReviewers(reviewerList)))
 
   const evidence = renderEvidence({ evidenceRows, gates })
   if (evidence) blocks.push(detailsSection('Evidence — rounds & gates', evidence))
@@ -232,8 +268,8 @@ export function renderReport(data = {}) {
   const n = suggestions.length
   blocks.push(
     detailsSection(
-      `<strong>Create ${n} Linear ${n === 1 ? 'issue' : 'issues'}</strong>`,
-      renderSuggestions(suggestions, tracker),
+      `<strong>Create ${n} follow-up ${n === 1 ? 'issue' : 'issues'}</strong>`,
+      renderSuggestions(suggestions, tracker, { prUrl, issueUrl }),
     ),
   )
 

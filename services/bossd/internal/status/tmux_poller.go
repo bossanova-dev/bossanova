@@ -67,6 +67,27 @@ const PollInterval = 3 * time.Second
 // IdleThreshold is the duration of unchanged output before reporting idle.
 const IdleThreshold = 5 * time.Second
 
+// capturedTailMaxBytes bounds the pane tail captured at process death (~4 KiB)
+// so a runaway agent transcript can't bloat the ephemeral diagnostic store
+// (BOS-477).
+const capturedTailMaxBytes = 4096
+
+// boundedTail returns the last <= maxBytes bytes of s, advanced forward to the
+// next whole-line boundary so the returned tail never begins mid-line. Input at
+// or under maxBytes is returned unchanged.
+func boundedTail(s string, maxBytes int) string {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s
+	}
+	tail := s[len(s)-maxBytes:]
+	// Drop a leading partial line so the tail starts cleanly; guard against
+	// consuming the whole slice when the only newline is the final byte.
+	if nl := strings.IndexByte(tail, '\n'); nl >= 0 && nl+1 < len(tail) {
+		tail = tail[nl+1:]
+	}
+	return tail
+}
+
 // Run starts the background polling goroutine. It stops when ctx is cancelled.
 func (p *TmuxStatusPoller) Run(ctx context.Context) {
 	safego.Go(p.logger, func() {
@@ -116,6 +137,20 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 			continue
 		}
 		if !p.tmux.HasSession(ctx, *chat.TmuxSessionName) {
+			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
+			p.tracker.SetAuthFailed(chat.AgentSessionID, false)
+			continue
+		}
+		// With remain-on-exit armed (BOS-477), a chat whose agent process exited
+		// keeps the tmux session alive as a pane_dead zombie, so HasSession stays
+		// true. Capture the final tail ONCE at death, then reap the pane so it
+		// can't linger, and report STOPPED. The KillSession runs unconditionally
+		// (even if capture failed) so a dead pane never survives as a zombie.
+		if dead, _ := p.tmux.PaneDead(ctx, *chat.TmuxSessionName); dead {
+			if tail, err := p.tmux.CapturePane(ctx, *chat.TmuxSessionName); err == nil {
+				p.tracker.SetCapturedOutput(chat.AgentSessionID, boundedTail(tail, capturedTailMaxBytes))
+			}
+			_ = p.tmux.KillSession(ctx, *chat.TmuxSessionName)
 			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
 			p.tracker.SetAuthFailed(chat.AgentSessionID, false)
 			continue

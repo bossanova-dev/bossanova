@@ -57,10 +57,19 @@ func (s *Server) DescribeChatLaunch(ctx context.Context, req *connect.Request[pb
 	// worktree are still useful, so return what we have with an empty host.
 	host, _ := os.Hostname()
 
+	// captured_output carries the agent's own final output if the status poller
+	// grabbed it at pane death (BOS-477) — e.g. "Session ID … already in use".
+	// Empty when nothing was captured; the TUI falls back to the neutral prose.
+	var captured string
+	if s.chatStatus != nil {
+		captured = s.chatStatus.CapturedOutput(agentSessionID)
+	}
+
 	return connect.NewResponse(&pb.DescribeChatLaunchResponse{
-		Argv:         argv,
-		WorktreePath: sess.WorktreePath,
-		Host:         host,
-		AgentName:    chat.AgentName,
+		Argv:           argv,
+		WorktreePath:   sess.WorktreePath,
+		Host:           host,
+		AgentName:      chat.AgentName,
+		CapturedOutput: captured,
 	}), nil
 }

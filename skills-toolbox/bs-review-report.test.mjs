@@ -22,6 +22,10 @@ function cleanFixture() {
     status: 'clean',
     summary: 'Self-review of the bs-review skill against its own branch.',
     security: [],
+    reviewers: [
+      { name: 'golang-pro', status: 'clean' },
+      { name: 'requesting-code-review', status: 'clean', note: 'no actionable findings' },
+    ],
     issuesHeadline: '1 must-fix found and fixed this run across 3 files',
     verdict: {
       assessment: 'Sound',
@@ -71,7 +75,7 @@ test('header + horizontal rule + marker lead the report', () => {
     /bs-review completed after 2 round\(s\)\. All must-fix findings fixed; required gates green\./,
   )
   assert.match(md, /\n---\n/)
-  assert.match(md, /### bs-review report/)
+  assert.match(md, /#### Code Review/)
 })
 
 test('verdict block badges each field per VERDICT_OK', () => {
@@ -147,66 +151,160 @@ test('issue headline is bolded and joined with the security status', () => {
 
 test('non-empty sections render collapsible <details> with the right summaries', () => {
   const md = renderReport(cleanFixture())
+  assert.match(md, /<details><summary>2 Reviewers<\/summary>/)
   assert.match(md, /<details><summary>Evidence — rounds & gates<\/summary>/)
   assert.match(
     md,
     /<details><summary>Must-fix detail — found 1 \/ fixed 1 \/ verified 0 \/ unresolved 0<\/summary>/,
   )
   assert.match(md, /<details><summary>Leave as-is<\/summary>/)
-  assert.match(md, /<details><summary><strong>Create 1 Linear issue<\/strong><\/summary>/)
+  assert.match(md, /<details><summary><strong>Create 1 follow-up issue<\/strong><\/summary>/)
+})
+
+test('the Reviewers block lists each reviewer with status and optional note', () => {
+  const md = renderReport(cleanFixture())
+  assert.match(md, /- \*\*golang-pro\*\* — clean\n/)
+  assert.match(md, /- \*\*requesting-code-review\*\* — clean \(no actionable findings\)/)
+})
+
+test('reviewer name/status/note are HTML-escaped so a lens label cannot break the layout', () => {
+  const md = renderReport({
+    reviewers: [{ name: 'lens <x>', status: 'clean', note: 'saw <b> & <i>' }],
+  })
+  assert.match(md, /- \*\*lens &lt;x&gt;\*\* — clean \(saw &lt;b&gt; &amp; &lt;i&gt;\)/)
+})
+
+test('the Reviewers block is omitted (with no empty toggle) when there are no reviewers', () => {
+  const data = cleanFixture()
+  data.reviewers = []
+  const md = renderReport(data)
+  assert.doesNotMatch(md, /Reviewer/)
+})
+
+test('the Reviewers summary counts reviewers with singular/plural', () => {
+  const one = renderReport({ reviewers: [{ name: 'golang-pro', status: 'clean' }] })
+  assert.match(one, /<details><summary>1 Reviewer<\/summary>/)
+  const two = renderReport({
+    reviewers: [
+      { name: 'golang-pro', status: 'clean' },
+      { name: 'thermonuclear', status: 'clean' },
+    ],
+  })
+  assert.match(two, /<details><summary>2 Reviewers<\/summary>/)
 })
 
 test('the follow-up block summary counts suggestions with singular/plural', () => {
   const one = renderReport({
     suggestions: [{ title: 'Only one', file: 'a.ts', line: 1 }],
   })
-  assert.match(one, /<details><summary><strong>Create 1 Linear issue<\/strong><\/summary>/)
+  assert.match(one, /<details><summary><strong>Create 1 follow-up issue<\/strong><\/summary>/)
   const two = renderReport({
     suggestions: [
       { title: 'First', file: 'a.ts', line: 1 },
       { title: 'Second', file: 'b.ts', line: 2 },
     ],
   })
-  assert.match(two, /<details><summary><strong>Create 2 Linear issues<\/strong><\/summary>/)
+  assert.match(two, /<details><summary><strong>Create 2 follow-up issues<\/strong><\/summary>/)
 })
 
-test('the copyable prompt refers to issues, not tickets', () => {
+test('the follow-up prompt renders one <ticket> block per suggestion', () => {
   const md = renderReport({
-    ...cleanFixture(),
-    tracker: {
-      mcpServer: 'acme-tracker',
-      team: 'Acme',
-      states: { planned: 'Ready', inProgress: 'Doing' },
-    },
+    suggestions: [
+      { title: 'Cover the isTTY branch', file: 'a.ts', line: 44, detail: 'add a unit test' },
+    ],
+    tracker: null,
   })
-  assert.match(md, /create one Acme issue per item/)
-  assert.match(md, /existing Ready\/Doing issues\./)
-  assert.doesNotMatch(md, /ticket/i)
+  assert.match(md, /Please create the following follow-up issues from the automated code review/)
+  assert.match(md, /<ticket>\n<title>Cover the isTTY branch<\/title>/)
+  assert.match(md, /<body>add a unit test \(originating: a\.ts:44\)<\/body>/)
+  assert.match(md, /<priority>Low<\/priority>\n<\/ticket>/)
 })
 
-test('a configured tracker drives the follow-up prompt server/team/state names', () => {
+test('a suggestion can override its priority', () => {
+  const md = renderReport({
+    suggestions: [{ title: 'X', file: 'a.ts', line: 1, priority: 'Medium' }],
+    tracker: null,
+  })
+  assert.match(md, /<priority>Medium<\/priority>/)
+})
+
+test('a configured tracker sources the follow-up label line from followUpLabels verbatim', () => {
   const md = renderReport({
     suggestions: [{ title: 'X', file: 'a.ts', line: 1 }],
-    tracker: {
-      mcpServer: 'acme-tracker',
-      team: 'Acme',
-      states: { planned: 'Ready', inProgress: 'Doing' },
-    },
+    tracker: { mcpServer: 'acme-tracker', team: 'Acme', followUpLabels: ['follow-up', 'triage'] },
   })
-  assert.match(md, /Using the acme-tracker MCP/)
-  assert.match(md, /create one Acme issue/)
-  assert.match(md, /existing Ready\/Doing issues/)
+  assert.match(md, /Label all issues with: follow-up, triage\./)
 })
 
-test('an unconfigured repo (tracker null) emits a generic project-agnostic prompt', () => {
+test('a tracker without a followUpLabels list drops the label line', () => {
+  const md = renderReport({
+    suggestions: [{ title: 'X', file: 'a.ts', line: 1 }],
+    tracker: { mcpServer: 'acme-tracker', team: 'Acme' },
+  })
+  assert.doesNotMatch(md, /Label all issues with:/)
+})
+
+test('an unconfigured repo (tracker null) emits a generic, label-free prompt', () => {
   const md = renderReport({
     suggestions: [{ title: 'X', file: 'a.ts', line: 1 }],
     tracker: null,
   })
-  assert.match(md, /Using the configured issue tracker MCP/)
-  assert.match(md, /create one issue per item/)
-  assert.match(md, /existing open issues/)
+  assert.match(md, /Please create the following follow-up issues/)
+  assert.doesNotMatch(md, /Label all issues with:/)
   assert.doesNotMatch(md, /bossanova/i)
+})
+
+test('a suggestion with no file and no detail renders <body> as just the title', () => {
+  const md = renderReport({ suggestions: [{ title: 'Bare suggestion' }], tracker: null })
+  assert.match(md, /<body>Bare suggestion<\/body>/)
+  assert.doesNotMatch(md, /originating:/)
+})
+
+test('the code fence grows so a backtick run inside a suggestion cannot break out', () => {
+  const md = renderReport({
+    suggestions: [{ title: 'Fix ```js block```', file: 'a.ts', line: 1, detail: 'has ``` inside' }],
+    tracker: null,
+  })
+  // A 3-backtick run in the body forces a >=4-backtick fence; the title/body still render literally.
+  assert.match(md, /````\nPlease create the following follow-up issues/)
+  assert.match(md, /<title>Fix ```js block```<\/title>/)
+})
+
+test('the related-issue instruction is gated on issueUrl', () => {
+  const withIssue = renderReport({
+    suggestions: [{ title: 'X', file: 'a.ts', line: 1 }],
+    tracker: null,
+    issueUrl: 'https://tracker.example/issue/AC-1',
+  })
+  assert.match(withIssue, /Create each in the same project\/team as the related issue below\./)
+  const noIssue = renderReport({
+    suggestions: [{ title: 'X', file: 'a.ts', line: 1 }],
+    tracker: null,
+  })
+  assert.doesNotMatch(noIssue, /related issue below/)
+})
+
+test('Related PR / Related issue lines render only when their URLs are supplied', () => {
+  const withLinks = renderReport({
+    suggestions: [{ title: 'X', file: 'a.ts', line: 1 }],
+    tracker: null,
+    prUrl: 'https://github.com/acme/repo/pull/7',
+    issueUrl: 'https://tracker.example/issue/AC-1',
+  })
+  assert.match(withLinks, /Related PR: https:\/\/github\.com\/acme\/repo\/pull\/7/)
+  assert.match(withLinks, /Related issue: https:\/\/tracker\.example\/issue\/AC-1/)
+  assert.match(
+    withLinks,
+    /add a comment to the related PR \(https:\/\/github\.com\/acme\/repo\/pull\/7\)/,
+  )
+
+  const noLinks = renderReport({
+    suggestions: [{ title: 'X', file: 'a.ts', line: 1 }],
+    tracker: null,
+  })
+  assert.doesNotMatch(noLinks, /Related PR:/)
+  assert.doesNotMatch(noLinks, /Related issue:/)
+  assert.doesNotMatch(noLinks, /add a comment to the related PR/)
 })
 
 test('the default path (no injected tracker) reads config from cwd and stays generic when unconfigured', () => {
@@ -214,7 +312,7 @@ test('the default path (no injected tracker) reads config from cwd and stays gen
   // renderReport with no `tracker` key falls back to
   // trackerConfigFor(loadSkillConfig()), which resolves .boss-skills.json from
   // cwd. From a scratch dir with no config anywhere above it the tracker resolves
-  // null, so the generic project-agnostic prompt must render — proving the seam
+  // null, so the generic label-free prompt must render — proving the seam
   // self-disables cleanly in an unconfigured checkout (not just when null is
   // hand-injected).
   const scratch = mkdtempSync(join(tmpdir(), 'bs-review-report-'))
@@ -222,8 +320,8 @@ test('the default path (no injected tracker) reads config from cwd and stays gen
   try {
     process.chdir(scratch)
     const md = renderReport({ suggestions: [{ title: 'X', file: 'a.ts', line: 1 }] })
-    assert.match(md, /Using the configured issue tracker MCP/)
-    assert.match(md, /existing open issues/)
+    assert.match(md, /Please create the following follow-up issues/)
+    assert.doesNotMatch(md, /Label all issues with:/)
     assert.doesNotMatch(md, /bossanova/i)
   } finally {
     process.chdir(prevCwd)
@@ -315,11 +413,13 @@ test('suggestions render a fence-guarded follow-up prompt', () => {
     tracker: {
       mcpServer: 'acme-tracker',
       team: 'Acme',
-      states: { planned: 'Ready', inProgress: 'Doing' },
+      labels: { followUp: 'follow-up', agentPlan: 'agent-plan' },
     },
   })
-  assert.match(md, /Using the acme-tracker MCP/)
-  assert.match(md, /- Cover the isTTY CLI branch \(`scripts\/bs-review-detect\.mjs:44`\)/)
+  // A fence wraps the copyable prompt (the copy-to-clipboard button) and the
+  // suggestion becomes a <ticket> block.
+  assert.match(md, /```\nPlease create the following follow-up issues/)
+  assert.match(md, /<title>Cover the isTTY CLI branch<\/title>/)
 })
 
 test('CLI renders JSON from --in and from stdin', () => {

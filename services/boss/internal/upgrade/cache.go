@@ -14,6 +14,23 @@ import (
 // matches the latest release.
 const DefaultSnoozeDuration = 7 * 24 * time.Hour
 
+// CacheTTL is how long an upgrade-check cache entry is considered fresh. Both
+// the TUI banner and the `boss upgrade` action reuse the same window so a check
+// made by one satisfies the other without a second network call.
+const CacheTTL = 24 * time.Hour
+
+// DefaultCachePath returns the on-disk path for the upgrade-check cache, shared
+// by the TUI banner and the `boss upgrade` action. It returns "" when the
+// user's cache directory is unavailable; callers treat an empty path as "cache
+// disabled" and skip both reads and writes.
+func DefaultCachePath() string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "bossanova", "upgrade-cache.json")
+}
+
 type CacheEntry struct {
 	CheckedAt      time.Time `json:"checked_at"`
 	CurrentVersion string    `json:"current_version"`

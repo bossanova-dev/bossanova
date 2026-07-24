@@ -64,7 +64,7 @@ func TestBaseHarnessEnvStripsSeedEnvCarrier(t *testing.T) {
 }
 
 func TestProofEnvWhitelistFamilies(t *testing.T) {
-	want := []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_"}
+	want := []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_", "BOSS_PROOF_UPGRADE_"}
 	if !reflect.DeepEqual(ProofEnvWhitelist, want) {
 		t.Fatalf("ProofEnvWhitelist = %v, want %v", ProofEnvWhitelist, want)
 	}

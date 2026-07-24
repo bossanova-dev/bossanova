@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "title": "BOS-493 upgrade check — a rate-limited GitHub 403 renders a friendly banner (rate limit, resets at HH:MM, set GITHUB_TOKEN / gh auth login) instead of a raw 'HTTP 403'",
+  "fixture": {
+    "preset": "demo",
+    "env": { "BOSS_PROOF_UPGRADE_RATE_LIMIT": "1" }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the home upgrade banner surfaces the typed RateLimitError as an actionable rate-limit line, not a bare HTTP 403",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "rate limit",
+            "match": "normalized",
+            "label": "the upgrade check returned a *RateLimitError and the banner rendered its friendly message"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home loaded: the injected rate-limit 403 surfaces as a human-readable banner line"
+        },
+        {
+          "expect": {
+            "text": "resets at",
+            "match": "normalized",
+            "label": "the banner tells the user when the anonymous quota resets"
+          },
+          "caption": "The banner names the reset time parsed from X-RateLimit-Reset"
+        },
+        {
+          "expect": {
+            "text": "gh auth login",
+            "match": "normalized",
+            "label": "the banner points the user at the fix — set GITHUB_TOKEN or run gh auth login"
+          },
+          "caption": "The banner is actionable: authenticate to get the 5000/hr budget"
+        }
+      ]
+    }
+  ]
+}

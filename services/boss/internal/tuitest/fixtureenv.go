@@ -63,12 +63,16 @@ func SeedFirstRunSettings(home, socketPath string) error {
 
 // ProofEnvWhitelist is the set of env key prefixes a proof scenario may forward
 // into the boss subprocess. Security boundary: scenario files are agent-authored,
-// so only these harness-managed E2E families are permitted — never arbitrary
-// developer env. The families intentionally mirror the prefixes BaseHarnessEnv
+// so only these harness-managed families are permitted — never arbitrary
+// developer env. The E2E families intentionally mirror the prefixes BaseHarnessEnv
 // strips (BOSS_CLOUD_ACCESS_E2E_*, BOSS_GITHUB_APP_E2E_*, BOSS_AUTH_E2E_*): the
 // harness strips them from the ambient environ, then the bridge re-adds only the
-// validated, scenario-requested subset.
-var ProofEnvWhitelist = []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_"}
+// validated, scenario-requested subset. BOSS_PROOF_UPGRADE_* is a proof-only
+// display toggle family (not an E2E fake): it lets a scenario force a
+// deterministic upgrade-banner state (e.g. the rate-limit line) without draining
+// a real GitHub quota. Values only flip on-screen text, never behavior a user
+// cares about, so forwarding them from an agent-authored scenario is safe.
+var ProofEnvWhitelist = []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_", "BOSS_PROOF_UPGRADE_"}
 
 // FilterProofEnv splits a requested env map into allowed (keys that prefix-match
 // ProofEnvWhitelist) and rejected (keys that don't). Env validation lives ONLY

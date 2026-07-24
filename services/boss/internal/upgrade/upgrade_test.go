@@ -710,7 +710,7 @@ func TestVerifyReleaseTag(t *testing.T) {
 					}, nil
 				}),
 			}
-			err := VerifyReleaseTag(context.Background(), client, "", "v1.2.3")
+			err := VerifyReleaseTag(context.Background(), client, "", "v1.2.3", "")
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("VerifyReleaseTag() error = %v, want nil", err)

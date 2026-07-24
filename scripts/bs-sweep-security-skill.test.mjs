@@ -181,6 +181,77 @@ const prsFixture = fileURLToPath(
   new URL('./fixtures/bs-sweep-security/prs.sample.json', import.meta.url),
 )
 
+// ---------------------------------------------------------------------------
+// BOS-491 — the read-only main-gate health probe (Phase 1.5) additive contract.
+// ---------------------------------------------------------------------------
+
+test('the main-gate health probe (Phase 1.5) is documented', () => {
+  assert.match(SKILL, /Main-gate health probe/i, 'Phase 1.5 probe section must be present')
+  assert.ok(
+    SKILL.includes('scripts/sweep-maingate-gate.mjs'),
+    'must resolve the pure-core gate helper',
+  )
+  assert.ok(SKILL.includes('selectStub'), 'must name the pure-core decision function')
+  assert.ok(SKILL.includes('nosec-metadata-check.sh'), 'must run the nosec-metadata check inline')
+})
+
+test('the probe references the line-anchored MainGate: marker scheme', () => {
+  assert.ok(SKILL.includes('MainGate:'), 'SKILL.md must reference the MainGate: marker')
+  assert.match(SKILL, /\^MainGate: <id>\$/, 'must document the line-anchored marker rule')
+})
+
+test('the gosec probe adds a third awaited general-purpose dispatch', () => {
+  // Phase 2 triage + Phase 4 repair-watch + Phase 1.5 gosec = 3 dispatches.
+  assert.ok(
+    countOf(SKILL, 'subagent_type: general-purpose') >= 3,
+    'expected >= 3 `subagent_type: general-purpose` dispatch directives (adds the gosec probe)',
+  )
+  assert.ok(
+    countOf(SKILL, '<!-- tier: opus -->') >= 3,
+    'the gosec probe dispatch must also be a tier: opus judgment step',
+  )
+})
+
+test('the probe uses the exact CI gosec flags from security.yml', () => {
+  for (const flag of [
+    '-conf=.gosec.json',
+    '-severity=medium',
+    '-confidence=medium',
+    '-verbose=json',
+    "-exclude-dir='(^|/)gen(/|$)'",
+    "-exclude-dir='(^|/)genproto(/|$)'",
+    '-exclude-dir=testdata',
+    '-exclude-dir=node_modules',
+    'gosec@v2.22.5',
+  ]) {
+    assert.ok(SKILL.includes(flag), `probe must pass the exact CI flag/token ${flag}`)
+  }
+})
+
+test('the probe files at most one gated, deduped Linear stub', () => {
+  assert.match(SKILL, /would file stub/i, 'dry-run must print the would-file preview')
+  assert.ok(SKILL.includes('main-gate:'), 'a main-gate: report line must be present')
+  assert.match(SKILL, /origin\/staging/, 'gosec scope is changed modules vs origin/staging')
+  assert.match(
+    SKILL,
+    /all.{0,6}go.work modules|ALL go.work modules/i,
+    'base-ref-absent fallback documented',
+  )
+})
+
+test('the .codex mirror carries the main-gate probe tokens (parity)', () => {
+  assert.match(CODEX, /Main-gate health probe/i, 'codex mirror must carry the probe section')
+  assert.ok(CODEX.includes('MainGate:'), 'codex mirror must carry the MainGate: marker token')
+  assert.ok(
+    CODEX.includes('scripts/sweep-maingate-gate.mjs') || CODEX.includes('sweep-maingate-gate.mjs'),
+    'codex mirror must reference the pure-core gate helper',
+  )
+  assert.ok(
+    countOf(CODEX, 'subagent_type: general-purpose') >= 3,
+    'codex mirror must carry all three dispatch directives',
+  )
+})
+
 test('triage parity: gate select-batch picks the expected non-empty batch on fixtures', () => {
   const res = spawnSync(
     process.execPath,

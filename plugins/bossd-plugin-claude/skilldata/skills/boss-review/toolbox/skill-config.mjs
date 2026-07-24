@@ -286,6 +286,19 @@ export function validateConfig(config, source) {
         }
       }
     }
+    // followUpLabels: the verbatim label set boss-review's follow-up-issue prompt applies. A list
+    // (not a role map) so the choice of which labels lives in config, not the published-core renderer.
+    if ('followUpLabels' in tc) {
+      if (
+        !Array.isArray(tc.followUpLabels) ||
+        tc.followUpLabels.length === 0 ||
+        !tc.followUpLabels.every((l) => typeof l === 'string' && l.length > 0)
+      ) {
+        fail(
+          `trackerConfig.${adapter}.followUpLabels must be a non-empty array of non-empty strings`,
+        )
+      }
+    }
   }
   if (
     config.publishConfig == null ||

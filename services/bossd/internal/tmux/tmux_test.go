@@ -399,6 +399,106 @@ func TestNewSession_SkipsTermProgramWhenTmux(t *testing.T) {
 	}
 }
 
+// TestNewSession_RemainOnExit verifies that RemainOnExit arms
+// `set-option -t <name> remain-on-exit on` after session creation (BOS-477),
+// and that the option is omitted when the flag is unset.
+func TestNewSession_RemainOnExit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	remainOn := []string{"tmux", "set-option", "-t", "boss-test-1234", "remain-on-exit", "on"}
+
+	t.Run("armed when set", func(t *testing.T) {
+		mock := &mockCommandFactory{}
+		c := NewClient(WithCommandFactory(mock.factory))
+		if err := c.NewSession(context.Background(), NewSessionOpts{
+			Name:         "boss-test-1234",
+			WorkDir:      "/tmp",
+			Command:      []string{"claude"},
+			RemainOnExit: true,
+		}); err != nil {
+			t.Fatalf("NewSession failed: %v", err)
+		}
+		found := false
+		for _, call := range mock.calls {
+			if equalSlices(call, remainOn) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected remain-on-exit on call, got calls: %v", mock.calls)
+		}
+	})
+
+	t.Run("omitted when unset", func(t *testing.T) {
+		mock := &mockCommandFactory{}
+		c := NewClient(WithCommandFactory(mock.factory))
+		if err := c.NewSession(context.Background(), NewSessionOpts{
+			Name:    "boss-test-1234",
+			WorkDir: "/tmp",
+			Command: []string{"claude"},
+		}); err != nil {
+			t.Fatalf("NewSession failed: %v", err)
+		}
+		for _, call := range mock.calls {
+			if len(call) >= 5 && call[1] == "set-option" && call[4] == "remain-on-exit" {
+				t.Errorf("did not expect remain-on-exit call when flag unset, got: %v", call)
+			}
+		}
+	})
+}
+
+// TestPaneDead covers the pane_dead probe: "1" → dead, "0" → alive, and a tmux
+// command failure surfaces as (false, err) rather than a false "dead" verdict.
+func TestPaneDead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+
+	t.Run("dead pane reports true", func(t *testing.T) {
+		mock := &captureOutputFactory{output: "1\n"}
+		c := NewClient(WithCommandFactory(mock.factory))
+		dead, err := c.PaneDead(ctx, "boss-dead")
+		if err != nil {
+			t.Fatalf("PaneDead: %v", err)
+		}
+		if !dead {
+			t.Fatal("expected dead=true for pane_dead=1")
+		}
+		want := []string{"tmux", "display-message", "-p", "-t", "boss-dead", "#{pane_dead}"}
+		if last := mock.calls[len(mock.calls)-1]; !equalSlices(last, want) {
+			t.Errorf("PaneDead argv = %v, want %v", last, want)
+		}
+	})
+
+	t.Run("alive pane reports false", func(t *testing.T) {
+		mock := &captureOutputFactory{output: "0\n"}
+		c := NewClient(WithCommandFactory(mock.factory))
+		dead, err := c.PaneDead(ctx, "boss-alive")
+		if err != nil {
+			t.Fatalf("PaneDead: %v", err)
+		}
+		if dead {
+			t.Fatal("expected dead=false for pane_dead=0")
+		}
+	})
+
+	t.Run("command failure returns error", func(t *testing.T) {
+		c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "false")
+		}))
+		dead, err := c.PaneDead(ctx, "missing")
+		if err == nil {
+			t.Fatal("expected error on command failure, got nil")
+		}
+		if dead {
+			t.Fatal("expected dead=false on command failure")
+		}
+	})
+}
+
 // TestSetAttachOptions verifies that SetAttachOptions issues the two
 // session-level tmux set-option commands in the expected order with the
 // expected arguments.

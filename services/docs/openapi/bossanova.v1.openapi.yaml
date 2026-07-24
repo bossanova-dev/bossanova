@@ -4952,6 +4952,15 @@ components:
           type: string
           title: agent_name
           description: resolved agent (claude, codex, …)
+        capturedOutput:
+          type: string
+          title: captured_output
+          description: |-
+            captured_output is the agent's own final output, captured by bossd at pane
+             death for a chat that exited before its pane came up (e.g. "Session ID …
+             already in use"). Empty when nothing was captured. Additive daemon-RPC field
+             (BOS-477) — not the bossanova.v1 orchestrator surface — so no apiversion
+             bump. Shown verbatim (sanitized) in the attach diagnostic.
       title: DescribeChatLaunchResponse
       additionalProperties: false
     bossanova.v1.DetectUsageLimitRequest:

@@ -649,6 +649,12 @@ message DescribeChatLaunchResponse {
   string worktree_path = 2;  // working directory bossd launches it in
   string host = 3;           // daemon hostname — where to run argv
   string agent_name = 4;     // resolved agent (claude, codex, …)
+  // captured_output is the agent's own final output, captured by bossd at pane
+  // death for a chat that exited before its pane came up (e.g. "Session ID …
+  // already in use"). Empty when nothing was captured. Additive daemon-RPC field
+  // (BOS-477) — not the bossanova.v1 orchestrator surface — so no apiversion
+  // bump. Shown verbatim (sanitized) in the attach diagnostic.
+  string captured_output = 5;
 }
 
 message GetChatTranscriptRequest {

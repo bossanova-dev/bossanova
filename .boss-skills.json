@@ -73,7 +73,8 @@
         "epic": "epic",
         "bug": "bug"
       },
-      "githubLabels": { "proofInvalid": "proof-invalid" }
+      "githubLabels": { "proofInvalid": "proof-invalid" },
+      "followUpLabels": ["follow-up", "agent-plan"]
     }
   },
   "publishConfig": {

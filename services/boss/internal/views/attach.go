@@ -586,12 +586,23 @@ func renderLaunchDiagnostic(info *pb.DescribeChatLaunchResponse, agentLabel stri
 	}
 
 	var b strings.Builder
-	b.WriteString(prose.Render(fmt.Sprintf(
-		"The %s CLI exited before its pane came up. This is often a PATH or\n"+
-			"login-shell problem that only reproduces where the agent runs, but it\n"+
-			"can also be the agent itself refusing to start. Run the command to see\n"+
-			"the underlying error.", agentLabel)))
-	b.WriteString("\n\n")
+	// When bossd captured the agent's own final output at pane death (BOS-477),
+	// lead with it verbatim (sanitized like the tmux tail so control bytes can't
+	// scramble the boss frame) — it is the real error. Otherwise fall back to the
+	// neutral prose that points the user at the reproduction command.
+	if captured := strings.TrimSpace(sanitizeTmuxTail(info.GetCapturedOutput())); captured != "" {
+		b.WriteString(prose.Render(agentLabel + " reported:"))
+		b.WriteString("\n\n")
+		b.WriteString(code.Render(captured))
+		b.WriteString("\n\n")
+	} else {
+		b.WriteString(prose.Render(fmt.Sprintf(
+			"The %s CLI exited before its pane came up. This is often a PATH or\n"+
+				"login-shell problem that only reproduces where the agent runs, but it\n"+
+				"can also be the agent itself refusing to start. Run the command to see\n"+
+				"the underlying error.", agentLabel)))
+		b.WriteString("\n\n")
+	}
 	b.WriteString(prose.Render("bossd ran this on " + where + ":"))
 	b.WriteString("\n\n")
 	b.WriteString(code.Render(cmd))

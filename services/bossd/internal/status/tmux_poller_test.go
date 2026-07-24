@@ -431,6 +431,8 @@ type mockTmuxFactory struct {
 	mu       sync.Mutex
 	sessions map[string]bool   // session name -> alive
 	captures map[string]string // session name -> pane content
+	dead     map[string]bool   // session name -> pane_dead (remain-on-exit zombie)
+	killed   map[string]bool   // session name -> kill-session was requested
 }
 
 func (f *mockTmuxFactory) factory(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -448,6 +450,32 @@ func (f *mockTmuxFactory) factory(ctx context.Context, name string, args ...stri
 				}
 				return exec.CommandContext(ctx, "false")
 			}
+		case "display-message":
+			// args = ["display-message", "-p", "-t", sessName, "#{pane_dead}"]
+			var sessName string
+			for i, a := range args {
+				if a == "-t" && i+1 < len(args) {
+					sessName = args[i+1]
+					break
+				}
+			}
+			if f.dead[sessName] {
+				return exec.CommandContext(ctx, "printf", "%s", "1\n")
+			}
+			return exec.CommandContext(ctx, "printf", "%s", "0\n")
+		case "kill-session":
+			// args = ["kill-session", "-t", sessName]
+			if len(args) >= 3 {
+				sessName := args[2]
+				if f.killed == nil {
+					f.killed = map[string]bool{}
+				}
+				f.killed[sessName] = true
+				// The pane is now gone: reflect that so a later has-session probe
+				// reports the reaped session absent.
+				delete(f.sessions, sessName)
+			}
+			return exec.CommandContext(ctx, "true")
 		case "capture-pane":
 			// Find session name after "-t" flag (supports additional flags like -S -1000).
 			var sessName string
@@ -547,6 +575,60 @@ func TestTmuxStatusPoller_WorkingDetected(t *testing.T) {
 	}
 	if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
 		t.Errorf("expected WORKING, got %v", entry.Status)
+	}
+}
+
+func (f *mockTmuxFactory) wasKilled(sessName string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.killed[sessName]
+}
+
+// TestTmuxStatusPoller_DeadPaneCapturedAndReaped covers the BOS-477 death path:
+// a chat whose pane is pane_dead (remain-on-exit zombie) has its final output
+// captured into the tracker, its tmux session reaped, and its status set to
+// STOPPED — so no zombie survives and the agent's own error is preserved.
+func TestTmuxStatusPoller_DeadPaneCapturedAndReaped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-deadchat"
+	agentSessionID := "claude-dead"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+
+	// remain-on-exit keeps the session present (has-session true) but pane_dead,
+	// with the agent's final error still on the pane.
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		dead:     map[string]bool{tmuxName: true},
+		captures: map[string]string{
+			tmuxName: "Error: Session ID claude-dead is already in use\n",
+		},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	// The agent's final output is captured verbatim.
+	if got := tracker.CapturedOutput(agentSessionID); !strings.Contains(got, "Session ID claude-dead is already in use") {
+		t.Fatalf("CapturedOutput = %q, want the agent's final error", got)
+	}
+	// The dead pane is reaped so no zombie survives.
+	if !factory.wasKilled(tmuxName) {
+		t.Fatalf("expected the dead pane's tmux session to be killed (reaped)")
+	}
+	// Status is STOPPED.
+	entry := tracker.Get(agentSessionID)
+	if entry == nil || entry.Status != pb.ChatStatus_CHAT_STATUS_STOPPED {
+		t.Fatalf("expected STOPPED entry after reap, got %v", entry)
 	}
 }
 
@@ -1921,5 +2003,31 @@ func TestTmuxStatusPoller_AuthFailedClearedOnNormalOutput(t *testing.T) {
 
 	if tracker.AuthFailed(agentSessionID) {
 		t.Error("expected auth-failed marker cleared after a normal pane")
+	}
+}
+
+// TestBoundedTail covers the BOS-477 tail bounding: short input is unchanged,
+// long input is truncated to <= cap and starts at a whole-line boundary.
+func TestBoundedTail(t *testing.T) {
+	if got := boundedTail("short line\n", 4096); got != "short line\n" {
+		t.Fatalf("short input mutated: %q", got)
+	}
+
+	// Build > cap of many short lines; the tail must be <= cap and not begin
+	// mid-line (i.e. its first line equals a whole original line).
+	var sb strings.Builder
+	for i := 0; i < 5000; i++ {
+		fmt.Fprintf(&sb, "line-number-%05d\n", i)
+	}
+	got := boundedTail(sb.String(), 4096)
+	if len(got) > 4096 {
+		t.Fatalf("boundedTail len = %d, want <= 4096", len(got))
+	}
+	first := got
+	if nl := strings.IndexByte(got, '\n'); nl >= 0 {
+		first = got[:nl]
+	}
+	if !strings.HasPrefix(first, "line-number-") || len(first) != len("line-number-00000") {
+		t.Fatalf("tail begins mid-line: first line = %q", first)
 	}
 }

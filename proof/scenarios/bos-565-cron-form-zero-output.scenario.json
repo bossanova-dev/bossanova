@@ -1,0 +1,221 @@
+{
+  "version": 1,
+  "title": "BOS-565 the cron form's Zero output confirm, in create and edit mode",
+  "fixture": {
+    "preset": "demo"
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "home settles, then open Settings",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        {
+          "key": "s",
+          "caption": "Press [s] to open Settings"
+        },
+        {
+          "waitFor": "Cron jobs",
+          "timeoutMs": 10000,
+          "caption": "Settings menu loaded"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the create form shows Zero output between Run setup command and Enabled, defaulted off",
+      "steps": [
+        {
+          "key": "c",
+          "caption": "Press [c] to open the Scheduled Jobs (cron) list"
+        },
+        {
+          "waitFor": "Morning PR triage",
+          "timeoutMs": 10000,
+          "caption": "Cron list loaded"
+        },
+        {
+          "key": "n",
+          "caption": "Press [n] to open the create form"
+        },
+        {
+          "waitFor": "Name",
+          "timeoutMs": 10000,
+          "caption": "Cron create form visible (focus starts on Name)"
+        },
+        {
+          "type": "Zero output demo",
+          "caption": "Type a name"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Repo"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Model"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Prompt"
+        },
+        {
+          "type": "Post the nightly report to Slack.",
+          "caption": "Type a prompt"
+        },
+        {
+          "key": "tab",
+          "caption": "[tab] leaves the Prompt text area (a text area consumes [enter])"
+        },
+        {
+          "type": "0 9 * * 1-5",
+          "caption": "Type a schedule"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Timezone"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Gate command"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Run setup command — the form scrolls to its run-shape toggles"
+        },
+        {
+          "waitFor": "Zero output",
+          "timeoutMs": 10000,
+          "caption": "The Zero output confirm is in view"
+        },
+        {
+          "expect": [
+            {
+              "text": "Run setup command",
+              "match": "normalized",
+              "label": "the existing run-shape toggle (the field the new one is modelled on)"
+            },
+            {
+              "text": "Zero output",
+              "match": "normalized",
+              "label": "the new Zero output confirm is present"
+            },
+            {
+              "text": "Enabled",
+              "match": "normalized",
+              "label": "the lifecycle toggle that must stay below both run-shape toggles"
+            },
+            {
+              "text": "Run setup command[\\s\\S]*Zero output[\\s\\S]*Enabled",
+              "match": "regex",
+              "label": "field ORDER: Zero output renders strictly between Run setup command and Enabled"
+            },
+            {
+              "text": "Run with no worktree, branch, or PR",
+              "match": "normalized",
+              "label": "the Zero output help text, identical to the web form's"
+            }
+          ],
+          "caption": "Zero output sits between Run setup command and Enabled, so the two run-shape toggles group above the lifecycle toggle. It renders unselected — the only toggle on this form defaulting off."
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "the edit form pre-populates Zero output from a job that has it on",
+      "steps": [
+        {
+          "key": "esc",
+          "caption": "Leave the create form, back to the cron list"
+        },
+        {
+          "waitFor": "Morning PR triage",
+          "timeoutMs": 10000,
+          "caption": "Cron list again"
+        },
+        {
+          "key": "down",
+          "caption": "Move to row 2 (Nightly mutation tests)"
+        },
+        {
+          "key": "down",
+          "caption": "Move to row 3 (Weekly tech-debt sweep)"
+        },
+        {
+          "key": "down",
+          "caption": "Move to row 4 (Hourly broken-link check)"
+        },
+        {
+          "key": "down",
+          "caption": "Move to row 5 — 'Morning PR triage', the one demo job with is_zero_output set"
+        },
+        {
+          "key": "enter",
+          "caption": "Press [enter] to edit the highlighted job"
+        },
+        {
+          "waitFor": "Name",
+          "timeoutMs": 10000,
+          "caption": "Cron edit form visible, pre-populated (focus starts on Name)"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Repo"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Model"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Prompt"
+        },
+        {
+          "key": "tab",
+          "caption": "[tab] leaves the Prompt text area"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Timezone"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Gate command"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Run setup command — the form scrolls to its run-shape toggles"
+        },
+        {
+          "waitFor": "Zero output",
+          "timeoutMs": 10000,
+          "caption": "The Zero output confirm is in view, pre-populated from the job"
+        },
+        {
+          "expect": [
+            {
+              "text": "Morning PR triage",
+              "match": "normalized",
+              "label": "the edit form's title/name field shows 'Morning PR triage' — the one demo job with is_zero_output set, so opening any other row fails here"
+            },
+            {
+              "text": "Zero output",
+              "match": "normalized",
+              "label": "the Zero output confirm is present in edit mode too"
+            },
+            {
+              "text": "Zero output[\\s\\S]*Yes",
+              "match": "regex",
+              "label": "the confirm renders its affirmative option; the still shows Yes highlighted, pre-populated from job.IsZeroOutput"
+            }
+          ],
+          "caption": "Editing 'Morning PR triage' (is_zero_output = true) pre-populates the Zero output confirm affirmative — the still shows Yes highlighted, where every other demo job renders No."
+        }
+      ]
+    }
+  ]
+}

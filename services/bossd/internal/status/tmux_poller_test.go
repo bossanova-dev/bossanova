@@ -20,6 +20,7 @@ import (
 	"github.com/recurser/bossalib/statusdetect"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/status/questionsignal"
 	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -1767,6 +1768,213 @@ func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
 	}
 }
 
+// TestTmuxStatusPoller_StructuredSignalYieldsQuestion — a fresh pending record
+// in the question-signal store drives QUESTION even though the pane content
+// would NOT trip the regex detector (structured signal is primary, BOS-485).
+func TestTmuxStatusPoller_StructuredSignalYieldsQuestion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-structured"
+	agentSessionID := "claude-structured"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+	// Benign pane: the regex detector would NOT report a question here.
+	fake := &claudeFakeClient{}
+	if statusdetect.HasQuestionPrompt([]byte("just some normal output\n")) {
+		t.Fatal("precondition failed: benign pane must not trip the question regex")
+	}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "just some normal output\n"},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	store := questionsignal.NewStore(time.Minute)
+	store.SetPending(agentSessionID, "claude-notification")
+
+	// sessions=nil so questionState surfaces the structured signal unsuppressed.
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient,
+		map[string]agent.AgentRunnerClient{"claude": fake}, zerolog.Nop())
+	poller.SetQuestionSignals(store)
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	if entry := tracker.Get(agentSessionID); entry == nil {
+		t.Fatal("expected entry after poll")
+	} else if entry.Status != pb.ChatStatus_CHAT_STATUS_QUESTION {
+		t.Errorf("expected QUESTION from structured signal, got %v", entry.Status)
+	}
+	// Structured signal is primary: the regex detector must NOT have been the
+	// decider (it wasn't consulted at all when a record is present).
+	if got := fake.hasPromptCalls.Load(); got != 0 {
+		t.Errorf("HasQuestionPrompt called %d times; structured signal should short-circuit the regex path", got)
+	}
+}
+
+// TestTmuxStatusPoller_RegexFallbackWithStoreButNoSignal — with a store wired
+// but NO pending record, questionState uses the regex path exactly as before:
+// a question pane → QUESTION, and HasQuestionPrompt IS consulted.
+func TestTmuxStatusPoller_RegexFallbackWithStoreButNoSignal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-fallback"
+	agentSessionID := "claude-fallback"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+	fake := &claudeFakeClient{}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "  Allow Claude to run this command?\n\n  ❯ Allow\n    Allow once\n    Deny\n"},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	store := questionsignal.NewStore(time.Minute) // empty — no record for this chat
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient,
+		map[string]agent.AgentRunnerClient{"claude": fake}, zerolog.Nop())
+	poller.SetQuestionSignals(store)
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	if entry := tracker.Get(agentSessionID); entry == nil {
+		t.Fatal("expected entry after poll")
+	} else if entry.Status != pb.ChatStatus_CHAT_STATUS_QUESTION {
+		t.Errorf("expected QUESTION via regex fallback, got %v", entry.Status)
+	}
+	if got := fake.hasPromptCalls.Load(); got == 0 {
+		t.Error("HasQuestionPrompt should be consulted when no structured record is present")
+	}
+}
+
+// TestTmuxStatusPoller_StructuredSignalClearedOnUserAnswer — a pending record
+// plus a transcript whose last real turn is the user clears the record and
+// reports WORKING (suppressed), mirroring the regex reconcile.
+func TestTmuxStatusPoller_StructuredSignalClearedOnUserAnswer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tmuxName := "boss-test-structclear"
+	agentSessionID := "claude-structclear"
+	sessionID := "sess-structclear"
+	worktreePath := "/tmp/boss-test-structclear-wt"
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	projectDir := home + "/.claude/projects/" + pathToProjectKey(worktreePath)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	transcript := projectDir + "/" + agentSessionID + ".jsonl"
+	userAnsweredFixture := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"proceed?"}]}}
+{"type":"user","message":{"role":"user","content":"yes"}}
+`
+	if err := os.WriteFile(transcript, []byte(userAnsweredFixture), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", SessionID: sessionID, TmuxSessionName: &tmuxName},
+		},
+	}
+	sessionStore := &mockSessionStore{
+		sessions: map[string]*models.Session{sessionID: {ID: sessionID, WorktreePath: worktreePath}},
+	}
+	// Benign pane so only the structured record could assert a question.
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "just some normal output\n"},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	store := questionsignal.NewStore(time.Minute)
+	store.SetPending(agentSessionID, "claude-notification")
+
+	tracker := NewTracker()
+	poller := NewTmuxStatusPoller(tracker, chatStore, sessionStore, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.SetQuestionSignals(store)
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	if entry := tracker.Get(agentSessionID); entry == nil {
+		t.Fatal("expected entry after poll")
+	} else if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Errorf("expected WORKING (user answered, question suppressed), got %v", entry.Status)
+	}
+	if _, ok := store.Get(agentSessionID); ok {
+		t.Error("pending record should have been cleared once the user answered")
+	}
+}
+
+// TestTmuxStatusPoller_StaleSignalAgesOut — a pending record older than the
+// store TTL no longer asserts a question; the poller falls back to the regex
+// path (benign pane → not QUESTION).
+func TestTmuxStatusPoller_StaleSignalAgesOut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-stale"
+	agentSessionID := "claude-stale"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "just some normal output\n"},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	// Controllable clock: record is set at t0, then time jumps past the TTL.
+	clk := &pollerFakeClock{t: time.Unix(1000, 0)}
+	store := questionsignal.NewStoreWithClock(30*time.Second, clk.now)
+	store.SetPending(agentSessionID, "claude-notification")
+	clk.advance(time.Hour) // well past TTL
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.SetQuestionSignals(store)
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	if entry := tracker.Get(agentSessionID); entry == nil {
+		t.Fatal("expected entry after poll")
+	} else if entry.Status == pb.ChatStatus_CHAT_STATUS_QUESTION {
+		t.Error("stale (aged-out) record should not assert QUESTION")
+	}
+}
+
+// pollerFakeClock is a monotonic test clock for the TTL age-out test.
+type pollerFakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *pollerFakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *pollerFakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
 // recordingAgentClient is a per-test fake that records every HasQuestionPrompt
 // call so the dispatch test can prove pollOnce routes by chat.AgentName.
 // Returns the configured response without actually inspecting pane content.
@@ -2029,5 +2237,108 @@ func TestBoundedTail(t *testing.T) {
 	}
 	if !strings.HasPrefix(first, "line-number-") || len(first) != len("line-number-00000") {
 		t.Fatalf("tail begins mid-line: first line = %q", first)
+	}
+}
+
+// TestTmuxStatusPoller_TransientAPIErrorDetected covers the BOS-518 detect path:
+// a pane whose turn ended on a 5xx API-error banner must set the marker from the
+// same capture the poller already took for status.
+func TestTmuxStatusPoller_TransientAPIErrorDetected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-transient"
+	agentSessionID := "claude-transient"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{
+			tmuxName: "⏺ Reading the file...\n\nAPI Error: 502 Bad Gateway\n\n❯ \n",
+		},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	if !tracker.TransientAPIError(agentSessionID) {
+		t.Error("expected transient-API-error marker after polling a 502 banner pane")
+	}
+}
+
+// TestTmuxStatusPoller_TransientAPIErrorClearedOnNormalOutput proves the marker
+// self-clears the moment the pane no longer ends on the banner (e.g. the agent
+// retried and moved on), so a stale flag can never trigger an auto-resume.
+func TestTmuxStatusPoller_TransientAPIErrorClearedOnNormalOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-transient-clear"
+	agentSessionID := "claude-transient-clear"
+	// Pre-seed the marker; a healthy pane must clear it.
+	tracker.SetTransientAPIError(agentSessionID, true)
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{
+			tmuxName: "Working on some code changes...",
+		},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	if tracker.TransientAPIError(agentSessionID) {
+		t.Error("expected transient-API-error marker cleared after a healthy pane")
+	}
+}
+
+// TestTmuxStatusPoller_TransientAPIErrorClearedWhenSessionGone covers the STOPPED
+// path: a chat whose tmux session vanished can't be resumed from a banner it is
+// no longer showing, so the marker must be cleared alongside the auth marker.
+func TestTmuxStatusPoller_TransientAPIErrorClearedWhenSessionGone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-transient-gone"
+	agentSessionID := "claude-transient-gone"
+	tracker.SetTransientAPIError(agentSessionID, true)
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{},
+		captures: map[string]string{},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	if tracker.TransientAPIError(agentSessionID) {
+		t.Error("expected transient-API-error marker cleared when the tmux session is gone")
 	}
 }

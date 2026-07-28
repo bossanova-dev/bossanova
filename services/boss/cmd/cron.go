@@ -33,6 +33,7 @@ type cronJobJSON struct {
 	Model                 string `json:"model"`
 	GateCommand           string `json:"gate_command"`
 	ShouldRunSetupCommand bool   `json:"run_setup_command"`
+	IsZeroOutput          bool   `json:"zero_output"`
 	LastRunSessionID      string `json:"last_run_session_id"`
 	LastRunAt             string `json:"last_run_at"`
 	LastRunOutcome        string `json:"last_run_outcome"`
@@ -53,6 +54,7 @@ func cronJobToJSON(j *pb.CronJob) cronJobJSON {
 		Model:                 j.GetModel(),
 		GateCommand:           j.GetGateCommand(),
 		ShouldRunSetupCommand: j.GetShouldRunSetupCommand(),
+		IsZeroOutput:          j.GetIsZeroOutput(),
 		LastRunSessionID:      j.GetLastRunSessionId(),
 		LastRunAt:             rfc3339OrEmpty(j.GetLastRunAt()),
 		LastRunOutcome:        j.GetLastRunOutcome(),
@@ -179,6 +181,7 @@ func runCronShow(cmd *cobra.Command, id string) error {
 	fmt.Fprintf(&b, "Model:               %s\n", orDash(job.GetModel()))
 	fmt.Fprintf(&b, "Gate command:        %s\n", orDash(job.GetGateCommand()))
 	fmt.Fprintf(&b, "Run setup command:   %s\n", boolLabel(job.GetShouldRunSetupCommand()))
+	fmt.Fprintf(&b, "Zero output:         %s\n", boolLabel(job.GetIsZeroOutput()))
 	fmt.Fprintf(&b, "Last run session ID: %s\n", orDash(job.GetLastRunSessionId()))
 	fmt.Fprintf(&b, "Last run at:         %s\n", orDash(rfc3339OrEmpty(job.GetLastRunAt())))
 	fmt.Fprintf(&b, "Last run outcome:    %s\n", orDash(job.GetLastRunOutcome()))
@@ -227,6 +230,10 @@ func runCronAdd(cmd *cobra.Command) error {
 		v, _ := cmd.Flags().GetBool("run-setup")
 		req.ShouldRunSetupCommand = &v
 	}
+	if cmd.Flags().Changed("zero-output") {
+		v, _ := cmd.Flags().GetBool("zero-output")
+		req.IsZeroOutput = &v
+	}
 
 	c, err := newClient(cmd)
 	if err != nil {
@@ -273,6 +280,11 @@ func runCronUpdate(cmd *cobra.Command, id string) error {
 		req.ShouldRunSetupCommand = proto.Bool(v)
 		anyChanged = true
 	}
+	if cmd.Flags().Changed("zero-output") {
+		v, _ := cmd.Flags().GetBool("zero-output")
+		req.IsZeroOutput = proto.Bool(v)
+		anyChanged = true
+	}
 
 	// Prompt: set only when --prompt or --prompt-file was provided.
 	prompt, provided, err := readPromptFlag(cmd, false)
@@ -285,7 +297,7 @@ func runCronUpdate(cmd *cobra.Command, id string) error {
 	}
 
 	if !anyChanged {
-		return fmt.Errorf("no flags provided — use --name, --schedule, --prompt, --agent, --gate, --model, --tz, --enabled, or --run-setup")
+		return fmt.Errorf("no flags provided — use --name, --schedule, --prompt, --agent, --gate, --model, --tz, --enabled, --run-setup, or --zero-output")
 	}
 
 	c, err := newClient(cmd)

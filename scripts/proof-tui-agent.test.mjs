@@ -656,6 +656,54 @@ test('runTuiWithReplayFallback: truncated agent leg + no scenario → SurfaceRun
   assert.equal(run.surface, 'tui')
 })
 
+test("runTuiWithReplayFallback: threads the replayed scenario's terminal into the leg deps (BOS-571)", async () => {
+  const { runTuiWithReplayFallback } = await import('./proof-tui-agent.mjs')
+  const seen = []
+  const fakeLeg = async (ctx) => {
+    seen.push(ctx.deps)
+    return {
+      surface: 'tui',
+      captureShapes: [],
+      brief: {},
+      agentResult: { passed: false, summary: '', evidence: [], steps: 0 },
+      hasFailure: true,
+      noSurface: false,
+      elapsedMs: 0,
+      reasonCode: null,
+    }
+  }
+  const baseDeps = {
+    runTuiAgentProof: fakeLeg,
+    agentUsable: false, // keyless ⇒ replay-only leg
+    runReplayLoop: async () => ({ agentResult: { passed: true }, finalScreen: '' }),
+    synthesizeBrief: () => ({ title: 't', description: 'd' }),
+    makeScenarioEvaluator: () => () => ({ passed: true }),
+  }
+  const ctx = {
+    prNumber: '1',
+    commit: 'abc1234',
+    changedFiles: ['proof/scenarios/narrow.scenario.json'],
+    dryRun: true,
+    runContext: { collect: true, runId: 'r', token: 't', maxWallClockMs: 60_000 },
+    deps: { renderStill: 'sentinel' },
+  }
+
+  // A scenario declaring a terminal forwards it alongside the caller's own deps.
+  await runTuiWithReplayFallback(ctx, {
+    ...baseDeps,
+    loadScenario: () => ({ scenario: { title: 'narrow', terminal: { cols: 72 } } }),
+  })
+  assert.deepEqual(seen.at(-1), { renderStill: 'sentinel', terminal: { cols: 72 } })
+
+  // A scenario WITHOUT a terminal leaves the deps object byte-identical.
+  await runTuiWithReplayFallback(ctx, {
+    ...baseDeps,
+    loadScenario: () => ({ scenario: { title: 'wide' } }),
+  })
+  assert.deepEqual(seen.at(-1), { renderStill: 'sentinel' })
+  assert.equal('terminal' in seen.at(-1), false, 'no terminal key is invented')
+})
+
 // ── 4. zero-frame fallback ────────────────────────────────────────────────────
 
 test('runTuiAgentProof: no stills captured → exactly one fallback still', async () => {
@@ -2371,6 +2419,87 @@ test('bridgeSpawnArgs: appends fixture and seed only when provided', async () =>
   ])
 })
 
+// ── BOS-571: scenario-selected terminal size → --width/--height ───────────────
+
+test('bridgeSpawnArgs: default argv is byte-identical when no terminal is supplied (BOS-571)', async () => {
+  const { bridgeSpawnArgs } = await import('./proof-tui-agent.mjs')
+  // The regression guard the ticket pins: adding the terminal knob must not
+  // change what every existing scenario spawns today.
+  assert.deepEqual(bridgeSpawnArgs({ castPath: '/tmp/session.cast' }), [
+    '--cast',
+    '/tmp/session.cast',
+  ])
+})
+
+test('bridgeSpawnArgs: appends --width/--height after the existing args when a terminal is supplied (BOS-571)', async () => {
+  const { bridgeSpawnArgs } = await import('./proof-tui-agent.mjs')
+  assert.deepEqual(
+    bridgeSpawnArgs({
+      castPath: '/tmp/session.cast',
+      bossBin: '/tmp/boss-e2e',
+      fixture: 'demo',
+      seedPath: '/tmp/seed.json',
+      terminal: { cols: 72, rows: 30 },
+    }),
+    [
+      '--cast',
+      '/tmp/session.cast',
+      '--boss-bin',
+      '/tmp/boss-e2e',
+      '--fixture',
+      'demo',
+      '--seed',
+      '/tmp/seed.json',
+      '--width',
+      '72',
+      '--height',
+      '30',
+    ],
+  )
+})
+
+test('bridgeSpawnArgs: each terminal member is independently optional (BOS-571)', async () => {
+  const { bridgeSpawnArgs } = await import('./proof-tui-agent.mjs')
+  // cols only → --width, no --height (the Go -height default 36 applies).
+  assert.deepEqual(bridgeSpawnArgs({ castPath: '/tmp/session.cast', terminal: { cols: 72 } }), [
+    '--cast',
+    '/tmp/session.cast',
+    '--width',
+    '72',
+  ])
+  // rows only → --height, no --width (the Go -width default 140 applies).
+  assert.deepEqual(bridgeSpawnArgs({ castPath: '/tmp/session.cast', terminal: { rows: 30 } }), [
+    '--cast',
+    '/tmp/session.cast',
+    '--height',
+    '30',
+  ])
+})
+
+test('bridgeSpawnArgs: a malformed or empty terminal leaves the argv unchanged (BOS-571)', async () => {
+  const { bridgeSpawnArgs } = await import('./proof-tui-agent.mjs')
+  const base = ['--cast', '/tmp/session.cast']
+  for (const terminal of [
+    {},
+    null,
+    undefined,
+    'wide',
+    72,
+    [],
+    { cols: null, rows: null },
+    { cols: '72', rows: '30' },
+    { cols: 72.5 },
+    { cols: Number.NaN, rows: Infinity },
+    { widthPx: 900 },
+  ]) {
+    assert.deepEqual(
+      bridgeSpawnArgs({ castPath: '/tmp/session.cast', terminal }),
+      base,
+      `terminal ${JSON.stringify(terminal) ?? String(terminal)} must not change the argv`,
+    )
+  }
+})
+
 test('settleExtra: forwards valid integer settle overrides', async () => {
   const { settleExtra } = await import('./proof-tui-agent.mjs')
   assert.deepEqual(settleExtra({ settleMs: 120, hardCapMs: 900 }), {
@@ -2425,6 +2554,11 @@ fs.writeFileSync(
     'const exitAfter = process.env.FAKE_BRIDGE_EXIT_AFTER !== undefined',
     '  ? Number(process.env.FAKE_BRIDGE_EXIT_AFTER) : Infinity;',
     "const baseScreen = process.env.FAKE_BRIDGE_SCREEN || 'FAKE SCREEN';",
+    // BOS-571: when FAKE_BRIDGE_ARGV_OUT is set, record the flags the spawner
+    // actually passed so a test can assert the real spawn argv. Unset ⇒ no-op.
+    'if (process.env.FAKE_BRIDGE_ARGV_OUT) {',
+    "  require('node:fs').writeFileSync(process.env.FAKE_BRIDGE_ARGV_OUT, JSON.stringify(process.argv.slice(2)));",
+    '}',
     'let count = 0;',
     "rl.on('line', (line) => {",
     '  const t = line.trim();',
@@ -2449,7 +2583,12 @@ process.on('exit', () => {
 
 /** Save/restore env keys around a bridge test. */
 function withBridgeEnv(overrides, fn) {
-  const KEYS = ['BOSS_PROOF_TUI_BRIDGE_BIN', 'FAKE_BRIDGE_EXIT_AFTER', 'FAKE_BRIDGE_SCREEN']
+  const KEYS = [
+    'BOSS_PROOF_TUI_BRIDGE_BIN',
+    'FAKE_BRIDGE_EXIT_AFTER',
+    'FAKE_BRIDGE_SCREEN',
+    'FAKE_BRIDGE_ARGV_OUT',
+  ]
   const saved = {}
   for (const k of KEYS) saved[k] = process.env[k]
   for (const [k, v] of Object.entries(overrides)) {
@@ -2475,6 +2614,62 @@ function makeBridgeDirs(label) {
   fs.mkdirSync(rawDir, { recursive: true })
   return { localDir, rawDir, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) }
 }
+
+test('makeStdioBridge: forwards a scenario terminal size to the spawned bridge argv (BOS-571)', async () => {
+  const { makeStdioBridge } = await import('./proof-tui-agent.mjs')
+  const { localDir, rawDir, cleanup } = makeBridgeDirs('terminal')
+  const argvOut = path.join(localDir, 'argv.json')
+  try {
+    await withBridgeEnv(
+      { BOSS_PROOF_TUI_BRIDGE_BIN: FAKE_BRIDGE_BIN, FAKE_BRIDGE_ARGV_OUT: argvOut },
+      async () => {
+        const bridge = makeStdioBridge({ localDir, rawDir, terminal: { cols: 72, rows: 30 } })
+        try {
+          await bridge.observe()
+          const argv = JSON.parse(fs.readFileSync(argvOut, 'utf8'))
+          assert.deepEqual(argv.slice(-4), ['--width', '72', '--height', '30'])
+          assert.deepEqual(argv.slice(0, 2), ['--cast', path.join(rawDir, 'session.cast')])
+        } finally {
+          try {
+            await bridge.quit()
+          } catch {
+            // ignore
+          }
+        }
+      },
+    )
+  } finally {
+    cleanup()
+  }
+})
+
+test('makeStdioBridge: omits --width/--height when no terminal is supplied (BOS-571)', async () => {
+  const { makeStdioBridge } = await import('./proof-tui-agent.mjs')
+  const { localDir, rawDir, cleanup } = makeBridgeDirs('noterminal')
+  const argvOut = path.join(localDir, 'argv.json')
+  try {
+    await withBridgeEnv(
+      { BOSS_PROOF_TUI_BRIDGE_BIN: FAKE_BRIDGE_BIN, FAKE_BRIDGE_ARGV_OUT: argvOut },
+      async () => {
+        const bridge = makeStdioBridge({ localDir, rawDir })
+        try {
+          await bridge.observe()
+          const argv = JSON.parse(fs.readFileSync(argvOut, 'utf8'))
+          assert.equal(argv.includes('--width'), false, 'no --width without a terminal')
+          assert.equal(argv.includes('--height'), false, 'no --height without a terminal')
+        } finally {
+          try {
+            await bridge.quit()
+          } catch {
+            // ignore
+          }
+        }
+      },
+    )
+  } finally {
+    cleanup()
+  }
+})
 
 test('makeStdioBridge: observe/sendKeys/typeText round-trip returns expected screen', async () => {
   const { makeStdioBridge } = await import('./proof-tui-agent.mjs')

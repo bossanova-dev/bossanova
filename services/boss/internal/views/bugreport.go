@@ -75,10 +75,17 @@ type BugReportModel struct {
 	session        *pb.Session
 	daemonStatuses map[string]string
 
-	phase   bugReportPhase
-	form    *huh.Form
-	fd      *bugReportFormData
-	spinner spinner.Model
+	phase bugReportPhase
+	form  *huh.Form
+	// commentField is the Text field, retained so Update can resize it to its
+	// content after every keystroke (resizeComment). Like fd it is a pointer, so
+	// it survives bubbletea's value-receiver copies of this model.
+	commentField *huh.Text
+	// formFields is the ordered field slice handed to huh.NewGroup, retained
+	// because huh.Form exposes no enumeration; it backs click-to-focus (BOS-512).
+	formFields formFields
+	fd         *bugReportFormData
+	spinner    spinner.Model
 
 	reportID string
 	err      error
@@ -102,14 +109,11 @@ func NewBugReportModel(
 	daemonStatuses map[string]string,
 ) BugReportModel {
 	fd := &bugReportFormData{}
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewText().
-				Title("What went wrong?").
-				Placeholder("Describe the issue.").
-				Value(&fd.comment),
-		),
-	).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
+	comment := bossText(fd.comment).
+		Title("What went wrong?").
+		Placeholder("Describe the issue.").
+		Value(&fd.comment)
+	form := newBossForm(comment)
 
 	return BugReportModel{
 		client:         c,
@@ -120,10 +124,17 @@ func NewBugReportModel(
 		daemonStatuses: daemonStatuses,
 		phase:          bugReportPhaseEditing,
 		form:           form,
+		commentField:   comment,
+		formFields:     newFormFields(comment),
 		fd:             fd,
 		spinner:        newStatusSpinner(),
 	}
 }
+
+// formPrefix is everything View renders above the huh form — nothing, in this
+// modal. It exists so the click hit test and the render read the same figure:
+// a title line added here later shifts both together (BOS-512).
+func (m BugReportModel) formPrefix() string { return "" }
 
 // Cancelled returns true when the user aborted the modal.
 func (m BugReportModel) Cancelled() bool { return m.cancel }
@@ -194,7 +205,17 @@ func (m BugReportModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Click-to-focus, ahead of huh: huh v2 has no mouse support, so every
+	// mouse-shaped message is consumed here rather than forwarded (BOS-512).
+	if cmd, handled := m.formFields.handleMouse(msg, m.form, linesBefore(m.formPrefix())); handled {
+		return m, cmd
+	}
+
+	// Grow the comment box for what this message is about to type before huh
+	// sees it, so the textarea never scrolls to find its own cursor.
+	m.resizeCommentFor(bossTextPendingInsert(msg))
 	_, cmd := m.form.Update(msg)
+	m.resizeComment()
 
 	if m.form.State == huh.StateAborted {
 		m.cancel = true
@@ -208,6 +229,38 @@ func (m BugReportModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	return m, cmd
 }
+
+// resizeComment re-sizes the comment field to its current content, so the box
+// tracks what the user has typed instead of sitting at the textarea's fixed
+// default height. huh's Text.Lines is a plain textarea.SetHeight, which clamps
+// itself, so calling it every update is cheap and safe.
+func (m *BugReportModel) resizeComment() {
+	m.resizeCommentFor("")
+}
+
+// resizeCommentFor is resizeComment for the content plus pending — the text a
+// message is about to insert. Call it with the pending insert *before* handing
+// the message to huh and with "" after; bossTextPendingInsert explains why the
+// second call alone leaves the box scrolled off its own first line.
+func (m *BugReportModel) resizeCommentFor(pending string) {
+	if m.commentField == nil || m.fd == nil || m.form == nil {
+		return
+	}
+	lines := bossTextLines(m.fd.comment+pending, bossFormWrapWidth())
+	m.commentField.Lines(lines)
+	// The form height has to move with the field. This modal never sets one, so
+	// huh pinned the group's viewport to the height the form had when it was
+	// built; a taller textarea would then scroll inside that viewport instead of
+	// growing the modal. The cron form does not need this because it re-applies
+	// a terminal-derived height of its own.
+	m.form.WithHeight(bugReportFormChrome + lines)
+}
+
+// bugReportFormChrome is what the form renders around the comment rows: the
+// field title. There is no description, no validation error and no huh help
+// footer (newBossForm suppresses it), so the whole form is that one line plus
+// however many rows the textarea is showing.
+const bugReportFormChrome = 1
 
 // submit spawns a safego-protected goroutine that collects context and
 // invokes ReportBug. A panic inside either call is recovered and surfaced as
@@ -299,7 +352,13 @@ func (m BugReportModel) View() tea.View {
 		return tea.NewView("")
 	}
 
-	content := lipgloss.NewStyle().PaddingLeft(2).Render(m.form.View()) + "\n" +
-		actionBar([]string{"[enter] submit", "[esc] cancel"})
-	return tea.NewView(content)
+	content := m.formPrefix() +
+		lipgloss.NewStyle().PaddingLeft(2).Render(m.form.View()) + "\n" +
+		formActionBar([]string{"[enter] submit"}, []string{"[esc] cancel"})
+	v := tea.NewView(content)
+	// Mouse reporting is scoped to form screens (BOS-512): every other phase and
+	// every other view keeps the zero value MouseModeNone, so click-drag text
+	// selection is only affected while a form is on screen.
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
 }

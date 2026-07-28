@@ -999,6 +999,10 @@ const cronAutonomyDirective = "You are running as an autonomous, scheduled (cron
 	"Complete your task and commit your work — the system opens and tags the pull request " +
 	"for you after you stop."
 
+const zeroOutputCronAutonomyDirective = "You are running as an autonomous, scheduled zero-output cron job. " +
+	"There is no worktree and no pull request for this run. Do not commit or modify repository files. " +
+	"No human is watching, so make decisions yourself and never wait for input."
+
 // isCronSession reports whether the session was spawned by the cron scheduler.
 func isCronSession(sess *models.Session) bool {
 	return sess != nil && sess.CronJobID != nil && *sess.CronJobID != ""
@@ -1074,6 +1078,7 @@ type SessionFacts struct {
 	BossBin        string // "" when neither a trusted boss binary nor a repo-local <worktree>/bin/boss resolved
 	McpBin         string // "" when no trusted mcp binary was resolved
 	IsCron         bool
+	IsQuickChat    bool
 	IsUnattended   bool
 	CronJobID      string
 	CronName       string
@@ -1096,6 +1101,7 @@ func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string)
 		f.SessionID = sess.ID
 		f.RepoID = sess.RepoID
 		f.Worktree = sess.WorktreePath
+		f.IsQuickChat = sess.IsQuickChat
 		f.IsUnattended = isUnattendedSession(sess)
 		if isCronSession(sess) {
 			f.IsCron = true
@@ -1242,7 +1248,11 @@ func AppendSystemPromptFor(sess *models.Session, agentSessionID, agentName, mcpC
 	}
 	prompt := bossSessionContext(f)
 	if f.IsUnattended {
-		prompt += "\n\n" + cronAutonomyDirective
+		if f.IsCron && f.IsQuickChat {
+			prompt += "\n\n" + zeroOutputCronAutonomyDirective
+		} else {
+			prompt += "\n\n" + cronAutonomyDirective
+		}
 	}
 	return prompt
 }

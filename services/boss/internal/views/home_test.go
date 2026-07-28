@@ -3,16 +3,21 @@ package views
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/daemon"
+	"github.com/recurser/boss/internal/fixtures"
 	"github.com/recurser/boss/internal/upgrade"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/displaystatus"
@@ -1712,7 +1717,11 @@ func TestHomeUpgradeBannerRenders(t *testing.T) {
 	if !strings.Contains(content, "v1.2.4") {
 		t.Fatalf("expected latest version in upgrade banner, got: %s", content)
 	}
-	if !strings.Contains(content, "[u]pgrade [d]ismiss") {
+	// The banner is a status line, so it wraps at statusWrapWidth (BOS-530) and
+	// the two hints can land on different rows. Reflow before matching: this
+	// asserts the hints are present, not that the line happens to fit on one
+	// row.
+	if !strings.Contains(reflowStatusBlock(content), "[u]pgrade [d]ismiss") {
 		t.Fatalf("expected upgrade actions in banner, got: %s", content)
 	}
 	if strings.Contains(content, "u upgrade  U dismiss") {
@@ -2935,4 +2944,1281 @@ func TestHomeCloudStatusTransitionsStartAndContinuePolling(t *testing.T) {
 			t.Fatal("tick returned nil batch command")
 		}
 	})
+}
+
+// --- BOS-474: HTTP endpoint auxiliary rows on the home session list --------
+
+func endpointSession(id string, ports ...uint32) *pb.Session {
+	sess := &pb.Session{Id: id, Title: "Session " + id}
+	for _, p := range ports {
+		sess.HttpEndpoints = append(sess.HttpEndpoints, &pb.HttpEndpoint{
+			Port: p,
+			Url:  fmt.Sprintf("http://localhost:%d", p),
+		})
+	}
+	return sess
+}
+
+// osc8Pattern matches an OSC 8 introducer or terminator (ESC ] 8 ; ; <url> ESC \).
+var osc8Pattern = regexp.MustCompile("\x1b\\]8;;[^\x1b]*\x1b\\\\")
+
+// visibleRowText strips SGR and OSC 8 bytes from a table row's NAME cell so a
+// test can assert on what the operator actually sees.
+func visibleRowText(cell string) string {
+	return stripANSI(osc8Pattern.ReplaceAllString(cell, ""))
+}
+
+// TestHomeEndpointRowAccounting pins the centralized auxiliary-row accounting:
+// row construction, height, cursor→session mapping, and session→cursor mapping
+// must all agree that an endpoint row precedes any warning rows.
+func TestHomeEndpointRowAccounting(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	withBoth := endpointSession("both", 3000, 5173)
+	withBoth.SetupError = "setup script blew up"
+	h.sessions = []*pb.Session{
+		endpointSession("eps", 3000, 5173), // primary + endpoint row
+		withBoth,                           // primary + endpoint row + warning row
+		{Id: "plain", Title: "Plain"},      // primary only
+	}
+
+	if got, want := h.primarySessionRows(), []int{0, 2, 5}; len(got) != len(want) ||
+		got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("primarySessionRows() = %v, want %v", got, want)
+	}
+	if got := h.tableDataRowCount(); got != 6 {
+		t.Fatalf("tableDataRowCount() = %d, want 6", got)
+	}
+
+	for _, tt := range []struct {
+		cursor int
+		id     string
+		ok     bool
+	}{
+		{cursor: -1},
+		{cursor: 0, id: "eps", ok: true},
+		{cursor: 1, id: "eps", ok: true}, // endpoint row maps back to its session
+		{cursor: 2, id: "both", ok: true},
+		{cursor: 3, id: "both", ok: true}, // endpoint row
+		{cursor: 4, id: "both", ok: true}, // warning row
+		{cursor: 5, id: "plain", ok: true},
+		{cursor: 6},
+	} {
+		idx, ok := h.sessionIndexForTableCursor(tt.cursor)
+		if ok != tt.ok {
+			t.Errorf("sessionIndexForTableCursor(%d) ok = %t, want %t", tt.cursor, ok, tt.ok)
+			continue
+		}
+		if ok && h.sessions[idx].GetId() != tt.id {
+			t.Errorf("sessionIndexForTableCursor(%d) = %q, want %q", tt.cursor, h.sessions[idx].GetId(), tt.id)
+		}
+	}
+
+	for _, tt := range []struct{ index, want int }{
+		{0, 0}, {1, 2}, {2, 5}, {3, -1},
+	} {
+		if got := h.tableCursorForSessionIndex(tt.index); got != tt.want {
+			t.Errorf("tableCursorForSessionIndex(%d) = %d, want %d", tt.index, got, tt.want)
+		}
+	}
+}
+
+// TestHomeEndpointRowRendersBeforeWarnings verifies the rendered row order and
+// that only the NAME column carries the labels.
+func TestHomeEndpointRowRendersBeforeWarnings(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	sess := endpointSession("both", 3000, 5173)
+	sess.SetupError = "setup script blew up"
+	h.sessions = []*pb.Session{sess}
+	h.buildTableRows()
+
+	rows := h.table.Rows()
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3 (primary + endpoint + warning)", len(rows))
+	}
+	endpointRow := rows[1]
+	if got := visibleRowText(endpointRow[3]); got != ":3000 · :5173" {
+		t.Errorf("endpoint row NAME = %q, want %q", got, ":3000 · :5173")
+	}
+	for i, cell := range endpointRow {
+		if i == 3 {
+			continue
+		}
+		if cell != "" {
+			t.Errorf("endpoint row cell %d = %q, want empty", i, cell)
+		}
+	}
+	if !strings.Contains(endpointRow[3], "\x1b]8;;http://localhost:3000\x1b\\") {
+		t.Errorf("endpoint row lost the :3000 OSC 8 hyperlink: %q", endpointRow[3])
+	}
+	if !strings.Contains(endpointRow[3], "\x1b]8;;http://localhost:5173\x1b\\") {
+		t.Errorf("endpoint row lost the :5173 OSC 8 hyperlink: %q", endpointRow[3])
+	}
+	if got := visibleRowText(rows[2][3]); !strings.Contains(got, "setup script blew up") {
+		t.Errorf("warning row NAME = %q, want the setup-error hint below the endpoint row", got)
+	}
+}
+
+// TestHomeEndpointLinksSurviveTableRender is the clickability gate. The row
+// cells above are only the INPUT to bubbles' cell rendering — ansi.Truncate,
+// lipgloss Inline/MaxWidth, and the selected-row style all sit between them and
+// the screen, and each is documented as capable of mangling an OSC 8 envelope.
+// Assert on the rendered View so a lipgloss/bubbles bump that eats the envelope
+// fails here rather than silently shipping unclickable ports.
+func TestHomeEndpointLinksSurviveTableRender(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.width = 120
+	h.height = 24
+	h.sessions = []*pb.Session{
+		endpointSession("eps", 3000, 5173),
+		{Id: "plain", Title: "Plain session"},
+	}
+	h.buildTableRows()
+
+	content := h.View().Content
+	for _, want := range []string{
+		"\x1b]8;;http://localhost:3000\x1b\\",
+		"\x1b]8;;http://localhost:5173\x1b\\",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("rendered home view lost the hyperlink %q:\n%q", want, content)
+		}
+	}
+	if !strings.Contains(stripANSI(osc8Pattern.ReplaceAllString(content, "")), ":3000 · :5173") {
+		t.Errorf("rendered home view lost the visible endpoint labels:\n%q", content)
+	}
+}
+
+// TestHomeNoEndpointsRowsUnchanged pins that an endpoint-free board grows no
+// auxiliary rows and emits no endpoint hyperlink. It is NOT the escape-byte
+// identity gate — that is TestLinkRenderers_ExactEscapes in status_test.go.
+func TestHomeNoEndpointsRowsUnchanged(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.sessions = []*pb.Session{
+		{Id: "plain", Title: "Plain session"},
+		{Id: "warned", Title: "Warned session", SetupError: "boom"},
+		// Endpoints that cannot be rendered (zero port) must not add a row.
+		{Id: "portless", Title: "Portless", HttpEndpoints: []*pb.HttpEndpoint{{Url: "http://localhost"}}},
+	}
+	h.buildTableRows()
+
+	rows := h.table.Rows()
+	if len(rows) != 4 {
+		t.Fatalf("rows = %d, want 4 (3 primary + 1 warning)", len(rows))
+	}
+	for _, row := range rows {
+		if strings.Contains(row[3], "\x1b]8;;http") {
+			t.Errorf("unexpected endpoint hyperlink in a no-endpoint board: %q", row[3])
+		}
+	}
+	if got := h.tableDataRowCount(); got != 4 {
+		t.Errorf("tableDataRowCount() = %d, want 4", got)
+	}
+}
+
+// TestHomeEndpointLabelsCountTowardNameWidth verifies the NAME column widens for
+// a long endpoint list even when every session title is short.
+func TestHomeEndpointLabelsCountTowardNameWidth(t *testing.T) {
+	narrow := NewHomeModel(nil, context.Background(), nil)
+	narrow.sessions = []*pb.Session{{Id: "a", Title: "ab"}}
+	narrow.buildTableRows()
+	narrowWidth := narrow.table.Columns()[3].Width
+
+	wide := NewHomeModel(nil, context.Background(), nil)
+	wide.sessions = []*pb.Session{endpointSession("a", 3000, 5173, 8080, 9229)}
+	wide.sessions[0].Title = "ab"
+	wide.buildTableRows()
+	wideWidth := wide.table.Columns()[3].Width
+
+	if wideWidth <= narrowWidth {
+		t.Fatalf("NAME width did not account for endpoint labels: %d <= %d", wideWidth, narrowWidth)
+	}
+	if want := lipgloss.Width(":3000 · :5173 · :8080 · :9229"); wideWidth < want {
+		t.Fatalf("NAME width = %d, want at least %d to fit the endpoint labels", wideWidth, want)
+	}
+}
+
+// TestHomeTableHeightCountsEndpointRows mirrors the repair-warning height test.
+func TestHomeTableHeightCountsEndpointRows(t *testing.T) {
+	h := HomeModel{sessions: []*pb.Session{endpointSession("a", 3000)}}
+	if got := h.tableHeight(); got != 3 {
+		t.Fatalf("tableHeight() = %d, want 3: header + session row + endpoint row", got)
+	}
+}
+
+// TestHomeNavigationSkipsEndpointRows walks the cursor down and back up through
+// a board whose middle session carries an endpoint row, asserting the cursor
+// only ever settles on primary rows.
+func TestHomeNavigationSkipsEndpointRows(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.sessions = []*pb.Session{
+		{Id: "first", Title: "First"},
+		endpointSession("middle", 3000),
+		{Id: "last", Title: "Last"},
+	}
+	h.buildTableRows()
+
+	// Down through every auxiliary row: cursor must land on 0 → 2 → 3.
+	wantDown := []string{"middle", "last"}
+	for _, want := range wantDown {
+		prev := h.table.Cursor()
+		h.table.MoveDown(1)
+		h.normalizeTableCursor(prev)
+		sess := h.selectedSession()
+		if sess == nil || sess.GetId() != want {
+			t.Fatalf("moving down from %d selected %v, want %q", prev, sess.GetId(), want)
+		}
+	}
+	wantUp := []string{"middle", "first"}
+	for _, want := range wantUp {
+		prev := h.table.Cursor()
+		h.table.MoveUp(1)
+		h.normalizeTableCursor(prev)
+		sess := h.selectedSession()
+		if sess == nil || sess.GetId() != want {
+			t.Fatalf("moving up from %d selected %v, want %q", prev, sess.GetId(), want)
+		}
+	}
+}
+
+// TestHomeSelectionSurvivesEndpointChurn drives the real poll path and verifies
+// that endpoints appearing and disappearing on OTHER sessions keep the SAME
+// session selected by ID, even though the row indices shift underneath it.
+func TestHomeSelectionSurvivesEndpointChurn(t *testing.T) {
+	plain := func() []*pb.Session {
+		return []*pb.Session{
+			{Id: "first", Title: "First"},
+			{Id: "second", Title: "Second"},
+			{Id: "third", Title: "Third"},
+		}
+	}
+	churned := func() []*pb.Session {
+		first := endpointSession("first", 3000)
+		first.Title = "First"
+		second := endpointSession("second", 5173, 8080)
+		second.Title = "Second"
+		return []*pb.Session{first, second, {Id: "third", Title: "Third"}}
+	}
+
+	h := NewHomeModel(nil, context.Background(), nil)
+	poll := func(sessions []*pb.Session) {
+		t.Helper()
+		updated, _ := h.Update(sessionListMsg{sessions: sessions})
+		h = updated.(HomeModel)
+	}
+
+	poll(plain())
+	cursor, ok := h.tableCursorForSessionID("third")
+	if !ok {
+		t.Fatal("third session not found")
+	}
+	h.table.SetCursor(cursor)
+	if got := h.selectedSession().GetId(); got != "third" {
+		t.Fatalf("pre-churn selection = %q, want third", got)
+	}
+
+	poll(churned())
+	if got := h.selectedSession().GetId(); got != "third" {
+		t.Fatalf("selection after endpoints appeared = %q, want third", got)
+	}
+	// first: primary + 1 endpoint row; second: primary + 1 endpoint row (both
+	// its ports share a single row) → third's primary row is 4.
+	if got := h.table.Cursor(); got != 4 {
+		t.Fatalf("cursor after endpoints appeared = %d, want 4", got)
+	}
+
+	poll(plain())
+	if got := h.selectedSession().GetId(); got != "third" {
+		t.Fatalf("selection after endpoints vanished = %q, want third", got)
+	}
+	if got := h.table.Cursor(); got != 2 {
+		t.Fatalf("cursor after endpoints vanished = %d, want 2", got)
+	}
+}
+
+// TestHomeEndpointRowNarrowTerminal verifies a narrow terminal neither drops
+// the endpoint row from the accounting nor panics on the truncated NAME column.
+func TestHomeEndpointRowNarrowTerminal(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 40
+	h.height = 10
+	h.sessions = []*pb.Session{endpointSession("a", 3000, 5173, 8080, 9229, 4000)}
+	h.buildTableRows()
+
+	if got := h.tableDataRowCount(); got != 2 {
+		t.Fatalf("tableDataRowCount() = %d, want 2", got)
+	}
+	if len(h.table.Rows()) != 2 {
+		t.Fatalf("rows = %d, want 2", len(h.table.Rows()))
+	}
+	if h.table.Cursor() != 0 {
+		t.Fatalf("cursor = %d, want 0 (the primary row)", h.table.Cursor())
+	}
+	// The NAME column caps at 60 columns, so five endpoint labels get cut by the
+	// bubbles table's ansi.Truncate. Truncation must not strand a hyperlink
+	// introducer without its terminator: each OSC 8 link contributes exactly two
+	// "\x1b]8;;" markers, so an odd count means the rest of the screen would be
+	// swallowed into one link.
+	content := h.View().Content
+	if n := strings.Count(content, "\x1b]8;;"); n%2 != 0 {
+		t.Errorf("rendered narrow home view has %d OSC 8 markers (odd) — an envelope was left open:\n%q", n, content)
+	}
+}
+
+// longCloudAccessErrorDetail is the real failure from the BOS-507 report: 173
+// columns on its own, 243 once cloudAccessUnavailableLine has composed it. Long
+// enough that a 120-column terminal must wrap it across several lines.
+//
+// Aliased from the fixtures package rather than re-declared so these wrap tests
+// and the cloud-error proof scenario pin the SAME string: the proof screenshot
+// and this guard would otherwise drift apart the moment either copy is edited.
+const longCloudAccessErrorDetail = fixtures.LongCloudAccessError
+
+// homeStatusWrapColumns returns a column set whose columnsWidth is exactly
+// want, so the width matrix can pin table-derived widths without depending on
+// the real home column layout.
+func homeStatusWrapColumns(want int) []table.Column {
+	// columnsWidth adds tableColumnGap per column, so a single column of
+	// (want - tableColumnGap) yields exactly want.
+	return []table.Column{{Title: "NAME", Width: want - tableColumnGap}}
+}
+
+func TestHomeStatusWrapWidth(t *testing.T) {
+	someSessions := []*pb.Session{{Id: "s1", Title: "work"}}
+
+	tests := []struct {
+		name     string
+		width    int
+		sessions []*pb.Session
+		columns  []table.Column
+		want     int
+	}{
+		{
+			name:     "terminal width unknown leaves the line unconstrained",
+			width:    0,
+			sessions: someSessions,
+			columns:  homeStatusWrapColumns(116),
+			want:     0,
+		},
+		{
+			name:     "negative terminal width leaves the line unconstrained",
+			width:    -1,
+			sessions: someSessions,
+			columns:  homeStatusWrapColumns(116),
+			want:     0,
+		},
+		{
+			name:     "wide terminal wide table tracks the table",
+			width:    200,
+			sessions: someSessions,
+			columns:  homeStatusWrapColumns(116),
+			want:     116,
+		},
+		{
+			name:     "wide terminal narrow table floors at minStatusWrapWidth",
+			width:    200,
+			sessions: someSessions,
+			columns:  homeStatusWrapColumns(38),
+			want:     minStatusWrapWidth,
+		},
+		{
+			name:     "narrow terminal clamps to the terminal width",
+			width:    50,
+			sessions: someSessions,
+			columns:  homeStatusWrapColumns(116),
+			want:     50,
+		},
+		{
+			name:     "terminal narrower than the floor clamps below it",
+			width:    40,
+			sessions: someSessions,
+			columns:  homeStatusWrapColumns(116),
+			want:     40,
+		},
+		{
+			// Below twice the padding lipgloss has no columns to wrap into and
+			// silently renders the line unwrapped, so report 0 rather than a
+			// width that only looks like it constrains.
+			name:     "terminal too narrow to wrap into leaves the line unconstrained",
+			width:    statusLinePadding * 2,
+			sessions: someSessions,
+			columns:  homeStatusWrapColumns(116),
+			want:     0,
+		},
+		{
+			name:     "narrowest terminal that can actually wrap clamps to itself",
+			width:    statusLinePadding*2 + 1,
+			sessions: someSessions,
+			columns:  homeStatusWrapColumns(116),
+			want:     statusLinePadding*2 + 1,
+		},
+		{
+			name:     "empty state ignores stale columns",
+			width:    200,
+			sessions: nil,
+			columns:  homeStatusWrapColumns(116),
+			want:     minStatusWrapWidth,
+		},
+		{
+			name:     "empty state with no columns uses the floor",
+			width:    200,
+			sessions: nil,
+			columns:  nil,
+			want:     minStatusWrapWidth,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewHomeModel(nil, context.Background(), nil)
+			h.width = tt.width
+			h.sessions = tt.sessions
+			h.table.SetColumns(tt.columns)
+			if got := h.statusWrapWidth(); got != tt.want {
+				t.Fatalf("statusWrapWidth() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHomeFixedStatusCopyStaysReadableAtFloor bounds the deliberate trade-off
+// baked into minStatusWrapWidth. The floor is narrower than most of Home's
+// fixed status copy, so in the empty state (the one place the floor is the
+// whole rule) that copy renders on two rows rather than one. That cost is
+// accepted — a floor wide enough for the copy would overhang a typical board —
+// but it must stay bounded: copy edited past two rows turns a status line into
+// a ribbon, and this test fails before that ships.
+func TestHomeFixedStatusCopyStaysReadableAtFloor(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 200 // wide terminal, no sessions: the floor is the whole rule
+	if got := h.statusWrapWidth(); got != minStatusWrapWidth {
+		t.Fatalf("statusWrapWidth() = %d, want the floor %d", got, minStatusWrapWidth)
+	}
+
+	// Every fixed (non-error-text) string Home renders through statusLine,
+	// referenced from the production consts so the guard cannot pass against a
+	// stale copy of text the screen no longer shows.
+	fixed := []string{
+		cloudBillingUnavailableLine,
+		statusCloudChecking,
+		statusCloudNeedsSubscriptionUpgrade,
+		statusCloudNeedsSubscription,
+		statusCloudPendingUpgrade,
+		statusCloudPending,
+		statusUpgrading,
+		statusRestartingDaemon,
+		statusUpgradeRestartPrompt,
+		statusUpgradeDone,
+		fmt.Sprintf(statusUpgradeAvailableFormat, "v1.2.3", "v1.2.4"),
+	}
+	for _, text := range fixed {
+		rows := strings.Split(h.statusLine(colorWarning, text), "\n")
+		if len(rows) > 2 {
+			t.Errorf("fixed status copy renders %d rows at the %d-column floor, want <= 2 (%d columns): %q",
+				len(rows), minStatusWrapWidth, lipgloss.Width(text), text)
+		}
+		// No copy may be dropped by the wrap.
+		if got := reflowStatusBlock(h.statusLine(colorWarning, text)); got != text {
+			t.Errorf("wrapped copy does not reflow to the original:\n got: %q\nwant: %q", got, text)
+		}
+	}
+}
+
+// TestHomeStatusWrapWidthTracksRealTable pins the branch the ticket exists for
+// against a real table built by buildTableRows, not the synthetic columns the
+// width matrix uses: with sessions on screen the status width must equal the
+// rendered table's columnsWidth, and must be the derived value rather than the
+// floor. Without this, every render test could pass while the table-derived
+// branch was never exercised.
+func TestHomeStatusWrapWidthTracksRealTable(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 200
+	h.sessions = []*pb.Session{
+		{Id: "sess-1", RepoDisplayName: "mobile-app", Title: "Add rate limiting to the public API", PrNumber: i32ForTest(597)},
+		{Id: "sess-2", RepoDisplayName: "my-app", Title: "Fix login bug"},
+	}
+	h.buildTableRows()
+
+	derived := columnsWidth(h.table.Columns())
+	if derived <= minStatusWrapWidth {
+		t.Fatalf("real table columnsWidth = %d, want > the %d floor so this test covers the derived branch", derived, minStatusWrapWidth)
+	}
+	if got := h.statusWrapWidth(); got != derived {
+		t.Fatalf("statusWrapWidth() = %d, want the table's columnsWidth %d", got, derived)
+	}
+
+	// The whole point: the rendered status block must sit inside the rendered
+	// table, not overhang it. View() draws the table inside Padding(0, 1), so
+	// the table's outer width is columnsWidth + 2.
+	tableWidth := lipgloss.Width(lipgloss.NewStyle().Padding(0, 1).Render(h.table.View()))
+	block := h.statusLine(colorWarning, "Cloud access status unavailable: "+longCloudAccessErrorDetail)
+	for i, line := range strings.Split(block, "\n") {
+		if got := lipgloss.Width(line); got > tableWidth {
+			t.Errorf("status line %d measures %d columns, want <= the rendered table width %d: %q", i, got, tableWidth, line)
+		}
+	}
+}
+
+func i32ForTest(v int32) *int32 { return &v }
+
+// homeWithLongCloudError builds a Home model on a wide terminal with sessions
+// present and a long cloud-access failure pending.
+func homeWithLongCloudError(t *testing.T) HomeModel {
+	t.Helper()
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	// The title is long enough that the real columnsWidth clears
+	// minStatusWrapWidth, so these render tests exercise the table-derived
+	// branch rather than silently falling back to the floor (the floor branch
+	// has its own test, TestHomeEmptyStateCloudErrorWrapsAtFloor).
+	h.sessions = []*pb.Session{{Id: "sess-1", RepoDisplayName: "my-app", Title: "Add rate limiting to the public API"}}
+	h.buildTableRows()
+	h.width = 120
+	h.height = 30
+
+	model, _ := h.Update(cloudAccessMsg{err: errors.New(longCloudAccessErrorDetail)})
+	return model.(HomeModel)
+}
+
+// reflowStatusBlock undoes a status block's wrapping: it strips ANSI colour and
+// collapses the newlines and right-padding that Width() introduces back into
+// single spaces, so a caller can assert on copy that a wrap may have split
+// across rows.
+func reflowStatusBlock(block string) string {
+	return strings.Join(strings.Fields(stripANSI(block)), " ")
+}
+
+// assertWrapped checks a rendered status block wrapped onto more than one line
+// and that every line fits the wrap width. Measured with lipgloss.Width, not
+// len(): the lines carry ANSI colour, so len() would silently pass.
+func assertWrapped(t *testing.T, label, block string, want int) {
+	t.Helper()
+	lines := strings.Split(block, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("%s rendered %d line(s), want it wrapped across several:\n%q", label, len(lines), block)
+	}
+	for i, line := range lines {
+		if got := lipgloss.Width(line); got > want {
+			t.Errorf("%s line %d measures %d columns, want <= %d: %q", label, i, got, want, line)
+		}
+	}
+}
+
+func TestHomeCloudGateLineWrapsAtContentWidth(t *testing.T) {
+	h := homeWithLongCloudError(t)
+
+	want := h.statusWrapWidth()
+	if want <= 0 || want > h.width {
+		t.Fatalf("statusWrapWidth() = %d, want a positive width no wider than the terminal (%d)", want, h.width)
+	}
+
+	line := h.cloudGateLine()
+	assertWrapped(t, "cloudGateLine()", line, want)
+
+	// Wrapping inserts newlines mid-sentence and right-pads every line, so
+	// reflow the block back to a single space-separated string before checking
+	// that no copy was dropped.
+	plain := reflowStatusBlock(line)
+	if !strings.Contains(plain, "Cloud access status unavailable") {
+		t.Errorf("wrapped gate line lost its heading:\n%s", plain)
+	}
+	// The tail is what ran off the terminal edge before this fix.
+	if !strings.Contains(plain, "Local sessions are still available.") {
+		t.Errorf("wrapped gate line lost its trailing copy:\n%s", plain)
+	}
+}
+
+func TestHomeCloudCheckoutStatusLineWrapsAtContentWidth(t *testing.T) {
+	h := homeWithLongCloudError(t)
+	h.cloudCheckoutStatus = longCloudAccessErrorDetail
+
+	assertWrapped(t, "cloudCheckoutStatusLine()", h.cloudCheckoutStatusLine(), h.statusWrapWidth())
+}
+
+func TestHomeStatusLineWrapsAtContentWidth(t *testing.T) {
+	h := homeWithLongCloudError(t)
+	h.cloudErr = nil
+	h.status = longCloudAccessErrorDetail
+
+	want := h.statusWrapWidth()
+	content := h.View().Content
+	lines := strings.Split(content, "\n")
+
+	// Measure EVERY row of the status block, not just the rows that happen to
+	// carry a recognisable token: an overflow confined to a middle wrapped row
+	// (".../authenticate\": dial tcp: lookup") would otherwise pass. Take the
+	// block's row count from the helper itself, then measure that whole span
+	// where it lands in the view.
+	blockRows := len(strings.Split(h.statusLine(colorSuccess, h.status), "\n"))
+	if blockRows < 2 {
+		t.Fatalf("status block rendered on a single row, want it wrapped")
+	}
+	first := -1
+	for i, line := range lines {
+		if strings.Contains(stripANSI(line), "refresh token") {
+			first = i
+			break
+		}
+	}
+	if first < 0 || first+blockRows > len(lines) {
+		t.Fatalf("home view did not render the wrapped status block (first=%d rows=%d):\n%s", first, blockRows, stripANSI(content))
+	}
+	for i := first; i < first+blockRows; i++ {
+		line := lines[i]
+		if got := lipgloss.Width(line); got > want {
+			t.Errorf("status line %d measures %d columns, want <= %d: %q", i, got, want, line)
+		}
+	}
+}
+
+func TestHomeUpgradeStatusViewWrapsAtContentWidth(t *testing.T) {
+	h := homeWithLongCloudError(t)
+	h.upgradeAvailable = true
+	h.upgradeCurrent = "v1.0.0"
+	h.upgradeLatest = "v2.0.0"
+
+	want := h.statusWrapWidth()
+	for i, line := range strings.Split(h.upgradeStatusView(), "\n") {
+		if got := lipgloss.Width(line); got != want {
+			t.Errorf("upgrade status line %d measures %d columns, want exactly %d (Width right-pads): %q", i, got, want, line)
+		}
+	}
+}
+
+// TestHomeEmptyStateCloudErrorWrapsAtFloor pins the empty-state branch: with no
+// sessions the table is not drawn, so the wrap width falls back to the floor
+// rather than a stale column width.
+func TestHomeEmptyStateCloudErrorWrapsAtFloor(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 0
+	h.width = 120
+	h.height = 30
+
+	model, _ := h.Update(cloudAccessMsg{err: errors.New(longCloudAccessErrorDetail)})
+	h = model.(HomeModel)
+
+	if got := h.statusWrapWidth(); got != minStatusWrapWidth {
+		t.Fatalf("statusWrapWidth() = %d, want the floor %d", got, minStatusWrapWidth)
+	}
+	assertWrapped(t, "empty-state cloudGateLine()", h.cloudGateLine(), minStatusWrapWidth)
+}
+
+// TestRenderErrorFillsTheGivenWidth pins the lipgloss contract renderError
+// depends on: .Width(n) sets the TOTAL block width with styleError's padding
+// included, and right-pads every line to n. So a caller passing the terminal
+// width must get a block exactly that wide — the assertion is equality, not
+// <=, because a block that came out narrower is the bug this guards (BOS-507:
+// subtracting the padding a second time rendered every error 4 columns short).
+//
+// Widths are all comfortably above styleError's 4 columns of horizontal
+// padding: lipgloss no-ops .Width(n) for n at or below the padding, so an
+// equality assertion down there would fail for unrelated reasons.
+// TestStyleErrorWidthNoOpsAtOrBelowItsPadding covers that band instead.
+func TestRenderErrorFillsTheGivenWidth(t *testing.T) {
+	// The real BOS-507 failure — long enough to wrap at every width below, and
+	// it carries a token wider than the narrowest content area so the hard-break
+	// path is covered too.
+	const msg = longCloudAccessErrorDetail
+
+	for _, width := range []int{40, 60, 100} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			lines := strings.Split(renderError(msg, width), "\n")
+			// Guard the guard: a single unwrapped line would satisfy the width
+			// assertion below without exercising the wrap at all.
+			if len(lines) < 2 {
+				t.Fatalf("renderError(msg, %d) rendered %d line(s), want it wrapped across several "+
+					"(if fixtures.LongCloudAccessError was shortened, widen this subtest rather than "+
+					"reading this as a renderError bug)", width, len(lines))
+			}
+			for i, line := range lines {
+				// lipgloss.Width, not len(): the lines carry ANSI colour.
+				if got := lipgloss.Width(line); got != width {
+					t.Errorf("renderError(msg, %d) line %d measures %d columns, want exactly %d (Width right-pads): %q",
+						width, i, got, width, line)
+				}
+			}
+			// No copy may be dropped by the wrap.
+			if got := squashErrorWhitespace(strings.Join(lines, "\n")); got != squashErrorWhitespace(msg) {
+				t.Errorf("wrapped error dropped copy:\n got: %q\nwant: %q", got, squashErrorWhitespace(msg))
+			}
+		})
+	}
+}
+
+// TestRenderErrorUnknownWidthIsUnconstrained pins the width == 0 fallback: with
+// no tea.WindowSizeMsg yet there is nothing to wrap into, so the message stays
+// on one line at its natural width plus styleError's padding.
+func TestRenderErrorUnknownWidthIsUnconstrained(t *testing.T) {
+	const msg = longCloudAccessErrorDetail
+
+	rendered := renderError(msg, 0)
+	if lines := strings.Split(rendered, "\n"); len(lines) != 1 {
+		t.Fatalf("renderError(msg, 0) rendered %d lines, want the message unconstrained on one: %q", len(lines), rendered)
+	}
+	// Ask styleError for its own padding rather than restating theme.go's
+	// Padding(0, 2) as a local constant: a literal here would go quietly stale
+	// the day the theme changes, and fail naming the wrong culprit. Only the
+	// width == 0 case needs the term at all — when a width is given, lipgloss
+	// folds the padding into that total.
+	if want := lipgloss.Width(msg) + styleError.GetHorizontalPadding(); lipgloss.Width(rendered) != want {
+		t.Errorf("renderError(msg, 0) measures %d columns, want the message plus padding (%d)", lipgloss.Width(rendered), want)
+	}
+	if got := stripANSI(rendered); !strings.Contains(got, msg) {
+		t.Errorf("renderError(msg, 0) dropped copy:\n got: %q\nwant it to contain: %q", got, msg)
+	}
+}
+
+// TestStyleErrorWidthNoOpsAtOrBelowItsPadding pins the LIPGLOSS behaviour that
+// renderError's and statusWrapWidth's floors both rest on: lipgloss wraps at the
+// width minus the horizontal padding, so a width at or below styleError's 4
+// columns of padding leaves nothing to wrap into and .Width() does nothing at
+// all. Both helpers therefore skip the call and fall back to unconstrained,
+// which is honest only while this holds.
+//
+// Assert it against the STYLE, not through renderError: renderError's guard
+// short-circuits before .Width() is ever reached, so going through the helper
+// would compare its fallback against itself and could never fail. Driving
+// styleError directly is what gives this teeth — if a lipgloss upgrade starts
+// honouring these widths, this fails and both floors need revisiting.
+func TestStyleErrorWidthNoOpsAtOrBelowItsPadding(t *testing.T) {
+	const msg = longCloudAccessErrorDetail
+	bare := styleError.Render(msg)
+
+	// 1..4 is the whole band at or below styleError's horizontal padding; 5 is
+	// the first width lipgloss actually honours, and anchors the boundary.
+	for width := 1; width <= styleError.GetHorizontalPadding(); width++ {
+		t.Run(fmt.Sprintf("width_%d_noop", width), func(t *testing.T) {
+			if got := styleError.Width(width).Render(msg); got != bare {
+				t.Errorf("styleError.Width(%d).Render(msg) differs from an unconstrained Render, so lipgloss now honours a width at or below the padding; renderError's and statusWrapWidth's floors both assume it does not:\n got: %q\nwant: %q",
+					width, got, bare)
+			}
+		})
+	}
+
+	t.Run("width_just_above_padding_wraps", func(t *testing.T) {
+		width := styleError.GetHorizontalPadding() + 1
+		if got := styleError.Width(width).Render(msg); got == bare {
+			t.Errorf("styleError.Width(%d).Render(msg) was still a no-op; the floor is meant to sit at the padding, so a width above it must constrain", width)
+		}
+	})
+}
+
+// squashErrorWhitespace strips ANSI then drops every space and newline, so a
+// wrap can be checked for lost copy. Unlike reflowStatusBlock it does not
+// preserve word boundaries: lipgloss hard-breaks a token wider than the content
+// area rather than overflowing, and that break lands mid-word, which a
+// space-joining reflow would report as a difference even though no characters
+// were lost. The strip is folded in — as its siblings flattenPrompt and
+// reflowStatusBlock do — because escape sequences carry no whitespace and so
+// survive strings.Fields intact, making a forgotten strip a confusing diff
+// rather than a clean failure.
+func squashErrorWhitespace(s string) string { return strings.Join(strings.Fields(stripANSI(s)), "") }
+
+// --- BOS-572: the Home session table fits the terminal width ---------------
+
+// responsiveHomeSessions is the fixture the responsive-column tests share: a
+// long-titled session that pushes NAME to its 60-column cap, a session with
+// HTTP endpoints (an endpoint sub-row), and a session with a setup failure (a
+// warning sub-row). Between them the declared column set is ~102 columns wide,
+// comfortably inside a 140-column board and comfortably outside a 72-column
+// one, so both tiers are exercised by real data rather than a synthetic table.
+func responsiveHomeSessions() []*pb.Session {
+	eps := &pb.Session{
+		Id:              "eps",
+		RepoDisplayName: "my-app",
+		Title:           "Serve the docs site",
+		HttpEndpoints: []*pb.HttpEndpoint{
+			{Port: 3000, Url: "http://localhost:3000"},
+			{Port: 5173, Url: "http://localhost:5173"},
+		},
+	}
+	return []*pb.Session{
+		{
+			Id:              "long",
+			RepoDisplayName: "bossanova",
+			// Longer than the NAME column's 60-column cap on purpose.
+			Title:      "Add responsive table primitives and apply them to the Home session list",
+			PrNumber:   i32ForTest(1234),
+			BranchName: "boss-build-bos-572",
+		},
+		eps,
+		{
+			Id:              "warn",
+			RepoDisplayName: "web",
+			Title:           "Fix the login redirect",
+			SetupError:      "setup script failed to install dependencies",
+		},
+	}
+}
+
+// homeResponsiveModel builds a Home model at the given terminal width with the
+// shared fixture and a freshly fitted table.
+func homeResponsiveModel(width int) HomeModel {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.width = width
+	h.height = 40
+	h.sessions = responsiveHomeSessions()
+	h.buildTableRows()
+	return h
+}
+
+func homeColumnTitles(cols []table.Column) []string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = c.Title
+	}
+	return out
+}
+
+// TestHomeColumnsUnchangedAtFullWidth is the no-regression guard for BOS-572.
+// The full tier must draw exactly what the pre-responsive board drew: same
+// titles, same widths, same cell count per row. h.width == 0 is the unfitted
+// board (no tea.WindowSizeMsg has arrived), so DeepEqual against it pins the
+// fit as a provable no-op at 140 columns rather than a coincidence.
+func TestHomeColumnsUnchangedAtFullWidth(t *testing.T) {
+	full := homeResponsiveModel(140)
+	unfitted := homeResponsiveModel(0)
+
+	wantTitles := []string{" ", " ", "REPO", "NAME", "PR", "STATUS"}
+	if got := homeColumnTitles(full.table.Columns()); !reflect.DeepEqual(got, wantTitles) {
+		t.Fatalf("column titles at 140 columns = %v, want %v", got, wantTitles)
+	}
+	if got, want := full.table.Columns(), unfitted.table.Columns(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("columns at 140 columns = %+v, want the unfitted set %+v", got, want)
+	}
+
+	gotRows, wantRows := full.table.Rows(), unfitted.table.Rows()
+	if len(gotRows) != len(wantRows) {
+		t.Fatalf("rows at 140 columns = %d, want %d", len(gotRows), len(wantRows))
+	}
+	for i := range gotRows {
+		if len(gotRows[i]) != len(wantTitles) {
+			t.Errorf("row %d has %d cells at 140 columns, want %d", i, len(gotRows[i]), len(wantTitles))
+		}
+	}
+}
+
+// homeResponsiveWidths are the terminal widths the fit is exercised at: two
+// narrow-tier widths, the narrow ceiling, the classic 80-column default, a
+// compact width, and the full-tier proof width.
+var homeResponsiveWidths = []int{40, 60, 72, 80, 100, 140}
+
+// TestRenderSessionTablePadsByHomeTableBlockPadding closes the loop between the
+// fit budget and the view that spends it.
+//
+// tableAvailWidth subtracts homeTableBlockPadding from both sides of the
+// terminal, which is only correct while renderSessionTable actually wraps the
+// table in that much padding. Every other assertion in this file re-applies the
+// padding itself, so if renderSessionTable's Padding(0, ...) were widened to 2
+// the fit would over-budget by 2, every narrow board would overhang the
+// terminal by 2 — and the whole suite would stay green. This test is the one
+// that reads the real view output, so that change fails here.
+func TestRenderSessionTablePadsByHomeTableBlockPadding(t *testing.T) {
+	for _, width := range homeResponsiveWidths {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			h := homeResponsiveModel(width)
+			bare := h.table.View()
+			want := lipgloss.Width(lipgloss.NewStyle().Padding(0, homeTableBlockPadding).Render(bare))
+
+			// renderSessionTable writes the padded table block first, then the
+			// status/action lines, so the table's own height bounds the block.
+			lines := strings.Split(h.renderSessionTable(), "\n")
+			blockHeight := lipgloss.Height(bare)
+			if len(lines) < blockHeight {
+				t.Fatalf("renderSessionTable returned %d lines, want at least the table's %d", len(lines), blockHeight)
+			}
+			got := 0
+			for _, line := range lines[:blockHeight] {
+				got = max(got, lipgloss.Width(line))
+			}
+			if got != want {
+				t.Errorf("renderSessionTable drew the table block %d columns wide at a %d-column terminal, want %d — the view's Padding(0, ...) no longer matches homeTableBlockPadding (%d), so tableAvailWidth is budgeting against the wrong number",
+					got, width, want, homeTableBlockPadding)
+			}
+		})
+	}
+}
+
+func TestHomeColumnsFitTerminalWidth(t *testing.T) {
+	for _, width := range homeResponsiveWidths {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			h := homeResponsiveModel(width)
+			cols := h.table.Columns()
+			// Budget against tableAvailWidth, not the raw terminal width: the
+			// table is drawn inside renderSessionTable's Padding(0, 1), so a
+			// set that merely fits `width` still overhangs by both pads.
+			// Asserting the looser bound would let homeTableBlockPadding go to
+			// zero with every test still green and the board still overhanging.
+			if got, avail := columnsWidth(cols), h.tableAvailWidth(); got > avail {
+				t.Errorf("columnsWidth = %d at a %d-column terminal, want <= tableAvailWidth %d (titles %v)",
+					got, width, avail, homeColumnTitles(cols))
+			}
+			// And the end-to-end claim the ticket is actually about: what is
+			// RENDERED, padding included, fits the terminal.
+			rendered := lipgloss.Width(lipgloss.NewStyle().Padding(0, homeTableBlockPadding).Render(h.table.View()))
+			if rendered > width {
+				t.Errorf("the rendered session table is %d columns wide at a %d-column terminal, want <= %d",
+					rendered, width, width)
+			}
+			for i, c := range cols {
+				// lipgloss reads Width(0) as unconstrained, so a fitted column
+				// must never come back at or below zero.
+				if c.Width <= 0 {
+					t.Errorf("column %d (%q) has width %d at a %d-column terminal, want > 0", i, c.Title, c.Width, width)
+				}
+			}
+		})
+	}
+}
+
+// TestHomeNarrowTerminalDropsLowPriorityColumns pins that the fit actually
+// bites on a narrow board: the expendable columns go and NAME stays.
+func TestHomeNarrowTerminalDropsLowPriorityColumns(t *testing.T) {
+	h := homeResponsiveModel(72)
+	titles := homeColumnTitles(h.table.Columns())
+
+	has := func(title string) bool {
+		for _, got := range titles {
+			if got == title {
+				return true
+			}
+		}
+		return false
+	}
+	if has("REPO") && has("PR") {
+		t.Errorf("neither REPO nor PR was dropped at a 72-column terminal: %v", titles)
+	}
+	if !has("NAME") {
+		t.Fatalf("NAME was dropped at a 72-column terminal: %v", titles)
+	}
+}
+
+// TestHomeSubRowsFollowFittedNameColumn is the silent-bug gate. The endpoint
+// and warning sub-rows carry their text in the NAME cell, and the NAME cell's
+// index moves as soon as REPO is dropped — so a hard-coded index 3 puts the
+// text in the wrong column (or off the end of the row) on a narrow board.
+// Both sub-rows must be projected through the same fitted mapping the header
+// is, at every width.
+func TestHomeSubRowsFollowFittedNameColumn(t *testing.T) {
+	for _, width := range []int{140, 72} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			h := homeResponsiveModel(width)
+			cols := h.table.Columns()
+			nameIdx := -1
+			for i, c := range cols {
+				if c.Title == "NAME" {
+					nameIdx = i
+				}
+			}
+			if nameIdx < 0 {
+				t.Fatalf("no NAME column at a %d-column terminal: %v", width, homeColumnTitles(cols))
+			}
+
+			rows := h.table.Rows()
+			// Fixture layout: long (primary), eps (primary + endpoint row),
+			// warn (primary + warning row).
+			if len(rows) != 5 {
+				t.Fatalf("rows = %d, want 5", len(rows))
+			}
+			for _, tc := range []struct {
+				label string
+				row   int
+				want  string
+			}{
+				{label: "endpoint sub-row", row: 2, want: ":3000"},
+				{label: "warning sub-row", row: 4, want: "setup script failed"},
+			} {
+				row := rows[tc.row]
+				if len(row) != len(cols) {
+					t.Fatalf("%s has %d cells, want one per fitted column (%d)", tc.label, len(row), len(cols))
+				}
+				if got := visibleRowText(row[nameIdx]); !strings.Contains(got, tc.want) {
+					t.Errorf("%s NAME cell (index %d) = %q, want it to contain %q", tc.label, nameIdx, got, tc.want)
+				}
+				for i, cell := range row {
+					if i == nameIdx {
+						continue
+					}
+					if cell != "" {
+						t.Errorf("%s cell %d (%q) = %q, want empty", tc.label, i, cols[i].Title, cell)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestHomeStatusWrapWidthNeverExceedsFittedTable checks BOS-507's alignment
+// invariant still holds once the columns are width-fitted: the status block
+// tracks the table it sits under, and never runs past the terminal.
+//
+// The minStatusWrapWidth term in the bound is deliberate, not slack. BOS-507's
+// floor intentionally OVERRIDES the table-derived width on a very narrow board
+// (a 250-column error wrapped at ~38 columns is an unreadable ribbon), and
+// TestHomeStatusWrapWidth's "wide terminal narrow table floors at
+// minStatusWrapWidth" case pins that override as intended behaviour. So the
+// status width is bounded by the wider of the rendered table and that floor,
+// and separately by the terminal.
+func TestHomeStatusWrapWidthNeverExceedsFittedTable(t *testing.T) {
+	for _, width := range homeResponsiveWidths {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			h := homeResponsiveModel(width)
+			got := h.statusWrapWidth()
+			if got > width {
+				t.Errorf("statusWrapWidth() = %d at a %d-column terminal, want <= %d", got, width, width)
+			}
+			// renderSessionTable draws the table inside Padding(0,
+			// homeTableBlockPadding) — use the constant, not a literal, so a
+			// retune moves this measurement with the view.
+			renderedTableWidth := lipgloss.Width(lipgloss.NewStyle().Padding(0, homeTableBlockPadding).Render(h.table.View()))
+			if bound := max(renderedTableWidth, minStatusWrapWidth); got > bound {
+				t.Errorf("statusWrapWidth() = %d at a %d-column terminal, want <= max(rendered table %d, floor %d) = %d",
+					got, width, renderedTableWidth, minStatusWrapWidth, bound)
+			}
+		})
+	}
+}
+
+// TestHomeEmptyStateRendersAtEveryWidth pins that the empty state — where
+// buildTableRows returns before it ever fits a column — still renders and
+// still wraps at the documented floor/terminal clamp.
+func TestHomeEmptyStateRendersAtEveryWidth(t *testing.T) {
+	for _, width := range []int{40, 72, 140} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			h := NewHomeModel(nil, context.Background(), nil)
+			h.loading = false
+			h.loggedIn = true
+			h.repoCount = 1
+			h.width = width
+			h.height = 40
+			h.sessions = nil
+			h.buildTableRows()
+
+			if content := h.View().Content; strings.TrimSpace(content) == "" {
+				t.Fatalf("empty state rendered nothing at a %d-column terminal", width)
+			}
+			want := min(minStatusWrapWidth, width)
+			if got := h.statusWrapWidth(); got != want {
+				t.Errorf("statusWrapWidth() = %d at a %d-column terminal, want %d (the floor, clamped to the terminal)", got, width, want)
+			}
+		})
+	}
+}
+
+// TestHomeTableRebuildsAcrossWidths is the crash gate for the responsive fit.
+//
+// buildTableRows hands bubbles a NEW column set and a NEW row set, and every
+// bubbles setter re-renders the viewport immediately — so between the two
+// calls the table holds the new columns against the PREVIOUS rows. Before
+// BOS-572 the column count was a constant 6 and that window was harmless;
+// now it shrinks, and table.renderRow indexes m.cols[i] for every cell in
+// m.rows[r], so a stale 6-cell row against a 3-column set panics with an
+// index-out-of-range. A narrowing resize (the feature's own headline path) and
+// an ordinary poll that brings in a longer session title on a sub-full-tier
+// terminal both reach it.
+//
+// Rebuilding in both directions, and at a constant width with growing data,
+// is the only thing that exercises that window — a single build never can.
+func TestHomeTableRebuildsAcrossWidths(t *testing.T) {
+	t.Run("narrowing then widening", func(t *testing.T) {
+		h := homeResponsiveModel(140)
+		for _, width := range []int{72, 40, 140, 100, 60, 140} {
+			h.width = width
+			h.buildTableRows()
+			cols := h.table.Columns()
+			for _, row := range h.table.Rows() {
+				if len(row) != len(cols) {
+					t.Fatalf("at width %d a row has %d cells, want one per fitted column (%d)", width, len(row), len(cols))
+				}
+			}
+			// Render too: the panic surfaces inside the viewport update, so a
+			// View() here proves the model is drawable and not merely built.
+			if h.table.View() == "" {
+				t.Fatalf("table rendered nothing at width %d", width)
+			}
+		}
+	})
+
+	t.Run("resize message", func(t *testing.T) {
+		h := homeResponsiveModel(140)
+		for _, width := range []int{72, 140, 40} {
+			updated, _ := h.handleWindowSize(tea.WindowSizeMsg{Width: width, Height: 40})
+			next, ok := updated.(HomeModel)
+			if !ok {
+				t.Fatalf("handleWindowSize returned %T, want HomeModel", updated)
+			}
+			h = next
+			if got := columnsWidth(h.table.Columns()); got > h.tableAvailWidth() {
+				t.Errorf("after resizing to %d columns the table is %d wide, want <= %d",
+					width, got, h.tableAvailWidth())
+			}
+		}
+	})
+
+	t.Run("constant width, growing data", func(t *testing.T) {
+		// A 100-column terminal fits the short-titled board, then a poll brings
+		// in a session whose title pushes the declared set over budget and
+		// forces a drop — no resize involved.
+		h := homeResponsiveModel(100)
+		h.sessions = append(h.sessions, &pb.Session{
+			Id:              "grew",
+			RepoDisplayName: "bossanova",
+			Title:           strings.Repeat("a very long session title ", 4),
+		})
+		h.buildTableRows()
+		if h.table.View() == "" {
+			t.Fatal("table rendered nothing after the session list grew")
+		}
+	})
+}
+
+// TestHomeNameMinWidthTiers pins the per-tier NAME floors and their tie to the
+// width-tier constants.
+//
+// Only the NARROW floor is reachable through a Home board today, and
+// TestHomeNameFloorBindsOnANarrowBoard is the test that reaches it. The squeeze
+// pass only runs once every droppable column is gone, which NAME's 60-column
+// cap confines to terminals below ~68 columns, so homeNameMinWidthCompact and
+// homeNameMinWidthFull are inert — see homeNameMinWidth's comment for the
+// arithmetic and for why they are kept anyway. This test is what stops the two
+// inert constants from being behaviourally untested configuration, and what
+// pins the tier boundaries themselves.
+func TestHomeNameMinWidthTiers(t *testing.T) {
+	tests := []struct {
+		name  string
+		width int
+		want  int
+	}{
+		{name: "unknown width assumes the full tier", width: 0, want: 32},
+		{name: "negative width assumes the full tier", width: -1, want: 32},
+		{name: "narrow tier", width: 40, want: 16},
+		{name: "narrow ceiling", width: narrowWidthMax, want: 16},
+		{name: "compact tier starts one past the narrow ceiling", width: narrowWidthMax + 1, want: 24},
+		{name: "compact ceiling", width: compactWidthMax, want: 24},
+		{name: "full tier starts one past the compact ceiling", width: compactWidthMax + 1, want: 32},
+		{name: "proof width is full tier", width: 140, want: 32},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := homeNameMinWidth(tt.width); got != tt.want {
+				t.Fatalf("homeNameMinWidth(%d) = %d, want %d", tt.width, got, tt.want)
+			}
+		})
+	}
+
+	// The floors must widen monotonically with the terminal, or a wider board
+	// would be allowed to truncate titles harder than a narrower one.
+	prev := 0
+	for _, width := range []int{40, narrowWidthMax, narrowWidthMax + 1, compactWidthMax, compactWidthMax + 1, 200} {
+		got := homeNameMinWidth(width)
+		if got < prev {
+			t.Fatalf("homeNameMinWidth(%d) = %d, want >= the narrower tier's %d", width, got, prev)
+		}
+		prev = got
+	}
+}
+
+// TestHomeNameFloorBindsOnANarrowBoard drives the Home column set to the width
+// where homeNameMinWidth actually clamps the squeeze, so the floor is proven to
+// be wired into the fit rather than merely declared.
+func TestHomeNameFloorBindsOnANarrowBoard(t *testing.T) {
+	const width = 22 // narrow tier: NAME floors at 16
+	h := homeResponsiveModel(width)
+
+	cols := h.table.Columns()
+	titles := homeColumnTitles(cols)
+	if len(cols) != 3 {
+		t.Fatalf("columns at a %d-column terminal = %v, want only the two indicators and NAME", width, titles)
+	}
+	name := cols[2]
+	if name.Title != "NAME" {
+		t.Fatalf("last surviving column = %q, want NAME", name.Title)
+	}
+	// Assert the LITERAL, not homeNameMinWidth(width): deriving the expectation
+	// from the production function would pass for any retuned value the squeeze
+	// can reach, pinning only "a floor is wired in" rather than which one.
+	if name.Width != homeNameMinWidthNarrow {
+		t.Fatalf("NAME width at a %d-column terminal = %d, want the narrow tier floor %d", width, name.Width, homeNameMinWidthNarrow)
+	}
+	if got := homeNameMinWidth(width); got != homeNameMinWidthNarrow {
+		t.Fatalf("homeNameMinWidth(%d) = %d, so this test is no longer exercising the narrow tier it names", width, got)
+	}
+	// The floor is what stops the squeeze, so the set is knowingly over budget
+	// here — that is rule 6 (overflow beats a zero/negative width), not a bug.
+	if got := columnsWidth(cols); got <= h.tableAvailWidth() {
+		t.Fatalf("columnsWidth = %d at avail %d: expected the floor to hold the set over budget", got, h.tableAvailWidth())
+	}
+	for _, c := range cols {
+		if c.Width <= 0 {
+			t.Fatalf("column %q has width %d, want > 0 even when the floor binds", c.Title, c.Width)
+		}
+	}
+}
+
+// TestHomeRebuildKeepsTheSelectionVisible pins that a rebuild does not scroll
+// the selected row out of the viewport.
+//
+// buildTableRows runs on every keypress and on every spinner tick — roughly ten
+// times a second — so anything it does to the table's scroll offset happens
+// continuously. bubbles keeps that offset inside its viewport and exposes no
+// accessor for it: SetCursor, SetWidth and SetHeight all leave it alone, only
+// MoveUp/MoveDown maintain it, and viewport.SetContent CLAMPS it (to zero for
+// empty content). So a rebuild that empties the rows silently sends a scrolled
+// board back to the top while the cursor stays where it was — the ❯ caret and
+// the selected row leave the screen, and Enter goes on acting on a selection
+// the operator can no longer see. app_view.go's setReservedTableHeight
+// documents the same hazard on the SetHeight path.
+//
+// A short board can never show this, so the fixture here is deliberately taller
+// than the viewport.
+func TestHomeRebuildKeepsTheSelectionVisible(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.width = 140
+	h.height = 20
+	for i := range 30 {
+		h.sessions = append(h.sessions, &pb.Session{
+			Id:              fmt.Sprintf("s%02d", i),
+			RepoDisplayName: "bossanova",
+			Title:           fmt.Sprintf("session number %02d", i),
+		})
+	}
+	h.buildTableRows()
+
+	if len(h.table.Rows()) <= h.table.Height() {
+		t.Fatalf("fixture is %d rows against a %d-row viewport: it cannot scroll, so this test would be vacuous",
+			len(h.table.Rows()), h.table.Height())
+	}
+
+	// Scroll to the bottom through the table's own movement API, which is the
+	// only thing that maintains the viewport offset.
+	h.table.GotoBottom()
+	selected := "session number 29"
+	if !strings.Contains(visibleRowText(strings.Join(h.table.SelectedRow(), " ")), selected) {
+		t.Fatalf("precondition failed: GotoBottom did not select the last session, got %q",
+			visibleRowText(strings.Join(h.table.SelectedRow(), " ")))
+	}
+	if !strings.Contains(visibleRowText(h.table.View()), selected) {
+		t.Fatalf("precondition failed: the selected row %q is not visible before the rebuild", selected)
+	}
+
+	// A spinner tick, a keypress, a poll — every one of them lands here.
+	h.buildTableRows()
+
+	if got := visibleRowText(h.table.View()); !strings.Contains(got, selected) {
+		t.Errorf("after a rebuild the selected row %q is no longer visible in the viewport:\n%s", selected, got)
+	}
 }

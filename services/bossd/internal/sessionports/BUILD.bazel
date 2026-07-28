@@ -1,0 +1,75 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sessionports",
+    srcs = [
+        "address.go",
+        "clock.go",
+        "command.go",
+        "detector.go",
+        "doc.go",
+        "endpoint.go",
+        "identity_darwin.go",
+        "identity_linux.go",
+        "lsofparse.go",
+        "parseps.go",
+        "platform_other.go",
+        "probe.go",
+        "processsource.go",
+        "procfssocket.go",
+        "procnetparse.go",
+        "procstat.go",
+        "roots.go",
+        "socketscan.go",
+        "socketsource_darwin.go",
+        "socketsource_linux.go",
+        "sources.go",
+        "tracker.go",
+        "types.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/sessionports",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "@com_github_rs_zerolog//:zerolog",
+    ] + select({
+        "@rules_go//go/platform:darwin": [
+            "@org_golang_x_sys//unix",
+        ],
+        "@rules_go//go/platform:ios": [
+            "@org_golang_x_sys//unix",
+        ],
+        "//conditions:default": [],
+    }),
+)
+
+go_test(
+    name = "sessionports_test",
+    srcs = [
+        "command_test.go",
+        "detector_test.go",
+        "endpoint_test.go",
+        "live_darwin_test.go",
+        "lsofparse_test.go",
+        "main_test.go",
+        "parseps_test.go",
+        "probe_test.go",
+        "procfssocket_test.go",
+        "procnetparse_test.go",
+        "procstat_test.go",
+        "roots_test.go",
+        "tracker_test.go",
+    ],
+    embed = [":sessionports"],
+    deps = [
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_uber_go_goleak//:goleak",
+    ] + select({
+        "@rules_go//go/platform:darwin": [
+            "@org_golang_x_sys//unix",
+        ],
+        "@rules_go//go/platform:ios": [
+            "@org_golang_x_sys//unix",
+        ],
+        "//conditions:default": [],
+    }),
+)

@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "title": "BOS-571 (BOS-570 epic) — a scenario declaring terminal.cols 72 is captured on a 72-column pty, so the narrow board today's TUI draws is finally visible",
+  "fixture": { "preset": "demo" },
+  "terminal": { "cols": 72 },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the Home session list on a 72-column terminal — the size this scenario asked for, not the harness's 140-column default",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "NAME PR STATUS",
+            "match": "normalized",
+            "label": "the Home session table is drawn on the pty the scenario's terminal.cols asked for"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home on a 72-column terminal: this scenario asked for terminal.cols 72, not the default 140"
+        },
+        {
+          "waitMs": 1500,
+          "caption": "Since BOS-572 the session table fits the terminal it was given: REPO is dropped at 72 columns so the rest of the board stays inside the edge"
+        },
+        {
+          "expect": [
+            {
+              "text": "NAME",
+              "match": "normalized",
+              "label": "NAME — the session title column is priority 0, so it is never dropped however narrow the terminal is"
+            },
+            {
+              "text": "STATUS",
+              "match": "normalized",
+              "label": "STATUS — the most-scanned column is kept as long as it fits"
+            }
+          ],
+          "caption": "The columns that survive 72 are the ones the drop order protects: NAME always, STATUS for as long as it fits"
+        },
+        {
+          "key": "down",
+          "caption": "Arrow-navigating the narrow board: the cursor moves down the list as it does at 140 columns"
+        },
+        {
+          "expect": [
+            {
+              "text": "[n]ew session",
+              "match": "normalized",
+              "label": "[n]ew session — the Home action bar fits inside 72 columns and is fully readable"
+            },
+            {
+              "text": "[q]uit",
+              "match": "normalized",
+              "label": "[q]uit — the tail of the Home action bar is not clipped at the 72-column edge"
+            }
+          ],
+          "caption": "The Home action bar's first and last hints are both on screen, so this bar survives 72 columns"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the Settings hub on the same 72-column pty — its action bar runs off the narrow edge, which is exactly the layout problem the rest of BOS-570 exists to fix",
+      "steps": [
+        {
+          "key": "s",
+          "caption": "Open the Settings hub — same capture, same 72-column pty: the size held for the whole run"
+        },
+        {
+          "waitFor": {
+            "text": "[enter] open",
+            "match": "normalized",
+            "label": "the Settings hub action bar is rendered"
+          },
+          "timeoutMs": 10000,
+          "caption": "The Settings action bar wants 87 columns; only 72 exist, so it is cut at the terminal edge"
+        },
+        {
+          "waitMs": 1500,
+          "caption": "The honest \"before\" for BOS-570: this ticket shows the cramped board without fixing it"
+        },
+        {
+          "expect": [
+            {
+              "text": "[t]rash",
+              "match": "normalized",
+              "label": "[t]rash — the last Settings action hint that still fits inside 72 columns"
+            },
+            {
+              "text": "\\[b\\]illi(?!ng)",
+              "match": "regex",
+              "label": "the [b]illing hint is cut off mid-word at column 72 — at the 140-column default this line reads \"[b]illing · [esc] back\" in full"
+            }
+          ],
+          "caption": "The clipped hint is the width-dependent evidence: it holds at 72 columns and fails at 140"
+        }
+      ]
+    }
+  ]
+}

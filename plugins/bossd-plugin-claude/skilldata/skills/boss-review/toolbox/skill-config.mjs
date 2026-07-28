@@ -109,6 +109,10 @@ export const DEFAULT_CONFIG = Object.freeze({
   // instead of demanding an MCP server that does not exist there.
   trackerConfig: {},
   publishConfig: {},
+  // Plan storage is deliberately separate from publishConfig: proof artifacts
+  // continue using the publish adapter even when implementation plans live on
+  // the configured tracker.
+  planStorage: { kind: 'r2' },
   // Versioned wire contract for the `##`-section plan description that boss-plan emits and
   // boss-build / bs-sweep-plan consume. `version` is the integer contract
   // version stamped in-band as `- Contract: v<N>` under `## Planning`; `sections` is the
@@ -317,6 +321,16 @@ export function validateConfig(config, source) {
       }
     }
   }
+  if (
+    !config.planStorage ||
+    typeof config.planStorage !== 'object' ||
+    Array.isArray(config.planStorage)
+  ) {
+    fail('planStorage must be an object')
+  }
+  if (!['r2', 'tracker-attachment'].includes(config.planStorage.kind)) {
+    fail('planStorage.kind must be "r2" or "tracker-attachment"')
+  }
   // planContract is the extension point this feature exists for (a consuming repo overrides
   // the section set), so a malformed override must fail here with a skill-config: error rather
   // than a raw TypeError deep in planSections()/requiredPlanSections()/validatePlanDescription().
@@ -482,6 +496,11 @@ export function githubLabelName(config, role) {
 export function publishConfigFor(config, adapter = adapterFor(config, 'publish')) {
   const pc = config.publishConfig?.[adapter]
   return pc && typeof pc === 'object' ? pc : null
+}
+
+/** Resolve the implementation-plan store without changing proof publishing. */
+export function planStorageFor(config) {
+  return config.planStorage
 }
 
 /**

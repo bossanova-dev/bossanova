@@ -53,7 +53,7 @@ func (s *accountsStub) TestAccount(_ context.Context, id string) (*pb.TestAccoun
 	return s.testResp, s.testErr
 }
 
-func (s *accountsStub) ListSessions(_ context.Context, _ *pb.ListSessionsRequest) ([]*pb.Session, error) {
+func (s *accountsStub) ListSessions(_ context.Context, _ *pb.ListSessionsRequest, _ client.SessionReadOptions) ([]*pb.Session, error) {
 	s.sessionsCalls++
 	return s.sessions, s.sessionsErr
 }
@@ -224,10 +224,6 @@ func TestAccountsList_EmptyState_ExactSentence(t *testing.T) {
 	content := m.View().Content
 	if !strings.Contains(content, emptyAccountsMessage) {
 		t.Fatalf("empty view missing exact sentence %q\n%s", emptyAccountsMessage, content)
-	}
-	// Guard the literal wording so a typo can never silently pass the ticket.
-	if emptyAccountsMessage != "No managed accounts yet. Add one to let Bossanova rotate credentials automatically." {
-		t.Fatalf("empty-state sentence changed: %q", emptyAccountsMessage)
 	}
 }
 

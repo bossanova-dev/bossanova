@@ -193,15 +193,11 @@ func TestTUI_RepoAddView_FirstRepoReturnsSettings(t *testing.T) {
 	// The first repo was added from the settings hub, so completing the add
 	// returns there (its merge/automation/integration options were configured
 	// inline on the add wizard, not on a separate settings screen).
-	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-		return strings.Contains(screen, "Settings") &&
-			strings.Contains(screen, "[r]epos") &&
-			strings.Contains(screen, "[c]ron") &&
-			strings.Contains(screen, "[t]rash")
-	}); err != nil {
-		t.Fatalf("expected settings after adding only repo; screen:\n%s", h.Driver.Screen())
-	}
-	if screen := h.Driver.Screen(); strings.Contains(screen, "Repositories") || strings.Contains(screen, "PATH") {
+	waitForSettingsHub(t, h)
+	// "Repositories" is no longer a repo-list marker — it is also the label of
+	// the hub's Repositories section (BOS-511) — so the repo table's PATH header
+	// is what distinguishes the list from the hub.
+	if screen := h.Driver.Screen(); strings.Contains(screen, "PATH") {
 		t.Fatalf("first repo add should not leave user on repo list; screen:\n%s", screen)
 	}
 	if got := len(h.Daemon.Repos()); got != 1 {

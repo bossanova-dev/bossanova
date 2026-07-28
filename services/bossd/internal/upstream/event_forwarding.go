@@ -108,6 +108,16 @@ func (c *StreamClient) forwardEvent(
 		case outbound <- out:
 		case <-ctx.Done():
 		}
+	case ev.EgressBroadcast != nil:
+		// Carried through verbatim. Deliberately unlogged: the payload
+		// holds the secret broadcast body.
+		out := &pb.DaemonEvent{Event: &pb.DaemonEvent_EgressBroadcast{
+			EgressBroadcast: ev.EgressBroadcast.Egress,
+		}}
+		select {
+		case outbound <- out:
+		case <-ctx.Done():
+		}
 	case ev.Status != nil:
 		// Route through the coalescer. statusCh has a buffered 64 slots
 		// so a burst fits; if full we drop (the coalescer holds the

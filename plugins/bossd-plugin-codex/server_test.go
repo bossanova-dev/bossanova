@@ -217,6 +217,46 @@ func TestBuildInteractiveCommand_NoMcpOverrideWhenConfigUnreadable(t *testing.T)
 	}
 }
 
+// TestBuildInteractiveCommand_NoTuiNotificationOverrides pins BOS-487's
+// empirical finding: codex must NOT be launched with `tui.notifications` /
+// `tui.notification_method` overrides.
+//
+// The plan wanted `-c 'tui.notifications=["approval-requested"]' -c
+// tui.notification_method="osc9"` so an OSC 9 escape in the pipe-pane raw log
+// could feed BOS-485's question-signal store. Measured against codex-cli
+// 0.145.0: `approval-requested` is not a codex notification kind (the string is
+// absent from the binary), and because `tui.notifications` is an allow-list,
+// naming it emits nothing AND suppresses the one kind that does fire. That kind
+// is `agent-turn-complete`, whose payload is the last assistant message — the
+// semantic opposite of "a question is pending", so it must never reach the
+// question-signal store.
+//
+// Flip this test only alongside evidence that codex emits an approval-time
+// notification. Details:
+// docs/solutions/logic-errors/spike-codex-osc9-notification-is-turn-complete-only.md
+func TestBuildInteractiveCommand_NoTuiNotificationOverrides(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:    "s1",
+		WorktreePath: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	argv := strings.Join(resp.GetArgv(), " ")
+	for _, banned := range []string{
+		"tui.notifications",
+		"tui.notification_method",
+		"tui.notification_condition",
+	} {
+		if strings.Contains(argv, banned) {
+			t.Fatalf("codex argv must not carry %q (BOS-487: OSC 9 only signals "+
+				"turn-complete, never an approval): %v", banned, resp.GetArgv())
+		}
+	}
+}
+
 func TestBuildInteractiveCommandTrustsWorktreeBeforeReturningArgv(t *testing.T) {
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)

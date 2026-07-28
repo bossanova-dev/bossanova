@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/recurser/bossalib/githubcallback"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 )
@@ -23,17 +25,16 @@ func NewGithubCallbackStore(db *sql.DB) *SQLiteGithubCallbackStore {
 	return &SQLiteGithubCallbackStore{db: db}
 }
 
-// validGithubCallbackTrigger reports whether t is a known trigger event.
+// validGithubCallbackTrigger reports whether t is a known trigger event. This
+// store is the authority that rejects a registration, so it deliberately
+// derives from githubcallback.ValidTriggers() — the same canonical list the CLI
+// and MCP schemas validate against — rather than re-enumerating the vocabulary
+// here. A hand-maintained third copy would let a newly added trigger be
+// accepted by every other surface and rejected only at write time, with the
+// whole suite still green. Membership is exact (no trimming or case folding) so
+// the stored value is always a canonical trigger string.
 func validGithubCallbackTrigger(t models.GithubCallbackTrigger) bool {
-	switch t {
-	case models.GithubCallbackTriggerMerged,
-		models.GithubCallbackTriggerClosed,
-		models.GithubCallbackTriggerChecksPassed,
-		models.GithubCallbackTriggerChecksFailed:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(githubcallback.ValidTriggers(), t)
 }
 
 func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGithubCallbackParams) (*models.GithubCallback, error) {
@@ -242,12 +243,12 @@ func (s *SQLiteGithubCallbackStore) ReleaseLease(ctx context.Context, id, owner 
 
 func (s *SQLiteGithubCallbackStore) TriggerGroup(ctx context.Context, id, event string, now time.Time) (*models.GithubCallback, error) {
 	nowStr := sqlutil.FormatTime(now)
-	conn, err := s.beginImmediate(ctx)
+	conn, err := beginImmediate(ctx, s.db, "github callback")
 	if err != nil {
 		return nil, err
 	}
 	committed := false
-	defer s.closeImmediate(ctx, conn, &committed)
+	defer closeImmediate(ctx, conn, &committed)
 
 	var state, groupID, expiresAt string
 	var groupIDNull sql.NullString
@@ -358,28 +359,6 @@ func (s *SQLiteGithubCallbackStore) ScheduleRetry(ctx context.Context, id, owner
 		return ErrGithubCallbackLeaseConflict
 	}
 	return nil
-}
-
-func (s *SQLiteGithubCallbackStore) beginImmediate(ctx context.Context) (*sql.Conn, error) {
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("github callback write connection: %w", err)
-	}
-	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("begin github callback write transaction: %w", err)
-	}
-	return conn, nil
-}
-
-func (s *SQLiteGithubCallbackStore) closeImmediate(ctx context.Context, conn *sql.Conn, committed *bool) {
-	if conn == nil {
-		return
-	}
-	if committed == nil || !*committed {
-		_, _ = conn.ExecContext(context.WithoutCancel(ctx), `ROLLBACK`)
-	}
-	_ = conn.Close()
 }
 
 const githubCallbackSelectSQL = `SELECT id, group_id, target_chat_id, repo_owner, repo_name, pr_number,

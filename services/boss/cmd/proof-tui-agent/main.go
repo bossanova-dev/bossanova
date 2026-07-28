@@ -96,6 +96,9 @@ func seedWorld(d *tuitest.MockDaemon, w fixtures.World) {
 	for _, c := range w.Chats {
 		d.AddChat(c)
 	}
+	for _, e := range w.ChatStatuses {
+		d.AddChatStatus(e)
+	}
 	for _, j := range w.CronJobs {
 		d.AddCronJob(j)
 	}

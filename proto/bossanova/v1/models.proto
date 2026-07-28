@@ -177,6 +177,10 @@ message Repo {
   // Whether the daemon automatically deletes a session's git branch once its
   // session is archived. Honored by the session dispatcher. Defaults on.
   bool can_auto_delete_branches = 23;
+  // Whether the daemon proactively rebases this repo's other in-flight session
+  // branches onto the base branch whenever a merge advances it, force-pushing
+  // with lease. Opt-in (every rebase re-runs CI), so it defaults OFF.
+  bool should_keep_branches_current = 24;
   string linear_api_key = 15;
   reserved 16;
   // Sentry credentials. Mirrors linear_api_key: a Sentry auth token alone can't
@@ -232,6 +236,21 @@ message RepoSettings {
   bool has_linear_key = 9;
   bool has_sentry_key = 10;
   google.protobuf.Timestamp updated_at = 11; // echoed for optimistic concurrency
+}
+
+// HttpEndpoint is a single verified, machine-local web endpoint for a session:
+// the listening TCP port and the reachable loopback URL (scheme + loopback host
+// + port), e.g. "http://127.0.0.1:8080" or "https://[::1]:8443".
+//
+// These values are local, dynamic, and NEVER persisted. They exist only on the
+// wire, and only for an opted-in local TUI read that clears the daemon's
+// locality gates (see GetSessionRequest / ListSessionsRequest). Default reads,
+// CLI/MCP callers, mutation responses, daemon snapshots, reverse-stream
+// commands, and every bosso/orchestrator surface leave Session.http_endpoints
+// empty.
+message HttpEndpoint {
+  uint32 port = 1;
+  string url = 2;
 }
 
 // Session represents a coding-agent session.
@@ -416,6 +435,33 @@ message Session {
   // MERGED + repo_should_archive_sessions_after_merge, which stays true forever for a
   // merged→archived→resurrected session (BOS-425). Mirrors display_merging (60).
   bool archive_pending = 62;
+
+  // Verified machine-local HTTP/HTTPS endpoints for this session, hydrated
+  // server-side ONLY for an opted-in local TUI read that passes the daemon's
+  // locality gates (request opt-in + endpoint tracker available + a matching
+  // network namespace on Linux / a local Unix-socket request on macOS).
+  //
+  // Transport-only: local, dynamic, and NEVER persisted. SessionToProto leaves
+  // this empty; it is filled at the very end of GetSession/ListSessions and
+  // nowhere else. Default local reads, CLI/MCP callers, mutation responses,
+  // daemon snapshots, reverse-stream commands, RemoteClient/orchestrator
+  // requests, bosso, the MCP gateway, and DB models all carry an empty list.
+  repeated HttpEndpoint http_endpoints = 63;
+
+  // When this session's repair lease was released because the repair round
+  // STALLED — no repair-head-SHA advance and no repair-chat output for
+  // RepairStallWindow (8m). Absent for a healthy or never-repaired session, and
+  // for a lease reclaimed by the 45m crash TTL (that is a dead holder, not a
+  // stalled round).
+  //
+  // Transport-only: hydrated server-side from the in-memory RepairLeaseManager's
+  // stall record and NEVER persisted, exactly like repair_active (53). The
+  // record is cleared when a new repair round acquires the lease or when
+  // progress is observed, so a set value means "the last repair round died on
+  // its feet" — the signal an unattended driver reads to stop waiting on a
+  // frozen lease. While it is set, last_repair_blocked_reason (51) carries the
+  // stall reason.
+  optional google.protobuf.Timestamp repair_stalled_at = 64;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display
@@ -696,6 +742,11 @@ message CronJob {
   string model = 16;                   // opaque agent model id; "" = plugin default. Never enumerated by bossd.
   string gate_command = 17;            // optional gate command run before each fire; empty = no gate
   bool   should_run_setup_command = 18;       // run the repo setup script before the agent; default true
+  // Marks this job as "zero output": it is intended to fire with no worktree,
+  // branch, or pull request, because the run is expected to produce no repo
+  // changes. Persisted and echoed back only — nothing honours it yet, so a job
+  // with this set still fires exactly as it does today (BOS-543).
+  bool   is_zero_output = 19;
 }
 
 // GithubCallback is a durable one-shot registration that delivers a chat
@@ -710,7 +761,7 @@ message GithubCallback {
   string repo_owner     = 4;
   string repo_name      = 5;
   int32  pr_number      = 6;
-  string trigger        = 7;   // merged | closed | checks_passed | checks_failed
+  string trigger        = 7;   // merged | closed | checks_passed | checks_failed | ready_for_review | checks_passed_ready
   string state          = 8;   // active | leased | triggered | delivered | canceled | expired
   string message        = 9;   // registered prompt body; secret — never logged
   string lease_owner    = 10;  // empty = no active lease

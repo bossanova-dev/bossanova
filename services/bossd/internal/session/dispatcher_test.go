@@ -583,6 +583,53 @@ func TestDispatcherPRMerged_ArchivesWhenEnabled(t *testing.T) {
 	}
 }
 
+// TestDispatcherPRMerged_ArchivesWhenAlreadyReconciledToMerged pins the
+// interaction BOS-534 exposes. MergeSession's post-merge display refresh
+// reconciles the session to Merged synchronously, before its RPC returns — so
+// by the time GitHub's PR-merged webhook arrives, the row is already Merged.
+// machine.Merged permits no outbound PRMerged, so the handler's FireCtx would
+// fail and return early, silently skipping archive-after-merge (and the
+// branch deletion chained off it) on every user-initiated merge. The handler
+// must treat an already-Merged row as the transition having happened and still
+// run the side effects.
+func TestDispatcherPRMerged_ArchivesWhenAlreadyReconciledToMerged(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", ShouldArchiveSessionsAfterMerge: true}
+	// Already reconciled to Merged by the display refresh MergeSession fired.
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.Merged,
+	}
+
+	arch := newFakeArchiver()
+	d := NewDispatcher(sessions, repos, vp, logger)
+	d.SetArchiver(arch)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	if got := sessions.sessions["sess-1"].State; got != machine.Merged {
+		t.Errorf("state = %v, want Merged", got)
+	}
+	select {
+	case id := <-arch.calls:
+		if id != "sess-1" {
+			t.Errorf("archived %q, want sess-1", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("an already-Merged session was not archived when its merge webhook arrived")
+	}
+}
+
 // With the flag off, a merged session is not archived.
 func TestDispatcherPRMerged_DoesNotArchiveWhenDisabled(t *testing.T) {
 	ctx := context.Background()

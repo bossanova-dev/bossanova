@@ -25,6 +25,7 @@ func testCronJobs() []*pb.CronJob {
 			Model:                 "opus",
 			GateCommand:           "make lint",
 			ShouldRunSetupCommand: true,
+			IsZeroOutput:          true,
 			LastRunSessionId:      "sess-aaa-111",
 			LastRunAt:             timestamppb.New(timestampDaysAgo(1)),
 			LastRunOutcome:        "pr_created",
@@ -56,6 +57,7 @@ type cronJSON struct {
 	Model                 string `json:"model"`
 	GateCommand           string `json:"gate_command"`
 	ShouldRunSetupCommand bool   `json:"run_setup_command"`
+	IsZeroOutput          bool   `json:"zero_output"`
 	LastRunSessionID      string `json:"last_run_session_id"`
 	LastRunAt             string `json:"last_run_at"`
 	LastRunOutcome        string `json:"last_run_outcome"`
@@ -131,6 +133,9 @@ func TestCLI_Cron_Ls_JSON(t *testing.T) {
 	}
 	if !first.Enabled || !first.ShouldRunSetupCommand {
 		t.Errorf("expected enabled+run_setup_command true: %+v", first)
+	}
+	if !first.IsZeroOutput {
+		t.Errorf("expected zero_output true in --json output: %+v", first)
 	}
 	if first.Model != "opus" || first.GateCommand != "make lint" || first.AgentName != "claude" {
 		t.Errorf("unexpected agent/model/gate: %+v", first)
@@ -227,6 +232,10 @@ func TestCLI_Cron_Add(t *testing.T) {
 	// --run-setup not given: ShouldRunSetupCommand stays nil so server default applies.
 	if req.ShouldRunSetupCommand != nil {
 		t.Errorf("expected ShouldRunSetupCommand nil when --run-setup omitted, got %v", *req.ShouldRunSetupCommand)
+	}
+	// --zero-output not given: IsZeroOutput stays nil so the server default (false) applies.
+	if req.IsZeroOutput != nil {
+		t.Errorf("expected IsZeroOutput nil when --zero-output omitted, got %v", *req.IsZeroOutput)
 	}
 }
 
@@ -418,5 +427,104 @@ func TestCLI_Cron_RunNow_Skipped(t *testing.T) {
 	}
 	if !strings.Contains(res.Stdout, "overlap with running session") {
 		t.Errorf("expected skip reason in output, got %q", res.Stdout)
+	}
+}
+
+// --- BOS-565: --zero-output on cron add/update, show, and --json ---
+
+// TestCLI_Cron_Add_ZeroOutput verifies `cron add --zero-output` sends the flag
+// as an explicit pointer.
+func TestCLI_Cron_Add_ZeroOutput(t *testing.T) {
+	h := clitest.New(t, clitest.WithRepos(testRepos()...))
+	res := h.Run("cron", "add",
+		"--repo", "repo-1", "--name", "j", "--schedule", "@daily",
+		"--prompt", "p", "--zero-output",
+	)
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	calls := h.Daemon.CreateCronJobCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 create call, got %d", len(calls))
+	}
+	if calls[0].IsZeroOutput == nil {
+		t.Fatalf("expected non-nil IsZeroOutput")
+	}
+	if !*calls[0].IsZeroOutput {
+		t.Errorf("expected IsZeroOutput true, got false")
+	}
+}
+
+// TestCLI_Cron_Update_ZeroOutputFalse verifies `cron update --zero-output=false`
+// turns the flag off. An explicit false must reach the daemon, which is why the
+// flag is read through Changed() rather than its value alone.
+func TestCLI_Cron_Update_ZeroOutputFalse(t *testing.T) {
+	h := clitest.New(t, clitest.WithCronJobs(testCronJobs()...))
+	res := h.Run("cron", "update", "cron-aaa", "--zero-output=false")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	calls := h.Daemon.UpdateCronJobCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 update call, got %d", len(calls))
+	}
+	if calls[0].IsZeroOutput == nil {
+		t.Fatalf("expected non-nil IsZeroOutput")
+	}
+	if *calls[0].IsZeroOutput {
+		t.Errorf("expected IsZeroOutput false, got true")
+	}
+}
+
+// TestCLI_Cron_Update_ZeroOutputOmitted is the diff half: an update that does
+// not name --zero-output must leave it unset so the current value survives.
+func TestCLI_Cron_Update_ZeroOutputOmitted(t *testing.T) {
+	h := clitest.New(t, clitest.WithCronJobs(testCronJobs()...))
+	res := h.Run("cron", "update", "cron-aaa", "--name", "renamed")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	calls := h.Daemon.UpdateCronJobCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 update call, got %d", len(calls))
+	}
+	if calls[0].IsZeroOutput != nil {
+		t.Errorf("expected IsZeroOutput nil when --zero-output omitted, got %v", *calls[0].IsZeroOutput)
+	}
+}
+
+// TestCLI_Cron_Update_NoFlagsErrorListsZeroOutput pins the error string that
+// enumerates every supported update flag — a new flag missing from it is a
+// discoverability bug.
+func TestCLI_Cron_Update_NoFlagsErrorListsZeroOutput(t *testing.T) {
+	h := clitest.New(t, clitest.WithCronJobs(testCronJobs()...))
+	res := h.Run("cron", "update", "cron-aaa")
+
+	if res.ExitCode == 0 {
+		t.Fatalf("expected a non-zero exit for an update with no flags, got 0: %q", res.Stdout)
+	}
+	out := res.Stdout + res.Stderr
+	if !strings.Contains(out, "no flags provided") {
+		t.Fatalf("expected the no-flags error, got %q", out)
+	}
+	if !strings.Contains(out, "--zero-output") {
+		t.Errorf("no-flags error does not list --zero-output: %q", out)
+	}
+}
+
+// TestCLI_Cron_Show_ZeroOutput verifies the human `cron show` output carries a
+// Zero output line.
+func TestCLI_Cron_Show_ZeroOutput(t *testing.T) {
+	h := clitest.New(t, clitest.WithCronJobs(testCronJobs()...))
+	res := h.Run("cron", "show", "cron-aaa")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "Zero output:") {
+		t.Errorf("show output missing a %q line:\n%s", "Zero output:", res.Stdout)
 	}
 }

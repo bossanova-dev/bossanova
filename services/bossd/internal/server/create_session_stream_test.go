@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/hex"
@@ -22,6 +23,7 @@ import (
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/socketauth"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
@@ -495,6 +497,361 @@ func TestCreateSessionEmptyWorktreeBaseDirReturnsInvalidArgument(t *testing.T) {
 	}
 }
 
+// gatedDraftPRProvider parks the first CreateDraftPR call until released, so a
+// test can inspect the exact window BOS-540 opened: the session exists and is
+// ready, but its draft PR has not been created yet.
+type gatedDraftPRProvider struct {
+	setupStreamProvider
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+	releaseOnce sync.Once
+}
+
+// unpark releases the parked create. Idempotent, so the test can register it as
+// a cleanup and still close the gate explicitly on the happy path: without the
+// cleanup, any t.Fatalf before the release leaves the provider goroutine parked
+// forever and the harness drain burns its full timeout before reporting.
+func (p *gatedDraftPRProvider) unpark() {
+	p.releaseOnce.Do(func() { close(p.release) })
+}
+
+func (p *gatedDraftPRProvider) CreateDraftPR(context.Context, vcs.CreatePROpts) (*vcs.PRInfo, error) {
+	// Both closes are once-guarded. A second call — a retry path added later —
+	// would otherwise panic on close-of-closed-channel from a background
+	// goroutine, taking down the whole test binary rather than one test.
+	p.enteredOnce.Do(func() { close(p.entered) })
+	<-p.release
+	return &vcs.PRInfo{Number: 7, URL: "https://github.com/org/repo/pull/7"}, nil
+}
+
+// TestStreamCreateSession_SessionCreatedBeforeDraftPRExists is the client-facing
+// half of BOS-540. Moving the draft-PR create into the background changes what a
+// CreateSession client sees, so the change is asserted here rather than left to
+// be discovered: the stream still emits its normal SetupOutput → SessionCreated
+// sequence, but the SessionCreated frame now carries a session with NO PR number
+// — ready, attachable, with its worktree and branch — plus a blocked reason that
+// says a PR is on its way. The PR number arrives on a later read.
+func TestStreamCreateSession_SessionCreatedBeforeDraftPRExists(t *testing.T) {
+	provider := &gatedDraftPRProvider{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	h := newCreateSessionStreamHarnessWithProvider(
+		t, &setupStreamWorktree{}, &setupStreamAgent{}, provider, zerolog.Nop(),
+	)
+	// Registered AFTER the harness so LIFO pops it BEFORE the harness's drain:
+	// a t.Fatalf below must release the parked provider first, or the drain sits
+	// out its full timeout and reports a spurious still-in-flight error.
+	t.Cleanup(provider.unpark)
+
+	agentName := "claude"
+	var created *pb.Session
+	// No PrNumber: this is the default path that opens a draft PR.
+	err := h.server.StreamCreateSession(context.Background(), &pb.CreateSessionRequest{
+		RepoId:    h.repo.ID,
+		Title:     "background draft pr",
+		Plan:      "do work",
+		AgentName: &agentName,
+		Detach:    true,
+	}, func(resp *pb.CreateSessionResponse) error {
+		if sc := resp.GetSessionCreated(); sc != nil {
+			created = sc.GetSession()
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamCreateSession: %v", err)
+	}
+	if created == nil {
+		t.Fatal("no SessionCreated frame emitted")
+	}
+
+	// The RPC returned while the create is still parked inside the provider.
+	<-provider.entered
+
+	if created.PrNumber != nil {
+		t.Fatalf("SessionCreated PrNumber = %d, want unset: the client is told about the session, not the PR", *created.PrNumber)
+	}
+	if created.PrUrl != nil {
+		t.Fatalf("SessionCreated PrUrl = %q, want unset", *created.PrUrl)
+	}
+	// Everything a client needs to use the session is already there.
+	if created.State != pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN {
+		t.Fatalf("SessionCreated State = %v, want IMPLEMENTING_PLAN", created.State)
+	}
+	if created.WorktreePath == "" || created.BranchName == "" {
+		t.Fatalf("SessionCreated worktree/branch = %q/%q, want both set", created.WorktreePath, created.BranchName)
+	}
+	if got := created.GetBlockedReason(); got != sessionreason.DraftPRCreationInFlight() {
+		t.Fatalf("SessionCreated BlockedReason = %q, want the in-flight marker %q", got, sessionreason.DraftPRCreationInFlight())
+	}
+
+	provider.unpark()
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer waitCancel()
+	if err := h.lifecycle.WaitForBackgroundDraftPR(waitCtx, created.Id); err != nil {
+		t.Fatalf("background draft PR did not finish: %v", err)
+	}
+
+	// The PR reaches the client on its next read of the session row — no new
+	// event type, no second frame on this stream.
+	after, err := h.sessions.Get(context.Background(), created.Id)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if after.PRNumber == nil || *after.PRNumber != 7 {
+		t.Fatalf("persisted PRNumber = %v, want 7", after.PRNumber)
+	}
+	if after.BlockedReason != nil {
+		t.Fatalf("persisted BlockedReason = %q, want nil once the PR landed", *after.BlockedReason)
+	}
+}
+
+func TestStreamCreateSession_LinearSuggestedBranchCreatesFreshWorktree(t *testing.T) {
+	var logs bytes.Buffer
+	logger := zerolog.New(zerolog.SyncWriter(&logs))
+	worktrees := &setupStreamWorktree{}
+	h := newCreateSessionStreamHarnessWithProvider(
+		t,
+		worktrees,
+		&setupStreamAgent{},
+		setupStreamProvider{},
+		logger,
+	)
+	branchName := "dave/bos-504-speed-up-startup"
+	trackerID := "BOS-504"
+	agentName := "claude"
+	var created bool
+
+	err := h.server.StreamCreateSession(context.Background(), &pb.CreateSessionRequest{
+		RepoId:     h.repo.ID,
+		Title:      "speed up startup",
+		Plan:       "implement BOS-504",
+		TrackerId:  &trackerID,
+		BranchName: &branchName,
+		AgentName:  &agentName,
+		DeferPr:    true,
+	}, func(resp *pb.CreateSessionResponse) error {
+		created = created || resp.GetSessionCreated() != nil
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamCreateSession: %v", err)
+	}
+	if !created {
+		t.Fatal("SessionCreated frame not emitted")
+	}
+
+	createCalls, existingCalls := worktrees.callRecords()
+	if len(createCalls) != 1 {
+		t.Fatalf("Create calls = %d, want 1", len(createCalls))
+	}
+	if got := createCalls[0].BranchName; got != branchName {
+		t.Fatalf("Create BranchName = %q, want %q", got, branchName)
+	}
+	if len(existingCalls) != 0 {
+		t.Fatalf("CreateFromExistingBranch calls = %d, want 0", len(existingCalls))
+	}
+	if got := logs.String(); !strings.Contains(got, `"branch_mode":"fresh-branch"`) {
+		t.Fatalf("logs missing fresh branch mode:\n%s", got)
+	}
+}
+
+func TestStreamCreateSession_PRUsesExistingCheckout(t *testing.T) {
+	var logs bytes.Buffer
+	logger := zerolog.New(zerolog.SyncWriter(&logs))
+	worktrees := &setupStreamWorktree{}
+	h := newCreateSessionStreamHarnessWithProvider(
+		t,
+		worktrees,
+		&setupStreamAgent{},
+		setupStreamProvider{},
+		logger,
+	)
+
+	if _, err := h.createSession(t, "existing PR"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	createCalls, existingCalls := worktrees.callRecords()
+	if len(createCalls) != 0 {
+		t.Fatalf("Create calls = %d, want 0", len(createCalls))
+	}
+	if len(existingCalls) != 1 {
+		t.Fatalf("CreateFromExistingBranch calls = %d, want 1", len(existingCalls))
+	}
+	if got, want := existingCalls[0].BranchName, "dependabot/npm/pkg-1.0.0"; got != want {
+		t.Fatalf("CreateFromExistingBranch BranchName = %q, want %q", got, want)
+	}
+	if got := logs.String(); !strings.Contains(got, `"result":"checked_out_existing"`) {
+		t.Fatalf("logs missing existing checkout result:\n%s", got)
+	}
+}
+
+func TestStreamCreateSession_QuickChatDoesNotWaitForWorktreeStart(t *testing.T) {
+	var logs bytes.Buffer
+	logger := zerolog.New(zerolog.SyncWriter(&logs))
+	createStarted := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseCreate) })
+	}
+	t.Cleanup(release)
+
+	worktrees := &setupStreamWorktree{
+		createFn: func(_ context.Context, _ gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
+			close(createStarted)
+			<-releaseCreate
+			return &gitpkg.CreateResult{
+				WorktreePath: "/tmp/worktrees/repo/normal",
+				BranchName:   "normal",
+			}, nil
+		},
+	}
+	h := newCreateSessionStreamHarnessWithProvider(
+		t,
+		worktrees,
+		&setupStreamAgent{},
+		setupStreamProvider{},
+		logger,
+	)
+	agentName := "claude"
+	normalDone := make(chan error, 1)
+	go func() {
+		normalDone <- h.server.StreamCreateSession(context.Background(), &pb.CreateSessionRequest{
+			RepoId:    h.repo.ID,
+			Title:     "normal",
+			Plan:      "do normal work",
+			AgentName: &agentName,
+			DeferPr:   true,
+		}, func(*pb.CreateSessionResponse) error { return nil })
+	}()
+
+	select {
+	case <-createStarted:
+	case <-time.After(time.Second):
+		t.Fatal("normal request did not enter worktree Create")
+	}
+	select {
+	case err := <-normalDone:
+		t.Fatalf("normal request returned before Create was released: %v", err)
+	default:
+	}
+
+	type streamResult struct {
+		err     error
+		created bool
+	}
+	quickDone := make(chan streamResult, 1)
+	go func() {
+		result := streamResult{}
+		result.err = h.server.StreamCreateSession(context.Background(), &pb.CreateSessionRequest{
+			RepoId:      h.repo.ID,
+			Title:       "quick",
+			Plan:        "answer a question",
+			AgentName:   &agentName,
+			IsQuickChat: true,
+		}, func(resp *pb.CreateSessionResponse) error {
+			result.created = result.created || resp.GetSessionCreated() != nil
+			return nil
+		})
+		quickDone <- result
+	}()
+
+	select {
+	case result := <-quickDone:
+		if result.err != nil {
+			t.Fatalf("Quick Chat StreamCreateSession: %v", result.err)
+		}
+		if !result.created {
+			t.Fatal("Quick Chat did not emit SessionCreated")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Quick Chat waited for blocked worktree startup")
+	}
+	select {
+	case err := <-normalDone:
+		t.Fatalf("normal request returned before explicit release: %v", err)
+	default:
+	}
+
+	release()
+	if err := <-normalDone; err != nil {
+		t.Fatalf("normal StreamCreateSession after release: %v", err)
+	}
+	gotLogs := logs.String()
+	for _, want := range []string{
+		`"quick_chat":true`,
+		`"branch_mode":"quick-chat"`,
+		`"start_lock_wait":0`,
+	} {
+		if !strings.Contains(gotLogs, want) {
+			t.Fatalf("logs missing %q:\n%s", want, gotLogs)
+		}
+	}
+}
+
+func TestStreamCreateSession_LogsStartupTimingAndLifecycleBranchResult(t *testing.T) {
+	var logs bytes.Buffer
+	logger := zerolog.New(zerolog.SyncWriter(&logs))
+	// Distinct sentinel phase durations so the assertions below pin which
+	// CreateResult field feeds which log key. With the fake's zero-valued
+	// result every phase renders as 0 and a crossed wire (e.g. logging
+	// WorktreeAddDuration under fetch_ms) would still satisfy a bare
+	// key-presence check.
+	worktrees := &setupStreamWorktree{
+		createFromExistingErr: errors.New("remote branch missing"),
+		createFn: func(_ context.Context, _ gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
+			return &gitpkg.CreateResult{
+				WorktreePath:        "/tmp/worktrees/repo/branch",
+				BranchName:          "branch",
+				FetchDuration:       11 * time.Millisecond,
+				BranchProbeDuration: 22 * time.Millisecond,
+				WorktreeAddDuration: 33 * time.Millisecond,
+				SetupScriptDuration: 44 * time.Millisecond,
+			}, nil
+		},
+	}
+	h := newCreateSessionStreamHarnessWithProvider(
+		t,
+		worktrees,
+		&setupStreamAgent{},
+		setupStreamProvider{},
+		logger,
+	)
+
+	if _, err := h.createSession(t, "logged fallback"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	got := logs.String()
+	for _, want := range []string{
+		`"message":"session startup complete"`,
+		`"quick_chat":false`,
+		`"branch_mode":"existing-pr"`,
+		`"startup_duration":`,
+		`"start_lock_wait":`,
+		`"message":"existing branch checkout failed; creating fresh branch"`,
+		`"result":"existing_checkout_failed"`,
+		`"message":"worktree startup complete"`,
+		`"result":"created_fresh_after_existing_checkout_error"`,
+		`"worktree_duration":`,
+		// Value-level, not just key presence: zerolog's default
+		// DurationFieldUnit is time.Millisecond (this repo sets no override),
+		// so each sentinel above renders as its millisecond count.
+		`"fetch_ms":11`,
+		`"branch_probe_ms":22`,
+		`"worktree_add_ms":33`,
+		`"setup_script_ms":44`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("logs missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // TestNewHookToken verifies the server's finalize-hook token minter (used for
 // tmux_unattended sessions): a 64-char hex string, unique per call.
 func TestNewHookToken(t *testing.T) {
@@ -525,6 +882,9 @@ type createSessionStreamHarness struct {
 	repo     *models.Repo
 	repos    db.RepoStore
 	sessions db.SessionStore
+	// lifecycle is exposed so tests can join the background draft-PR step
+	// (BOS-540), which outlives the CreateSession RPC.
+	lifecycle *session.Lifecycle
 }
 
 func newCreateSessionStreamHarness(t *testing.T, worktrees *setupStreamWorktree, runner *setupStreamAgent) *createSessionStreamHarness {
@@ -554,7 +914,7 @@ func newCreateSessionStreamHarnessWithProvider(t *testing.T, worktrees *setupStr
 		t.Fatalf("create repo: %v", err)
 	}
 
-	lifecycle := session.NewLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, provider, zerolog.Nop())
+	lifecycle := session.NewLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, provider, logger)
 	// createSession uses Detach=true (headless StartByAgent), which resolves the
 	// proof env overlay. Inject a keyring-free resolver so the test never opens
 	// the real OS keyring (non-deterministic; leaks a dbus goroutine on Linux).
@@ -574,15 +934,37 @@ func newCreateSessionStreamHarnessWithProvider(t *testing.T, worktrees *setupStr
 	httpServer := httptest.NewServer(mux)
 	t.Cleanup(httpServer.Close)
 
-	return &createSessionStreamHarness{
+	h := &createSessionStreamHarness{
 		client: bossanovav1connect.NewDaemonServiceClient(
 			httpServer.Client(), httpServer.URL,
 			connect.WithInterceptors(socketauth.NewClientInterceptor(streamTestToken)),
 		),
-		server:   s,
-		repo:     repo,
-		repos:    repos,
-		sessions: sessions,
+		server:    s,
+		repo:      repo,
+		repos:     repos,
+		sessions:  sessions,
+		lifecycle: lifecycle,
+	}
+
+	// A create that is still opening its draft PR when the test ends would keep
+	// writing to a closed test DB, so every harness drains the background step.
+	t.Cleanup(func() { h.awaitDraftPRs(t) })
+
+	return h
+}
+
+// awaitDraftPRs blocks until every background draft-PR create this harness
+// started has finished (BOS-540). Any test that both creates a default-path
+// session AND reads shared state the step writes — most sharply a zerolog
+// bytes.Buffer sink, which the step logs into after the RPC has returned — must
+// call this BEFORE that read. Draining, not sleeping: the step's registry
+// channel closes after its last write, so the read is ordered behind it.
+func (h *createSessionStreamHarness) awaitDraftPRs(t *testing.T) {
+	t.Helper()
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer drainCancel()
+	if abandoned := h.lifecycle.WaitForBackgroundDraftPRs(drainCtx); len(abandoned) > 0 {
+		t.Errorf("background draft PR still in flight for %v", abandoned)
 	}
 }
 
@@ -666,12 +1048,29 @@ func (s *setupOutputCaptureSender) Send(resp *pb.CreateSessionResponse) error {
 }
 
 type setupStreamWorktree struct {
-	output    []string
-	createErr error
+	mu sync.Mutex
+
+	output                []string
+	createErr             error
+	createFromExistingErr error
+	createFn              func(context.Context, gitpkg.CreateOpts) (*gitpkg.CreateResult, error)
+
+	createCalls             []gitpkg.CreateOpts
+	createFromExistingCalls []gitpkg.CreateFromExistingBranchOpts
 }
 
-func (w *setupStreamWorktree) Create(_ context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
-	for _, text := range w.output {
+func (w *setupStreamWorktree) Create(ctx context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
+	w.mu.Lock()
+	w.createCalls = append(w.createCalls, opts)
+	output := append([]string(nil), w.output...)
+	createErr := w.createErr
+	createFn := w.createFn
+	w.mu.Unlock()
+
+	if createFn != nil {
+		return createFn(ctx, opts)
+	}
+	for _, text := range output {
 		if opts.SetupScriptOutput == nil {
 			continue
 		}
@@ -679,14 +1078,23 @@ func (w *setupStreamWorktree) Create(_ context.Context, opts gitpkg.CreateOpts) 
 			return nil, err
 		}
 	}
-	if w.createErr != nil {
-		return nil, w.createErr
+	if createErr != nil {
+		return nil, createErr
 	}
 	return &gitpkg.CreateResult{WorktreePath: "/tmp/worktrees/repo/branch", BranchName: "branch"}, nil
 }
 
 func (w *setupStreamWorktree) CreateFromExistingBranch(_ context.Context, opts gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {
-	for _, text := range w.output {
+	w.mu.Lock()
+	w.createFromExistingCalls = append(w.createFromExistingCalls, opts)
+	output := append([]string(nil), w.output...)
+	createErr := w.createFromExistingErr
+	if createErr == nil {
+		createErr = w.createErr
+	}
+	w.mu.Unlock()
+
+	for _, text := range output {
 		if opts.SetupScriptOutput == nil {
 			continue
 		}
@@ -694,10 +1102,18 @@ func (w *setupStreamWorktree) CreateFromExistingBranch(_ context.Context, opts g
 			return nil, err
 		}
 	}
-	if w.createErr != nil {
-		return nil, w.createErr
+	if createErr != nil {
+		return nil, createErr
 	}
 	return &gitpkg.CreateResult{WorktreePath: "/tmp/worktrees/repo/branch", BranchName: opts.BranchName}, nil
+}
+
+func (w *setupStreamWorktree) callRecords() ([]gitpkg.CreateOpts, []gitpkg.CreateFromExistingBranchOpts) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return append([]gitpkg.CreateOpts(nil), w.createCalls...),
+		append([]gitpkg.CreateFromExistingBranchOpts(nil), w.createFromExistingCalls...)
 }
 
 func (w *setupStreamWorktree) Archive(context.Context, string) error { return nil }
@@ -715,12 +1131,16 @@ func (w *setupStreamWorktree) PushWithLease(context.Context, string, string, str
 func (w *setupStreamWorktree) InjectPRNumbers(context.Context, string, string, int, string) error {
 	return nil
 }
-func (w *setupStreamWorktree) VerifyPushedBranchAheadOfBase(context.Context, string, string, string) (*gitpkg.BranchVerification, error) {
+func (w *setupStreamWorktree) VerifyPushedBranchAheadOfBase(context.Context, string, string, string, gitpkg.VerifyPushedBranchAheadOfBaseOpts) (*gitpkg.BranchVerification, error) {
 	return &gitpkg.BranchVerification{HeadSHA: "head", BaseSHA: "base", RemoteHeadSHA: "head", AheadCount: 1}, nil
 }
 func (w *setupStreamWorktree) Status(context.Context, string) (string, error) { return "", nil }
 func (w *setupStreamWorktree) CommitSubjects(context.Context, string, string) ([]string, error) {
 	return nil, nil
+}
+
+func (w *setupStreamWorktree) HasDiffAgainstBase(context.Context, string, string) (bool, error) {
+	return true, nil
 }
 
 func (w *setupStreamWorktree) LatestCommitSubject(context.Context, string) (string, error) {
@@ -742,6 +1162,9 @@ func (w *setupStreamWorktree) RetryDeferredBaseSyncs(context.Context)           
 func (w *setupStreamWorktree) IsAncestor(context.Context, string, string, string) (bool, error) {
 	return true, nil
 }
+func (w *setupStreamWorktree) CountMergeCommits(context.Context, string, string, string) (int, error) {
+	return 0, nil
+}
 func (w *setupStreamWorktree) DeleteLocalBranch(context.Context, string, string) error { return nil }
 func (w *setupStreamWorktree) BranchSafeToDelete(context.Context, string, string, string) (bool, error) {
 	return false, nil
@@ -749,6 +1172,12 @@ func (w *setupStreamWorktree) BranchSafeToDelete(context.Context, string, string
 func (w *setupStreamWorktree) FetchBase(context.Context, string, string) error { return nil }
 func (w *setupStreamWorktree) MergeLocalBranch(context.Context, string, string, string, string) error {
 	return nil
+}
+func (w *setupStreamWorktree) CountBehindBase(context.Context, string, string, string) (int, error) {
+	return 0, nil
+}
+func (w *setupStreamWorktree) RebaseOntoBaseAndPush(context.Context, string, string, string) (*gitpkg.RebaseResult, error) {
+	return &gitpkg.RebaseResult{}, nil
 }
 
 type setupStreamAgent struct {

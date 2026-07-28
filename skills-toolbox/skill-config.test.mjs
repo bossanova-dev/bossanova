@@ -22,6 +22,7 @@ import {
   adapterFor,
   trackerConfigFor,
   publishConfigFor,
+  planStorageFor,
   stateName,
   labelName,
   githubLabelName,
@@ -120,6 +121,21 @@ test('loadSkillConfig returns defaults when no file present', () => {
   } finally {
     cleanup()
   }
+})
+
+test('planStorageFor defaults to R2 and accepts tracker attachments', () => {
+  assert.deepEqual(planStorageFor(DEFAULT_CONFIG), { kind: 'r2' })
+  assert.deepEqual(
+    planStorageFor(mergeConfig(DEFAULT_CONFIG, { planStorage: { kind: 'tracker-attachment' } })),
+    { kind: 'tracker-attachment' },
+  )
+})
+
+test('validateConfig rejects an unknown plan storage kind', () => {
+  assert.throws(
+    () => validateConfig(mergeConfig(DEFAULT_CONFIG, { planStorage: { kind: 'unknown' } }), 'test'),
+    /skill-config:.*planStorage\.kind must be "r2" or "tracker-attachment"/,
+  )
 })
 
 test('mergeConfig replaces arrays and shallow-merges objects', () => {
@@ -860,4 +876,5 @@ test('the committed .boss-skills.json reproduces the current hard-coded values',
   const pc = publishConfigFor(cfg)
   assert.ok(pc.bucket.length > 0)
   assert.match(pc.baseUrl, /^https:\/\//)
+  assert.deepEqual(planStorageFor(cfg), { kind: 'tracker-attachment' })
 })

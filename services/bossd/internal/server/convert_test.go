@@ -626,6 +626,7 @@ func TestCronJobStatus(t *testing.T) {
 	prSkippedNoGitHub := models.CronJobOutcomePRSkippedNoGitHub
 	failedRecovered := models.CronJobOutcomeFailedRecovered
 	worktreeGone := models.CronJobOutcomeWorktreeGone
+	zeroOutput := models.CronJobOutcomeZeroOutput
 
 	// Seed the fake store with sessions in various lifecycle states.
 	store := newFakeSessionStore()
@@ -802,6 +803,12 @@ func TestCronJobStatus(t *testing.T) {
 			// no-op, not a run failure. Must paint IDLE, never red FAILED.
 			name:  "outcome worktree_gone -> IDLE",
 			job:   &models.CronJob{LastRunOutcome: &worktreeGone},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "outcome zero_output -> IDLE",
+			job:   &models.CronJob{LastRunOutcome: &zeroOutput},
 			store: store,
 			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
 		},
@@ -1049,6 +1056,39 @@ func TestCronJobToProtoGateCommandAndRunSetupCommandRoundTrip(t *testing.T) {
 	}
 	if !got.ShouldRunSetupCommand {
 		t.Fatalf("ShouldRunSetupCommand = false, want true")
+	}
+}
+
+// TestCronJobToProtoZeroOutputRoundTrip proves the model→proto conversion carries
+// IsZeroOutput in both directions, so a hardcoded constant on either side cannot
+// pass.
+func TestCronJobToProtoZeroOutputRoundTrip(t *testing.T) {
+	now := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+
+	for _, tt := range []struct {
+		name string
+		want bool
+	}{
+		{"zero output enabled", true},
+		{"zero output disabled", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			job := &models.CronJob{
+				ID:           "job-zero-output",
+				RepoID:       "repo-1",
+				Name:         "Zero output",
+				Prompt:       "check",
+				Schedule:     "@daily",
+				IsZeroOutput: tt.want,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			}
+
+			got := cronJobToProto(context.Background(), job, newFakeSessionStore(), nil, nil)
+			if got.IsZeroOutput != tt.want {
+				t.Fatalf("IsZeroOutput = %v, want %v", got.IsZeroOutput, tt.want)
+			}
+		})
 	}
 }
 

@@ -74,10 +74,18 @@ type TaskSourceProvider interface {
 // the auto-merge and returns git.ErrLocalSyncDeferred (non-fatal) when the
 // operator's base checkout is dirty. FetchBase and IsAncestor verify the PR's
 // merge commit actually landed on origin/<base> before the mapping completes.
+// CountMergeCommits runs BEFORE the merge, feeding the shared strategy seam
+// (mergepolicy.ResolveStrategyForBranch) so a branch GitHub would refuse to
+// rebase-merge is squashed instead of failed.
 type BaseBranchSyncer interface {
 	SyncBaseBranch(ctx context.Context, localPath, base string) error
 	FetchBase(ctx context.Context, localPath, base string) error
 	IsAncestor(ctx context.Context, localPath, ref, target string) (bool, error)
+
+	// CountMergeCommits reports how many merge commits exist on head that are
+	// not already on origin/<base>; used to detect a branch GitHub will refuse
+	// to rebase-merge before asking it to.
+	CountMergeCommits(ctx context.Context, localPath, base, head string) (int, error)
 }
 
 // queuedTask pairs a task item with its repo info for the FIFO queue.
@@ -858,8 +866,30 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 	// checkout state. The local fast-forward of refs/heads/<base> is a
 	// best-effort, deferrable step handled after the merge (see the
 	// SyncBaseBranch call below), never a pre-merge abort.
-	strategy, err := mergepolicy.ResolveStrategy(ctx, o.provider, repo.originURL, repo.mergeStrategy)
+	//
+	// o.baseSyncer is an optional (nil-able) field: when it is nil the
+	// interface value passed as the counter is nil too and the resolver fails
+	// open, so no special case is needed here. The head branch comes straight
+	// off the task item; an empty head is fine for the same reason.
+	strategy, substituted, err := mergepolicy.ResolveStrategyForBranch(
+		ctx, o.provider, repo.originURL, repo.mergeStrategy,
+		o.baseSyncer, repo.localPath, repo.baseBranch, task.GetExistingBranch(),
+	)
 	if err != nil {
+		if errors.Is(err, mergepolicy.ErrMergeStrategyIncompatible) {
+			// Route the pre-check to the SAME place the post-failure
+			// rebase-refusal branch below goes. Without the pre-check this
+			// exact case would reach MergePR, collect GitHub's "can't be
+			// rebased" refusal, and land in that repair branch anyway;
+			// failing the mapping here instead would regress a repairable PR
+			// into a dead Failed mapping.
+			o.logger.Info().Err(err).
+				Int("pr", prNumber).
+				Str("repo", repo.displayName).
+				Msg("auto-merge strategy incompatible with branch; queueing repair session")
+			o.enqueueMappedCreateSession(ctx, rebaseRepairTask(task, repo, err), repo, mapping)
+			return
+		}
 		o.logger.Error().Err(err).
 			Int("pr", prNumber).
 			Str("repo", repo.displayName).
@@ -867,9 +897,17 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 		o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
 		return
 	}
+	if substituted != "" {
+		o.logger.Warn().
+			Int("pr", prNumber).
+			Str("repo", repo.displayName).
+			Str("strategy", strategy).
+			Str("reason", substituted).
+			Msg("auto-merge: substituted squash for rebase")
+	}
 
 	if err := o.provider.MergePR(ctx, repo.originURL, prNumber, strategy); err != nil {
-		if shouldRepairRebaseMergeFailure(strategy, err) {
+		if mergepolicy.IsRebaseRefusal(strategy, err) {
 			o.logger.Info().Err(err).
 				Int("pr", prNumber).
 				Str("repo", repo.displayName).
@@ -1019,15 +1057,6 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 		Str("external_id", task.GetExternalId()).
 		Str("title", task.GetTitle()).
 		Msg("session created for task")
-}
-
-func shouldRepairRebaseMergeFailure(strategy string, err error) bool {
-	if err == nil || strategy != "rebase" {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "can't be rebased") ||
-		strings.Contains(msg, "cannot be rebased")
 }
 
 func rebaseRepairTask(task *bossanovav1.TaskItem, repo repoInfo, mergeErr error) *bossanovav1.TaskItem {

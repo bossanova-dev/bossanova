@@ -17,8 +17,18 @@ import { normalizeExpectation, displayText } from './proof-evidence-matcher.mjs'
 export const STEP_OPS = ['key', 'type', 'waitFor', 'waitMs', 'daemon', 'expect']
 export const SCENARIO_MAX_SCENES = 4
 
-const TOP_LEVEL_KEYS = new Set(['$schema', 'version', 'title', 'fixture', 'scenes'])
+// Bounds for the optional top-level `terminal` size (BOS-571). A sane floor and
+// ceiling so a typo cannot allocate an absurd pty. Exported so the
+// schema-agreement suite pins proof/scenarios/schema.json to these rather than
+// to magic numbers.
+export const TERMINAL_COLS_MIN = 40
+export const TERMINAL_COLS_MAX = 300
+export const TERMINAL_ROWS_MIN = 10
+export const TERMINAL_ROWS_MAX = 100
+
+const TOP_LEVEL_KEYS = new Set(['$schema', 'version', 'title', 'fixture', 'terminal', 'scenes'])
 const FIXTURE_KEYS = new Set(['preset', 'seed', 'env'])
+const TERMINAL_KEYS = new Set(['cols', 'rows'])
 const SCENE_KEYS = new Set(['id', 'title', 'steps'])
 const SCENE_ID_RE = /^[a-z0-9][a-z0-9-]*$/
 
@@ -60,10 +70,14 @@ export function validateScenario(obj) {
   }
 
   if (obj.fixture !== undefined) validateFixture(obj.fixture, push)
+  if (obj.terminal !== undefined) validateTerminal(obj.terminal, push)
 
   validateScenes(obj.scenes, push)
 
   if (errors.length) return { ok: false, errors }
+  // `fixture` gets a preset:'demo' default; `terminal` deliberately does NOT —
+  // an absent terminal must stay absent so the bridge keeps its own default size
+  // and the spawned argv stays byte-identical to today's.
   const scenario = {
     ...obj,
     fixture: { preset: 'demo', ...(isPlainObject(obj.fixture) ? obj.fixture : {}) },
@@ -94,6 +108,33 @@ function validateFixture(fixture, push) {
     } else if (!Object.values(fixture.env).every((v) => typeof v === 'string')) {
       push('fixture.env', 'env values must be strings')
     }
+  }
+}
+
+/**
+ * Validate the optional top-level `terminal` size (BOS-571). Both members are
+ * optional; an omitted member keeps the Go bridge's own default (cols 140 /
+ * rows 36).
+ */
+function validateTerminal(terminal, push) {
+  if (!isPlainObject(terminal)) {
+    push('terminal', 'must be an object')
+    return
+  }
+  for (const k of Object.keys(terminal)) {
+    if (!TERMINAL_KEYS.has(k)) push('terminal', `unknown field "${k}"`)
+  }
+  if (
+    terminal.cols !== undefined &&
+    !isIntInRange(terminal.cols, TERMINAL_COLS_MIN, TERMINAL_COLS_MAX)
+  ) {
+    push('terminal.cols', `must be an integer ${TERMINAL_COLS_MIN}..${TERMINAL_COLS_MAX}`)
+  }
+  if (
+    terminal.rows !== undefined &&
+    !isIntInRange(terminal.rows, TERMINAL_ROWS_MIN, TERMINAL_ROWS_MAX)
+  ) {
+    push('terminal.rows', `must be an integer ${TERMINAL_ROWS_MIN}..${TERMINAL_ROWS_MAX}`)
   }
 }
 

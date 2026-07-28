@@ -546,7 +546,7 @@ test('the SKILL documents the EPIC decomposition phase and its plan-epic-lib cor
     'the phase must state that 8 is never a single-ticket estimate',
   )
   for (const sym of [
-    'scripts/plan-epic-lib.mjs',
+    '$BOSS_PLAN_TOOLBOX/plan-epic-lib.mjs',
     'validateDecomposition',
     'assertAcyclic',
     'topoOrderChildren',

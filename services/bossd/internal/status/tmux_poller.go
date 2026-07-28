@@ -12,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/statusdetect"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/status/questionsignal"
 	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
@@ -25,6 +26,12 @@ type TmuxStatusPoller struct {
 	tmux         *tmux.Client
 	agentClients map[string]agent.AgentRunnerClient
 	logger       zerolog.Logger
+
+	// questionSignals is the structured "a question is pending" store (BOS-485).
+	// A nil store means pure regex behavior — questionState falls back to the
+	// per-agent HasQuestionPrompt pane scraper exactly as before, so existing
+	// wiring and tests are unaffected until SetQuestionSignals injects a store.
+	questionSignals *questionsignal.Store
 
 	mu            sync.Mutex
 	prevCaptures  map[string]captureEntry // agentSessionID -> previous capture
@@ -59,6 +66,13 @@ func NewTmuxStatusPoller(tracker *Tracker, chats db.AgentChatStore, sessions db.
 		missingLogged: make(map[string]struct{}),
 		done:          make(chan struct{}),
 	}
+}
+
+// SetQuestionSignals injects the structured question-signal store (BOS-485).
+// Call before Run/Bootstrap. Passing nil (or never calling this) keeps the
+// poller on the pure regex fallback path.
+func (p *TmuxStatusPoller) SetQuestionSignals(store *questionsignal.Store) {
+	p.questionSignals = store
 }
 
 // PollInterval is the interval between tmux status polls.
@@ -134,11 +148,13 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
 			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
 			p.tracker.SetAuthFailed(chat.AgentSessionID, false)
+			p.tracker.SetTransientAPIError(chat.AgentSessionID, false)
 			continue
 		}
 		if !p.tmux.HasSession(ctx, *chat.TmuxSessionName) {
 			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
 			p.tracker.SetAuthFailed(chat.AgentSessionID, false)
+			p.tracker.SetTransientAPIError(chat.AgentSessionID, false)
 			continue
 		}
 		// With remain-on-exit armed (BOS-477), a chat whose agent process exited
@@ -153,6 +169,7 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 			_ = p.tmux.KillSession(ctx, *chat.TmuxSessionName)
 			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
 			p.tracker.SetAuthFailed(chat.AgentSessionID, false)
+			p.tracker.SetTransientAPIError(chat.AgentSessionID, false)
 			continue
 		}
 		activeChats = append(activeChats, chat)
@@ -160,11 +177,22 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 	}
 
 	// GC prevCaptures entries for chats that are no longer in the active set
-	// (DB row removed, tmux name cleared, or tmux session died).
+	// (DB row removed, tmux name cleared, or tmux session died). Also drop any
+	// structured question-signal record for a departed chat (BOS-485 plan step
+	// 6): a chat whose Notification fired but was never answered, then stopped,
+	// is filtered out before questionState, so its record would otherwise linger
+	// (harmless for correctness — a gone chat can't re-surface QUESTION — but
+	// never physically reclaimed before the TTL). Clearing here bounds the store
+	// to live chats. Clear keys on AgentSessionID, which for the claude writer
+	// equals the store key (chatResumeSessionID); a future agent whose provider
+	// id differs still self-heals via the TTL.
 	p.mu.Lock()
 	for id := range p.prevCaptures {
 		if !seen[id] {
 			delete(p.prevCaptures, id)
+			if p.questionSignals != nil {
+				p.questionSignals.Clear(id)
+			}
 		}
 	}
 	p.mu.Unlock()
@@ -189,6 +217,12 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		// flagging (see statusdetect.IsLoginRequired); the server reads this
 		// marker to surface the AGENT_AUTH_FAILED attention reason.
 		p.tracker.SetAuthFailed(agentSessionID, statusdetect.IsLoginRequired([]byte(content)))
+
+		// Reuse the SAME already-captured pane content to record/clear the
+		// transient-API-failure marker (a 5xx/gateway banner that aborted the
+		// turn). No extra capture, no extra tmux round-trip — one read feeds
+		// both overlays and the status decision below.
+		p.tracker.SetTransientAPIError(agentSessionID, statusdetect.IsTransientAPIError([]byte(content)))
 
 		// Resolve limit + question state before taking p.mu — both may issue
 		// plugin RPCs / DB queries and we hold the mutex only briefly below.
@@ -373,6 +407,10 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 		}
 
 		p.tracker.SetAuthFailed(chat.AgentSessionID, statusdetect.IsLoginRequired([]byte(content)))
+		// Same single capture feeds the transient-API-failure marker, so a chat
+		// whose turn died on a 5xx banner is flagged from the first bootstrap
+		// pass rather than waiting a poll tick.
+		p.tracker.SetTransientAPIError(chat.AgentSessionID, statusdetect.IsTransientAPIError([]byte(content)))
 
 		paneLimited, limitResetAt := p.limitState(ctx, chat, content)
 		paneShowsQuestion, questionSuppressed := p.questionState(ctx, chat, content)
@@ -420,27 +458,60 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 	}
 }
 
-// questionState resolves whether the captured pane content shows a question
-// prompt and, if so, whether the user has already answered. Both signals are
-// dispatched per-agent: HasQuestionPrompt and LastTurnIsUser run on the
-// AgentRunner plugin matching chat.AgentName so each agent owns its own
-// pane regex and transcript schema. When no client is registered for the
-// chat's AgentName the chat falls through as "no question" — fail-open so a
-// missing plugin can never lock a chat in QUESTION forever.
+// questionState resolves whether the chat is asking a question and, if so,
+// whether the user has already answered.
+//
+// The structured signal is primary (BOS-485): if the question-signal store
+// holds a fresh pending record for this chat (set by the agent's Notification
+// hook via POST /hooks/question/{id}), the chat is treated as showing a
+// question WITHOUT consulting the pane regex. When there is no record (or no
+// store is wired), it falls back to the per-agent HasQuestionPrompt pane
+// scraper byte-for-byte as before — so no regression when the explicit signal
+// is absent.
+//
+// Either way, the answer is reconciled the same way: LastTurnIsUser (run per
+// agent against the on-disk transcript) reports whether the user has already
+// responded. When they have, the pending record is cleared (mirroring the
+// regex path's questionSuppressed) so a stale Notification can't re-assert
+// QUESTION; the TTL is the backstop for a missed clear.
+//
+// When no client is registered for the chat's AgentName the regex path can't
+// run, so we fail open to "no question" — a missing plugin can never lock a
+// chat in QUESTION. A structured record that predates a plugin unload still
+// surfaces the question (it was an explicit signal) but can't be reconciled
+// without a client until the TTL ages it out.
 func (p *TmuxStatusPoller) questionState(ctx context.Context, chat *models.AgentChat, content string) (paneShowsQuestion, questionSuppressed bool) {
 	if chat == nil {
 		return false, false
 	}
+	resumeID := chatResumeSessionID(chat)
+
+	structured := false
+	if p.questionSignals != nil {
+		if _, ok := p.questionSignals.Get(resumeID); ok {
+			structured = true
+			paneShowsQuestion = true
+		}
+	}
+
 	client, ok := p.agentClients[chat.AgentName]
 	if !ok {
 		p.logMissingAgentOnce(chat.AgentName)
-		return false, false
+		// No client: can't run the regex path or reconcile via LastTurnIsUser.
+		// Surface the structured signal (if any) unsuppressed; otherwise no
+		// question.
+		return paneShowsQuestion, false
 	}
-	hpResp, err := client.HasQuestionPrompt(ctx, &pb.HasQuestionPromptRequest{PaneContent: []byte(content)})
-	if err != nil || hpResp == nil || !hpResp.GetHasPrompt() {
-		return false, false
+
+	if !structured {
+		// Regex fallback — byte-for-byte the historical behavior.
+		hpResp, err := client.HasQuestionPrompt(ctx, &pb.HasQuestionPromptRequest{PaneContent: []byte(content)})
+		if err != nil || hpResp == nil || !hpResp.GetHasPrompt() {
+			return false, false
+		}
+		paneShowsQuestion = true
 	}
-	paneShowsQuestion = true
+
 	if p.sessions == nil {
 		return paneShowsQuestion, false
 	}
@@ -450,9 +521,14 @@ func (p *TmuxStatusPoller) questionState(ctx context.Context, chat *models.Agent
 	}
 	luResp, err := client.LastTurnIsUser(ctx, &pb.LastTurnIsUserRequest{
 		WorkDir:        sess.WorktreePath,
-		AgentSessionId: chatResumeSessionID(chat),
+		AgentSessionId: resumeID,
 	})
 	questionSuppressed = err == nil && luResp != nil && luResp.GetIsUser()
+	if questionSuppressed && p.questionSignals != nil {
+		// The user answered — drop any pending structured record so it can't
+		// re-fire QUESTION next poll. No-op when there was no record.
+		p.questionSignals.Clear(resumeID)
+	}
 	return paneShowsQuestion, questionSuppressed
 }
 

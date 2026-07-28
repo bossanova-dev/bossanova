@@ -36,15 +36,18 @@ func (c confirmPrompt) update(msg tea.KeyMsg) (confirmPrompt, tea.Cmd) {
 }
 
 // footer renders the active danger-styled prompt plus the standard
-// confirm/cancel action bar. The prompt is width-wrapped like renderError so
-// long multi-sentence copy (e.g. the bound-account disable/remove warnings)
-// wraps cleanly with the left padding preserved instead of hard-wrapping past
-// the terminal edge. width == 0 (terminal size not yet known) falls back to no
+// confirm/cancel action bar. The prompt is width-wrapped so long
+// multi-sentence copy (e.g. the bound-account disable/remove warnings) wraps
+// cleanly with the left padding preserved instead of hard-wrapping past the
+// terminal edge. width == 0 (terminal size not yet known) falls back to no
 // width constraint. Callers pass their model's width.
 func (c confirmPrompt) footer(width int) string {
 	style := lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger)
 	if width > 0 {
-		// Account for padding (2 chars each side), matching renderError.
+		// KNOWN BUG, do NOT copy: .Width() already includes the padding, so
+		// subtracting it renders this prompt 4 columns narrower than the
+		// terminal. BOS-531 removed the identical mistake from renderError but
+		// left this untested path alone; widen it under its own change.
 		style = style.Width(width - 4)
 	}
 	return style.Render(c.prompt) + "\n" + styleActionBar.Render("[y/enter] confirm  [n/esc] cancel")

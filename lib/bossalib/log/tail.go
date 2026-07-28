@@ -50,6 +50,12 @@ func Tail(path string, maxLines int) (string, error) {
 		return lastLines(data, maxLines), nil
 	}
 
+	return tailReaderAt(f, size, maxLines)
+}
+
+// tailReaderAt reads a large file from the end until it has enough lines.
+// Accepting io.ReaderAt keeps the chunk-boundary behavior directly testable.
+func tailReaderAt(r io.ReaderAt, size int64, maxLines int) (string, error) {
 	// Read from the end in chunks until we have enough newlines (or hit the start).
 	// The loop usually exits in 1-2 iterations, so a fresh chunk per pass is fine.
 	var buf []byte
@@ -59,7 +65,7 @@ func Tail(path string, maxLines int) (string, error) {
 		readSize := min(int64(tailChunkSize), offset)
 		offset -= readSize
 		chunk := make([]byte, readSize) //nolint:prealloc // fresh buffer for ReadAt; prepended below
-		if _, err := f.ReadAt(chunk, offset); err != nil {
+		if _, err := r.ReadAt(chunk, offset); err != nil {
 			return "", err
 		}
 		buf = append(chunk, buf...)

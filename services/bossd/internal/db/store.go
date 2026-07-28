@@ -43,6 +43,12 @@ var ErrGithubCallbackLeaseConflict = errors.New("github callback lease held by a
 // caller lost the group race; exactly one caller ever avoids it per group.
 var ErrGithubCallbackTriggerConflict = errors.New("github callback already resolved")
 
+// ErrNoteInvalid is the base for NoteStore validation failures (missing repo
+// id, empty or oversize body, empty/oversize tag, too many tags). Wrapped with
+// a specific reason via fmt.Errorf %w so RPC handlers can map any of them to a
+// single invalid-argument code with errors.Is.
+var ErrNoteInvalid = errors.New("invalid note")
+
 // CreateRepoParams holds the parameters for creating a new repo.
 type CreateRepoParams struct {
 	DisplayName       string
@@ -69,10 +75,12 @@ type UpdateRepoParams struct {
 	ShouldArchiveSessionsAfterMerge *bool
 	// CanAutoDeleteBranches toggles the auto-delete-branch-on-archive automation.
 	CanAutoDeleteBranches *bool
-	MergeStrategy         *models.MergeStrategy
-	LinearAPIKey          *string
-	SentryAPIKey          *string
-	SentryOrg             *string
+	// ShouldKeepBranchesCurrent toggles the post-merge keep-current rebase sweep.
+	ShouldKeepBranchesCurrent *bool
+	MergeStrategy             *models.MergeStrategy
+	LinearAPIKey              *string
+	SentryAPIKey              *string
+	SentryOrg                 *string
 	// ExpectedUpdatedAt, when non-nil, enables an optimistic-concurrency guard:
 	// the update is applied only while the repo's stored updated_at still matches
 	// this token (compared at the stored millisecond string granularity). A
@@ -404,6 +412,10 @@ type CreateCronJobParams struct {
 	IsEnabled             bool
 	GateCommand           string // shell command to run before firing; "" = no gate
 	ShouldRunSetupCommand bool   // whether to run the repo setup script before the agent session
+	// IsZeroOutput marks the job as intended to fire with no worktree, branch, or
+	// PR, because the run is expected to produce no repo changes. Persisted only —
+	// nothing honours it yet (BOS-543).
+	IsZeroOutput bool
 }
 
 // UpdateCronJobParams holds the fields that can be updated on a cron job.
@@ -419,6 +431,7 @@ type UpdateCronJobParams struct {
 	NextRunAt             **time.Time // double pointer: nil = don't update, *nil = clear
 	GateCommand           *string     // nil = don't update; "" = clear gate
 	ShouldRunSetupCommand *bool       // nil = don't update
+	IsZeroOutput          *bool       // nil = don't update
 }
 
 // UpdateCronJobLastRunParams records the outcome of a cron job fire.
@@ -589,4 +602,101 @@ type GithubCallbackStore interface {
 	// it increments attempt_count, sets next_attempt_at and diagnostics, and
 	// releases the lease so a later attempt can re-acquire it. CAS on lease_owner.
 	ScheduleRetry(ctx context.Context, id, owner string, params ScheduleGithubCallbackRetryParams) error
+}
+
+// NoteMaxBodyBytes caps a note's body, aliasing the canonical constant in
+// models so the store and every authoring surface (CLI, MCP) cannot drift.
+const NoteMaxBodyBytes = models.NoteMaxBodyBytes
+
+// NoteMaxTagLength caps one tag's length after trimming. Aliases models.
+const NoteMaxTagLength = models.NoteMaxTagLength
+
+// NoteMaxTags caps how many distinct tags one note may carry, counted after
+// normalisation. Aliases models.
+const NoteMaxTags = models.NoteMaxTags
+
+// CreateNoteParams holds the fields for recording a new note. The store derives
+// id and timestamps and normalises tags; validation lives in Create.
+type CreateNoteParams struct {
+	// RepoID is the owning repository. Required.
+	RepoID string
+	// SessionID and ChatID are optional PROVENANCE: they record which run wrote
+	// the note. They are not owners — the note outlives both.
+	SessionID *string
+	ChatID    *string
+	// Body is stored verbatim (leading/trailing whitespace preserved) but must
+	// be non-empty after trimming and at most NoteMaxBodyBytes.
+	Body string
+	// Tags are trimmed, lowercased, and de-duplicated before insert.
+	Tags []string
+}
+
+// UpdateNoteParams holds the mutable fields of a note. Nil fields are left
+// untouched, so a caller can change the body without disturbing tags.
+type UpdateNoteParams struct {
+	// ID identifies the note to update. Required.
+	ID string
+	// Body, when non-nil, replaces the note's body.
+	Body *string
+	// Tags, when non-nil, REPLACES the note's entire tag set — it does not
+	// merge. Passing an empty non-nil slice clears every tag. This is the one
+	// place a caller can silently lose data, so nil (leave alone) and
+	// []string{} (clear) are deliberately distinct.
+	Tags []string
+}
+
+// ListNotesFilter narrows NoteStore.List. Every field is optional and a nil
+// field is not constrained. Results are ordered by created_at then id.
+type ListNotesFilter struct {
+	// RepoID, SessionID and ChatID are applied whenever the pointer is non-nil,
+	// including when it points at a blank string: the value is trimmed and
+	// compared with `=`, and the write path stores blank provenance as NULL, so
+	// a blank pointer matches NOTHING rather than being ignored. There is
+	// deliberately no way to express "notes with no session" — pass nil to leave
+	// the column unconstrained.
+	RepoID    *string
+	SessionID *string
+	ChatID    *string
+	// Tags matches notes carrying ANY of these tags (OR, not AND). Entries are
+	// trimmed and lowercased to match the normalisation applied on write, and
+	// blank entries are dropped. A non-empty Tags whose entries ALL normalise
+	// away matches nothing rather than everything: the filter fails closed, so a
+	// malformed `--tag ""` can never widen the result set.
+	Tags []string
+	// Search is a substring match on the body. SQL wildcards in the term are
+	// matched literally, not as patterns. Case-insensitivity is ASCII-only:
+	// SQLite's LOWER() does not fold non-ASCII without ICU, so "Éclair" does
+	// not match a search for "éclair".
+	//
+	// A term that is blank after trimming is treated as NO search — unlike a
+	// blank tag entry, which fails closed. The asymmetry is not an oversight:
+	// an empty substring matches every body, so applying and dropping the
+	// clause are the same result set, whereas an empty tag set matches no
+	// note_tags row and dropping it would widen the result to everything.
+	Search *string
+	// Limit caps the number of rows returned. Nil or non-positive = no cap.
+	Limit *int
+}
+
+// NoteStore persists free-text notes and their tags. A note is repo-scoped;
+// its session and chat are provenance, so deleting or archiving a session never
+// removes the notes that session wrote.
+type NoteStore interface {
+	// Create validates params, normalises tags, and inserts the note with its
+	// tag rows in one transaction. Returns ErrNoteInvalid (wrapped) on
+	// validation failure.
+	Create(ctx context.Context, params CreateNoteParams) (*models.Note, error)
+	// Get returns a note (with its tags) by id, or sql.ErrNoRows if absent.
+	Get(ctx context.Context, id string) (*models.Note, error)
+	// List returns notes matching filter, ordered by created_at then id.
+	List(ctx context.Context, filter ListNotesFilter) ([]*models.Note, error)
+	// Update applies the non-nil fields of params in one transaction and bumps
+	// updated_at. A non-nil Tags slice REPLACES the tag set rather than merging
+	// into it. Returns sql.ErrNoRows if the note is absent and ErrNoteInvalid
+	// (wrapped) on validation failure. An update with no fields set is a no-op
+	// that returns the current note unchanged.
+	Update(ctx context.Context, params UpdateNoteParams) (*models.Note, error)
+	// Delete removes a note and (by cascade) its tag rows. It is idempotent:
+	// deleting an absent id is a nil no-op.
+	Delete(ctx context.Context, id string) error
 }

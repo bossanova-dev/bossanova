@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "resume",
+    srcs = ["transient_resumer.go"],
+    importpath = "github.com/recurser/bossd/internal/resume",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/safego",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "resume_test",
+    srcs = ["transient_resumer_test.go"],
+    embed = [":resume"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

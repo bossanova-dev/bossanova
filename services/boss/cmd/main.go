@@ -125,6 +125,8 @@ func rootCmd() *cobra.Command {
 	addGrouped("repo", repoCmd())
 	addGrouped("cron", cronCmd())
 	addGrouped("callback", callbackCmd())
+	addGrouped("broadcast", broadcastCmd())
+	addGrouped("notes", notesCmd())
 	addGrouped("account", accountCmd())
 	addGrouped("trash", trashCmd())
 	addGrouped("daemon", daemonCmd())
@@ -312,6 +314,8 @@ func repoCmd() *cobra.Command {
 	update.Flags().Bool("no-auto-repair", false, "Disable automatic repair")
 	update.Flags().Bool("delete-branches", false, "Enable deleting safe local branches after archiving")
 	update.Flags().Bool("no-delete-branches", false, "Disable deleting local branches after archiving")
+	update.Flags().Bool("keep-branches-current", false, "Enable proactively rebasing in-flight session branches when the base advances")
+	update.Flags().Bool("no-keep-branches-current", false, "Disable proactively rebasing in-flight session branches when the base advances")
 
 	repo.AddCommand(
 		&cobra.Command{
@@ -386,6 +390,9 @@ func cronCmd() *cobra.Command {
 	add.Flags().String("tz", "", "IANA timezone name (empty = daemon-local)")
 	add.Flags().Bool("enabled", true, "Whether the job is enabled")
 	add.Flags().Bool("run-setup", true, "Run the repo setup script before the agent")
+	// Unlike --enabled/--run-setup, this defaults to false: a zero-output job
+	// runs with no worktree, branch or PR, which is never a safe default.
+	add.Flags().Bool("zero-output", false, "Run with no worktree, branch, or PR (for jobs that change nothing in this repo)")
 
 	update := &cobra.Command{
 		Use:   "update <cron-id>",
@@ -409,6 +416,7 @@ func cronCmd() *cobra.Command {
 	// "(default: true)" in the generated skill reference. false is elided there.
 	update.Flags().Bool("enabled", false, "Enable or disable the job (unset preserves current)")
 	update.Flags().Bool("run-setup", false, "Run the repo setup script before the agent (unset preserves current)")
+	update.Flags().Bool("zero-output", false, "Run with no worktree, branch, or PR (unset preserves current)")
 
 	cron.AddCommand(
 		ls,

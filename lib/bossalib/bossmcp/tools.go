@@ -92,6 +92,72 @@ func redactCallbacks(cbs []*pb.GithubCallback) []*pb.GithubCallback {
 	return out
 }
 
+// redactBroadcast returns a copy of bc with the secret message body cleared, so
+// no MCP tool ever echoes a broadcast's delivery prompt back to the caller. The
+// Broadcast proto carries `message` as a plain field (populated only on the
+// delivering owner's path) and every broadcast-returning tool serializes the
+// message directly, so redaction must happen at the MCP layer — exactly like
+// redactCallback does for a callback body. The source message is never mutated
+// (proto.Clone makes a copy).
+func redactBroadcast(bc *pb.Broadcast) *pb.Broadcast {
+	if bc == nil {
+		return nil
+	}
+	clone, ok := proto.Clone(bc).(*pb.Broadcast)
+	if !ok {
+		// Unreachable (proto.Clone of a *pb.Broadcast always yields
+		// *pb.Broadcast), but fail closed for a secret scrubber: never return
+		// the unredacted source.
+		return &pb.Broadcast{Id: bc.GetId()}
+	}
+	clone.Message = ""
+	return clone
+}
+
+// redactBroadcasts applies redactBroadcast to every element, returning a new slice.
+func redactBroadcasts(bcs []*pb.Broadcast) []*pb.Broadcast {
+	out := make([]*pb.Broadcast, len(bcs))
+	for i, bc := range bcs {
+		out[i] = redactBroadcast(bc)
+	}
+	return out
+}
+
+// The broadcast tool descriptions are an agent's ONLY documentation at call
+// time, so the three facts that make broadcasts safe to use are stated on every
+// tool they are true for, from these shared constants rather than by hand (a
+// re-typed caveat is a caveat that drifts).
+const (
+	// broadcastSignalRule is the caveat every broadcast tool carries: a
+	// delivered broadcast is a claim, not evidence.
+	broadcastSignalRule = "A broadcast is a signal, not proof — a receiving agent must verify any state it claims rather than trusting it."
+
+	// broadcastWakeCost states the cost of a wide audience. Only tools that
+	// cause a delivery say it.
+	broadcastWakeCost = "Delivery WAKES every target chat, so a broad selector has a real cost."
+
+	// broadcastSelectorGrammar is the one-line selector grammar with an
+	// example. Only tools that accept a selector say it.
+	broadcastSelectorGrammar = `Selector grammar: inside one clause, comma-separated key:value terms AND across different keys and OR when a key repeats (agent:claude,agent:codex); "+" ORs whole clauses, e.g. repo:<id>,agent:claude+account:<id>. Valid keys are chat, session, repo, agent, account and daemon. An empty selector is an error, never "everyone".`
+
+	// noteRepoIDRouting is the repo_id contract shared by the three id-keyed
+	// note tools (get_note, update_note, delete_note), stated from one constant
+	// so the three cannot drift apart. It carries all three facts an agent can
+	// only learn here, each of which fails in a way no single-daemon test sees:
+	// repo_id is REQUIRED even where it is ignored (the generated schema marks
+	// it so and the SDK rejects an omitted value before the handler runs); it is
+	// the daemon-local repos.id, not an origin URL; and — per
+	// ProxyGetNoteRequest's contract in orchestrator.proto — it ROUTES BUT DOES
+	// NOT SCOPE, so it must never be presented as a safety check.
+	noteRepoIDRouting = "repo_id is REQUIRED even against a local daemon, which resolves the note from the id alone and ignores the value; the hosted gateway needs it to pick the daemon holding the note. It is the daemon-local repo id that list_repos and resolve_context return, NOT a git origin URL — an origin URL resolves to NotFound. It ROUTES BUT DOES NOT SCOPE: the daemon addresses the note by id alone and never checks that the note belongs to repo_id, so naming one repo while passing an id that lives in another acts on that other note. Do not treat repo_id as a safety check — the id is what selects the note."
+
+	// noteRepoIDRoutingField is the same contract, worded for the repo_id field
+	// description on those three tools' argument structs. A struct tag must be a
+	// literal, so this constant cannot be interpolated into one — it exists to
+	// keep the three hand-copied tags reviewable against a single source.
+	noteRepoIDRoutingField = "the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). Use the daemon-local repo id list_repos/resolve_context return, NOT a git origin URL — an origin URL resolves to NotFound. It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"
+)
+
 // boolPtr returns a pointer to b. The MCP SDK's ToolAnnotations.DestructiveHint
 // is a *bool (meaningful only when ReadOnlyHint is false), so destructive tools
 // must set it explicitly.
@@ -427,6 +493,138 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		r, err := jsonResult(redactCallbacks(out))
 		return r, nil, err
 	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "list_notes",
+		Description: "List notes — durable free-text recorded against a repository so a later run can harvest what earlier ones learned — optionally filtered by repo, provenance, tags, or a body substring. Bodies are returned IN FULL: a note is not a secret, it is the payload it exists to carry. Every filter is optional: omit a filter you do not want applied, and a blank value is treated as omitted here — this tool leaves an empty string unset rather than forwarding it, so a blank repo_id, session_id or chat_id is ignored and does not narrow the result. tags matches notes carrying ANY of the listed tags (OR, not all-of) and is compared against the trimmed, lowercased form stored on write. search is a literal substring match on the body (SQL wildcards are matched literally; case folding is ASCII-only); blank means no search. limit zero or negative means unlimited. Give repo_id the daemon-local repo id list_repos/resolve_context return, not a git origin URL. Against the hosted gateway an omitted repo_id fans the list out across your reachable daemons and SKIPS any that are offline or slow, so an empty or short result is not proof no further notes exist.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListNotesArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.ListNotesRequest{Tags: args.Tags, Limit: args.Limit}
+		if args.RepoID != "" {
+			v := args.RepoID
+			req.RepoId = &v
+		}
+		if args.SessionID != "" {
+			v := args.SessionID
+			req.SessionId = &v
+		}
+		if args.ChatID != "" {
+			v := args.ChatID
+			req.ChatId = &v
+		}
+		if args.Search != "" {
+			v := args.Search
+			req.Search = &v
+		}
+		out, err := backend.ListNotes(ctx, req)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		// No redaction pass — deliberately. A note body is the payload the
+		// caller asked for, not a secret like a callback or broadcast message,
+		// so it is returned in full on every read surface.
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "get_note",
+		Description: "Get a single note by id, including its body and normalised tags. The body is returned in full: unlike a callback or broadcast message it is not a secret, it is the payload the note exists to carry. " + noteRepoIDRouting,
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args GetNoteArgs) (*mcp.CallToolResult, any, error) {
+		out, err := backend.GetNote(ctx, args.RepoID, args.ID)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		// No redaction pass: the note body is deliberately returned in full,
+		// because it is the payload the caller asked for.
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name: "list_broadcasts",
+		Description: "List broadcasts — one message addressed at the set of chats a selector resolved to — optionally filtered by lifecycle state (pending, resolved, completed, expired, canceled), the chat that sent them, or a chat they were addressed to. Rows carry ids, the selector, state and timestamps only: the message body is stored verbatim and is a secret, and is never returned by this tool. " +
+			broadcastSignalRule +
+			" A broadcast's audience was resolved ONCE, at send time, so a chat created afterwards is never among its targets.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListBroadcastsArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.ListBroadcastsRequest{Limit: args.Limit}
+		if args.State != "" {
+			v := args.State
+			req.State = &v
+		}
+		if args.OriginChatID != "" {
+			v := args.OriginChatID
+			req.OriginChatId = &v
+		}
+		if args.TargetChatID != "" {
+			v := args.TargetChatID
+			req.TargetChatId = &v
+		}
+		out, err := backend.ListBroadcasts(ctx, req)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		// The message body is a secret: scrub it from every returned broadcast.
+		r, err := jsonResult(redactBroadcasts(out))
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name: "list_broadcast_subscriptions",
+		Description: "List standing broadcast subscriptions — rules that broadcast one message when a session completes, errors, or settles — optionally filtered by owner session, the chat that registered them, state, or trigger event. Rows carry ids, trigger and state only: the registered message body is a secret and is never returned by this tool (the record has no body field at all). " +
+			broadcastSignalRule +
+			" A subscription's audience is resolved at FIRE time, not at registration, and firing wakes every chat it then resolves to.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListBroadcastSubscriptionsArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.ListBroadcastSubscriptionsRequest{Limit: args.Limit}
+		if args.OwnerSessionID != "" {
+			v := args.OwnerSessionID
+			req.OwnerSessionId = &v
+		}
+		if args.OriginChatID != "" {
+			v := args.OriginChatID
+			req.OriginChatId = &v
+		}
+		if args.State != "" {
+			v := args.State
+			req.State = &v
+		}
+		if args.TriggerEvent != "" {
+			v := args.TriggerEvent
+			req.TriggerEvent = &v
+		}
+		out, err := backend.ListBroadcastSubscriptions(ctx, req)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		// No redaction pass is possible or needed: BroadcastSubscription
+		// deliberately carries no message field, so the body cannot reach here.
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+}
+
+// ListBroadcastsArgs is the typed argument struct for list_broadcasts. Every
+// field is an optional filter; an unset field is not constrained. The message
+// body is a secret and is never a filter or an output field.
+type ListBroadcastsArgs struct {
+	State        string `json:"state,omitempty" jsonschema:"only broadcasts in this lifecycle state (pending, resolved, completed, expired, canceled); an unrecognised value is rejected, not treated as matching nothing"`
+	OriginChatID string `json:"origin_chat_id,omitempty" jsonschema:"only broadcasts sent from this chat id; operator-issued broadcasts carry no origin and never match"`
+	TargetChatID string `json:"target_chat_id,omitempty" jsonschema:"only broadcasts addressed to this chat id — what this chat has been sent"`
+	Limit        int32  `json:"limit,omitempty" jsonschema:"max broadcasts to return (zero or negative = unlimited)"`
+}
+
+// ListBroadcastSubscriptionsArgs is the typed argument struct for
+// list_broadcast_subscriptions. Every field is an optional filter; an unset
+// field is not constrained.
+type ListBroadcastSubscriptionsArgs struct {
+	OwnerSessionID string `json:"owner_session_id,omitempty" jsonschema:"only subscriptions watching this session id"`
+	OriginChatID   string `json:"origin_chat_id,omitempty" jsonschema:"only subscriptions registered from this chat id; operator-issued subscriptions carry no origin and never match"`
+	State          string `json:"state,omitempty" jsonschema:"only subscriptions in this lifecycle state (active, fired, canceled, expired)"`
+	TriggerEvent   string `json:"trigger_event,omitempty" jsonschema:"only subscriptions with exactly this trigger (completed, errored, settled); it does not apply the settled-matches-both rule"`
+	Limit          int32  `json:"limit,omitempty" jsonschema:"max subscriptions to return (zero or negative = unlimited)"`
 }
 
 // ListAccountsArgs is the typed argument struct for list_accounts.
@@ -450,8 +648,35 @@ type ListGithubCallbacksArgs struct {
 	RepoOwner    string `json:"repo_owner,omitempty" jsonschema:"only callbacks on this repository owner (lowercase)"`
 	RepoName     string `json:"repo_name,omitempty" jsonschema:"only callbacks on this repository name (lowercase)"`
 	PRNumber     int32  `json:"pr_number,omitempty" jsonschema:"only callbacks watching this PR number"`
-	Trigger      string `json:"trigger,omitempty" jsonschema:"only callbacks with this trigger; one of merged, closed, checks_passed, checks_failed"`
+	Trigger      string `json:"trigger,omitempty" jsonschema:"only callbacks with this trigger; one of merged, closed, checks_passed, checks_failed, ready_for_review, checks_passed_ready"`
 	State        string `json:"state,omitempty" jsonschema:"only callbacks in this lifecycle state (e.g. active, delivered, expired)"`
+}
+
+// ListNotesArgs is the typed argument struct for list_notes. Every field is an
+// optional filter. The daemon applies repo_id/session_id/chat_id whenever the
+// request field is SET — including when set to the empty string, where it
+// matches nothing. This tool therefore marshals only non-empty strings into the
+// request's optional pointers and leaves a blank one unset, so a blank argument
+// behaves as an omitted filter rather than a fail-closed one.
+type ListNotesArgs struct {
+	RepoID    string   `json:"repo_id,omitempty" jsonschema:"only notes owned by this repo id — the daemon-local repo id list_repos/resolve_context return, NOT a git origin URL. Omit it to leave the repo unconstrained; on the hosted gateway an omitted repo_id fans the list out across your reachable daemons"`
+	SessionID string   `json:"session_id,omitempty" jsonschema:"only notes recorded by this session id (provenance; the session may no longer exist)"`
+	ChatID    string   `json:"chat_id,omitempty" jsonschema:"only notes recorded by this chat id (provenance)"`
+	Tags      []string `json:"tags,omitempty" jsonschema:"only notes carrying ANY of these tags (OR, not all-of); entries are trimmed and lowercased to match the stored form"`
+	Search    string   `json:"search,omitempty" jsonschema:"literal substring match on the note body (SQL wildcards are matched literally; ASCII-only case folding); blank means no search"`
+	Limit     int32    `json:"limit,omitempty" jsonschema:"max notes to return (zero or negative = unlimited)"`
+}
+
+// GetNoteArgs is the typed argument struct for get_note. repo_id is the owning
+// repository: the hosted gateway routes the read by it, while the local socket
+// adapter ignores it (its own daemon owns every note, so the id resolves it).
+// It carries no `omitempty`, so the generated schema marks it REQUIRED and an
+// omitted value fails validation before the handler runs — hence "required" in
+// the field description, which must not read as optional just because the local
+// adapter ignores the value. Keep the tag in step with noteRepoIDRoutingField.
+type GetNoteArgs struct {
+	RepoID string `json:"repo_id" jsonschema:"the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). Use the daemon-local repo id list_repos/resolve_context return, NOT a git origin URL — an origin URL resolves to NotFound. It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"`
+	ID     string `json:"id" jsonschema:"the note id"`
 }
 
 // NoArgs is the typed argument struct for tools that take no input.

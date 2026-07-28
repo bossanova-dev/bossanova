@@ -51,7 +51,7 @@ func TestRegistryBuilderPreservesSessionAndChatDocumentation(t *testing.T) {
 			},
 		},
 		"boss new": {
-			Long: "Launches the interactive session creation flow. When both --repo and --prompt are provided the command runs non-interactively: it creates the session, streams any setup output to stderr, and prints the session-id and chat-id to stdout, then exits. Combine with --detach (implicit when both flags are set) for scripting. Use --agent to override the default agent plugin.",
+			Long: "Launches the interactive session creation flow. When both --repo and --prompt are provided the command runs non-interactively: it creates the session, streams any setup output to stderr, and prints the session-id and chat-id to stdout, then exits. Combine with --detach (implicit when both flags are set) for scripting. Use --agent to override the default agent plugin.\n\nLaunching a session to run work unattended: supplying a prompt launches the agent (headless, via the implicit --detach) so the work actually runs — the CLI and the MCP `create_session` tool now share this default. `create_session` applies the same rule: a prompt-carrying call defaults to headless and reports agent_launched=true, while attended:true creates the session idle awaiting a human `boss attach` (agent_launched=false). Prefer the default for programmatic/unattended launches.",
 			Examples: []Example{
 				{Command: "boss new"},
 				{Command: "boss new --agent opencode"},

@@ -40,6 +40,18 @@ type Tracker struct {
 	// that logged back in (or died) stops flagging — fail toward NOT flagging.
 	authFailed map[string]time.Time // agent_session_id -> last observed
 
+	// transientAPIError records, per agent session ID, the time the transient
+	// API-failure terminal shape (an end-of-turn "API Error:" banner naming a
+	// retryable 5xx / gateway-overload condition) was last observed on the
+	// chat's pane. Like authFailed it lives outside entries because Update
+	// recreates the Entry on every heartbeat, which would wipe a marker the
+	// poller writes on its own cadence; only the dedicated SetTransientAPIError
+	// path writes it. A marker older than StaleThreshold reads as absent so a
+	// chat whose banner scrolled away (it retried, was resumed, or died) stops
+	// flagging — fail toward NOT flagging, because a false positive resumes a
+	// session that is legitimately blocked.
+	transientAPIError map[string]time.Time // agent_session_id -> last observed
+
 	// capturedOutput holds, per agent session ID, the bounded final tail the
 	// tmux poller grabbed from a chat pane at process death before reaping it
 	// (BOS-477). It is an ephemeral diagnostic — not durable state — read by the
@@ -74,14 +86,26 @@ type Tracker struct {
 	// receives ATTENTION_REASON_AGENT_AUTH_FAILED. Fired only on a transition,
 	// so the poller's per-tick SetAuthFailed calls don't storm the stream.
 	onAuthChange func(agentSessionID string)
+
+	// onTransientAPIErrorChange, when non-nil, is invoked after
+	// SetTransientAPIError whenever the chat's EFFECTIVE transient-API-error
+	// state flips (absent/stale → fresh, or present → cleared). It is separate
+	// from onUpdate for the same reason onAuthChange is: a chat can go
+	// transient-failed without its ChatStatus moving, so Update may never fire.
+	// Gating on the transition is what makes the hook safe to wire to an action
+	// (an auto-resume, an audit log) — the poller calls SetTransientAPIError on
+	// EVERY tick, so an ungated hook would re-fire for as long as the banner
+	// stays on screen.
+	onTransientAPIErrorChange func(agentSessionID string)
 }
 
 // NewTracker creates a new empty Tracker.
 func NewTracker() *Tracker {
 	return &Tracker{
-		entries:        make(map[string]*Entry),
-		authFailed:     make(map[string]time.Time),
-		capturedOutput: make(map[string]string),
+		entries:           make(map[string]*Entry),
+		authFailed:        make(map[string]time.Time),
+		transientAPIError: make(map[string]time.Time),
+		capturedOutput:    make(map[string]string),
 	}
 }
 
@@ -194,6 +218,52 @@ func (t *Tracker) AuthFailed(agentSessionID string) bool {
 	return time.Since(at) <= StaleThreshold
 }
 
+// SetTransientAPIError records or clears the transient-API-failure marker for a
+// chat. When present is true it stamps the current time; when false it clears
+// any existing marker immediately (so a chat whose banner redrew away — it
+// retried, or was resumed — stops flagging on the very next poll tick). Called
+// by the tmux poller every tick with the current pane state.
+//
+// It fires onTransientAPIErrorChange only when the EFFECTIVE state flips — a
+// fresh marker appearing where there was none (or only a stale one), or a fresh
+// marker being cleared. The poller calls this once per tick per chat, so
+// transition gating is what keeps a hook that takes an ACTION (auto-resume)
+// from re-firing every three seconds for as long as the banner is on screen.
+func (t *Tracker) SetTransientAPIError(agentSessionID string, present bool) {
+	t.mu.Lock()
+	prevAt, had := t.transientAPIError[agentSessionID]
+	wasPresent := had && time.Since(prevAt) <= StaleThreshold
+	if present {
+		t.transientAPIError[agentSessionID] = time.Now()
+	} else {
+		delete(t.transientAPIError, agentSessionID)
+	}
+	hook := t.onTransientAPIErrorChange
+	shouldFire := (!present && had) || (present && !wasPresent)
+	t.mu.Unlock()
+
+	if hook != nil && shouldFire {
+		hook(agentSessionID)
+	}
+}
+
+// TransientAPIError reports whether the chat's pane currently ends on a
+// retryable API-failure banner and the marker is fresh (observed within
+// StaleThreshold). A stale marker — the poller stopped re-observing it because
+// the pane moved on, the chat was resumed, or it died — is treated as absent so
+// the flag clears itself and never sticks. This fails toward NOT flagging: a
+// missed transient failure costs one manual resume, a false one resumes a
+// session that is legitimately blocked.
+func (t *Tracker) TransientAPIError(agentSessionID string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	at, ok := t.transientAPIError[agentSessionID]
+	if !ok {
+		return false
+	}
+	return time.Since(at) <= StaleThreshold
+}
+
 // SetOnUpdate wires a callback fired after Update when the chat's status
 // changes. The wiring lives in cmd/main.go and resolves claude_id →
 // sessionID before delegating to DisplayStatusComputer.Recompute. Tests
@@ -221,6 +291,16 @@ func (t *Tracker) SetOnAuthChange(fn func(agentSessionID string)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.onAuthChange = fn
+}
+
+// SetOnTransientAPIErrorChange wires a callback fired after
+// SetTransientAPIError when the chat's effective transient-API-error state
+// flips. The wiring lives in cmd/main.go, which resolves agent_session_id →
+// session before acting on the transition. Tests usually leave this nil.
+func (t *Tracker) SetOnTransientAPIErrorChange(fn func(agentSessionID string)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onTransientAPIErrorChange = fn
 }
 
 // Get returns the cached entry for the given claude ID, or nil if not found
@@ -300,14 +380,20 @@ func (t *Tracker) Snapshot() map[string]*Entry {
 func (t *Tracker) Remove(agentSessionID string) {
 	t.mu.Lock()
 	_, hadAuthMarker := t.authFailed[agentSessionID]
+	_, hadTransientMarker := t.transientAPIError[agentSessionID]
 	delete(t.entries, agentSessionID)
 	delete(t.authFailed, agentSessionID)
+	delete(t.transientAPIError, agentSessionID)
 	delete(t.capturedOutput, agentSessionID)
 	hook := t.onAuthChange
+	transientHook := t.onTransientAPIErrorChange
 	t.mu.Unlock()
 
 	if hook != nil && hadAuthMarker {
 		hook(agentSessionID)
+	}
+	if transientHook != nil && hadTransientMarker {
+		transientHook(agentSessionID)
 	}
 }
 
@@ -332,12 +418,25 @@ func (t *Tracker) Cleanup() {
 			clearedAuthMarkers = append(clearedAuthMarkers, id)
 		}
 	}
+	var clearedTransientMarkers []string
+	for id, at := range t.transientAPIError {
+		if now.Sub(at) > StaleThreshold {
+			delete(t.transientAPIError, id)
+			clearedTransientMarkers = append(clearedTransientMarkers, id)
+		}
+	}
 	hook := t.onAuthChange
+	transientHook := t.onTransientAPIErrorChange
 	t.mu.Unlock()
 
 	if hook != nil {
 		for _, id := range clearedAuthMarkers {
 			hook(id)
+		}
+	}
+	if transientHook != nil {
+		for _, id := range clearedTransientMarkers {
+			transientHook(id)
 		}
 	}
 }

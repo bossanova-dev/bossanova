@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "title": "Unknown member inside terminal",
+  "terminal": { "columns": 72 },
+  "scenes": [
+    {
+      "title": "Scene",
+      "steps": [{ "expect": "x" }]
+    }
+  ]
+}

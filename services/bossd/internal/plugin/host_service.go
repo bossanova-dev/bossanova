@@ -807,7 +807,6 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 				DisplayStatus:               vcsDisplayStatusToProto(displayStatus),
 				DisplayHasFailures:          hasFailures,
 				DisplayIsRepairing:          isRepairing,
-				RepairActive:                s.repairLease.Active(sess.ID),
 				HasActiveChat:               hasActiveChat,
 				PrDisplayHeadSha:            headSHA,
 				LastRepairRunnerError:       sess.LastRepairRunnerError,
@@ -834,6 +833,13 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 			if !latestChatActivity.IsZero() {
 				pbSess.LastChatActivityAt = timestamppb.New(latestChatActivity)
 			}
+			// repair_active + the BOS-515 repair_stalled_at stall overlay, in
+			// the one order every hydration site uses: feed the stall heartbeat
+			// with the current evidence (recorded repair head SHA + newest chat
+			// output), then read the possibly just-released lease. Runs after
+			// the literal above because a live stall record OVERWRITES the
+			// DB-sourced LastRepairBlockedReason at the transport level.
+			s.repairLease.HydrateSession(pbSess, sess.ID, sess.LastRepairHeadSHA, latestChatActivity)
 			pbSessions = append(pbSessions, pbSess)
 		}
 	}
@@ -1391,6 +1397,32 @@ func (s *HostServiceServer) CompleteAgentRun(_ context.Context, agentSessionID, 
 	}
 
 	return sessionID, nil
+}
+
+// ValidateRunToken reports whether bearerToken matches the per-run hook token
+// recorded for agentSessionID, WITHOUT any side effect. It backs the
+// /hooks/question/{agent_session_id} receiver, which authenticates the same
+// per-run token the run-scoped Stop/Notification hooks carry but must not
+// signal completion or mutate run state the way CompleteAgentRun does.
+//
+// Returns:
+//   - nil                     token matches a registered run
+//   - ErrAgentRunNotFound     agent_session_id was never registered / already torn down
+//   - ErrAuthMismatch         token mismatch for a registered run
+//
+// The constant-time compare mirrors CompleteAgentRun so the two auth paths
+// can't drift.
+func (s *HostServiceServer) ValidateRunToken(_ context.Context, agentSessionID, bearerToken string) error {
+	s.runMu.Lock()
+	expectedToken, ok := s.runHookTokens[agentSessionID]
+	s.runMu.Unlock()
+	if !ok {
+		return ErrAgentRunNotFound
+	}
+	if subtle.ConstantTimeCompare([]byte(bearerToken), []byte(expectedToken)) != 1 {
+		return ErrAuthMismatch
+	}
+	return nil
 }
 
 // SignalRunComplete is the in-process completion path for hookless agents.

@@ -22,6 +22,24 @@ import (
 	"github.com/recurser/bossd/internal/session"
 )
 
+// QuestionSignalRecorder records a structured "a question is pending" signal
+// for a chat, keyed by agent_session_id. Satisfied by
+// *questionsignal.Store. Kept as a narrow interface so the hook server has no
+// hard dependency on the store's concrete type and tests can substitute a
+// fake.
+type QuestionSignalRecorder interface {
+	SetPending(agentSessionID, source string)
+}
+
+// RunTokenValidator authenticates a per-run bearer token WITHOUT any side
+// effect (no completion signal, no state mutation). Satisfied by
+// *plugin.HostServiceServer.ValidateRunToken. The question hook carries the
+// same per-run token the run-scoped Stop/Notification hooks use, so it
+// authenticates through this seam rather than the sessions.hook_token path.
+type RunTokenValidator interface {
+	ValidateRunToken(ctx context.Context, agentSessionID, bearerToken string) error
+}
+
 // finalizeDispatchTimeout bounds the background FinalizeSession call spawned
 // by the Stop hook. Five minutes comfortably covers the worst-case
 // EnsurePR + push + chat-spawn path on a slow repo while still preventing
@@ -83,6 +101,8 @@ type HookServer struct {
 	finalizer              HookFinalizer
 	cronCompletionNotifier CronCompletionNotifier
 	completer              AgentRunCompleter
+	questionSignals        QuestionSignalRecorder
+	questionAuth           RunTokenValidator
 	logger                 zerolog.Logger
 	listener               net.Listener
 	srv                    *http.Server
@@ -97,17 +117,27 @@ type HookServerConfig struct {
 	Sessions  db.SessionStore
 	Finalizer HookFinalizer
 	Completer AgentRunCompleter
-	Logger    zerolog.Logger
+	// QuestionSignals and QuestionAuth back POST /hooks/question/{agent_session_id}
+	// (BOS-485). Both are optional for legacy/test wiring that doesn't exercise
+	// the structured question signal; when either is nil the endpoint returns
+	// 500 rather than silently no-op'ing. Production (cmd/main.go) and the
+	// shared test harness wire both to the questionsignal store and the
+	// *plugin.HostServiceServer respectively.
+	QuestionSignals QuestionSignalRecorder
+	QuestionAuth    RunTokenValidator
+	Logger          zerolog.Logger
 }
 
 // NewHookServer constructs a HookServer. Call Listen to bind, then Serve
 // (typically in a goroutine). Shutdown is safe after either.
 func NewHookServer(cfg HookServerConfig) *HookServer {
 	return &HookServer{
-		sessions:  cfg.Sessions,
-		finalizer: cfg.Finalizer,
-		completer: cfg.Completer,
-		logger:    cfg.Logger,
+		sessions:        cfg.Sessions,
+		finalizer:       cfg.Finalizer,
+		completer:       cfg.Completer,
+		questionSignals: cfg.QuestionSignals,
+		questionAuth:    cfg.QuestionAuth,
+		logger:          cfg.Logger,
 	}
 }
 
@@ -133,6 +163,7 @@ func (h *HookServer) Listen() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /hooks/finalize/{session_id}", h.handleFinalize)
 	mux.HandleFunc("POST /hooks/agent-run-complete/{agent_session_id}", h.handleAgentRunComplete)
+	mux.HandleFunc("POST /hooks/question/{agent_session_id}", h.handleQuestion)
 
 	h.srv = &http.Server{
 		Handler:           mux,
@@ -325,6 +356,181 @@ func (h *HookServer) handleAgentRunComplete(w http.ResponseWriter, r *http.Reque
 	default:
 		_ = sessionID // observability hook for future use
 		w.WriteHeader(http.StatusOK)
+	}
+}
+
+// handleQuestion implements POST /hooks/question/{agent_session_id} (BOS-485).
+//
+// It records a structured "a question is pending" signal that lets an explicit
+// agent-emitted event (the Claude Code Notification hook) drive
+// CHAT_STATUS_QUESTION instead of the regex pane scraper. The signal is a hint:
+// the poller clears it when the user has answered, and the store ages it out
+// via TTL, so nothing here needs to reconcile.
+//
+// The Notification hook fires on EVERY notification type (it is installed with
+// an empty matcher — see bossdNotificationEntry — because Claude's Notification
+// event filters its matcher by type). So this handler classifies by the
+// notification_type in the forwarded payload and records a pending signal only
+// for types that mean the human is needed (needsHumanNotification). Benign
+// types (auth_success on login, idle_prompt, a normal turn-end) are ACKed with
+// 200 but leave the store untouched — otherwise a login would flip the chat to
+// "? question". An unrecognised type is logged at info (so a future Claude
+// type, e.g. the AskUserQuestion selector's, self-reports for the allowlist)
+// and, conservatively, not treated as a question.
+//
+// Auth mirrors the run-scoped hooks: the Notification hook carries the same
+// per-run bearer token as the run's Stop hook, validated in constant time by
+// the RunTokenValidator with no side effect.
+//
+// Response codes:
+//   - 400 — agent_session_id path parameter missing
+//   - 401 — Authorization header missing/malformed, or the token mismatches a
+//     registered run (can't authenticate ⇒ no store write)
+//   - 500 — question deps not wired (misconfiguration; production always wires them)
+//   - 200 — auth succeeded (the pending signal is recorded only for a
+//     needs-human notification_type; benign/unknown types ACK without a write),
+//     OR the run is unknown/torn-down (idempotent no-op, no store write) —
+//     mirroring handleAgentRunComplete so a stale Notification hook's `curl -sf`
+//     doesn't surface as a hook-error line in the Claude transcript
+func (h *HookServer) handleQuestion(w http.ResponseWriter, r *http.Request) {
+	agentSessionID := r.PathValue("agent_session_id")
+	if agentSessionID == "" {
+		http.Error(w, "agent_session_id required", http.StatusBadRequest)
+		return
+	}
+
+	if h.questionSignals == nil || h.questionAuth == nil {
+		// Defense-in-depth: the daemon entrypoint and test harness wire both.
+		// Surface a clear 500 rather than silently dropping the signal so a
+		// wiring regression is loud.
+		h.logger.Error().Str("agent_session", agentSessionID).Msg("hook: question signal deps not configured")
+		http.Error(w, "question signal not configured", http.StatusInternalServerError)
+		return
+	}
+
+	token, ok := bearerToken(r.Header.Get("Authorization"))
+	if !ok {
+		h.logger.Warn().Str("agent_session", agentSessionID).Msg("hook: question auth missing")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	switch err := h.questionAuth.ValidateRunToken(r.Context(), agentSessionID, token); {
+	case err == nil:
+		h.recordQuestionByType(agentSessionID, r)
+		w.WriteHeader(http.StatusOK)
+	case errors.Is(err, plugin.ErrAgentRunNotFound):
+		// Idempotent no-op, mirroring handleAgentRunComplete: a Notification for
+		// a run the daemon no longer tracks (already completed, or forgotten
+		// across a restart) is not an error. The Notification hook carries the
+		// same per-run token with the same lifetime as the Stop hook, so it
+		// shares the identical post-teardown race window; returning 200 keeps a
+		// stale Notification's `curl -sf` from surfacing as a hook-error line in
+		// the Claude transcript. No positive auth ⇒ the store is left
+		// un-written, so the "no write without auth" invariant still holds.
+		w.WriteHeader(http.StatusOK)
+	case errors.Is(err, plugin.ErrAuthMismatch):
+		// A registered run with the wrong token is a genuine auth failure (a
+		// rotated token, or a request aimed at the wrong daemon); surface it as
+		// 401 rather than swallow it, same as the sibling handler.
+		h.logger.Warn().Str("agent_session", agentSessionID).Msg("hook: question auth failed")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	default:
+		h.logger.Error().Err(err).Str("agent_session", agentSessionID).Msg("hook: question auth error")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
+}
+
+// maxNotificationBody caps how much of the forwarded Notification payload we
+// read. Claude notification payloads are a few hundred bytes; 64 KiB is a
+// generous ceiling that still bounds a malformed/hostile body.
+const maxNotificationBody = 64 << 10
+
+// recordQuestionByType reads the forwarded Claude Notification payload, and
+// records a pending question signal only when its notification_type means the
+// human is needed. It is called after the run token has authenticated, so a
+// store write here always follows positive auth.
+//
+// The body is best-effort: an empty/unreadable/unparsable payload yields an
+// empty type, which is neither needs-human nor known-benign, so it takes the
+// unclassified path (logged, no write) rather than guessing.
+func (h *HookServer) recordQuestionByType(agentSessionID string, r *http.Request) {
+	ntype, message := parseNotificationType(r)
+
+	switch {
+	case needsHumanNotification(ntype):
+		h.questionSignals.SetPending(agentSessionID, "claude-notification:"+ntype)
+		h.logger.Debug().
+			Str("agent_session", agentSessionID).
+			Str("notification_type", ntype).
+			Msg("hook: question signal recorded")
+	case knownBenignNotification(ntype):
+		// Expected non-question notification (login, idle, turn-end). ACK
+		// without a write; Debug keeps the common case out of info logs.
+		h.logger.Debug().
+			Str("agent_session", agentSessionID).
+			Str("notification_type", ntype).
+			Msg("hook: notification ignored (not needs-human)")
+	default:
+		// Unrecognised (or missing) type. Don't treat it as a question — that
+		// would risk false "? question" flips — but log loudly so a new Claude
+		// notification type (e.g. the AskUserQuestion selector's) surfaces and
+		// can be added to needsHumanNotification.
+		h.logger.Info().
+			Str("agent_session", agentSessionID).
+			Str("notification_type", ntype).
+			Str("message", message).
+			Msg("hook: unclassified notification type; not treated as a question")
+	}
+}
+
+// parseNotificationType extracts notification_type (and message, for logging)
+// from a forwarded Claude Notification payload. Returns empty strings on any
+// read/parse failure — the caller treats that as unclassified, not an error.
+func parseNotificationType(r *http.Request) (ntype, message string) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxNotificationBody))
+	if err != nil || len(body) == 0 {
+		return "", ""
+	}
+	var p struct {
+		NotificationType string `json:"notification_type"`
+		Message          string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		return "", ""
+	}
+	return p.NotificationType, p.Message
+}
+
+// needsHumanNotification reports whether a Claude Code Notification of this type
+// means the agent is blocked waiting on the human (⇒ CHAT_STATUS_QUESTION).
+//
+// permission_prompt is empirically confirmed to fire on a tool-approval gate.
+// agent_needs_input and elicitation_dialog are semantically "waiting on the
+// human" and included so they're handled correctly if/when they fire; if they
+// never do in bossd panes, no harm. Benign/informational types are excluded on
+// purpose (see knownBenignNotification) so a login or turn-end can't raise a
+// question.
+func needsHumanNotification(t string) bool {
+	switch t {
+	case "permission_prompt", "agent_needs_input", "elicitation_dialog":
+		return true
+	default:
+		return false
+	}
+}
+
+// knownBenignNotification reports whether a Notification type is a recognised
+// non-question event — one we deliberately ACK without recording a signal, and
+// without the info-level "unclassified" log. Anything neither needs-human nor
+// benign is genuinely unrecognised and worth surfacing.
+func knownBenignNotification(t string) bool {
+	switch t {
+	case "auth_success", "idle_prompt", "agent_completed",
+		"elicitation_complete", "elicitation_response":
+		return true
+	default:
+		return false
 	}
 }
 

@@ -776,15 +776,10 @@ func (m RepoSettingsModel) View() tea.View {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.nameInput.View()))
 		b.WriteString("\n")
 	} else {
-		cursor := "  "
-		if cur == repoSettingsRowName {
-			cursor = cursorChevron + " "
-		}
-		line := fmt.Sprintf("%sName: %s", cursor, m.repo.DisplayName)
-		if cur == repoSettingsRowName {
-			line = styleSelected.Render(line)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
+		b.WriteString(renderFieldRow(
+			cur == repoSettingsRowName,
+			fmt.Sprintf("Name: %s", m.repo.DisplayName),
+		))
 		b.WriteString("\n")
 	}
 
@@ -795,35 +790,23 @@ func (m RepoSettingsModel) View() tea.View {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.setupInput.View()))
 		b.WriteString("\n")
 	} else {
-		cursor := "  "
-		if cur == repoSettingsRowSetupScript {
-			cursor = cursorChevron + " "
-		}
 		val := m.repo.GetSetupScript()
 		if val == "" {
 			val = "(none)"
 		}
-		line := fmt.Sprintf("%sSetup command: %s", cursor, val)
-		if cur == repoSettingsRowSetupScript {
-			line = styleSelected.Render(line)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
+		b.WriteString(renderFieldRow(
+			cur == repoSettingsRowSetupScript,
+			fmt.Sprintf("Setup command: %s", val),
+		))
 		b.WriteString("\n")
 	}
 
 	// Row 2: Merge strategy
-	{
-		cursor := "  "
-		if cur == repoSettingsRowMergeStrategy {
-			cursor = cursorChevron + " "
-		}
-		line := fmt.Sprintf("%sMerge strategy: %s", cursor, mergeStrategyLabel(m.repo.MergeStrategy))
-		if cur == repoSettingsRowMergeStrategy {
-			line = styleSelected.Render(line)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
-		b.WriteString("\n")
-	}
+	b.WriteString(renderFieldRow(
+		cur == repoSettingsRowMergeStrategy,
+		fmt.Sprintf("Merge strategy: %s", mergeStrategyLabel(m.repo.MergeStrategy)),
+	))
+	b.WriteString("\n")
 
 	b.WriteString("\n")
 
@@ -837,15 +820,8 @@ func (m RepoSettingsModel) View() tea.View {
 		if cb.checked {
 			check = "x"
 		}
-		cursor := "  "
-		if cur == cb.row && m.editingField == repoSettingsRowNone {
-			cursor = cursorChevron + " "
-		}
-		line := fmt.Sprintf("%s[%s] %s", cursor, check, cb.label)
-		if cur == cb.row && m.editingField == repoSettingsRowNone {
-			line = styleSelected.Render(line)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
+		focused := cur == cb.row && m.editingField == repoSettingsRowNone
+		b.WriteString(renderFieldRow(focused, fmt.Sprintf("[%s] %s", check, cb.label)))
 		b.WriteString("\n")
 	}
 
@@ -938,34 +914,23 @@ func (m RepoSettingsModel) renderIntegrationHeader(label string, expanded bool, 
 	if expanded {
 		check = "x"
 	}
-	cursor := "  "
 	focused := cur == row && m.editingField == repoSettingsRowNone
-	if focused {
-		cursor = cursorChevron + " "
-	}
-	line := fmt.Sprintf("%s[%s] %s", cursor, check, label)
-	if focused {
-		line = styleSelected.Render(line)
-	}
-	return lipgloss.NewStyle().Padding(0, 2).Render(line) + "\n"
+	return renderFieldRow(focused, fmt.Sprintf("[%s] %s", check, label)) + "\n"
 }
+
+// repoSettingsChildIndent is how many columns an integration's child field rows
+// sit right of their header row, marking them as nested under it. It is the
+// indent the chevron idiom baked into its own cursor strings before BOS-567.
+const repoSettingsChildIndent = 2
 
 // renderChildField renders an indented integration child field row. When missing
 // is true (partial-config validation), the value is shown in red.
 func (m RepoSettingsModel) renderChildField(label, value string, row, cur rowID, missing bool) string {
-	cursor := "    "
 	focused := cur == row && m.editingField == repoSettingsRowNone
-	if focused {
-		cursor = "  " + cursorChevron + " "
-	}
 	if missing {
 		value = styleStatusDanger.Render(value)
 	}
-	line := fmt.Sprintf("%s%s: %s", cursor, label, value)
-	if focused {
-		line = styleSelected.Render(line)
-	}
-	return lipgloss.NewStyle().Padding(0, 2).Render(line) + "\n"
+	return renderIndentedFieldRow(focused, repoSettingsChildIndent, fmt.Sprintf("%s: %s", label, value)) + "\n"
 }
 
 func (m RepoSettingsModel) githubAppRepoLabel() string {

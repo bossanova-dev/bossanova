@@ -4,3 +4,25 @@
 # cross-worktree target-visibility errors and infinite node_modules symlink loops.
 .claude/worktrees
 .worktrees
+
+# pnpm workspace node_modules trees. pnpm creates a self-referential
+# `node_modules/node_modules` symlink, which `bazel query //...` reports as
+# "infinite symlink expansion detected" — a hard BUILD file error that aborts the
+# query with a non-zero exit and an empty result set (`bazel test` merely logs and
+# skips it). Without these entries `make build-drift-check` is green in CI (which
+# never runs `pnpm install`) and permanently red on every dev/agent worktree.
+# Safe to ignore: no BUILD.bazel or .bzl lives under them, and web/marketing/docs
+# tests run through turbo (`make test-web`), never bazel.
+#
+# Keep this list in sync with the members of `pnpm-workspace.yaml` (plus
+# `services/docs`): a workspace member that gains its first dependency starts
+# materialising its own node_modules tree, and the resulting query failure is
+# silent (both `bazel query` calls in check-build-drift.sh redirect stderr), so
+# the gate goes red with no diagnostic. `lib/ui-tokens` has no dependencies today
+# and so no tree on disk; the entry is listed pre-emptively and is a harmless
+# no-op until it does.
+node_modules
+lib/ui-tokens/node_modules
+services/web/node_modules
+services/marketing/node_modules
+services/docs/node_modules

@@ -5,6 +5,14 @@ re-inject wait). It replaces a naked blocking poll with a **one-shot GitHub call
 run the moment CI resolves or the PR merges/closes — while keeping the poll as a bounded fallback and
 authoritative reconciliation as the only thing that actually decides.
 
+**First decide whether callbacks are usable at all.** `callbacksAvailable(env)`
+(`scripts/callback/adapter.mjs`, keyed on `BOSS_SESSION_ID`) is the single "callbacks usable" gate.
+When it is **false** (a standalone run with no daemon behind the `boss callback` interface), **skip
+`registerWatch` entirely and use `fallbackPoll`** — the clean, documented no-op below, never a failed
+wait. When it is **true**, arm the group as described. This is an up-front check, not a "did the CLI
+happen to fail at runtime" guess, and it is the one place to extend if the usability signal ever
+diverges from raw in-boss.
+
 The capability contract is the callback-notifier adapter (`scripts/callback/adapter.mjs`, default
 `CALLBACK=boss`). The boss reference (`scripts/callback/boss.mjs`) maps three capabilities onto the
 generic `boss callback` CLI and carries the watch policy:
@@ -34,8 +42,12 @@ generic `boss callback` CLI and carries the watch policy:
    done
    ```
 
-   If `boss callback add` is unavailable (no daemon, older host, `boss` absent), **skip registration
-   and fall through to the bounded poll** — never fail the wait because callbacks are missing.
+   When `callbacksAvailable(env)` is false (no daemon behind the `boss callback` interface), **skip
+   registration and fall through to the bounded poll** — never fail the wait because callbacks are
+   missing. Consult the gate before arming rather than discovering unavailability from a CLI error. If
+   a `registerWatch` call nonetheless errors at runtime under a **true** gate (e.g. an older host that
+   lacks the `boss callback` subcommand), treat it exactly like the gate-false path — skip and rely on
+   the bounded poll below, never a failed wait.
 
 2. **Reconcile on wake — a callback is a nudge, not a verdict.** A wake (or a poll return) means
    _look_, not _act_. Query real state before changing course:
@@ -75,6 +87,8 @@ generic `boss callback` CLI and carries the watch policy:
 - **Reconcile before act, always** (`policy.reconcileBeforeAct`). No terminal action is driven by a
   callback trigger name alone.
 - **Idempotent under duplicate/late delivery** (`policy.dedupById`). Re-delivery is a no-op.
-- **Graceful degradation.** Missing callback support ⇒ bounded poll, never a failed wait.
+- **Graceful degradation gated on `callbacksAvailable`.** Gate false ⇒ skip `registerWatch`, use
+  `fallbackPoll` — an explicit no-op, never a failed wait. The gate, not a runtime CLI failure,
+  decides.
 - **Project-agnostic.** Only the generic `boss callback` interface and `gh` are named; no host- or
   tracker-specific identifiers appear here.

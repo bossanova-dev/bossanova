@@ -260,6 +260,74 @@ test('survey loss check: every detector finding surfaces as a candidate (no drop
 })
 
 // ---------------------------------------------------------------------------
+// Detector wiring (BOS-525) — the file-size detector the complexity-hotspot
+// playbook points at exists, and its threshold knob is not silently inert.
+// ---------------------------------------------------------------------------
+
+test('the debt-filesize detector exists and its threshold knob actually rewrites the config', () => {
+  const makefile = read('Makefile')
+  const toml = read('scripts/debt/revive-filesize.toml')
+
+  assert.match(makefile, /^debt-filesize-\$\(2\):$/m, 'define-debt-targets must define the target')
+  assert.match(
+    makefile,
+    /^DEBT_FILESIZE_THRESHOLD \?= (\d+)$/m,
+    'the threshold must be overridable',
+  )
+  assert.match(makefile, /REVIVE_PKG\s*:=/, 'the revive tool must be pinned in a variable')
+  assert.match(toml, /\[rule\.file-length-limit\]/, 'the detector config must carry the rule')
+
+  // The recipe seds DEBT_FILESIZE_THRESHOLD over the committed default. Replay that exact
+  // expression here: a pattern that no longer matches the config would leave the knob inert
+  // (the detector would silently keep reporting against the committed default forever).
+  const recipe = /^debt-filesize-\$\(2\):$[\s\S]*?^endef$/m.exec(makefile)
+  assert.ok(recipe, 'the debt-filesize recipe must live inside define-debt-targets')
+  const sed = /sed 's\/(.+)\/(.+)\/'/.exec(recipe[0])
+  assert.ok(sed, 'the debt-filesize recipe must carry a sed rewrite of the threshold')
+  const pattern = new RegExp(sed[1].replace(/\\\(/g, '(').replace(/\\\)/g, ')'))
+  const replacement = sed[2].replace('\\1', '$1').replace('$$(DEBT_FILESIZE_THRESHOLD)', '4242')
+  const rewritten = toml.replace(pattern, replacement)
+  assert.notEqual(rewritten, toml, 'the sed pattern no longer matches revive-filesize.toml')
+  assert.match(rewritten, /max = 4242/, 'the rewrite must land on the file-length-limit max')
+
+  // The committed default must equal the Makefile default, or `make debt-filesize-*` and a
+  // bare `revive -config scripts/debt/revive-filesize.toml` would disagree.
+  const makeDefault = /^DEBT_FILESIZE_THRESHOLD \?= (\d+)$/m.exec(makefile)[1]
+  const tomlDefault = /max = (\d+)/.exec(toml)[1]
+  assert.equal(tomlDefault, makeDefault, 'toml max must equal the Makefile threshold default')
+
+  // The recipe's `|| true` makes the detector non-blocking, which also means revive exiting
+  // non-zero (unparseable config) presents as "0 findings" — and revive DISABLES
+  // file-length-limit when max <= 0, so a bare `0` silences it while looking green. Three
+  // guards keep that from becoming a silent all-clear. Pin each guard TOGETHER WITH the
+  // `exit 1` it must reach: matching the condition alone would still pass a guard whose body
+  // was emptied, or one whose failing half was deleted along with its consequent.
+  assert.match(
+    recipe[0],
+    /case "\$\$\(DEBT_FILESIZE_THRESHOLD\)" in ''\|\*\[!0-9\]\*\|0\*\)[\s\S]{0,220}?exit 1;; esac/,
+    'a non-numeric/leading-zero DEBT_FILESIZE_THRESHOLD must exit 1 before the config is built',
+  )
+  assert.match(
+    recipe[0],
+    /grep -q '\^\\\[rule\\\.file-length-limit\\\]'[\s\S]{0,80}?grep -qE "max = \$\$\(DEBT_FILESIZE_THRESHOLD\)[\s\S]{0,240}?exit 1; \}/,
+    'a generated config missing the rule or the REQUESTED max must exit 1',
+  )
+  assert.match(
+    recipe[0],
+    /trap 'rm -f "\$\$\$\$cfg"' EXIT INT TERM/,
+    'the recipe must trap-clean its temp config',
+  )
+  // The survey parser only understands revive's `default` one-line shape. Fed `friendly`
+  // output it returns [] — a 100% silent loss the D8 gate cannot see, because that gate
+  // asserts over a static fixture rather than a live run. Pin the formatter to the parser.
+  assert.match(
+    recipe[0],
+    /-formatter default\b/,
+    "the recipe must use revive's default formatter; the survey parser silently drops every friendly-shaped finding",
+  )
+})
+
+// ---------------------------------------------------------------------------
 // Tier→model wiring (BOS-323) — the cheap survey leg runs on Sonnet, guarded on
 // $BOSS_AGENT, in BOTH mirrors; the Opus fix/check-watch legs are unchanged.
 // ---------------------------------------------------------------------------

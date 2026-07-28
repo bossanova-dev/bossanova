@@ -5,7 +5,7 @@
   "scenes": [
     {
       "id": "scene-01",
-      "title": "accounts list shows both providers and the x/d action bar",
+      "title": "accounts list shows both providers and the toggle/remove action bar",
       "steps": [
         { "key": "s", "caption": "Open the Settings hub" },
         {
@@ -16,7 +16,8 @@
         { "key": "a", "caption": "Press [a] to open the Accounts list" },
         {
           "waitFor": {
-            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "text": "LABEL PROVIDER",
+            "match": "normalized",
             "label": "Accounts list loaded"
           },
           "timeoutMs": 10000,
@@ -40,9 +41,9 @@
               "label": "codex account row"
             },
             {
-              "text": "[x] disable/enable",
+              "text": "[space] toggle",
               "match": "normalized",
-              "label": "action bar advertises the [x] disable/enable toggle"
+              "label": "action bar advertises the disable/enable toggle"
             },
             {
               "text": "[d] remove",
@@ -109,7 +110,7 @@
               "label": "account still present after the dismissed remove"
             },
             {
-              "text": "[x] disable/enable",
+              "text": "[space] toggle",
               "match": "normalized",
               "label": "action bar restored on the list"
             }

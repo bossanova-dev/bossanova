@@ -1345,7 +1345,7 @@ func TestRepoStore_CloseImmediateRollsBackWithCanceledContext(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewRepoStore(db)
 
-	conn, err := store.beginImmediate(context.Background())
+	conn, err := beginImmediate(context.Background(), db, "repo")
 	if err != nil {
 		t.Fatalf("begin immediate: %v", err)
 	}
@@ -1353,7 +1353,7 @@ func TestRepoStore_CloseImmediateRollsBackWithCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	committed := false
-	store.closeImmediate(ctx, conn, &committed)
+	closeImmediate(ctx, conn, &committed)
 
 	_, err = store.Create(context.Background(), CreateRepoParams{
 		DisplayName:       "after-cancel",

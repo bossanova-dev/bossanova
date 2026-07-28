@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossalib/githubcallback"
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
 )
@@ -125,6 +126,46 @@ func TestGithubCallbackStore_CreateValidation(t *testing.T) {
 				t.Fatalf("err = %v, want ErrGithubCallbackInvalid", err)
 			}
 		})
+	}
+}
+
+// TestGithubCallbackStore_AcceptsEveryCanonicalTrigger pins the store's
+// validation to the canonical vocabulary. The store is the authority that
+// rejects a registration, so if its notion of "valid trigger" ever drifts from
+// githubcallback.ValidTriggers() the CLI, MCP schema, and evaluator would all
+// accept a trigger the write path silently refuses. Asserting acceptance of the
+// whole canonical list (and rejection of a bogus value) makes that drift
+// impossible to land green.
+func TestGithubCallbackStore_AcceptsEveryCanonicalTrigger(t *testing.T) {
+	store := NewGithubCallbackStore(setupTestDB(t))
+	ctx := context.Background()
+
+	triggers := githubcallback.ValidTriggers()
+	if len(triggers) == 0 {
+		t.Fatal("ValidTriggers() is empty; the canonical vocabulary cannot be empty")
+	}
+	for _, tr := range triggers {
+		t.Run(string(tr), func(t *testing.T) {
+			p := newTestCallbackParams()
+			p.Trigger = tr
+			cb, err := store.Create(ctx, p)
+			if err != nil {
+				t.Fatalf("canonical trigger %q rejected by the store: %v", tr, err)
+			}
+			if cb.Trigger != tr {
+				t.Fatalf("stored trigger = %q, want %q (the store must persist the value verbatim)", cb.Trigger, tr)
+			}
+		})
+	}
+
+	// Exact membership: a near-miss must not be normalized into acceptance, or
+	// the stored value would stop being a canonical trigger string.
+	for _, bogus := range []models.GithubCallbackTrigger{"", "MERGED", " merged ", "merged\n", "ready-for-review", "checks_passed_readyy"} {
+		p := newTestCallbackParams()
+		p.Trigger = bogus
+		if _, err := store.Create(ctx, p); !errors.Is(err, ErrGithubCallbackInvalid) {
+			t.Errorf("trigger %q: err = %v, want ErrGithubCallbackInvalid", bogus, err)
+		}
 	}
 }
 

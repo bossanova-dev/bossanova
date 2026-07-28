@@ -50,6 +50,26 @@ func (f SessionArchiverFunc) ArchiveSession(ctx context.Context, id string) erro
 	return f(ctx, id)
 }
 
+// BaseAdvanceNotifier is told, once a PR merges, that the session's base
+// branch has moved on. It backs the BOS-521 keep-current sweep, which rebases
+// the repo's other in-flight branches onto the new base.
+//
+// The hook lives here rather than only on the merge RPC because a PR can merge
+// without boss doing the merging — the GitHub UI, a merge queue, another tool.
+// Every one of those funnels through this handler, so this is the seam that
+// sees them all. Merges that DO go through boss fire both hooks; the second
+// sweep finds every branch already current and skips.
+type BaseAdvanceNotifier interface {
+	NotifyBaseAdvanced(ctx context.Context, mergedSessionID string)
+}
+
+// BaseAdvanceNotifierFunc adapts a plain func to the BaseAdvanceNotifier
+// interface.
+type BaseAdvanceNotifierFunc func(ctx context.Context, mergedSessionID string)
+
+// NotifyBaseAdvanced implements BaseAdvanceNotifier.
+func (f BaseAdvanceNotifierFunc) NotifyBaseAdvanced(ctx context.Context, id string) { f(ctx, id) }
+
 // Dispatcher consumes VCS events from the poller and applies the
 // corresponding state machine transitions and database updates.
 //
@@ -67,6 +87,7 @@ type Dispatcher struct {
 	completionNotifier SessionCompletionNotifier
 	displayStatus      DisplayStatusSetter
 	archiver           SessionArchiver
+	baseAdvance        BaseAdvanceNotifier
 	logger             zerolog.Logger
 	mu                 sync.Mutex // see type doc: redundant given single-goroutine Run, kept as a safety net
 }
@@ -108,6 +129,15 @@ func (d *Dispatcher) SetDisplayStatusSetter(s DisplayStatusSetter) {
 // nil-safe: leaving it unset disables the post-merge archive automation.
 func (d *Dispatcher) SetArchiver(a SessionArchiver) {
 	d.archiver = a
+}
+
+// SetBaseAdvanceNotifier wires the hook invoked after a PR merges, when the
+// base branch it merged into has therefore advanced. Uses a setter (not a
+// constructor param) because the dispatcher is created before the daemon
+// server that implements it. nil-safe: leaving it unset disables the
+// keep-current sweep on the webhook path.
+func (d *Dispatcher) SetBaseAdvanceNotifier(n BaseAdvanceNotifier) {
+	d.baseAdvance = n
 }
 
 // notifyCompletion calls the completion notifier if one is set.
@@ -425,8 +455,42 @@ func (d *Dispatcher) handleReviewSubmitted(ctx context.Context, sm *machine.Mach
 }
 
 func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
-	if err := sm.FireCtx(ctx, machine.PRMerged); err != nil {
-		return fmt.Errorf("fire pr_merged: %w", err)
+	// The row may already be Merged when this webhook lands. MergeSession's
+	// post-merge display refresh reconciles the session to Merged synchronously
+	// before its RPC returns (and, more rarely, a scheduled display poll gets
+	// there first), which is seconds ahead of GitHub's PR-merged delivery.
+	// machine.Merged permits no outbound PRMerged, so firing again fails and
+	// returns early — skipping the archive hook below, which is the ONLY
+	// archive-after-merge trigger for ordinary sessions and, through
+	// ArchiveSession, the only auto-delete-branches trigger too. Treat an
+	// already-Merged row as "the transition happened" and fall through to the
+	// side effects, all of which are idempotent: the tracker Set and the state
+	// Update are writes of the value already there, notifyCompletion is guarded
+	// against duplicates by the orchestrator, and ArchiveSession (as wired,
+	// Server.ArchiveSessionAndNotify) swallows the already-archived ErrNoRows.
+	// A duplicate delivery that arrives once the archive has landed cannot
+	// reach here at all — ListByRepoAndPR filters archived rows — and a
+	// resurrected session is back on ImplementingPlan, so it takes the normal
+	// fire path, not this one. Duplicates in the window before the async
+	// archive completes, or on a repo with the archive flag off, do land here;
+	// that is exactly what the idempotency above is for.
+	//
+	// Deliberately merge-only: handlePRClosed has no archive hook, so losing
+	// its transition costs nothing that the reconcile has not already done.
+	//
+	// Deliberately an equality test, not sm.CanFire(PRMerged): CanFire would
+	// also swallow a genuinely illegal Closed/Orphaned -> Merged fire and fall
+	// through to the side effects. Do not "simplify" it to CanFire. The flip
+	// side is that those states still lose the archive hook, as does any daemon
+	// that never receives the webhook at all (the display reconcile lands
+	// Merged and pollableState then excludes the row from the state poller
+	// that would otherwise emit PRMerged). Both predate this branch — it only
+	// makes the second deterministic for user-initiated merges — and both want
+	// the archive hook moved somewhere both reconcile paths reach.
+	if sess.State != machine.Merged {
+		if err := sm.FireCtx(ctx, machine.PRMerged); err != nil {
+			return fmt.Errorf("fire pr_merged: %w", err)
+		}
 	}
 
 	if err := d.persistTerminalPRState(ctx, sess, machine.Merged, vcs.DisplayStatusMerged, "PR merged", models.TaskMappingStatusCompleted); err != nil {
@@ -435,6 +499,12 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 	// Merge-only: the archive hook lives here, not in the shared
 	// persistTerminalPRState, so a PR *close* never archives the session.
 	d.archiveAfterMergeIfEnabled(ctx, sess)
+	// The base this PR merged into has advanced (BOS-521). Fire even when the
+	// merge came from boss itself: the sweep is idempotent, and this is the one
+	// seam that also catches merges boss did not perform.
+	if d.baseAdvance != nil {
+		d.baseAdvance.NotifyBaseAdvanced(ctx, sess.ID)
+	}
 	return nil
 }
 

@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { test } from 'node:test'
 
 import {
@@ -79,17 +82,61 @@ test('listUnformatted collects flagged paths and batches large inputs', () => {
   assert.deepEqual(calls, [400, 400, 50])
 })
 
-test('resolveGoimports prefers the PATH binary, falls back to `go tool`', () => {
+test('resolveGoimports prefers the PATH binary, falls back to read-only `go tool`', () => {
   const orig = process.env.PATH
   try {
     process.env.PATH = '' // no goimports binary → the go-tool fallback
     const r = resolveGoimports()
-    assert.deepEqual(r.baseArgs, ['tool', 'goimports', '-l'])
+    assert.deepEqual(r.baseArgs, ['-C', 'lib/bossalib', 'tool', 'goimports', '-l'])
     assert.equal(r.cmd, 'go')
+    assert.equal(r.absolutePaths, true)
+    assert.match(r.env.GOFLAGS, /(?:^|\s)-mod=readonly(?:\s|$)/)
+    assert.equal(r.env.GOWORK, 'off')
   } finally {
     process.env.PATH = orig
   }
   assert.equal(onPath('definitely-not-a-real-binary-xyz'), false)
+})
+
+test('resolveGoimports runs a PATH goimports binary in read-only module mode', () => {
+  const originalPath = process.env.PATH
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'goimports-path-'))
+  const binary = path.join(dir, 'goimports')
+  fs.writeFileSync(binary, '#!/bin/sh\nexit 0\n')
+  fs.chmodSync(binary, 0o755)
+  try {
+    process.env.PATH = dir
+    const resolved = resolveGoimports()
+    assert.equal(resolved.cmd, 'goimports')
+    assert.match(resolved.env.GOFLAGS, /(?:^|\s)-mod=readonly(?:\s|$)/)
+    assert.equal(resolved.env.GOWORK, 'off')
+  } finally {
+    process.env.PATH = originalPath
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('checkFormat preserves the goimports read-only environment', () => {
+  const calls = []
+  checkFormat({
+    repoRoot: '/repo',
+    files: ['a.go'],
+    run: (cmd, _args, env) => {
+      calls.push({ cmd, env })
+      return ''
+    },
+    goimports: {
+      label: 'read-only goimports',
+      cmd: 'go',
+      baseArgs: ['tool', 'goimports', '-l'],
+      env: { GOFLAGS: '-mod=readonly', GOWORK: 'off' },
+    },
+  })
+
+  assert.deepEqual(calls, [
+    { cmd: 'gofmt', env: undefined },
+    { cmd: 'go', env: { GOFLAGS: '-mod=readonly', GOWORK: 'off' } },
+  ])
 })
 
 test('checkFormat unions gofmt and goimports offenders, deduped and sorted', () => {

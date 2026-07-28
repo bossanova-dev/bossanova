@@ -24,6 +24,12 @@ const (
 	GithubCallbackTriggerChecksPassed GithubCallbackTrigger = "checks_passed"
 	// GithubCallbackTriggerChecksFailed fires when a PR check fails.
 	GithubCallbackTriggerChecksFailed GithubCallbackTrigger = "checks_failed"
+	// GithubCallbackTriggerReadyForReview fires when the PR is open and not a
+	// draft (i.e. on or after the draft-to-ready flip).
+	GithubCallbackTriggerReadyForReview GithubCallbackTrigger = "ready_for_review"
+	// GithubCallbackTriggerChecksPassedReady fires when the PR's checks are all
+	// green and the PR is not a draft — the merge-eligibility moment.
+	GithubCallbackTriggerChecksPassedReady GithubCallbackTrigger = "checks_passed_ready"
 )
 
 // GithubCallbackState is the lifecycle position of a callback.

@@ -72,6 +72,16 @@ func errLocalOnly(op string) error {
 	return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("%s is only available on a local daemon", op))
 }
 
+// errBroadcastLocalOnly is returned for the broadcast RPCs, which have no
+// orchestrator proxy today. It is deliberately distinct from errLocalOnly:
+// broadcasts are not permanently local — cross-daemon delivery is a separate,
+// planned child — so the message says "not yet routed through the
+// orchestrator" rather than implying the operation will never work remotely.
+func errBroadcastLocalOnly(op string) error {
+	return connect.NewError(connect.CodeUnimplemented, fmt.Errorf(
+		"%s is only available against a local daemon: broadcasts are not yet routed through the orchestrator, so run this without --remote (or with BOSS_SOCKET pointed at a local bossd)", op))
+}
+
 // --- Ping ---
 
 func (c *RemoteClient) Ping(ctx context.Context) error {
@@ -266,7 +276,10 @@ func (c *RemoteClient) CreateSession(_ context.Context, _ *pb.CreateSessionReque
 	return nil, errLocalOnly("CreateSession")
 }
 
-func (c *RemoteClient) GetSession(ctx context.Context, id string) (*pb.Session, error) {
+// GetSession ignores opts entirely: machine-local endpoints are never surfaced
+// through the orchestrator, so RemoteClient never sets the opt-in or namespace
+// fields on the proxy request. The ProxyGetSession surface has no such fields.
+func (c *RemoteClient) GetSession(ctx context.Context, id string, _ SessionReadOptions) (*pb.Session, error) {
 	resp, err := c.rpc.ProxyGetSession(ctx, connect.NewRequest(&pb.ProxyGetSessionRequest{Id: id}))
 	if err != nil {
 		return nil, err
@@ -274,7 +287,9 @@ func (c *RemoteClient) GetSession(ctx context.Context, id string) (*pb.Session, 
 	return resp.Msg.Session, nil
 }
 
-func (c *RemoteClient) ListSessions(ctx context.Context, req *pb.ListSessionsRequest) ([]*pb.Session, error) {
+// ListSessions ignores opts entirely (see GetSession): the orchestrator never
+// carries machine-local endpoints.
+func (c *RemoteClient) ListSessions(ctx context.Context, req *pb.ListSessionsRequest, _ SessionReadOptions) ([]*pb.Session, error) {
 	proxyReq := &pb.ProxyListSessionsRequest{
 		IncludeArchived: req.IncludeArchived,
 		States:          req.States,
@@ -619,6 +634,7 @@ func (c *RemoteClient) CreateCronJob(ctx context.Context, req *pb.CreateCronJobR
 		Model:                 req.GetModel(),
 		GateCommand:           req.GetGateCommand(),
 		ShouldRunSetupCommand: req.ShouldRunSetupCommand,
+		IsZeroOutput:          req.IsZeroOutput,
 	}))
 	if err != nil {
 		return nil, err
@@ -671,6 +687,7 @@ func (c *RemoteClient) UpdateCronJob(ctx context.Context, req *pb.UpdateCronJobR
 		Model:                 req.Model,
 		GateCommand:           req.GateCommand,
 		ShouldRunSetupCommand: req.ShouldRunSetupCommand,
+		IsZeroOutput:          req.IsZeroOutput,
 	}))
 	if err != nil {
 		return nil, err
@@ -749,6 +766,111 @@ func (c *RemoteClient) DeleteGithubCallback(ctx context.Context, targetChatID, i
 		Id:           id,
 	}))
 	return err
+}
+
+// --- Notes ---
+
+// CreateNote proxies a note creation through the orchestrator, routed by
+// repo_id to the owning daemon.
+func (c *RemoteClient) CreateNote(ctx context.Context, req *pb.CreateNoteRequest) (*pb.Note, error) {
+	resp, err := c.rpc.ProxyCreateNote(ctx, connect.NewRequest(&pb.ProxyCreateNoteRequest{
+		RepoId:    req.GetRepoId(),
+		SessionId: req.SessionId,
+		ChatId:    req.ChatId,
+		Body:      req.GetBody(),
+		Tags:      req.Tags,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNote(), nil
+}
+
+// GetNote proxies a note read through the orchestrator, routing to the
+// owning daemon by repoID.
+func (c *RemoteClient) GetNote(ctx context.Context, repoID, id string) (*pb.Note, error) {
+	resp, err := c.rpc.ProxyGetNote(ctx, connect.NewRequest(&pb.ProxyGetNoteRequest{
+		RepoId: repoID,
+		Id:     id,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNote(), nil
+}
+
+// ListNotes proxies the note list through the orchestrator. When req carries
+// a repo_id it routes to that repo's owning daemon; otherwise bosso fans out
+// across the caller's Ready daemons and concatenates the results. The
+// optional filter pointers pass straight through so an unset field is not
+// constrained.
+func (c *RemoteClient) ListNotes(ctx context.Context, req *pb.ListNotesRequest) ([]*pb.Note, error) {
+	resp, err := c.rpc.ProxyListNotes(ctx, connect.NewRequest(&pb.ProxyListNotesRequest{
+		RepoId:    req.RepoId,
+		SessionId: req.SessionId,
+		ChatId:    req.ChatId,
+		Tags:      req.Tags,
+		Search:    req.Search,
+		Limit:     req.GetLimit(),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNotes(), nil
+}
+
+// UpdateNote proxies a note mutation through the orchestrator, routing to the
+// owning daemon by repoID. req.Tags is *pb.NoteTagSet and is passed through
+// unmodified — nil means leave the tag set alone, a non-nil pointer (even one
+// wrapping an empty list) replaces it wholesale; normalizing nil to an empty
+// set here would silently turn "leave alone" into "clear all tags".
+func (c *RemoteClient) UpdateNote(ctx context.Context, repoID string, req *pb.UpdateNoteRequest) (*pb.Note, error) {
+	resp, err := c.rpc.ProxyUpdateNote(ctx, connect.NewRequest(&pb.ProxyUpdateNoteRequest{
+		RepoId: repoID,
+		Id:     req.GetId(),
+		Body:   req.Body,
+		Tags:   req.Tags,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNote(), nil
+}
+
+// DeleteNote proxies a note delete through the orchestrator, routing to the
+// owning daemon by repoID.
+func (c *RemoteClient) DeleteNote(ctx context.Context, repoID, id string) error {
+	_, err := c.rpc.ProxyDeleteNote(ctx, connect.NewRequest(&pb.ProxyDeleteNoteRequest{
+		RepoId: repoID,
+		Id:     id,
+	}))
+	return err
+}
+
+// --- Broadcasts (local only) ---
+
+func (c *RemoteClient) SendBroadcast(_ context.Context, _ *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error) {
+	return nil, errBroadcastLocalOnly("SendBroadcast")
+}
+
+func (c *RemoteClient) ListBroadcasts(_ context.Context, _ *pb.ListBroadcastsRequest) ([]*pb.Broadcast, error) {
+	return nil, errBroadcastLocalOnly("ListBroadcasts")
+}
+
+func (c *RemoteClient) DeleteBroadcast(_ context.Context, _ string) error {
+	return errBroadcastLocalOnly("DeleteBroadcast")
+}
+
+func (c *RemoteClient) CreateBroadcastSubscription(_ context.Context, _ *pb.CreateBroadcastSubscriptionRequest) (*pb.BroadcastSubscription, error) {
+	return nil, errBroadcastLocalOnly("CreateBroadcastSubscription")
+}
+
+func (c *RemoteClient) ListBroadcastSubscriptions(_ context.Context, _ *pb.ListBroadcastSubscriptionsRequest) ([]*pb.BroadcastSubscription, error) {
+	return nil, errBroadcastLocalOnly("ListBroadcastSubscriptions")
+}
+
+func (c *RemoteClient) DeleteBroadcastSubscription(_ context.Context, _ string) error {
+	return errBroadcastLocalOnly("DeleteBroadcastSubscription")
 }
 
 // --- Accounts (local only) ---

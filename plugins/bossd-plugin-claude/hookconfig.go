@@ -24,6 +24,16 @@ const hookMatcherKey = "bossd-finalize"
 // run entry; the session-keyed bossd-finalize entry is left untouched.
 const runHookMatcherPrefix = "bossd-agent-run-"
 
+// questionHookURLPrefix is the unique substring of the BOS-485 Notification
+// (question) hook's POST URL. bossd keys the Notification array off this — NOT
+// the Claude matcher — because that matcher is a real notification-type filter
+// (an empty matcher fires on every type), a value the hook necessarily shares
+// with any sibling chat's question hook or a user-authored Notification hook.
+// The URL carries the agent_session_id, so "/hooks/question/{id}" uniquely
+// identifies one run's entry, and the bare prefix identifies "any bossd
+// question hook" for the stale-sibling sweep.
+const questionHookURLPrefix = "/hooks/question/"
+
 // WriteHookConfig writes (or merges) a Stop-hook entry into
 // worktreePath/.claude/settings.local.json. The entry POSTs to the
 // bossd loopback hook server with a Bearer token so FinalizeSession (or,
@@ -104,6 +114,33 @@ func WriteHookConfig(worktreePath, sessionID, agentSessionID, token string, port
 
 	stops = upsertByMatcher(stops, matcher, entry)
 	hooks["Stop"] = stops
+
+	// Run-scoped writes also install a Claude Code Notification hook (BOS-485)
+	// so a "needs the human" event drives CHAT_STATUS_QUESTION via an explicit
+	// signal instead of the pane regex. It POSTs the SAME per-run token to
+	// /hooks/question/{agentSessionID}, forwarding the notification payload on
+	// stdin so bossd can classify by notification_type. The session-keyed
+	// finalize path (agentSessionID == "") has no agent_session_id to key or
+	// POST, so it installs no Notification hook.
+	//
+	// Unlike Stop, Claude's Notification event FILTERS its matcher by
+	// notification TYPE (permission_prompt, idle_prompt, …); a synthetic per-run
+	// identifier there matches no type, so the hook would never fire (the
+	// original BOS-485 inert bug). We therefore install an EMPTY matcher — fire
+	// on every type — and let bossd decide which types mean "needs the human".
+	// Because the matcher is no longer a unique per-run key, bossd owns this
+	// entry by the unique substring of its POST URL (/hooks/question/{id})
+	// rather than by matcher — see questionHookURLPrefix. pruneQuestionHooks
+	// also sweeps the pre-fix inert entry (same URL, old matcher), so an upgrade
+	// heals itself.
+	if agentSessionID != "" {
+		notifURL := questionHookURLPrefix + agentSessionID
+		notifs := pruneQuestionHooks(asSlice(hooks, "Notification"))
+		notifEntry := bossdNotificationEntry(notifURL, token, port)
+		notifs = upsertByCommandURL(notifs, notifURL, notifEntry)
+		hooks["Notification"] = notifs
+	}
+
 	root["hooks"] = hooks
 
 	out, err := json.MarshalIndent(root, "", "  ")
@@ -172,6 +209,90 @@ func pruneRunHooks(stops []any) []any {
 	return kept
 }
 
+// entryCommandContains reports whether raw is a Claude hook group whose inner
+// {type,command} entries include a command containing substr. This is how the
+// Notification array identifies bossd's own question hook — by its POST URL
+// rather than by matcher, since the matcher is now a shared type filter.
+func entryCommandContains(raw any, substr string) bool {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return false
+	}
+	inner, ok := m["hooks"].([]any)
+	if !ok {
+		return false
+	}
+	for _, h := range inner {
+		hm, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+		if cmd, _ := hm["command"].(string); strings.Contains(cmd, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// pruneQuestionHooks drops every Notification entry that is one of bossd's
+// question hooks (its command POSTs to questionHookURLPrefix), regardless of
+// agent_session_id. User/repo Notification hooks are preserved. Returns a fresh
+// slice — never aliases or mutates the input backing array. The URL-based
+// analogue of pruneRunHooks, and safe for the same reason: runs are sequential
+// per worktree, so a pre-existing question hook belongs to a finished run whose
+// cleanup was missed. It also sweeps the pre-fix inert entry (same URL, old
+// per-run matcher), so an upgrade heals itself.
+func pruneQuestionHooks(notifs []any) []any {
+	kept := make([]any, 0, len(notifs))
+	for _, raw := range notifs {
+		if entryCommandContains(raw, questionHookURLPrefix) {
+			continue
+		}
+		kept = append(kept, raw)
+	}
+	return kept
+}
+
+// upsertByCommandURL replaces the first Notification entry whose command
+// contains urlPath, or appends entry when none match. Ownership key for the
+// Notification array (see questionHookURLPrefix) — the URL-based analogue of
+// upsertByMatcher. Returns a fresh slice — never aliases or mutates the input.
+func upsertByCommandURL(notifs []any, urlPath string, entry map[string]any) []any {
+	out := make([]any, len(notifs), len(notifs)+1)
+	copy(out, notifs)
+	for i, raw := range out {
+		if entryCommandContains(raw, urlPath) {
+			out[i] = entry
+			return out
+		}
+	}
+	return append(out, entry)
+}
+
+// removeCommandURLFromHookArray drops the entry from hooks[key] whose command
+// contains urlPath. URL-based analogue of removeMatcherFromHookArray for the
+// Notification array. Returns true when an entry was removed and the slice
+// rewritten back into hooks. A missing key or wrong-typed value is a no-op
+// returning false.
+func removeCommandURLFromHookArray(hooks map[string]any, key, urlPath string) bool {
+	arr, ok := hooks[key].([]any)
+	if !ok {
+		return false
+	}
+	kept := make([]any, 0, len(arr))
+	for _, raw := range arr {
+		if entryCommandContains(raw, urlPath) {
+			continue
+		}
+		kept = append(kept, raw)
+	}
+	if len(kept) == len(arr) {
+		return false
+	}
+	hooks[key] = kept
+	return true
+}
+
 // RemoveRunHookConfig deletes the run-scoped Stop-hook entry
 // (matcher runHookMatcherPrefix+agentSessionID) from
 // worktreePath/.claude/settings.local.json. Inverse of WriteHookConfig's
@@ -198,25 +319,24 @@ func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
 	if !ok {
 		return nil
 	}
-	stops, ok := hooks["Stop"].([]any)
-	if !ok {
-		return nil
-	}
 
+	// Remove the run-keyed entry from BOTH the Stop and Notification arrays
+	// (BOS-485 added the Notification run hook). Each removal is independent —
+	// a file that only ever had a Stop entry (pre-BOS-485, or a session-keyed
+	// write) still cleans up correctly. Only rewrite when something changed.
+	//
+	// The Stop entry is keyed by its unique per-run matcher, but the Notification
+	// entry uses an empty (type-filter) matcher, so it must be removed by the
+	// unique substring of its POST URL instead — the same ownership key
+	// WriteHookConfig upserts on (see questionHookURLPrefix). Matching the full
+	// per-run URL removes only THIS run's entry, never a sibling's.
 	matcher := runHookMatcherPrefix + agentSessionID
-	kept := make([]any, 0, len(stops))
-	for _, raw := range stops {
-		if m, ok := raw.(map[string]any); ok {
-			if existing, _ := m["matcher"].(string); existing == matcher {
-				continue
-			}
-		}
-		kept = append(kept, raw)
-	}
-	if len(kept) == len(stops) {
+	changed := false
+	changed = removeMatcherFromHookArray(hooks, "Stop", matcher) || changed
+	changed = removeCommandURLFromHookArray(hooks, "Notification", questionHookURLPrefix+agentSessionID) || changed
+	if !changed {
 		return nil // nothing removed — don't rewrite the file
 	}
-	hooks["Stop"] = kept
 
 	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
@@ -224,6 +344,32 @@ func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
 	}
 	out = append(out, '\n')
 	return atomicWrite(claudeDir, target, out)
+}
+
+// removeMatcherFromHookArray drops the entry with the given matcher from
+// hooks[key] (a []any of Claude hook groups). Returns true when an entry was
+// removed and the slice rewritten back into hooks. A missing key or
+// wrong-typed value is a no-op returning false. Other entries (user hooks,
+// the session-keyed finalize entry) are preserved.
+func removeMatcherFromHookArray(hooks map[string]any, key, matcher string) bool {
+	arr, ok := hooks[key].([]any)
+	if !ok {
+		return false
+	}
+	kept := make([]any, 0, len(arr))
+	for _, raw := range arr {
+		if m, ok := raw.(map[string]any); ok {
+			if existing, _ := m["matcher"].(string); existing == matcher {
+				continue
+			}
+		}
+		kept = append(kept, raw)
+	}
+	if len(kept) == len(arr) {
+		return false
+	}
+	hooks[key] = kept
+	return true
 }
 
 // loadHookConfig reads and parses the existing settings.local.json.
@@ -307,6 +453,33 @@ func bossdStopEntry(matcher, urlPath, token string, port int) map[string]any {
 	)
 	return map[string]any{
 		"matcher": matcher,
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": cmd,
+			},
+		},
+	}
+}
+
+// bossdNotificationEntry returns the Notification-hook group for BOS-485. It
+// mirrors bossdStopEntry's curl flags but differs in two ways that the
+// Notification event demands:
+//
+//   - EMPTY matcher. Claude's Notification event filters its matcher by
+//     notification TYPE, so a synthetic per-run identifier would match nothing
+//     and the hook would never fire. An empty matcher fires on every type;
+//     bossd classifies server-side which types mean "needs the human".
+//   - `--data-binary @-` + Content-Type: application/json. The notification
+//     payload arrives on the hook's stdin; forwarding it verbatim lets bossd
+//     read notification_type and ignore benign types (auth_success, idle_prompt).
+func bossdNotificationEntry(urlPath, token string, port int) map[string]any {
+	cmd := fmt.Sprintf(
+		`curl -sf --max-time 5 -X POST -H "Authorization: Bearer %s" -H "Content-Type: application/json" --data-binary @- http://127.0.0.1:%d%s`,
+		token, port, urlPath,
+	)
+	return map[string]any{
+		"matcher": "",
 		"hooks": []any{
 			map[string]any{
 				"type":    "command",

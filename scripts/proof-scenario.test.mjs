@@ -10,6 +10,10 @@ import {
   deriveScenes,
   STEP_OPS,
   SCENARIO_MAX_SCENES,
+  TERMINAL_COLS_MIN,
+  TERMINAL_COLS_MAX,
+  TERMINAL_ROWS_MIN,
+  TERMINAL_ROWS_MAX,
 } from './proof-scenario.mjs'
 import { MATCH_MODES } from './proof-evidence-matcher.mjs'
 
@@ -33,6 +37,19 @@ const INVALID_CASES = {
   'invalid-unknown-top.json': { reason: 'unknown top-level', pathScoped: false },
   'invalid-bad-env.json': { reason: 'env values must be strings', pathScoped: false },
   'invalid-daemon-no-action.json': { reason: 'daemon.action', pathScoped: true },
+  'invalid-terminal-cols-type.json': {
+    reason: 'terminal.cols: must be an integer',
+    pathScoped: false,
+  },
+  'invalid-terminal-cols-range.json': {
+    reason: 'terminal.cols: must be an integer',
+    pathScoped: false,
+  },
+  'invalid-terminal-rows-range.json': {
+    reason: 'terminal.rows: must be an integer',
+    pathScoped: false,
+  },
+  'invalid-terminal-unknown-member.json': { reason: 'unknown field "columns"', pathScoped: false },
 }
 
 test('validateScenario accepts every valid-*.json fixture', () => {
@@ -109,6 +126,63 @@ test('fixture preset defaults to "demo" when absent', () => {
   const r = validateScenario(readFixture('valid-minimal.json'))
   assert.equal(r.ok, true)
   assert.equal(r.scenario.fixture.preset, 'demo')
+})
+
+// --- BOS-571: optional top-level terminal size ---
+
+test('terminal is accepted and preserved verbatim on the normalized scenario', () => {
+  const r = validateScenario(readFixture('valid-terminal.json'))
+  assert.equal(r.ok, true, JSON.stringify(r.errors))
+  assert.deepEqual(r.scenario.terminal, { cols: 72, rows: 30 })
+})
+
+test('either terminal member may be omitted (the bridge default fills the gap)', () => {
+  const base = (terminal) => ({
+    version: 1,
+    title: 't',
+    terminal,
+    scenes: [{ title: 's', steps: [{ expect: 'x' }] }],
+  })
+  assert.equal(validateScenario(base({ cols: 72 })).ok, true)
+  assert.equal(validateScenario(base({ rows: 30 })).ok, true)
+  assert.equal(validateScenario(base({})).ok, true)
+})
+
+test('a scenario with no terminal validates and stays terminal-free after normalization', () => {
+  const r = validateScenario(readFixture('valid-minimal.json'))
+  assert.equal(r.ok, true)
+  // Unlike fixture (which gets a preset:'demo' default), an absent terminal must
+  // stay absent so downstream bridge argv is byte-identical to today's.
+  assert.equal('terminal' in r.scenario, false)
+  assert.equal(r.scenario.terminal, undefined)
+})
+
+test('terminal must be an object', () => {
+  const r = validateScenario({
+    version: 1,
+    title: 't',
+    terminal: 72,
+    scenes: [{ title: 's', steps: [{ expect: 'x' }] }],
+  })
+  assert.equal(r.ok, false)
+  assert.match(r.errors[0], /^terminal: must be an object/)
+})
+
+test('terminal bounds are inclusive at both ends and reject one step outside', () => {
+  const base = (terminal) => ({
+    version: 1,
+    title: 't',
+    terminal,
+    scenes: [{ title: 's', steps: [{ expect: 'x' }] }],
+  })
+  assert.equal(validateScenario(base({ cols: TERMINAL_COLS_MIN })).ok, true)
+  assert.equal(validateScenario(base({ cols: TERMINAL_COLS_MAX })).ok, true)
+  assert.equal(validateScenario(base({ rows: TERMINAL_ROWS_MIN })).ok, true)
+  assert.equal(validateScenario(base({ rows: TERMINAL_ROWS_MAX })).ok, true)
+  assert.equal(validateScenario(base({ cols: TERMINAL_COLS_MIN - 1 })).ok, false)
+  assert.equal(validateScenario(base({ cols: TERMINAL_COLS_MAX + 1 })).ok, false)
+  assert.equal(validateScenario(base({ rows: TERMINAL_ROWS_MIN - 1 })).ok, false)
+  assert.equal(validateScenario(base({ rows: TERMINAL_ROWS_MAX + 1 })).ok, false)
 })
 
 test('version must be exactly 1', () => {
@@ -213,6 +287,27 @@ test('schema agreement: scene bounds and version const match the validator', () 
   const schema = readSchema()
   assert.equal(schema.properties.scenes.maxItems, SCENARIO_MAX_SCENES)
   assert.equal(schema.properties.version.const, 1)
+})
+
+test('schema agreement: terminal is optional, closed, and its bounds match the validator', () => {
+  const schema = readSchema()
+  assert.deepEqual(schema.properties.terminal, { $ref: '#/$defs/terminal' })
+  assert.equal((schema.required ?? []).includes('terminal'), false)
+  const terminal = schema.$defs.terminal
+  assert.equal(terminal.type, 'object')
+  assert.equal(terminal.additionalProperties, false)
+  assert.equal(terminal.required, undefined, 'both members must stay optional')
+  assert.deepEqual(Object.keys(terminal.properties).sort(), ['cols', 'rows'])
+  assert.deepEqual(terminal.properties.cols, {
+    type: 'integer',
+    minimum: TERMINAL_COLS_MIN,
+    maximum: TERMINAL_COLS_MAX,
+  })
+  assert.deepEqual(terminal.properties.rows, {
+    type: 'integer',
+    minimum: TERMINAL_ROWS_MIN,
+    maximum: TERMINAL_ROWS_MAX,
+  })
 })
 
 // ── BOS-359: the committed rich 4-scene account-flow scenario ─────────────────

@@ -59,6 +59,22 @@
             "label": "not-today events carry an ISO date prefix"
           },
           "caption": "Events not from today are prefixed with the date (2026-…)"
+        },
+        {
+          "expect": {
+            "text": "Rotation history",
+            "match": "normalized",
+            "label": "the rotation-history block header is on screen"
+          },
+          "caption": "The rotation-history block renders below the action bar"
+        },
+        {
+          "expect": {
+            "text": "switched to",
+            "match": "normalized",
+            "label": "a rotation row renders its switched-to label"
+          },
+          "caption": "A rotated event renders its switched-to label"
         }
       ]
     }

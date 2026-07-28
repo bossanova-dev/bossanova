@@ -95,7 +95,7 @@ func (m TrashModel) Init() tea.Cmd {
 
 func (m TrashModel) fetchArchived() tea.Cmd {
 	return func() tea.Msg {
-		sessions, err := m.client.ListSessions(m.ctx, &pb.ListSessionsRequest{IncludeArchived: true})
+		sessions, err := m.client.ListSessions(m.ctx, &pb.ListSessionsRequest{IncludeArchived: true}, client.SessionReadOptions{})
 		if err != nil {
 			return trashListMsg{err: err}
 		}

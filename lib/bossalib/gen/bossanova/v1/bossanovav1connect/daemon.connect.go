@@ -178,6 +178,37 @@ const (
 	// DaemonServiceDeleteGithubCallbackProcedure is the fully-qualified name of the DaemonService's
 	// DeleteGithubCallback RPC.
 	DaemonServiceDeleteGithubCallbackProcedure = "/bossanova.v1.DaemonService/DeleteGithubCallback"
+	// DaemonServiceSendBroadcastProcedure is the fully-qualified name of the DaemonService's
+	// SendBroadcast RPC.
+	DaemonServiceSendBroadcastProcedure = "/bossanova.v1.DaemonService/SendBroadcast"
+	// DaemonServiceListBroadcastsProcedure is the fully-qualified name of the DaemonService's
+	// ListBroadcasts RPC.
+	DaemonServiceListBroadcastsProcedure = "/bossanova.v1.DaemonService/ListBroadcasts"
+	// DaemonServiceDeleteBroadcastProcedure is the fully-qualified name of the DaemonService's
+	// DeleteBroadcast RPC.
+	DaemonServiceDeleteBroadcastProcedure = "/bossanova.v1.DaemonService/DeleteBroadcast"
+	// DaemonServiceCreateNoteProcedure is the fully-qualified name of the DaemonService's CreateNote
+	// RPC.
+	DaemonServiceCreateNoteProcedure = "/bossanova.v1.DaemonService/CreateNote"
+	// DaemonServiceGetNoteProcedure is the fully-qualified name of the DaemonService's GetNote RPC.
+	DaemonServiceGetNoteProcedure = "/bossanova.v1.DaemonService/GetNote"
+	// DaemonServiceListNotesProcedure is the fully-qualified name of the DaemonService's ListNotes RPC.
+	DaemonServiceListNotesProcedure = "/bossanova.v1.DaemonService/ListNotes"
+	// DaemonServiceUpdateNoteProcedure is the fully-qualified name of the DaemonService's UpdateNote
+	// RPC.
+	DaemonServiceUpdateNoteProcedure = "/bossanova.v1.DaemonService/UpdateNote"
+	// DaemonServiceDeleteNoteProcedure is the fully-qualified name of the DaemonService's DeleteNote
+	// RPC.
+	DaemonServiceDeleteNoteProcedure = "/bossanova.v1.DaemonService/DeleteNote"
+	// DaemonServiceCreateBroadcastSubscriptionProcedure is the fully-qualified name of the
+	// DaemonService's CreateBroadcastSubscription RPC.
+	DaemonServiceCreateBroadcastSubscriptionProcedure = "/bossanova.v1.DaemonService/CreateBroadcastSubscription"
+	// DaemonServiceListBroadcastSubscriptionsProcedure is the fully-qualified name of the
+	// DaemonService's ListBroadcastSubscriptions RPC.
+	DaemonServiceListBroadcastSubscriptionsProcedure = "/bossanova.v1.DaemonService/ListBroadcastSubscriptions"
+	// DaemonServiceDeleteBroadcastSubscriptionProcedure is the fully-qualified name of the
+	// DaemonService's DeleteBroadcastSubscription RPC.
+	DaemonServiceDeleteBroadcastSubscriptionProcedure = "/bossanova.v1.DaemonService/DeleteBroadcastSubscription"
 	// DaemonServiceListAccountsProcedure is the fully-qualified name of the DaemonService's
 	// ListAccounts RPC.
 	DaemonServiceListAccountsProcedure = "/bossanova.v1.DaemonService/ListAccounts"
@@ -313,6 +344,74 @@ type DaemonServiceClient interface {
 	// DeleteGithubCallback removes a callback by id. Idempotent: deleting an
 	// absent id succeeds.
 	DeleteGithubCallback(context.Context, *connect.Request[v1.DeleteGithubCallbackRequest]) (*connect.Response[v1.DeleteGithubCallbackResponse], error)
+	// SendBroadcast resolves a selector to an audience and records one delivery
+	// per target; the worker then delivers them asynchronously with retry.
+	//
+	// Resolution happens ONCE, at send time, and the resolved audience is FROZEN
+	// into the delivery rows. A broadcast is a message to the chats that existed
+	// and matched when it was sent — never a standing subscription. A chat
+	// created (or renamed, or moved to a matching repo) after the send is NOT
+	// retroactively included, even while the broadcast is still un-expired and
+	// deliveries are still being retried.
+	//
+	// Two boundary cases callers must not conflate:
+	//   - Over the cap: if the selector resolves to more chats than the server's
+	//     fan-out cap (MaxTargets), the RPC FAILS, naming the resolved count and
+	//     the cap. It never silently truncates to the cap — a partially delivered
+	//     broadcast the caller believes was complete is worse than a hard error.
+	//   - Zero targets: a selector that resolves to nobody is SUCCESS with zero
+	//     deliveries, not an error. "No chat currently matches" is a legitimate
+	//     answer, and a coordinator broadcasting to an audience that has already
+	//     finished should not have to special-case a failure.
+	SendBroadcast(context.Context, *connect.Request[v1.SendBroadcastRequest]) (*connect.Response[v1.SendBroadcastResponse], error)
+	// ListBroadcasts returns broadcasts matching the optional filters, ordered by
+	// creation time then id for a deterministic listing.
+	ListBroadcasts(context.Context, *connect.Request[v1.ListBroadcastsRequest]) (*connect.Response[v1.ListBroadcastsResponse], error)
+	// DeleteBroadcast removes a broadcast and its deliveries by id. Idempotent:
+	// deleting an absent id succeeds.
+	DeleteBroadcast(context.Context, *connect.Request[v1.DeleteBroadcastRequest]) (*connect.Response[v1.DeleteBroadcastResponse], error)
+	// CreateNote records a note. The server validates it (repo id required,
+	// non-empty body within the size cap) and normalises tags — trimmed,
+	// lowercased, de-duplicated — before storing them.
+	CreateNote(context.Context, *connect.Request[v1.CreateNoteRequest]) (*connect.Response[v1.CreateNoteResponse], error)
+	// GetNote returns a single note by id, including its tags.
+	GetNote(context.Context, *connect.Request[v1.GetNoteRequest]) (*connect.Response[v1.GetNoteResponse], error)
+	// ListNotes returns notes matching the optional filters, ordered by creation
+	// time then id for a deterministic listing. The tag filter is ANY-OF (a note
+	// matching one listed tag is returned), not all-of.
+	ListNotes(context.Context, *connect.Request[v1.ListNotesRequest]) (*connect.Response[v1.ListNotesResponse], error)
+	// UpdateNote mutates a note's body and/or tags. Both are optional; an unset
+	// field is left alone. A SET tags field REPLACES the note's entire tag set
+	// rather than merging into it — sending an empty tag list clears every tag.
+	UpdateNote(context.Context, *connect.Request[v1.UpdateNoteRequest]) (*connect.Response[v1.UpdateNoteResponse], error)
+	// DeleteNote removes a note and its tags by id. Idempotent: deleting an
+	// absent id succeeds.
+	DeleteNote(context.Context, *connect.Request[v1.DeleteNoteRequest]) (*connect.Response[v1.DeleteNoteResponse], error)
+	// CreateBroadcastSubscription registers a STANDING rule: when the owning
+	// session reaches an outcome matching trigger_event, the daemon broadcasts
+	// the registered message to the audience the selector resolves — resolved at
+	// FIRE time, not now. It is a notification primitive, not an orchestration
+	// one: it delivers a message, it does not schedule work.
+	//
+	// A subscription fires at most once (the store's compare-and-swap on the
+	// active state is the guard) and is retired by its expiry if the session
+	// never settles.
+	//
+	// CASCADES ARE NOT DETECTED. The broadcast a subscription fires wakes chats,
+	// and those chats may themselves hold subscriptions, so subscriptions can
+	// chain. There is NO cycle detection in v1: the fan-out cap (a selector
+	// resolving to more chats than the cap is refused outright) and subscription
+	// expiry are what bound the blast radius. A caller building a topology where
+	// A's completion messages B and B's completion messages A owns that loop.
+	CreateBroadcastSubscription(context.Context, *connect.Request[v1.CreateBroadcastSubscriptionRequest]) (*connect.Response[v1.CreateBroadcastSubscriptionResponse], error)
+	// ListBroadcastSubscriptions returns subscriptions matching the optional
+	// filters, ordered by creation time then id for a deterministic listing. It
+	// never returns the registered message body.
+	ListBroadcastSubscriptions(context.Context, *connect.Request[v1.ListBroadcastSubscriptionsRequest]) (*connect.Response[v1.ListBroadcastSubscriptionsResponse], error)
+	// DeleteBroadcastSubscription retires a standing subscription by id.
+	// Idempotent: deleting an absent id, or one that has already fired, been
+	// canceled or expired, succeeds.
+	DeleteBroadcastSubscription(context.Context, *connect.Request[v1.DeleteBroadcastSubscriptionRequest]) (*connect.Response[v1.DeleteBroadcastSubscriptionResponse], error)
 	// ListAccounts returns registry accounts, optionally filtered by provider.
 	// Metadata only — credential blobs never cross the wire.
 	ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error)
@@ -676,6 +775,72 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("DeleteGithubCallback")),
 			connect.WithClientOptions(opts...),
 		),
+		sendBroadcast: connect.NewClient[v1.SendBroadcastRequest, v1.SendBroadcastResponse](
+			httpClient,
+			baseURL+DaemonServiceSendBroadcastProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("SendBroadcast")),
+			connect.WithClientOptions(opts...),
+		),
+		listBroadcasts: connect.NewClient[v1.ListBroadcastsRequest, v1.ListBroadcastsResponse](
+			httpClient,
+			baseURL+DaemonServiceListBroadcastsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListBroadcasts")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteBroadcast: connect.NewClient[v1.DeleteBroadcastRequest, v1.DeleteBroadcastResponse](
+			httpClient,
+			baseURL+DaemonServiceDeleteBroadcastProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DeleteBroadcast")),
+			connect.WithClientOptions(opts...),
+		),
+		createNote: connect.NewClient[v1.CreateNoteRequest, v1.CreateNoteResponse](
+			httpClient,
+			baseURL+DaemonServiceCreateNoteProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("CreateNote")),
+			connect.WithClientOptions(opts...),
+		),
+		getNote: connect.NewClient[v1.GetNoteRequest, v1.GetNoteResponse](
+			httpClient,
+			baseURL+DaemonServiceGetNoteProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetNote")),
+			connect.WithClientOptions(opts...),
+		),
+		listNotes: connect.NewClient[v1.ListNotesRequest, v1.ListNotesResponse](
+			httpClient,
+			baseURL+DaemonServiceListNotesProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListNotes")),
+			connect.WithClientOptions(opts...),
+		),
+		updateNote: connect.NewClient[v1.UpdateNoteRequest, v1.UpdateNoteResponse](
+			httpClient,
+			baseURL+DaemonServiceUpdateNoteProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("UpdateNote")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteNote: connect.NewClient[v1.DeleteNoteRequest, v1.DeleteNoteResponse](
+			httpClient,
+			baseURL+DaemonServiceDeleteNoteProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DeleteNote")),
+			connect.WithClientOptions(opts...),
+		),
+		createBroadcastSubscription: connect.NewClient[v1.CreateBroadcastSubscriptionRequest, v1.CreateBroadcastSubscriptionResponse](
+			httpClient,
+			baseURL+DaemonServiceCreateBroadcastSubscriptionProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("CreateBroadcastSubscription")),
+			connect.WithClientOptions(opts...),
+		),
+		listBroadcastSubscriptions: connect.NewClient[v1.ListBroadcastSubscriptionsRequest, v1.ListBroadcastSubscriptionsResponse](
+			httpClient,
+			baseURL+DaemonServiceListBroadcastSubscriptionsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListBroadcastSubscriptions")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteBroadcastSubscription: connect.NewClient[v1.DeleteBroadcastSubscriptionRequest, v1.DeleteBroadcastSubscriptionResponse](
+			httpClient,
+			baseURL+DaemonServiceDeleteBroadcastSubscriptionProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DeleteBroadcastSubscription")),
+			connect.WithClientOptions(opts...),
+		),
 		listAccounts: connect.NewClient[v1.ListAccountsRequest, v1.ListAccountsResponse](
 			httpClient,
 			baseURL+DaemonServiceListAccountsProcedure,
@@ -759,68 +924,79 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 
 // daemonServiceClient implements DaemonServiceClient.
 type daemonServiceClient struct {
-	resolveContext       *connect.Client[v1.ResolveContextRequest, v1.ResolveContextResponse]
-	validateRepoPath     *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
-	registerRepo         *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
-	cloneAndRegisterRepo *connect.Client[v1.CloneAndRegisterRepoRequest, v1.CloneAndRegisterRepoResponse]
-	listRepos            *connect.Client[v1.ListReposRequest, v1.ListReposResponse]
-	removeRepo           *connect.Client[v1.RemoveRepoRequest, v1.RemoveRepoResponse]
-	updateRepo           *connect.Client[v1.UpdateRepoRequest, v1.UpdateRepoResponse]
-	getRepoSettings      *connect.Client[v1.GetRepoSettingsRequest, v1.GetRepoSettingsResponse]
-	listRepoPRs          *connect.Client[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse]
-	listTrackerIssues    *connect.Client[v1.ListTrackerIssuesRequest, v1.ListTrackerIssuesResponse]
-	createSession        *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
-	getSession           *connect.Client[v1.GetSessionRequest, v1.GetSessionResponse]
-	listSessions         *connect.Client[v1.ListSessionsRequest, v1.ListSessionsResponse]
-	attachSession        *connect.Client[v1.AttachSessionRequest, v1.AttachSessionResponse]
-	stopSession          *connect.Client[v1.StopSessionRequest, v1.StopSessionResponse]
-	pauseSession         *connect.Client[v1.PauseSessionRequest, v1.PauseSessionResponse]
-	resumeSession        *connect.Client[v1.ResumeSessionRequest, v1.ResumeSessionResponse]
-	retrySession         *connect.Client[v1.RetrySessionRequest, v1.RetrySessionResponse]
-	closeSession         *connect.Client[v1.CloseSessionRequest, v1.CloseSessionResponse]
-	mergeSession         *connect.Client[v1.MergeSessionRequest, v1.MergeSessionResponse]
-	removeSession        *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
-	updateSession        *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
-	linkSessionPR        *connect.Client[v1.LinkSessionPRRequest, v1.LinkSessionPRResponse]
-	switchSessionAccount *connect.Client[v1.SwitchSessionAccountRequest, v1.SwitchSessionAccountResponse]
-	archiveSession       *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
-	resurrectSession     *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
-	emptyTrash           *connect.Client[v1.EmptyTrashRequest, v1.EmptyTrashResponse]
-	recordChat           *connect.Client[v1.RecordChatRequest, v1.RecordChatResponse]
-	listChats            *connect.Client[v1.ListChatsRequest, v1.ListChatsResponse]
-	updateChatTitle      *connect.Client[v1.UpdateChatTitleRequest, v1.UpdateChatTitleResponse]
-	deleteChat           *connect.Client[v1.DeleteChatRequest, v1.DeleteChatResponse]
-	wakeChat             *connect.Client[v1.WakeChatRequest, v1.WakeChatResponse]
-	describeChatLaunch   *connect.Client[v1.DescribeChatLaunchRequest, v1.DescribeChatLaunchResponse]
-	getChatTranscript    *connect.Client[v1.GetChatTranscriptRequest, v1.GetChatTranscriptResponse]
-	sendChatMessage      *connect.Client[v1.SendChatMessageRequest, v1.SendChatMessageResponse]
-	reportChatStatus     *connect.Client[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse]
-	getChatStatuses      *connect.Client[v1.GetChatStatusesRequest, v1.GetChatStatusesResponse]
-	getSessionStatuses   *connect.Client[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse]
-	deliverVCSEvent      *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
-	notifyAuthChange     *connect.Client[v1.NotifyAuthChangeRequest, v1.NotifyAuthChangeResponse]
-	createCronJob        *connect.Client[v1.CreateCronJobRequest, v1.CreateCronJobResponse]
-	listCronJobs         *connect.Client[v1.ListCronJobsRequest, v1.ListCronJobsResponse]
-	getCronJob           *connect.Client[v1.GetCronJobRequest, v1.GetCronJobResponse]
-	updateCronJob        *connect.Client[v1.UpdateCronJobRequest, v1.UpdateCronJobResponse]
-	deleteCronJob        *connect.Client[v1.DeleteCronJobRequest, v1.DeleteCronJobResponse]
-	runCronJobNow        *connect.Client[v1.RunCronJobNowRequest, v1.RunCronJobNowResponse]
-	createGithubCallback *connect.Client[v1.CreateGithubCallbackRequest, v1.CreateGithubCallbackResponse]
-	listGithubCallbacks  *connect.Client[v1.ListGithubCallbacksRequest, v1.ListGithubCallbacksResponse]
-	deleteGithubCallback *connect.Client[v1.DeleteGithubCallbackRequest, v1.DeleteGithubCallbackResponse]
-	listAccounts         *connect.Client[v1.ListAccountsRequest, v1.ListAccountsResponse]
-	addAccount           *connect.Client[v1.AddAccountRequest, v1.AddAccountResponse]
-	refreshAccount       *connect.Client[v1.RefreshAccountRequest, v1.RefreshAccountResponse]
-	updateAccount        *connect.Client[v1.UpdateAccountRequest, v1.UpdateAccountResponse]
-	removeAccount        *connect.Client[v1.RemoveAccountRequest, v1.RemoveAccountResponse]
-	testAccount          *connect.Client[v1.TestAccountRequest, v1.TestAccountResponse]
-	repairDoctor         *connect.Client[v1.RepairDoctorRequest, v1.RepairDoctorResponse]
-	startRepairWorkflow  *connect.Client[v1.StartRepairWorkflowRequest, v1.StartRepairWorkflowResponse]
-	listCheckSnapshots   *connect.Client[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse]
-	listAgents           *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
-	listPlugins          *connect.Client[v1.ListPluginsRequest, v1.ListPluginsResponse]
-	getSettings          *connect.Client[v1.GetSettingsRequest, v1.GetSettingsResponse]
-	updateSettings       *connect.Client[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse]
+	resolveContext              *connect.Client[v1.ResolveContextRequest, v1.ResolveContextResponse]
+	validateRepoPath            *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
+	registerRepo                *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
+	cloneAndRegisterRepo        *connect.Client[v1.CloneAndRegisterRepoRequest, v1.CloneAndRegisterRepoResponse]
+	listRepos                   *connect.Client[v1.ListReposRequest, v1.ListReposResponse]
+	removeRepo                  *connect.Client[v1.RemoveRepoRequest, v1.RemoveRepoResponse]
+	updateRepo                  *connect.Client[v1.UpdateRepoRequest, v1.UpdateRepoResponse]
+	getRepoSettings             *connect.Client[v1.GetRepoSettingsRequest, v1.GetRepoSettingsResponse]
+	listRepoPRs                 *connect.Client[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse]
+	listTrackerIssues           *connect.Client[v1.ListTrackerIssuesRequest, v1.ListTrackerIssuesResponse]
+	createSession               *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
+	getSession                  *connect.Client[v1.GetSessionRequest, v1.GetSessionResponse]
+	listSessions                *connect.Client[v1.ListSessionsRequest, v1.ListSessionsResponse]
+	attachSession               *connect.Client[v1.AttachSessionRequest, v1.AttachSessionResponse]
+	stopSession                 *connect.Client[v1.StopSessionRequest, v1.StopSessionResponse]
+	pauseSession                *connect.Client[v1.PauseSessionRequest, v1.PauseSessionResponse]
+	resumeSession               *connect.Client[v1.ResumeSessionRequest, v1.ResumeSessionResponse]
+	retrySession                *connect.Client[v1.RetrySessionRequest, v1.RetrySessionResponse]
+	closeSession                *connect.Client[v1.CloseSessionRequest, v1.CloseSessionResponse]
+	mergeSession                *connect.Client[v1.MergeSessionRequest, v1.MergeSessionResponse]
+	removeSession               *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
+	updateSession               *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
+	linkSessionPR               *connect.Client[v1.LinkSessionPRRequest, v1.LinkSessionPRResponse]
+	switchSessionAccount        *connect.Client[v1.SwitchSessionAccountRequest, v1.SwitchSessionAccountResponse]
+	archiveSession              *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
+	resurrectSession            *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
+	emptyTrash                  *connect.Client[v1.EmptyTrashRequest, v1.EmptyTrashResponse]
+	recordChat                  *connect.Client[v1.RecordChatRequest, v1.RecordChatResponse]
+	listChats                   *connect.Client[v1.ListChatsRequest, v1.ListChatsResponse]
+	updateChatTitle             *connect.Client[v1.UpdateChatTitleRequest, v1.UpdateChatTitleResponse]
+	deleteChat                  *connect.Client[v1.DeleteChatRequest, v1.DeleteChatResponse]
+	wakeChat                    *connect.Client[v1.WakeChatRequest, v1.WakeChatResponse]
+	describeChatLaunch          *connect.Client[v1.DescribeChatLaunchRequest, v1.DescribeChatLaunchResponse]
+	getChatTranscript           *connect.Client[v1.GetChatTranscriptRequest, v1.GetChatTranscriptResponse]
+	sendChatMessage             *connect.Client[v1.SendChatMessageRequest, v1.SendChatMessageResponse]
+	reportChatStatus            *connect.Client[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse]
+	getChatStatuses             *connect.Client[v1.GetChatStatusesRequest, v1.GetChatStatusesResponse]
+	getSessionStatuses          *connect.Client[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse]
+	deliverVCSEvent             *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
+	notifyAuthChange            *connect.Client[v1.NotifyAuthChangeRequest, v1.NotifyAuthChangeResponse]
+	createCronJob               *connect.Client[v1.CreateCronJobRequest, v1.CreateCronJobResponse]
+	listCronJobs                *connect.Client[v1.ListCronJobsRequest, v1.ListCronJobsResponse]
+	getCronJob                  *connect.Client[v1.GetCronJobRequest, v1.GetCronJobResponse]
+	updateCronJob               *connect.Client[v1.UpdateCronJobRequest, v1.UpdateCronJobResponse]
+	deleteCronJob               *connect.Client[v1.DeleteCronJobRequest, v1.DeleteCronJobResponse]
+	runCronJobNow               *connect.Client[v1.RunCronJobNowRequest, v1.RunCronJobNowResponse]
+	createGithubCallback        *connect.Client[v1.CreateGithubCallbackRequest, v1.CreateGithubCallbackResponse]
+	listGithubCallbacks         *connect.Client[v1.ListGithubCallbacksRequest, v1.ListGithubCallbacksResponse]
+	deleteGithubCallback        *connect.Client[v1.DeleteGithubCallbackRequest, v1.DeleteGithubCallbackResponse]
+	sendBroadcast               *connect.Client[v1.SendBroadcastRequest, v1.SendBroadcastResponse]
+	listBroadcasts              *connect.Client[v1.ListBroadcastsRequest, v1.ListBroadcastsResponse]
+	deleteBroadcast             *connect.Client[v1.DeleteBroadcastRequest, v1.DeleteBroadcastResponse]
+	createNote                  *connect.Client[v1.CreateNoteRequest, v1.CreateNoteResponse]
+	getNote                     *connect.Client[v1.GetNoteRequest, v1.GetNoteResponse]
+	listNotes                   *connect.Client[v1.ListNotesRequest, v1.ListNotesResponse]
+	updateNote                  *connect.Client[v1.UpdateNoteRequest, v1.UpdateNoteResponse]
+	deleteNote                  *connect.Client[v1.DeleteNoteRequest, v1.DeleteNoteResponse]
+	createBroadcastSubscription *connect.Client[v1.CreateBroadcastSubscriptionRequest, v1.CreateBroadcastSubscriptionResponse]
+	listBroadcastSubscriptions  *connect.Client[v1.ListBroadcastSubscriptionsRequest, v1.ListBroadcastSubscriptionsResponse]
+	deleteBroadcastSubscription *connect.Client[v1.DeleteBroadcastSubscriptionRequest, v1.DeleteBroadcastSubscriptionResponse]
+	listAccounts                *connect.Client[v1.ListAccountsRequest, v1.ListAccountsResponse]
+	addAccount                  *connect.Client[v1.AddAccountRequest, v1.AddAccountResponse]
+	refreshAccount              *connect.Client[v1.RefreshAccountRequest, v1.RefreshAccountResponse]
+	updateAccount               *connect.Client[v1.UpdateAccountRequest, v1.UpdateAccountResponse]
+	removeAccount               *connect.Client[v1.RemoveAccountRequest, v1.RemoveAccountResponse]
+	testAccount                 *connect.Client[v1.TestAccountRequest, v1.TestAccountResponse]
+	repairDoctor                *connect.Client[v1.RepairDoctorRequest, v1.RepairDoctorResponse]
+	startRepairWorkflow         *connect.Client[v1.StartRepairWorkflowRequest, v1.StartRepairWorkflowResponse]
+	listCheckSnapshots          *connect.Client[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse]
+	listAgents                  *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
+	listPlugins                 *connect.Client[v1.ListPluginsRequest, v1.ListPluginsResponse]
+	getSettings                 *connect.Client[v1.GetSettingsRequest, v1.GetSettingsResponse]
+	updateSettings              *connect.Client[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse]
 }
 
 // ResolveContext calls bossanova.v1.DaemonService.ResolveContext.
@@ -1068,6 +1244,61 @@ func (c *daemonServiceClient) DeleteGithubCallback(ctx context.Context, req *con
 	return c.deleteGithubCallback.CallUnary(ctx, req)
 }
 
+// SendBroadcast calls bossanova.v1.DaemonService.SendBroadcast.
+func (c *daemonServiceClient) SendBroadcast(ctx context.Context, req *connect.Request[v1.SendBroadcastRequest]) (*connect.Response[v1.SendBroadcastResponse], error) {
+	return c.sendBroadcast.CallUnary(ctx, req)
+}
+
+// ListBroadcasts calls bossanova.v1.DaemonService.ListBroadcasts.
+func (c *daemonServiceClient) ListBroadcasts(ctx context.Context, req *connect.Request[v1.ListBroadcastsRequest]) (*connect.Response[v1.ListBroadcastsResponse], error) {
+	return c.listBroadcasts.CallUnary(ctx, req)
+}
+
+// DeleteBroadcast calls bossanova.v1.DaemonService.DeleteBroadcast.
+func (c *daemonServiceClient) DeleteBroadcast(ctx context.Context, req *connect.Request[v1.DeleteBroadcastRequest]) (*connect.Response[v1.DeleteBroadcastResponse], error) {
+	return c.deleteBroadcast.CallUnary(ctx, req)
+}
+
+// CreateNote calls bossanova.v1.DaemonService.CreateNote.
+func (c *daemonServiceClient) CreateNote(ctx context.Context, req *connect.Request[v1.CreateNoteRequest]) (*connect.Response[v1.CreateNoteResponse], error) {
+	return c.createNote.CallUnary(ctx, req)
+}
+
+// GetNote calls bossanova.v1.DaemonService.GetNote.
+func (c *daemonServiceClient) GetNote(ctx context.Context, req *connect.Request[v1.GetNoteRequest]) (*connect.Response[v1.GetNoteResponse], error) {
+	return c.getNote.CallUnary(ctx, req)
+}
+
+// ListNotes calls bossanova.v1.DaemonService.ListNotes.
+func (c *daemonServiceClient) ListNotes(ctx context.Context, req *connect.Request[v1.ListNotesRequest]) (*connect.Response[v1.ListNotesResponse], error) {
+	return c.listNotes.CallUnary(ctx, req)
+}
+
+// UpdateNote calls bossanova.v1.DaemonService.UpdateNote.
+func (c *daemonServiceClient) UpdateNote(ctx context.Context, req *connect.Request[v1.UpdateNoteRequest]) (*connect.Response[v1.UpdateNoteResponse], error) {
+	return c.updateNote.CallUnary(ctx, req)
+}
+
+// DeleteNote calls bossanova.v1.DaemonService.DeleteNote.
+func (c *daemonServiceClient) DeleteNote(ctx context.Context, req *connect.Request[v1.DeleteNoteRequest]) (*connect.Response[v1.DeleteNoteResponse], error) {
+	return c.deleteNote.CallUnary(ctx, req)
+}
+
+// CreateBroadcastSubscription calls bossanova.v1.DaemonService.CreateBroadcastSubscription.
+func (c *daemonServiceClient) CreateBroadcastSubscription(ctx context.Context, req *connect.Request[v1.CreateBroadcastSubscriptionRequest]) (*connect.Response[v1.CreateBroadcastSubscriptionResponse], error) {
+	return c.createBroadcastSubscription.CallUnary(ctx, req)
+}
+
+// ListBroadcastSubscriptions calls bossanova.v1.DaemonService.ListBroadcastSubscriptions.
+func (c *daemonServiceClient) ListBroadcastSubscriptions(ctx context.Context, req *connect.Request[v1.ListBroadcastSubscriptionsRequest]) (*connect.Response[v1.ListBroadcastSubscriptionsResponse], error) {
+	return c.listBroadcastSubscriptions.CallUnary(ctx, req)
+}
+
+// DeleteBroadcastSubscription calls bossanova.v1.DaemonService.DeleteBroadcastSubscription.
+func (c *daemonServiceClient) DeleteBroadcastSubscription(ctx context.Context, req *connect.Request[v1.DeleteBroadcastSubscriptionRequest]) (*connect.Response[v1.DeleteBroadcastSubscriptionResponse], error) {
+	return c.deleteBroadcastSubscription.CallUnary(ctx, req)
+}
+
 // ListAccounts calls bossanova.v1.DaemonService.ListAccounts.
 func (c *daemonServiceClient) ListAccounts(ctx context.Context, req *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error) {
 	return c.listAccounts.CallUnary(ctx, req)
@@ -1227,6 +1458,74 @@ type DaemonServiceHandler interface {
 	// DeleteGithubCallback removes a callback by id. Idempotent: deleting an
 	// absent id succeeds.
 	DeleteGithubCallback(context.Context, *connect.Request[v1.DeleteGithubCallbackRequest]) (*connect.Response[v1.DeleteGithubCallbackResponse], error)
+	// SendBroadcast resolves a selector to an audience and records one delivery
+	// per target; the worker then delivers them asynchronously with retry.
+	//
+	// Resolution happens ONCE, at send time, and the resolved audience is FROZEN
+	// into the delivery rows. A broadcast is a message to the chats that existed
+	// and matched when it was sent — never a standing subscription. A chat
+	// created (or renamed, or moved to a matching repo) after the send is NOT
+	// retroactively included, even while the broadcast is still un-expired and
+	// deliveries are still being retried.
+	//
+	// Two boundary cases callers must not conflate:
+	//   - Over the cap: if the selector resolves to more chats than the server's
+	//     fan-out cap (MaxTargets), the RPC FAILS, naming the resolved count and
+	//     the cap. It never silently truncates to the cap — a partially delivered
+	//     broadcast the caller believes was complete is worse than a hard error.
+	//   - Zero targets: a selector that resolves to nobody is SUCCESS with zero
+	//     deliveries, not an error. "No chat currently matches" is a legitimate
+	//     answer, and a coordinator broadcasting to an audience that has already
+	//     finished should not have to special-case a failure.
+	SendBroadcast(context.Context, *connect.Request[v1.SendBroadcastRequest]) (*connect.Response[v1.SendBroadcastResponse], error)
+	// ListBroadcasts returns broadcasts matching the optional filters, ordered by
+	// creation time then id for a deterministic listing.
+	ListBroadcasts(context.Context, *connect.Request[v1.ListBroadcastsRequest]) (*connect.Response[v1.ListBroadcastsResponse], error)
+	// DeleteBroadcast removes a broadcast and its deliveries by id. Idempotent:
+	// deleting an absent id succeeds.
+	DeleteBroadcast(context.Context, *connect.Request[v1.DeleteBroadcastRequest]) (*connect.Response[v1.DeleteBroadcastResponse], error)
+	// CreateNote records a note. The server validates it (repo id required,
+	// non-empty body within the size cap) and normalises tags — trimmed,
+	// lowercased, de-duplicated — before storing them.
+	CreateNote(context.Context, *connect.Request[v1.CreateNoteRequest]) (*connect.Response[v1.CreateNoteResponse], error)
+	// GetNote returns a single note by id, including its tags.
+	GetNote(context.Context, *connect.Request[v1.GetNoteRequest]) (*connect.Response[v1.GetNoteResponse], error)
+	// ListNotes returns notes matching the optional filters, ordered by creation
+	// time then id for a deterministic listing. The tag filter is ANY-OF (a note
+	// matching one listed tag is returned), not all-of.
+	ListNotes(context.Context, *connect.Request[v1.ListNotesRequest]) (*connect.Response[v1.ListNotesResponse], error)
+	// UpdateNote mutates a note's body and/or tags. Both are optional; an unset
+	// field is left alone. A SET tags field REPLACES the note's entire tag set
+	// rather than merging into it — sending an empty tag list clears every tag.
+	UpdateNote(context.Context, *connect.Request[v1.UpdateNoteRequest]) (*connect.Response[v1.UpdateNoteResponse], error)
+	// DeleteNote removes a note and its tags by id. Idempotent: deleting an
+	// absent id succeeds.
+	DeleteNote(context.Context, *connect.Request[v1.DeleteNoteRequest]) (*connect.Response[v1.DeleteNoteResponse], error)
+	// CreateBroadcastSubscription registers a STANDING rule: when the owning
+	// session reaches an outcome matching trigger_event, the daemon broadcasts
+	// the registered message to the audience the selector resolves — resolved at
+	// FIRE time, not now. It is a notification primitive, not an orchestration
+	// one: it delivers a message, it does not schedule work.
+	//
+	// A subscription fires at most once (the store's compare-and-swap on the
+	// active state is the guard) and is retired by its expiry if the session
+	// never settles.
+	//
+	// CASCADES ARE NOT DETECTED. The broadcast a subscription fires wakes chats,
+	// and those chats may themselves hold subscriptions, so subscriptions can
+	// chain. There is NO cycle detection in v1: the fan-out cap (a selector
+	// resolving to more chats than the cap is refused outright) and subscription
+	// expiry are what bound the blast radius. A caller building a topology where
+	// A's completion messages B and B's completion messages A owns that loop.
+	CreateBroadcastSubscription(context.Context, *connect.Request[v1.CreateBroadcastSubscriptionRequest]) (*connect.Response[v1.CreateBroadcastSubscriptionResponse], error)
+	// ListBroadcastSubscriptions returns subscriptions matching the optional
+	// filters, ordered by creation time then id for a deterministic listing. It
+	// never returns the registered message body.
+	ListBroadcastSubscriptions(context.Context, *connect.Request[v1.ListBroadcastSubscriptionsRequest]) (*connect.Response[v1.ListBroadcastSubscriptionsResponse], error)
+	// DeleteBroadcastSubscription retires a standing subscription by id.
+	// Idempotent: deleting an absent id, or one that has already fired, been
+	// canceled or expired, succeeds.
+	DeleteBroadcastSubscription(context.Context, *connect.Request[v1.DeleteBroadcastSubscriptionRequest]) (*connect.Response[v1.DeleteBroadcastSubscriptionResponse], error)
 	// ListAccounts returns registry accounts, optionally filtered by provider.
 	// Metadata only — credential blobs never cross the wire.
 	ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error)
@@ -1586,6 +1885,72 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("DeleteGithubCallback")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceSendBroadcastHandler := connect.NewUnaryHandler(
+		DaemonServiceSendBroadcastProcedure,
+		svc.SendBroadcast,
+		connect.WithSchema(daemonServiceMethods.ByName("SendBroadcast")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListBroadcastsHandler := connect.NewUnaryHandler(
+		DaemonServiceListBroadcastsProcedure,
+		svc.ListBroadcasts,
+		connect.WithSchema(daemonServiceMethods.ByName("ListBroadcasts")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceDeleteBroadcastHandler := connect.NewUnaryHandler(
+		DaemonServiceDeleteBroadcastProcedure,
+		svc.DeleteBroadcast,
+		connect.WithSchema(daemonServiceMethods.ByName("DeleteBroadcast")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceCreateNoteHandler := connect.NewUnaryHandler(
+		DaemonServiceCreateNoteProcedure,
+		svc.CreateNote,
+		connect.WithSchema(daemonServiceMethods.ByName("CreateNote")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceGetNoteHandler := connect.NewUnaryHandler(
+		DaemonServiceGetNoteProcedure,
+		svc.GetNote,
+		connect.WithSchema(daemonServiceMethods.ByName("GetNote")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListNotesHandler := connect.NewUnaryHandler(
+		DaemonServiceListNotesProcedure,
+		svc.ListNotes,
+		connect.WithSchema(daemonServiceMethods.ByName("ListNotes")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceUpdateNoteHandler := connect.NewUnaryHandler(
+		DaemonServiceUpdateNoteProcedure,
+		svc.UpdateNote,
+		connect.WithSchema(daemonServiceMethods.ByName("UpdateNote")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceDeleteNoteHandler := connect.NewUnaryHandler(
+		DaemonServiceDeleteNoteProcedure,
+		svc.DeleteNote,
+		connect.WithSchema(daemonServiceMethods.ByName("DeleteNote")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceCreateBroadcastSubscriptionHandler := connect.NewUnaryHandler(
+		DaemonServiceCreateBroadcastSubscriptionProcedure,
+		svc.CreateBroadcastSubscription,
+		connect.WithSchema(daemonServiceMethods.ByName("CreateBroadcastSubscription")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListBroadcastSubscriptionsHandler := connect.NewUnaryHandler(
+		DaemonServiceListBroadcastSubscriptionsProcedure,
+		svc.ListBroadcastSubscriptions,
+		connect.WithSchema(daemonServiceMethods.ByName("ListBroadcastSubscriptions")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceDeleteBroadcastSubscriptionHandler := connect.NewUnaryHandler(
+		DaemonServiceDeleteBroadcastSubscriptionProcedure,
+		svc.DeleteBroadcastSubscription,
+		connect.WithSchema(daemonServiceMethods.ByName("DeleteBroadcastSubscription")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceListAccountsHandler := connect.NewUnaryHandler(
 		DaemonServiceListAccountsProcedure,
 		svc.ListAccounts,
@@ -1764,6 +2129,28 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceListGithubCallbacksHandler.ServeHTTP(w, r)
 		case DaemonServiceDeleteGithubCallbackProcedure:
 			daemonServiceDeleteGithubCallbackHandler.ServeHTTP(w, r)
+		case DaemonServiceSendBroadcastProcedure:
+			daemonServiceSendBroadcastHandler.ServeHTTP(w, r)
+		case DaemonServiceListBroadcastsProcedure:
+			daemonServiceListBroadcastsHandler.ServeHTTP(w, r)
+		case DaemonServiceDeleteBroadcastProcedure:
+			daemonServiceDeleteBroadcastHandler.ServeHTTP(w, r)
+		case DaemonServiceCreateNoteProcedure:
+			daemonServiceCreateNoteHandler.ServeHTTP(w, r)
+		case DaemonServiceGetNoteProcedure:
+			daemonServiceGetNoteHandler.ServeHTTP(w, r)
+		case DaemonServiceListNotesProcedure:
+			daemonServiceListNotesHandler.ServeHTTP(w, r)
+		case DaemonServiceUpdateNoteProcedure:
+			daemonServiceUpdateNoteHandler.ServeHTTP(w, r)
+		case DaemonServiceDeleteNoteProcedure:
+			daemonServiceDeleteNoteHandler.ServeHTTP(w, r)
+		case DaemonServiceCreateBroadcastSubscriptionProcedure:
+			daemonServiceCreateBroadcastSubscriptionHandler.ServeHTTP(w, r)
+		case DaemonServiceListBroadcastSubscriptionsProcedure:
+			daemonServiceListBroadcastSubscriptionsHandler.ServeHTTP(w, r)
+		case DaemonServiceDeleteBroadcastSubscriptionProcedure:
+			daemonServiceDeleteBroadcastSubscriptionHandler.ServeHTTP(w, r)
 		case DaemonServiceListAccountsProcedure:
 			daemonServiceListAccountsHandler.ServeHTTP(w, r)
 		case DaemonServiceAddAccountProcedure:
@@ -1993,6 +2380,50 @@ func (UnimplementedDaemonServiceHandler) ListGithubCallbacks(context.Context, *c
 
 func (UnimplementedDaemonServiceHandler) DeleteGithubCallback(context.Context, *connect.Request[v1.DeleteGithubCallbackRequest]) (*connect.Response[v1.DeleteGithubCallbackResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteGithubCallback is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) SendBroadcast(context.Context, *connect.Request[v1.SendBroadcastRequest]) (*connect.Response[v1.SendBroadcastResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SendBroadcast is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListBroadcasts(context.Context, *connect.Request[v1.ListBroadcastsRequest]) (*connect.Response[v1.ListBroadcastsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListBroadcasts is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) DeleteBroadcast(context.Context, *connect.Request[v1.DeleteBroadcastRequest]) (*connect.Response[v1.DeleteBroadcastResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteBroadcast is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) CreateNote(context.Context, *connect.Request[v1.CreateNoteRequest]) (*connect.Response[v1.CreateNoteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.CreateNote is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetNote(context.Context, *connect.Request[v1.GetNoteRequest]) (*connect.Response[v1.GetNoteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetNote is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListNotes(context.Context, *connect.Request[v1.ListNotesRequest]) (*connect.Response[v1.ListNotesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListNotes is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) UpdateNote(context.Context, *connect.Request[v1.UpdateNoteRequest]) (*connect.Response[v1.UpdateNoteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateNote is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) DeleteNote(context.Context, *connect.Request[v1.DeleteNoteRequest]) (*connect.Response[v1.DeleteNoteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteNote is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) CreateBroadcastSubscription(context.Context, *connect.Request[v1.CreateBroadcastSubscriptionRequest]) (*connect.Response[v1.CreateBroadcastSubscriptionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.CreateBroadcastSubscription is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListBroadcastSubscriptions(context.Context, *connect.Request[v1.ListBroadcastSubscriptionsRequest]) (*connect.Response[v1.ListBroadcastSubscriptionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListBroadcastSubscriptions is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) DeleteBroadcastSubscription(context.Context, *connect.Request[v1.DeleteBroadcastSubscriptionRequest]) (*connect.Response[v1.DeleteBroadcastSubscriptionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteBroadcastSubscription is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error) {

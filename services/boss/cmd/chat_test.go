@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
+	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -19,7 +20,7 @@ type chatTargetClient struct {
 	err     error
 }
 
-func (c chatTargetClient) GetSession(context.Context, string) (*pb.Session, error) {
+func (c chatTargetClient) GetSession(context.Context, string, client.SessionReadOptions) (*pb.Session, error) {
 	return c.session, c.err
 }
 

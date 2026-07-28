@@ -11,7 +11,7 @@ import (
 )
 
 // allPresetNames is the exact, sorted set the registry must expose.
-var allPresetNames = []string{"archive-signal", "busy", "demo", "empty", "errored-status", "login", "onboarding", "respawn-history", "rotation-history"}
+var allPresetNames = []string{"archive-signal", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "login", "onboarding", "question-row", "respawn-history", "rotation-history"}
 
 func TestPresetsExactSet(t *testing.T) {
 	got := make([]string, 0, len(Presets()))
@@ -191,5 +191,105 @@ func TestLookupPresetKnown(t *testing.T) {
 func TestPresetNamesSorted(t *testing.T) {
 	if got := PresetNames(); !reflect.DeepEqual(got, allPresetNames) {
 		t.Fatalf("PresetNames() = %v, want %v", got, allPresetNames)
+	}
+}
+
+// TestQuestionRowWorldSeedsMixedStatuses pins the BOS-494 chat-picker proof
+// preset: one session with a newer working chat and an older question chat,
+// each carrying a heartbeat status, so the picker can preselect the question
+// row.
+func TestQuestionRowWorldSeedsMixedStatuses(t *testing.T) {
+	w := Presets()["question-row"].World()
+	if len(w.Sessions) != 1 {
+		t.Fatalf("question-row world has %d sessions, want 1", len(w.Sessions))
+	}
+	if len(w.Chats) != 2 {
+		t.Fatalf("question-row world has %d chats, want 2", len(w.Chats))
+	}
+	// Statuses must include exactly one working and one question chat.
+	byStatus := map[pb.ChatStatus]string{}
+	for _, e := range w.ChatStatuses {
+		byStatus[e.GetStatus()] = e.GetAgentSessionId()
+	}
+	if byStatus[pb.ChatStatus_CHAT_STATUS_WORKING] == "" {
+		t.Error("question-row world has no working chat status")
+	}
+	qAgent := byStatus[pb.ChatStatus_CHAT_STATUS_QUESTION]
+	if qAgent == "" {
+		t.Fatal("question-row world has no question chat status")
+	}
+	// The question chat must be the older one (created before the working chat),
+	// so the picker sorts it below the working chat and the fix is exercised.
+	var working, question *pb.ClaudeChat
+	for _, c := range w.Chats {
+		switch c.GetAgentSessionId() {
+		case qAgent:
+			question = c
+		case byStatus[pb.ChatStatus_CHAT_STATUS_WORKING]:
+			working = c
+		}
+	}
+	if working == nil || question == nil {
+		t.Fatalf("question-row chats do not match the seeded statuses")
+	}
+	if !question.GetCreatedAt().AsTime().Before(working.GetCreatedAt().AsTime()) {
+		t.Errorf("question chat must be older than the working chat so it sorts below it")
+	}
+}
+
+// TestHTTPEndpointsWorldSeedsEndpoints pins the BOS-474 proof fixture: exactly
+// one session carrying the two ports the scenario asserts on, with loopback
+// HTTP URLs so the TUI renders them as clickable links.
+func TestHTTPEndpointsWorldSeedsEndpoints(t *testing.T) {
+	w := HTTPEndpointsWorld()
+	var withEndpoints []*pb.Session
+	for _, s := range w.Sessions {
+		if len(s.GetHttpEndpoints()) > 0 {
+			withEndpoints = append(withEndpoints, s)
+		}
+	}
+	if len(withEndpoints) != 1 {
+		t.Fatalf("sessions with endpoints = %d, want exactly 1", len(withEndpoints))
+	}
+	sess := withEndpoints[0]
+	var ports []uint32
+	for _, ep := range sess.GetHttpEndpoints() {
+		ports = append(ports, ep.GetPort())
+		if !strings.HasPrefix(ep.GetUrl(), "http://") {
+			t.Errorf("endpoint %d url = %q, want an http:// URL so the TUI links it", ep.GetPort(), ep.GetUrl())
+		}
+	}
+	if !reflect.DeepEqual(ports, []uint32{3000, 5173}) {
+		t.Errorf("ports = %v, want [3000 5173]", ports)
+	}
+	if len(w.Chats) == 0 {
+		t.Error("HTTPEndpointsWorld has no chats; the scenario must be able to open the session's chat picker")
+	}
+}
+
+// TestCloudErrorPresetPinsLongFailure pins the BOS-507 wrap proof preset: the
+// cloud-access probe must fail (sequence "error", not "active") with the long
+// report failure, on a world that has sessions so the home table is drawn and
+// the status wrap width has a table to track.
+func TestCloudErrorPresetPinsLongFailure(t *testing.T) {
+	p, err := LookupPreset("cloud-error")
+	if err != nil {
+		t.Fatalf("LookupPreset(cloud-error): %v", err)
+	}
+	if got := p.DefaultEnv["BOSS_CLOUD_ACCESS_E2E_SEQUENCE"]; got != "error" {
+		t.Errorf("cloud sequence = %q, want %q", got, "error")
+	}
+	if got := p.DefaultEnv["BOSS_CLOUD_ACCESS_E2E_ERROR_MESSAGE"]; got != LongCloudAccessError {
+		t.Errorf("error message = %q, want the long report failure", got)
+	}
+	// The rendered line is "Cloud access status unavailable: <err>. Local
+	// sessions are still available." — wider than the 120-column proof
+	// terminal, which is what makes the wrap visible.
+	rendered := "Cloud access status unavailable: " + LongCloudAccessError + ". Local sessions are still available."
+	if len(rendered) <= 120 {
+		t.Errorf("rendered cloud error is %d columns, want > 120 so it wraps in the proof harness", len(rendered))
+	}
+	if len(p.World().Sessions) == 0 {
+		t.Error("cloud-error world has no sessions; the home table must be drawn for the wrap width to track it")
 	}
 }

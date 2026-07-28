@@ -517,6 +517,102 @@ func (b *Backend) DeleteGithubCallback(ctx context.Context, _ string, id string)
 	return err
 }
 
+// --- Notes ---
+//
+// A note's body passes through UNREDACTED on every read surface: unlike a
+// callback or broadcast message it is the payload the caller asked for, not a
+// secret. There is deliberately no redactNote.
+
+func (b *Backend) CreateNote(ctx context.Context, req *pb.CreateNoteRequest) (*pb.Note, error) {
+	resp, err := b.rpc.CreateNote(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNote(), nil
+}
+
+// GetNote ignores repoID: this adapter's own daemon owns every note in its
+// store, so the id alone resolves it. The parameter exists for the hosted
+// gateway, which uses it to route the read.
+func (b *Backend) GetNote(ctx context.Context, _ string, id string) (*pb.Note, error) {
+	resp, err := b.rpc.GetNote(ctx, connect.NewRequest(&pb.GetNoteRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNote(), nil
+}
+
+func (b *Backend) ListNotes(ctx context.Context, req *pb.ListNotesRequest) ([]*pb.Note, error) {
+	resp, err := b.rpc.ListNotes(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNotes(), nil
+}
+
+// UpdateNote ignores repoID, for the same reason GetNote does: the id alone
+// resolves the note on this adapter's own daemon, and the parameter exists for
+// the hosted gateway's routing.
+func (b *Backend) UpdateNote(ctx context.Context, _ string, req *pb.UpdateNoteRequest) (*pb.Note, error) {
+	resp, err := b.rpc.UpdateNote(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNote(), nil
+}
+
+// DeleteNote ignores repoID, for the same reason GetNote does: the id alone
+// resolves the note on this adapter's own daemon, and the parameter exists for
+// the hosted gateway's routing.
+func (b *Backend) DeleteNote(ctx context.Context, _ string, id string) error {
+	_, err := b.rpc.DeleteNote(ctx, connect.NewRequest(&pb.DeleteNoteRequest{Id: id}))
+	return err
+}
+
+// --- Broadcasts ---
+
+func (b *Backend) SendBroadcast(ctx context.Context, req *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error) {
+	resp, err := b.rpc.SendBroadcast(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (b *Backend) ListBroadcasts(ctx context.Context, req *pb.ListBroadcastsRequest) ([]*pb.Broadcast, error) {
+	resp, err := b.rpc.ListBroadcasts(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetBroadcasts(), nil
+}
+
+func (b *Backend) DeleteBroadcast(ctx context.Context, id string) error {
+	_, err := b.rpc.DeleteBroadcast(ctx, connect.NewRequest(&pb.DeleteBroadcastRequest{Id: id}))
+	return err
+}
+
+func (b *Backend) CreateBroadcastSubscription(ctx context.Context, req *pb.CreateBroadcastSubscriptionRequest) (*pb.BroadcastSubscription, error) {
+	resp, err := b.rpc.CreateBroadcastSubscription(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSubscription(), nil
+}
+
+func (b *Backend) ListBroadcastSubscriptions(ctx context.Context, req *pb.ListBroadcastSubscriptionsRequest) ([]*pb.BroadcastSubscription, error) {
+	resp, err := b.rpc.ListBroadcastSubscriptions(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSubscriptions(), nil
+}
+
+func (b *Backend) DeleteBroadcastSubscription(ctx context.Context, id string) error {
+	_, err := b.rpc.DeleteBroadcastSubscription(ctx, connect.NewRequest(&pb.DeleteBroadcastSubscriptionRequest{Id: id}))
+	return err
+}
+
 // --- Accounts ---
 
 func (b *Backend) ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error) {

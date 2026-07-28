@@ -18,9 +18,21 @@ type fakeChatOrchestrator struct {
 	bossanovav1connect.UnimplementedOrchestratorServiceHandler
 	transcriptReq *pb.ProxyGetChatTranscriptRequest
 	sendReq       *pb.ProxySendChatMessageRequest
+	getSessReq    *pb.ProxyGetSessionRequest
+	listSessReq   *pb.ProxyListSessionsRequest
+	createCronReq *pb.ProxyCreateCronJobRequest
+	updateCronReq *pb.ProxyUpdateCronJobRequest
 	// sendResp, when set, is returned by ProxySendChatMessage instead of the
 	// default canned response — lets a test drive the notice_text unwrap.
 	sendResp *pb.ProxySendChatMessageResponse
+
+	// Notes (BOS-553): captured so tests can assert repo_id is set on the wire
+	// for every proxy call.
+	createNoteReq *pb.ProxyCreateNoteRequest
+	getNoteReq    *pb.ProxyGetNoteRequest
+	listNoteReq   *pb.ProxyListNotesRequest
+	updateNoteReq *pb.ProxyUpdateNoteRequest
+	deleteNoteReq *pb.ProxyDeleteNoteRequest
 }
 
 func (f *fakeChatOrchestrator) ProxyGetChatTranscript(_ context.Context, req *connect.Request[pb.ProxyGetChatTranscriptRequest]) (*connect.Response[pb.ProxyGetChatTranscriptResponse], error) {
@@ -39,6 +51,16 @@ func (f *fakeChatOrchestrator) ProxySendChatMessage(_ context.Context, req *conn
 		return connect.NewResponse(f.sendResp), nil
 	}
 	return connect.NewResponse(&pb.ProxySendChatMessageResponse{TmuxSessionName: "tmux-x", Delivered: true}), nil
+}
+
+func (f *fakeChatOrchestrator) ProxyGetSession(_ context.Context, req *connect.Request[pb.ProxyGetSessionRequest]) (*connect.Response[pb.ProxyGetSessionResponse], error) {
+	f.getSessReq = req.Msg
+	return connect.NewResponse(&pb.ProxyGetSessionResponse{Session: &pb.Session{Id: "sess-1"}}), nil
+}
+
+func (f *fakeChatOrchestrator) ProxyListSessions(_ context.Context, req *connect.Request[pb.ProxyListSessionsRequest]) (*connect.Response[pb.ProxyListSessionsResponse], error) {
+	f.listSessReq = req.Msg
+	return connect.NewResponse(&pb.ProxyListSessionsResponse{Sessions: []*pb.Session{{Id: "sess-1"}}}), nil
 }
 
 func newTestRemote(t *testing.T) (*RemoteClient, *fakeChatOrchestrator) {
@@ -99,6 +121,41 @@ func TestRemoteClient_SendChatMessage(t *testing.T) {
 	}
 }
 
+// TestRemoteClient_SessionReadsNeverCarryEndpoints is the BOS-473 negative-egress
+// pin for the orchestrator boundary: even when the caller opts into local
+// endpoint hydration, RemoteClient proxies through the orchestrator surface,
+// which has no endpoint opt-in/namespace fields, and the returned sessions carry
+// no http_endpoints. Machine-local URLs never cross the remote path.
+func TestRemoteClient_SessionReadsNeverCarryEndpoints(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+	ctx := context.Background()
+
+	sess, err := c.GetSession(ctx, "sess-1", SessionReadOptions{IncludeLocalHTTPEndpoints: true})
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if fake.getSessReq == nil {
+		t.Fatal("ProxyGetSession was not reached")
+	}
+	if len(sess.GetHttpEndpoints()) != 0 {
+		t.Fatalf("remote GetSession returned %d endpoints, want 0", len(sess.GetHttpEndpoints()))
+	}
+
+	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{}, SessionReadOptions{IncludeLocalHTTPEndpoints: true})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if fake.listSessReq == nil {
+		t.Fatal("ProxyListSessions was not reached")
+	}
+	for _, s := range sessions {
+		if len(s.GetHttpEndpoints()) != 0 {
+			t.Fatalf("remote ListSessions returned %d endpoints, want 0", len(s.GetHttpEndpoints()))
+		}
+	}
+}
+
 // TestRemoteClient_SendChatMessage_ThreadsNoticeText asserts the BOS-317
 // mechanical "/boss switch" outcome (notice_text with delivered=false) survives
 // the ProxySendChatMessageResponse → SendChatMessageResponse unwrap.
@@ -145,5 +202,83 @@ func TestRemoteClient_SendChatMessage_PropagatesSubmit(t *testing.T) {
 		if got.GetSubmit() != submit {
 			t.Fatalf("submit forwarded = %v, want %v", got.GetSubmit(), submit)
 		}
+	}
+}
+
+func (f *fakeChatOrchestrator) ProxyCreateCronJob(_ context.Context, req *connect.Request[pb.ProxyCreateCronJobRequest]) (*connect.Response[pb.ProxyCreateCronJobResponse], error) {
+	f.createCronReq = req.Msg
+	return connect.NewResponse(&pb.ProxyCreateCronJobResponse{Job: &pb.CronJob{Id: "cj-new", Name: req.Msg.GetName()}}), nil
+}
+
+func (f *fakeChatOrchestrator) ProxyUpdateCronJob(_ context.Context, req *connect.Request[pb.ProxyUpdateCronJobRequest]) (*connect.Response[pb.ProxyUpdateCronJobResponse], error) {
+	f.updateCronReq = req.Msg
+	return connect.NewResponse(&pb.ProxyUpdateCronJobResponse{Job: &pb.CronJob{Id: req.Msg.GetId()}}), nil
+}
+
+// TestRemoteClient_CronJobZeroOutputPassThrough pins the BOS-563 is_zero_output
+// tri-state across the boss remote client → orchestrator hop for both create and
+// update. All three states are asserted (nil stays nil, &true arrives true,
+// &false arrives false) so a hardcoded value on either side cannot pass.
+func TestRemoteClient_CronJobZeroOutputPassThrough(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	tr, fa := true, false
+	cases := []struct {
+		name string
+		in   *bool
+	}{
+		{"unset stays nil", nil},
+		{"explicit true", &tr},
+		{"explicit false", &fa},
+	}
+
+	for _, tc := range cases {
+		t.Run("create "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, fake := newTestRemote(t)
+			if _, err := c.CreateCronJob(ctx, &pb.CreateCronJobRequest{
+				RepoId:       "repo-1",
+				Name:         "nightly",
+				IsZeroOutput: tc.in,
+			}); err != nil {
+				t.Fatalf("CreateCronJob: %v", err)
+			}
+			got := fake.createCronReq
+			if got == nil {
+				t.Fatal("ProxyCreateCronJob was not called")
+			}
+			assertZeroOutputPointer(t, tc.in, got.IsZeroOutput)
+		})
+
+		t.Run("update "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, fake := newTestRemote(t)
+			if _, err := c.UpdateCronJob(ctx, &pb.UpdateCronJobRequest{
+				Id:           "cj-1",
+				IsZeroOutput: tc.in,
+			}); err != nil {
+				t.Fatalf("UpdateCronJob: %v", err)
+			}
+			got := fake.updateCronReq
+			if got == nil {
+				t.Fatal("ProxyUpdateCronJob was not called")
+			}
+			assertZeroOutputPointer(t, tc.in, got.IsZeroOutput)
+		})
+	}
+}
+
+// assertZeroOutputPointer compares an is_zero_output pointer against the value
+// the caller supplied, treating nil as a distinct state from a pointer to false.
+func assertZeroOutputPointer(t *testing.T, want, got *bool) {
+	t.Helper()
+	switch {
+	case want == nil && got != nil:
+		t.Fatalf("is_zero_output = &%v, want nil (unset must stay unset)", *got)
+	case want != nil && got == nil:
+		t.Fatalf("is_zero_output = nil, want &%v", *want)
+	case want != nil && *got != *want:
+		t.Fatalf("is_zero_output = %v, want %v", *got, *want)
 	}
 }

@@ -118,6 +118,7 @@ func BaseHarnessEnv(environ []string) []string {
 			strings.HasPrefix(e, "BOSS_AUTH_E2E_LOGIN_EMAIL=") ||
 			strings.HasPrefix(e, "BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=") ||
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_SEQUENCE=") ||
+			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_ERROR_MESSAGE=") ||
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_URL=") ||
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_ERROR=") ||
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_REFRESH_INTERVAL=") ||

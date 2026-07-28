@@ -126,6 +126,96 @@ service DaemonService {
   // absent id succeeds.
   rpc DeleteGithubCallback(DeleteGithubCallbackRequest) returns (DeleteGithubCallbackResponse);
 
+  // --- Broadcasts (BOS-556) ---
+
+  // SendBroadcast resolves a selector to an audience and records one delivery
+  // per target; the worker then delivers them asynchronously with retry.
+  //
+  // Resolution happens ONCE, at send time, and the resolved audience is FROZEN
+  // into the delivery rows. A broadcast is a message to the chats that existed
+  // and matched when it was sent — never a standing subscription. A chat
+  // created (or renamed, or moved to a matching repo) after the send is NOT
+  // retroactively included, even while the broadcast is still un-expired and
+  // deliveries are still being retried.
+  //
+  // Two boundary cases callers must not conflate:
+  //   - Over the cap: if the selector resolves to more chats than the server's
+  //     fan-out cap (MaxTargets), the RPC FAILS, naming the resolved count and
+  //     the cap. It never silently truncates to the cap — a partially delivered
+  //     broadcast the caller believes was complete is worse than a hard error.
+  //   - Zero targets: a selector that resolves to nobody is SUCCESS with zero
+  //     deliveries, not an error. "No chat currently matches" is a legitimate
+  //     answer, and a coordinator broadcasting to an audience that has already
+  //     finished should not have to special-case a failure.
+  rpc SendBroadcast(SendBroadcastRequest) returns (SendBroadcastResponse);
+
+  // ListBroadcasts returns broadcasts matching the optional filters, ordered by
+  // creation time then id for a deterministic listing.
+  rpc ListBroadcasts(ListBroadcastsRequest) returns (ListBroadcastsResponse);
+
+  // DeleteBroadcast removes a broadcast and its deliveries by id. Idempotent:
+  // deleting an absent id succeeds.
+  rpc DeleteBroadcast(DeleteBroadcastRequest) returns (DeleteBroadcastResponse);
+
+  // --- Notes (BOS-550) ---
+  //
+  // A note is durable free-text a run records against a repository so a later
+  // sweep can harvest what was learned. Ownership is repo-scoped and the
+  // session/chat are PROVENANCE only: deleting or archiving a session never
+  // removes its notes, because reading notes from finished runs is the point.
+
+  // CreateNote records a note. The server validates it (repo id required,
+  // non-empty body within the size cap) and normalises tags — trimmed,
+  // lowercased, de-duplicated — before storing them.
+  rpc CreateNote(CreateNoteRequest) returns (CreateNoteResponse);
+
+  // GetNote returns a single note by id, including its tags.
+  rpc GetNote(GetNoteRequest) returns (GetNoteResponse);
+
+  // ListNotes returns notes matching the optional filters, ordered by creation
+  // time then id for a deterministic listing. The tag filter is ANY-OF (a note
+  // matching one listed tag is returned), not all-of.
+  rpc ListNotes(ListNotesRequest) returns (ListNotesResponse);
+
+  // UpdateNote mutates a note's body and/or tags. Both are optional; an unset
+  // field is left alone. A SET tags field REPLACES the note's entire tag set
+  // rather than merging into it — sending an empty tag list clears every tag.
+  rpc UpdateNote(UpdateNoteRequest) returns (UpdateNoteResponse);
+
+  // DeleteNote removes a note and its tags by id. Idempotent: deleting an
+  // absent id succeeds.
+  rpc DeleteNote(DeleteNoteRequest) returns (DeleteNoteResponse);
+
+  // --- Standing broadcast subscriptions (BOS-557) ---
+
+  // CreateBroadcastSubscription registers a STANDING rule: when the owning
+  // session reaches an outcome matching trigger_event, the daemon broadcasts
+  // the registered message to the audience the selector resolves — resolved at
+  // FIRE time, not now. It is a notification primitive, not an orchestration
+  // one: it delivers a message, it does not schedule work.
+  //
+  // A subscription fires at most once (the store's compare-and-swap on the
+  // active state is the guard) and is retired by its expiry if the session
+  // never settles.
+  //
+  // CASCADES ARE NOT DETECTED. The broadcast a subscription fires wakes chats,
+  // and those chats may themselves hold subscriptions, so subscriptions can
+  // chain. There is NO cycle detection in v1: the fan-out cap (a selector
+  // resolving to more chats than the cap is refused outright) and subscription
+  // expiry are what bound the blast radius. A caller building a topology where
+  // A's completion messages B and B's completion messages A owns that loop.
+  rpc CreateBroadcastSubscription(CreateBroadcastSubscriptionRequest) returns (CreateBroadcastSubscriptionResponse);
+
+  // ListBroadcastSubscriptions returns subscriptions matching the optional
+  // filters, ordered by creation time then id for a deterministic listing. It
+  // never returns the registered message body.
+  rpc ListBroadcastSubscriptions(ListBroadcastSubscriptionsRequest) returns (ListBroadcastSubscriptionsResponse);
+
+  // DeleteBroadcastSubscription retires a standing subscription by id.
+  // Idempotent: deleting an absent id, or one that has already fired, been
+  // canceled or expired, succeeds.
+  rpc DeleteBroadcastSubscription(DeleteBroadcastSubscriptionRequest) returns (DeleteBroadcastSubscriptionResponse);
+
   // --- Accounts (BOS-157 rotation registry) ---
 
   // ListAccounts returns registry accounts, optionally filtered by provider.
@@ -299,6 +389,7 @@ message UpdateRepoRequest {
   google.protobuf.Timestamp expected_updated_at = 18;
   optional bool should_archive_sessions_after_merge = 19;
   optional bool can_auto_delete_branches = 20;
+  optional bool should_keep_branches_current = 21;
 }
 
 message UpdateRepoResponse {
@@ -400,6 +491,20 @@ message SessionCreated {
 
 message GetSessionRequest {
   string id = 1;
+
+  // include_local_http_endpoints opts this read into machine-local endpoint
+  // hydration. Only a local Boss TUI read (Home / ChatPicker) sets it; the
+  // orchestrator/RemoteClient never does. When false the response's
+  // Session.http_endpoints is always empty.
+  bool include_local_http_endpoints = 2;
+
+  // client_network_namespace carries the caller's own network-namespace
+  // identity (Linux: the /proc/self/ns/net symlink target). The daemon
+  // hydrates endpoints only when this exactly equals its own namespace
+  // identity, so a Unix socket mounted across namespaces cannot reach a
+  // different service's localhost. Empty on macOS and whenever the client
+  // cannot read it, which makes the daemon fail closed on Linux.
+  string client_network_namespace = 3;
 }
 
 message GetSessionResponse {
@@ -413,6 +518,18 @@ message ListSessionsRequest {
   repeated SessionState states = 2;
   // Include archived sessions.
   bool include_archived = 3;
+
+  // include_local_http_endpoints opts this read into machine-local endpoint
+  // hydration. Only a local Boss TUI read (Home / ChatPicker) sets it; the
+  // orchestrator/RemoteClient never does. When false every returned
+  // Session.http_endpoints is empty.
+  bool include_local_http_endpoints = 4;
+
+  // client_network_namespace carries the caller's own network-namespace
+  // identity (Linux: the /proc/self/ns/net symlink target). See
+  // GetSessionRequest.client_network_namespace — the daemon fails closed on
+  // Linux unless this exactly equals its own namespace identity.
+  string client_network_namespace = 5;
 }
 
 message ListSessionsResponse {
@@ -497,6 +614,9 @@ message MergeSessionRequest {
 
 message MergeSessionResponse {
   Session session = 1;
+  // Human-readable note about how the merge was performed, e.g. a merge
+  // strategy substitution. Empty when the merge ran exactly as configured.
+  string detail = 2;
 }
 
 message RemoveSessionRequest {
@@ -771,6 +891,12 @@ message CreateCronJobRequest {
   // default it to true when a client omits it (a plain bool can't tell
   // "omitted" from "explicit false").
   optional bool should_run_setup_command = 10;
+  // mark the job "zero output": intended to fire with no worktree/branch/PR,
+  // because the run is expected to produce no repo changes. optional purely for
+  // symmetry with UpdateCronJobRequest; omitted and explicit false mean the same
+  // thing (default false). Persisted and echoed back only — nothing honours it
+  // yet, so a job with this set still fires exactly as it does today (BOS-543).
+  optional bool is_zero_output = 11;
 }
 
 message CreateCronJobResponse {
@@ -805,6 +931,10 @@ message UpdateCronJobRequest {
   optional string model = 8; // opaque agent model id; "" = plugin default.
   optional string gate_command = 9; // optional gate command; empty = no gate
   optional bool   should_run_setup_command = 10; // run the repo setup script before the agent
+  // mark the job "zero output": intended to fire with no worktree/branch/PR,
+  // because the run is expected to produce no repo changes. Persisted and echoed
+  // back only — nothing honours it yet (BOS-543).
+  optional bool   is_zero_output = 11;
 }
 
 message UpdateCronJobResponse {
@@ -839,7 +969,7 @@ message CreateGithubCallbackRequest {
   string repo_owner        = 3;
   string repo_name         = 4;
   int32  pr_number         = 5;
-  string trigger           = 6; // merged | closed | checks_passed | checks_failed
+  string trigger           = 6; // merged | closed | checks_passed | checks_failed | ready_for_review | checks_passed_ready
   string message           = 7; // prompt body delivered on fire; stored verbatim
   // Optional explicit expiry. Unset = server default (24h). Must be in the
   // future and within 30 days, else InvalidArgument.
@@ -869,6 +999,377 @@ message DeleteGithubCallbackRequest {
 }
 
 message DeleteGithubCallbackResponse {}
+
+// --- Broadcasts (BOS-551) ---
+//
+// These messages fix the wire vocabulary the broadcast epic builds against.
+// SendBroadcast, ListBroadcasts and DeleteBroadcast (declared above, BOS-556)
+// carry them; the request/response envelopes for those RPCs follow the domain
+// types below. The Go mirror of these types, plus the conversions, live in
+// lib/bossalib/broadcast.
+
+// BroadcastSelectorClause is a conjunction: every non-empty dimension must
+// match (AND), and within one dimension the listed values are alternatives
+// (OR). A dimension left empty is not a constraint. A clause that constrains
+// nothing matches NOTHING, never everyone.
+//
+// A blank ("") entry is invalid in every dimension, so the system-default
+// account and the local daemon — which carry "" on the target side — are not
+// addressable by name; those chats are reached via the other four dimensions
+// until a grammar sentinel exists. Values may not carry the textual grammar's
+// "+" or "," separators either, since the canonical selector string must
+// re-parse to the same selector.
+message BroadcastSelectorClause {
+  repeated string chat_ids    = 1;   // ClaudeChat.agent_session_id
+  repeated string session_ids = 2;   // Session.id
+  repeated string repo_ids    = 3;   // Session.repo_id
+  repeated string agent_names = 4;   // ClaudeChat.agent_name
+  // No wire message carries a chat's account today (ClaudeChat has no
+  // account_id), so this dimension is resolved daemon-side from the
+  // agent_chats.account_id column. The delivery child either keeps resolving it
+  // there or adds account_id to ClaudeChat. The "" default account is not
+  // addressable.
+  repeated string account_ids = 5;
+  repeated string daemon_ids  = 6;   // ClaudeChat.daemon_id (the "" local daemon is not addressable)
+}
+
+// BroadcastSelector is a disjunction of clauses: a candidate chat is in the
+// audience if ANY clause matches (OR). A selector with no clauses is INVALID,
+// never universal — an empty selector must never mean everyone, and the
+// delivery boundary re-validates before fanning out.
+message BroadcastSelector {
+  repeated BroadcastSelectorClause clauses = 1;
+}
+
+// Broadcast is one message addressed at the set of chats a selector resolves
+// to. It mirrors the daemon's domain model; timestamps use
+// google.protobuf.Timestamp and enum-like fields are stable lowercase strings.
+message Broadcast {
+  string            id             = 1;
+  BroadcastSelector selector       = 2;
+  // ClaudeChat.agent_session_id — the same identifier BroadcastSelectorClause
+  // .chat_ids carries, NOT ClaudeChat.id. Spelled out because ClaudeChat has
+  // both, and a delivery child storing the row id here would produce records
+  // that cannot be joined against a selector.
+  string            origin_chat_id = 3;   // chat that sent it; empty = not chat-originated
+  // Prompt body delivered to each target chat. SECRET: stored verbatim and
+  // NEVER echoed back on any read surface — not in a list/get response, not in
+  // a log line, not in an error detail. It is carried here only for the
+  // delivering owner. The precedent is GithubCallback.message and the
+  // deliberately body-free githubCallbackJSON in services/boss/cmd/callback.go.
+  string            message        = 4;
+  string            state          = 5;   // lifecycle state; stable lowercase strings, defined by the delivery child
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+}
+
+// BroadcastDelivery is the per-target outcome of one broadcast: one record per
+// chat the selector resolved to.
+message BroadcastDelivery {
+  string broadcast_id   = 1;
+  string target_chat_id = 2;   // ClaudeChat.agent_session_id, as in BroadcastSelectorClause.chat_ids
+  string state          = 3;   // per-target delivery state; stable lowercase strings, defined by the delivery child
+  int32  attempt_count  = 4;
+  string last_error     = 5;   // delivery diagnostic; empty = none. NEVER the message body.
+  google.protobuf.Timestamp delivered_at = 6;
+}
+
+message SendBroadcastRequest {
+  // Audience to resolve. Required, and must carry at least one clause: an
+  // empty selector is rejected rather than treated as "everyone".
+  BroadcastSelector selector = 1;
+  // Chat this broadcast is issued from (ClaudeChat.agent_session_id). Empty =
+  // operator-issued from the CLI or MCP with no originating chat, which is why
+  // this is a plain string rather than a required id.
+  string origin_chat_id = 2;
+  // Prompt body delivered to each target. SECRET on the way back out — see the
+  // rule on Broadcast.message; it travels inbound here and is never echoed.
+  string message = 3;
+  // Optional expiry as a duration string ("24h", "30m"). Empty = the server
+  // default of 24h, maximum 30 days — the same expiry convention
+  // CreateGithubCallbackRequest.expires_at applies, expressed as a duration
+  // because a broadcast's lifetime is "how long to keep retrying", not a
+  // wall-clock deadline the caller computed.
+  optional string expires_in = 4;
+  // When false (the default), the origin chat is excluded from its own
+  // audience even if the selector matches it. A coordinator broadcasting "I
+  // finished" to its own repo must not wake itself and loop. Set true only for
+  // the deliberate self-include case.
+  bool include_origin = 5;
+  // Whether the caller is asking for this broadcast to leave the daemon it was
+  // issued on.
+  //
+  // When false (the default, which preserves today's behaviour exactly) the
+  // broadcast is confined to this daemon's own chats — no egress event is
+  // published — UNLESS the selector itself names `daemon:` ids other than this
+  // daemon's, which is already an explicit request to reach elsewhere.
+  //
+  // When true the caller is explicitly asking bosso to route it to other
+  // daemons, so an egress event is published even when the selector names no
+  // foreign daemon: a selector like "repo:foo" is ambiguous about reach, and
+  // this flag is how the caller says "yes, other daemons too".
+  bool cross_daemon = 6;
+}
+
+// SendBroadcastResponse reports ids and states only, NEVER the message body:
+// Broadcast.message is populated solely on the delivering owner's path and is
+// cleared on every read surface, including this one — see the secret-body rule
+// on Broadcast.message.
+message SendBroadcastResponse {
+  Broadcast broadcast = 1;
+  // One record per resolved target, in the frozen audience order. Empty when
+  // the selector resolved to nobody, which is a successful send.
+  repeated BroadcastDelivery deliveries = 2;
+}
+
+// ListBroadcastsRequest mirrors db.ListBroadcastsFilter: every filter is
+// optional, an unset field is not constrained, and set fields intersect.
+message ListBroadcastsRequest {
+  optional string state = 1;
+  // Matches the chat a broadcast was issued from. Operator-issued broadcasts
+  // carry no origin and so never match this filter.
+  optional string origin_chat_id = 2;
+  // Reaches through the delivery rows: "which broadcasts were addressed to
+  // this chat", which is how a chat asks what it has been sent.
+  optional string target_chat_id = 3;
+  // Caps the rows returned; zero or negative means unlimited.
+  int32 limit = 4;
+}
+
+// ListBroadcastsResponse carries ids and states only, never the message body —
+// same secret-body rule as SendBroadcastResponse.
+message ListBroadcastsResponse {
+  repeated Broadcast broadcasts = 1;
+}
+
+message DeleteBroadcastRequest {
+  string id = 1;
+}
+
+message DeleteBroadcastResponse {}
+
+// --- Notes (BOS-550) ---
+
+// Note is durable free-text recorded against a repository, so a later sweep can
+// harvest what past runs learned. It mirrors the daemon's domain model;
+// timestamps use google.protobuf.Timestamp.
+//
+// session_id and chat_id are PROVENANCE, not ownership: they record which run
+// wrote the note and are deliberately not foreign keys, so archiving or
+// deleting that session leaves the note — and this provenance — intact.
+//
+// Unlike GithubCallback.message and Broadcast.message, a note's body is NOT a
+// secret: it exists to be read back, so it is populated on every read surface.
+message Note {
+  string id         = 1;
+  string repo_id    = 2;
+  // Session that recorded the note; empty = not session-scoped. The referenced
+  // session may no longer exist.
+  string session_id = 3;
+  // Chat that recorded the note; empty = not chat-scoped.
+  string chat_id    = 4;
+  string body       = 5;
+  // Normalised (trimmed, lowercased, de-duplicated) and returned in ascending
+  // order. Normalisation is lossy: display casing is not preserved.
+  repeated string tags = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+// NoteTagSet wraps a repeated tag field so UpdateNoteRequest can distinguish
+// "leave the tags alone" (field unset) from "clear every tag" (field set to an
+// empty list). A bare proto3 `repeated` cannot express that difference — an
+// empty list and an absent list are the same wire bytes — and the difference is
+// load-bearing here, because an update that means to change only the body must
+// not silently wipe the note's tags.
+message NoteTagSet {
+  repeated string tags = 1;
+}
+
+message CreateNoteRequest {
+  // Owning repository. Required.
+  string repo_id = 1;
+  // Optional provenance: which run recorded this note.
+  optional string session_id = 2;
+  optional string chat_id    = 3;
+  // Stored verbatim. Must be non-empty after trimming and within the 64 KiB
+  // cap, else InvalidArgument.
+  string body = 4;
+  // Trimmed, lowercased and de-duplicated before storage. At most 32 tags of
+  // at most 64 bytes each (measured after trimming), else InvalidArgument.
+  repeated string tags = 5;
+}
+
+message CreateNoteResponse {
+  Note note = 1;
+}
+
+message GetNoteRequest {
+  string id = 1;
+}
+
+message GetNoteResponse {
+  Note note = 1;
+}
+
+// ListNotesRequest mirrors db.ListNotesFilter: every filter is optional, an
+// unset field is not constrained, and set fields intersect (AND).
+message ListNotesRequest {
+  // Applied whenever the field is SET, including when set to the empty string:
+  // the value is trimmed and compared with `=`, and blank provenance is stored
+  // as NULL, so a set-but-blank filter matches NOTHING. Leave the field unset
+  // to leave that column unconstrained; there is no way to ask for "notes with
+  // no session".
+  optional string repo_id    = 1;
+  optional string session_id = 2;
+  optional string chat_id    = 3;
+  // Matches notes carrying ANY of these tags (OR), not all of them. Entries are
+  // trimmed and lowercased to match the normalisation applied on write, and
+  // blank entries are dropped. A non-empty list whose entries ALL normalise
+  // away matches nothing rather than everything — the filter fails closed, so a
+  // stray empty tag can never widen the result set.
+  repeated string tags = 4;
+  // Substring match on the body. SQL wildcards are matched literally, not as
+  // patterns. Case-insensitivity is ASCII-only — the daemon folds case with
+  // SQLite's LOWER(), which does not fold non-ASCII without ICU. A term that is
+  // blank after trimming means NO search, unlike a blank tag entry, which
+  // matches nothing: an empty substring already matches every body, so applying
+  // and dropping the filter give the same rows.
+  optional string search = 5;
+  // Caps the rows returned; zero or negative means unlimited.
+  int32 limit = 6;
+}
+
+message ListNotesResponse {
+  repeated Note notes = 1;
+}
+
+message UpdateNoteRequest {
+  string id = 1;
+  // Unset = leave the body alone.
+  optional string body = 2;
+  // Unset = leave the tags alone. SET = REPLACE the entire tag set with this
+  // list, including replacing it with nothing when the list is empty.
+  optional NoteTagSet tags = 3;
+}
+
+message UpdateNoteResponse {
+  Note note = 1;
+}
+
+message DeleteNoteRequest {
+  string id = 1;
+}
+
+message DeleteNoteResponse {}
+
+// --- Standing broadcast subscriptions (BOS-557) ---
+
+// BroadcastSubscription is a standing rule: when owner_session_id reaches an
+// outcome matching trigger_event, the daemon broadcasts the registered message
+// to the audience selector resolves.
+//
+// THE MESSAGE BODY IS DELIBERATELY ABSENT from this message, and that omission
+// is the contract, not an oversight. Unlike Broadcast — which carries a
+// `message` field because the delivering owner needs it and every read surface
+// clears it — a BroadcastSubscription is only ever built on a READ path, so the
+// body has no legitimate reason to exist on the wire here at all. It is
+// write-only: CreateBroadcastSubscriptionRequest.message carries it inbound,
+// and no response, log line, or persisted diagnostic ever returns it. Do not
+// add a `message` field to this message or to any subscription response.
+message BroadcastSubscription {
+  string id = 1;
+  // Session whose outcome fires this subscription. Carries no foreign key: a
+  // subscription may outlive the session it watches, and expiry — not a
+  // referential cascade — retires one whose session will never settle.
+  string owner_session_id = 2;
+  // Chat that registered it (ClaudeChat.agent_session_id), as in
+  // BroadcastSelectorClause.chat_ids. Empty = operator-issued with no
+  // registering chat.
+  //
+  // Provenance only: it never narrows the audience. Unlike SendBroadcast — where
+  // the origin is the sender and is dropped from its own audience unless
+  // include_origin — the origin of a subscription is the REQUESTER, so a
+  // selector naming it is honoured and the registering chat is told. The
+  // selector alone decides who receives the fired broadcast.
+  string origin_chat_id = 3;
+  // Outcome class awaited: "completed", "errored", or "settled" (either).
+  string trigger_event = 4;
+  // Audience to broadcast to when it fires. Resolved at FIRE time, so the
+  // chats that exist then are the ones addressed.
+  BroadcastSelector selector = 5;
+  // Lifecycle state: "active", "fired", "canceled", or "expired".
+  string state = 6;
+  // Broadcast the winning compare-and-swap produced; empty until it fires.
+  string fired_broadcast_id = 7;
+  google.protobuf.Timestamp fired_at   = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+message CreateBroadcastSubscriptionRequest {
+  // Session whose outcome fires this subscription. Required.
+  string owner_session_id = 1;
+  // Outcome class to wait for: "completed", "errored", or "settled". An
+  // unrecognised value is rejected rather than registering a rule that could
+  // never match.
+  string trigger_event = 2;
+  // Audience to broadcast to when it fires. Required, and must carry at least
+  // one clause: an empty selector is rejected rather than treated as
+  // "everyone".
+  BroadcastSelector selector = 3;
+  // Chat registering this subscription (ClaudeChat.agent_session_id). Empty =
+  // operator-issued from the CLI or MCP with no originating chat. It records
+  // who asked; address it by naming it in the selector, which is honoured
+  // (there is no self-exclusion on a fired subscription).
+  string origin_chat_id = 4;
+  // Prompt body to broadcast when the subscription fires. SECRET and
+  // WRITE-ONLY: it travels inbound here and is never echoed back — see the
+  // omission rule on BroadcastSubscription.
+  string message = 5;
+  // Optional expiry as a duration string ("24h", "30m"). Empty = the server
+  // default of 24h, maximum 30 days — the same convention SendBroadcastRequest
+  // .expires_in and CreateGithubCallbackRequest.expires_at apply, sharing one
+  // parser so the registration surfaces cannot drift. It bounds how long the
+  // RULE stands, not the delivery window of the broadcast it fires.
+  optional string expires_in = 6;
+}
+
+// CreateBroadcastSubscriptionResponse reports ids, state and trigger only —
+// never the registered body. See the omission rule on BroadcastSubscription.
+message CreateBroadcastSubscriptionResponse {
+  BroadcastSubscription subscription = 1;
+}
+
+// ListBroadcastSubscriptionsRequest mirrors
+// db.ListBroadcastSubscriptionsFilter: every filter is optional, an unset
+// field is not constrained, and set fields intersect.
+message ListBroadcastSubscriptionsRequest {
+  optional string owner_session_id = 1;
+  // Matches the chat a subscription was registered from. Operator-issued
+  // subscriptions carry no origin and so never match this filter.
+  optional string origin_chat_id = 2;
+  optional string state = 3;
+  // Matches the registered trigger EXACTLY: it does not apply the
+  // settled-matches-both rule, which is evaluator policy rather than a query
+  // one. Filtering for "completed" therefore never returns a "settled" row.
+  optional string trigger_event = 4;
+  // Caps the rows returned; zero or negative means unlimited.
+  int32 limit = 5;
+}
+
+// ListBroadcastSubscriptionsResponse carries ids and states only, never the
+// registered body — see the omission rule on BroadcastSubscription.
+message ListBroadcastSubscriptionsResponse {
+  repeated BroadcastSubscription subscriptions = 1;
+}
+
+message DeleteBroadcastSubscriptionRequest {
+  string id = 1;
+}
+
+message DeleteBroadcastSubscriptionResponse {}
 
 // --- Accounts (BOS-157 rotation registry) ---
 

@@ -8,11 +8,23 @@
 //     -> prints a fresh run token (stdout), tracker-agnostic 32-char hex
 //   node scripts/tracker/cli.mjs claim-verdict --me <token> --comments <json-array>
 //     -> exit 0 WON (my token is the first writer), exit 3 LOST
+//   node scripts/tracker/cli.mjs states
+//     -> stdout: {"planned":"<name>","inProgress":"<name>|null","inReview":"<name>|null"}
+//     The adapter is the PRIMARY authority for the tracker's workflow-state names, so a
+//     repo wired through a vendored adapter never has to restate them in config. `states`
+//     is an OPTIONAL capability: an adapter without it exits 2 with a diagnostic on stderr
+//     and NOTHING on stdout, which is why callers invoke it as `... states 2>/dev/null ||
+//     true` and fall back to their own `.boss-skills.json` read.
+//   node scripts/tracker/cli.mjs update-comment --id <commentId> --body-file <path>
+//     -> stdout: {"tool":"<adapter operationMap.updateComment.tool>","args":{"id":<commentId>,"body":<file contents>}}
+//     The descriptor is emitted for the driver to execute through the tracker MCP —
+//     drivers never issue raw GraphQL for the single-comment progress protocol.
 //
 // Verdict delegates to the resolved adapter's resolveClaim capability (BOS-190); the
 // Linear reference impl computes first-writer-wins over the claim comments, unchanged.
 
 import crypto from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { resolveTrackerAdapter } from './adapter.mjs'
@@ -34,7 +46,11 @@ function parseFlags(rest) {
  * Dispatch one tracker capability. Returns the process exit code; never calls
  * process.exit directly so it is unit-testable.
  * @param {string[]} argv
- * @param {{write?: (s: string) => void, errWrite?: (s: string) => void, env?: object}} [io]
+ * @param {{write?: (s: string) => void, errWrite?: (s: string) => void, env?: object,
+ *   resolveAdapter?: typeof resolveTrackerAdapter}} [io]
+ *   `resolveAdapter` defaults to the real `resolveTrackerAdapter` import; tests inject a stub
+ *   here to reach adapter shapes (e.g. one missing an operationMap entry) that the real,
+ *   always-Linear-today registry can't produce.
  * @returns {number}
  */
 export function runCli(
@@ -43,6 +59,7 @@ export function runCli(
     write = (s) => process.stdout.write(s),
     errWrite = (s) => process.stderr.write(s),
     env = process.env,
+    resolveAdapter = resolveTrackerAdapter,
   } = {},
 ) {
   const [cmd, ...rest] = argv
@@ -62,9 +79,81 @@ export function runCli(
       errWrite('claim-verdict: --comments <json-array> is required\n')
       return 2
     }
-    const adapter = resolveTrackerAdapter({ env })
+    const adapter = resolveAdapter({ env })
     const won = adapter.resolveClaim(JSON.parse(comments), me)
     return won ? 0 : 3
+  }
+  if (cmd === 'states') {
+    const adapter = resolveAdapter({ env })
+    // Absent capability is a NORMAL outcome, not a crash: the caller's fallback path
+    // is the whole reason `states` is optional. Exit 2 with a one-line diagnostic and
+    // an empty stdout so `2>/dev/null || true` degrades to the config read cleanly —
+    // never print a partial/empty map, which the caller would parse as an answer.
+    if (typeof adapter?.states !== 'function') {
+      errWrite('states: resolved tracker adapter has no states capability\n')
+      return 2
+    }
+    // "Never throws" is the adapter contract, not something this CLI can assume: a
+    // vendored adapter that violates it must still degrade to the caller's config
+    // fallback rather than crash it. Same for a non-object return — JSON.stringify
+    // would emit the literal `undefined`, which is neither valid JSON nor an empty
+    // stdout, so a stricter caller than the SKILL's `try { JSON.parse } catch {}`
+    // would mis-read it as an answer. Both collapse to the same exit-2 contract.
+    let states
+    try {
+      states = adapter.states()
+    } catch (err) {
+      errWrite(`states: tracker adapter states capability threw: ${err?.message ?? err}\n`)
+      return 2
+    }
+    if (!states || typeof states !== 'object') {
+      errWrite('states: tracker adapter states capability returned a non-object\n')
+      return 2
+    }
+    write(JSON.stringify(states) + '\n')
+    return 0
+  }
+  if (cmd === 'update-comment') {
+    const { id, 'body-file': bodyFile } = parseFlags(rest)
+    if (!id) {
+      errWrite('update-comment: --id <commentId> is required\n')
+      return 2
+    }
+    if (!bodyFile) {
+      errWrite('update-comment: --body-file <path> is required\n')
+      return 2
+    }
+    let body
+    try {
+      body = readFileSync(bodyFile, 'utf8')
+    } catch (err) {
+      errWrite(`update-comment: could not read --body-file ${bodyFile}: ${err.message}\n`)
+      return 2
+    }
+    // Same guard the progress-comment toolbox applies to its own upsert body: an
+    // update carrying a blank body erases the target comment INCLUDING its marker
+    // anchor line, so the next run matches nothing and posts a duplicate. Reject
+    // it here too rather than emitting a descriptor that quietly does that.
+    if (body.trim() === '') {
+      errWrite(`update-comment: --body-file ${bodyFile} is empty; refusing to blank the comment\n`)
+      return 2
+    }
+    const adapter = resolveAdapter({ env })
+    const op = adapter.operationMap?.updateComment
+    if (!op) {
+      errWrite('update-comment: resolved tracker adapter has no updateComment operation\n')
+      return 2
+    }
+    // An entry present but carrying no usable `tool` (`{}`, `{tool: ''}`) is as
+    // unusable as an absent one — it would emit a descriptor naming no MCP tool
+    // and exit 0, deferring the failure to whatever tried to execute it. Same
+    // non-empty rule assertConforms applies to the operationMap.
+    if (typeof op.tool !== 'string' || op.tool.trim() === '') {
+      errWrite('update-comment: resolved tracker adapter updateComment operation has no tool\n')
+      return 2
+    }
+    write(JSON.stringify({ tool: op.tool, args: { id, body } }) + '\n')
+    return 0
   }
   errWrite(`unknown tracker capability: ${cmd ?? '(none)'}\n`)
   return 2

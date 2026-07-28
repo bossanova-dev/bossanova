@@ -990,3 +990,202 @@ func TestCronJobStore_GateCommand_Update(t *testing.T) {
 		t.Errorf("cleared: GateCommand = %q, want empty", cleared.GateCommand)
 	}
 }
+
+// TestCronJobStore_ZeroOutput_CreateRoundTrip pins the persistence contract for
+// the is_zero_output column added in BOS-563: an unset Create defaults it to
+// false and an explicit true survives the Create -> Get -> List round trip. The
+// List assertion guards against a column being wired into only one SELECT path.
+func TestCronJobStore_ZeroOutput_CreateRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+
+	off, err := store.Create(ctx, CreateCronJobParams{
+		RepoID:       repo.ID,
+		Name:         "zero-output-off",
+		Prompt:       "noop",
+		Schedule:     "@daily",
+		IsEnabled:    true,
+		IsZeroOutput: false,
+	})
+	if err != nil {
+		t.Fatalf("create (false): %v", err)
+	}
+	if off.IsZeroOutput {
+		t.Errorf("create(false): IsZeroOutput = true, want false")
+	}
+	gotOff, err := store.Get(ctx, off.ID)
+	if err != nil {
+		t.Fatalf("get (false): %v", err)
+	}
+	if gotOff.IsZeroOutput {
+		t.Errorf("get(false): IsZeroOutput = true, want false")
+	}
+
+	on, err := store.Create(ctx, CreateCronJobParams{
+		RepoID:       repo.ID,
+		Name:         "zero-output-on",
+		Prompt:       "noop",
+		Schedule:     "@daily",
+		IsEnabled:    true,
+		IsZeroOutput: true,
+	})
+	if err != nil {
+		t.Fatalf("create (true): %v", err)
+	}
+	if !on.IsZeroOutput {
+		t.Errorf("create(true): IsZeroOutput = false, want true")
+	}
+	gotOn, err := store.Get(ctx, on.ID)
+	if err != nil {
+		t.Fatalf("get (true): %v", err)
+	}
+	if !gotOn.IsZeroOutput {
+		t.Errorf("get(true): IsZeroOutput = false, want true")
+	}
+
+	// The list path must carry the flag too.
+	listed, err := store.ListByRepo(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("list by repo: %v", err)
+	}
+	byID := map[string]bool{}
+	for _, j := range listed {
+		byID[j.ID] = j.IsZeroOutput
+	}
+	if got, ok := byID[off.ID]; !ok || got {
+		t.Errorf("list: IsZeroOutput for %q = %v (present=%v), want false", off.ID, got, ok)
+	}
+	if got, ok := byID[on.ID]; !ok || !got {
+		t.Errorf("list: IsZeroOutput for %q = %v (present=%v), want true", on.ID, got, ok)
+	}
+}
+
+// TestCronJobStore_ZeroOutput_Update verifies that Update can both set and
+// clear is_zero_output. The clear leg (true -> false) is what proves the
+// set-clause actually writes rather than being an accidental no-op.
+func TestCronJobStore_ZeroOutput_Update(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	job, err := store.Create(ctx, CreateCronJobParams{
+		RepoID:    repo.ID,
+		Name:      "zero-output-update",
+		Prompt:    "noop",
+		Schedule:  "@daily",
+		IsEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if job.IsZeroOutput {
+		t.Fatalf("IsZeroOutput = true on creation, want false (default)")
+	}
+
+	enable := true
+	enabled, err := store.Update(ctx, job.ID, UpdateCronJobParams{IsZeroOutput: &enable})
+	if err != nil {
+		t.Fatalf("update (true): %v", err)
+	}
+	if !enabled.IsZeroOutput {
+		t.Errorf("after Update(true): IsZeroOutput = false, want true")
+	}
+
+	disable := false
+	disabled, err := store.Update(ctx, job.ID, UpdateCronJobParams{IsZeroOutput: &disable})
+	if err != nil {
+		t.Fatalf("update (false): %v", err)
+	}
+	if disabled.IsZeroOutput {
+		t.Errorf("after Update(false): IsZeroOutput = true, want false (cleared)")
+	}
+	reread, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get after clear: %v", err)
+	}
+	if reread.IsZeroOutput {
+		t.Errorf("get after Update(false): IsZeroOutput = true, want false")
+	}
+}
+
+// TestCronJobStore_ZeroOutput_NilUpdateLeavesUnchanged pins the partial-update
+// guard: an Update whose IsZeroOutput pointer is nil must not touch the column,
+// even when other fields are being written.
+func TestCronJobStore_ZeroOutput_NilUpdateLeavesUnchanged(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	job, err := store.Create(ctx, CreateCronJobParams{
+		RepoID:       repo.ID,
+		Name:         "zero-output-nil-update",
+		Prompt:       "noop",
+		Schedule:     "@daily",
+		IsEnabled:    true,
+		IsZeroOutput: true,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !job.IsZeroOutput {
+		t.Fatalf("IsZeroOutput = false after Create(true), want true")
+	}
+
+	renamed := "zero-output-nil-update (renamed)"
+	updated, err := store.Update(ctx, job.ID, UpdateCronJobParams{Name: &renamed})
+	if err != nil {
+		t.Fatalf("unrelated update: %v", err)
+	}
+	if updated.Name != renamed {
+		t.Fatalf("Name = %q, want %q", updated.Name, renamed)
+	}
+	if !updated.IsZeroOutput {
+		t.Errorf("after unrelated Update: IsZeroOutput = false, want true (unchanged)")
+	}
+
+	// A fully-empty Update must not clear it either.
+	noop, err := store.Update(ctx, job.ID, UpdateCronJobParams{})
+	if err != nil {
+		t.Fatalf("no-op update: %v", err)
+	}
+	if !noop.IsZeroOutput {
+		t.Errorf("after no-op Update: IsZeroOutput = false, want true (unchanged)")
+	}
+}
+
+// TestCronJobStore_ZeroOutput_DefaultRow verifies that a row inserted without
+// is_zero_output (simulating a job created before the migration) reads back
+// false, from the column's NOT NULL DEFAULT 0.
+func TestCronJobStore_ZeroOutput_DefaultRow(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, is_enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"cron-zero-output-legacy", repo.ID, "Legacy Zero Output", "noop", "@daily", 1,
+		"2026-07-25T00:00:00.000Z", "2026-07-25T00:00:00.000Z",
+	)
+	if err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+
+	got, err := store.Get(ctx, "cron-zero-output-legacy")
+	if err != nil {
+		t.Fatalf("get legacy row: %v", err)
+	}
+	if got.IsZeroOutput {
+		t.Errorf("IsZeroOutput = true, want false (migration default 0)")
+	}
+}

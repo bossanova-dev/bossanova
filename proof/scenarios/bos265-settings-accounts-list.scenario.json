@@ -24,7 +24,8 @@
         { "key": "a", "caption": "Press [a] to open the Accounts list (BOS-265)" },
         {
           "waitFor": {
-            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "text": "LABEL PROVIDER",
+            "match": "normalized",
             "label": "Accounts list loaded"
           },
           "timeoutMs": 10000,
@@ -32,11 +33,10 @@
         },
         {
           "expect": [
-            { "text": "Accounts", "match": "normalized", "label": "Accounts screen title" },
             {
               "text": "LABEL PROVIDER STATUS HEALTH",
               "match": "normalized",
-              "label": "Accounts column headers"
+              "label": "Accounts column headers (the hub's Accounts row cannot match them)"
             },
             { "text": "codex", "match": "normalized", "label": "codex provider cell" },
             { "text": "work-claude", "match": "normalized", "label": "claude account label" },

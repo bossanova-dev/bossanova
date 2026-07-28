@@ -825,7 +825,7 @@ func (s *agentPreflightStub) ListAgents(context.Context) ([]client.AgentInfo, er
 	return s.agents, nil
 }
 
-func (s *agentPreflightStub) GetSession(_ context.Context, id string) (*pb.Session, error) {
+func (s *agentPreflightStub) GetSession(_ context.Context, id string, _ client.SessionReadOptions) (*pb.Session, error) {
 	s.getSessionID = id
 	return s.session, nil
 }

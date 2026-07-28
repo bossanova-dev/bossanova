@@ -48,10 +48,23 @@ type MockDaemon struct {
 	repos           []*pb.Repo
 	sessions        []*pb.Session
 	chats           []*pb.ClaudeChat
-	cronJobs        map[string]*pb.CronJob        // keyed by cron job ID
-	githubCallbacks map[string]*pb.GithubCallback // keyed by callback ID
-	prs             map[string][]*pb.PRSummary    // keyed by repo ID
-	trackerIssues   map[string][]*pb.TrackerIssue // keyed by repo ID
+	chatStatuses    map[string]*pb.ChatStatusEntry // keyed by agent_session_id
+	cronJobs        map[string]*pb.CronJob         // keyed by cron job ID
+	githubCallbacks map[string]*pb.GithubCallback  // keyed by callback ID
+	prs             map[string][]*pb.PRSummary     // keyed by repo ID
+	trackerIssues   map[string][]*pb.TrackerIssue  // keyed by repo ID
+
+	// broadcasts and broadcastSubscriptions are keyed by their own ids. Neither
+	// stored message carries a body: the daemon clears Broadcast.message on
+	// every read surface and BroadcastSubscription has no body field, so the
+	// mock holds exactly what a real read would return.
+	broadcasts             map[string]*pb.Broadcast
+	broadcastSubscriptions map[string]*pb.BroadcastSubscription
+
+	// notes is the in-memory note store, keyed by note id. Unlike the broadcast
+	// and callback stores, the stored value DOES carry the body: a note body is
+	// not a secret, it is the record, so every read surface returns it.
+	notes map[string]*pb.Note
 
 	// lastCreateSession records the most recent CreateSession request so tests
 	// can assert on what the TUI sent (e.g. that filter-narrowed selection uses
@@ -120,6 +133,63 @@ type MockDaemon struct {
 	// deleteGithubCallbackCalls records every DeleteGithubCallback id.
 	deleteGithubCallbackCalls []string
 
+	// broadcastCounter generates deterministic broadcast IDs.
+	broadcastCounter int
+
+	// sendBroadcastCalls records every SendBroadcast request. The request
+	// carries the message body, which is exactly what lets a test assert the
+	// CLI sent it while no output surface echoed it back.
+	sendBroadcastCalls []*pb.SendBroadcastRequest
+
+	// listBroadcastCalls records every ListBroadcasts request.
+	listBroadcastCalls []*pb.ListBroadcastsRequest
+
+	// deleteBroadcastCalls records every DeleteBroadcast id.
+	deleteBroadcastCalls []string
+
+	// broadcastDeliveries holds the resolved targets per broadcast id, keyed
+	// separately from broadcasts because ListBroadcasts returns broadcasts
+	// while the target_chat_id filter reaches through the delivery rows.
+	broadcastDeliveries map[string][]*pb.BroadcastDelivery
+
+	// broadcastSubscriptionCounter generates deterministic subscription IDs.
+	broadcastSubscriptionCounter int
+
+	// createBroadcastSubscriptionCalls records every CreateBroadcastSubscription request.
+	createBroadcastSubscriptionCalls []*pb.CreateBroadcastSubscriptionRequest
+
+	// listBroadcastSubscriptionCalls records every ListBroadcastSubscriptions request.
+	listBroadcastSubscriptionCalls []*pb.ListBroadcastSubscriptionsRequest
+
+	// deleteBroadcastSubscriptionCalls records every DeleteBroadcastSubscription id.
+	deleteBroadcastSubscriptionCalls []string
+
+	// noteCounter generates deterministic note IDs.
+	noteCounter int
+	// noteClock ticks once per note write (create or update) and drives the
+	// deterministic created_at/updated_at stamps, so a test can assert on exact
+	// timestamps and on ordering without a real clock.
+	noteClock int
+
+	// createNoteCalls records every CreateNote request. The request carries the
+	// body, repo and provenance the CLI resolved, which is what lets a test
+	// assert the CLI defaulted them correctly.
+	createNoteCalls []*pb.CreateNoteRequest
+	// listNoteCalls records every ListNotes request, so a test can prove the
+	// filters were pushed to the daemon rather than applied client-side.
+	listNoteCalls []*pb.ListNotesRequest
+	// updateNoteCalls records every UpdateNote request. Its optional body/tags
+	// fields distinguish "leave alone" from "replace", so the requests are kept
+	// intact rather than reduced to their effect.
+	updateNoteCalls []*pb.UpdateNoteRequest
+	// deleteNoteCalls records every DeleteNote id.
+	deleteNoteCalls []string
+
+	// resolvedContext, when non-nil, is what ResolveContext returns. Seeded via
+	// SetResolvedContext; nil means "this working directory is not inside any
+	// registered repo or session", which is an empty response, not an error.
+	resolvedContext *pb.ResolveContextResponse
+
 	// runCronJobNowMode controls RunCronJobNow behaviour.
 	// "" or "alwaysRun" → return a synthesized Session.
 	// "alwaysSkip" → return a skipped response with runCronJobNowSkipReason.
@@ -174,16 +244,20 @@ func StartMockDaemon(socketPath string) (*MockDaemon, func() error, error) {
 		return nil, nil, fmt.Errorf("listen unix: %w", err)
 	}
 	m := &MockDaemon{
-		socketPath:         socketPath,
-		listener:           ln,
-		cronJobs:           make(map[string]*pb.CronJob),
-		githubCallbacks:    make(map[string]*pb.GithubCallback),
-		accounts:           make(map[string]*pb.Account),
-		accountCredentials: make(map[string][]byte),
-		prs:                make(map[string][]*pb.PRSummary),
-		trackerIssues:      make(map[string][]*pb.TrackerIssue),
-		attachEvents:       make(map[string]chan *pb.AttachSessionResponse),
-		attachActive:       make(map[string]int),
+		socketPath:             socketPath,
+		listener:               ln,
+		cronJobs:               make(map[string]*pb.CronJob),
+		githubCallbacks:        make(map[string]*pb.GithubCallback),
+		broadcasts:             make(map[string]*pb.Broadcast),
+		broadcastDeliveries:    make(map[string][]*pb.BroadcastDelivery),
+		broadcastSubscriptions: make(map[string]*pb.BroadcastSubscription),
+		notes:                  make(map[string]*pb.Note),
+		accounts:               make(map[string]*pb.Account),
+		accountCredentials:     make(map[string][]byte),
+		prs:                    make(map[string][]*pb.PRSummary),
+		trackerIssues:          make(map[string][]*pb.TrackerIssue),
+		attachEvents:           make(map[string]chan *pb.AttachSessionResponse),
+		attachActive:           make(map[string]int),
 	}
 	mux := http.NewServeMux()
 	path, handler := bossanovav1connect.NewDaemonServiceHandler(m, connect.WithInterceptors(socketauth.NewServerInterceptor(token)))
@@ -244,6 +318,18 @@ func (m *MockDaemon) AddChat(c *pb.ClaudeChat) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.chats = append(m.chats, c)
+}
+
+// AddChatStatus records a daemon-heartbeat status for a chat (keyed by
+// agent_session_id), so GetChatStatuses can serve deterministic
+// working/idle/question statuses in proof scenarios.
+func (m *MockDaemon) AddChatStatus(e *pb.ChatStatusEntry) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.chatStatuses == nil {
+		m.chatStatuses = make(map[string]*pb.ChatStatusEntry)
+	}
+	m.chatStatuses[e.AgentSessionId] = e
 }
 
 // AddPRs adds pull request summaries for a repo to the mock daemon's in-memory store.
@@ -310,6 +396,80 @@ func (m *MockDaemon) AddGithubCallback(cb *pb.GithubCallback) {
 	m.githubCallbacks[cb.Id] = cb
 }
 
+// AddNote seeds the mock daemon with a note. The note is stored as given —
+// tags are NOT re-normalised — so a test can seed the exact rows a real daemon
+// would already hold.
+func (m *MockDaemon) AddNote(n *pb.Note) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.notes[n.GetId()] = cloneMsg(n)
+}
+
+// SetResolvedContext seeds what ResolveContext reports for any working
+// directory. Either argument may be nil; passing two nils restores the default
+// "not inside a registered repo or session" answer. Both arguments are cloned,
+// as AddNote clones its note: a test that mutates a seeded repo afterwards is
+// changing its own fixture, not the daemon's state.
+func (m *MockDaemon) SetResolvedContext(repo *pb.Repo, session *pb.Session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resolvedContext = &pb.ResolveContextResponse{Repo: cloneMsg(repo), Session: cloneMsg(session)}
+}
+
+// Notes returns a copy of every stored note, ordered by id. Tests assert on
+// the daemon's state here rather than on CLI output, so an update that printed
+// the right thing but stored the wrong one cannot pass.
+func (m *MockDaemon) Notes() []*pb.Note {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.notes))
+	for id := range m.notes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]*pb.Note, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, cloneMsg(m.notes[id]))
+	}
+	return out
+}
+
+// CreateNoteCalls returns a copy of every CreateNote request.
+func (m *MockDaemon) CreateNoteCalls() []*pb.CreateNoteRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.CreateNoteRequest, len(m.createNoteCalls))
+	copy(out, m.createNoteCalls)
+	return out
+}
+
+// ListNoteCalls returns a copy of every ListNotes request.
+func (m *MockDaemon) ListNoteCalls() []*pb.ListNotesRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.ListNotesRequest, len(m.listNoteCalls))
+	copy(out, m.listNoteCalls)
+	return out
+}
+
+// UpdateNoteCalls returns a copy of every UpdateNote request.
+func (m *MockDaemon) UpdateNoteCalls() []*pb.UpdateNoteRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.UpdateNoteRequest, len(m.updateNoteCalls))
+	copy(out, m.updateNoteCalls)
+	return out
+}
+
+// DeleteNoteCalls returns a copy of every DeleteNote id.
+func (m *MockDaemon) DeleteNoteCalls() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]string, len(m.deleteNoteCalls))
+	copy(out, m.deleteNoteCalls)
+	return out
+}
+
 // CreateGithubCallbackCalls returns a copy of every CreateGithubCallback request.
 func (m *MockDaemon) CreateGithubCallbackCalls() []*pb.CreateGithubCallbackRequest {
 	m.mu.RLock()
@@ -334,6 +494,48 @@ func (m *MockDaemon) DeleteGithubCallbackCalls() []string {
 	defer m.mu.RUnlock()
 	out := make([]string, len(m.deleteGithubCallbackCalls))
 	copy(out, m.deleteGithubCallbackCalls)
+	return out
+}
+
+// SendBroadcastCalls returns a copy of every SendBroadcast request. These
+// requests DO carry the message body — that is the point: a test asserts the
+// CLI transmitted the body here while no output surface echoed it back.
+func (m *MockDaemon) SendBroadcastCalls() []*pb.SendBroadcastRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.SendBroadcastRequest, len(m.sendBroadcastCalls))
+	copy(out, m.sendBroadcastCalls)
+	return out
+}
+
+// DeleteBroadcastCalls returns a copy of every DeleteBroadcast id, so a test
+// can prove an idempotent `rm` of an unknown id still reached the daemon.
+func (m *MockDaemon) DeleteBroadcastCalls() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]string, len(m.deleteBroadcastCalls))
+	copy(out, m.deleteBroadcastCalls)
+	return out
+}
+
+// CreateBroadcastSubscriptionCalls returns a copy of every
+// CreateBroadcastSubscription request. As with SendBroadcastCalls, these carry
+// the registered body so a leak test has something real to contrast against.
+func (m *MockDaemon) CreateBroadcastSubscriptionCalls() []*pb.CreateBroadcastSubscriptionRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.CreateBroadcastSubscriptionRequest, len(m.createBroadcastSubscriptionCalls))
+	copy(out, m.createBroadcastSubscriptionCalls)
+	return out
+}
+
+// DeleteBroadcastSubscriptionCalls returns a copy of every
+// DeleteBroadcastSubscription id.
+func (m *MockDaemon) DeleteBroadcastSubscriptionCalls() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]string, len(m.deleteBroadcastSubscriptionCalls))
+	copy(out, m.deleteBroadcastSubscriptionCalls)
 	return out
 }
 
@@ -594,8 +796,21 @@ func (m *MockDaemon) ReportChatStatus(_ context.Context, _ *connect.Request[pb.R
 	return connect.NewResponse(&pb.ReportChatStatusResponse{}), nil
 }
 
-func (m *MockDaemon) GetChatStatuses(_ context.Context, _ *connect.Request[pb.GetChatStatusesRequest]) (*connect.Response[pb.GetChatStatusesResponse], error) {
-	return connect.NewResponse(&pb.GetChatStatusesResponse{}), nil
+func (m *MockDaemon) GetChatStatuses(_ context.Context, req *connect.Request[pb.GetChatStatusesRequest]) (*connect.Response[pb.GetChatStatusesResponse], error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []*pb.ChatStatusEntry
+	// Serve statuses for chats in the requested session, mirroring ListChats'
+	// session filter so the picker only sees its own chats' heartbeats.
+	for _, c := range m.chats {
+		if req.Msg.SessionId != "" && c.SessionId != req.Msg.SessionId {
+			continue
+		}
+		if e, ok := m.chatStatuses[c.AgentSessionId]; ok {
+			out = append(out, e)
+		}
+	}
+	return connect.NewResponse(&pb.GetChatStatusesResponse{Statuses: out}), nil
 }
 
 func (m *MockDaemon) GetSessionStatuses(_ context.Context, _ *connect.Request[pb.GetSessionStatusesRequest]) (*connect.Response[pb.GetSessionStatusesResponse], error) {
@@ -688,6 +903,9 @@ func (m *MockDaemon) UpdateRepo(_ context.Context, req *connect.Request[pb.Updat
 			}
 			if req.Msg.CanAutoMergeDependabot != nil {
 				r.CanAutoMergeDependabot = *req.Msg.CanAutoMergeDependabot
+			}
+			if req.Msg.ShouldKeepBranchesCurrent != nil {
+				r.ShouldKeepBranchesCurrent = *req.Msg.ShouldKeepBranchesCurrent
 			}
 			if req.Msg.CanAutoRepair != nil {
 				r.CanAutoRepair = *req.Msg.CanAutoRepair
@@ -784,11 +1002,22 @@ func (m *MockDaemon) UpdateChatTitle(_ context.Context, _ *connect.Request[pb.Up
 	return connect.NewResponse(&pb.UpdateChatTitleResponse{}), nil
 }
 
-// --- Unimplemented RPCs (streaming or not used by tested views) ---
-
+// ResolveContext answers with whatever SetResolvedContext seeded, ignoring the
+// working directory the caller passed: a test controls the answer directly
+// rather than by arranging the subprocess's cwd. An unseeded daemon returns an
+// EMPTY response, not an error — "this directory is not inside a registered
+// repo or session" is a normal answer, and CLI commands that fall back to it
+// must see it as such.
 func (m *MockDaemon) ResolveContext(context.Context, *connect.Request[pb.ResolveContextRequest]) (*connect.Response[pb.ResolveContextResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.resolvedContext == nil {
+		return connect.NewResponse(&pb.ResolveContextResponse{}), nil
+	}
+	return connect.NewResponse(cloneMsg(m.resolvedContext)), nil
 }
+
+// --- Unimplemented RPCs (streaming or not used by tested views) ---
 
 func (m *MockDaemon) CloneAndRegisterRepo(context.Context, *connect.Request[pb.CloneAndRegisterRepoRequest]) (*connect.Response[pb.CloneAndRegisterRepoResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
@@ -1252,6 +1481,361 @@ func (m *MockDaemon) DeleteGithubCallback(_ context.Context, req *connect.Reques
 	m.deleteGithubCallbackCalls = append(m.deleteGithubCallbackCalls, req.Msg.Id)
 	delete(m.githubCallbacks, req.Msg.Id)
 	return connect.NewResponse(&pb.DeleteGithubCallbackResponse{}), nil
+}
+
+// The broadcast RPCs keep real bookkeeping, as the GithubCallback trio above
+// does, so `boss broadcast send|ls|rm` can be driven end to end against the
+// mock.
+//
+// SendBroadcast deliberately mirrors the daemon's secret-body contract: the
+// stored Broadcast carries no message, so a CLI leak test cannot pass merely
+// because the mock never had the body to echo.
+
+func (m *MockDaemon) SendBroadcast(_ context.Context, req *connect.Request[pb.SendBroadcastRequest]) (*connect.Response[pb.SendBroadcastResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sendBroadcastCalls = append(m.sendBroadcastCalls, cloneMsg(req.Msg))
+	m.broadcastCounter++
+	b := &pb.Broadcast{
+		Id:           fmt.Sprintf("bc-%d", m.broadcastCounter),
+		Selector:     req.Msg.GetSelector(),
+		OriginChatId: req.Msg.GetOriginChatId(),
+		State:        "pending",
+	}
+	// Resolve one delivery per chat id named in the selector, honouring the
+	// origin self-exclusion rule so the CLI's target table has something
+	// meaningful to render.
+	var deliveries []*pb.BroadcastDelivery
+	for _, clause := range req.Msg.GetSelector().GetClauses() {
+		for _, chatID := range clause.GetChatIds() {
+			if chatID == req.Msg.GetOriginChatId() && !req.Msg.GetIncludeOrigin() {
+				continue
+			}
+			deliveries = append(deliveries, &pb.BroadcastDelivery{
+				BroadcastId:  b.Id,
+				TargetChatId: chatID,
+				State:        "pending",
+			})
+		}
+	}
+	m.broadcasts[b.Id] = b
+	m.broadcastDeliveries[b.Id] = deliveries
+	return connect.NewResponse(&pb.SendBroadcastResponse{
+		Broadcast:  cloneMsg(b),
+		Deliveries: deliveries,
+	}), nil
+}
+
+func (m *MockDaemon) ListBroadcasts(_ context.Context, req *connect.Request[pb.ListBroadcastsRequest]) (*connect.Response[pb.ListBroadcastsResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.listBroadcastCalls = append(m.listBroadcastCalls, cloneMsg(req.Msg))
+	ids := make([]string, 0, len(m.broadcasts))
+	for id := range m.broadcasts {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]*pb.Broadcast, 0, len(ids))
+	for _, id := range ids {
+		b := m.broadcasts[id]
+		if req.Msg.State != nil && b.State != req.Msg.GetState() {
+			continue
+		}
+		if req.Msg.OriginChatId != nil && b.OriginChatId != req.Msg.GetOriginChatId() {
+			continue
+		}
+		if req.Msg.TargetChatId != nil && !broadcastHasTarget(m.broadcastDeliveries[id], req.Msg.GetTargetChatId()) {
+			continue
+		}
+		out = append(out, cloneMsg(b))
+	}
+	if limit := int(req.Msg.GetLimit()); limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return connect.NewResponse(&pb.ListBroadcastsResponse{Broadcasts: out}), nil
+}
+
+// broadcastHasTarget reports whether any delivery addressed the given chat,
+// backing ListBroadcastsRequest.target_chat_id — the "what have I been sent"
+// query, which reaches through the delivery rows rather than the broadcast.
+func broadcastHasTarget(deliveries []*pb.BroadcastDelivery, chatID string) bool {
+	for _, d := range deliveries {
+		if d.GetTargetChatId() == chatID {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MockDaemon) DeleteBroadcast(_ context.Context, req *connect.Request[pb.DeleteBroadcastRequest]) (*connect.Response[pb.DeleteBroadcastResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deleteBroadcastCalls = append(m.deleteBroadcastCalls, req.Msg.Id)
+	// Idempotent, matching the daemon: deleting an unknown id is not an error.
+	delete(m.broadcasts, req.Msg.Id)
+	delete(m.broadcastDeliveries, req.Msg.Id)
+	return connect.NewResponse(&pb.DeleteBroadcastResponse{}), nil
+}
+
+// The note RPCs (BOS-550) keep real bookkeeping, as the GithubCallback trio
+// above does, so `boss notes add|ls|show|edit|rm` can be driven end to end
+// against the mock.
+//
+// They deliberately reproduce the daemon's two load-bearing behaviours rather
+// than passing requests through: tags are NORMALISED on write, and every list
+// filter is APPLIED. A mock that never filtered would let a CLI that filtered
+// client-side — or never sent the filter at all — pass.
+
+// noteEpoch anchors the mock's deterministic note clock. Each note write
+// (create or update) advances it by a minute, so created_at/updated_at are
+// exact, ordering is meaningful, and no test depends on wall-clock time.
+var noteEpoch = time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// tickNoteClock advances the deterministic note clock. Callers must hold m.mu.
+func (m *MockDaemon) tickNoteClock() *timestamppb.Timestamp {
+	m.noteClock++
+	return timestamppb.New(noteEpoch.Add(time.Duration(m.noteClock) * time.Minute))
+}
+
+// normaliseNoteTags mirrors the daemon's write-side normalisation: trim,
+// lowercase, de-duplicate, and sort ascending. It is lossy by design — display
+// casing is not preserved — and returns a nil slice when nothing survives, so
+// a note with no usable tags stores no tags.
+func normaliseNoteTags(tags []string) []string {
+	seen := make(map[string]bool, len(tags))
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		t := strings.ToLower(strings.TrimSpace(tag))
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (m *MockDaemon) CreateNote(_ context.Context, req *connect.Request[pb.CreateNoteRequest]) (*connect.Response[pb.CreateNoteResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.createNoteCalls = append(m.createNoteCalls, cloneMsg(req.Msg))
+	m.noteCounter++
+	now := m.tickNoteClock()
+	note := &pb.Note{
+		Id:        fmt.Sprintf("note-%d", m.noteCounter),
+		RepoId:    req.Msg.GetRepoId(),
+		SessionId: req.Msg.GetSessionId(),
+		ChatId:    req.Msg.GetChatId(),
+		Body:      req.Msg.GetBody(),
+		Tags:      normaliseNoteTags(req.Msg.GetTags()),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	m.notes[note.Id] = note
+	return connect.NewResponse(&pb.CreateNoteResponse{Note: cloneMsg(note)}), nil
+}
+
+func (m *MockDaemon) GetNote(_ context.Context, req *connect.Request[pb.GetNoteRequest]) (*connect.Response[pb.GetNoteResponse], error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	note, ok := m.notes[req.Msg.GetId()]
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("note %q not found", req.Msg.GetId()))
+	}
+	return connect.NewResponse(&pb.GetNoteResponse{Note: cloneMsg(note)}), nil
+}
+
+func (m *MockDaemon) ListNotes(_ context.Context, req *connect.Request[pb.ListNotesRequest]) (*connect.Response[pb.ListNotesResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.listNoteCalls = append(m.listNoteCalls, cloneMsg(req.Msg))
+
+	// The tag filter is ANY-OF and fails closed: a non-empty list whose entries
+	// all normalise away matches nothing rather than everything.
+	wantTags := make(map[string]bool, len(req.Msg.GetTags()))
+	for _, tag := range req.Msg.GetTags() {
+		if t := strings.ToLower(strings.TrimSpace(tag)); t != "" {
+			wantTags[t] = true
+		}
+	}
+	tagFilterSet := len(req.Msg.GetTags()) > 0
+	// A search term that is blank after trimming means NO search: an empty
+	// substring already matches every body.
+	search := strings.ToLower(strings.TrimSpace(req.Msg.GetSearch()))
+
+	ids := make([]string, 0, len(m.notes))
+	for id := range m.notes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	out := make([]*pb.Note, 0, len(ids))
+	for _, id := range ids {
+		n := m.notes[id]
+		if !noteProvenanceMatches(req.Msg.RepoId, n.GetRepoId()) ||
+			!noteProvenanceMatches(req.Msg.SessionId, n.GetSessionId()) ||
+			!noteProvenanceMatches(req.Msg.ChatId, n.GetChatId()) {
+			continue
+		}
+		if tagFilterSet && !noteHasAnyTag(n, wantTags) {
+			continue
+		}
+		if search != "" && !strings.Contains(strings.ToLower(n.GetBody()), search) {
+			continue
+		}
+		out = append(out, cloneMsg(n))
+	}
+	// Ordered by (created_at, id) ascending, as the daemon orders them.
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i].GetCreatedAt().AsTime(), out[j].GetCreatedAt().AsTime()
+		if a.Equal(b) {
+			return out[i].GetId() < out[j].GetId()
+		}
+		return a.Before(b)
+	})
+	if limit := req.Msg.GetLimit(); limit > 0 && int(limit) < len(out) {
+		out = out[:limit]
+	}
+	return connect.NewResponse(&pb.ListNotesResponse{Notes: out}), nil
+}
+
+// noteProvenanceMatches applies one repo/session/chat filter the way the
+// daemon's SQL does. Two details matter, and getting either wrong inverts the
+// result set:
+//
+//   - The daemon stores an absent session/chat as SQL NULL (optionalTrimmed in
+//     services/bossd/internal/db/note_store.go), and `session_id = ?` never
+//     matches NULL. So a note with no session is invisible to EVERY set session
+//     filter — including `--session ""`, which therefore matches nothing rather
+//     than "the notes that have no session".
+//   - The daemon trims the filter value before binding it, so `--session
+//     " s1 "` finds the same rows as `--session s1`.
+//
+// An unset (nil) filter is not applied at all and matches every note.
+func noteProvenanceMatches(filter *string, stored string) bool {
+	if filter == nil {
+		return true
+	}
+	value := strings.TrimSpace(stored)
+	if value == "" {
+		return false
+	}
+	return value == strings.TrimSpace(*filter)
+}
+
+// noteHasAnyTag reports whether the note carries any of the wanted tags,
+// backing the ANY-OF (OR) tag filter.
+func noteHasAnyTag(n *pb.Note, want map[string]bool) bool {
+	for _, tag := range n.GetTags() {
+		if want[tag] {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MockDaemon) UpdateNote(_ context.Context, req *connect.Request[pb.UpdateNoteRequest]) (*connect.Response[pb.UpdateNoteResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.updateNoteCalls = append(m.updateNoteCalls, cloneMsg(req.Msg))
+	note, ok := m.notes[req.Msg.GetId()]
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("note %q not found", req.Msg.GetId()))
+	}
+	// Nothing to change: the daemon returns the current note rather than
+	// bumping updated_at for a write that alters no field, so an empty update
+	// must not look like work was done.
+	if req.Msg.Body == nil && req.Msg.Tags == nil {
+		return connect.NewResponse(&pb.UpdateNoteResponse{Note: cloneMsg(note)}), nil
+	}
+	// Each field is optional: unset leaves that part alone. A SET tag set
+	// REPLACES the whole set, including replacing it with nothing.
+	if req.Msg.Body != nil {
+		note.Body = req.Msg.GetBody()
+	}
+	if req.Msg.Tags != nil {
+		note.Tags = normaliseNoteTags(req.Msg.GetTags().GetTags())
+	}
+	note.UpdatedAt = m.tickNoteClock()
+	return connect.NewResponse(&pb.UpdateNoteResponse{Note: cloneMsg(note)}), nil
+}
+
+func (m *MockDaemon) DeleteNote(_ context.Context, req *connect.Request[pb.DeleteNoteRequest]) (*connect.Response[pb.DeleteNoteResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deleteNoteCalls = append(m.deleteNoteCalls, req.Msg.GetId())
+	// Idempotent, matching the daemon: deleting an unknown id is not an error.
+	delete(m.notes, req.Msg.GetId())
+	return connect.NewResponse(&pb.DeleteNoteResponse{}), nil
+}
+
+// The standing-subscription trio (BOS-557) keeps real bookkeeping too, so
+// `boss broadcast subscribe|subscriptions|unsubscribe` can be driven end to
+// end. As with SendBroadcast, the stored subscription carries no body —
+// pb.BroadcastSubscription has no message field at all — so a leak test cannot
+// pass vacuously.
+func (m *MockDaemon) CreateBroadcastSubscription(_ context.Context, req *connect.Request[pb.CreateBroadcastSubscriptionRequest]) (*connect.Response[pb.CreateBroadcastSubscriptionResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.createBroadcastSubscriptionCalls = append(m.createBroadcastSubscriptionCalls, cloneMsg(req.Msg))
+	m.broadcastSubscriptionCounter++
+	sub := &pb.BroadcastSubscription{
+		Id:             fmt.Sprintf("bsub-%d", m.broadcastSubscriptionCounter),
+		OwnerSessionId: req.Msg.GetOwnerSessionId(),
+		OriginChatId:   req.Msg.GetOriginChatId(),
+		TriggerEvent:   req.Msg.GetTriggerEvent(),
+		Selector:       req.Msg.GetSelector(),
+		State:          "active",
+	}
+	m.broadcastSubscriptions[sub.Id] = sub
+	return connect.NewResponse(&pb.CreateBroadcastSubscriptionResponse{Subscription: cloneMsg(sub)}), nil
+}
+
+func (m *MockDaemon) ListBroadcastSubscriptions(_ context.Context, req *connect.Request[pb.ListBroadcastSubscriptionsRequest]) (*connect.Response[pb.ListBroadcastSubscriptionsResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.listBroadcastSubscriptionCalls = append(m.listBroadcastSubscriptionCalls, cloneMsg(req.Msg))
+	ids := make([]string, 0, len(m.broadcastSubscriptions))
+	for id := range m.broadcastSubscriptions {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]*pb.BroadcastSubscription, 0, len(ids))
+	for _, id := range ids {
+		sub := m.broadcastSubscriptions[id]
+		if req.Msg.OwnerSessionId != nil && sub.OwnerSessionId != req.Msg.GetOwnerSessionId() {
+			continue
+		}
+		if req.Msg.OriginChatId != nil && sub.OriginChatId != req.Msg.GetOriginChatId() {
+			continue
+		}
+		if req.Msg.State != nil && sub.State != req.Msg.GetState() {
+			continue
+		}
+		// Matches the registered trigger EXACTLY: "settled" does not match a
+		// "completed" filter, mirroring the daemon's query semantics.
+		if req.Msg.TriggerEvent != nil && sub.TriggerEvent != req.Msg.GetTriggerEvent() {
+			continue
+		}
+		out = append(out, cloneMsg(sub))
+	}
+	if limit := int(req.Msg.GetLimit()); limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return connect.NewResponse(&pb.ListBroadcastSubscriptionsResponse{Subscriptions: out}), nil
+}
+
+func (m *MockDaemon) DeleteBroadcastSubscription(_ context.Context, req *connect.Request[pb.DeleteBroadcastSubscriptionRequest]) (*connect.Response[pb.DeleteBroadcastSubscriptionResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deleteBroadcastSubscriptionCalls = append(m.deleteBroadcastSubscriptionCalls, req.Msg.Id)
+	// Idempotent, matching the daemon and `DeleteBroadcast` above.
+	delete(m.broadcastSubscriptions, req.Msg.Id)
+	return connect.NewResponse(&pb.DeleteBroadcastSubscriptionResponse{}), nil
 }
 
 func (m *MockDaemon) RepairDoctor(_ context.Context, _ *connect.Request[pb.RepairDoctorRequest]) (*connect.Response[pb.RepairDoctorResponse], error) {

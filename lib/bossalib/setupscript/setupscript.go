@@ -59,15 +59,18 @@ type Spec struct {
 // ErrInvalidSpec is returned for specs that fail validation.
 var ErrInvalidSpec = errors.New("invalid setup_script spec")
 
-// setupOutputTailBytes bounds how much of a failed setup script's combined
+// setupOutputTailBytes bounds how much of a setup script's combined
 // stdout/stderr is folded into the returned error. Enough to show the actual
 // failure (a stack trace, a "command not found", a make error) without
-// ballooning the error string.
+// ballooning the error string. It doubles as the log-volume bound for
+// ExecuteOpts.LogOutput, which is written on both the success and the failure
+// path, so raising it to enrich error messages also multiplies what a chatty
+// setup script writes to the daemon log.
 const setupOutputTailBytes = 4096
 
 // tailWriter is an io.Writer that retains only the last max bytes written to
-// it, so a failed setup script's final output can be surfaced in the error
-// without buffering the entire (potentially large) stream.
+// it, so a setup script's final output can be surfaced in the error and in the
+// LogOutput sink without buffering the entire (potentially large) stream.
 type tailWriter struct {
 	max int
 	buf []byte
@@ -160,6 +163,13 @@ type ExecuteOpts struct {
 	WorktreePath string        // worktree path; exposed as WORKTREE_DIR
 	Output       io.Writer     // stdout + stderr sink; nil → os.Stderr
 	Timeout      time.Duration // overall timeout; zero → no additional deadline
+	// LogOutput is a secondary, diagnostics-only sink for the daemon log. It is
+	// additive to Output rather than an alternative: a caller that claims the
+	// live stream (the create-session stream does) otherwise leaves the run with
+	// no record at all in the log. It receives the bounded output tail once, on
+	// completion — not the live stream — so a chatty setup script cannot flood
+	// the log. Optional; nil is the historical behaviour.
+	LogOutput io.Writer
 	// LoginShell, when set to a supported shell (the user's $SHELL captured in
 	// settings), runs the setup command THROUGH that login shell — exactly how
 	// agent plugins are launched. The daemon's own PATH is the restricted
@@ -177,12 +187,16 @@ type ExecuteOpts struct {
 // Execute runs the spec. Execute re-validates, performs filesystem-scoped
 // checks (path traversal after join, Makefile existence), then invokes the
 // underlying binary via exec.CommandContext without a shell.
-func (s Spec) Execute(ctx context.Context, opts ExecuteOpts) error {
+//
+// The returned duration measures the script's own run (cmd.Run) and is
+// reported on the failure path too — a script that failed after five minutes
+// still cost five minutes. It is zero only when the spec never reached exec.
+func (s Spec) Execute(ctx context.Context, opts ExecuteOpts) (time.Duration, error) {
 	if err := s.Validate(); err != nil {
-		return err
+		return 0, err
 	}
 	if opts.WorktreePath == "" {
-		return fmt.Errorf("%w: worktree path required", ErrInvalidSpec)
+		return 0, fmt.Errorf("%w: worktree path required", ErrInvalidSpec)
 	}
 
 	if opts.Timeout > 0 {
@@ -198,7 +212,7 @@ func (s Spec) Execute(ctx context.Context, opts ExecuteOpts) error {
 
 	argv, err := s.buildArgv(opts)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// Run through the user's login shell when configured so version-manager
 	// shims land on PATH (see ExecuteOpts.LoginShell). Unsupported/empty shells
@@ -214,27 +228,65 @@ func (s Spec) Execute(ctx context.Context, opts ExecuteOpts) error {
 		"REPO_DIR="+opts.RepoPath,
 		"WORKTREE_DIR="+opts.WorktreePath,
 	)
-	// Tee the combined stream to a bounded tail buffer so a failure can report
-	// the script's actual output (the full stream still reaches opts.Output).
+	// Tee the combined stream to a bounded tail buffer: it feeds both the
+	// failure error and opts.LogOutput (the full stream still reaches
+	// opts.Output).
 	tail := &tailWriter{max: setupOutputTailBytes}
 	sink := io.MultiWriter(output, tail)
 	cmd.Stdout = sink
 	cmd.Stderr = sink
+	// NOTE: cmd.WaitDelay is deliberately left unset. Because Stdout/Stderr are
+	// not *os.File, os/exec uses a pipe whose write end a surviving grandchild
+	// (a `pnpm install` service, a spawned daemon) can hold open, so cmd.Run can
+	// outlive opts.Timeout. Setting WaitDelay bounds that, but it also makes
+	// Wait return exec.ErrWaitDelay for a script that *succeeded* and merely
+	// left a background process holding the pipe — turning a working setup into
+	// a reported failure. Trading a rare hang for a routine false failure needs
+	// its own ticket, not a drive-by in an observability change.
 
 	if s.Type == TypeLegacy && opts.Warn != nil {
 		opts.Warn("legacy shell-string setup_script detected — rewritten to .boss/setup.sh; re-run 'boss repo settings' to migrate to the structured form")
 	}
 
-	if err := cmd.Run(); err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("timed out after %v", opts.Timeout)
-		}
-		if t := strings.TrimSpace(tail.String()); t != "" {
-			return fmt.Errorf("run setup script (%s): %w\n--- last setup output ---\n%s", s.Type, err, t)
-		}
-		return fmt.Errorf("run setup script (%s): %w", s.Type, err)
+	started := time.Now()
+	runErr := cmd.Run()
+	elapsed := time.Since(started)
+
+	// One materialization of the (bounded) tail feeds both consumers below, so
+	// the blank-only guard cannot drift between them.
+	tailStr := strings.TrimSpace(tail.String())
+
+	// Emit the tail to the log sink once the run is over, on success and failure
+	// alike. Writing the tail rather than joining the live MultiWriter is what
+	// keeps the log bounded; see ExecuteOpts.LogOutput. The sink is diagnostics,
+	// so a write failure is deliberately swallowed — it must not turn a working
+	// setup script into a failed one.
+	if opts.LogOutput != nil && tailStr != "" {
+		_, _ = io.WriteString(opts.LogOutput, tailStr)
 	}
-	return nil
+
+	if runErr != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			// Wrap DeadlineExceeded so callers can errors.Is it, and carry the
+			// tail: a timed-out install is exactly the case where the last few
+			// KB name the step that hung. The deadline may be the caller's ctx
+			// rather than opts.Timeout, so only name a limit we actually set.
+			limit := "the caller's deadline"
+			if opts.Timeout > 0 {
+				limit = opts.Timeout.String()
+			}
+			if tailStr != "" {
+				return elapsed, fmt.Errorf("run setup script (%s): timed out after %s: %w\n--- last setup output ---\n%s",
+					s.Type, limit, context.DeadlineExceeded, tailStr)
+			}
+			return elapsed, fmt.Errorf("run setup script (%s): timed out after %s: %w", s.Type, limit, context.DeadlineExceeded)
+		}
+		if tailStr != "" {
+			return elapsed, fmt.Errorf("run setup script (%s): %w\n--- last setup output ---\n%s", s.Type, runErr, tailStr)
+		}
+		return elapsed, fmt.Errorf("run setup script (%s): %w", s.Type, runErr)
+	}
+	return elapsed, nil
 }
 
 // buildArgv resolves the command argv for this spec, performing any

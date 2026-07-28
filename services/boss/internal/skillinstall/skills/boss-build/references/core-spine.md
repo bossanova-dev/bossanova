@@ -36,7 +36,8 @@ This keeps each task's reasoning isolated and prevents one task's context from c
 next.
 
 Each task subagent returns a **fixed, short contract** — the task id, the files it touched, the
-tests it added and their pass state, the interface signatures it produced, and any residual risk.
+tests it added and their pass state, the interface signatures it produced, any residual risk, and the
+commits it made (short SHA + subject, or an explicit _no commit — verification only_ note).
 The orchestrator threads only that short contract into the next task's brief; it never pastes a
 prior task's full transcript forward. Larger hand-offs (the task brief, a report file, a review
 package) travel as files, not as inline text.

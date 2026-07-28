@@ -2,11 +2,14 @@ package views
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/auth"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -116,5 +119,44 @@ func TestLoginModelStartsSubscriptionFlowWhenCloudClientConfigured(t *testing.T)
 	}
 	if m.subscription.phase != subscriptionPhaseChecking {
 		t.Fatalf("subscription phase = %v, want checking", m.subscription.phase)
+	}
+}
+
+// TestLoginModelErrorBlockFitsTerminalWidth guards the one renderError call
+// site that used to nest the helper inside a second Padding(0, 2) style. While
+// renderError subtracted its own padding from the wrap width the two mistakes
+// cancelled and the block happened to land on the terminal width; once BOS-531
+// made renderError fill the width it was given, the outer padding pushed every
+// line 4 columns past the terminal edge. Assert the fit rather than the absence
+// of the wrapper, so the invariant survives a future rewrite of this view.
+func TestLoginModelErrorBlockFitsTerminalWidth(t *testing.T) {
+	for _, width := range []int{80, 120} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			m := LoginModel{
+				phase: loginPhaseError,
+				err:   errors.New(longCloudAccessErrorDetail),
+				width: width,
+			}
+
+			lines := strings.Split(m.View().Content, "\n")
+			// Guard the guard: an error short enough not to wrap would satisfy
+			// the width assertion without exercising the wrap at all. Measure
+			// the unwrapped baseline from a short error rather than restating
+			// what the action bar's padding costs — that arithmetic belongs to
+			// styleActionBar, not to this test.
+			short := LoginModel{phase: loginPhaseError, err: errors.New("boom"), width: width}
+			baseline := len(strings.Split(short.View().Content, "\n"))
+			if len(lines) <= baseline {
+				t.Fatalf("login error view rendered %d line(s) at width %d, no more than the %d an unwrapped error costs, "+
+					"so the width assertion below is not exercising the wrap (if fixtures.LongCloudAccessError was "+
+					"shortened, widen this subtest rather than reading this as a view bug)", len(lines), width, baseline)
+			}
+			for i, line := range lines {
+				// lipgloss.Width, not len(): the view carries ANSI colour.
+				if got := lipgloss.Width(line); got > width {
+					t.Errorf("login error view line %d measures %d columns, want at most %d: %q", i, got, width, line)
+				}
+			}
+		})
 	}
 }

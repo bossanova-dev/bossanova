@@ -2,6 +2,8 @@ package views
 
 import (
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -530,6 +532,20 @@ func renderChatStartFailed() string {
 	return styleStatusDanger.Render("× failed")
 }
 
+// osc8Link wraps an already-styled label in an OSC 8 hyperlink envelope
+// targeting url, so a cmd/ctrl+click in a supporting terminal opens it.
+//
+// This is the single place the envelope's byte shape lives: ESC ] 8 ; ; <url>
+// ESC \ <label> ESC ] 8 ; ; ESC \. Every link renderer below styles its label
+// with RAW ANSI (never lipgloss — lipgloss.Render on a string containing OSC 8
+// strips the leading ESC bytes and leaves the payload visible) and then calls
+// this to make it clickable. Callers are responsible for validating url; see
+// isHTTPEndpointURL for the endpoint path, where the URL is daemon-supplied
+// rather than a well-known PR/tracker URL.
+func osc8Link(url, styledLabel string) string {
+	return "\x1b]8;;" + url + "\x1b\\" + styledLabel + "\x1b]8;;\x1b\\"
+}
+
 // renderPRLink returns an underlined, OSC 8 hyperlinked PR label (e.g. "#12")
 // that opens the PR URL on cmd+click. Returns plain label if no URL is available.
 // Uses raw ANSI underline escapes (not lipgloss) so the table's row-level
@@ -541,7 +557,7 @@ func renderPRLink(sess *pb.Session) string {
 	label := fmt.Sprintf("#%d", *sess.PrNumber)
 	underlined := "\x1b[4m" + label + "\x1b[24m"
 	if sess.PrUrl != nil && *sess.PrUrl != "" {
-		return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.PrUrl, underlined)
+		return osc8Link(*sess.PrUrl, underlined)
 	}
 	return underlined
 }
@@ -561,7 +577,7 @@ func renderMutedPRLink(sess *pb.Session) string {
 	// SGR 9 = strikethrough, SGR 4 = underline
 	styled := "\x1b[38;2;98;98;98;58;2;98;98;98;9;4m" + label + "\x1b[39;59;29;24m"
 	if sess.PrUrl != nil && *sess.PrUrl != "" {
-		return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.PrUrl, styled)
+		return osc8Link(*sess.PrUrl, styled)
 	}
 	return styled
 }
@@ -581,7 +597,7 @@ func renderTrackerLink(sess *pb.Session, title string) string {
 	underlined := "\x1b[4m" + target + "\x1b[24m"
 	var linked string
 	if sess.TrackerUrl != nil && *sess.TrackerUrl != "" {
-		linked = fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.TrackerUrl, underlined)
+		linked = osc8Link(*sess.TrackerUrl, underlined)
 	} else {
 		linked = underlined
 	}
@@ -627,7 +643,7 @@ func renderMutedTrackerLink(sess *pb.Session, title string) string {
 	styledTarget := mutedStrikeUnderlineOpen + target + mutedStrikeUnderlineClose
 	linked := styledTarget
 	if sess.TrackerUrl != nil && *sess.TrackerUrl != "" {
-		linked = fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.TrackerUrl, styledTarget)
+		linked = osc8Link(*sess.TrackerUrl, styledTarget)
 	}
 	return wrap(title[:idx]) + linked + wrap(title[idx+len(target):])
 }
@@ -679,7 +695,7 @@ func renderSelectedTrackerLink(sess *pb.Session, title string) string {
 	styledTarget := selectedUnderlineOpen + target + selectedUnderlineClose
 	linked := styledTarget
 	if sess.TrackerUrl != nil && *sess.TrackerUrl != "" {
-		linked = fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.TrackerUrl, styledTarget)
+		linked = osc8Link(*sess.TrackerUrl, styledTarget)
 	}
 	return wrap(title[:idx]) + linked + wrap(title[idx+len(target):])
 }
@@ -694,7 +710,157 @@ func renderSelectedPRLink(sess *pb.Session) string {
 	label := fmt.Sprintf("#%d", *sess.PrNumber)
 	styled := selectedUnderlineOpen + label + selectedUnderlineClose
 	if sess.PrUrl != nil && *sess.PrUrl != "" {
-		return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.PrUrl, styled)
+		return osc8Link(*sess.PrUrl, styled)
 	}
 	return styled
+}
+
+// --- Session HTTP endpoints (BOS-474) --------------------------------------
+
+// SGR envelopes for the muted endpoint labels rendered beneath a session (Home)
+// and above the chat table (ChatPicker). Raw ANSI rather than lipgloss so they
+// can bracket an OSC 8 hyperlink without the Render path mangling the envelope
+// — the same constraint the merged/selected link constants above document.
+//
+// 38;2;98;98;98 = muted gray fg (#626262). The underline variant pins the
+// underline color with 58;2;98;98;98 so it matches the text instead of
+// inheriting whatever SGR 58 the previous row left set, and adds 4 = underline
+// to mark the label as clickable.
+const (
+	mutedTextOpen       = "\x1b[38;2;98;98;98m"
+	mutedTextClose      = "\x1b[39m"
+	mutedUnderlineOpen  = "\x1b[38;2;98;98;98;58;2;98;98;98;4m"
+	mutedUnderlineClose = "\x1b[39;59;24m"
+	// endpointSeparator joins multiple endpoint labels. Rendered muted so the
+	// clickable ":port" labels remain the only emphasized tokens.
+	endpointSeparator = " · "
+)
+
+// renderableEndpoints returns the session's HTTP endpoints that have something
+// to show: non-nil with a non-zero port. The port is the label, so an endpoint
+// without one cannot be rendered — and an endpoint with a port but a bad URL is
+// still worth showing (just not as a hyperlink), so URL validity is NOT part of
+// this filter. Returns nil when there is nothing to render, which is what every
+// caller tests to decide whether an endpoint row/line exists at all.
+func renderableEndpoints(sess *pb.Session) []*pb.HttpEndpoint {
+	if sess == nil {
+		return nil
+	}
+	var out []*pb.HttpEndpoint
+	for _, ep := range sess.GetHttpEndpoints() {
+		if ep == nil || ep.GetPort() == 0 {
+			continue
+		}
+		out = append(out, ep)
+	}
+	return out
+}
+
+// sessionHasEndpointRow reports whether the Home session list must emit an
+// endpoint auxiliary row for this session.
+//
+// This is the ONE predicate both the renderer (buildTableRows) and the
+// accounting (sessionSubRowCount) ask. Deriving "is there a row?" separately
+// from the rendered string and from the measured labels is exactly the desync
+// that strands the cursor on an unselectable row, so neither caller is allowed
+// to test emptiness of its own artifact.
+func sessionHasEndpointRow(sess *pb.Session) bool {
+	return len(renderableEndpoints(sess)) > 0
+}
+
+// sessionEndpointLabels returns the VISIBLE (unstyled) endpoint text, e.g.
+// ":3000 · :5173", or "" when the session has no renderable endpoints. Used for
+// column-width measurement, where styling bytes must not be counted — NOT for
+// deciding whether the endpoint row exists (see sessionHasEndpointRow).
+func sessionEndpointLabels(sess *pb.Session) string {
+	eps := renderableEndpoints(sess)
+	if len(eps) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(eps))
+	for _, ep := range eps {
+		labels = append(labels, endpointLabel(ep))
+	}
+	return strings.Join(labels, endpointSeparator)
+}
+
+// endpointLabel returns the compact ":<port>" label for one endpoint.
+func endpointLabel(ep *pb.HttpEndpoint) string {
+	return ":" + strconv.FormatUint(uint64(ep.GetPort()), 10)
+}
+
+// renderSessionEndpoints returns the muted, individually clickable endpoint
+// labels for a session, joined by a muted " · ", or "" when there is nothing to
+// render. Each label is underlined and wrapped in an OSC 8 hyperlink ONLY when
+// its URL passes isHTTPEndpointURL; an endpoint whose URL is missing, non-HTTP,
+// or otherwise unsafe still shows its port, plainly muted and not underlined,
+// so the operator sees the port without the TUI emitting an escape envelope
+// around an untrusted target.
+func renderSessionEndpoints(sess *pb.Session) string {
+	eps := renderableEndpoints(sess)
+	if len(eps) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, ep := range eps {
+		if i > 0 {
+			b.WriteString(mutedTextOpen + endpointSeparator + mutedTextClose)
+		}
+		label := endpointLabel(ep)
+		if url := ep.GetUrl(); isHTTPEndpointURL(url) {
+			b.WriteString(osc8Link(url, mutedUnderlineOpen+label+mutedUnderlineClose))
+			continue
+		}
+		b.WriteString(mutedTextOpen + label + mutedTextClose)
+	}
+	return b.String()
+}
+
+// isHTTPEndpointURL reports whether raw is safe to place inside an OSC 8
+// hyperlink target: a parseable absolute URL with an http/https scheme, a
+// non-empty host, and no control or space bytes.
+//
+// The control-byte check is the load-bearing one. The OSC 8 envelope is
+// delimited by ESC bytes, so a URL carrying ESC/BEL/newline could terminate the
+// introducer early and inject arbitrary escape sequences into the operator's
+// terminal. url.Parse already rejects ASCII control characters, but this is
+// asserted explicitly rather than relying on that as an implementation detail.
+// A raw space (0x20) is rejected on the same pass: url.Parse accepts it, but a
+// URI containing one is invalid per RFC 3986, so the terminal would render a
+// dead link rather than a working one.
+func isHTTPEndpointURL(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] <= 0x20 || raw[i] == 0x7f {
+			return false
+		}
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return false
+	}
+	return u.Host != ""
+}
+
+// sessionSubRowCount returns how many NON-SELECTABLE auxiliary rows the Home
+// session list renders directly beneath a session's primary row: the endpoint
+// row (0 or 1) followed by one row per warning hint.
+//
+// This is the single source of truth for auxiliary-row accounting. Row
+// construction, table height, cursor↔session mapping, and cursor normalization
+// all route through it — if any of them counted independently they could
+// disagree and strand the cursor on an unselectable row (BOS-474).
+func sessionSubRowCount(sess *pb.Session) int {
+	n := len(sessionWarningHints(sess))
+	if sessionHasEndpointRow(sess) {
+		n++
+	}
+	return n
 }

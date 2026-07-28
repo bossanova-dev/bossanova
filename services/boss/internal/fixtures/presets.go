@@ -132,6 +132,17 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// question-row: one active session with a newer `working` chat and an
+		// older `? question` chat plus heartbeat statuses, for the BOS-494
+		// chat-picker proof scenario. Opening the session must land the initial
+		// cursor on the older question chat (waiting on the user) rather than the
+		// newer working chat. Carries the same cloud-access e2e pin as demo so
+		// boss lands on the home session list.
+		"question-row": {
+			World:      QuestionRowWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		// errored-status: two errored (orphaned + blocked) sessions whose live
 		// chat is working, for the BOS-430 session-list proof scenario. The home
 		// STATUS column must show the real "working" status recolored red (danger)
@@ -143,8 +154,40 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// http-endpoints: one session with two machine-local HTTP listeners
+		// (:3000, :5173) plus an endpoint-free neighbour, for the BOS-474 /
+		// BOS-460 proof scenario. Home must show the clickable ":port" links on
+		// an auxiliary row under the owning session, and the chat picker must
+		// show the "HTTP" line directly above the chat table. Carries the same
+		// cloud-access e2e pin as demo so boss lands on the home session list.
+		"http-endpoints": {
+			World:      HTTPEndpointsWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
+		// cloud-error: the demo board (sessions present, so the home table is
+		// drawn and the status wrap width tracks it) with the cloud-access probe
+		// failing with the real ~250-column refresh-token error from the BOS-507
+		// report. Unlike the other presets this pins the e2e cloud sequence to
+		// "error" rather than "active", so cloudGateLine renders its warning
+		// branch; the message override supplies the long failure text that must
+		// wrap at the table width instead of running off the terminal edge.
+		"cloud-error": {
+			World:    DemoWorld,
+			SeedKind: SeedAcknowledged,
+			DefaultEnv: map[string]string{
+				"BOSS_CLOUD_ACCESS_E2E_SEQUENCE":      "error",
+				"BOSS_CLOUD_ACCESS_E2E_ERROR_MESSAGE": LongCloudAccessError,
+			},
+		},
 	}
 }
+
+// LongCloudAccessError is the verbatim cloud-access failure from the BOS-507
+// report: 173 columns on its own. Rendered through cloudAccessUnavailableLine it
+// produces a 243-column status line — far wider than the 120-column proof
+// terminal — so it is the fixture that makes the wrap visible.
+const LongCloudAccessError = `refresh token: token request: Post "https://api.workos.com/user_management/authenticate": dial tcp: lookup api.workos.com: no such host (run 'boss login' to re-authenticate)`
 
 // PresetNames returns the registry's preset names sorted alphabetically. Used
 // for the -fixture flag usage string and the unknown-name error message.

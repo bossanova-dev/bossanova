@@ -143,6 +143,8 @@ func ValidTriggers() []models.GithubCallbackTrigger {
 		models.GithubCallbackTriggerClosed,
 		models.GithubCallbackTriggerChecksPassed,
 		models.GithubCallbackTriggerChecksFailed,
+		models.GithubCallbackTriggerReadyForReview,
+		models.GithubCallbackTriggerChecksPassedReady,
 	}
 }
 

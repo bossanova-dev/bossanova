@@ -41,7 +41,15 @@ func newRegistry() map[string]Prose {
 				"non-interactively: it creates the session, streams any setup output " +
 				"to stderr, and prints the session-id and chat-id to stdout, then " +
 				"exits. Combine with --detach (implicit when both flags are set) for " +
-				"scripting. Use --agent to override the default agent plugin.",
+				"scripting. Use --agent to override the default agent plugin.\n\n" +
+				"Launching a session to run work unattended: supplying a prompt " +
+				"launches the agent (headless, via the implicit --detach) so the work " +
+				"actually runs — the CLI and the MCP `create_session` tool now share " +
+				"this default. `create_session` applies the same rule: a " +
+				"prompt-carrying call defaults to headless and reports " +
+				"agent_launched=true, while attended:true creates the session idle " +
+				"awaiting a human `boss attach` (agent_launched=false). Prefer the " +
+				"default for programmatic/unattended launches.",
 			Examples: []Example{
 				{Command: "boss new"},
 				{Command: "boss new --agent opencode"},
@@ -128,17 +136,28 @@ func newRegistry() map[string]Prose {
 				"prompt into a chat once a pull request reaches a chosen state, then " +
 				"retires. Use it to answer natural-language asks like \"tell me when PR " +
 				"#123 is merged\", \"ping this chat when PR #123 goes green\", \"let me " +
-				"know if PR #123's checks fail\", or \"notify me when PR #123 is closed\". " +
-				"Triggers map to those phrasings: `merged`, `checks_passed` (green), " +
-				"`checks_failed` (red), and `closed`. Delivery only signals that the " +
-				"event fired — always verify the PR's actual state before acting on it. " +
-				"Callbacks expire after 24h by default and may not outlive 30 days.",
+				"know if PR #123's checks fail\", \"notify me when PR #123 is closed\", " +
+				"\"tell me when PR #123 comes out of draft\", or \"ping me when PR #123 " +
+				"is green and ready to merge\". Triggers map to those phrasings: " +
+				"`merged`, `checks_passed` (green), `checks_failed` (red), `closed`, " +
+				"`ready_for_review` (the draft→ready flip), and `checks_passed_ready` " +
+				"(green and not a draft — the merge-eligibility moment). Triggers are " +
+				"evaluated on PR state, not on transitions: a callback armed on a PR " +
+				"that ALREADY satisfies its trigger fires on the next evaluation rather " +
+				"than waiting for a fresh event. Delivery only " +
+				"signals that the event fired — always verify the PR's actual state " +
+				"before acting on it. Callbacks expire after 24h by default and may not " +
+				"outlive 30 days.",
 		},
 		"boss callback add": {
 			Long: "Register a one-shot callback. `<pr>` is a bare PR number (resolved " +
 				"against the current repository) or a full " +
 				"`https://github.com/owner/repo/pull/N` URL. `<trigger>` is one of " +
-				"`merged`, `closed`, `checks_passed`, or `checks_failed`. The `--message` " +
+				"`merged`, `closed`, `checks_passed`, `checks_failed`, " +
+				"`ready_for_review` (the draft→ready flip), or `checks_passed_ready` " +
+				"(green and not a draft — merge-eligible). Triggers match on PR state, " +
+				"not on transitions, so arming one against a PR that already satisfies " +
+				"it fires on the next evaluation. The `--message` " +
 				"prompt is delivered verbatim to the target chat when the callback fires " +
 				"and is treated as a secret — it is never echoed back on any surface. " +
 				"Expiry defaults to 24h and may not exceed 30 days.",
@@ -160,6 +179,14 @@ func newRegistry() map[string]Prose {
 						`--message "PR #123 was closed" --expires-in 7d`,
 					Explanation: `"notify me when PR #123 is closed" (full URL, longer expiry)`,
 				},
+				{
+					Command:     `boss callback add 123 ready_for_review --message "PR #123 left draft — review it"`,
+					Explanation: `"tell me when PR #123 comes out of draft"`,
+				},
+				{
+					Command:     `boss callback add 123 checks_passed_ready --message "PR #123 is green and ready to merge"`,
+					Explanation: `"ping me when PR #123 is green and ready to merge"`,
+				},
 			},
 		},
 		"boss callback list": {
@@ -171,6 +198,127 @@ func newRegistry() map[string]Prose {
 		},
 		"boss callback remove": {
 			Examples: []Example{{Command: "boss callback remove cb_abc123"}},
+		},
+
+		// --- Notes ---
+		"boss notes": {
+			Long: "A note is durable free-text recorded against a REPOSITORY so a later " +
+				"sweep can harvest what a run learned — a gotcha, a decision, a piece " +
+				"of tech debt worth filing. Notes are repo-scoped and session and chat " +
+				"are provenance ONLY: they record who wrote the note, and archiving or " +
+				"removing that session never removes its notes. A note outlives the run " +
+				"that wrote it. Inside a registered repo or a session worktree the repo " +
+				"and session default from the working directory, so an agent can leave a " +
+				"note with one command and no ids to look up. A body is REQUIRED (a blank " +
+				"or whitespace-only one is rejected), may be up to 64 KiB, and is stored " +
+				"verbatim. Tags are normalised — trimmed, lowercased and " +
+				"de-duplicated — so `Tech-Debt` and `tech-debt` are one tag; a note may " +
+				"carry up to 32 tags of 64 bytes each. Notes are listed OLDEST first. " +
+				"`add`, `ls`, `show` and `edit` all take `--json` for machine parsing.",
+		},
+		"boss notes add": {
+			Long: "Record a note. `--repo`, `--session` and `--chat` are resolved in this " +
+				"order: the explicit flag, then the ambient `BOSS_REPO_ID` / " +
+				"`BOSS_SESSION_ID` / `BOSS_AGENT_SESSION_ID`, then — for the repo and " +
+				"session only — the daemon's resolution of the working directory. An " +
+				"agent running inside its own session worktree therefore needs no ids at " +
+				"all. There is no working-directory fallback for the chat: a session's " +
+				"primary chat is not necessarily the one calling, so guessing would " +
+				"attribute the note to the wrong agent — export " +
+				"`BOSS_AGENT_SESSION_ID` or pass `--chat` if the chat matters. When the " +
+				"repository cannot be resolved the command FAILS naming `--repo` rather " +
+				"than writing the note against the wrong repo. `--tag` is repeatable " +
+				"(`--tag a --tag b`), not comma-separated; tags are trimmed, lowercased " +
+				"and de-duplicated before they are stored.",
+			Examples: []Example{
+				{
+					Command:     `boss notes add "the flaky test is a socket-token race" --tag tech-debt`,
+					Explanation: "From inside a session worktree: repo and session are inferred, no ids needed",
+				},
+				{
+					Command:     `boss notes add "auth middleware assumes a trailing slash" --tag gotcha --tag auth`,
+					Explanation: "Repeat --tag for several tags",
+				},
+				{
+					Command:     `boss notes add "release checklist step 3 is stale" --repo my-repo --json`,
+					Explanation: "Record against an explicit repo from anywhere, and parse the result",
+				},
+			},
+		},
+		"boss notes ls": {
+			Long: "List notes in the order they were recorded, OLDEST first, so " +
+				"`--limit N` returns the N oldest. `--repo` resolves like `add`'s: the " +
+				"explicit flag, then the ambient `BOSS_REPO_ID`, then the working " +
+				"directory's repo — so inside a repo the listing is scoped to it. To " +
+				"list across EVERY repo pass `--repo \"\"` explicitly; simply leaving " +
+				"the repo directory is NOT enough, because a boss-managed agent pane " +
+				"always exports `BOSS_REPO_ID`. `--tag` " +
+				"matches ANY of the tags given (a note carrying just one of them " +
+				"matches), not all of them; unlike on `add`/`edit`, `--tag \"\"` here is " +
+				"not a wildcard — the daemon fails closed on a tag that normalises away, " +
+				"so it matches nothing. `--search` matches a substring of the body, " +
+				"case-insensitively for ASCII only (the daemon folds case with SQLite's " +
+				"`LOWER()`, which does not fold non-ASCII); SQL wildcards are matched " +
+				"literally. `--session` filters by the session that recorded " +
+				"the note and does NOT default from the working directory — a " +
+				"session-scoped default would silently hide the repo's other notes. " +
+				"Bodies are flattened to one line and truncated in the table: use " +
+				"`boss notes show` for the full text.",
+			Examples: []Example{
+				{Command: "boss notes ls"},
+				{
+					Command:     "boss notes ls --tag tech-debt --tag gotcha",
+					Explanation: "Notes carrying EITHER tag (any-of, not all-of)",
+				},
+				{
+					Command:     `boss notes ls --search "socket token" --limit 5`,
+					Explanation: "The 5 oldest notes whose body contains the term",
+				},
+				{Command: "boss notes ls --repo my-repo --json"},
+				{
+					Command:     `boss notes ls --repo ""`,
+					Explanation: "Every repo, even from inside a session pane that exports BOSS_REPO_ID",
+				},
+			},
+		},
+		"boss notes show": {
+			Long: "Print one note in full: its ids, provenance, tags, timestamps, and " +
+				"then the body verbatim and untruncated (`boss notes ls` only shows a " +
+				"one-line preview). `--repo` is a routing hint for a remote daemon and " +
+				"is ignored locally — the note is resolved by id.",
+			Examples: []Example{
+				{Command: "boss notes show note_abc123"},
+				{Command: "boss notes show note_abc123 --json"},
+			},
+		},
+		"boss notes edit": {
+			Long: "Change a note's body and/or tags; pass at least one of `--body` and " +
+				"`--tag` or the command fails with nothing to do. An omitted `--body` " +
+				"leaves the body alone and an omitted `--tag` leaves the tags alone. " +
+				"Passing `--tag` REPLACES the whole tag set with exactly what you pass — " +
+				"it does not merge, so re-list every tag the note should keep. " +
+				"`--tag \"\"` therefore clears every tag.",
+			Examples: []Example{
+				{
+					Command:     `boss notes edit note_abc123 --body "the flaky test is a socket-token race; fixed in #1712"`,
+					Explanation: "Rewrite the body, leaving the tags untouched",
+				},
+				{
+					Command:     "boss notes edit note_abc123 --tag tech-debt --tag resolved",
+					Explanation: "REPLACES the tag set with exactly these two tags",
+				},
+				{
+					Command:     `boss notes edit note_abc123 --tag ""`,
+					Explanation: "Clear every tag",
+				},
+			},
+		},
+		"boss notes rm": {
+			Long: "Remove a note by id. Removal is idempotent: removing a note that is " +
+				"already gone succeeds rather than erroring, so a cleanup script can be " +
+				"re-run safely. Removing a note is permanent — there is no trash for " +
+				"notes.",
+			Examples: []Example{{Command: "boss notes rm note_abc123"}},
 		},
 
 		// --- Trash Management ---

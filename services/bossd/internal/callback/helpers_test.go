@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/recurser/bossalib/migrate"
@@ -64,6 +65,34 @@ func (f *fakeProvider) GetPRStatus(_ context.Context, _ string, _ int) (*vcs.PRS
 
 func (f *fakeProvider) GetCheckResults(_ context.Context, _ string, _ int) ([]vcs.CheckResult, error) {
 	return f.checks, f.checksErr
+}
+
+// scriptedProvider is a mutex-guarded vcs provider whose status/checks can be
+// mutated between rounds, unlike fakeProvider's fixed snapshot — used by flow
+// tests that need to flip PR state (e.g. Draft) across successive evaluations.
+type scriptedProvider struct {
+	mu     sync.Mutex
+	status *vcs.PRStatus
+	checks []vcs.CheckResult
+}
+
+func (s *scriptedProvider) set(status *vcs.PRStatus, checks []vcs.CheckResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status = status
+	s.checks = checks
+}
+
+func (s *scriptedProvider) GetPRStatus(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.status, nil
+}
+
+func (s *scriptedProvider) GetCheckResults(_ context.Context, _ string, _ int) ([]vcs.CheckResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.checks, nil
 }
 
 // conclusion returns a pointer to a CheckConclusion.

@@ -99,7 +99,7 @@ func TestE2E_Resilience_PushFailsAfterWorktreeCreated(t *testing.T) {
 	// error so it fails; the lifecycle logs a warning and continues.
 	h.Git.SetPushError(errors.New("push failed: network down"))
 
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoID, Title: "push-fails", Plan: "Recover after push fail",
 	})
 
@@ -132,7 +132,7 @@ func TestE2E_Resilience_CreatePRFails(t *testing.T) {
 
 	h.VCS.SetCreatePRError(errors.New("create PR failed: GitHub 503"))
 
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoID, Title: "createpr-fails", Plan: "Recover after PR fail",
 	})
 

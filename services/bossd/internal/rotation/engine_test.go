@@ -450,6 +450,202 @@ func TestDecideCooldownDuration(t *testing.T) {
 	}
 }
 
+// TestDecideSuppressCooldownBenchesNothingButStillRotates proves the BOS-584
+// escape hatch: a UsageLimited signal whose dispatcher could NOT confirm the cap
+// (a transient upstream 429) still picks a rotation target, but writes no
+// cooldown at all — the capped account stays selectable the instant the signal
+// is handled. SuppressCooldown must gate ONLY the cooldown write; candidate
+// selection, health, and the outcome kind are untouched.
+func TestDecideSuppressCooldownBenchesNothingButStillRotates(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+
+	tests := []struct {
+		name             string
+		suppressCooldown bool
+		wantCooling      bool
+		wantCooldownCall int
+	}{
+		{name: "suppressed cap benches nothing", suppressCooldown: true, wantCooling: false, wantCooldownCall: 0},
+		{name: "unsuppressed cap benches as before", suppressCooldown: false, wantCooling: true, wantCooldownCall: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capped := mkAcct("capped", 0, ok, active, nil, tp(0))
+			other := mkAcct("B", 1, ok, active, nil, tp(-1*time.Hour))
+			store := newFakeStore(capped, other)
+			eng := newEngineForTest(store)
+
+			out, err := eng.Decide(context.Background(), Signal{
+				Provider:         claude,
+				CappedAccountID:  "capped",
+				Kind:             UsageLimited,
+				RotationCapable:  true,
+				SuppressCooldown: tt.suppressCooldown,
+			})
+			if err != nil {
+				t.Fatalf("Decide error: %v", err)
+			}
+			if out.Kind != OutcomeRotate {
+				t.Fatalf("Kind = %v, want OutcomeRotate (suppression must not stop rotation)", out.Kind)
+			}
+			if out.NextAccount == nil || out.NextAccount.ID != "B" {
+				t.Fatalf("NextAccount = %v, want B", out.NextAccount)
+			}
+			if got := capped.CooldownUntil != nil; got != tt.wantCooling {
+				t.Fatalf("capped cooling = %v (until %v), want %v", got, capped.CooldownUntil, tt.wantCooling)
+			}
+			if store.cooldownCalls != tt.wantCooldownCall {
+				t.Fatalf("cooldownCalls = %d, want %d", store.cooldownCalls, tt.wantCooldownCall)
+			}
+			if out.CooldownApplied != tt.wantCooling {
+				t.Fatalf("CooldownApplied = %v, want %v", out.CooldownApplied, tt.wantCooling)
+			}
+			if capped.Health != models.AccountHealthOK {
+				t.Fatalf("capped.Health = %v, want ok (suppression never fails health)", capped.Health)
+			}
+		})
+	}
+}
+
+// TestDecideSuppressCooldownOnLastAccountShiftsKind pins the one way suppression
+// DOES change the outcome kind. Kind is resolved after the write from the
+// account list, and minFutureCooldown only sees future cooldowns — so when the
+// capped account is the last selectable one, the cooldown this signal declined
+// to write is also the cooldown that would have produced OutcomeAllExhausted.
+// The single-account pool is the common deployment and was the incident's own
+// shape, so pin it rather than leave it to a reader's inference.
+func TestDecideSuppressCooldownOnLastAccountShiftsKind(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+
+	tests := []struct {
+		name             string
+		suppressCooldown bool
+		wantKind         OutcomeKind
+	}{
+		{name: "confirmed cap on the last account is exhausted", suppressCooldown: false, wantKind: OutcomeAllExhausted},
+		{name: "suppressed cap on the last account is no-eligible", suppressCooldown: true, wantKind: OutcomeNoEligibleAccount},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			only := mkAcct("only", 0, ok, active, nil, tp(0))
+			eng := newEngineForTest(newFakeStore(only))
+
+			out, err := eng.Decide(context.Background(), Signal{
+				Provider:         claude,
+				CappedAccountID:  "only",
+				Kind:             UsageLimited,
+				RotationCapable:  true,
+				SuppressCooldown: tt.suppressCooldown,
+			})
+			if err != nil {
+				t.Fatalf("Decide error: %v", err)
+			}
+			if out.NextAccount != nil {
+				t.Fatalf("NextAccount = %v, want nil (no alternate exists)", out.NextAccount)
+			}
+			if out.Kind != tt.wantKind {
+				t.Fatalf("Kind = %v, want %v", out.Kind, tt.wantKind)
+			}
+			// Either way the account must not be left benched by a suppressed cap.
+			if got := only.CooldownUntil != nil; got == tt.suppressCooldown {
+				t.Fatalf("cooling = %v, want %v", got, !tt.suppressCooldown)
+			}
+		})
+	}
+}
+
+// gatedStore parks every DecideTx caller until the test releases it, so two
+// signals can be held in flight SIMULTANEOUSLY. Entering DecideTx at all is the
+// proof a caller was not coalesced away by single-flight.
+type gatedStore struct {
+	*fakeStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedStore) DecideTx(ctx context.Context, provider string, fn func(tx TxAccountView) error) error {
+	g.entered <- struct{}{}
+	<-g.release
+	return g.fakeStore.DecideTx(ctx, provider, fn)
+}
+
+// TestDecideConcurrentSuppressionDoesNotCoalesce pins the BOS-584 half of the
+// single-flight key. SuppressCooldown selects a DIFFERENT write, not a duplicate
+// of the same one, so two concurrent signals that disagree about whether the
+// account may be benched must each execute:
+//
+//   - if the suppressing signal won, the non-suppressing caller would get
+//     CooldownApplied=false, which the headless initial-cap path reads as "a
+//     duplicate the engine already handled" and answers by skipping its restart —
+//     stalling the session instead of rotating it;
+//   - if the non-suppressing signal won, an account whose probe said it was
+//     healthy would be benched anyway, i.e. the exact bug suppression prevents.
+//
+// Both callers are held inside DecideTx at once, so a coalesced second caller
+// never arrives and the test fails deterministically rather than flakily.
+func TestDecideConcurrentSuppressionDoesNotCoalesce(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+	capped := mkAcct("capped", 0, ok, active, nil, tp(0))
+	other := mkAcct("B", 1, ok, active, nil, tp(-1*time.Hour))
+	gated := &gatedStore{
+		fakeStore: newFakeStore(capped, other),
+		entered:   make(chan struct{}, 2),
+		release:   make(chan struct{}),
+	}
+	eng := NewEngine(gated, WithClock(fixedClock()))
+
+	sig := func(suppress bool) Signal {
+		return Signal{
+			Provider: claude, CappedAccountID: "capped", Kind: UsageLimited,
+			RotationCapable: true, SuppressCooldown: suppress,
+		}
+	}
+	outs := make([]Outcome, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i, suppress := range []bool{true, false} {
+		wg.Add(1)
+		go func(idx int, s bool) {
+			defer wg.Done()
+			outs[idx], errs[idx] = eng.Decide(context.Background(), sig(s))
+		}(i, suppress)
+		// Wait for THIS caller to reach the store before launching the next, so
+		// the second call provably overlaps the first's in-flight execution.
+		select {
+		case <-gated.entered:
+		case <-time.After(5 * time.Second):
+			close(gated.release)
+			wg.Wait()
+			t.Fatalf("caller %d never reached the store: the signals coalesced", i)
+		}
+	}
+	close(gated.release)
+	wg.Wait()
+
+	for i := range outs {
+		if errs[i] != nil {
+			t.Fatalf("caller %d error: %v", i, errs[i])
+		}
+	}
+	if outs[0].CooldownApplied {
+		t.Fatal("suppressing caller CooldownApplied = true, want false")
+	}
+	if !outs[1].CooldownApplied {
+		t.Fatal("non-suppressing caller CooldownApplied = false, want true (it must not inherit the suppressing verdict)")
+	}
+	if capped.CooldownUntil == nil {
+		t.Fatal("capped.CooldownUntil = nil, want set by the confirmed cap")
+	}
+	if gated.cooldownCalls != 1 {
+		t.Fatalf("cooldownCalls = %d, want 1 (only the non-suppressing signal writes)", gated.cooldownCalls)
+	}
+}
+
 func TestDecideAuthInvalidatedVsQuota(t *testing.T) {
 	ok := models.AccountHealthOK
 	active := models.AccountStatusActive

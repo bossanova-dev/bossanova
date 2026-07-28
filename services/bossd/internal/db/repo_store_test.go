@@ -247,3 +247,51 @@ func TestRepoStore_CanAutoDeleteBranches_Update(t *testing.T) {
 		t.Error("stored can_auto_delete_branches = true, want false")
 	}
 }
+
+// TestRepoStore_ShouldKeepBranchesCurrent_DefaultsFalse verifies a freshly created
+// repo has the keep-current sweep OFF (BOS-521). Every proactive rebase
+// force-pushes and re-runs CI, so the trade is one an operator opts into
+// deliberately; the Create INSERT literal and the column DEFAULT are both 0.
+func TestRepoStore_ShouldKeepBranchesCurrent_DefaultsFalse(t *testing.T) {
+	store := NewRepoStore(setupTestDB(t))
+	repo := createTestRepo(t, store)
+	if repo.ShouldKeepBranchesCurrent {
+		t.Fatal("new repos should default to keep-branches-current OFF (BOS-521)")
+	}
+}
+
+// TestRepoStore_ShouldKeepBranchesCurrent_Update verifies the flag round-trips
+// through UpdateRepoParams in both directions and is persisted.
+func TestRepoStore_ShouldKeepBranchesCurrent_Update(t *testing.T) {
+	store := NewRepoStore(setupTestDB(t))
+	ctx := context.Background()
+	repo := createTestRepo(t, store)
+
+	on := true
+	updated, err := store.Update(ctx, repo.ID, UpdateRepoParams{ShouldKeepBranchesCurrent: &on})
+	if err != nil {
+		t.Fatalf("update should_keep_branches_current on: %v", err)
+	}
+	if !updated.ShouldKeepBranchesCurrent {
+		t.Error("update returned should_keep_branches_current = false, want true")
+	}
+	got, err := store.Get(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.ShouldKeepBranchesCurrent {
+		t.Error("stored should_keep_branches_current = false, want true")
+	}
+
+	off := false
+	if _, err := store.Update(ctx, repo.ID, UpdateRepoParams{ShouldKeepBranchesCurrent: &off}); err != nil {
+		t.Fatalf("update should_keep_branches_current off: %v", err)
+	}
+	got, err = store.Get(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ShouldKeepBranchesCurrent {
+		t.Error("stored should_keep_branches_current = true, want false")
+	}
+}

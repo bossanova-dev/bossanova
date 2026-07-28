@@ -179,6 +179,15 @@ func TestListGithubCallbacksRedactsMessage(t *testing.T) {
 	if got.GetPrNumber() != 42 {
 		t.Errorf("pr_number filter = %d, want 42", got.GetPrNumber())
 	}
+	if got.RepoOwner != nil {
+		t.Errorf("omitted repo_owner must remain unset; got %q", got.GetRepoOwner())
+	}
+	if got.RepoName != nil {
+		t.Errorf("omitted repo_name must remain unset; got %q", got.GetRepoName())
+	}
+	if got.State != nil {
+		t.Errorf("omitted state must remain unset; got %q", got.GetState())
+	}
 	out := textOf(t, res)
 	if strings.Contains(out, secretMessage) || strings.Contains(out, "another-secret") {
 		t.Errorf("list_github_callbacks leaked a secret message: %s", out)

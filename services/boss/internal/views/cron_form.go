@@ -47,18 +47,13 @@ type cronFormAgentsMsg struct {
 
 var cronNameRe = regexp.MustCompile(`^[A-Za-z0-9 _-]+$`)
 
-// cronSelectHeight caps how many options the Repo/Agent selects show at once.
-// Past this the select scrolls internally instead of ballooning the form and
-// pushing the Enabled toggle and action bar below the terminal fold.
-const cronSelectHeight = 6
-
 // cronFormChrome is the number of rendered lines that surround the huh form in
 // the common (no-error) case, subtracted from terminal height when sizing the
 // form so the action bar stays on screen. It covers the banner App.View prepends
 // (bannerOverhead), the title + blank line, the live schedule preview line, and
-// the action bar (top+bottom padding plus its single text line). Mirrors the
-// overhead-constant style in cron_list.go / chatpicker.go.
-const cronFormChrome = bannerOverhead + 2 /*title+blank*/ + 1 /*preview line*/ + (actionBarPadY*2 + 1) /*action bar*/
+// the action bar (top+bottom padding plus its formActionBarLines text lines).
+// Mirrors the overhead-constant style in cron_list.go / chatpicker.go.
+const cronFormChrome = bannerOverhead + 2 /*title+blank*/ + 1 /*preview line*/ + (actionBarPadY*2 + formActionBarLines) /*action bar*/
 
 // --- Form data ---
 
@@ -75,8 +70,15 @@ type cronFormData struct {
 	model           string
 	gateCommand     string
 	runSetupCommand bool
+	zeroOutput      bool
 	confirm         bool // true = save, false = cancel (mapped from the terminal Confirm field)
 }
+
+// cronZeroOutputHelp is the help text for the "Zero output" confirm. The web
+// cron form (services/web/src/components/CronJobForm.tsx) carries the same
+// string so the two surfaces read as one product; a web-side parity test reads
+// this file and asserts they stay byte-identical.
+const cronZeroOutputHelp = "Run with no worktree, branch, or PR — for jobs that report elsewhere and change nothing in this repo. The agent runs in the repository checkout. Default off."
 
 // --- Model ---
 
@@ -97,7 +99,16 @@ type CronFormModel struct {
 
 	// huh form and bound data.
 	form *huh.Form
-	fd   *cronFormData
+	// formFields is the ordered field slice handed to huh.NewGroup, retained
+	// because huh.Form exposes no enumeration; it backs click-to-focus (BOS-512).
+	// This is the tallest form in the package, so it is the one that actually
+	// exercises the scroll-offset path.
+	formFields formFields
+	fd         *cronFormData
+	// promptField is the Prompt Text field, retained so Update can resize it to
+	// its content after every keystroke (resizePrompt). Like fd it is a pointer,
+	// so it survives bubbletea's value-receiver copies of this model.
+	promptField *huh.Text
 
 	// Live schedule preview rendered below the form.
 	schedulePreview string // empty if invalid or blank
@@ -171,6 +182,7 @@ func (m *CronFormModel) buildForm() {
 		m.fd.model = m.job.Model
 		m.fd.gateCommand = m.job.GateCommand
 		m.fd.runSetupCommand = m.job.ShouldRunSetupCommand
+		m.fd.zeroOutput = m.job.IsZeroOutput
 		m.fd.confirm = true
 		m.fdPopulated = true
 	}
@@ -206,19 +218,17 @@ func (m *CronFormModel) buildForm() {
 				return nil
 			}),
 
-		huh.NewSelect[string]().
+		bossSelect[string](len(repoOpts), 1).
 			Title("Repo").
 			Options(repoOpts...).
-			Height(cronSelectHeight).
 			Value(&m.fd.repoID),
 	}
 
 	if agentOpts := m.agentOptions(); len(agentOpts) > 0 {
 		fields = append(fields,
-			huh.NewSelect[string]().
+			bossSelect[string](len(agentOpts), 1).
 				Title("Agent").
 				Options(agentOpts...).
-				Height(cronSelectHeight).
 				Value(&m.fd.agentName),
 		)
 	}
@@ -231,17 +241,22 @@ func (m *CronFormModel) buildForm() {
 			Value(&m.fd.model),
 	)
 
+	// Seeded at build time as well as resized on every Update, so an edit-mode
+	// prefill opens at the height its prompt needs instead of snapping to it on
+	// the first keypress.
+	m.promptField = bossText(m.fd.prompt).
+		Title("Prompt").
+		Description("Single-turn prompt. Cron sessions only listen for the main agent's Stop hook — subagents are ignored. Keep it self-contained.").
+		Value(&m.fd.prompt).
+		Validate(func(s string) error {
+			if strings.TrimSpace(s) == "" {
+				return fmt.Errorf("prompt is required")
+			}
+			return nil
+		})
+
 	fields = append(fields,
-		huh.NewText().
-			Title("Prompt").
-			Description("Single-turn prompt. Cron sessions only listen for the main agent's Stop hook — subagents are ignored. Keep it self-contained.").
-			Value(&m.fd.prompt).
-			Validate(func(s string) error {
-				if strings.TrimSpace(s) == "" {
-					return fmt.Errorf("prompt is required")
-				}
-				return nil
-			}),
+		m.promptField,
 
 		huh.NewInput().
 			Title("Schedule").
@@ -277,25 +292,29 @@ func (m *CronFormModel) buildForm() {
 			Description("Optional. Runs before each scheduled fire; a non-zero exit skips the run. Treated as a path if it starts with /, ./, or ../, otherwise run via the shell.").
 			Value(&m.fd.gateCommand),
 
-		huh.NewConfirm().
+		bossConfirm().
 			Title("Run setup command").
 			Description("Run the repo setup script before the agent. Turn off to keep light jobs fast. Default on.").
 			Value(&m.fd.runSetupCommand),
 
-		huh.NewConfirm().
+		bossConfirm().
+			Title("Zero output").
+			Description(cronZeroOutputHelp).
+			Value(&m.fd.zeroOutput),
+
+		bossConfirm().
 			Title("Enabled").
 			Description("Run this job on its schedule.").
 			Value(&m.fd.enabled),
 
-		huh.NewConfirm().
+		bossConfirm().
 			Affirmative(saveLabel(m.job)).
 			Negative("Cancel").
 			Value(&m.fd.confirm),
 	)
 
-	m.form = huh.NewForm(
-		huh.NewGroup(fields...),
-	).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70).WithHeight(m.formHeight())
+	m.form = newBossForm(fields...).WithHeight(m.formHeight())
+	m.formFields = newFormFields(fields...)
 }
 
 // saveLabel returns the affirmative label for the terminal save Confirm based
@@ -402,6 +421,25 @@ func (m *CronFormModel) recomputePreview() {
 	m.scheduleErr = ""
 }
 
+// resizePrompt re-sizes the Prompt field to its current content. Called after
+// each Update so the box tracks what the user has typed. huh's Text.Lines is a
+// plain textarea.SetHeight, which clamps itself, so calling it every update is
+// cheap and safe.
+func (m *CronFormModel) resizePrompt() {
+	m.resizePromptFor("")
+}
+
+// resizePromptFor re-sizes the Prompt field for its content plus pending — the
+// text a message is about to insert. Call it with the pending insert *before*
+// handing the message to huh and with "" after; bossTextPendingInsert explains
+// why the second call alone leaves the box scrolled off its own first line.
+func (m *CronFormModel) resizePromptFor(pending string) {
+	if m.promptField == nil || m.fd == nil {
+		return
+	}
+	m.promptField.Lines(bossTextLines(m.fd.prompt+pending, bossFormWrapWidth()))
+}
+
 // Update handles messages.
 func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -410,7 +448,20 @@ func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		if m.form != nil {
-			m.form.WithHeight(m.formHeight())
+			// Re-size the prompt before the form, not after: huh's
+			// Group.WithHeight only ever shrinks an over-tall field, so a
+			// terminal that shrank and then grew again would otherwise leave
+			// the textarea clipped at its shrunk height until the next
+			// keystroke. Seeding it back to its content height first lets
+			// resizeForm re-clamp only if the new height still demands it.
+			//
+			// The Prompt is the only field re-seeded because it is the only one
+			// this view holds a pointer to, and the only one whose height is
+			// content-derived rather than fixed at build time. The selects
+			// carry the same shrink-only asymmetry — that predates BOS-567 and
+			// costs at most one hidden option — so it is left alone here.
+			m.resizePrompt()
+			return m, resizeForm(m.form, m.formHeight(), msg)
 		}
 		return m, nil
 
@@ -442,10 +493,17 @@ func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.submitting = false
 		if msg.err != nil {
 			m.err = msg.err
+			// Deliberately a bare WithHeight, not resizeForm: this message can
+			// only arrive from handleSubmit, which is only reached with the
+			// form in huh.StateCompleted, and huh's Form.Update early-returns
+			// for any non-StateNormal state — so nothing here can rebuild the
+			// group's viewport, and there is no scroll offset to resync because
+			// a completed form renders nothing at all (Form.View returns "" once
+			// quitting). The call is inert; it is kept only so the height stays
+			// consistent if the form is ever revived.
 			if m.form != nil {
 				m.form.WithHeight(m.formHeight())
 			}
-			// Do NOT unwind the form — let the user correct and resubmit.
 			return m, nil
 		}
 		m.done = true
@@ -481,8 +539,19 @@ func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Click-to-focus, ahead of huh: huh v2 has no mouse support, so every
+	// mouse-shaped message is consumed here rather than forwarded (BOS-512).
+	if m.form != nil {
+		if cmd, handled := m.formFields.handleMouse(msg, m.form, linesBefore(m.formPrefix())); handled {
+			return m, cmd
+		}
+	}
+
 	// Delegate to huh form.
 	if m.form != nil {
+		// Grow the Prompt for what this message is about to type before huh
+		// sees it, so the textarea never scrolls to find its own cursor.
+		m.resizePromptFor(bossTextPendingInsert(msg))
 		_, cmd := m.form.Update(msg)
 
 		if m.form.State == huh.StateAborted {
@@ -498,8 +567,10 @@ func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleSubmit()
 		}
 
-		// Recompute live preview after every form update.
+		// Recompute live preview and re-fit the Prompt box after every form
+		// update.
 		m.recomputePreview()
+		m.resizePrompt()
 		return m, cmd
 	}
 
@@ -529,6 +600,7 @@ func (m CronFormModel) handleSubmit() (tea.Model, tea.Cmd) {
 				Model:                 strings.TrimSpace(fd.model),
 				GateCommand:           strings.TrimSpace(fd.gateCommand),
 				ShouldRunSetupCommand: &fd.runSetupCommand,
+				IsZeroOutput:          &fd.zeroOutput,
 			})
 			return cronFormSavedMsg{job: job, err: err}
 		}
@@ -574,6 +646,10 @@ func (m CronFormModel) handleSubmit() (tea.Model, tea.Cmd) {
 		rsc := fd.runSetupCommand
 		req.ShouldRunSetupCommand = &rsc
 	}
+	if fd.zeroOutput != original.IsZeroOutput {
+		zo := fd.zeroOutput
+		req.IsZeroOutput = &zo
+	}
 
 	return m, func() tea.Msg {
 		job, err := c.UpdateCronJob(ctx, req)
@@ -581,11 +657,12 @@ func (m CronFormModel) handleSubmit() (tea.Model, tea.Cmd) {
 	}
 }
 
-// View renders the form.
-func (m CronFormModel) View() tea.View {
+// formPrefix is everything View renders above the huh form: the header, the
+// blank line under it, and the submit-error block when one is showing. The
+// click hit test measures this same string, so a line added here moves both the
+// render and the hit test together (BOS-512).
+func (m CronFormModel) formPrefix() string {
 	var b strings.Builder
-
-	// Header.
 	title := "New Scheduled Job"
 	if m.job != nil {
 		title = fmt.Sprintf("Edit Scheduled Job: %s", m.job.Name)
@@ -597,6 +674,14 @@ func (m CronFormModel) View() tea.View {
 		b.WriteString(renderError(fmt.Sprintf("Error: %v", m.err), m.width))
 		b.WriteString("\n")
 	}
+	return b.String()
+}
+
+// View renders the form.
+func (m CronFormModel) View() tea.View {
+	var b strings.Builder
+
+	b.WriteString(m.formPrefix())
 
 	if !m.reposReady || !m.agentsReady {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render("Loading…"))
@@ -611,8 +696,16 @@ func (m CronFormModel) View() tea.View {
 		return tea.NewView(b.String())
 	}
 
-	if m.form != nil {
-		b.WriteString(lipgloss.NewStyle().PaddingLeft(1).Render(m.form.View()))
+	// huh returns "" from View once the form is completed or aborted, which this
+	// view stays on after a failed submit — so "m.form != nil" is not the same
+	// question as "a form is on screen", and only the latter may turn mouse
+	// reporting on, or advertise [click], below.
+	onScreen := formOnScreen(m.form)
+	if onScreen {
+		// PaddingLeft(2) matches this view's title, schedule preview, error and
+		// action bar (all Padding(_, 2)) and the other three form hosts, so the
+		// focused field's gutter lines up with everything else on screen.
+		b.WriteString(lipgloss.NewStyle().PaddingLeft(2).Render(m.form.View()))
 		b.WriteString("\n")
 	}
 
@@ -625,7 +718,19 @@ func (m CronFormModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(actionBar([]string{"[tab] next field", "[enter] save", "[esc] cancel"}))
+	// The field-navigation bar belongs only on a screen that has fields to
+	// navigate; without a form the plain bar carries the verbs alone.
+	if !onScreen {
+		b.WriteString(actionBar([]string{"[enter] save"}, []string{"[esc] cancel"}))
+		return tea.NewView(b.String())
+	}
+	b.WriteString(formActionBar([]string{"[enter] save"}, []string{"[esc] cancel"}))
 
-	return tea.NewView(b.String())
+	v := tea.NewView(b.String())
+	// Mouse reporting is scoped to screens that actually render a form
+	// (BOS-512): the loading and saving branches above return before here, and
+	// after a failed submit the completed form renders nothing — there is no
+	// field to click, so the mode must stay off.
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
 }

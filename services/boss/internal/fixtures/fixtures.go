@@ -24,11 +24,12 @@ func sp(s string) *string { return &s }
 
 // World is the deterministic demo dataset used to populate proof screenshots.
 type World struct {
-	Repos    []*pb.Repo
-	Sessions []*pb.Session
-	Chats    []*pb.ClaudeChat
-	CronJobs []*pb.CronJob
-	Accounts []*pb.Account
+	Repos        []*pb.Repo
+	Sessions     []*pb.Session
+	Chats        []*pb.ClaudeChat
+	ChatStatuses []*pb.ChatStatusEntry
+	CronJobs     []*pb.CronJob
+	Accounts     []*pb.Account
 }
 
 // Repos returns the registered repositories. The first entry (repo-1 / my-app)
@@ -159,7 +160,9 @@ func Chats() []*pb.ClaudeChat {
 // realistic fill; cron-1 stays first to match legacy data. Two carry the
 // gate-command statuses (gating in progress, gated blocked) so the list
 // proof shows the new STATUS values, and "Morning PR triage" sets a gate
-// command so the cron form proof has a populated Gate command field. cron-8
+// command so the cron form proof has a populated Gate command field — and is
+// also the one job with IsZeroOutput set, so the cron form's edit-mode proof
+// can show that confirm pre-populated affirmative (BOS-565). cron-8
 // carries the benign worktree_gone outcome with an IDLE status (BOS-384): a
 // finalize against an already-removed worktree renders as a plain "idle" row,
 // never a red FAILED framing.
@@ -169,7 +172,11 @@ func CronJobs() []*pb.CronJob {
 		{Id: "cron-2", RepoId: "repo-2", Name: "Nightly mutation tests", Prompt: "Run mutation tests and add coverage for survivors", Schedule: "0 3 * * *", Timezone: "UTC", IsEnabled: true, AgentName: "claude", ShouldRunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATING},
 		{Id: "cron-3", RepoId: "repo-1", Name: "Weekly tech-debt sweep", Prompt: "Find and fix one unit of technical debt", Schedule: "@weekly", Timezone: "UTC", IsEnabled: true, AgentName: "claude", ShouldRunSetupCommand: true},
 		{Id: "cron-4", RepoId: "repo-3", Name: "Hourly broken-link check", Prompt: "Scan the marketing site for broken links", Schedule: "@hourly", Timezone: "UTC", IsEnabled: false, AgentName: "claude", ShouldRunSetupCommand: true},
-		{Id: "cron-5", RepoId: "repo-2", Name: "Morning PR triage", Prompt: "Triage open PRs and summarize review state", Schedule: "0 9 * * 1-5", Timezone: "UTC", IsEnabled: true, AgentName: "codex", GateCommand: "gh pr list --label needs-triage --state open | grep .", ShouldRunSetupCommand: false, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATED, LastRunOutcome: "gated"},
+		// cron-5 is the "light job" archetype and the only fixture with
+		// IsZeroOutput set (BOS-565), so the cron form's edit-mode proof scene has
+		// a job whose Zero output confirm renders affirmative. Exactly one job
+		// carries it so both states stay represented in the demo world.
+		{Id: "cron-5", RepoId: "repo-2", Name: "Morning PR triage", Prompt: "Triage open PRs and summarize review state", Schedule: "0 9 * * 1-5", Timezone: "UTC", IsEnabled: true, AgentName: "codex", GateCommand: "gh pr list --label needs-triage --state open | grep .", ShouldRunSetupCommand: false, IsZeroOutput: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATED, LastRunOutcome: "gated"},
 		// Disabled jobs carrying a colored last-run status (gated / failed): the
 		// muted-row rendering states BOS-313 fixed are otherwise unreachable in
 		// the demo world, so TUI proofs could never show them (BOS-251).
@@ -436,6 +443,55 @@ func RespawnHistoryChats() []*pb.ClaudeChat {
 	}
 }
 
+// QuestionRowWorld builds the BOS-494 chat-picker dataset: one active session
+// with two chats — a newer chat that is `working` and an older chat that is
+// `? question` — plus heartbeat statuses. Navigating into the session must land
+// the initial cursor on the older question chat (the one waiting on the user),
+// not the newer working chat. The demo cloud-access pin makes boss land on the
+// home session list.
+func QuestionRowWorld() World {
+	return World{
+		Repos:        Repos(),
+		Sessions:     QuestionRowSessions(),
+		Chats:        QuestionRowChats(),
+		ChatStatuses: QuestionRowChatStatuses(),
+	}
+}
+
+// QuestionRowSessions returns the single BOS-494 session hosting the mixed
+// working/question chats.
+func QuestionRowSessions() []*pb.Session {
+	return []*pb.Session{
+		{
+			Id: "sess-494-question", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "Notification question demo", BranchName: "boss/notification-question",
+			State:        pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			PrNumber:     i32(494),
+			CreatedAt:    ts(-2 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-app/notification-question",
+		},
+	}
+}
+
+// QuestionRowChats returns the BOS-494 chats. The picker sorts newest-first, so
+// the working chat (created more recently) renders on row 0 and the question
+// chat on row 1 — the arrangement the fix must override by preselecting row 1.
+func QuestionRowChats() []*pb.ClaudeChat {
+	return []*pb.ClaudeChat{
+		{Id: "chat-494-working", AgentSessionId: "claude-494-working", SessionId: "sess-494-question", Title: "Build the daily health sweep", CreatedAt: ts(-30 * time.Minute)},
+		{Id: "chat-494-question", AgentSessionId: "claude-494-question", SessionId: "sess-494-question", Title: "Wire up web notifications", CreatedAt: ts(-2 * time.Hour)},
+	}
+}
+
+// QuestionRowChatStatuses returns the daemon heartbeat statuses for the BOS-494
+// chats: the newer chat is working, the older chat is asking a question.
+func QuestionRowChatStatuses() []*pb.ChatStatusEntry {
+	return []*pb.ChatStatusEntry{
+		{AgentSessionId: "claude-494-working", Status: pb.ChatStatus_CHAT_STATUS_WORKING, LastOutputAt: ts(-2 * time.Minute)},
+		{AgentSessionId: "claude-494-question", Status: pb.ChatStatus_CHAT_STATUS_QUESTION, LastOutputAt: ts(-50 * time.Minute)},
+	}
+}
+
 // ArchiveSignalWorld builds the BOS-425 dataset: the demo repos (so
 // archive-after-merge is configured) plus the two ArchiveSignal sessions and
 // their chats. Used by the archive-signal proof scenarios.
@@ -523,6 +579,56 @@ func ErroredStatusWorld() World {
 		Repos:    Repos(),
 		Sessions: ErroredStatusSessions(),
 		Chats:    ErroredStatusChats(),
+	}
+}
+
+// HTTPEndpointsSessions returns the BOS-474 dataset: one session running a dev
+// server (:3000) and a Vite server (:5173) on loopback, plus a plain neighbour
+// with no listeners. The pair proves both halves of the change — the endpoint
+// session grows a ":3000 · :5173" auxiliary row while the neighbour's rendering
+// is untouched — and the two ports prove the " · " separator and per-port
+// hyperlinks.
+func HTTPEndpointsSessions() []*pb.Session {
+	return []*pb.Session{
+		{
+			Id: "sess-474-endpoints", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "Local dev servers demo", BranchName: "boss/http-endpoints",
+			State:        pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			PrNumber:     i32(474),
+			CreatedAt:    ts(-90 * time.Minute),
+			WorktreePath: "/Users/demo/worktrees/my-app/http-endpoints",
+			HttpEndpoints: []*pb.HttpEndpoint{
+				{Port: 3000, Url: "http://127.0.0.1:3000"},
+				{Port: 5173, Url: "http://127.0.0.1:5173"},
+			},
+		},
+		{
+			Id: "sess-474-plain", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "No listeners demo", BranchName: "boss/no-listeners",
+			State:        pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			CreatedAt:    ts(-3 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-app/no-listeners",
+		},
+	}
+}
+
+// HTTPEndpointsChats returns one chat per HTTPEndpoints session so both chat
+// pickers render a populated table rather than "Loading chats...".
+func HTTPEndpointsChats() []*pb.ClaudeChat {
+	return []*pb.ClaudeChat{
+		{Id: "chat-474-eps", AgentSessionId: "claude-474-eps", SessionId: "sess-474-endpoints", Title: "Run the dev servers", CreatedAt: ts(-80 * time.Minute)},
+		{Id: "chat-474-plain", AgentSessionId: "claude-474-plain", SessionId: "sess-474-plain", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
+	}
+}
+
+// HTTPEndpointsWorld builds the BOS-474 dataset: the demo repos plus the
+// endpoint-bearing session, its endpoint-free neighbour, and their chats. Used
+// by the bos-460-session-http-endpoints proof scenario.
+func HTTPEndpointsWorld() World {
+	return World{
+		Repos:    Repos(),
+		Sessions: HTTPEndpointsSessions(),
+		Chats:    HTTPEndpointsChats(),
 	}
 }
 

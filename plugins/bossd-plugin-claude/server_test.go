@@ -586,19 +586,6 @@ func TestServer_ResolveInteractiveSessionID(t *testing.T) {
 	}
 }
 
-func TestHasQuestionPromptDelegatesToStatusdetect(t *testing.T) {
-	s := newServer(nil, zerolog.Nop())
-	pane := []byte("question?\n❯ pick one\n  option a\n  option b\n")
-	resp, err := s.HasQuestionPrompt(context.Background(),
-		&bossanovav1.HasQuestionPromptRequest{PaneContent: pane})
-	if err != nil {
-		t.Fatalf("HasQuestionPrompt: %v", err)
-	}
-	if !resp.HasPrompt {
-		t.Errorf("expected has_prompt=true for ❯ + indented options + ?")
-	}
-}
-
 func TestHasQuestionPromptReturnsFalseForPlainText(t *testing.T) {
 	s := newServer(nil, zerolog.Nop())
 	resp, err := s.HasQuestionPrompt(context.Background(),

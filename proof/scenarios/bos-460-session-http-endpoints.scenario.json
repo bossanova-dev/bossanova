@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "title": "BOS-460 session HTTP endpoints — clickable :port links in Home and the chat picker",
+  "fixture": { "preset": "http-endpoints" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "home lists the endpoint ports directly beneath the owning session",
+      "steps": [
+        {
+          "waitFor": "Local dev servers demo",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded (http-endpoints preset)"
+        },
+        {
+          "expect": {
+            "text": ":3000 · :5173",
+            "match": "normalized",
+            "label": "both endpoint ports render on one auxiliary row, joined by the muted separator"
+          },
+          "caption": "BOS-474: the session's machine-local listeners render as clickable :3000 · :5173 links"
+        },
+        {
+          "expect": {
+            "text": "No listeners demo",
+            "match": "normalized",
+            "label": "the endpoint-free neighbour session is still listed"
+          },
+          "caption": "A session with no listeners is unchanged — no auxiliary row, no ports"
+        },
+        {
+          "expect": {
+            "text": "❯.*Local dev servers demo",
+            "match": "regex",
+            "label": "the cursor chevron sits on the endpoint-bearing session's own row, not its :port row"
+          },
+          "caption": "The endpoint row is non-selectable: the cursor stays on a real session row"
+        },
+        { "key": "down", "caption": "Arrow down once — the cursor must skip the endpoint row" },
+        {
+          "expect": {
+            "text": "❯.*No listeners demo",
+            "match": "regex",
+            "label": "one arrow-down moves the chevron a whole session forward, stepping OVER the :port row"
+          },
+          "caption": "Navigation steps session-to-session; the endpoint row never traps selection"
+        },
+        { "key": "up", "caption": "Arrow back up to the endpoint-bearing session" },
+        { "key": "enter", "caption": "Open the endpoint-bearing session's chat picker" }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the chat picker shows the HTTP line immediately above the chat table",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Run the dev servers",
+            "match": "normalized",
+            "label": "the chat picker rendered the session's chat list"
+          },
+          "timeoutMs": 10000,
+          "caption": "The chat picker opened on the endpoint-bearing session"
+        },
+        {
+          "expect": {
+            "text": "HTTP",
+            "match": "normalized",
+            "label": "the muted HTTP label renders above the chat table"
+          },
+          "caption": "BOS-474: the detail view labels the session's listeners with a muted HTTP prefix"
+        },
+        {
+          "expect": {
+            "text": "HTTP  :3000 · :5173",
+            "match": "normalized",
+            "label": "the HTTP line shows both ports, each independently clickable"
+          },
+          "caption": "Both ports render on the single HTTP line directly above the chat table"
+        },
+        {
+          "expect": {
+            "text": "[esc] back",
+            "match": "normalized",
+            "label": "the chat picker action bar is present below the chat table"
+          },
+          "caption": "The chat table and its action bar still render in full — the HTTP line costs one reserved row, not a chat"
+        }
+      ]
+    }
+  ]
+}

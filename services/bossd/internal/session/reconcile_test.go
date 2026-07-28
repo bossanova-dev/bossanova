@@ -37,6 +37,79 @@ type reconcileMockProvider struct {
 	maxOpenInFlight int
 }
 
+func TestNeedsPRAssociation(t *testing.T) {
+	now := time.Now()
+	prNumber := 123
+	base := func() *models.Session {
+		return &models.Session{
+			BranchName: "feature/ready",
+			State:      machine.ImplementingPlan,
+		}
+	}
+
+	tests := []struct {
+		name string
+		sess *models.Session
+		want bool
+	}{
+		{name: "nil", sess: nil, want: false},
+		{
+			name: "archived",
+			sess: func() *models.Session {
+				sess := base()
+				sess.ArchivedAt = &now
+				return sess
+			}(),
+			want: false,
+		},
+		{
+			name: "PR backed",
+			sess: func() *models.Session {
+				sess := base()
+				sess.PRNumber = &prNumber
+				return sess
+			}(),
+			want: false,
+		},
+		{
+			name: "blank branch",
+			sess: func() *models.Session {
+				sess := base()
+				sess.BranchName = ""
+				return sess
+			}(),
+			want: false,
+		},
+		{
+			name: "creating worktree",
+			sess: func() *models.Session {
+				sess := base()
+				sess.State = machine.CreatingWorktree
+				return sess
+			}(),
+			want: false,
+		},
+		{
+			name: "starting agent",
+			sess: func() *models.Session {
+				sess := base()
+				sess.State = machine.StartingAgent
+				return sess
+			}(),
+			want: false,
+		},
+		{name: "ready", sess: base(), want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NeedsPRAssociation(tt.sess); got != tt.want {
+				t.Fatalf("NeedsPRAssociation() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func newReconcileMockProvider() *reconcileMockProvider {
 	return &reconcileMockProvider{
 		openPRs:     make(map[string][]vcs.PRSummary),

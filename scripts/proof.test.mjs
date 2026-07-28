@@ -22,6 +22,7 @@ import {
   tuiAgentBridgeEnv,
   tuiAgentCanCapture,
   tuiAgentUsable,
+  uploadBundle,
 } from './proof.mjs'
 
 const repoRootForTest = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -1092,6 +1093,103 @@ test('BOS-223 (c): keyless (agent unusable) + scenario ⇒ agent leg NEVER invok
   assert.equal(run.hasFailure, false)
 })
 
+test('BOS-223 (e2): double gate-fail ⇒ merged captureShapes never reference the agent artifacts the replay leg deleted', async () => {
+  // Regression: the replay leg wipes `localDir/<CAPTURE_ID>` before it runs (the
+  // two legs share one fixed-name capture dir). On a DOUBLE gate-fail the
+  // agent-incomplete branch used to concatenate the agent leg's captureShapes with
+  // the replay's — but the agent leg's PNGs are gone by then, so every frame the
+  // (shorter) replay did not re-create became a dangling manifest reference and
+  // uploadBundle died with an opaque `wrangler ... exited 1` (ENOENT), turning an
+  // honest, reviewable agent-incomplete into a pipeline-error.
+  const localDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-two-leg-'))
+  const captureDir = path.join(localDir, 'tui-agent')
+  // Each leg writes `frames` stills + the fixed-name video, then gate-fails.
+  const runLegWritingFrames = (frames) => {
+    fs.mkdirSync(captureDir, { recursive: true })
+    fs.writeFileSync(path.join(captureDir, 'tui.mp4'), 'mp4')
+    const stills = []
+    for (let i = 1; i <= frames; i++) {
+      const rel = `tui-agent/scene-01-frame-0${i}.png`
+      fs.writeFileSync(path.join(localDir, rel), 'png')
+      stills.push({ fileName: rel, label: `scene 1 frame 0${i}` })
+    }
+    return {
+      ...tuiLegRun({ hasFailure: true }),
+      captureShapes: [
+        {
+          surface: 'tui',
+          status: 'failed',
+          error: 'gate failed',
+          fileName: 'tui-agent/tui.mp4',
+          stills,
+        },
+      ],
+    }
+  }
+  try {
+    // Agent leg captures 3 frames; the shorter replay leg re-creates only 1.
+    const leg = fakeTuiLeg((_args, i) => runLegWritingFrames(i === 0 ? 3 : 1))
+    const run = await runTuiWithReplayFallback(
+      tuiDispatchCtx({
+        runContext: { collect: true, runId: 'r', token: 't', maxWallClockMs: 600000, localDir },
+      }),
+      replayDeps({ runTuiAgentProof: leg, agentUsable: true }),
+    )
+    assert.equal(leg.calls.length, 2, 'both legs ran')
+    assert.equal(run.hasFailure, true, 'double gate-fail stays a fatal agent-incomplete')
+    const referenced = run.captureShapes.flatMap((c) =>
+      [c.fileName, c.posterFileName, ...(c.stills ?? []).map((s) => s.fileName)].filter(Boolean),
+    )
+    const missing = referenced.filter((rel) => !fs.existsSync(path.join(localDir, rel)))
+    assert.deepEqual(
+      missing,
+      [],
+      `captureShapes reference artifacts absent from disk: ${missing.join(', ')}`,
+    )
+  } finally {
+    fs.rmSync(localDir, { recursive: true, force: true })
+  }
+})
+
+test('uploadBundle: a manifest naming absent media throws by NAME before any wrangler call', () => {
+  // Defense in depth for the regression above: wrangler surfaces a missing --file
+  // as a bare `exited 1` (runCommand inherits stdio, so the ENOENT never reaches
+  // the thrown Error), which made dangling-reference bugs unreadable in CI logs.
+  // Still fail-loud — just diagnosable, and without a half-uploaded bundle.
+  const localDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-upload-'))
+  try {
+    fs.writeFileSync(path.join(localDir, 'manifest.json'), '{}')
+    fs.mkdirSync(path.join(localDir, 'tui-agent'), { recursive: true })
+    fs.writeFileSync(path.join(localDir, 'tui-agent', 'scene-01-frame-01.png'), 'png')
+    const manifest = {
+      captures: [
+        {
+          stills: [
+            { fileName: 'tui-agent/scene-01-frame-01.png' },
+            { fileName: 'tui-agent/scene-01-frame-03.png' },
+          ],
+        },
+      ],
+    }
+    assert.throws(
+      () => uploadBundle({ localDir, publicPrefix: 'p', manifest, bucket: 'b' }),
+      (err) => {
+        assert.match(err.message, /missing from/)
+        assert.match(err.message, /tui-agent\/scene-01-frame-03\.png/)
+        assert.doesNotMatch(
+          err.message,
+          /scene-01-frame-01\.png/,
+          'only the absent artifact is named',
+        )
+        return true
+      },
+      'a dangling manifest reference throws before shelling out to wrangler',
+    )
+  } finally {
+    fs.rmSync(localDir, { recursive: true, force: true })
+  }
+})
+
 test('BOS-223 (d): keyless + scenario-less is resolved by the BOS-220 scenario-missing gate upstream', () => {
   // A KEYLESS scenario-less TUI diff never reaches the usable gate: the dispatcher
   // defers it as `scenario-missing` first (BOS-220, reordered by BOS-350 to fire only
@@ -1567,6 +1665,38 @@ test('runScenarioCommand run --dry-run: replays via the three seams with zero SD
       force: true,
     })
   }
+})
+
+test("runScenarioCommand run: threads the scenario's terminal into the TUI leg deps (BOS-571)", async () => {
+  const { runScenarioCommand } = await import('./proof.mjs')
+  /** Spy standing in for runTuiAgentProof; records the deps it was handed. */
+  const capture = []
+  const runTuiAgentProof = async ({ deps }) => {
+    capture.push(deps)
+    return {}
+  }
+  const overrides = {
+    prNumber: 'scenarioterm',
+    commit: 'abc1234',
+    runTuiAgentProof,
+    runReplayLoop: async () => ({}),
+    synthesizeBrief: () => ({ title: 't', description: 'd' }),
+    makeScenarioEvaluator: () => () => ({ passed: true }),
+    bridge: scenarioReplayBridge('REPO'),
+    log: () => {},
+  }
+
+  // A scenario declaring `terminal` reaches the bridge factory's dep bag.
+  await withScenarioFile({ ...DEMO_SCENARIO, terminal: { cols: 72, rows: 30 } }, (file) =>
+    runScenarioCommand({ sub: 'run', file, dryRun: true, pr: null }, overrides),
+  )
+  assert.deepEqual(capture.at(-1).terminal, { cols: 72, rows: 30 })
+
+  // Without one, no terminal is invented (default argv stays byte-identical).
+  await withScenarioFile(DEMO_SCENARIO, (file) =>
+    runScenarioCommand({ sub: 'run', file, dryRun: true, pr: null }, overrides),
+  )
+  assert.equal('terminal' in capture.at(-1), false, 'absent terminal stays absent')
 })
 
 // ── BOS-219 Task 4: full-run integration + end-to-end no-API-key guarantee ─────

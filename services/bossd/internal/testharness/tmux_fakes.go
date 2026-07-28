@@ -39,6 +39,15 @@ type CronReadyTmuxFake struct {
 	// has-session consults this map.
 	liveSessions map[string]bool
 
+	// CapturePaneOutput, when non-empty, replaces the canned capture-pane
+	// stdout. Tests that need the daemon to react to specific pane CONTENT —
+	// a login banner, a usage-limit banner, a transient 5xx banner — script it
+	// here instead of standing up a second fake. Whatever is supplied must
+	// still carry the ready marker (❯) if the test exercises a Send* path, as
+	// those poll capture-pane for it. Empty (the zero value) keeps the original
+	// cron-happy-path pane, so existing callers are unaffected.
+	CapturePaneOutput string
+
 	// FailNewSession, when non-empty, makes every `tmux new-session` exit
 	// non-zero writing this string to stderr — reproducing a real tmux launch
 	// failure (e.g. "missing or unsuitable terminal: xterm-ghostty") so tests
@@ -161,9 +170,15 @@ func (f *CronReadyTmuxFake) cmd(ctx context.Context, name string, args ...string
 	case "capture-pane":
 		// Return canned stdout containing the SendPlan ready marker so
 		// the daemon's first poll succeeds without sleeping. printf is
-		// portable across macOS and Linux CI runners.
+		// portable across macOS and Linux CI runners. The pane text is
+		// passed as printf's ARGUMENT, never its format string, so a
+		// scripted CapturePaneOutput containing "%" is emitted verbatim.
+		pane := f.CapturePaneOutput
+		if pane == "" {
+			pane = "Welcome to Claude\n❯\n"
+		}
 		f.mu.Unlock()
-		return exec.CommandContext(ctx, "printf", "%s", "Welcome to Claude\n❯\n")
+		return exec.CommandContext(ctx, "printf", "%s", pane)
 	}
 
 	f.mu.Unlock()

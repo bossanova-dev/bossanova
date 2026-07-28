@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "title": "BOS-512 TUI forms advertise click-to-focus and keep working from the keyboard",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the add-repo details form advertises that a field can be clicked",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        { "key": "s", "caption": "Press [s] to open the Settings hub" },
+        {
+          "waitFor": "Cron jobs",
+          "timeoutMs": 10000,
+          "caption": "Settings menu loaded"
+        },
+        { "key": "r", "caption": "Press [r] to open the repository list" },
+        {
+          "waitFor": "[a]dd",
+          "timeoutMs": 10000,
+          "caption": "Repository list loaded; its action bar offers [a]dd"
+        },
+        { "key": "a", "caption": "Press [a] to add a repository" },
+        {
+          "waitFor": "Open project",
+          "timeoutMs": 10000,
+          "caption": "Add-repo source picker loaded"
+        },
+        { "key": "enter", "caption": "Choose 'Open project' (register a local repo)" },
+        {
+          "waitFor": "Add a local repository",
+          "timeoutMs": 10000,
+          "caption": "The add-repo input form is on screen"
+        },
+        { "type": "/tmp/demo-repo", "caption": "Type a repository path" },
+        { "key": "enter", "caption": "Submit the path" },
+        {
+          "waitFor": "Merge strategy",
+          "timeoutMs": 10000,
+          "caption": "The add-repo details form is on screen — the tallest form a new user meets"
+        },
+        {
+          "expect": [
+            {
+              "text": "┃ +Name",
+              "match": "regex",
+              "label": "focus starts on the first field — this token does NOT match in scene 2, so the pair proves focus actually moved rather than just re-asserting a static field list"
+            },
+            {
+              "text": "Merge strategy",
+              "match": "normalized",
+              "label": "details form field a user would reach for with the mouse"
+            },
+            {
+              "text": "[click] select field",
+              "match": "normalized",
+              "label": "the form action bar names [click] as a way to reach a field"
+            },
+            {
+              "text": "[tab] next field",
+              "match": "normalized",
+              "label": "the keyboard hints share the bar with the click hint"
+            },
+            {
+              "text": "[enter] add repo",
+              "match": "normalized",
+              "label": "details-phase submit verb still on its own bar line"
+            }
+          ],
+          "caption": "The shared form action bar names three ways to reach a field on this screen: [tab], [shift+tab] and [click]. NOTE: the deterministic replay harness has no mouse/click step (proof/scenarios/schema.json's step vocabulary is key|type|waitFor|waitMs|daemon|expect), so the click itself is proven by the unit tests in services/boss/internal/views/form_mouse_test.go and form_mouse_views_test.go rather than here"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "keyboard navigation still moves focus with mouse reporting enabled",
+      "steps": [
+        { "key": "tab", "caption": "Press [tab]: focus moves Name → Setup command" },
+        {
+          "key": "tab",
+          "caption": "Press [tab] again: focus moves Setup command → Merge strategy"
+        },
+        {
+          "key": "tab",
+          "caption": "Press [tab] a third time: focus moves Merge strategy → Automation"
+        },
+        {
+          "waitFor": { "text": "┃ +Automation", "match": "regex" },
+          "timeoutMs": 10000,
+          "caption": "The focus gutter has walked down to the Automation multi-select"
+        },
+        {
+          "expect": [
+            {
+              "text": "┃ +Automation",
+              "match": "regex",
+              "label": "the focus gutter is now on Automation — in scene 1 it was on Name and this token did not match, so tab genuinely moved focus with mouse reporting enabled. The bare field title would have matched in both scenes and proved nothing"
+            },
+            {
+              "text": "Automation",
+              "match": "normalized",
+              "label": "the field list is unchanged between the scenes, so focus moved rather than the form re-laying out"
+            },
+            {
+              "text": "[shift+tab] previous field",
+              "match": "normalized",
+              "label": "the reverse keyboard hint is still advertised"
+            },
+            {
+              "text": "[click] select field",
+              "match": "normalized",
+              "label": "the click hint persists while the keyboard is in use"
+            }
+          ],
+          "caption": "Enabling MouseModeCellMotion on the form screens did not take anything away from the keyboard: tab / shift+tab still walk the fields, and both vocabularies are advertised side by side"
+        }
+      ]
+    }
+  ]
+}

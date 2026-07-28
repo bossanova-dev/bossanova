@@ -58,6 +58,8 @@ var GroupOrder = []GroupSpec{
 	{ID: "repo", Title: "Repository Management"},
 	{ID: "cron", Title: "Cron Jobs"},
 	{ID: "callback", Title: "GitHub Callbacks"},
+	{ID: "broadcast", Title: "Broadcasts"},
+	{ID: "notes", Title: "Notes"},
 	{ID: "account", Title: "Account Management"},
 	{ID: "trash", Title: "Trash Management"},
 	{ID: "daemon", Title: "Daemon Management"},

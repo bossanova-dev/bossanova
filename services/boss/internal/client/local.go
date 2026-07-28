@@ -13,6 +13,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/socketauth"
+	"google.golang.org/protobuf/proto"
 )
 
 // DefaultSocketPath returns the default Unix socket path for the daemon.
@@ -244,15 +245,32 @@ func (s *localCreateSessionStream) Close() error {
 	return s.stream.Close()
 }
 
-func (c *LocalClient) GetSession(ctx context.Context, id string) (*pb.Session, error) {
-	resp, err := c.rpc.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: id}))
+func (c *LocalClient) GetSession(ctx context.Context, id string, opts SessionReadOptions) (*pb.Session, error) {
+	req := &pb.GetSessionRequest{Id: id}
+	if opts.IncludeLocalHTTPEndpoints {
+		req.IncludeLocalHttpEndpoints = true
+		// On Linux this is the /proc/self/ns/net identity the daemon must match;
+		// off Linux it is "" and the daemon treats the Unix-socket request as
+		// local. An unreadable identity stays "" so the daemon fails closed.
+		req.ClientNetworkNamespace = networkNamespaceIdentity()
+	}
+	resp, err := c.rpc.GetSession(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
 	return resp.Msg.Session, nil
 }
 
-func (c *LocalClient) ListSessions(ctx context.Context, req *pb.ListSessionsRequest) ([]*pb.Session, error) {
+func (c *LocalClient) ListSessions(ctx context.Context, req *pb.ListSessionsRequest, opts SessionReadOptions) ([]*pb.Session, error) {
+	if opts.IncludeLocalHTTPEndpoints {
+		// The endpoint opt-in is per-call, so clone rather than mutate the
+		// caller-owned request: a request object reused for a later default read
+		// (zero-value SessionReadOptions) must never inherit the opt-in flag or the
+		// stamped network-namespace identity.
+		req = proto.CloneOf(req)
+		req.IncludeLocalHttpEndpoints = true
+		req.ClientNetworkNamespace = networkNamespaceIdentity()
+	}
 	resp, err := c.rpc.ListSessions(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
@@ -579,6 +597,95 @@ func (c *LocalClient) ListGithubCallbacks(ctx context.Context, req *pb.ListGithu
 // callback in its own registry, so the id alone resolves it.
 func (c *LocalClient) DeleteGithubCallback(ctx context.Context, _ string, id string) error {
 	_, err := c.rpc.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{Id: id}))
+	return err
+}
+
+// --- Notes ---
+
+func (c *LocalClient) CreateNote(ctx context.Context, req *pb.CreateNoteRequest) (*pb.Note, error) {
+	resp, err := c.rpc.CreateNote(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNote(), nil
+}
+
+// GetNote ignores repoID: the local daemon owns every note in its own
+// registry, so the id alone resolves it.
+func (c *LocalClient) GetNote(ctx context.Context, _ string, id string) (*pb.Note, error) {
+	resp, err := c.rpc.GetNote(ctx, connect.NewRequest(&pb.GetNoteRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNote(), nil
+}
+
+func (c *LocalClient) ListNotes(ctx context.Context, req *pb.ListNotesRequest) ([]*pb.Note, error) {
+	resp, err := c.rpc.ListNotes(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNotes(), nil
+}
+
+// UpdateNote ignores repoID: see GetNote. req.Tags is *pb.NoteTagSet and is
+// passed through unmodified — nil means leave the tag set alone, a non-nil
+// pointer (even one wrapping an empty list) replaces it wholesale.
+func (c *LocalClient) UpdateNote(ctx context.Context, _ string, req *pb.UpdateNoteRequest) (*pb.Note, error) {
+	resp, err := c.rpc.UpdateNote(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNote(), nil
+}
+
+// DeleteNote ignores repoID: see GetNote.
+func (c *LocalClient) DeleteNote(ctx context.Context, _ string, id string) error {
+	_, err := c.rpc.DeleteNote(ctx, connect.NewRequest(&pb.DeleteNoteRequest{Id: id}))
+	return err
+}
+
+// --- Broadcasts ---
+
+func (c *LocalClient) SendBroadcast(ctx context.Context, req *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error) {
+	resp, err := c.rpc.SendBroadcast(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *LocalClient) ListBroadcasts(ctx context.Context, req *pb.ListBroadcastsRequest) ([]*pb.Broadcast, error) {
+	resp, err := c.rpc.ListBroadcasts(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetBroadcasts(), nil
+}
+
+func (c *LocalClient) DeleteBroadcast(ctx context.Context, id string) error {
+	_, err := c.rpc.DeleteBroadcast(ctx, connect.NewRequest(&pb.DeleteBroadcastRequest{Id: id}))
+	return err
+}
+
+func (c *LocalClient) CreateBroadcastSubscription(ctx context.Context, req *pb.CreateBroadcastSubscriptionRequest) (*pb.BroadcastSubscription, error) {
+	resp, err := c.rpc.CreateBroadcastSubscription(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSubscription(), nil
+}
+
+func (c *LocalClient) ListBroadcastSubscriptions(ctx context.Context, req *pb.ListBroadcastSubscriptionsRequest) ([]*pb.BroadcastSubscription, error) {
+	resp, err := c.rpc.ListBroadcastSubscriptions(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSubscriptions(), nil
+}
+
+func (c *LocalClient) DeleteBroadcastSubscription(ctx context.Context, id string) error {
+	_, err := c.rpc.DeleteBroadcastSubscription(ctx, connect.NewRequest(&pb.DeleteBroadcastSubscriptionRequest{Id: id}))
 	return err
 }
 

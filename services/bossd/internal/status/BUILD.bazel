@@ -21,8 +21,10 @@ go_library(
         "//lib/bossalib/vcs",
         "//services/bossd/internal/agent",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/status/questionsignal",
         "//services/bossd/internal/tmux",
         "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )
 
@@ -46,6 +48,7 @@ go_test(
         "//lib/bossalib/vcs",
         "//services/bossd/internal/agent",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/status/questionsignal",
         "//services/bossd/internal/tmux",
         "@com_github_rs_zerolog//:zerolog",
         "@org_golang_google_protobuf//types/known/timestamppb",

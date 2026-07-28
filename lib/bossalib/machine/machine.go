@@ -37,6 +37,27 @@ const (
 	Orphaned
 )
 
+// AllStates returns every session state, in declaration order.
+//
+// Go cannot reflect over an iota const block, so every exhaustiveness check in
+// the tree — the broadcast-subscription trigger classification, the display
+// mappings — needs an enumeration to iterate, and this is the single one. Do not
+// re-declare a local list: TestAllStatesMatchesTheConstBlock parses this file's
+// const block and fails when the two disagree, which is what makes "a state
+// added without being classified" a build failure somewhere rather than a
+// silent no-op everywhere.
+//
+// Appending a state means adding it here in the same edit. The guard above is
+// what enforces that; the previous String()-based tripwire could not, because a
+// state added without a String() case simply rendered as "unknown".
+func AllStates() []State {
+	return []State{
+		CreatingWorktree, StartingAgent, PushingBranch, OpeningDraftPR,
+		ImplementingPlan, AwaitingChecks, FixingChecks, GreenDraft,
+		ReadyForReview, Blocked, Merged, Closed, Finalizing, Orphaned,
+	}
+}
+
 // Event represents a session event trigger.
 type Event int
 

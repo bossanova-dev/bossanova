@@ -6,6 +6,7 @@ go_library(
         "account.go",
         "auth.go",
         "authstore_prod.go",
+        "broadcast.go",
         "callback.go",
         "chat.go",
         "cloud_access_prod.go",
@@ -16,6 +17,7 @@ go_library(
         "handlers.go",
         "main.go",
         "mcp.go",
+        "notes.go",
         "proof.go",
         "repair_doctor.go",
         "repair_start.go",
@@ -28,6 +30,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//lib/bossalib/bossmcp",
+        "//lib/bossalib/broadcast",
         "//lib/bossalib/buildinfo",
         "//lib/bossalib/clidoc",
         "//lib/bossalib/config",
@@ -37,6 +40,7 @@ go_library(
         "//lib/bossalib/githubcallback",
         "//lib/bossalib/keyringutil",
         "//lib/bossalib/log",
+        "//lib/bossalib/models",
         "//lib/bossalib/skillinstall",
         "//lib/bossalib/socketauth",
         "//lib/bossalib/telemetry",
@@ -77,6 +81,7 @@ go_test(
         "account_ls_test.go",
         "account_refresh_test.go",
         "account_switch_test.go",
+        "broadcast_test.go",
         "callback_test.go",
         "chat_test.go",
         "cloud_gate_test.go",
@@ -86,6 +91,7 @@ go_test(
         "handlers_test.go",
         "mcp_test.go",
         "new_test.go",
+        "notes_test.go",
         "proof_test.go",
         "repo_resolve_test.go",
         "settings_rotation_test.go",
@@ -96,6 +102,7 @@ go_test(
         "testmain_test.go",
         "upgrade_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":cmd_lib"],
     # keep: skill/upgrade tests go-build the boss binary and install plugins via a
     # runtime.Caller workspace root — genuinely escapes the sandbox. Covered by `make test-boss`.
@@ -104,6 +111,7 @@ go_test(
         "requires-workspace",
     ],
     deps = [
+        "//lib/bossalib/broadcast",
         "//lib/bossalib/config",
         "//lib/bossalib/daemonstate",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
@@ -122,6 +130,7 @@ go_test(
         "@com_connectrpc_connect//:connect",
         "@com_github_99designs_keyring//:keyring",
         "@com_github_spf13_cobra//:cobra",
+        "@land_charm_bubbles_v2//table",
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

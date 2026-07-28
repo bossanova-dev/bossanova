@@ -49,8 +49,14 @@ type BossClient interface {
 
 	// Session lifecycle
 	CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (CreateSessionStream, error)
-	GetSession(ctx context.Context, id string) (*pb.Session, error)
-	ListSessions(ctx context.Context, req *pb.ListSessionsRequest) ([]*pb.Session, error)
+	// GetSession reads one session. opts.IncludeLocalHTTPEndpoints gates
+	// machine-local endpoint hydration (LocalClient only); the zero value is a
+	// plain read. See SessionReadOptions.
+	GetSession(ctx context.Context, id string, opts SessionReadOptions) (*pb.Session, error)
+	// ListSessions reads sessions. opts.IncludeLocalHTTPEndpoints gates
+	// machine-local endpoint hydration (LocalClient only); the zero value is a
+	// plain read. See SessionReadOptions.
+	ListSessions(ctx context.Context, req *pb.ListSessionsRequest, opts SessionReadOptions) ([]*pb.Session, error)
 	AttachSession(ctx context.Context, id string) (AttachStream, error)
 	StopSession(ctx context.Context, id string) (*pb.Session, error)
 	PauseSession(ctx context.Context, id string) (*pb.Session, error)
@@ -119,6 +125,38 @@ type BossClient interface {
 	// DeleteGithubCallback removes a callback by id. Idempotent. targetChatID is
 	// the remote routing key (owning daemon); LocalClient ignores it.
 	DeleteGithubCallback(ctx context.Context, targetChatID, id string) error
+
+	// Notes (BOS-553): repo-scoped free-text notes with optional session/chat
+	// provenance and tags. CreateNote and ListNotes carry repo_id inside their
+	// request message, so they take no extra parameter. Get/Update/Delete take
+	// repoID as a separate argument that is the remote routing key only —
+	// LocalClient ignores it (the local daemon resolves by id alone), exactly
+	// as DeleteGithubCallback does for target-chat routing.
+	CreateNote(ctx context.Context, req *pb.CreateNoteRequest) (*pb.Note, error)
+	GetNote(ctx context.Context, repoID, id string) (*pb.Note, error)
+	// ListNotes returns notes matching the optional filters in req.
+	ListNotes(ctx context.Context, req *pb.ListNotesRequest) ([]*pb.Note, error)
+	UpdateNote(ctx context.Context, repoID string, req *pb.UpdateNoteRequest) (*pb.Note, error)
+	DeleteNote(ctx context.Context, repoID, id string) error
+
+	// Broadcasts (BOS-551): one message fanned out to the audience a selector
+	// resolves to, plus standing subscriptions that fire one when a session
+	// settles. Local-daemon only today — the orchestrator proto carries no
+	// Proxy*Broadcast RPCs, so RemoteClient refuses rather than pretending.
+	// The message body travels inbound on the request and is NEVER echoed back
+	// on any response: Broadcast.message is cleared on every read surface and
+	// BroadcastSubscription has no body field at all.
+	SendBroadcast(ctx context.Context, req *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error)
+	// ListBroadcasts returns broadcasts matching the optional filters in req.
+	ListBroadcasts(ctx context.Context, req *pb.ListBroadcastsRequest) ([]*pb.Broadcast, error)
+	// DeleteBroadcast removes a broadcast by id. Idempotent.
+	DeleteBroadcast(ctx context.Context, id string) error
+	// CreateBroadcastSubscription registers a standing rule on a session's outcome.
+	CreateBroadcastSubscription(ctx context.Context, req *pb.CreateBroadcastSubscriptionRequest) (*pb.BroadcastSubscription, error)
+	// ListBroadcastSubscriptions returns subscriptions matching the optional filters in req.
+	ListBroadcastSubscriptions(ctx context.Context, req *pb.ListBroadcastSubscriptionsRequest) ([]*pb.BroadcastSubscription, error)
+	// DeleteBroadcastSubscription removes a subscription by id. Idempotent.
+	DeleteBroadcastSubscription(ctx context.Context, id string) error
 
 	// Accounts (agent credential registry). Local-daemon only, like cron jobs.
 	ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error)

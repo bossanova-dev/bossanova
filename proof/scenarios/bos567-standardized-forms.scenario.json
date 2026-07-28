@@ -1,0 +1,229 @@
+{
+  "version": 1,
+  "title": "BOS-567 the TUI's forms share one field chrome: fitted selects, a fitted prompt, left-aligned buttons and one focus gutter",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the cron edit form's select and prompt are both sized to their content",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        { "key": "s", "caption": "Press [s] to open the Settings hub" },
+        {
+          "waitFor": "Cron jobs",
+          "timeoutMs": 10000,
+          "caption": "Settings hub loaded; it offers the Scheduled Jobs list"
+        },
+        { "key": "c", "caption": "Press [c] to open the Scheduled Jobs (cron) list" },
+        {
+          "waitFor": "Morning PR triage",
+          "timeoutMs": 10000,
+          "caption": "Cron list loaded — the AGENT column names each job's runner"
+        },
+        { "key": "down", "caption": "Move to row 2 (Nightly mutation tests)" },
+        { "key": "down", "caption": "Move to row 3 (Weekly tech-debt sweep)" },
+        { "key": "down", "caption": "Move to row 4 (Hourly broken-link check)" },
+        { "key": "down", "caption": "Move to row 5 — 'Morning PR triage', the codex job" },
+        { "key": "enter", "caption": "Press [enter] to edit the highlighted job" },
+        {
+          "waitFor": "Edit Scheduled Job: Morning PR triage",
+          "timeoutMs": 10000,
+          "caption": "The cron edit form is on screen, pre-populated from the job"
+        },
+        {
+          "expect": [
+            {
+              "text": "codex",
+              "match": "normalized",
+              "label": "the cron list's AGENT column shows this job runs on codex — the job whose edit form the rest of this scenario drives"
+            },
+            {
+              "text": "Repo",
+              "match": "normalized",
+              "label": "the form's Select field. NOTE: the plan named the Agent select here, but the proof harness's daemon reports no agent runners (its ListAgents is empty and seedWorld never seeds any), so the optional Agent field never renders in a TUI capture; Repo is the Select that does"
+            },
+            {
+              "text": "Model",
+              "match": "normalized",
+              "label": "the field that follows the Select — its title is what the Select's trailing whitespace used to push down the form"
+            },
+            {
+              "text": "my-web[ \\t]*\\n[ \\t]*\\n[ \\t]*Model",
+              "match": "regex",
+              "label": "SELECT FIT: the Model title sits one blank line under 'my-web', the Select's last option — the option block ends where its content ends instead of padding out to a fixed height"
+            }
+          ],
+          "caption": "The Repo select renders exactly its five options and stops; the next field's title follows immediately, with no block of trailing blank lines under the last option."
+        },
+        { "key": "tab", "caption": "Press [tab]: focus moves Name → Repo" },
+        { "key": "tab", "caption": "Press [tab] again: Repo → Model" },
+        { "key": "tab", "caption": "Press [tab] again: Model → Prompt" },
+        {
+          "waitFor": {
+            "text": "┃ Triage open PRs and summarize review state",
+            "match": "regex"
+          },
+          "timeoutMs": 10000,
+          "caption": "The focus gutter has landed on Prompt, whose stored value is a single line"
+        },
+        {
+          "expect": [
+            {
+              "text": "Prompt",
+              "match": "normalized",
+              "label": "the Text field under test"
+            },
+            {
+              "text": "Triage open PRs",
+              "match": "normalized",
+              "label": "the job's stored prompt, one wrapped line long"
+            },
+            {
+              "text": "Schedule",
+              "match": "normalized",
+              "label": "the field below it, which the fixed-height textarea used to push down the form"
+            },
+            {
+              "text": "┃ Triage open PRs and summarize review state[ \\t]*\\n[ \\t]*\\n[ \\t]*Schedule",
+              "match": "regex",
+              "label": "TEXT FIT: the Schedule title sits one blank line under the prompt's only line, inside the focused field's own gutter — the textarea is one row tall, not the fixed six it defaulted to"
+            }
+          ],
+          "caption": "A focused, one-line prompt occupies one row. The Schedule field directly follows it instead of sitting five blank rows further down."
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "every confirm's buttons start at the same left column",
+      "steps": [
+        { "key": "tab", "caption": "Press [tab]: Prompt → Schedule" },
+        { "key": "tab", "caption": "Press [tab]: Schedule → Timezone" },
+        { "key": "tab", "caption": "Press [tab]: Timezone → Gate command" },
+        {
+          "key": "tab",
+          "caption": "Press [tab]: Gate command → Run setup command, scrolling the form to its confirms"
+        },
+        {
+          "waitFor": "Zero output",
+          "timeoutMs": 10000,
+          "caption": "The form's three confirms are in view together"
+        },
+        {
+          "expect": [
+            {
+              "text": "Run setup command",
+              "match": "normalized",
+              "label": "the focused confirm, whose description is two lines long"
+            },
+            {
+              "text": "Yes",
+              "match": "normalized",
+              "label": "the affirmative chip every confirm renders"
+            },
+            {
+              "text": "Enabled",
+              "match": "normalized",
+              "label": "the confirm with the shortest description — the one whose buttons drifted furthest left of the others when huh centred them"
+            },
+            {
+              "text": "\\n {6}Yes {5}No\\n[\\s\\S]*\\n {6}Yes {5}No\\n",
+              "match": "regex",
+              "label": "BUTTON ALIGNMENT: the Zero output and Enabled confirms carry four-line and one-line descriptions, so huh's centring put their Yes chips at different columns; both now start at column 6"
+            },
+            {
+              "text": "\\n {2}┃ {3}Yes {5}No\\n",
+              "match": "regex",
+              "label": "the focused confirm's chips start at that same column 6 — two columns of gutter, then the two-space chip padding — so focus does not move the buttons either"
+            }
+          ],
+          "caption": "Three confirms with three different description widths render their Yes/No pairs at one shared left column, in line with every other field's content."
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "repository settings marks its cursor row with the same focus gutter",
+      "steps": [
+        { "key": "esc", "caption": "Leave the cron form, back to the cron list" },
+        {
+          "waitFor": "Morning PR triage",
+          "timeoutMs": 10000,
+          "caption": "Cron list again"
+        },
+        { "key": "esc", "caption": "Back to the Settings hub" },
+        { "waitFor": "Cron jobs", "timeoutMs": 10000, "caption": "Settings hub again" },
+        { "key": "r", "caption": "Press [r] to open the repository list" },
+        {
+          "waitFor": "[a]dd",
+          "timeoutMs": 10000,
+          "caption": "Repository list loaded"
+        },
+        {
+          "key": "enter",
+          "caption": "Press [enter] to open the highlighted repository's settings"
+        },
+        {
+          "waitFor": "Merge strategy",
+          "timeoutMs": 10000,
+          "caption": "Repository settings loaded, cursor on the first row"
+        },
+        {
+          "expect": [
+            {
+              "text": "┃ +Name",
+              "match": "regex",
+              "label": "the cursor row carries the huh field gutter — this token cannot match on the unchanged code, where these hand-rolled rows drew a '❯ ' chevron and no gutter"
+            },
+            {
+              "text": "Merge strategy",
+              "match": "normalized",
+              "label": "a non-cursor row on the same screen: it reserves the gutter's width without drawing it, so no row text shifts as the cursor moves"
+            },
+            {
+              "text": " {6}Organization slug",
+              "match": "regex",
+              "label": "the Sentry integration's indented child rows keep their two columns of nesting under the header — the gutter moved right with them rather than flattening the indent"
+            }
+          ],
+          "caption": "A screen that never used huh now marks its cursor row with the identical glyph, width and colour a focused huh field gets, and its nested rows keep their indent."
+        }
+      ]
+    },
+    {
+      "id": "scene-04",
+      "title": "the gutter tracks the cursor down the settings rows",
+      "steps": [
+        { "key": "down", "caption": "Press [down]: the cursor moves Name → Setup command" },
+        {
+          "key": "down",
+          "caption": "Press [down] again: Setup command → Merge strategy"
+        },
+        {
+          "waitFor": { "text": "┃ +Merge strategy", "match": "regex" },
+          "timeoutMs": 10000,
+          "caption": "The gutter has landed on Merge strategy"
+        },
+        {
+          "expect": [
+            {
+              "text": "┃ +Merge strategy",
+              "match": "regex",
+              "label": "the gutter has moved onto Merge strategy — scene 3's '┃ Name' token matches on none of this scene's screens, so the gutter genuinely tracks the cursor rather than being painted statically"
+            },
+            {
+              "text": "Setup command",
+              "match": "normalized",
+              "label": "the row the cursor passed through is unchanged and still on screen, so the rows did not re-lay out around the moving gutter"
+            }
+          ],
+          "caption": "Two presses of [down] move the gutter two rows while every row keeps its horizontal position — the same positional, jitter-free focus cue the huh forms use."
+        }
+      ]
+    }
+  ]
+}

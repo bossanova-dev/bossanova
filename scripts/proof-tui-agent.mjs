@@ -1654,6 +1654,10 @@ export async function runTuiWithReplayFallback(ctx, deps) {
   let replayOutcome = 'not-attempted'
   let replayDetail = null
   let replayRun = null
+  // True once the replay leg has deleted the agent leg's capture dir: from that
+  // point `agentRun.captureShapes` are DANGLING references (see the clear below),
+  // and only the replay's own shapes describe what is actually on disk.
+  let agentArtifactsCleared = false
   if (legs.runReplay && agentOutcome !== 'passed') {
     const [rel] = replayScenarios
     try {
@@ -1673,9 +1677,18 @@ export async function runTuiWithReplayFallback(ctx, deps) {
       if (replayLocalDir) {
         fs.rmSync(path.join(replayLocalDir, 'raw'), { recursive: true, force: true })
         fs.rmSync(path.join(replayLocalDir, CAPTURE_ID), { recursive: true, force: true })
+        agentArtifactsCleared = true
       }
       replayRun = await runLeg({
         ...ctx,
+        // BOS-571: the collect-mode dispatcher hands the leg no `deps`, so this is
+        // where the replayed scenario's optional `terminal` has to join the dep bag
+        // that resolveBridge → makeStdioBridge reads. Spread nothing when the
+        // scenario declares no size, keeping `deps` (and therefore the spawn argv)
+        // byte-identical for every scenario written before the field existed.
+        ...(scenario.terminal != null
+          ? { deps: { ...(ctx.deps ?? {}), terminal: scenario.terminal } }
+          : {}),
         brief: synthesizeBrief(scenario, fileBasename),
         // runTuiAgentProof clamps brief.budgets.maxWallClockMs to the reserved slice,
         // but the custom loopRunner args omit maxWallClockMs, so runReplayLoop would
@@ -1800,7 +1813,17 @@ export async function runTuiWithReplayFallback(ctx, deps) {
   // agent-incomplete: no leg produced media. reasonCode stays null so
   // classifySurfaceOutcomes derives `agent-incomplete` from hasFailure; the first
   // captureShape carries the combined two-leg errorDetail (firstCaptureError reads it).
-  const baseShapes = [...(agentRun?.captureShapes ?? []), ...replayShapes]
+  // Only shapes whose media still EXISTS may be carried: once the replay leg
+  // cleared the shared capture dir, the agent leg's shapes name files that were
+  // deleted (and its fixed-name video/poster entries would silently resolve to the
+  // replay's re-written ones). Uploading such a list ENOENTs on the first frame the
+  // shorter replay never re-created, which masks this honest agent-incomplete as an
+  // opaque `wrangler r2 object put ... exited 1` pipeline-error. Dropping them loses
+  // no evidence — those artifacts are already gone from disk. When the replay never
+  // ran (or ran without a collect-mode localDir to clear), the agent shapes are still
+  // live and ride along exactly as before.
+  const liveAgentShapes = agentArtifactsCleared ? [] : (agentRun?.captureShapes ?? [])
+  const baseShapes = [...liveAgentShapes, ...replayShapes]
   const shapes =
     baseShapes.length > 0
       ? baseShapes.map((c, i) => (i === 0 ? { ...c, error: outcome.errorDetail } : c))
@@ -2517,10 +2540,16 @@ function gatherDiff() {
 /** Use an injected bridge if provided, else build + spawn the real Go bridge. */
 function resolveBridge(d, { localDir, rawDir }) {
   if (d.bridge) return d.bridge
-  // Forward a scenario-selected fixture preset / env overlay to the real bridge.
-  // Both default to undefined (byte-identical to the pre-BOS-425 demo default)
-  // when the caller doesn't thread them.
-  return makeStdioBridge({ localDir, rawDir, fixture: d.fixture, seedEnv: d.seedEnv })
+  // Forward a scenario-selected fixture preset / env overlay / terminal size to
+  // the real bridge. All default to undefined (byte-identical to the pre-BOS-425
+  // demo default at 140x36) when the caller doesn't thread them.
+  return makeStdioBridge({
+    localDir,
+    rawDir,
+    fixture: d.fixture,
+    seedEnv: d.seedEnv,
+    terminal: d.terminal,
+  })
 }
 
 /**
@@ -2552,7 +2581,7 @@ export const settleExtra = (opts = {}) => {
   return extra
 }
 
-export function makeStdioBridge({ localDir, rawDir, fixture, seedPath, seedEnv } = {}) {
+export function makeStdioBridge({ localDir, rawDir, fixture, seedPath, seedEnv, terminal } = {}) {
   const bridgeBin = process.env.BOSS_PROOF_TUI_BRIDGE_BIN
   if (!bridgeBin || !fs.existsSync(bridgeBin)) {
     throw new Error(
@@ -2563,11 +2592,19 @@ export function makeStdioBridge({ localDir, rawDir, fixture, seedPath, seedEnv }
   const castPath = path.join(rawDir, 'session.cast')
   // Flags match the BOS-69 bridge (services/boss/cmd/proof-tui-agent): -cast writes
   // the asciinema session; -boss-bin is forwarded when dispatch prebuilds one;
-  // -fixture / -seed are forwarded only when a scenario requests them.
+  // -fixture / -seed are forwarded only when a scenario requests them; -width /
+  // -height (BOS-571) likewise, and only for the members a scenario's `terminal`
+  // actually declares, so an unsized scenario still gets the bridge's 140x36 pty.
   // The bridge has no output-dir flag; stills are rendered Node-side from screens.
   const child = spawn(
     bridgeBin,
-    bridgeSpawnArgs({ castPath, bossBin: process.env.BOSS_PROOF_BOSS_BIN, fixture, seedPath }),
+    bridgeSpawnArgs({
+      castPath,
+      bossBin: process.env.BOSS_PROOF_BOSS_BIN,
+      fixture,
+      seedPath,
+      terminal,
+    }),
     {
       cwd: repoRoot,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -2701,17 +2738,33 @@ export function makeStdioBridge({ localDir, rawDir, fixture, seedPath, seedEnv }
   }
 }
 
-export function bridgeSpawnArgs({ castPath, bossBin, fixture, seedPath } = {}) {
-  // Existing param order is preserved (cast, then boss-bin); fixture/seed are
-  // appended ONLY when provided, so the default (nothing requested) output stays
+export function bridgeSpawnArgs({ castPath, bossBin, fixture, seedPath, terminal } = {}) {
+  // Existing param order is preserved (cast, then boss-bin); fixture/seed/terminal
+  // are appended ONLY when provided, so the default (nothing requested) output stays
   // byte-identical to the pre-BOS-217 bridge. The bridge (Go) owns all fixture
   // and env validation — Node forwards raw.
+  //
+  // BOS-571: a scenario's optional top-level `terminal` selects the pty size the
+  // bridge allocates. `cols` and `rows` are INDEPENDENTLY optional — an absent
+  // member simply leaves the Go flag default in place (-width 140 / -height 36,
+  // services/boss/cmd/proof-tui-agent/main.go), which is what every scenario
+  // written before this field got. The Number.isInteger guard (not a truthiness
+  // check) is deliberate: it drops a non-object/empty/malformed `terminal`
+  // AND a fractional or non-numeric member, so junk can never degrade the
+  // default argv — and it also drops 0, which is not a usable pty dimension.
+  // The scenario validator (scripts/proof-scenario.mjs) already bounds real
+  // scenarios to cols 40..300 / rows 10..100; this is the belt-and-braces layer
+  // for programmatic callers.
+  const cols = terminal?.cols
+  const rows = terminal?.rows
   return [
     '--cast',
     castPath,
     ...(bossBin ? ['--boss-bin', bossBin] : []),
     ...(fixture ? ['--fixture', fixture] : []),
     ...(seedPath ? ['--seed', seedPath] : []),
+    ...(Number.isInteger(cols) && cols > 0 ? ['--width', String(cols)] : []),
+    ...(Number.isInteger(rows) && rows > 0 ? ['--height', String(rows)] : []),
   ]
 }
 

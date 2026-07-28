@@ -45,7 +45,7 @@ func CollectContext(
 		DaemonStatuses: daemonStatuses,
 	}
 
-	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{IncludeArchived: false})
+	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{IncludeArchived: false}, client.SessionReadOptions{})
 	if err != nil {
 		log.Warn().Err(err).Msg("report: ListSessions failed; submitting report without session list")
 	}

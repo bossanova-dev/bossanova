@@ -1272,6 +1272,39 @@ func TestCompleteAgentRun_DuplicatePOSTIdempotent(t *testing.T) {
 	}
 }
 
+// TestValidateRunToken covers the non-mutating token check used by the
+// /hooks/question/{agent_session_id} receiver. Unlike CompleteAgentRun it
+// must never signal completion or mutate run state — it only reports whether
+// the supplied bearer matches the recorded per-run token.
+func TestValidateRunToken(t *testing.T) {
+	srv := newRunCompleteServer()
+	ch := srv.registerRun("sess-1", "agent-1", "right-token")
+
+	if err := srv.ValidateRunToken(t.Context(), "agent-1", "right-token"); err != nil {
+		t.Fatalf("ValidateRunToken(right) = %v, want nil", err)
+	}
+	if err := srv.ValidateRunToken(t.Context(), "agent-1", "wrong-token"); !errors.Is(err, ErrAuthMismatch) {
+		t.Fatalf("ValidateRunToken(wrong) = %v, want ErrAuthMismatch", err)
+	}
+	if err := srv.ValidateRunToken(t.Context(), "unknown", "tok"); !errors.Is(err, ErrAgentRunNotFound) {
+		t.Fatalf("ValidateRunToken(unknown) = %v, want ErrAgentRunNotFound", err)
+	}
+
+	// Validation must not have signalled the run's completion channel or torn
+	// down its state — a subsequent real completion still works.
+	select {
+	case <-ch:
+		t.Fatal("ValidateRunToken signalled the completion channel; it must be side-effect free")
+	case <-time.After(50 * time.Millisecond):
+	}
+	srv.runMu.Lock()
+	_, hasTok := srv.runHookTokens["agent-1"]
+	srv.runMu.Unlock()
+	if !hasTok {
+		t.Error("ValidateRunToken must not clear run state")
+	}
+}
+
 // TestCompleteAgentRun_DuplicatePOSTWrongTokenAfterSignal a wrong-Bearer
 // POST that arrives after the legitimate completion still returns
 // ErrAuthMismatch (HTTP 401). The token entry must survive past the first
@@ -2387,7 +2420,10 @@ func TestHostServiceStartChatRun_RefusesReplacementAfterNewChatActivity(t *testi
 	}
 	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
 	observed := time.Now().Add(-6 * time.Minute)
-	srv.chatTracker.Update("agent-finalize", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, observed.Add(time.Minute))
+	// The post-snapshot output must be FRESH (younger than repairDisplaceMinIdle)
+	// for the refusal to stand — BOS-515 stopped pinning a chat that spoke once
+	// since an old snapshot and then went quiet again.
+	srv.chatTracker.Update("agent-finalize", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, time.Now().Add(-30*time.Second))
 
 	_, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
 		SessionId:             "sess-1",

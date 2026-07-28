@@ -159,8 +159,10 @@ func serializeMergeServer(t *testing.T, prov vcs.Provider, sessions map[string]*
 	t.Helper()
 	tracker := status.NewDisplayTracker()
 	for id := range sessions {
-		// Seed an entry so MergeSession's deferred SetMerging clear takes the
-		// hadEntry path and never dereferences the (nil) prRefresher.
+		// Seed an entry so the tracker looks realistic going into the merge;
+		// MergeSession's deferred SetMerging clear never dereferences the
+		// (nil) prRefresher regardless, because that call is guarded by the
+		// surviving `s.prRefresher != nil` check.
 		tracker.Set(id, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
 	}
 	return &Server{

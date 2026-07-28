@@ -26,7 +26,7 @@ type fakeReportClient struct {
 	calls    int
 }
 
-func (f *fakeReportClient) ListSessions(_ context.Context, req *pb.ListSessionsRequest) ([]*pb.Session, error) {
+func (f *fakeReportClient) ListSessions(_ context.Context, req *pb.ListSessionsRequest, _ client.SessionReadOptions) ([]*pb.Session, error) {
 	f.calls++
 	f.gotReq = req
 	return f.sessions, f.err

@@ -17,6 +17,12 @@ func prStatus(state vcs.PRState) *vcs.PRStatus {
 	return &vcs.PRStatus{State: state}
 }
 
+// prStatusDraft builds a PRStatus with an explicit draft flag, for the
+// draft-aware ready_for_review / checks_passed_ready triggers.
+func prStatusDraft(state vcs.PRState, draft bool) *vcs.PRStatus {
+	return &vcs.PRStatus{State: state, Draft: draft}
+}
+
 // TestEvaluatePR_TriggerMapping verifies that a single ungrouped active callback
 // is triggered only when the authoritative PR/check state satisfies exactly its
 // requested trigger — and, crucially, that a webhook-suggested event the
@@ -89,6 +95,87 @@ func TestEvaluatePR_TriggerMapping(t *testing.T) {
 			trigger:     models.GithubCallbackTriggerChecksPassed,
 			status:      prStatus(vcs.PRStateOpen),
 			checks:      nil,
+			wantTrigger: false,
+		},
+		{
+			// Draft "commit CI" noise: checks_passed is trigger-blind to draft
+			// status and still fires, but the new draft-aware triggers must not.
+			name:        "draft pr, all-green checks, checks_passed trigger -> still fires",
+			trigger:     models.GithubCallbackTriggerChecksPassed,
+			status:      prStatusDraft(vcs.PRStateOpen, true),
+			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
+			wantTrigger: true,
+		},
+		{
+			name:        "draft pr, all-green checks, checks_passed_ready trigger -> no false trigger",
+			trigger:     models.GithubCallbackTriggerChecksPassedReady,
+			status:      prStatusDraft(vcs.PRStateOpen, true),
+			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
+			wantTrigger: false,
+		},
+		{
+			name:        "draft pr, all-green checks, ready_for_review trigger -> no false trigger",
+			trigger:     models.GithubCallbackTriggerReadyForReview,
+			status:      prStatusDraft(vcs.PRStateOpen, true),
+			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
+			wantTrigger: false,
+		},
+		{
+			name:        "not-draft open pr, pending checks, ready_for_review trigger -> fires",
+			trigger:     models.GithubCallbackTriggerReadyForReview,
+			status:      prStatusDraft(vcs.PRStateOpen, false),
+			checks:      []vcs.CheckResult{pendingCheck("build")},
+			wantTrigger: true,
+		},
+		{
+			name:        "not-draft open pr, pending checks, checks_passed_ready trigger -> not yet",
+			trigger:     models.GithubCallbackTriggerChecksPassedReady,
+			status:      prStatusDraft(vcs.PRStateOpen, false),
+			checks:      []vcs.CheckResult{pendingCheck("build")},
+			wantTrigger: false,
+		},
+		{
+			name:        "not-draft open pr, all-green checks, ready_for_review trigger -> fires",
+			trigger:     models.GithubCallbackTriggerReadyForReview,
+			status:      prStatusDraft(vcs.PRStateOpen, false),
+			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
+			wantTrigger: true,
+		},
+		{
+			name:        "not-draft open pr, all-green checks, checks_passed_ready trigger -> fires",
+			trigger:     models.GithubCallbackTriggerChecksPassedReady,
+			status:      prStatusDraft(vcs.PRStateOpen, false),
+			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
+			wantTrigger: true,
+		},
+		{
+			// Closed/merged PRs report Draft == false, so draft-negation alone
+			// cannot exclude them; state == open is required too.
+			name:        "closed pr, all-green checks, ready_for_review trigger -> no false trigger",
+			trigger:     models.GithubCallbackTriggerReadyForReview,
+			status:      prStatusDraft(vcs.PRStateClosed, false),
+			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
+			wantTrigger: false,
+		},
+		{
+			name:        "closed pr, all-green checks, checks_passed_ready trigger -> no false trigger",
+			trigger:     models.GithubCallbackTriggerChecksPassedReady,
+			status:      prStatusDraft(vcs.PRStateClosed, false),
+			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
+			wantTrigger: false,
+		},
+		{
+			name:        "merged pr, all-green checks, ready_for_review trigger -> no false trigger",
+			trigger:     models.GithubCallbackTriggerReadyForReview,
+			status:      prStatusDraft(vcs.PRStateMerged, false),
+			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
+			wantTrigger: false,
+		},
+		{
+			name:        "merged pr, all-green checks, checks_passed_ready trigger -> no false trigger",
+			trigger:     models.GithubCallbackTriggerChecksPassedReady,
+			status:      prStatusDraft(vcs.PRStateMerged, false),
+			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
 			wantTrigger: false,
 		},
 	}
@@ -220,6 +307,81 @@ func TestReconcileAll_TriggersEnduringStatesPerDistinctPR(t *testing.T) {
 	}
 	if got := getState(t, store, b.ID); got != models.GithubCallbackStateTriggered {
 		t.Errorf("b state = %q, want triggered", got)
+	}
+}
+
+// TestFlow_DraftNoiseSuppressedThenSingleUnDraftFire proves the headline
+// draft-aware acceptance criteria end-to-end through evaluator -> store ->
+// DeliveryWorker: repeated "draft commit CI" rounds (draft PR, all checks
+// green) must not fire either new trigger, and only the `gh pr ready` flip
+// (Draft -> false, still open) fires each callback exactly once — with no
+// re-fire on a subsequent no-op round.
+func TestFlow_DraftNoiseSuppressedThenSingleUnDraftFire(t *testing.T) {
+	store := newStore(t)
+	clk := newClock(time.Now())
+
+	// Distinct groups (none, here) so the store's group-sibling cancellation
+	// does not cancel one callback when the other fires.
+	readyCB := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerReadyForReview, Message: "ready for review",
+	})
+	checksReadyCB := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-2", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerChecksPassedReady, Message: "checks passed and ready",
+	})
+
+	greenChecks := []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)}
+	prov := &scriptedProvider{}
+	ev := NewEvaluator(store, prov, clk.now, zerolog.Nop())
+	deliverer := newCaptureDeliverer(nil)
+	w := newWorker(store, deliverer, clk.now, "worker-1")
+
+	// Rounds 1-3: draft PR, all checks green -- the "draft commit CI" noise.
+	// Neither new trigger should ever fire while the PR remains a draft.
+	prov.set(prStatusDraft(vcs.PRStateOpen, true), greenChecks)
+	for round := 1; round <= 3; round++ {
+		if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+			t.Fatalf("round %d: EvaluatePR: %v", round, err)
+		}
+		w.scan(context.Background())
+
+		if got := getState(t, store, readyCB.ID); got != models.GithubCallbackStateActive {
+			t.Errorf("round %d: ready_for_review state = %q, want active", round, got)
+		}
+		if got := getState(t, store, checksReadyCB.ID); got != models.GithubCallbackStateActive {
+			t.Errorf("round %d: checks_passed_ready state = %q, want active", round, got)
+		}
+		if n := deliverer.count(); n != 0 {
+			t.Errorf("round %d: deliverer count = %d, want 0", round, n)
+		}
+	}
+
+	// Round 4: the `gh pr ready` flip -- Draft -> false, still open, checks
+	// still green. Both callbacks should fire exactly once.
+	prov.set(prStatusDraft(vcs.PRStateOpen, false), greenChecks)
+	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+		t.Fatalf("round 4: EvaluatePR: %v", err)
+	}
+	w.scan(context.Background())
+
+	if got := getState(t, store, readyCB.ID); got != models.GithubCallbackStateDelivered {
+		t.Errorf("round 4: ready_for_review state = %q, want delivered", got)
+	}
+	if got := getState(t, store, checksReadyCB.ID); got != models.GithubCallbackStateDelivered {
+		t.Errorf("round 4: checks_passed_ready state = %q, want delivered", got)
+	}
+	if n := deliverer.count(); n != 2 {
+		t.Fatalf("round 4: deliverer count = %d, want exactly 2", n)
+	}
+
+	// Round 5: nothing changed. One-shot semantics -- no re-fire.
+	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+		t.Fatalf("round 5: EvaluatePR: %v", err)
+	}
+	w.scan(context.Background())
+	if n := deliverer.count(); n != 2 {
+		t.Errorf("round 5: deliverer count = %d, want still exactly 2 (no re-fire)", n)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/charmbracelet/x/ansi"
 	creackpty "github.com/creack/pty/v2"
 	"golang.org/x/term"
 )
@@ -99,6 +100,19 @@ func (c *PTYCommand) Run() error {
 		return err
 	}
 	defer term.Restore(fd, oldState) //nolint:errcheck // best-effort restore on exit
+	// Reset the outer terminal's mouse-tracking modes before restoring cooked
+	// mode. LIFO defer ordering runs this BEFORE term.Restore, while the
+	// terminal is still ours. A foreign full-screen child (tmux with
+	// `set -g mouse on`) enables xterm mouse reporting on the real terminal but
+	// never emits the matching reset when boss abandons the proxy on Ctrl+X
+	// detach, stranding the terminal in mouse-reporting mode and breaking native
+	// drag-select. Fires on every return past MakeRaw (detach, process-exit,
+	// inputDone, early errors). See BOS-499.
+	defer func() {
+		if c.stdout != nil {
+			writeTerminalModeReset(c.stdout)
+		}
+	}()
 
 	proc, err := c.manager.GetOrStart(c.agentSessionID, c.cmd)
 	if err != nil {
@@ -238,6 +252,36 @@ func (c *PTYCommand) Run() error {
 		c.Detached = true
 		return nil
 	}
+}
+
+// writeTerminalModeReset writes the xterm mouse-tracking DECRST disable
+// sequences to w (best-effort; write errors are ignored, matching the other
+// teardown writes). It neutralizes any mouse-reporting modes a foreign
+// full-screen child (tmux with `set -g mouse on`) enabled on the real terminal
+// but never reset, which would otherwise strand the outer terminal in
+// mouse-reporting mode and break native drag-select. DECRST on a mode that was
+// never set is a harmless no-op. See BOS-499.
+//
+// The core set (?1000/?1002/?1003/?1006) covers what tmux `mouse on` enables;
+// the defensive extras (?1005 legacy UTF-8, ?1015 urxvt, ?9 X10) cover exotic
+// terminal/tmux encodings. ansi has no named constants for ?1005l or ?1015l, so
+// those two are raw literals.
+func writeTerminalModeReset(w io.Writer) {
+	const (
+		resetModeMouseUTF8  = "\x1b[?1005l" // no ansi constant: legacy UTF-8 mouse encoding
+		resetModeMouseUrxvt = "\x1b[?1015l" // no ansi constant: urxvt mouse encoding
+	)
+	_, _ = io.WriteString(w,
+		// Core set first.
+		ansi.ResetModeMouseNormal+ // ?1000l
+			ansi.ResetModeMouseButtonEvent+ // ?1002l
+			ansi.ResetModeMouseAnyEvent+ // ?1003l
+			ansi.ResetModeMouseExtSgr+ // ?1006l
+			// Defensive extras.
+			resetModeMouseUTF8+ // ?1005l
+			resetModeMouseUrxvt+ // ?1015l
+			ansi.ResetModeMouseX10, // ?9l
+	)
 }
 
 func containsDetachSequence(data []byte) bool {

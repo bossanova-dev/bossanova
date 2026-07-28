@@ -582,6 +582,29 @@ func TestFire_PassesModelToSession(t *testing.T) {
 	}
 }
 
+func TestFire_ZeroOutputPassesNoWorktreeOptions(t *testing.T) {
+	store := newFakeStore()
+	job := makeJob("zero", "@every 1m", true)
+	job.IsZeroOutput = true
+	store.put(job)
+	creator := newFakeCreator()
+	s := newTestScheduler(t, store, newFakeSessionStore(), creator)
+
+	if _, skipped, err := s.fire(context.Background(), "zero"); err != nil || skipped != "" {
+		t.Fatalf("fire = (_, %q, %v), want created session", skipped, err)
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("creator calls = %d, want 1", len(creator.calls))
+	}
+	opts := creator.calls[0]
+	if !opts.ZeroOutput {
+		t.Fatal("ZeroOutput = false, want true")
+	}
+	if opts.BranchName != "" {
+		t.Errorf("BranchName = %q, want empty for zero-output fire", opts.BranchName)
+	}
+}
+
 func TestFire_DisabledBetweenTickAndFire(t *testing.T) {
 	store := newFakeStore()
 	store.put(makeJob("j", "@every 1m", false))

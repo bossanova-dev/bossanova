@@ -57,6 +57,22 @@ type fakeBackend struct {
 	createGithubCallback func(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error)
 	listGithubCallbacks  func(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error)
 	deleteGithubCallback func(ctx context.Context, targetChatID, id string) error
+
+	// Notes. Each of the five carries its OWN hook so a handler wired to a
+	// sibling's backend method cannot pass its neighbour's assertions.
+	createNote func(ctx context.Context, req *pb.CreateNoteRequest) (*pb.Note, error)
+	getNote    func(ctx context.Context, repoID, id string) (*pb.Note, error)
+	listNotes  func(ctx context.Context, req *pb.ListNotesRequest) ([]*pb.Note, error)
+	updateNote func(ctx context.Context, repoID string, req *pb.UpdateNoteRequest) (*pb.Note, error)
+	deleteNote func(ctx context.Context, repoID, id string) error
+
+	sendBroadcast               func(ctx context.Context, req *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error)
+	listBroadcasts              func(ctx context.Context, req *pb.ListBroadcastsRequest) ([]*pb.Broadcast, error)
+	deleteBroadcast             func(ctx context.Context, id string) error
+	createBroadcastSubscription func(ctx context.Context, req *pb.CreateBroadcastSubscriptionRequest) (*pb.BroadcastSubscription, error)
+	listBroadcastSubscriptions  func(ctx context.Context, req *pb.ListBroadcastSubscriptionsRequest) ([]*pb.BroadcastSubscription, error)
+	deleteBroadcastSubscription func(ctx context.Context, id string) error
+
 	listAccounts         func(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error)
 	addAccount           func(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error)
 	refreshAccount       func(ctx context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error)
@@ -377,6 +393,83 @@ func (f *fakeBackend) ListGithubCallbacks(ctx context.Context, req *pb.ListGithu
 func (f *fakeBackend) DeleteGithubCallback(ctx context.Context, targetChatID, id string) error {
 	if f.deleteGithubCallback != nil {
 		return f.deleteGithubCallback(ctx, targetChatID, id)
+	}
+	return errNotImpl
+}
+
+func (f *fakeBackend) CreateNote(ctx context.Context, req *pb.CreateNoteRequest) (*pb.Note, error) {
+	if f.createNote != nil {
+		return f.createNote(ctx, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) GetNote(ctx context.Context, repoID, id string) (*pb.Note, error) {
+	if f.getNote != nil {
+		return f.getNote(ctx, repoID, id)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) ListNotes(ctx context.Context, req *pb.ListNotesRequest) ([]*pb.Note, error) {
+	if f.listNotes != nil {
+		return f.listNotes(ctx, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) UpdateNote(ctx context.Context, repoID string, req *pb.UpdateNoteRequest) (*pb.Note, error) {
+	if f.updateNote != nil {
+		return f.updateNote(ctx, repoID, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) DeleteNote(ctx context.Context, repoID, id string) error {
+	if f.deleteNote != nil {
+		return f.deleteNote(ctx, repoID, id)
+	}
+	return errNotImpl
+}
+
+func (f *fakeBackend) SendBroadcast(ctx context.Context, req *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error) {
+	if f.sendBroadcast != nil {
+		return f.sendBroadcast(ctx, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) ListBroadcasts(ctx context.Context, req *pb.ListBroadcastsRequest) ([]*pb.Broadcast, error) {
+	if f.listBroadcasts != nil {
+		return f.listBroadcasts(ctx, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) DeleteBroadcast(ctx context.Context, id string) error {
+	if f.deleteBroadcast != nil {
+		return f.deleteBroadcast(ctx, id)
+	}
+	return errNotImpl
+}
+
+func (f *fakeBackend) CreateBroadcastSubscription(ctx context.Context, req *pb.CreateBroadcastSubscriptionRequest) (*pb.BroadcastSubscription, error) {
+	if f.createBroadcastSubscription != nil {
+		return f.createBroadcastSubscription(ctx, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) ListBroadcastSubscriptions(ctx context.Context, req *pb.ListBroadcastSubscriptionsRequest) ([]*pb.BroadcastSubscription, error) {
+	if f.listBroadcastSubscriptions != nil {
+		return f.listBroadcastSubscriptions(ctx, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) DeleteBroadcastSubscription(ctx context.Context, id string) error {
+	if f.deleteBroadcastSubscription != nil {
+		return f.deleteBroadcastSubscription(ctx, id)
 	}
 	return errNotImpl
 }

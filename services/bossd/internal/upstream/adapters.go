@@ -10,12 +10,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
+	bcast "github.com/recurser/bossalib/broadcast"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/safego"
+	bcastsvc "github.com/recurser/bossd/internal/broadcast"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -181,6 +184,11 @@ type SessionCommandServer interface {
 	CreateGithubCallback(context.Context, *connect.Request[pb.CreateGithubCallbackRequest]) (*connect.Response[pb.CreateGithubCallbackResponse], error)
 	ListGithubCallbacks(context.Context, *connect.Request[pb.ListGithubCallbacksRequest]) (*connect.Response[pb.ListGithubCallbacksResponse], error)
 	DeleteGithubCallback(context.Context, *connect.Request[pb.DeleteGithubCallbackRequest]) (*connect.Response[pb.DeleteGithubCallbackResponse], error)
+	CreateNote(context.Context, *connect.Request[pb.CreateNoteRequest]) (*connect.Response[pb.CreateNoteResponse], error)
+	GetNote(context.Context, *connect.Request[pb.GetNoteRequest]) (*connect.Response[pb.GetNoteResponse], error)
+	ListNotes(context.Context, *connect.Request[pb.ListNotesRequest]) (*connect.Response[pb.ListNotesResponse], error)
+	UpdateNote(context.Context, *connect.Request[pb.UpdateNoteRequest]) (*connect.Response[pb.UpdateNoteResponse], error)
+	DeleteNote(context.Context, *connect.Request[pb.DeleteNoteRequest]) (*connect.Response[pb.DeleteNoteResponse], error)
 	AddAccount(context.Context, *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error)
 	RefreshAccount(context.Context, *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error)
 	UpdateAccount(context.Context, *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error)
@@ -204,12 +212,35 @@ type SessionCommandServer interface {
 // cmd/main.go can wire narrow interfaces rather than pull the whole
 // server package in.
 type CommandHandlerAdapter struct {
-	Lifecycle    LifecycleStopper
-	Sessions     SessionReader
-	Automation   AutomationToggler
-	Waker        ChatWaker
-	Commands     SessionCommandServer
+	Lifecycle  LifecycleStopper
+	Sessions   SessionReader
+	Automation AutomationToggler
+	Waker      ChatWaker
+	Commands   SessionCommandServer
+	// Broadcasts materialises an inbound cross-daemon broadcast locally
+	// (BOS-558). Nil when the daemon has no upstream, in which case no
+	// BroadcastCommand can arrive to need it.
+	Broadcasts   BroadcastReceiver
 	OnCompletion func(ctx context.Context, sessionID string) // optional, mirrors task orchestrator hook
+}
+
+// BroadcastReceiver is the one method the inbound cross-daemon broadcast path
+// needs from *broadcast.Ingress, declared here as a narrow interface for the
+// same reason ChatWaker is: cmd/main.go plugs in the real ingress and a test
+// scripts it, without either side depending on the whole type.
+//
+// It takes the DOMAIN value (broadcast.InboundBroadcast) rather than the raw
+// *pb.BroadcastCommand. Importing services/bossd/internal/broadcast from here
+// creates NO cycle — that package depends only on internal/db, internal/rotation
+// and bossalib, all of which upstream already depends on, and nothing in it
+// imports upstream (the ingress takes the daemon id as a plain string precisely
+// so it does not have to). Given the choice is free, translating the wire form
+// into the domain form HERE is the right seam: adapters.go is where every other
+// command turns proto into a daemon call, it keeps cmd/main.go pure wiring, and
+// it means the ingress — where the loop guard and idempotency live — never sees
+// a proto type and so can never be tempted to reach back for one.
+type BroadcastReceiver interface {
+	Receive(ctx context.Context, in bcastsvc.InboundBroadcast) error
 }
 
 // ChatWaker is the slice of *server.Server the WakeChat path needs. The
@@ -712,8 +743,8 @@ func (a *CommandHandlerAdapter) ListCronJobs(ctx context.Context) (*pb.ListCronJ
 
 // CreateCronJob implements SessionCommandHandler.CreateCronJob, translating the
 // stream command into the daemon's CreateCronJobRequest field-for-field. The
-// run_setup_command optional bool is copied as a pointer so its unset/true/false
-// tri-state reaches the daemon unchanged.
+// run_setup_command and is_zero_output optional bools are copied as pointers so
+// their unset/true/false tri-state reaches the daemon unchanged.
 func (a *CommandHandlerAdapter) CreateCronJob(ctx context.Context, cmd *pb.CreateCronJobCommand) (*pb.CreateCronJobResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("create_cron_job: command server not wired")
@@ -729,6 +760,7 @@ func (a *CommandHandlerAdapter) CreateCronJob(ctx context.Context, cmd *pb.Creat
 		Model:                 cmd.GetModel(),
 		GateCommand:           cmd.GetGateCommand(),
 		ShouldRunSetupCommand: cmd.ShouldRunSetupCommand,
+		IsZeroOutput:          cmd.IsZeroOutput,
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("create cron job: %w", err)
@@ -755,6 +787,7 @@ func (a *CommandHandlerAdapter) UpdateCronJob(ctx context.Context, cmd *pb.Updat
 		Model:                 cmd.Model,
 		GateCommand:           cmd.GateCommand,
 		ShouldRunSetupCommand: cmd.ShouldRunSetupCommand,
+		IsZeroOutput:          cmd.IsZeroOutput,
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("update cron job: %w", err)
@@ -832,6 +865,167 @@ func (a *CommandHandlerAdapter) DeleteGithubCallback(ctx context.Context, id str
 		return fmt.Errorf("delete github callback: %w", err)
 	}
 	return nil
+}
+
+// CreateNote implements SessionCommandHandler.CreateNote (BOS-552), translating
+// the stream command into the daemon's CreateNoteRequest field-for-field.
+// SessionId and ChatId are copied as pointers so their unset state reaches the
+// daemon unchanged — the store distinguishes "no provenance" from a blank one.
+func (a *CommandHandlerAdapter) CreateNote(ctx context.Context, cmd *pb.CreateNoteCommand) (*pb.CreateNoteResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("create_note: command server not wired")
+	}
+	resp, err := a.Commands.CreateNote(ctx, connect.NewRequest(&pb.CreateNoteRequest{
+		RepoId:    cmd.GetRepoId(),
+		SessionId: cmd.SessionId,
+		ChatId:    cmd.ChatId,
+		Body:      cmd.GetBody(),
+		Tags:      cmd.GetTags(),
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("create note: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// GetNote implements SessionCommandHandler.GetNote. An absent id surfaces as the
+// daemon's NotFound, which classifyCommandError maps to ERROR_CODE_NOT_FOUND.
+func (a *CommandHandlerAdapter) GetNote(ctx context.Context, cmd *pb.GetNoteCommand) (*pb.GetNoteResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("get_note: command server not wired")
+	}
+	resp, err := a.Commands.GetNote(ctx, connect.NewRequest(&pb.GetNoteRequest{Id: cmd.GetId()}))
+	if err != nil {
+		return nil, fmt.Errorf("get note: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// ListNotes implements SessionCommandHandler.ListNotes, translating the stream
+// command into the daemon's ListNotesRequest. Every filter is an optional
+// pointer copied straight through so the daemon applies only the filters the
+// caller set; Limit is a plain int32 the daemon treats as unbounded when zero.
+func (a *CommandHandlerAdapter) ListNotes(ctx context.Context, cmd *pb.ListNotesCommand) (*pb.ListNotesResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("list_notes: command server not wired")
+	}
+	resp, err := a.Commands.ListNotes(ctx, connect.NewRequest(&pb.ListNotesRequest{
+		RepoId:    cmd.RepoId,
+		SessionId: cmd.SessionId,
+		ChatId:    cmd.ChatId,
+		Tags:      cmd.GetTags(),
+		Search:    cmd.Search,
+		Limit:     cmd.GetLimit(),
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("list notes: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// UpdateNote implements SessionCommandHandler.UpdateNote. Body and Tags are
+// copied as pointers: an unset field leaves that part of the note alone, and a
+// set-but-empty Tags wrapper means "clear the tags", so flattening either one
+// would turn a clear into a silent no-op.
+func (a *CommandHandlerAdapter) UpdateNote(ctx context.Context, cmd *pb.UpdateNoteCommand) (*pb.UpdateNoteResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("update_note: command server not wired")
+	}
+	resp, err := a.Commands.UpdateNote(ctx, connect.NewRequest(&pb.UpdateNoteRequest{
+		Id:   cmd.GetId(),
+		Body: cmd.Body,
+		Tags: cmd.GetTags(),
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("update note: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// DeleteNote implements SessionCommandHandler.DeleteNote. The daemon's
+// DeleteNoteResponse carries no payload, so the response is discarded (mirrors
+// DeleteGithubCallback).
+func (a *CommandHandlerAdapter) DeleteNote(ctx context.Context, id string) error {
+	if a.Commands == nil {
+		return errors.New("delete_note: command server not wired")
+	}
+	if _, err := a.Commands.DeleteNote(ctx, connect.NewRequest(&pb.DeleteNoteRequest{Id: id})); err != nil {
+		return fmt.Errorf("delete note: %w", err)
+	}
+	return nil
+}
+
+// DeliverBroadcast implements SessionCommandHandler.DeliverBroadcast by turning
+// the wire command into the ingress's domain value (BOS-558). It is a
+// TRANSLATOR and nothing more — the loop guard, the idempotency probe and
+// local-only resolution all live in broadcast.Ingress.Receive.
+//
+// Ids are passed through trimmed because the ingress compares origin_daemon_id
+// against this daemon's persisted id: a stray space would defeat the loop guard.
+//
+// ABSENT EXPIRY IS A REJECTION, NOT A DEFAULT. An origin always stamps an
+// absolute expires_at (SendBroadcast derives it from the callback duration
+// parser, which never yields zero), so a missing one means a malformed or
+// truncated command. The two tempting alternatives are both worse:
+// timestamppb's nil AsTime() is the 1970 epoch, which would make every delivery
+// instantly overdue with no error anywhere, and inventing a local default would
+// give a routed broadcast a different lifetime than the one its sender asked
+// for — exactly what carrying an absolute expiry exists to prevent. So we fail
+// loudly, naming the field.
+//
+// This guard runs BEFORE the ingress's loop guard, which the contract says
+// comes first. That ordering is safe and deliberate: a self-echo is by
+// construction well-formed (this daemon stamped its expiry), so the check can
+// only ever fire on a genuinely malformed command from elsewhere — one there is
+// no domain value to build for at all.
+//
+// SECRET BODY: no error below interpolates cmd.message; error text from here
+// travels back to bosso on CommandResult.error.
+func (a *CommandHandlerAdapter) DeliverBroadcast(ctx context.Context, cmd *pb.BroadcastCommand) error {
+	if cmd == nil {
+		return errors.New("broadcast: command is required")
+	}
+	if a.Broadcasts == nil {
+		return errors.New("broadcast: ingress not wired")
+	}
+	id := strings.TrimSpace(cmd.GetBroadcastId())
+	// A zero-valued (as opposed to absent) timestamp decodes to the epoch, which
+	// the ingress's own IsZero check cannot distinguish from "the caller sent
+	// nothing", so the wire form is normalised to a zero time.Time HERE and the
+	// ingress rejects it as the missing field it is. The ingress owns the rule
+	// (it is exported and has other potential callers); this only stops the
+	// decode from inventing 1970.
+	var expiresAt time.Time
+	if ts := cmd.GetExpiresAt(); ts != nil && ts.IsValid() && (ts.GetSeconds() != 0 || ts.GetNanos() != 0) {
+		expiresAt = ts.AsTime().UTC()
+	}
+	err := a.Broadcasts.Receive(ctx, bcastsvc.InboundBroadcast{
+		ID:             id,
+		Selector:       bcast.SelectorFromProto(cmd.GetSelector()),
+		OriginDaemonID: strings.TrimSpace(cmd.GetOriginDaemonId()),
+		OriginChatID:   strings.TrimSpace(cmd.GetOriginChatId()),
+		Message:        cmd.GetMessage(),
+		ExpiresAt:      expiresAt,
+	})
+	// PERMANENT failures are typed so the router can drop rather than redeliver.
+	// The stream is at-least-once, so an error that reads as "try again" WILL come
+	// back: a malformed command or an over-cap selector reported the same way as
+	// "database is locked" is a poison pill that retries forever. Both sentinels
+	// here are deterministic in the command itself — the same bytes fail the same
+	// way on every attempt — so they become InvalidArgument, which
+	// classifyCommandError turns into a typed CommandResult.error_code. Everything
+	// else stays untyped and therefore retryable, which is the safe default.
+	//
+	// SECRET BODY: connect.NewError wraps the ingress's own error text, which is
+	// id-and-field only by construction; nothing here reaches for cmd.GetMessage().
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, bcastsvc.ErrInvalidInbound), errors.Is(err, bcastsvc.ErrTooManyTargets):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return err
+	}
 }
 
 // RunCronJobNow implements SessionCommandHandler.RunCronJobNow by delegating to

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Install after replacing placeholders:
+
+  REPO_ROOT="/absolute/path/to/bossanova"
+  PLIST="$HOME/Library/LaunchAgents/com.bossanova.clean-go-build-cache.plist"
+  sed -e "s|__REPO_ROOT__|$REPO_ROOT|g" -e "s|__HOME__|$HOME|g" \
+    scripts/launchd/com.bossanova.clean-go-build-cache.plist.example > "$PLIST"
+  launchctl bootstrap "gui/$(id -u)" "$PLIST"
+
+To remove it later:
+
+  launchctl bootout "gui/$(id -u)" "$PLIST"
+  rm "$PLIST"
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.bossanova.clean-go-build-cache</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>cd "__REPO_ROOT__" &amp;&amp; make clean-cache</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>4</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/bossanova-clean-go-build-cache.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/bossanova-clean-go-build-cache.log</string>
+</dict>
+</plist>

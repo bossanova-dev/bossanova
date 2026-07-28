@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "title": "BOS-511 Settings is a menu of sections",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "Settings lists every section instead of hiding them behind letters",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings menu" },
+        {
+          "waitFor": "Cron jobs",
+          "timeoutMs": 10000,
+          "caption": "The Settings menu is rendered"
+        },
+        {
+          "expect": [
+            { "text": "General", "match": "normalized", "label": "General section row" },
+            {
+              "text": "Repositories",
+              "match": "normalized",
+              "label": "Repositories section row"
+            },
+            { "text": "Trash", "match": "normalized", "label": "Trash section row" }
+          ],
+          "caption": "Every settings destination is a visible row"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "arrow keys walk the section rows and enter opens the one under the cursor",
+      "steps": [
+        { "key": "down", "caption": "Arrow down to Repositories" },
+        { "key": "down", "caption": "Arrow down to Cron jobs" },
+        {
+          "waitFor": {
+            "text": "❯.*Cron jobs",
+            "match": "regex",
+            "label": "cursor walked down to Cron jobs"
+          },
+          "timeoutMs": 10000,
+          "caption": "Arrow keys move between section rows"
+        },
+        { "key": "up", "caption": "Arrow back up to Repositories" },
+        { "key": "up", "caption": "Arrow back up to General" },
+        {
+          "waitFor": {
+            "text": "❯.*General",
+            "match": "regex",
+            "label": "cursor back on the General row"
+          },
+          "timeoutMs": 10000,
+          "caption": "The cursor is back on the General row"
+        },
+        { "key": "enter", "caption": "Press [enter] on the General row" },
+        {
+          "waitFor": "Worktree base directory",
+          "timeoutMs": 10000,
+          "caption": "General Settings loaded"
+        },
+        {
+          "expect": [
+            {
+              "text": "❯.*Cron jobs",
+              "match": "regex",
+              "label": "the cursor visibly moved down the section menu"
+            },
+            {
+              "text": "Worktree base directory",
+              "match": "normalized",
+              "label": "worktree base directory row"
+            },
+            {
+              "text": "Poll interval",
+              "match": "normalized",
+              "label": "poll interval row"
+            }
+          ],
+          "caption": "The old flat toggle list now lives under General"
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "esc returns to the Settings menu",
+      "steps": [
+        { "key": "esc", "caption": "Press [esc] to leave General Settings" },
+        {
+          "waitFor": "Cron jobs",
+          "timeoutMs": 10000,
+          "caption": "Back on the Settings menu"
+        },
+        {
+          "expect": [
+            { "text": "General", "match": "normalized", "label": "General section row again" },
+            { "text": "Cron jobs", "match": "normalized", "label": "Cron jobs section row" }
+          ],
+          "caption": "General's parent is statically the Settings menu"
+        }
+      ]
+    },
+    {
+      "id": "scene-04",
+      "title": "a letter accelerator still jumps straight to a section",
+      "steps": [
+        { "key": "a", "caption": "Press [a] to jump straight to Accounts" },
+        {
+          "waitFor": {
+            "text": "LABEL PROVIDER",
+            "match": "normalized",
+            "label": "Accounts list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Accounts opened without walking the menu"
+        },
+        {
+          "expect": [
+            {
+              "text": "LABEL PROVIDER",
+              "match": "normalized",
+              "label": "accounts table header (the hub's Accounts row cannot match it)"
+            },
+            {
+              "text": "work-claude",
+              "match": "normalized",
+              "label": "seeded account row proves the jump landed"
+            }
+          ],
+          "caption": "The accelerators survive as shortcuts over the menu"
+        }
+      ]
+    }
+  ]
+}

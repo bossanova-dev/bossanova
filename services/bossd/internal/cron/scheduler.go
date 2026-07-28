@@ -509,10 +509,13 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (*models.Session, st
 		// is left behind by a PR, an archived orphan, or a SIGTERM'd
 		// session. Including the unix timestamp keeps consecutive fires
 		// (≥1 minute apart by cron's smallest granularity) collision-free.
-		BranchName: cronBranchName(job.Name, s.nowFunc()),
 		CronJobID:  job.ID,
 		DeferPR:    true,
 		HookToken:  token,
+		ZeroOutput: job.IsZeroOutput,
+	}
+	if !job.IsZeroOutput {
+		opts.BranchName = cronBranchName(job.Name, s.nowFunc())
 	}
 
 	sess, err := s.creator.CreateSession(ctx, opts)

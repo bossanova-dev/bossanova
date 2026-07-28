@@ -83,3 +83,38 @@ func TestResolveE2ECloudAccessClientUsesCheckoutURLEnv(t *testing.T) {
 		t.Fatalf("checkoutURL = %q, want custom env URL", client.checkoutURL)
 	}
 }
+
+func TestE2ECloudAccessStatusErrorMessageOverride(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_ACCESS_E2E_SEQUENCE", "error")
+	t.Setenv("BOSS_CLOUD_ACCESS_E2E_ERROR_MESSAGE", "  dial tcp: lookup api.workos.com: no such host  ")
+
+	client, ok := resolveE2ECloudAccessClient().(*e2eCloudAccessClient)
+	if !ok {
+		t.Fatalf("resolveE2ECloudAccessClient returned %T, want *e2eCloudAccessClient", client)
+	}
+	_, err := client.GetCloudAccessStatus(context.Background())
+	if err == nil {
+		t.Fatal("GetCloudAccessStatus returned nil error, want the overridden failure")
+	}
+	if got, want := err.Error(), "dial tcp: lookup api.workos.com: no such host"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+func TestE2ECloudAccessStatusErrorMessageDefaults(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_ACCESS_E2E_SEQUENCE", "error")
+	t.Setenv("BOSS_CLOUD_ACCESS_E2E_ERROR_MESSAGE", "")
+
+	client, ok := resolveE2ECloudAccessClient().(*e2eCloudAccessClient)
+	if !ok {
+		t.Fatalf("resolveE2ECloudAccessClient returned %T, want *e2eCloudAccessClient", client)
+	}
+	_, err := client.GetCloudAccessStatus(context.Background())
+	if err == nil || err.Error() != defaultE2ECloudAccessError {
+		t.Fatalf("error = %v, want the default %q", err, defaultE2ECloudAccessError)
+	}
+	// A zero-value client (not built through resolve) still reports the default.
+	if _, zErr := (&e2eCloudAccessClient{states: []pb.CloudAccessState{pb.CloudAccessState_CLOUD_ACCESS_STATE_UNSPECIFIED}}).GetCloudAccessStatus(context.Background()); zErr == nil || zErr.Error() != defaultE2ECloudAccessError {
+		t.Fatalf("zero-value client error = %v, want the default %q", zErr, defaultE2ECloudAccessError)
+	}
+}

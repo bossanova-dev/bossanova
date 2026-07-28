@@ -64,7 +64,7 @@ func NewSessionSettingsModel(c client.BossClient, ctx context.Context, sessionID
 
 func (m SessionSettingsModel) Init() tea.Cmd {
 	return func() tea.Msg {
-		sess, err := m.client.GetSession(m.ctx, m.sessionID)
+		sess, err := m.client.GetSession(m.ctx, m.sessionID, client.SessionReadOptions{})
 		if err != nil {
 			return sessionSettingsLoadedMsg{err: err}
 		}
@@ -220,15 +220,10 @@ func (m SessionSettingsModel) View() tea.View {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.nameInput.View()))
 		b.WriteString("\n")
 	} else {
-		cursor := "  "
-		if m.cursor == sessionSettingsRowName {
-			cursor = cursorChevron + " "
-		}
-		line := fmt.Sprintf("%sName: %s", cursor, m.session.Title)
-		if m.cursor == sessionSettingsRowName {
-			line = styleSelected.Render(line)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
+		b.WriteString(renderFieldRow(
+			m.cursor == sessionSettingsRowName,
+			fmt.Sprintf("Name: %s", m.session.Title),
+		))
 		b.WriteString("\n")
 	}
 

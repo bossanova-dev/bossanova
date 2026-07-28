@@ -13,9 +13,14 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
+// defaultE2ECloudAccessError is the failure text the "error" sequence state
+// reports when no override is supplied.
+const defaultE2ECloudAccessError = "e2e cloud access status error"
+
 type e2eCloudAccessClient struct {
 	mu                         sync.Mutex
 	states                     []pb.CloudAccessState
+	errorMessage               string
 	refreshIndex               int
 	checkoutURL                string
 	portalURL                  string
@@ -43,8 +48,17 @@ func resolveE2ECloudAccessClient() cloudAccessClient {
 	if githubAppURL == "" {
 		githubAppURL = "https://github.com/apps/bossanova-dev/installations/new"
 	}
+	// BOSS_CLOUD_ACCESS_E2E_ERROR_MESSAGE lets a fixture pin the exact failure
+	// text the "error" state reports, so a proof scenario can exercise a
+	// realistic long error (the ~250-column refresh-token failure) without
+	// hard-coding it here. Empty falls back to the short default.
+	errorMessage := strings.TrimSpace(os.Getenv("BOSS_CLOUD_ACCESS_E2E_ERROR_MESSAGE"))
+	if errorMessage == "" {
+		errorMessage = defaultE2ECloudAccessError
+	}
 	return &e2eCloudAccessClient{
 		states:                     parseE2ECloudAccessStates(raw),
+		errorMessage:               errorMessage,
 		checkoutURL:                checkoutURL,
 		portalURL:                  portalURL,
 		githubAppURL:               githubAppURL,
@@ -87,9 +101,18 @@ func (c *e2eCloudAccessClient) GetCloudAccessStatus(context.Context) (*pb.CloudA
 		state = c.states[0]
 	}
 	if state == pb.CloudAccessState_CLOUD_ACCESS_STATE_UNSPECIFIED {
-		return nil, errors.New("e2e cloud access status error")
+		return nil, errors.New(c.errorText())
 	}
 	return &pb.CloudAccessStatus{State: state, CanCreateCheckout: true}, nil
+}
+
+// errorText returns the configured failure text, defaulting when unset (a
+// zero-value client built outside resolveE2ECloudAccessClient).
+func (c *e2eCloudAccessClient) errorText() string {
+	if c.errorMessage == "" {
+		return defaultE2ECloudAccessError
+	}
+	return c.errorMessage
 }
 
 func (c *e2eCloudAccessClient) RefreshCloudEntitlements(context.Context) (*pb.CloudAccessStatus, error) {

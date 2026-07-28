@@ -52,6 +52,7 @@ Press `n` from the cron list. The form's fields all come from
 | `Timezone`          | no        | IANA name (e.g. `America/New_York`). Empty = the daemon's local zone.                                                                       |
 | `Gate command`      | no        | Optional command run before each fire; a non-zero exit skips the run. See [Gate command](#gate-command).                                    |
 | `Run setup command` | yes       | Defaults to **on**. Turn off to skip the repo [setup script](setup-scripts.md) for light jobs. See [Run setup command](#run-setup-command). |
+| `Zero output`       | yes       | Defaults to **off**. Turn on for jobs that change nothing in the repo — no worktree, branch, or PR. See [Zero output](#zero-output).        |
 | `Enabled`           | yes       | Defaults to on. Disabled rows persist but don't fire.                                                                                       |
 
 The form renders a live **next-fire preview** under the schedule
@@ -183,6 +184,30 @@ setup script entirely and starts the agent in the bare worktree.
 Internally this maps to the session's `SkipSetupScript` option
 (`run_setup_command` off ⇒ `SkipSetupScript` true).
 
+## Zero output
+
+Some jobs only ever report somewhere else — they post to Slack, probe a
+health endpoint, or file a ticket — and are never expected to change a
+line of this repository. Provisioning a worktree, a branch and a draft PR
+for those is pure overhead.
+
+**Zero output** is the per-job toggle for that shape. It defaults to
+**off** — the only toggle on this form that does, because running with no
+worktree is never a safe default. Turn it **on** and the fire runs with
+no worktree, no branch and no PR: the agent runs in the repository
+checkout itself, the setup script is skipped regardless of
+[Run setup command](#run-setup-command), and the run finalizes as a
+benign no-op recorded with the `zero_output` outcome.
+
+Because the agent runs in your real checkout rather than an isolated
+worktree, a zero-output job that does write files leaves them there —
+nothing cleans them up and no PR is opened. Keep the prompt to jobs that
+genuinely produce no repository changes.
+
+It is settable from every surface: the TUI and web cron forms, `boss cron
+add --zero-output` / `boss cron update <id> --zero-output=false`, and the
+`create_cron_job` / `update_cron_job` MCP tools' `zero_output` argument.
+
 ## What happens at fire time
 
 When the schedule's next tick arrives, the daemon's scheduler
@@ -210,6 +235,9 @@ runs `fire()`:
    [setup script](setup-scripts.md) runs **unless [Run setup
    command](#run-setup-command) is off**; and the agent plugin starts
    the agent inside it with the cron job's prompt as the first turn.
+   When [Zero output](#zero-output) is on, none of that provisioning
+   happens: the agent starts in the repository checkout with no
+   worktree, branch or PR.
 6. **Persist.** `last_run_session_id`, `last_run_at`, and
    `next_run_at` are written to the cron job row, so the list view's
    `LAST RUN` and `NEXT RUN` columns update on the next poll.

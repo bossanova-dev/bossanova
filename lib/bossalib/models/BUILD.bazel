@@ -4,10 +4,12 @@ go_library(
     name = "models",
     srcs = [
         "account.go",
+        "broadcast.go",
         "convert.go",
         "cron_job.go",
         "github_callback.go",
         "models.go",
+        "note.go",
         "workflow.go",
     ],
     importpath = "github.com/recurser/bossalib/models",
@@ -22,6 +24,7 @@ go_library(
 go_test(
     name = "models_test",
     srcs = [
+        "broadcast_test.go",
         "convert_test.go",
         "merge_strategy_test.go",
     ],

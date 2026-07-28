@@ -757,9 +757,12 @@ type mockBaseSyncer struct {
 	fetchErr      error
 	ancestorFn    func(ref, target string) (bool, error)
 	syncErr       error
+	mergeCommits  int
+	countErr      error
 	syncCalls     int
 	fetchCalls    int
 	ancestorCalls int
+	countCalls    int
 }
 
 func (m *mockBaseSyncer) SyncBaseBranch(_ context.Context, _, _ string) error {
@@ -776,6 +779,10 @@ func (m *mockBaseSyncer) IsAncestor(_ context.Context, _, ref, target string) (b
 		return m.ancestorFn(ref, target)
 	}
 	return true, nil
+}
+func (m *mockBaseSyncer) CountMergeCommits(_ context.Context, _, _, _ string) (int, error) {
+	m.countCalls++
+	return m.mergeCommits, m.countErr
 }
 
 func TestRouteTask_AutoMerge_VerifiesCommitOnBase(t *testing.T) {
@@ -989,6 +996,192 @@ func TestRouteTask_AutoMerge_DefersLocalBaseSync(t *testing.T) {
 	}
 	if finalStatus != models.TaskMappingStatusCompleted {
 		t.Errorf("want Completed (deferred local sync is non-fatal), got %d", finalStatus)
+	}
+}
+
+func TestRouteTask_AutoMerge_SubstitutesSquashWhenBranchHasMergeCommits(t *testing.T) {
+	// BOS-513: a rebase-configured repo whose Dependabot branch carries a
+	// merge commit is one GitHub's rebase-merge structurally refuses. The
+	// shared strategy seam must downgrade to squash BEFORE MergePR is called.
+	var passedStrategy string
+	var finalStatus models.TaskMappingStatus
+
+	syncer := &mockBaseSyncer{
+		ancestorFn:   func(_, _ string) (bool, error) { return true, nil },
+		mergeCommits: 1,
+	}
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		base := &mockProvider{
+			mergeFn:             func(_ context.Context, _ string, _ int) error { return nil },
+			mergeCommitFn:       func(_ int) (string, error) { return "abc123", nil },
+			allowedStrategiesFn: func() ([]string, error) { return []string{"squash", "rebase"}, nil },
+		}
+		o.provider = &strategyCapturingProvider{Provider: base, captured: &passedStrategy}
+		o.baseSyncer = syncer
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+				if params.Status != nil {
+					finalStatus = *params.Status
+				}
+				return &models.TaskMapping{}, nil
+			},
+		}
+	})
+
+	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId:     "dependabot:pr:https://github.com/org/repo:31",
+		Title:          "Bump foo",
+		Action:         bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+		ExistingBranch: "dependabot/npm_and_yarn/foo-1.2.3",
+	}, repoInfo{
+		id:            "r1",
+		originURL:     "https://github.com/org/repo",
+		localPath:     "/tmp/repo",
+		baseBranch:    "main",
+		mergeStrategy: "rebase",
+	}, "dependabot")
+
+	if syncer.countCalls == 0 {
+		t.Error("CountMergeCommits should have been consulted for a rebase repo")
+	}
+	if passedStrategy != "squash" {
+		t.Errorf("want MergePR called with strategy=squash, got %q", passedStrategy)
+	}
+	if finalStatus != models.TaskMappingStatusCompleted {
+		t.Errorf("want Completed, got %d", finalStatus)
+	}
+}
+
+func TestRouteTask_AutoMerge_IncompatibleStrategyQueuesRepairSession(t *testing.T) {
+	// Merge commits present, rebase is the only strategy the remote allows:
+	// nothing can succeed, so the pre-check must route to the SAME repair
+	// path that today's post-failure rebase-refusal branch uses rather than
+	// dead-ending the mapping in Failed.
+	var passedStrategy string
+	var capturedOpts CreateSessionOpts
+	var updatedStatus models.TaskMappingStatus
+
+	syncer := &mockBaseSyncer{mergeCommits: 2}
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		base := &mockProvider{
+			mergeFn:             func(_ context.Context, _ string, _ int) error { return nil },
+			allowedStrategiesFn: func() ([]string, error) { return []string{"rebase"}, nil },
+		}
+		o.provider = &strategyCapturingProvider{Provider: base, captured: &passedStrategy}
+		o.baseSyncer = syncer
+		o.sessionCreator = &mockSessionCreatorOrch{
+			createFn: func(_ context.Context, opts CreateSessionOpts) (*models.Session, error) {
+				capturedOpts = opts
+				return &models.Session{ID: "repair-session"}, nil
+			},
+		}
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+				if params.Status != nil {
+					updatedStatus = *params.Status
+				}
+				return &models.TaskMapping{}, nil
+			},
+		}
+	})
+
+	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId:     "dependabot:pr:https://github.com/org/repo:32",
+		Title:          "Bump foo",
+		Plan:           "Original dependabot plan.",
+		Action:         bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+		ExistingBranch: "dependabot/npm_and_yarn/foo-1.2.3",
+		Labels:         []string{"dependabot"},
+	}, repoInfo{
+		id:            "r1",
+		originURL:     "https://github.com/org/repo",
+		localPath:     "/tmp/repo",
+		baseBranch:    "main",
+		mergeStrategy: "rebase",
+	}, "dependabot")
+
+	if passedStrategy != "" {
+		t.Errorf("MergePR must not run for an incompatible strategy; got %q", passedStrategy)
+	}
+	if capturedOpts.HeadBranch != "dependabot/npm_and_yarn/foo-1.2.3" {
+		t.Errorf("HeadBranch = %q, want the existing Dependabot branch", capturedOpts.HeadBranch)
+	}
+	if !strings.Contains(capturedOpts.Plan, "rebase") {
+		t.Errorf("repair plan should mention rebase, got %q", capturedOpts.Plan)
+	}
+	if updatedStatus != models.TaskMappingStatusInProgress {
+		t.Errorf("status = %d, want InProgress (repair session queued)", updatedStatus)
+	}
+}
+
+func TestRouteTask_AutoMerge_KeepsRebaseWithoutMergeCommits(t *testing.T) {
+	// A linear branch is exactly what rebase-merge wants — no substitution.
+	var passedStrategy string
+
+	syncer := &mockBaseSyncer{
+		ancestorFn:   func(_, _ string) (bool, error) { return true, nil },
+		mergeCommits: 0,
+	}
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		base := &mockProvider{
+			mergeFn:             func(_ context.Context, _ string, _ int) error { return nil },
+			allowedStrategiesFn: func() ([]string, error) { return []string{"squash", "rebase"}, nil },
+		}
+		o.provider = &strategyCapturingProvider{Provider: base, captured: &passedStrategy}
+		o.baseSyncer = syncer
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+	})
+
+	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId:     "dependabot:pr:https://github.com/org/repo:33",
+		Title:          "Bump foo",
+		Action:         bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+		ExistingBranch: "dependabot/npm_and_yarn/foo-1.2.3",
+	}, repoInfo{
+		id:            "r1",
+		originURL:     "https://github.com/org/repo",
+		localPath:     "/tmp/repo",
+		baseBranch:    "main",
+		mergeStrategy: "rebase",
+	}, "dependabot")
+
+	if passedStrategy != "rebase" {
+		t.Errorf("want MergePR called with strategy=rebase, got %q", passedStrategy)
+	}
+}
+
+func TestRouteTask_AutoMerge_NilBaseSyncerFailsOpenToRebase(t *testing.T) {
+	// baseSyncer is optional; with no counter the seam must fail open to the
+	// resolved strategy rather than panicking or blocking the merge.
+	var passedStrategy string
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		base := &mockProvider{
+			mergeFn:             func(_ context.Context, _ string, _ int) error { return nil },
+			allowedStrategiesFn: func() ([]string, error) { return []string{"squash", "rebase"}, nil },
+		}
+		o.provider = &strategyCapturingProvider{Provider: base, captured: &passedStrategy}
+		o.baseSyncer = nil
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+	})
+
+	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId:     "dependabot:pr:https://github.com/org/repo:34",
+		Title:          "Bump foo",
+		Action:         bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+		ExistingBranch: "dependabot/npm_and_yarn/foo-1.2.3",
+	}, repoInfo{
+		id:            "r1",
+		originURL:     "https://github.com/org/repo",
+		localPath:     "/tmp/repo",
+		baseBranch:    "main",
+		mergeStrategy: "rebase",
+	}, "dependabot")
+
+	if passedStrategy != "rebase" {
+		t.Errorf("want MergePR called with strategy=rebase (fail open), got %q", passedStrategy)
 	}
 }
 

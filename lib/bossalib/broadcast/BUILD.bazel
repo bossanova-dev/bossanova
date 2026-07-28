@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "broadcast",
+    srcs = [
+        "match.go",
+        "proto.go",
+        "selector.go",
+    ],
+    importpath = "github.com/recurser/bossalib/broadcast",
+    visibility = ["//visibility:public"],
+    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+)
+
+go_test(
+    name = "broadcast_test",
+    srcs = [
+        "match_test.go",
+        "proto_test.go",
+        "selector_test.go",
+    ],
+    embed = [":broadcast"],
+    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+)

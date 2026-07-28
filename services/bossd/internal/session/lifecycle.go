@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -240,6 +241,21 @@ type Lifecycle struct {
 	rotationBinding     rotationBinding
 	rateLimitProbe      rateLimitProbe
 
+	// proxyProbeGroup coalesces the failover proxy's inline confirm-before-cool
+	// probe by account id. A rate-limit episode 429s several in-flight requests
+	// bound to the SAME account at once, and each one used to pay its own
+	// MaterializeAccount + ProbeRateLimit round trip plus a usage-cache write —
+	// fanning probes out at the provider that is already unhappy. They are all
+	// asking one question ("is this account limited right now?"), so one answer
+	// serves them all. The engine's own single-flight is downstream of this call
+	// and cannot cover it. (BOS-584)
+	proxyProbeGroup singleflight.Group
+
+	// proxyProbeTimeout bounds that inline probe. Zero means
+	// defaultProxyUsageProbeTimeout; tests shorten it so the deadline path does
+	// not cost real wall-clock seconds.
+	proxyProbeTimeout time.Duration
+
 	// accountGetter resolves a *models.Account by id, so CurrentBearer can turn
 	// the binding's CappedAccountID into an account the materializer accepts
 	// (CurrentBinding returns only the id). Nil ⇒ CurrentBearer degrades to ""
@@ -290,6 +306,16 @@ type Lifecycle struct {
 	accountSwitchRegistry    accountRegistry
 	accountSwitchWorking     chatStatusReader
 	accountSwitchTranscripts transcriptProbe
+
+	// backgroundDraftPRs tracks the in-flight background draft-PR creates
+	// StartSession spawns (BOS-540), keyed by session id. The value channel is
+	// closed when that session's create finishes. The registry is what makes
+	// the step tracked rather than fire-and-forget: daemon shutdown joins every
+	// entry via WaitForBackgroundDraftPRs, and callers that need one session's
+	// create to have landed use WaitForBackgroundDraftPR. Lazily created on
+	// first use, so the zero Lifecycle is usable.
+	backgroundDraftPRMu sync.Mutex
+	backgroundDraftPRs  map[string]*backgroundDraftPRHandle
 }
 
 // proofEnvResolver resolves the allowlisted proof environment overlay. The
@@ -1072,6 +1098,10 @@ func NewLifecycle(
 type StartSessionOpts struct {
 	// ExistingBranch, when non-empty, makes the worktree check out that
 	// branch instead of creating a fresh one (used for existing PR sessions).
+	// Every caller today sets it only alongside a PR number; this path fetches
+	// the head branch but not the base, and createDraftPR relies on that
+	// pairing without enforcing it. Read the SkipFetch rationale in
+	// createDraftPR before setting this from a new call site.
 	ExistingBranch string
 
 	// ForceBranch removes any pre-existing branch with the derived name
@@ -1118,6 +1148,10 @@ type StartSessionOpts struct {
 	// (like a cron session) instead of the headless detach path, and is
 	// persisted so the completion gate and restart re-adoption recognise it.
 	IsTmuxUnattended bool
+
+	// ZeroOutput runs a cron job from the repository checkout without a
+	// worktree, branch, draft PR, setup script, or Stop-hook file.
+	ZeroOutput bool
 }
 
 // StartSession creates a worktree, starts a Claude process, and fires
@@ -1167,13 +1201,17 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		cronJobID := &opts.CronJobID
 		updateParams.CronJobID = &cronJobID
 	}
-	if opts.HookToken != "" && tmuxHosted {
+	if opts.HookToken != "" && tmuxHosted && !opts.ZeroOutput {
 		hookToken := &opts.HookToken
 		updateParams.HookToken = &hookToken
 	}
 	if opts.IsTmuxUnattended {
 		tmuxUnattended := true
 		updateParams.IsTmuxUnattended = &tmuxUnattended
+	}
+	if opts.ZeroOutput {
+		quickChat := true
+		updateParams.IsQuickChat = &quickChat
 	}
 	// Persist Detach only on the durable tmux-hosted branch: a `--detach` run
 	// that fell back to the paneless headless path (tmux unavailable) must stay
@@ -1187,14 +1225,16 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		return fmt.Errorf("set creating_worktree state: %w", err)
 	}
 
-	l.logger.Info().
-		Str("session", sessionID).
-		Str("repo", repo.LocalPath).
-		Msg("creating worktree")
+	if opts.ZeroOutput {
+		l.logger.Info().Str("session", sessionID).Str("repo", repo.LocalPath).
+			Msg("starting zero-output cron session without worktree")
+	} else {
+		l.logger.Info().Str("session", sessionID).Str("repo", repo.LocalPath).Msg("creating worktree")
+	}
 
 	// Determine setup script — skip it when the flag is set (e.g. dependabot PRs).
 	setupScript := repo.SetupScript
-	if skipSetupScript {
+	if skipSetupScript || opts.ZeroOutput {
 		setupScript = nil
 	}
 
@@ -1208,8 +1248,14 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	}
 
 	// Create worktree: existing branch (PR) or new branch.
+	worktreeStarted := time.Now()
+	worktreeResult := "created_fresh"
 	var result *gitpkg.CreateResult
-	if existingBranch != "" {
+	if opts.ZeroOutput {
+		worktreeResult = "zero_output"
+		result = &gitpkg.CreateResult{WorktreePath: repo.LocalPath}
+	} else if existingBranch != "" {
+		worktreeResult = "checked_out_existing"
 		result, err = l.worktrees.CreateFromExistingBranch(ctx, gitpkg.CreateFromExistingBranchOpts{
 			RepoPath:          repo.LocalPath,
 			BranchName:        existingBranch,
@@ -1219,12 +1265,16 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			SetupScriptOutput: setupOutput,
 		})
 		if err != nil {
-			// The branch may not exist on the remote yet (e.g. a Linear issue
-			// with no PR). Fall back to creating a new branch with that name.
+			// Preserve the existing fallback for any checkout failure. The
+			// worktree manager does not expose a typed missing-remote error, so
+			// report the failure neutrally instead of guessing its cause.
 			l.logger.Info().
 				Str("branch", existingBranch).
+				Str("result", "existing_checkout_failed").
+				Dur("worktree_duration", time.Since(worktreeStarted)).
 				Err(err).
-				Msg("existing branch not found on remote, creating new branch")
+				Msg("existing branch checkout failed; creating fresh branch")
+			worktreeResult = "created_fresh_after_existing_checkout_error"
 			result, err = l.worktrees.Create(ctx, gitpkg.CreateOpts{
 				RepoPath:          repo.LocalPath,
 				BaseBranch:        session.BaseBranch,
@@ -1252,6 +1302,17 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	}
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
+	}
+	if !opts.ZeroOutput {
+		l.logger.Info().
+			Str("session", sessionID).
+			Str("result", worktreeResult).
+			Dur("worktree_duration", time.Since(worktreeStarted)).
+			Dur("fetch_ms", result.FetchDuration).
+			Dur("branch_probe_ms", result.BranchProbeDuration).
+			Dur("worktree_add_ms", result.WorktreeAddDuration).
+			Dur("setup_script_ms", result.SetupScriptDuration).
+			Msg("worktree startup complete")
 	}
 
 	// A setup-script failure is non-fatal: the worktree is valid, so the
@@ -1287,7 +1348,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// startup). Non-cron sessions have an empty HookToken and skip this
 	// path entirely, preserving historical behaviour.
 	var hookResp *bossanovav1.ConfigureFinalizeHookResponse
-	if opts.HookToken != "" && tmuxHosted {
+	if opts.HookToken != "" && tmuxHosted && !opts.ZeroOutput {
 		if l.hookPort == 0 {
 			return fmt.Errorf("hook port not configured: SetHookPort must be called before starting sessions with a HookToken")
 		}
@@ -1390,7 +1451,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	if hookResp != nil && !hookResp.GetIsSupported() {
 		l.logger.Info().Str("session", sessionID).Msg("agent does not support finalize hook")
 	}
-	hooklessTmux := tmuxHosted && hookResp != nil && !hookResp.GetIsSupported()
+	hooklessTmux := tmuxHosted && (opts.ZeroOutput || hookResp != nil && !hookResp.GetIsSupported())
 
 	// Update session with Claude session ID. Idle tracker sessions have no
 	// agent session yet, so leave AgentSessionID nil (matching quick chat)
@@ -1462,21 +1523,25 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	}
 
 	// For sessions without an existing PR, push the branch and create a
-	// draft PR immediately so the user gets a PR right away. This covers
-	// both plain "new PR" sessions and tracker-sourced sessions (e.g.
-	// Linear tickets) — the latter carry a Plan but still need a PR up
-	// front for visibility.
+	// draft PR so the user gets a PR for the session. This covers both plain
+	// "new PR" sessions and tracker-sourced sessions (e.g. Linear tickets) —
+	// the latter carry a Plan but still need a PR for visibility.
 	//
-	// Cron-spawned sessions opt out via opts.DeferPR — the Stop-hook
-	// finalize path calls EnsurePR once the run actually produces commits.
+	// The create runs as a TRACKED BACKGROUND STEP (BOS-540): it costs a push,
+	// a fetch and a `gh pr create` — 64s of a measured 135s session start —
+	// and nothing the agent does needs the PR to exist, so blocking the return
+	// on it only delayed the moment the session became attachable. The session
+	// row remains the single source of truth: the PR number is persisted
+	// through the usual sessions.Update once the create lands, and the TUI/web
+	// pick it up on their normal refresh. See startBackgroundDraftPR for the
+	// context and lifetime contract.
+	//
+	// Cron-spawned sessions opt out entirely via opts.DeferPR — the Stop-hook
+	// finalize path calls EnsurePR once the run actually produces commits. That
+	// is unchanged: a DeferPR session starts no background step and creates no
+	// PR here.
 	if session.PRNumber == nil && !opts.DeferPR {
-		if err := l.createDraftPR(ctx, sessionID, result.WorktreePath, result.BranchName, session, repo); err != nil {
-			l.setDraftPRBlockedReason(ctx, sessionID, err)
-			l.logger.Warn().Err(err).
-				Str("session", sessionID).
-				Str("branch", result.BranchName).
-				Msg("draft PR creation failed during session start; branch is preserved and retryable")
-		}
+		l.startBackgroundDraftPR(ctx, sessionID, result.WorktreePath, result.BranchName)
 	}
 
 	l.logger.Info().
@@ -1661,15 +1726,23 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// createDraftPR pushes the branch and creates a draft PR on GitHub,
-// storing the PR number and URL on the session. Used during StartSession
-// to create the PR immediately for any session without an existing one.
+// draftPRBlockedReason renders the blocked_reason recorded when a draft PR
+// create fails.
 func draftPRBlockedReason(err error) string {
 	return sessionreason.DraftPRCreationFailure(err)
 }
 
 func isDraftPRBlockedReason(reason *string) bool {
 	return sessionreason.IsDraftPRCreationFailure(reason)
+}
+
+// isClearableDraftPRReason reports whether reason is one of the two
+// lifecycle-owned draft-PR markers a successful create or attach should clear:
+// the failure reason from a previous attempt, or the in-flight marker the
+// background step (BOS-540) wrote when it started. Anything else — a fix-loop
+// block, a finalize failure — belongs to another owner and is left alone.
+func isClearableDraftPRReason(reason *string) bool {
+	return isDraftPRBlockedReason(reason) || sessionreason.IsDraftPRCreationInFlight(reason)
 }
 
 func (l *Lifecycle) setDraftPRBlockedReason(ctx context.Context, sessionID string, err error) {
@@ -1687,8 +1760,36 @@ func (l *Lifecycle) setDraftPRBlockedReason(ctx context.Context, sessionID strin
 	}
 }
 
+// clearDraftPRBlockedReason drops a lifecycle-owned draft-PR marker (a previous
+// attempt's failure, or the background step's in-flight marker) once a PR has
+// been created or attached.
+//
+// The clear is an unconditional `blocked_reason = NULL`, so it re-reads the row
+// before writing. The caller's *models.Session is a snapshot, and on the BOS-540
+// background path that snapshot is taken before a push + fetch + `gh pr create`
+// — tens of seconds during which the session's own headless run can fail and
+// write a real block. Deciding from the stale copy would erase that diagnostic
+// and leave the session Blocked with no reason. Re-reading narrows the window to
+// the store round-trip, matching what this helper's synchronous callers have
+// always had.
 func (l *Lifecycle) clearDraftPRBlockedReason(ctx context.Context, sessionID string, session *models.Session) error {
-	if !isDraftPRBlockedReason(session.BlockedReason) {
+	if !isClearableDraftPRReason(session.BlockedReason) {
+		return nil
+	}
+	// A failed re-read falls through to the clear rather than erroring. Two of
+	// this helper's callers (attachPRMetadata, LinkPR) propagate the error, and
+	// they reach here AFTER the PR metadata is persisted — so failing on a
+	// transient read would invent a partial-success shape the row does not have.
+	// Falling through is exactly the behaviour every caller had before the
+	// re-read existed.
+	if current, err := l.sessions.Get(ctx, sessionID); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Msg("could not re-read session before clearing draft PR blocked reason; clearing from the caller's copy")
+	} else if !isClearableDraftPRReason(current.BlockedReason) {
+		// Someone else owns the reason now. Adopt the stored value so the
+		// caller's copy stops disagreeing with the row.
+		session.BlockedReason = current.BlockedReason
 		return nil
 	}
 	var cleared *string
@@ -1707,8 +1808,19 @@ func (l *Lifecycle) clearDraftPRBlockedReason(ctx context.Context, sessionID str
 // PRs and dirty-only cron finalize both use it). draftPRTitle recognizes it
 // and falls back to the session/cron title rather than deriving a user-facing
 // PR title from this scaffolding commit.
-const draftPRPlaceholderCommitSubject = "chore: [skip ci] create pull request"
+//
+// The literal now lives in package git as gitpkg.DraftPRPlaceholderCommitSubject
+// — this is an alias, not a second source of truth — because InjectPRNumbers'
+// rebase --exec (owned by git) must also recognize the placeholder so it
+// never rewrites its subject (BOS-591), and git cannot import session (this
+// package already imports git).
+const draftPRPlaceholderCommitSubject = gitpkg.DraftPRPlaceholderCommitSubject
 
+// createDraftPR pushes the branch and creates a draft PR on GitHub, storing the
+// PR number and URL on the session. StartSession runs it for any session
+// without an existing PR — since BOS-540 from a tracked background step rather
+// than on its synchronous return path, so the PR lands after the session is
+// already usable.
 func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, branchName string, session *models.Session, repo *models.Repo) error {
 	// Ensure origin URL is available before any VCS operations.
 	if err := l.resolveOriginURL(ctx, repo); err != nil {
@@ -1734,7 +1846,28 @@ func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, 
 		return fmt.Errorf("push branch: %w", err)
 	}
 
-	verification, err := l.worktrees.VerifyPushedBranchAheadOfBase(ctx, worktreePath, branchName, session.BaseBranch)
+	// SkipFetch: refs/remotes/origin/<base> is already present in the repo's
+	// shared common git dir — Manager.Create fetched this very base earlier in
+	// this same StartSession call — so fetching it again here buys nothing but
+	// a second GitHub round-trip. The base may have advanced since, and that
+	// staleness is accepted: this is a local sanity check whose only job is a
+	// better error message than GitHub's bare "No commits between" (see the
+	// wrapping below). GitHub remains the authority, comparing against the
+	// real base when the PR is actually opened. A stale ref cannot flip the
+	// ahead-count gate on its own, because the placeholder commit above was
+	// created here moments ago and so is in no origin/<base> this repo could
+	// be holding locally.
+	//
+	// The other worktree path, CreateFromExistingBranch, fetches the head
+	// branch but not the base, so it does not populate that ref itself. It
+	// does not reach this code today — createDraftPR runs only when
+	// session.PRNumber is nil, and ExistingBranch is only ever set alongside a
+	// PR number — but nothing enforces that pairing, so treat it as a
+	// convention. A caller that broke it would read whatever an earlier
+	// session left behind, or nothing at all if this clone never fetched that
+	// base; the latter fails to resolve origin/<base> and surfaces as a
+	// retryable blocked draft PR. Neither yields a wrong PR.
+	verification, err := l.worktrees.VerifyPushedBranchAheadOfBase(ctx, worktreePath, branchName, session.BaseBranch, gitpkg.VerifyPushedBranchAheadOfBaseOpts{SkipFetch: true})
 	if err != nil {
 		return fmt.Errorf("verify PR branch before draft PR: %w", err)
 	}
@@ -1785,6 +1918,52 @@ func (l *Lifecycle) logDraftPRBranchDebugSnapshot(ctx context.Context, sessionID
 }
 
 func (l *Lifecycle) openDraftPRForBranch(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo) error {
+	// Refresh the two row fields this function decides from and then writes back.
+	// Every caller but one fetched the session moments ago, so this is a
+	// confirming read; the exception is the BOS-540 background step, whose copy
+	// is a push and a fetch old by the time it gets here — long enough for both
+	// fields to have moved under it, and the write below is unconditional.
+	//
+	//   - Title: a rename issued after CreateSession returned. Its own PR-title
+	//     sync is skipped (UpdateSession gates that on pr_number, still nil), so
+	//     deciding from the stale copy would open the PR with the pre-rename
+	//     title AND revert the rename on the row, with nothing left to re-sync.
+	//   - PRNumber: finalize's EnsurePR, SubmitPR, the reconciler, or LinkPR
+	//     attaching a PR while we were pushing. Creating anyway would open a
+	//     second PR (LinkPR's may be on another branch, so GitHub would not even
+	//     refuse it with ErrPRAlreadyExists) and overwrite the attachment.
+	//     Converging here reaches the same end state as the ErrPRAlreadyExists
+	//     attach below, one round-trip earlier.
+	//
+	// A failed read falls through to the pre-existing behaviour rather than
+	// erroring: callers propagate this error, and the create itself is fine.
+	if current, err := l.sessions.Get(ctx, sessionID); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Msg("could not re-read session before opening draft PR; using the caller's copy")
+	} else {
+		session.Title = current.Title
+		if current.PRNumber != nil {
+			session.PRNumber = current.PRNumber
+			session.PRURL = current.PRURL
+			// Decide the clear below from the ROW, not the caller's copy: the
+			// background step's copy predates the in-flight marker on some
+			// paths, and a stale nil there would leave the marker set on a
+			// session that now has a PR.
+			session.BlockedReason = current.BlockedReason
+			l.logger.Info().
+				Str("session", sessionID).
+				Int("prNumber", *current.PRNumber).
+				Msg("draft PR open skipped: another writer already attached a PR")
+			if clearErr := l.clearDraftPRBlockedReason(ctx, sessionID, session); clearErr != nil {
+				l.logger.Warn().Err(clearErr).
+					Str("session", sessionID).
+					Msg("clear draft PR blocked reason failed after concurrent attach")
+			}
+			return nil
+		}
+	}
+
 	title := l.draftPRTitle(ctx, session)
 	prInfo, err := l.provider.CreateDraftPR(ctx, vcs.CreatePROpts{
 		RepoPath:   repo.OriginURL,
@@ -1912,10 +2091,16 @@ func (l *Lifecycle) finalizeTitle(ctx context.Context, session *models.Session, 
 
 // realCommitSubjects drops the empty draft-PR placeholder commit so it never
 // counts toward the multi-commit threshold or reaches the title suggester.
+//
+// Classification is delegated to gitpkg.IsDraftPRPlaceholderSubject: package
+// git owns both the placeholder literal and the tolerance for the "[#NNN] "
+// tag inject-pr-tag can leave in it (BOS-591). Keeping one implementation
+// means the finalize guard and the PR-tag injector can never disagree about
+// what counts as real work.
 func realCommitSubjects(raw []string) []string {
 	out := make([]string, 0, len(raw))
 	for _, s := range raw {
-		if t := strings.TrimSpace(s); t == "" || t == draftPRPlaceholderCommitSubject {
+		if t := strings.TrimSpace(s); t == "" || gitpkg.IsDraftPRPlaceholderSubject(t) {
 			continue
 		}
 		out = append(out, s)
@@ -2386,6 +2571,20 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 	if err != nil {
 		return fmt.Errorf("get repo: %w", err)
 	}
+	// Stop any in-flight background draft-PR create before the worktree goes
+	// (BOS-540). It runs `git commit` and `git push` INSIDE that directory, so
+	// removing it underneath the goroutine corrupts the create; and the local
+	// branch reap below could drop a branch whose remote copy and PR the create
+	// had just published.
+	l.StopBackgroundDraftPR(ctx, sessionID)
+	// Re-read after the join, as RemoveSession does: the step can correct a
+	// drifted BranchName on its way out (attachPRMetadata does), and the branch
+	// reap below would then target a name that no longer exists while the real
+	// branch survives.
+	if fresh, freshErr := l.sessions.Get(ctx, sessionID); freshErr == nil {
+		session = fresh
+	}
+
 	if session.WorktreePath != "" && session.WorktreePath != repo.LocalPath {
 		if err := l.worktrees.Archive(ctx, session.WorktreePath); err != nil {
 			return fmt.Errorf("archive worktree: %w", err)

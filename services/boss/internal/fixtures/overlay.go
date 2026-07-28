@@ -46,6 +46,14 @@ type OverlaySession struct {
 	PRNumber          *int   `json:"prNumber,omitempty"`
 	BranchName        string `json:"branchName,omitempty"`
 	CreatedOffsetMins int    `json:"createdOffsetMins,omitempty"`
+	// HTTPPorts are the session's machine-local HTTP listeners (BOS-474). Each
+	// becomes one pb.HttpEndpoint with a loopback http:// URL, in order, so a
+	// fixture can stage the clickable ":port" links the TUI renders.
+	HTTPPorts []int `json:"httpPorts,omitempty"`
+	// RotationEvents are the session's account-rotation audit rows (BOS-506),
+	// newest first, as the TUI hydrates them. Each becomes one pb.RotationEvent
+	// so a fixture can stage the session-list rotation toast.
+	RotationEvents []OverlayRotationEvent `json:"rotationEvents,omitempty"`
 }
 
 // Build validates required fields and maps the overlay onto a *pb.Session,
@@ -78,7 +86,62 @@ func (s OverlaySession) Build() (*pb.Session, error) {
 		n := int32(*s.PRNumber)
 		sess.PrNumber = &n
 	}
+	for _, port := range s.HTTPPorts {
+		if port <= 0 || port > math.MaxUint16 {
+			return nil, fmt.Errorf("session %q: httpPort %d out of range (1..65535)", s.ID, port)
+		}
+		sess.HttpEndpoints = append(sess.HttpEndpoints, &pb.HttpEndpoint{
+			// Bounds-checked against 1..MaxUint16 immediately above.
+			Port: uint32(port),
+			Url:  fmt.Sprintf("http://127.0.0.1:%d", port),
+		})
+	}
+	for _, ev := range s.RotationEvents {
+		built, err := ev.Build()
+		if err != nil {
+			return nil, fmt.Errorf("session %q: %w", s.ID, err)
+		}
+		// The owning session ID is only in scope here, so stamp it now.
+		built.SessionId = s.ID
+		sess.RotationEvents = append(sess.RotationEvents, built)
+	}
 	return sess, nil
+}
+
+// OverlayRotationEvent is the minimal display shape of a pb.RotationEvent.
+// outcome accepts the short form ("ROTATED") or the full enum name
+// ("ROTATION_OUTCOME_ROTATED"); absent outcome defaults to UNSPECIFIED.
+// fromAccount/toAccount are exposed because views.rotationEventLabel renders
+// "<from> switched to <to>" for the ROTATED outcome — without them a fixture
+// could not stage a realistic rotated event.
+type OverlayRotationEvent struct {
+	ID                string `json:"id"`
+	Outcome           string `json:"outcome,omitempty"`
+	Detail            string `json:"detail,omitempty"`
+	FromAccount       string `json:"fromAccount,omitempty"`
+	ToAccount         string `json:"toAccount,omitempty"`
+	CreatedOffsetMins int    `json:"createdOffsetMins,omitempty"`
+}
+
+// Build validates required fields and maps the overlay onto a *pb.RotationEvent.
+// SessionId is left to the owning OverlaySession.Build(), which has the session
+// ID in scope.
+func (e OverlayRotationEvent) Build() (*pb.RotationEvent, error) {
+	if e.ID == "" {
+		return nil, fmt.Errorf("rotationEvent: id is required")
+	}
+	outcome, err := rotationOutcomeFromName(e.Outcome)
+	if err != nil {
+		return nil, fmt.Errorf("rotationEvent %q: %w", e.ID, err)
+	}
+	return &pb.RotationEvent{
+		Id:          e.ID,
+		Outcome:     outcome,
+		Detail:      e.Detail,
+		FromAccount: e.FromAccount,
+		ToAccount:   e.ToAccount,
+		CreatedAt:   ts(time.Duration(e.CreatedOffsetMins) * time.Minute),
+	}, nil
 }
 
 // OverlayRepo is the minimal display shape of a pb.Repo.
@@ -424,6 +487,24 @@ func prStateFromName(name string) (pb.PRState, error) {
 		return pb.PRState(v), nil
 	}
 	return 0, fmt.Errorf("unknown pr state %q (valid: %s)", name, strings.Join(validEnumShortNames(pb.PRState_value, "PR_STATE_"), ", "))
+}
+
+// rotationOutcomeFromName maps a short ("ROTATED") or full
+// ("ROTATION_OUTCOME_ROTATED") rotation-outcome name to the pb enum. Empty
+// defaults to UNSPECIFIED. Unknown names return an error listing the valid
+// short names.
+func rotationOutcomeFromName(name string) (pb.RotationOutcome, error) {
+	if name == "" {
+		return pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED, nil
+	}
+	full := name
+	if !strings.HasPrefix(full, "ROTATION_OUTCOME_") {
+		full = "ROTATION_OUTCOME_" + full
+	}
+	if v, ok := pb.RotationOutcome_value[full]; ok {
+		return pb.RotationOutcome(v), nil
+	}
+	return 0, fmt.Errorf("unknown rotation outcome %q (valid: %s)", name, strings.Join(validEnumShortNames(pb.RotationOutcome_value, "ROTATION_OUTCOME_"), ", "))
 }
 
 // validEnumShortNames returns the sorted short (prefix-stripped) enum names,

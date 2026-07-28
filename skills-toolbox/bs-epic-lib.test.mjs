@@ -14,6 +14,10 @@ import {
   parseEpicArgs,
   parseTicketRef,
   mergeBlockedExternalBlockers,
+  classifyRepairLease,
+  resolveStateRole,
+  resolvePlannedState,
+  REPAIR_STALL_WINDOW_MS,
 } from './bs-epic-lib.mjs'
 
 const t = (id, over = {}) => ({
@@ -121,6 +125,44 @@ test('normalizeTicket: planUrl falls back to a links array when attachments is a
     blockedBy: [],
   })
   assert.equal(ticket.planUrl, 'https://proof.bossanova.dev/BOS-8')
+})
+
+test('normalizeTicket: a canonical attachment takes precedence over a stale plan link', () => {
+  const ticket = normalizeTicket({
+    id: 'BOS-999',
+    title: 'Attachment precedence',
+    priority: 3,
+    createdAt: '2026-01-01T00:00:00Z',
+    stateName: 'Todo',
+    stateType: 'unstarted',
+    labels: [],
+    links: [{ title: 'Implementation plan (BOS-999)', url: 'https://example.test/stale.md' }],
+    attachments: [
+      {
+        id: 'attachment-id',
+        title: 'Implementation plan (BOS-999)',
+        url: 'https://uploads.example/current.md',
+        createdAt: '2026-02-01T00:00:00Z',
+      },
+    ],
+    blockedBy: [],
+  })
+  assert.equal(ticket.planUrl, 'https://uploads.example/current.md')
+})
+
+test('normalizeTicket: does not accept an untitled attachment as a plan', () => {
+  const ticket = normalizeTicket({
+    id: 'BOS-999',
+    title: 'Untitled attachment',
+    priority: 3,
+    createdAt: '2026-01-01T00:00:00Z',
+    stateName: 'Todo',
+    stateType: 'unstarted',
+    labels: [],
+    attachments: [{ id: 'attachment-id', url: 'https://uploads.example/current.md' }],
+    blockedBy: [],
+  })
+  assert.equal(ticket.planUrl, null)
 })
 
 test('normalizeTicket: planUrl is null when no matching attachment/link exists', () => {
@@ -474,4 +516,267 @@ test('mergeBlockedExternalBlockers: in-epic blockers are never treated as extern
     blockerStateTypes: new Map([['BOS-1', 'started']]),
   })
   assert.deepEqual(open, [])
+})
+
+// --- classifyRepairLease (BOS-520: frozen-repair-lease escape) -------------
+//
+// Synthetic `get_session` payloads. The driver reads `repair_active`,
+// `repair_stalled_at`, `last_repair_head_sha` off the session and pairs them
+// with its own previous-poll snapshot + the tracked repair chat's activity
+// timestamp. `'stalled'` is what makes Phase 3c terminate, so every branch is
+// pinned — especially the fail-toward-'active' cases, where a false 'stalled'
+// would burn a repair round or fail-isolate a healthy ticket.
+
+const NOW = 1_770_000_000_000
+// A live lease making progress: head advanced since the last poll, chat is chatty.
+const lease = (over = {}) => ({
+  repairActive: true,
+  lastRepairHeadSha: 'bbbb222',
+  prevLastRepairHeadSha: 'aaaa111',
+  repairChatLastOutputAtMs: NOW - 30_000,
+  nowMs: NOW,
+  ...over,
+})
+
+test('classifyRepairLease: no lease held and no daemon stall field → none', () => {
+  assert.equal(classifyRepairLease(lease({ repairActive: false })), 'none')
+  assert.equal(classifyRepairLease({}), 'none')
+  assert.equal(classifyRepairLease(), 'none')
+})
+
+test('classifyRepairLease: active and progressing → active', () => {
+  assert.equal(classifyRepairLease(lease()), 'active')
+})
+
+test('classifyRepairLease: head advanced but chat silent → active (still working)', () => {
+  // Only one leg of the driver evidence: the repairer committed, so the lease
+  // is alive even though the chat has not spoken for a while.
+  assert.equal(
+    classifyRepairLease(lease({ repairChatLastOutputAtMs: NOW - 60 * 60_000 })),
+    'active',
+  )
+})
+
+test('classifyRepairLease: chatting but head frozen → active (thinking, not dead)', () => {
+  // The other single leg: no commit yet, but the chat is producing output.
+  assert.equal(classifyRepairLease(lease({ prevLastRepairHeadSha: 'bbbb222' })), 'active')
+})
+
+test('classifyRepairLease: repair_stalled_at set → stalled (the daemon decided)', () => {
+  // Takes precedence over every other signal, including a chatty, advancing lease.
+  assert.equal(classifyRepairLease(lease({ repairStalledAt: '2026-07-25T12:00:00Z' })), 'stalled')
+  // …and even once the daemon has already dropped repair_active.
+  assert.equal(
+    classifyRepairLease(lease({ repairActive: false, repairStalledAt: '2026-07-25T12:00:00Z' })),
+    'stalled',
+  )
+})
+
+test('classifyRepairLease: frozen head + stale chat → stalled from driver evidence alone', () => {
+  // The MAD-652 shape on a daemon with no repair_stalled_at field at all.
+  assert.equal(
+    classifyRepairLease(
+      lease({
+        prevLastRepairHeadSha: 'bbbb222',
+        repairChatLastOutputAtMs: NOW - 21 * 60_000,
+      }),
+    ),
+    'stalled',
+  )
+})
+
+test('classifyRepairLease: stall window boundary is inclusive', () => {
+  const frozen = { prevLastRepairHeadSha: 'bbbb222' }
+  // Exactly at the window → stalled.
+  assert.equal(
+    classifyRepairLease(
+      lease({ ...frozen, repairChatLastOutputAtMs: NOW - REPAIR_STALL_WINDOW_MS }),
+    ),
+    'stalled',
+  )
+  // One millisecond short → still active.
+  assert.equal(
+    classifyRepairLease(
+      lease({ ...frozen, repairChatLastOutputAtMs: NOW - REPAIR_STALL_WINDOW_MS + 1 }),
+    ),
+    'active',
+  )
+  // An explicit window overrides the default in both directions.
+  assert.equal(
+    classifyRepairLease(
+      lease({ ...frozen, repairChatLastOutputAtMs: NOW - 60_000, stallWindowMs: 30_000 }),
+    ),
+    'stalled',
+  )
+})
+
+test('classifyRepairLease: missing evidence fails toward active, never stalled', () => {
+  const frozenAndSilent = {
+    prevLastRepairHeadSha: 'bbbb222',
+    repairChatLastOutputAtMs: NOW - 21 * 60_000,
+  }
+  for (const missing of [
+    { lastRepairHeadSha: undefined, prevLastRepairHeadSha: undefined },
+    { lastRepairHeadSha: '', prevLastRepairHeadSha: '' }, // no SHA reported yet
+    { repairChatLastOutputAtMs: undefined }, // chat never tracked / no timestamp
+    { repairChatLastOutputAtMs: null },
+    { nowMs: undefined }, // caller forgot the clock
+  ]) {
+    assert.equal(
+      classifyRepairLease(lease({ ...frozenAndSilent, ...missing })),
+      'active',
+      `absent evidence must not read as a dead lease: ${JSON.stringify(missing)}`,
+    )
+  }
+})
+
+test('classifyRepairLease: is pure — the same payload classifies identically twice', () => {
+  const payload = lease({
+    prevLastRepairHeadSha: 'bbbb222',
+    repairChatLastOutputAtMs: NOW - 21 * 60_000,
+  })
+  const snapshot = JSON.stringify(payload)
+  assert.equal(classifyRepairLease(payload), classifyRepairLease(payload))
+  assert.equal(JSON.stringify(payload), snapshot, 'must not mutate its argument')
+})
+
+// --- resolveStateRole / resolvePlannedState (BOS-524) ----------------------
+// A repo can be fully functional through a vendored tracker adapter that already
+// knows its own state names and carries no trackerConfig.<tracker>.states block;
+// resolving from configuration alone self-BLOCKs such a repo for a value the adapter
+// was holding. Pin the adapter-first order, the config fallback, and the fail-closed
+// null that makes the caller BLOCK naming both probed sources.
+
+test('resolveStateRole: the adapter alone resolves the role (no trackerConfig states needed)', () => {
+  assert.equal(
+    resolveStateRole({ role: 'planned', adapterStates: { planned: 'Scheduled' } }),
+    'Scheduled',
+  )
+  // Explicitly absent config, not merely omitted — the no-trackerConfig repo.
+  assert.equal(
+    resolveStateRole({
+      role: 'inReview',
+      adapterStates: { inReview: 'Under Review' },
+      trackerConfigStates: null,
+    }),
+    'Under Review',
+  )
+})
+
+test('resolveStateRole: falls back to trackerConfig when the adapter has no states', () => {
+  for (const adapterStates of [undefined, null, {}]) {
+    assert.equal(
+      resolveStateRole({
+        role: 'planned',
+        adapterStates,
+        trackerConfigStates: { planned: 'Ready' },
+      }),
+      'Ready',
+      `config must answer when adapterStates = ${JSON.stringify(adapterStates)}`,
+    )
+  }
+})
+
+test('resolveStateRole: the adapter WINS when both sources carry the role', () => {
+  assert.equal(
+    resolveStateRole({
+      role: 'inProgress',
+      adapterStates: { inProgress: 'From Adapter' },
+      trackerConfigStates: { inProgress: 'From Config' },
+    }),
+    'From Adapter',
+  )
+})
+
+test('resolveStateRole: neither source ⇒ null (the caller fails closed)', () => {
+  assert.equal(resolveStateRole({ role: 'planned' }), null)
+  assert.equal(
+    resolveStateRole({ role: 'planned', adapterStates: {}, trackerConfigStates: {} }),
+    null,
+  )
+  // A role the adapter answers null for, exactly as the states() contract requires.
+  assert.equal(
+    resolveStateRole({
+      role: 'planned',
+      adapterStates: { planned: null },
+      trackerConfigStates: {},
+    }),
+    null,
+  )
+  assert.equal(resolveStateRole(), null, 'a bare call must not throw')
+})
+
+test('resolveStateRole: a blank adapter value falls THROUGH to config, never wins', () => {
+  // A whitespace-only state name is exactly as unusable as an absent one; letting it
+  // win would BLOCK a repo whose config held a perfectly good name.
+  for (const blank of ['', '   ', '\n', '\t ']) {
+    assert.equal(
+      resolveStateRole({
+        role: 'planned',
+        adapterStates: { planned: blank },
+        trackerConfigStates: { planned: 'Ready' },
+      }),
+      'Ready',
+      `adapter value ${JSON.stringify(blank)} must fall through`,
+    )
+    // ...and with no config behind it, a blank resolves null rather than ''.
+    assert.equal(
+      resolveStateRole({ role: 'planned', adapterStates: { planned: blank } }),
+      null,
+      `adapter value ${JSON.stringify(blank)} must resolve null, not itself`,
+    )
+  }
+})
+
+test('resolveStateRole: malformed sources resolve null instead of throwing', () => {
+  // The adapter probe is a CLI read the caller may hand over unparsed/garbled; a throw
+  // here would defeat the very fallback this helper exists to perform.
+  for (const bad of ['nope', 42, [], true, () => {}]) {
+    assert.equal(
+      resolveStateRole({ role: 'planned', adapterStates: bad, trackerConfigStates: bad }),
+      null,
+      `malformed source ${JSON.stringify(bad)} must resolve null`,
+    )
+    // A malformed adapter source must still let a good config answer.
+    assert.equal(
+      resolveStateRole({
+        role: 'planned',
+        adapterStates: bad,
+        trackerConfigStates: { planned: 'Ready' },
+      }),
+      'Ready',
+    )
+  }
+  // A non-string state value is not a name.
+  assert.equal(resolveStateRole({ role: 'planned', adapterStates: { planned: 7 } }), null)
+})
+
+test('resolvePlannedState delegates to resolveStateRole for the planned role', () => {
+  const adapterStates = { planned: 'Scheduled', inReview: 'Under Review' }
+  const trackerConfigStates = { planned: 'Ready', inReview: 'Reviewing' }
+  assert.equal(resolvePlannedState({ adapterStates }), 'Scheduled')
+  assert.equal(resolvePlannedState({ trackerConfigStates }), 'Ready')
+  assert.equal(resolvePlannedState({ adapterStates, trackerConfigStates }), 'Scheduled')
+  assert.equal(resolvePlannedState({}), null)
+  assert.equal(resolvePlannedState(), null)
+  // It must read the `planned` role specifically, not the first/any entry.
+  assert.equal(resolvePlannedState({ adapterStates: { inReview: 'Under Review' } }), null)
+  assert.equal(
+    resolvePlannedState({
+      adapterStates,
+      trackerConfigStates,
+    }),
+    resolveStateRole({ role: 'planned', adapterStates, trackerConfigStates }),
+  )
+})
+
+test('a resolved planned state feeds classifyTickets, whose empty-state throw stays the backstop', () => {
+  // The helper is the resolution; classifyTickets keeps its own throw as the library
+  // backstop, so a caller that skips the BLOCK still cannot schedule unplanned work.
+  const planned = resolvePlannedState({ adapterStates: { planned: 'Todo' } })
+  assert.equal(classifyTickets([t('BOS-1')], planned).eligible.length, 1)
+  assert.throws(
+    () => classifyTickets([t('BOS-1')], resolvePlannedState({})),
+    /plannedState .* is required/,
+  )
 })

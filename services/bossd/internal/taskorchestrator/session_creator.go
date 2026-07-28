@@ -59,6 +59,7 @@ type CreateSessionOpts struct {
 	DeferPR    bool   // if true, skip draft-PR creation; wait for the Stop-hook finalize path
 	HookToken  string // if non-empty, written into settings.local.json for the Stop hook
 	BranchName string // if non-empty, overrides the title-derived branch name (cron uses a unique per-fire suffix)
+	ZeroOutput bool   // if true, run from the repo checkout without a worktree, branch, or PR
 }
 
 // SessionStarter abstracts the lifecycle's StartSession method for testability.
@@ -242,6 +243,7 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 		DeferPR:         opts.DeferPR,
 		HookToken:       opts.HookToken,
 		BranchName:      branchName,
+		ZeroOutput:      opts.ZeroOutput,
 		// The interactive RPC path streams setup output to the client; this
 		// non-interactive path has no client, so route it to the session log
 		// rather than discarding it (a failing setup script would otherwise

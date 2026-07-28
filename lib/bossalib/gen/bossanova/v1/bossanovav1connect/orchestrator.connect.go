@@ -208,6 +208,21 @@ const (
 	// OrchestratorServiceProxyDeleteGithubCallbackProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyDeleteGithubCallback RPC.
 	OrchestratorServiceProxyDeleteGithubCallbackProcedure = "/bossanova.v1.OrchestratorService/ProxyDeleteGithubCallback"
+	// OrchestratorServiceProxyCreateNoteProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyCreateNote RPC.
+	OrchestratorServiceProxyCreateNoteProcedure = "/bossanova.v1.OrchestratorService/ProxyCreateNote"
+	// OrchestratorServiceProxyGetNoteProcedure is the fully-qualified name of the OrchestratorService's
+	// ProxyGetNote RPC.
+	OrchestratorServiceProxyGetNoteProcedure = "/bossanova.v1.OrchestratorService/ProxyGetNote"
+	// OrchestratorServiceProxyListNotesProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListNotes RPC.
+	OrchestratorServiceProxyListNotesProcedure = "/bossanova.v1.OrchestratorService/ProxyListNotes"
+	// OrchestratorServiceProxyUpdateNoteProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyUpdateNote RPC.
+	OrchestratorServiceProxyUpdateNoteProcedure = "/bossanova.v1.OrchestratorService/ProxyUpdateNote"
+	// OrchestratorServiceProxyDeleteNoteProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyDeleteNote RPC.
+	OrchestratorServiceProxyDeleteNoteProcedure = "/bossanova.v1.OrchestratorService/ProxyDeleteNote"
 	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStreamChats RPC.
 	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
@@ -399,6 +414,17 @@ type OrchestratorServiceClient interface {
 	ProxyCreateGithubCallback(context.Context, *connect.Request[v1.ProxyCreateGithubCallbackRequest]) (*connect.Response[v1.ProxyCreateGithubCallbackResponse], error)
 	ProxyListGithubCallbacks(context.Context, *connect.Request[v1.ProxyListGithubCallbacksRequest]) (*connect.Response[v1.ProxyListGithubCallbacksResponse], error)
 	ProxyDeleteGithubCallback(context.Context, *connect.Request[v1.ProxyDeleteGithubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGithubCallbackResponse], error)
+	// Notes proxies for remote-CLI and hosted-gateway note management (BOS-552).
+	// A note is repo-scoped, so all five route to the owning daemon by repo_id,
+	// reusing the caller's own auth — a foreign repo resolves to NotFound so no
+	// cross-user note access can dispatch. Create/Get/Update/Delete require
+	// repo_id; List routes by repo_id when set, else aggregates across the
+	// caller's Ready daemons.
+	ProxyCreateNote(context.Context, *connect.Request[v1.ProxyCreateNoteRequest]) (*connect.Response[v1.ProxyCreateNoteResponse], error)
+	ProxyGetNote(context.Context, *connect.Request[v1.ProxyGetNoteRequest]) (*connect.Response[v1.ProxyGetNoteResponse], error)
+	ProxyListNotes(context.Context, *connect.Request[v1.ProxyListNotesRequest]) (*connect.Response[v1.ProxyListNotesResponse], error)
+	ProxyUpdateNote(context.Context, *connect.Request[v1.ProxyUpdateNoteRequest]) (*connect.Response[v1.ProxyUpdateNoteResponse], error)
+	ProxyDeleteNote(context.Context, *connect.Request[v1.ProxyDeleteNoteRequest]) (*connect.Response[v1.ProxyDeleteNoteResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -800,6 +826,36 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteGithubCallback")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyCreateNote: connect.NewClient[v1.ProxyCreateNoteRequest, v1.ProxyCreateNoteResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyCreateNoteProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateNote")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyGetNote: connect.NewClient[v1.ProxyGetNoteRequest, v1.ProxyGetNoteResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyGetNoteProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetNote")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyListNotes: connect.NewClient[v1.ProxyListNotesRequest, v1.ProxyListNotesResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListNotesProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListNotes")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyUpdateNote: connect.NewClient[v1.ProxyUpdateNoteRequest, v1.ProxyUpdateNoteResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyUpdateNoteProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateNote")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyDeleteNote: connect.NewClient[v1.ProxyDeleteNoteRequest, v1.ProxyDeleteNoteResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyDeleteNoteProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteNote")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyStreamChats: connect.NewClient[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent](
 			httpClient,
 			baseURL+OrchestratorServiceProxyStreamChatsProcedure,
@@ -953,6 +1009,11 @@ type orchestratorServiceClient struct {
 	proxyCreateGithubCallback  *connect.Client[v1.ProxyCreateGithubCallbackRequest, v1.ProxyCreateGithubCallbackResponse]
 	proxyListGithubCallbacks   *connect.Client[v1.ProxyListGithubCallbacksRequest, v1.ProxyListGithubCallbacksResponse]
 	proxyDeleteGithubCallback  *connect.Client[v1.ProxyDeleteGithubCallbackRequest, v1.ProxyDeleteGithubCallbackResponse]
+	proxyCreateNote            *connect.Client[v1.ProxyCreateNoteRequest, v1.ProxyCreateNoteResponse]
+	proxyGetNote               *connect.Client[v1.ProxyGetNoteRequest, v1.ProxyGetNoteResponse]
+	proxyListNotes             *connect.Client[v1.ProxyListNotesRequest, v1.ProxyListNotesResponse]
+	proxyUpdateNote            *connect.Client[v1.ProxyUpdateNoteRequest, v1.ProxyUpdateNoteResponse]
+	proxyDeleteNote            *connect.Client[v1.ProxyDeleteNoteRequest, v1.ProxyDeleteNoteResponse]
 	proxyStreamChats           *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken           *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
 	terminalStream             *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
@@ -1260,6 +1321,31 @@ func (c *orchestratorServiceClient) ProxyDeleteGithubCallback(ctx context.Contex
 	return c.proxyDeleteGithubCallback.CallUnary(ctx, req)
 }
 
+// ProxyCreateNote calls bossanova.v1.OrchestratorService.ProxyCreateNote.
+func (c *orchestratorServiceClient) ProxyCreateNote(ctx context.Context, req *connect.Request[v1.ProxyCreateNoteRequest]) (*connect.Response[v1.ProxyCreateNoteResponse], error) {
+	return c.proxyCreateNote.CallUnary(ctx, req)
+}
+
+// ProxyGetNote calls bossanova.v1.OrchestratorService.ProxyGetNote.
+func (c *orchestratorServiceClient) ProxyGetNote(ctx context.Context, req *connect.Request[v1.ProxyGetNoteRequest]) (*connect.Response[v1.ProxyGetNoteResponse], error) {
+	return c.proxyGetNote.CallUnary(ctx, req)
+}
+
+// ProxyListNotes calls bossanova.v1.OrchestratorService.ProxyListNotes.
+func (c *orchestratorServiceClient) ProxyListNotes(ctx context.Context, req *connect.Request[v1.ProxyListNotesRequest]) (*connect.Response[v1.ProxyListNotesResponse], error) {
+	return c.proxyListNotes.CallUnary(ctx, req)
+}
+
+// ProxyUpdateNote calls bossanova.v1.OrchestratorService.ProxyUpdateNote.
+func (c *orchestratorServiceClient) ProxyUpdateNote(ctx context.Context, req *connect.Request[v1.ProxyUpdateNoteRequest]) (*connect.Response[v1.ProxyUpdateNoteResponse], error) {
+	return c.proxyUpdateNote.CallUnary(ctx, req)
+}
+
+// ProxyDeleteNote calls bossanova.v1.OrchestratorService.ProxyDeleteNote.
+func (c *orchestratorServiceClient) ProxyDeleteNote(ctx context.Context, req *connect.Request[v1.ProxyDeleteNoteRequest]) (*connect.Response[v1.ProxyDeleteNoteResponse], error) {
+	return c.proxyDeleteNote.CallUnary(ctx, req)
+}
+
 // ProxyStreamChats calls bossanova.v1.OrchestratorService.ProxyStreamChats.
 func (c *orchestratorServiceClient) ProxyStreamChats(ctx context.Context, req *connect.Request[v1.ProxyStreamChatsRequest]) (*connect.ServerStreamForClient[v1.ProxyChatListEvent], error) {
 	return c.proxyStreamChats.CallServerStream(ctx, req)
@@ -1479,6 +1565,17 @@ type OrchestratorServiceHandler interface {
 	ProxyCreateGithubCallback(context.Context, *connect.Request[v1.ProxyCreateGithubCallbackRequest]) (*connect.Response[v1.ProxyCreateGithubCallbackResponse], error)
 	ProxyListGithubCallbacks(context.Context, *connect.Request[v1.ProxyListGithubCallbacksRequest]) (*connect.Response[v1.ProxyListGithubCallbacksResponse], error)
 	ProxyDeleteGithubCallback(context.Context, *connect.Request[v1.ProxyDeleteGithubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGithubCallbackResponse], error)
+	// Notes proxies for remote-CLI and hosted-gateway note management (BOS-552).
+	// A note is repo-scoped, so all five route to the owning daemon by repo_id,
+	// reusing the caller's own auth — a foreign repo resolves to NotFound so no
+	// cross-user note access can dispatch. Create/Get/Update/Delete require
+	// repo_id; List routes by repo_id when set, else aggregates across the
+	// caller's Ready daemons.
+	ProxyCreateNote(context.Context, *connect.Request[v1.ProxyCreateNoteRequest]) (*connect.Response[v1.ProxyCreateNoteResponse], error)
+	ProxyGetNote(context.Context, *connect.Request[v1.ProxyGetNoteRequest]) (*connect.Response[v1.ProxyGetNoteResponse], error)
+	ProxyListNotes(context.Context, *connect.Request[v1.ProxyListNotesRequest]) (*connect.Response[v1.ProxyListNotesResponse], error)
+	ProxyUpdateNote(context.Context, *connect.Request[v1.ProxyUpdateNoteRequest]) (*connect.Response[v1.ProxyUpdateNoteResponse], error)
+	ProxyDeleteNote(context.Context, *connect.Request[v1.ProxyDeleteNoteRequest]) (*connect.Response[v1.ProxyDeleteNoteResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -1876,6 +1973,36 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteGithubCallback")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyCreateNoteHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyCreateNoteProcedure,
+		svc.ProxyCreateNote,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateNote")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyGetNoteHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyGetNoteProcedure,
+		svc.ProxyGetNote,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetNote")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyListNotesHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListNotesProcedure,
+		svc.ProxyListNotes,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListNotes")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyUpdateNoteHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyUpdateNoteProcedure,
+		svc.ProxyUpdateNote,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateNote")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyDeleteNoteHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyDeleteNoteProcedure,
+		svc.ProxyDeleteNote,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteNote")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyStreamChatsHandler := connect.NewServerStreamHandler(
 		OrchestratorServiceProxyStreamChatsProcedure,
 		svc.ProxyStreamChats,
@@ -2084,6 +2211,16 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyListGithubCallbacksHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyDeleteGithubCallbackProcedure:
 			orchestratorServiceProxyDeleteGithubCallbackHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyCreateNoteProcedure:
+			orchestratorServiceProxyCreateNoteHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyGetNoteProcedure:
+			orchestratorServiceProxyGetNoteHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListNotesProcedure:
+			orchestratorServiceProxyListNotesHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyUpdateNoteProcedure:
+			orchestratorServiceProxyUpdateNoteHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyDeleteNoteProcedure:
+			orchestratorServiceProxyDeleteNoteHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
 			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceIssueAttachTokenProcedure:
@@ -2353,6 +2490,26 @@ func (UnimplementedOrchestratorServiceHandler) ProxyListGithubCallbacks(context.
 
 func (UnimplementedOrchestratorServiceHandler) ProxyDeleteGithubCallback(context.Context, *connect.Request[v1.ProxyDeleteGithubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGithubCallbackResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyDeleteGithubCallback is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyCreateNote(context.Context, *connect.Request[v1.ProxyCreateNoteRequest]) (*connect.Response[v1.ProxyCreateNoteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyCreateNote is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyGetNote(context.Context, *connect.Request[v1.ProxyGetNoteRequest]) (*connect.Response[v1.ProxyGetNoteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyGetNote is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListNotes(context.Context, *connect.Request[v1.ProxyListNotesRequest]) (*connect.Response[v1.ProxyListNotesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListNotes is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyUpdateNote(context.Context, *connect.Request[v1.ProxyUpdateNoteRequest]) (*connect.Response[v1.ProxyUpdateNoteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyUpdateNote is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyDeleteNote(context.Context, *connect.Request[v1.ProxyDeleteNoteRequest]) (*connect.Response[v1.ProxyDeleteNoteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyDeleteNote is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {

@@ -1,4 +1,4 @@
-.PHONY: all all-full build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format format-affected format-all generate gen-skill kill kill-all lint lint-all lint-go-fmt vendor-toolbox vendor-toolbox-check \
+.PHONY: all all-full build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format format-affected format-all generate gen-skill kill kill-all lint lint-all lint-go-fmt vendor-toolbox vendor-toolbox-check build-drift-check \
 	buf-check-version deps-golangci lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
@@ -53,9 +53,17 @@ DEADCODE_PKG    := golang.org/x/tools/cmd/deadcode@latest
 DUPL_PKG        := github.com/mibk/dupl@latest
 GOCYCLO_PKG     := github.com/fzipp/gocyclo/cmd/gocyclo@latest
 GOVULNCHECK_PKG := golang.org/x/vuln/cmd/govulncheck@latest
+# revive backs the FILE-size detector (`debt-filesize-*`). It reads the
+# detector-only scripts/debt/revive-filesize.toml, NOT .golangci.yml — the
+# blocking lint gate stays untouched (see that file's header for why).
+REVIVE_PKG      := github.com/mgechev/revive@latest
 # Thresholds for the noisier detectors (lower = more findings).
 DEBT_DUPL_THRESHOLD  ?= 150
 DEBT_CYCLO_THRESHOLD ?= 15
+# Effective (comment/blank-skipping) file-length limit for `debt-filesize-*`.
+# revive takes rule arguments from its config file only (no CLI flag), so the
+# recipe seds this value over the committed default in revive-filesize.toml.
+DEBT_FILESIZE_THRESHOLD ?= 800
 
 # Binaries output to bin/
 BIN_DIR := bin
@@ -155,6 +163,25 @@ vendor-toolbox:
 vendor-toolbox-check:
 	node scripts/vendor-toolbox.mjs --check
 
+## build-drift-check: Fail if committed BUILD.bazel files drift from gazelle, or if
+## scripts/bazel/binary-inventory.json / ledger.json no longer match the live graph.
+## Depends on copy-skills: the embedsrcs lists describe the mirrored skill payload, so
+## checking before that rsync would compare against a stale tree under `make -j`.
+## Deliberately does NOT depend on $(GEN_STAMP), even though generated protobuf sources
+## are also gazelle inputs: $(GEN_DEPS) pulls in $(WEB_DEPS_STAMP) -> `pnpm install`, and
+## bazel.yml's go-test job has no pnpm (it never installs web deps), so that edge makes
+## the gate fail with exit 127 in CI while staying green locally. Generated sources are
+## committed, so gazelle always has valid inputs; test-all lists $(GEN_STAMP) itself, which
+## is what keeps a generate-then-check ordering available to callers that need it.
+## Requires the pnpm node_modules entries in .bazelignore — `bazel query //...` treats
+## pnpm's self-referential node_modules symlink as a hard BUILD error.
+build-drift-check: copy-skills
+ifeq ($(BAZEL_USABLE),1)
+	./scripts/bazel/check-build-drift.sh
+else
+	@echo "==> bazel unavailable (BOSS_NO_BAZEL set or bazel not on PATH) — skipping BUILD drift check (public-mirror fallback)"
+endif
+
 deploy-staging:
 	$(MAKE) -C infra/kustomize deploy-staging
 
@@ -240,7 +267,7 @@ deps:
 		go install github.com/sudorandom/protoc-gen-connect-openapi@v0.25.7; \
 	fi
 	@echo "==> Warming technical-debt scanners (make debt-*)"
-	@for pkg in "$(DEADCODE_PKG)" "$(DUPL_PKG)" "$(GOCYCLO_PKG)" "$(GOVULNCHECK_PKG)"; do \
+	@for pkg in "$(DEADCODE_PKG)" "$(DUPL_PKG)" "$(GOCYCLO_PKG)" "$(GOVULNCHECK_PKG)" "$(REVIVE_PKG)"; do \
 		echo "    $$pkg"; \
 		go install "$$pkg" || echo "    (warning: failed to install $$pkg; make debt-* will fetch it on demand)"; \
 	done
@@ -300,6 +327,21 @@ setup-worktree:
 			|| echo "pnpm install failed — deps/hooks unavailable (non-fatal)"; \
 	else \
 		echo "pnpm not found on PATH — skipping JS dep + hook install (non-fatal)"; \
+	fi
+	@# services/docs is deliberately OUTSIDE the pnpm workspace (adding docusaurus
+	@# pulled terser into the shared peer graph and broke the marketing vite build),
+	@# so it carries its own pnpm-lock.yaml and the root install above does NOT
+	@# provision it. Without this step a fresh worktree fails `make lint` / `make
+	@# test` at "==> Linting services/docs" with `sh: tsc: command not found` even
+	@# though the diff is Go-only. Delegate to the docs package's own `deps` target
+	@# so the --ignore-workspace knowledge stays single-sourced there. Best-effort,
+	@# mirroring the root install: a docs dep failure must not abort worktree setup.
+	@if command -v pnpm >/dev/null 2>&1 && [ -d "$$WORKTREE_DIR/services/docs" ]; then \
+		echo "==> Installing services/docs deps (standalone, outside the workspace)"; \
+		( cd "$$WORKTREE_DIR" && $(MAKE) -C services/docs deps ) \
+			|| echo "services/docs deps failed — make lint/test will fail there (non-fatal)"; \
+	else \
+		echo "pnpm or services/docs missing — skipping docs dep install (non-fatal)"; \
 	fi
 	@# Install the Playwright Chromium the boss-proof pipeline drives (BOS-138). Best
 	@# effort: guarded on pnpm + web node_modules and NEVER fatal — a worktree that
@@ -445,7 +487,7 @@ test: test-affected
 ## `make test`. Delegates the Go module loop to `bazel test //...` (cached) + the
 ## native ledger step; falls back to the legacy per-module loop when bazel is
 ## unavailable (BOSS_NO_BAZEL set or not on PATH — keeps the public mirror green).
-test-all: $(GEN_STAMP) copy-skills codex-skills-check vendor-toolbox-check
+test-all: $(GEN_STAMP) copy-skills codex-skills-check vendor-toolbox-check build-drift-check
 	$(MAKE) test-scripts
 	$(MAKE) test-readme
 	$(MAKE) test-no-inline-stop-hooks
@@ -708,14 +750,18 @@ lint-check-version:
 	fi
 
 ## lint: Fast affected lint (default) — buf lint + cached golangci (lint-affected,
-## content-stamp-skipped) + the standalone gofmt/goimports gate + docs lint, with the
-## markdown format check scoped to CHANGED files (lint-docs-affected). Fast is the
+## content-stamp-skipped) + the standalone gofmt/goimports gate + affected web Biome
+## checks + docs lint, with the markdown format check scoped to CHANGED files
+## (lint-docs-affected). Fast is the
 ## default (BOS-371); the exhaustive whole-tree markdown pass is `make lint-all`.
 lint: buf-check-version lint-check-version $(GEN_STAMP)
 	buf lint
 	$(MAKE) lint-scripts
 	@node scripts/lint-affected.mjs
 	$(MAKE) lint-go-fmt
+	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
+		node scripts/lint-web-affected.mjs; \
+	fi
 	@if [ -d services/docs ]; then \
 		echo "==> Linting services/docs"; \
 		$(MAKE) -C services/docs lint; \
@@ -866,6 +912,7 @@ $(foreach p,$(PLUGIN_MODULES),$(eval \
 ##   make debt-dupl-bossalib    # duplicated token sequences within the module
 ##   make debt-cyclo-boss       # functions over the cyclomatic-complexity threshold
 ##   make debt-vuln-bosso       # reachable known vulnerabilities (govulncheck)
+##   make debt-filesize-boss    # files over the effective-line limit (revive file-length-limit)
 define define-debt-targets
 debt-deadcode-$(2):
 	cd $(1) && go run $$(DEADCODE_PKG) -test ./...
@@ -875,6 +922,29 @@ debt-cyclo-$(2):
 	cd $(1) && go run $$(GOCYCLO_PKG) -over $$(DEBT_CYCLO_THRESHOLD) .
 debt-vuln-$(2):
 	cd $(1) && go run $$(GOVULNCHECK_PKG) ./...
+# File-size (not function-size) hotspots. revive only takes rule arguments from a
+# config file, so DEBT_FILESIZE_THRESHOLD is sed'd over the committed default into
+# a temp copy. `|| true` keeps the DETECTOR RUN strictly non-blocking even if a
+# future revive changes its exit-status behaviour on findings — but the config
+# build is deliberately NOT tolerant: revive given an empty/ruleless config prints
+# nothing and exits 0, which is indistinguishable from "this module is clean" —
+# and `|| true` would swallow a config it cannot parse at all. Worse, revive
+# DISABLES file-length-limit when max <= 0, so a bare `0` would silence the
+# detector while looking green. So a DEBT_FILESIZE_THRESHOLD that is not a
+# positive integer without a leading zero (`0`, `00`, `0800`, `abc`), a failed
+# sed, or a generated config that lost the rule hard-fails loudly rather than
+# reporting a silent all-clear. `trap` removes the temp copy on interrupt too.
+debt-filesize-$(2):
+	@case "$$(DEBT_FILESIZE_THRESHOLD)" in ''|*[!0-9]*|0*) \
+	    echo "debt-filesize: DEBT_FILESIZE_THRESHOLD must be a positive integer with no leading zero, got '$$(DEBT_FILESIZE_THRESHOLD)'" >&2; exit 1;; esac; \
+	  cfg=$$$$(mktemp -t revive-filesize.XXXXXX) || exit 1; \
+	  trap 'rm -f "$$$$cfg"' EXIT INT TERM; \
+	  sed 's/\(max = \)[0-9][0-9]*/\1$$(DEBT_FILESIZE_THRESHOLD)/' \
+	    $$(CURDIR)/scripts/debt/revive-filesize.toml > "$$$$cfg" || \
+	    { echo "debt-filesize: cannot build config from $$(CURDIR)/scripts/debt/revive-filesize.toml" >&2; exit 1; }; \
+	  grep -q '^\[rule\.file-length-limit\]' "$$$$cfg" && grep -qE "max = $$(DEBT_FILESIZE_THRESHOLD)[,}[:space:]]" "$$$$cfg" || \
+	    { echo "debt-filesize: generated config lost the file-length-limit rule or the requested max; detector would be silently inert" >&2; exit 1; }; \
+	  (cd $(1) && go run $$(REVIVE_PKG) -config "$$$$cfg" -formatter default ./...) || true
 endef
 $(foreach m,$(MODULES),$(eval \
   $(call define-debt-targets,$(m),$(patsubst bossd-plugin-%,%,$(notdir $(m))))))
@@ -920,7 +990,8 @@ build-claude: copy-skills
 
 ## format: Fast affected format (default) — format only the files changed on this
 ## branch (format-affected: gofmt/goimports on changed .go; prettier/biome on changed
-## web/markdown; syncpack when a package.json changed). Fast is the default (BOS-371);
+## web/markdown; full Biome packages after workspace dependency changes; syncpack when a
+## package.json changed). Fast is the default (BOS-371);
 ## the whole-tree format is `make format-all`.
 format:
 	@node scripts/format-affected.mjs
@@ -1006,6 +1077,10 @@ release-codex-check:
 			|| { echo "FAIL: bossd-plugin-codex did not build for $$os/$$arch"; exit 1; }; \
 	done
 	@echo "==> bossd-plugin-codex builds clean across $(RELEASE_CODEX_PLATFORMS)"
+
+## clean-cache: Prune the Go build cache at GO_CACHE_MAX_GIB (100 GiB default).
+clean-cache:
+	node scripts/clean-go-build-cache.mjs
 
 ## clean: Remove build artifacts and generated code
 clean:

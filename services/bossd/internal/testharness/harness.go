@@ -37,6 +37,7 @@ import (
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
+	"github.com/recurser/bossd/internal/status/questionsignal"
 	"github.com/recurser/bossd/internal/tmux"
 	"github.com/recurser/bossd/internal/upstream"
 	"github.com/rs/zerolog"
@@ -71,14 +72,17 @@ type Harness struct {
 	AgentChats      db.AgentChatStore
 	CronJobs        db.CronJobStore
 	GithubCallbacks db.GithubCallbackStore
-	Lifecycle       *session.Lifecycle
-	Server          *server.Server
-	Provider        *StubProvider
-	Dispatcher      *upstream.WebhookDispatcher
-	Tmux            *tmux.Client
-	Git             *MockWorktreeManager
-	Agent           *MockAgentRunner
-	VCS             *MockVCSProvider
+	// Notes lets downstream tests seed and assert on the notes primitive
+	// (BOS-550) without reaching past the harness into the daemon's stores.
+	Notes      db.NoteStore
+	Lifecycle  *session.Lifecycle
+	Server     *server.Server
+	Provider   *StubProvider
+	Dispatcher *upstream.WebhookDispatcher
+	Tmux       *tmux.Client
+	Git        *MockWorktreeManager
+	Agent      *MockAgentRunner
+	VCS        *MockVCSProvider
 	// DisplayTracker backs the MergeSession "PR is not passing" guard. Leave
 	// entries empty to let merges through (the guard skips when no entry
 	// exists); call DisplayTracker.Set with a non-passing status to block.
@@ -186,6 +190,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	agentChats := db.NewAgentChatStore(database)
 	cronJobs := db.NewCronJobStore(database)
 	githubCallbacks := db.NewGithubCallbackStore(database)
+	notes := db.NewNoteStore(database)
 	accounts := db.NewAccountStore(database)
 
 	// Mocks.
@@ -261,6 +266,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		AgentChats:      agentChats,
 		Accounts:        accounts,
 		GithubCallbacks: githubCallbacks,
+		Notes:           notes,
 		// In-memory credential store so account RPCs are exercisable without
 		// touching the real OS keyring. AccountSmokeRunner stays nil.
 		AccountCredentials: newMemAccountCreds(),
@@ -354,10 +360,12 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	// directly into the lifecycle (same as the daemon entrypoint) so tests
 	// don't need a port file on disk.
 	hookSrv := server.NewHookServer(server.HookServerConfig{
-		Sessions:  sessions,
-		Finalizer: lifecycle,
-		Completer: hostService,
-		Logger:    logger,
+		Sessions:        sessions,
+		Finalizer:       lifecycle,
+		Completer:       hostService,
+		QuestionSignals: questionsignal.NewStore(questionsignal.DefaultTTL),
+		QuestionAuth:    hostService,
+		Logger:          logger,
 	})
 	if err := hookSrv.Listen(); err != nil {
 		t.Fatalf("hook server listen: %v", err)
@@ -383,6 +391,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	h.AgentChats = agentChats
 	h.CronJobs = cronJobs
 	h.GithubCallbacks = githubCallbacks
+	h.Notes = notes
 	h.Lifecycle = lifecycle
 	h.Server = srv
 	h.Provider = realtimeProvider
@@ -442,6 +451,18 @@ func (h *Harness) UpdatedSessions() []*pb.Session {
 func (h *Harness) Close() {
 	if !h.closed.CompareAndSwap(false, true) {
 		return
+	}
+	// Stop the background draft-PR creates StartSession spawns (BOS-540) before
+	// anything else is torn down. They outlive the CreateSession RPC, so a test
+	// that never called AwaitDraftPRs would otherwise leave one writing to the
+	// SQLite handle closed below and calling into the shared mocks after the
+	// test returned — a standing -race source, not just a leak. Cancel first so
+	// a parked mock cannot hold teardown hostage.
+	if h.Lifecycle != nil {
+		h.Lifecycle.CancelBackgroundDraftPRs()
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = h.Lifecycle.WaitForBackgroundDraftPRs(drainCtx)
+		drainCancel()
 	}
 	if h.cancel != nil {
 		h.cancel()
@@ -592,6 +613,32 @@ func (h *Harness) SetArchivedAt(t *testing.T, sessionID string, at time.Time) {
 	}
 }
 
+// awaitDraftPRFor joins one session's background draft-PR create, tolerating a
+// harness built without a Lifecycle.
+func (h *Harness) awaitDraftPRFor(ctx context.Context, sessionID string) error {
+	if h.Lifecycle == nil {
+		return nil
+	}
+	return h.Lifecycle.WaitForBackgroundDraftPR(ctx, sessionID)
+}
+
+// AwaitDraftPRs blocks until every background draft-PR create started through
+// this harness has finished. StartSession opens the default-path draft PR in a
+// tracked background step (BOS-540), so a test that inspects the VCS/git mocks
+// or the session row straight after CreateSession would otherwise race it — and
+// read a half-created state.
+func (h *Harness) AwaitDraftPRs(t *testing.T) {
+	t.Helper()
+	if h.Lifecycle == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if abandoned := h.Lifecycle.WaitForBackgroundDraftPRs(ctx); len(abandoned) > 0 {
+		t.Fatalf("background draft PR still in flight for %v", abandoned)
+	}
+}
+
 // SeedSessionInState creates a session under repoID and advances it to the
 // requested state. Returns the session ID (and the created PR number when
 // one was opened along the way, or 0 otherwise). It t.Fatals on any step
@@ -634,6 +681,17 @@ func (h *Harness) SeedSessionInState(t *testing.T, ctx context.Context, repoID s
 		t.Fatal("SeedSessionInState: no SessionCreated in stream")
 	} else {
 		sessionID = created.Id
+	}
+
+	// The draft PR is opened by a tracked background step, so it lands AFTER
+	// CreateSession returns (BOS-540). Join it here so a seeded session is fully
+	// formed — pr_number and all — by the time the caller inspects or mutates
+	// it; otherwise the create races (and silently undoes) setup like
+	// force-orphaning the row.
+	prCtx, prCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer prCancel()
+	if err := h.awaitDraftPRFor(prCtx, sessionID); err != nil {
+		t.Fatalf("SeedSessionInState: background draft PR did not finish: %v", err)
 	}
 
 	switch state {

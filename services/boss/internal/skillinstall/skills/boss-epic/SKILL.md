@@ -40,6 +40,13 @@ schedules and merges.
   duplicating it.
 - **Serialized merges.** At most one merge in flight, ever — the base branch is
   advanced one PR at a time, in `nextToMerge` order.
+- **Prefer a callback over blind polling.** Whenever you are about to wait on a
+  child's PR / CI check / merge state, arm a one-shot callback group first rather
+  than spinning on the poll — gated on the single `callbacksAvailable(env)` signal
+  (`scripts/callback/adapter.mjs`, keyed on `BOSS_SESSION_ID`). Gate true ⇒
+  `registerWatch` per in-flight child; gate false ⇒ skip arming and let
+  `policy.fallbackPoll` alone drive Phase 3 — an explicit no-op, never a failed
+  wait. Protocol: [`references/callback-watches.md`](references/callback-watches.md).
 - **The parent issue is never mutated.** boss-epic moves only the explicitly
   enumerated child tickets to `Done`; it never closes or restates the parent.
 - **Empty eligible set is success.** A parent whose children are all already
@@ -96,11 +103,11 @@ Bossanova reference impls resolve to today's exact tools and sub-skills —
   (`scripts/callback/adapter.mjs`). One-shot GitHub PR-event watches
   (`registerWatch` / `listWatches` / `removeWatch` over `boss callback
 add|list|remove`); `policy.watchTriggers` = `checks_passed` / `checks_failed`
-  / `merged`, armed as a group per in-flight child. A resolved/merged child PR
-  then wakes the epic promptly; every wake **reconciles real session/PR state
-  before acting** (Phase 3b) and re-arms one-shot watches while still waiting,
-  with the poll as the bounded fallback (`policy.fallbackPoll`) when callbacks
-  are unavailable.
+  / `merged`, armed as a group per in-flight child **when
+  `callbacksAvailable(env)`** (else `policy.fallbackPoll` alone drives the wait).
+  A resolved/merged child PR then wakes the epic promptly; every wake
+  **reconciles real session/PR state before acting** (Phase 3b). Full protocol:
+  [`references/callback-watches.md`](references/callback-watches.md).
 
 ## The library: how to compute a decision
 
@@ -117,22 +124,34 @@ fi
 test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed bossanova skills not found"; exit 1; }
 BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"
 export BOSS_EPIC_TOOLBOX
-# Eligibility is gated on the tracker's CONFIGURED planned state (never a baked-in
-# word): resolve it from .boss-skills.json and pass it to classifyTickets below.
-BOSS_EPIC_PLANNED_STATE="$(node --input-type=module -e '
+# Eligibility (planned) and the merge gate (inReview) are gated on the tracker's state
+# names, never a baked-in word. Resolve ADAPTER-FIRST via `resolveStateRole`: the tracker
+# adapter's OPTIONAL `states` capability is the PRIMARY authority — a repo wired through a
+# vendored adapter that knows its own states needs no trackerConfig at all — and the
+# .boss-skills.json upward walk is the FALLBACK (the only source for an adapter without the
+# capability). Both roles go through the one helper so they cannot diverge.
+ADAPTER_STATES="$(node "$(git rev-parse --show-toplevel)/scripts/tracker/cli.mjs" states 2>/dev/null || true)"
+resolve_state() { ADAPTER_STATES="$ADAPTER_STATES" ROLE="$1" node --input-type=module -e '
   import { readFileSync } from "node:fs"; import { dirname, join } from "node:path"
+  const { resolveStateRole } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/bs-epic-lib.mjs`)
+  let adapterStates = null, trackerConfigStates = null
+  try { adapterStates = JSON.parse(process.env.ADAPTER_STATES) } catch {}
   for (let d = process.cwd(); ; d = dirname(d)) {
     try { const c = JSON.parse(readFileSync(join(d, ".boss-skills.json")))
       const a = process.env.TRACKER || c.adapters?.tracker || "linear"
-      process.stdout.write(c.trackerConfig?.[a]?.states?.planned ?? ""); break } catch {}
+      trackerConfigStates = c.trackerConfig?.[a]?.states ?? null; break } catch {}
     if (dirname(d) === d) break
-  }' 2>/dev/null)"
-export BOSS_EPIC_PLANNED_STATE
-# Fail closed with an actionable message (symmetric with the BOSS_SKILLS_HOME guard above)
-# rather than a buried exception: a repo with no .boss-skills.json (or one lacking
-# trackerConfig.<tracker>.states.planned) must self-disable cleanly, never spawn sessions for
+  }
+  process.stdout.write(resolveStateRole({ role: process.env.ROLE, adapterStates, trackerConfigStates }) ?? "")
+' 2>/dev/null; }
+BOSS_EPIC_PLANNED_STATE="$(resolve_state planned)"; BOSS_EPIC_REVIEW_STATE="$(resolve_state inReview)"
+export BOSS_EPIC_PLANNED_STATE BOSS_EPIC_REVIEW_STATE
+# Fail closed with an actionable message naming BOTH probed sources (symmetric with the
+# BOSS_SKILLS_HOME guard above) rather than a buried exception: BLOCK only when NEITHER the
+# adapter nor the config yields a planned state, so a repo that is fully functional through
+# its adapter never self-disables, and a repo with neither never spawns sessions for
 # unplanned work. classifyTickets also throws on an empty state as a library-level backstop.
-test -n "$BOSS_EPIC_PLANNED_STATE" || { echo "BLOCKED: no planned state configured in .boss-skills.json (trackerConfig.<tracker>.states.planned)"; exit 1; }
+test -n "$BOSS_EPIC_PLANNED_STATE" || { echo "BLOCKED: no planned state resolved — tracker adapter states capability returned none and .boss-skills.json trackerConfig.<tracker>.states.planned is empty"; exit 1; }
 echo "$TICKETS_JSON" | node --input-type=module -e '
   const { classifyTickets, normalizeTicket } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/bs-epic-lib.mjs`)
   const raw = JSON.parse(await new Promise((r) => {
@@ -145,7 +164,8 @@ echo "$TICKETS_JSON" | node --input-type=module -e '
 
 Exports available: `normalizeTicket`, `classifyTickets`, `buildGraph`,
 `readyTickets`, `transitiveDependents`, `nextToMerge`, `parseEpicArgs`,
-`parseTicketRef`, `mergeBlockedExternalBlockers`, `BLOCKER_CLEARED_STATE_TYPES`.
+`parseTicketRef`, `mergeBlockedExternalBlockers`, `resolveStateRole`,
+`resolvePlannedState`, `BLOCKER_CLEARED_STATE_TYPES`.
 Because
 `buildGraph`/`readyTickets`/`nextToMerge` return `Map`/`Set` values that do not
 round-trip through `JSON.stringify`, keep the multi-step scheduling logic
@@ -338,7 +358,10 @@ adopts rather than duplicates:
 Repeat until the ready set is empty **and** the in-flight table is empty. State
 carried across cycles as plain data: the ticket JSON, and the id lists `merged`,
 `failed`, `inFlight`, `externallyCleared`, `greens`, plus per-ticket
-`session_id` / `chat_id`, wall-clock start, and repair-round counters.
+`session_id` / `chat_id`, wall-clock start, repair-round counters, and — for the
+3c frozen-lease escape — `prevLastRepairHeadSha` (the previous poll's
+`last_repair_head_sha`) and `repairStallSince` (when the lease first classified
+`stalled`).
 A ticket enters `inFlight` at launch (3a) and leaves only when folded into
 `merged` (3d) or `failed` (3e); `greens` is a **subset**
 of `inFlight` — a green keeps its concurrency slot until merged, so
@@ -398,11 +421,32 @@ per-ticket wall clock.
 
 ### 3b. Poll
 
-A callback wake (child PR `checks_passed`/`checks_failed`/`merged`, armed via the
-callback notifier when each child enters flight) trims the poll cadence but never
-replaces this reconciliation — a wake means _re-read the state below_, never _act
-on the trigger name_; dedup by callback id, and re-arm the child's group while it
-is still in flight. When callbacks are unavailable, the poll alone drives Phase 3.
+A callback wake (armed per child that enters flight **only when
+`callbacksAvailable(env)`**) trims the poll cadence but never replaces this
+reconciliation — a wake means _re-read the state below_, never _act on the trigger
+name_; dedup by callback id, and re-arm the child's group while it is still in flight.
+
+**Never arm bare `checks_passed` on a child PR.** boss-build opens its PR as a **draft**
+and CI runs on drafts, so bare `checks_passed` fires on the first green draft commit —
+each premature fire consumes the one-shot watch at a moment that can never be
+merge-eligible. Arm **`checks_passed_ready`** (green **and** not a draft — the
+merge-eligibility moment) together with `checks_failed` and `merged`, plus optionally
+**`ready_for_review`** for the un-draft flip itself; this draft-aware set replaces the
+generic `policy.watchTriggers` default for boss-epic's in-flight watch. The daemon merge
+gate stays authoritative — a wake is a signal, not proof. Re-arm any watch consumed
+prematurely or expired, keeping one `group` per child so a superseded re-arm cancels its
+siblings.
+
+**How the driver waits.** Callbacks are primary; a **session cron** (a scheduled prompt
+re-entering this poll cycle every 2–5 minutes) is the bounded fallback. **Never** rely on
+backgrounded shell watchers or sleep loops to hold the wait — session hosts may kill them
+within the turn, and a driver that assumes them stalls silently. When
+`callbacksAvailable` is false, skip arming and let the cron/poll alone drive Phase 3 — a
+clean no-op, never a failed wait. Every wake runs the same idempotent cycle below; the
+driver never cares _why_ it woke. Trigger policy, cron cadence caveats, and the full
+arm/reconcile/re-arm/cleanup protocol:
+[`references/callback-watches.md`](references/callback-watches.md).
+
 Every 2–5 minutes (or on a callback wake), for each in-flight ticket read
 `get_session` (state, `last_agent_activity_at`, `AGENT_AUTH_FAILED`),
 `list_check_snapshots` (DisplayStatus), and `get_chat_statuses {session_id}` for the entry whose
@@ -419,20 +463,48 @@ IDLE/STOPPED + passing.
 
 ### 3c. Transitions
 
-- **GREEN_DRAFT or READY_FOR_REVIEW + DisplayStatus Passing + chat SETTLED**
-  (tracked `chat_id` is `IDLE` stale, or `STOPPED` stale/missing) → add to the
+- **READY_FOR_REVIEW + DisplayStatus Passing + chat SETTLED** (tracked `chat_id`
+  is `IDLE` stale, or `STOPPED` stale/missing) → check the remaining rail
+  conditions before queueing: the PR is **not a draft**, the linked ticket sits
+  in the tracker's **review** state (`$BOSS_EPIC_REVIEW_STATE`), and the PR title/body
+  carries no partial-slice / `do not merge` marker. All five hold → add to the
   **greens** (merge queue). Do not add a ticket to `greens` while that chat is
   WORKING, QUESTION, or LIMITED. The daemon Blocks an empty/no-op
   run (a bootstrap-only branch is **not** surfaced as green), so a green here
-  genuinely means real work landed — safe to merge.
+  genuinely means real work landed. Reads for each condition:
+  [`references/merge-recovery.md`](references/merge-recovery.md).
+- **GREEN_DRAFT** (Passing + settled, but the PR is still a **draft**) → **hold**,
+  never green. CI on a draft is expected noise, not merge-eligibility; the child
+  has not declared the slice finished. Re-poll until it is marked ready, or route
+  it as an unfinished child.
 - **Passing but chat still WORKING/QUESTION/LIMITED** → **hold**: neither green
   nor repair; re-poll while the tracked `chat_id` finalizes review/comments.
 - **BLOCKED, or tracked `chat_id` status IDLE/STOPPED + Failing / Conflict /
   Rejected** → **repair
-  round**. First read `get_session` `repair_active`: if a repairer
-  holds the lease (the auto-repair plugin is engaged), do **not** dispatch a
-  second chat — two repairers on one worktree collide; count it as a round and
-  re-poll. Otherwise run `subSkills.repair` (`/boss-repair watch`) in a **new
+  round**. First classify the repair lease with `classifyRepairLease`
+  (bs-epic-lib), fed from `get_session` (`repair_active`, `repair_stalled_at`,
+  `last_repair_head_sha`), the driver's `prevLastRepairHeadSha`, and the tracked
+  repair chat's last output time:
+
+  - `'active'` — a repairer holds the lease (the auto-repair plugin is engaged).
+    Do **not** dispatch a second chat — two repairers on one worktree collide;
+    count it as a round and re-poll.
+  - `'stalled'` — a **frozen repair lease**. Diagnosis cheat: `repair_active:true`
+    with `last_repair_head_sha` unchanged and repair-chat output stale across ≥2
+    polls ⇒ dead lease (also reported directly by `repair_stalled_at` on daemons
+    that expose it). The round is **exhausted**: count it against the cap
+    immediately, then — rounds remaining → dispatch a fresh repair round now (the
+    lease is stalled, so a second dispatch no longer collides); cap reached →
+    fail-isolate the ticket with a `frozen repair lease` note. Never re-poll a
+    lease already classified `stalled`: this is what makes the loop **terminate**,
+    so "re-poll forever" is unreachable from a dead lease.
+  - `'none'` — no lease held; dispatch below.
+
+  Snapshot `last_repair_head_sha` into `prevLastRepairHeadSha` after every poll,
+  and stamp `repairStallSince` on the first `stalled`; drop both when a fresh
+  round is dispatched, so that round is judged on its own evidence.
+
+  To dispatch, run `subSkills.repair` (`/boss-repair watch`) in a **new
   chat in the ticket's own session** (the session-runner `recordChat` +
   `sendChatMessage` capabilities) — clean context, session `model` inherited, same
   worktree/branch/PR. Never `create_session` for repair: on a PR whose session
@@ -447,10 +519,21 @@ IDLE/STOPPED + passing.
                      submit: true, message: "/boss-repair watch"}  // submits
   ```
 
-  Cap at **4 repair rounds per ticket** (a plugin-held round counts too; each
+  Cap at **4 repair rounds per ticket** (a plugin-held or frozen-lease round
+  counts too; each
   capped at 5 passes). A conflicted green (Passing but `pr_mergeable=false`)
   needs a repair round, not a merge. Track the repair chat in place of
   the original in `inFlight`; still red after round 4 → fail-isolate.
+
+- **Infra-death** — a state distinct from BLOCKED: the session is idle, the
+  chat's last message is a **transient API/5xx error** (not an agent
+  conclusion), no spinner, activity frozen. Deliver **one** wake-to-resume —
+  `send_chat_message` with wake + submit, telling it to continue from committed
+  state and not restart completed work. No resume — or a re-error — within one
+  poll cycle → fail-isolate. This is **not** the forbidden BLOCKED-nudge below:
+  BLOCKED is the agent's own decision to stop, an infra-death is the harness
+  dying mid-work. Diagnosis cheat sheet:
+  [`references/merge-recovery.md`](references/merge-recovery.md).
 
 - **Wall clock exceeded** (default **90 min**) → fail-isolate. Do **not**
   `stop_session` — leave the session open for a human.
@@ -502,9 +585,23 @@ state: "Done"}`, fold the id into `merged` (plus `externallyCleared` for a
    to a repair round. This conflict-after-green demotion gets its **own single
    extra** repair round and does **not** consume the ticket's normal 4-round cap
    the first time.
+4. **Any other merge error** → never treat the merge as failed until you have
+   re-read the PR's real provider state (an error can follow a merge that
+   landed), and read a rebase refusal as a merge commit on the branch, not as a
+   red PR. Both recipes:
+   [`references/merge-recovery.md`](references/merge-recovery.md).
 
 Only one `merge_session` may be outstanding per cycle; compute `nextToMerge`,
 re-check its external blockers, merge it, verify, and only then consider the next.
+
+**Expect drift, and budget for it.** Because merges are serialized and builds are long, a
+late-finishing child WILL sit many merges behind the base by the time its turn comes.
+Two mechanisms absorb that, neither of them this skill's to enable: the daemon's **opt-in
+proactive rebase** (a per-repo setting) keeps in-flight branches current without driver
+action, and the **linear-history invariant** — every child rebases onto the base and never
+merges the base back in — keeps whatever conflict does surface a single-branch replay
+rather than a tangled merge graph. Treat a late drift conflict as a normal repair round
+(step 3 above), not as a child failure.
 
 ### 3e. Fail-isolate bookkeeping
 
@@ -550,7 +647,20 @@ Body below the marker: a `| ticket | state | session | note |` table (one row
 per epic ticket) plus a one-line legend explaining the state vocabulary
 (queued / in-flight / green / merged / repairing / failed / skipped). In list
 mode (no parent issue), post the progress comment on the first ticket in the
-list and note that anchor in the driver chat. **Never** post per-event comments —
+list and note that anchor in the driver chat.
+
+**Do not hand-roll the renderer or the create-vs-update decision** —
+`toolbox/progress-comment.mjs` is the reference implementation: `validateProgressState`
+pins the state-file schema (`epicId`, the **bare** `marker` token, a caller-supplied
+`updatedAt`, and an ordered `tickets[]` whose `status` is one of the six
+`PROGRESS_STATUSES` — map the driver vocabulary above onto them, queued → `pending` and
+in-flight or repairing → `building`, carrying any round count in `rounds` / `note`),
+`renderProgressComment(state)` builds the body, and
+`planProgressCommentUpsert({comments, marker, body})` returns the `create` or `update` op
+the driver executes verbatim through the tracker adapter's `writeComment` /
+`updateComment`. The helpers are pure — they never call a tracker themselves.
+
+**Never** post per-event comments —
 the single edited comment is the whole audit trail, and its marker is what makes
 resume idempotent. On a **zero-launch** run (no-ready / no-inflight — Phase 1
 step 3) this same single comment is upserted exactly once as the final summary
@@ -564,9 +674,22 @@ State and honor these explicitly:
   `nextToMerge` order. At most one merge in flight, ever.
 - **A PR number alone is never completion or merge-readiness.** An open PR —
   especially an empty draft placeholder — proves only that a branch exists. A
-  ticket is merge-eligible only through the settled-green gate (chat SETTLED +
-  DisplayStatus Passing + real changed files), never on the strength of a PR
-  existing.
+  ticket is **merge-eligible only when all five hold**: (1) the daemon merge
+  gate is clear (`gate 1` / DisplayStatus `Passing` — the daemon gate is
+  authoritative); (2) the build chat has SETTLED (idle, no spinner, stable
+  across two polls) with real changed files; (3) the PR is **not a draft**;
+  (4) the linked ticket sits in the tracker's **review** state (resolved from
+  the `inReview` role adapter-first by the same `resolveStateRole` as the
+  planned state — the adapter's `states` capability, else the configured
+  `states.inReview` — and exported by Phase 0 as `$BOSS_EPIC_REVIEW_STATE`;
+  never a baked-in state name. **Empty ⇒ condition 4 cannot hold: never
+  merge, never compare against `""`.** Phase 0 does not BLOCK on an empty
+  review state — only `planned` is preflight-critical — so this gate is where
+  it fails closed);
+  (5) the PR title/body carries **no** partial-slice or `do not merge` marker.
+  Green on a _draft_ PR is expected CI noise, not merge-eligibility. Rationale
+  and the read for each condition:
+  [`references/merge-recovery.md`](references/merge-recovery.md).
 - **Never `stop_session` a failed ticket.** Fail-isolate means leave the session
   open so a human inherits the evidence.
 - **Never call AskUserQuestion after Phase 0** — the run is fire-and-forget.
@@ -597,6 +720,18 @@ State and honor these explicitly:
   skipped/blocked. `transitiveDependents` is cycle-safe.
 - Driver killed mid-run → relaunch the identical command; Phase 2 adopts
   in-flight sessions and the marker comment.
+- Merge-commit deadlock → `merge_session` fails with a rebase refusal
+  (`MERGE_STRATEGY_INCOMPATIBLE`) while the PR reads CLEAN. Diagnose with
+  `git rev-list --merges --count origin/<base>..<branch>` (any count `> 0` on a
+  rebase-strategy repo); the daemon auto-squashes when the repo allows squash, so
+  re-invoke `merge_session` **once**. Recovery paths and the linear-history
+  prevention invariant (a `git merge` of the base ref is forbidden — always
+  rebase): [`references/merge-recovery.md`](references/merge-recovery.md).
+- Stranded merge mid-run → on **any** `merge_session` error, re-read the PR's
+  actual provider state before treating the merge as failed. `MERGED` means it
+  landed: complete the bookkeeping (ticket → its done state, fold into `merged`,
+  release the merge slot) and **never re-merge or fail-isolate**. `merge_session`
+  is idempotent, so the safe generic move is re-read, then retry once.
 - Empty draft PR placeholder — a draft PR with no real file changes and no check
   evidence, present _before/without_ a settled run (e.g. bossd's bootstrap
   draft). This is **not** completion and **not** a settled no-op. Such an

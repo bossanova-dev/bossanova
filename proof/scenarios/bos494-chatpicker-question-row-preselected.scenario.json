@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "title": "BOS-494 chat picker — initial cursor lands on the pending-question row",
+  "fixture": { "preset": "question-row" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the home list shows the notification-question session",
+      "steps": [
+        {
+          "waitFor": "Notification question demo",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded (question-row preset)"
+        },
+        {
+          "expect": {
+            "text": "Notification question demo",
+            "match": "normalized",
+            "label": "the notification-question session is listed"
+          },
+          "caption": "The session hosting the mixed working/question chats is on the home list"
+        },
+        { "key": "enter", "caption": "Open the session's chat picker" }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the cursor is preselected on the older question chat, not the newer working chat",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Wire up web notifications",
+            "match": "normalized",
+            "label": "the chat picker rendered the mixed chat list"
+          },
+          "timeoutMs": 10000,
+          "caption": "The chat picker view lists both chats for the session"
+        },
+        {
+          "expect": {
+            "text": "Build the daily health sweep",
+            "match": "normalized",
+            "label": "the newer working chat is also listed (above the question chat)"
+          },
+          "caption": "Both chats render: the newer working chat and the older question chat"
+        },
+        {
+          "expect": {
+            "text": "? question",
+            "match": "normalized",
+            "label": "the question chat renders '? question' in the STATUS column"
+          },
+          "caption": "The older chat is asking a question (STATUS shows '? question')"
+        },
+        {
+          "expect": {
+            "text": "❯ Wire up web notifications",
+            "match": "normalized",
+            "label": "the cursor chevron sits on the question row (not the working row)"
+          },
+          "caption": "BOS-494: the initial cursor is preselected on the question row, so pressing enter opens it"
+        },
+        {
+          "expect": {
+            "text": "[esc] back",
+            "match": "normalized",
+            "label": "the chat picker action bar is present"
+          },
+          "caption": "The [esc] back action bar renders with the populated chat table"
+        }
+      ]
+    }
+  ]
+}

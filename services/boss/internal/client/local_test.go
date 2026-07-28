@@ -25,6 +25,15 @@ type fakeDaemonRPC struct {
 	// dispatching (so the request-mutation branches can be asserted).
 	lastTrackerReq *pb.ListTrackerIssuesRequest
 	lastRecordReq  *pb.RecordChatRequest
+	lastGetReq     *pb.GetSessionRequest
+	lastListReq    *pb.ListSessionsRequest
+
+	// Notes (BOS-553): captured so tests can assert LocalClient ignores the
+	// repoID argument on Get/Update/Delete — the daemon request carries only
+	// the id.
+	lastNoteGetReq    *pb.GetNoteRequest
+	lastNoteUpdateReq *pb.UpdateNoteRequest
+	lastNoteDeleteReq *pb.DeleteNoteRequest
 }
 
 var _ bossanovav1connect.DaemonServiceClient = (*fakeDaemonRPC)(nil)
@@ -38,13 +47,15 @@ func sessionResp[T any](f *fakeDaemonRPC, build func() *T) (*connect.Response[T]
 	return connect.NewResponse(build()), nil
 }
 
-func (f *fakeDaemonRPC) GetSession(_ context.Context, _ *connect.Request[pb.GetSessionRequest]) (*connect.Response[pb.GetSessionResponse], error) {
+func (f *fakeDaemonRPC) GetSession(_ context.Context, req *connect.Request[pb.GetSessionRequest]) (*connect.Response[pb.GetSessionResponse], error) {
+	f.lastGetReq = req.Msg
 	return sessionResp(f, func() *pb.GetSessionResponse {
 		return &pb.GetSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
 	})
 }
 
-func (f *fakeDaemonRPC) ListSessions(_ context.Context, _ *connect.Request[pb.ListSessionsRequest]) (*connect.Response[pb.ListSessionsResponse], error) {
+func (f *fakeDaemonRPC) ListSessions(_ context.Context, req *connect.Request[pb.ListSessionsRequest]) (*connect.Response[pb.ListSessionsResponse], error) {
+	f.lastListReq = req.Msg
 	return sessionResp(f, func() *pb.ListSessionsResponse {
 		return &pb.ListSessionsResponse{Sessions: []*pb.Session{{Id: fakeSessionID}}}
 	})
@@ -142,7 +153,9 @@ func TestLocalClientSessionWrappers(t *testing.T) {
 		name string
 		call func(*LocalClient) (*pb.Session, error)
 	}{
-		{"GetSession", func(c *LocalClient) (*pb.Session, error) { return c.GetSession(ctx, "id") }},
+		{"GetSession", func(c *LocalClient) (*pb.Session, error) {
+			return c.GetSession(ctx, "id", SessionReadOptions{})
+		}},
 		{"StopSession", func(c *LocalClient) (*pb.Session, error) { return c.StopSession(ctx, "id") }},
 		{"PauseSession", func(c *LocalClient) (*pb.Session, error) { return c.PauseSession(ctx, "id") }},
 		{"ResumeSession", func(c *LocalClient) (*pb.Session, error) { return c.ResumeSession(ctx, "id") }},
@@ -189,7 +202,7 @@ func TestLocalClientListSessions(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		c := &LocalClient{rpc: &fakeDaemonRPC{}}
-		got, err := c.ListSessions(ctx, &pb.ListSessionsRequest{})
+		got, err := c.ListSessions(ctx, &pb.ListSessionsRequest{}, SessionReadOptions{})
 		if err != nil {
 			t.Fatalf("unexpected err %v", err)
 		}
@@ -200,7 +213,7 @@ func TestLocalClientListSessions(t *testing.T) {
 
 	t.Run("error", func(t *testing.T) {
 		c := &LocalClient{rpc: &fakeDaemonRPC{err: errRPC}}
-		got, err := c.ListSessions(ctx, &pb.ListSessionsRequest{})
+		got, err := c.ListSessions(ctx, &pb.ListSessionsRequest{}, SessionReadOptions{})
 		if !errors.Is(err, errRPC) {
 			t.Fatalf("got err %v, want %v", err, errRPC)
 		}
@@ -208,6 +221,113 @@ func TestLocalClientListSessions(t *testing.T) {
 			t.Fatalf("got %v, want nil sessions", got)
 		}
 	})
+}
+
+// TestLocalClientGetSessionEndpointOptIn pins the BOS-473 request shaping on
+// GetSession: the zero-value option leaves the machine-local endpoint fields
+// unset (a plain read), while opting in sets IncludeLocalHttpEndpoints and
+// stamps the platform network-namespace identity so the daemon can gate on it.
+func TestLocalClientGetSessionEndpointOptIn(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("default leaves endpoint fields unset", func(t *testing.T) {
+		fake := &fakeDaemonRPC{}
+		c := &LocalClient{rpc: fake}
+		if _, err := c.GetSession(ctx, "id", SessionReadOptions{}); err != nil {
+			t.Fatalf("unexpected err %v", err)
+		}
+		if fake.lastGetReq.GetIncludeLocalHttpEndpoints() {
+			t.Fatalf("IncludeLocalHttpEndpoints = true, want false for a plain read")
+		}
+		if ns := fake.lastGetReq.GetClientNetworkNamespace(); ns != "" {
+			t.Fatalf("ClientNetworkNamespace = %q, want empty for a plain read", ns)
+		}
+	})
+
+	t.Run("opt-in sets flag and namespace identity", func(t *testing.T) {
+		fake := &fakeDaemonRPC{}
+		c := &LocalClient{rpc: fake}
+		if _, err := c.GetSession(ctx, "id", SessionReadOptions{IncludeLocalHTTPEndpoints: true}); err != nil {
+			t.Fatalf("unexpected err %v", err)
+		}
+		if !fake.lastGetReq.GetIncludeLocalHttpEndpoints() {
+			t.Fatalf("IncludeLocalHttpEndpoints = false, want true when opted in")
+		}
+		if got, want := fake.lastGetReq.GetClientNetworkNamespace(), networkNamespaceIdentity(); got != want {
+			t.Fatalf("ClientNetworkNamespace = %q, want platform identity %q", got, want)
+		}
+	})
+}
+
+// TestLocalClientListSessionsEndpointOptIn mirrors the GetSession opt-in pins
+// for the list read path.
+func TestLocalClientListSessionsEndpointOptIn(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("default leaves endpoint fields unset", func(t *testing.T) {
+		fake := &fakeDaemonRPC{}
+		c := &LocalClient{rpc: fake}
+		if _, err := c.ListSessions(ctx, &pb.ListSessionsRequest{}, SessionReadOptions{}); err != nil {
+			t.Fatalf("unexpected err %v", err)
+		}
+		if fake.lastListReq.GetIncludeLocalHttpEndpoints() {
+			t.Fatalf("IncludeLocalHttpEndpoints = true, want false for a plain read")
+		}
+		if ns := fake.lastListReq.GetClientNetworkNamespace(); ns != "" {
+			t.Fatalf("ClientNetworkNamespace = %q, want empty for a plain read", ns)
+		}
+	})
+
+	t.Run("opt-in sets flag and namespace identity", func(t *testing.T) {
+		fake := &fakeDaemonRPC{}
+		c := &LocalClient{rpc: fake}
+		if _, err := c.ListSessions(ctx, &pb.ListSessionsRequest{}, SessionReadOptions{IncludeLocalHTTPEndpoints: true}); err != nil {
+			t.Fatalf("unexpected err %v", err)
+		}
+		if !fake.lastListReq.GetIncludeLocalHttpEndpoints() {
+			t.Fatalf("IncludeLocalHttpEndpoints = false, want true when opted in")
+		}
+		if got, want := fake.lastListReq.GetClientNetworkNamespace(), networkNamespaceIdentity(); got != want {
+			t.Fatalf("ClientNetworkNamespace = %q, want platform identity %q", got, want)
+		}
+	})
+}
+
+// TestLocalClientListSessionsOptInDoesNotMutateCallerRequest pins the BOS-473
+// per-call isolation: opting into endpoint hydration must not mutate the
+// caller-owned request, so the same request object reused for a later default
+// read stays a plain read (no leaked opt-in flag or namespace identity).
+func TestLocalClientListSessionsOptInDoesNotMutateCallerRequest(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeDaemonRPC{}
+	c := &LocalClient{rpc: fake}
+
+	req := &pb.ListSessionsRequest{IncludeArchived: true}
+	if _, err := c.ListSessions(ctx, req, SessionReadOptions{IncludeLocalHTTPEndpoints: true}); err != nil {
+		t.Fatalf("opt-in ListSessions: unexpected err %v", err)
+	}
+	// The wire request the daemon saw must carry the opt-in...
+	if !fake.lastListReq.GetIncludeLocalHttpEndpoints() {
+		t.Fatal("wire request IncludeLocalHttpEndpoints = false, want true when opted in")
+	}
+	// ...but the caller's own request object must be untouched.
+	if req.GetIncludeLocalHttpEndpoints() {
+		t.Fatal("caller request was mutated: IncludeLocalHttpEndpoints = true, want false")
+	}
+	if ns := req.GetClientNetworkNamespace(); ns != "" {
+		t.Fatalf("caller request was mutated: ClientNetworkNamespace = %q, want empty", ns)
+	}
+
+	// Reusing the same request for a default read must be a plain read.
+	if _, err := c.ListSessions(ctx, req, SessionReadOptions{}); err != nil {
+		t.Fatalf("reused default ListSessions: unexpected err %v", err)
+	}
+	if fake.lastListReq.GetIncludeLocalHttpEndpoints() {
+		t.Fatal("reused default read leaked IncludeLocalHttpEndpoints = true, want false")
+	}
+	if ns := fake.lastListReq.GetClientNetworkNamespace(); ns != "" {
+		t.Fatalf("reused default read leaked ClientNetworkNamespace = %q, want empty", ns)
+	}
 }
 
 // TestLocalClientEmptyTrash pins the int32 count extraction: the success path

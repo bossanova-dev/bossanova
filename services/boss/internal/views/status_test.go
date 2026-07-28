@@ -1019,3 +1019,327 @@ func TestRenderSelectedPRLink(t *testing.T) {
 		t.Errorf("expected empty output when PrNumber is nil")
 	}
 }
+
+// --- BOS-474: exact-escape goldens for the OSC 8 link renderers ------------
+//
+// These pin the FULL byte sequence each link renderer emits (raw ANSI + OSC 8
+// envelope) so the osc8Link extraction is provably byte-stable. The wants are
+// written as literals — never composed from the production constants — so a
+// change to those constants fails here instead of silently agreeing with
+// itself.
+
+func TestLinkRenderers_ExactEscapes(t *testing.T) {
+	const (
+		prURL      = "https://github.com/acme/widgets/pull/42"
+		trackerURL = "https://linear.app/acme/issue/BOS-474"
+		title      = "Ship [BOS-474] endpoints"
+	)
+	pr := int32(42)
+	trackerID := "BOS-474"
+	linked := &pb.Session{
+		PrNumber:   &pr,
+		PrUrl:      strPtr(prURL),
+		TrackerId:  &trackerID,
+		TrackerUrl: strPtr(trackerURL),
+	}
+	unlinked := &pb.Session{PrNumber: &pr, TrackerId: &trackerID}
+
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{
+			name: "pr link with url",
+			got:  renderPRLink(linked),
+			want: "\x1b]8;;" + prURL + "\x1b\\" + "\x1b[4m#42\x1b[24m" + "\x1b]8;;\x1b\\",
+		},
+		{
+			name: "pr link without url",
+			got:  renderPRLink(unlinked),
+			want: "\x1b[4m#42\x1b[24m",
+		},
+		{
+			name: "muted pr link with url",
+			got:  renderMutedPRLink(linked),
+			want: "\x1b]8;;" + prURL + "\x1b\\" +
+				"\x1b[38;2;98;98;98;58;2;98;98;98;9;4m#42\x1b[39;59;29;24m" +
+				"\x1b]8;;\x1b\\",
+		},
+		{
+			name: "muted pr link without url",
+			got:  renderMutedPRLink(unlinked),
+			want: "\x1b[38;2;98;98;98;58;2;98;98;98;9;4m#42\x1b[39;59;29;24m",
+		},
+		{
+			name: "selected pr link with url",
+			got:  renderSelectedPRLink(linked),
+			want: "\x1b]8;;" + prURL + "\x1b\\" +
+				"\x1b[1;38;2;76;167;248;58;2;76;167;248;4m#42\x1b[22;39;59;24m" +
+				"\x1b]8;;\x1b\\",
+		},
+		{
+			name: "selected pr link without url",
+			got:  renderSelectedPRLink(unlinked),
+			want: "\x1b[1;38;2;76;167;248;58;2;76;167;248;4m#42\x1b[22;39;59;24m",
+		},
+		{
+			name: "tracker link with url",
+			got:  renderTrackerLink(linked, title),
+			want: "Ship " +
+				"\x1b]8;;" + trackerURL + "\x1b\\" + "\x1b[4m[BOS-474]\x1b[24m" + "\x1b]8;;\x1b\\" +
+				" endpoints",
+		},
+		{
+			name: "tracker link without url",
+			got:  renderTrackerLink(unlinked, title),
+			want: "Ship " + "\x1b[4m[BOS-474]\x1b[24m" + " endpoints",
+		},
+		{
+			name: "muted tracker link with url",
+			got:  renderMutedTrackerLink(linked, title),
+			want: "\x1b[38;2;98;98;98;9mShip \x1b[39;29m" +
+				"\x1b]8;;" + trackerURL + "\x1b\\" +
+				"\x1b[38;2;98;98;98;58;2;98;98;98;9;4m[BOS-474]\x1b[39;59;29;24m" +
+				"\x1b]8;;\x1b\\" +
+				"\x1b[38;2;98;98;98;9m endpoints\x1b[39;29m",
+		},
+		{
+			name: "muted tracker link without url",
+			got:  renderMutedTrackerLink(unlinked, title),
+			want: "\x1b[38;2;98;98;98;9mShip \x1b[39;29m" +
+				"\x1b[38;2;98;98;98;58;2;98;98;98;9;4m[BOS-474]\x1b[39;59;29;24m" +
+				"\x1b[38;2;98;98;98;9m endpoints\x1b[39;29m",
+		},
+		{
+			name: "selected tracker link with url",
+			got:  renderSelectedTrackerLink(linked, title),
+			want: "\x1b[1;38;2;76;167;248mShip \x1b[22;39m" +
+				"\x1b]8;;" + trackerURL + "\x1b\\" +
+				"\x1b[1;38;2;76;167;248;58;2;76;167;248;4m[BOS-474]\x1b[22;39;59;24m" +
+				"\x1b]8;;\x1b\\" +
+				"\x1b[1;38;2;76;167;248m endpoints\x1b[22;39m",
+		},
+		{
+			name: "selected tracker link without url",
+			got:  renderSelectedTrackerLink(unlinked, title),
+			want: "\x1b[1;38;2;76;167;248mShip \x1b[22;39m" +
+				"\x1b[1;38;2;76;167;248;58;2;76;167;248;4m[BOS-474]\x1b[22;39;59;24m" +
+				"\x1b[1;38;2;76;167;248m endpoints\x1b[22;39m",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Errorf("escape sequence drift\n got: %q\nwant: %q", tc.got, tc.want)
+			}
+		})
+	}
+}
+
+// --- BOS-474: endpoint link rendering --------------------------------------
+
+func TestSessionEndpointLabels(t *testing.T) {
+	cases := []struct {
+		name string
+		sess *pb.Session
+		want string
+	}{
+		{name: "nil session", sess: nil, want: ""},
+		{name: "no endpoints", sess: &pb.Session{}, want: ""},
+		{
+			name: "single endpoint",
+			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+				{Port: 3000, Url: "http://localhost:3000"},
+			}},
+			want: ":3000",
+		},
+		{
+			name: "multiple endpoints",
+			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+				{Port: 3000, Url: "http://localhost:3000"},
+				{Port: 5173, Url: "https://localhost:5173"},
+			}},
+			want: ":3000 · :5173",
+		},
+		{
+			name: "invalid url still labelled",
+			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+				{Port: 3000, Url: "ftp://localhost:3000"},
+			}},
+			want: ":3000",
+		},
+		{
+			name: "zero port dropped",
+			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+				{Port: 0, Url: "http://localhost"},
+				{Port: 8080, Url: "http://localhost:8080"},
+			}},
+			want: ":8080",
+		},
+		{
+			name: "nil entry dropped",
+			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+				nil,
+				{Port: 8080, Url: "http://localhost:8080"},
+			}},
+			want: ":8080",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sessionEndpointLabels(tc.sess); got != tc.want {
+				t.Errorf("sessionEndpointLabels = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenderSessionEndpoints_ExactEscapes(t *testing.T) {
+	const (
+		mutedLink  = "\x1b[38;2;98;98;98;58;2;98;98;98;4m"
+		mutedLinkX = "\x1b[39;59;24m"
+		mutedOpen  = "\x1b[38;2;98;98;98m"
+		mutedClose = "\x1b[39m"
+	)
+	cases := []struct {
+		name string
+		sess *pb.Session
+		want string
+	}{
+		{name: "nil session", sess: nil, want: ""},
+		{name: "no endpoints", sess: &pb.Session{}, want: ""},
+		{
+			name: "single http endpoint is clickable",
+			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+				{Port: 3000, Url: "http://localhost:3000"},
+			}},
+			want: "\x1b]8;;http://localhost:3000\x1b\\" + mutedLink + ":3000" + mutedLinkX + "\x1b]8;;\x1b\\",
+		},
+		{
+			name: "two endpoints joined by a muted separator",
+			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+				{Port: 3000, Url: "http://localhost:3000"},
+				{Port: 5173, Url: "https://127.0.0.1:5173"},
+			}},
+			want: "\x1b]8;;http://localhost:3000\x1b\\" + mutedLink + ":3000" + mutedLinkX + "\x1b]8;;\x1b\\" +
+				mutedOpen + " · " + mutedClose +
+				"\x1b]8;;https://127.0.0.1:5173\x1b\\" + mutedLink + ":5173" + mutedLinkX + "\x1b]8;;\x1b\\",
+		},
+		{
+			name: "non-http scheme renders muted but not clickable",
+			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+				{Port: 3000, Url: "ftp://localhost:3000"},
+			}},
+			want: mutedOpen + ":3000" + mutedClose,
+		},
+		{
+			name: "empty url renders muted but not clickable",
+			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+				{Port: 3000},
+			}},
+			want: mutedOpen + ":3000" + mutedClose,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := renderSessionEndpoints(tc.sess); got != tc.want {
+				t.Errorf("renderSessionEndpoints\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsHTTPEndpointURL rejects anything that must never become an OSC 8
+// target: non-HTTP schemes, relative/hostless URLs, unparseable strings, and
+// (critically) strings carrying control bytes that would terminate or forge
+// the escape envelope.
+func TestIsHTTPEndpointURL(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{"http://localhost:3000", true},
+		{"https://127.0.0.1:5173", true},
+		{"http://localhost:3000/path?q=1", true},
+		{"", false},
+		{"localhost:3000", false},
+		{"//localhost:3000", false},
+		{"ftp://localhost:3000", false},
+		{"file:///etc/passwd", false},
+		{"javascript:alert(1)", false},
+		{"http://", false},
+		{"http://loc\x1balhost", false},
+		{"http://localhost\x07", false},
+		{"http://localhost\n:3000", false},
+		// A raw space makes the URI invalid per RFC 3986 even though url.Parse
+		// accepts it — the terminal would render a dead link.
+		{"http://local host:3000", false},
+		{"http://localhost:3000/a b", false},
+		{"http://localhost:3000/a%20b", true},
+		{"HTTP://localhost:3000", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			if got := isHTTPEndpointURL(tc.raw); got != tc.want {
+				t.Errorf("isHTTPEndpointURL(%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenderSessionEndpoints_NeverEmitsUnsafeTarget is the security-shaped
+// backstop for the table above: whatever the daemon hands us, the rendered
+// string must never contain an OSC 8 introducer whose target carries a raw
+// ESC or BEL byte.
+func TestRenderSessionEndpoints_NeverEmitsUnsafeTarget(t *testing.T) {
+	hostile := []string{
+		"http://localhost:3000\x1b]8;;http://evil\x1b\\",
+		"http://localhost\x07",
+		"http://localhost\n",
+	}
+	for _, raw := range hostile {
+		sess := &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{{Port: 3000, Url: raw}}}
+		got := renderSessionEndpoints(sess)
+		if strings.Contains(got, "\x1b]8;;") {
+			t.Errorf("hostile url %q produced an OSC 8 envelope: %q", raw, got)
+		}
+		if !strings.Contains(got, ":3000") {
+			t.Errorf("hostile url %q dropped the visible label: %q", raw, got)
+		}
+	}
+}
+
+// TestSessionSubRowCount verifies the single accounting function every Home
+// row/height/cursor helper routes through.
+func TestSessionSubRowCount(t *testing.T) {
+	endpoints := []*pb.HttpEndpoint{{Port: 3000, Url: "http://localhost:3000"}}
+	cases := []struct {
+		name string
+		sess *pb.Session
+		want int
+	}{
+		{name: "nil", sess: nil, want: 0},
+		{name: "bare session", sess: &pb.Session{}, want: 0},
+		{name: "endpoints only", sess: &pb.Session{HttpEndpoints: endpoints}, want: 1},
+		{name: "warning only", sess: &pb.Session{SetupError: "boom"}, want: 1},
+		{
+			name: "endpoints and warning",
+			sess: &pb.Session{HttpEndpoints: endpoints, SetupError: "boom"},
+			want: 2,
+		},
+		{
+			name: "unrenderable endpoints add no row",
+			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{{Port: 0, Url: "http://localhost"}}},
+			want: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sessionSubRowCount(tc.sess); got != tc.want {
+				t.Errorf("sessionSubRowCount = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

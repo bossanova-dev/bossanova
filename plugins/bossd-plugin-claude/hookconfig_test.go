@@ -372,6 +372,317 @@ func findRunStop(t *testing.T, settings map[string]any, agentSessionID string) m
 	return found
 }
 
+// notifCommand returns the first inner command string of a hook group, or ""
+// if the shape doesn't match. Lets tests key the Notification entry off its
+// POST URL, the same ownership key WriteHookConfig uses.
+func notifCommand(entry map[string]any) string {
+	inner, ok := entry["hooks"].([]any)
+	if !ok || len(inner) == 0 {
+		return ""
+	}
+	h, ok := inner[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	cmd, _ := h["command"].(string)
+	return cmd
+}
+
+// findRunNotification returns bossd's question-hook entry for the given
+// agentSessionID from the Notification array, or fails the test if it isn't
+// there exactly once. The entry is keyed by the unique substring of its POST
+// URL (/hooks/question/{id}), NOT by matcher: bossd installs it with an EMPTY
+// matcher because Claude's Notification event filters the matcher by
+// notification type, so a synthetic matcher would make the hook inert (the
+// original BOS-485 bug). This helper matching on URL is what keeps the test
+// honest about the fired-hook contract rather than a dead identifier.
+func findRunNotification(t *testing.T, settings map[string]any, agentSessionID string) map[string]any {
+	t.Helper()
+	wantURL := "/hooks/question/" + agentSessionID
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings.hooks missing or wrong type: %T", settings["hooks"])
+	}
+	notifs, ok := hooks["Notification"].([]any)
+	if !ok {
+		t.Fatalf("settings.hooks.Notification missing or wrong type: %T", hooks["Notification"])
+	}
+	var found map[string]any
+	matches := 0
+	for _, raw := range notifs {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.Contains(notifCommand(m), wantURL) {
+			found = m
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("expected exactly 1 entry POSTing to %s in Notification[], got %d", wantURL, matches)
+	}
+	return found
+}
+
+// TestWriteHookConfig_RunKeyed_InstallsNotificationHook — a run-keyed write
+// installs a Notification hook alongside the Stop hook, POSTing to
+// /hooks/question/{id} with the same token. The Notification entry MUST use an
+// empty matcher (so Claude, which filters the Notification matcher by type,
+// actually fires it) and MUST forward the payload body so bossd can classify by
+// notification_type. These two assertions are the guard against regressing to
+// the original inert-hook / false-green bug.
+func TestWriteHookConfig_RunKeyed_InstallsNotificationHook(t *testing.T) {
+	worktree := t.TempDir()
+	const agentSession = "agent-q-1"
+
+	if err := WriteHookConfig(worktree, "sess-q1", agentSession, "tok-q", 45678); err != nil {
+		t.Fatalf("WriteHookConfig: %v", err)
+	}
+
+	settings := readSettings(t, worktree)
+
+	// Stop hook still present and correct.
+	stopEntry := findRunStop(t, settings, agentSession)
+	assertCommandContains(t, stopEntry,
+		"Authorization: Bearer tok-q",
+		"http://127.0.0.1:45678/hooks/agent-run-complete/"+agentSession,
+	)
+
+	// Notification hook present, POSTs to question with the same token, and
+	// forwards the JSON payload on stdin for server-side classification.
+	notifEntry := findRunNotification(t, settings, agentSession)
+	assertCommandContains(t, notifEntry,
+		"Authorization: Bearer tok-q",
+		"http://127.0.0.1:45678/hooks/question/"+agentSession,
+		"--data-binary @-",
+		"Content-Type: application/json",
+	)
+
+	// Empty matcher: Claude filters the Notification matcher by notification
+	// type, so anything non-empty (e.g. a synthetic per-run id) matches no type
+	// and the hook never fires. This is the crux of the BOS-485 fix.
+	if m, ok := notifEntry["matcher"].(string); !ok || m != "" {
+		t.Errorf("Notification matcher = %q (ok=%v), want empty string so the hook fires on every type", notifEntry["matcher"], ok)
+	}
+}
+
+// TestWriteHookConfig_SessionKeyed_NoNotificationHook — a session-keyed
+// (cron finalize) write has no agent_session_id, so no Notification hook is
+// installed (there's no id to key or POST).
+func TestWriteHookConfig_SessionKeyed_NoNotificationHook(t *testing.T) {
+	worktree := t.TempDir()
+	if err := WriteHookConfig(worktree, "sess-nonotif", "", "tok", 1234); err != nil {
+		t.Fatalf("WriteHookConfig: %v", err)
+	}
+	settings := readSettings(t, worktree)
+	hooks, _ := settings["hooks"].(map[string]any)
+	if _, ok := hooks["Notification"]; ok {
+		t.Errorf("session-keyed write installed a Notification hook; want none")
+	}
+}
+
+// TestWriteHookConfig_Notification_PreservesUserHooks — an existing
+// user/repo Notification hook survives a run-keyed write alongside ours.
+func TestWriteHookConfig_Notification_PreservesUserHooks(t *testing.T) {
+	worktree := t.TempDir()
+	claudeDir := filepath.Join(worktree, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	userNotif := map[string]any{
+		"matcher": "user-notif",
+		"hooks": []any{
+			map[string]any{"type": "command", "command": "echo hi"},
+		},
+	}
+	userStop := map[string]any{
+		"matcher": "user-stop",
+		"hooks": []any{
+			map[string]any{"type": "command", "command": "echo stop"},
+		},
+	}
+	existing := map[string]any{
+		"hooks": map[string]any{
+			"Notification": []any{userNotif},
+			"Stop":         []any{userStop},
+		},
+	}
+	data, _ := json.Marshal(existing)
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.local.json"), data, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := WriteHookConfig(worktree, "sess-u", "agent-u", "tok-u", 5555); err != nil {
+		t.Fatalf("WriteHookConfig: %v", err)
+	}
+
+	settings := readSettings(t, worktree)
+	notifs := settings["hooks"].(map[string]any)["Notification"].([]any)
+	if len(notifs) != 2 {
+		t.Fatalf("Notification length = %d, want 2 (user + bossd)", len(notifs))
+	}
+	var foundUser bool
+	for _, raw := range notifs {
+		m := raw.(map[string]any)
+		if m["matcher"] == "user-notif" {
+			foundUser = true
+			if m["hooks"].([]any)[0].(map[string]any)["command"] != "echo hi" {
+				t.Error("user Notification hook mutated")
+			}
+		}
+	}
+	if !foundUser {
+		t.Error("user Notification hook was dropped")
+	}
+	findRunNotification(t, settings, "agent-u")
+	// User Stop hook preserved too.
+	stops := settings["hooks"].(map[string]any)["Stop"].([]any)
+	var foundUserStop bool
+	for _, raw := range stops {
+		if raw.(map[string]any)["matcher"] == "user-stop" {
+			foundUserStop = true
+		}
+	}
+	if !foundUserStop {
+		t.Error("user Stop hook was dropped")
+	}
+}
+
+// TestWriteHookConfig_Notification_PreservesEmptyMatcherUserHook — the exact
+// collision URL-keying exists to prevent: a user's OWN Notification hook that
+// also uses an empty matcher (fire on every type) must survive a run-keyed
+// write. Under the old matcher-keyed upsert this would have been silently
+// overwritten by ours (same "" matcher); keying on the POST URL keeps them
+// distinct.
+func TestWriteHookConfig_Notification_PreservesEmptyMatcherUserHook(t *testing.T) {
+	worktree := t.TempDir()
+	claudeDir := filepath.Join(worktree, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	userNotif := map[string]any{
+		"matcher": "", // user's catch-all Notification hook
+		"hooks": []any{
+			map[string]any{"type": "command", "command": "echo user-catch-all"},
+		},
+	}
+	existing := map[string]any{
+		"hooks": map[string]any{"Notification": []any{userNotif}},
+	}
+	data, _ := json.Marshal(existing)
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.local.json"), data, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := WriteHookConfig(worktree, "sess-e", "agent-e", "tok-e", 5555); err != nil {
+		t.Fatalf("WriteHookConfig: %v", err)
+	}
+
+	settings := readSettings(t, worktree)
+	notifs := settings["hooks"].(map[string]any)["Notification"].([]any)
+	if len(notifs) != 2 {
+		t.Fatalf("Notification length = %d, want 2 (user catch-all + bossd)", len(notifs))
+	}
+	// User's empty-matcher hook untouched.
+	var foundUser bool
+	for _, raw := range notifs {
+		m := raw.(map[string]any)
+		if notifCommand(m) == "echo user-catch-all" {
+			foundUser = true
+		}
+	}
+	if !foundUser {
+		t.Error("user's empty-matcher Notification hook was clobbered")
+	}
+	// Ours present, keyed by URL.
+	findRunNotification(t, settings, "agent-e")
+}
+
+// TestWriteHookConfig_Notification_LatestRunWins — a second run-keyed write
+// for a different agent_session_id sweeps the prior run's Notification entry
+// (runs are sequential per worktree), mirroring the Stop-hook prune.
+func TestWriteHookConfig_Notification_LatestRunWins(t *testing.T) {
+	worktree := t.TempDir()
+	if err := WriteHookConfig(worktree, "sess-n", "agent-N1", "tok-1", 5555); err != nil {
+		t.Fatalf("run N1 write: %v", err)
+	}
+	if err := WriteHookConfig(worktree, "sess-n", "agent-N2", "tok-2", 6666); err != nil {
+		t.Fatalf("run N2 write: %v", err)
+	}
+	settings := readSettings(t, worktree)
+	notifs := settings["hooks"].(map[string]any)["Notification"].([]any)
+	if len(notifs) != 1 {
+		t.Fatalf("Notification length = %d, want 1 (only latest run)", len(notifs))
+	}
+	findRunNotification(t, settings, "agent-N2")
+}
+
+// TestWriteHookConfig_RunKeyed_ReplacesSameNotification — calling the
+// run-keyed path twice with the same agent_session_id replaces the
+// Notification entry in place rather than duplicating it.
+func TestWriteHookConfig_RunKeyed_ReplacesSameNotification(t *testing.T) {
+	worktree := t.TempDir()
+	const agentSession = "agent-nsame"
+	if err := WriteHookConfig(worktree, "sess-ns", agentSession, "tok-old", 7777); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if err := WriteHookConfig(worktree, "sess-ns", agentSession, "tok-new", 8888); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	settings := readSettings(t, worktree)
+	notifs := settings["hooks"].(map[string]any)["Notification"].([]any)
+	if len(notifs) != 1 {
+		t.Fatalf("Notification length = %d, want 1 (no dupe on rewrite)", len(notifs))
+	}
+	entry := findRunNotification(t, settings, agentSession)
+	assertCommandContains(t, entry,
+		"Authorization: Bearer tok-new",
+		"http://127.0.0.1:8888/hooks/question/"+agentSession,
+	)
+}
+
+// TestRemoveRunHookConfig_RemovesNotificationToo — RemoveRunHookConfig
+// deletes both the Stop and Notification run entries for the agent_session_id,
+// leaving the session-keyed finalize entry and user hooks untouched.
+func TestRemoveRunHookConfig_RemovesNotificationToo(t *testing.T) {
+	worktree := t.TempDir()
+	if err := WriteHookConfig(worktree, "sess-1", "", "tok-final", 4000); err != nil {
+		t.Fatalf("finalize write: %v", err)
+	}
+	if err := WriteHookConfig(worktree, "sess-1", "run-both", "tok-1", 4000); err != nil {
+		t.Fatalf("run write: %v", err)
+	}
+	// Sanity: both entries exist before removal.
+	pre := readSettings(t, worktree)
+	findRunStop(t, pre, "run-both")
+	findRunNotification(t, pre, "run-both")
+
+	if err := RemoveRunHookConfig(worktree, "run-both"); err != nil {
+		t.Fatalf("RemoveRunHookConfig: %v", err)
+	}
+
+	settings := readSettings(t, worktree)
+	// Stop run entry gone.
+	for _, raw := range settings["hooks"].(map[string]any)["Stop"].([]any) {
+		if raw.(map[string]any)["matcher"] == runHookMatcherPrefix+"run-both" {
+			t.Fatal("Stop run entry should have been removed")
+		}
+	}
+	// Notification entry gone: no remaining entry POSTs to this run's question
+	// URL. Matching on URL (not matcher) is what actually proves removal — the
+	// entry carries an empty matcher, so a matcher check would pass vacuously.
+	if notifsRaw, ok := settings["hooks"].(map[string]any)["Notification"]; ok {
+		for _, raw := range notifsRaw.([]any) {
+			if m, ok := raw.(map[string]any); ok && strings.Contains(notifCommand(m), "/hooks/question/run-both") {
+				t.Fatal("Notification run entry should have been removed")
+			}
+		}
+	}
+	// finalize entry survives.
+	findBossdStop(t, settings)
+}
+
 // TestWriteHookConfig_RunKeyed_Empty — fresh worktree, no existing
 // settings. Run-keyed write installs a "bossd-agent-run-{uuid}" entry
 // that POSTs to /hooks/agent-run-complete/{uuid}.

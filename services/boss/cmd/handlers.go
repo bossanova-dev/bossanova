@@ -248,7 +248,7 @@ func launchTUIWithOptions(cmd *cobra.Command, opts launchTUIOptions) error {
 
 type agentPreflightClient interface {
 	ResolveContext(ctx context.Context, workingDir string) (*pb.ResolveContextResponse, error)
-	GetSession(ctx context.Context, id string) (*pb.Session, error)
+	GetSession(ctx context.Context, id string, opts client.SessionReadOptions) (*pb.Session, error)
 	ListAgents(ctx context.Context) ([]client.AgentInfo, error)
 }
 
@@ -285,7 +285,7 @@ func needsLocalDaemonStartup(cmd *cobra.Command) bool {
 
 func agentPreflightTarget(ctx context.Context, c agentPreflightClient, sessionID string) (string, string, error) {
 	if sessionID != "" {
-		sess, err := c.GetSession(ctx, sessionID)
+		sess, err := c.GetSession(ctx, sessionID, client.SessionReadOptions{})
 		if err != nil {
 			return "", "", err
 		}
@@ -975,7 +975,7 @@ func runLS(cmd *cobra.Command) error {
 	}
 
 	ctx := context.Background()
-	sessions, err := c.ListSessions(ctx, req)
+	sessions, err := c.ListSessions(ctx, req, client.SessionReadOptions{})
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
 	}
@@ -2136,7 +2136,7 @@ func resolveSessionID(c client.BossClient, ctx context.Context, prefix string) (
 	if len(prefix) >= 32 {
 		return prefix, nil
 	}
-	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{IncludeArchived: true})
+	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{IncludeArchived: true}, client.SessionReadOptions{})
 	if err != nil {
 		return "", fmt.Errorf("list sessions: %w", err)
 	}
@@ -2158,7 +2158,7 @@ func resolveSessionID(c client.BossClient, ctx context.Context, prefix string) (
 
 // resolveArchivedSessionID is like resolveSessionID but only matches archived sessions.
 func resolveArchivedSessionID(c client.BossClient, ctx context.Context, prefix string) (string, error) {
-	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{IncludeArchived: true})
+	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{IncludeArchived: true}, client.SessionReadOptions{})
 	if err != nil {
 		return "", fmt.Errorf("list sessions: %w", err)
 	}
@@ -2229,7 +2229,7 @@ func runShow(cmd *cobra.Command, sessionID string) error {
 		return err
 	}
 
-	sess, err := c.GetSession(ctx, sessionID)
+	sess, err := c.GetSession(ctx, sessionID, client.SessionReadOptions{})
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
 	}
@@ -2386,7 +2386,7 @@ func runTrashLS(cmd *cobra.Command) error {
 	}
 
 	ctx := context.Background()
-	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{IncludeArchived: true})
+	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{IncludeArchived: true}, client.SessionReadOptions{})
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
 	}
@@ -2518,6 +2518,7 @@ func runRepoUpdate(cmd *cobra.Command, repoID string) error {
 		{"auto-merge-dependabot", "no-auto-merge-dependabot", func(v bool) { req.CanAutoMergeDependabot = &v }},
 		{"auto-repair", "no-auto-repair", func(v bool) { req.CanAutoRepair = &v }},
 		{"delete-branches", "no-delete-branches", func(v bool) { req.CanAutoDeleteBranches = &v }},
+		{"keep-branches-current", "no-keep-branches-current", func(v bool) { req.ShouldKeepBranchesCurrent = &v }},
 	}
 	for _, bp := range boolPairs {
 		enableChanged := cmd.Flags().Changed(bp.enable)
@@ -2556,6 +2557,7 @@ func runRepoUpdate(cmd *cobra.Command, repoID string) error {
 	fmt.Printf("  Auto-merge Dependabot:  %v\n", repo.CanAutoMergeDependabot)
 	fmt.Printf("  Automatic repair:       %v\n", repo.CanAutoRepair)
 	fmt.Printf("  Delete branches:        %v\n", repo.CanAutoDeleteBranches)
+	fmt.Printf("  Keep branches current:  %v\n", repo.ShouldKeepBranchesCurrent)
 	return nil
 }
 

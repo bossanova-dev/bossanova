@@ -42,11 +42,12 @@ func (s *SQLiteCronJobStore) Create(ctx context.Context, params CreateCronJobPar
 		gateCommandVal = params.GateCommand
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled, gate_command, should_run_setup_command, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled, gate_command, should_run_setup_command, is_zero_output, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.RepoID, params.Name, params.Prompt, params.Schedule, params.Timezone,
 		agentName, params.Model, sqlutil.BoolToInt(params.IsEnabled),
-		gateCommandVal, sqlutil.BoolToInt(params.ShouldRunSetupCommand), now, now,
+		gateCommandVal, sqlutil.BoolToInt(params.ShouldRunSetupCommand),
+		sqlutil.BoolToInt(params.IsZeroOutput), now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert cron job: %w", err)
@@ -137,6 +138,10 @@ func (s *SQLiteCronJobStore) Update(ctx context.Context, id string, params Updat
 	if params.ShouldRunSetupCommand != nil {
 		sets = append(sets, "should_run_setup_command = ?")
 		args = append(args, sqlutil.BoolToInt(*params.ShouldRunSetupCommand))
+	}
+	if params.IsZeroOutput != nil {
+		sets = append(sets, "is_zero_output = ?")
+		args = append(args, sqlutil.BoolToInt(*params.IsZeroOutput))
 	}
 
 	args = append(args, id)
@@ -249,7 +254,7 @@ func (s *SQLiteCronJobStore) Delete(ctx context.Context, id string) error {
 }
 
 const cronJobSelectSQL = `SELECT id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled,
-	gate_command, should_run_setup_command,
+	gate_command, should_run_setup_command, is_zero_output,
 	last_run_session_id, last_run_at, last_run_outcome, next_run_at,
 	created_at, updated_at
 	FROM cron_jobs`
@@ -269,13 +274,13 @@ func collectCronJobs(rows *sql.Rows) ([]*models.CronJob, error) {
 
 func scanCronJob(s sqlutil.Scanner) (*models.CronJob, error) {
 	var j models.CronJob
-	var enabledInt, runSetupInt int
+	var enabledInt, runSetupInt, zeroOutputInt int
 	var timezone, agentName, model, gateCommand, lastRunSessionID, lastRunAt, lastRunOutcome, nextRunAt sql.NullString
 	var createdAt, updatedAt string
 	err := s.Scan(
 		&j.ID, &j.RepoID, &j.Name, &j.Prompt, &j.Schedule,
 		&timezone, &agentName, &model, &enabledInt,
-		&gateCommand, &runSetupInt,
+		&gateCommand, &runSetupInt, &zeroOutputInt,
 		&lastRunSessionID, &lastRunAt, &lastRunOutcome, &nextRunAt,
 		&createdAt, &updatedAt,
 	)
@@ -285,6 +290,7 @@ func scanCronJob(s sqlutil.Scanner) (*models.CronJob, error) {
 	j.IsEnabled = enabledInt != 0
 	j.GateCommand = gateCommand.String
 	j.ShouldRunSetupCommand = runSetupInt != 0
+	j.IsZeroOutput = zeroOutputInt != 0
 	if timezone.Valid {
 		s := timezone.String
 		j.Timezone = &s

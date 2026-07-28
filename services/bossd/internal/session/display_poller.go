@@ -181,7 +181,33 @@ func (p *DisplayPoller) pruneLastPoll(active map[string]struct{}) {
 	}
 }
 
+// RefreshPR re-polls one PR's display status on demand and credits the affected
+// sessions with webhook health, backing their scheduled poll interval off to
+// webhookHealthyInterval. Use it only for refreshes actually triggered by an
+// inbound webhook — the backoff is only sound as evidence that the webhook
+// pipeline is delivering for that session. Locally-initiated refreshes must use
+// RefreshPRWithoutWebhookCredit.
 func (p *DisplayPoller) RefreshPR(ctx context.Context, repoOriginURL string, prNumber int) error {
+	return p.refreshPR(ctx, repoOriginURL, prNumber, true)
+}
+
+// RefreshPRWithoutWebhookCredit re-polls one PR's display status on demand
+// without treating the refresh as evidence of webhook health. Callers that
+// refresh because the daemon itself just acted on the PR (MergeSession) have no
+// webhook to credit: crediting one would replace the session's scheduled poll
+// interval with webhookHealthyInterval, so at any DisplayPollInterval below
+// that (including the 2-minute default) a still-active session's status would
+// refresh LESS often after a blocked or failed merge than before it. Note
+// intervalFor substitutes rather than taking a max, so a configured interval
+// above webhookHealthyInterval would be shortened instead — either way the
+// caller's cadence should not hinge on who last refreshed. The immediate-poll
+// suppression (markPolled) still applies to both variants — that part is just
+// "this session was polled a moment ago".
+func (p *DisplayPoller) RefreshPRWithoutWebhookCredit(ctx context.Context, repoOriginURL string, prNumber int) error {
+	return p.refreshPR(ctx, repoOriginURL, prNumber, false)
+}
+
+func (p *DisplayPoller) refreshPR(ctx context.Context, repoOriginURL string, prNumber int, creditWebhookHealth bool) error {
 	now := time.Now()
 	repo, err := p.repos.GetByOrigin(ctx, repoOriginURL)
 	if err != nil {
@@ -210,7 +236,9 @@ func (p *DisplayPoller) RefreshPR(ctx context.Context, repoOriginURL string, prN
 	if refreshed > 0 {
 		for _, sessionID := range refreshedSessions {
 			p.markPolled(sessionID, now)
-			p.recordRefresh(sessionID, now)
+			if creditWebhookHealth {
+				p.recordRefresh(sessionID, now)
+			}
 		}
 	}
 
@@ -425,7 +453,17 @@ func (p *DisplayPoller) maybeClearStaleFixLoopBlock(ctx context.Context, session
 //     stale hint would linger forever. Clear the residual metadata in place, with
 //     no transition (the state is already correct).
 //
-// Like maybeClearStaleFixLoopBlock, it emits no completion notification.
+// The in-place metadata clear emits no completion notification, but the
+// non-terminal transition branch does: reconcileNonTerminalToResolved calls
+// notifyCompletion, which is what lets MergeSession's synchronous post-merge
+// refresh settle the task mapping before its RPC returns.
+//
+// It does NOT archive. archive-after-merge lives only on the dispatcher's
+// PRMerged handler, so a daemon that never receives the PR-merged webhook has
+// always depended on the state poller reaching the row first — and once this
+// reconcile lands Merged, pollableState excludes it. That race predates this
+// reconcile being reachable from MergeSession; see the note in
+// dispatcher.handlePRMerged.
 func (p *DisplayPoller) reconcileTerminalPRForSession(ctx context.Context, sessionID string, prStatus *vcs.PRStatus) error {
 	if prStatus.State != vcs.PRStateMerged && prStatus.State != vcs.PRStateClosed {
 		return nil

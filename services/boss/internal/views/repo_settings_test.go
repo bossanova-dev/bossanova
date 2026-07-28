@@ -663,10 +663,10 @@ func (s *stubRepoClient) CloneAndRegisterRepo(context.Context, *pb.CloneAndRegis
 	panic("unused")
 }
 func (s *stubRepoClient) RemoveRepo(context.Context, string) error { panic("unused") }
-func (s *stubRepoClient) GetSession(context.Context, string) (*pb.Session, error) {
+func (s *stubRepoClient) GetSession(context.Context, string, client.SessionReadOptions) (*pb.Session, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) ListSessions(context.Context, *pb.ListSessionsRequest) ([]*pb.Session, error) {
+func (s *stubRepoClient) ListSessions(context.Context, *pb.ListSessionsRequest, client.SessionReadOptions) ([]*pb.Session, error) {
 	panic("unused")
 }
 func (s *stubRepoClient) AttachSession(context.Context, string) (client.AttachStream, error) {
@@ -764,6 +764,31 @@ func (s *stubRepoClient) ListGithubCallbacks(context.Context, *pb.ListGithubCall
 	panic("unused")
 }
 func (s *stubRepoClient) DeleteGithubCallback(context.Context, string, string) error { panic("unused") }
+func (s *stubRepoClient) CreateNote(context.Context, *pb.CreateNoteRequest) (*pb.Note, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) GetNote(context.Context, string, string) (*pb.Note, error) { panic("unused") }
+func (s *stubRepoClient) ListNotes(context.Context, *pb.ListNotesRequest) ([]*pb.Note, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) UpdateNote(context.Context, string, *pb.UpdateNoteRequest) (*pb.Note, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) DeleteNote(context.Context, string, string) error { panic("unused") }
+func (s *stubRepoClient) SendBroadcast(context.Context, *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) ListBroadcasts(context.Context, *pb.ListBroadcastsRequest) ([]*pb.Broadcast, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) DeleteBroadcast(context.Context, string) error { panic("unused") }
+func (s *stubRepoClient) CreateBroadcastSubscription(context.Context, *pb.CreateBroadcastSubscriptionRequest) (*pb.BroadcastSubscription, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) ListBroadcastSubscriptions(context.Context, *pb.ListBroadcastSubscriptionsRequest) ([]*pb.BroadcastSubscription, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) DeleteBroadcastSubscription(context.Context, string) error { panic("unused") }
 func (s *stubRepoClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }

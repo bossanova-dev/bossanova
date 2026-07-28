@@ -11,5 +11,6 @@ go_library(
 go_test(
     name = "machine_test",
     srcs = ["machine_test.go"],
+    data = ["machine.go"],  # keep: TestAllStatesMatchesTheConstBlock parses the package's own source for the State const block
     embed = [":machine"],
 )

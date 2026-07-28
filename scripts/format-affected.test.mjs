@@ -143,6 +143,14 @@ test('format-affected: routeFiles routes a mixed list into the right buckets', (
   assert.equal(plan.packageJson, true, 'package.json presence must set packageJson flag')
 })
 
+test('format-affected: workspace dependency updates reformat every biome package', () => {
+  // A Biome upgrade can change formatting even when no TypeScript source changed.
+  // Formatting only the manifest leaves pre-existing source drift for CI to find.
+  const plan = routeFiles(['pnpm-lock.yaml', 'services/web/package.json'])
+
+  assert.deepEqual(plan.biomeAll, ['services/web/', 'services/marketing/'])
+})
+
 test('format-affected: routeFiles routes docs .mdx to prettier (matches services/docs format gate)', () => {
   // services/docs has no own .prettierrc, so it inherits root prettier config;
   // `make format` formats docs/**/*.{md,mdx} with that same prettier. Routing .mdx
@@ -388,7 +396,7 @@ test('format-affected: a changed package.json runs syncpack via stub pnpm', () =
 
 // ---------------------------------------------------------------------------
 // Integration: a services/web/package.json fires BOTH buckets (repo-wide
-// syncpack AND per-package biome), and syncpack MUST run before biome so the
+// syncpack AND a full per-package biome format), and syncpack MUST run before biome so the
 // final writer matches `make format` (biome last). This ordering is load-bearing
 // for CI parity — a future reorder must not silently regress it.
 // ---------------------------------------------------------------------------
@@ -404,7 +412,7 @@ test('format-affected: a services/web/package.json runs syncpack BEFORE biome', 
   const biomeStub = path.join(binDir, 'biome')
   fs.writeFileSync(
     biomeStub,
-    `#!/bin/sh\n[ "$1" = "check" ] && shift\nwhile [ "$1" = "--write" ]; do shift; done\nprintf 'biome\\n' >> "${orderLog}"\nfor f in "$@"; do printf '\\n/* stub-biome */\\n' >> "$f"; done\n`,
+    `#!/bin/sh\n[ "$1" = "check" ] && shift\nwhile [ "$1" = "--write" ]; do shift; done\nprintf 'biome %s\\n' "$*" >> "${orderLog}"\n`,
   )
   fs.chmodSync(biomeStub, 0o755)
 
@@ -416,15 +424,15 @@ test('format-affected: a services/web/package.json runs syncpack BEFORE biome', 
 
   const order = fs.readFileSync(orderLog, 'utf8').split(/\r?\n/).filter(Boolean)
   assert.ok(order.includes('syncpack'), 'syncpack must run for a changed package.json')
-  assert.ok(order.includes('biome'), 'biome must run for a services/web/ file')
   assert.ok(
-    order.indexOf('syncpack') < order.lastIndexOf('biome'),
-    `syncpack must run before biome (order: ${order.join(',')})`,
+    order.includes('biome migrate --write'),
+    'Biome config must migrate with the upgraded CLI',
   )
-  // biome is the final writer on the web package.json (matches make format).
+  assert.ok(order.includes('biome .'), 'the full web package must be biome-formatted')
   assert.ok(
-    fs.readFileSync(path.join(repo, 'services/web/package.json'), 'utf8').includes('stub-biome'),
-    'services/web/package.json must be biome-formatted',
+    order.indexOf('syncpack') < order.indexOf('biome migrate --write') &&
+      order.indexOf('biome migrate --write') < order.lastIndexOf('biome .'),
+    `syncpack must run before migration and full formatting (order: ${order.join(',')})`,
   )
 })
 

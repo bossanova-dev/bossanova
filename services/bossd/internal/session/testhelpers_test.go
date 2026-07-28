@@ -4,10 +4,42 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"testing"
+	"time"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/agent"
 )
+
+// backgroundDraftPRIsTracked reports whether a background draft-PR step is
+// currently registered for sessionID. Tests use it to assert the NEGATIVE case
+// (DeferPR starts no step at all), which WaitForBackgroundDraftPR cannot
+// distinguish from "the step already finished".
+func (l *Lifecycle) backgroundDraftPRIsTracked(sessionID string) bool {
+	l.backgroundDraftPRMu.Lock()
+	defer l.backgroundDraftPRMu.Unlock()
+	_, ok := l.backgroundDraftPRs[sessionID]
+	return ok
+}
+
+// awaitDraftPR blocks until the background draft-PR step StartSession spawned
+// for sessionID has finished (BOS-540). Every StartSession assertion that reads
+// the session row, the provider's create calls, or the worktree call log must go
+// through this first: the create no longer completes before StartSession
+// returns, so reading those without joining the goroutine both races it and
+// asserts on a half-written state.
+//
+// It is a no-op when no create is in flight — a DeferPR session, a session that
+// already had a PR, or a StartSession that failed before the spawn — so it is
+// safe to call after every StartSession unconditionally.
+func awaitDraftPR(t *testing.T, lc *Lifecycle, sessionID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := lc.WaitForBackgroundDraftPR(ctx, sessionID); err != nil {
+		t.Fatalf("background draft PR for %s did not finish: %v", sessionID, err)
+	}
+}
 
 // Compile-time check that fakeAgentForLifecycle satisfies AgentRunnerClient.
 var _ agent.AgentRunnerClient = (*fakeAgentForLifecycle)(nil)

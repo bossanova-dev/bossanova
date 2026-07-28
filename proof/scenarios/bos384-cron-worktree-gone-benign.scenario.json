@@ -14,9 +14,9 @@
         },
         { "key": "s", "caption": "Press [s] to open Settings" },
         {
-          "waitFor": "Worktree base directory",
+          "waitFor": "Cron jobs",
           "timeoutMs": 10000,
-          "caption": "Settings screen loaded"
+          "caption": "Settings menu loaded"
         }
       ]
     },

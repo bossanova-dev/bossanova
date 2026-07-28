@@ -421,10 +421,13 @@ func TestCron_CreateRoundtrip(t *testing.T) {
 	// Field 7: Run setup command — keep default (Yes), advance.
 	advanceCronFormField(t, h)
 
-	// Field 8: Enabled toggle — already "Yes"; advance.
+	// Field 8: Zero output — keep default (No), advance.
 	advanceCronFormField(t, h)
 
-	// Field 9: Save confirm — "Add Scheduled Job" is highlighted; submit.
+	// Field 9: Enabled toggle — already "Yes"; advance.
+	advanceCronFormField(t, h)
+
+	// Field 10: Save confirm — "Add Scheduled Job" is highlighted; submit.
 	advanceCronFormField(t, h)
 
 	// After submit, the form completes and we return to the cron list.
@@ -505,6 +508,7 @@ func TestCron_CreateWithSelectedAgentSendsAgentName(t *testing.T) {
 	advanceCronFormField(t, h) // Timezone
 	advanceCronFormField(t, h) // Gate command
 	advanceCronFormField(t, h) // Run setup command
+	advanceCronFormField(t, h) // Zero output
 	advanceCronFormField(t, h) // Enabled toggle
 	advanceCronFormField(t, h) // Save confirm — "Add Scheduled Job"
 
@@ -587,10 +591,13 @@ func TestCron_EditRoundtrip(t *testing.T) {
 	// Field 7: Run setup command — keep as-is; advance.
 	advanceCronFormField(t, h)
 
-	// Field 8: Enabled toggle — keep as-is; advance.
+	// Field 8: Zero output — keep as-is; advance.
 	advanceCronFormField(t, h)
 
-	// Field 9: Save confirm — "Update Scheduled Job" is highlighted; submit.
+	// Field 9: Enabled toggle — keep as-is; advance.
+	advanceCronFormField(t, h)
+
+	// Field 10: Save confirm — "Update Scheduled Job" is highlighted; submit.
 	advanceCronFormField(t, h)
 
 	// Wait for list to reappear.
@@ -720,6 +727,7 @@ func TestCron_EditHighlightsEditedRow(t *testing.T) {
 	advanceCronFormField(t, h)  // Timezone
 	advanceCronFormField(t, h)  // Gate command
 	advanceCronFormField(t, h)  // Run setup command
+	advanceCronFormField(t, h)  // Zero output
 	advanceCronFormField(t, h)  // Enabled toggle
 	advanceCronFormField(t, h)  // Save confirm — "Update Scheduled Job"
 

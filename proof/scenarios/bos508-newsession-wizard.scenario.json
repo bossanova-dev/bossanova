@@ -1,0 +1,165 @@
+{
+  "version": 1,
+  "title": "BOS-508 the new-session wizard walks repo select → type select → form, and esc returns to the type chooser",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "[n] from home opens the repo picker",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        { "key": "n", "caption": "Press [n] to start a new session" },
+        {
+          "waitFor": "Select a repository",
+          "timeoutMs": 10000,
+          "caption": "With five demo repos the wizard opens on the repo picker"
+        },
+        {
+          "expect": [
+            {
+              "text": "Select a repository",
+              "match": "normalized",
+              "label": "repo-picker title"
+            },
+            {
+              "text": "NAME PATH",
+              "match": "normalized",
+              "label": "repo-picker column headers"
+            },
+            {
+              "text": "design-system /tmp/design-system",
+              "match": "normalized",
+              "label": "default-selected repo row (sorts first, case-insensitively)"
+            },
+            {
+              "text": "[enter] select · [esc] back",
+              "match": "normalized",
+              "label": "repo-picker action bar"
+            }
+          ],
+          "caption": "Phase 1 of the wizard: the repo picker"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "[enter] on a repo advances to the session-type chooser",
+      "steps": [
+        { "key": "enter", "caption": "Select design-system (row 0)" },
+        {
+          "waitFor": "Starting a new session",
+          "timeoutMs": 10000,
+          "caption": "The type chooser is on screen, headed by the chosen repo"
+        },
+        {
+          "expect": [
+            {
+              "text": "Starting a new session for design-system",
+              "match": "normalized",
+              "label": "type-chooser header names the repo picked in scene 1"
+            },
+            {
+              "text": "Create a new PR Start a fresh branch and pull request",
+              "match": "normalized",
+              "label": "type option: Create a new PR"
+            },
+            {
+              "text": "Work on an existing PR Attach to an open pull request",
+              "match": "normalized",
+              "label": "type option: Work on an existing PR"
+            },
+            {
+              "text": "Fix a Sentry issue Pick an issue from your Sentry organization",
+              "match": "normalized",
+              "label": "type option: Fix a Sentry issue (design-system carries Sentry credentials)"
+            },
+            {
+              "text": "Quick Chat Work directly in the repo's base folder",
+              "match": "normalized",
+              "label": "type option: Quick Chat"
+            }
+          ],
+          "caption": "Phase 2 of the wizard: the session-type chooser, built from the selected repo's credentials"
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "[enter] on a session type advances to the name form",
+      "steps": [
+        { "key": "enter", "caption": "Choose 'Create a new PR' (row 0)" },
+        {
+          "waitFor": "Session name",
+          "timeoutMs": 10000,
+          "caption": "The name form is on screen"
+        },
+        {
+          "expect": [
+            {
+              "text": "Session name",
+              "match": "normalized",
+              "label": "form field: Session name"
+            },
+            {
+              "text": "Starting a new session for design-system",
+              "match": "normalized",
+              "label": "the form keeps the wizard header"
+            },
+            {
+              "text": "[enter] create",
+              "match": "normalized",
+              "label": "form action bar: submit verb"
+            },
+            {
+              "text": "[esc] back",
+              "match": "normalized",
+              "label": "form action bar advertises the esc return path"
+            }
+          ],
+          "caption": "Phase 3 of the wizard: the session-name form"
+        }
+      ]
+    },
+    {
+      "id": "scene-04",
+      "title": "[esc] from the form returns to the type chooser, not to home",
+      "steps": [
+        { "key": "esc", "caption": "Press [esc] on the form" },
+        {
+          "waitFor": "Create a new PR",
+          "timeoutMs": 10000,
+          "caption": "esc lands back on the session-type chooser — one step back, not out of the wizard"
+        },
+        {
+          "expect": [
+            {
+              "text": "Create a new PR",
+              "match": "normalized",
+              "label": "back on the type chooser"
+            },
+            {
+              "text": "Quick Chat",
+              "match": "normalized",
+              "label": "the full type list is rebuilt"
+            },
+            {
+              "text": "Starting a new session for design-system",
+              "match": "normalized",
+              "label": "still inside the wizard, still on the repo picked in scene 1"
+            },
+            {
+              "text": "^(?![\\s\\S]*Add dark mode)[\\s\\S]*Create a new PR",
+              "match": "regex",
+              "label": "the type chooser is on screen with NO home session rows — esc did not fall through to home"
+            }
+          ],
+          "caption": "The refactored form-phase esc path pops exactly one phase"
+        }
+      ]
+    }
+  ]
+}

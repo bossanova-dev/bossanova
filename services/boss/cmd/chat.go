@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
+	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -105,9 +106,9 @@ type chatTarget struct {
 }
 
 func resolveChatTarget(ctx context.Context, c interface {
-	GetSession(context.Context, string) (*pb.Session, error)
+	GetSession(context.Context, string, client.SessionReadOptions) (*pb.Session, error)
 }, target string) (chatTarget, error) {
-	sess, err := c.GetSession(ctx, target)
+	sess, err := c.GetSession(ctx, target, client.SessionReadOptions{})
 	if err == nil && sess != nil {
 		if agentSessionID := sess.GetAgentSessionId(); agentSessionID != "" {
 			return chatTarget{SessionID: sess.GetId(), AgentSessionID: agentSessionID}, nil

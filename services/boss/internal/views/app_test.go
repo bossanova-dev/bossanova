@@ -3,13 +3,17 @@ package views
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -153,12 +157,12 @@ func TestAppSettingsNotificationToggleAppliesToHomeImmediately(t *testing.T) {
 	withTempConfigHome(t)
 
 	a := NewApp(nil, nil)
-	a.activeView = ViewSettings
-	a.settings = NewSettingsModel(nil, a.ctx)
+	a.activeView = ViewGeneralSettings
+	a.generalSettings = NewGeneralSettingsModel(nil, a.ctx)
 
-	for i, row := range a.settings.rows {
+	for i, row := range a.generalSettings.rows {
 		if row.Kind == settingsRowKindNotifications {
-			a.settings.cursor = i
+			a.generalSettings.cursor = i
 			break
 		}
 	}
@@ -180,11 +184,11 @@ func TestAppSettingsSuccessfulOtherSaveAfterNotificationFailureAppliesToHome(t *
 	withTempConfigHome(t)
 
 	a := NewApp(nil, nil)
-	a.activeView = ViewSettings
-	a.settings = NewSettingsModel(nil, a.ctx)
-	for i, row := range a.settings.rows {
+	a.activeView = ViewGeneralSettings
+	a.generalSettings = NewGeneralSettingsModel(nil, a.ctx)
+	for i, row := range a.generalSettings.rows {
 		if row.Kind == settingsRowKindNotifications {
-			a.settings.cursor = i
+			a.generalSettings.cursor = i
 			break
 		}
 	}
@@ -196,21 +200,21 @@ func TestAppSettingsSuccessfulOtherSaveAfterNotificationFailureAppliesToHome(t *
 	t.Setenv("BOSS_SETTINGS_PATH", badPath)
 	model, _ := a.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
 	a = model.(App)
-	if a.settings.err == nil {
+	if a.generalSettings.err == nil {
 		t.Fatal("failed notification save did not retain an error")
 	}
 
 	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
-	for i, row := range a.settings.rows {
+	for i, row := range a.generalSettings.rows {
 		if row.Kind == settingsRowKindErrorTracking {
-			a.settings.cursor = i
+			a.generalSettings.cursor = i
 			break
 		}
 	}
 	model, _ = a.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	got := model.(App)
-	if got.settings.err != nil {
-		t.Fatalf("successful other save retained stale error: %v", got.settings.err)
+	if got.generalSettings.err != nil {
+		t.Fatalf("successful other save retained stale error: %v", got.generalSettings.err)
 	}
 	if config.NotificationsEnabled(got.userSettings) {
 		t.Fatal("successful other save did not update App.userSettings notification setting")
@@ -498,5 +502,403 @@ func TestRepoAddCompletedEmptyIDFallsBack(t *testing.T) {
 
 	if got.activeView != ViewRepoList {
 		t.Fatalf("empty id should fall back to list, got %v", got.activeView)
+	}
+}
+
+// --- BOS-506: the rotation toast must be budgeted out of the frame ---
+
+// sizedToastApp builds an App on view v, sized to width x height through the
+// real WindowSizeMsg path, populated with n sessions/chats whose titles carry
+// the "zq" marker so rendered data rows can be counted.
+func sizedToastApp(t *testing.T, v View, n, width, height int) App {
+	t.Helper()
+	a := NewApp(nil, nil)
+	a.activeView = v
+	sessions := make([]*pb.Session, 0, n)
+	chats := make([]*pb.ClaudeChat, 0, n)
+	for i := range n {
+		id := fmt.Sprintf("zq%02d", i)
+		sessions = append(sessions, &pb.Session{Id: id, Title: id})
+		chats = append(chats, &pb.ClaudeChat{SessionId: "zqsess", AgentSessionId: id, Title: id})
+	}
+	a.home.sessions = sessions
+	a.home.loading = false
+	a.chatPicker.chats = chats
+	a.chatPicker.loading = false
+	a.chatPicker.session = &pb.Session{Id: "zqsess", Title: "zqsess"}
+	model, _ := a.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	sized := model.(App)
+	// Views build their table rows (and cache the table height) in Update, so
+	// prime both the way a data poll would before rendering.
+	sized.home.buildTableRows()
+	sized.chatPicker.buildTableRows()
+	return sized
+}
+
+// countMarkerRows reports how many rendered lines carry a data-row marker.
+func countMarkerRows(s string) int {
+	n := 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, "zq") {
+			n++
+		}
+	}
+	return n
+}
+
+// A visible toast must not push the action bar off the bottom of the frame:
+// the rendered frame stays within the terminal height either way (BOS-506).
+func TestAppViewFitsTerminalHeightWithToast(t *testing.T) {
+	const (
+		width  = 80
+		height = 24
+	)
+	for _, tc := range []struct {
+		name string
+		view View
+	}{
+		{"home", ViewHome},
+		{"chatpicker", ViewChatPicker},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := sizedToastApp(t, tc.view, 30, width, height)
+
+			plain := lipgloss.Height(a.View().Content)
+			if plain > height {
+				t.Fatalf("frame without toast = %d lines, want <= %d", plain, height)
+			}
+
+			a.toast, _ = a.toast.Show("session: rotated to backup account")
+			withToast := lipgloss.Height(a.View().Content)
+			if withToast > height {
+				t.Errorf("frame with toast = %d lines, want <= %d (toast overflows the frame and clips the action bar)", withToast, height)
+			}
+		})
+	}
+}
+
+// The active view's table gives up exactly the toast's lines while it is
+// visible and regains them once the toast expires through the real path.
+func TestAppViewToastShrinksTableAndRestoresOnExpiry(t *testing.T) {
+	const (
+		width  = 80
+		height = 24
+	)
+	a := sizedToastApp(t, ViewHome, 30, width, height)
+
+	before := countMarkerRows(a.View().Content)
+	if before < 5 {
+		t.Fatalf("expected the home table to be height-capped with rows to spare, got %d rendered rows", before)
+	}
+
+	a.toast, _ = a.toast.Show("session: rotated to backup account")
+	reserved := a.toast.Height(width)
+	if reserved <= 0 {
+		t.Fatalf("visible toast reported height %d, want > 0", reserved)
+	}
+
+	during := countMarkerRows(a.View().Content)
+	if want := before - reserved; during != want {
+		t.Errorf("rendered rows with toast = %d, want %d (before %d - toast %d)", during, want, before, reserved)
+	}
+
+	model, _ := a.Update(toastExpireMsg{id: a.toast.id})
+	expired := model.(App)
+	if after := countMarkerRows(expired.View().Content); after != before {
+		t.Errorf("rendered rows after toast expiry = %d, want %d", after, before)
+	}
+}
+
+// heightOwningSubModels reflects over App and returns the name of every
+// sub-model field that owns an unexported `height int`, along with its current
+// value. This is the durable form of "keep reserveHeight in step with new
+// views": a new height-owning view shows up here automatically.
+//
+// Pointer sub-models are followed too. A view added as *FooModel would
+// otherwise be invisible here, and the guard would pass vacuously while that
+// view silently kept the pre-BOS-506 overflow — the exact regression this test
+// exists to catch.
+func heightOwningSubModels(t *testing.T, a *App) map[string]int64 {
+	t.Helper()
+	out := map[string]int64{}
+	av := reflect.ValueOf(a).Elem()
+	at := av.Type()
+	for i := range at.NumField() {
+		fv := av.Field(i)
+		if fv.Kind() == reflect.Pointer {
+			if fv.IsNil() {
+				continue
+			}
+			fv = fv.Elem()
+		}
+		if fv.Kind() != reflect.Struct {
+			continue
+		}
+		hv := fv.FieldByName("height")
+		if !hv.IsValid() || hv.Kind() != reflect.Int {
+			continue
+		}
+		out[at.Field(i).Name] = hv.Int()
+	}
+	return out
+}
+
+// Every height-owning sub-model is shrunk by reserveHeight — discovered by
+// reflection so a newly added view fails here instead of silently reverting to
+// the pre-BOS-506 overflow.
+func TestReserveHeightCoversEveryHeightOwningSubModel(t *testing.T) {
+	a := NewApp(nil, nil)
+	model, _ := a.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	sized := model.(App)
+	// WindowSizeMsg does not reach every sub-model (attach sizes itself from its
+	// own Update), so seed the rest explicitly; a field left at 0 below means the
+	// helper's list and this test are both missing a newly added view.
+	sized.attach.height = 40
+
+	found := heightOwningSubModels(t, &sized)
+	if len(found) == 0 {
+		t.Fatal("reflection found no height-owning sub-models on App")
+	}
+	for name, h := range found {
+		if h != 40 {
+			t.Fatalf("sub-model %s owns a height but the test did not seed it (got %d); add it to reserveHeight, to applyReservedTableHeights if it caches a table height in Update, and to this test", name, h)
+		}
+	}
+
+	sized.reserveHeight(3)
+	for name, h := range heightOwningSubModels(t, &sized) {
+		if h != 37 {
+			t.Errorf("after reserveHeight(3), %s.height = %d, want 37", name, h)
+		}
+	}
+}
+
+// Shrinking a table must not hide the row it has selected. bubbles' SetHeight
+// recomputes the rendered row window from the cursor but leaves viewport.YOffset
+// alone, so without the re-anchor in setReservedTableHeight a cursor resting in
+// the last rows of the unscrolled first page falls outside the shortened window:
+// the selected title and the ❯ caret both disappear for the toast's six seconds
+// while Enter still acts on the invisible selection (BOS-506).
+func TestAppViewToastKeepsTheSelectedRowOnScreen(t *testing.T) {
+	const rows = 60
+
+	sessions := make([]*pb.Session, rows)
+	for i := range rows {
+		id := fmt.Sprintf("zq%02d", i)
+		sessions[i] = &pb.Session{Id: id, Title: id}
+	}
+
+	for _, height := range []int{24, 30, 40} {
+		t.Run(fmt.Sprintf("height%d", height), func(t *testing.T) {
+			checked := 0
+			for cur := range 45 {
+				a := NewApp(nil, nil)
+				a.activeView = ViewHome
+				a.home.sessions = sessions
+				a.home.loading = false
+				model, _ := a.Update(tea.WindowSizeMsg{Width: 100, Height: height})
+				sized := model.(App)
+				sized.home.buildTableRows()
+				// Park the cursor exactly as a key handler would.
+				sized.home.table.SetCursor(cur)
+				updateCursorColumn(&sized.home.table)
+
+				want := sessions[cur].Title
+				if !strings.Contains(sized.View().Content, want) {
+					continue // already off-screen without a toast; nothing to preserve
+				}
+				checked++
+
+				sized.toast, _ = sized.toast.Show("session: rotated to backup account")
+				got := sized.View().Content
+				// Locate the selected row's rendered line and check the caret on
+				// it. This is a visibility check with a precise failure message,
+				// NOT a cursor-preservation check: updateCursorColumn writes the
+				// chevron into the row data at cur, so caret and title are two
+				// cells of one row and the second check cannot fail on its own.
+				// That the re-anchor leaves the cursor alone is pinned by
+				// TestSetReservedTableHeightPreservesTheCursor.
+				selected := ""
+				for _, line := range strings.Split(got, "\n") {
+					if strings.Contains(line, want) {
+						selected = line
+						break
+					}
+				}
+				if selected == "" {
+					t.Errorf("cursor %d: selected row %q left the frame when the toast appeared", cur, want)
+					continue
+				}
+				if !strings.Contains(selected, cursorChevron) {
+					t.Errorf("cursor %d: the %q caret is not on the selected row's line %q", cur, cursorChevron, selected)
+				}
+			}
+			if checked < 10 {
+				t.Fatalf("only %d cursor positions reached the assertions; the fixture no longer exercises the shrink and this guard has gone vacuous", checked)
+			}
+		})
+	}
+}
+
+// setReservedTableHeight re-anchors the viewport, and that is ALL it may do to
+// the selection: the row bubbles highlights must stay the row updateCursorColumn
+// put the ❯ caret on, or the two disagree on screen. This is the only test that
+// catches a re-anchor which moves the cursor — the integration test above cannot,
+// because the caret travels in the row data rather than with the cursor.
+//
+// The empty-table case is separate: bubbles' clamp is min(max(v, low), high)
+// with no low > high case,
+// so MoveDown on a zero-row table yields clamp(0, 0, -1) = -1, and a later
+// SetRows only ever clamps a cursor down, so that -1 would stick (BOS-506).
+func TestSetReservedTableHeightPreservesTheCursor(t *testing.T) {
+	cols := []table.Column{cursorColumn, {Title: "NAME", Width: 20}}
+	rows := make([]table.Row, 60)
+	for i := range rows {
+		rows[i] = table.Row{"", fmt.Sprintf("row-%02d", i)}
+	}
+
+	tbl := newBossTable(cols, rows, 16)
+	tbl.SetCursor(13)
+	setReservedTableHeight(&tbl, 14)
+	if got := tbl.Cursor(); got != 13 {
+		t.Errorf("cursor moved to %d while reserving the toast's height, want 13", got)
+	}
+
+	empty := newBossTable(cols, nil, 16)
+	setReservedTableHeight(&empty, 14)
+	if got := empty.Cursor(); got != 0 {
+		t.Errorf("empty table cursor = %d after reserving, want 0 (a negative cursor survives SetRows)", got)
+	}
+}
+
+// The switch-to-NewSession path builds a FRESH NewSessionModel, so it must seed
+// the height itself — the WindowSizeMsg seed is discarded with the old model.
+// This is the seed that matters in production: without it newSession's three
+// tables take clampedTableHeight's uncapped branch and the toast reservation is
+// dead on that view (BOS-506).
+func TestSwitchToNewSessionSeedsHeight(t *testing.T) {
+	const termRows = 40
+
+	a := NewApp(nil, nil)
+	model, _ := a.Update(tea.WindowSizeMsg{Width: 120, Height: termRows})
+	sized := model.(App)
+
+	switched, _ := sized.Update(switchViewMsg{view: ViewNewSession})
+	got := switched.(App)
+	if got.newSession.height != termRows {
+		t.Errorf("newSession.height = %d after switching to New Session, want %d", got.newSession.height, termRows)
+	}
+	if got.newSession.width != 120 {
+		t.Errorf("newSession.width = %d after switching to New Session, want 120", got.newSession.width)
+	}
+}
+
+// reserveHeight on its own is inert: list views cache their table height by
+// calling table.SetHeight in Update, never in View, so shrinking the sub-model
+// height alone never reaches the frame being rendered.
+// applyReservedTableHeights is what closes that gap — and it must close it for
+// EVERY height-derived table, not just Home's. A view wired into reserveHeight
+// but missed there silently keeps the pre-BOS-506 clipping, which no other test
+// would catch, so pin all nine tables here (BOS-506).
+func TestApplyReservedTableHeightsCoversEveryHeightDerivedTable(t *testing.T) {
+	const (
+		reserve  = 3
+		termRows = 40
+		// More rows than the terminal can show, so every table lands on
+		// clampedTableHeight's capped branch and therefore tracks the reserved
+		// height. An uncapped table would be unaffected and prove nothing.
+		rows = 60
+	)
+
+	a := NewApp(nil, nil)
+	model, _ := a.Update(tea.WindowSizeMsg{Width: 120, Height: termRows})
+	sized := model.(App)
+	if sized.newSession.height != termRows {
+		t.Fatalf("newSession.height = %d after WindowSizeMsg, want %d; the App-level seed is missing, so its three tables silently take clampedTableHeight's uncapped branch", sized.newSession.height, termRows)
+	}
+
+	sessions := make([]*pb.Session, rows)
+	chats := make([]*pb.ClaudeChat, rows)
+	repos := make([]*pb.Repo, rows)
+	jobs := make([]*pb.CronJob, rows)
+	accounts := make([]*pb.Account, rows)
+	idxs := make([]int, rows)
+	for i := range rows {
+		id := fmt.Sprintf("zq%02d", i)
+		sessions[i] = &pb.Session{Id: id, Title: id}
+		chats[i] = &pb.ClaudeChat{AgentSessionId: id, Title: id}
+		repos[i] = &pb.Repo{Id: id, DisplayName: id}
+		jobs[i] = &pb.CronJob{Id: id, Name: id}
+		accounts[i] = &pb.Account{Id: id, Label: id}
+		idxs[i] = i
+	}
+	sized.home.sessions = sessions
+	sized.chatPicker.chats = chats
+	sized.newSession.repos = repos
+	sized.newSession.prsFiltered = idxs
+	sized.newSession.issuesFiltered = idxs
+	sized.repoList.repos = repos
+	sized.trash.filteredSessions = idxs
+	sized.cronList.jobs = jobs
+	sized.accountsList.accounts = accounts
+
+	// Stand in for the table.SetHeight each view performs in Update: cache every
+	// table height against the un-reserved terminal height first, so the deltas
+	// below are attributable to the reservation alone.
+	sized.applyReservedTableHeights()
+	tables := func(a *App) map[string]int {
+		return map[string]int{
+			"home":                 a.home.table.Height(),
+			"chatPicker":           a.chatPicker.table.Height(),
+			"newSession.repoTable": a.newSession.repoTable.Height(),
+			"newSession.prTable":   a.newSession.prTable.Height(),
+			"newSession.issueTab":  a.newSession.issueTable.Height(),
+			"repoList":             a.repoList.table.Height(),
+			"trash":                a.trash.table.Height(),
+			"cronList":             a.cronList.table.Height(),
+			"accountsList":         a.accountsList.table.Height(),
+		}
+	}
+	before := tables(&sized)
+	for name, h := range before {
+		if h <= reserve {
+			t.Fatalf("%s table height = %d after priming; either it is missing from applyReservedTableHeights or the fixture no longer leaves it height-capped with rows to spare", name, h)
+		}
+	}
+
+	sized.reserveHeight(reserve)
+	for name, h := range tables(&sized) {
+		if want := before[name] - reserve; h != want {
+			t.Errorf("after reserveHeight(%d), %s table height = %d, want %d (missing from applyReservedTableHeights?)", reserve, name, h, want)
+		}
+	}
+}
+
+// A sub-model that has not seen a WindowSizeMsg yet keeps height 0, which
+// clampedTableHeight reads as "terminal height unknown" (uncapped). Reserving
+// must not force it onto a bogus small value.
+func TestReserveHeightLeavesUnsizedSubModelsAlone(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.reserveHeight(2)
+	for name, h := range heightOwningSubModels(t, &a) {
+		if h != 0 {
+			t.Errorf("unsized sub-model %s.height = %d after reserveHeight, want 0", name, h)
+		}
+	}
+}
+
+// On a very short terminal the reservation clamps at 1, never 0: a 0 would flip
+// clampedTableHeight onto its uncapped path and grow the table instead.
+func TestReserveHeightClampsAtOne(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.height = 2
+	a.chatPicker.height = 1
+	a.reserveHeight(5)
+
+	if a.home.height != 1 {
+		t.Errorf("home.height = %d after over-reserving, want 1", a.home.height)
+	}
+	if a.chatPicker.height != 1 {
+		t.Errorf("chatPicker.height = %d after over-reserving, want 1", a.chatPicker.height)
 	}
 }

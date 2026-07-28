@@ -113,8 +113,25 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 		Str("worktree", session.WorktreePath).
 		Msg("finalizing session")
 
-	// Step 2 + 3: classify outcome by examining the worktree.
-	result := l.classifyFinalizeOutcome(ctx, session)
+	// A zero-output cron session deliberately runs in the user's repository
+	// checkout. Do this before classification: classifyFinalizeOutcome starts by
+	// calling worktrees.Status and could otherwise inspect, push, or create a PR
+	// from that checkout.
+	var result *FinalizeResult
+	if isCronSession(session) && session.IsQuickChat {
+		repo, repoErr := l.repos.Get(ctx, session.RepoID)
+		if repoErr != nil {
+			return nil, fmt.Errorf("get repo for zero-output finalize: %w", repoErr)
+		}
+		if deleteErr := l.hardDeleteSession(ctx, session, repo); deleteErr != nil {
+			result = &FinalizeResult{Outcome: models.CronJobOutcomeCleanupFailed, Err: deleteErr}
+		} else {
+			result = &FinalizeResult{Outcome: models.CronJobOutcomeZeroOutput, Deleted: true}
+		}
+	} else {
+		// Step 2 + 3: classify outcome by examining the worktree.
+		result = l.classifyFinalizeOutcome(ctx, session)
+	}
 
 	// Step 4: record the outcome on the cron job row. Non-cron sessions
 	// (the headless-completion path in finalizeHeadlessRunIfApplicable now
@@ -314,6 +331,9 @@ func (l *Lifecycle) markFinalizePRReady(ctx context.Context, sessionID, originUR
 	if cur.PRNumber == nil || *cur.PRNumber <= 0 {
 		return fmt.Errorf("no PR number resolved for mark ready")
 	}
+	if err := l.assertPRHasDiffBeforeMarkReady(ctx, cur); err != nil {
+		return err
+	}
 	if err := l.provider.MarkReadyForReview(ctx, originURL, *cur.PRNumber); err != nil {
 		l.logger.Warn().Err(err).
 			Str("session", sessionID).
@@ -325,6 +345,106 @@ func (l *Lifecycle) markFinalizePRReady(ctx context.Context, sessionID, originUR
 		Str("session", sessionID).
 		Int("pr", *cur.PRNumber).
 		Msg("finalize: marked PR ready for review")
+	return nil
+}
+
+// errEmptyDiffRefusedReady marks the backstop's refusal so the finalize call
+// sites can classify it as pr_no_changes rather than pr_failed. Nothing broke —
+// the PR was opened and pushed fine; the run simply produced no changes — and
+// pr_failed must keep meaning "something went wrong". Both outcomes are
+// attention outcomes (needsAttention), so the session still Blocks either way;
+// only the recorded reason differs.
+var errEmptyDiffRefusedReady = errors.New("empty diff against base")
+
+// markReadyFailureOutcome maps a markFinalizePRReady error to the outcome that
+// describes it truthfully: the BOS-591 empty-diff refusal is a no-changes run,
+// anything else is a genuine PR failure.
+func markReadyFailureOutcome(err error) models.CronJobOutcome {
+	if errors.Is(err, errEmptyDiffRefusedReady) {
+		return models.CronJobOutcomePRNoChanges
+	}
+	return models.CronJobOutcomePRFailed
+}
+
+// assertPRHasDiffBeforeMarkReady is BOS-591's last line of defence: a PR whose
+// diff against its base is empty is vacuously green (no code to fail CI), so
+// marking it ready presents a failed run as merge-ready. The empty-run guard in
+// attachExistingPRIfCleanBranchHasOne is the primary defence; this check sits
+// inside markFinalizePRReady — the single funnel for all three of *finalize's*
+// mark-ready call sites — so it holds regardless of how finalize arrived there.
+// It deliberately covers cron sessions too (decision D2): what stays cron-exempt
+// is the *guard*, not this backstop. A cron branch that genuinely changes
+// nothing should not be advertised as reviewable. Note that widens cron's
+// dirty-output-with-no-commits path from pr_created to pr_no_changes — that PR
+// was exactly the vacuous-green shape this ticket exists to stop.
+//
+// It is NOT the only MarkReadyForReview call in bossd: Dispatcher.handleChecksPassed
+// (dispatcher.go) also marks a green draft ready when repo.CanAutoMerge, and
+// that path does not run this check. It is unreachable for a session this
+// backstop refused — Blocked does not Permit ChecksPassed (machine.go) — but do
+// not read this comment as "an empty PR can never be marked ready anywhere".
+//
+// The caller guarantees cur.PRNumber is non-nil and positive (markFinalizePRReady
+// validates it immediately above); this function dereferences it unguarded.
+//
+// Known limitation: it compares against the SESSION's base branch, not the PR's
+// current base on GitHub. attachExistingPRIfCleanBranchHasOne attaches whatever
+// open PR GitHub reports for the branch, and libvcs.PRSummary does not carry the
+// PR's base at all (decodePRList never asks `gh pr list` for baseRefName), so
+// there is nothing to sync session.BaseBranch from. A PR retargeted on GitHub is
+// therefore evaluated against the wrong ref, and it breaks BOTH ways: a branch
+// empty against the PR's real base but differing from the session's slips
+// through, and — the user-visible direction — a branch empty against the
+// session's stale base but carrying real work against the PR's live base is
+// wrongly refused and Blocked.
+//
+// This is pre-existing and consistent with injectPRTagsAndPush, which
+// merge-bases against session.BaseBranch too. Closing it is not a one-line
+// assignment: the live base only comes from a GetPRStatus round-trip
+// (vcs.PRStatus.BaseBranch), plus a second FetchBase for a base ref that may not
+// exist locally — two network hops on a path that deliberately avoids even one.
+// Wider than BOS-591. Do not read this backstop as base-retarget-proof.
+//
+// It deliberately does NOT fetch the base: injectPRTagsAndPush runs immediately
+// before markFinalizePRReady at every call site and already calls FetchBase (see
+// injectPRTagsAndPush above), so refs/remotes/origin/<base> is fresh. Adding a
+// second fetch here would duplicate a network round-trip on the hot path.
+//
+// Failure semantics are asymmetric on purpose, matching this file's convention
+// that a git error never blocks a legitimate run: an EMPTY diff is definite
+// evidence of a no-op run and is refused, but an UNREADABLE diff is not evidence
+// of emptiness, so a HasDiffAgainstBase error warns and proceeds (fail open).
+// Missing base/worktree fields are likewise skipped rather than refused — they
+// have their own validation in injectPRTagsAndPush.
+func (l *Lifecycle) assertPRHasDiffBeforeMarkReady(ctx context.Context, cur *models.Session) error {
+	if cur.BaseBranch == "" || cur.WorktreePath == "" {
+		l.logger.Warn().
+			Str("session", cur.ID).
+			Str("branch", cur.BranchName).
+			Int("pr", *cur.PRNumber).
+			Msg("finalize: missing base/worktree; skipping empty-diff check before mark ready")
+		return nil
+	}
+	baseRef := "refs/remotes/origin/" + cur.BaseBranch
+	hasDiff, err := l.worktrees.HasDiffAgainstBase(ctx, cur.WorktreePath, baseRef)
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", cur.ID).
+			Str("branch", cur.BranchName).
+			Int("pr", *cur.PRNumber).
+			Str("base_ref", baseRef).
+			Msg("finalize: empty-diff check failed before mark ready; proceeding (fail open)")
+		return nil
+	}
+	if !hasDiff {
+		l.logger.Warn().
+			Str("session", cur.ID).
+			Str("branch", cur.BranchName).
+			Int("pr", *cur.PRNumber).
+			Str("base_ref", baseRef).
+			Msg("finalize: refusing to mark PR ready — it has an empty diff against its base")
+		return fmt.Errorf("refusing to mark PR #%d ready (%s): %w", *cur.PRNumber, baseRef, errEmptyDiffRefusedReady)
+	}
 	return nil
 }
 
@@ -607,7 +727,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
 	}
 	if err := l.markFinalizePRReady(ctx, session.ID, repo.OriginURL); err != nil {
-		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
+		return &FinalizeResult{Outcome: markReadyFailureOutcome(err), Err: err}
 	}
 
 	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}
@@ -689,12 +809,22 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 	// for cron sessions. A git error fails open toward "real work" so a
 	// transient failure never wrongly blocks a legitimate run.
 	if !isCronSession(session) {
-		if hasReal, realErr := l.branchHasRealCommits(ctx, session); realErr != nil {
+		// Every branch of this guard logs its decision — including the
+		// real-work path. BOS-591's incident was undiagnosable after the fact
+		// precisely because the "this run did real work" outcome was silent,
+		// making a bypassed guard indistinguishable from a guard that never ran.
+		if hasReal, realCount, realErr := l.branchHasRealCommits(ctx, session); realErr != nil {
 			l.logger.Warn().Err(realErr).
 				Str("session", session.ID).
 				Str("branch", session.BranchName).
 				Msg("finalize: real-commit check failed for clean branch with PR; treating as real work")
-		} else if !hasReal {
+		} else if hasReal {
+			l.logger.Info().
+				Str("session", session.ID).
+				Str("branch", session.BranchName).
+				Int("real_commits", realCount).
+				Msg("finalize: clean branch has an existing PR with real commits; proceeding to mark it ready")
+		} else {
 			// Planning-only sessions (quick chats: recon, plan review, visible
 			// /boss-plan) are expected to produce no repository changes, so a
 			// no-real-commits result is a benign success — not a failed
@@ -729,7 +859,7 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
 	}
 	if err := l.markFinalizePRReady(ctx, session.ID, repo.OriginURL); err != nil {
-		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
+		return &FinalizeResult{Outcome: markReadyFailureOutcome(err), Err: err}
 	}
 	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}
 }
@@ -842,7 +972,7 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
 	}
 	if err := l.markFinalizePRReady(ctx, session.ID, repo.OriginURL); err != nil {
-		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
+		return &FinalizeResult{Outcome: markReadyFailureOutcome(err), Err: err}
 	}
 
 	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}
@@ -873,21 +1003,41 @@ func (l *Lifecycle) cleanBranchHasCommittedWork(ctx context.Context, session *mo
 // branchHasRealCommits reports whether the session's branch carries any commit
 // beyond bossd's empty draft-PR bootstrap commit — i.e. the run produced real
 // work rather than leaving only the placeholder. It reuses realCommitSubjects
-// (the same placeholder filter the cron PR-title path uses) against the local
-// base ref, so it needs no remote fetch. The non-cron (headless detach)
-// finalize paths use it to refuse to surface a no-op run as a green PR: a
-// bootstrap-only branch is HEAD-ahead-of-base (so cleanBranchHasCommittedWork
-// and an attached bootstrap PR both read as "work"), yet its diff vs base is
-// empty. A legitimate tiny/docs change carries a real commit and still passes.
-func (l *Lifecycle) branchHasRealCommits(ctx context.Context, session *models.Session) (bool, error) {
+// (the same placeholder filter the cron PR-title path uses), but — unlike
+// finalizeTitle's use of CommitSubjects — against the freshly-fetched
+// remote-tracking base ref (refs/remotes/origin/<base>), not the bare local
+// base branch name. A freshly-created worktree's local base branch can be
+// stale (behind the remote), so `git log <local-base>..HEAD` would also list
+// every commit merged to the real base since that local ref was last updated —
+// making a bootstrap-only branch look like it did real work and defeating this
+// guard. The non-cron (headless detach) finalize paths use it to refuse to
+// surface a no-op run as a green PR: a bootstrap-only branch is
+// HEAD-ahead-of-base (so cleanBranchHasCommittedWork and an attached bootstrap
+// PR both read as "work"), yet its diff vs the true base is empty. A
+// legitimate tiny/docs change carries a real commit and still passes. A
+// FetchBase failure is returned as an error (never silently ignored, and never
+// falls back to the stale local ref) so the caller's fail-open contract kicks
+// in and treats the run as real work rather than risk a false "no changes".
+// realCount is the number of non-placeholder commits the check counted; the
+// caller logs it so a future guard bypass is diagnosable from the log alone.
+func (l *Lifecycle) branchHasRealCommits(ctx context.Context, session *models.Session) (hasReal bool, realCount int, err error) {
 	if session.BaseBranch == "" {
-		return false, fmt.Errorf("base branch is empty for branch %q", session.BranchName)
+		return false, 0, fmt.Errorf("base branch is empty for branch %q", session.BranchName)
 	}
-	subjects, err := l.worktrees.CommitSubjects(ctx, session.WorktreePath, session.BaseBranch)
+	// NOTE: this now starts with FetchBase, and a fetch is a ref WRITE. An empty
+	// worktree path is rejected by git.Manager.FetchBase itself (guarded there
+	// so every call site is covered, not just this one); the error surfaces
+	// here and the caller's fail-open contract treats the run as real work.
+	if err := l.worktrees.FetchBase(ctx, session.WorktreePath, session.BaseBranch); err != nil {
+		return false, 0, fmt.Errorf("fetch base branch: %w", err)
+	}
+	baseRef := "refs/remotes/origin/" + session.BaseBranch
+	subjects, err := l.worktrees.CommitSubjects(ctx, session.WorktreePath, baseRef)
 	if err != nil {
-		return false, fmt.Errorf("read commit subjects: %w", err)
+		return false, 0, fmt.Errorf("read commit subjects: %w", err)
 	}
-	return len(realCommitSubjects(subjects)) > 0, nil
+	realCount = len(realCommitSubjects(subjects))
+	return realCount > 0, realCount, nil
 }
 
 func (l *Lifecycle) originURLIfConfigured(ctx context.Context, repo *models.Repo) (string, error) {
@@ -924,10 +1074,26 @@ func (l *Lifecycle) originURLIfConfigured(ctx context.Context, repo *models.Repo
 // cleanup_failed and preserve the session row for investigation.
 //
 // The worktree guard (WorktreePath != "" && != repo.LocalPath) is applied here
-// so both callers get identical protection. Both callers are cron-only paths
-// (interactive sessions never reach finalize, and the no-github caller gates on
-// isCronSession), so a tmux-hosted chat is always present to tear down.
+// so both callers get identical protection. The no-github caller is cron-gated;
+// finalizeNoChanges is not — since the headless-completion path routes non-cron
+// `--detach` runs through FinalizeSession, a clean-worktree interactive session
+// reaches it too (which is why the draft-PR stop above is load-bearing).
 func (l *Lifecycle) hardDeleteSession(ctx context.Context, session *models.Session, repo *models.Repo) error {
+	// Load-bearing, not defensive (BOS-540). Only the second caller (the
+	// no-GitHub-origin branch) is cron-gated; finalizeNoChanges is reached by
+	// ANY clean-worktree session, including a non-cron `--detach` run, which
+	// runs with DeferPR=false and therefore DOES have a background draft-PR step
+	// in flight. Without this the step would go on to push the branch and open a
+	// PR for a session this function has just deleted.
+	l.StopBackgroundDraftPR(ctx, session.ID)
+	// Re-read after the join, as ArchiveSession and RemoveSession do: the step
+	// can correct a drifted BranchName on its way out, and the reap below is
+	// unconditional, so a stale name would delete nothing and leak the real
+	// branch.
+	if fresh, freshErr := l.sessions.Get(ctx, session.ID); freshErr == nil {
+		session = fresh
+	}
+
 	if session.WorktreePath != "" && session.WorktreePath != repo.LocalPath {
 		if err := l.worktrees.Archive(ctx, session.WorktreePath); err != nil {
 			return fmt.Errorf("archive worktree: %w", err)
@@ -1109,6 +1275,7 @@ func needsAttention(o models.CronJobOutcome) bool {
 		models.CronJobOutcomePRNoChanges:
 		return true
 	case models.CronJobOutcomeDeletedNoChanges,
+		models.CronJobOutcomeZeroOutput,
 		models.CronJobOutcomePRCreated,
 		models.CronJobOutcomeFailedRecovered,
 		models.CronJobOutcomeFireFailed,

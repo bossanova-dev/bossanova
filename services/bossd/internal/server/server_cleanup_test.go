@@ -235,7 +235,7 @@ func (m *cleanupWorktreeManager) PushWithLease(context.Context, string, string, 
 func (m *cleanupWorktreeManager) InjectPRNumbers(context.Context, string, string, int, string) error {
 	panic("not used")
 }
-func (m *cleanupWorktreeManager) VerifyPushedBranchAheadOfBase(context.Context, string, string, string) (*gitpkg.BranchVerification, error) {
+func (m *cleanupWorktreeManager) VerifyPushedBranchAheadOfBase(context.Context, string, string, string, gitpkg.VerifyPushedBranchAheadOfBaseOpts) (*gitpkg.BranchVerification, error) {
 	panic("not used")
 }
 func (m *cleanupWorktreeManager) Status(context.Context, string) (string, error) {
@@ -243,6 +243,10 @@ func (m *cleanupWorktreeManager) Status(context.Context, string) (string, error)
 }
 func (m *cleanupWorktreeManager) CommitSubjects(context.Context, string, string) ([]string, error) {
 	return nil, nil
+}
+
+func (m *cleanupWorktreeManager) HasDiffAgainstBase(context.Context, string, string) (bool, error) {
+	return true, nil
 }
 
 func (m *cleanupWorktreeManager) LatestCommitSubject(context.Context, string) (string, error) {
@@ -272,6 +276,9 @@ func (m *cleanupWorktreeManager) RetryDeferredBaseSyncs(context.Context) {
 func (m *cleanupWorktreeManager) IsAncestor(context.Context, string, string, string) (bool, error) {
 	panic("not used")
 }
+func (m *cleanupWorktreeManager) CountMergeCommits(context.Context, string, string, string) (int, error) {
+	panic("not used")
+}
 func (m *cleanupWorktreeManager) DeleteLocalBranch(context.Context, string, string) error {
 	panic("not used")
 }
@@ -282,5 +289,13 @@ func (m *cleanupWorktreeManager) FetchBase(context.Context, string, string) erro
 	panic("not used")
 }
 func (m *cleanupWorktreeManager) MergeLocalBranch(context.Context, string, string, string, string) error {
+	panic("not used")
+}
+
+func (m *cleanupWorktreeManager) CountBehindBase(context.Context, string, string, string) (int, error) {
+	panic("not used")
+}
+
+func (m *cleanupWorktreeManager) RebaseOntoBaseAndPush(context.Context, string, string, string) (*gitpkg.RebaseResult, error) {
 	panic("not used")
 }

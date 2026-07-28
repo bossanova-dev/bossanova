@@ -107,15 +107,25 @@ export function chunk(items, size) {
 
 /**
  * Run one `-l` (list) formatter over the files and return the set of paths it
- * reports as needing formatting. `run(cmd, args)` returns stdout; injected in
+ * reports as needing formatting. `run(cmd, args, env)` returns stdout; injected in
  * tests. Paths are normalized to repo-relative POSIX for stable comparison.
  */
-export function listUnformatted({ label, cmd, baseArgs, files, run, repoRoot }) {
+export function listUnformatted({
+  label,
+  cmd,
+  baseArgs,
+  files,
+  run,
+  repoRoot,
+  env,
+  absolutePaths = false,
+}) {
   const flagged = new Set()
   for (const batch of chunk(files, 400)) {
     let stdout
     try {
-      stdout = run(cmd, [...baseArgs, ...batch])
+      const paths = absolutePaths ? batch.map((file) => path.resolve(repoRoot, file)) : batch
+      stdout = run(cmd, [...baseArgs, ...paths], env)
     } catch (err) {
       throw new Error(`${label} failed to run: ${err.message}`)
     }
@@ -145,18 +155,28 @@ export function onPath(name) {
 }
 
 /**
- * Resolve how to invoke goimports in `-l` mode. Prefer the standalone `goimports`
- * binary on PATH: it is a plain executable that never touches the Go module graph.
- * `go tool goimports` (the fallback when the binary is absent) resolves via
- * lib/bossalib's go.mod `tool` directive but, being a `go` subprocess, COMPLETES a
- * missing `go.work.sum` hash on first run — which would leave a dirty tree after
- * every `make lint`. So the binary is strongly preferred; the fallback keeps the
- * gate working on a bare host at the cost of that one-time sum completion.
+ * Resolve how to invoke goimports in `-l` mode. Both the standalone binary and
+ * `go tool` fallback run outside the workspace with read-only module resolution:
+ * goimports loads package metadata and can otherwise complete a missing
+ * `go.work.sum` hash. A formatter check must never leave a cron worktree dirty;
+ * real workspace-sum drift instead fails here with an actionable error.
  */
 export function resolveGoimports() {
-  return onPath('goimports')
-    ? { label: 'goimports -l', cmd: 'goimports', baseArgs: ['-l'] }
-    : { label: 'go tool goimports -l', cmd: 'go', baseArgs: ['tool', 'goimports', '-l'] }
+  const goflags = (process.env.GOFLAGS || '')
+    .split(/\s+/)
+    .filter((flag) => flag !== '' && !flag.startsWith('-mod='))
+  goflags.push('-mod=readonly')
+  const env = { GOFLAGS: goflags.join(' '), GOWORK: 'off' }
+  if (onPath('goimports')) {
+    return { label: 'GOFLAGS=-mod=readonly goimports -l', cmd: 'goimports', baseArgs: ['-l'], env }
+  }
+  return {
+    label: 'GOFLAGS=-mod=readonly go tool goimports -l',
+    cmd: 'go',
+    baseArgs: ['-C', 'lib/bossalib', 'tool', 'goimports', '-l'],
+    env,
+    absolutePaths: true,
+  }
 }
 
 /**
@@ -181,13 +201,16 @@ export function checkFormat({ repoRoot, files, run, goimports = resolveGoimports
     files,
     run,
     repoRoot,
+    env: goimports.env,
+    absolutePaths: goimports.absolutePaths,
   })
   return [...new Set([...gofmtFlagged, ...goimportsFlagged])].sort()
 }
 
-function defaultRun(cmd, args, repoRoot) {
+function defaultRun(cmd, args, repoRoot, env) {
   return execFileSync(cmd, args, {
     cwd: repoRoot,
+    env: { ...process.env, ...env },
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   })
@@ -197,7 +220,7 @@ function main(argv) {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const explicit = argv.filter((a) => !a.startsWith('-'))
   const files = explicit.length > 0 ? explicit : collectGoFiles(repoRoot)
-  const run = (cmd, args) => defaultRun(cmd, args, repoRoot)
+  const run = (cmd, args, env) => defaultRun(cmd, args, repoRoot, env)
   const goimports = resolveGoimports()
 
   // Stamp the whole-tree run only; an explicit file set is a targeted check /

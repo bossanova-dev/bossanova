@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "title": "BOS-566 Settings restores the selected section after a return",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "First Settings entry selects General",
+      "steps": [
+        { "key": "s", "caption": "Open Settings" },
+        {
+          "waitFor": { "text": "❯.*General", "match": "regex", "label": "General starts selected" },
+          "timeoutMs": 10000,
+          "caption": "Fresh Settings highlights General"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "Trash hotkey moves the hub cursor before opening Trash",
+      "steps": [
+        { "key": "t", "caption": "Open Trash with its hotkey" },
+        {
+          "waitFor": "Trash",
+          "timeoutMs": 10000,
+          "caption": "Trash view is open"
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "Esc from Trash returns to its Settings row",
+      "steps": [
+        { "key": "esc", "caption": "Return to Settings from Trash" },
+        {
+          "waitFor": { "text": "❯.*Trash", "match": "regex", "label": "Trash remains selected" },
+          "timeoutMs": 10000,
+          "caption": "Settings restores the Trash selection"
+        }
+      ]
+    },
+    {
+      "id": "scene-04",
+      "title": "Cron jobs return to their Settings row",
+      "steps": [
+        { "key": "c", "caption": "Open Cron jobs with its hotkey" },
+        {
+          "waitFor": "CRON",
+          "timeoutMs": 10000,
+          "caption": "Cron jobs view is open"
+        },
+        { "key": "esc", "caption": "Return to Settings from Cron jobs" },
+        {
+          "waitFor": {
+            "text": "❯.*Cron jobs",
+            "match": "regex",
+            "label": "Cron jobs remains selected"
+          },
+          "timeoutMs": 10000,
+          "caption": "Settings restores the Cron jobs selection"
+        }
+      ]
+    }
+  ]
+}

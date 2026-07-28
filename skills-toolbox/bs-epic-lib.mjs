@@ -93,6 +93,49 @@ export function normalizeTicket(issue) {
 }
 
 /**
+ * Resolves ONE tracker workflow-state role to a concrete state name, adapter-first.
+ *
+ * A repo can be fully functional through a vendored tracker adapter that already
+ * knows its own state names, with no `trackerConfig.<tracker>.states` block at all;
+ * resolving from configuration alone would self-BLOCK such a repo for a value the
+ * adapter was holding the whole time. So the order is:
+ *   1. the adapter's `states` capability (the PRIMARY authority — it speaks for the
+ *      tracker it wraps), then
+ *   2. `trackerConfig.<tracker>.states` (the FALLBACK, and the only source for an
+ *      adapter that omits the optional capability), then
+ *   3. `null` — fail closed. The caller BLOCKs naming BOTH probed sources, because
+ *      "which of the two do I fix?" is the only useful thing to say at that point.
+ *
+ * A value counts only when it is a non-empty, non-whitespace string: a blank name is
+ * exactly as unusable as an absent one and must fall through, not win. Either source
+ * may be null/undefined/a non-object (an absent capability, an unparsed CLI probe) —
+ * all resolve to `null` rather than throwing, since throwing would defeat the very
+ * fallback this function exists to perform. Pure; no I/O.
+ *
+ * @param {{role: string, adapterStates?: object|null, trackerConfigStates?: object|null}} opts
+ * @returns {string|null}
+ */
+export function resolveStateRole({ role, adapterStates, trackerConfigStates } = {}) {
+  const pick = (source) => {
+    if (!source || typeof source !== 'object') return null
+    const value = source[role]
+    return typeof value === 'string' && value.trim() !== '' ? value : null
+  }
+  return pick(adapterStates) ?? pick(trackerConfigStates)
+}
+
+/**
+ * The `planned` role via resolveStateRole — the state a ticket must sit in to be
+ * eligible, and the value classifyTickets is called with. Named separately because it
+ * is the one role Phase 0 resolves before it can schedule anything at all.
+ * @param {{adapterStates?: object|null, trackerConfigStates?: object|null}} opts
+ * @returns {string|null}
+ */
+export function resolvePlannedState({ adapterStates, trackerConfigStates } = {}) {
+  return resolveStateRole({ role: 'planned', adapterStates, trackerConfigStates })
+}
+
+/**
  * Splits normalized tickets into three buckets against the tracker's configured
  * planned-state name (`plannedState`, e.g. the reference impl's
  * `trackerConfigFor(config).states.planned`) — the one workflow-state word this
@@ -260,4 +303,66 @@ export function mergeBlockedExternalBlockers(
       .map(([id]) => id),
   )
   return mergeBlockedExternalBlockersPure(ticket, graph, { clearedForMerge, clearedBlockers })
+}
+
+/** Default driver-side stall window: the repair lease is presumed dead after
+ *  8 minutes of no head-SHA movement AND no repair-chat output. Matches the
+ *  daemon-side constant; skew between the two is harmless (whichever trips
+ *  first routes to the same 'stalled' handling), so it stays a parameter. */
+export const REPAIR_STALL_WINDOW_MS = 8 * 60_000
+
+/**
+ * Classifies the repair lease on a polled session so the Phase 3c driver has a
+ * TERMINATING escape from a frozen lease. Phase 3c must never dispatch a second
+ * repairer while a live lease is held, but with a stuck lease + dead repair chat
+ * that rule alone has no terminating condition — the driver re-polls forever.
+ * This is the predicate that ends the loop.
+ *
+ * Inputs are the plain `get_session` payload fields plus the driver's own
+ * previous-poll snapshot:
+ *   - `repairActive`             — `session.repair_active`
+ *   - `repairStalledAt`          — `session.repair_stalled_at` (absent on older daemons)
+ *   - `lastRepairHeadSha`        — `session.last_repair_head_sha`, this poll
+ *   - `prevLastRepairHeadSha`    — the same field on the previous poll (driver state)
+ *   - `repairChatLastOutputAtMs` — tracked repair chat's last_output_at /
+ *                                  last_agent_activity_at, epoch ms
+ *   - `nowMs`, `stallWindowMs`   — clock + window (default REPAIR_STALL_WINDOW_MS)
+ *
+ * Rules, in order:
+ *   1. not active and no `repairStalledAt`     → `'none'`   (no lease at all)
+ *   2. `repairStalledAt` set                   → `'stalled'` (the daemon already decided)
+ *   3. active, head SHA unchanged across polls
+ *      AND chat output stale >= the window     → `'stalled'` (driver evidence — works
+ *                                                against daemons with no stall field)
+ *   4. otherwise                               → `'active'`
+ *
+ * Missing/undefined evidence fails toward `'active'`: absent data must never be
+ * read as a dead lease, because `'stalled'` burns a repair round and can
+ * fail-isolate a ticket. Pure — no I/O, no clock read of its own.
+ */
+export function classifyRepairLease({
+  repairActive,
+  repairStalledAt,
+  lastRepairHeadSha,
+  prevLastRepairHeadSha,
+  repairChatLastOutputAtMs,
+  nowMs,
+  stallWindowMs = REPAIR_STALL_WINDOW_MS,
+} = {}) {
+  const daemonSaysStalled =
+    repairStalledAt !== undefined && repairStalledAt !== null && repairStalledAt !== ''
+  if (!repairActive && !daemonSaysStalled) return 'none'
+  if (daemonSaysStalled) return 'stalled'
+
+  // Driver-side evidence. BOTH legs must be proven, from present data.
+  const headFrozen =
+    typeof lastRepairHeadSha === 'string' &&
+    lastRepairHeadSha.length > 0 &&
+    lastRepairHeadSha === prevLastRepairHeadSha
+  const chatStale =
+    Number.isFinite(repairChatLastOutputAtMs) &&
+    Number.isFinite(nowMs) &&
+    Number.isFinite(stallWindowMs) &&
+    nowMs - repairChatLastOutputAtMs >= stallWindowMs
+  return headFrozen && chatStale ? 'stalled' : 'active'
 }

@@ -32,7 +32,10 @@ go_test(
     # sandbox intermittently denies that ("fork/exec /bin/sh: input/output
     # error" on processwrapper-sandbox, hang on darwin-sandbox). Runs
     # unsandboxed (still covered). See docs/solutions/build-systems/bazel-sandbox-patterns.md.
-    tags = ["local", "no-sandbox"],
+    tags = [
+        "local",
+        "no-sandbox",
+    ],
     deps = [
         "@com_github_charmbracelet_ultraviolet//:ultraviolet",
         "@com_github_charmbracelet_x_vt//:vt",

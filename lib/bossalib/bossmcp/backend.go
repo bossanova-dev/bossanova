@@ -86,6 +86,44 @@ type Backend interface {
 	ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error)
 	DeleteGithubCallback(ctx context.Context, targetChatID, id string) error
 
+	// Notes (durable free-text a run records against a repository so a later
+	// sweep can harvest what was learned). A note is repo-scoped; its session
+	// and chat are PROVENANCE only, so deleting or archiving a session never
+	// removes its notes.
+	//
+	// CreateNoteRequest and ListNotesRequest already carry repo_id, so those two
+	// pass their request through unchanged. GetNote, UpdateNote and DeleteNote
+	// address the note by id alone on the daemon, but take repoID alongside it
+	// so the hosted gateway can route the call to the daemon that owns the note;
+	// the local socket adapter ignores it (its own daemon owns every note in its
+	// store, so the id alone resolves it) — exactly as DeleteGithubCallback
+	// takes targetChatID.
+	//
+	// A note's body is NOT a secret. Unlike GithubCallback.message and
+	// Broadcast.message — which are scrubbed at the tool layer — the body is the
+	// payload the caller asked for and is returned UNREDACTED on every read
+	// surface. There is no redactNote, and its absence is deliberate: do not
+	// "restore" one.
+	CreateNote(ctx context.Context, req *pb.CreateNoteRequest) (*pb.Note, error)
+	GetNote(ctx context.Context, repoID, id string) (*pb.Note, error)
+	ListNotes(ctx context.Context, req *pb.ListNotesRequest) ([]*pb.Note, error)
+	UpdateNote(ctx context.Context, repoID string, req *pb.UpdateNoteRequest) (*pb.Note, error)
+	DeleteNote(ctx context.Context, repoID, id string) error
+
+	// Broadcasts (one message addressed at the set of chats a selector resolves
+	// to, plus the standing subscriptions that fire one when a session settles).
+	// SendBroadcast and CreateBroadcastSubscription carry a SECRET message body
+	// inbound; nothing here ever returns it — pb.Broadcast.message is scrubbed at
+	// the tool layer (redactBroadcast) and pb.BroadcastSubscription deliberately
+	// has no body field at all. Both deletes are idempotent: an absent id
+	// succeeds.
+	SendBroadcast(ctx context.Context, req *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error)
+	ListBroadcasts(ctx context.Context, req *pb.ListBroadcastsRequest) ([]*pb.Broadcast, error)
+	DeleteBroadcast(ctx context.Context, id string) error
+	CreateBroadcastSubscription(ctx context.Context, req *pb.CreateBroadcastSubscriptionRequest) (*pb.BroadcastSubscription, error)
+	ListBroadcastSubscriptions(ctx context.Context, req *pb.ListBroadcastSubscriptionsRequest) ([]*pb.BroadcastSubscription, error)
+	DeleteBroadcastSubscription(ctx context.Context, id string) error
+
 	// Accounts (agent credential registry). AddAccount consumes an inbound
 	// credential blob straight into the keyring; no method ever returns it.
 	ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error)

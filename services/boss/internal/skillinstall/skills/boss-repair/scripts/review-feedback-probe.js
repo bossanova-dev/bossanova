@@ -1,6 +1,18 @@
 #!/usr/bin/env node
 
 const { execFileSync } = require('child_process')
+const { createHash } = require('crypto')
+const {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} = require('fs')
+const os = require('os')
+const path = require('path')
 
 const INLINE_COMMENT_DISPLAY_LIMIT = 100
 
@@ -38,23 +50,172 @@ function parsePaginatedArray(raw) {
   return parsed
 }
 
+function withPrivateUmask(work) {
+  const previous = process.umask(0o077)
+  try {
+    return work()
+  } finally {
+    process.umask(previous)
+  }
+}
+
+function requireSafeDirectory(dir) {
+  if (!existsSync(dir)) {
+    withPrivateUmask(() => mkdirSync(dir, { recursive: true, mode: 0o700 }))
+  }
+  const stat = lstatSync(dir)
+  if (stat.isSymbolicLink()) {
+    throw new Error(`refusing symlinked review disposition state root: ${dir}`)
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(`review disposition state root is not a directory: ${dir}`)
+  }
+  if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+    throw new Error(`refusing non-owned review disposition state root: ${dir}`)
+  }
+}
+
+function stateDirectory({ stateRoot, host, owner, name, pr }) {
+  const root =
+    stateRoot || process.env.BOSS_REPAIR_STATE_DIR || path.join(os.tmpdir(), 'boss-repair-state')
+  requireSafeDirectory(root)
+  const child = `${host}-${owner}-${name}-${pr}`.replace(/[^A-Za-z0-9._-]/g, '_')
+  const dir = path.join(root, child)
+  withPrivateUmask(() => mkdirSync(dir, { recursive: true, mode: 0o700 }))
+  requireSafeDirectory(dir)
+  return dir
+}
+
+function threadIdentity(thread) {
+  const comments = thread?.comments?.nodes || []
+  const last = comments[comments.length - 1] || {}
+  return createHash('sha256')
+    .update(`${last.author?.login || ''}\0${last.databaseId || last.id || ''}`)
+    .digest('hex')
+}
+
+function threadRecordPath(context, threadId) {
+  const key = createHash('sha256').update(String(threadId)).digest('hex')
+  return path.join(stateDirectory(context), `${key}.json`)
+}
+
+function readThreadDisposition(context, threadId) {
+  const recordPath = threadRecordPath(context, threadId)
+  if (!existsSync(recordPath)) {
+    return null
+  }
+  const record = JSON.parse(readFileSync(recordPath, 'utf8'))
+  return record?.threadId === threadId ? record : null
+}
+
+function markThreadDisposition(context, thread, disposition) {
+  if (!['dispatched', 'needs-human'].includes(disposition)) {
+    throw new Error(`unsupported review thread disposition: ${disposition}`)
+  }
+  const recordPath = threadRecordPath(context, thread.id)
+  const record = {
+    threadId: thread.id,
+    disposition,
+    actedIdentity: threadIdentity(thread),
+  }
+  const temporary = `${recordPath}.${process.pid}.tmp`
+  withPrivateUmask(() => writeFileSync(temporary, `${JSON.stringify(record)}\n`, { mode: 0o600 }))
+  renameSync(temporary, recordPath)
+  return record
+}
+
+function clearThreadDisposition(context, threadId) {
+  const recordPath = threadRecordPath(context, threadId)
+  if (existsSync(recordPath)) {
+    unlinkSync(recordPath)
+  }
+}
+
+function reconcileReviewThreads(context, threads) {
+  const actionable = []
+  const parked = []
+  for (const thread of threads) {
+    const record = readThreadDisposition(context, thread.id)
+    if (record?.disposition === 'needs-human' && record.actedIdentity === threadIdentity(thread)) {
+      parked.push(thread)
+      continue
+    }
+    if (record?.disposition === 'needs-human') {
+      clearThreadDisposition(context, thread.id)
+    }
+    actionable.push(thread)
+  }
+  return { actionable, parked }
+}
+
 function repairStatusFromReviewProbe({
-  suspiciousZero,
-  unresolvedCount,
-  inlineCommentCount,
-  reviewThreadCount,
-  latestCommented,
+  suspiciousZero = false,
+  unresolvedCount = 0,
+  actionableCount = unresolvedCount,
+  inlineCommentCount = 0,
+  reviewThreadCount = 0,
+  latestCommented = false,
 }) {
   if (suspiciousZero) {
     return { status: 'unknown', reason: 'commented review but no comments found' }
   }
-  if (unresolvedCount > 0) {
+  if (actionableCount > 0) {
     return { status: 'needs_repair', reason: 'unresolved review threads' }
+  }
+  if (unresolvedCount > 0) {
+    return { status: 'parked', reason: 'unresolved review threads are parked' }
   }
   if (reviewThreadCount === 0 && (inlineCommentCount > 0 || latestCommented)) {
     return { status: 'unknown', reason: 'inline comments without review thread state' }
   }
   return { status: 'clean', reason: 'no unresolved review threads' }
+}
+
+function reviewContext(prView, owner, name) {
+  const host = new URL(prView.url || 'https://github.com').hostname
+  return { host, owner, name, pr: prView.number }
+}
+
+function markArguments(args) {
+  if (args[0] !== 'mark') {
+    return null
+  }
+  const threadIndex = args.indexOf('--thread')
+  const dispositionIndex = args.indexOf('--disposition')
+  const threadId = threadIndex >= 0 ? args[threadIndex + 1] : ''
+  const disposition = dispositionIndex >= 0 ? args[dispositionIndex + 1] : ''
+  if (!threadId || !['dispatched', 'needs-human', 'open'].includes(disposition)) {
+    throw new Error('usage: mark --thread <id> --disposition dispatched|needs-human|open')
+  }
+  return { threadId, disposition }
+}
+
+function main(args = process.argv.slice(2)) {
+  const mark = markArguments(args)
+  const prView = JSON.parse(runGh(['pr', 'view', '--json', 'number,latestReviews,url']))
+  const repoView = JSON.parse(runGh(['repo', 'view', '--json', 'owner,name']))
+  const owner = repoView.owner.login
+  const name = repoView.name
+  const context = reviewContext(prView, owner, name)
+
+  if (mark) {
+    if (mark.disposition === 'open') {
+      clearThreadDisposition(context, mark.threadId)
+      console.log(`marked_thread=${mark.threadId} disposition=open`)
+      return
+    }
+    const thread = fetchReviewThreads(owner, name, prView.number).find(
+      (item) => item.id === mark.threadId,
+    )
+    if (!thread) {
+      throw new Error(`review thread not found: ${mark.threadId}`)
+    }
+    markThreadDisposition(context, thread, mark.disposition)
+    console.log(`marked_thread=${mark.threadId} disposition=${mark.disposition}`)
+    return
+  }
+
+  return probe(context, prView, owner, name)
 }
 
 function fetchReviewThreads(owner, name, pr) {
@@ -122,11 +283,7 @@ function fetchReviewThreads(owner, name, pr) {
   }
 }
 
-function main() {
-  const prView = JSON.parse(runGh(['pr', 'view', '--json', 'number,latestReviews']))
-  const repoView = JSON.parse(runGh(['repo', 'view', '--json', 'owner,name']))
-  const owner = repoView.owner.login
-  const name = repoView.name
+function probe(context, prView, owner, name) {
   const repo = `${owner}/${name}`
   const pr = prView.number
 
@@ -145,6 +302,7 @@ function main() {
 
   const threads = fetchReviewThreads(owner, name, pr)
   const unresolved = threads.filter((thread) => !thread.isResolved)
+  const reconciliation = reconcileReviewThreads(context, unresolved)
   const latestCommented = (prView.latestReviews || []).some(
     (review) => review.state === 'COMMENTED',
   )
@@ -158,12 +316,15 @@ function main() {
   const repair = repairStatusFromReviewProbe({
     suspiciousZero,
     unresolvedCount: unresolved.length,
+    actionableCount: reconciliation.actionable.length,
     inlineCommentCount: comments.length,
     reviewThreadCount: threads.length,
     latestCommented,
   })
   console.log(`repair_status=${repair.status}`)
   console.log(`repair_reason=${repair.reason}`)
+  console.log(`parked_threads=${reconciliation.parked.length}`)
+  console.log(`actionable_threads=${reconciliation.actionable.length}`)
 
   if (suspiciousZero) {
     console.log(
@@ -172,10 +333,10 @@ function main() {
     process.exit(2)
   }
 
-  if (unresolved.length > 0) {
+  if (reconciliation.actionable.length > 0) {
     console.log('')
     console.log('UNRESOLVED_THREADS')
-    unresolved.forEach((thread, index) => {
+    reconciliation.actionable.forEach((thread, index) => {
       const first = thread.comments.nodes[0] || {}
       const last = thread.comments.nodes[thread.comments.nodes.length - 1] || first
       console.log(
@@ -205,12 +366,24 @@ function main() {
   }
 }
 
-try {
-  main()
-} catch (error) {
-  console.log('probe_status=failed')
-  console.log('repair_status=unknown')
-  console.log('repair_reason=review probe failed')
-  console.log(`ERROR ${error.message}`)
-  process.exit(1)
+module.exports = {
+  clearThreadDisposition,
+  markThreadDisposition,
+  reconcileReviewThreads,
+  repairStatusFromReviewProbe,
+  readThreadDisposition,
+  stateDirectory,
+  threadIdentity,
+}
+
+if (require.main === module) {
+  try {
+    main()
+  } catch (error) {
+    console.log('probe_status=failed')
+    console.log('repair_status=unknown')
+    console.log('repair_reason=review probe failed')
+    console.log(`ERROR ${error.message}`)
+    process.exit(1)
+  }
 }

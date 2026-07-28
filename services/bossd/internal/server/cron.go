@@ -68,6 +68,11 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 		runSetup = *msg.ShouldRunSetupCommand
 	}
 	params.ShouldRunSetupCommand = runSetup
+	// Unlike ShouldRunSetupCommand above, IsZeroOutput defaults OFF, so there is
+	// deliberately no `true` pre-seed here: omitted means false.
+	if msg.IsZeroOutput != nil {
+		params.IsZeroOutput = *msg.IsZeroOutput
+	}
 	if tz := strings.TrimSpace(msg.Timezone); tz != "" {
 		params.Timezone = &tz
 	}
@@ -201,6 +206,9 @@ func (s *Server) UpdateCronJob(ctx context.Context, req *connect.Request[pb.Upda
 	}
 	if msg.ShouldRunSetupCommand != nil {
 		params.ShouldRunSetupCommand = msg.ShouldRunSetupCommand
+	}
+	if msg.IsZeroOutput != nil {
+		params.IsZeroOutput = msg.IsZeroOutput
 	}
 	if nextIsEnabled {
 		if err := s.validateExplicitAgentName(nextAgentName); err != nil {

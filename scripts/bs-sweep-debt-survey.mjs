@@ -29,6 +29,7 @@ function detectorFor(line) {
   if (/\bmake debt-dupl-/.test(line)) return 'dupl'
   if (/\bmake debt-cyclo-/.test(line)) return 'cyclo'
   if (/\bmake debt-vuln-/.test(line)) return 'vuln'
+  if (/\bmake debt-filesize-/.test(line)) return 'filesize'
   if (/\bknip\b/.test(line)) return 'knip'
   if (/\bjscpd\b/.test(line)) return 'jscpd'
   return null
@@ -39,6 +40,7 @@ const CATEGORY_OF = {
   dupl: 'duplication',
   cyclo: 'complexity-hotspot',
   vuln: 'security',
+  filesize: 'complexity-hotspot',
   knip: 'dead-code',
   jscpd: 'duplication',
 }
@@ -89,6 +91,19 @@ export function parseDetectorFindings(text) {
       } else if (vulnId && (m = /^#\d+:\s+(\S+\.go):\d+/.exec(line))) {
         push(m[1], vulnId)
       }
+    } else if (
+      detector === 'filesize' &&
+      // revive's `default` formatter emits ONE line per finding carrying all three values:
+      // "<file>.go:<pos>: file length is N lines, which exceeds the limit of M". Keeping the
+      // limit in the evidence is load-bearing — the complexity-hotspot playbook selects its
+      // axis on "an eligible file exceeds 2x the detector's limit", and the threshold is
+      // overridable, so a bare line count would leave that rule uncomputable downstream.
+      (m =
+        /^(\S+\.go):\d+(?::\d+)?:\s+file length is\s+(\d+)\s+lines,\s+which exceeds the limit of\s+(\d+)/.exec(
+          line,
+        ))
+    ) {
+      push(m[1], `${m[2]} lines (limit ${m[3]})`)
     } else if (detector === 'knip') {
       // knip's default (symbols) reporter groups findings by type. Surface all reachable types,
       // not just unused exports: unused exports (`<symbol>  <file>:line:col`), unused files (a

@@ -80,6 +80,11 @@ func (m PreflightModel) View() tea.View {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(colorDanger).Padding(0, 2)
 	bodyStyle := lipgloss.NewStyle().Padding(0, 2)
 	if m.width > 0 {
+		// KNOWN BUG, do NOT copy: .Width() already includes the padding, so
+		// subtracting it renders these blocks 4 columns narrower than the
+		// terminal. BOS-531 removed the identical mistake from renderError but
+		// left this branch alone (no test covers m.width > 0); widen it under
+		// its own change.
 		titleStyle = titleStyle.Width(m.width - 4)
 		bodyStyle = bodyStyle.Width(m.width - 4)
 	}

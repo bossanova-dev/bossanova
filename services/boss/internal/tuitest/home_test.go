@@ -74,33 +74,13 @@ func TestTUI_HomeView_DataDisplay(t *testing.T) {
 }
 
 func TestTUI_HomeView_ArrowKeys(t *testing.T) {
-	h := tuitest.New(t,
-		tuitest.WithRepos(testRepos()...),
-		tuitest.WithSessions(testSessions()...),
-	)
-
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
+	h := newHomeWithSessions(t)
 
 	// Send down arrow (ESC [ B) and up arrow (ESC [ A).
-	if err := h.Driver.SendString("\x1b[B"); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(200 * time.Millisecond)
-
-	if err := h.Driver.SendString("\x1b[A"); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(200 * time.Millisecond)
-
-	screen := h.Driver.Screen()
-	if !strings.Contains(screen, "Add dark mode") {
-		t.Fatalf("expected 'Add dark mode' on screen:\n%s", screen)
-	}
-	if !strings.Contains(screen, "Fix login bug") {
-		t.Fatalf("expected 'Fix login bug' on screen:\n%s", screen)
-	}
+	assertHomeNavigationKeepsSessions(t, h,
+		func() error { return h.Driver.SendString("\x1b[B") },
+		func() error { return h.Driver.SendString("\x1b[A") },
+	)
 }
 
 func TestTUI_HomeView_ActionBar(t *testing.T) {
@@ -254,24 +234,35 @@ func TestTUI_HomeView_SingleSession(t *testing.T) {
 }
 
 func TestTUI_HomeView_JKNavigation(t *testing.T) {
-	h := tuitest.New(t,
+	h := newHomeWithSessions(t)
+
+	assertHomeNavigationKeepsSessions(t, h,
+		func() error { return h.Driver.SendKey('j') },
+		func() error { return h.Driver.SendKey('k') },
+	)
+}
+
+func newHomeWithSessions(t *testing.T) *tuitest.Harness {
+	t.Helper()
+
+	return tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),
 	)
+}
+
+func assertHomeNavigationKeepsSessions(t *testing.T, h *tuitest.Harness, navigate ...func() error) {
+	t.Helper()
 
 	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
 		t.Fatal(err)
 	}
-
-	if err := h.Driver.SendKey('j'); err != nil {
-		t.Fatal(err)
+	for _, step := range navigate {
+		if err := step(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	time.Sleep(200 * time.Millisecond)
-
-	if err := h.Driver.SendKey('k'); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(200 * time.Millisecond)
 
 	screen := h.Driver.Screen()
 	if !strings.Contains(screen, "Add dark mode") {

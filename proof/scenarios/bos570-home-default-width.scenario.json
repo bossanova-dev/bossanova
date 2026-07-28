@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "title": "BOS-572 (BOS-570 epic) — at the default terminal width the full Home board is unchanged, so the narrow reduction is width-driven rather than a permanent removal",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "every session column is still drawn at the harness's default width — the companion to bos570-home-narrow, which drops one at 72 columns",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "REPO NAME PR STATUS",
+            "match": "normalized",
+            "label": "the full Home session table header is drawn at the default terminal width"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home at the default width: the declared column set already fits, so fitColumns returns it untouched"
+        },
+        {
+          "waitMs": 1500,
+          "caption": "This is the load-bearing half of BOS-572 — a board that fits is returned unchanged, which is what keeps every committed scenario and the Home view tests green"
+        },
+        {
+          "expect": [
+            {
+              "text": "REPO",
+              "match": "normalized",
+              "label": "REPO — the first column dropped at 72 columns is still here, so the reduction is width-driven, not a permanent removal"
+            },
+            {
+              "text": "PR",
+              "match": "normalized",
+              "label": "PR — the second column in the drop order is present at the default width"
+            },
+            {
+              "text": "STATUS",
+              "match": "normalized",
+              "label": "STATUS — the last droppable column, present at both widths"
+            }
+          ],
+          "caption": "REPO and PR are both on screen here and REPO is gone at 72 columns: the same build, two terminal sizes, two column sets"
+        },
+        {
+          "expect": {
+            "text": "[n]ew session",
+            "match": "normalized",
+            "label": "[n]ew session — the Home action bar renders as it always has beneath the untouched board"
+          },
+          "caption": "Nothing else about Home moved: the fit is a no-op whenever the declared columns already fit the terminal"
+        }
+      ]
+    }
+  ]
+}

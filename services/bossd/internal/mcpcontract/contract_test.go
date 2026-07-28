@@ -26,6 +26,8 @@ type captureBackend struct {
 	sendChat      *pb.SendChatMessageRequest
 	addAccount    *pb.AddAccountRequest
 	updateAccount *pb.UpdateAccountRequest
+	createNote    *pb.CreateNoteRequest
+	updateNote    *pb.UpdateNoteRequest
 }
 
 func (b *captureBackend) RegisterRepo(_ context.Context, req *pb.RegisterRepoRequest) (*pb.Repo, error) {
@@ -61,6 +63,18 @@ func (b *captureBackend) AddAccount(_ context.Context, req *pb.AddAccountRequest
 func (b *captureBackend) UpdateAccount(_ context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error) {
 	b.updateAccount = req
 	return &pb.Account{Id: "captured"}, nil
+}
+
+func (b *captureBackend) CreateNote(_ context.Context, req *pb.CreateNoteRequest) (*pb.Note, error) {
+	b.createNote = req
+	return &pb.Note{Id: "captured"}, nil
+}
+
+// UpdateNote drops repoID deliberately: it is a hosted-gateway routing key that
+// never reaches the daemon, and this test replays the DAEMON request.
+func (b *captureBackend) UpdateNote(_ context.Context, _ string, req *pb.UpdateNoteRequest) (*pb.Note, error) {
+	b.updateNote = req
+	return &pb.Note{Id: "captured"}, nil
 }
 
 // callTool drives a single MCP tool over an in-memory transport against the
@@ -209,5 +223,45 @@ func TestMCPCreateToolsSatisfyDaemonValidation(t *testing.T) {
 		})
 		_, err := h.Client.UpdateAccount(ctx, connect.NewRequest(backend.updateAccount))
 		assertNotMissingRequired(t, "update_account", err)
+	})
+
+	t.Run("create_note", func(t *testing.T) {
+		backend := &captureBackend{}
+		// Provenance omitted on purpose: session_id/chat_id are optional, and
+		// the tool must leave them UNSET rather than sending blank strings.
+		callTool(t, backend, "create_note", map[string]any{
+			"repo_id": "nonexistent-repo",
+			"body":    "the CI poller retries three times before giving up",
+			"tags":    []any{"ci", "flake"},
+		})
+		// Asserted here, not inferred from the replay: bossd's optionalTrimmed
+		// maps a blank string to SQL NULL, so a tool regressing to
+		// SessionId: proto.String("") would be ACCEPTED and the replay below
+		// would still pass. Only the captured request shows the difference.
+		if backend.createNote.SessionId != nil || backend.createNote.ChatId != nil {
+			t.Errorf("create_note sent provenance %v/%v, want both unset when omitted", backend.createNote.SessionId, backend.createNote.ChatId)
+		}
+		_, err := h.Client.CreateNote(ctx, connect.NewRequest(backend.createNote))
+		assertNotMissingRequired(t, "create_note", err)
+	})
+
+	t.Run("update_note", func(t *testing.T) {
+		backend := &captureBackend{}
+		// Body supplied without tags: the tri-state tags pointer must stay
+		// unset, which is what tells the daemon to leave the stored tags alone.
+		callTool(t, backend, "update_note", map[string]any{
+			"repo_id": "nonexistent-repo",
+			"id":      "nonexistent-note",
+			"body":    "revised after re-reading poller.go",
+		})
+		// Also asserted on the captured request rather than the replay: a
+		// set-but-empty NoteTagSet means "clear every tag", and the daemon
+		// accepts it happily — so a body-only edit that wrongly sent one would
+		// wipe the note's tags without any RPC error to notice.
+		if backend.updateNote.Tags != nil {
+			t.Errorf("update_note sent tags %v, want nil: an omitted tags argument must leave the stored tags alone", backend.updateNote.GetTags().GetTags())
+		}
+		_, err := h.Client.UpdateNote(ctx, connect.NewRequest(backend.updateNote))
+		assertNotMissingRequired(t, "update_note", err)
 	})
 }

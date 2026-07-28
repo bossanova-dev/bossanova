@@ -70,12 +70,17 @@ type Repo struct {
 	// CanAutoDeleteBranches controls whether the daemon deletes a session's git
 	// branch once its session is archived. Defaults true.
 	CanAutoDeleteBranches bool
-	MergeStrategy         MergeStrategy
-	LinearAPIKey          string
-	SentryAPIKey          string
-	SentryOrg             string
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	// ShouldKeepBranchesCurrent controls whether the daemon proactively rebases the
+	// repo's other in-flight session branches onto the base branch whenever a
+	// merge advances it, force-pushing with lease (BOS-521). Opt-in — every
+	// rebase re-runs CI — so it defaults false.
+	ShouldKeepBranchesCurrent bool
+	MergeStrategy             MergeStrategy
+	LinearAPIKey              string
+	SentryAPIKey              string
+	SentryOrg                 string
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
 }
 
 // Session represents an agent coding session.

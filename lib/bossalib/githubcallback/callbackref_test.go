@@ -103,6 +103,11 @@ func TestParsePRRef(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "zero pr in url rejected",
+			ref:     "https://github.com/acme/widgets/pull/0",
+			wantErr: true,
+		},
+		{
 			name:    "empty ref rejected",
 			ref:     "   ",
 			wantErr: true,
@@ -166,7 +171,7 @@ func TestSplitRepo(t *testing.T) {
 
 func TestValidateTrigger(t *testing.T) {
 	t.Parallel()
-	for _, valid := range []string{"merged", "closed", "checks_passed", "checks_failed"} {
+	for _, valid := range []string{"merged", "closed", "checks_passed", "checks_failed", "ready_for_review", "checks_passed_ready"} {
 		got, err := ValidateTrigger(valid)
 		if err != nil {
 			t.Fatalf("ValidateTrigger(%q) unexpected error: %v", valid, err)
@@ -175,7 +180,7 @@ func TestValidateTrigger(t *testing.T) {
 			t.Fatalf("ValidateTrigger(%q) = %q", valid, got)
 		}
 	}
-	for _, invalid := range []string{"", "opened", "MERGED", "checks-passed"} {
+	for _, invalid := range []string{"", "opened", "MERGED", "checks-passed", "ready-for-review", "checks_passed_read"} {
 		if _, err := ValidateTrigger(invalid); err == nil {
 			t.Fatalf("ValidateTrigger(%q) = nil error, want error", invalid)
 		}

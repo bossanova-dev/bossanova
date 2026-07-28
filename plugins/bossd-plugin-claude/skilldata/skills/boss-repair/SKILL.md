@@ -23,13 +23,77 @@ It may also be run **by hand** as `/boss-repair watch` to keep the whole wait-an
 
 ---
 
+## Linear-History Invariant
+
+**Always sync a branch with its base by rebasing. Never merge the base branch into the session branch.**
+
+```bash
+git fetch origin "$BASE_BRANCH"
+git rebase "origin/$BASE_BRANCH"
+```
+
+A `git merge` of the base ref — and any `git pull` that records a merge — is **FORBIDDEN**. On a repo
+whose merge strategy is rebase, a merge commit on the PR branch structurally breaks GitHub's
+rebase-merge: GitHub refuses the merge no matter how green the checks are, and every later repair
+round that merges again re-poisons the branch, deadlocking the PR. When a pull is unavoidable, use
+`git pull --rebase`.
+
+**Preflight — before any push that follows a base sync, assert zero merge commits:**
+
+```bash
+MERGE_COUNT=$(git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD) || exit 1
+test "$MERGE_COUNT" = 0 ||
+  { echo "Merge commit(s) on this branch; linearize before pushing"; exit 1; }
+```
+
+Capture the count and compare it as a **string**. `test "$(…)" -eq 0` fails **open**: when
+`$BASE_BRANCH` is unset or `origin/$BASE_BRANCH` has not been fetched, `git rev-list` errors and the
+substitution is empty, and an empty operand compares equal to `0` under zsh — so the guard would pass
+and the poisoned branch would be pushed. The form above fails closed in every shell.
+
+**Diagnosis.** A count greater than `0` means one or more merge commits are on the branch — most
+often a base merge. That is the one-line signal that GitHub's rebase-merge will refuse this PR. List
+what you are about to flatten with `git rev-list --merges --oneline "origin/$BASE_BRANCH..HEAD"`.
+
+**Linearize recovery.** Flattening **discards anything recorded only in a merge commit** — manual
+conflict-resolution edits and files added directly in the merge. Run the Strategy A amendment guard
+first (it lists those merges via `git show --remerge-diff`) and convert any amendment it reports into
+a normal commit before continuing; otherwise this rewrite loses it silently. Then flatten, re-verify
+the count is `0`, and force-push:
+
+```bash
+git fetch origin "$BASE_BRANCH"
+git rebase --onto "origin/$BASE_BRANCH" "$(git merge-base "origin/$BASE_BRANCH" HEAD)"
+# Resolve any conflicts in-rebase (Strategy A steps 2-4) until the rebase COMPLETES, then:
+if [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
+  echo "Rebase still in progress; finish it or 'git rebase --abort' before pushing"; exit 1
+fi
+MERGE_COUNT=$(git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD) || exit 1
+test "$MERGE_COUNT" = 0 ||
+  { echo "Branch still has merge commits after linearizing; resolve by hand"; exit 1; }
+git push --force-with-lease
+```
+
+Each assertion must be `||`-guarded like the ones above — a bare `test` line prints nothing and gates
+nothing, so the force-push on the next line would run regardless.
+
+A plain `git rebase "origin/$BASE_BRANCH"` flattens merge commits too; the `--onto` form above is the
+explicit equivalent for the linear-base case this recovery targets. Do **not** pass `--rebase-merges`
+when linearizing — it recreates the very merge commits you are removing. Strategy A names it only to
+explain what its amendment guard protects.
+
+---
+
 ## Repair Workflow
 
 ### Phase 1: Assess Current State
 
 **1.1 Check PR Status**
 
+Record the PR head SHA **first**, ahead of every other command here, per the round-freshness rule in the [Phase 2](#phase-2-execute-repair-strategy) lead-in:
+
 ```bash
+gh pr view --json headRefOid -q .headRefOid   # record this value as ROUND_HEAD for the rest of the round
 git status                    # Check for conflicts and uncommitted changes
 git log --oneline -5          # Recent commits
 gh pr view                    # PR details, checks, and review status
@@ -55,13 +119,84 @@ For each triggered strategy below, the orchestrator dispatches a fresh **awaited
 
 This dispatch stays on the orchestrator's model (Opus): conflict resolution, failing-check code fixes, and review-feedback reasoning are all judgment, so no cheaper `model:` override is applied. The subagent keeps the bulk material (diffs, CI logs, `gh run view` output, review threads) inside its own context; only the summary returns to the orchestrator, which stays thin. This is orchestration framing only: Strategy A/B/C below are unchanged and are exactly what the dispatched subagent runs. If the subagent dispatch itself fails (a tool error, not a repair failure), fall back to running that strategy inline; the dispatch is awaited and its failure is non-fatal, so it must never turn a would-be clean exit into a nonzero one.
 
+**Round freshness — capture the head SHA before reading PR state.** The first thing a round does,
+before reading review threads, check runs, or mergeability, is record the commit the **PR head**
+points at — the commit every check run is attached to. That capture is
+`gh pr view --json headRefOid -q .headRefOid`, and it is already the first command of
+[Phase 1](#phase-1-assess-current-state) step 1.1, ahead of `gh pr view`.
+**Do not run it again here** as the round's routine baseline: re-capturing in Phase 2 would
+re-baseline onto a head that has already absorbed any mid-round push, and the comparison below could
+never fire. The missing-baseline recovery below is the one exception, and it is safe only because it
+re-reads the check runs alongside the re-capture.
+
+The local worktree tip is **not** the value to compare. `git rev-parse HEAD` only moves when this
+round itself commits, so it can never see the push by another actor that this rule exists to catch —
+and it moves on a local commit that was never pushed and superseded no check run at all.
+
+Carry the printed SHA in your own notes, not only in a shell variable: shell state does not survive
+between tool calls, and an empty baseline must never be mistaken for a moved head. If you reach the
+freshness test without a recorded baseline, do not cancel and do not proceed on what you already
+read: re-capture the PR head and re-read the check runs against it, so the view you act on is
+coherent with a baseline you hold. A missing baseline is never on its own a reason to cancel.
+
+**Handle review feedback before CI failures.** Thread content is stable: a reviewer's words mean the
+same thing whether or not another commit has landed since they were written, so feedback can be
+acted on exactly as read. Check runs are volatile — each describes one specific commit, and a push
+that lands mid-round supersedes every check result read before it. Taking the stable half first
+leaves only the volatile half needing a freshness test.
+
+**Re-read the head SHA before acting on a CI failure, and skip the failure when it has moved.**
+Re-read the PR head (`gh pr view --json headRefOid -q .headRefOid`) and compare it against
+`ROUND_HEAD` at the moment you are about to act on a check
+failure. If they differ, this round's CI view describes a superseded commit:
+do not fix it and do not push a commit for it.
+Check the head once more immediately before you push a CI fix, too: the window between deciding to
+act and pushing is small but not empty, and a head that moved inside it supersedes the fix you are
+about to send. Cancel the CI half then as well rather than force-pushing over the newer commit.
+Keep the commit you already made — do not reset it — and name it in the residual as built but unpushed;
+the branch being ahead of origin is expected in this one case, so Phase 3's clean-tree check and
+Watch Mode's no-progress comparison both read it as the cancellation it is, not as progress.
+Skip only the CI half of the round — any conflict repair or review work this round still owes is
+unaffected and is still due first; end the pass only once that work is done.
+Report the superseded CI view as a residual and **exit zero**, per
+[Residuals vs true stops](#residuals-vs-true-stops).
+
+That skip is **cancellation, not error**. A superseded round is a normal outcome, not a failed one:
+the push that superseded it raises its own signal and gets its own round, which reads a coherent
+view of the new head. Nothing is broken and nothing is lost, so a cancelled round
+must never exit non-zero. In Watch Mode the cancellation is not an exit at all: skip the superseded
+CI view, return to the poll loop, and read the new head's state on the next pass, per
+[Watch Mode](#watch-mode) — the exit-zero form applies to default mode only.
+
+**A round's own push never marks that round stale.** The freshness test is applied only _before_ this
+round acts on a check failure, and only against commits this round did not author. Once the round has
+fixed a failure and pushed, the head is _expected_ to differ from `ROUND_HEAD` — that is the round
+succeeding by its own hand, not going stale. After **every** push this round makes — including the
+review-feedback push that the ordering above puts first —
+re-baseline `ROUND_HEAD` to the commit you just pushed
+(`git rev-parse HEAD` immediately after your own push is exactly that commit)
+**and re-read the check runs**: a CI view read before any push, your own included, describes a
+superseded commit and must be re-read rather than acted on. You never have to inspect authorship — because you
+re-baseline after every push you make, any remaining difference from `ROUND_HEAD` is by construction
+a commit this round did not author. Only a head that moved before this round acted, by a commit this
+round did not author, cancels it.
+
+Check runs for a commit you just pushed usually do not exist yet, so that re-read is a freshness
+check inside the pass, not a second repair pass and not the Phase 3 poll. If it returns nothing, or
+only pending runs, there is no fresh CI view to act on: leave it to Phase 3's post-push poll (Watch
+Mode: to the next poll) rather than falling back on the pre-push results. `$BEFORE` in
+[Watch Mode](#watch-mode) step 1 is a different baseline for a different question — it is the local
+tip and detects whether _this_ pass made progress, while `ROUND_HEAD` is the PR head and detects a
+push this round did not make. They are not interchangeable.
+
 #### Strategy A: Merge Conflicts
 
 **Symptoms**: Git reports conflicts, PR status shows conflict
 
 **Resolution**:
 
-1. Fetch and rebase onto the PR base branch:
+1. Fetch and rebase onto the PR base branch — never merge it in, per the
+   [Linear-History Invariant](#linear-history-invariant):
 
    ```bash
    BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || true)
@@ -98,13 +233,30 @@ This dispatch stays on the orchestrator's model (Opus): conflict resolution, fai
      echo "Resolve manually or convert those amendments into normal commits before rebasing."
      exit 1
    fi
-   git rebase --rebase-merges "origin/$BASE_BRANCH"
+   git rebase "origin/$BASE_BRANCH"
    ```
 
-   Use the preflight guard because `--rebase-merges` recreates merge commits
-   but does not preserve manual conflict-resolution edits or files added
-   directly in merge commits. Only rebase automatically when the guard finds no
-   merge-commit amendments.
+   Use the **amendment guard** (the `MERGE_AMENDMENTS` probe above — distinct
+   from the merge-count preflight in the
+   [Linear-History Invariant](#linear-history-invariant)) because a plain rebase
+   flattens merge commits but does not preserve manual conflict-resolution edits
+   or files added directly in merge commits. Only rebase automatically when the
+   guard finds no merge-commit amendments. `--rebase-merges` would preserve that
+   shape, but it recreates the merge commits the invariant forbids — so when the
+   guard trips, lift those amendments out of the merge and re-run the plain
+   rebase; never resolve it with a new merge:
+
+   ```bash
+   for merge_commit in $MERGE_AMENDMENTS; do
+     git show --remerge-diff --format= "$merge_commit" > "/tmp/amend-$merge_commit.patch"
+   done
+   git rebase "origin/$BASE_BRANCH"          # flattens; the amendments are now saved off-branch
+   git apply "/tmp/amend-<sha>.patch"        # re-apply each captured amendment, oldest first
+   git add -A && git commit -m "fix: re-apply conflict resolution from flattened merge"
+   ```
+
+   If an amendment does not re-apply cleanly, stop and escalate per
+   [Complex Conflicts](#complex-conflicts) rather than merging the base in.
 
 2. Identify conflicting files:
 
@@ -157,14 +309,21 @@ This dispatch stays on the orchestrator's model (Opus): conflict resolution, fai
    cargo test
    ```
 
-6. Push the rebased branch:
+6. Run the merge-commit preflight, then push the rebased branch:
    ```bash
+   MERGE_COUNT=$(git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD) || exit 1
+   test "$MERGE_COUNT" = 0 ||
+     { echo "Merge commit(s) on this branch; linearize before pushing"; exit 1; }
    git push --force-with-lease
    ```
+   A nonzero count means the branch is poisoned; run the linearize recovery in the
+   [Linear-History Invariant](#linear-history-invariant) before pushing.
 
 #### Strategy B: Failing Checks
 
 **Symptoms**: PR checks show failures (tests, lint, build errors)
+
+The A/B/C ordering here is presentational, not an execution order. If review feedback is also present, run [Strategy C](#strategy-c-review-feedback) first and apply the round-freshness rule from the Phase 2 lead-in before acting on anything below.
 
 **Resolution**:
 
@@ -250,6 +409,7 @@ This dispatch stays on the orchestrator's model (Opus): conflict resolution, fai
    - Trust `repair_status` as the normalized result when `probe_status=ok`.
    - `repair_status=clean`: there are no unresolved review threads. Historical REST `inline_comments`, resolved GraphQL `review_threads`, and `COMMENTED` latest reviews do not require action by themselves.
    - `repair_status=needs_repair`: handle every printed unresolved thread.
+   - `repair_status=parked`: every unresolved thread is waiting on a human. Do not re-dispatch repair work unless a later probe reports `needs_repair`.
    - `repair_status=unknown`: REST and GraphQL disagree or thread state is unavailable. Retry with explicit repo/pr before concluding there is no review feedback.
 
 2. For each unresolved thread, triage into one of three categories:
@@ -257,6 +417,10 @@ This dispatch stays on the orchestrator's model (Opus): conflict resolution, fai
    **a) Actionable — fix it:**
    - Read the relevant code/files
    - Implement the requested change
+   - Mark the thread as dispatched before acting on it:
+     ```bash
+     node scripts/review-feedback-probe.js mark --thread THREAD_ID --disposition dispatched
+     ```
    - Add a reply comment on the thread explaining what was fixed:
      ```bash
      gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -f body="Fixed: [brief explanation of what was changed]"
@@ -293,6 +457,13 @@ This dispatch stays on the orchestrator's model (Opus): conflict resolution, fai
      gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -f body="Could you clarify what you meant by [...]?"
      ```
    - Do NOT resolve the thread — leave it open for the reviewer.
+   - Mark it `needs-human` after posting the clarification, so later repair rounds park it until the
+     reviewer's last-comment identity changes:
+     ```bash
+     node scripts/review-feedback-probe.js mark --thread THREAD_ID --disposition needs-human
+     ```
+   - A thread left open this way is a **residual**: record it in the Repair Summary alongside the
+     rest, per [Residuals vs true stops](#residuals-vs-true-stops). It does not fail the pass.
 
    **IMPORTANT**: Every unresolved thread must be handled. Do not silently skip threads. Either fix and resolve, decline and resolve with an explanation, or ask for clarification. Fixed or declined threads must be resolved before the PR is considered clean. Only true clarification requests may remain unresolved.
 
@@ -379,7 +550,50 @@ Provide a concise summary:
 **Status**:
 - Changes pushed to origin
 - [Checks are now passing | Checks are pending | Awaiting review]
+
+**Residuals**:
+- [What this pass could not resolve and why the round stopped short | none]
 ```
+
+---
+
+## Residuals vs true stops
+
+Not every unfinished repair is a failure. Decide which of these two outcomes you are in **before**
+choosing an exit code.
+
+- **Residual** — a condition this pass legitimately could not resolve: conflicts too tangled to
+  settle safely, a fix that needs a decision only a human can make, a red signal whose cause lives
+  outside the branch. A residual is **not an error**. Report it explicitly — as a residual line in
+  the Repair Summary, and in a PR comment when a human has to act — and then **exit zero**. A
+  residual is always a _reported_ outcome, never a silent one; leaving it out of the report is the
+  real failure.
+- **True stop** — the worker could not run at all: required tooling is missing, the repository or PR
+  is unreadable, or an unexpected exception aborted the pass. There is no repair outcome to report,
+  so **exit non-zero** and let the breakage surface loudly.
+
+Both outcomes describe how the **pass itself** ends. The `exit 1` guards inside the command snippets
+above are narrower: they abort that step — refusing to push a branch that would poison the PR, or a
+rebase that would drop manual edits — rather than settling the pass's exit status. When a guard trips,
+follow whatever the surrounding step says to do next — the merge-count preflights route to the
+linearize recovery above, the amendment guard escalates to
+[Complex Conflicts](#complex-conflicts) when its recovery will not re-apply, and a guard that leaves
+nothing to work with (no resolvable base branch) is a true stop — then end the pass by the same rule:
+a residual when there is an outcome to report, a true stop only when the pass could not run.
+
+Retry, cooldown, and attempt caps belong to the **daemon-owned repair loop** (the repair plugin
+described in [Integration with Repair Plugin](#integration-with-repair-plugin)), not to this worker.
+The loop decides whether and when another pass runs, and a pass that exits zero with its residuals
+reported gives it exactly what it needs to decide. Never simulate backoff by failing on purpose: a
+non-zero exit that only means "something remains" is recorded as a **failed attempt**, so it does not
+just disguise a normal outcome as a crash — it abandons the loop's in-session retry for a slower
+fresh sweep, lengthens the backoff before the next pass, and leaves a consecutive-failure count
+standing against a branch that was never broken. Failing does not "apply the cooldown" the branch
+needs; it charges the branch for one it did not earn. Watch Mode is the exception the rest of this
+document already names: a
+manual `/boss-repair watch` run owns its own bounded loop and is not driven by the daemon loop's
+retry schedule, per [Watch Mode](#watch-mode). The residual-versus-true-stop rule still decides how
+that loop exits.
 
 ---
 
@@ -395,7 +609,10 @@ If conflicts are too complex to resolve automatically:
    gh pr comment --body "Automatic repair detected complex merge conflicts that require manual review. Files affected: <list>. Please resolve manually."
    ```
 
-2. Exit with failure status so the cooldown applies
+2. Report the unresolved conflict as a **residual** in the Repair Summary — name the files still
+   conflicting and why this round stopped short — and **exit zero**. This is not a true stop, so do
+   not fail the pass to force a cooldown; whichever loop is driving this pass — the daemon-owned one,
+   or watch mode's own — owns backoff and any further attempt.
 
 ### Cascading Failures
 
@@ -415,7 +632,10 @@ If the repair requires information not available (e.g., design decisions, extern
 
 1. Add a PR comment requesting clarification
 2. Do NOT make assumptions
-3. Exit with failure status
+3. Report the open question as a **residual** in the Repair Summary — state what information is
+   missing and who has to supply it — and **exit zero**. Waiting on a human is not a true stop, and
+   failing the pass would neither get the question answered sooner nor tell the loop driving it
+   anything it does not already track.
 
 ---
 
@@ -426,7 +646,8 @@ If the repair requires information not available (e.g., design decisions, extern
 3. **Test Locally**: Always run the repo's formatting and test gates before pushing
 4. **Clear Commits**: Write descriptive commit messages that explain the fix
 5. **Atomic Repairs**: Each repair attempt should be self-contained
-6. **Fail Fast**: If unable to fix, exit quickly to avoid wasting time
+6. **Stop Early, Not Loudly**: If this pass cannot fix the issue, report the residual and exit zero
+   rather than grinding — see [Residuals vs true stops](#residuals-vs-true-stops)
 7. **No raw bulk output in the main thread**: Never paste full diffs, CI logs, `gh run view` output, or
    review threads into the orchestrator's context — that bulk is re-charged on every later turn. The
    Phase 2 strategy subagent reads them in its own context and returns only a summary; when working
@@ -443,6 +664,7 @@ If the repair requires information not available (e.g., design decisions, extern
 | Accepting all "ours" or "theirs" blindly                          | Loses important changes             | Review each conflict individually                                 |
 | Skipping tests after conflict resolution                          | Introduces bugs                     | Always run full test suite                                        |
 | Commenting out failing tests                                      | Hides problems                      | Fix the root cause                                                |
+| Merging the base branch in to resolve drift                       | Merge commit deadlocks rebase-merge | Rebase onto the base; keep `git rev-list --merges --count` at `0` |
 | Plain force pushing                                               | Loses history, breaks collaboration | Use `--force-with-lease` after rebase                             |
 | Making unrelated "improvements"                                   | Scope creep                         | Fix only the reported issue                                       |
 | Retrying immediately after failure                                | Triggers cooldown loops             | Fix the root cause first                                          |
@@ -458,12 +680,13 @@ If the repair requires information not available (e.g., design decisions, extern
 Problem: PR shows conflict status, git reports conflicts in server.go
 
 Resolution:
-1. Fetch and rebase onto the PR base branch
+1. Fetch and rebase onto the PR base branch (never merge it in)
 2. Read server.go, see conflict in import statements
 3. Keep both imports (they're independent)
 4. git add server.go && GIT_EDITOR=true git rebase --continue
 5. Run repo formatting and test gates (passes)
-6. git push --force-with-lease
+6. Preflight: git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD → 0
+7. git push --force-with-lease
 
 Result: ✓ Conflict resolved, checks passing
 ```
@@ -534,7 +757,8 @@ This skill should:
 
 - Focus on fixing the immediate problem
 - Complete within a reasonable time (< 5 minutes typical)
-- Exit with clear success/failure status
+- Exit zero once a pass completes, with any residual reported in the Repair Summary, and non-zero
+  only on a true stop — see [Residuals vs true stops](#residuals-vs-true-stops)
 - Provide actionable feedback via PR comments if unable to fix
 
 ---
@@ -566,10 +790,10 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
 3. Interpret the full PR state:
 
    - **Checks:** `gh pr checks --json bucket` — all checks pass only when every bucket is passing/successful and none are pending, skipped-required, cancelled, timed out, or failed.
-   - **Review threads:** `node scripts/review-feedback-probe.js` — trust `repair_status` (`clean`, `needs_repair`, `unknown`) using the same interpretation rules as Strategy C above.
+   - **Review threads:** `node scripts/review-feedback-probe.js` — trust `repair_status` (`clean`, `parked`, `needs_repair`, `unknown`) using the same interpretation rules as Strategy C above.
    - **Conflicts:** `gh pr view --json mergeable -q .mergeable` — `CONFLICTING` means a merge conflict appeared.
 
-4. **Review work first:** if `repair_status=needs_repair`, repair every printed unresolved thread immediately. For each valid comment, fix it, reply with what changed, resolve the parent review thread, push, then start the next poll. For each invalid, stale, or already-handled comment, reply explaining why it is declined, resolve the parent review thread, push if the reply changed local state, then start the next poll. Only true clarification requests may remain unresolved. If `repair_status=unknown`, retry with explicit repo/pr and do not treat reviews as clean.
+4. **Review work first:** if `repair_status=needs_repair`, repair every printed unresolved thread immediately. For each valid comment, fix it, reply with what changed, resolve the parent review thread, push, then start the next poll. For each invalid, stale, or already-handled comment, reply explaining why it is declined, resolve the parent review thread, push if the reply changed local state, then start the next poll. Only true clarification requests may remain unresolved. If `repair_status=parked`, no action is due until a reviewer replies. If `repair_status=unknown`, retry with explicit repo/pr and do not treat reviews as clean.
 
 5. **Conflicts next:** if mergeable is `CONFLICTING`, repair the conflict, commit, push, then start the next poll.
 
@@ -577,13 +801,15 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
 
 7. **Failed checks:** if checks failed, run the matching repair strategy from Phase 2 for the new failure, push, then start the next poll.
 
-8. **Done:** exit success only when checks pass AND `repair_status=clean` AND mergeable is not `CONFLICTING` AND all fixed or declined review threads are resolved.
+8. **Done — green or parked:** the loop has reached a non-repair terminal state only when checks pass AND (`repair_status=clean` **or** `repair_status=parked`) AND mergeable is not `CONFLICTING` AND all fixed or declined review threads are resolved. Once all four hold, stop and exit zero.
 
 9. **No-progress stop:** after a repair pass, if `git rev-parse HEAD` equals the `$BEFORE` value captured immediately before that pass (no new commit was pushed) and the failing signal is unchanged, stop and report — do not spin on an unfixable failure. This mirrors the plugin's duplicate-input guard.
 
 10. **Bound:** never exceed 5 repair passes. After the 5th, report the remaining failures and exit.
 
-When watch mode exits (green, no-progress, or 5 attempts reached), print the standard Repair Summary plus a final line stating why the loop ended (`green` / `no-progress` / `max-attempts`).
+11. **Ending short of green is a residual, not a true stop:** the no-progress stop, the 5-pass bound, and any escalation out of [Edge Cases and Error Handling](#edge-cases-and-error-handling) all end a loop that ran fine and left something behind. Record what is still red in the Repair Summary's `**Residuals**` line and **exit zero**; watch mode exits non-zero only on a true stop, per [Residuals vs true stops](#residuals-vs-true-stops).
+
+When watch mode exits (green, parked, no-progress, 5 attempts reached, or escalated to a human per an edge case), print the standard Repair Summary plus a final line stating why the loop ended (`green` / `parked` / `no-progress` / `max-attempts` / `blocked`). Use `blocked` for an edge-case escalation: it is the established token for "this needs a human", and callers that classify this line already understand it.
 
 ---
 
@@ -595,16 +821,25 @@ Before completing the repair:
 - [ ] Appropriate repair strategy executed
 - [ ] Local formatting and test gates passed
 - [ ] Changes committed with descriptive message
+- [ ] Base sync was a rebase; `git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD` is `0`
 - [ ] Changes pushed to origin; post-push waiting is delegated to the repair plugin
 - [ ] Summary provided with actions taken
+- [ ] Residuals reported in the summary, or explicitly recorded as `none`
+
+A pass that ends on a residual without changing the branch skips the commit/push/gate boxes above —
+there is nothing to commit — and is complete once the residual is reported.
 
 ---
 
 ## Success Criteria
 
-One repair run is successful when:
+"Successful" here means the **run** did its job, not that the PR came out green. A pass that ends on
+a reported residual is still a successful run — see [Residuals vs true stops](#residuals-vs-true-stops).
+Criteria 2–4 apply only when the pass produced a change; a pass that ends on a residual without
+touching the branch has nothing to gate, commit, or push and is judged on 1, 5, and 6 alone. One
+repair run is successful when:
 
-1. ✅ The immediate issue was identified and fixed
+1. ✅ The immediate issue was identified and fixed, or the reason it could not be is recorded as a residual
 2. ✅ Local formatting and test gates passed
 3. ✅ Changes were committed with a descriptive message
 4. ✅ Changes were pushed to the PR branch

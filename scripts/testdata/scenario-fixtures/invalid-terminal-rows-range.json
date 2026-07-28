@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "title": "Out-of-bounds terminal rows",
+  "terminal": { "rows": 4000 },
+  "scenes": [
+    {
+      "title": "Scene",
+      "steps": [{ "expect": "x" }]
+    }
+  ]
+}

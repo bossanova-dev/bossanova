@@ -105,6 +105,16 @@ type fakeCommandHandler struct {
 	listGithubCallbacksResult  *pb.ListGithubCallbacksResponse
 	listGithubCallbacksCmd     *pb.ListGithubCallbacksCommand // last command passed to ListGithubCallbacks
 	deleteGithubCallbackID     string                         // last id passed to DeleteGithubCallback
+	// Notes knobs (BOS-552).
+	createNoteResult *pb.CreateNoteResponse
+	createNoteCmd    *pb.CreateNoteCommand // last command passed to CreateNote
+	getNoteResult    *pb.GetNoteResponse
+	getNoteCmd       *pb.GetNoteCommand // last command passed to GetNote
+	listNotesResult  *pb.ListNotesResponse
+	listNotesCmd     *pb.ListNotesCommand // last command passed to ListNotes
+	updateNoteResult *pb.UpdateNoteResponse
+	updateNoteCmd    *pb.UpdateNoteCommand // last command passed to UpdateNote
+	deleteNoteID     string                // last id passed to DeleteNote
 	// Account-management knobs.
 	addAccountResult     *pb.AddAccountResponse
 	addAccountCmd        *pb.AddAccountCommand // last command passed to AddAccount
@@ -127,6 +137,10 @@ type fakeCommandHandler struct {
 	getCronJobResult         *pb.GetCronJobResponse
 	getCronJobID             string // last id passed to GetCronJob
 	repairDoctorResult       *pb.RepairDoctorResponse
+
+	// Cross-daemon broadcast ingress knob (BOS-558). The dispatcher forwards
+	// the command verbatim; every decision about it lives behind the handler.
+	broadcastCmd *pb.BroadcastCommand // last command passed to DeliverBroadcast
 
 	closeSession        *pb.Session
 	closeSessionID      string // last sessionID passed to CloseSession
@@ -283,6 +297,30 @@ func (f *fakeCommandHandler) ListGithubCallbacks(_ context.Context, cmd *pb.List
 }
 func (f *fakeCommandHandler) DeleteGithubCallback(_ context.Context, id string) error {
 	f.deleteGithubCallbackID = id
+	return f.returnErr
+}
+func (f *fakeCommandHandler) CreateNote(_ context.Context, cmd *pb.CreateNoteCommand) (*pb.CreateNoteResponse, error) {
+	f.createNoteCmd = cmd
+	return f.createNoteResult, f.returnErr
+}
+func (f *fakeCommandHandler) GetNote(_ context.Context, cmd *pb.GetNoteCommand) (*pb.GetNoteResponse, error) {
+	f.getNoteCmd = cmd
+	return f.getNoteResult, f.returnErr
+}
+func (f *fakeCommandHandler) ListNotes(_ context.Context, cmd *pb.ListNotesCommand) (*pb.ListNotesResponse, error) {
+	f.listNotesCmd = cmd
+	return f.listNotesResult, f.returnErr
+}
+func (f *fakeCommandHandler) UpdateNote(_ context.Context, cmd *pb.UpdateNoteCommand) (*pb.UpdateNoteResponse, error) {
+	f.updateNoteCmd = cmd
+	return f.updateNoteResult, f.returnErr
+}
+func (f *fakeCommandHandler) DeleteNote(_ context.Context, id string) error {
+	f.deleteNoteID = id
+	return f.returnErr
+}
+func (f *fakeCommandHandler) DeliverBroadcast(_ context.Context, cmd *pb.BroadcastCommand) error {
+	f.broadcastCmd = cmd
 	return f.returnErr
 }
 func (f *fakeCommandHandler) AddAccount(_ context.Context, cmd *pb.AddAccountCommand) (*pb.AddAccountResponse, error) {
@@ -2241,5 +2279,370 @@ func TestDispatchCommand_Merge_HandlerError_ReturnsCommandErr(t *testing.T) {
 	}
 	if r.GetError() != "merge failed: conflict" {
 		t.Fatalf("expected error message %q, got %q", "merge failed: conflict", r.GetError())
+	}
+}
+
+// TestDispatchCommand_Notes_RoundTrip covers the five BOS-552 notes commands:
+// each reaches the handler with its command intact and comes back as the
+// matching CommandResult payload. DeleteNote is Ok-only with no payload,
+// exactly like DeleteGithubCallback.
+func TestDispatchCommand_Notes_RoundTrip(t *testing.T) {
+	sessionID, chatID := "sess-1", "chat-1"
+	body, search := "edited body", "needle"
+
+	cases := []struct {
+		name    string
+		handler *fakeCommandHandler
+		cmd     *pb.OrchestratorCommand
+		verify  func(t *testing.T, h *fakeCommandHandler, r *pb.CommandResult)
+	}{
+		{
+			name:    "create",
+			handler: &fakeCommandHandler{createNoteResult: &pb.CreateNoteResponse{Note: &pb.Note{Id: "n-1", Body: "hello"}}},
+			cmd: &pb.OrchestratorCommand{
+				CommandId: "c-note-create",
+				Cmd: &pb.OrchestratorCommand_CreateNote{CreateNote: &pb.CreateNoteCommand{
+					RepoId:    "repo-1",
+					SessionId: &sessionID,
+					ChatId:    &chatID,
+					Body:      "hello",
+					Tags:      []string{"a", "b"},
+				}},
+			},
+			verify: func(t *testing.T, h *fakeCommandHandler, r *pb.CommandResult) {
+				t.Helper()
+				got := h.createNoteCmd
+				if got == nil || got.GetRepoId() != "repo-1" || got.GetBody() != "hello" ||
+					got.GetSessionId() != "sess-1" || got.GetChatId() != "chat-1" ||
+					len(got.GetTags()) != 2 || got.GetTags()[0] != "a" {
+					t.Fatalf("create_note command not forwarded verbatim: %+v", got)
+				}
+				if r.GetCreateNote().GetNote().GetId() != "n-1" || r.GetCreateNote().GetNote().GetBody() != "hello" {
+					t.Fatalf("unexpected create_note payload: %+v", r.GetCreateNote())
+				}
+			},
+		},
+		{
+			name:    "get",
+			handler: &fakeCommandHandler{getNoteResult: &pb.GetNoteResponse{Note: &pb.Note{Id: "n-2", Body: "read me"}}},
+			cmd: &pb.OrchestratorCommand{
+				CommandId: "c-note-get",
+				Cmd:       &pb.OrchestratorCommand_GetNote{GetNote: &pb.GetNoteCommand{Id: "n-2"}},
+			},
+			verify: func(t *testing.T, h *fakeCommandHandler, r *pb.CommandResult) {
+				t.Helper()
+				if h.getNoteCmd.GetId() != "n-2" {
+					t.Fatalf("get_note id = %q, want n-2", h.getNoteCmd.GetId())
+				}
+				if r.GetGetNote().GetNote().GetBody() != "read me" {
+					t.Fatalf("unexpected get_note payload: %+v", r.GetGetNote())
+				}
+			},
+		},
+		{
+			name: "list",
+			handler: &fakeCommandHandler{listNotesResult: &pb.ListNotesResponse{
+				Notes: []*pb.Note{{Id: "n-3"}, {Id: "n-4"}},
+			}},
+			cmd: &pb.OrchestratorCommand{
+				CommandId: "c-note-list",
+				Cmd: &pb.OrchestratorCommand_ListNotes{ListNotes: &pb.ListNotesCommand{
+					RepoId:    strPtr("repo-1"),
+					SessionId: &sessionID,
+					ChatId:    &chatID,
+					Tags:      []string{"x"},
+					Search:    &search,
+					Limit:     7,
+				}},
+			},
+			verify: func(t *testing.T, h *fakeCommandHandler, r *pb.CommandResult) {
+				t.Helper()
+				got := h.listNotesCmd
+				// Every filter, including the limit, must reach the handler
+				// intact — a dropped limit silently unbounds a fleet list.
+				if got == nil || got.GetRepoId() != "repo-1" || got.GetSessionId() != "sess-1" ||
+					got.GetChatId() != "chat-1" || got.GetSearch() != "needle" || got.GetLimit() != 7 ||
+					len(got.GetTags()) != 1 || got.GetTags()[0] != "x" {
+					t.Fatalf("list_notes filters not forwarded verbatim: %+v", got)
+				}
+				if notes := r.GetListNotes().GetNotes(); len(notes) != 2 || notes[1].GetId() != "n-4" {
+					t.Fatalf("unexpected list_notes payload: %+v", notes)
+				}
+			},
+		},
+		{
+			name:    "update",
+			handler: &fakeCommandHandler{updateNoteResult: &pb.UpdateNoteResponse{Note: &pb.Note{Id: "n-5", Body: "edited body"}}},
+			cmd: &pb.OrchestratorCommand{
+				CommandId: "c-note-update",
+				Cmd: &pb.OrchestratorCommand_UpdateNote{UpdateNote: &pb.UpdateNoteCommand{
+					Id:   "n-5",
+					Body: &body,
+					Tags: &pb.NoteTagSet{Tags: []string{"kept"}},
+				}},
+			},
+			verify: func(t *testing.T, h *fakeCommandHandler, r *pb.CommandResult) {
+				t.Helper()
+				got := h.updateNoteCmd
+				if got == nil || got.GetId() != "n-5" || got.Body == nil || got.GetBody() != "edited body" ||
+					got.Tags == nil || len(got.GetTags().GetTags()) != 1 {
+					t.Fatalf("update_note command not forwarded verbatim: %+v", got)
+				}
+				if r.GetUpdateNote().GetNote().GetBody() != "edited body" {
+					t.Fatalf("unexpected update_note payload: %+v", r.GetUpdateNote())
+				}
+			},
+		},
+		{
+			name:    "delete",
+			handler: &fakeCommandHandler{},
+			cmd: &pb.OrchestratorCommand{
+				CommandId: "c-note-delete",
+				Cmd:       &pb.OrchestratorCommand_DeleteNote{DeleteNote: &pb.DeleteNoteCommand{Id: "n-6"}},
+			},
+			verify: func(t *testing.T, h *fakeCommandHandler, r *pb.CommandResult) {
+				t.Helper()
+				if h.deleteNoteID != "n-6" {
+					t.Fatalf("delete_note id = %q, want n-6", h.deleteNoteID)
+				}
+				// Ok-only: no payload, mirroring DeleteGithubCallback.
+				if r.GetPayload() != nil {
+					t.Fatalf("delete_note must reply Ok-only, got payload %+v", r.GetPayload())
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newDispatcherClient(tc.handler, nil, nil)
+			out := make(chan *pb.DaemonEvent, 4)
+			// Notes commands are store-bound and dispatched async, so the
+			// result lands on outbound rather than the return value.
+			if ev := client.dispatchCommand(context.Background(), tc.cmd, out); ev != nil {
+				t.Fatalf("expected nil synchronous result for async notes command, got %+v", ev)
+			}
+			r := recvEvent(t, out).GetResult()
+			if r == nil || !r.GetOk() {
+				t.Fatalf("expected ok result, got %+v", r)
+			}
+			if r.GetCommandId() != tc.cmd.GetCommandId() {
+				t.Fatalf("command_id = %q, want %q", r.GetCommandId(), tc.cmd.GetCommandId())
+			}
+			tc.verify(t, tc.handler, r)
+		})
+	}
+}
+
+// TestDispatchCommand_Notes_NotFound_ClassifiesCode pins the error mapping the
+// notes dispatchers share with the callback dispatchers: a connect NotFound
+// from the handler becomes CommandResult.error_code NOT_FOUND, not the
+// UNSPECIFIED catch-all.
+func TestDispatchCommand_Notes_NotFound_ClassifiesCode(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  *pb.OrchestratorCommand
+	}{
+		{"create", &pb.OrchestratorCommand{CommandId: "e1", Cmd: &pb.OrchestratorCommand_CreateNote{CreateNote: &pb.CreateNoteCommand{RepoId: "r"}}}},
+		{"get", &pb.OrchestratorCommand{CommandId: "e2", Cmd: &pb.OrchestratorCommand_GetNote{GetNote: &pb.GetNoteCommand{Id: "nope"}}}},
+		{"list", &pb.OrchestratorCommand{CommandId: "e3", Cmd: &pb.OrchestratorCommand_ListNotes{ListNotes: &pb.ListNotesCommand{}}}},
+		{"update", &pb.OrchestratorCommand{CommandId: "e4", Cmd: &pb.OrchestratorCommand_UpdateNote{UpdateNote: &pb.UpdateNoteCommand{Id: "nope"}}}},
+		{"delete", &pb.OrchestratorCommand{CommandId: "e5", Cmd: &pb.OrchestratorCommand_DeleteNote{DeleteNote: &pb.DeleteNoteCommand{Id: "nope"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &fakeCommandHandler{returnErr: connect.NewError(connect.CodeNotFound, fmt.Errorf("no such note"))}
+			client := newDispatcherClient(handler, nil, nil)
+			out := make(chan *pb.DaemonEvent, 4)
+			client.dispatchCommand(context.Background(), tc.cmd, out)
+			r := recvEvent(t, out).GetResult()
+			if r == nil || r.GetOk() || !strings.Contains(r.GetError(), "no such note") {
+				t.Fatalf("expected failed result mentioning the absent note, got %+v", r)
+			}
+			if r.GetErrorCode() != pb.CommandResult_ERROR_CODE_NOT_FOUND {
+				t.Fatalf("error_code = %v, want NOT_FOUND", r.GetErrorCode())
+			}
+		})
+	}
+}
+
+func TestDispatchCommand_NoteCommands_HandlerNotWired(t *testing.T) {
+	client := newDispatcherClient(nil, nil, nil) // no command handler
+	cases := []struct {
+		name string
+		cmd  *pb.OrchestratorCommand
+	}{
+		{"create", &pb.OrchestratorCommand{CommandId: "w1", Cmd: &pb.OrchestratorCommand_CreateNote{CreateNote: &pb.CreateNoteCommand{}}}},
+		{"get", &pb.OrchestratorCommand{CommandId: "w2", Cmd: &pb.OrchestratorCommand_GetNote{GetNote: &pb.GetNoteCommand{}}}},
+		{"list", &pb.OrchestratorCommand{CommandId: "w3", Cmd: &pb.OrchestratorCommand_ListNotes{ListNotes: &pb.ListNotesCommand{}}}},
+		{"update", &pb.OrchestratorCommand{CommandId: "w4", Cmd: &pb.OrchestratorCommand_UpdateNote{UpdateNote: &pb.UpdateNoteCommand{}}}},
+		{"delete", &pb.OrchestratorCommand{CommandId: "w5", Cmd: &pb.OrchestratorCommand_DeleteNote{DeleteNote: &pb.DeleteNoteCommand{}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := client.dispatchCommand(context.Background(), tc.cmd, make(chan *pb.DaemonEvent, 1))
+			r := ev.GetResult()
+			if r == nil || r.GetOk() || r.GetError() != "command handler not wired" {
+				t.Fatalf("expected synchronous not-wired error, got %+v", ev)
+			}
+		})
+	}
+}
+
+// TestDispatchCommand_Broadcast_ForwardsToHandler pins the INGRESS half of the
+// cross-daemon broadcast path at the dispatcher boundary (BOS-558): a
+// BroadcastCommand routed here by bosso reaches the handler with every field
+// intact, and comes back as an Ok-only CommandResult with no payload (the
+// receiving daemon reports "materialised", not what it resolved — target
+// counts stay local, and the body never round-trips).
+//
+// Forwarded VERBATIM is the contract being pinned: the dispatcher makes no
+// decision about an inbound broadcast. The loop guard, the idempotency probe
+// and local-only resolution all live behind the handler in internal/broadcast.
+func TestDispatchCommand_Broadcast_ForwardsToHandler(t *testing.T) {
+	expires := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	handler := &fakeCommandHandler{}
+	client := newDispatcherClient(handler, nil, nil)
+
+	out := make(chan *pb.DaemonEvent, 4)
+	cmd := &pb.OrchestratorCommand{
+		CommandId: "c-bcast-1",
+		Cmd: &pb.OrchestratorCommand_Broadcast{Broadcast: &pb.BroadcastCommand{
+			BroadcastId: "b-1",
+			Selector: &pb.BroadcastSelector{Clauses: []*pb.BroadcastSelectorClause{
+				{RepoIds: []string{"repo-1"}},
+			}},
+			OriginDaemonId: "daemon-far",
+			OriginChatId:   "chat-far",
+			Message:        "secret body",
+			ExpiresAt:      timestamppb.New(expires),
+		}},
+	}
+	// Store-bound and dispatched async, so the result lands on outbound.
+	if ev := client.dispatchCommand(context.Background(), cmd, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for the async broadcast command, got %+v", ev)
+	}
+	r := recvEvent(t, out).GetResult()
+	if r == nil || !r.GetOk() {
+		t.Fatalf("expected ok result, got %+v", r)
+	}
+	if r.GetCommandId() != "c-bcast-1" {
+		t.Fatalf("command_id = %q, want c-bcast-1", r.GetCommandId())
+	}
+	if r.GetPayload() != nil {
+		t.Fatalf("broadcast must reply Ok-only, got payload %+v", r.GetPayload())
+	}
+	got := handler.broadcastCmd
+	if got == nil {
+		t.Fatal("handler never saw the broadcast command")
+	}
+	if got.GetBroadcastId() != "b-1" {
+		t.Fatalf("broadcast_id = %q, want b-1", got.GetBroadcastId())
+	}
+	if got.GetOriginDaemonId() != "daemon-far" || got.GetOriginChatId() != "chat-far" {
+		t.Fatalf("origin ids not forwarded verbatim: %+v", got)
+	}
+	if got.GetMessage() != "secret body" {
+		t.Fatalf("message = %q, want it forwarded verbatim", got.GetMessage())
+	}
+	if !got.GetExpiresAt().AsTime().Equal(expires) {
+		t.Fatalf("expires_at = %v, want %v", got.GetExpiresAt().AsTime(), expires)
+	}
+	sel := got.GetSelector().GetClauses()
+	if len(sel) != 1 || len(sel[0].GetRepoIds()) != 1 || sel[0].GetRepoIds()[0] != "repo-1" {
+		t.Fatalf("selector not forwarded verbatim: %+v", got.GetSelector())
+	}
+}
+
+// TestDispatchCommand_Broadcast_HandlerErrorFailsTheCommand pins that a
+// materialisation failure comes back as a failed CommandResult carrying the
+// handler's own message (so bosso can tell "too many targets" from "the write
+// broke"), with the connect code classified rather than flattened.
+//
+// SECRET BODY: the error text asserted here rides back to bosso on
+// CommandResult.error. It must stay derived from the handler's error alone —
+// the ingress never puts the broadcast body in one, and this test is the place
+// a change that started to would be noticed.
+func TestDispatchCommand_Broadcast_HandlerErrorFailsTheCommand(t *testing.T) {
+	handler := &fakeCommandHandler{returnErr: connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("selector resolves 99 targets, over the cap of 64"))}
+	client := newDispatcherClient(handler, nil, nil)
+
+	out := make(chan *pb.DaemonEvent, 4)
+	cmd := &pb.OrchestratorCommand{
+		CommandId: "c-bcast-err",
+		Cmd: &pb.OrchestratorCommand_Broadcast{Broadcast: &pb.BroadcastCommand{
+			BroadcastId: "b-2",
+			Message:     "secret body",
+		}},
+	}
+	client.dispatchCommand(context.Background(), cmd, out)
+	r := recvEvent(t, out).GetResult()
+	if r == nil || r.GetOk() {
+		t.Fatalf("expected a failed result, got %+v", r)
+	}
+	if !strings.Contains(r.GetError(), "over the cap of 64") {
+		t.Fatalf("error = %q, want the handler's own message", r.GetError())
+	}
+	if strings.Contains(r.GetError(), "secret body") {
+		t.Fatalf("the broadcast body leaked into CommandResult.error: %q", r.GetError())
+	}
+	if r.GetErrorCode() != pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION {
+		t.Fatalf("error_code = %v, want FAILED_PRECONDITION", r.GetErrorCode())
+	}
+}
+
+func TestDispatchCommand_Broadcast_HandlerNotWired(t *testing.T) {
+	client := newDispatcherClient(nil, nil, nil) // no command handler
+	ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "w-bcast",
+		Cmd:       &pb.OrchestratorCommand_Broadcast{Broadcast: &pb.BroadcastCommand{}},
+	}, make(chan *pb.DaemonEvent, 1))
+	r := ev.GetResult()
+	if r == nil || r.GetOk() || r.GetError() != "command handler not wired" {
+		t.Fatalf("expected synchronous not-wired error, got %+v", ev)
+	}
+}
+
+// TestClassifyBroadcastCommandErrorIsScopedToBroadcast pins the API-compatibility
+// boundary BOS-558 deliberately drew: the INVALID_ARGUMENT arm belongs to the
+// broadcast command ALONE.
+//
+// The shared classifier is reached by every other inbound command, and most of
+// them delegate to a bossd server handler that already returns
+// connect.CodeInvalidArgument for ordinary validation failures. Those classify
+// as UNSPECIFIED, which bosso renders as CodeAborted. Teaching the shared
+// classifier the arm would silently re-render all of them as CodeInvalidArgument
+// on the bossanova.v1 surface — a change in the meaning of an existing response,
+// which needs an apiversion bump plus a down-convert transform. This test fails
+// the moment someone widens it, so that change cannot ride in unversioned.
+func TestClassifyBroadcastCommandErrorIsScopedToBroadcast(t *testing.T) {
+	t.Parallel()
+
+	invalid := connect.NewError(connect.CodeInvalidArgument, errors.New("malformed"))
+
+	if got := classifyBroadcastCommandError(invalid); got != pb.CommandResult_ERROR_CODE_INVALID_ARGUMENT {
+		t.Fatalf("broadcast classifier: want ERROR_CODE_INVALID_ARGUMENT, got %v", got)
+	}
+	// The api-compat pin: unchanged for every non-broadcast command.
+	if got := classifyCommandError(invalid); got != pb.CommandResult_ERROR_CODE_UNSPECIFIED {
+		t.Fatalf("shared classifier must stay UNSPECIFIED for CodeInvalidArgument "+
+			"(widening it is an unversioned bossanova.v1 behaviour change); got %v", got)
+	}
+	// The arms both classifiers share must keep agreeing.
+	for _, tc := range []struct {
+		name string
+		err  error
+		want pb.CommandResult_ErrorCode
+	}{
+		{"not found", connect.NewError(connect.CodeNotFound, errors.New("gone")), pb.CommandResult_ERROR_CODE_NOT_FOUND},
+		{"failed precondition", connect.NewError(connect.CodeFailedPrecondition, errors.New("bad state")), pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION},
+		{"untyped", errors.New("boom"), pb.CommandResult_ERROR_CODE_UNSPECIFIED},
+	} {
+		if got := classifyBroadcastCommandError(tc.err); got != tc.want {
+			t.Errorf("%s: broadcast classifier got %v, want %v", tc.name, got, tc.want)
+		}
+		if got := classifyCommandError(tc.err); got != tc.want {
+			t.Errorf("%s: shared classifier got %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

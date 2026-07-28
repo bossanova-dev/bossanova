@@ -156,6 +156,17 @@ service OrchestratorService {
   rpc ProxyCreateGithubCallback(ProxyCreateGithubCallbackRequest) returns (ProxyCreateGithubCallbackResponse);
   rpc ProxyListGithubCallbacks(ProxyListGithubCallbacksRequest) returns (ProxyListGithubCallbacksResponse);
   rpc ProxyDeleteGithubCallback(ProxyDeleteGithubCallbackRequest) returns (ProxyDeleteGithubCallbackResponse);
+  // Notes proxies for remote-CLI and hosted-gateway note management (BOS-552).
+  // A note is repo-scoped, so all five route to the owning daemon by repo_id,
+  // reusing the caller's own auth — a foreign repo resolves to NotFound so no
+  // cross-user note access can dispatch. Create/Get/Update/Delete require
+  // repo_id; List routes by repo_id when set, else aggregates across the
+  // caller's Ready daemons.
+  rpc ProxyCreateNote(ProxyCreateNoteRequest) returns (ProxyCreateNoteResponse);
+  rpc ProxyGetNote(ProxyGetNoteRequest) returns (ProxyGetNoteResponse);
+  rpc ProxyListNotes(ProxyListNotesRequest) returns (ProxyListNotesResponse);
+  rpc ProxyUpdateNote(ProxyUpdateNoteRequest) returns (ProxyUpdateNoteResponse);
+  rpc ProxyDeleteNote(ProxyDeleteNoteRequest) returns (ProxyDeleteNoteResponse);
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -707,6 +718,7 @@ message ProxyCreateCronJobRequest {
   string model = 9;
   string gate_command = 10;
   optional bool should_run_setup_command = 11;
+  optional bool is_zero_output = 12;
 }
 message ProxyCreateCronJobResponse { CronJob job = 1; }
 
@@ -724,6 +736,7 @@ message ProxyUpdateCronJobRequest {
   optional string model = 9;
   optional string gate_command = 10;
   optional bool should_run_setup_command = 11;
+  optional bool is_zero_output = 12;
 }
 message ProxyUpdateCronJobResponse { CronJob job = 1; }
 
@@ -760,6 +773,101 @@ message ProxyDeleteGithubCallbackRequest {
   string id             = 2;
 }
 message ProxyDeleteGithubCallbackResponse {}
+
+// Notes proxy messages (BOS-552). The requests mirror the daemon.proto field
+// sets; repo_id is the routing key, because a note is repo-scoped. Get/Update/
+// Delete carry repo_id purely so bosso can route (the daemon addresses the note
+// by id alone) — exactly the precedent set by ProxyDeleteGithubCallbackRequest,
+// which carries target_chat_id for the same reason. Responses reuse the Note
+// message from daemon.proto rather than redeclaring it.
+//
+// repo_id IS THE DAEMON-LOCAL repos.id — the value ResolveContext returns in
+// Repo.id, and the same namespace CreateCronJobCommand.repo_id already uses. It
+// is NOT the canonical origin URL that DaemonSnapshot.repo_ids advertises for
+// webhook routing. Bosso resolves the owning daemon by asking the caller's Ready
+// daemons for their repo lists, so passing an origin URL here resolves to
+// NotFound.
+//
+// On Get/Update/Delete, repo_id ROUTES BUT DOES NOT SCOPE: once bosso has picked
+// the daemon, the daemon addresses the note by id alone and does NOT verify that
+// the note belongs to repo_id. Naming repo A while passing an id that lives in
+// repo B on the same daemon therefore acts on B's note. This is not a privilege
+// boundary — every candidate daemon is already the caller's own — but a client
+// must not present repo_id to a user as a safety check.
+message ProxyCreateNoteRequest {
+  // Owning repository (daemon-local repos.id). Required — also the routing key.
+  string repo_id = 1;
+  // Optional provenance: which run recorded this note.
+  optional string session_id = 2;
+  optional string chat_id    = 3;
+  // Stored verbatim. Must be non-empty after trimming and within the 64 KiB
+  // cap, else InvalidArgument.
+  string body = 4;
+  // Trimmed, lowercased and de-duplicated before storage. At most 32 tags of
+  // at most 64 bytes each (measured after trimming), else InvalidArgument.
+  repeated string tags = 5;
+}
+message ProxyCreateNoteResponse { Note note = 1; }
+
+message ProxyGetNoteRequest {
+  string repo_id = 1; // routing key only; the daemon resolves by id alone
+  string id      = 2;
+}
+message ProxyGetNoteResponse { Note note = 1; }
+
+// ProxyListNotesRequest mirrors ListNotesRequest: every filter is optional, an
+// unset field is not constrained, and set fields intersect (AND). repo_id
+// doubles as the routing key — set to a non-blank repos.id, the call goes to the
+// owning daemon; unset, bosso fans out across the caller's Ready daemons. Set to
+// the empty string it matches nothing (see below), and bosso answers with an
+// empty list without asking any daemon.
+message ProxyListNotesRequest {
+  // Applied whenever the field is SET, including when set to the empty string:
+  // the value is trimmed and compared with `=`, and blank provenance is stored
+  // as NULL, so a set-but-blank filter matches NOTHING. Leave the field unset
+  // to leave that column unconstrained; there is no way to ask for "notes with
+  // no session".
+  optional string repo_id    = 1;
+  optional string session_id = 2;
+  optional string chat_id    = 3;
+  // Matches notes carrying ANY of these tags (OR), not all of them. Entries are
+  // trimmed and lowercased to match the normalisation applied on write, and
+  // blank entries are dropped. A non-empty list whose entries ALL normalise
+  // away matches nothing rather than everything — the filter fails closed, so a
+  // stray empty tag can never widen the result set.
+  repeated string tags = 4;
+  // Substring match on the body. SQL wildcards are matched literally, not as
+  // patterns. Case-insensitivity is ASCII-only. A term that is blank after
+  // trimming means NO search, unlike a blank tag entry, which matches nothing.
+  optional string search = 5;
+  // Caps the rows returned; zero or negative means unlimited. On an unfiltered
+  // fan-out it is passed through to every daemon AND re-applied to the merged
+  // list, so a caller asking for N always receives at most N — never N per
+  // daemon. Because each daemon returns its own oldest `limit` notes, the merged
+  // list truncated after the (created_at, id) sort is exactly the oldest `limit`
+  // notes ACROSS THE DAEMONS THAT ANSWERED: the fan-out is fail-soft, so a
+  // daemon that is offline or times out contributes nothing and is skipped
+  // rather than failing the call.
+  int32 limit = 6;
+}
+message ProxyListNotesResponse { repeated Note notes = 1; }
+
+message ProxyUpdateNoteRequest {
+  string repo_id = 1; // routing key only; the daemon resolves by id alone
+  string id      = 2;
+  // Unset = leave the body alone.
+  optional string body = 3;
+  // Unset = leave the tags alone. SET = REPLACE the entire tag set with this
+  // list, including replacing it with nothing when the list is empty.
+  optional NoteTagSet tags = 4;
+}
+message ProxyUpdateNoteResponse { Note note = 1; }
+
+message ProxyDeleteNoteRequest {
+  string repo_id = 1; // routing key only; the daemon resolves by id alone
+  string id      = 2;
+}
+message ProxyDeleteNoteResponse {}
 
 message ProxyRunCronJobNowRequest { string daemon_id = 1; string id = 2; }
 message ProxyRunCronJobNowResponse { Session session = 1; string skipped_reason = 2; }

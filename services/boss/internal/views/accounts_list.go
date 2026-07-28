@@ -145,7 +145,7 @@ func (m AccountsListModel) fetchAccounts() tea.Cmd {
 // non-fatal: sessionsKnown stays false and prompt copy degrades to generic.
 func (m AccountsListModel) fetchSessions() tea.Cmd {
 	return func() tea.Msg {
-		sessions, err := m.client.ListSessions(m.ctx, &pb.ListSessionsRequest{})
+		sessions, err := m.client.ListSessions(m.ctx, &pb.ListSessionsRequest{}, client.SessionReadOptions{})
 		return sessionsLoadedMsg{sessions: sessions, err: err}
 	}
 }

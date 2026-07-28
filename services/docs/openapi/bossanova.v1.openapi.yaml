@@ -624,6 +624,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyCreateGithubCallbackResponse'
+  /bossanova.v1.OrchestratorService/ProxyCreateNote:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyCreateNote
+      description: |-
+        Notes proxies for remote-CLI and hosted-gateway note management (BOS-552).
+         A note is repo-scoped, so all five route to the owning daemon by repo_id,
+         reusing the caller's own auth — a foreign repo resolves to NotFound so no
+         cross-user note access can dispatch. Create/Get/Update/Delete require
+         repo_id; List routes by repo_id when set, else aggregates across the
+         caller's Ready daemons.
+      operationId: bossanova.v1.OrchestratorService.ProxyCreateNote
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyCreateNoteRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyCreateNoteResponse'
   /bossanova.v1.OrchestratorService/ProxyCreateSession: {}
   /bossanova.v1.OrchestratorService/ProxyDeleteChat:
     post:
@@ -731,6 +773,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyDeleteGithubCallbackResponse'
+  /bossanova.v1.OrchestratorService/ProxyDeleteNote:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyDeleteNote
+      operationId: bossanova.v1.OrchestratorService.ProxyDeleteNote
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyDeleteNoteRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyDeleteNoteResponse'
   /bossanova.v1.OrchestratorService/ProxyEmptyTrash:
     post:
       tags:
@@ -843,6 +920,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyGetCronJobResponse'
+  /bossanova.v1.OrchestratorService/ProxyGetNote:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyGetNote
+      operationId: bossanova.v1.OrchestratorService.ProxyGetNote
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyGetNoteRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyGetNoteResponse'
   /bossanova.v1.OrchestratorService/ProxyGetRepo:
     post:
       tags:
@@ -1255,6 +1367,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyListGithubCallbacksResponse'
+  /bossanova.v1.OrchestratorService/ProxyListNotes:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyListNotes
+      operationId: bossanova.v1.OrchestratorService.ProxyListNotes
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyListNotesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyListNotesResponse'
   /bossanova.v1.OrchestratorService/ProxyListPlugins:
     post:
       tags:
@@ -2202,6 +2349,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyUpdateCronJobResponse'
+  /bossanova.v1.OrchestratorService/ProxyUpdateNote:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyUpdateNote
+      operationId: bossanova.v1.OrchestratorService.ProxyUpdateNote
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyUpdateNoteRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyUpdateNoteResponse'
   /bossanova.v1.OrchestratorService/ProxyUpdateRepo:
     post:
       tags:
@@ -2958,6 +3140,326 @@ components:
       description: |-
         AuthKind identifies how an agent's per-account credential is injected into a
          spawned process. Reported by RotationCapability.
+    bossanova.v1.Broadcast:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        selector:
+          title: selector
+          $ref: '#/components/schemas/bossanova.v1.BroadcastSelector'
+        originChatId:
+          type: string
+          title: origin_chat_id
+          description: |-
+            ClaudeChat.agent_session_id — the same identifier BroadcastSelectorClause
+             .chat_ids carries, NOT ClaudeChat.id. Spelled out because ClaudeChat has
+             both, and a delivery child storing the row id here would produce records
+             that cannot be joined against a selector. chat that sent it; empty = not chat-originated
+        message:
+          type: string
+          title: message
+          description: |-
+            Prompt body delivered to each target chat. SECRET: stored verbatim and
+             NEVER echoed back on any read surface — not in a list/get response, not in
+             a log line, not in an error detail. It is carried here only for the
+             delivering owner. The precedent is GithubCallback.message and the
+             deliberately body-free githubCallbackJSON in services/boss/cmd/callback.go.
+        state:
+          type: string
+          title: state
+          description: lifecycle state; stable lowercase strings, defined by the delivery child
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        expiresAt:
+          title: expires_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: Broadcast
+      additionalProperties: false
+      description: |-
+        Broadcast is one message addressed at the set of chats a selector resolves
+         to. It mirrors the daemon's domain model; timestamps use
+         google.protobuf.Timestamp and enum-like fields are stable lowercase strings.
+    bossanova.v1.BroadcastCommand:
+      type: object
+      properties:
+        broadcastId:
+          type: string
+          title: broadcast_id
+          description: |-
+            The ORIGIN daemon's broadcast id, NOT one minted by the receiver. The
+             reverse stream is at-least-once, so a redelivery of the same broadcast must
+             be recognisable: persisting under the origin's id makes a repeat a no-op,
+             whereas a locally minted id would make every redelivery look like a brand
+             new broadcast and fan out duplicate deliveries.
+        selector:
+          title: selector
+          description: |-
+            Audience as issued by the origin, re-resolved against the receiving
+             daemon's LOCAL chats only, under the same fan-out cap and start-error
+             filter the daemon applies to its own sends.
+          $ref: '#/components/schemas/bossanova.v1.BroadcastSelector'
+        originDaemonId:
+          type: string
+          title: origin_daemon_id
+          description: |-
+            The ORIGIN daemon's persisted `.config/daemon-id`. LOOP GUARD: a daemon
+             MUST drop, before doing anything else, any command whose origin_daemon_id
+             equals its own daemon id. Without that check a daemon whose selector names
+             itself would deliver its own broadcast twice — once locally at send time,
+             once again on the round trip through bosso.
+        originChatId:
+          type: string
+          title: origin_chat_id
+          description: |-
+            Chat the broadcast was issued from, on the ORIGIN daemon. It is not a local
+             chat id here, so it is recorded as provenance only and is not resolvable
+             against the receiver's chats.
+        message:
+          type: string
+          title: message
+          description: |-
+            Broadcast body delivered to each resolved local target. SECRET — see the
+             rule on Broadcast.message in daemon.proto: never echoed on a read surface,
+             never logged.
+        expiresAt:
+          title: expires_at
+          description: |-
+            Absolute expiry inherited from the origin, so the receiver stops retrying
+             at the same instant the origin does rather than restarting the clock.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: BroadcastCommand
+      additionalProperties: false
+      description: |-
+        BroadcastCommand travels bosso → daemon: "you are a target for this
+         broadcast; resolve it against YOUR chats and deliver it". A daemon that
+         receives one delivers locally and MUST NOT publish a BroadcastEgress in
+         response — that is the anti-storm invariant, and it is why this is a distinct
+         type from BroadcastEgress rather than the same one flowing back.
+    bossanova.v1.BroadcastDelivery:
+      type: object
+      properties:
+        broadcastId:
+          type: string
+          title: broadcast_id
+        targetChatId:
+          type: string
+          title: target_chat_id
+          description: ClaudeChat.agent_session_id, as in BroadcastSelectorClause.chat_ids
+        state:
+          type: string
+          title: state
+          description: per-target delivery state; stable lowercase strings, defined by the delivery child
+        attemptCount:
+          type: integer
+          title: attempt_count
+          format: int32
+        lastError:
+          type: string
+          title: last_error
+          description: delivery diagnostic; empty = none. NEVER the message body.
+        deliveredAt:
+          title: delivered_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: BroadcastDelivery
+      additionalProperties: false
+      description: |-
+        BroadcastDelivery is the per-target outcome of one broadcast: one record per
+         chat the selector resolved to.
+    bossanova.v1.BroadcastEgress:
+      type: object
+      properties:
+        broadcastId:
+          type: string
+          title: broadcast_id
+          description: |-
+            The ORIGIN daemon's broadcast id. Every daemon that delivers this broadcast
+             persists it under this id (see BroadcastCommand.broadcast_id).
+        selector:
+          title: selector
+          description: |-
+            Audience as issued by the origin. Each receiving daemon re-resolves it
+             against its own local chats; a selector is not a pre-resolved target list.
+          $ref: '#/components/schemas/bossanova.v1.BroadcastSelector'
+        originDaemonId:
+          type: string
+          title: origin_daemon_id
+          description: |-
+            The persisted `.config/daemon-id` of the daemon that ORIGINATED the
+             broadcast. Carried so the ingress side can drop its own echo — see the loop
+             guard on BroadcastCommand.origin_daemon_id.
+        originChatId:
+          type: string
+          title: origin_chat_id
+          description: |-
+            Chat the broadcast was issued from (ClaudeChat.agent_session_id), on the
+             origin daemon. Empty = operator-issued with no originating chat.
+        message:
+          type: string
+          title: message
+          description: |-
+            Broadcast body. SECRET — see the rule on Broadcast.message in daemon.proto:
+             never echoed on a read surface, never logged.
+        expiresAt:
+          title: expires_at
+          description: |-
+            Absolute expiry inherited from the origin's broadcast row, so a slow route
+             cannot extend a broadcast's lifetime past what the sender asked for.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: BroadcastEgress
+      additionalProperties: false
+      description: |-
+        BroadcastEgress travels daemon → bosso on the reverse stream: "this daemon
+         produced a broadcast whose audience reaches beyond itself; route it". Local
+         delivery is already the origin daemon's own business and has happened (or is
+         happening) independently — this event asks only for the foreign leg. Bosso
+         selects the target daemons and sends each a BroadcastCommand.
+    bossanova.v1.BroadcastSelector:
+      type: object
+      properties:
+        clauses:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.BroadcastSelectorClause'
+          title: clauses
+      title: BroadcastSelector
+      additionalProperties: false
+      description: |-
+        BroadcastSelector is a disjunction of clauses: a candidate chat is in the
+         audience if ANY clause matches (OR). A selector with no clauses is INVALID,
+         never universal — an empty selector must never mean everyone, and the
+         delivery boundary re-validates before fanning out.
+    bossanova.v1.BroadcastSelectorClause:
+      type: object
+      properties:
+        chatIds:
+          type: array
+          items:
+            type: string
+          title: chat_ids
+          description: ClaudeChat.agent_session_id
+        sessionIds:
+          type: array
+          items:
+            type: string
+          title: session_ids
+          description: Session.id
+        repoIds:
+          type: array
+          items:
+            type: string
+          title: repo_ids
+          description: Session.repo_id
+        agentNames:
+          type: array
+          items:
+            type: string
+          title: agent_names
+          description: ClaudeChat.agent_name
+        accountIds:
+          type: array
+          items:
+            type: string
+          title: account_ids
+          description: |-
+            No wire message carries a chat's account today (ClaudeChat has no
+             account_id), so this dimension is resolved daemon-side from the
+             agent_chats.account_id column. The delivery child either keeps resolving it
+             there or adds account_id to ClaudeChat. The "" default account is not
+             addressable.
+        daemonIds:
+          type: array
+          items:
+            type: string
+          title: daemon_ids
+          description: ClaudeChat.daemon_id (the "" local daemon is not addressable)
+      title: BroadcastSelectorClause
+      additionalProperties: false
+      description: |-
+        BroadcastSelectorClause is a conjunction: every non-empty dimension must
+         match (AND), and within one dimension the listed values are alternatives
+         (OR). A dimension left empty is not a constraint. A clause that constrains
+         nothing matches NOTHING, never everyone.
+
+         A blank ("") entry is invalid in every dimension, so the system-default
+         account and the local daemon — which carry "" on the target side — are not
+         addressable by name; those chats are reached via the other four dimensions
+         until a grammar sentinel exists. Values may not carry the textual grammar's
+         "+" or "," separators either, since the canonical selector string must
+         re-parse to the same selector.
+    bossanova.v1.BroadcastSubscription:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        ownerSessionId:
+          type: string
+          title: owner_session_id
+          description: |-
+            Session whose outcome fires this subscription. Carries no foreign key: a
+             subscription may outlive the session it watches, and expiry — not a
+             referential cascade — retires one whose session will never settle.
+        originChatId:
+          type: string
+          title: origin_chat_id
+          description: |-
+            Chat that registered it (ClaudeChat.agent_session_id), as in
+             BroadcastSelectorClause.chat_ids. Empty = operator-issued with no
+             registering chat.
+
+             Provenance only: it never narrows the audience. Unlike SendBroadcast — where
+             the origin is the sender and is dropped from its own audience unless
+             include_origin — the origin of a subscription is the REQUESTER, so a
+             selector naming it is honoured and the registering chat is told. The
+             selector alone decides who receives the fired broadcast.
+        triggerEvent:
+          type: string
+          title: trigger_event
+          description: 'Outcome class awaited: "completed", "errored", or "settled" (either).'
+        selector:
+          title: selector
+          description: |-
+            Audience to broadcast to when it fires. Resolved at FIRE time, so the
+             chats that exist then are the ones addressed.
+          $ref: '#/components/schemas/bossanova.v1.BroadcastSelector'
+        state:
+          type: string
+          title: state
+          description: 'Lifecycle state: "active", "fired", "canceled", or "expired".'
+        firedBroadcastId:
+          type: string
+          title: fired_broadcast_id
+          description: Broadcast the winning compare-and-swap produced; empty until it fires.
+        firedAt:
+          title: fired_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        expiresAt:
+          title: expires_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        updatedAt:
+          title: updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: BroadcastSubscription
+      additionalProperties: false
+      description: |-
+        BroadcastSubscription is a standing rule: when owner_session_id reaches an
+         outcome matching trigger_event, the daemon broadcasts the registered message
+         to the audience selector resolves.
+
+         THE MESSAGE BODY IS DELIBERATELY ABSENT from this message, and that omission
+         is the contract, not an oversight. Unlike Broadcast — which carries a
+         `message` field because the delivering owner needs it and every read surface
+         clears it — a BroadcastSubscription is only ever built on a READ path, so the
+         body has no legitimate reason to exist on the wire here at all. It is
+         write-only: CreateBroadcastSubscriptionRequest.message carries it inbound,
+         and no response, log line, or persisted diagnostic ever returns it. Do not
+         add a `message` field to this message or to any subscription response.
     bossanova.v1.BuildInteractiveCommandRequest:
       type: object
       properties:
@@ -3565,6 +4067,15 @@ components:
                 - createGithubCallback
             - type: object
               properties:
+                createNote:
+                  title: create_note
+                  description: CreateNote returns the created note (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.CreateNoteResponse'
+              title: create_note
+              required:
+                - createNote
+            - type: object
+              properties:
                 emptyTrash:
                   title: empty_trash
                   description: |-
@@ -3592,6 +4103,15 @@ components:
               title: get_cron_job
               required:
                 - getCronJob
+            - type: object
+              properties:
+                getNote:
+                  title: get_note
+                  description: GetNote returns the note (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.GetNoteResponse'
+              title: get_note
+              required:
+                - getNote
             - type: object
               properties:
                 getRepo:
@@ -3668,6 +4188,15 @@ components:
               title: list_github_callbacks
               required:
                 - listGithubCallbacks
+            - type: object
+              properties:
+                listNotes:
+                  title: list_notes
+                  description: ListNotes returns the matching notes (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.ListNotesResponse'
+              title: list_notes
+              required:
+                - listNotes
             - type: object
               properties:
                 listPlugins:
@@ -3809,6 +4338,17 @@ components:
                 - updateCronJob
             - type: object
               properties:
+                updateNote:
+                  title: update_note
+                  description: |-
+                    UpdateNote returns the updated note (reuses daemon.proto type).
+                     DeleteNote is Ok-only (no payload), exactly like DeleteGithubCallback.
+                  $ref: '#/components/schemas/bossanova.v1.UpdateNoteResponse'
+              title: update_note
+              required:
+                - updateNote
+            - type: object
+              properties:
                 updateRepo:
                   title: update_repo
                   description: |-
@@ -3839,6 +4379,7 @@ components:
         - ERROR_CODE_UNSPECIFIED
         - ERROR_CODE_NOT_FOUND
         - ERROR_CODE_FAILED_PRECONDITION
+        - ERROR_CODE_INVALID_ARGUMENT
       description: |-
         ErrorCode is a typed channel for failure-mode signalling so bosso can
          map daemon errors back to ConnectRPC codes without parsing the human-
@@ -3935,6 +4476,66 @@ components:
           title: url
       title: CreateBillingPortalSessionResponse
       additionalProperties: false
+    bossanova.v1.CreateBroadcastSubscriptionRequest:
+      type: object
+      properties:
+        ownerSessionId:
+          type: string
+          title: owner_session_id
+          description: Session whose outcome fires this subscription. Required.
+        triggerEvent:
+          type: string
+          title: trigger_event
+          description: |-
+            Outcome class to wait for: "completed", "errored", or "settled". An
+             unrecognised value is rejected rather than registering a rule that could
+             never match.
+        selector:
+          title: selector
+          description: |-
+            Audience to broadcast to when it fires. Required, and must carry at least
+             one clause: an empty selector is rejected rather than treated as
+             "everyone".
+          $ref: '#/components/schemas/bossanova.v1.BroadcastSelector'
+        originChatId:
+          type: string
+          title: origin_chat_id
+          description: |-
+            Chat registering this subscription (ClaudeChat.agent_session_id). Empty =
+             operator-issued from the CLI or MCP with no originating chat. It records
+             who asked; address it by naming it in the selector, which is honoured
+             (there is no self-exclusion on a fired subscription).
+        message:
+          type: string
+          title: message
+          description: |-
+            Prompt body to broadcast when the subscription fires. SECRET and
+             WRITE-ONLY: it travels inbound here and is never echoed back — see the
+             omission rule on BroadcastSubscription.
+        expiresIn:
+          type:
+            - string
+            - "null"
+          title: expires_in
+          description: |-
+            Optional expiry as a duration string ("24h", "30m"). Empty = the server
+             default of 24h, maximum 30 days — the same convention SendBroadcastRequest
+             .expires_in and CreateGithubCallbackRequest.expires_at apply, sharing one
+             parser so the registration surfaces cannot drift. It bounds how long the
+             RULE stands, not the delivery window of the broadcast it fires.
+      title: CreateBroadcastSubscriptionRequest
+      additionalProperties: false
+    bossanova.v1.CreateBroadcastSubscriptionResponse:
+      type: object
+      properties:
+        subscription:
+          title: subscription
+          $ref: '#/components/schemas/bossanova.v1.BroadcastSubscription'
+      title: CreateBroadcastSubscriptionResponse
+      additionalProperties: false
+      description: |-
+        CreateBroadcastSubscriptionResponse reports ids, state and trigger only —
+         never the registered body. See the omission rule on BroadcastSubscription.
     bossanova.v1.CreateCheckoutSessionRequest:
       type: object
       properties:
@@ -3992,6 +4593,11 @@ components:
             - boolean
             - "null"
           title: should_run_setup_command
+        isZeroOutput:
+          type:
+            - boolean
+            - "null"
+          title: is_zero_output
       title: CreateCronJobCommand
       additionalProperties: false
       description: |-
@@ -4041,6 +4647,17 @@ components:
             run the repo setup script before the agent. optional so the server can
              default it to true when a client omits it (a plain bool can't tell
              "omitted" from "explicit false").
+        isZeroOutput:
+          type:
+            - boolean
+            - "null"
+          title: is_zero_output
+          description: |-
+            mark the job "zero output": intended to fire with no worktree/branch/PR,
+             because the run is expected to produce no repo changes. optional purely for
+             symmetry with UpdateCronJobRequest; omitted and explicit false mean the same
+             thing (default false). Persisted and echoed back only — nothing honours it
+             yet, so a job with this set still fires exactly as it does today (BOS-543).
       title: CreateCronJobRequest
       additionalProperties: false
     bossanova.v1.CreateCronJobResponse:
@@ -4127,7 +4744,7 @@ components:
         trigger:
           type: string
           title: trigger
-          description: merged | closed | checks_passed | checks_failed
+          description: merged | closed | checks_passed | checks_failed | ready_for_review | checks_passed_ready
         message:
           type: string
           title: message
@@ -4149,6 +4766,78 @@ components:
           title: github_callback
           $ref: '#/components/schemas/bossanova.v1.GithubCallback'
       title: CreateGithubCallbackResponse
+      additionalProperties: false
+    bossanova.v1.CreateNoteCommand:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+        sessionId:
+          type:
+            - string
+            - "null"
+          title: session_id
+        chatId:
+          type:
+            - string
+            - "null"
+          title: chat_id
+        body:
+          type: string
+          title: body
+        tags:
+          type: array
+          items:
+            type: string
+          title: tags
+      title: CreateNoteCommand
+      additionalProperties: false
+      description: |-
+        CreateNoteCommand records a note against a repo. Mirrors daemon.proto's
+         CreateNoteRequest. Replies with CommandResult carrying a CreateNoteResponse
+         (create_note = 36).
+    bossanova.v1.CreateNoteRequest:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+          description: Owning repository. Required.
+        sessionId:
+          type:
+            - string
+            - "null"
+          title: session_id
+          description: 'Optional provenance: which run recorded this note.'
+        chatId:
+          type:
+            - string
+            - "null"
+          title: chat_id
+        body:
+          type: string
+          title: body
+          description: |-
+            Stored verbatim. Must be non-empty after trimming and within the 64 KiB
+             cap, else InvalidArgument.
+        tags:
+          type: array
+          items:
+            type: string
+          title: tags
+          description: |-
+            Trimmed, lowercased and de-duplicated before storage. At most 32 tags of
+             at most 64 bytes each (measured after trimming), else InvalidArgument.
+      title: CreateNoteRequest
+      additionalProperties: false
+    bossanova.v1.CreateNoteResponse:
+      type: object
+      properties:
+        note:
+          title: note
+          $ref: '#/components/schemas/bossanova.v1.Note'
+      title: CreateNoteResponse
       additionalProperties: false
     bossanova.v1.CreatePROpts:
       type: object
@@ -4526,6 +5215,14 @@ components:
           type: boolean
           title: should_run_setup_command
           description: run the repo setup script before the agent; default true
+        isZeroOutput:
+          type: boolean
+          title: is_zero_output
+          description: |-
+            Marks this job as "zero output": it is intended to fire with no worktree,
+             branch, or pull request, because the run is expected to produce no repo
+             changes. Persisted and echoed back only — nothing honours it yet, so a job
+             with this set still fires exactly as it does today (BOS-543).
       title: CronJob
       additionalProperties: false
       description: |-
@@ -4634,6 +5331,19 @@ components:
           title: create_chunk
           required:
             - createChunk
+        - type: object
+          properties:
+            egressBroadcast:
+              title: egress_broadcast
+              description: |-
+                A broadcast this daemon produced whose audience reaches beyond itself,
+                 published for bosso to route to the other daemons. Outbound only: the
+                 inbound half is the separate BroadcastCommand type, so an inbound
+                 broadcast can never be re-published here and loop. See BroadcastEgress.
+              $ref: '#/components/schemas/bossanova.v1.BroadcastEgress'
+          title: egress_broadcast
+          required:
+            - egressBroadcast
         - type: object
           properties:
             result:
@@ -4800,6 +5510,30 @@ components:
         DaemonSnapshot is the required first event on every stream connect. It
          carries slim metadata only (IDs, state, timestamps, preview strings) — full
          chat transcripts are fetched on demand via AttachSessionCommand (decision #5).
+    bossanova.v1.DeleteBroadcastRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: DeleteBroadcastRequest
+      additionalProperties: false
+    bossanova.v1.DeleteBroadcastResponse:
+      type: object
+      title: DeleteBroadcastResponse
+      additionalProperties: false
+    bossanova.v1.DeleteBroadcastSubscriptionRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: DeleteBroadcastSubscriptionRequest
+      additionalProperties: false
+    bossanova.v1.DeleteBroadcastSubscriptionResponse:
+      type: object
+      title: DeleteBroadcastSubscriptionResponse
+      additionalProperties: false
     bossanova.v1.DeleteChatCommand:
       type: object
       properties:
@@ -4886,6 +5620,30 @@ components:
     bossanova.v1.DeleteGithubCallbackResponse:
       type: object
       title: DeleteGithubCallbackResponse
+      additionalProperties: false
+    bossanova.v1.DeleteNoteCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: DeleteNoteCommand
+      additionalProperties: false
+      description: |-
+        DeleteNoteCommand deletes a note by id. Mirrors daemon.proto's
+         DeleteNoteRequest. Replies with CommandResult{ok:true} and no payload — Ok-only,
+         exactly like DeleteGithubCallbackCommand.
+    bossanova.v1.DeleteNoteRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: DeleteNoteRequest
+      additionalProperties: false
+    bossanova.v1.DeleteNoteResponse:
+      type: object
+      title: DeleteNoteResponse
       additionalProperties: false
     bossanova.v1.DeleteWebhookConfigRequest:
       type: object
@@ -5385,6 +6143,33 @@ components:
           title: install_url
       title: GetGitHubAppInstallURLResponse
       additionalProperties: false
+    bossanova.v1.GetNoteCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: GetNoteCommand
+      additionalProperties: false
+      description: |-
+        GetNoteCommand reads one note by id. Mirrors daemon.proto's GetNoteRequest.
+         Replies with CommandResult carrying a GetNoteResponse (get_note = 37).
+    bossanova.v1.GetNoteRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: GetNoteRequest
+      additionalProperties: false
+    bossanova.v1.GetNoteResponse:
+      type: object
+      properties:
+        note:
+          title: note
+          $ref: '#/components/schemas/bossanova.v1.Note'
+      title: GetNoteResponse
+      additionalProperties: false
     bossanova.v1.GetPRStatusRequest:
       type: object
       properties:
@@ -5478,6 +6263,24 @@ components:
         id:
           type: string
           title: id
+        includeLocalHttpEndpoints:
+          type: boolean
+          title: include_local_http_endpoints
+          description: |-
+            include_local_http_endpoints opts this read into machine-local endpoint
+             hydration. Only a local Boss TUI read (Home / ChatPicker) sets it; the
+             orchestrator/RemoteClient never does. When false the response's
+             Session.http_endpoints is always empty.
+        clientNetworkNamespace:
+          type: string
+          title: client_network_namespace
+          description: |-
+            client_network_namespace carries the caller's own network-namespace
+             identity (Linux: the /proc/self/ns/net symlink target). The daemon
+             hydrates endpoints only when this exactly equals its own namespace
+             identity, so a Unix socket mounted across namespaces cannot reach a
+             different service's localhost. Empty on macOS and whenever the client
+             cannot read it, which makes the daemon fail closed on Linux.
       title: GetSessionRequest
       additionalProperties: false
     bossanova.v1.GetSessionResponse:
@@ -5611,7 +6414,7 @@ components:
         trigger:
           type: string
           title: trigger
-          description: merged | closed | checks_passed | checks_failed
+          description: merged | closed | checks_passed | checks_failed | ready_for_review | checks_passed_ready
         state:
           type: string
           title: state
@@ -5752,6 +6555,28 @@ components:
           title: sessions
       title: HostServiceListSessionsResponse
       additionalProperties: false
+    bossanova.v1.HttpEndpoint:
+      type: object
+      properties:
+        port:
+          type: integer
+          title: port
+        url:
+          type: string
+          title: url
+      title: HttpEndpoint
+      additionalProperties: false
+      description: |-
+        HttpEndpoint is a single verified, machine-local web endpoint for a session:
+         the listening TCP port and the reachable loopback URL (scheme + loopback host
+         + port), e.g. "http://127.0.0.1:8080" or "https://[::1]:8443".
+
+         These values are local, dynamic, and NEVER persisted. They exist only on the
+         wire, and only for an opted-in local TUI read that clears the daemon's
+         locality gates (see GetSessionRequest / ListSessionsRequest). Default reads,
+         CLI/MCP callers, mutation responses, daemon snapshots, reverse-stream
+         commands, and every bosso/orchestrator surface leave Session.http_endpoints
+         empty.
     bossanova.v1.InstalledPlugin:
       type: object
       properties:
@@ -6023,6 +6848,107 @@ components:
           title: issues
       title: ListAvailableIssuesResponse
       additionalProperties: false
+    bossanova.v1.ListBroadcastSubscriptionsRequest:
+      type: object
+      properties:
+        ownerSessionId:
+          type:
+            - string
+            - "null"
+          title: owner_session_id
+        originChatId:
+          type:
+            - string
+            - "null"
+          title: origin_chat_id
+          description: |-
+            Matches the chat a subscription was registered from. Operator-issued
+             subscriptions carry no origin and so never match this filter.
+        state:
+          type:
+            - string
+            - "null"
+          title: state
+        triggerEvent:
+          type:
+            - string
+            - "null"
+          title: trigger_event
+          description: |-
+            Matches the registered trigger EXACTLY: it does not apply the
+             settled-matches-both rule, which is evaluator policy rather than a query
+             one. Filtering for "completed" therefore never returns a "settled" row.
+        limit:
+          type: integer
+          title: limit
+          format: int32
+          description: Caps the rows returned; zero or negative means unlimited.
+      title: ListBroadcastSubscriptionsRequest
+      additionalProperties: false
+      description: |-
+        ListBroadcastSubscriptionsRequest mirrors
+         db.ListBroadcastSubscriptionsFilter: every filter is optional, an unset
+         field is not constrained, and set fields intersect.
+    bossanova.v1.ListBroadcastSubscriptionsResponse:
+      type: object
+      properties:
+        subscriptions:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.BroadcastSubscription'
+          title: subscriptions
+      title: ListBroadcastSubscriptionsResponse
+      additionalProperties: false
+      description: |-
+        ListBroadcastSubscriptionsResponse carries ids and states only, never the
+         registered body — see the omission rule on BroadcastSubscription.
+    bossanova.v1.ListBroadcastsRequest:
+      type: object
+      properties:
+        state:
+          type:
+            - string
+            - "null"
+          title: state
+        originChatId:
+          type:
+            - string
+            - "null"
+          title: origin_chat_id
+          description: |-
+            Matches the chat a broadcast was issued from. Operator-issued broadcasts
+             carry no origin and so never match this filter.
+        targetChatId:
+          type:
+            - string
+            - "null"
+          title: target_chat_id
+          description: |-
+            Reaches through the delivery rows: "which broadcasts were addressed to
+             this chat", which is how a chat asks what it has been sent.
+        limit:
+          type: integer
+          title: limit
+          format: int32
+          description: Caps the rows returned; zero or negative means unlimited.
+      title: ListBroadcastsRequest
+      additionalProperties: false
+      description: |-
+        ListBroadcastsRequest mirrors db.ListBroadcastsFilter: every filter is
+         optional, an unset field is not constrained, and set fields intersect.
+    bossanova.v1.ListBroadcastsResponse:
+      type: object
+      properties:
+        broadcasts:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.Broadcast'
+          title: broadcasts
+      title: ListBroadcastsResponse
+      additionalProperties: false
+      description: |-
+        ListBroadcastsResponse carries ids and states only, never the message body —
+         same secret-body rule as SendBroadcastResponse.
     bossanova.v1.ListChatsCommand:
       type: object
       properties:
@@ -6275,6 +7201,113 @@ components:
           description: relative to work_dir
       title: ListIgnoredDirtyFilesResponse
       additionalProperties: false
+    bossanova.v1.ListNotesCommand:
+      type: object
+      properties:
+        repoId:
+          type:
+            - string
+            - "null"
+          title: repo_id
+        sessionId:
+          type:
+            - string
+            - "null"
+          title: session_id
+        chatId:
+          type:
+            - string
+            - "null"
+          title: chat_id
+        tags:
+          type: array
+          items:
+            type: string
+          title: tags
+        search:
+          type:
+            - string
+            - "null"
+          title: search
+        limit:
+          type: integer
+          title: limit
+          format: int32
+      title: ListNotesCommand
+      additionalProperties: false
+      description: |-
+        ListNotesCommand lists notes. Mirrors daemon.proto's ListNotesRequest: every
+         filter is optional, unset fields are unconstrained, set fields intersect, and
+         a set-but-blank provenance filter matches nothing. Tags match ANY (OR), and a
+         tag list that normalises away entirely fails closed. Replies with
+         CommandResult carrying a ListNotesResponse (list_notes = 38).
+    bossanova.v1.ListNotesRequest:
+      type: object
+      properties:
+        repoId:
+          type:
+            - string
+            - "null"
+          title: repo_id
+          description: |-
+            Applied whenever the field is SET, including when set to the empty string:
+             the value is trimmed and compared with `=`, and blank provenance is stored
+             as NULL, so a set-but-blank filter matches NOTHING. Leave the field unset
+             to leave that column unconstrained; there is no way to ask for "notes with
+             no session".
+        sessionId:
+          type:
+            - string
+            - "null"
+          title: session_id
+        chatId:
+          type:
+            - string
+            - "null"
+          title: chat_id
+        tags:
+          type: array
+          items:
+            type: string
+          title: tags
+          description: |-
+            Matches notes carrying ANY of these tags (OR), not all of them. Entries are
+             trimmed and lowercased to match the normalisation applied on write, and
+             blank entries are dropped. A non-empty list whose entries ALL normalise
+             away matches nothing rather than everything — the filter fails closed, so a
+             stray empty tag can never widen the result set.
+        search:
+          type:
+            - string
+            - "null"
+          title: search
+          description: |-
+            Substring match on the body. SQL wildcards are matched literally, not as
+             patterns. Case-insensitivity is ASCII-only — the daemon folds case with
+             SQLite's LOWER(), which does not fold non-ASCII without ICU. A term that is
+             blank after trimming means NO search, unlike a blank tag entry, which
+             matches nothing: an empty substring already matches every body, so applying
+             and dropping the filter give the same rows.
+        limit:
+          type: integer
+          title: limit
+          format: int32
+          description: Caps the rows returned; zero or negative means unlimited.
+      title: ListNotesRequest
+      additionalProperties: false
+      description: |-
+        ListNotesRequest mirrors db.ListNotesFilter: every filter is optional, an
+         unset field is not constrained, and set fields intersect (AND).
+    bossanova.v1.ListNotesResponse:
+      type: object
+      properties:
+        notes:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.Note'
+          title: notes
+      title: ListNotesResponse
+      additionalProperties: false
     bossanova.v1.ListOpenPRsRequest:
       type: object
       properties:
@@ -6385,6 +7418,22 @@ components:
           type: boolean
           title: include_archived
           description: Include archived sessions.
+        includeLocalHttpEndpoints:
+          type: boolean
+          title: include_local_http_endpoints
+          description: |-
+            include_local_http_endpoints opts this read into machine-local endpoint
+             hydration. Only a local Boss TUI read (Home / ChatPicker) sets it; the
+             orchestrator/RemoteClient never does. When false every returned
+             Session.http_endpoints is empty.
+        clientNetworkNamespace:
+          type: string
+          title: client_network_namespace
+          description: |-
+            client_network_namespace carries the caller's own network-namespace
+             identity (Linux: the /proc/self/ns/net symlink target). See
+             GetSessionRequest.client_network_namespace — the daemon fails closed on
+             Linux unless this exactly equals its own namespace identity.
       title: ListSessionsRequest
       additionalProperties: false
     bossanova.v1.ListSessionsResponse:
@@ -6590,6 +7639,12 @@ components:
         session:
           title: session
           $ref: '#/components/schemas/bossanova.v1.Session'
+        detail:
+          type: string
+          title: detail
+          description: |-
+            Human-readable note about how the merge was performed, e.g. a merge
+             strategy substitution. Empty when the merge ran exactly as configured.
       title: MergeSessionResponse
       additionalProperties: false
     bossanova.v1.MergeStrategy:
@@ -6612,6 +7667,72 @@ components:
       title: NoOpAction
       additionalProperties: false
       description: NoOpAction indicates the job ran but no action is needed.
+    bossanova.v1.Note:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        repoId:
+          type: string
+          title: repo_id
+        sessionId:
+          type: string
+          title: session_id
+          description: |-
+            Session that recorded the note; empty = not session-scoped. The referenced
+             session may no longer exist.
+        chatId:
+          type: string
+          title: chat_id
+          description: Chat that recorded the note; empty = not chat-scoped.
+        body:
+          type: string
+          title: body
+        tags:
+          type: array
+          items:
+            type: string
+          title: tags
+          description: |-
+            Normalised (trimmed, lowercased, de-duplicated) and returned in ascending
+             order. Normalisation is lossy: display casing is not preserved.
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        updatedAt:
+          title: updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: Note
+      additionalProperties: false
+      description: |-
+        Note is durable free-text recorded against a repository, so a later sweep can
+         harvest what past runs learned. It mirrors the daemon's domain model;
+         timestamps use google.protobuf.Timestamp.
+
+         session_id and chat_id are PROVENANCE, not ownership: they record which run
+         wrote the note and are deliberately not foreign keys, so archiving or
+         deleting that session leaves the note — and this provenance — intact.
+
+         Unlike GithubCallback.message and Broadcast.message, a note's body is NOT a
+         secret: it exists to be read back, so it is populated on every read surface.
+    bossanova.v1.NoteTagSet:
+      type: object
+      properties:
+        tags:
+          type: array
+          items:
+            type: string
+          title: tags
+      title: NoteTagSet
+      additionalProperties: false
+      description: |-
+        NoteTagSet wraps a repeated tag field so UpdateNoteRequest can distinguish
+         "leave the tags alone" (field unset) from "clear every tag" (field set to an
+         empty list). A bare proto3 `repeated` cannot express that difference — an
+         empty list and an absent list are the same wire bytes — and the difference is
+         load-bearing here, because an update that means to change only the body must
+         not silently wipe the note's tags.
     bossanova.v1.NotifyAuthChangeRequest:
       type: object
       properties:
@@ -6688,6 +7809,20 @@ components:
                 - attach
             - type: object
               properties:
+                broadcast:
+                  title: broadcast
+                  description: |-
+                    bosso → daemon: this daemon is a target for a broadcast that originated
+                     elsewhere; resolve it locally and deliver it. Delivery is asynchronous, so
+                     this replies CommandResult{ok:true} with no payload once accepted. The
+                     handler NEVER publishes a BroadcastEgress in response — see
+                     BroadcastCommand.
+                  $ref: '#/components/schemas/bossanova.v1.BroadcastCommand'
+              title: broadcast
+              required:
+                - broadcast
+            - type: object
+              properties:
                 closeSession:
                   title: close_session
                   description: 'bosso → daemon: close (abandon) a session. Replies CommandResult{session}.'
@@ -6713,6 +7848,15 @@ components:
               title: create_github_callback
               required:
                 - createGithubCallback
+            - type: object
+              properties:
+                createNote:
+                  title: create_note
+                  description: 'bosso → daemon: record a note against a repo. Replies CommandResult{create_note}.'
+                  $ref: '#/components/schemas/bossanova.v1.CreateNoteCommand'
+              title: create_note
+              required:
+                - createNote
             - type: object
               properties:
                 createSession:
@@ -6754,6 +7898,15 @@ components:
                 - deleteGithubCallback
             - type: object
               properties:
+                deleteNote:
+                  title: delete_note
+                  description: 'bosso → daemon: delete a note by id. Replies CommandResult{Ok} with no payload.'
+                  $ref: '#/components/schemas/bossanova.v1.DeleteNoteCommand'
+              title: delete_note
+              required:
+                - deleteNote
+            - type: object
+              properties:
                 emptyTrash:
                   title: empty_trash
                   description: 'bosso → daemon: permanently delete archived sessions. Replies CommandResult{empty_trash}.'
@@ -6779,6 +7932,15 @@ components:
               title: get_cron_job
               required:
                 - getCronJob
+            - type: object
+              properties:
+                getNote:
+                  title: get_note
+                  description: 'bosso → daemon: read one note by id. Replies CommandResult{get_note}.'
+                  $ref: '#/components/schemas/bossanova.v1.GetNoteCommand'
+              title: get_note
+              required:
+                - getNote
             - type: object
               properties:
                 getRepo:
@@ -6864,6 +8026,15 @@ components:
               title: list_github_callbacks
               required:
                 - listGithubCallbacks
+            - type: object
+              properties:
+                listNotes:
+                  title: list_notes
+                  description: 'bosso → daemon: list notes. Replies CommandResult{list_notes}.'
+                  $ref: '#/components/schemas/bossanova.v1.ListNotesCommand'
+              title: list_notes
+              required:
+                - listNotes
             - type: object
               properties:
                 listPlugins:
@@ -7120,6 +8291,15 @@ components:
               title: update_cron_job
               required:
                 - updateCronJob
+            - type: object
+              properties:
+                updateNote:
+                  title: update_note
+                  description: 'bosso → daemon: edit a note by id. Replies CommandResult{update_note}.'
+                  $ref: '#/components/schemas/bossanova.v1.UpdateNoteCommand'
+              title: update_note
+              required:
+                - updateNote
             - type: object
               properties:
                 updateRepo:
@@ -7622,6 +8802,11 @@ components:
             - boolean
             - "null"
           title: should_run_setup_command
+        isZeroOutput:
+          type:
+            - boolean
+            - "null"
+          title: is_zero_output
       title: ProxyCreateCronJobRequest
       additionalProperties: false
       description: |-
@@ -7680,6 +8865,69 @@ components:
           title: github_callback
           $ref: '#/components/schemas/bossanova.v1.GithubCallback'
       title: ProxyCreateGithubCallbackResponse
+      additionalProperties: false
+    bossanova.v1.ProxyCreateNoteRequest:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+          description: Owning repository (daemon-local repos.id). Required — also the routing key.
+        sessionId:
+          type:
+            - string
+            - "null"
+          title: session_id
+          description: 'Optional provenance: which run recorded this note.'
+        chatId:
+          type:
+            - string
+            - "null"
+          title: chat_id
+        body:
+          type: string
+          title: body
+          description: |-
+            Stored verbatim. Must be non-empty after trimming and within the 64 KiB
+             cap, else InvalidArgument.
+        tags:
+          type: array
+          items:
+            type: string
+          title: tags
+          description: |-
+            Trimmed, lowercased and de-duplicated before storage. At most 32 tags of
+             at most 64 bytes each (measured after trimming), else InvalidArgument.
+      title: ProxyCreateNoteRequest
+      additionalProperties: false
+      description: |-
+        Notes proxy messages (BOS-552). The requests mirror the daemon.proto field
+         sets; repo_id is the routing key, because a note is repo-scoped. Get/Update/
+         Delete carry repo_id purely so bosso can route (the daemon addresses the note
+         by id alone) — exactly the precedent set by ProxyDeleteGithubCallbackRequest,
+         which carries target_chat_id for the same reason. Responses reuse the Note
+         message from daemon.proto rather than redeclaring it.
+
+         repo_id IS THE DAEMON-LOCAL repos.id — the value ResolveContext returns in
+         Repo.id, and the same namespace CreateCronJobCommand.repo_id already uses. It
+         is NOT the canonical origin URL that DaemonSnapshot.repo_ids advertises for
+         webhook routing. Bosso resolves the owning daemon by asking the caller's Ready
+         daemons for their repo lists, so passing an origin URL here resolves to
+         NotFound.
+
+         On Get/Update/Delete, repo_id ROUTES BUT DOES NOT SCOPE: once bosso has picked
+         the daemon, the daemon addresses the note by id alone and does NOT verify that
+         the note belongs to repo_id. Naming repo A while passing an id that lives in
+         repo B on the same daemon therefore acts on B's note. This is not a privilege
+         boundary — every candidate daemon is already the caller's own — but a client
+         must not present repo_id to a user as a safety check.
+    bossanova.v1.ProxyCreateNoteResponse:
+      type: object
+      properties:
+        note:
+          title: note
+          $ref: '#/components/schemas/bossanova.v1.Note'
+      title: ProxyCreateNoteResponse
       additionalProperties: false
     bossanova.v1.ProxyCreateSessionRequest:
       type: object
@@ -7874,6 +9122,22 @@ components:
       type: object
       title: ProxyDeleteGithubCallbackResponse
       additionalProperties: false
+    bossanova.v1.ProxyDeleteNoteRequest:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+          description: routing key only; the daemon resolves by id alone
+        id:
+          type: string
+          title: id
+      title: ProxyDeleteNoteRequest
+      additionalProperties: false
+    bossanova.v1.ProxyDeleteNoteResponse:
+      type: object
+      title: ProxyDeleteNoteResponse
+      additionalProperties: false
     bossanova.v1.ProxyEmptyTrashRequest:
       type: object
       properties:
@@ -7959,6 +9223,26 @@ components:
           title: cron_job
           $ref: '#/components/schemas/bossanova.v1.CronJob'
       title: ProxyGetCronJobResponse
+      additionalProperties: false
+    bossanova.v1.ProxyGetNoteRequest:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+          description: routing key only; the daemon resolves by id alone
+        id:
+          type: string
+          title: id
+      title: ProxyGetNoteRequest
+      additionalProperties: false
+    bossanova.v1.ProxyGetNoteResponse:
+      type: object
+      properties:
+        note:
+          title: note
+          $ref: '#/components/schemas/bossanova.v1.Note'
+      title: ProxyGetNoteResponse
       additionalProperties: false
     bossanova.v1.ProxyGetRepoRequest:
       type: object
@@ -8204,6 +9488,82 @@ components:
             $ref: '#/components/schemas/bossanova.v1.GithubCallback'
           title: github_callbacks
       title: ProxyListGithubCallbacksResponse
+      additionalProperties: false
+    bossanova.v1.ProxyListNotesRequest:
+      type: object
+      properties:
+        repoId:
+          type:
+            - string
+            - "null"
+          title: repo_id
+          description: |-
+            Applied whenever the field is SET, including when set to the empty string:
+             the value is trimmed and compared with `=`, and blank provenance is stored
+             as NULL, so a set-but-blank filter matches NOTHING. Leave the field unset
+             to leave that column unconstrained; there is no way to ask for "notes with
+             no session".
+        sessionId:
+          type:
+            - string
+            - "null"
+          title: session_id
+        chatId:
+          type:
+            - string
+            - "null"
+          title: chat_id
+        tags:
+          type: array
+          items:
+            type: string
+          title: tags
+          description: |-
+            Matches notes carrying ANY of these tags (OR), not all of them. Entries are
+             trimmed and lowercased to match the normalisation applied on write, and
+             blank entries are dropped. A non-empty list whose entries ALL normalise
+             away matches nothing rather than everything — the filter fails closed, so a
+             stray empty tag can never widen the result set.
+        search:
+          type:
+            - string
+            - "null"
+          title: search
+          description: |-
+            Substring match on the body. SQL wildcards are matched literally, not as
+             patterns. Case-insensitivity is ASCII-only. A term that is blank after
+             trimming means NO search, unlike a blank tag entry, which matches nothing.
+        limit:
+          type: integer
+          title: limit
+          format: int32
+          description: |-
+            Caps the rows returned; zero or negative means unlimited. On an unfiltered
+             fan-out it is passed through to every daemon AND re-applied to the merged
+             list, so a caller asking for N always receives at most N — never N per
+             daemon. Because each daemon returns its own oldest `limit` notes, the merged
+             list truncated after the (created_at, id) sort is exactly the oldest `limit`
+             notes ACROSS THE DAEMONS THAT ANSWERED: the fan-out is fail-soft, so a
+             daemon that is offline or times out contributes nothing and is skipped
+             rather than failing the call.
+      title: ProxyListNotesRequest
+      additionalProperties: false
+      description: |-
+        ProxyListNotesRequest mirrors ListNotesRequest: every filter is optional, an
+         unset field is not constrained, and set fields intersect (AND). repo_id
+         doubles as the routing key — set to a non-blank repos.id, the call goes to the
+         owning daemon; unset, bosso fans out across the caller's Ready daemons. Set to
+         the empty string it matches nothing (see below), and bosso answers with an
+         empty list without asking any daemon.
+    bossanova.v1.ProxyListNotesResponse:
+      type: object
+      properties:
+        notes:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.Note'
+          title: notes
+      title: ProxyListNotesResponse
       additionalProperties: false
     bossanova.v1.ProxyListPluginsRequest:
       type: object
@@ -8851,6 +10211,11 @@ components:
             - boolean
             - "null"
           title: should_run_setup_command
+        isZeroOutput:
+          type:
+            - boolean
+            - "null"
+          title: is_zero_output
       title: ProxyUpdateCronJobRequest
       additionalProperties: false
       description: |-
@@ -8863,6 +10228,40 @@ components:
           title: job
           $ref: '#/components/schemas/bossanova.v1.CronJob'
       title: ProxyUpdateCronJobResponse
+      additionalProperties: false
+    bossanova.v1.ProxyUpdateNoteRequest:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+          description: routing key only; the daemon resolves by id alone
+        id:
+          type: string
+          title: id
+        body:
+          type:
+            - string
+            - "null"
+          title: body
+          description: Unset = leave the body alone.
+        tags:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.NoteTagSet'
+            - type: "null"
+          title: tags
+          description: |-
+            Unset = leave the tags alone. SET = REPLACE the entire tag set with this
+             list, including replacing it with nothing when the list is empty.
+      title: ProxyUpdateNoteRequest
+      additionalProperties: false
+    bossanova.v1.ProxyUpdateNoteResponse:
+      type: object
+      properties:
+        note:
+          title: note
+          $ref: '#/components/schemas/bossanova.v1.Note'
+      title: ProxyUpdateNoteResponse
       additionalProperties: false
     bossanova.v1.ProxyUpdateRepoRequest:
       type: object
@@ -9619,6 +11018,13 @@ components:
           description: |-
             Whether the daemon automatically deletes a session's git branch once its
              session is archived. Honored by the session dispatcher. Defaults on.
+        shouldKeepBranchesCurrent:
+          type: boolean
+          title: should_keep_branches_current
+          description: |-
+            Whether the daemon proactively rebases this repo's other in-flight session
+             branches onto the base branch whenever a merge advances it, force-pushing
+             with lease. Opt-in (every rebase re-runs CI), so it defaults OFF.
         linearApiKey:
           type: string
           title: linear_api_key
@@ -10226,6 +11632,86 @@ components:
       description: |-
         SecretUpdate carries a secret mutation. value is required iff action == SET
          and is ignored otherwise. Never populated on read/aggregate responses.
+    bossanova.v1.SendBroadcastRequest:
+      type: object
+      properties:
+        selector:
+          title: selector
+          description: |-
+            Audience to resolve. Required, and must carry at least one clause: an
+             empty selector is rejected rather than treated as "everyone".
+          $ref: '#/components/schemas/bossanova.v1.BroadcastSelector'
+        originChatId:
+          type: string
+          title: origin_chat_id
+          description: |-
+            Chat this broadcast is issued from (ClaudeChat.agent_session_id). Empty =
+             operator-issued from the CLI or MCP with no originating chat, which is why
+             this is a plain string rather than a required id.
+        message:
+          type: string
+          title: message
+          description: |-
+            Prompt body delivered to each target. SECRET on the way back out — see the
+             rule on Broadcast.message; it travels inbound here and is never echoed.
+        expiresIn:
+          type:
+            - string
+            - "null"
+          title: expires_in
+          description: |-
+            Optional expiry as a duration string ("24h", "30m"). Empty = the server
+             default of 24h, maximum 30 days — the same expiry convention
+             CreateGithubCallbackRequest.expires_at applies, expressed as a duration
+             because a broadcast's lifetime is "how long to keep retrying", not a
+             wall-clock deadline the caller computed.
+        includeOrigin:
+          type: boolean
+          title: include_origin
+          description: |-
+            When false (the default), the origin chat is excluded from its own
+             audience even if the selector matches it. A coordinator broadcasting "I
+             finished" to its own repo must not wake itself and loop. Set true only for
+             the deliberate self-include case.
+        crossDaemon:
+          type: boolean
+          title: cross_daemon
+          description: |-
+            Whether the caller is asking for this broadcast to leave the daemon it was
+             issued on.
+
+             When false (the default, which preserves today's behaviour exactly) the
+             broadcast is confined to this daemon's own chats — no egress event is
+             published — UNLESS the selector itself names `daemon:` ids other than this
+             daemon's, which is already an explicit request to reach elsewhere.
+
+             When true the caller is explicitly asking bosso to route it to other
+             daemons, so an egress event is published even when the selector names no
+             foreign daemon: a selector like "repo:foo" is ambiguous about reach, and
+             this flag is how the caller says "yes, other daemons too".
+      title: SendBroadcastRequest
+      additionalProperties: false
+    bossanova.v1.SendBroadcastResponse:
+      type: object
+      properties:
+        broadcast:
+          title: broadcast
+          $ref: '#/components/schemas/bossanova.v1.Broadcast'
+        deliveries:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.BroadcastDelivery'
+          title: deliveries
+          description: |-
+            One record per resolved target, in the frozen audience order. Empty when
+             the selector resolved to nobody, which is a successful send.
+      title: SendBroadcastResponse
+      additionalProperties: false
+      description: |-
+        SendBroadcastResponse reports ids and states only, NEVER the message body:
+         Broadcast.message is populated solely on the delivering owner's path and is
+         cleared on every read surface, including this one — see the secret-body rule
+         on Broadcast.message.
     bossanova.v1.SendChatMessageCommand:
       type: object
       properties:
@@ -10628,6 +12114,41 @@ components:
              when the daemon has an archive running — not inferred from steady-state
              MERGED + repo_should_archive_sessions_after_merge, which stays true forever for a
              merged→archived→resurrected session (BOS-425). Mirrors display_merging (60).
+        httpEndpoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.HttpEndpoint'
+          title: http_endpoints
+          description: |-
+            Verified machine-local HTTP/HTTPS endpoints for this session, hydrated
+             server-side ONLY for an opted-in local TUI read that passes the daemon's
+             locality gates (request opt-in + endpoint tracker available + a matching
+             network namespace on Linux / a local Unix-socket request on macOS).
+
+             Transport-only: local, dynamic, and NEVER persisted. SessionToProto leaves
+             this empty; it is filled at the very end of GetSession/ListSessions and
+             nowhere else. Default local reads, CLI/MCP callers, mutation responses,
+             daemon snapshots, reverse-stream commands, RemoteClient/orchestrator
+             requests, bosso, the MCP gateway, and DB models all carry an empty list.
+        repairStalledAt:
+          oneOf:
+            - $ref: '#/components/schemas/google.protobuf.Timestamp'
+            - type: "null"
+          title: repair_stalled_at
+          description: |-
+            When this session's repair lease was released because the repair round
+             STALLED — no repair-head-SHA advance and no repair-chat output for
+             RepairStallWindow (8m). Absent for a healthy or never-repaired session, and
+             for a lease reclaimed by the 45m crash TTL (that is a dead holder, not a
+             stalled round).
+
+             Transport-only: hydrated server-side from the in-memory RepairLeaseManager's
+             stall record and NEVER persisted, exactly like repair_active (53). The
+             record is cleared when a new repair round acquires the lease or when
+             progress is observed, so a set value means "the last repair round died on
+             its feet" — the signal an unattended driver reads to stop waiting on a
+             frozen lease. While it is set, last_repair_blocked_reason (51) carries the
+             stall reason.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -12011,6 +13532,11 @@ components:
             - boolean
             - "null"
           title: should_run_setup_command
+        isZeroOutput:
+          type:
+            - boolean
+            - "null"
+          title: is_zero_output
       title: UpdateCronJobCommand
       additionalProperties: false
       description: |-
@@ -12071,6 +13597,15 @@ components:
             - "null"
           title: should_run_setup_command
           description: run the repo setup script before the agent
+        isZeroOutput:
+          type:
+            - boolean
+            - "null"
+          title: is_zero_output
+          description: |-
+            mark the job "zero output": intended to fire with no worktree/branch/PR,
+             because the run is expected to produce no repo changes. Persisted and echoed
+             back only — nothing honours it yet (BOS-543).
       title: UpdateCronJobRequest
       additionalProperties: false
     bossanova.v1.UpdateCronJobResponse:
@@ -12080,6 +13615,59 @@ components:
           title: cron_job
           $ref: '#/components/schemas/bossanova.v1.CronJob'
       title: UpdateCronJobResponse
+      additionalProperties: false
+    bossanova.v1.UpdateNoteCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        body:
+          type:
+            - string
+            - "null"
+          title: body
+        tags:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.NoteTagSet'
+            - type: "null"
+          title: tags
+      title: UpdateNoteCommand
+      additionalProperties: false
+      description: |-
+        UpdateNoteCommand edits a note by id. Mirrors daemon.proto's
+         UpdateNoteRequest: an unset field is left alone, and a SET tags field replaces
+         the entire tag set (including clearing it when empty). Replies with
+         CommandResult carrying an UpdateNoteResponse (update_note = 39).
+    bossanova.v1.UpdateNoteRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        body:
+          type:
+            - string
+            - "null"
+          title: body
+          description: Unset = leave the body alone.
+        tags:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.NoteTagSet'
+            - type: "null"
+          title: tags
+          description: |-
+            Unset = leave the tags alone. SET = REPLACE the entire tag set with this
+             list, including replacing it with nothing when the list is empty.
+      title: UpdateNoteRequest
+      additionalProperties: false
+    bossanova.v1.UpdateNoteResponse:
+      type: object
+      properties:
+        note:
+          title: note
+          $ref: '#/components/schemas/bossanova.v1.Note'
+      title: UpdateNoteResponse
       additionalProperties: false
     bossanova.v1.UpdateRepoCommand:
       type: object
@@ -12222,6 +13810,11 @@ components:
             - boolean
             - "null"
           title: can_auto_delete_branches
+        shouldKeepBranchesCurrent:
+          type:
+            - boolean
+            - "null"
+          title: should_keep_branches_current
       title: UpdateRepoRequest
       additionalProperties: false
     bossanova.v1.UpdateRepoResponse:

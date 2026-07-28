@@ -227,3 +227,150 @@ func TestApplyOverlayRequiredFields(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyOverlaySessionHTTPPorts pins the BOS-474 overlay field: httpPorts
+// becomes one loopback HttpEndpoint per port, in the order given.
+func TestApplyOverlaySessionHTTPPorts(t *testing.T) {
+	o, err := ParseOverlay([]byte(`{"sessions":[{"id":"s1","title":"t","httpPorts":[3000,5173]}]}`))
+	if err != nil {
+		t.Fatalf("ParseOverlay: %v", err)
+	}
+	target := newFakeTarget()
+	if err := ApplyOverlay(target, o); err != nil {
+		t.Fatalf("ApplyOverlay: %v", err)
+	}
+	eps := target.sessions[0].GetHttpEndpoints()
+	if len(eps) != 2 {
+		t.Fatalf("http endpoints = %d, want 2: %+v", len(eps), eps)
+	}
+	for i, want := range []struct {
+		port uint32
+		url  string
+	}{{3000, "http://127.0.0.1:3000"}, {5173, "http://127.0.0.1:5173"}} {
+		if eps[i].GetPort() != want.port || eps[i].GetUrl() != want.url {
+			t.Errorf("endpoint %d = {%d, %q}, want {%d, %q}", i, eps[i].GetPort(), eps[i].GetUrl(), want.port, want.url)
+		}
+	}
+}
+
+// TestApplyOverlaySessionHTTPPortsRejectsOutOfRange keeps a bad port from
+// silently wrapping into a nonsense uint32.
+func TestApplyOverlaySessionHTTPPortsRejectsOutOfRange(t *testing.T) {
+	for _, bad := range []string{"0", "-1", "65536"} {
+		o, err := ParseOverlay([]byte(`{"sessions":[{"id":"s1","title":"t","httpPorts":[` + bad + `]}]}`))
+		if err != nil {
+			t.Fatalf("ParseOverlay(%s): %v", bad, err)
+		}
+		if err := ApplyOverlay(newFakeTarget(), o); err == nil {
+			t.Errorf("ApplyOverlay with httpPorts [%s]: want an error, got nil", bad)
+		}
+	}
+}
+
+// TestApplyOverlaySessionRotationEvents pins the BOS-506 overlay field: a
+// rotationEvents entry becomes one pb.RotationEvent on the owning session,
+// carrying the session's own id so the row is self-consistent.
+func TestApplyOverlaySessionRotationEvents(t *testing.T) {
+	o, err := ParseOverlay([]byte(`{"sessions":[{"id":"s1","title":"t","rotationEvents":[{"id":"rot-1","outcome":"UNSPECIFIED","detail":"pane recovered before rotation"}]}]}`))
+	if err != nil {
+		t.Fatalf("ParseOverlay: %v", err)
+	}
+	target := newFakeTarget()
+	if err := ApplyOverlay(target, o); err != nil {
+		t.Fatalf("ApplyOverlay: %v", err)
+	}
+	evs := target.sessions[0].GetRotationEvents()
+	if len(evs) != 1 {
+		t.Fatalf("rotation events = %d, want 1: %+v", len(evs), evs)
+	}
+	ev := evs[0]
+	if ev.GetId() != "rot-1" {
+		t.Errorf("id = %q, want %q", ev.GetId(), "rot-1")
+	}
+	if ev.GetSessionId() != "s1" {
+		t.Errorf("sessionId = %q, want the owning session %q", ev.GetSessionId(), "s1")
+	}
+	if ev.GetOutcome() != pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED {
+		t.Errorf("outcome = %v, want UNSPECIFIED", ev.GetOutcome())
+	}
+	if ev.GetDetail() != "pane recovered before rotation" {
+		t.Errorf("detail = %q, want the seeded detail", ev.GetDetail())
+	}
+	// Absent createdOffsetMins pins to fixedNow exactly.
+	if got, want := ev.GetCreatedAt().AsTime(), ts(0).AsTime(); !got.Equal(want) {
+		t.Errorf("CreatedAt = %v, want %v (fixedNow)", got, want)
+	}
+}
+
+// TestApplyOverlaySessionRotationEventRotated covers the display-relevant
+// ROTATED shape (views.rotationEventLabel renders "<from> switched to <to>"),
+// accepting both the short and full enum names.
+func TestApplyOverlaySessionRotationEventRotated(t *testing.T) {
+	for _, name := range []string{"ROTATED", "ROTATION_OUTCOME_ROTATED"} {
+		o, err := ParseOverlay([]byte(`{"sessions":[{"id":"s1","title":"t","rotationEvents":[{"id":"rot-1","outcome":"` + name + `","fromAccount":"personal","toAccount":"work"}]}]}`))
+		if err != nil {
+			t.Fatalf("ParseOverlay(%s): %v", name, err)
+		}
+		target := newFakeTarget()
+		if err := ApplyOverlay(target, o); err != nil {
+			t.Fatalf("ApplyOverlay(%s): %v", name, err)
+		}
+		ev := target.sessions[0].GetRotationEvents()[0]
+		if ev.GetOutcome() != pb.RotationOutcome_ROTATION_OUTCOME_ROTATED {
+			t.Errorf("outcome %s -> %v, want ROTATED", name, ev.GetOutcome())
+		}
+		if ev.GetFromAccount() != "personal" || ev.GetToAccount() != "work" {
+			t.Errorf("accounts = (%q, %q), want (personal, work)", ev.GetFromAccount(), ev.GetToAccount())
+		}
+	}
+}
+
+// TestApplyOverlayBadRotationOutcomeListsValid keeps a typo'd outcome loud and
+// self-explanatory, mirroring the state-name contract.
+func TestApplyOverlayBadRotationOutcomeListsValid(t *testing.T) {
+	o, err := ParseOverlay([]byte(`{"sessions":[{"id":"s1","title":"t","rotationEvents":[{"id":"rot-1","outcome":"NOPE"}]}]}`))
+	if err != nil {
+		t.Fatalf("ParseOverlay: %v", err)
+	}
+	err = ApplyOverlay(newFakeTarget(), o)
+	if err == nil {
+		t.Fatal("expected error for bad rotation outcome")
+	}
+	if !strings.Contains(err.Error(), "NOPE") {
+		t.Errorf("error should name the bad value: %v", err)
+	}
+	if !strings.Contains(err.Error(), "ROTATED") {
+		t.Errorf("error should list valid outcomes: %v", err)
+	}
+}
+
+// TestApplyOverlayRotationEventRequiresID pins the required-field contract.
+func TestApplyOverlayRotationEventRequiresID(t *testing.T) {
+	o, err := ParseOverlay([]byte(`{"sessions":[{"id":"s1","title":"t","rotationEvents":[{"detail":"no id"}]}]}`))
+	if err != nil {
+		t.Fatalf("ParseOverlay: %v", err)
+	}
+	if err := ApplyOverlay(newFakeTarget(), o); err == nil {
+		t.Fatal("expected required-field error for a rotation event with no id")
+	}
+}
+
+// TestApplyOverlayRotationEventCreatedOffset pins the offset-only clock: no
+// absolute timestamps in overlays.
+func TestApplyOverlayRotationEventCreatedOffset(t *testing.T) {
+	o, err := ParseOverlay([]byte(`{"sessions":[{"id":"s1","title":"t","rotationEvents":[{"id":"rot-1","createdOffsetMins":-7}]}]}`))
+	if err != nil {
+		t.Fatalf("ParseOverlay: %v", err)
+	}
+	target := newFakeTarget()
+	if err := ApplyOverlay(target, o); err != nil {
+		t.Fatalf("ApplyOverlay: %v", err)
+	}
+	got := target.sessions[0].GetRotationEvents()[0].GetCreatedAt().AsTime()
+	if want := ts(-7 * time.Minute).AsTime(); !got.Equal(want) {
+		t.Fatalf("CreatedAt = %v, want %v (fixedNow -7m)", got, want)
+	}
+	if got.Equal(ts(0).AsTime()) {
+		t.Fatal("createdOffsetMins:-7 must differ from the zero-offset case")
+	}
+}

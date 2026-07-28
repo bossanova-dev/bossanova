@@ -11,7 +11,6 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
@@ -36,9 +35,19 @@ func errMessage(err error) string {
 
 // createSessionFromStream is a test helper that opens a CreateSession stream,
 // drains it, and returns the final Session.
-func createSessionFromStream(t *testing.T, client bossanovav1connect.DaemonServiceClient, ctx context.Context, req *pb.CreateSessionRequest) *pb.Session {
+// createSessionFromStream drives CreateSession to completion and returns the
+// session as it looks once its draft PR has landed.
+//
+// The SessionCreated frame itself now describes a session whose draft PR is
+// still being created in the background (BOS-540), so this helper joins that
+// step and RE-READS the row before returning: E2E tests here assert on the
+// settled session and on the git/VCS mock call logs, both of which the
+// background step is still writing when the stream closes. The pre-PR window a
+// client actually observes is asserted deliberately in
+// server.TestStreamCreateSession_SessionCreatedBeforeDraftPRExists.
+func createSessionFromStream(t *testing.T, h *testharness.Harness, ctx context.Context, req *pb.CreateSessionRequest) *pb.Session {
 	t.Helper()
-	stream, err := client.CreateSession(ctx, connect.NewRequest(req))
+	stream, err := h.Client.CreateSession(ctx, connect.NewRequest(req))
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -57,7 +66,15 @@ func createSessionFromStream(t *testing.T, client bossanovav1connect.DaemonServi
 	if sess == nil {
 		t.Fatal("expected SessionCreated in stream")
 	}
-	return sess
+
+	h.AwaitDraftPRs(t)
+	settled, err := h.Client.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: sess.Id}))
+	if err != nil {
+		// A test may legitimately delete the session as part of the create path
+		// (attach/dedup); fall back to the streamed frame rather than failing.
+		return sess
+	}
+	return settled.Msg.GetSession()
 }
 
 // TestE2E_FullSessionLifecycle exercises the complete session lifecycle:
@@ -94,7 +111,7 @@ func TestE2E_FullSessionLifecycle(t *testing.T) {
 	// --- Step 2: Create a session ---
 	// Detach=true: this E2E test drives the full headless run lifecycle and
 	// asserts an AgentSessionId is set; interactive sessions stay idle.
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoID,
 		Title:  "Add user avatars",
 		Plan:   "Add avatar upload to the user profile page",
@@ -244,7 +261,7 @@ func TestE2E_ChecksFailedFixLoop(t *testing.T) {
 		t.Fatalf("register repo: %v", err)
 	}
 
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Fix flaky test",
 		Plan:   "Fix the flaky integration test",
@@ -312,7 +329,7 @@ func TestE2E_ArchiveAndResurrect(t *testing.T) {
 		t.Fatalf("register repo: %v", err)
 	}
 
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Refactor auth",
 		Plan:   "Refactor the auth module",
@@ -384,11 +401,11 @@ func TestE2E_ListSessionsWithStateFilter(t *testing.T) {
 	repoID := repoResp.Msg.Repo.Id
 
 	// Create two sessions.
-	createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoID, Title: "Session A", Plan: "Plan A",
 	})
 
-	sessB := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sessB := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoID, Title: "Session B", Plan: "Plan B",
 	})
 
@@ -452,7 +469,7 @@ func TestE2E_PRMergedTransition(t *testing.T) {
 		t.Fatalf("update repo: %v", err)
 	}
 
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Add feature X",
 		Plan:   "Implement feature X",
@@ -529,7 +546,7 @@ func TestE2E_ConflictDetectedTransition(t *testing.T) {
 		t.Fatalf("update repo: %v", err)
 	}
 
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Add feature with conflict",
 		Plan:   "Add a feature that will conflict",
@@ -602,7 +619,7 @@ func TestE2E_ConflictAfterPassingChecks(t *testing.T) {
 		t.Fatalf("register repo: %v", err)
 	}
 
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Conflict after green",
 		Plan:   "Pass checks, then watch main move under us",
@@ -685,7 +702,7 @@ func TestE2E_ReviewSubmittedTransition(t *testing.T) {
 		t.Fatalf("update repo: %v", err)
 	}
 
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Add feature for review",
 		Plan:   "Implement and request review",
@@ -767,7 +784,7 @@ func TestE2E_PRClosedTransition(t *testing.T) {
 	}
 	repoID := repoResp.Msg.Repo.Id
 
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoID,
 		Title:  "Abandoned feature",
 		Plan:   "Implement, then close PR without merging",
@@ -833,7 +850,7 @@ func TestE2E_ChatTrackingLifecycle(t *testing.T) {
 	// Detach=true: the session runs on the headless start path, which
 	// auto-creates an agent_chats row; this test asserts that row joins the
 	// two explicitly recorded chats for three total.
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Chat tracking test",
 		Plan:   "Test chat tracking",
@@ -1658,7 +1675,7 @@ func TestE2E_CreateSession_IsQuickChat(t *testing.T) {
 	}
 	repoID := repoResp.Msg.Repo.Id
 
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId:      repoID,
 		Title:       "Ask a quick question",
 		Plan:        "",
@@ -1722,7 +1739,7 @@ func TestE2E_CreateSession_DeferPR(t *testing.T) {
 			t.Fatalf("register repo: %v", err)
 		}
 
-		sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+		sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 			RepoId: repoResp.Msg.Repo.Id,
 			Title:  "Read-only planning sweep",
 			Plan:   "Investigate; do not change code",
@@ -1761,7 +1778,7 @@ func TestE2E_CreateSession_DeferPR(t *testing.T) {
 			t.Fatalf("register repo: %v", err)
 		}
 
-		createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+		createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 			RepoId: repoResp.Msg.Repo.Id,
 			Title:  "Normal implementation",
 			Plan:   "Add a feature",
@@ -1807,7 +1824,7 @@ func TestE2E_CreateSession_ForceBranch(t *testing.T) {
 			t.Fatalf("register repo: %v", err)
 		}
 
-		sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+		sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 			RepoId:      repoResp.Msg.Repo.Id,
 			Title:       "Retry with force",
 			Plan:        "Retry plan",
@@ -1928,7 +1945,7 @@ func TestE2E_CreateSession_AttachExistingPR(t *testing.T) {
 	})
 
 	prNumber := int32(42)
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId:   repoID,
 		Title:    "Continue work on existing PR",
 		PrNumber: &prNumber,
@@ -2001,13 +2018,19 @@ func TestE2E_CreateSession_LinearBranchDuplicateReturnsExistingSession(t *testin
 		BranchName: &branch,
 	}
 
-	first := createSessionFromStream(t, h.Client, ctx, req)
-	second := createSessionFromStream(t, h.Client, ctx, req)
+	first := createSessionFromStream(t, h, ctx, req)
+	second := createSessionFromStream(t, h, ctx, req)
 	if second.Id != first.Id {
 		t.Fatalf("second CreateSession returned session %q, want existing %q", second.Id, first.Id)
 	}
-	if got := len(h.Git.CreateFromExistingBranchCalls); got != 1 {
-		t.Fatalf("CreateFromExistingBranch calls = %d, want 1", got)
+	if got := len(h.Git.CreateCalls); got != 1 {
+		t.Fatalf("Create calls = %d, want 1", got)
+	}
+	if got := h.Git.CreateCalls[0].BranchName; got != branch {
+		t.Fatalf("Create branch = %q, want %q", got, branch)
+	}
+	if got := len(h.Git.CreateFromExistingBranchCalls); got != 0 {
+		t.Fatalf("CreateFromExistingBranch calls = %d, want 0", got)
 	}
 	active, err := h.Sessions.ListActive(ctx, repoID)
 	if err != nil {
@@ -2049,7 +2072,7 @@ func TestE2E_CreateSession_LinearBranchDuplicateWhileStartingWaitsForDurableSess
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
-	h.Git.CreateFromExistingBranchFunc = func(ctx context.Context, opts gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {
+	h.Git.CreateFunc = func(ctx context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
 		once.Do(func() { close(started) })
 		select {
 		case <-release:
@@ -2135,8 +2158,14 @@ func TestE2E_CreateSession_LinearBranchDuplicateWhileStartingWaitsForDurableSess
 	if second.session.Id != first.session.Id {
 		t.Fatalf("second session ID = %q, want existing session %q", second.session.Id, first.session.Id)
 	}
-	if got := len(h.Git.CreateFromExistingBranchCalls); got != 1 {
-		t.Fatalf("CreateFromExistingBranch calls = %d, want 1", got)
+	if got := len(h.Git.CreateCalls); got != 1 {
+		t.Fatalf("Create calls = %d, want 1", got)
+	}
+	if got := h.Git.CreateCalls[0].BranchName; got != branch {
+		t.Fatalf("Create branch = %q, want %q", got, branch)
+	}
+	if got := len(h.Git.CreateFromExistingBranchCalls); got != 0 {
+		t.Fatalf("CreateFromExistingBranch calls = %d, want 0", got)
 	}
 }
 
@@ -2170,7 +2199,7 @@ func TestE2E_EmptyTrash_WithAgeFilter(t *testing.T) {
 		branch string
 	}
 	mkSession := func(title string) seeded {
-		sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+		sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 			RepoId: repoID,
 			Title:  title,
 			Plan:   "Plan for " + title,
@@ -2291,6 +2320,14 @@ func TestE2E_PluginSession_DeferPRDefaultsFalse(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("plugin-path create session: %v", err)
+	}
+	// The draft PR is opened by a background step (BOS-540); join it, then
+	// re-read the row — the session CreateSession returned is a snapshot from
+	// before the PR landed.
+	h.AwaitDraftPRs(t)
+	sess, err = h.Sessions.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("re-read plugin-path session: %v", err)
 	}
 
 	// Up-front draft PR must have fired — if it didn't, DeferPR leaked from

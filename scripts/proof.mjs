@@ -682,6 +682,15 @@ export async function runScenarioCommand(args, overrides = {}) {
   if (proofDeps.seedEnv == null && scenario.fixture?.env != null) {
     proofDeps.seedEnv = scenario.fixture.env
   }
+  // BOS-571: the scenario's optional `terminal` selects the pty size the bridge
+  // allocates (--width/--height). This is the ONLY place the loaded scenario and
+  // the bridge factory meet on the `scenario run` path — runReplayLoop receives an
+  // already-constructed bridge, so the size has to be decided here. Left unset when
+  // the scenario declares none, so bridgeSpawnArgs emits its byte-identical default
+  // argv and the bridge keeps its 140x36 pty.
+  if (proofDeps.terminal == null && scenario.terminal != null) {
+    proofDeps.terminal = scenario.terminal
+  }
   if (overrides.bridge) {
     proofDeps.bridge = overrides.bridge
   } else if (!proofDeps.bridge) {
@@ -1028,7 +1037,21 @@ function postDeferredComment({ prNumber, dryRun, commentBody, tmpPrefix }) {
 }
 
 export function uploadBundle({ localDir, publicPrefix, manifest, bucket }) {
-  for (const { file, relative, contentType } of proofUploadFiles({ manifest, localDir })) {
+  const uploads = proofUploadFiles({ manifest, localDir })
+  // Fail on a dangling manifest reference BEFORE shelling out. Wrangler reports a
+  // missing --file as a bare `exited 1` through runCommand (stdio is inherited, so
+  // its ENOENT is not in the thrown Error), which made every such bug read as an
+  // unexplained upload failure. Listing the missing paths up front keeps the run
+  // fail-loud — a manifest naming absent media is a real pipeline defect, never
+  // something to skip past — while naming the defect precisely. It also stops a
+  // half-uploaded bundle: nothing is written when the list is already inconsistent.
+  const missing = uploads.filter(({ file }) => !fs.existsSync(file)).map(({ relative }) => relative)
+  if (missing.length > 0) {
+    throw new Error(
+      `proof manifest references ${missing.length} artifact(s) missing from ${localDir}: ${missing.join(', ')}`,
+    )
+  }
+  for (const { file, relative, contentType } of uploads) {
     const key = `${publicPrefix}/${relative}`
     runCommand(
       r2UploadCommand({

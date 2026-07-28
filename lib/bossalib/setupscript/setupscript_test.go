@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -158,7 +159,7 @@ func TestExecute_ScriptPathTraversal_FailsBeforeExec(t *testing.T) {
 	// refuses to build the command for a traversal attempt — defense
 	// in depth in case Validate is skipped somewhere.
 	s := Spec{Type: TypeScript, Path: "../escaped.sh"}
-	err := s.Execute(context.Background(), ExecuteOpts{
+	_, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
 		Timeout:      5 * time.Second,
 	})
@@ -177,7 +178,7 @@ func TestExecute_Command_PassesArgvLiterally(t *testing.T) {
 	// Shell metachars in argv stay literal: echo never sees them as
 	// shell syntax, just as a second argument.
 	s := Spec{Type: TypeCommand, Argv: []string{"echo", "; rm -rf /"}}
-	if err := s.Execute(context.Background(), ExecuteOpts{
+	if _, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
 		Output:       &buf,
 		Timeout:      5 * time.Second,
@@ -205,7 +206,7 @@ func TestExecute_LoginShell_WrapsButPreservesEnvAndCwd(t *testing.T) {
 	// lands in wt), and the REPO_DIR/WORKTREE_DIR env. Output goes to a file, not
 	// stdout, so login-shell rc chatter can't corrupt the assertion.
 	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", `printf %s "$WORKTREE_DIR" > marker`}}
-	if err := s.Execute(context.Background(), ExecuteOpts{
+	if _, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
 		LoginShell:   bash,
 		Timeout:      30 * time.Second,
@@ -241,7 +242,7 @@ func TestExecute_LoginShell_InvokesSupportedWrapper(t *testing.T) {
 	}
 
 	s := Spec{Type: TypeCommand, Argv: []string{"true"}}
-	if err := s.Execute(context.Background(), ExecuteOpts{
+	if _, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
 		LoginShell:   bash,
 		Timeout:      10 * time.Second,
@@ -262,7 +263,7 @@ func TestExecute_LoginShell_UnsupportedFallsBackToDirectExec(t *testing.T) {
 	// An unsupported shell name must not be exec'd as a wrapper — Execute falls
 	// through to running the argv directly, so setup still works.
 	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", `printf ok > marker`}}
-	if err := s.Execute(context.Background(), ExecuteOpts{
+	if _, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
 		LoginShell:   "/usr/bin/definitely-not-a-shell",
 		Timeout:      10 * time.Second,
@@ -287,7 +288,7 @@ func TestExecute_Script_RunsFile(t *testing.T) {
 
 	var buf bytes.Buffer
 	s := Spec{Type: TypeScript, Path: "setup.sh"}
-	if err := s.Execute(context.Background(), ExecuteOpts{
+	if _, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
 		Output:       &buf,
 		Timeout:      5 * time.Second,
@@ -306,7 +307,7 @@ func TestExecute_Command_NonZeroExit_WrapsError(t *testing.T) {
 	wt := t.TempDir()
 
 	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", "exit 7"}}
-	err := s.Execute(context.Background(), ExecuteOpts{
+	_, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
 		Output:       &bytes.Buffer{},
 		Timeout:      5 * time.Second,
@@ -339,7 +340,7 @@ func TestExecute_NonZeroExit_ErrorIncludesOutputTail(t *testing.T) {
 
 	var buf bytes.Buffer
 	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", "echo boom-marker >&2; exit 2"}}
-	err := s.Execute(context.Background(), ExecuteOpts{
+	_, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
 		Output:       &buf,
 		Timeout:      5 * time.Second,
@@ -372,7 +373,7 @@ func TestExecute_Make_RequiresMakefile(t *testing.T) {
 	wt := t.TempDir()
 
 	s := Spec{Type: TypeMake, Target: "setup"}
-	err := s.Execute(context.Background(), ExecuteOpts{
+	_, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
 		Timeout:      5 * time.Second,
 	})
@@ -391,7 +392,7 @@ func TestExecute_Legacy_WritesSetupShAndRuns(t *testing.T) {
 	var buf bytes.Buffer
 	s := Spec{Type: TypeLegacy, LegacyScript: "echo legacy-ran"}
 
-	err := s.Execute(context.Background(), ExecuteOpts{
+	_, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
 		Output:       &buf,
 		Timeout:      5 * time.Second,
@@ -420,7 +421,7 @@ func TestExecute_Timeout_PreservesDeadline(t *testing.T) {
 
 	s := Spec{Type: TypeCommand, Argv: []string{"sleep", "5"}}
 	start := time.Now()
-	err := s.Execute(context.Background(), ExecuteOpts{
+	_, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
 		Timeout:      200 * time.Millisecond,
 	})
@@ -447,7 +448,7 @@ func TestExecute_ZeroTimeout_NoDeadline(t *testing.T) {
 
 	var buf bytes.Buffer
 	s := Spec{Type: TypeCommand, Argv: []string{"echo", "ran"}}
-	if err := s.Execute(context.Background(), ExecuteOpts{
+	if _, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
 		Output:       &buf,
 		Timeout:      0, // exact boundary: no additional deadline
@@ -475,6 +476,318 @@ func TestResolveInsideWorktree_AllowsSubdirs(t *testing.T) {
 	want := filepath.Join(wt, ".boss", "setup.sh")
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// TestExecute_LogOutput_WritesTailToBothSinks pins the dual-sink contract: when
+// a caller claims the live stream (the TUI create-session stream does), the
+// daemon log sink must still receive the script's output. Before LogOutput
+// existed, a streamed setup ran with no trace whatsoever in the daemon log.
+// Note the asymmetry the name reflects: Output gets the live stream, LogOutput
+// gets the bounded tail once the run ends (see TestExecute_LogOutput_BoundedByTail).
+func TestExecute_LogOutput_WritesTailToBothSinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX echo behavior assumed")
+	}
+	wt := t.TempDir()
+
+	var stream, logSink bytes.Buffer
+	s := Spec{Type: TypeCommand, Argv: []string{"echo", "both-sinks"}}
+	if _, err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Output:       &stream,
+		LogOutput:    &logSink,
+		Timeout:      5 * time.Second,
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(stream.String(), "both-sinks") {
+		t.Fatalf("Output missed the stream: %q", stream.String())
+	}
+	if !strings.Contains(logSink.String(), "both-sinks") {
+		t.Fatalf("LogOutput missed the stream: %q", logSink.String())
+	}
+}
+
+// TestExecute_LogOutput_ReceivesTailOnFailure covers the path that matters most
+// for diagnosis: a setup script that fails must leave its output in the log
+// sink too, not just in the returned error.
+func TestExecute_LogOutput_ReceivesTailOnFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell assumed")
+	}
+	wt := t.TempDir()
+
+	var logSink bytes.Buffer
+	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", "echo boom-marker >&2; exit 2"}}
+	if _, err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Output:       &bytes.Buffer{},
+		LogOutput:    &logSink,
+		Timeout:      5 * time.Second,
+	}); err == nil {
+		t.Fatal("expected error from non-zero exit, got nil")
+	}
+	if !strings.Contains(logSink.String(), "boom-marker") {
+		t.Fatalf("LogOutput should carry the failure tail, got %q", logSink.String())
+	}
+}
+
+// TestExecute_NilLogOutput_LeavesOutputUnchanged guards the no-regression
+// promise for the existing callers that never set LogOutput.
+func TestExecute_NilLogOutput_LeavesOutputUnchanged(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX echo behavior assumed")
+	}
+	wt := t.TempDir()
+
+	var stream bytes.Buffer
+	s := Spec{Type: TypeCommand, Argv: []string{"echo", "single-sink"}}
+	if _, err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Output:       &stream,
+		Timeout:      5 * time.Second,
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := strings.TrimSpace(stream.String()); got != "single-sink" {
+		t.Fatalf("Output = %q, want %q", got, "single-sink")
+	}
+}
+
+// TestExecute_NoSinks_FallsBackToStderr keeps the historical fallback honest:
+// with neither sink supplied the output still lands on os.Stderr (the daemon
+// log), which is how every non-stream caller gets its record today. os.Stderr
+// is swapped for a pipe so the assertion doesn't depend on polluting the test
+// binary's own stderr.
+//
+// os.Stderr is process-global: this test (and therefore this file) must never
+// call t.Parallel(), or the swap would capture — and corrupt — unrelated tests.
+// The script writes a few bytes, far under the pipe buffer, so the run cannot
+// block on an undrained reader.
+func TestExecute_NoSinks_FallsBackToStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX echo behavior assumed")
+	}
+	wt := t.TempDir()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() {
+		os.Stderr = orig
+		_ = w.Close() // no-op after the explicit close below; covers early t.Fatal
+	}()
+
+	s := Spec{Type: TypeCommand, Argv: []string{"echo", "stderr-fallback"}}
+	if _, err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Timeout:      5 * time.Second,
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	os.Stderr = orig
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	if !strings.Contains(string(got), "stderr-fallback") {
+		t.Fatalf("os.Stderr fallback lost the output, got %q", got)
+	}
+}
+
+// TestExecute_ReturnsMeasuredDuration proves the returned duration is a real
+// measurement of cmd.Run rather than a zero value. The floor is deliberately
+// below the sleep so scheduling jitter can't flake it, while still being far
+// above the few-millisecond cost of a command that never slept.
+func TestExecute_ReturnsMeasuredDuration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sleep binary assumed")
+	}
+	wt := t.TempDir()
+
+	s := Spec{Type: TypeCommand, Argv: []string{"sleep", "0.05"}}
+	got, err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Timeout:      30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got < 40*time.Millisecond {
+		t.Fatalf("duration = %v, want at least 40ms for a 50ms sleep", got)
+	}
+}
+
+// TestExecute_ReturnsDurationOnFailure pins the error path too: a script that
+// burned real time before failing must not report a zero duration, or the log
+// would attribute none of the create's cost to it.
+func TestExecute_ReturnsDurationOnFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell assumed")
+	}
+	wt := t.TempDir()
+
+	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", "sleep 0.05; exit 3"}}
+	got, err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Output:       &bytes.Buffer{},
+		Timeout:      30 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected error from non-zero exit, got nil")
+	}
+	if got < 40*time.Millisecond {
+		t.Fatalf("duration on failure = %v, want at least 40ms for a 50ms sleep", got)
+	}
+}
+
+// TestExecute_LogOutput_BoundedByTail is the log-volume guard: a chatty setup
+// script (a real `yarn install` emits thousands of lines) must not flood the
+// daemon log. The live stream stays unbounded; only the log sink is capped.
+func TestExecute_LogOutput_BoundedByTail(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell assumed")
+	}
+	wt := t.TempDir()
+
+	var stream, logSink bytes.Buffer
+	s := Spec{Type: TypeCommand, Argv: []string{
+		"sh", "-c", `i=0; while [ $i -lt 2000 ]; do echo "line-$i-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; i=$((i+1)); done`,
+	}}
+	if _, err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Output:       &stream,
+		LogOutput:    &logSink,
+		Timeout:      30 * time.Second,
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if stream.Len() <= setupOutputTailBytes {
+		t.Fatalf("test script emitted only %d bytes — not enough to exercise the bound", stream.Len())
+	}
+	if logSink.Len() > setupOutputTailBytes {
+		t.Fatalf("LogOutput = %d bytes, want at most %d", logSink.Len(), setupOutputTailBytes)
+	}
+}
+
+// errWriter fails every write, standing in for a log sink whose backing file
+// has gone away.
+type errWriter struct{}
+
+func (errWriter) Write([]byte) (int, error) { return 0, errors.New("sink is gone") }
+
+// TestExecute_LogOutput_WriteErrorDoesNotFailTheRun pins the deliberate
+// swallow: LogOutput is diagnostics, so a broken sink must never turn a working
+// setup script into a failed one.
+func TestExecute_LogOutput_WriteErrorDoesNotFailTheRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX echo behavior assumed")
+	}
+	wt := t.TempDir()
+
+	var stream bytes.Buffer
+	s := Spec{Type: TypeCommand, Argv: []string{"echo", "sink-error"}}
+	got, err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Output:       &stream,
+		LogOutput:    errWriter{},
+		Timeout:      5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v — a failing log sink must not fail the run", err)
+	}
+	if got <= 0 {
+		t.Fatalf("duration = %v, want a positive measurement", got)
+	}
+	if !strings.Contains(stream.String(), "sink-error") {
+		t.Fatalf("Output lost the stream: %q", stream.String())
+	}
+}
+
+// TestExecute_LogOutput_BlankOutputWritesNothing pins the blank-only guard: a
+// script whose entire output is whitespace must not produce an empty log event.
+func TestExecute_LogOutput_BlankOutputWritesNothing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell assumed")
+	}
+	wt := t.TempDir()
+
+	var logSink bytes.Buffer
+	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", `printf "  \n\n"`}}
+	if _, err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Output:       &bytes.Buffer{},
+		LogOutput:    &logSink,
+		Timeout:      5 * time.Second,
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if logSink.Len() != 0 {
+		t.Fatalf("LogOutput = %q, want no write at all for whitespace-only output", logSink.String())
+	}
+}
+
+// TestExecute_Timeout_ErrorWrapsDeadlineExceeded pins the timeout error's
+// contract: callers must be able to errors.Is it, and the tail that names the
+// step that hung must survive into the message.
+func TestExecute_Timeout_ErrorWrapsDeadlineExceeded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell assumed")
+	}
+	wt := t.TempDir()
+
+	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", "echo hang-marker; sleep 5"}}
+	_, err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Output:       &bytes.Buffer{},
+		Timeout:      200 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected a timeout error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error %v does not wrap context.DeadlineExceeded", err)
+	}
+	if !strings.Contains(err.Error(), "hang-marker") {
+		t.Fatalf("timeout error dropped the output tail: %v", err)
+	}
+}
+
+// TestExecute_CallerDeadline_ErrorNamesCaller pins the zero-timeout boundary
+// in the timeout diagnostic. When Execute adds no timeout of its own, the
+// message must attribute cancellation to the caller rather than claiming a
+// misleading zero-second configured limit.
+func TestExecute_CallerDeadline_ErrorNamesCaller(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sleep behavior assumed")
+	}
+	wt := t.TempDir()
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	s := Spec{Type: TypeCommand, Argv: []string{"sleep", "5"}}
+	_, err := s.Execute(ctx, ExecuteOpts{
+		WorktreePath: wt,
+		Timeout:      0,
+	})
+	if err == nil {
+		t.Fatal("expected caller deadline error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error %v does not wrap context.DeadlineExceeded", err)
+	}
+	if !strings.Contains(err.Error(), "timed out after the caller's deadline") {
+		t.Fatalf("error misidentified the timeout source: %v", err)
 	}
 }
 
@@ -506,7 +819,7 @@ func TestExecute_Legacy_ContentShebangRunsUnderSh(t *testing.T) {
 	var buf bytes.Buffer
 	s := Spec{Type: TypeLegacy, LegacyScript: "#!/nonexistent/interpreter\necho shebang-ignored"}
 
-	err := s.Execute(context.Background(), ExecuteOpts{
+	_, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
 		Output:       &buf,
 		Timeout:      5 * time.Second,

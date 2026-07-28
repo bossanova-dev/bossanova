@@ -14,6 +14,7 @@ go_library(
 go_test(
     name = "git_test",
     srcs = [
+        "keepcurrent_test.go",
         "worktree_bazel_test.go",
         "worktree_perms_test.go",
         "worktree_test.go",

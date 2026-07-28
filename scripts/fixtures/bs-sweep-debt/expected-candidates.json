@@ -64,5 +64,17 @@
     "area": "services/web",
     "file": "services/web/src/components/A.tsx",
     "evidence": "services/web/src/components/B.tsx"
+  },
+  {
+    "category": "complexity-hotspot",
+    "area": "services/boss",
+    "file": "services/boss/internal/views/home.go",
+    "evidence": "1378 lines (limit 800)"
+  },
+  {
+    "category": "complexity-hotspot",
+    "area": "services/boss",
+    "file": "services/boss/internal/views/app.go",
+    "evidence": "858 lines (limit 800)"
   }
 ]

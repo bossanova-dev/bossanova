@@ -19,7 +19,9 @@ metadata object.
 - `PLAN_PATH` — the exact file to write the plan to: `.linear-plans/<ISSUE-ID>-<slug>.md`
   (gitignored scratch; the slug is the issue id + hyphenated title). The orchestrator computed it
   with
-  `node -e "import('./scripts/plan-upload.mjs').then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))" <ISSUE-ID> "<title>"`.
+  `node -e "import('file://'+process.argv[3]+'/plan-slug.mjs').then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))" <ISSUE-ID> "<title>" "${BOSS_PLAN_TOOLBOX:?}"`
+  — the toolbox dir is passed in as an argument, re-derived in the calling block, so the command
+  never depends on an inherited export.
 - `RUN_SENTINEL`, `RUN_DIR`, `RUN_ID` — the run-file sentinel context you write your terminal
   decision to (see "Write the terminal sentinel" below).
 
@@ -49,7 +51,7 @@ proportionate; do not manufacture complexity.
 ### Epic decompose-and-auto-create (headless, triage = EPIC)
 
 No human confirms, so you auto-create the epic **behind the hard guards** (SKILL.md Phase 2.5 owns
-the guards + ordering discipline; the deterministic core is `scripts/plan-epic-lib.mjs`):
+the guards + ordering discipline; the deterministic core is `$BOSS_PLAN_TOOLBOX/plan-epic-lib.mjs`):
 
 **Precondition — the source ticket MUST be unplanned.** Parent-repurpose-last and idempotent resume
 (re-pick a stranded partial epic via the unplanned sweep — `list_issues` filtered to the
@@ -108,8 +110,10 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    removing no images), description-only so it does NOT move the ticket out of unplanned (parent-
    repurpose-last still holds). **Defense-in-depth — in this SAME first `save_issue`, strip any
    pre-existing `agent-friendly`/`needs-human` label and stale single-ticket `Implementation plan (…)`
-   link** from the parent. The unplanned-source precondition means a well-formed parent has none, but
-   `boss-build` selects exactly a planned ticket carrying `agent-friendly` + a plan link
+   link or attachment** from the parent. For `tracker-attachment`, require `deletePlanAttachment`
+   before this first epic write and delete stale matching attachment ids. The unplanned-source
+   precondition means a well-formed parent has none, but `boss-build` selects exactly a planned ticket
+   carrying `agent-friendly` + a plan artifact
    (`skills/boss-build/SKILL.md`), so stripping at the FIRST write guarantees even a mis-selected parent
    is non-`boss-build`-selectable from the very first tracker mutation onward rather than through the
    create→wire→expose window or after a crash (the step-7 flip's strip then only reaffirms it).
@@ -119,7 +123,7 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    recovers the spec from the marker **and** reconstructs the verbatim `## Original notes` + runs the
    image-parity gate against the still-present original source. **R2 publish bootstrap — repeat before
    EVERY publish in this subagent:** each Bash call here is a **fresh shell** that does NOT inherit the
-   orchestrator's Phase 0 exports, and `scripts/plan-upload.mjs` throws when `BOSS_PROOF_R2_BUCKET` is
+   orchestrator's Phase 0 exports, and the r2 publish path throws when `BOSS_PROOF_R2_BUCKET` is
    unset, so before **every** publish (each child plan **and** the parent overview) re-run the Phase 4
    R2 setup in that same shell:
    ```bash
@@ -137,10 +141,10 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
      [ -n "$BOSS_PROOF_PUBLIC_BASE_URL" ] && export BOSS_PROOF_PUBLIC_BASE_URL
    fi
    ```
-   Then publish + create
+   Then store + create
    children in
    `topoOrderChildren` order with the **full** `save_issue` contract SKILL.md Phase 2.5 step 4 spells
-   out — `parentId` = the original ticket, the **planned** state (the config-resolved
+   out — `parentId` = the original ticket, the **planned** state for `r2` (the config-resolved
    `trackerConfigFor(config).states.planned` value, **never** the literal role word `planned` — a repo
    may map that role to e.g. a differently-named workflow state, so passing `planned` verbatim can make
    the tracker reject the child or land it in the wrong state), and each child spec's validated `estimate`
@@ -148,15 +152,18 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    orchestrator's `list_issues parentId=<parentId>` reverify sees the exact parent/planned shape) —
    plus a `<!-- boss-plan-epic-child:<key> -->` resume marker embedded in each child's description and
    each child's content labels (**plus `agent-question` when that child's `openQuestions` is non-empty**
-   — the Phase 4 contract, unioned in) + child plan link, but **not** `agent-friendly`
+   — the Phase 4 contract, unioned in) + child plan attachment or link, but **not** `agent-friendly`
    yet — deferred exposure, so a non-`agent-friendly` child is not `boss-build`-selectable and cannot be
-   picked up before its blockers exist. **The child plan link's title MUST be exactly
+   picked up before its blockers exist. **The child plan attachment or link's title MUST be exactly
    `Implementation plan (<child id>)`** (matching the single-ticket convention): `boss-epic`'s
    `normalizeTicket` recognizes a plan only via a link/attachment whose title **starts with**
    `Implementation plan`, so a child linked under any other title is exposed `agent-friendly` yet
    silently skipped by `boss-epic` as "missing a plan". Wire the intra-epic DAG via `epicWiringPlan`
    (intra-epic edges must come **exclusively** from `epicWiringPlan`; the siblings were just created in
-   planned). **Defer the external conflict links until after the parent overview commits** (below): those
+   planned). For `tracker-attachment`, create an unplanned, unexposed child shell first, use its
+   returned id for `preparePlanAttachment` → helper PUT → `finalizePlanAttachment` with the exact
+   title, then move it to planned. Never expose a child or move its shell to planned before that
+   sequence succeeds. **Defer the external conflict links until after the parent overview commits** (below): those
    outward edges mutate **non-epic** backlog tickets, so writing them before the parent gate would
    strand existing backlog work behind a child that a deterministic parent-gate failure leaves
    unexposed. **Gate, then
@@ -165,14 +172,15 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    parent write, abort), so a **deterministic** parent-gate failure (e.g. a dropped image or a secret in
    the parent's `## Original notes`) never leaves a child `agent-friendly`/`boss-build`-buildable while
    the parent aborts unplanned. The parent overview embeds the original description verbatim; its
-   **secret gate** (redact any credentials/PII) and **image-parity gate** (`scripts/plan-image-guard.mjs`
+   **secret gate** (redact any credentials/PII) and **image-parity gate** (`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs`
    — every original image URL must survive verbatim in the parent overview's `## Original notes`; on a
-   drop, no parent write, abort) run here. Only after both parent gates pass, **publish + save the parent
-   overview onto the original ticket, re-appending the hidden `<!-- boss-plan-epic-spec:… -->` marker,
+   drop, no parent write, abort) run here. Only after both parent gates pass, store the parent overview
+   through the configured `planStorageFor(config).kind` branch + save it onto the original ticket,
+   re-appending the hidden `<!-- boss-plan-epic-spec:… -->` marker,
    but keep it unplanned** (a description-only save — defer the unplanned → planned repurpose flip to the
    very last write below). This is the durable **parent commit**, and it runs **before any child is
    exposed**: because publishing to R2 and saving to Linear are the failure-prone writes, doing them here
-   means a failing R2 publish or Linear parent save surfaces **before** a single child becomes
+   means a failing configured plan-store operation or Linear parent save surfaces **before** a single child becomes
    `agent-friendly`, never after — so an exposed child is always backed by an already-published parent,
    never one that later aborts unplanned. Re-appending the marker matters because this save replaces
    the description, so without re-appending, the earlier `epicSpecMarker` write is lost and idempotent
@@ -186,7 +194,7 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    its blocker relations: a child whose plan concluded agent-friendly gets `agent-friendly`; a child
    whose plan concluded it **needs a human** (`agentFriendly: false`) gets `needs-human` instead —
    **never** `agent-friendly`. `boss-epic` treats a child as eligible only when it is planned **and**
-   `agent-friendly` **and** has a plan link **and** is **not** `needs-human`, so honoring the per-child
+   `agent-friendly` **and** has a plan artifact **and** is **not** `needs-human`, so honoring the per-child
    decision here keeps a human-blocked child out of `boss-build`. This deferred exposure is the moment
    an agent-friendly child becomes `boss-build`-eligible, and `boss-build`'s "skip a
    candidate whose blocker relations exist" then keeps blocked children from starting out of DAG order
@@ -199,10 +207,11 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    — the overview + marker were already saved above. **Strip stale build metadata with this flip:** a
    headless sweep can pick an explicitly-named planned/in-progress ticket that was **already planned**,
    so the original may already carry `agent-friendly` **and** a single-ticket `Implementation plan (…)`
-   link; a bare state flip would leave the epic parent `boss-build`-selectable, so **remove any
+   link or attachment; a bare state flip would leave the epic parent `boss-build`-selectable, so **remove any
    pre-existing `agent-friendly`/`needs-human` label and drop any stale single-ticket
-   `Implementation plan (…)` link** from the parent with (or immediately before) the flip — its only
-   plan link is the epic overview from above. Because this
+   `Implementation plan (…)` link or attachment** from the parent with (or immediately before) the flip — its only
+   plan artifact is the epic overview from above. Preserve the recorded new parent-overview attachment
+   id while deleting stale matching attachments. Because this
    unplanned → planned flip is **last**, the parent stays
    unplanned until the epic is fully wired + exposed: a crash or malformed sentinel at any earlier
    point (partial child create, unsaved parent overview, or unexposed children) leaves the original
@@ -459,7 +468,7 @@ history to agents, so the rewritten description is the only surviving copy of th
 paraphrase destroys them permanently (this is the exact screenshot-dropping data-loss failure). You MAY _additionally_
 list the images under a `## Screenshots` bullet list in the plan body for the implementer's
 convenience, but the original URLs must stay intact inside `## Original notes`. A mechanical
-orchestrator-side guard (`scripts/plan-image-guard.mjs`) aborts the Linear write if any source image
+orchestrator-side guard (`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs`) aborts the Linear write if any source image
 is missing from your `descriptionSummary`, so a dropped image fails the whole run — do not let it.
 
 ## Step 8 — Write the terminal sentinel
@@ -496,9 +505,24 @@ failed and you fell back to a single-ticket plan, write the single-ticket sentin
 
 Before writing the sentinel, **self-verify image parity**: confirm every image URL in the ticket's
 original description (inline `![](…)`, `<img>`, `uploads.linear.app`/attachment URLs) survives
-verbatim in your `descriptionSummary`'s `## Original notes` (run `scripts/plan-image-guard.mjs`
-against the two, or eyeball the URL set). Fix any drop before writing the `ok` sentinel — the
-orchestrator's mechanical guard will otherwise abort the whole run.
+verbatim in your `descriptionSummary`'s `## Original notes`. Run the guard — re-deriving the toolbox
+dir in the same block, because this Bash call inherits nothing:
+
+```bash
+BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
+if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
+# Add --allow-empty-original ONLY when the ticket description handed to you was genuinely empty.
+node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original <orig.md> --rewritten <new.md>
+```
+
+The guard **refuses** an empty or whitespace-only original (exit 1, `cannot verify image parity`)
+rather than certify a comparison it cannot make. Your `description` input may legitimately be empty
+(see Inputs), and that is the one case where the refusal is a false alarm: pass
+`--allow-empty-original` then, and only then. If the description was **not** empty, an empty
+`<orig.md>` means your own extraction broke — fix the extraction, never silence it with the flag.
+
+Fix any drop before writing the `ok` sentinel — the orchestrator's mechanical guard will otherwise
+abort the whole run.
 
 ## Step 9 — Return only bounded metadata (never the plan content)
 

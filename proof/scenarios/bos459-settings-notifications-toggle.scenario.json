@@ -5,15 +5,16 @@
   "scenes": [
     {
       "id": "scene-01",
-      "title": "desktop notifications render enabled in Settings",
+      "title": "desktop notifications render enabled in General Settings",
       "steps": [
-        { "key": "s", "caption": "Open the Settings hub" },
+        { "key": "s", "caption": "Open the Settings menu" },
+        { "key": "g", "caption": "Open General Settings from the Settings menu" },
         {
           "waitFor": "[x] Enable desktop notifications for questions",
           "timeoutMs": 10000,
           "caption": "Desktop notifications are enabled by default"
         },
-        { "key": "down", "caption": "Move to poll interval" },
+        { "key": "down", "caption": "Move from worktree base directory to poll interval" },
         { "key": "down", "caption": "Move to automatic account rotation" },
         { "key": "down", "caption": "Select desktop notifications" },
         {

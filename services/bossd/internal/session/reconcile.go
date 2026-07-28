@@ -9,6 +9,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
@@ -149,7 +150,7 @@ func (r *PRAssociationResolver) Reconcile(ctx context.Context) (int64, error) {
 func (r *PRAssociationResolver) ReconcileSessions(ctx context.Context, sessions []*models.Session) (int64, error) {
 	var updated int64
 	for _, sess := range sessions {
-		if !sessionNeedsPRAssociation(sess) {
+		if !NeedsPRAssociation(sess) {
 			continue
 		}
 
@@ -187,7 +188,7 @@ func (r *PRAssociationResolver) ReconcileSessions(ctx context.Context, sessions 
 		}
 
 		// Rename the session to the PR title now that we've identified the PR.
-		// One-shot: once PRNumber is set, sessionNeedsPRAssociation returns false,
+		// One-shot: once PRNumber is set, NeedsPRAssociation returns false,
 		// so this never repeatedly clobbers a later user-edited title.
 		if title := strings.TrimSpace(match.pr.Title); title != "" {
 			updateParams.Title = &title
@@ -260,11 +261,15 @@ func (r *PRAssociationResolver) repairStaleCronTitles(ctx context.Context, sessi
 	return repaired
 }
 
-func sessionNeedsPRAssociation(sess *models.Session) bool {
+// NeedsPRAssociation reports whether a session is ready for PR discovery.
+// Startup-owned rows are excluded until worktree and agent initialization finish.
+func NeedsPRAssociation(sess *models.Session) bool {
 	return sess != nil &&
 		sess.ArchivedAt == nil &&
 		sess.PRNumber == nil &&
-		sess.BranchName != ""
+		sess.BranchName != "" &&
+		sess.State != machine.CreatingWorktree &&
+		sess.State != machine.StartingAgent
 }
 
 // findPRMatchForSession returns the first open PR whose head branch exactly
@@ -386,7 +391,11 @@ func clonePRSummaries(prs []vcs.PRSummary) []vcs.PRSummary {
 }
 
 func clearDraftPRBlockedReasonUpdate(reason *string, params *db.UpdateSessionParams) {
-	if !isDraftPRBlockedReason(reason) {
+	// Also clears the background step's in-flight marker (BOS-540): if the
+	// reconciler is attaching a PR to this session, the create the marker was
+	// advertising is moot — including the case where a daemon restart abandoned
+	// the background step and left the marker behind.
+	if !isClearableDraftPRReason(reason) {
 		return
 	}
 

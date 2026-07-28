@@ -15,6 +15,7 @@ import (
 	"github.com/recurser/boss/internal/views"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/githubcallback"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 )
 
@@ -251,14 +252,7 @@ func runCallbackList(cmd *cobra.Command) error {
 		expiries[i] = orDash(rfc3339OrEmpty(cb.GetExpiresAt()))
 	}
 
-	cols := []table.Column{
-		{Title: "ID", Width: views.MaxColWidth("ID", ids, 0)},
-		{Title: "PR", Width: views.MaxColWidth("PR", prs, 30)},
-		{Title: "TRIGGER", Width: views.MaxColWidth("TRIGGER", triggers, 16)},
-		{Title: "STATE", Width: views.MaxColWidth("STATE", states, 12)},
-		{Title: "CHAT", Width: views.MaxColWidth("CHAT", chats, 0)},
-		{Title: "EXPIRES", Width: views.MaxColWidth("EXPIRES", expiries, 20)},
-	}
+	cols := callbackListColumns(ids, prs, triggers, states, chats, expiries)
 	rows := make([]table.Row, len(callbacks))
 	for i := range callbacks {
 		rows[i] = table.Row{ids[i], prs[i], triggers[i], states[i], chats[i], expiries[i]}
@@ -273,6 +267,37 @@ func runCallbackList(cmd *cobra.Command) error {
 	)
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
 	return nil
+}
+
+// triggerColCap is the TRIGGER column cap for `boss callback list`. It is
+// derived from the trigger vocabulary instead of hard-coded because the table
+// silently clips a cell to its column width: a cap shorter than the longest
+// valid trigger renders `checks_passed_ready` as `checks_passed_re`. Deriving
+// it means growing the vocabulary can never reintroduce that truncation, while
+// still bounding the column against an unrecognised (arbitrarily long) trigger
+// echoed back by the daemon.
+func triggerColCap() int {
+	widest := len("TRIGGER")
+	for _, tr := range githubcallback.ValidTriggers() {
+		if n := len(string(tr)); n > widest {
+			widest = n
+		}
+	}
+	return widest
+}
+
+// callbackListColumns builds the `boss callback list` table columns. Extracted
+// so the widths — and the no-truncation guarantee for the TRIGGER column — are
+// testable without a daemon.
+func callbackListColumns(ids, prs, triggers, states, chats, expiries []string) []table.Column {
+	return []table.Column{
+		{Title: "ID", Width: views.MaxColWidth("ID", ids, 0)},
+		{Title: "PR", Width: views.MaxColWidth("PR", prs, 30)},
+		{Title: "TRIGGER", Width: views.MaxColWidth("TRIGGER", triggers, triggerColCap())},
+		{Title: "STATE", Width: views.MaxColWidth("STATE", states, 12)},
+		{Title: "CHAT", Width: views.MaxColWidth("CHAT", chats, 0)},
+		{Title: "EXPIRES", Width: views.MaxColWidth("EXPIRES", expiries, 20)},
+	}
 }
 
 func runCallbackRemove(cmd *cobra.Command, id string) error {
@@ -293,29 +318,36 @@ func runCallbackRemove(cmd *cobra.Command, id string) error {
 	return nil
 }
 
+// triggerLabels maps each known trigger constant to its short natural-language
+// clause for human output ("is merged", "passes checks", …). Keyed on the
+// models.GithubCallbackTrigger constants, never on a positional index or a
+// bare string literal, so the mapping stays correct regardless of the order
+// ValidTriggers() returns them in.
+var triggerLabels = map[models.GithubCallbackTrigger]string{
+	models.GithubCallbackTriggerMerged:            "is merged",
+	models.GithubCallbackTriggerClosed:            "is closed",
+	models.GithubCallbackTriggerChecksPassed:      "passes checks",
+	models.GithubCallbackTriggerChecksFailed:      "fails checks",
+	models.GithubCallbackTriggerReadyForReview:    "is ready for review",
+	models.GithubCallbackTriggerChecksPassedReady: "passes checks while ready for review",
+}
+
 // triggerLabel renders a trigger as a short natural-language clause for human
 // output ("is merged", "passes checks", …). Delivery is only a signal that the
-// event fired; callers must still verify the PR's actual state.
+// event fired; callers must still verify the PR's actual state. Falls back to
+// the raw trigger string for an unknown key.
 func triggerLabel(trigger string) string {
-	switch trigger {
-	case string(githubcallback.ValidTriggers()[0]): // merged
-		return "is merged"
-	case string(githubcallback.ValidTriggers()[1]): // closed
-		return "is closed"
-	case string(githubcallback.ValidTriggers()[2]): // checks_passed
-		return "passes checks"
-	case string(githubcallback.ValidTriggers()[3]): // checks_failed
-		return "fails checks"
-	default:
-		return trigger
+	if label, ok := triggerLabels[models.GithubCallbackTrigger(trigger)]; ok {
+		return label
 	}
+	return trigger
 }
 
 // emitJSON marshals v as indented JSON to the command's stdout.
 func emitJSON(cmd *cobra.Command, v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal github callback: %w", err)
+		return fmt.Errorf("marshal JSON output: %w", err)
 	}
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(b))
 	return nil
@@ -327,7 +359,8 @@ func callbackCmd() *cobra.Command {
 		Short: "Manage GitHub PR callbacks (durable one-shot event notifications)",
 		Long: "Register a durable, one-shot notification that fires a prompt into a chat " +
 			"when a GitHub pull request reaches a chosen state (merged, closed, checks passed, " +
-			"or checks failed). Delivery is a signal that the event fired — always verify the " +
+			"checks failed, ready for review, or checks passed while ready for review). " +
+			"Delivery is a signal that the event fired — always verify the " +
 			"PR's actual state before acting on it.",
 	}
 
@@ -336,7 +369,9 @@ func callbackCmd() *cobra.Command {
 		Short: "Register a callback for a pull request event",
 		Long: "Register a one-shot callback. <pr> is a PR number (with repository context) " +
 			"or a full https://github.com/owner/repo/pull/N URL. <trigger> is one of: " +
-			strings.Join(githubcallback.ValidTriggerStrings(), ", ") + ".",
+			strings.Join(githubcallback.ValidTriggerStrings(), ", ") + ". " +
+			"Triggers match on PR state, not on transitions, so arming one against a PR " +
+			"that already satisfies it fires on the next evaluation.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCallbackAdd(cmd, args[0], args[1])

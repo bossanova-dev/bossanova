@@ -240,9 +240,14 @@ type RepoAddModel struct {
 
 	// Form (used for clone/open input fields + details phase)
 	form *huh.Form
+	// formFields is the ordered field slice handed to huh.NewGroup, retained
+	// because huh.Form exposes no enumeration; it backs click-to-focus (BOS-512).
+	// Rebuilt by buildInputForm/buildDetailsForm alongside form itself.
+	formFields formFields
 
 	// Layout
-	width int
+	width  int
+	height int
 
 	// returnHomeOnCancel routes back to ViewHome (instead of ViewRepoList) when
 	// the user cancels. Set by the App when the add-repo wizard was opened via
@@ -295,48 +300,67 @@ func (m *RepoAddModel) buildSourceTable() {
 	m.sourceTable.SetWidth(columnsWidth(cols))
 }
 
-func (m *RepoAddModel) buildInputForm() {
-	if m.sourceMode == sourceModeClone {
-		m.form = huh.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Git URL").
-					Placeholder("https://github.com/user/repo.git").
-					Value(&m.fd.gitURL).
-					Validate(func(s string) error {
-						if strings.TrimSpace(s) == "" {
-							return fmt.Errorf("URL is required")
-						}
-						return nil
-					}),
-				huh.NewInput().
-					Title("Clone path").
-					Placeholder("Clone destination path").
-					Value(&m.fd.clonePath).
-					Validate(func(s string) error {
-						if strings.TrimSpace(s) == "" {
-							return fmt.Errorf("clone path is required")
-						}
-						return nil
-					}),
-			),
-		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
-	} else {
-		m.form = huh.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Path").
-					Placeholder("Repository path").
-					Value(&m.fd.localPath).
-					Validate(func(s string) error {
-						if strings.TrimSpace(s) == "" {
-							return fmt.Errorf("path is required")
-						}
-						return nil
-					}),
-			),
-		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
+// repoAddChrome is the number of rendered lines that surround the huh form in
+// the form phases, subtracted from terminal height when sizing the form so the
+// action bar stays on screen. It covers the banner App.View prepends
+// (bannerOverhead), the title + blank line, and the action bar (top+bottom
+// padding plus its formActionBarLines text lines). Mirrors cronFormChrome in
+// cron_form.go.
+const repoAddChrome = bannerOverhead + 2 /*title+blank*/ + (actionBarPadY*2 + formActionBarLines) /*action bar*/
+
+// formHeight returns the height to constrain the huh form to so the action bar
+// below it stays on screen. It returns 0 when the terminal height is unknown
+// (WithHeight(0) is a no-op in huh, leaving the form unconstrained). Without it
+// the 5-field details form renders 22 lines which, plus the banner, overflows an
+// 80x24 terminal and clips the action bar this view exists to show.
+func (m RepoAddModel) formHeight() int {
+	if m.height <= 0 {
+		return 0
 	}
+	return max(m.height-repoAddChrome, 3)
+}
+
+func (m *RepoAddModel) buildInputForm() {
+	var fields []huh.Field
+	if m.sourceMode == sourceModeClone {
+		fields = []huh.Field{
+			huh.NewInput().
+				Title("Git URL").
+				Placeholder("https://github.com/user/repo.git").
+				Value(&m.fd.gitURL).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return fmt.Errorf("URL is required")
+					}
+					return nil
+				}),
+			huh.NewInput().
+				Title("Clone path").
+				Placeholder("Clone destination path").
+				Value(&m.fd.clonePath).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return fmt.Errorf("clone path is required")
+					}
+					return nil
+				}),
+		}
+	} else {
+		fields = []huh.Field{
+			huh.NewInput().
+				Title("Path").
+				Placeholder("Repository path").
+				Value(&m.fd.localPath).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return fmt.Errorf("path is required")
+					}
+					return nil
+				}),
+		}
+	}
+	m.form = newBossForm(fields...)
+	m.formFields = newFormFields(fields...)
 }
 
 func (m *RepoAddModel) buildDetailsForm() {
@@ -345,45 +369,56 @@ func (m *RepoAddModel) buildDetailsForm() {
 		huh.NewOption("Auto-merge Dependabot PRs", automationDependabot),
 		huh.NewOption("Automatic repair (failing checks, conflicts, review feedback)", automationRepair),
 	}
-	m.form = huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Name").
-				Placeholder("Display name").
-				Value(&m.fd.name).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return fmt.Errorf("name is required")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				Title("Setup command").
-				Placeholder("Optional, e.g. make setup").
-				Value(&m.fd.setup),
-			huh.NewSelect[string]().
-				Title("Merge strategy").
-				Options(
-					huh.NewOption("Merge commit", string(models.MergeStrategyMerge)),
-					huh.NewOption("Rebase", string(models.MergeStrategyRebase)),
-					huh.NewOption("Squash", string(models.MergeStrategySquash)),
-				).
-				Value(&m.fd.mergeStrategy),
-			huh.NewMultiSelect[string]().
-				Title("Automation").
-				// Explicit height = option count + 1 for the title line. Without
-				// it, huh v2's auto-height sizes the option viewport to
-				// (options height - title height), silently clipping the last
-				// option (the "Automatic repair" row never rendered otherwise).
-				Height(len(automationOptions)+1).
-				Value(&m.fd.automation).
-				Options(automationOptions...),
-			huh.NewConfirm().
-				Affirmative("Add Repository").
-				Negative("Cancel").
-				Value(&m.fd.confirm),
-		),
-	).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
+	// Hoisted so the select is sized from len() rather than a literal: a fourth
+	// strategy added inline would otherwise be clipped with no error.
+	mergeStrategyOptions := []huh.Option[string]{
+		huh.NewOption("Merge commit", string(models.MergeStrategyMerge)),
+		huh.NewOption("Rebase", string(models.MergeStrategyRebase)),
+		huh.NewOption("Squash", string(models.MergeStrategySquash)),
+	}
+	fields := []huh.Field{
+		huh.NewInput().
+			Title("Name").
+			Placeholder("Display name").
+			Value(&m.fd.name).
+			Validate(func(s string) error {
+				if strings.TrimSpace(s) == "" {
+					return fmt.Errorf("name is required")
+				}
+				return nil
+			}),
+		huh.NewInput().
+			Title("Setup command").
+			Placeholder("Optional, e.g. make setup").
+			Value(&m.fd.setup),
+		bossSelect[string](len(mergeStrategyOptions), 1).
+			Title("Merge strategy").
+			Options(mergeStrategyOptions...).
+			Value(&m.fd.mergeStrategy),
+		// The explicit height is why bossMultiSelect takes the option count:
+		// with huh v2's auto-height the option viewport is sized to
+		// (options height - title height) and silently clips the last option
+		// (the "Automatic repair" row never rendered otherwise).
+		//
+		// The count only buys that up to bossSelectMaxHeight; past the cap huh
+		// scrolls the viewport, and it draws no scroll indicator, so a seventh
+		// automation option would be off-screen with nothing to say so. Three
+		// today — revisit the cap here if the list ever gets that long.
+		bossMultiSelect[string](len(automationOptions), 1).
+			Title("Automation").
+			Value(&m.fd.automation).
+			Options(automationOptions...),
+		bossConfirm().
+			Affirmative("Add Repository").
+			Negative("Cancel").
+			Value(&m.fd.confirm),
+	}
+	// Only the details form needs a height budget: it is the one form here
+	// tall enough to push the action bar off a short terminal. The input
+	// forms are 1-2 fields, and huh's viewport pads to the height it is
+	// given, so constraining them would inflate them instead.
+	m.form = newBossForm(fields...).WithHeight(m.formHeight())
+	m.formFields = newFormFields(fields...)
 }
 
 func (m RepoAddModel) Init() tea.Cmd {
@@ -397,6 +432,10 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
+		if m.form != nil && m.phase == repoAddPhaseDetails {
+			return m, resizeForm(m.form, m.formHeight(), msg)
+		}
 		return m, nil
 
 	case repoRegisteredMsg:
@@ -586,6 +625,12 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// screen — keep stray keys away from the now-hidden details form so they
 	// can't re-submit it.
 	if m.form != nil && m.phase != repoAddPhaseDone && m.configErr == nil {
+		// Click-to-focus, ahead of huh: huh v2 has no mouse support, so every
+		// mouse-shaped message is consumed here rather than forwarded (BOS-512).
+		if cmd, handled := m.formFields.handleMouse(msg, m.form, linesBefore(m.formPrefix())); handled {
+			return m, cmd
+		}
+
 		_, cmd := m.form.Update(msg)
 
 		if m.form.State == huh.StateAborted {
@@ -961,17 +1006,54 @@ func (m RepoAddModel) View() tea.View {
 
 	if m.form != nil {
 		var b strings.Builder
-		if m.sourceMode == sourceModeClone {
-			b.WriteString(styleTitle.Render("Clone a repository from URL"))
-		} else {
-			b.WriteString(styleTitle.Render("Add a local repository"))
+		b.WriteString(m.formPrefix())
+		// formOnScreen, not "form != nil": huh renders nothing once the form is
+		// completed, which is the state this branch is in while the RegisterRepo
+		// round-trip runs (that path sets neither validating nor cloning, so
+		// every early return above is skipped). Advertising [click] and enabling
+		// mouse reporting on a screen with no fields would be a lie (BOS-512).
+		onScreen := formOnScreen(m.form)
+		submit := "[enter] continue"
+		if m.phase == repoAddPhaseDetails {
+			submit = "[enter] add repo"
 		}
-		b.WriteString("\n\n")
+		if !onScreen {
+			b.WriteString(actionBar([]string{submit}, []string{"[esc] back"}))
+			return tea.NewView(b.String())
+		}
+
 		b.WriteString(lipgloss.NewStyle().PaddingLeft(2).Render(m.form.View()))
-		return tea.NewView(b.String())
+		// styleActionBar's Padding(actionBarPadY, 2) supplies the blank line
+		// above the bar, so the form ends with a single newline and no more.
+		b.WriteString("\n")
+		// Verbs are kept short on purpose. The nav hints moved onto their own
+		// line when the [click] hint joined them (BOS-512), so they no longer
+		// share a line with the verb — but repoAddChrome budgets exactly
+		// formActionBarLines, so a verb long enough to wrap its own line would
+		// still clip the bar this view exists to show.
+		b.WriteString(formActionBar([]string{submit}, []string{"[esc] back"}))
+		v := tea.NewView(b.String())
+		// Mouse reporting is scoped to screens that actually render a form
+		// (BOS-512): the source table, validating, cloning, error, config-error
+		// and done branches all return above, and a completed form takes the
+		// !onScreen path, all keeping the zero value MouseModeNone.
+		v.MouseMode = tea.MouseModeCellMotion
+		return v
 	}
 
 	return tea.NewView("")
+}
+
+// formPrefix is everything the form branch of View renders above the huh form:
+// the phase title and the blank line under it. The click hit test measures this
+// same string, so a line added here moves both the render and the hit test
+// together (BOS-512).
+func (m RepoAddModel) formPrefix() string {
+	title := "Add a local repository"
+	if m.sourceMode == sourceModeClone {
+		title = "Clone a repository from URL"
+	}
+	return styleTitle.Render(title) + "\n\n"
 }
 
 func (m RepoAddModel) githubAppInstallPromptView() string {

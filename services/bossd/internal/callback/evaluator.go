@@ -146,15 +146,18 @@ func (e *Evaluator) ReconcileAll(ctx context.Context) error {
 // satisfiedTriggers derives which triggers the authoritative state currently
 // satisfies. A trigger absent from the map is not satisfied.
 //
-//   - merged:        PR is merged.
-//   - closed:        PR is closed and NOT merged (PRStateMerged is distinct).
-//   - checks_passed: at least one check, none pending, none failed.
-//   - checks_failed: at least one completed check failed/timed_out/cancelled.
+//   - merged:               PR is merged.
+//   - closed:               PR is closed and NOT merged (PRStateMerged is distinct).
+//   - checks_passed:        at least one check, none pending, none failed.
+//   - checks_failed:        at least one completed check failed/timed_out/cancelled.
+//   - ready_for_review:     PR is open and not a draft (the draft-to-ready flip).
+//   - checks_passed_ready:  checks_passed AND the PR is open and not a draft.
 //
 // Pending checks satisfy neither passed nor failed; a completed failure still
 // satisfies checks_failed even if other checks are still pending.
 func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult) map[models.GithubCallbackTrigger]bool {
-	out := make(map[models.GithubCallbackTrigger]bool, 4)
+	out := make(map[models.GithubCallbackTrigger]bool, 6)
+	openAndReady := false
 	if status != nil {
 		switch status.State {
 		case vcs.PRStateMerged:
@@ -162,6 +165,10 @@ func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult) map[model
 		case vcs.PRStateClosed:
 			out[models.GithubCallbackTriggerClosed] = true
 		case vcs.PRStateOpen:
+			if !status.Draft {
+				out[models.GithubCallbackTriggerReadyForReview] = true
+				openAndReady = true
+			}
 		}
 	}
 
@@ -179,8 +186,17 @@ func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult) map[model
 	if anyFailed {
 		out[models.GithubCallbackTriggerChecksFailed] = true
 	}
-	if len(checks) > 0 && !anyPending && !anyFailed {
+	checksPassed := len(checks) > 0 && !anyPending && !anyFailed
+	if checksPassed {
 		out[models.GithubCallbackTriggerChecksPassed] = true
+	}
+	// checks_passed_ready additionally requires state == open (not just
+	// !Draft): a merged or closed PR reports Draft == false too, so
+	// draft-negation alone would let a closed/merged PR falsely satisfy this
+	// trigger. Gating on openAndReady (which already implies State == Open)
+	// keeps closed/merged PRs excluded.
+	if checksPassed && openAndReady {
+		out[models.GithubCallbackTriggerChecksPassedReady] = true
 	}
 	return out
 }

@@ -18,6 +18,7 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'bs-epic-lib.mjs',
     'bs-run-sentinel.mjs',
     'dag-scheduler.mjs',
+    'progress-comment.mjs',
   ])
   assert.ok(VENDOR_MAP['boss-plan'].includes('bs-run-sentinel.mjs'))
   assert.ok(VENDOR_MAP['boss-build'].includes('worktree-lock.sh'))

@@ -486,3 +486,165 @@ func TestUpdateCronJobGateCommandAndRunSetupCommand(t *testing.T) {
 		t.Fatalf("ShouldRunSetupCommand = true, want false after update")
 	}
 }
+
+// TestCreateCronJobZeroOutputDefaultsFalse verifies that omitting is_zero_output
+// (nil) persists false. Unlike should_run_setup_command — which is pre-seeded to
+// true because it defaults on — is_zero_output defaults OFF, so a pre-seed here
+// would silently make every cron job zero-output. This is that guard.
+func TestCreateCronJobZeroOutputDefaultsFalse(t *testing.T) {
+	srv, repoID, ctx := newCronTestServer(t)
+
+	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:    repoID,
+		Name:      "Default zero output",
+		Prompt:    "do it",
+		Schedule:  "@daily",
+		AgentName: "codex",
+		IsEnabled: false,
+		// IsZeroOutput intentionally omitted (nil).
+	}))
+	if err != nil {
+		t.Fatalf("CreateCronJob: %v", err)
+	}
+	if created.Msg.CronJob.IsZeroOutput {
+		t.Fatalf("IsZeroOutput = true, want false (default off)")
+	}
+
+	// Re-read from the store so this proves persistence, not just the response.
+	got, err := srv.GetCronJob(ctx, connect.NewRequest(&pb.GetCronJobRequest{Id: created.Msg.CronJob.Id}))
+	if err != nil {
+		t.Fatalf("GetCronJob: %v", err)
+	}
+	if got.Msg.CronJob.IsZeroOutput {
+		t.Fatalf("persisted IsZeroOutput = true, want false (default off)")
+	}
+}
+
+// TestCreateCronJobZeroOutputExplicitTrue verifies an explicit true is honoured
+// and persisted.
+func TestCreateCronJobZeroOutputExplicitTrue(t *testing.T) {
+	srv, repoID, ctx := newCronTestServer(t)
+	trueVal := true
+
+	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:       repoID,
+		Name:         "Zero output job",
+		Prompt:       "do it",
+		Schedule:     "@daily",
+		AgentName:    "codex",
+		IsEnabled:    false,
+		IsZeroOutput: &trueVal,
+	}))
+	if err != nil {
+		t.Fatalf("CreateCronJob: %v", err)
+	}
+	if !created.Msg.CronJob.IsZeroOutput {
+		t.Fatalf("IsZeroOutput = false, want true (explicit opt-in)")
+	}
+
+	got, err := srv.GetCronJob(ctx, connect.NewRequest(&pb.GetCronJobRequest{Id: created.Msg.CronJob.Id}))
+	if err != nil {
+		t.Fatalf("GetCronJob: %v", err)
+	}
+	if !got.Msg.CronJob.IsZeroOutput {
+		t.Fatalf("persisted IsZeroOutput = false, want true (explicit opt-in)")
+	}
+}
+
+// TestCreateCronJobZeroOutputExplicitFalse verifies an explicit false persists
+// false (and is not confused with "omitted").
+func TestCreateCronJobZeroOutputExplicitFalse(t *testing.T) {
+	srv, repoID, ctx := newCronTestServer(t)
+	falseVal := false
+
+	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:       repoID,
+		Name:         "Explicitly not zero output",
+		Prompt:       "do it",
+		Schedule:     "@daily",
+		AgentName:    "codex",
+		IsEnabled:    false,
+		IsZeroOutput: &falseVal,
+	}))
+	if err != nil {
+		t.Fatalf("CreateCronJob: %v", err)
+	}
+	if created.Msg.CronJob.IsZeroOutput {
+		t.Fatalf("IsZeroOutput = true, want false (explicit false)")
+	}
+}
+
+// TestUpdateCronJobZeroOutputOmittedPreservesTrue verifies that an UpdateCronJob
+// which omits is_zero_output leaves a previously-true value alone (nil = don't
+// touch), rather than clearing it to the zero value.
+func TestUpdateCronJobZeroOutputOmittedPreservesTrue(t *testing.T) {
+	srv, repoID, ctx := newCronTestServer(t)
+	trueVal := true
+
+	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:       repoID,
+		Name:         "Zero output update target",
+		Prompt:       "do it",
+		Schedule:     "@daily",
+		AgentName:    "codex",
+		IsEnabled:    false,
+		IsZeroOutput: &trueVal,
+	}))
+	if err != nil {
+		t.Fatalf("CreateCronJob: %v", err)
+	}
+
+	newPrompt := "do it again"
+	updated, err := srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{
+		Id:     created.Msg.CronJob.Id,
+		Prompt: &newPrompt,
+		// IsZeroOutput intentionally omitted (nil) — must not clear it.
+	}))
+	if err != nil {
+		t.Fatalf("UpdateCronJob: %v", err)
+	}
+	if !updated.Msg.CronJob.IsZeroOutput {
+		t.Fatalf("IsZeroOutput = false after unrelated update, want true (nil = don't touch)")
+	}
+}
+
+// TestUpdateCronJobZeroOutputExplicitFalseClears verifies that an explicit false
+// on UpdateCronJob really does clear a previously-true value — i.e. the update
+// path is not a write-only-when-true no-op.
+func TestUpdateCronJobZeroOutputExplicitFalseClears(t *testing.T) {
+	srv, repoID, ctx := newCronTestServer(t)
+	trueVal := true
+
+	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:       repoID,
+		Name:         "Zero output clear target",
+		Prompt:       "do it",
+		Schedule:     "@daily",
+		AgentName:    "codex",
+		IsEnabled:    false,
+		IsZeroOutput: &trueVal,
+	}))
+	if err != nil {
+		t.Fatalf("CreateCronJob: %v", err)
+	}
+
+	falseVal := false
+	updated, err := srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{
+		Id:           created.Msg.CronJob.Id,
+		IsZeroOutput: &falseVal,
+	}))
+	if err != nil {
+		t.Fatalf("UpdateCronJob: %v", err)
+	}
+	if updated.Msg.CronJob.IsZeroOutput {
+		t.Fatalf("IsZeroOutput = true, want false after explicit-false update")
+	}
+
+	got, err := srv.GetCronJob(ctx, connect.NewRequest(&pb.GetCronJobRequest{Id: created.Msg.CronJob.Id}))
+	if err != nil {
+		t.Fatalf("GetCronJob: %v", err)
+	}
+	if got.Msg.CronJob.IsZeroOutput {
+		t.Fatalf("persisted IsZeroOutput = true, want false after explicit-false update")
+	}
+}

@@ -16,7 +16,8 @@
         { "key": "a", "caption": "Press [a] to open the Accounts list" },
         {
           "waitFor": {
-            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "text": "LABEL PROVIDER",
+            "match": "normalized",
             "label": "Accounts list loaded"
           },
           "timeoutMs": 10000,
@@ -52,8 +53,9 @@
         { "key": "c", "caption": "Press [c] to open the Scheduled Jobs (cron) list" },
         {
           "waitFor": {
-            "anyOf": ["CRON NAME REPO", { "text": "Scheduled", "match": "normalized" }],
-            "label": "cron list loaded"
+            "text": "CRON NAME REPO",
+            "match": "normalized",
+            "label": "cron list loaded (the hub's Scheduled skill runs row cannot match it)"
           },
           "timeoutMs": 10000,
           "caption": "Cron list settled"

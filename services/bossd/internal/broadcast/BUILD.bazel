@@ -1,0 +1,50 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "broadcast",
+    srcs = [
+        "egress.go",
+        "ingress.go",
+        "prompt.go",
+        "resolve.go",
+        "send.go",
+        "subscription.go",
+        "worker.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/broadcast",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/broadcast",
+        "//lib/bossalib/machine",
+        "//lib/bossalib/models",
+        "//lib/bossalib/sqlutil",
+        "//services/bossd/internal/db",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "broadcast_test",
+    srcs = [
+        "egress_test.go",
+        "ingress_test.go",
+        "prompt_test.go",
+        "resolve_test.go",
+        "send_test.go",
+        "subscription_hook_test.go",
+        "subscription_test.go",
+        "worker_contract_test.go",
+        "worker_test.go",
+    ],
+    data = ["//services/bossd/migrations:sql"],  # keep: worker_contract_test.go reads migrations/*.sql from disk via runtime.Caller
+    embed = [":broadcast"],
+    rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
+    deps = [
+        "//lib/bossalib/broadcast",
+        "//lib/bossalib/machine",
+        "//lib/bossalib/migrate",
+        "//lib/bossalib/models",
+        "//services/bossd/internal/db",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

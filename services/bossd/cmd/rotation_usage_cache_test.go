@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/rotation"
 )
 
@@ -24,14 +25,82 @@ type fakeDecisionUsageCache struct {
 	suspendID     string
 	suspendReason string
 	suspendErr    error
+	// Per-account overrides for tests that need distinct probe results in one
+	// pass (e.g. the BOS-584 cooldown reconciliation sweep). Unset ids fall back
+	// to probeSnap/probeErr.
+	probeSnapByID map[string]models.UsageSnapshot
+	probeErrByID  map[string]error
+	// updates records every Update call so a test can assert which accounts had
+	// cooldown_until cleared.
+	updates   []fakeAccountUpdate
+	updateErr error
+	// getErr and getByID drive the reconciler's re-read guard: by default Get
+	// echoes the row from accounts (nothing changed during the probe), and a test
+	// can override an id to simulate a cooldown written mid-sweep.
+	getCalls int
+	getErr   error
+	getByID  map[string]*models.Account
+	// getNil forces Get to return (nil, nil) for an id — the "row vanished
+	// without an error" shape a store may legitimately produce.
+	getNil map[string]bool
 }
 
-func (f *fakeDecisionUsageCache) ProbeUsageSnapshot(_ context.Context, _ string) (models.UsageSnapshot, error) {
+// fakeAccountUpdate is one recorded Update call against the fake store.
+type fakeAccountUpdate struct {
+	id     string
+	params db.UpdateAccountParams
+}
+
+func (f *fakeDecisionUsageCache) ProbeUsageSnapshot(_ context.Context, id string) (models.UsageSnapshot, error) {
 	f.probeCalls++
+	if err, ok := f.probeErrByID[id]; ok {
+		return models.UsageSnapshot{}, err
+	}
+	if snap, ok := f.probeSnapByID[id]; ok {
+		return snap, nil
+	}
 	if f.probeErr != nil {
 		return models.UsageSnapshot{}, f.probeErr
 	}
 	return f.probeSnap, nil
+}
+
+// Get echoes the listed row unless a test overrides it, so the reconciler's
+// re-read guard sees "nothing changed during the probe" by default.
+func (f *fakeDecisionUsageCache) Get(_ context.Context, id string) (*models.Account, error) {
+	f.getCalls++
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	if f.getNil[id] {
+		return nil, nil
+	}
+	if acct, ok := f.getByID[id]; ok {
+		return acct, nil
+	}
+	for _, a := range f.accounts {
+		if a != nil && a.ID == id {
+			return a, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeDecisionUsageCache) Update(_ context.Context, id string, params db.UpdateAccountParams) (*models.Account, error) {
+	f.updates = append(f.updates, fakeAccountUpdate{id: id, params: params})
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	for _, a := range f.accounts {
+		if a == nil || a.ID != id {
+			continue
+		}
+		if params.CooldownUntil != nil {
+			a.CooldownUntil = *params.CooldownUntil
+		}
+		return a, nil
+	}
+	return nil, nil
 }
 
 func (f *fakeDecisionUsageCache) RecordUsageProbe(_ context.Context, _ string, _ models.UsageSnapshot) error {

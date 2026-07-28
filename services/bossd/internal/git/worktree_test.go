@@ -1,15 +1,20 @@
 package git
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -330,6 +335,322 @@ func TestCreateDoesNotSuffixGeneratedBranchWhenOnlyNamespacedRemoteBranchExists(
 	}
 	if result.BranchName != "test-session" {
 		t.Fatalf("branch = %q, want test-session", result.BranchName)
+	}
+}
+
+// remoteBranchSeams wires Manager's injectable remote-branch seams (BOS-539) to
+// in-memory fakes and records how many queries each issued, so the batching
+// contract can be asserted without a network remote.
+type remoteBranchSeams struct {
+	batch      map[string]struct{} // set returned by the batched lookup
+	batchErr   error               // non-nil forces the fail-open fallback
+	probeTaken map[string]bool     // per-candidate fallback answers
+
+	batchCalls    int
+	batchPrefixes []string
+	probeCalls    int
+	probedNames   []string
+}
+
+func (s *remoteBranchSeams) install(m *Manager) {
+	m.remoteBranches = func(_ context.Context, _, prefix string) (map[string]struct{}, error) {
+		s.batchCalls++
+		s.batchPrefixes = append(s.batchPrefixes, prefix)
+		if s.batchErr != nil {
+			return nil, s.batchErr
+		}
+		return s.batch, nil
+	}
+	m.remoteBranchProbe = func(_ context.Context, _, branch string) bool {
+		s.probeCalls++
+		s.probedNames = append(s.probedNames, branch)
+		return s.probeTaken[branch]
+	}
+}
+
+func remoteBranchSet(names ...string) map[string]struct{} {
+	set := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		set[n] = struct{}{}
+	}
+	return set
+}
+
+// A colliding walk must pay exactly one remote round trip no matter how many
+// locally-absent candidates it steps over (BOS-539 acceptance criterion 1).
+func TestAvailableNewBranchNameIssuesOneRemoteQueryForWholeWalk(t *testing.T) {
+	repoDir := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	seams := &remoteBranchSeams{batch: remoteBranchSet("foo", "foo-2", "foo-3")}
+	seams.install(mgr)
+
+	got, err := mgr.availableNewBranchName(context.Background(), repoDir, "foo", true)
+	if err != nil {
+		t.Fatalf("availableNewBranchName: %v", err)
+	}
+	if got != "foo-4" {
+		t.Fatalf("branch = %q, want foo-4", got)
+	}
+	if seams.batchCalls != 1 {
+		t.Fatalf("batched remote queries = %d, want 1 (prefixes: %v)", seams.batchCalls, seams.batchPrefixes)
+	}
+	if len(seams.batchPrefixes) != 1 || seams.batchPrefixes[0] != "foo" {
+		t.Fatalf("batch prefixes = %v, want [foo]", seams.batchPrefixes)
+	}
+	if seams.probeCalls != 0 {
+		t.Fatalf("per-candidate probes = %d, want 0 on the batched path", seams.probeCalls)
+	}
+}
+
+// The free local check must still short-circuit ahead of any network work, and
+// the batch must be resolved lazily so a fully-local walk stays offline
+// (BOS-539 acceptance criterion 2).
+func TestAvailableNewBranchNameSkipsRemoteQueryForLocalCandidates(t *testing.T) {
+	t.Run("no suffix allowed issues no remote query at all", func(t *testing.T) {
+		repoDir := initTestRepo(t)
+		gitOutput(t, repoDir, "branch", "foo")
+
+		mgr := NewManager(zerolog.Nop())
+		seams := &remoteBranchSeams{}
+		seams.install(mgr)
+
+		_, err := mgr.availableNewBranchName(context.Background(), repoDir, "foo", false)
+		if !errors.Is(err, ErrBranchExists) {
+			t.Fatalf("err = %v, want ErrBranchExists", err)
+		}
+		if seams.batchCalls != 0 || seams.probeCalls != 0 {
+			t.Fatalf("remote queries = %d batched / %d per-candidate, want 0/0", seams.batchCalls, seams.probeCalls)
+		}
+	})
+
+	t.Run("batch resolved lazily on the first local miss", func(t *testing.T) {
+		repoDir := initTestRepo(t)
+		gitOutput(t, repoDir, "branch", "foo")
+
+		mgr := NewManager(zerolog.Nop())
+		seams := &remoteBranchSeams{batch: remoteBranchSet()}
+		seams.install(mgr)
+
+		got, err := mgr.availableNewBranchName(context.Background(), repoDir, "foo", true)
+		if err != nil {
+			t.Fatalf("availableNewBranchName: %v", err)
+		}
+		if got != "foo-2" {
+			t.Fatalf("branch = %q, want foo-2", got)
+		}
+		if seams.batchCalls != 1 {
+			t.Fatalf("batched remote queries = %d, want 1", seams.batchCalls)
+		}
+		// The prefix must be the BASE, not the candidate that triggered the lazy
+		// resolve. Only this subtest can tell them apart: here the first local
+		// miss is "foo-2", so keying the query on the candidate would query
+		// `refs/heads/foo-2*` — which does not cover foo-3, foo-4, … and would
+		// hand back a name already taken on origin (the fail-CLOSED hazard).
+		if len(seams.batchPrefixes) != 1 || seams.batchPrefixes[0] != "foo" {
+			t.Fatalf("batch prefixes = %v, want [foo] (the base, not the candidate)", seams.batchPrefixes)
+		}
+	})
+}
+
+// A branch that lives only on origin must still be skipped — the batch must not
+// silently narrow the check (BOS-539 acceptance criterion 3).
+func TestAvailableNewBranchNameSkipsRemoteOnlyBranch(t *testing.T) {
+	repoDir := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	seams := &remoteBranchSeams{batch: remoteBranchSet("foo")}
+	seams.install(mgr)
+
+	got, err := mgr.availableNewBranchName(context.Background(), repoDir, "foo", true)
+	if err != nil {
+		t.Fatalf("availableNewBranchName: %v", err)
+	}
+	if got != "foo-2" {
+		t.Fatalf("branch = %q, want foo-2", got)
+	}
+}
+
+// allowSuffix=false is the explicitly-requested-branch-name shape: there is no
+// suffix walk to absorb a mistake, so "taken" is decided entirely by the batched
+// set on the very first candidate. Pin that a remote-only collision is still
+// caught here, so a "we cannot suffix anyway, skip the remote query" shortcut
+// cannot slip in — it would hand back a name already taken on origin.
+func TestAvailableNewBranchNameRejectsRemoteOnlyCollisionWithoutSuffix(t *testing.T) {
+	repoDir := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	seams := &remoteBranchSeams{batch: remoteBranchSet("foo")}
+	seams.install(mgr)
+
+	_, err := mgr.availableNewBranchName(context.Background(), repoDir, "foo", false)
+	if !errors.Is(err, ErrBranchExists) {
+		t.Fatalf("err = %v, want ErrBranchExists for a branch taken only on origin", err)
+	}
+	if seams.batchCalls != 1 {
+		t.Fatalf("batched remote queries = %d, want 1 (the remote must still be consulted)", seams.batchCalls)
+	}
+}
+
+// LOAD-BEARING (BOS-539 acceptance criterion 4): this test is the guard against
+// a fail-CLOSED regression. If a failed batched query were ever misread as "no
+// remote branches exist", availableNewBranchName would hand back a name already
+// taken on origin and the later push would fail confusingly. Assert the failure
+// degrades to the per-candidate probe for the rest of the walk.
+func TestAvailableNewBranchNameFallsBackWhenBatchedQueryFails(t *testing.T) {
+	repoDir := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	seams := &remoteBranchSeams{
+		batchErr:   errors.New("ls-remote: network unreachable"),
+		probeTaken: map[string]bool{"foo": true, "foo-2": true},
+	}
+	seams.install(mgr)
+
+	got, err := mgr.availableNewBranchName(context.Background(), repoDir, "foo", true)
+	if err != nil {
+		t.Fatalf("availableNewBranchName: %v", err)
+	}
+	if got != "foo-3" {
+		t.Fatalf("branch = %q, want foo-3 (a failed batch must not be read as an empty remote)", got)
+	}
+	if seams.batchCalls != 1 {
+		t.Fatalf("batched remote queries = %d, want 1 (retry the batch and the walk pays N round trips again)", seams.batchCalls)
+	}
+	want := []string{"foo", "foo-2", "foo-3"}
+	if len(seams.probedNames) != len(want) {
+		t.Fatalf("per-candidate probes = %v, want %v", seams.probedNames, want)
+	}
+	for i, name := range want {
+		if seams.probedNames[i] != name {
+			t.Fatalf("per-candidate probes = %v, want %v", seams.probedNames, want)
+		}
+	}
+}
+
+// The 99-candidate cap is unchanged by the batching (BOS-539 acceptance
+// criterion 5).
+func TestAvailableNewBranchNameExhaustionStillReturnsErrBranchExists(t *testing.T) {
+	repoDir := initTestRepo(t)
+	taken := remoteBranchSet("foo")
+	for i := 2; i <= 100; i++ {
+		taken[fmt.Sprintf("foo-%d", i)] = struct{}{}
+	}
+
+	mgr := NewManager(zerolog.Nop())
+	seams := &remoteBranchSeams{batch: taken}
+	seams.install(mgr)
+
+	_, err := mgr.availableNewBranchName(context.Background(), repoDir, "foo", true)
+	if !errors.Is(err, ErrBranchExists) {
+		t.Fatalf("err = %v, want ErrBranchExists", err)
+	}
+	if seams.batchCalls != 1 {
+		t.Fatalf("batched remote queries = %d, want 1 across the whole exhaustion walk", seams.batchCalls)
+	}
+}
+
+// Pins the glob semantics against a REAL `git ls-remote` rather than a fake: the
+// plan flags "does refs/heads/<base>* actually cover the -N suffix shapes?" as
+// the open question, so this exercises real git against a real origin.
+func TestRemoteBranchesWithPrefixAgainstRealGit(t *testing.T) {
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+
+	// Push the candidate shapes the walk can generate plus two decoys, then drop
+	// the local branches so only origin has them.
+	for _, branch := range []string{"foo", "foo-2", "foo-10", "foobar", "other"} {
+		gitOutput(t, repoDir, "branch", branch)
+		gitOutput(t, repoDir, "push", "origin", branch)
+		gitOutput(t, repoDir, "branch", "-D", branch)
+	}
+
+	got, err := remoteBranchesWithPrefix(ctx, repoDir, "foo")
+	if err != nil {
+		t.Fatalf("remoteBranchesWithPrefix: %v", err)
+	}
+	// "foobar" is matched by the prefix glob and is harmless: membership is
+	// tested by exact candidate name, never by prefix.
+	want := remoteBranchSet("foo", "foo-2", "foo-10", "foobar")
+	if len(got) != len(want) {
+		t.Fatalf("remote branches = %v, want %v", got, want)
+	}
+	for name := range want {
+		if _, ok := got[name]; !ok {
+			t.Fatalf("remote branches = %v, want %v", got, want)
+		}
+	}
+
+	// End to end through the real seams: foo and foo-2 are taken on origin only.
+	branch, err := NewManager(zerolog.Nop()).availableNewBranchName(ctx, repoDir, "foo", true)
+	if err != nil {
+		t.Fatalf("availableNewBranchName: %v", err)
+	}
+	if branch != "foo-3" {
+		t.Fatalf("branch = %q, want foo-3", branch)
+	}
+}
+
+// A pattern that matches nothing exits 0 with empty output — "no remote
+// branches", NOT a failed query. That distinction is the boundary between the
+// batched path and the fail-open fallback, so pin it against real git.
+func TestRemoteBranchesWithPrefixEmptyResultIsNotAFailure(t *testing.T) {
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+
+	got, err := remoteBranchesWithPrefix(ctx, repoDir, "nothing-matches-this")
+	if err != nil {
+		t.Fatalf("remoteBranchesWithPrefix: %v, want nil error for an empty match", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("remote branches = %v, want empty", got)
+	}
+
+	branch, err := NewManager(zerolog.Nop()).availableNewBranchName(ctx, repoDir, "nothing-matches-this", true)
+	if err != nil {
+		t.Fatalf("availableNewBranchName: %v", err)
+	}
+	if branch != "nothing-matches-this" {
+		t.Fatalf("branch = %q, want nothing-matches-this", branch)
+	}
+}
+
+// LOAD-BEARING, and the other half of the fail-open guarantee: an unreachable
+// remote must surface as a non-nil ERROR, never as an empty set. The
+// availableNewBranchName fallback test above proves the caller degrades on an
+// error, but it fakes the seam, so it can never observe this side regressing.
+// Without this test, swallowing the ls-remote failure here (returning an empty
+// set and a nil error) is invisible — and that is exactly the fail-CLOSED
+// mutation that would hand back a branch name already taken on origin.
+func TestRemoteBranchesWithPrefixErrorsWhenRemoteUnreachable(t *testing.T) {
+	repoDir := initTestRepo(t)
+	// Point origin at a path that is not a repository; real git exits 128.
+	gitOutput(t, repoDir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "definitely-not-a-repo.git"))
+
+	got, err := remoteBranchesWithPrefix(context.Background(), repoDir, "foo")
+	if err == nil {
+		t.Fatalf("remoteBranchesWithPrefix = %v, nil error; want an error so the caller can fail open", got)
+	}
+	if got != nil {
+		t.Fatalf("remote branches = %v, want nil alongside the error", got)
+	}
+}
+
+// remoteBranchExists used to be called straight from the collision walk, so the
+// Create tests covered it incidentally. Batching demoted it to the fail-open
+// fallback seam, which the walk tests fake — leaving the probe that every
+// DEGRADED create now depends on with no coverage at all. Pin it directly
+// against real git so it cannot rot undetected.
+func TestRemoteBranchExistsAgainstRealGit(t *testing.T) {
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+
+	// Push "foo" and drop it locally, so only origin has it.
+	gitOutput(t, repoDir, "branch", "foo")
+	gitOutput(t, repoDir, "push", "origin", "foo")
+	gitOutput(t, repoDir, "branch", "-D", "foo")
+
+	if !remoteBranchExists(ctx, repoDir, "foo") {
+		t.Fatal("remoteBranchExists(foo) = false, want true for a branch present only on origin")
+	}
+	if remoteBranchExists(ctx, repoDir, "bar") {
+		t.Fatal("remoteBranchExists(bar) = true, want false for a branch on neither side")
 	}
 }
 
@@ -1952,7 +2273,7 @@ func TestRunSetupScript_RejectsPathTraversal(t *testing.T) {
 	}
 
 	spec := `{"type":"script","path":"` + relToBait + `"}`
-	err = runSetupScript(context.Background(), worktree, worktree, spec, "", nil)
+	_, err = runSetupScript(context.Background(), worktree, worktree, spec, "", nil, nil)
 	if err == nil {
 		t.Fatal("expected an error, got nil — traversal was not rejected")
 	}
@@ -2390,6 +2711,114 @@ func TestIsAncestor(t *testing.T) {
 	}
 }
 
+// TestHasDiffAgainstBase pins BOS-591's mark-ready backstop primitive: a
+// branch whose only commits are empty (`--allow-empty`, the shape of bossd's
+// draft-PR bootstrap commit) has no diff against the base and must report
+// false, while a branch that actually changed a file must report true. It also
+// pins the three-dot (merge-base) semantics: a base that has since moved ahead
+// on an unrelated commit must NOT make an otherwise-empty branch look changed.
+func TestHasDiffAgainstBase(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	if _, err := runGit(ctx, repo, "checkout", "-b", "empty-branch"); err != nil {
+		t.Fatalf("checkout -b empty-branch: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "commit", "--allow-empty", "-m", "chore: [skip ci] create pull request"); err != nil {
+		t.Fatalf("empty commit: %v", err)
+	}
+
+	hasDiff, err := mgr.HasDiffAgainstBase(ctx, repo, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("HasDiffAgainstBase(empty): %v", err)
+	}
+	if hasDiff {
+		t.Error("HasDiffAgainstBase(empty-commit-only branch) = true, want false")
+	}
+
+	// Move the base forward independently. Three-dot semantics compare against
+	// the merge base, so the branch must still read as empty.
+	if _, err := runGit(ctx, repo, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "upstream.txt"), []byte("upstream\n"), 0o600); err != nil {
+		t.Fatalf("write upstream.txt: %v", err)
+	}
+	for _, args := range [][]string{{"add", "upstream.txt"}, {"commit", "-m", "feat: upstream work"}} {
+		if _, err := runGit(ctx, repo, args...); err != nil {
+			t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+		}
+	}
+	if _, err := runGit(ctx, repo, "checkout", "empty-branch"); err != nil {
+		t.Fatalf("checkout empty-branch: %v", err)
+	}
+	hasDiff, err = mgr.HasDiffAgainstBase(ctx, repo, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("HasDiffAgainstBase(empty, advanced base): %v", err)
+	}
+	if hasDiff {
+		t.Error("HasDiffAgainstBase(empty branch, advanced base) = true, want false (three-dot semantics)")
+	}
+
+	// Now make a real change on the branch.
+	if err := os.WriteFile(filepath.Join(repo, "real.txt"), []byte("real\n"), 0o600); err != nil {
+		t.Fatalf("write real.txt: %v", err)
+	}
+	for _, args := range [][]string{{"add", "real.txt"}, {"commit", "-m", "feat: real work"}} {
+		if _, err := runGit(ctx, repo, args...); err != nil {
+			t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+		}
+	}
+	hasDiff, err = mgr.HasDiffAgainstBase(ctx, repo, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("HasDiffAgainstBase(real): %v", err)
+	}
+	if !hasDiff {
+		t.Error("HasDiffAgainstBase(branch with a real change) = false, want true")
+	}
+
+	if _, err := mgr.HasDiffAgainstBase(ctx, repo, "  "); err == nil {
+		t.Error("HasDiffAgainstBase with a blank base ref should error")
+	}
+}
+
+// TestHasDiffAgainstBase_WhitespaceOnlyPathIsStillADiff pins the `-z` in
+// HasDiffAgainstBase. runGit TrimSpace's every command's stdout, so with
+// newline-separated `--name-only` output a diff whose sole changed path is
+// made entirely of spaces trims away to "" and reads as "no diff" — the
+// backstop would then refuse to mark a legitimate PR ready. Dropping `-z`
+// fails this test and nothing else.
+func TestHasDiffAgainstBase_WhitespaceOnlyPathIsStillADiff(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	if _, err := runGit(ctx, repo, "checkout", "-b", "spacey-branch"); err != nil {
+		t.Fatalf("checkout -b spacey-branch: %v", err)
+	}
+	// A filename consisting only of spaces. git does not quote it (quoting
+	// covers control/non-ASCII chars, not plain spaces), so `--name-only`
+	// without -z emits a line of pure whitespace.
+	spacey := filepath.Join(repo, "   ")
+	if err := os.WriteFile(spacey, []byte("content\n"), 0o600); err != nil {
+		t.Fatalf("write whitespace-named file: %v", err)
+	}
+	for _, args := range [][]string{{"add", "--", "   "}, {"commit", "-m", "feat: add a spacey path"}} {
+		if _, err := runGit(ctx, repo, args...); err != nil {
+			t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+		}
+	}
+
+	hasDiff, err := mgr.HasDiffAgainstBase(ctx, repo, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("HasDiffAgainstBase(whitespace-only path): %v", err)
+	}
+	if !hasDiff {
+		t.Error("HasDiffAgainstBase(branch changing only a whitespace-named path) = false, want true")
+	}
+}
+
 func TestFetchBase(t *testing.T) {
 	repo := initTestRepo(t)
 	mgr := NewManager(zerolog.Nop())
@@ -2412,6 +2841,87 @@ func TestFetchBase(t *testing.T) {
 
 	if err := mgr.FetchBase(ctx, repo, ""); err == nil {
 		t.Error("FetchBase with empty base should error")
+	}
+
+	// An empty local path must be rejected, not run in the daemon's process
+	// cwd. A fetch is a ref WRITE and runGit sets cmd.Dir unconditionally, so
+	// without this guard an empty path silently writes refs into whatever repo
+	// the daemon happens to be sitting in (BOS-591).
+	if err := mgr.FetchBase(ctx, "", "main"); err == nil {
+		t.Error("FetchBase with empty local path should error")
+	}
+}
+
+func TestCountMergeCommits_NoMergeCommits(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	if _, err := runGit(ctx, repo, "checkout", "-b", "feat"); err != nil {
+		t.Fatalf("checkout -b feat: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "commit", "--allow-empty", "-m", "feat commit"); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "push", "-u", "origin", "feat"); err != nil {
+		t.Fatalf("push feat: %v", err)
+	}
+
+	count, err := mgr.CountMergeCommits(ctx, repo, "main", "feat")
+	if err != nil {
+		t.Fatalf("CountMergeCommits: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+}
+
+func TestCountMergeCommits_WithMergeCommit(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	if _, err := runGit(ctx, repo, "checkout", "-b", "feat"); err != nil {
+		t.Fatalf("checkout -b feat: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "commit", "--allow-empty", "-m", "feat commit"); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "checkout", "-b", "side"); err != nil {
+		t.Fatalf("checkout -b side: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "commit", "--allow-empty", "-m", "side commit"); err != nil {
+		t.Fatalf("commit on side: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "checkout", "feat"); err != nil {
+		t.Fatalf("checkout feat: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "merge", "--no-ff", "--no-edit", "-m", "merge side into feat", "side"); err != nil {
+		t.Fatalf("merge --no-ff side into feat: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "push", "-u", "origin", "feat"); err != nil {
+		t.Fatalf("push feat: %v", err)
+	}
+
+	count, err := mgr.CountMergeCommits(ctx, repo, "main", "feat")
+	if err != nil {
+		t.Fatalf("CountMergeCommits: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1", count)
+	}
+}
+
+func TestCountMergeCommits_RequiresBaseAndHead(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	if _, err := mgr.CountMergeCommits(ctx, repo, "", "feat"); err == nil || err.Error() != "base branch is required" {
+		t.Errorf("CountMergeCommits with empty base = %v, want error %q", err, "base branch is required")
+	}
+	if _, err := mgr.CountMergeCommits(ctx, repo, "main", ""); err == nil || err.Error() != "head branch is required" {
+		t.Errorf("CountMergeCommits with empty head = %v, want error %q", err, "head branch is required")
 	}
 }
 
@@ -2743,13 +3253,265 @@ func TestRunSetupScript_CommandArgvStaysLiteral(t *testing.T) {
 	sentinel := filepath.Join(t.TempDir(), "sentinel")
 	spec := `{"type":"command","argv":["echo","; touch ` + sentinel + `"]}`
 
-	if err := runSetupScript(context.Background(), worktree, worktree, spec, "", nil); err != nil {
+	if _, err := runSetupScript(context.Background(), worktree, worktree, spec, "", nil, nil); err != nil {
 		t.Fatalf("runSetupScript: %v", err)
 	}
 	if _, err := os.Stat(sentinel); err == nil {
 		t.Fatalf("sentinel was created — argv was interpreted as shell")
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("unexpected stat error: %v", err)
+	}
+}
+
+// TestRunSetupScript_TeesToLogSinkAndReportsDuration pins the daemon-side half
+// of the tee: even when a caller claims the live output stream, the log sink
+// still receives the script's output, and the run's own duration comes back so
+// it can be attributed in the daemon log.
+func TestRunSetupScript_TeesToLogSinkAndReportsDuration(t *testing.T) {
+	worktree := t.TempDir()
+
+	var stream, logSink bytes.Buffer
+	spec := `{"type":"command","argv":["sh","-c","echo tee-marker; sleep 0.05"]}`
+
+	got, err := runSetupScript(context.Background(), worktree, worktree, spec, "", &stream, &logSink)
+	if err != nil {
+		t.Fatalf("runSetupScript: %v", err)
+	}
+	if !strings.Contains(stream.String(), "tee-marker") {
+		t.Fatalf("client stream missed the output: %q", stream.String())
+	}
+	if !strings.Contains(logSink.String(), "tee-marker") {
+		t.Fatalf("log sink missed the output: %q", logSink.String())
+	}
+	if got < 40*time.Millisecond {
+		t.Fatalf("duration = %v, want at least 40ms for a 50ms sleep", got)
+	}
+}
+
+// lockedBuffer is a concurrency-safe io.Writer for capturing zerolog output in
+// tests. Defensive rather than currently required: nothing in this package
+// logs off-goroutine today, but a zerolog.Logger writing into a bare
+// bytes.Buffer is one background-goroutine refactor away from a data race.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestCreate_LogsSetupScriptDurationAndOutput is the structural check behind
+// "a TUI-created session in a setup-script repo leaves a duration record in
+// the daemon log": Create is driven with a client stream attached (exactly
+// what the create-session RPC does, and the configuration that previously left
+// the daemon log empty), and the manager's logger must still carry both the
+// measured duration and the script's output.
+func TestCreate_LogsSetupScriptDurationAndOutput(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+
+	logs := &lockedBuffer{}
+	mgr := NewManager(zerolog.New(logs))
+
+	var stream bytes.Buffer
+	script := `echo create-log-marker`
+	result, err := mgr.Create(context.Background(), CreateOpts{
+		RepoPath:          repoDir,
+		BaseBranch:        "main",
+		WorktreeBaseDir:   wtBase,
+		RepoName:          "my-repo",
+		Title:             "Setup log test",
+		SetupScript:       &script,
+		SetupScriptOutput: &stream,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if result.SetupErr != nil {
+		t.Fatalf("SetupErr = %v, want nil", result.SetupErr)
+	}
+	if !strings.Contains(stream.String(), "create-log-marker") {
+		t.Fatalf("client stream missed the output: %q", stream.String())
+	}
+
+	got := logs.String()
+	if !strings.Contains(got, "create-log-marker") {
+		t.Fatalf("daemon log missing the setup-script output tail:\n%s", got)
+	}
+
+	// Assert the duration is a real measurement, not a zero value that happens
+	// to serialize.
+	event, ok := findSetupScriptRunEvent(t, got, "setup script finished")
+	if !ok {
+		t.Fatalf("daemon log missing the setup-script duration record:\n%s", got)
+	}
+	if event.Op != "create" {
+		t.Errorf(`op = %q, want "create"`, event.Op)
+	}
+	if event.Duration <= 0 {
+		t.Errorf("setup_script_run_ms = %v, want a positive measurement", event.Duration)
+	}
+}
+
+// TestResurrect_LogsSetupScriptDurationAndOutput pins the resurrect wiring end
+// to end. It matters more than the create case: Resurrect returns no duration
+// to any caller, so this log event is the only record that path produces —
+// deleting the wiring there would otherwise leave the suite green.
+func TestResurrect_LogsSetupScriptDurationAndOutput(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+
+	logs := &lockedBuffer{}
+	mgr := NewManager(zerolog.New(logs))
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Resurrect setup log test",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	script := `echo resurrect-log-marker`
+	if err := mgr.Resurrect(ctx, ResurrectOpts{
+		RepoPath:     repoDir,
+		WorktreePath: result.WorktreePath,
+		BranchName:   result.BranchName,
+		SetupScript:  &script,
+	}); err != nil {
+		t.Fatalf("Resurrect: %v", err)
+	}
+
+	event, ok := findSetupScriptRunEvent(t, logs.String(), "setup script finished")
+	if !ok {
+		t.Fatalf("daemon log missing the resurrect duration record:\n%s", logs.String())
+	}
+	if event.Op != "resurrect" {
+		t.Errorf("op = %q, want resurrect", event.Op)
+	}
+	if event.Duration <= 0 {
+		t.Errorf("setup_script_run_ms = %v, want a positive measurement", event.Duration)
+	}
+	if !strings.Contains(logs.String(), "resurrect-log-marker") {
+		t.Errorf("daemon log missing the resurrect setup output tail:\n%s", logs.String())
+	}
+}
+
+// TestCreate_BlankSetupScriptIsSkippedEverywhere pins the harmonized guard.
+// Before runAndLogSetup the three call sites disagreed: create and resurrect
+// tested the raw string, create-from-existing-branch trimmed first, so a
+// whitespace-only setup_script surfaced as an ErrInvalidSpec SetupErr on two
+// paths and was skipped on the third. It is now treated as "no setup step"
+// everywhere — no run, no SetupErr, no duration, and no log event to mislead
+// someone reading the create.
+func TestCreate_BlankSetupScriptIsSkippedEverywhere(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+
+	logs := &lockedBuffer{}
+	mgr := NewManager(zerolog.New(logs))
+
+	script := "   \n\t"
+	result, err := mgr.Create(context.Background(), CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Blank setup script",
+		SetupScript:     &script,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if result.SetupErr != nil {
+		t.Errorf("SetupErr = %v, want nil for a whitespace-only setup_script", result.SetupErr)
+	}
+	if result.SetupScriptDuration != 0 {
+		t.Errorf("SetupScriptDuration = %v, want 0 — nothing ran", result.SetupScriptDuration)
+	}
+	if _, ok := findSetupScriptRunEvent(t, logs.String(), "setup script finished"); ok {
+		t.Errorf("logged a setup-script run that never happened:\n%s", logs.String())
+	}
+	if _, ok := findSetupScriptRunEvent(t, logs.String(), "setup script failed; continuing"); ok {
+		t.Errorf("logged a setup-script failure that never happened:\n%s", logs.String())
+	}
+}
+
+// setupScriptRunEvent is the subset of the structured setup-script log event
+// the tests assert on.
+type setupScriptRunEvent struct {
+	Level    string  `json:"level"`
+	Message  string  `json:"message"`
+	Op       string  `json:"op"`
+	Branch   string  `json:"branch"`
+	Error    string  `json:"error"`
+	Duration float64 `json:"setup_script_run_ms"`
+}
+
+// findSetupScriptRunEvent scans captured zerolog output for the last event with
+// the given message. Non-JSON and unrelated lines are skipped.
+func findSetupScriptRunEvent(t *testing.T, logs, message string) (setupScriptRunEvent, bool) {
+	t.Helper()
+	var found setupScriptRunEvent
+	var ok bool
+	for _, line := range strings.Split(strings.TrimSpace(logs), "\n") {
+		var event setupScriptRunEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		if event.Message != message {
+			continue
+		}
+		found, ok = event, true
+	}
+	return found, ok
+}
+
+// TestLogSetupScriptRun_FailureBranchAndOpTag covers what the Create-path test
+// cannot reach: the warning branch, and an op tag other than "create". The op
+// tag exists so a resurrect of a worktree is distinguishable from its create in
+// the log, which is only true if the failure branch carries it too.
+func TestLogSetupScriptRun_FailureBranchAndOpTag(t *testing.T) {
+	logs := &lockedBuffer{}
+	mgr := NewManager(zerolog.New(logs))
+
+	mgr.logSetupScriptRun("resurrect", "/tmp/wt", "feature-branch", 1500*time.Millisecond,
+		errors.New("exit status 2"))
+
+	event, ok := findSetupScriptRunEvent(t, logs.String(), "setup script failed; continuing")
+	if !ok {
+		t.Fatalf("no failure event logged:\n%s", logs.String())
+	}
+	if event.Level != "warn" {
+		t.Errorf("level = %q, want warn (a failed setup must not log as success)", event.Level)
+	}
+	if event.Op != "resurrect" {
+		t.Errorf("op = %q, want resurrect", event.Op)
+	}
+	if event.Branch != "feature-branch" {
+		t.Errorf("branch = %q, want feature-branch", event.Branch)
+	}
+	if !strings.Contains(event.Error, "exit status 2") {
+		t.Errorf("error = %q, want the wrapped failure", event.Error)
+	}
+	if event.Duration != 1500 {
+		t.Errorf("duration = %v ms, want 1500 — a failed run still cost its time", event.Duration)
 	}
 }
 
@@ -2894,5 +3656,603 @@ func TestInjectPRNumbers_NoCommitsIsNoOp(t *testing.T) {
 
 	if err := mgr.InjectPRNumbers(ctx, repoDir, branch, 42, "refs/remotes/origin/main"); err != nil {
 		t.Fatalf("InjectPRNumbers on empty branch: %v", err)
+	}
+}
+
+// withInjectedTag inserts "[#n] " immediately after the placeholder's
+// conventional-commit "type: " prefix, mirroring what a prior injector run
+// (or a rebase against a different PR number) can leave behind. Built from
+// the constant rather than a retyped literal so the test can't drift from
+// production's prefix.
+func withInjectedTag(t *testing.T, n int) string {
+	t.Helper()
+	placeholder := DraftPRPlaceholderCommitSubject
+	idx := strings.Index(placeholder, ": ")
+	if idx < 0 {
+		t.Fatalf("placeholder %q has no conventional-commit prefix", placeholder)
+	}
+	prefixEnd := idx + 2
+	return placeholder[:prefixEnd] + "[#" + strconv.Itoa(n) + "] " + placeholder[prefixEnd:]
+}
+
+// TestInjectPRNumbers_LeavesDraftPRPlaceholderSubjectUnchanged pins BOS-591:
+// the injector must never rewrite the draft-PR bootstrap commit's subject,
+// even while it's still tagging real commits on the same branch normally.
+func TestInjectPRNumbers_LeavesDraftPRPlaceholderSubjectUnchanged(t *testing.T) {
+	ctx := context.Background()
+	branch := "cron-inject-placeholder-and-real"
+	repoDir := injectTestBranch(t, branch,
+		DraftPRPlaceholderCommitSubject,
+		"feat(web): add widget",
+	)
+	mgr := NewManager(zerolog.Nop())
+
+	if err := mgr.InjectPRNumbers(ctx, repoDir, branch, 42, "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("InjectPRNumbers: %v", err)
+	}
+
+	subjects := strings.Split(gitOutput(t, repoDir, "log", "--format=%s", "origin/main..HEAD"), "\n")
+	var gotPlaceholder, gotReal bool
+	for _, s := range subjects {
+		switch s {
+		case DraftPRPlaceholderCommitSubject:
+			gotPlaceholder = true
+		case "feat(web): [#42] add widget":
+			gotReal = true
+		}
+	}
+	if !gotPlaceholder {
+		t.Fatalf("subjects = %v, want the placeholder subject unchanged (%q)", subjects, DraftPRPlaceholderCommitSubject)
+	}
+	if !gotReal {
+		t.Fatalf("subjects = %v, want the real commit tagged with [#42]", subjects)
+	}
+}
+
+// TestInjectPRNumbers_LeavesAlreadyTaggedPlaceholderUnchangedAlongsideRealWork
+// is the only test that actually executes injectPRTagExec's placeholder
+// tag-stripping sed. The sibling cases can't: a placeholder-only branch (tagged
+// or not) short-circuits in the needsTag pre-scan so the rebase --exec never
+// runs at all, and the mixed branch above carries an UNTAGGED placeholder, for
+// which the sed is an identity no-op that the bare equality check would pass on
+// its own.
+//
+// This shape — a placeholder already tagged for an earlier PR, plus a real
+// untagged commit forcing needsTag true — is the one the plan calls out as
+// existing in the wild. Delete stripPlaceholderTagSed and the placeholder comes
+// back double-tagged ("chore: [#42] [#7] [skip ci] create pull request"), which
+// IsDraftPRPlaceholderSubject (single-tag tolerance by design) then classifies
+// as REAL WORK — silently re-creating the BOS-591 defeat with every other test
+// still green.
+func TestInjectPRNumbers_LeavesAlreadyTaggedPlaceholderUnchangedAlongsideRealWork(t *testing.T) {
+	ctx := context.Background()
+	branch := "cron-inject-tagged-placeholder-and-real"
+	taggedPlaceholder := withInjectedTag(t, 7)
+	repoDir := injectTestBranch(t, branch,
+		taggedPlaceholder,
+		"feat(web): add widget",
+	)
+	mgr := NewManager(zerolog.Nop())
+
+	if err := mgr.InjectPRNumbers(ctx, repoDir, branch, 42, "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("InjectPRNumbers: %v", err)
+	}
+
+	subjects := strings.Split(gitOutput(t, repoDir, "log", "--format=%s", "origin/main..HEAD"), "\n")
+	var gotPlaceholder, gotReal bool
+	for _, s := range subjects {
+		switch s {
+		case taggedPlaceholder:
+			gotPlaceholder = true
+		case "feat(web): [#42] add widget":
+			gotReal = true
+		}
+	}
+	if !gotPlaceholder {
+		t.Fatalf("subjects = %v, want the already-tagged placeholder byte-identical (%q); a double tag means the strip is gone", subjects, taggedPlaceholder)
+	}
+	if !gotReal {
+		t.Fatalf("subjects = %v, want the real commit tagged with [#42]", subjects)
+	}
+	// Belt and braces: the failure mode is specifically a second tag, so name it.
+	for _, s := range subjects {
+		if strings.Contains(s, "[#42]") && strings.Contains(s, "[#7]") {
+			t.Fatalf("subject %q carries both PR tags; the placeholder was retagged", s)
+		}
+	}
+	// The classifier must still agree the placeholder is a placeholder — that is
+	// what the finalize guard ultimately calls.
+	if !IsDraftPRPlaceholderSubject(taggedPlaceholder) {
+		t.Fatalf("IsDraftPRPlaceholderSubject(%q) = false, want true", taggedPlaceholder)
+	}
+}
+
+// TestInjectPRNumbers_OnlyPlaceholderCommitIsNoOp pins the needsTag pre-scan:
+// a branch whose only commit is the untagged placeholder must not be
+// rebased at all — same SHA before and after, not just an unchanged subject.
+func TestInjectPRNumbers_OnlyPlaceholderCommitIsNoOp(t *testing.T) {
+	ctx := context.Background()
+	branch := "cron-inject-placeholder-only"
+	repoDir := injectTestBranch(t, branch, DraftPRPlaceholderCommitSubject)
+	mgr := NewManager(zerolog.Nop())
+
+	headBefore := gitOutput(t, repoDir, "rev-parse", "HEAD")
+	if err := mgr.InjectPRNumbers(ctx, repoDir, branch, 42, "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("InjectPRNumbers: %v", err)
+	}
+	if got := gitOutput(t, repoDir, "rev-parse", "HEAD"); got != headBefore {
+		t.Fatalf("HEAD changed on placeholder-only branch: before=%s after=%s (a no-op rebase still mints a new SHA)", headBefore, got)
+	}
+	if got := gitOutput(t, repoDir, "log", "-1", "--format=%s"); got != DraftPRPlaceholderCommitSubject {
+		t.Fatalf("subject = %q, want unchanged placeholder", got)
+	}
+}
+
+// TestInjectPRNumbers_OnlyPlaceholderAlreadyTaggedWithDifferentPRIsNoOp
+// covers a placeholder tagged by an earlier PR number (which exists on
+// branches in the wild): a later run for a different PR number must not
+// retag it.
+func TestInjectPRNumbers_OnlyPlaceholderAlreadyTaggedWithDifferentPRIsNoOp(t *testing.T) {
+	ctx := context.Background()
+	branch := "cron-inject-placeholder-tagged"
+	taggedPlaceholder := withInjectedTag(t, 7)
+	repoDir := injectTestBranch(t, branch, taggedPlaceholder)
+	mgr := NewManager(zerolog.Nop())
+
+	headBefore := gitOutput(t, repoDir, "rev-parse", "HEAD")
+	if err := mgr.InjectPRNumbers(ctx, repoDir, branch, 42, "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("InjectPRNumbers: %v", err)
+	}
+	if got := gitOutput(t, repoDir, "rev-parse", "HEAD"); got != headBefore {
+		t.Fatalf("HEAD changed on already-tagged placeholder branch: before=%s after=%s", headBefore, got)
+	}
+	if got := gitOutput(t, repoDir, "log", "-1", "--format=%s"); got != taggedPlaceholder {
+		t.Fatalf("subject = %q, want unchanged (not retagged to [#42]): %q", got, taggedPlaceholder)
+	}
+}
+
+// TestInjectPRNumbers_LeavesStackedTagPlaceholderUnchangedAlongsideRealWork
+// drives the sed's repeat group end to end, through real sh and real git.
+//
+// Tags stack because the boss-finalize skill's add-pr-numbers.sh (which this
+// branch does not touch) tags the placeholder unconditionally and skips only
+// when the CURRENT run's number is present. With a single-tag strip the sed
+// fails to recognise a two-tag placeholder and prepends a THIRD tag, and the
+// Go classifier then counts it as real work — reopening the BOS-591 guard.
+// The real commit on the branch is what makes needsTag true so the --exec
+// actually runs.
+func TestInjectPRNumbers_LeavesStackedTagPlaceholderUnchangedAlongsideRealWork(t *testing.T) {
+	ctx := context.Background()
+	branch := "cron-inject-stacked-placeholder-and-real"
+	stackedPlaceholder := "chore: [#7] [#42] [skip ci] create pull request"
+	if !IsDraftPRPlaceholderSubject(stackedPlaceholder) {
+		t.Fatalf("precondition: IsDraftPRPlaceholderSubject(%q) = false", stackedPlaceholder)
+	}
+	repoDir := injectTestBranch(t, branch,
+		stackedPlaceholder,
+		"feat(web): add widget",
+	)
+	mgr := NewManager(zerolog.Nop())
+
+	if err := mgr.InjectPRNumbers(ctx, repoDir, branch, 1689, "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("InjectPRNumbers: %v", err)
+	}
+
+	subjects := strings.Split(gitOutput(t, repoDir, "log", "--format=%s", "origin/main..HEAD"), "\n")
+	var gotPlaceholder, gotReal bool
+	for _, s := range subjects {
+		switch s {
+		case stackedPlaceholder:
+			gotPlaceholder = true
+		case "feat(web): [#1689] add widget":
+			gotReal = true
+		}
+	}
+	if !gotPlaceholder {
+		t.Fatalf("subjects = %v, want the stacked-tag placeholder byte-identical (%q); a third tag means the sed's repeat group is gone", subjects, stackedPlaceholder)
+	}
+	if !gotReal {
+		t.Fatalf("subjects = %v, want the real commit tagged with [#1689]", subjects)
+	}
+	for _, s := range subjects {
+		if strings.Contains(s, "[skip ci]") && strings.Contains(s, "[#1689]") {
+			t.Fatalf("placeholder %q was retagged with this run's number", s)
+		}
+	}
+}
+
+// TestInjectPRNumbers_OnlyPlaceholderCommitSkipsRebase pins the needsTag
+// pre-scan itself, which the SHA-equality tests above do not: git preserves
+// the SHA of a commit whose --exec leaves the message alone, so removing
+// `|| IsDraftPRPlaceholderSubject(trimmed)` from the pre-scan leaves those
+// tests green while the injector silently starts running a rebase (and a
+// leased force-push) against every placeholder-only branch.
+//
+// HEAD's reflog is the discriminator: a rebase always appends entries to it
+// ("rebase (start)"/"rebase (finish)") even when every replayed SHA is
+// unchanged, whereas the pre-scan's skip path touches no ref at all.
+func TestInjectPRNumbers_OnlyPlaceholderCommitSkipsRebase(t *testing.T) {
+	ctx := context.Background()
+	branch := "cron-inject-placeholder-no-rebase"
+	repoDir := injectTestBranch(t, branch, DraftPRPlaceholderCommitSubject)
+	mgr := NewManager(zerolog.Nop())
+
+	reflogBefore := gitOutput(t, repoDir, "reflog", "show", "--format=%gs", "HEAD")
+	if err := mgr.InjectPRNumbers(ctx, repoDir, branch, 42, "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("InjectPRNumbers: %v", err)
+	}
+	reflogAfter := gitOutput(t, repoDir, "reflog", "show", "--format=%gs", "HEAD")
+
+	if reflogAfter != reflogBefore {
+		t.Fatalf("InjectPRNumbers ran a rebase on a placeholder-only branch; HEAD reflog grew:\nbefore:\n%s\nafter:\n%s",
+			reflogBefore, reflogAfter)
+	}
+}
+
+// TestIsDraftPRPlaceholderSubject unit-tests the placeholder-detection helper
+// InjectPRNumbers' needsTag pre-scan relies on.
+func TestIsDraftPRPlaceholderSubject(t *testing.T) {
+	tests := []struct {
+		name    string
+		subject string
+		want    bool
+	}{
+		{"untagged placeholder", DraftPRPlaceholderCommitSubject, true},
+		{"tagged placeholder", withInjectedTag(t, 42), true},
+		{"placeholder tagged with a different PR number", withInjectedTag(t, 7), true},
+		{"placeholder with surrounding whitespace", "  " + DraftPRPlaceholderCommitSubject + "  \n", true},
+		{"genuine tagged commit", "feat(boss): [#1689] add X", false},
+		{"genuine untagged commit", "feat(boss): add X", false},
+		// Shares the placeholder's own "chore: " prefix AND carries a valid tag,
+		// so only the final whole-subject equality check can reject it. Without
+		// this case, weakening that check to "matching prefix + a tag" would
+		// misclassify genuine chore work as the placeholder and suppress a real
+		// run — the exact failure BOS-591 exists to prevent.
+		{"tagged chore commit whose suffix is not the placeholder", "chore: [#1689] something else entirely", false},
+		{"empty subject", "", false},
+		// Tags STACK: the boss-finalize skill's add-pr-numbers.sh tags the
+		// placeholder unconditionally and skips only when the CURRENT run's
+		// number is present, so two runs for different PRs leave two tags. A
+		// single-tag strip would call these real work and reopen the guard.
+		{"placeholder with two stacked tags", "chore: [#7] [#42] [skip ci] create pull request", true},
+		{"placeholder with three stacked tags", "chore: [#7] [#42] [#1689] [skip ci] create pull request", true},
+		// The safety half: repeating the strip must not swallow genuine work.
+		{"genuine commit with two stacked tags", "feat(boss): [#7] [#1689] add X", false},
+		{"stacked-tag chore commit that is not the placeholder", "chore: [#7] [#42] something else entirely", false},
+		// `[skip ci]` is not a tag (the shape needs `#` + digits), so the
+		// repeat group can never consume it and leave a bare "chore: create
+		// pull request" that would fail the equality check.
+		{"bracketed non-tag is not stripped", "chore: [skip ci] [#42] create pull request", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsDraftPRPlaceholderSubject(tt.subject); got != tt.want {
+				t.Errorf("IsDraftPRPlaceholderSubject(%q) = %v, want %v", tt.subject, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCreate_PopulatesPhaseDurations pins BOS-536: a fresh Create (no setup
+// script) must populate the per-phase timing fields on CreateResult so
+// worktree_duration becomes attributable. SetupScriptDuration stays zero when
+// no setup script is configured, and the sum of the timed phases must never
+// exceed the wall-clock time actually spent in Create — there is un-timed
+// glue (MkdirAll, branchExists, clearStaleWorktree, ensureGitInfoExclude,
+// verifyCurrentBranch) between the phases.
+func TestCreate_PopulatesPhaseDurations(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+
+	start := time.Now()
+	result, err := mgr.Create(context.Background(), CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Test session",
+	})
+	wallClock := time.Since(start)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if result.FetchDuration <= 0 {
+		t.Errorf("FetchDuration = %v, want > 0", result.FetchDuration)
+	}
+	if result.BranchProbeDuration <= 0 {
+		t.Errorf("BranchProbeDuration = %v, want > 0", result.BranchProbeDuration)
+	}
+	if result.WorktreeAddDuration <= 0 {
+		t.Errorf("WorktreeAddDuration = %v, want > 0", result.WorktreeAddDuration)
+	}
+	if result.SetupScriptDuration != 0 {
+		t.Errorf("SetupScriptDuration = %v, want 0 (no setup script configured)", result.SetupScriptDuration)
+	}
+
+	sum := result.FetchDuration + result.BranchProbeDuration + result.WorktreeAddDuration + result.SetupScriptDuration
+	if sum > wallClock {
+		t.Errorf("phase duration sum %v exceeds wall-clock aggregate %v", sum, wallClock)
+	}
+}
+
+// TestCreate_SetupScriptDurationPositiveWhenScriptRuns pins that
+// SetupScriptDuration reflects real elapsed time when a setup script is
+// configured, using a deterministic sleep so the measured duration is
+// reliably nonzero without flaking on fast machines.
+func TestCreate_SetupScriptDurationPositiveWhenScriptRuns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell assumed")
+	}
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+
+	// Derive the script from the bound below so the two cannot drift apart.
+	const sleepFor = 50 * time.Millisecond
+	script := fmt.Sprintf("sleep %v", sleepFor.Seconds())
+	start := time.Now()
+	result, err := mgr.Create(context.Background(), CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Test session",
+		SetupScript:     &script,
+	})
+	wallClock := time.Since(start)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// A script that failed to parse or exited non-zero would still record a
+	// positive duration, so assert the run actually succeeded before reading
+	// the timing — otherwise this test greens while measuring a broken script.
+	if result.SetupErr != nil {
+		t.Fatalf("SetupErr = %v, want nil (the sleep script must actually run)", result.SetupErr)
+	}
+	// Bound against the sleep's own floor rather than zero: shell startup
+	// alone would satisfy "> 0" even if the sleep never happened.
+	if result.SetupScriptDuration < sleepFor {
+		t.Errorf("SetupScriptDuration = %v, want >= %v", result.SetupScriptDuration, sleepFor)
+	}
+
+	sum := result.FetchDuration + result.BranchProbeDuration + result.WorktreeAddDuration + result.SetupScriptDuration
+	if sum > wallClock {
+		t.Errorf("phase duration sum %v exceeds wall-clock aggregate %v", sum, wallClock)
+	}
+}
+
+// TestCreate_ForceSkipsBranchProbeDuration pins the documented zero semantics
+// of BranchProbeDuration on the Create path: CreateOpts.Force skips
+// availableNewBranchName entirely, so the probe duration must stay zero while
+// the other phases are still attributed.
+func TestCreate_ForceSkipsBranchProbeDuration(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+
+	result, err := mgr.Create(context.Background(), CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Test session",
+		Force:           true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if result.BranchProbeDuration != 0 {
+		t.Errorf("BranchProbeDuration = %v, want 0 (probe skipped under Force)", result.BranchProbeDuration)
+	}
+	if result.FetchDuration <= 0 {
+		t.Errorf("FetchDuration = %v, want > 0", result.FetchDuration)
+	}
+	if result.WorktreeAddDuration <= 0 {
+		t.Errorf("WorktreeAddDuration = %v, want > 0", result.WorktreeAddDuration)
+	}
+}
+
+// TestCreateFromExistingBranch_PopulatesPhaseDurations pins BOS-536 for the
+// existing-branch path: FetchDuration and WorktreeAddDuration must be
+// populated, BranchProbeDuration must stay zero (there is no branch-name
+// collision probe on this path — see the CreateFromExistingBranch doc
+// comment), and the phase sum must never exceed the wall-clock aggregate.
+func TestCreateFromExistingBranch_PopulatesPhaseDurations(t *testing.T) {
+	repoDir := initTestRepo(t)
+	for _, args := range [][]string{
+		{"checkout", "-b", "fix-camera-crash"},
+		{"commit", "--allow-empty", "-m", "feature"},
+		{"push", "origin", "fix-camera-crash"},
+		{"checkout", "main"},
+		{"branch", "-D", "fix-camera-crash"},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+
+	start := time.Now()
+	result, err := mgr.CreateFromExistingBranch(context.Background(), CreateFromExistingBranchOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		BranchName:      "fix-camera-crash",
+	})
+	wallClock := time.Since(start)
+	if err != nil {
+		t.Fatalf("CreateFromExistingBranch: %v", err)
+	}
+
+	if result.FetchDuration <= 0 {
+		t.Errorf("FetchDuration = %v, want > 0", result.FetchDuration)
+	}
+	if result.WorktreeAddDuration <= 0 {
+		t.Errorf("WorktreeAddDuration = %v, want > 0", result.WorktreeAddDuration)
+	}
+	if result.BranchProbeDuration != 0 {
+		t.Errorf("BranchProbeDuration = %v, want 0 (no collision probe on this path)", result.BranchProbeDuration)
+	}
+
+	sum := result.FetchDuration + result.BranchProbeDuration + result.WorktreeAddDuration + result.SetupScriptDuration
+	if sum > wallClock {
+		t.Errorf("phase duration sum %v exceeds wall-clock aggregate %v", sum, wallClock)
+	}
+}
+
+// verifyFixture is the state createDraftPR reaches just before it calls
+// VerifyPushedBranchAheadOfBase.
+type verifyFixture struct {
+	worktreePath string
+	branch       string
+	headSHA      string
+}
+
+// newVerifyFixture reproduces createDraftPR's prelude in production shape: a
+// linked worktree created off the base (which fetches it), the placeholder
+// commit, and Push. Running the verification from the linked worktree — not
+// the main clone — is what makes the shared-common-dir claim load-bearing.
+func newVerifyFixture(t *testing.T, mgr *Manager, repo string) verifyFixture {
+	t.Helper()
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repo,
+		BaseBranch:      "main",
+		WorktreeBaseDir: filepath.Join(t.TempDir(), "worktrees"),
+		RepoName:        "my-repo",
+		Title:           "Verify fixture",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.EmptyCommit(ctx, result.WorktreePath, "chore: [skip ci] create pull request"); err != nil {
+		t.Fatalf("EmptyCommit: %v", err)
+	}
+	if err := mgr.Push(ctx, result.WorktreePath, result.BranchName); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	headSHA, err := runGit(ctx, result.WorktreePath, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	return verifyFixture{worktreePath: result.WorktreePath, branch: result.BranchName, headSHA: headSHA}
+}
+
+// TestVerifyPushedBranchAheadOfBase_SkipFetchUsesExistingRefs proves the
+// skip-fetch option really skips the fetch: origin/main has advanced upstream,
+// so a BaseSHA still pointing at the stale remote-tracking ref can only mean no
+// fetch ran. All three SHAs must still resolve from the refs already present.
+func TestVerifyPushedBranchAheadOfBase_SkipFetchUsesExistingRefs(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	fixture := newVerifyFixture(t, mgr, repo)
+	staleBaseSHA, err := runGit(ctx, fixture.worktreePath, "rev-parse", "origin/main")
+	if err != nil {
+		t.Fatalf("rev-parse origin/main: %v", err)
+	}
+	commitOnOrigin(t, repo, "main")
+
+	verification, err := mgr.VerifyPushedBranchAheadOfBase(ctx, fixture.worktreePath, fixture.branch, "main", VerifyPushedBranchAheadOfBaseOpts{SkipFetch: true})
+	if err != nil {
+		t.Fatalf("VerifyPushedBranchAheadOfBase: %v", err)
+	}
+	if verification.BaseSHA != staleBaseSHA {
+		t.Errorf("BaseSHA = %s, want the un-refreshed ref %s — a fetch ran despite SkipFetch", verification.BaseSHA, staleBaseSHA)
+	}
+	if verification.HeadSHA != fixture.headSHA {
+		t.Errorf("HeadSHA = %s, want %s", verification.HeadSHA, fixture.headSHA)
+	}
+	if verification.RemoteHeadSHA != fixture.headSHA {
+		t.Errorf("RemoteHeadSHA = %s, want %s", verification.RemoteHeadSHA, fixture.headSHA)
+	}
+	if verification.AheadCount != 1 {
+		t.Errorf("AheadCount = %d, want 1", verification.AheadCount)
+	}
+}
+
+// TestVerifyPushedBranchAheadOfBase_DefaultFetchesBase pins the zero value to
+// today's behavior, so callers that have not just fetched are unaffected.
+func TestVerifyPushedBranchAheadOfBase_DefaultFetchesBase(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	fixture := newVerifyFixture(t, mgr, repo)
+	freshBaseSHA := commitOnOrigin(t, repo, "main")
+
+	verification, err := mgr.VerifyPushedBranchAheadOfBase(ctx, fixture.worktreePath, fixture.branch, "main", VerifyPushedBranchAheadOfBaseOpts{})
+	if err != nil {
+		t.Fatalf("VerifyPushedBranchAheadOfBase: %v", err)
+	}
+	if verification.BaseSHA != freshBaseSHA {
+		t.Errorf("BaseSHA = %s, want the freshly fetched upstream tip %s", verification.BaseSHA, freshBaseSHA)
+	}
+}
+
+// TestVerifyPushedBranchAheadOfBase_SkipFetchStillDetectsRemoteHeadMismatch
+// proves skipping the base fetch does not weaken the head-vs-remote check: the
+// branch ref is fetch-independent (push maintains it), so a local commit made
+// after the push must still be caught.
+func TestVerifyPushedBranchAheadOfBase_SkipFetchStillDetectsRemoteHeadMismatch(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	fixture := newVerifyFixture(t, mgr, repo)
+	pushedSHA := fixture.headSHA
+	localSHA := makeLocalCommit(t, fixture.worktreePath, "feat: unpushed work")
+
+	verification, err := mgr.VerifyPushedBranchAheadOfBase(ctx, fixture.worktreePath, fixture.branch, "main", VerifyPushedBranchAheadOfBaseOpts{SkipFetch: true})
+	if err == nil {
+		t.Fatal("expected a remote head mismatch error, got nil")
+	}
+	if !strings.Contains(err.Error(), "remote head mismatch") {
+		t.Fatalf("error = %v, want a remote head mismatch", err)
+	}
+	if verification == nil {
+		t.Fatal("expected the verification to be returned alongside the mismatch error")
+	}
+	if verification.HeadSHA != localSHA {
+		t.Errorf("HeadSHA = %s, want %s", verification.HeadSHA, localSHA)
+	}
+	if verification.RemoteHeadSHA != pushedSHA {
+		t.Errorf("RemoteHeadSHA = %s, want %s", verification.RemoteHeadSHA, pushedSHA)
+	}
+}
+
+// TestVerifyPushedBranchAheadOfBase_SkipFetchWithoutBaseRefErrors pins the
+// failure mode createDraftPR's skip-site comment promises for a caller that
+// skips the fetch without one having happened: origin/<base> does not resolve,
+// so the verification errors instead of silently passing. Unlike the
+// remote-head-mismatch and ahead-count errors, which return a populated
+// *BranchVerification alongside theirs, this one fails before the struct is
+// built and hands back nil.
+func TestVerifyPushedBranchAheadOfBase_SkipFetchWithoutBaseRefErrors(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	fixture := newVerifyFixture(t, mgr, repo)
+	if _, err := runGit(ctx, fixture.worktreePath, "update-ref", "-d", "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("update-ref -d refs/remotes/origin/main: %v", err)
+	}
+
+	verification, err := mgr.VerifyPushedBranchAheadOfBase(ctx, fixture.worktreePath, fixture.branch, "main", VerifyPushedBranchAheadOfBaseOpts{SkipFetch: true})
+	if err == nil {
+		t.Fatal("expected an unresolvable base error, got nil")
+	}
+	if !strings.Contains(err.Error(), "resolve origin/main") {
+		t.Fatalf("error = %v, want a resolve origin/main failure", err)
+	}
+	if verification != nil {
+		t.Errorf("verification = %+v, want nil when the base ref cannot be resolved", verification)
 	}
 }

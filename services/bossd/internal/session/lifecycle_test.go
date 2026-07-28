@@ -20,6 +20,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -107,7 +108,12 @@ func (m *mockSessionStore) Get(_ context.Context, id string) (*models.Session, e
 	return s, nil
 }
 
+// List takes m.mu like Get and Update do. Lifecycle now reaches this map from a
+// background goroutine (the BOS-540 draft-PR step), so an unguarded range here
+// is one refactor away from being a real -race source.
 func (m *mockSessionStore) List(_ context.Context, repoID string) ([]*models.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var result []*models.Session
 	for _, s := range m.sessions {
 		if repoID != "" && s.RepoID != repoID {
@@ -216,6 +222,9 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	}
 	if params.IsTmuxUnattended != nil {
 		s.IsTmuxUnattended = *params.IsTmuxUnattended
+	}
+	if params.IsQuickChat != nil {
+		s.IsQuickChat = *params.IsQuickChat
 	}
 	if params.Detach != nil {
 		s.Detach = *params.Detach
@@ -756,20 +765,45 @@ type mockWorktreeManager struct {
 	emptyCommits                []string // worktree paths on which EmptyCommit was invoked
 	emptyCommitCalls            int
 	verifyCurrentBranchErr      error
-	verifiedBranches            []string
-	verifyPushedErr             error
-	verifyPushedResult          *gitpkg.BranchVerification
-	verifyPushedCalls           []verifyPushedCall
-	latestCommitSubject         string
-	latestCommitSubjectErr      error
-	commitSubjects              []string
-	commitSubjectsErr           error
+	// verifyCurrentBranchHook, when set, runs inside VerifyCurrentBranch — the
+	// FIRST worktree call createDraftPR makes. The BOS-540 tests use it to park
+	// the background create before it has touched anything, so the assertions
+	// that follow observe the session exactly as a client would while the PR is
+	// still being opened.
+	verifyCurrentBranchHook func()
+	// verifyCurrentBranchCtxHook is the same park point with the call's context
+	// in hand, so a test can stand in for a git/GitHub call that honours
+	// cancellation rather than one that ignores it.
+	verifyCurrentBranchCtxHook func(context.Context)
+	verifiedBranches           []string
+	verifyPushedErr            error
+	verifyPushedResult         *gitpkg.BranchVerification
+	verifyPushedCalls          []verifyPushedCall
+	latestCommitSubject        string
+	latestCommitSubjectErr     error
+	commitSubjects             []string
+	commitSubjectsErr          error
+	// commitSubjectsFn, when set, overrides commitSubjects/commitSubjectsErr and
+	// lets a test return different subjects depending on the base ref passed to
+	// CommitSubjects (e.g. local "main" vs "refs/remotes/origin/main").
+	commitSubjectsFn       func(baseRef string) ([]string, error)
+	commitSubjectsBaseRefs []string // base refs passed to CommitSubjects, in call order
+	// hasDiffAgainstBase is what HasDiffAgainstBase reports, but ONLY when
+	// hasDiffAgainstBaseOK is set. The extra opt-in flag keeps the zero-value
+	// mock answering "has a diff" — the pre-BOS-591 behaviour every existing
+	// finalize test assumes — while still letting a test assert the empty-diff
+	// refusal, rather than overloading a bool's zero value as "unset".
+	hasDiffAgainstBase          bool
+	hasDiffAgainstBaseOK        bool
+	hasDiffAgainstBaseErr       error
+	hasDiffAgainstBaseRefs      []string // base refs passed to HasDiffAgainstBase, in call order
 	branchDebugSnapshot         *gitpkg.BranchDebugSnapshot
 	branchDebugSnapshotErr      error
 	branchDebugSnapshotCalls    []branchDebugSnapshotCall
 	originURL                   string // returned by DetectOriginURL
 	statusOut                   string // returned by Status
 	statusErr                   error  // if set, Status returns this error
+	statusCalls                 int
 	worktreePath                string // override for Create's returned WorktreePath; empty uses the historical fixed path
 	fetchedBases                []string
 	fetchBaseErr                error
@@ -799,6 +833,7 @@ type verifyPushedCall struct {
 	worktreePath string
 	branch       string
 	baseBranch   string
+	skipFetch    bool
 }
 
 func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
@@ -837,8 +872,14 @@ func (m *mockWorktreeManager) EmptyCommit(_ context.Context, worktreePath, _ str
 	return nil
 }
 
-func (m *mockWorktreeManager) VerifyCurrentBranch(_ context.Context, _ string, branch string) error {
+func (m *mockWorktreeManager) VerifyCurrentBranch(ctx context.Context, _ string, branch string) error {
 	m.verifiedBranches = append(m.verifiedBranches, branch)
+	if m.verifyCurrentBranchCtxHook != nil {
+		m.verifyCurrentBranchCtxHook(ctx)
+	}
+	if m.verifyCurrentBranchHook != nil {
+		m.verifyCurrentBranchHook()
+	}
 	return m.verifyCurrentBranchErr
 }
 
@@ -867,11 +908,12 @@ func (m *mockWorktreeManager) InjectPRNumbers(_ context.Context, _, branch strin
 	return m.injectPRNumbersErr
 }
 
-func (m *mockWorktreeManager) VerifyPushedBranchAheadOfBase(_ context.Context, worktreePath, branch, baseBranch string) (*gitpkg.BranchVerification, error) {
+func (m *mockWorktreeManager) VerifyPushedBranchAheadOfBase(_ context.Context, worktreePath, branch, baseBranch string, opts gitpkg.VerifyPushedBranchAheadOfBaseOpts) (*gitpkg.BranchVerification, error) {
 	m.verifyPushedCalls = append(m.verifyPushedCalls, verifyPushedCall{
 		worktreePath: worktreePath,
 		branch:       branch,
 		baseBranch:   baseBranch,
+		skipFetch:    opts.SkipFetch,
 	})
 	if m.verifyPushedErr != nil {
 		return nil, m.verifyPushedErr
@@ -888,11 +930,27 @@ func (m *mockWorktreeManager) VerifyPushedBranchAheadOfBase(_ context.Context, w
 }
 
 func (m *mockWorktreeManager) Status(_ context.Context, _ string) (string, error) {
+	m.statusCalls++
 	return m.statusOut, m.statusErr
 }
 
-func (m *mockWorktreeManager) CommitSubjects(context.Context, string, string) ([]string, error) {
+func (m *mockWorktreeManager) CommitSubjects(_ context.Context, _ string, baseRef string) ([]string, error) {
+	m.commitSubjectsBaseRefs = append(m.commitSubjectsBaseRefs, baseRef)
+	if m.commitSubjectsFn != nil {
+		return m.commitSubjectsFn(baseRef)
+	}
 	return m.commitSubjects, m.commitSubjectsErr
+}
+
+func (m *mockWorktreeManager) HasDiffAgainstBase(_ context.Context, _ string, baseRef string) (bool, error) {
+	m.hasDiffAgainstBaseRefs = append(m.hasDiffAgainstBaseRefs, baseRef)
+	if m.hasDiffAgainstBaseErr != nil {
+		return false, m.hasDiffAgainstBaseErr
+	}
+	if !m.hasDiffAgainstBaseOK {
+		return true, nil
+	}
+	return m.hasDiffAgainstBase, nil
 }
 
 func (m *mockWorktreeManager) LatestCommitSubject(_ context.Context, _ string) (string, error) {
@@ -954,8 +1012,20 @@ func (m *mockWorktreeManager) IsAncestor(_ context.Context, localPath, ref, targ
 	return true, nil
 }
 
+func (m *mockWorktreeManager) CountMergeCommits(_ context.Context, _, _, _ string) (int, error) {
+	return 0, nil
+}
+
 func (m *mockWorktreeManager) MergeLocalBranch(_ context.Context, _, _, _, _ string) error {
 	return nil
+}
+
+func (m *mockWorktreeManager) CountBehindBase(_ context.Context, _, _, _ string) (int, error) {
+	return 0, nil
+}
+
+func (m *mockWorktreeManager) RebaseOntoBaseAndPush(_ context.Context, _, _, _ string) (*gitpkg.RebaseResult, error) {
+	return &gitpkg.RebaseResult{}, nil
 }
 
 func (m *mockWorktreeManager) FetchBase(_ context.Context, _, base string) error {
@@ -1090,6 +1160,11 @@ type mockVCSProvider struct {
 	getCheckResultsCalls   int
 	getReviewCommentsCalls int
 	getPRStatusPRNumbers   []int
+
+	// createPRHook, when set, fully replaces CreateDraftPR's body (including
+	// its call recording). Used by the BOS-540 concurrency tests to park the
+	// background create while another writer opens the PR.
+	createPRHook func(vcs.CreatePROpts) (*vcs.PRInfo, error)
 }
 
 type updatePRTitleCall struct {
@@ -1106,6 +1181,12 @@ func newMockVCSProvider() *mockVCSProvider {
 }
 
 func (m *mockVCSProvider) CreateDraftPR(_ context.Context, opts vcs.CreatePROpts) (*vcs.PRInfo, error) {
+	if m.createPRHook != nil {
+		// The hook owns both the call log and the result, so a test can make
+		// concurrent creates (BOS-540's background create racing finalize) return
+		// different answers per call under its own lock.
+		return m.createPRHook(opts)
+	}
 	m.createPRCalls = append(m.createPRCalls, opts)
 	if m.createPRErr != nil {
 		return nil, m.createPRErr
@@ -1214,6 +1295,7 @@ func TestStartSession(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	// Verify worktree was created.
 	if len(wt.created) != 1 {
@@ -1292,6 +1374,7 @@ func TestStartSession_TrackerSession_AwaitsManualStart(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	// Worktree setup still runs.
 	if len(wt.created) != 1 {
@@ -1368,6 +1451,7 @@ func TestStartSession_ForkGovernedByDetach(t *testing.T) {
 			if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: tc.detach}); err != nil {
 				t.Fatalf("StartSession: %v", err)
 			}
+			awaitDraftPR(t, lc, "sess-1")
 
 			got := sessions.sessions["sess-1"]
 			if tc.wantHeadless {
@@ -1421,6 +1505,7 @@ func TestStartSession_HeadlessRunUsesSessionModel(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 	if len(cr.started) != 1 {
 		t.Fatalf("expected 1 headless agent start, got %d", len(cr.started))
 	}
@@ -1460,6 +1545,7 @@ func TestStartSession_NewPR_AwaitsManualStart(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if len(cr.started) != 0 {
 		t.Fatalf("expected 0 agent starts for interactive new-PR session, got %d", len(cr.started))
@@ -1505,6 +1591,7 @@ func TestStartSession_ExistingPR_AwaitsManualStart(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{ExistingBranch: "feature/pr-42"}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if len(cr.started) != 0 {
 		t.Fatalf("expected 0 agent starts for interactive existing-PR session, got %d", len(cr.started))
@@ -1550,6 +1637,7 @@ func TestStartSession_DraftPRNotAttemptedWhenBranchHasNoCommitsOverBase(t *testi
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if len(vp.createPRCalls) != 0 {
 		t.Fatalf("CreateDraftPR calls = %d, want 0", len(vp.createPRCalls))
@@ -1611,6 +1699,7 @@ func TestStartSession_NoCommitsBetweenProviderErrorIncludesBranchSHAs(t *testing
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if len(vp.createPRCalls) != 1 {
 		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
@@ -1672,6 +1761,7 @@ func TestStartSession_DuplicatePRErrorAttachesExistingPRAndClearsBlockedReason(t
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	sess := sessions.sessions["sess-1"]
 	if sess.PRNumber == nil || *sess.PRNumber != 77 {
@@ -1729,6 +1819,7 @@ func TestStartSession_CronPRTitleNormalizesSessionTitleWhenLatestCommitSubjectFa
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{CronJobID: cronJobID}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if len(vp.createPRCalls) != 1 {
 		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
@@ -1769,6 +1860,7 @@ func TestStartSession_ExistingBranchNotOnRemote_FallsBackToCreate(t *testing.T) 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{ExistingBranch: "dave/fre-1176"}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	// Should have tried CreateFromExistingBranch first.
 	if len(wt.createdFromExisting) != 1 {
@@ -2402,6 +2494,7 @@ func TestStartSession_NoPlan_CreateDraftPRFailsRepoNotReady(t *testing.T) {
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{})
+	awaitDraftPR(t, lc, "sess-1")
 	if err != nil {
 		t.Fatalf("expected session to start successfully despite PR failure, got: %v", err)
 	}
@@ -2452,6 +2545,7 @@ func TestStartSession_SkipSetupScript_NilsSetupScript(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	// Verify CreateFromExistingBranch was called with nil SetupScript.
 	if len(wt.createdFromExisting) != 1 {
@@ -2492,6 +2586,7 @@ func TestStartSession_SkipSetupScript_NewBranch(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{SkipSetupScript: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	// Verify Create was called with nil SetupScript.
 	if len(wt.created) != 1 {
@@ -2649,6 +2744,7 @@ func TestStartSession_SetsInitializingWhenSetupScriptPresent(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if want := []bool{true, false}; !reflect.DeepEqual(f.snapshot(), want) {
 		t.Fatalf("calls = %v, want %v", f.snapshot(), want)
@@ -2684,6 +2780,7 @@ func TestStartSession_ClearsInitializingOnCreateError(t *testing.T) {
 	lc.SetDisplayTracker(f)
 
 	_ = lc.StartSession(ctx, "sess-1", StartSessionOpts{})
+	awaitDraftPR(t, lc, "sess-1")
 
 	calls := f.snapshot()
 	if len(calls) == 0 || calls[len(calls)-1] != false {
@@ -2722,6 +2819,7 @@ func TestStartSession_NoInitializingWithoutSetupScript(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if calls := f.snapshot(); len(calls) != 0 {
 		t.Fatalf("expected no SetSettingUp calls when no setup script, got: %v", calls)
@@ -2980,6 +3078,7 @@ func TestStartSession_NoPlan_EmptyOriginURL_ReDetected(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	// Verify origin URL was re-detected and persisted.
 	if repos.repos["repo-1"].OriginURL != "git@github.com:owner/repo.git" {
@@ -3027,6 +3126,7 @@ func TestStartSession_NoSkipSetupScript_PassesSetupScript(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	// Verify CreateFromExistingBranch was called WITH SetupScript.
 	if len(wt.createdFromExisting) != 1 {
@@ -3072,6 +3172,7 @@ func TestStartSession_DeferPRFalse_CreatesDraftPR(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if len(vp.createPRCalls) != 1 {
 		t.Fatalf("expected 1 createPR call with DeferPR=false, got %d", len(vp.createPRCalls))
@@ -3079,6 +3180,14 @@ func TestStartSession_DeferPRFalse_CreatesDraftPR(t *testing.T) {
 	sess := sessions.sessions["sess-1"]
 	if sess.PRNumber == nil {
 		t.Error("expected PRNumber to be populated after up-front draft PR")
+	}
+	// Worktree creation already fetched this base earlier in the same
+	// StartSession call, so the draft-PR verification must not fetch it again.
+	if len(wt.verifyPushedCalls) != 1 {
+		t.Fatalf("VerifyPushedBranchAheadOfBase calls = %d, want 1", len(wt.verifyPushedCalls))
+	}
+	if !wt.verifyPushedCalls[0].skipFetch {
+		t.Error("skipFetch = false, want true so session create fetches the base only once")
 	}
 }
 
@@ -3116,6 +3225,7 @@ func TestStartSession_CreateDraftPRFailureStoresBlockedReason(t *testing.T) {
 	if err := lifecycle.StartSession(ctx, session.ID, StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession returned error: %v", err)
 	}
+	awaitDraftPR(t, lifecycle, session.ID)
 
 	updated := sessions.sessions[session.ID]
 	if updated.PRNumber != nil {
@@ -3186,6 +3296,7 @@ func TestStartSession_CreateDraftPRFailureLogsBranchDiagnostics(t *testing.T) {
 		provider.createPRErr = errors.New(prFailure)
 
 		err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{})
+		awaitDraftPR(t, lifecycle, "sess-1")
 		return sessions, err
 	}
 
@@ -3224,7 +3335,9 @@ func TestStartSession_CreateDraftPRFailureLogsBranchDiagnostics(t *testing.T) {
 			},
 		}
 
-		sessions, err := startWithDraftPRError(t, worktrees, zerolog.New(&logs))
+		// SyncWriter: StartSession and its background draft-PR step (BOS-540)
+		// now both log, so an unsynchronized bytes.Buffer has two writers.
+		sessions, err := startWithDraftPRError(t, worktrees, zerolog.New(zerolog.SyncWriter(&logs)))
 		if err != nil {
 			t.Fatalf("StartSession returned error: %v", err)
 		}
@@ -3257,7 +3370,9 @@ func TestStartSession_CreateDraftPRFailureLogsBranchDiagnostics(t *testing.T) {
 			branchDebugSnapshotErr: errors.New("snapshot failed"),
 		}
 
-		sessions, err := startWithDraftPRError(t, worktrees, zerolog.New(&logs))
+		// SyncWriter: StartSession and its background draft-PR step (BOS-540)
+		// now both log, so an unsynchronized bytes.Buffer has two writers.
+		sessions, err := startWithDraftPRError(t, worktrees, zerolog.New(zerolog.SyncWriter(&logs)))
 		if err != nil {
 			t.Fatalf("StartSession returned error: %v", err)
 		}
@@ -3309,6 +3424,7 @@ func TestStartSession_BlocksDraftPRWhenWorktreeBranchMismatches(t *testing.T) {
 
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{})
+	awaitDraftPR(t, lc, "sess-1")
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
@@ -3361,6 +3477,7 @@ func TestStartSession_DeferPRTrue_SkipsDraftPR(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{DeferPR: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if len(vp.createPRCalls) != 0 {
 		t.Errorf("expected 0 createPR calls with DeferPR=true, got %d", len(vp.createPRCalls))
@@ -3371,6 +3488,765 @@ func TestStartSession_DeferPRTrue_SkipsDraftPR(t *testing.T) {
 	sess := sessions.sessions["sess-1"]
 	if sess.PRNumber != nil {
 		t.Errorf("expected PRNumber to remain nil, got %v", sess.PRNumber)
+	}
+	// BOS-540: DeferPR must not merely skip the create, it must start no
+	// background step at all — no goroutine, and no in-flight marker claiming a
+	// PR is coming when none is.
+	if sess.BlockedReason != nil {
+		t.Errorf("BlockedReason = %q, want nil: DeferPR advertises no pending PR", *sess.BlockedReason)
+	}
+	if lc.backgroundDraftPRIsTracked("sess-1") {
+		t.Error("DeferPR session registered a background draft-PR step, want none")
+	}
+}
+
+// newBackgroundDraftPRFixture builds the shared setup for the BOS-540 tests: a
+// repo, one PR-less session in CreatingWorktree, and a Lifecycle wired to
+// controllable mocks.
+func newBackgroundDraftPRFixture(t *testing.T) (*mockSessionStore, *mockWorktreeManager, *mockVCSProvider, *Lifecycle) {
+	t.Helper()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	vp := newMockVCSProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "git@github.com:owner/repo.git",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		Plan:       "Do something",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, newMockAgentRunner(), nil, vp, zerolog.Nop())
+	return sessions, wt, vp, lc
+}
+
+// TestStartSession_DraftPRCreatedInBackgroundAfterReturn is the core BOS-540
+// assertion: StartSession returns — session usable, state ImplementingPlan —
+// while the draft PR has not been created yet, and the PR number is persisted to
+// the session row once the background step finishes.
+//
+// The create is parked inside VerifyCurrentBranch, the first thing createDraftPR
+// does, so the window the test inspects is exactly what a client sees between
+// "session created" and "PR opened".
+func TestStartSession_DraftPRCreatedInBackgroundAfterReturn(t *testing.T) {
+	ctx := context.Background()
+	sessions, wt, vp, lc := newBackgroundDraftPRFixture(t)
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	wt.verifyCurrentBranchHook = func() {
+		close(parked)
+		<-release
+	}
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// StartSession has returned while the create is still parked: everything
+	// read below is ordered behind the parked goroutine's last write by the
+	// channel handshake, so these are stable observations, not a snapshot race.
+	<-parked
+
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.ImplementingPlan {
+		t.Fatalf("State = %v, want ImplementingPlan before the PR exists", sess.State)
+	}
+	if sess.PRNumber != nil {
+		t.Fatalf("PRNumber = %d, want nil: StartSession must not wait for the PR", *sess.PRNumber)
+	}
+	if len(vp.createPRCalls) != 0 {
+		t.Fatalf("CreateDraftPR calls = %d, want 0 while the background step is still running", len(vp.createPRCalls))
+	}
+	// Observability: the session says a PR is coming, and says it in a form that
+	// is NOT a failure — otherwise the TUI would render "? PR failed" for every
+	// healthy session start.
+	if !sessionreason.IsDraftPRCreationInFlight(sess.BlockedReason) {
+		t.Fatalf("BlockedReason = %v, want the draft-PR in-flight marker", sess.BlockedReason)
+	}
+	if sessionreason.IsDraftPRCreationFailure(sess.BlockedReason) {
+		t.Fatalf("BlockedReason = %q reads as a failure, want in-flight", *sess.BlockedReason)
+	}
+
+	close(release)
+	awaitDraftPR(t, lc, "sess-1")
+
+	sess = sessions.sessions["sess-1"]
+	if sess.PRNumber == nil || *sess.PRNumber != 42 {
+		t.Fatalf("PRNumber = %v, want 42 once the background create finished", sess.PRNumber)
+	}
+	if sess.PRURL == nil || *sess.PRURL != "https://github.com/owner/repo/pull/42" {
+		t.Fatalf("PRURL = %v, want the created PR's URL", sess.PRURL)
+	}
+	if sess.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil once the PR landed", *sess.BlockedReason)
+	}
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
+	}
+}
+
+// TestStartSession_BackgroundDraftPRFailureBlocksAndPreservesBranch pins that
+// moving the create into the background did not move its failure handling: the
+// blocked reason still lands (replacing the in-flight marker, so the session
+// reads as failed rather than perpetually pending), the branch is still pushed
+// and preserved for a retry, and StartSession itself still succeeds.
+func TestStartSession_BackgroundDraftPRFailureBlocksAndPreservesBranch(t *testing.T) {
+	ctx := context.Background()
+	sessions, wt, vp, lc := newBackgroundDraftPRFixture(t)
+	vp.createPRErr = errors.New("gh pr create: GraphQL: Head sha can't be blank")
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	awaitDraftPR(t, lc, "sess-1")
+
+	sess := sessions.sessions["sess-1"]
+	if sess.PRNumber != nil {
+		t.Fatalf("PRNumber = %d, want nil after a failed create", *sess.PRNumber)
+	}
+	if !sessionreason.IsDraftPRCreationFailure(sess.BlockedReason) {
+		t.Fatalf("BlockedReason = %v, want a draft PR creation failure", sess.BlockedReason)
+	}
+	if sessionreason.IsDraftPRCreationInFlight(sess.BlockedReason) {
+		t.Fatal("BlockedReason still reads as in-flight after the create failed")
+	}
+	if sess.State != machine.ImplementingPlan {
+		t.Fatalf("State = %v, want ImplementingPlan: a failed PR must not derail the session", sess.State)
+	}
+	// Retryable: the branch reached the remote, so EnsurePR/SubmitPR can open
+	// the PR later without redoing the session.
+	if len(wt.pushed) != 1 || wt.pushed[0] != sess.BranchName {
+		t.Fatalf("pushed branches = %v, want [%s] preserved for retry", wt.pushed, sess.BranchName)
+	}
+}
+
+// TestStartSession_FinalizeRacingBackgroundDraftPRYieldsOnePR covers the
+// ordering constraint the background step introduces: a run short enough to
+// finalize before the create completes has two writers trying to open a PR for
+// the same branch. GitHub rejects the second with ErrPRAlreadyExists, and the
+// existing attach path must turn that into "attach the PR that exists" — so the
+// session ends with exactly one PR, not two and not a blocked session.
+func TestStartSession_FinalizeRacingBackgroundDraftPRYieldsOnePR(t *testing.T) {
+	ctx := context.Background()
+	sessions, _, vp, lc := newBackgroundDraftPRFixture(t)
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var mu sync.Mutex
+	attempts := 0
+	vp.createPRHook = func(opts vcs.CreatePROpts) (*vcs.PRInfo, error) {
+		mu.Lock()
+		attempts++
+		n := attempts
+		vp.createPRCalls = append(vp.createPRCalls, opts)
+		mu.Unlock()
+		if n == 1 {
+			// The background create, parked mid-flight so finalize can overtake it.
+			close(parked)
+			<-release
+			return nil, vcs.ErrPRAlreadyExists
+		}
+		return &vcs.PRInfo{Number: 91, URL: "https://github.com/owner/repo/pull/91"}, nil
+	}
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	<-parked
+
+	// Finalize's EnsurePR wins the race and opens PR 91.
+	branch := sessions.sessions["sess-1"].BranchName
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 91, Title: "Test Session", HeadBranch: branch, State: vcs.PRStateOpen},
+	}
+	if err := lc.EnsurePR(ctx, "sess-1"); err != nil {
+		t.Fatalf("EnsurePR: %v", err)
+	}
+
+	close(release)
+	awaitDraftPR(t, lc, "sess-1")
+
+	sess := sessions.sessions["sess-1"]
+	if sess.PRNumber == nil || *sess.PRNumber != 91 {
+		t.Fatalf("PRNumber = %v, want 91 (the single PR both writers converged on)", sess.PRNumber)
+	}
+	if sess.PRURL == nil || *sess.PRURL != "https://github.com/owner/repo/pull/91" {
+		t.Fatalf("PRURL = %v, want PR 91's URL", sess.PRURL)
+	}
+	if sess.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil: losing the race is not a failure", *sess.BlockedReason)
+	}
+	mu.Lock()
+	gotAttempts := attempts
+	mu.Unlock()
+	if gotAttempts != 2 {
+		t.Fatalf("CreateDraftPR attempts = %d, want 2 (both writers tried)", gotAttempts)
+	}
+	// Exactly one of the two attempts produced a PR; the loser attached to it
+	// rather than opening a second, which is what the ListOpenPRs lookup proves.
+	if len(vp.listOpenPRCalls) != 1 {
+		t.Fatalf("ListOpenPRs calls = %d, want 1 (the duplicate-create attach path)", len(vp.listOpenPRCalls))
+	}
+}
+
+// TestStartSession_BackgroundDraftPRSkippedWhenPRAlreadyAttached covers the
+// cheap half of the interlock: when another writer attaches a PR before the
+// background step gets to run, the step must bow out without touching GitHub —
+// and must clear the in-flight marker it wrote, so the session is not left
+// advertising a PR that is never coming.
+func TestStartSession_BackgroundDraftPRSkippedWhenPRAlreadyAttached(t *testing.T) {
+	ctx := context.Background()
+	sessions, _, vp, lc := newBackgroundDraftPRFixture(t)
+
+	// The update hook fires on the in-flight marker write, which happens on the
+	// calling goroutine BEFORE the background step is spawned — so the PR is
+	// guaranteed to be attached by the time the step re-reads the row.
+	existing := 55
+	existingURL := "https://github.com/owner/repo/pull/55"
+	sessions.updateHook = func(id string, params db.UpdateSessionParams) error {
+		if params.BlockedReason != nil && *params.BlockedReason != nil &&
+			sessionreason.IsDraftPRCreationInFlight(*params.BlockedReason) {
+			sessions.sessions[id].PRNumber = &existing
+			sessions.sessions[id].PRURL = &existingURL
+		}
+		return nil
+	}
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	awaitDraftPR(t, lc, "sess-1")
+
+	sess := sessions.sessions["sess-1"]
+	if sess.PRNumber == nil || *sess.PRNumber != existing {
+		t.Fatalf("PRNumber = %v, want the already-attached 55", sess.PRNumber)
+	}
+	if len(vp.createPRCalls) != 0 {
+		t.Fatalf("CreateDraftPR calls = %d, want 0 when a PR is already attached", len(vp.createPRCalls))
+	}
+	if sess.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil: the in-flight marker must not outlive the step", *sess.BlockedReason)
+	}
+}
+
+// TestWaitForBackgroundDraftPRsNamesAbandonedSessions pins the shutdown
+// contract: a create still in flight when the daemon gives up is REPORTED, not
+// silently dropped, so the operator knows which sessions may have a PR opened
+// remotely after the daemon exits.
+func TestWaitForBackgroundDraftPRsNamesAbandonedSessions(t *testing.T) {
+	ctx := context.Background()
+	_, wt, _, lc := newBackgroundDraftPRFixture(t)
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	wt.verifyCurrentBranchHook = func() {
+		close(parked)
+		<-release
+	}
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	<-parked
+
+	giveUp, cancel := context.WithCancel(context.Background())
+	cancel()
+	abandoned := lc.WaitForBackgroundDraftPRs(giveUp)
+	if len(abandoned) != 1 || abandoned[0] != "sess-1" {
+		t.Fatalf("abandoned = %v, want [sess-1]", abandoned)
+	}
+
+	close(release)
+	awaitDraftPR(t, lc, "sess-1")
+
+	// Drained: a later shutdown reports nothing outstanding.
+	if abandoned := lc.WaitForBackgroundDraftPRs(context.Background()); len(abandoned) != 0 {
+		t.Fatalf("abandoned after drain = %v, want none", abandoned)
+	}
+}
+
+// TestBackgroundDraftPRFailureDoesNotOverwriteAnotherOwnersState pins the
+// failure-path twin of the clearDraftPRBlockedReason re-read. The step's failure
+// is decided up to a full push + `gh pr create` after it started, so by the time
+// it lands the blocked reason may no longer be ours: finalize's EnsurePR may
+// have opened the PR (making our failure moot — and "? PR failed" would then
+// render forever on a session that HAS its PR), or the session's own run may
+// have recorded a real block (whose diagnostic we would swap for a PR one).
+func TestBackgroundDraftPRFailureDoesNotOverwriteAnotherOwnersState(t *testing.T) {
+	inFlight := sessionreason.DraftPRCreationInFlight()
+	createErr := errors.New("push branch: index.lock exists")
+
+	tests := []struct {
+		name    string
+		session *models.Session
+		// wantReason is the blocked reason expected after the failed create;
+		// empty means "expect a draft-PR failure reason".
+		wantReason string
+	}{
+		{
+			name:    "no owner: the failure is recorded",
+			session: &models.Session{ID: "sess-1", RepoID: "repo-1", BlockedReason: &inFlight},
+		},
+		{
+			name: "a PR landed first: nothing is recorded",
+			session: &models.Session{
+				ID: "sess-1", RepoID: "repo-1",
+				PRNumber: intPtr(42),
+			},
+			wantReason: "\x00none",
+		},
+		{
+			name: "another owner blocked the session: its reason survives",
+			session: &models.Session{
+				ID: "sess-1", RepoID: "repo-1",
+				BlockedReason: strptr("blocked: max fix attempts reached"),
+			},
+			wantReason: "blocked: max fix attempts reached",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessions := newMockSessionStore()
+			sessions.sessions["sess-1"] = tt.session
+			lc := newTestLifecycle(
+				sessions, newMockRepoStore(), nil, nil,
+				&mockWorktreeManager{}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop(),
+			)
+
+			lc.failInFlightDraftPR(context.Background(), "sess-1", createErr)
+
+			got := sessions.sessions["sess-1"].BlockedReason
+			switch tt.wantReason {
+			case "":
+				if !sessionreason.IsDraftPRCreationFailure(got) {
+					t.Fatalf("BlockedReason = %v, want a draft PR creation failure", got)
+				}
+			case "\x00none":
+				if got != nil {
+					t.Fatalf("BlockedReason = %q, want nil: the PR exists, so the failure is moot", *got)
+				}
+			default:
+				if got == nil || *got != tt.wantReason {
+					t.Fatalf("BlockedReason = %v, want %q left in place", got, tt.wantReason)
+				}
+			}
+		})
+	}
+}
+
+// TestBackgroundDraftPRPanicStillRecordsAFailure pins the marker's last escape
+// hatch. safego.Go RECOVERS panics instead of crashing the process, so a panic
+// under the step would otherwise unwind straight past every failure handler and
+// leave the session advertising a PR that is never coming — until the next
+// daemon boot, since the stale-marker sweep only runs at startup.
+func TestBackgroundDraftPRPanicStillRecordsAFailure(t *testing.T) {
+	ctx := context.Background()
+	sessions, wt, _, lc := newBackgroundDraftPRFixture(t)
+	wt.verifyCurrentBranchHook = func() { panic("boom from the provider") }
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	awaitDraftPR(t, lc, "sess-1")
+
+	got := sessions.sessions["sess-1"].BlockedReason
+	if sessionreason.IsDraftPRCreationInFlight(got) {
+		t.Fatal("BlockedReason is still the in-flight marker after a panic; the session would advertise a PR forever")
+	}
+	if !sessionreason.IsDraftPRCreationFailure(got) {
+		t.Fatalf("BlockedReason = %v, want a draft PR creation failure", got)
+	}
+}
+
+// TestBackgroundDraftPRCancellationClearsRatherThanFails pins the teardown
+// paths that PRESERVE the row. ArchiveSession cancels the create, and a cancel
+// is a deliberate teardown, not a failure: recording one would leave the
+// archived session reading "draft PR creation failed: … context canceled",
+// which drives the "? PR failed" label for a session nobody asked to have a PR.
+func TestBackgroundDraftPRCancellationClearsRatherThanFails(t *testing.T) {
+	ctx := context.Background()
+	sessions, wt, _, lc := newBackgroundDraftPRFixture(t)
+
+	parked := make(chan struct{})
+	wt.verifyCurrentBranchCtxHook = func(stepCtx context.Context) {
+		close(parked)
+		<-stepCtx.Done()
+	}
+	// Faithful to what a cancelled create actually surfaces. exec.CommandContext
+	// KILLS the git/gh subprocess, so the error is an *exec.ExitError — "signal:
+	// killed" — which does NOT satisfy errors.Is(err, context.Canceled). A
+	// cancel-detection keyed on the error value alone passes a test that returns
+	// a wrapped context error and fails in production; this returns the real
+	// shape, so only a context-keyed detection passes.
+	wt.verifyCurrentBranchErr = errors.New("signal: killed")
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	<-parked
+	if !sessionreason.IsDraftPRCreationInFlight(sessions.sessions["sess-1"].BlockedReason) {
+		t.Fatal("precondition: the in-flight marker should be set while the create is parked")
+	}
+
+	lc.StopBackgroundDraftPR(ctx, "sess-1")
+
+	got := sessions.sessions["sess-1"].BlockedReason
+	if got != nil {
+		t.Fatalf("BlockedReason = %q, want nil: a cancelled create is a teardown, not a failure", *got)
+	}
+}
+
+// TestOpenDraftPRForBranchRefreshesTitleAndPRBeforeCreating pins the two row
+// fields the background step decides from and then writes back, both of which
+// can move under it during the ~12-60s create.
+func TestOpenDraftPRForBranchRefreshesTitleAndPRBeforeCreating(t *testing.T) {
+	t.Run("a rename during the create reaches the PR and survives", func(t *testing.T) {
+		sessions := newMockSessionStore()
+		vp := newMockVCSProvider()
+		sessions.sessions["sess-1"] = &models.Session{
+			ID: "sess-1", RepoID: "repo-1", BaseBranch: "main",
+			BranchName: "feat-x", Title: "renamed by the user",
+		}
+		lc := newTestLifecycle(
+			sessions, newMockRepoStore(), nil, nil,
+			&mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop(),
+		)
+
+		// The step's copy, taken before the rename landed.
+		stale := &models.Session{
+			ID: "sess-1", RepoID: "repo-1", BaseBranch: "main",
+			BranchName: "feat-x", Title: "original title",
+		}
+		if err := lc.openDraftPRForBranch(context.Background(), "sess-1", stale, &models.Repo{ID: "repo-1", OriginURL: "git@github.com:owner/repo.git"}); err != nil {
+			t.Fatalf("openDraftPRForBranch: %v", err)
+		}
+
+		if len(vp.createPRCalls) != 1 {
+			t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
+		}
+		if got := vp.createPRCalls[0].Title; got != "renamed by the user" {
+			t.Fatalf("PR title = %q, want the renamed title: UpdateSession skipped its own PR sync because pr_number was still nil", got)
+		}
+		if got := sessions.sessions["sess-1"].Title; got != "renamed by the user" {
+			t.Fatalf("stored Title = %q, want the rename preserved, not reverted", got)
+		}
+	})
+
+	t.Run("a PR attached during the create is adopted, not duplicated", func(t *testing.T) {
+		sessions := newMockSessionStore()
+		vp := newMockVCSProvider()
+		inFlight := sessionreason.DraftPRCreationInFlight()
+		sessions.sessions["sess-1"] = &models.Session{
+			ID: "sess-1", RepoID: "repo-1", BaseBranch: "main", BranchName: "feat-x",
+			PRNumber: intPtr(99), PRURL: strptr("https://github.com/owner/repo/pull/99"),
+			BlockedReason: &inFlight,
+		}
+		lc := newTestLifecycle(
+			sessions, newMockRepoStore(), nil, nil,
+			&mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop(),
+		)
+
+		stale := &models.Session{ID: "sess-1", RepoID: "repo-1", BaseBranch: "main", BranchName: "feat-x"}
+		if err := lc.openDraftPRForBranch(context.Background(), "sess-1", stale, &models.Repo{ID: "repo-1", OriginURL: "git@github.com:owner/repo.git"}); err != nil {
+			t.Fatalf("openDraftPRForBranch: %v", err)
+		}
+
+		if len(vp.createPRCalls) != 0 {
+			t.Fatalf("CreateDraftPR calls = %d, want 0: a PR is already attached", len(vp.createPRCalls))
+		}
+		if got := sessions.sessions["sess-1"].PRNumber; got == nil || *got != 99 {
+			t.Fatalf("stored PRNumber = %v, want the attached 99 untouched", got)
+		}
+		if stale.PRNumber == nil || *stale.PRNumber != 99 {
+			t.Fatalf("caller copy PRNumber = %v, want 99 adopted", stale.PRNumber)
+		}
+		// The in-flight marker still has to go: no create is coming.
+		if got := sessions.sessions["sess-1"].BlockedReason; got != nil {
+			t.Fatalf("BlockedReason = %q, want nil once the PR is adopted", *got)
+		}
+	})
+}
+
+// ctxAwareSessionStore rejects writes on a Done context, the way SQLite's
+// ExecContext does. The plain mock ignores ctx entirely, so without this the
+// bug pinned below — terminal state writes issued on the create's own expired
+// context — would pass silently in tests and fail only in production.
+type ctxAwareSessionStore struct {
+	db.SessionStore
+}
+
+func (s ctxAwareSessionStore) Update(ctx context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.SessionStore.Update(ctx, id, params)
+}
+
+// TestBackgroundDraftPRFailureIsRecordedWhenTheCreateContextIsDone pins the
+// worst state the in-flight marker can get into. The background step bounds
+// itself with backgroundDraftPRTimeout, so on the wedged-create path — the one
+// where the marker MUST be replaced by a failure — the create's own context is
+// already Done. Writing the failure through that context makes the UPDATE fail,
+// and the session then advertises "draft PR creation in progress" forever: no
+// PR, no failure, nothing to retry. The terminal writes therefore run on a
+// detached context.
+//
+// The context is EXPIRED rather than cancelled, which is the real distinction:
+// a deadline means the create wedged and the failure is genuine, while a cancel
+// means a teardown stopped it deliberately and the marker is cleared instead
+// (see TestBackgroundDraftPRCancellationClearsRatherThanFails).
+func TestBackgroundDraftPRFailureIsRecordedWhenTheCreateContextIsDone(t *testing.T) {
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	inFlight := sessionreason.DraftPRCreationInFlight()
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:            "sess-1",
+		RepoID:        "repo-1",
+		BaseBranch:    "main",
+		BlockedReason: &inFlight,
+	}
+	lc := newTestLifecycle(
+		ctxAwareSessionStore{sessions}, repos, nil, nil,
+		&mockWorktreeManager{}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop(),
+	)
+
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if !errors.Is(expired.Err(), context.DeadlineExceeded) {
+		t.Fatalf("precondition: ctx.Err() = %v, want DeadlineExceeded", expired.Err())
+	}
+
+	lc.failInFlightDraftPR(expired, "sess-1", errors.New("push branch: signal: killed"))
+
+	sess := sessions.sessions["sess-1"]
+	if sessionreason.IsDraftPRCreationInFlight(sess.BlockedReason) {
+		t.Fatal("BlockedReason is still the in-flight marker; the session would advertise a PR that is never coming")
+	}
+	if !sessionreason.IsDraftPRCreationFailure(sess.BlockedReason) {
+		t.Fatalf("BlockedReason = %v, want a draft PR creation failure", sess.BlockedReason)
+	}
+}
+
+// TestClearDraftPRBlockedReasonDoesNotEraseAForeignReason pins the widened
+// check-to-write window. clearDraftPRBlockedReason issues an unconditional
+// `blocked_reason = NULL`, and the *models.Session it decides from is read up to
+// a full push + fetch + `gh pr create` before that write once the create runs in
+// the background. In that window the session's own headless run can fail and
+// record a real block; the PR landing afterwards must not silently erase the
+// diagnostic, leaving a Blocked session with no reason.
+//
+// This drives the helper directly with an explicitly stale snapshot rather than
+// going through StartSession, because mockSessionStore.Get hands back the live
+// map entry — the caller's "snapshot" is aliased to the row, so a full-flow test
+// can never make it disagree and would pass against the unfixed code. A real
+// SQLite Get scans into a fresh struct, which is the shape reproduced here.
+func TestClearDraftPRBlockedReasonDoesNotEraseAForeignReason(t *testing.T) {
+	sessions := newMockSessionStore()
+	inFlight := sessionreason.DraftPRCreationInFlight()
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:            "sess-1",
+		RepoID:        "repo-1",
+		BlockedReason: &inFlight,
+	}
+	lc := newTestLifecycle(
+		sessions, newMockRepoStore(), nil, nil,
+		&mockWorktreeManager{}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop(),
+	)
+
+	// What the background step carries: the row as it looked when the create
+	// began, still showing the in-flight marker it had just written.
+	stale := &models.Session{ID: "sess-1", RepoID: "repo-1", BlockedReason: &inFlight}
+
+	// Meanwhile a different owner blocks the session for real.
+	const foreign = "headless run failed: agent exited 1"
+	reason := foreign
+	reasonPtr := &reason
+	if _, err := sessions.Update(context.Background(), "sess-1", db.UpdateSessionParams{BlockedReason: &reasonPtr}); err != nil {
+		t.Fatalf("write foreign blocked reason: %v", err)
+	}
+
+	if err := lc.clearDraftPRBlockedReason(context.Background(), "sess-1", stale); err != nil {
+		t.Fatalf("clearDraftPRBlockedReason: %v", err)
+	}
+
+	if got := sessions.sessions["sess-1"].BlockedReason; got == nil || *got != foreign {
+		t.Fatalf("stored BlockedReason = %v, want the foreign reason %q preserved", got, foreign)
+	}
+	// The caller's copy adopts the stored value rather than staying stale.
+	if stale.BlockedReason == nil || *stale.BlockedReason != foreign {
+		t.Fatalf("caller copy BlockedReason = %v, want %q adopted from the row", stale.BlockedReason, foreign)
+	}
+}
+
+// TestClearDraftPRBlockedReasonStillClearsItsOwnMarker is the positive half:
+// the re-read must not turn the helper into a no-op for the case it exists to
+// serve — the marker this step itself wrote is still there, so it goes.
+func TestClearDraftPRBlockedReasonStillClearsItsOwnMarker(t *testing.T) {
+	sessions := newMockSessionStore()
+	inFlight := sessionreason.DraftPRCreationInFlight()
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:            "sess-1",
+		RepoID:        "repo-1",
+		BlockedReason: &inFlight,
+	}
+	lc := newTestLifecycle(
+		sessions, newMockRepoStore(), nil, nil,
+		&mockWorktreeManager{}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop(),
+	)
+
+	stale := &models.Session{ID: "sess-1", RepoID: "repo-1", BlockedReason: &inFlight}
+	if err := lc.clearDraftPRBlockedReason(context.Background(), "sess-1", stale); err != nil {
+		t.Fatalf("clearDraftPRBlockedReason: %v", err)
+	}
+	if got := sessions.sessions["sess-1"].BlockedReason; got != nil {
+		t.Fatalf("stored BlockedReason = %q, want nil", *got)
+	}
+}
+
+// TestCancelBackgroundDraftPRUnblocksTheJoin pins the interlock
+// cleanupFailedCreateSession depends on. That path runs under the process-global
+// start mutex, so it cannot afford to wait out a push it does not want the
+// result of — it cancels the step first, and the join then only covers the
+// unwind.
+func TestCancelBackgroundDraftPRUnblocksTheJoin(t *testing.T) {
+	ctx := context.Background()
+	_, wt, _, lc := newBackgroundDraftPRFixture(t)
+
+	parked := make(chan struct{})
+	wt.verifyCurrentBranchCtxHook = func(stepCtx context.Context) {
+		close(parked)
+		// Stand in for a git/GitHub call that honours cancellation.
+		<-stepCtx.Done()
+	}
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	<-parked
+
+	lc.CancelBackgroundDraftPR("sess-1")
+
+	joinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := lc.WaitForBackgroundDraftPR(joinCtx, "sess-1"); err != nil {
+		t.Fatalf("join after cancel: %v, want the cancelled step to unwind promptly", err)
+	}
+}
+
+// TestStopBackgroundDraftPRIsCalledBeforeTeardownTouchesTheWorktree pins the
+// interlock every session-teardown path needs. Before the create moved into the
+// background, CreateSession did not return until the PR existed, so nothing
+// could tear a session down mid-create. Now the RPC hands the client a session
+// handle while the goroutine is still about to `git commit`/`git push` inside
+// the worktree — so an archive that removes that directory first corrupts the
+// create and can leave a remote branch and PR behind a session that is gone.
+func TestStopBackgroundDraftPRIsCalledBeforeTeardownTouchesTheWorktree(t *testing.T) {
+	ctx := context.Background()
+	sessions, wt, _, lc := newBackgroundDraftPRFixture(t)
+
+	// Record which happened first. Asserting only that the archive completed
+	// would still pass with the stop moved AFTER worktrees.Archive — i.e.
+	// against the very regression this test names.
+	var orderMu sync.Mutex
+	var order []string
+	note := func(event string) {
+		orderMu.Lock()
+		order = append(order, event)
+		orderMu.Unlock()
+	}
+
+	parked := make(chan struct{})
+	wt.verifyCurrentBranchCtxHook = func(stepCtx context.Context) {
+		close(parked)
+		<-stepCtx.Done()
+		note("step-cancelled")
+	}
+	wt.archiveHook = func() { note("worktree-archived") }
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	<-parked
+
+	sess := sessions.sessions["sess-1"]
+	sess.WorktreePath = "/tmp/worktrees/repo/sess-1"
+
+	done := make(chan error, 1)
+	go func() { done <- lc.ArchiveSession(ctx, "sess-1") }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ArchiveSession: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("ArchiveSession did not complete: it must cancel the in-flight draft PR create, not wait it out")
+	}
+
+	// Cancelled and unwound: nothing is left to race the worktree removal.
+	joinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := lc.WaitForBackgroundDraftPR(joinCtx, "sess-1"); err != nil {
+		t.Fatalf("background draft PR still in flight after archive: %v", err)
+	}
+
+	orderMu.Lock()
+	defer orderMu.Unlock()
+	want := []string{"step-cancelled", "worktree-archived"}
+	if len(order) != len(want) || order[0] != want[0] || order[1] != want[1] {
+		t.Fatalf("event order = %v, want %v: the create must be stopped before its worktree is removed", order, want)
+	}
+}
+
+// TestClearStaleDraftPRInFlightReasons pins the daemon-restart sweep. The
+// in-flight marker means "a goroutine in THIS process is opening a PR", so a
+// marker that survives a restart is provably stale — and without the sweep it
+// survives forever, because every in-process exit of the step clears it itself.
+// The sweep must be surgical: only the in-flight marker goes.
+func TestClearStaleDraftPRInFlightReasons(t *testing.T) {
+	sessions := newMockSessionStore()
+	inFlight := sessionreason.DraftPRCreationInFlight()
+	realBlock := "blocked: max fix attempts reached"
+	failure := sessionreason.DraftPRCreationFailure(errors.New("boom"))
+	sessions.sessions["stale"] = &models.Session{ID: "stale", RepoID: "repo-1", BlockedReason: &inFlight}
+	sessions.sessions["blocked"] = &models.Session{ID: "blocked", RepoID: "repo-1", BlockedReason: &realBlock}
+	sessions.sessions["failed"] = &models.Session{ID: "failed", RepoID: "repo-1", BlockedReason: &failure}
+	sessions.sessions["clean"] = &models.Session{ID: "clean", RepoID: "repo-1"}
+
+	lc := newTestLifecycle(
+		sessions, newMockRepoStore(), nil, nil,
+		&mockWorktreeManager{}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop(),
+	)
+
+	cleared, err := lc.ClearStaleDraftPRInFlightReasons(context.Background())
+	if err != nil {
+		t.Fatalf("ClearStaleDraftPRInFlightReasons: %v", err)
+	}
+	if len(cleared) != 1 || cleared[0] != "stale" {
+		t.Fatalf("cleared = %v, want [stale]", cleared)
+	}
+	if got := sessions.sessions["stale"].BlockedReason; got != nil {
+		t.Fatalf("stale session BlockedReason = %q, want nil", *got)
+	}
+	// Everything else keeps its reason: a real block and a recorded draft-PR
+	// failure are both still true after a restart.
+	if got := sessions.sessions["blocked"].BlockedReason; got == nil || *got != realBlock {
+		t.Fatalf("blocked session BlockedReason = %v, want %q untouched", got, realBlock)
+	}
+	if got := sessions.sessions["failed"].BlockedReason; got == nil || *got != failure {
+		t.Fatalf("failed session BlockedReason = %v, want %q untouched", got, failure)
 	}
 }
 
@@ -3413,6 +4289,7 @@ func TestStartSession_CronJobID_Persisted(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	sess := sessions.sessions["sess-1"]
 	if sess.CronJobID == nil {
@@ -3420,6 +4297,49 @@ func TestStartSession_CronJobID_Persisted(t *testing.T) {
 	}
 	if *sess.CronJobID != "cron-42" {
 		t.Errorf("CronJobID = %q, want %q", *sess.CronJobID, "cron-42")
+	}
+}
+
+func TestStartSession_ZeroOutputUsesRepoCheckoutWithoutHookOrSetup(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := &mockWorktreeManager{}
+	agentRunner := newMockAgentRunner()
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	setup := "pnpm install"
+	repos.repos["repo-1"] = &models.Repo{
+		ID: "repo-1", LocalPath: "/tmp/repo", SetupScript: &setup,
+		DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID: "sess-1", RepoID: "repo-1", Title: "Zero output", Plan: "inspect status",
+		BaseBranch: "main", State: machine.CreatingWorktree, AgentName: "claude",
+	}
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, agentRunner, tmuxClient, newMockVCSProvider(), zerolog.Nop())
+	fakeAgent := newFakeAgent()
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fakeAgent})
+	lc.SetAgentLogsDir(t.TempDir())
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{CronJobID: "cron-1", HookToken: "secret", DeferPR: true, ZeroOutput: true}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if len(wt.created) != 0 || len(wt.createdFromExisting) != 0 {
+		t.Fatalf("zero-output created worktrees: fresh=%d existing=%d", len(wt.created), len(wt.createdFromExisting))
+	}
+	if fakeAgent.LastConfigureHookReq != nil {
+		t.Fatal("ConfigureFinalizeHook called for zero-output session")
+	}
+	if lc.backgroundDraftPRIsTracked("sess-1") {
+		t.Fatal("zero-output session started a draft PR")
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess.WorktreePath != "/tmp/repo" || sess.BranchName != "" || !sess.IsQuickChat {
+		t.Fatalf("session = path %q branch %q quick=%v, want repo checkout, empty branch, quick chat", sess.WorktreePath, sess.BranchName, sess.IsQuickChat)
+	}
+	if sess.State != machine.ImplementingPlan || sess.AgentSessionID == nil {
+		t.Fatalf("session did not start tmux agent: state=%s agent=%v", sess.State, sess.AgentSessionID)
 	}
 }
 
@@ -3472,6 +4392,7 @@ func TestStartSession_HookToken_CallsConfigureFinalizeHook(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	// Verify ConfigureFinalizeHook RPC was called with the correct args.
 	req := fa.LastConfigureHookReq
@@ -4698,6 +5619,7 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	// The headless claude path must NOT have run.
 	if len(cr.started) != 0 {
@@ -4809,6 +5731,7 @@ func TestStartSession_TmuxUnattended_RoutesToTmux(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	// The headless StartByAgent path must NOT have run.
 	if len(cr.started) != 0 {
@@ -4884,6 +5807,7 @@ func TestStartSession_TmuxUnattended_HookToken_ConfiguresFinalizeHook(t *testing
 	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if len(fakeAgent.ConfigureHookReqs) == 0 {
 		t.Fatal("expected ConfigureFinalizeHook to fire for a HookToken session")
@@ -4951,6 +5875,7 @@ func TestStartSession_DetachTmuxAvailable_RoutesToTmux(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	// Routed through the durable tmux path, not the paneless headless one.
 	if len(cr.started) != 0 {
@@ -5028,6 +5953,7 @@ func TestStartSession_CronJobID_TmuxUnavailable_Errors(t *testing.T) {
 		DeferPR:   true,
 		CronJobID: "cron-42",
 	})
+	awaitDraftPR(t, lc, "sess-1")
 	if err == nil {
 		t.Fatal("expected error when tmux is unavailable on cron path")
 	}
@@ -5087,6 +6013,7 @@ func TestStartSession_CronJobID_ChatCreateFails_KillsTmux(t *testing.T) {
 		DeferPR:   true,
 		CronJobID: "cron-42",
 	})
+	awaitDraftPR(t, lc, "sess-1")
 	if err == nil {
 		t.Fatal("expected error when claude_chats.Create fails")
 	}
@@ -5258,6 +6185,7 @@ func TestSetAgents_RoutesByAgentName(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-opencode")
 
 	if openCodeAgent.LastConfigureHookReq == nil {
 		t.Fatal("expected ConfigureFinalizeHook on opencode agent")
@@ -5309,6 +6237,7 @@ func TestSetAgents_UnknownAgentErrors(t *testing.T) {
 		CronJobID: "cron-1",
 		HookToken: "tok",
 	})
+	awaitDraftPR(t, lc, "sess-1")
 	if err == nil {
 		t.Fatal("expected error when AgentName has no registered client")
 	}
@@ -5372,6 +6301,7 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRun(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if !armer.armCalled {
 		t.Fatal("poll fallback not armed for hookless non-cron headless run")
@@ -5433,6 +6363,7 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRunWithoutHookToken(t *te
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true, DeferPR: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if !armer.armCalled {
 		t.Fatal("poll fallback not armed for hookless non-cron headless run without HookToken")
@@ -6158,6 +7089,7 @@ func TestStartSessionDoesNotArmPollFallbackWhenHookSupported(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if armer.armCalled {
 		t.Error("poll fallback should NOT be armed when hook is supported")
@@ -6204,6 +7136,7 @@ func TestStartSession_DeferPRTrue_HookSupportedDoesNotArmPollFallback(t *testing
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{DeferPR: true, CronJobID: "cron-1", HookToken: "tok-1"}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 	if pollArmer.armCalled {
 		t.Fatal("hook-supported cron agents should use hook notification, not poll fallback")
 	}
@@ -6256,6 +7189,7 @@ func TestStartSession_DeferPRTrue_HooklessAgentDoesNotArmPollFallback(t *testing
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{DeferPR: true, CronJobID: "cron-1", HookToken: "tok-1"}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 	agentSessionID := sessions.sessions["sess-1"].AgentSessionID
 	if agentSessionID == nil {
 		t.Fatal("primary cron agent session id missing")
@@ -6361,6 +7295,7 @@ func TestStartSession_RoutesToCodexWhenSessionAgentNameIsCodex(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	// Codex must have seen Start; claude must not. The empty agentSessionID
 	// is what the lifecycle passes for fresh runs (the runner generates one
@@ -6416,6 +7351,7 @@ func TestStartSession_CreatesAgentChatRowForHeadlessRun(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 
 	if len(chats.createCalls) != 1 {
 		t.Fatalf("expected 1 agent_chats Create, got %d", len(chats.createCalls))
@@ -6456,6 +7392,7 @@ func TestStartSession_TrackerSessionCreatesNoChatRow(t *testing.T) {
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	awaitDraftPR(t, lc, "sess-1")
 	if len(chats.createCalls) != 0 {
 		t.Fatalf("tracker session must not create an agent_chats row, got %d", len(chats.createCalls))
 	}

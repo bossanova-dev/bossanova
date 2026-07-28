@@ -341,6 +341,50 @@ func TestCLI_Callback_Add_ExpiryTooLong(t *testing.T) {
 	}
 }
 
+// TestCLI_Callback_Add_AllTriggers registers a callback for every trigger the
+// CLI accepts, including the two draft-aware additions (ready_for_review and
+// checks_passed_ready), and asserts both that registration succeeds and that
+// the human-readable confirmation line renders the expected natural-language
+// clause for each.
+func TestCLI_Callback_Add_AllTriggers(t *testing.T) {
+	cases := []struct {
+		trigger string
+		label   string
+	}{
+		{"merged", "is merged"},
+		{"closed", "is closed"},
+		{"checks_passed", "passes checks"},
+		{"checks_failed", "fails checks"},
+		{"ready_for_review", "is ready for review"},
+		{"checks_passed_ready", "passes checks while ready for review"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.trigger, func(t *testing.T) {
+			h := clitest.New(t)
+			res := h.Run("callback", "add",
+				"https://github.com/acme/widgets/pull/1", tc.trigger,
+				"--chat", "chat-1",
+				"--message", "hi",
+			)
+
+			if res.ExitCode != 0 {
+				t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+			}
+			if !strings.Contains(res.Stdout, tc.label) {
+				t.Errorf("stdout missing label %q\n%s", tc.label, res.Stdout)
+			}
+
+			calls := h.Daemon.CreateGithubCallbackCalls()
+			if len(calls) != 1 {
+				t.Fatalf("expected 1 CreateGithubCallback call, got %d", len(calls))
+			}
+			if calls[0].GetTrigger() != tc.trigger {
+				t.Errorf("expected trigger %q sent to daemon, got %q", tc.trigger, calls[0].GetTrigger())
+			}
+		})
+	}
+}
+
 func TestCLI_Callback_Remove(t *testing.T) {
 	h := clitest.New(t, clitest.WithGithubCallbacks(testCallbacks()...))
 	res := h.Run("callback", "remove", "cb-aaa", "--chat", "chat-1")

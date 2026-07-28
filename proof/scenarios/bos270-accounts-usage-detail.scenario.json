@@ -16,7 +16,8 @@
         { "key": "a", "caption": "Press [a] to open the Accounts list" },
         {
           "waitFor": {
-            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "text": "LABEL PROVIDER",
+            "match": "normalized",
             "label": "Accounts list loaded"
           },
           "timeoutMs": 10000,
@@ -70,7 +71,8 @@
         { "key": "esc", "caption": "Back to the Accounts list" },
         {
           "waitFor": {
-            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "text": "LABEL PROVIDER",
+            "match": "normalized",
             "label": "Accounts list loaded"
           },
           "timeoutMs": 10000,

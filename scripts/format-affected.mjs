@@ -59,6 +59,11 @@ const PRETTIER_EXTENSIONS = new Set([
 // per-package `biome check --write`, never root prettier.
 const BIOME_ROOTS = ['services/web/', 'services/marketing/']
 
+// A workspace dependency update can change a Biome formatter's output without
+// changing a source file. In that case format the whole owning package: routing
+// only the manifest leaves formatter drift for CI to discover.
+const WORKSPACE_TOOLING_FILES = new Set(['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'])
+
 // Generated web protobuf code is committed for consumers but explicitly ignored
 // by services/web/biome.json. Do not pass it to Biome: it exits non-zero when
 // every explicit path is ignored, making `make format` fail on proto-only work.
@@ -100,7 +105,7 @@ export function normalizePath(file) {
 /**
  * Route changed paths into per-ecosystem buckets. Pure.
  *
- * Returns `{ go, prettier, biome, packageJson }` where `biome` is an object mapping
+ * Returns `{ go, prettier, biome, biomeAll, packageJson }` where `biome` is an object mapping
  * each biome-owned package root (only those with ≥1 file) to its normalized, deduped
  * file list. Paths are normalized and deduped; empty entries ignored. A changed
  * `package.json` in a syncpack-covered (pnpm-workspace) dir sets `packageJson` so
@@ -113,12 +118,19 @@ export function routeFiles(files) {
   const go = new Set()
   const prettier = new Set()
   const biome = new Map(BIOME_ROOTS.map((root) => [root, new Set()]))
+  const biomeAll = new Set()
   let packageJson = false
 
   for (const rawFile of files) {
     const file = normalizePath(rawFile)
     if (file === '') {
       continue
+    }
+
+    if (WORKSPACE_TOOLING_FILES.has(file)) {
+      for (const root of BIOME_ROOTS) {
+        biomeAll.add(root)
+      }
     }
 
     const isPackageJson = path.basename(file) === 'package.json'
@@ -136,6 +148,7 @@ export function routeFiles(files) {
       }
       if (isPackageJson) {
         packageJson = true
+        biomeAll.add(biomeRoot)
       }
       if (BIOME_EXTENSIONS.has(ext)) {
         biome.get(biomeRoot).add(file)
@@ -165,7 +178,13 @@ export function routeFiles(files) {
     }
   }
 
-  return { go: [...go], prettier: [...prettier], biome: biomeOut, packageJson }
+  return {
+    go: [...go],
+    prettier: [...prettier],
+    biome: biomeOut,
+    biomeAll: [...biomeAll],
+    packageJson,
+  }
 }
 
 /** Collect changed-file lines from a git command, degrading to [] on any failure. */
@@ -319,17 +338,31 @@ export function formatFiles(plan, opts = {}) {
   // with package-relative paths so each package's biome.json applies (matches
   // `make format`'s `$(MAKE) -C services/web format`). This IS the web *formatter*,
   // not an added linter step.
-  for (const [root, files] of Object.entries(plan.biome)) {
+  const biomeAll = new Set(plan.biomeAll ?? [])
+  const biomeRoots = new Set([...Object.keys(plan.biome), ...biomeAll])
+  for (const root of biomeRoots) {
+    const files = plan.biome[root] ?? []
     const existing = files.filter(isFormattableFile)
-    if (existing.length === 0) {
+    if (!biomeAll.has(root) && existing.length === 0) {
       continue
     }
     const biomeCmd = resolveBiome(root)
     if (!biomeCmd) {
       continue
     }
-    const relative = existing.map((file) => path.relative(root, file))
-    log(`format-affected: biome check --write (${existing.length} file(s) in ${root})`)
+    if (biomeAll.has(root)) {
+      try {
+        exec(biomeCmd, ['migrate', '--write'], { cwd: root })
+      } catch {
+        hadError = true
+        continue
+      }
+    }
+    const relative = biomeAll.has(root) ? ['.'] : existing.map((file) => path.relative(root, file))
+    const label = biomeAll.has(root)
+      ? `all files in ${root}`
+      : `${existing.length} file(s) in ${root}`
+    log(`format-affected: biome check --write (${label})`)
     try {
       exec(biomeCmd, ['check', '--write', ...relative], { cwd: root })
     } catch {
@@ -362,6 +395,7 @@ export function run(argv = process.argv.slice(2), opts = {}) {
     plan.go.length === 0 &&
     plan.prettier.length === 0 &&
     Object.keys(plan.biome).length === 0 &&
+    plan.biomeAll.length === 0 &&
     !plan.packageJson
   if (nothing) {
     log('format-affected: nothing to format')

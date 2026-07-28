@@ -142,7 +142,7 @@ func recordChatSetup(t *testing.T, fake *fakeTmux) (*testharness.Harness, contex
 		t.Fatalf("register repo: %v", err)
 	}
 	agentName := "claude"
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId:    repoResp.Msg.Repo.Id,
 		Title:     "Tmux RecordChat",
 		Plan:      "test plan",
@@ -320,7 +320,7 @@ func TestE2E_RecordChat_SurvivesDaemonRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register repo: %v", err)
 	}
-	sess := createSessionFromStream(t, h1.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h1, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Pre-restart",
 		Plan:   "p",
@@ -439,7 +439,7 @@ func TestE2E_RecordChat_CodexRealTmuxDiscoversProviderSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register repo: %v", err)
 	}
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Real Codex Tmux",
 		Plan:   "test plan",

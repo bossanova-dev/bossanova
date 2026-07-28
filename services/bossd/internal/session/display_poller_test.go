@@ -1122,6 +1122,59 @@ func TestRefreshPRFailedTerminalReconcileDoesNotSuppressImmediateScheduledPoll(t
 
 func boolPtr(b bool) *bool { return &b }
 
+// refreshBackoffPoller builds a poller over one open, healthy PR whose refresh
+// reaches pollSession successfully, so the webhook-credit bookkeeping runs.
+func refreshBackoffPoller(t *testing.T) *DisplayPoller {
+	t.Helper()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+
+	prNum := 42
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", PRNumber: &prNum}
+
+	success := vcs.CheckConclusionSuccess
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: boolPtr(true)}
+	vp.nextCheckResults = []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}}
+
+	return NewDisplayPoller(sessions, repos, vp, status.NewDisplayTracker(), 30*time.Second, zerolog.Nop())
+}
+
+// TestRefreshPRWithoutWebhookCreditLeavesPollIntervalAlone pins the split
+// BOS-534 needs. RefreshPR credits the refreshed sessions with webhook health,
+// which backs their scheduled poll interval off to webhookHealthyInterval — 5
+// minutes, longer than the configured interval. That is sound for a refresh an
+// inbound webhook triggered, but MergeSession's post-merge refresh has no
+// webhook behind it: crediting one would leave a still-active session (a
+// blocked or failed merge) polling LESS often than before the merge attempt,
+// the opposite of what the ticket set out to fix. The uncredited variant must
+// therefore leave intervalFor at the configured interval.
+func TestRefreshPRWithoutWebhookCreditLeavesPollIntervalAlone(t *testing.T) {
+	ctx := context.Background()
+
+	credited := refreshBackoffPoller(t)
+	if err := credited.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+	if got := credited.intervalFor("sess-1", time.Now()); got != webhookHealthyInterval {
+		t.Fatalf("RefreshPR interval = %v, want the webhook-healthy backoff %v", got, webhookHealthyInterval)
+	}
+
+	uncredited := refreshBackoffPoller(t)
+	if err := uncredited.RefreshPRWithoutWebhookCredit(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("RefreshPRWithoutWebhookCredit returned error: %v", err)
+	}
+	if got := uncredited.intervalFor("sess-1", time.Now()); got != 30*time.Second {
+		t.Fatalf("RefreshPRWithoutWebhookCredit interval = %v, want the configured 30s", got)
+	}
+	// The immediate-poll suppression is shared: both variants still record the
+	// poll, so a scheduled tick right behind the refresh is a no-op.
+	if uncredited.shouldPollSession("sess-1", time.Now()) {
+		t.Fatal("expected the uncredited refresh to still suppress an immediate scheduled poll")
+	}
+}
+
 // TestDisplayPollerAutoUnblocksStaleFixLoopExhausted is BOS-235 acceptance
 // criterion 4: a session sitting in Blocked with the FixLoopExhausted reason
 // whose live PR is observed clean + green + mergeable is auto-unblocked — it

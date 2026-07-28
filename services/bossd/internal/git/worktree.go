@@ -83,6 +83,30 @@ func isNonFastForwardGitOutput(err error) bool {
 // so the user can resolve the conflict by hand; boss never auto-resolves.
 var ErrMergeConflict = errors.New("merge conflict")
 
+// ErrRebaseConflict is returned by RebaseOntoBase when replaying the branch
+// onto the base stopped on a genuine content conflict. The rebase has already
+// been aborted and the branch restored to its pre-rebase tip when this is
+// returned, so the worktree is never left half-rebased. boss never
+// auto-resolves — the session owns its own conflicts.
+var ErrRebaseConflict = errors.New("rebase conflict")
+
+// ErrRebaseFailed is returned by RebaseOntoBase when the rebase failed for a
+// reason that is NOT a conflict: a cancelled context, a bad ref, a failing
+// hook, a held index.lock. It is deliberately distinct from ErrRebaseConflict
+// because a conflict is a benign, expected outcome the caller can log quietly,
+// whereas everything else may indicate a wedged or damaged worktree and must be
+// surfaced loudly.
+var ErrRebaseFailed = errors.New("rebase failed")
+
+// ErrBranchNotPushed is returned by RebaseOntoBaseAndPush when the local branch
+// tip does not match refs/remotes/origin/<branch>. The push half of that
+// operation anchors its --force-with-lease on the pre-rebase LOCAL tip, but git
+// evaluates the lease against the actual remote ref: if the session has commits
+// that were committed but never pushed, the lease is stale by construction and
+// the push is always rejected. Detecting that up front turns a guaranteed
+// rebase-then-discard cycle into a cheap skip.
+var ErrBranchNotPushed = errors.New("local branch tip differs from origin")
+
 // SetupScriptTimeout is the maximum time allowed for a setup script to run.
 const SetupScriptTimeout = 5 * time.Minute
 
@@ -162,13 +186,22 @@ type WorktreeManager interface {
 	// change context instead of only the last commit.
 	CommitSubjects(ctx context.Context, worktreePath, baseRef string) ([]string, error)
 
+	// HasDiffAgainstBase reports whether HEAD has a non-empty diff against
+	// baseRef, using three-dot (merge-base) semantics so it matches what
+	// GitHub shows as the PR's diff. False means the branch changes nothing
+	// relative to the base — the shape of a branch carrying only bossd's
+	// empty draft-PR bootstrap commit. Finalize uses it as the last line of
+	// defence before marking a PR ready for review (BOS-591).
+	HasDiffAgainstBase(ctx context.Context, worktreePath, baseRef string) (bool, error)
+
 	// BranchDebugSnapshot captures branch state used to diagnose draft PR
 	// creation failures.
 	BranchDebugSnapshot(ctx context.Context, worktreePath, branch, baseBranch string) (*BranchDebugSnapshot, error)
 
 	// VerifyPushedBranchAheadOfBase verifies the worktree is on branch, HEAD is
 	// ahead of origin/<baseBranch>, and origin/<branch> points at local HEAD.
-	VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePath, branch, baseBranch string) (*BranchVerification, error)
+	// It fetches the base first unless opts.SkipFetch is set.
+	VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePath, branch, baseBranch string, opts VerifyPushedBranchAheadOfBaseOpts) (*BranchVerification, error)
 
 	// Clone clones a remote repository to the given local path.
 	Clone(ctx context.Context, cloneURL, localPath string) error
@@ -219,6 +252,36 @@ type WorktreeManager interface {
 	// state. Used by post-merge verification.
 	FetchBase(ctx context.Context, localPath, base string) error
 
+	// CountMergeCommits reports how many merge commits exist on head that
+	// are not already on origin/<base>. Used to detect PR branches GitHub
+	// cannot rebase-merge before requesting that merge strategy.
+	CountMergeCommits(ctx context.Context, localPath, base, head string) (int, error)
+
+	// CountBehindBase reports how many commits exist on origin/<base> that
+	// are not yet on branch — i.e. how far the branch has fallen behind the
+	// base. origin/<base> is freshened first so the count reflects the
+	// remote's current tip. Zero means the branch already contains the base.
+	CountBehindBase(ctx context.Context, worktreePath, branch, base string) (int, error)
+
+	// RebaseOntoBaseAndPush replays branch (which must be the worktree's
+	// checked-out branch, with a clean working tree) on top of a freshly
+	// fetched origin/<base>, then force-pushes the result with a lease
+	// anchored on the pre-rebase tip. It never creates a merge commit by
+	// construction. It refuses up front (ErrBranchNotPushed) when the local
+	// tip does not already equal origin/<branch> — or when the branch no
+	// longer exists on the remote at all — because the lease anchor would then
+	// be stale by construction. Every other failure mode — conflict
+	// (ErrRebaseConflict), any other rebase failure (ErrRebaseFailed), or a
+	// rejected/failed push — restores the branch to its exact pre-rebase tip,
+	// so the worktree is never left half-rebased and never silently diverges
+	// from origin/<branch>. The restore is best-effort, not guaranteed: it is
+	// skipped when no rebase is in progress and the worktree holds changes a
+	// hard reset would destroy (work written after the clean-worktree
+	// precondition was checked), and it can also fail outright if the
+	// cleanliness probe or the restore command itself errors. Each of those
+	// leaves the branch as-is and logs at Error for manual recovery.
+	RebaseOntoBaseAndPush(ctx context.Context, worktreePath, branch, base string) (*RebaseResult, error)
+
 	// MergeLocalBranch performs a safe local merge of head into base inside
 	// the repo at localPath. It does not push anywhere. Requires a clean
 	// working tree on base and returns ErrBaseBranchNotReady / ErrMergeConflict
@@ -244,6 +307,20 @@ type BranchVerification struct {
 	AheadCount    int
 }
 
+// VerifyPushedBranchAheadOfBaseOpts tunes the verification. The zero value
+// fetches the base branch, which is what any caller that has not just fetched
+// it needs. No production caller takes that default today — createDraftPR is
+// the only one and it skips — so the fetching branch is kept deliberately, to
+// leave the helper correct for a future caller rather than because one relies
+// on it now.
+type VerifyPushedBranchAheadOfBaseOpts struct {
+	// SkipFetch skips freshening refs/remotes/origin/<baseBranch> and reads
+	// the remote-tracking ref that is already present. Only set it when the
+	// same call path fetched that base moments earlier; the verification then
+	// compares against a possibly-stale base SHA.
+	SkipFetch bool
+}
+
 // CreateOpts holds the parameters for creating a new worktree.
 type CreateOpts struct {
 	RepoPath          string    // Path to the main repository.
@@ -258,6 +335,12 @@ type CreateOpts struct {
 }
 
 // CreateResult holds the output of a successful worktree creation.
+//
+// The four phase-duration fields attribute the cost of worktree creation. They
+// deliberately do not sum to the caller's aggregate: on both creation paths the
+// glue between phases is untimed, and clearStaleWorktree in particular is not
+// always cheap — reaping a prior worktree and its Bazel output base can take
+// seconds. That difference is the unattributed remainder, not a bug.
 type CreateResult struct {
 	WorktreePath string
 	BranchName   string
@@ -266,6 +349,24 @@ type CreateResult struct {
 	// may proceed (in a degraded/flagged state) rather than abort. nil means
 	// the setup script ran cleanly or none was configured.
 	SetupErr error
+
+	// FetchDuration is the time spent fetching the base (Create) or existing
+	// (CreateFromExistingBranch) branch from origin. Always populated on
+	// success.
+	FetchDuration time.Duration
+	// BranchProbeDuration is the time spent probing for a unique branch name
+	// (the local/remote existence checks in availableNewBranchName, including
+	// its ls-remote). Zero when the probe is skipped: under CreateOpts.Force,
+	// and always on the CreateFromExistingBranch path, which has no
+	// name-collision probe to time.
+	BranchProbeDuration time.Duration
+	// WorktreeAddDuration is the time spent in the `git worktree add`
+	// invocation that creates the worktree directory. Always populated on
+	// success.
+	WorktreeAddDuration time.Duration
+	// SetupScriptDuration is the time spent running the repo's configured
+	// setup script. Zero when no setup script is configured.
+	SetupScriptDuration time.Duration
 }
 
 // CreateFromExistingBranchOpts holds the parameters for creating a worktree
@@ -301,6 +402,13 @@ type Manager struct {
 	// removeAll is injectable so teardown failure paths can be tested without
 	// relying on platform-specific directory permission behavior.
 	removeAll func(string) error
+	// remoteBranches resolves every origin branch sharing a prefix in a single
+	// ls-remote (BOS-539); remoteBranchProbe is the per-candidate fallback used
+	// when that batched query fails. Both are injectable — same rationale as
+	// removeAll — so the batching contract and its fail-open degradation can be
+	// asserted without a network remote.
+	remoteBranches    func(ctx context.Context, repoPath, prefix string) (map[string]struct{}, error)
+	remoteBranchProbe func(ctx context.Context, repoPath, branch string) bool
 	// LoginShell is the user's login shell ($SHELL, captured in settings). When
 	// set, the repo setup script runs through it so per-project version-manager
 	// shims (nodenv/asdf/…) land on PATH — otherwise the daemon's restricted
@@ -314,7 +422,12 @@ type Manager struct {
 
 // NewManager creates a new git WorktreeManager.
 func NewManager(logger zerolog.Logger) *Manager {
-	return &Manager{logger: logger, removeAll: os.RemoveAll}
+	return &Manager{
+		logger:            logger,
+		removeAll:         os.RemoveAll,
+		remoteBranches:    remoteBranchesWithPrefix,
+		remoteBranchProbe: remoteBranchExists,
+	}
 }
 
 // sanitizeBranchName converts a session title into a valid git branch name.
@@ -471,6 +584,41 @@ func branchExists(ctx context.Context, repoPath, branch string) bool {
 func remoteBranchExists(ctx context.Context, repoPath, branch string) bool {
 	_, err := runGit(ctx, repoPath, "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/"+branch)
 	return err == nil
+}
+
+// remoteBranchesWithPrefix returns the set of origin branch names beginning with
+// prefix, resolved in ONE ls-remote (BOS-539). The collision walk in
+// availableNewBranchName only ever generates `<prefix>` and `<prefix>-N`, so a
+// single `refs/heads/<prefix>*` query covers every candidate it can reach and
+// the walk pays one ~4s network round trip instead of one per locally-absent
+// candidate. Names outside the candidate shapes (e.g. `<prefix>bar`) also match
+// the glob; that is harmless because membership is tested by exact name. Git
+// refname rules forbid `*`, `?` and `[` in a branch, so the base cannot inject
+// glob metacharacters, and the pattern reaches git as a literal argv element.
+//
+// `--exit-code` is deliberately NOT passed: a pattern matching nothing must exit
+// 0 with empty output so an empty result stays distinguishable from a failed
+// query. Callers rely on that to fail open (see availableNewBranchName) —
+// only a returned error means the remote could not be consulted.
+func remoteBranchesWithPrefix(ctx context.Context, repoPath, prefix string) (map[string]struct{}, error) {
+	out, err := runGit(ctx, repoPath, "ls-remote", "--heads", "origin", "refs/heads/"+prefix+"*")
+	if err != nil {
+		return nil, fmt.Errorf("list remote branches for %q: %w", prefix, err)
+	}
+	branches := make(map[string]struct{})
+	for line := range strings.SplitSeq(out, "\n") {
+		// Each line is "<sha>\t<ref>"; blank lines (empty output) are skipped.
+		_, ref, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		if !ok {
+			continue
+		}
+		name := strings.TrimPrefix(ref, "refs/heads/")
+		if name == "" {
+			continue
+		}
+		branches[name] = struct{}{}
+	}
+	return branches, nil
 }
 
 // refExists reports whether ref resolves against the repo's already-known refs.
@@ -746,21 +894,26 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	if opts.BaseBranch == "" {
 		return nil, fmt.Errorf("base branch is required")
 	}
+	fetchStarted := time.Now()
 	if err := m.FetchBase(ctx, opts.RepoPath, opts.BaseBranch); err != nil {
 		return nil, err
 	}
+	fetchDuration := time.Since(fetchStarted)
 	if !hasRef(ctx, opts.RepoPath, "refs/remotes/origin/"+opts.BaseBranch) {
 		return nil, fmt.Errorf("origin/%s does not exist", opts.BaseBranch)
 	}
+	var branchProbeDuration time.Duration
 	if !opts.Force {
 		// For tracker-linked creates the CreateSession dedup guard (BOS-236)
 		// fires before reaching here, so availableNewBranchName's allowSuffix
 		// rename never masks a tracker duplicate. Behavior for non-tracker /
 		// explicit-branch creates is unchanged.
+		branchProbeStarted := time.Now()
 		uniqueBranch, err := m.availableNewBranchName(ctx, opts.RepoPath, branch, opts.BranchName == "")
 		if err != nil {
 			return nil, err
 		}
+		branchProbeDuration = time.Since(branchProbeStarted)
 		branch = uniqueBranch
 	}
 
@@ -822,6 +975,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	m.clearStaleWorktree(ctx, opts.RepoPath, wtPath)
 
 	// git worktree add -b <branch> <path> origin/<baseBranch>
+	worktreeAddStarted := time.Now()
 	if _, err := runGit(ctx, opts.RepoPath,
 		"worktree", "add", "-b", branch, wtPath, "origin/"+opts.BaseBranch,
 	); err != nil {
@@ -830,6 +984,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 		}
 		return nil, fmt.Errorf("worktree add: %w", err)
 	}
+	worktreeAddDuration := time.Since(worktreeAddStarted)
 
 	// Ensure bossd-managed paths (e.g. .boss/) are git-ignored before any
 	// downstream step writes into them.
@@ -842,10 +997,16 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	// failure on the result and let the caller decide rather than tearing the
 	// worktree down and blocking the whole session.
 	var setupErr error
-	if opts.SetupScript != nil && *opts.SetupScript != "" {
-		if err := runSetupScript(ctx, opts.RepoPath, wtPath, *opts.SetupScript, m.LoginShell, opts.SetupScriptOutput); err != nil {
-			setupErr = fmt.Errorf("setup script: %w", err)
-		}
+	setupScriptDuration, err := m.runAndLogSetup(ctx, setupRunOpts{
+		Op:       "create",
+		RepoPath: opts.RepoPath,
+		Worktree: wtPath,
+		Branch:   branch,
+		Script:   opts.SetupScript,
+		Output:   opts.SetupScriptOutput,
+	})
+	if err != nil {
+		setupErr = fmt.Errorf("setup script: %w", err)
 	}
 
 	if err := m.verifyCurrentBranch(ctx, wtPath, branch); err != nil {
@@ -853,15 +1014,62 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	}
 
 	return &CreateResult{
-		WorktreePath: wtPath,
-		BranchName:   branch,
-		SetupErr:     setupErr,
+		WorktreePath:        wtPath,
+		BranchName:          branch,
+		SetupErr:            setupErr,
+		FetchDuration:       fetchDuration,
+		BranchProbeDuration: branchProbeDuration,
+		WorktreeAddDuration: worktreeAddDuration,
+		SetupScriptDuration: setupScriptDuration,
 	}, nil
 }
 
 func (m *Manager) availableNewBranchName(ctx context.Context, repoPath, branch string, allowSuffix bool) (string, error) {
 	if branch == "" {
 		return "", fmt.Errorf("branch name is required")
+	}
+
+	// One batched ls-remote covers every candidate this walk can generate, so a
+	// colliding create pays a single network round trip rather than one per
+	// locally-absent candidate (BOS-539). sync.OnceValues makes the three
+	// properties that matter STRUCTURAL rather than flag-maintained: the query
+	// runs at most ONCE (a failure is never retried per candidate), it runs
+	// LAZILY — the closure is reached only past the free branchExists
+	// short-circuit below, so a walk whose candidates all exist locally stays
+	// entirely offline — and the cached error makes the degradation sticky.
+	// Note the prefix is the BASE, never the candidate: `refs/heads/<base>*`
+	// covers `<base>` and every `<base>-N`, whereas a candidate-keyed pattern
+	// would not.
+	resolveRemote := sync.OnceValues(func() (map[string]struct{}, error) {
+		found, err := m.remoteBranches(ctx, repoPath, branch)
+		if err != nil {
+			// Log here so the lost batching is observable exactly once.
+			m.logger.Warn().Err(err).Str("branch", branch).
+				Msg("batched remote branch probe failed; falling back to per-candidate probes")
+			return nil, err
+		}
+		return found, nil
+	})
+
+	// remoteTaken reports whether origin already holds candidate.
+	//
+	// Fail OPEN on a batch error: a failed query must never be read as "no
+	// remote branches exist", which would hand back a name already taken on
+	// origin and make the later push fail confusingly. Degrade to the
+	// per-candidate probe instead.
+	//
+	// That restores exactly the pre-batching behaviour, no more:
+	// remoteBranchProbe itself reports "free" on any error, so a PERSISTENT
+	// outage (network down, auth broken) still ends in "branch free" as it
+	// always did. What the fallback genuinely recovers is a batch-SPECIFIC
+	// failure — e.g. a transient blip — where the per-candidate query answers.
+	remoteTaken := func(candidate string) bool {
+		found, err := resolveRemote()
+		if err != nil {
+			return m.remoteBranchProbe(ctx, repoPath, candidate)
+		}
+		_, ok := found[candidate]
+		return ok
 	}
 
 	for i := 0; ; i++ {
@@ -873,7 +1081,7 @@ func (m *Manager) availableNewBranchName(ctx context.Context, repoPath, branch s
 			candidate = fmt.Sprintf("%s-%d", branch, i+1)
 		}
 
-		if branchExists(ctx, repoPath, candidate) || remoteBranchExists(ctx, repoPath, candidate) {
+		if branchExists(ctx, repoPath, candidate) || remoteTaken(candidate) {
 			if i >= 99 {
 				return "", fmt.Errorf("find unique branch name for %q: %w", branch, ErrBranchExists)
 			}
@@ -1000,14 +1208,16 @@ func (m *Manager) Resurrect(ctx context.Context, opts ResurrectOpts) error {
 	// Run setup script if provided. Non-fatal: this is the reattach path for an
 	// existing worktree, where a failed setup step must not block resurrection.
 	// Log it and carry on.
-	if opts.SetupScript != nil && *opts.SetupScript != "" {
-		if err := runSetupScript(ctx, opts.RepoPath, opts.WorktreePath, *opts.SetupScript, m.LoginShell, opts.SetupScriptOutput); err != nil {
-			m.logger.Warn().Err(err).
-				Str("worktree", opts.WorktreePath).
-				Str("branch", opts.BranchName).
-				Msg("setup script failed during resurrect; continuing")
-		}
-	}
+	// The error is intentionally dropped: runAndLogSetup has already logged it,
+	// and resurrection continues regardless.
+	_, _ = m.runAndLogSetup(ctx, setupRunOpts{
+		Op:       "resurrect",
+		RepoPath: opts.RepoPath,
+		Worktree: opts.WorktreePath,
+		Branch:   opts.BranchName,
+		Script:   opts.SetupScript,
+		Output:   opts.SetupScriptOutput,
+	})
 
 	if err := m.verifyCurrentBranch(ctx, opts.WorktreePath, opts.BranchName); err != nil {
 		return fmt.Errorf("verify resurrected worktree branch: %w", err)
@@ -1133,6 +1343,124 @@ func (m *Manager) CommitSubjects(ctx context.Context, worktreePath, baseRef stri
 	return strings.Split(out, "\n"), nil
 }
 
+// HasDiffAgainstBase reports whether HEAD has a non-empty diff against
+// baseRef. It uses three-dot (`<baseRef>...HEAD`) semantics so the comparison
+// is against the merge base — exactly the diff GitHub renders for a PR — and
+// so a base that has independently advanced never makes an otherwise-empty
+// branch look changed.
+//
+// `git diff --name-only` (not `--quiet`) is deliberate: --quiet signals
+// "differences found" with exit status 1, which runGit cannot distinguish
+// from a genuine git failure. Non-empty stdout is the unambiguous signal.
+//
+// `-z` is what makes "non-empty stdout" actually unambiguous. runGit
+// TrimSpace's every command's stdout, so with newline-separated output a diff
+// whose only changed path is made entirely of spaces would trim away to "" and
+// be misread as "no diff" — refusing to mark a legitimate PR ready. The NUL
+// terminator `-z` appends is not whitespace, so it survives the trim and any
+// non-empty result stays non-empty.
+func (m *Manager) HasDiffAgainstBase(ctx context.Context, worktreePath, baseRef string) (bool, error) {
+	if strings.TrimSpace(baseRef) == "" {
+		return false, fmt.Errorf("diff against base: empty base ref")
+	}
+	out, err := runGit(ctx, worktreePath, "diff", "--name-only", "-z", baseRef+"...HEAD")
+	if err != nil {
+		return false, fmt.Errorf("diff against base %s: %w", baseRef, err)
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
+// DraftPRPlaceholderCommitSubject is the subject of the empty commit bossd
+// uses to give a branch a diff so GitHub will open a PR for it (package
+// session creates this commit for session-start draft PRs and dirty-only
+// cron finalize; see draftPRPlaceholderCommitSubject in lifecycle.go, which
+// aliases this constant, and IsDraftPRPlaceholderSubject, which both packages
+// use to recognise it). InjectPRNumbers' rebase --exec must never rewrite
+// this subject: doing so used to insert a PR tag into the placeholder,
+// making an otherwise-empty branch look like it carried real work and
+// defeating finalize's empty-run guard (BOS-591).
+const DraftPRPlaceholderCommitSubject = "chore: [skip ci] create pull request"
+
+// draftPRPlaceholderPrefix is the conventional-commit "type: " prefix of
+// DraftPRPlaceholderCommitSubject ("chore: "), derived from the constant
+// rather than retyped so injectPRTagExec's placeholder-detection shell
+// snippet can't drift from it.
+var draftPRPlaceholderPrefix = mustConventionalPrefix(DraftPRPlaceholderCommitSubject)
+
+// mustConventionalPrefix returns subject's leading conventional-commit
+// "type: " (or "type(scope): ") prefix, including the trailing space, and
+// panics at package init if there is none. Slicing on a bare strings.Index
+// would silently yield a one-character prefix ("c") should the constant ever
+// lose its ": " separator, quietly corrupting injectPRTagExec's shell snippet;
+// failing loudly at init makes that impossible to miss.
+func mustConventionalPrefix(subject string) string {
+	i := strings.Index(subject, ": ")
+	if i < 0 {
+		panic(fmt.Sprintf("draft-PR placeholder subject %q has no conventional-commit %q prefix", subject, ": "))
+	}
+	return subject[:i+len(": ")]
+}
+
+var (
+	draftPRPlaceholderConventionalPrefixRE = regexp.MustCompile(`^[[:alpha:]][[:alnum:]-]*(\([^)]*\))?!?:[[:space:]]+`)
+	// One or more tags, each a single literal space — deliberately NOT
+	// [[:space:]]+: this must match stripPlaceholderTagSed's
+	// `(\[#[0-9]+\] )+` byte for byte. If it were looser, a placeholder tagged
+	// with (say) a tab would be classified as a placeholder here while the
+	// rebase --exec re-tagged it. Only this package's own injector emits these
+	// tags and it always emits exactly one space.
+	//
+	// The `+` matters: tags STACK. The boss-finalize skill's add-pr-numbers.sh
+	// (plugins/bossd-plugin-claude/skilldata/skills/boss-finalize/, and its
+	// services/boss mirror) still tags the placeholder unconditionally, and its
+	// idempotence check is `grep -q "\[#$PR_NUM\]"` — it only skips when THIS
+	// run's number is already present. Two runs for different PR numbers
+	// therefore leave `chore: [#7] [#42] [skip ci] create pull request`. A
+	// single-tag strip would classify that as real work and reopen the very
+	// guard BOS-591 closes, so the strip must be repeat-capable.
+	// `[skip ci]` can never be eaten by it: the tag shape requires `#`+digits.
+	// (The prefix RE above may stay loose: its looseness is neutralised by the
+	// whole-subject equality check that follows it.)
+	draftPRPlaceholderTagRE = regexp.MustCompile(`^(\[#[0-9]+\] )+`)
+)
+
+// IsDraftPRPlaceholderSubject reports whether subject is the draft-PR
+// bootstrap placeholder commit (DraftPRPlaceholderCommitSubject), tolerating
+// any run of "[#NNN] " PR tags injected immediately after the
+// conventional-commit "type: "/"type(scope): " prefix — a rebase run before
+// this fix, a retry against a branch already tagged for a different PR number,
+// or the boss-finalize skill's still-unconditional add-pr-numbers.sh (whose
+// idempotence check only recognises the current run's number, so tags stack)
+// can all leave tags in place.
+//
+// It is exported because package session needs the same classification to
+// decide whether a branch carries real work, and the dependency only runs one
+// way (session imports git), so this package owns both the literal and the
+// logic that interprets it.
+//
+// The normalization stays narrow despite the repeat: it strips only tags in the
+// exact recognized shape, only at the front of the subject, only to decide
+// membership — and the decision is still whole-subject equality against the
+// constant, so no amount of stripping can turn genuine work into a placeholder
+// ("feat(boss): [#1] [#2] add X" becomes "feat(boss): add X", which is not the
+// constant). Callers must keep using the original, unmodified subject.
+func IsDraftPRPlaceholderSubject(subject string) bool {
+	t := strings.TrimSpace(subject)
+	if t == DraftPRPlaceholderCommitSubject {
+		return true
+	}
+	prefix := draftPRPlaceholderConventionalPrefixRE.FindString(t)
+	if prefix == "" {
+		return false
+	}
+	rest := t[len(prefix):]
+	tag := draftPRPlaceholderTagRE.FindString(rest)
+	if tag == "" {
+		return false
+	}
+	return prefix+rest[len(tag):] == DraftPRPlaceholderCommitSubject
+}
+
 // InjectPRNumbers ports the boss-finalize skill's add-pr-numbers.sh into the
 // daemon so cron runs satisfy the commit-message PR-tag policy without spawning
 // a separate finalize chat. It rebases the branch onto its merge-base with
@@ -1173,7 +1501,23 @@ func (m *Manager) InjectPRNumbers(ctx context.Context, worktreePath, branch stri
 	}
 	needsTag := false
 	for s := range strings.SplitSeq(subjects, "\n") {
-		if strings.TrimSpace(s) != "" && !strings.Contains(s, tag) {
+		trimmed := strings.TrimSpace(s)
+		// bossd never tags the placeholder (see injectPRTagExec), so it must
+		// never make needsTag true either: a branch whose only commit is the
+		// placeholder must be a true no-op here. It is skipped by
+		// classification rather than by exact match precisely because it CAN
+		// arrive already tagged — the boss-finalize skill's add-pr-numbers.sh
+		// still tags it, and its tags stack (see draftPRPlaceholderTagRE).
+		// Skipping it keeps the
+		// rebase itself from running — git does preserve the SHA of a commit
+		// its --exec leaves untouched, so this is not the only thing standing
+		// between a placeholder-only branch and a new SHA, but it is what
+		// keeps the run free of any rewrite, force-push, or lease check at
+		// all. TestInjectPRNumbers_OnlyPlaceholderCommitSkipsRebase pins that.
+		if trimmed == "" || IsDraftPRPlaceholderSubject(trimmed) {
+			continue
+		}
+		if !strings.Contains(s, tag) {
 			needsTag = true
 			break
 		}
@@ -1230,15 +1574,38 @@ func remoteBranchHead(ctx context.Context, worktreePath, branch string) (string,
 // "type(scope): " (or "type: ") prefix, falling back to appending it. The
 // message is amended via stdin (-F -) so no subject quoting is needed, and
 // --no-verify skips the worktree's commit-msg hook.
+//
+// Before any of that, it leaves the draft-PR placeholder commit's subject
+// byte-identical (BOS-591): it strips any RUN of "[#NNN] " tags immediately
+// after the placeholder's "chore: " prefix and compares the result to
+// DraftPRPlaceholderCommitSubject, exiting 0 on a match. That covers an
+// untagged placeholder, one already tagged by an earlier PR number, and one
+// carrying several stacked tags — none may be retagged with this run's number.
+// "at most one" would be the wrong belief here: see draftPRPlaceholderTagRE's
+// comment for why tags stack. draftPRPlaceholderPrefix and
+// DraftPRPlaceholderCommitSubject supply the literal text so it is never
+// retyped here.
 func injectPRTagExec(tag string) string {
+	// `(\[#[0-9]+\] )+` strips a whole RUN of stacked tags in one substitution.
+	// A `:a … ta` loop would also work but is a BSD-sed portability trap (BSD
+	// consumes the rest of the line as the label name, so `:a; s/…/…/; ta`
+	// silently defines a label called "a; s/…/…/"). A repeat group needs no
+	// label and behaves identically under GNU and BSD `sed -E`. Kept in
+	// lockstep with draftPRPlaceholderTagRE — see the comment there for why
+	// tags stack in the first place.
+	stripPlaceholderTagSed := "s/^" + draftPRPlaceholderPrefix + "(\\[#[0-9]+\\] )+/" + draftPRPlaceholderPrefix + "/"
 	return "s=$(git log -1 --format=%s); " +
+		"p=$(printf '%s' \"$s\" | sed -E '" + stripPlaceholderTagSed + "'); " +
+		"if [ \"$p\" = '" + DraftPRPlaceholderCommitSubject + "' ]; then exit 0; fi; " +
 		"if printf '%s' \"$s\" | grep -qF '" + tag + "'; then exit 0; fi; " +
 		"n=$(printf '%s' \"$s\" | sed 's/): /): " + tag + " /'); " +
 		"if [ \"$n\" = \"$s\" ]; then n=$(printf '%s' \"$s\" | sed 's/^\\([a-z][a-z]*\\): /\\1: " + tag + " /'); fi; " +
 		"if [ \"$n\" = \"$s\" ]; then n=\"$s " + tag + "\"; fi; " +
 		"b=$(git log -1 --format=%b); " +
-		// --allow-empty so an empty placeholder commit (chore: [skip ci] create
-		// pull request) can still be reworded without aborting the whole rebase.
+		// --allow-empty so amending a commit that carries no diff can't abort
+		// the whole rebase. The draft-PR placeholder no longer reaches this
+		// line (it exits 0 above, BOS-591), so this now covers any *other*
+		// empty commit a branch happens to carry.
 		"if [ -n \"$b\" ]; then printf '%s\\n\\n%s' \"$n\" \"$b\"; else printf '%s' \"$n\"; fi | git commit --amend --no-verify --allow-empty -F -"
 }
 
@@ -1400,12 +1767,19 @@ func leaseSHAHasRebaseEvidence(reflog, expectedRemoteSHA, headSHA string) bool {
 	return false
 }
 
-func (m *Manager) VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePath, branch, baseBranch string) (*BranchVerification, error) {
+// VerifyPushedBranchAheadOfBase verifies the worktree is on branch, HEAD is
+// ahead of origin/<baseBranch>, and origin/<branch> points at local HEAD.
+// Remote-tracking refs live in the shared common git dir and `git push`
+// maintains refs/remotes/origin/<branch> itself, so opts.SkipFetch reads both
+// refs without a network round-trip when the caller already fetched the base.
+func (m *Manager) VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePath, branch, baseBranch string, opts VerifyPushedBranchAheadOfBaseOpts) (*BranchVerification, error) {
 	if err := m.verifyCurrentBranch(ctx, worktreePath, branch); err != nil {
 		return nil, err
 	}
-	if err := m.FetchBase(ctx, worktreePath, baseBranch); err != nil {
-		return nil, err
+	if !opts.SkipFetch {
+		if err := m.FetchBase(ctx, worktreePath, baseBranch); err != nil {
+			return nil, err
+		}
 	}
 
 	headSHA, err := runGit(ctx, worktreePath, "rev-parse", "HEAD")
@@ -1636,11 +2010,62 @@ func (m *Manager) FetchBase(ctx context.Context, localPath, base string) error {
 	if base == "" {
 		return fmt.Errorf("base branch is required")
 	}
+	// A fetch is a ref WRITE, and runGit sets cmd.Dir from localPath
+	// unconditionally — so an empty path would not error, it would silently
+	// fetch into whatever repo the daemon's process cwd happens to be. Guard it
+	// here rather than at any one caller: this covers every call site at once
+	// and cannot drift out of sync with them (BOS-591).
+	if localPath == "" {
+		return fmt.Errorf("local path is required")
+	}
 	refspec := "+refs/heads/" + base + ":refs/remotes/origin/" + base
 	if _, err := runGit(ctx, localPath, "fetch", "origin", refspec); err != nil {
 		return fmt.Errorf("fetch origin/%s: %w", base, err)
 	}
 	return nil
+}
+
+// CountMergeCommits reports how many merge commits exist on head that are
+// not already on origin/<base>. GitHub structurally refuses to rebase-merge
+// any branch containing a merge commit ("GraphQL: This branch can't be
+// rebased"), so callers use this to detect that case before requesting a
+// rebase merge.
+//
+// The remote head branch (refs/remotes/origin/<head>, freshly fetched) is
+// authoritative since that is what GitHub will actually rebase. If head
+// hasn't been pushed (or the fetch fails for another reason) this falls back
+// to the local branch when it exists.
+func (m *Manager) CountMergeCommits(ctx context.Context, localPath, base, head string) (int, error) {
+	if base == "" {
+		return 0, fmt.Errorf("base branch is required")
+	}
+	if head == "" {
+		return 0, fmt.Errorf("head branch is required")
+	}
+
+	if err := m.FetchBase(ctx, localPath, base); err != nil {
+		return 0, err
+	}
+
+	headRef := "refs/remotes/origin/" + head
+	headRefspec := "+refs/heads/" + head + ":" + headRef
+	if _, err := runGit(ctx, localPath, "fetch", "origin", headRefspec); err != nil {
+		if !branchExists(ctx, localPath, head) {
+			return 0, fmt.Errorf("head branch %q not found locally or on origin: %w", head, err)
+		}
+		headRef = "refs/heads/" + head
+	}
+
+	baseRef := "refs/remotes/origin/" + base
+	out, err := runGit(ctx, localPath, "rev-list", "--merges", "--count", baseRef+".."+headRef)
+	if err != nil {
+		return 0, fmt.Errorf("rev-list --merges --count %s..%s: %w", baseRef, headRef, err)
+	}
+	count, err := strconv.Atoi(out)
+	if err != nil {
+		return 0, fmt.Errorf("parse merge commit count %q: %w", out, err)
+	}
+	return count, nil
 }
 
 // IsAncestor reports whether ref is an ancestor of target. A non-ancestor is
@@ -1664,6 +2089,518 @@ func (m *Manager) IsAncestor(ctx context.Context, localPath, ref, target string)
 	}
 	return false, fmt.Errorf("merge-base --is-ancestor %s %s: %w: %s",
 		ref, target, err, strings.TrimSpace(stderr.String()))
+}
+
+// RebaseResult reports the branch tips either side of a successful
+// RebaseOntoBase. PriorHead is the pre-rebase tip — the value a follow-up
+// `push --force-with-lease` must use as its anchor, since the rebase leaves
+// PriorHead unreachable from the new tip.
+type RebaseResult struct {
+	PriorHead string
+	NewHead   string
+}
+
+// CountBehindBase reports how many commits are on origin/<base> but not on
+// branch. It is the `git rev-list --count <branch>..origin/<base>` reading,
+// taken after freshening origin/<base>, so the answer reflects the remote's
+// current tip rather than a stale remote-tracking ref.
+func (m *Manager) CountBehindBase(ctx context.Context, worktreePath, branch, base string) (int, error) {
+	if branch == "" {
+		return 0, errors.New("branch is required")
+	}
+	if base == "" {
+		return 0, errors.New("base branch is required")
+	}
+	if err := m.FetchBase(ctx, worktreePath, base); err != nil {
+		return 0, err
+	}
+	baseRef := "refs/remotes/origin/" + base
+	out, err := runGit(ctx, worktreePath, "rev-list", "--count", branch+".."+baseRef)
+	if err != nil {
+		return 0, fmt.Errorf("rev-list --count %s..%s: %w", branch, baseRef, err)
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("parse behind count %q: %w", out, err)
+	}
+	return count, nil
+}
+
+// RebaseOntoBase replays the checked-out branch on top of a freshly fetched
+// origin/<base>. Preconditions are verified before any write: branch must be
+// the worktree's current branch and the working tree must be clean, because a
+// rebase over uncommitted work would either refuse midway or silently move the
+// operator's changes.
+//
+// On conflict the rebase is aborted and — belt and braces, in case the abort
+// itself fails or leaves state behind — the branch is force-restored to its
+// exact pre-rebase tip. A half-rebased worktree is the one outcome this
+// function must never produce; a skipped session is always the safer failure.
+func (m *Manager) RebaseOntoBase(ctx context.Context, worktreePath, branch, base string) (*RebaseResult, error) {
+	if branch == "" {
+		return nil, errors.New("branch is required")
+	}
+	if base == "" {
+		return nil, errors.New("base branch is required")
+	}
+	if err := m.verifyCurrentBranch(ctx, worktreePath, branch); err != nil {
+		return nil, fmt.Errorf("verify branch before rebase: %w", err)
+	}
+	dirty, err := runGit(ctx, worktreePath, "status", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("git status before rebase: %w", err)
+	}
+	if strings.TrimSpace(dirty) != "" {
+		return nil, fmt.Errorf("worktree %s has uncommitted changes; refusing to rebase", worktreePath)
+	}
+	if err := m.FetchBase(ctx, worktreePath, base); err != nil {
+		return nil, err
+	}
+
+	priorHead, err := runGit(ctx, worktreePath, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("resolve HEAD before rebase: %w", err)
+	}
+	priorHead = strings.TrimSpace(priorHead)
+
+	baseRef := "refs/remotes/origin/" + base
+	if _, rebaseErr := runGit(ctx, worktreePath, "rebase", baseRef); rebaseErr != nil {
+		// Classify BEFORE unwinding: the unwind erases the on-disk rebase state
+		// the detector reads.
+		conflicted := rebaseStoppedOnConflict(ctx, worktreePath)
+		m.restoreAfterFailedRebase(ctx, worktreePath, branch, priorHead)
+		sentinel := ErrRebaseFailed
+		if conflicted {
+			sentinel = ErrRebaseConflict
+		}
+		return nil, fmt.Errorf("%w: rebase %s onto %s: %v", sentinel, branch, baseRef, rebaseErr)
+	}
+
+	newHead, err := runGit(ctx, worktreePath, "rev-parse", "HEAD")
+	if err != nil {
+		// The rebase landed but we cannot name the new tip, so we cannot hand a
+		// lease anchor to the push half. Leaving the branch here would leave it
+		// rebased-but-unpushed — local ahead of origin on a rewritten history,
+		// the permanent wedge this whole path exists to avoid. Unwind.
+		m.forceRestoreTip(ctx, worktreePath, branch, priorHead, "resolving HEAD after rebase failed")
+		return nil, fmt.Errorf("resolve HEAD after rebase: %w", err)
+	}
+	return &RebaseResult{PriorHead: priorHead, NewHead: strings.TrimSpace(newHead)}, nil
+}
+
+// rebaseStoppedOnConflict conservatively decides whether a failed `git rebase`
+// stopped because it needs conflict resolution, as opposed to failing for some
+// other reason (cancelled context, bad ref, failing hook, held index.lock).
+//
+// The positive signal is git's own on-disk rebase state: a rebase that stops
+// for conflict resolution leaves rebase-merge/rebase-apply behind so the
+// operator can continue or abort. Anything we cannot positively identify as a
+// conflict is reported as NOT a conflict, so ambiguity is logged loudly rather
+// than filed away as benign.
+func rebaseStoppedOnConflict(ctx context.Context, worktreePath string) bool {
+	if ctx.Err() != nil {
+		// The rebase was killed by cancellation/timeout, not by a conflict.
+		return false
+	}
+	// Probe on an uncancellable context so the answer reflects the worktree
+	// rather than a ctx that expired between the rebase and this check.
+	probeCtx, cancel := unwindContext(ctx)
+	defer cancel()
+	return rebaseInProgress(probeCtx, worktreePath)
+}
+
+// RebaseOntoBaseAndPush is RebaseOntoBase followed by a force-with-lease push
+// of the replayed branch, as one all-or-nothing step.
+//
+// The two halves are coupled deliberately. A rebase that lands locally but
+// fails to push leaves the worktree ahead of origin/<branch> on a history the
+// remote can no longer fast-forward, and the *next* sweep would anchor its
+// lease on the new local tip — a lease the remote can never satisfy, wedging
+// the branch permanently. So a failed push is unwound the same way a conflict
+// is: the branch goes back to its exact pre-rebase tip, which still holds all
+// of the session's work (a rebase only replays commits, it never invents or
+// drops them).
+func (m *Manager) RebaseOntoBaseAndPush(ctx context.Context, worktreePath, branch, base string) (*RebaseResult, error) {
+	// Precondition, checked before any write: the local tip must already equal
+	// origin/<branch>. The push below anchors its lease on the PRE-rebase local
+	// tip, but git evaluates --force-with-lease against the real remote ref, so
+	// an unpushed local commit makes the lease stale by construction and the
+	// push is certain to be rejected ("stale info"). Without this check the
+	// sweep would rebase and then throw the rebase away on every single merge,
+	// forever, for exactly those sessions.
+	if err := m.verifyBranchMatchesOrigin(ctx, worktreePath, branch); err != nil {
+		return nil, err
+	}
+
+	res, err := m.RebaseOntoBase(ctx, worktreePath, branch, base)
+	if err != nil {
+		return nil, err
+	}
+	// The pre-rebase tip is the lease anchor: it is what origin/<branch> still
+	// points at, and PushWithLease accepts it because the reflog carries the
+	// `rebase (finish)` evidence that the old tip was integrated, not lost.
+	if _, err := m.PushWithLease(ctx, worktreePath, branch, res.PriorHead); err != nil {
+		m.forceRestoreTip(ctx, worktreePath, branch, res.PriorHead, "push of rebased branch failed")
+		return nil, fmt.Errorf("push rebased branch %s: %w", branch, err)
+	}
+	return res, nil
+}
+
+// unwindTimeout bounds the recovery git commands run by the unwind paths. Short
+// and independent of the caller's budget: an unwind is a handful of local git
+// invocations with no network in them.
+const unwindTimeout = 2 * time.Minute
+
+// unwindContext derives the context every recovery git command runs on.
+//
+// It deliberately DROPS the caller's cancellation (context.WithoutCancel). The
+// unwind is what makes a failed rebase safe, and the most likely reason a
+// rebase failed in the first place is that the caller's context expired — on
+// the caller's ctx every recovery command would then fail instantly with
+// exec.CommandContext's kill, leaving exactly the half-rebased worktree the
+// unwind exists to prevent. Its own short timeout keeps it bounded.
+func unwindContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), unwindTimeout)
+}
+
+// restoreAfterFailedRebase returns the worktree to priorHead, checked out on
+// branch, with no rebase state on disk. `git rebase --abort` normally does the
+// whole job; forceRestoreTip is the fallback for the cases where it cannot
+// (abort failed, or git left a rebase-apply/rebase-merge directory behind).
+func (m *Manager) restoreAfterFailedRebase(ctx context.Context, worktreePath, branch, priorHead string) {
+	ctx, cancel := unwindContext(ctx)
+	defer cancel()
+
+	_, abortErr := runGit(ctx, worktreePath, "rebase", "--abort")
+
+	head, headErr := runGit(ctx, worktreePath, "rev-parse", "HEAD")
+	restored := headErr == nil && strings.TrimSpace(head) == priorHead
+	// Only take the early return when the probe positively says no rebase
+	// state remains; an unreadable probe is treated as residue so the forced
+	// path (which restores unconditionally) still runs.
+	if restored && headAttachedTo(ctx, worktreePath, branch) && !rebaseInProgressOrUnknown(ctx, worktreePath) {
+		return
+	}
+
+	m.logger.Warn().AnErr("abort_err", abortErr).Msg("rebase abort left residual state")
+	m.forceRestoreTip(ctx, worktreePath, branch, priorHead, "rebase abort left residual state")
+}
+
+// forceRestoreTip drops any in-progress rebase state and puts branch back on
+// priorHead with HEAD attached to it. It is the last-resort unwind used
+// whenever a keep-current step fails after the branch tip may already have
+// moved.
+//
+// The restore is skipped in exactly one case: no rebase is in progress AND the
+// worktree holds changes a `reset --hard priorHead` would destroy. The
+// clean-worktree precondition was checked before the rebase began, so such
+// changes were written since — most plausibly the session's own agent — and
+// destroying them is irrecoverable, whereas refusing leaves a branch an
+// operator can fix by hand. When a rebase IS in progress (or the rebase-state
+// probe cannot say) the dirt is git's own conflict debris, says nothing about
+// user work, and must not stop the unwind: refusing there would leave git
+// mid-operation on a detached HEAD, the exact wedge this function prevents.
+func (m *Manager) forceRestoreTip(ctx context.Context, worktreePath, branch, priorHead, reason string) {
+	ctx, cancel := unwindContext(ctx)
+	defer cancel()
+
+	m.logger.Warn().
+		Str("path", worktreePath).
+		Str("branch", branch).
+		Str("prior_head", priorHead).
+		Str("reason", reason).
+		Msg("force-restoring pre-rebase tip")
+
+	if rebaseInProgressOrUnknown(ctx, worktreePath) {
+		// Prefer `--abort`, which restores the branch, HEAD and the tree in
+		// one step; fall back to quit + a forced re-checkout when it cannot.
+		if _, err := runGit(ctx, worktreePath, "rebase", "--abort"); err == nil {
+			head, headErr := runGit(ctx, worktreePath, "rev-parse", "HEAD")
+			// Every clause matters. A successful abort that left HEAD
+			// detached, off priorHead, or with rebase state still on disk is
+			// not a restore, so anything short of all three falls through to
+			// the forced path rather than returning a wedged worktree.
+			if headErr == nil && strings.TrimSpace(head) == priorHead &&
+				headAttachedTo(ctx, worktreePath, branch) &&
+				!rebaseInProgressOrUnknown(ctx, worktreePath) {
+				return
+			}
+		}
+		_, _ = runGit(ctx, worktreePath, "rebase", "--quit")
+		m.hardResetTo(ctx, worktreePath, branch, priorHead)
+		return
+	}
+
+	// No rebase in progress: the rebase either finished or never started, and
+	// git leaves a clean tree in both cases. Anything modified here was written
+	// since the clean-worktree precondition was checked — most plausibly the
+	// session's own agent — and the restore would destroy it irrecoverably.
+	// Refusing leaves a branch an operator can fix by hand.
+	changes, err := destroyableChanges(ctx, worktreePath, priorHead)
+	if err != nil {
+		m.logger.Error().Err(err).
+			Str("path", worktreePath).
+			Str("branch", branch).
+			Str("prior_head", priorHead).
+			Msg("cannot verify worktree cleanliness; refusing to hard-reset, manual recovery required")
+		return
+	}
+	if changes != "" {
+		m.logger.Error().
+			Str("path", worktreePath).
+			Str("branch", branch).
+			Str("prior_head", priorHead).
+			Str("changes", excerpt(changes, 10, 1024)).
+			Msg("worktree has uncommitted changes; refusing to hard-reset, manual recovery required")
+		return
+	}
+	m.hardResetTo(ctx, worktreePath, branch, priorHead)
+}
+
+// hardResetTo moves branch and the working tree to priorHead, logging (rather
+// than returning) a failure: every caller is already on an unwind path where
+// there is nothing left to fall back to.
+//
+// It re-checks out the branch rather than resetting in place because its
+// callers reach it from `git rebase --quit`, which deliberately does NOT
+// re-attach HEAD — HEAD stays DETACHED at the partially replayed commit. A
+// plain `reset --hard` there would move the detached HEAD and never touch
+// refs/heads/<branch>, so the branch would keep pointing at the pre-unwind tip
+// and the session agent's next commit would never reach it. `checkout --force
+// -B <branch> <priorHead>` re-attaches HEAD to the branch AND points the
+// branch at priorHead in one step, discarding index and worktree debris.
+func (m *Manager) hardResetTo(ctx context.Context, worktreePath, branch, priorHead string) {
+	args := []string{"reset", "--hard", priorHead}
+	if branch != "" {
+		args = []string{"checkout", "--force", "-B", branch, priorHead}
+	}
+	if _, err := runGit(ctx, worktreePath, args...); err != nil {
+		m.logger.Error().Err(err).
+			Str("path", worktreePath).
+			Str("branch", branch).
+			Str("prior_head", priorHead).
+			Msg("failed to restore worktree tip; manual recovery required")
+	}
+}
+
+// headAttachedTo reports whether HEAD is a symbolic ref pointing at
+// refs/heads/<branch>. A detached HEAD — what `git rebase --quit` and a
+// stopped rebase both leave behind — yields false, as does an unreadable
+// HEAD. An empty branch means the caller has no attachment expectation.
+func headAttachedTo(ctx context.Context, worktreePath, branch string) bool {
+	if branch == "" {
+		return true
+	}
+	out, err := runGit(ctx, worktreePath, "symbolic-ref", "--quiet", "HEAD")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(out) == "refs/heads/"+branch
+}
+
+// destroyableChanges returns the `git status --porcelain` lines describing
+// changes a `reset --hard priorHead` (or the equivalent forced checkout) would
+// destroy.
+//
+// That is every staged or unstaged modification to a tracked file, PLUS any
+// untracked file whose path also exists in priorHead's tree: unlike
+// `git checkout`, `git reset --hard` does not refuse over such a collision —
+// it silently overwrites the untracked file with the target tree's content and
+// exits 0. That case is reachable whenever the base branch deleted a file the
+// session's agent then recreated untracked.
+//
+// Untracked files that do NOT collide, and ignored (`!!`) entries, stay
+// excluded: nothing in the restore removes them (that would take `git clean`),
+// so counting them as "dirty" would make the unwind refuse over files it was
+// never going to touch, leaving the branch wedged for no gain.
+func destroyableChanges(ctx context.Context, worktreePath, priorHead string) (string, error) {
+	out, err := runGit(ctx, worktreePath, "status", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	var kept []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "??") || strings.HasPrefix(line, "!!") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	colliding, err := untrackedPathsInTree(ctx, worktreePath, priorHead)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range colliding {
+		kept = append(kept, "?? "+p)
+	}
+	return strings.Join(kept, "\n"), nil
+}
+
+// untrackedPathsInTree lists the worktree's untracked, non-ignored files whose
+// path also exists in ref's tree — the untracked files a `reset --hard ref`
+// would silently overwrite. Both sides are read NUL-separated so paths with
+// spaces or quotes compare literally, and `ls-files --others` is used rather
+// than the porcelain's `??` lines because the porcelain collapses a wholly
+// untracked directory into a single entry.
+func untrackedPathsInTree(ctx context.Context, worktreePath, ref string) ([]string, error) {
+	if ref == "" {
+		return nil, nil
+	}
+	others, err := runGit(ctx, worktreePath, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("list untracked files: %w", err)
+	}
+	untracked := splitNul(others)
+	if len(untracked) == 0 {
+		return nil, nil
+	}
+	tree, err := runGit(ctx, worktreePath, "ls-tree", "-r", "--name-only", "-z", ref)
+	if err != nil {
+		return nil, fmt.Errorf("list tree of %s: %w", ref, err)
+	}
+	inTree := make(map[string]struct{}, len(tree)/16+1)
+	for _, p := range splitNul(tree) {
+		inTree[p] = struct{}{}
+	}
+	var colliding []string
+	for _, p := range untracked {
+		if _, ok := inTree[p]; ok {
+			colliding = append(colliding, p)
+		}
+	}
+	return colliding, nil
+}
+
+// splitNul splits git's -z output into entries, dropping the empty tail left by
+// the trailing separator.
+func splitNul(out string) []string {
+	var entries []string
+	for _, e := range strings.Split(out, "\x00") {
+		if e != "" {
+			entries = append(entries, e)
+		}
+	}
+	return entries
+}
+
+// excerpt bounds a multi-line blob for a log field: at most maxLines lines and
+// maxBytes bytes, with an elision marker when anything was dropped.
+func excerpt(s string, maxLines, maxBytes int) string {
+	truncated := false
+	lines := strings.Split(s, "\n")
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+		truncated = true
+	}
+	out := strings.Join(lines, "\n")
+	if len(out) > maxBytes {
+		out = out[:maxBytes]
+		truncated = true
+	}
+	if truncated {
+		out += "\n…"
+	}
+	return out
+}
+
+// verifyBranchMatchesOrigin reports whether the local branch tip is exactly
+// refs/remotes/origin/<branch>, freshening the remote-tracking ref first so the
+// comparison is against the remote's current tip rather than a stale one. Any
+// divergence — unpushed local commits, a remote that moved, or a branch that
+// was never pushed at all — yields ErrBranchNotPushed.
+//
+// A failed fetch is classified rather than assumed. FetchBase asks for one
+// branch by name (+refs/heads/<b>:refs/remotes/origin/<b>), so its commonest
+// failure is `couldn't find remote ref` for a branch that was deleted on the
+// remote or never pushed — the benign skip, not breakage. `git ls-remote
+// --heads origin <branch>` settles it: an empty listing from a working
+// ls-remote means the branch genuinely is not on the remote
+// (ErrBranchNotPushed); anything else — a listing, or an ls-remote that itself
+// fails — means auth failure, a dead remote or a network outage, which is real
+// breakage and is returned unwrapped so it is logged loudly.
+func (m *Manager) verifyBranchMatchesOrigin(ctx context.Context, worktreePath, branch string) error {
+	if branch == "" {
+		return errors.New("branch is required")
+	}
+	// FetchBase's refspec is generic (+refs/heads/X:refs/remotes/origin/X), so
+	// it freshens any branch, not just a base branch.
+	if err := m.FetchBase(ctx, worktreePath, branch); err != nil {
+		out, lsErr := runGit(ctx, worktreePath, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+		if lsErr == nil && strings.TrimSpace(out) == "" {
+			return fmt.Errorf("%w: origin/%s does not exist: %v", ErrBranchNotPushed, branch, err)
+		}
+		return err
+	}
+	local, err := runGit(ctx, worktreePath, "rev-parse", "refs/heads/"+branch)
+	if err != nil {
+		return fmt.Errorf("resolve local %s: %w", branch, err)
+	}
+	remote, err := runGit(ctx, worktreePath, "rev-parse", "refs/remotes/origin/"+branch)
+	if err != nil {
+		return fmt.Errorf("%w: resolve origin/%s: %w", ErrBranchNotPushed, branch, err)
+	}
+	if local != remote {
+		return fmt.Errorf("%w: %s is at %s but origin/%s is at %s",
+			ErrBranchNotPushed, branch, local, branch, remote)
+	}
+	return nil
+}
+
+// rebaseState reports whether git still has rebase state on disk for the given
+// worktree. The paths are resolved through `git rev-parse --git-path` so this
+// works for linked worktrees, where .git is a file rather than a dir.
+//
+// A probe that cannot answer — a cancelled or expired context, a git that
+// refuses to run, an unreadable git dir — returns an error rather than a
+// silent false, because "no rebase in progress" and "cannot tell" lead the
+// unwind paths to opposite decisions.
+func rebaseState(ctx context.Context, worktreePath string) (bool, error) {
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		out, err := runGit(ctx, worktreePath, "rev-parse", "--git-path", name)
+		if err != nil {
+			return false, fmt.Errorf("resolve --git-path %s: %w", name, err)
+		}
+		p := strings.TrimSpace(out)
+		if p == "" {
+			return false, fmt.Errorf("empty --git-path %s", name)
+		}
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(worktreePath, p)
+		}
+		switch _, err := os.Stat(p); {
+		case err == nil:
+			return true, nil
+		case errors.Is(err, fs.ErrNotExist):
+			// Definitively absent; keep looking at the other state dir.
+		default:
+			return false, fmt.Errorf("stat %s: %w", p, err)
+		}
+	}
+	return false, nil
+}
+
+// rebaseInProgress reports whether git POSITIVELY has rebase state on disk. An
+// unanswerable probe reads as false, which is what rebaseStoppedOnConflict
+// wants: anything it cannot identify as a conflict must be reported as not a
+// conflict, so ambiguity is logged loudly rather than filed away as benign.
+func rebaseInProgress(ctx context.Context, worktreePath string) bool {
+	inProgress, err := rebaseState(ctx, worktreePath)
+	return err == nil && inProgress
+}
+
+// rebaseInProgressOrUnknown reports whether rebase state exists OR the probe
+// could not tell. It is the reading the unwind paths use: the rebase-in-progress
+// branch restores unconditionally, so treating an unknown state as "in progress"
+// costs nothing beyond an extra `rebase --abort`, whereas the alternative routes
+// a genuinely mid-rebase worktree into the refuse path and leaves it mid-rebase
+// on a detached HEAD. The probe is unanswerable exactly when things are already
+// going wrong — most plausibly because the unwind's own budget has expired —
+// which is when being conservative matters most.
+func rebaseInProgressOrUnknown(ctx context.Context, worktreePath string) bool {
+	inProgress, err := rebaseState(ctx, worktreePath)
+	return inProgress || err != nil
 }
 
 // MergeLocalBranch merges head into base inside the repo at localPath. It
@@ -1859,12 +2796,14 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 	// Fetch the branch from origin into its remote-tracking ref first. If the
 	// remote branch is missing, callers may fall back to creating from a local
 	// branch, so do not clear any existing path until this succeeds.
+	fetchStarted := time.Now()
 	if _, err := runGit(ctx, opts.RepoPath,
 		"fetch", "origin",
 		"+refs/heads/"+opts.BranchName+":refs/remotes/origin/"+opts.BranchName,
 	); err != nil {
 		return nil, fmt.Errorf("fetch existing branch: %w", err)
 	}
+	fetchDuration := time.Since(fetchStarted)
 
 	// Clear any stale worktree left at this path by an orphaned prior session
 	// before updating the local branch ref. Git refuses to move a branch that is
@@ -1885,11 +2824,13 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 
 	// Create worktree from the fetched branch.
 	// git worktree add <path> <branch> — checks out existing branch.
+	worktreeAddStarted := time.Now()
 	if _, err := runGit(ctx, opts.RepoPath,
 		"worktree", "add", wtPath, opts.BranchName,
 	); err != nil {
 		return nil, fmt.Errorf("create worktree from existing branch: %w", err)
 	}
+	worktreeAddDuration := time.Since(worktreeAddStarted)
 
 	// Ensure bossd-managed paths (e.g. .boss/) are git-ignored before any
 	// downstream step writes into them.
@@ -1899,20 +2840,32 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 
 	// Run setup script if provided. Non-fatal — see Create for rationale.
 	var setupErr error
-	if opts.SetupScript != nil && strings.TrimSpace(*opts.SetupScript) != "" {
-		if err := runSetupScript(ctx, opts.RepoPath, wtPath, *opts.SetupScript, m.LoginShell, opts.SetupScriptOutput); err != nil {
-			setupErr = fmt.Errorf("setup script: %w", err)
-		}
+	setupScriptDuration, err := m.runAndLogSetup(ctx, setupRunOpts{
+		Op:       "create_from_existing_branch",
+		RepoPath: opts.RepoPath,
+		Worktree: wtPath,
+		Branch:   opts.BranchName,
+		Script:   opts.SetupScript,
+		Output:   opts.SetupScriptOutput,
+	})
+	if err != nil {
+		setupErr = fmt.Errorf("setup script: %w", err)
 	}
 
 	if err := m.verifyCurrentBranch(ctx, wtPath, opts.BranchName); err != nil {
 		return nil, fmt.Errorf("verify existing-branch worktree branch: %w", err)
 	}
 
+	// BranchProbeDuration is left zero here — there is no branch-name collision
+	// probe on this path — so the log shape stays identical across both
+	// creation paths. See CreateResult for the per-field semantics.
 	return &CreateResult{
-		WorktreePath: wtPath,
-		BranchName:   opts.BranchName,
-		SetupErr:     setupErr,
+		WorktreePath:        wtPath,
+		BranchName:          opts.BranchName,
+		SetupErr:            setupErr,
+		FetchDuration:       fetchDuration,
+		WorktreeAddDuration: worktreeAddDuration,
+		SetupScriptDuration: setupScriptDuration,
 	}, nil
 }
 
@@ -1924,22 +2877,122 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 //   - WORKTREE_DIR: path to the worktree being set up
 //
 // If output is non-nil, stdout and stderr are written there; otherwise they
-// go to os.Stderr (daemon logs). Legacy bare-string values are rewritten to
+// go to os.Stderr (daemon logs). logOutput is an additional, diagnostics-only
+// sink that receives the bounded output tail on completion — it exists because
+// the create-session RPC stream claims output, which left that (interactive)
+// path with no record in the rotated daemon log at all. Both writers may be
+// nil.
+//
+// bossd passes logOutput unconditionally, which is deliberate: on the other two
+// shapes it is a bounded (≤4 KiB) duplicate, not a wasted write.
+//   - nil output: the raw stream goes to os.Stderr, which under launchd is the
+//     unrotated bossd.stderr.log — never the rotated bossd.log that tooling and
+//     bug reports read. Only the structured event reaches that.
+//   - task-orchestrator output: that path routes its own per-line writer to the
+//     session logger, so the tail repeats the last few KB it already logged.
+//
+// Do not "fix" either duplicate by dropping the sink; the rotated-log record
+// is the point of the ticket.
+//
+// The returned duration is the script's own measured run time; it is reported
+// on the error path too. Legacy bare-string values are rewritten to
 // <worktree>/.boss/setup.sh on first use — the user is nudged via `warn` to
 // migrate to a structured {"type":...} value.
-func runSetupScript(ctx context.Context, repoPath, dir, script, loginShell string, output io.Writer) error {
+func runSetupScript(ctx context.Context, repoPath, dir, script, loginShell string, output, logOutput io.Writer) (time.Duration, error) {
 	spec, err := setupscript.Parse(script)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	return spec.Execute(ctx, setupscript.ExecuteOpts{
 		RepoPath:     repoPath,
 		WorktreePath: dir,
 		LoginShell:   loginShell,
 		Output:       output,
+		LogOutput:    logOutput,
 		Timeout:      SetupScriptTimeout,
 		Warn: func(msg string) {
 			fmt.Fprintln(os.Stderr, "bossd: "+msg)
 		},
 	})
+}
+
+// setupTailLogWriter adapts the manager's logger to the io.Writer that
+// setupscript.Execute uses for its bounded output tail, so the tail is emitted
+// as a structured event instead of a raw stderr blob. Named for the tail to
+// keep it distinct from taskorchestrator's same-purpose but per-line
+// setupLogWriter, which is wired to Output rather than LogOutput.
+type setupTailLogWriter struct {
+	logger   zerolog.Logger
+	worktree string
+}
+
+func (w setupTailLogWriter) Write(p []byte) (int, error) {
+	w.logger.Info().
+		Str("worktree", w.worktree).
+		Str("output", strings.TrimRight(string(p), "\n")).
+		Msg("setup script output")
+	return len(p), nil
+}
+
+// setupRunOpts names the per-call-site inputs of runAndLogSetup.
+type setupRunOpts struct {
+	Op       string    // "create" | "resurrect" | "create_from_existing_branch"; tags the log event
+	RepoPath string    // main repo path
+	Worktree string    // worktree the script runs in
+	Branch   string    // branch checked out there; log context only
+	Script   *string   // the stored setup_script value; nil or blank means "no setup step"
+	Output   io.Writer // caller's live stream; nil falls back to os.Stderr inside setupscript
+}
+
+// runAndLogSetup runs the repo's configured setup script (when there is one)
+// and records the run in the daemon log. All three setup call sites go through
+// it, so the "is there a script" guard, the log sink, the timing and the log
+// event cannot drift apart between create, resurrect, and
+// create-from-existing-branch.
+//
+// The returned duration is the caller's wall-clock (parse + exec) — what
+// CreateResult.SetupScriptDuration reports — and is zero when no script ran.
+// The error is the setup failure, which every call site treats as non-fatal;
+// it is already logged here.
+func (m *Manager) runAndLogSetup(ctx context.Context, opts setupRunOpts) (time.Duration, error) {
+	if opts.Script == nil || strings.TrimSpace(*opts.Script) == "" {
+		return 0, nil
+	}
+	started := time.Now()
+	runDuration, err := runSetupScript(ctx, opts.RepoPath, opts.Worktree, *opts.Script, m.LoginShell,
+		opts.Output, setupTailLogWriter{logger: m.logger, worktree: opts.Worktree})
+	m.logSetupScriptRun(opts.Op, opts.Worktree, opts.Branch, runDuration, err)
+	return time.Since(started), err
+}
+
+// logSetupScriptRun records the setup script's own measured run time in the
+// daemon log, tagged with the op that ran it so a create and a resurrect of
+// the same worktree stay distinguishable.
+//
+// This is the finer-grained cmd.Run measurement, and it is complementary to —
+// not a replacement for — CreateResult.SetupScriptDuration, the caller's
+// wall-clock (parse + exec) that travels to the client and is already logged
+// as setup_script_ms by session.Lifecycle on the create paths. On the
+// resurrect path, which returns no duration to any caller, this event is the
+// only duration record there is.
+//
+// A setup failure is non-fatal at every call site, so it is logged as a
+// warning here rather than returned; on the create paths the session lifecycle
+// logs the same failure again when it records SetupErr on the session.
+func (m *Manager) logSetupScriptRun(op, worktreePath, branch string, d time.Duration, err error) {
+	if err != nil {
+		m.logger.Warn().Err(err).
+			Str("op", op).
+			Str("worktree", worktreePath).
+			Str("branch", branch).
+			Dur("setup_script_run_ms", d).
+			Msg("setup script failed; continuing")
+		return
+	}
+	m.logger.Info().
+		Str("op", op).
+		Str("worktree", worktreePath).
+		Str("branch", branch).
+		Dur("setup_script_run_ms", d).
+		Msg("setup script finished")
 }

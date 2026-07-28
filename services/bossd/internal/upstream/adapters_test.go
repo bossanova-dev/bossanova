@@ -3,12 +3,15 @@ package upstream
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	connect "connectrpc.com/connect"
+	bcast "github.com/recurser/bossalib/broadcast"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	bcastsvc "github.com/recurser/bossd/internal/broadcast"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -29,6 +32,11 @@ type fakeSessionCommandServer struct {
 	lastCreateGithubCallback   *pb.CreateGithubCallbackRequest
 	lastListGithubCallbacks    *pb.ListGithubCallbacksRequest
 	lastDeleteGithubCallbackID string
+	lastCreateNote             *pb.CreateNoteRequest
+	lastGetNoteID              string
+	lastListNotes              *pb.ListNotesRequest
+	lastUpdateNote             *pb.UpdateNoteRequest
+	lastDeleteNoteID           string
 	lastAddAccount             *pb.AddAccountRequest
 	lastRefreshAcct            *pb.RefreshAccountRequest
 	lastUpdateAcct             *pb.UpdateAccountRequest
@@ -201,6 +209,31 @@ func (f *fakeSessionCommandServer) ListGithubCallbacks(_ context.Context, req *c
 func (f *fakeSessionCommandServer) DeleteGithubCallback(_ context.Context, req *connect.Request[pb.DeleteGithubCallbackRequest]) (*connect.Response[pb.DeleteGithubCallbackResponse], error) {
 	f.lastDeleteGithubCallbackID = req.Msg.GetId()
 	return connect.NewResponse(&pb.DeleteGithubCallbackResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) CreateNote(_ context.Context, req *connect.Request[pb.CreateNoteRequest]) (*connect.Response[pb.CreateNoteResponse], error) {
+	f.lastCreateNote = req.Msg
+	return connect.NewResponse(&pb.CreateNoteResponse{Note: &pb.Note{Id: "note-new", Body: req.Msg.GetBody()}}), nil
+}
+
+func (f *fakeSessionCommandServer) GetNote(_ context.Context, req *connect.Request[pb.GetNoteRequest]) (*connect.Response[pb.GetNoteResponse], error) {
+	f.lastGetNoteID = req.Msg.GetId()
+	return connect.NewResponse(&pb.GetNoteResponse{Note: &pb.Note{Id: req.Msg.GetId()}}), nil
+}
+
+func (f *fakeSessionCommandServer) ListNotes(_ context.Context, req *connect.Request[pb.ListNotesRequest]) (*connect.Response[pb.ListNotesResponse], error) {
+	f.lastListNotes = req.Msg
+	return connect.NewResponse(&pb.ListNotesResponse{Notes: []*pb.Note{{Id: "note-1"}}}), nil
+}
+
+func (f *fakeSessionCommandServer) UpdateNote(_ context.Context, req *connect.Request[pb.UpdateNoteRequest]) (*connect.Response[pb.UpdateNoteResponse], error) {
+	f.lastUpdateNote = req.Msg
+	return connect.NewResponse(&pb.UpdateNoteResponse{Note: &pb.Note{Id: req.Msg.GetId()}}), nil
+}
+
+func (f *fakeSessionCommandServer) DeleteNote(_ context.Context, req *connect.Request[pb.DeleteNoteRequest]) (*connect.Response[pb.DeleteNoteResponse], error) {
+	f.lastDeleteNoteID = req.Msg.GetId()
+	return connect.NewResponse(&pb.DeleteNoteResponse{}), nil
 }
 
 func (f *fakeSessionCommandServer) AddAccount(_ context.Context, req *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error) {
@@ -404,6 +437,26 @@ func (e *errCommandServer) ListGithubCallbacks(context.Context, *connect.Request
 }
 
 func (e *errCommandServer) DeleteGithubCallback(context.Context, *connect.Request[pb.DeleteGithubCallbackRequest]) (*connect.Response[pb.DeleteGithubCallbackResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) CreateNote(context.Context, *connect.Request[pb.CreateNoteRequest]) (*connect.Response[pb.CreateNoteResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) GetNote(context.Context, *connect.Request[pb.GetNoteRequest]) (*connect.Response[pb.GetNoteResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ListNotes(context.Context, *connect.Request[pb.ListNotesRequest]) (*connect.Response[pb.ListNotesResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) UpdateNote(context.Context, *connect.Request[pb.UpdateNoteRequest]) (*connect.Response[pb.UpdateNoteResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) DeleteNote(context.Context, *connect.Request[pb.DeleteNoteRequest]) (*connect.Response[pb.DeleteNoteResponse], error) {
 	return nil, e.err
 }
 
@@ -1928,6 +1981,283 @@ func TestCommandHandlerAdapter_CronJobs(t *testing.T) {
 	})
 }
 
+// TestCommandHandlerAdapter_Notes pins the BOS-552 stream-command → daemon-request
+// translation for the five notes verbs: every field (including the optional
+// provenance pointers, the tag-set wrapper, and the list limit) must reach the
+// daemon unchanged, and an unwired command server must be rejected rather than
+// panicking.
+func TestCommandHandlerAdapter_Notes(t *testing.T) {
+	t.Parallel()
+
+	t.Run("create forwards every field including the optional provenance pointers", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		sessionID, chatID := "sess-1", "chat-1"
+		resp, err := adapter.CreateNote(context.Background(), &pb.CreateNoteCommand{
+			RepoId:    "repo-1",
+			SessionId: &sessionID,
+			ChatId:    &chatID,
+			Body:      "remember this",
+			Tags:      []string{"alpha", "beta"},
+		})
+		if err != nil {
+			t.Fatalf("CreateNote returned error: %v", err)
+		}
+		if resp.GetNote().GetBody() != "remember this" {
+			t.Fatalf("response note body = %q, want remember this", resp.GetNote().GetBody())
+		}
+		got := fake.lastCreateNote
+		if got == nil {
+			t.Fatal("no CreateNoteRequest captured by the fake")
+		}
+		if got.GetRepoId() != "repo-1" || got.GetBody() != "remember this" ||
+			len(got.GetTags()) != 2 || got.GetTags()[1] != "beta" {
+			t.Fatalf("create fields not forwarded: %+v", got)
+		}
+		// The optional provenance fields must arrive by reference so their
+		// unset state survives the hop.
+		if got.SessionId == nil || got.GetSessionId() != "sess-1" || got.ChatId == nil || got.GetChatId() != "chat-1" {
+			t.Fatalf("provenance pointers not forwarded: session=%v chat=%v", got.SessionId, got.ChatId)
+		}
+	})
+
+	t.Run("create leaves unset provenance pointers nil", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		if _, err := adapter.CreateNote(context.Background(), &pb.CreateNoteCommand{RepoId: "repo-1", Body: "x"}); err != nil {
+			t.Fatalf("CreateNote returned error: %v", err)
+		}
+		if fake.lastCreateNote.SessionId != nil || fake.lastCreateNote.ChatId != nil {
+			t.Fatalf("unset provenance leaked non-nil: %+v", fake.lastCreateNote)
+		}
+	})
+
+	t.Run("get forwards the id", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		resp, err := adapter.GetNote(context.Background(), &pb.GetNoteCommand{Id: "note-7"})
+		if err != nil {
+			t.Fatalf("GetNote returned error: %v", err)
+		}
+		if resp.GetNote().GetId() != "note-7" {
+			t.Fatalf("response note id = %q, want note-7", resp.GetNote().GetId())
+		}
+		if fake.lastGetNoteID != "note-7" {
+			t.Fatalf("get id = %q, want note-7", fake.lastGetNoteID)
+		}
+	})
+
+	t.Run("list forwards every filter including the limit", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		repoID, sessionID, chatID, search := "repo-1", "sess-1", "chat-1", "needle"
+		resp, err := adapter.ListNotes(context.Background(), &pb.ListNotesCommand{
+			RepoId:    &repoID,
+			SessionId: &sessionID,
+			ChatId:    &chatID,
+			Tags:      []string{"alpha"},
+			Search:    &search,
+			Limit:     11,
+		})
+		if err != nil {
+			t.Fatalf("ListNotes returned error: %v", err)
+		}
+		if len(resp.GetNotes()) != 1 || resp.GetNotes()[0].GetId() != "note-1" {
+			t.Fatalf("unexpected list response: %+v", resp)
+		}
+		got := fake.lastListNotes
+		if got == nil {
+			t.Fatal("no ListNotesRequest captured by the fake")
+		}
+		// A dropped limit silently unbounds a fleet-wide list, so it is
+		// asserted alongside the provenance/tag/search filters.
+		if got.RepoId == nil || got.GetRepoId() != "repo-1" || got.SessionId == nil || got.GetSessionId() != "sess-1" ||
+			got.ChatId == nil || got.GetChatId() != "chat-1" || got.Search == nil || got.GetSearch() != "needle" ||
+			got.GetLimit() != 11 || len(got.GetTags()) != 1 || got.GetTags()[0] != "alpha" {
+			t.Fatalf("list filters not forwarded: %+v", got)
+		}
+	})
+
+	t.Run("list leaves unset filters nil", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		if _, err := adapter.ListNotes(context.Background(), &pb.ListNotesCommand{}); err != nil {
+			t.Fatalf("ListNotes returned error: %v", err)
+		}
+		got := fake.lastListNotes
+		if got.RepoId != nil || got.SessionId != nil || got.ChatId != nil || got.Search != nil || got.GetLimit() != 0 {
+			t.Fatalf("unset filters leaked non-nil: %+v", got)
+		}
+	})
+
+	t.Run("update forwards the body pointer and the tag-set wrapper", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		body := "edited"
+		resp, err := adapter.UpdateNote(context.Background(), &pb.UpdateNoteCommand{
+			Id:   "note-9",
+			Body: &body,
+			Tags: &pb.NoteTagSet{Tags: []string{"kept"}},
+		})
+		if err != nil {
+			t.Fatalf("UpdateNote returned error: %v", err)
+		}
+		if resp.GetNote().GetId() != "note-9" {
+			t.Fatalf("response note id = %q, want note-9", resp.GetNote().GetId())
+		}
+		got := fake.lastUpdateNote
+		if got == nil || got.GetId() != "note-9" || got.Body == nil || got.GetBody() != "edited" {
+			t.Fatalf("update fields not forwarded: %+v", got)
+		}
+		if got.Tags == nil || len(got.GetTags().GetTags()) != 1 || got.GetTags().GetTags()[0] != "kept" {
+			t.Fatalf("tag set not forwarded: %+v", got.Tags)
+		}
+	})
+
+	t.Run("update preserves a set-but-empty tag set as a clear", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		if _, err := adapter.UpdateNote(context.Background(), &pb.UpdateNoteCommand{
+			Id:   "note-10",
+			Tags: &pb.NoteTagSet{},
+		}); err != nil {
+			t.Fatalf("UpdateNote returned error: %v", err)
+		}
+		got := fake.lastUpdateNote
+		// A set-but-empty wrapper means "clear the tags"; flattening it to nil
+		// would silently turn a clear into a no-op.
+		if got.Tags == nil {
+			t.Fatal("set-but-empty tag set flattened to nil: the clear would be lost")
+		}
+		if got.Body != nil {
+			t.Fatalf("unset body leaked non-nil: %v", got.Body)
+		}
+	})
+
+	t.Run("delete forwards the id", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		if err := adapter.DeleteNote(context.Background(), "note-11"); err != nil {
+			t.Fatalf("DeleteNote returned error: %v", err)
+		}
+		if fake.lastDeleteNoteID != "note-11" {
+			t.Fatalf("delete id = %q, want note-11", fake.lastDeleteNoteID)
+		}
+	})
+
+	t.Run("nil command server is rejected for every verb", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.CreateNote(context.Background(), &pb.CreateNoteCommand{}); err == nil || !strings.Contains(err.Error(), "create_note: command server not wired") {
+			t.Fatalf("CreateNote error = %v, want command server not wired", err)
+		}
+		if _, err := adapter.GetNote(context.Background(), &pb.GetNoteCommand{}); err == nil || !strings.Contains(err.Error(), "get_note: command server not wired") {
+			t.Fatalf("GetNote error = %v, want command server not wired", err)
+		}
+		if _, err := adapter.ListNotes(context.Background(), &pb.ListNotesCommand{}); err == nil || !strings.Contains(err.Error(), "list_notes: command server not wired") {
+			t.Fatalf("ListNotes error = %v, want command server not wired", err)
+		}
+		if _, err := adapter.UpdateNote(context.Background(), &pb.UpdateNoteCommand{}); err == nil || !strings.Contains(err.Error(), "update_note: command server not wired") {
+			t.Fatalf("UpdateNote error = %v, want command server not wired", err)
+		}
+		if err := adapter.DeleteNote(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "delete_note: command server not wired") {
+			t.Fatalf("DeleteNote error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped and keeps its connect code", func(t *testing.T) {
+		t.Parallel()
+		notFound := connect.NewError(connect.CodeNotFound, errors.New("no such note"))
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: notFound}}
+		_, err := adapter.GetNote(context.Background(), &pb.GetNoteCommand{Id: "gone"})
+		if err == nil || !strings.Contains(err.Error(), "get note: ") || !strings.Contains(err.Error(), "no such note") {
+			t.Fatalf("GetNote error = %v, want it wrapped as get note: … no such note", err)
+		}
+		// The dispatcher classifies on the connect code, so wrapping must not
+		// erase it.
+		if connect.CodeOf(err) != connect.CodeNotFound {
+			t.Fatalf("connect code = %v, want NotFound", connect.CodeOf(err))
+		}
+	})
+}
+
+// TestCommandHandlerAdapter_CronJobZeroOutputPassThrough pins the BOS-563
+// is_zero_output tri-state across the stream-command → daemon-request hop. All
+// three states are asserted (nil stays nil, &true arrives true, &false arrives
+// false) so a hardcoded value on either side cannot pass.
+func TestCommandHandlerAdapter_CronJobZeroOutputPassThrough(t *testing.T) {
+	t.Parallel()
+
+	tr, fa := true, false
+	cases := []struct {
+		name string
+		in   *bool
+	}{
+		{"unset stays nil", nil},
+		{"explicit true", &tr},
+		{"explicit false", &fa},
+	}
+
+	for _, tc := range cases {
+		t.Run("create "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeSessionCommandServer{}
+			adapter := &CommandHandlerAdapter{Commands: fake}
+			if _, err := adapter.CreateCronJob(context.Background(), &pb.CreateCronJobCommand{
+				RepoId:       "repo-1",
+				Name:         "nightly",
+				IsZeroOutput: tc.in,
+			}); err != nil {
+				t.Fatalf("CreateCronJob returned error: %v", err)
+			}
+			got := fake.lastCreateCron
+			if got == nil {
+				t.Fatal("no CreateCronJobRequest captured by the fake")
+			}
+			assertZeroOutputPointer(t, tc.in, got.IsZeroOutput)
+		})
+
+		t.Run("update "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeSessionCommandServer{}
+			adapter := &CommandHandlerAdapter{Commands: fake}
+			if _, err := adapter.UpdateCronJob(context.Background(), &pb.UpdateCronJobCommand{
+				Id:           "cj-1",
+				IsZeroOutput: tc.in,
+			}); err != nil {
+				t.Fatalf("UpdateCronJob returned error: %v", err)
+			}
+			got := fake.lastUpdateCron
+			if got == nil {
+				t.Fatal("no UpdateCronJobRequest captured by the fake")
+			}
+			assertZeroOutputPointer(t, tc.in, got.IsZeroOutput)
+		})
+	}
+}
+
+// assertZeroOutputPointer compares an is_zero_output pointer against the value
+// the caller supplied, treating nil as a distinct state from a pointer to false.
+func assertZeroOutputPointer(t *testing.T, want, got *bool) {
+	t.Helper()
+	switch {
+	case want == nil && got != nil:
+		t.Fatalf("is_zero_output = &%v, want nil (unset must stay unset)", *got)
+	case want != nil && got == nil:
+		t.Fatalf("is_zero_output = nil, want &%v", *want)
+	case want != nil && *got != *want:
+		t.Fatalf("is_zero_output = %v, want %v", *got, *want)
+	}
+}
+
 func TestCommandHandlerAdapter_SendChatMessage(t *testing.T) {
 	t.Parallel()
 
@@ -1961,6 +2291,242 @@ func TestCommandHandlerAdapter_SendChatMessage(t *testing.T) {
 		got := fake.lastSendReq
 		if got.GetAgentSessionId() != "agent-9" || got.GetMessage() != "hello" || !got.GetWakeIfAsleep() || !got.GetSubmit() {
 			t.Fatalf("send fields not forwarded: %+v", got)
+		}
+	})
+}
+
+// fakeBroadcastReceiver captures the domain value the adapter translated the
+// wire command into, and can script a failure.
+type fakeBroadcastReceiver struct {
+	last  bcastsvc.InboundBroadcast
+	calls int
+	err   error
+}
+
+func (f *fakeBroadcastReceiver) Receive(_ context.Context, in bcastsvc.InboundBroadcast) error {
+	f.calls++
+	f.last = in
+	return f.err
+}
+
+// TestCommandHandlerAdapter_DeliverBroadcast covers the wire->domain seam of
+// the cross-daemon broadcast INGRESS (BOS-558). The adapter is a translator and
+// nothing more: every decision about an inbound broadcast (loop guard,
+// idempotency, local-only resolution) lives behind the receiver.
+func TestCommandHandlerAdapter_DeliverBroadcast(t *testing.T) {
+	t.Parallel()
+
+	t.Run("translates the command into the domain value", func(t *testing.T) {
+		t.Parallel()
+		expires := time.Date(2026, 7, 28, 9, 30, 0, 0, time.UTC)
+		recv := &fakeBroadcastReceiver{}
+		adapter := &CommandHandlerAdapter{Broadcasts: recv}
+		err := adapter.DeliverBroadcast(context.Background(), &pb.BroadcastCommand{
+			BroadcastId: "  b-1  ",
+			Selector: &pb.BroadcastSelector{Clauses: []*pb.BroadcastSelectorClause{
+				{RepoIds: []string{"repo-1"}, DaemonIds: []string{"daemon-here"}},
+			}},
+			OriginDaemonId: "  daemon-far  ",
+			OriginChatId:   "  chat-far  ",
+			Message:        "secret body",
+			ExpiresAt:      timestamppb.New(expires),
+		})
+		if err != nil {
+			t.Fatalf("DeliverBroadcast returned error: %v", err)
+		}
+		if recv.calls != 1 {
+			t.Fatalf("receiver calls = %d, want 1", recv.calls)
+		}
+		got := recv.last
+		// Ids are trimmed: the loop guard compares origin_daemon_id against the
+		// local id, and a stray space would defeat it.
+		if got.ID != "b-1" || got.OriginDaemonID != "daemon-far" || got.OriginChatID != "chat-far" {
+			t.Fatalf("ids not passed through trimmed: %+v", got)
+		}
+		if got.Message != "secret body" {
+			t.Fatalf("message = %q, want it carried verbatim", got.Message)
+		}
+		// The ORIGIN's absolute expiry, honoured verbatim: a slow route must not
+		// extend a broadcast's lifetime past what the sender asked for.
+		if !got.ExpiresAt.Equal(expires) {
+			t.Fatalf("expires_at = %v, want %v", got.ExpiresAt, expires)
+		}
+		if len(got.Selector.Clauses) != 1 ||
+			len(got.Selector.Clauses[0].RepoIDs) != 1 || got.Selector.Clauses[0].RepoIDs[0] != "repo-1" ||
+			len(got.Selector.Clauses[0].DaemonIDs) != 1 || got.Selector.Clauses[0].DaemonIDs[0] != "daemon-here" {
+			t.Fatalf("selector not decoded: %+v", got.Selector)
+		}
+	})
+
+	t.Run("an absent expiry decodes to the zero time, never the epoch", func(t *testing.T) {
+		t.Parallel()
+		// The RULE — an absent expiry is a rejection, never a default — lives in
+		// the ingress, which owns it for every caller of the exported
+		// BroadcastReceiver, not just this transport. What the adapter owes it is
+		// a faithful decode: timestamppb's nil AsTime() is the 1970 epoch, which
+		// the ingress cannot distinguish from "the caller sent an expiry", and
+		// which would make every delivery instantly overdue with no error
+		// anywhere. So the adapter normalises absent/zero to the ZERO time.Time
+		// the ingress rejects.
+		for _, tc := range []struct {
+			name string
+			ts   *timestamppb.Timestamp
+		}{
+			{"nil", nil},
+			{"epoch zero", &timestamppb.Timestamp{}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				recv := &fakeBroadcastReceiver{}
+				adapter := &CommandHandlerAdapter{Broadcasts: recv}
+				err := adapter.DeliverBroadcast(context.Background(), &pb.BroadcastCommand{
+					BroadcastId: "b-2",
+					Message:     "secret body",
+					ExpiresAt:   tc.ts,
+				})
+				if err != nil {
+					t.Fatalf("DeliverBroadcast: %v", err)
+				}
+				if !recv.last.ExpiresAt.IsZero() {
+					t.Fatalf("expires_at = %v, want the zero time (never the 1970 epoch)", recv.last.ExpiresAt)
+				}
+			})
+		}
+	})
+
+	t.Run("a permanent failure is typed so the router can stop retrying", func(t *testing.T) {
+		t.Parallel()
+		// The stream is at-least-once, so an error that reads as "try again" WILL
+		// come back. A malformed command and an over-cap selector are both
+		// deterministic in the command itself, so they must classify as
+		// InvalidArgument; anything else stays untyped and therefore retryable.
+		for _, tc := range []struct {
+			name     string
+			err      error
+			wantCode connect.Code
+		}{
+			{"invalid inbound", fmt.Errorf("%w: broadcast b-3: message is required", bcastsvc.ErrInvalidInbound), connect.CodeInvalidArgument},
+			{"over the fan-out cap", fmt.Errorf("materialise inbound broadcast b-3: %w", bcastsvc.ErrTooManyTargets), connect.CodeInvalidArgument},
+			{"a transient write failure stays retryable", errors.New("database is locked"), connect.CodeUnknown},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				adapter := &CommandHandlerAdapter{Broadcasts: &fakeBroadcastReceiver{err: tc.err}}
+				err := adapter.DeliverBroadcast(context.Background(), &pb.BroadcastCommand{
+					BroadcastId: "b-3",
+					Message:     "secret body",
+					ExpiresAt:   timestamppb.New(time.Now().Add(time.Hour)),
+				})
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				if got := connect.CodeOf(err); got != tc.wantCode {
+					t.Fatalf("connect code = %v, want %v (err = %v)", got, tc.wantCode, err)
+				}
+				if strings.Contains(err.Error(), "secret body") {
+					t.Fatalf("the broadcast body leaked into the error: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("a nil receiver names the missing wiring", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		err := adapter.DeliverBroadcast(context.Background(), &pb.BroadcastCommand{
+			BroadcastId: "b-3",
+			Message:     "secret body",
+			ExpiresAt:   timestamppb.New(time.Now()),
+		})
+		if err == nil || !strings.Contains(err.Error(), "broadcast: ingress not wired") {
+			t.Fatalf("error = %v, want broadcast: ingress not wired", err)
+		}
+	})
+
+	t.Run("a receiver failure propagates", func(t *testing.T) {
+		t.Parallel()
+		recv := &fakeBroadcastReceiver{err: errors.New("materialise inbound broadcast b-4: store is down")}
+		adapter := &CommandHandlerAdapter{Broadcasts: recv}
+		err := adapter.DeliverBroadcast(context.Background(), &pb.BroadcastCommand{
+			BroadcastId: "b-4",
+			Message:     "secret body",
+			ExpiresAt:   timestamppb.New(time.Now()),
+		})
+		if err == nil || !strings.Contains(err.Error(), "store is down") {
+			t.Fatalf("error = %v, want the receiver's own error", err)
+		}
+	})
+}
+
+// TestBroadcastEgressPublisher pins the EGRESS half's production adapter: the
+// send path's domain event becomes exactly one pb.BroadcastEgress on the
+// StreamBus, and the publish reports success because the bus cannot fail.
+func TestBroadcastEgressPublisher(t *testing.T) {
+	t.Parallel()
+
+	t.Run("publishes one egress event onto the bus", func(t *testing.T) {
+		t.Parallel()
+		expires := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
+		bus := NewStreamBus(zerolog.Nop())
+		defer bus.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		events := bus.Subscribe(ctx)
+
+		pub := NewBroadcastEgressPublisher(bus)
+		if err := pub.PublishBroadcastEgress(context.Background(), bcastsvc.EgressEvent{
+			BroadcastID: "b-1",
+			Selector: bcast.Selector{Clauses: []bcast.Clause{
+				{RepoIDs: []string{"repo-1"}},
+			}},
+			OriginDaemonID: "daemon-here",
+			OriginChatID:   "chat-here",
+			Message:        "secret body",
+			ExpiresAt:      expires,
+		}); err != nil {
+			t.Fatalf("PublishBroadcastEgress returned error: %v", err)
+		}
+
+		var ev StreamEvent
+		select {
+		case ev = <-events:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for the egress event")
+		}
+		if ev.EgressBroadcast == nil || ev.EgressBroadcast.Egress == nil {
+			t.Fatalf("expected an EgressBroadcast envelope, got %+v", ev)
+		}
+		eg := ev.EgressBroadcast.Egress
+		if eg.GetBroadcastId() != "b-1" || eg.GetOriginDaemonId() != "daemon-here" || eg.GetOriginChatId() != "chat-here" {
+			t.Fatalf("ids not carried: %+v", eg)
+		}
+		if eg.GetMessage() != "secret body" {
+			t.Fatalf("message = %q, want it carried verbatim", eg.GetMessage())
+		}
+		if !eg.GetExpiresAt().AsTime().Equal(expires) {
+			t.Fatalf("expires_at = %v, want %v", eg.GetExpiresAt().AsTime(), expires)
+		}
+		cl := eg.GetSelector().GetClauses()
+		if len(cl) != 1 || len(cl[0].GetRepoIds()) != 1 || cl[0].GetRepoIds()[0] != "repo-1" {
+			t.Fatalf("selector not encoded: %+v", eg.GetSelector())
+		}
+		// Exactly one event: a second would be a duplicate delivery fleet-wide.
+		select {
+		case extra := <-events:
+			t.Fatalf("a second event was published: %+v", extra)
+		case <-time.After(50 * time.Millisecond):
+		}
+	})
+
+	t.Run("an unwired bus is an error, not a silent drop", func(t *testing.T) {
+		t.Parallel()
+		pub := NewBroadcastEgressPublisher(nil)
+		err := pub.PublishBroadcastEgress(context.Background(), bcastsvc.EgressEvent{BroadcastID: "b-2", Message: "secret body"})
+		if err == nil || !strings.Contains(err.Error(), "stream bus not wired") {
+			t.Fatalf("error = %v, want stream bus not wired", err)
+		}
+		if strings.Contains(err.Error(), "secret body") {
+			t.Fatalf("the broadcast body leaked into the error: %v", err)
 		}
 	})
 }

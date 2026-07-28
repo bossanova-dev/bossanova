@@ -221,7 +221,7 @@ export function buildSpec({ recipe, outputDir, surface, defaultCrop, stageEnv })
   const cropToSelector = JSON.stringify(recipe.cropToSelector ?? '')
   const viewport = JSON.stringify(recipe.viewport ?? { width: 1440, height: 1000 })
   const fullPage = Boolean(recipe.fullPage)
-  const stageWeb = stageEnv ? webStageScript() : ''
+  const stageWeb = stageEnv ? webStageScript(recipe) : ''
   const testTitle = JSON.stringify(`proof screenshot: ${recipe.id}`)
 
   return `
@@ -279,7 +279,7 @@ function buildVideoSpec({ recipe, outputDir, surface, defaultCrop, stageEnv }) {
   const defaultCropToSelector = defaultCrop ?? (surface === 'marketing' ? 'main' : '#root')
   const cropToSelector = jsString(recipe.cropToSelector ?? defaultCropToSelector)
 
-  const stageWeb = stageEnv ? webStageScript() : ''
+  const stageWeb = stageEnv ? webStageScript(recipe) : ''
   const testTitle = JSON.stringify(`proof video: ${recipe.id}`)
   const slowMo = Number(recipe.slowMo ?? DEFAULT_VIDEO_SLOWMO_MS)
 
@@ -528,7 +528,7 @@ function collectProofAuditText(element) {
 `
 }
 
-function webStageScript() {
+function webStageScript(recipe) {
   return `
   await page.addInitScript(() => {
     window.bossanovaE2e = {
@@ -549,7 +549,14 @@ function webStageScript() {
         // (web-new-chat recipe) can resolve a daemon and list its agents rather
         // than falling back to auto-creating a chat with the session agent.
         daemonId: 'daemon-proof',
-        chats: [{ id: 'chat-1', agentSessionId: 'claude-1', title: 'Proof chat', status: 'idle' }],
+        // BOS-541: mix agent names across chats so ChatListPanel renders the
+        // has-agent-column phone layout — a single agent name (or none)
+        // never exercises the fixed delete-button column at 390px.
+        chats: [
+          { id: 'chat-1', agentSessionId: 'claude-1', title: 'Proof chat', status: 'idle', agentName: 'claude' },
+          { id: 'chat-e2e-2', agentSessionId: 'codex-e2e-2', title: 'A much longer chat title that should wrap onto a second line at 390px', status: 'idle', agentName: 'codex' },
+          { id: 'chat-e2e-3', agentSessionId: 'claude-e2e-3', title: 'Another chat', status: 'idle', agentName: 'claude' },
+        ],
       }, {
         // A Quick-Chat session with no PR: the header must show New chat/Archive
         // but NO Merge button and NO "Switch account" control (BOS-365 items 1 & 3).
@@ -614,5 +621,50 @@ function webStageScript() {
   await page.routeWebSocket('**/ws/attach*', (ws) => {
     ws.send(Buffer.from([4, 0, 0, 2, 91, 93]));
   });
+${notificationStageScript(recipe)}
 `
+}
+
+// notificationStageScript makes the BOS-492 notification surfaces deterministic
+// per recipe (the browser Notification API's permission is otherwise
+// environment-dependent and the priming modal mounts app-wide):
+//   - the priming-modal recipe forces permission 'default' and leaves the modal
+//     un-dismissed so it renders;
+//   - the settings recipe forces permission 'denied' so the "blocked" note shows,
+//     and pre-dismisses the modal so it does not overlay the settings card;
+//   - every other web recipe pre-dismisses the modal so it never overlays the
+//     captured surface.
+function notificationStageScript(recipe) {
+  const id = recipe?.id ?? ''
+  if (id === 'web-notification-permission-modal') {
+    return notificationInitScript('default', false)
+  }
+  if (id === 'web-notification-settings') {
+    return notificationInitScript('denied', true)
+  }
+  return dismissNotificationPromptScript()
+}
+
+function notificationInitScript(permission, dismissPrompt) {
+  const dismiss = dismissPrompt
+    ? "try { localStorage.setItem('bossanova.notificationPromptDismissed', 'true'); } catch (e) {}"
+    : ''
+  return `
+  await page.addInitScript(() => {
+    class FakeNotification {
+      static permission = ${JSON.stringify(permission)};
+      static async requestPermission() { return 'granted'; }
+      constructor(title, options) { this.title = title; this.options = options || {}; }
+      close() {}
+    }
+    window.Notification = FakeNotification;
+    ${dismiss}
+  });`
+}
+
+function dismissNotificationPromptScript() {
+  return `
+  await page.addInitScript(() => {
+    try { localStorage.setItem('bossanova.notificationPromptDismissed', 'true'); } catch (e) {}
+  });`
 }

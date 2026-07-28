@@ -83,6 +83,7 @@
       "baseUrl": "https://proof.bossanova.dev"
     }
   },
+  "planStorage": { "kind": "tracker-attachment" },
   "planContract": {
     "version": 1,
     "sections": [

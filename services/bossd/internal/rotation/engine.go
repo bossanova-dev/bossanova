@@ -52,6 +52,27 @@ type Signal struct {
 	// authoritative probe for the capped account, so candidate selection must not
 	// fall back to an unprobed account when candidate probes are unavailable.
 	CandidateProbeRequired bool
+	// SuppressCooldown tells the engine to rotate WITHOUT benching the capped
+	// account: skip the cooldown write only, leaving candidate selection and
+	// health exactly as they would otherwise be. It exists for the
+	// dispatcher that saw a cap-shaped signal it could not confirm — a transient
+	// upstream 429, or a 429 raised while the authoritative usage probe was itself
+	// unreachable (BOS-584). Benching on an unverifiable signal costs a healthy
+	// account a full DefaultCooldown, so those callers rotate the request away and
+	// leave the account selectable. Only consulted for UsageLimited signals; the
+	// resulting Outcome reports CooldownApplied: false because no cooldown was in
+	// fact applied.
+	//
+	// It CAN change the outcome kind, in one case. Kind is resolved after the
+	// write, from the account list, and minFutureCooldown only sees rows with a
+	// future cooldown_until. So when the capped account is the last selectable
+	// one for its provider — the single-account deployment — the cooldown this
+	// signal did not write is also the cooldown that would have produced
+	// OutcomeAllExhausted, and the result is OutcomeNoEligibleAccount instead.
+	// That is the truthful answer (nothing is cooling, and there is genuinely no
+	// alternate), but callers that map the kind to operator-facing advice must
+	// account for it — session.recordNonRotateAudit does.
+	SuppressCooldown bool
 }
 
 // OutcomeKind classifies the engine's decision.
@@ -97,12 +118,34 @@ type Outcome struct {
 	NextAccount *models.Account
 	// ResumeAt is set iff Kind == OutcomeAllExhausted.
 	ResumeAt time.Time
-	// CooldownApplied is false when the cap signal was a duplicate (the account
-	// was already cooling) or when the signal was an auth invalidation. It is a
-	// per-decision flag: concurrent callers whose identical signals coalesce via
-	// single-flight all receive the winning decision's value, so this flag is
-	// best-effort — the authoritative single-apply invariant is that exactly one
-	// cooldown row write reaches the store (guaranteed by SetCooldownIfNotCooling).
+	// CooldownApplied reports whether THIS decision wrote a cooldown. It is false
+	// in five cases, and a caller that reads it as "someone else already handled
+	// this cap" must be sure it can only see the first:
+	//   - the cap signal was a duplicate (the account was already cooling);
+	//   - the signal was an auth invalidation (health is failed, not cooled);
+	//   - the cap was unbound, with no account to cool (BOS-320);
+	//   - the dispatcher could not confirm the cap and set SuppressCooldown
+	//     (BOS-584), so the account is deliberately left selectable;
+	//   - the signal was not RotationCapable, short-circuiting to OutcomeStatusOnly
+	//     before any store access.
+	// The headless initial-cap path (session.attemptUsageLimitRotation) does read
+	// it as the duplicate signal, and is safe for three independent reasons: it
+	// reads the flag only inside case OutcomeRotate, which excludes the
+	// not-capable producer outright (that one short-circuits to
+	// OutcomeStatusOnly before any store access); it only ever sends
+	// Kind: UsageLimited, so it never sees the auth-invalidation producer — note
+	// that producer is NOT excluded by OutcomeRotate, since decide's
+	// AuthInvalidated case falls through to the shared selectCandidate and so
+	// pairs CooldownApplied: false with a non-nil NextAccount; and it never sends
+	// an unbound or suppressed signal itself, nor can it inherit another caller's
+	// suppression, because SuppressCooldown is part of the single-flight key.
+	// Keep all three true if you add a sixth producer of false.
+	//
+	// It is a per-decision flag: concurrent callers whose identical signals
+	// coalesce via single-flight all receive the winning decision's value, so this
+	// flag is best-effort — the authoritative single-apply invariant is that
+	// exactly one cooldown row write reaches the store (guaranteed by
+	// SetCooldownIfNotCooling).
 	CooldownApplied bool
 }
 
@@ -185,16 +228,29 @@ func NewEngine(accounts AccountRepository, opts ...Option) *Engine {
 }
 
 // Decide computes the rotation outcome for sig. It is safe for concurrent use:
-// identical signals for the same (provider, capped account, kind) are coalesced
-// via single-flight so a burst of duplicate signals collapses to one execution,
-// and the persistent cooldown guard makes any late duplicate a no-op write.
+// identical signals for the same (provider, capped account, kind, suppression)
+// are coalesced via single-flight so a burst of duplicate signals collapses to
+// one execution, and the persistent cooldown guard makes any late duplicate a
+// no-op write.
 //
-// The single-flight key is deliberately the (provider, capped account, kind)
-// triple, NOT the provider alone: coalescing distinct capped accounts on one
-// provider would drop the second account's cooldown and hand its caller the
-// first account's decision. Cross-account serialization is instead provided by
-// the single SQLite transaction in DecideTx (SQLite serializes writers), so
-// concurrent caps on different accounts each get their own cooldown write.
+// The single-flight key is deliberately the (provider, capped account, kind,
+// SuppressCooldown) tuple, NOT the provider alone: coalescing distinct capped
+// accounts on one provider would drop the second account's cooldown and hand its
+// caller the first account's decision. Cross-account serialization is instead
+// provided by the single SQLite transaction in DecideTx (SQLite serializes
+// writers), so concurrent caps on different accounts each get their own cooldown
+// write.
+//
+// SuppressCooldown is part of the key because it selects a DIFFERENT write, not
+// a duplicate of the same one (BOS-584). Two signals that disagree about whether
+// the account may be benched must not coalesce: a suppressing signal winning
+// would hand a non-suppressing caller CooldownApplied=false, and the headless
+// initial-cap path reads that as "a duplicate the engine already handled" and
+// skips its restart (see session.attemptUsageLimitRotation) — stalling the
+// session instead of rotating it. A non-suppressing signal winning would bench
+// an account whose probe said it was healthy, i.e. the very bug this suppression
+// exists to prevent. Keying on it makes each caller's own verdict authoritative
+// for its own outcome; genuine duplicates still coalesce because they agree.
 //
 // Serialization gives each cap its own committed write but NOT cross-signal
 // visibility: with concurrent caps for distinct accounts A and B, A's
@@ -214,7 +270,7 @@ func (e *Engine) Decide(ctx context.Context, sig Signal) (Outcome, error) {
 		return Outcome{Kind: OutcomeStatusOnly, CappedAccountID: sig.CappedAccountID}, nil
 	}
 
-	key := fmt.Sprintf("%s\x00%s\x00%d", sig.Provider, sig.CappedAccountID, sig.Kind)
+	key := fmt.Sprintf("%s\x00%s\x00%d\x00%t", sig.Provider, sig.CappedAccountID, sig.Kind, sig.SuppressCooldown)
 	r, err, _ := e.group.Do(key, func() (any, error) {
 		return e.decide(ctx, sig)
 	})
@@ -266,11 +322,20 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 			}
 			out.CooldownApplied = false
 		default: // UsageLimited
-			if sig.CappedAccountID == "" {
+			switch {
+			case sig.CappedAccountID == "":
 				// Unbound cap (BOS-320): an unbound session has no bound account to
 				// cool — select a rotation target only, write no cooldown.
 				out.CooldownApplied = false
-			} else {
+			case sig.SuppressCooldown:
+				// Unconfirmed cap (BOS-584): rotate the request away but leave the
+				// account selectable. Deliberately skips ONLY this write — the
+				// candidate selection below still runs. SuppressCooldown is part of
+				// the single-flight key (see Decide), so a suppressing and a
+				// non-suppressing signal for the same account never coalesce onto one
+				// another's verdict.
+				out.CooldownApplied = false
+			default:
 				until := now.Add(e.defaultCooldown)
 				if sig.ResetAt != nil {
 					until = *sig.ResetAt

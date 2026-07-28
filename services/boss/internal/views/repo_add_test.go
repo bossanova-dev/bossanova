@@ -759,6 +759,69 @@ func TestRepoAdd_DetailsForm_RendersConfigFields(t *testing.T) {
 	}
 }
 
+// TestRepoAdd_DetailsForm_MarksExactlyOneFocusedField is the user-visible half
+// of the focus affordance: on a 5-field form exactly one field may paint the
+// focus gutter. A field spans several lines, so the invariant is one contiguous
+// *run* of gutter lines, not one gutter character.
+func TestRepoAdd_DetailsForm_MarksExactlyOneFocusedField(t *testing.T) {
+	m := NewRepoAddModel(&repoAddStubClient{}, context.Background())
+	m.phase = repoAddPhaseDetails
+	m.sourceMode = sourceModeOpen
+	m.buildDetailsForm()
+	if cmd := m.form.Init(); cmd != nil {
+		cmd()
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(RepoAddModel)
+
+	view := m.View().Content
+	if runs := gutterRuns(view); runs != 1 {
+		t.Fatalf("details form paints %d focus-gutter runs, want exactly 1 (one focused field at a time); view:\n%s", runs, view)
+	}
+
+	// Moving focus must move the gutter, not add a second one. huh advances the
+	// field via a returned nextFieldMsg command, so the command has to be run
+	// and fed back before the move is observable.
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m = updated.(RepoAddModel)
+	if cmd == nil {
+		t.Fatal("tab produced no command; huh did not schedule a field advance")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(RepoAddModel)
+
+	moved := m.View().Content
+	if runs := gutterRuns(moved); runs != 1 {
+		t.Fatalf("after tab the details form paints %d focus-gutter runs, want exactly 1; view:\n%s", runs, moved)
+	}
+	if slices.Equal(gutterLines(moved), gutterLines(view)) {
+		t.Errorf("the focus gutter did not move after tab; it sat on lines %v both before and after", gutterLines(view))
+	}
+}
+
+// gutterLines reports the indexes of the rendered lines carrying the focus gutter.
+func gutterLines(view string) []int {
+	var lines []int
+	for i, line := range strings.Split(view, "\n") {
+		if strings.ContainsRune(line, focusGutterGlyph) {
+			lines = append(lines, i)
+		}
+	}
+	return lines
+}
+
+// gutterRuns counts contiguous groups of gutter lines — i.e. focused fields.
+func gutterRuns(view string) int {
+	runs, prev := 0, -2
+	for _, i := range gutterLines(view) {
+		if i != prev+1 {
+			runs++
+		}
+		prev = i
+	}
+	return runs
+}
+
 func TestRepoConfigUpdate(t *testing.T) {
 	tests := []struct {
 		name        string

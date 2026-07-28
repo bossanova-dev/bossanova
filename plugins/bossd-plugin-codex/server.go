@@ -192,6 +192,33 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgen
 // global overrides. This exposes the same mcp__boss__* tools without writing
 // anything into the worktree. It is best-effort — a missing/unparseable config
 // is logged and skipped so the launch never fails.
+//
+// No `tui.notifications` / `tui.notification_method` overrides are appended
+// here, deliberately. BOS-487 proposed launching codex with
+// `-c 'tui.notifications=["approval-requested"]' -c tui.notification_method="osc9"`
+// so a pipe-pane raw-log tailer could turn codex's OSC 9 desktop-notification
+// escape into a structured question signal (the BOS-485 seam). Measured against
+// codex-cli 0.145.0 that does not work — and the failure is NOT the one the plan
+// expected:
+//
+//   - OSC 9 IS reachable in a bossd tmux pane (the feared blocker is refuted):
+//     codex emits it and `tmux pipe-pane` preserves it verbatim in the raw log,
+//     even though `capture-pane -p` is blind to it.
+//   - But `approval-requested` is not a codex notification kind at all — the
+//     string does not exist in the 0.145.0 binary. Since `tui.notifications` is
+//     an allow-list, naming it emits nothing AND filters out the one kind that
+//     does fire.
+//   - The only kind that fires is `agent-turn-complete`, whose payload is the
+//     last assistant message. That is the semantic OPPOSITE of "a question is
+//     pending", so feeding it to the question-signal store would flag every
+//     completed turn as CHAT_STATUS_QUESTION.
+//
+// Codex's menu-grammar detector (hasCodexQuestionPrompt in question.go) stays
+// the source of truth; it already reaches questionState via the per-agent
+// HasQuestionPrompt RPC. Full measurements, the A/B table, and a repro live in
+// docs/solutions/logic-errors/spike-codex-osc9-notification-is-turn-complete-only.md
+// Revisit only if codex upstream grows an approval-time notification kind
+// (openai/codex#11808, #19921 track the same gap in the external notify hook).
 func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	args := []string{"codex"}
 	// Codex has no --mcp-config flag (the claude plugin maps the field to that).

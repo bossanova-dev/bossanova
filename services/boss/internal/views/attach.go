@@ -175,7 +175,7 @@ func (m AttachModel) Init() tea.Cmd {
 
 func (m AttachModel) fetchAttachState() tea.Cmd {
 	return func() tea.Msg {
-		sess, err := m.client.GetSession(m.ctx, m.sessionID)
+		sess, err := m.client.GetSession(m.ctx, m.sessionID, client.SessionReadOptions{})
 		if err != nil {
 			return attachErrMsg{err: err}
 		}

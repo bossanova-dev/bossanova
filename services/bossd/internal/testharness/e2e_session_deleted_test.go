@@ -31,7 +31,7 @@ func TestE2E_SessionDeleted_RemoveSession(t *testing.T) {
 	}
 	repoID := repoResp.Msg.Repo.Id
 
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoID,
 		Title:  "Remove me",
 		Plan:   "Plan for remove",
@@ -70,7 +70,7 @@ func TestE2E_SessionDeleted_EmptyTrash(t *testing.T) {
 	repoID := repoResp.Msg.Repo.Id
 
 	mk := func(title string) string {
-		sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+		sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 			RepoId: repoID,
 			Title:  title,
 			Plan:   "Plan for " + title,
@@ -184,7 +184,7 @@ func TestE2E_SessionUpdated_ArchiveAndResurrect(t *testing.T) {
 	}
 	repoID := repoResp.Msg.Repo.Id
 
-	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoID,
 		Title:  "Archive me",
 		Plan:   "Plan for archive",

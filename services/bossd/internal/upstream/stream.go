@@ -379,6 +379,41 @@ type SessionCommandHandler interface {
 	ListGithubCallbacks(ctx context.Context, cmd *pb.ListGithubCallbacksCommand) (*pb.ListGithubCallbacksResponse, error)
 	// DeleteGithubCallback removes a pending GitHub-callback by ID. Async.
 	DeleteGithubCallback(ctx context.Context, id string) error
+	// CreateNote records a note against a repository (BOS-552). Validation and
+	// tag normalisation live in the daemon's note store; its connect-coded
+	// error surfaces via CommandResult.error. Store-bound — dispatched async.
+	CreateNote(ctx context.Context, cmd *pb.CreateNoteCommand) (*pb.CreateNoteResponse, error)
+	// GetNote reads one note by ID. An absent ID maps to NotFound. Async.
+	GetNote(ctx context.Context, cmd *pb.GetNoteCommand) (*pb.GetNoteResponse, error)
+	// ListNotes returns the notes matching the optional filters the command
+	// sets, in the store's deterministic order. Async.
+	ListNotes(ctx context.Context, cmd *pb.ListNotesCommand) (*pb.ListNotesResponse, error)
+	// UpdateNote edits a note's body and/or tags. An unset field is left alone;
+	// a set tag list replaces the whole tag set. Async.
+	UpdateNote(ctx context.Context, cmd *pb.UpdateNoteCommand) (*pb.UpdateNoteResponse, error)
+	// DeleteNote removes a note by ID. The store's delete is idempotent, so
+	// deleting an already-absent ID succeeds. Async.
+	DeleteNote(ctx context.Context, id string) error
+	// DeliverBroadcast materialises an inbound cross-daemon broadcast LOCALLY
+	// (BOS-558): bosso routed here a broadcast some OTHER daemon originated, and
+	// this daemon turns it into delivery rows for the existing worker to drain.
+	//
+	// Everything that makes that safe lives BEHIND this method, in
+	// internal/broadcast, not in the dispatcher: the loop guard that drops a
+	// command this daemon originated, the idempotency probe that makes an
+	// at-least-once redelivery a no-op, and local-only selector resolution under
+	// the same fan-out cap and start-error filter a local send gets. The
+	// dispatcher forwards the command verbatim and decides nothing.
+	//
+	// It NEVER re-publishes upstream. pb.BroadcastEgress (daemon->bosso) and
+	// pb.BroadcastCommand (bosso->daemon) are deliberately separate message
+	// types so a receipt cannot become a send, and the ingress structurally
+	// holds no egress publisher — that absence is the anti-storm guarantee.
+	//
+	// SECRET BODY: cmd.message is the broadcast prompt. The returned error text
+	// travels back to bosso on CommandResult.error, so no error from this path
+	// may contain it. Store-bound — dispatched async.
+	DeliverBroadcast(ctx context.Context, cmd *pb.BroadcastCommand) error
 	// AddAccount registers a new provider login. The credential blob is
 	// inbound-only (consumed into the keyring, never echoed); the response
 	// carries account metadata only. Store/keyring-bound — dispatched async.
@@ -531,10 +566,25 @@ type CallbackInterestReader interface {
 // proto for a purely internal pipeline.
 type StreamEvent struct {
 	// Exactly one of the following is non-nil.
-	Session   *SessionEvent
-	Chat      *ChatEvent
-	Status    *StatusEvent
-	Interests *InterestsEvent
+	Session         *SessionEvent
+	Chat            *ChatEvent
+	Status          *StatusEvent
+	Interests       *InterestsEvent
+	EgressBroadcast *BroadcastEgressEvent
+}
+
+// BroadcastEgressEvent carries an outbound cross-daemon broadcast up the
+// reverse stream: "this daemon originated a broadcast whose audience reaches
+// beyond itself; route it". It wraps the already-built proto rather than
+// restating its fields so the envelope never holds a second, drifting copy.
+//
+// SECRET BODY: Egress.Message is the broadcast prompt. It rides the bus to
+// bosso for delivery and MUST NEVER be logged, echoed on a read surface, or
+// put in an error detail — the same rule daemon.proto states on
+// Broadcast.message. Nothing in this package logs the contents of this event;
+// log broadcast id, origin daemon id, and counts only.
+type BroadcastEgressEvent struct {
+	Egress *pb.BroadcastEgress
 }
 
 // InterestsEvent carries the daemon's complete current GitHub callback-interest

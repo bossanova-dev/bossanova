@@ -582,6 +582,19 @@ func TestCreateSessionToolAttachedExisting(t *testing.T) {
 		if !strings.Contains(out, "sess-att") || !strings.Contains(out, agentID) {
 			t.Errorf("attached create_session result must still expose the session: %s", out)
 		}
+		// BOS-498: the dedup-attach launched nothing and did NOT run the prompt,
+		// so agent_launched must read false even though the pre-existing session
+		// already has an agent_session_id — the Note (not this field) carries the
+		// reachable id. A false "your prompt is running" signal here would defeat
+		// the whole point of the loud signal.
+		if !strings.Contains(out, `"agent_launched": false`) {
+			t.Errorf("attached create_session must report agent_launched=false: %s", out)
+		}
+		// next_action is reserved for the genuine-create idle path; the attach
+		// path speaks through its Note.
+		if strings.Contains(out, "next_action") {
+			t.Errorf("attached create_session must not carry a next_action hint: %s", out)
+		}
 	})
 
 	t.Run("created", func(t *testing.T) {
@@ -608,6 +621,11 @@ func TestCreateSessionToolAttachedExisting(t *testing.T) {
 		}
 		if strings.Contains(out, "send_chat_message") {
 			t.Errorf("genuine create_session result must not carry the prompt-not-run note: %s", out)
+		}
+		// A genuine (non-attach) create that produced an agent_session_id did
+		// launch an agent: agent_launched must read true.
+		if !strings.Contains(out, `"agent_launched": true`) {
+			t.Errorf("genuine launched create_session must report agent_launched=true: %s", out)
 		}
 	})
 
@@ -642,6 +660,138 @@ func TestCreateSessionToolAttachedExisting(t *testing.T) {
 			t.Errorf("idle-attach result missing the no-agent-chat fallback note: %s", out)
 		}
 	})
+}
+
+// TestCreateSessionSafeDefaultDetach proves the MCP handler mirrors the CLI's
+// implicit --detach (BOS-498): a prompt-carrying create with no attended opt-in
+// and no explicit detach/tmux is defaulted to headless so the agent actually
+// runs, while attended:true and a prompt-less create both stay idle.
+func TestCreateSessionSafeDefaultDetach(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       map[string]any
+		wantDetach bool
+	}{
+		{
+			name:       "prompt no flags defaults to headless",
+			args:       map[string]any{"repo_id": "r1", "prompt": "do it", "title": "T"},
+			wantDetach: true,
+		},
+		{
+			name:       "attended opts into idle",
+			args:       map[string]any{"repo_id": "r1", "prompt": "do it", "title": "T", "attended": true},
+			wantDetach: false,
+		},
+		{
+			name:       "prompt-less create stays idle",
+			args:       map[string]any{"repo_id": "r1", "prompt": "", "title": "T"},
+			wantDetach: false,
+		},
+		{
+			name:       "explicit tmux_unattended is not overridden",
+			args:       map[string]any{"repo_id": "r1", "prompt": "do it", "title": "T", "tmux_unattended": true},
+			wantDetach: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured *pb.CreateSessionRequest
+			backend := &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error) {
+				captured = req
+				return &CreateSessionResult{Session: &pb.Session{Id: "sess-def"}}, nil
+			}}
+			cs := newConnectedClient(t, backend, Options{})
+			res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "create_session", Arguments: tc.args})
+			if err != nil {
+				t.Fatalf("call create_session: %v", err)
+			}
+			if res.IsError {
+				t.Fatalf("create_session error: %s", textOf(t, res))
+			}
+			if captured.GetDetach() != tc.wantDetach {
+				t.Errorf("create_session Detach = %v, want %v", captured.GetDetach(), tc.wantDetach)
+			}
+		})
+	}
+}
+
+// TestCreateSessionAgentLaunchedSignal proves the create_session result carries
+// a loud agent_launched signal (BOS-498): true with no hint when the create
+// started an agent (non-empty agent_session_id), false with a next_action hint
+// on the idle path (attended, no agent chat).
+func TestCreateSessionAgentLaunchedSignal(t *testing.T) {
+	t.Run("launched", func(t *testing.T) {
+		agentID := "agent-uuid-launched"
+		backend := &fakeBackend{createSession: func(_ context.Context, _ *pb.CreateSessionRequest) (*CreateSessionResult, error) {
+			return &CreateSessionResult{Session: &pb.Session{Id: "sess-launched", AgentSessionId: &agentID}}, nil
+		}}
+		cs := newConnectedClient(t, backend, Options{})
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      "create_session",
+			Arguments: map[string]any{"repo_id": "r1", "prompt": "do it", "title": "T"},
+		})
+		if err != nil {
+			t.Fatalf("call create_session: %v", err)
+		}
+		out := textOf(t, res)
+		if !strings.Contains(out, `"agent_launched": true`) {
+			t.Errorf("launched create result missing agent_launched=true: %s", out)
+		}
+		if strings.Contains(out, "next_action") {
+			t.Errorf("launched create result must not carry a next_action hint: %s", out)
+		}
+	})
+
+	t.Run("idle attended", func(t *testing.T) {
+		backend := &fakeBackend{createSession: func(_ context.Context, _ *pb.CreateSessionRequest) (*CreateSessionResult, error) {
+			// Attended create leaves the session idle: no agent chat yet.
+			return &CreateSessionResult{Session: &pb.Session{Id: "sess-idle"}}, nil
+		}}
+		cs := newConnectedClient(t, backend, Options{})
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      "create_session",
+			Arguments: map[string]any{"repo_id": "r1", "prompt": "do it", "title": "T", "attended": true},
+		})
+		if err != nil {
+			t.Fatalf("call create_session: %v", err)
+		}
+		out := textOf(t, res)
+		if !strings.Contains(out, `"agent_launched": false`) {
+			t.Errorf("idle create result missing agent_launched=false: %s", out)
+		}
+		if !strings.Contains(out, "next_action") {
+			t.Errorf("idle create result missing next_action hint: %s", out)
+		}
+		if !strings.Contains(out, "start_chat") {
+			t.Errorf("idle create next_action should mention start_chat: %s", out)
+		}
+	})
+}
+
+// TestCreateSessionToolDescriptionDocumentsAttendedDefault proves the tool
+// Description tells callers the default now launches headless when a prompt is
+// supplied and that attended:true opts into the idle-until-attach behavior.
+func TestCreateSessionToolDescriptionDocumentsAttendedDefault(t *testing.T) {
+	cs := newConnectedClient(t, &fakeBackend{}, Options{})
+	res, err := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	var desc string
+	for _, tool := range res.Tools {
+		if tool.Name == "create_session" {
+			desc = tool.Description
+			break
+		}
+	}
+	if desc == "" {
+		t.Fatal("create_session tool not registered")
+	}
+	for _, want := range []string{"attended", "headless"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("create_session description missing %q: %s", want, desc)
+		}
+	}
 }
 
 func TestCreateSessionToolDescriptionWarnsPlanningOnlyCallers(t *testing.T) {
@@ -813,5 +963,110 @@ func TestDeriveSessionTitle(t *testing.T) {
 				t.Errorf("deriveSessionTitle(%q, %q) = %q, want %q", tc.title, tc.prompt, got, tc.want)
 			}
 		})
+	}
+}
+
+// --- BOS-565: zero_output on create_cron_job / update_cron_job ---
+
+// TestCreateCronJobForwardsZeroOutput proves an explicit zero_output=true
+// reaches the create request as a set pointer.
+func TestCreateCronJobForwardsZeroOutput(t *testing.T) {
+	var captured *pb.CreateCronJobRequest
+	backend := &fakeBackend{createCronJob: func(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+		captured = req
+		return &pb.CronJob{Id: "c1"}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "create_cron_job",
+		Arguments: map[string]any{"repo_id": "r1", "name": "n", "prompt": "p", "schedule": "0 0 * * *", "zero_output": true},
+	})
+	if err != nil {
+		t.Fatalf("call create_cron_job: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("create_cron_job error: %s", textOf(t, res))
+	}
+	if captured.IsZeroOutput == nil {
+		t.Fatal("zero_output=true should set the proto field, got nil")
+	}
+	if !captured.GetIsZeroOutput() {
+		t.Errorf("zero_output=true not forwarded, got %v", captured.GetIsZeroOutput())
+	}
+}
+
+// TestCreateCronJobOmitZeroOutputLeavesUnset proves omitting zero_output leaves
+// the optional proto field nil rather than sending an explicit false.
+func TestCreateCronJobOmitZeroOutputLeavesUnset(t *testing.T) {
+	var captured *pb.CreateCronJobRequest
+	backend := &fakeBackend{createCronJob: func(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+		captured = req
+		return &pb.CronJob{Id: "c1"}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "create_cron_job",
+		Arguments: map[string]any{"repo_id": "r1", "name": "n", "prompt": "p", "schedule": "0 0 * * *"},
+	})
+	if err != nil {
+		t.Fatalf("call create_cron_job: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("create_cron_job error: %s", textOf(t, res))
+	}
+	if captured.IsZeroOutput != nil {
+		t.Errorf("omitted zero_output should leave proto field nil, got %v", *captured.IsZeroOutput)
+	}
+}
+
+// TestUpdateCronJobForwardsZeroOutputFalse proves an explicit false is
+// distinguishable from omission on update: it must arrive as a set pointer so a
+// caller can actually turn the flag off.
+func TestUpdateCronJobForwardsZeroOutputFalse(t *testing.T) {
+	var captured *pb.UpdateCronJobRequest
+	backend := &fakeBackend{updateCronJob: func(_ context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
+		captured = req
+		return &pb.CronJob{Id: "c1"}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "update_cron_job",
+		Arguments: map[string]any{"id": "c1", "zero_output": false},
+	})
+	if err != nil {
+		t.Fatalf("call update_cron_job: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("update_cron_job error: %s", textOf(t, res))
+	}
+	if captured.IsZeroOutput == nil {
+		t.Fatal("zero_output=false should set the proto field, got nil")
+	}
+	if captured.GetIsZeroOutput() {
+		t.Errorf("zero_output=false not forwarded, got true")
+	}
+}
+
+// TestUpdateCronJobOmitZeroOutputLeavesUnset is the present-only half: an update
+// that does not name zero_output must not clobber the stored value.
+func TestUpdateCronJobOmitZeroOutputLeavesUnset(t *testing.T) {
+	var captured *pb.UpdateCronJobRequest
+	backend := &fakeBackend{updateCronJob: func(_ context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
+		captured = req
+		return &pb.CronJob{Id: "c1"}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "update_cron_job",
+		Arguments: map[string]any{"id": "c1", "name": "x"},
+	})
+	if err != nil {
+		t.Fatalf("call update_cron_job: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("update_cron_job error: %s", textOf(t, res))
+	}
+	if captured.IsZeroOutput != nil {
+		t.Errorf("omitted zero_output should leave proto field nil, got %v", *captured.IsZeroOutput)
 	}
 }

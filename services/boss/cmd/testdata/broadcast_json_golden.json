@@ -1,0 +1,40 @@
+{
+  "broadcast": {
+    "id": "bc-1",
+    "origin_chat_id": "chat-origin",
+    "selector": "repo:repo-1,agent:claude",
+    "state": "delivering",
+    "target_count": 2,
+    "deliveries": [
+      {
+        "target_chat_id": "chat-a",
+        "state": "delivered",
+        "attempt_count": 1,
+        "last_error": "",
+        "delivered_at": "2026-01-02T03:04:05Z"
+      },
+      {
+        "target_chat_id": "chat-b",
+        "state": "failed",
+        "attempt_count": 3,
+        "last_error": "chat is not running",
+        "delivered_at": ""
+      }
+    ],
+    "expires_at": "2026-01-03T03:04:05Z",
+    "created_at": "2026-01-02T03:04:05Z"
+  },
+  "subscription": {
+    "id": "sub-1",
+    "owner_session_id": "sess-1",
+    "origin_chat_id": "chat-origin",
+    "trigger_event": "completed",
+    "selector": "repo:repo-1,agent:claude",
+    "state": "active",
+    "fired_broadcast_id": "",
+    "fired_at": "",
+    "expires_at": "2026-01-03T03:04:05Z",
+    "created_at": "2026-01-02T03:04:05Z",
+    "updated_at": "2026-01-02T03:04:05Z"
+  }
+}

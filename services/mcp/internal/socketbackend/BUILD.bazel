@@ -17,7 +17,10 @@ go_library(
 
 go_test(
     name = "socketbackend_test",
-    srcs = ["socketbackend_test.go"],
+    srcs = [
+        "socketbackend_notes_test.go",
+        "socketbackend_test.go",
+    ],
     embed = [":socketbackend"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",

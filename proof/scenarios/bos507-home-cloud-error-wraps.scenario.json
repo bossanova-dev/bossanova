@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "title": "BOS-507 home status lines — a 247-column cloud-access error wraps at the TUI content width instead of running off the terminal edge",
+  "fixture": { "preset": "cloud-error" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the long cloud-access error is wrapped across several lines, so its trailing copy is readable instead of clipped at the terminal edge",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Cloud access status unavailable",
+            "match": "normalized",
+            "label": "home loaded with the cloud-access gate line rendered (cloud-error preset)"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded: the cloud-access probe failed, so the warning gate line renders beneath the table"
+        },
+        {
+          "waitMs": 1500,
+          "caption": "The 247-column failure is laid out across several wrapped rows rather than one line clipped at the terminal edge"
+        },
+        {
+          "expect": {
+            "text": "no such host",
+            "match": "normalized",
+            "label": "the middle of the 247-column failure is on screen — it was previously clipped at the terminal edge"
+          },
+          "caption": "The DNS detail from the middle of the error is visible: an unwrapped line would have ended long before this"
+        },
+        {
+          "expect": {
+            "text": "Local sessions are still available.",
+            "match": "normalized",
+            "label": "the trailing reassurance copy — the very tail of the 247-column line — is rendered rather than cut off"
+          },
+          "caption": "The tail of the message survives: lipgloss now wraps the line onto several rows instead of letting it overflow the terminal width"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the wrapped block's right edge sits within the session table rather than running to the terminal edge",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "REPO NAME PR STATUS",
+            "match": "normalized",
+            "label": "the session table header row is drawn above the wrapped warning"
+          },
+          "timeoutMs": 10000,
+          "caption": "The session table is on screen with the wrapped warning beneath it — the wrap width is derived from these columns"
+        },
+        {
+          "waitMs": 1500,
+          "caption": "Every wrapped row stops short of the terminal edge, sitting inside the table's width instead: this board's columns measure 73 of the 120 available columns, and the wrapped block measures 73 too"
+        },
+        {
+          "expect": {
+            "text": "STATUS",
+            "match": "normalized",
+            "label": "the session table is drawn and its columns clear the minStatusWrapWidth floor, so statusWrapWidth tracks the table rather than the floor"
+          },
+          "caption": "The STATUS column header confirms the table the wrap width is measured from is the one actually rendered"
+        },
+        {
+          "expect": {
+            "text": "[n]ew session",
+            "match": "normalized",
+            "label": "the action bar is still drawn above the wrapped block, so the whole Home layout is intact around the wrap"
+          },
+          "caption": "The action bar sits above the wrapped warning and is unaffected by it — the whole Home layout renders normally around the taller status block"
+        }
+      ]
+    }
+  ]
+}

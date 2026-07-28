@@ -424,6 +424,90 @@ func TestListSessions_AttachesOpenPRForNoPRBranch(t *testing.T) {
 	}
 }
 
+func TestListSessions_PRAssociationRespectsStartupReadiness(t *testing.T) {
+	tests := []struct {
+		name           string
+		state          machine.State
+		wantCalls      int
+		wantRowLoads   int
+		wantPRNumber   int32
+		wantAssociated bool
+	}{
+		{
+			name:         "creating worktree",
+			state:        machine.CreatingWorktree,
+			wantCalls:    0,
+			wantRowLoads: 1,
+		},
+		{
+			name:         "starting agent",
+			state:        machine.StartingAgent,
+			wantCalls:    0,
+			wantRowLoads: 1,
+		},
+		{
+			name:           "ready",
+			state:          machine.AwaitingChecks,
+			wantCalls:      1,
+			wantRowLoads:   2,
+			wantPRNumber:   497,
+			wantAssociated: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := &models.Session{
+				ID:         "sess-1",
+				RepoID:     "repo-1",
+				Title:      "PR discovery",
+				BranchName: "discover-me",
+				State:      tt.state,
+				CreatedAt:  time.Now(),
+			}
+			provider := &listSessionsVCSProviderFake{
+				openPRs: []vcs.PRSummary{{
+					Number:     497,
+					HeadBranch: "discover-me",
+					State:      vcs.PRStateOpen,
+				}},
+			}
+			s := newListSessionsDisplayStatusTestServer(
+				[]*models.Session{sess},
+				nil,
+				status.NewDisplayTracker(),
+				status.NewTracker(),
+			)
+			store := s.sessions.(*listSessionsSessionStoreFake)
+			store.cloneRows = true
+			s.prResolver = session.NewPRAssociationResolver(
+				s.sessions,
+				s.repos,
+				provider,
+				zerolog.Nop(),
+			)
+
+			resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+			if err != nil {
+				t.Fatalf("ListSessions: %v", err)
+			}
+			got := onlySession(t, resp.Msg.Sessions)
+			if gotAssociated := got.PrNumber != nil; gotAssociated != tt.wantAssociated {
+				t.Fatalf("PR associated = %v, want %v (PRNumber=%v)", gotAssociated, tt.wantAssociated, got.PrNumber)
+			}
+			if tt.wantAssociated && got.GetPrNumber() != tt.wantPRNumber {
+				t.Fatalf("PRNumber = %d, want %d", got.GetPrNumber(), tt.wantPRNumber)
+			}
+			if got := provider.listOpenCallCount(); got != tt.wantCalls {
+				t.Fatalf("ListOpenPRs calls = %d, want %d", got, tt.wantCalls)
+			}
+			if got := store.listActiveWithRepoCalls; got != tt.wantRowLoads {
+				t.Fatalf("ListActiveWithRepo calls = %d, want %d", got, tt.wantRowLoads)
+			}
+		})
+	}
+}
+
 func TestListSessions_BoundsPRAssociationReconciliation(t *testing.T) {
 	originalTimeout := listSessionsPRAssociationTimeout
 	listSessionsPRAssociationTimeout = 10 * time.Millisecond

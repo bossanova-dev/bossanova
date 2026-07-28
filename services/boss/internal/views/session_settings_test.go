@@ -24,7 +24,7 @@ type stubSessionSettingsClient struct {
 
 var _ client.BossClient = (*stubSessionSettingsClient)(nil)
 
-func (s *stubSessionSettingsClient) GetSession(context.Context, string) (*pb.Session, error) {
+func (s *stubSessionSettingsClient) GetSession(context.Context, string, client.SessionReadOptions) (*pb.Session, error) {
 	if s.getErr != nil {
 		return nil, s.getErr
 	}
@@ -69,7 +69,7 @@ func (s *stubSessionSettingsClient) ListTrackerIssues(context.Context, string, s
 func (s *stubSessionSettingsClient) CreateSession(context.Context, *pb.CreateSessionRequest) (client.CreateSessionStream, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) ListSessions(context.Context, *pb.ListSessionsRequest) ([]*pb.Session, error) {
+func (s *stubSessionSettingsClient) ListSessions(context.Context, *pb.ListSessionsRequest, client.SessionReadOptions) ([]*pb.Session, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) AttachSession(context.Context, string) (client.AttachStream, error) {
@@ -159,6 +159,39 @@ func (s *stubSessionSettingsClient) ListGithubCallbacks(context.Context, *pb.Lis
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) DeleteGithubCallback(context.Context, string, string) error {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) CreateNote(context.Context, *pb.CreateNoteRequest) (*pb.Note, error) {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) GetNote(context.Context, string, string) (*pb.Note, error) {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) ListNotes(context.Context, *pb.ListNotesRequest) ([]*pb.Note, error) {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) UpdateNote(context.Context, string, *pb.UpdateNoteRequest) (*pb.Note, error) {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) DeleteNote(context.Context, string, string) error {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) SendBroadcast(context.Context, *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error) {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) ListBroadcasts(context.Context, *pb.ListBroadcastsRequest) ([]*pb.Broadcast, error) {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) DeleteBroadcast(context.Context, string) error {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) CreateBroadcastSubscription(context.Context, *pb.CreateBroadcastSubscriptionRequest) (*pb.BroadcastSubscription, error) {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) ListBroadcastSubscriptions(context.Context, *pb.ListBroadcastSubscriptionsRequest) ([]*pb.BroadcastSubscription, error) {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) DeleteBroadcastSubscription(context.Context, string) error {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {

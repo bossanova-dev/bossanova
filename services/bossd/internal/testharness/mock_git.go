@@ -58,7 +58,7 @@ type MockWorktreeManager struct {
 	InjectPRNumbersFunc func(ctx context.Context, worktreePath, branch string, prNumber int, baseRef string) error
 
 	// VerifyPushedBranchAheadOfBaseFunc overrides the default verification behavior when set.
-	VerifyPushedBranchAheadOfBaseFunc func(ctx context.Context, worktreePath, branch, baseBranch string) (*gitpkg.BranchVerification, error)
+	VerifyPushedBranchAheadOfBaseFunc func(ctx context.Context, worktreePath, branch, baseBranch string, opts gitpkg.VerifyPushedBranchAheadOfBaseOpts) (*gitpkg.BranchVerification, error)
 
 	// StatusFunc overrides the default Status behavior when set.
 	StatusFunc func(ctx context.Context, worktreePath string) (string, error)
@@ -68,6 +68,11 @@ type MockWorktreeManager struct {
 
 	// CommitSubjectsFunc overrides the default CommitSubjects behavior when set.
 	CommitSubjectsFunc func(ctx context.Context, worktreePath, baseRef string) ([]string, error)
+
+	// HasDiffAgainstBaseFunc overrides HasDiffAgainstBase when set. The
+	// default is (true, nil) — "the branch has a diff" — so finalize's
+	// BOS-591 mark-ready backstop stays transparent to every existing test.
+	HasDiffAgainstBaseFunc func(ctx context.Context, worktreePath, baseRef string) (bool, error)
 
 	// DetectOriginURLResult is returned by DetectOriginURL.
 	DetectOriginURLResult string
@@ -93,6 +98,21 @@ type MockWorktreeManager struct {
 	// RetryDeferredBaseSyncsCalls counts RetryDeferredBaseSyncs invocations.
 	RetryDeferredBaseSyncsCalls int
 
+	// CountBehindBaseCalls records every CountBehindBase invocation so
+	// keep-current sweep tests can assert which branches were even considered.
+	CountBehindBaseCalls []behindBaseCall
+	// CountBehindBaseErr is returned by CountBehindBase when non-nil.
+	CountBehindBaseErr error
+	// behindByBranch maps branch name to the behind count CountBehindBase
+	// reports; unset branches report 0 (up to date). Set via SetBehindBase.
+	behindByBranch map[string]int
+
+	// RebaseOntoBaseAndPushCalls records every RebaseOntoBaseAndPush invocation.
+	RebaseOntoBaseAndPushCalls []rebaseOntoBaseAndPushCall
+	// RebaseOntoBaseAndPushErr is returned by RebaseOntoBaseAndPush when non-nil — set it to
+	// gitpkg.ErrRebaseConflict to exercise the sweep's conflict-skip branch.
+	RebaseOntoBaseAndPushErr error
+
 	// createErrorOnCall maps 1-indexed Create call numbers to errors.
 	// When the call counter matches, the next Create returns this error
 	// and the entry is consumed.
@@ -108,6 +128,20 @@ type mergeLocalCall struct {
 	Base      string
 	Head      string
 	Strategy  string
+}
+
+// behindBaseCall records a single CountBehindBase invocation.
+type behindBaseCall struct {
+	WorktreePath string
+	Branch       string
+	Base         string
+}
+
+// rebaseOntoBaseAndPushCall records a single RebaseOntoBaseAndPush invocation.
+type rebaseOntoBaseAndPushCall struct {
+	WorktreePath string
+	Branch       string
+	Base         string
 }
 
 type cloneCall struct {
@@ -132,6 +166,7 @@ type verifyPushedBranchCall struct {
 	WorktreePath string
 	Branch       string
 	BaseBranch   string
+	SkipFetch    bool
 }
 
 type emptyTrashCall struct {
@@ -180,8 +215,12 @@ func (m *MockWorktreeManager) Create(ctx context.Context, opts gitpkg.CreateOpts
 		return m.CreateFunc(ctx, opts)
 	}
 
-	// Default: generate a worktree path and branch name from the title.
-	branch := sanitize(opts.Title)
+	// Match the real worktree manager: an explicit branch name wins, otherwise
+	// derive one from the title.
+	branch := opts.BranchName
+	if branch == "" {
+		branch = sanitize(opts.Title)
+	}
 	path := fmt.Sprintf("/tmp/worktrees/%s/%s", sanitize(opts.RepoName), branch)
 	// Materialise on disk so callers that stat the path (spawnChatTmux) work.
 	_ = os.MkdirAll(path, 0o750)
@@ -346,18 +385,19 @@ func (m *MockWorktreeManager) InjectPRNumbers(ctx context.Context, worktreePath,
 	return nil
 }
 
-func (m *MockWorktreeManager) VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePath, branch, baseBranch string) (*gitpkg.BranchVerification, error) {
+func (m *MockWorktreeManager) VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePath, branch, baseBranch string, opts gitpkg.VerifyPushedBranchAheadOfBaseOpts) (*gitpkg.BranchVerification, error) {
 	m.mu.Lock()
 	m.VerifyPushedBranchCalls = append(m.VerifyPushedBranchCalls, verifyPushedBranchCall{
 		WorktreePath: worktreePath,
 		Branch:       branch,
 		BaseBranch:   baseBranch,
+		SkipFetch:    opts.SkipFetch,
 	})
 	override := m.VerifyPushedBranchAheadOfBaseFunc
 	m.mu.Unlock()
 
 	if override != nil {
-		return override(ctx, worktreePath, branch, baseBranch)
+		return override(ctx, worktreePath, branch, baseBranch, opts)
 	}
 	return &gitpkg.BranchVerification{
 		HeadSHA:       "head-sha",
@@ -394,6 +434,13 @@ func (m *MockWorktreeManager) CommitSubjects(ctx context.Context, worktreePath, 
 		return m.CommitSubjectsFunc(ctx, worktreePath, baseRef)
 	}
 	return nil, nil
+}
+
+func (m *MockWorktreeManager) HasDiffAgainstBase(ctx context.Context, worktreePath, baseRef string) (bool, error) {
+	if m.HasDiffAgainstBaseFunc != nil {
+		return m.HasDiffAgainstBaseFunc(ctx, worktreePath, baseRef)
+	}
+	return true, nil
 }
 
 func (m *MockWorktreeManager) BranchDebugSnapshot(_ context.Context, _, _, _ string) (*gitpkg.BranchDebugSnapshot, error) {
@@ -445,6 +492,72 @@ func (m *MockWorktreeManager) FetchBase(_ context.Context, _, _ string) error {
 	err := m.FetchBaseErr
 	m.mu.Unlock()
 	return err
+}
+
+func (m *MockWorktreeManager) CountMergeCommits(_ context.Context, _, _, _ string) (int, error) {
+	return 0, nil
+}
+
+// CountBehindBase reports the per-branch behind count configured via
+// SetBehindBase, defaulting to zero (up to date) for branches with no entry —
+// so a test only has to name the branches it wants the keep-current sweep to
+// consider behind.
+func (m *MockWorktreeManager) CountBehindBase(_ context.Context, worktreePath, branch, base string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.CountBehindBaseCalls = append(m.CountBehindBaseCalls, behindBaseCall{
+		WorktreePath: worktreePath, Branch: branch, Base: base,
+	})
+	if m.CountBehindBaseErr != nil {
+		return 0, m.CountBehindBaseErr
+	}
+	return m.behindByBranch[branch], nil
+}
+
+// SetBehindBase configures how many commits CountBehindBase reports branch as
+// being behind its base.
+func (m *MockWorktreeManager) SetBehindBase(branch string, behind int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.behindByBranch == nil {
+		m.behindByBranch = make(map[string]int)
+	}
+	m.behindByBranch[branch] = behind
+}
+
+// RebaseOntoBaseAndPush records the call and returns synthetic pre/post tips, or
+// RebaseOntoBaseAndPushErr when set (e.g. gitpkg.ErrRebaseConflict).
+func (m *MockWorktreeManager) RebaseOntoBaseAndPush(_ context.Context, worktreePath, branch, base string) (*gitpkg.RebaseResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.RebaseOntoBaseAndPushCalls = append(m.RebaseOntoBaseAndPushCalls, rebaseOntoBaseAndPushCall{
+		WorktreePath: worktreePath, Branch: branch, Base: base,
+	})
+	if m.RebaseOntoBaseAndPushErr != nil {
+		return nil, m.RebaseOntoBaseAndPushErr
+	}
+	return &gitpkg.RebaseResult{
+		PriorHead: "prior-head-sha-" + branch,
+		NewHead:   "rebased-head-sha-" + branch,
+	}, nil
+}
+
+// BehindBaseCallCount returns how many times CountBehindBase was invoked.
+func (m *MockWorktreeManager) BehindBaseCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.CountBehindBaseCalls)
+}
+
+// RebasedBranches returns the branches passed to RebaseOntoBaseAndPush, in order.
+func (m *MockWorktreeManager) RebasedBranches() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.RebaseOntoBaseAndPushCalls))
+	for _, c := range m.RebaseOntoBaseAndPushCalls {
+		out = append(out, c.Branch)
+	}
+	return out
 }
 
 func (m *MockWorktreeManager) CreateFromExistingBranch(ctx context.Context, opts gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {

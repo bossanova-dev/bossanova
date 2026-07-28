@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "title": "Narrow terminal scenario",
+  "terminal": { "cols": 72, "rows": 30 },
+  "scenes": [
+    {
+      "title": "Scene",
+      "steps": [{ "expect": "x" }]
+    }
+  ]
+}

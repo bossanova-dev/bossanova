@@ -7,11 +7,19 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
   CAPTION_BAR_STYLE,
+  DEFAULT_TERMINAL_MIN_WIDTH_PX,
+  TERMINAL_CHAR_ADVANCE_PX,
   captionBarMarkup,
+  deriveTerminalMinWidthPx,
   parseManifestArg,
   renderCaptionStripHtml,
   renderHtml,
 } from './proof-render-terminal.mjs'
+
+/** A `cols`-wide, `rows`-tall block of screen text, like a rendered cast frame. */
+function screen(cols, rows = 3) {
+  return Array.from({ length: rows }, () => 'x'.repeat(cols)).join('\n')
+}
 
 // Regression guard (BOS-121): the CLI entry block calls renderHtml /
 // renderCaptionStripHtml, which read the top-level `const CAPTION_BAR_STYLE`. A
@@ -60,7 +68,9 @@ test('renderHtml bounds an over-long caption to <=140 chars ending with an ellip
   assert.doesNotMatch(html, new RegExp('A'.repeat(200)))
   assert.match(html, new RegExp(`${'A'.repeat(139)}…`))
   // Extract the caption bar text and assert it is <=140 chars and ends with '…'.
-  const m = html.match(/__proof-tui-caption[^>]*>([^<]*)</)
+  // Anchored on the ELEMENT, not the bare class token: the stylesheet also
+  // names .__proof-tui-caption (its sizing rule, BOS-571).
+  const m = html.match(/<div class="__proof-tui-caption"[^>]*>([^<]*)</)
   assert.ok(m, 'caption bar must be present')
   assert.ok(m[1].length <= 140, `caption text must be <=140 chars (was ${m[1].length})`)
   assert.equal(m[1].endsWith('…'), true)
@@ -68,7 +78,9 @@ test('renderHtml bounds an over-long caption to <=140 chars ending with an ellip
 
 test('renderHtml collapses a multi-line / multi-space caption to a single line', () => {
   const html = renderHtml({ title: 'boss', text: 'home', caption: 'open\n  the   dashboard' })
-  const m = html.match(/__proof-tui-caption[^>]*>([^<]*)</)
+  // Anchored on the ELEMENT, not the bare class token: the stylesheet also
+  // names .__proof-tui-caption (its sizing rule, BOS-571).
+  const m = html.match(/<div class="__proof-tui-caption"[^>]*>([^<]*)</)
   assert.ok(m, 'caption bar must be present')
   assert.equal(m[1], 'open the dashboard')
   assert.doesNotMatch(m[1], /\n/)
@@ -119,6 +131,83 @@ test('renderCaptionStripHtml: an empty caption still yields a screenshot target'
   // crash the locator if it ever does — the wrapper element is always present.
   const html = renderCaptionStripHtml({ caption: '', width: 640 })
   assert.match(html, /data-proof-caption-strip/)
+})
+
+// ── deriveTerminalMinWidthPx (cast-derived still floor, BOS-571) ─────────────
+
+test('deriveTerminalMinWidthPx: a narrow cast yields a floor proportional to its columns', () => {
+  const derived = deriveTerminalMinWidthPx(screen(72))
+  assert.ok(
+    derived < DEFAULT_TERMINAL_MIN_WIDTH_PX,
+    `a 72-column screen must not be floored at the 140-column default (got ${derived})`,
+  )
+  // The floor tracks the pre's own text box: cols * advance + padding + borders.
+  const expected = Math.ceil(72 * TERMINAL_CHAR_ADVANCE_PX) + 2 * 18 + 2 * 1
+  assert.equal(derived, expected)
+})
+
+test('deriveTerminalMinWidthPx: the floor scales with the recorded column count', () => {
+  const narrow = deriveTerminalMinWidthPx(screen(60))
+  const wider = deriveTerminalMinWidthPx(screen(90))
+  assert.ok(wider > narrow, 'a wider cast must derive a wider floor')
+  // ~30 columns of difference, within a rounding pixel.
+  assert.ok(Math.abs(wider - narrow - 30 * TERMINAL_CHAR_ADVANCE_PX) <= 1)
+})
+
+test('deriveTerminalMinWidthPx: measures the WIDEST line, not the first or last', () => {
+  const ragged = ['short', 'x'.repeat(72), ''].join('\n')
+  assert.equal(deriveTerminalMinWidthPx(ragged), deriveTerminalMinWidthPx(screen(72)))
+})
+
+test('deriveTerminalMinWidthPx: a ~140-column cast still yields exactly the 1120px default', () => {
+  // Byte-identical guard: every scenario committed before BOS-571 records 140
+  // columns, whose derived floor exceeds 1120, so min-width stays 1120 and
+  // `width: max-content` keeps sizing the card exactly as it does today.
+  assert.equal(deriveTerminalMinWidthPx(screen(140)), DEFAULT_TERMINAL_MIN_WIDTH_PX)
+  assert.equal(deriveTerminalMinWidthPx(screen(300)), DEFAULT_TERMINAL_MIN_WIDTH_PX)
+})
+
+test('deriveTerminalMinWidthPx: falls back to 1120 when the width is unknowable', () => {
+  for (const input of ['', '   ', '\n\n', undefined, null, 140, {}]) {
+    assert.equal(
+      deriveTerminalMinWidthPx(input),
+      DEFAULT_TERMINAL_MIN_WIDTH_PX,
+      `expected the 1120px fallback for ${JSON.stringify(input)}`,
+    )
+  }
+})
+
+test('renderHtml: min-width tracks a narrow screen and stays 1120px for a wide/empty one', () => {
+  const narrow = renderHtml({ title: 'boss', text: screen(72), caption: '' })
+  assert.match(narrow, new RegExp(`min-width: ${deriveTerminalMinWidthPx(screen(72))}px`))
+  assert.doesNotMatch(narrow, /min-width: 1120px/)
+
+  for (const text of [screen(140), '']) {
+    assert.match(
+      renderHtml({ title: 'boss', text, caption: '' }),
+      /min-width: 1120px/,
+      'a wide or empty screen must keep the historical 1120px floor',
+    )
+  }
+})
+
+test('renderHtml: keeps width: max-content so a wide cast still hugs its content', () => {
+  assert.match(renderHtml({ title: 'boss', text: screen(72) }), /width: max-content/)
+})
+
+test('renderHtml: the caption bar fills the card without sizing it', () => {
+  // The bar is a child of the max-content card, so an unwrapped 140-char
+  // caption would stretch the card past a narrow terminal and re-letterbox it
+  // (measured: 50 of the 406 committed scenario captions push a 72-column card
+  // from 645px to as much as 1005px). `width: 0` zeroes the max-content
+  // contribution; `min-width: 100%` still fills the card during layout. Pinned
+  // in source because layout is only observable in a browser.
+  const html = renderHtml({ title: 'boss', text: screen(72), caption: 'A'.repeat(140) })
+  const rule = html.match(/\.__proof-tui-caption \{([^}]*)\}/)
+  assert.ok(rule, 'the caption bar must carry a non-contributing width rule')
+  assert.match(rule[1], /width: 0;/)
+  assert.match(rule[1], /min-width: 100%;/)
+  assert.match(rule[1], /text-overflow: ellipsis;/)
 })
 
 // ── parseManifestArg (single-browser batch mode) ─────────────────────────────

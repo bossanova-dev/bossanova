@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "title": "BOS-506 session-list rotation toast — indented, emoji-free, and budgeted so the action bar survives",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the home list before any rotation lands — the before control, at full table height",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Control: no rotation has landed yet, so the table header sits directly under the banner with no notice line, and the action bar is on screen"
+        },
+        {
+          "expect": {
+            "text": "REPO",
+            "match": "normalized",
+            "label": "the session table header is the first line under the banner — no notice line above it"
+          }
+        },
+        {
+          "expect": {
+            "text": "[n]ew session",
+            "match": "normalized",
+            "label": "the action bar is on screen at full table height"
+          }
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "a rotation event raises the toast — indented to the caret column, no emoji, action bar intact",
+      "steps": [
+        {
+          "daemon": {
+            "action": "add_session",
+            "session": {
+              "id": "sess-506-toast",
+              "repoId": "repo-1",
+              "repoDisplayName": "my-app",
+              "title": "Rotation toast demo",
+              "state": "IMPLEMENTING_PLAN",
+              "branchName": "boss/rotation-toast-demo",
+              "rotationEvents": [
+                {
+                  "id": "rot-506-1",
+                  "outcome": "UNSPECIFIED",
+                  "detail": "pane recovered before rotation"
+                }
+              ]
+            }
+          },
+          "caption": "The daemon pushes a NEW session carrying a rotation event; the next poll sees an id it has never seen and raises the toast"
+        },
+        {
+          "waitFor": {
+            "text": "pane recovered before rotation",
+            "match": "normalized",
+            "label": "the toast is raised on the first home poll that observes the new rotation-event id"
+          },
+          "timeoutMs": 10000,
+          "caption": "BOS-506: the notice reads as plain text — the \"🔄 \" prefix is gone — and one blank line separates it from the table header below"
+        },
+        {
+          "waitMs": 600,
+          "caption": "BOS-506: the notice starts in the same column as the ❯ caret, and the [n]ew session action bar is untouched below the table"
+        },
+        {
+          "expect": {
+            "text": "pane recovered before rotation",
+            "match": "normalized",
+            "label": "the rotation notice renders, with no emoji prefix"
+          }
+        },
+        {
+          "expect": {
+            "text": "❯",
+            "match": "normalized",
+            "label": "the table caret is on screen, so the still can be read for column alignment against the notice"
+          }
+        },
+        {
+          "expect": {
+            "text": "[n]ew session",
+            "match": "normalized",
+            "label": "the action bar is still on screen with the toast up"
+          }
+        }
+      ]
+    }
+  ]
+}

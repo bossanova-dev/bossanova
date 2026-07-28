@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	bossalog "github.com/recurser/bossalib/log"
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
@@ -42,6 +44,7 @@ import (
 	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/agent"
+	"github.com/recurser/bossd/internal/broadcast"
 	"github.com/recurser/bossd/internal/callback"
 	cronpkg "github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
@@ -49,10 +52,13 @@ import (
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
 	"github.com/recurser/bossd/internal/proofenvkeyring"
+	"github.com/recurser/bossd/internal/resume"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
+	"github.com/recurser/bossd/internal/sessionports"
 	"github.com/recurser/bossd/internal/status"
+	"github.com/recurser/bossd/internal/status/questionsignal"
 	"github.com/recurser/bossd/internal/taskorchestrator"
 	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 	"github.com/recurser/bossd/internal/tmux"
@@ -160,16 +166,34 @@ func probeUsageSnapshotForRotation(
 }
 
 // refreshActiveAccountUsage probes and persists a fresh usage snapshot for every
-// active, non-cooling account, so the util-aware default-account selector
+// active account, so the util-aware default-account selector
 // (account.Resolver.selectDefault via freshCapped/isFresh) always has fresh data
 // to sideline capped accounts. Without a periodic refresh, snapshots only update
 // on a rotation event, go stale past the staleness window, and selection
 // degrades to priority/LRU — which can bind a brand-new session to a fully-capped
-// account (the "new chats pick an exhausted account" symptom, BOS-320). Cooling
-// accounts are skipped: their unavailability is already known and time-bounded,
-// and they are excluded from tier-1 selection regardless. Fail-soft — a list or
-// per-account probe error is logged and skipped, never fatal. Returns the number
-// of accounts refreshed.
+// account (the "new chats pick an exhausted account" symptom, BOS-320).
+//
+// Cooling accounts are probed too (BOS-584). They were skipped on the premise
+// that their unavailability was "already known and time-bounded" — that premise
+// is false: a transient upstream 429 could bench a perfectly healthy account for
+// a flat hour, and nothing in production ever cleared cooldown_until, so expiry
+// was purely wall-clock. Re-probing them bounds a mis-cooling to one refresh
+// interval: a fresh, available probe that contradicts the cooldown clears it
+// (see reconcileContradictedCooldown).
+//
+// Scope that claim precisely — it is about ACCOUNT SELECTION, not parked work.
+// Clearing cooldown_until returns the account to the selectable pool (rotation's
+// selectCandidate and the default-account resolver both key off it), so new and
+// rotating sessions can use it immediately. It does NOT wake sessions already
+// parked by the wrong bench: parkAllCooling stamped sessions.rotation_resume_at
+// from the cooldown that was current at park time, and SweepParkedRotations is
+// driven purely off that stamp, so a parked session still sleeps until its own
+// resume-at falls due. Pulling those stamps forward is a separate change to the
+// parked sweep, deliberately not made here. An operator reading this during an
+// incident should expect freed capacity, not resumed sessions.
+//
+// Fail-soft — a list, probe, or cooldown-clear error is logged and skipped,
+// never fatal. Returns the number of accounts refreshed.
 func refreshActiveAccountUsage(
 	ctx context.Context,
 	logger zerolog.Logger,
@@ -191,14 +215,114 @@ func refreshActiveAccountUsage(
 		if acct == nil || acct.Status != models.AccountStatusActive {
 			continue
 		}
-		if acct.CooldownUntil != nil && acct.CooldownUntil.After(now) {
+		snap, ok := probeUsageSnapshotForRotation(ctx, logger, prober, recorder, acct.ID)
+		if !ok {
 			continue
 		}
-		if _, ok := probeUsageSnapshotForRotation(ctx, logger, prober, recorder, acct.ID); ok {
-			refreshed++
+		refreshed++
+		if acct.CooldownUntil == nil || !acct.CooldownUntil.After(now) {
+			continue
 		}
+		reconcileContradictedCooldown(ctx, logger, recorder, acct, snap)
 	}
 	return refreshed
+}
+
+// accountCooldownClearer reads an account back and writes cooldown_until on it.
+// The store's Update supports clearing it to NULL (db.AccountStore.Update);
+// until BOS-584 nothing in production ever invoked that branch, which is why a
+// wrong bench could only be outlived, never corrected. Get is here so the clear
+// can re-check the row it is about to overwrite (see
+// reconcileContradictedCooldown).
+type accountCooldownClearer interface {
+	Get(context.Context, string) (*models.Account, error)
+	Update(context.Context, string, db.UpdateAccountParams) (*models.Account, error)
+}
+
+// The reconciliation sweep reaches the store through a runtime assertion, so a
+// signature drift on db.AccountStore.Update would silently turn the whole
+// safety net into a no-op — and every test injects a fake that satisfies the
+// interface, so nothing would go red. Pin the production shape at compile time
+// instead.
+var _ accountCooldownClearer = (db.AccountStore)(nil)
+
+// reconcileContradictedCooldown clears a cooling account's cooldown_until when
+// the authoritative usage probe says the account is not limited after all.
+//
+// The guard rails are the whole point, and they are deliberately asymmetric: a
+// cooldown is cleared ONLY on a probe that is fresh, available, and says "not
+// limited". A probe error never reaches here (probeUsageSnapshotForRotation
+// already returned !ok), and an explicitly unavailable probe
+// (UNSUPPORTED/UNSPECIFIED) leaves the bench exactly as it is. Clearing on an
+// unverifiable probe would be the mirror image of the bug this fixes — benching
+// on an unverifiable 429. A failed clear is logged and skipped so one bad write
+// never aborts the sweep.
+//
+// "Fresh" is structural, not a timestamp comparison: snap comes from
+// materializerAdapter.ProbeUsageSnapshot, which always issues a live
+// ProbeRateLimit RPC and stamps FetchedAt with the instant of that call — it
+// never returns a cached snapshot, so the nil check below is a
+// probe-produced-nothing guard, not an age guard. Wiring in a prober that
+// caches would break that guarantee and would need an explicit age check here.
+//
+// The re-read before the write is the concurrency guard. acct was listed BEFORE
+// a network probe, so a genuine, probe-confirmed cap may have landed in that
+// window; overwriting it would be this sweep re-creating the very bug it exists
+// to undo. The store exposes no compare-and-set, so this is not atomic — but it
+// shrinks the clobber window from the probe's whole duration to two adjacent
+// SQLite statements, and any bench that still slips through is re-applied by
+// the next 429.
+func reconcileContradictedCooldown(
+	ctx context.Context,
+	logger zerolog.Logger,
+	recorder usageSnapshotRecorder,
+	acct *models.Account,
+	snap models.UsageSnapshot,
+) {
+	if snap.FetchedAt == nil || rotation.UsageSnapshotProbeUnavailable(snap) ||
+		rotation.UsageSnapshotConfirmsLimited(snap) {
+		return
+	}
+	store, ok := recorder.(accountCooldownClearer)
+	if !ok {
+		logger.Warn().Str("account_id", acct.ID).
+			Msg("usage-refresh: recorder cannot clear cooldowns; contradicted bench left in place")
+		return
+	}
+	current, err := store.Get(ctx, acct.ID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// The account was deleted between the list and the re-read. Nothing to
+		// undo, and emphatically not a store fault — SQLiteAccountStore.Get
+		// surfaces a missing row this way, so without this arm an operator
+		// deleting an account would read as an error in the log.
+		return
+	case err != nil:
+		logger.Warn().Err(err).Str("account_id", acct.ID).
+			Msg("usage-refresh: re-reading the contradicted account failed; bench left in place")
+		return
+	}
+	switch {
+	case current == nil || current.CooldownUntil == nil:
+		// Already cleared or expired out from under us — nothing to undo.
+		return
+	case acct.CooldownUntil == nil || !current.CooldownUntil.Equal(*acct.CooldownUntil):
+		logger.Info().Str("account_id", acct.ID).
+			Msg("usage-refresh: cooldown changed during the probe; leaving the newer bench in place")
+		return
+	}
+	var cleared *time.Time
+	if _, err := store.Update(ctx, acct.ID, db.UpdateAccountParams{CooldownUntil: &cleared}); err != nil {
+		logger.Warn().Err(err).Str("account_id", acct.ID).
+			Msg("usage-refresh: clearing contradicted cooldown failed")
+		return
+	}
+	logger.Info().
+		Str("account_id", acct.ID).
+		Str("status", snap.Status).
+		Float64("util_5h", snap.Util5h).
+		Float64("util_7d", snap.Util7d).
+		Msg("usage-refresh: cooldown contradicted by usage probe; bench cleared")
 }
 
 // authProbeConfirmsInvalidation reports whether a usage-probe error is a typed
@@ -518,6 +642,13 @@ type runOpts struct {
 	// lifecycle's rotation binding and account materializer are installed.
 	onRotationSeamsWired func(live bool)
 
+	// onTransientResumeSeamsWired, if non-nil, fires synchronously immediately
+	// after the BOS-518 auto-resume consumer is constructed. live reports that
+	// BOTH halves of the lane exist — the resumer itself and the tracker
+	// transition hook that is its only trigger — because either half alone is a
+	// daemon that silently never auto-resumes.
+	onTransientResumeSeamsWired func(live bool)
+
 	// startupStrandedCronRecovery overrides the startup stranded-cron sweep for
 	// shutdown-lifecycle tests. Nil uses Lifecycle.RecoverStrandedCronSessionsAtStartup.
 	startupStrandedCronRecovery func(context.Context) (int, error)
@@ -648,6 +779,35 @@ func run(opts runOpts) error {
 	rawWorkflows := db.NewWorkflowStore(database)
 	cronJobs := db.NewCronJobStore(database)
 	githubCallbacks := db.NewGithubCallbackStore(database)
+	// Notes (BOS-550): durable free-text a run records against a repo so a
+	// later sweep can harvest what was learned.
+	notes := db.NewNoteStore(database)
+	// Broadcasts (BOS-556): the store persists a broadcast plus the audience
+	// frozen into its delivery rows; the resolver turns a validated selector
+	// into that audience from the daemon's routable chats and their sessions.
+	// The delivery worker that drains the rows is constructed below, once srv
+	// exists to provide the wake+submit delivery primitive.
+	//
+	// rawSessions rather than the display-recomputing wrapper: the resolver only
+	// reads a session's repo id, once per candidate chat on the fan-out path, so
+	// recomputing display state for every candidate would be pure cost.
+	broadcasts := db.NewBroadcastStore(database)
+	broadcastResolver := broadcast.NewResolver(agentChats, rawSessions, log.Logger)
+	// Standing broadcast subscriptions (BOS-557): a rule that fires a broadcast
+	// when its owning session reaches a matching outcome. The evaluator fires
+	// through the SAME broadcast.Sender the SendBroadcast RPC sends through, so a
+	// fired subscription is not a second delivery path.
+	//
+	// Constructed here, ahead of the session store, because it is wired INTO that
+	// store as its transition observer (see below) — the whole point of the
+	// design is that there is one place to hook.
+	broadcastSubscriptions := db.NewBroadcastSubscriptionStore(database)
+	broadcastSubscriptionEvaluator := broadcast.NewSubscriptionEvaluator(
+		broadcastSubscriptions,
+		broadcast.NewSender(broadcasts, broadcastResolver, log.Logger),
+		nil, // default clock
+		log.Logger,
+	).WithSessionStates(rawSessions)
 	accounts := db.NewAccountStore(database)
 	// Account-rotation policy engine (BOS-173). Held on the daemon for the
 	// headless/interactive auto-rotate consumers (BOS-174/175) to call; no cap
@@ -677,7 +837,15 @@ func run(opts runOpts) error {
 	displayComputer := status.NewDisplayStatusComputer(
 		rawSessions, displayTracker, chatStatusTracker, agentChats, rawWorkflows, log.Logger,
 	)
-	var sessions db.SessionStore = db.NewRecomputingSessionStore(rawSessions, displayComputer)
+	// THE single session state-transition seam (BOS-557). Roughly two dozen call
+	// sites write sessions.state, through Update plus the conditional and orphan
+	// methods; all of them hold this decorated store, so attaching the standing-
+	// subscription evaluator here observes every one of them exactly once without
+	// instrumenting any subsystem. See RecomputingSessionStore's doc comment for
+	// why it is layered ON the decorator rather than around it, and for the one
+	// known gap (AdvanceOrphanedSessions) the periodic reconcile sweep covers.
+	var sessions db.SessionStore = db.NewRecomputingSessionStore(rawSessions, displayComputer).
+		WithTransitionObserver(broadcastSubscriptionEvaluator)
 	var workflows db.WorkflowStore = db.NewRecomputingWorkflowStore(rawWorkflows, displayComputer)
 
 	// Wire the display tracker so its mutations recompute synchronously.
@@ -735,6 +903,17 @@ func run(opts runOpts) error {
 	// in scope (below). The nil-guard covers the brief startup window before it is
 	// assigned.
 	var chatRotator *rotation.ChatRotator
+
+	// transientResumer auto-resumes chats whose turn died on a retryable 5xx API
+	// banner (BOS-518). Declared alongside chatRotator and for the same reason:
+	// the chat-store and tracker closures below must reference it, but it needs
+	// srv (for the delivery seam), which is constructed much later. Every use
+	// site is nil-guarded to cover that window.
+	var transientResumer *resume.TransientResumer
+	// transientResumeHookInstalled records that the tracker transition hook — the
+	// resumer's ONLY trigger — was actually wired, so the seams probe can report
+	// the lane live rather than merely constructed.
+	transientResumeHookInstalled := false
 
 	chatStatusTracker.SetOnUpdate(func(agentSessionID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -806,6 +985,12 @@ func run(opts runOpts) error {
 			// after this closure is installed.
 			if chatRotator != nil {
 				chatRotator.Deregister(chat.AgentSessionID)
+			}
+			// Same reasoning for the auto-resume lane (BOS-518): a chat whose row is
+			// gone must not keep an armed settle/backoff timer that would later
+			// deliver a resume prompt into a pane nobody owns.
+			if transientResumer != nil {
+				transientResumer.Deregister(chat.AgentSessionID)
 			}
 		default:
 			return
@@ -1142,6 +1327,22 @@ func run(opts runOpts) error {
 	// keyring-backed resolver so proof credentials reach managed session spawns.
 	lifecycle.SetProofEnvResolver(proofEnv)
 	lifecycle.SetAccountEnvResolver(accountSpawnEnv)
+	// Drop draft-PR in-flight markers left by a daemon that died mid-create
+	// (BOS-540). The marker means "a goroutine in THIS process is opening a PR
+	// right now", so any that exist before this process has started a single
+	// session are provably stale; leaving them would have the session advertise
+	// a PR forever. Must run here, before anything can start a session — never
+	// on the periodic path, which would clear live markers. Fail-soft: a store
+	// error is a cosmetic loss, not a reason to refuse to boot.
+	func() {
+		sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer sweepCancel()
+		if stale, err := lifecycle.ClearStaleDraftPRInFlightReasons(sweepCtx); err != nil {
+			log.Warn().Err(err).Msg("failed to sweep stale draft PR in-flight markers")
+		} else if len(stale) > 0 {
+			log.Info().Strs("sessions", stale).Msg("cleared stale draft PR in-flight markers left by a previous daemon")
+		}
+	}()
 	lifecycle.SetSessionDeletedNotifier(func(_ context.Context, sessionID string) {
 		streamBus.Publish(upstream.StreamEvent{
 			Session: &upstream.SessionEvent{
@@ -1610,7 +1811,14 @@ func run(opts runOpts) error {
 
 	// --- Tmux Status Poller ---
 
+	// questionSignals is the structured "a question is pending" store (BOS-485),
+	// shared between the poller (reads/clears it to drive CHAT_STATUS_QUESTION)
+	// and the hook server (writes it when the agent's Notification hook fires).
+	// One instance so both sides see the same records.
+	questionSignals := questionsignal.NewStore(questionsignal.DefaultTTL)
+
 	tmuxStatusPoller := status.NewTmuxStatusPoller(chatStatusTracker, agentChats, sessions, tmuxClient, agentClients, log.Logger)
+	tmuxStatusPoller.SetQuestionSignals(questionSignals)
 
 	// --- Server ---
 
@@ -1697,12 +1905,46 @@ func run(opts runOpts) error {
 		}
 	})
 
+	// BOS-518: dispatch the bounded auto-resume consumer on every transient-API
+	// -error transition. Unlike the auth hook above this deliberately does NOT
+	// gate on the post-set marker state: OnTransientAPIError needs BOTH edges.
+	// The SET edge arms the settle timer, and the CLEAR edge is the only positive
+	// evidence the chat recovered — it cancels the armed cycle and zeroes the
+	// attempt budget. Gating on TransientAPIError(...) would swallow the clear,
+	// leaving a chat that recovered and later failed again with a partially spent
+	// budget. The resumer re-checks the marker itself on entry, so passing both
+	// edges through costs nothing. Nil-guarded: the resumer is constructed later
+	// (it needs srv), and the poller cannot fire this hook before then anyway.
+	chatStatusTracker.SetOnTransientAPIErrorChange(func(agentSessionID string) {
+		if transientResumer != nil {
+			transientResumer.OnTransientAPIError(agentSessionID)
+		}
+	})
+	transientResumeHookInstalled = true
+
 	var streamClient *upstream.StreamClient
 	var terminalStreamClient *upstream.TerminalStreamClient
 	var snapshotPublisher func(context.Context)
 	var authNotifier server.AuthNotifier
 	var cmdHandlerStream *upstream.CommandHandlerAdapter
 	var creatorAdapter *upstream.SessionCreatorAdapter
+	// Cross-daemon broadcasts (BOS-558). Both halves of the path are inert
+	// without an upstream, and both are wired ONLY inside the block below:
+	//
+	//   - persistedDaemonID is hoisted out of that block because server.New (far
+	//     below) needs the SAME resolved id the stream registers under. It is
+	//     resolved exactly once; re-resolving it ad hoc would risk a second value
+	//     and the ingress loop guard compares against it, so a mismatch would
+	//     stop this daemon recognising its own echo.
+	//   - broadcastEgress stays a nil INTERFACE with no upstream (not a typed nil
+	//     pointer, which would read as non-nil at the server's `== nil` guard and
+	//     turn every local send into a publish attempt).
+	//
+	// With no upstream both stay zero, which is exactly the fail-closed state the
+	// egress predicate and the ingress loop guard were written for: an unknown
+	// daemon id publishes nothing and originates nothing.
+	var persistedDaemonID string
+	var broadcastEgress broadcast.EgressPublisher
 	webhookEventCh := make(chan session.SessionEvent, 64)
 	emitter := session.NewSessionEventEmitter(&displayPollerSessionLookup{sessions: sessions, repos: repos}, webhookEventCh, log.Logger)
 	_, upstreamURLExplicit := os.LookupEnv("BOSSD_ORCHESTRATOR_URL")
@@ -1717,6 +1959,13 @@ func run(opts runOpts) error {
 		} else {
 			cfg.DaemonID = daemonID
 		}
+		persistedDaemonID = cfg.DaemonID
+		// EGRESS: a broadcast issued here whose audience reaches beyond this
+		// daemon rides the reverse stream to bosso for routing. The bus is
+		// drop-oldest, so this is best-effort by construction — the send path's
+		// contract is that a publish failure never fails the RPC or the local
+		// deliveries.
+		broadcastEgress = upstream.NewBroadcastEgressPublisher(streamBus)
 
 		// ConnectRPC bidi streams (DaemonStream) require HTTP/2, and the
 		// daemon needs HTTP/2 keepalive so a half-open stream (laptop
@@ -1915,6 +2164,23 @@ func run(opts runOpts) error {
 			Lifecycle:  lifecycle,
 			Sessions:   sessionGetterAdapter{sessions: sessions},
 			Automation: automationToggleAdapter{sessions: sessions},
+			// INGRESS (BOS-558): a broadcast bosso routed here from another
+			// daemon becomes LOCAL delivery rows. It goes through the SAME store,
+			// resolver and Sender the SendBroadcast RPC uses — reusing the values
+			// built above rather than constructing new ones is what makes "no
+			// second delivery path" structural: the existing worker drains the
+			// rows with no knowledge they arrived from elsewhere.
+			//
+			// cfg.DaemonID (the persisted id resolved just above) backs the loop
+			// guard that drops a command this daemon originated. The Ingress
+			// deliberately holds no egress publisher — see its file comment.
+			Broadcasts: broadcast.NewIngress(
+				broadcasts,
+				broadcast.NewSender(broadcasts, broadcastResolver, log.Logger),
+				persistedDaemonID,
+				nil, // time.Now
+				log.Logger,
+			),
 			OnCompletion: func(ctx context.Context, sessionID string) {
 				if orchestrator != nil {
 					orchestrator.HandleSessionCompleted(ctx, sessionID, models.TaskMappingStatusFailed)
@@ -2119,35 +2385,57 @@ func run(opts runOpts) error {
 		})
 	}
 
+	// sessionPortsTracker discovers verified machine-local HTTP endpoints for a
+	// session's tmux process tree (BOS-472). It backs the BOS-473 opt-in local
+	// endpoint hydration and is nil-safe on the server side. The tracker owns a
+	// background worker over the tmux pane lister; Close cancels it on shutdown.
+	// It only scans sessions a caller has requested, so an idle daemon does no
+	// work. tmux errors surface as empty endpoint lists (fail-soft).
+	sessionPortsTracker := sessionports.New(context.Background(), tmuxClient.PanePID, sessionports.WithLogger(log.Logger))
+	defer sessionPortsTracker.Close()
+
 	srv := server.New(server.Config{
-		Repos:              repos,
-		Sessions:           sessions,
-		Attempts:           attempts,
-		AgentChats:         agentChats,
-		Workflows:          workflows,
-		TaskMappings:       taskMappings,
-		CronJobs:           cronJobs,
-		GithubCallbacks:    githubCallbacks,
-		Accounts:           accounts,
-		RotationEngine:     rotationEngine,
-		Resolver:           accountResolver,
-		AccountCredentials: accountCreds,
-		AccountSmokeRunner: accountSmoke,
-		UsageProbe:         accountUsageProbe,
-		CheckSnapshots:     checkSnapshots,
-		RotationEvents:     rotationEvents,
-		CronScheduler:      cronScheduler,
-		CronActivity:       cronActivity,
-		ChatStatus:         chatStatusTracker,
-		DisplayTracker:     displayTracker,
-		PRRefresher:        displayPoller,
-		RepairLease:        repairLease,
-		TmuxPoller:         tmuxStatusPoller,
-		Lifecycle:          lifecycle,
-		Agent:              agentRunner,
-		AgentClients:       agentClients,
-		Worktrees:          worktrees,
-		Provider:           ghProvider,
+		Repos:             repos,
+		Sessions:          sessions,
+		Attempts:          attempts,
+		AgentChats:        agentChats,
+		Workflows:         workflows,
+		TaskMappings:      taskMappings,
+		CronJobs:          cronJobs,
+		GithubCallbacks:   githubCallbacks,
+		Notes:             notes,
+		Broadcasts:        broadcasts,
+		BroadcastResolver: broadcastResolver,
+		// Cross-daemon egress (BOS-558): both are zero unless an upstream is
+		// configured, which leaves the send path purely local. DaemonID is the
+		// one persisted id resolved for the reverse stream — the same value the
+		// ingress loop guard compares against, so it is threaded, never
+		// re-derived.
+		BroadcastEgress: broadcastEgress,
+		DaemonID:        persistedDaemonID,
+		// The RPC surface gets create/read/cancel only; firing stays with the
+		// evaluator wired into the session store above.
+		BroadcastSubscriptions: broadcastSubscriptions,
+		Accounts:               accounts,
+		RotationEngine:         rotationEngine,
+		Resolver:               accountResolver,
+		AccountCredentials:     accountCreds,
+		AccountSmokeRunner:     accountSmoke,
+		UsageProbe:             accountUsageProbe,
+		CheckSnapshots:         checkSnapshots,
+		RotationEvents:         rotationEvents,
+		CronScheduler:          cronScheduler,
+		CronActivity:           cronActivity,
+		ChatStatus:             chatStatusTracker,
+		DisplayTracker:         displayTracker,
+		PRRefresher:            displayPoller,
+		RepairLease:            repairLease,
+		TmuxPoller:             tmuxStatusPoller,
+		Lifecycle:              lifecycle,
+		Agent:                  agentRunner,
+		AgentClients:           agentClients,
+		Worktrees:              worktrees,
+		Provider:               ghProvider,
 
 		PRResolver:         prAssociationResolver,
 		PluginHost:         pluginHost,
@@ -2183,8 +2471,9 @@ func run(opts runOpts) error {
 				},
 			})
 		},
-		Logger:        log.Logger,
-		FileLimitSoft: achievedFileLimitSoft,
+		Logger:         log.Logger,
+		FileLimitSoft:  achievedFileLimitSoft,
+		EndpointReader: sessionPortsTracker,
 	})
 
 	// Auto-archive dependabot repair sessions when their PR merges (BOS-101).
@@ -2196,6 +2485,11 @@ func run(opts runOpts) error {
 	// ShouldArchiveSessionsAfterMerge flag on (BOS-46). Reuses the same
 	// archive-and-notify path as the dependabot auto-archive above.
 	dispatcher.SetArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify))
+
+	// Rebase the repo's other in-flight branches onto the base a merged PR just
+	// advanced, when the repo opted in (BOS-521). Wired on the merged-webhook
+	// path so it also covers PRs merged outside boss.
+	dispatcher.SetBaseAdvanceNotifier(session.BaseAdvanceNotifierFunc(srv.NotifyBaseAdvanced))
 
 	// Wire the chat-waker on the existing CommandHandlerAdapter now that
 	// the server is constructed. Done post-hoc rather than at adapter
@@ -2267,6 +2561,65 @@ func run(opts runOpts) error {
 		}))
 		return err
 	})
+
+	// --- Transient-API-error auto-resume (BOS-518) ---
+	//
+	// Constructed here rather than beside chatRotator because it shares the
+	// callback worker's delivery primitive (srv.SendChatMessage with wake+submit),
+	// which only exists once srv does. It must exist before the status poller
+	// starts below — the poller's first Bootstrap capture can already set the
+	// marker and fire the tracker hook.
+	//
+	// SettleWindow/BackoffBase/Now/Schedule are deliberately left at their
+	// package defaults: the tuning belongs to the policy, not to the wiring.
+	transientResumer = resume.NewTransientResumer(resume.TransientResumerDeps{
+		Logger:     log.Logger.With().Str("component", "transient-resume").Logger(),
+		MarkerSet:  chatStatusTracker.TransientAPIError,
+		AuthFailed: chatStatusTracker.AuthFailed,
+		ChatState: func(agentSessionID string) (bossanovav1.ChatStatus, time.Time, bool) {
+			entry := chatStatusTracker.Get(agentSessionID)
+			if entry == nil {
+				// No tracker evidence at all — the resumer treats unknown as "never
+				// fire", which is why this reports ok=false rather than a zero status.
+				return bossanovav1.ChatStatus_CHAT_STATUS_UNSPECIFIED, time.Time{}, false
+			}
+			return entry.Status, entry.LastOutputAt, true
+		},
+		SessionResumable: func(ctx context.Context, agentSessionID string) bool {
+			chat, err := agentChats.GetByAgentSessionID(ctx, agentSessionID)
+			if err != nil || chat == nil {
+				return false
+			}
+			sess, err := sessions.Get(ctx, chat.SessionID)
+			if err != nil || sess == nil {
+				return false
+			}
+			// Archived, merged and closed all mean a human deliberately ended the
+			// work; Orphaned means the run was killed mid-flight and has no live
+			// agent to deliver into. Merged/Closed mirror cron's isTerminalState
+			// (unexported, hence not reused); Orphaned is added because it is
+			// terminal by definition. Every other state — including Blocked and the
+			// post-implement waiting states — keeps a live pane a resume can reach,
+			// and the resumer's IDLE-only gate already filters the rest.
+			return sess.ArchivedAt == nil &&
+				sess.State != machine.Merged &&
+				sess.State != machine.Closed &&
+				sess.State != machine.Orphaned
+		},
+		Deliver: func(ctx context.Context, agentSessionID, message string) error {
+			_, err := srv.SendChatMessage(ctx, connect.NewRequest(&bossanovav1.SendChatMessageRequest{
+				AgentSessionId: agentSessionID,
+				Message:        message,
+				Submit:         true,
+				WakeIfAsleep:   true,
+			}))
+			return err
+		},
+	})
+	if opts.onTransientResumeSeamsWired != nil {
+		opts.onTransientResumeSeamsWired(transientResumer != nil && transientResumeHookInstalled)
+	}
+
 	callbackWorker := callback.NewDeliveryWorker(callback.WorkerConfig{
 		Store:      githubCallbacks,
 		Deliverer:  callbackDeliverer,
@@ -2275,6 +2628,39 @@ func run(opts runOpts) error {
 	})
 	callbackWorkerDone := safego.Go(log.Logger, func() { callbackWorker.Run(pollerCtx) })
 	trackDone(callbackWorkerDone)
+
+	// --- Broadcast delivery worker (BOS-556) ---
+	//
+	// Leases the outstanding deliveries of resolved broadcasts and injects the
+	// rendered prompt through the same verified wake+submit path the callback
+	// worker uses (Server.SendChatMessage, never a direct tmux write), so a
+	// broadcast reaches an asleep chat and is actually submitted rather than
+	// left in the composer. SendBroadcast owns pending -> resolved; this worker
+	// owns resolved -> completed, with capped backoff retry and a lazy expiry
+	// sweep per tick.
+	broadcastDeliverer := broadcast.DelivererFunc(func(ctx context.Context, agentSessionID, message string) error {
+		_, err := srv.SendChatMessage(ctx, connect.NewRequest(&bossanovav1.SendChatMessageRequest{
+			AgentSessionId: agentSessionID,
+			Message:        message,
+			Submit:         true,
+			WakeIfAsleep:   true,
+		}))
+		return err
+	})
+	//
+	// The worker's tick also carries the standing-subscription reconcile sweep
+	// (BOS-557), the same way the callback worker carries the callback one: it
+	// expires overdue subscriptions and fires any whose owning session already
+	// sits in a trigger state, covering both a transition made while the daemon
+	// was down and the startup bulk orphan advance that bypasses the hook.
+	broadcastWorker := broadcast.NewDeliveryWorker(broadcast.WorkerConfig{
+		Store:      broadcasts,
+		Deliverer:  broadcastDeliverer,
+		Reconciler: broadcastSubscriptionEvaluator,
+		Logger:     log.Logger,
+	})
+	broadcastWorkerDone := safego.Go(log.Logger, func() { broadcastWorker.Run(pollerCtx) })
+	trackDone(broadcastWorkerDone)
 
 	// Advertises the daemon's live GitHub callback-interest set to bosso as a
 	// steady-state delta on the reverse-stream bus whenever it changes (snapshot
@@ -2306,6 +2692,17 @@ func run(opts runOpts) error {
 		}
 	})
 
+	// Startup reconciliation for standing broadcast subscriptions (BOS-557):
+	// fire any whose owning session reached a trigger state while the daemon was
+	// down, and retire the overdue. Waiting for the worker's first periodic sweep
+	// would leave a coordinator waiting reconcileEveryTicks polls for news that
+	// already happened. Best-effort; non-fatal.
+	trackedGo(func() {
+		if err := broadcastSubscriptionEvaluator.ReconcileAll(pollerCtx); err != nil && pollerCtx.Err() == nil {
+			log.Warn().Err(err).Msg("startup broadcast subscription reconciliation failed")
+		}
+	})
+
 	// --- Hook Server (loopback HTTP for Claude Stop-hook notifications) ---
 	//
 	// Created and bound BEFORE lifecycle.Bootstrap: Bootstrap re-issues
@@ -2314,9 +2711,10 @@ func run(opts runOpts) error {
 	// first ensures the re-arm rewrites the worktree's hook config with this
 	// daemon's port instead of leaving the previous (now-dead) port in place.
 	hookCfg := server.HookServerConfig{
-		Sessions:  sessions,
-		Finalizer: lifecycle,
-		Logger:    log.Logger,
+		Sessions:        sessions,
+		Finalizer:       lifecycle,
+		QuestionSignals: questionSignals,
+		Logger:          log.Logger,
 	}
 	// HostService is non-nil whenever any plugin is configured (it's
 	// constructed alongside the plugin host). When no plugins are loaded
@@ -2324,8 +2722,11 @@ func run(opts runOpts) error {
 	// endpoint surfaces 500s — that's fine because no plugin is around
 	// to register a run in the first place. Wrap the nil-pointer check
 	// here so the HookServer can rely on `completer == nil` working.
+	// The same HostService also authenticates the question hook's per-run
+	// token via ValidateRunToken.
 	if hs := pluginHost.HostService(); hs != nil {
 		hookCfg.Completer = hs
+		hookCfg.QuestionAuth = hs
 	}
 	hookSrv := server.NewHookServer(hookCfg)
 	hookSrv.SetCronCompletionNotifier(cronGate)
@@ -2598,10 +2999,11 @@ func run(opts runOpts) error {
 	// usage snapshots inside the staleness window so the util-aware
 	// default-account selector sidelines capped accounts instead of degrading to
 	// LRU and binding a new session to an exhausted account. Benign vs the
-	// proactive sweep — it only re-probes and caches usage, never mutating a
-	// session — so it runs whenever rotation is not the explicit kill switch,
-	// with an immediate pass at boot (snapshots are otherwise stale until the
-	// first rotation event, e.g. after a daemon restart).
+	// proactive sweep — it re-probes and caches usage and, since BOS-584, clears
+	// a cooldown its own probe contradicts, but never mutates a session — so it
+	// runs whenever rotation is not the explicit kill switch, with an immediate
+	// pass at boot (snapshots are otherwise stale until the first rotation event,
+	// e.g. after a daemon restart).
 	if settings.ManagedAccounts.ManagedAccountsEnabled() {
 		trackedGo(func() {
 			if n := refreshActiveAccountUsage(pollerCtx, log.Logger, accountMaterializer, accounts); n > 0 {
@@ -2732,11 +3134,36 @@ func run(opts runOpts) error {
 	if err := hookSrv.Shutdown(ctx); err != nil {
 		log.Warn().Err(err).Msg("hook server shutdown error")
 	}
+
 	if proxySrv != nil {
 		if err := proxySrv.Shutdown(ctx); err != nil {
 			log.Warn().Err(err).Msg("failover proxy shutdown error")
 		}
 	}
+
+	// Join any background draft-PR creates StartSession spawned (BOS-540).
+	// They run on a context deliberately detached from the request that started
+	// them, so nothing else cancels them; this is what keeps an interrupted
+	// create from being stranded *silently*. It runs AFTER srv.Shutdown so the
+	// set it snapshots is final — draining earlier would miss a create spawned
+	// by a CreateSession still in flight — and after the other Shutdown calls
+	// because it owns its own budget: they share the single 5s ctx above, and a
+	// drain wedged in between would hand them an already-expired one, turning
+	// every graceful shutdown into an abrupt listener close. The bound is short
+	// because a create can legitimately take ~a minute: the point is not to
+	// finish it but to name the sessions we are walking away from, whose branch
+	// and placeholder commit survive on the remote for the next reconcile pass
+	// to attach. Stragglers are then cancelled — asynchronously, so this asks
+	// them to stop rather than waiting; the deferred database.Close may still
+	// beat one, which surfaces as a logged store error, not a crash.
+	draftPRCtx, draftPRCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if abandoned := lifecycle.WaitForBackgroundDraftPRs(draftPRCtx); len(abandoned) > 0 {
+		log.Warn().
+			Strs("sessions", abandoned).
+			Msg("shutting down with draft PR creation still in flight; branches are preserved and the PR may still be created remotely")
+	}
+	draftPRCancel()
+	lifecycle.CancelBackgroundDraftPRs()
 
 	// Clean up socket file.
 	_ = os.Remove(socketPath)

@@ -37,12 +37,7 @@ func TestTUI_SettingsView_Content(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('s'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
-		t.Fatal(err)
-	}
+	openGeneralSettings(t, h)
 
 	screen := h.Driver.Screen()
 	if !strings.Contains(screen, "dangerously-skip-permissions") {
@@ -66,12 +61,7 @@ func TestTUI_SettingsView_TogglePermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('s'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
-		t.Fatal(err)
-	}
+	openGeneralSettings(t, h)
 
 	// The schema-driven settings view places built-in rows (worktree,
 	// poll interval) before per-agent rows. Walk the cursor down past
@@ -119,12 +109,7 @@ func TestTUI_SettingsView_JKNavigation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('s'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
-		t.Fatal(err)
-	}
+	openGeneralSettings(t, h)
 
 	// Navigate down through all 3 rows and back up.
 	if err := h.Driver.SendKey('j'); err != nil {
@@ -167,12 +152,7 @@ func TestTUI_SettingsView_EditCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('s'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
-		t.Fatal(err)
-	}
+	openGeneralSettings(t, h)
 
 	// Move to "Worktree base directory" (row 1).
 	if err := h.Driver.SendKey('j'); err != nil {

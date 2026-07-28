@@ -24,6 +24,10 @@ var readOnlyToolNames = []string{
 	"get_chat_transcript",
 	"get_settings",
 	"list_github_callbacks",
+	"list_notes",
+	"get_note",
+	"list_broadcasts",
+	"list_broadcast_subscriptions",
 }
 
 // writeToolNames is the canonical union of mutating + destructive tool names,
@@ -37,10 +41,14 @@ var writeToolNames = []string{
 	"run_cron_job_now", "add_account", "refresh_account", "update_account",
 	"test_account", "send_chat_message", "switch_account", "update_settings",
 	"start_repair_workflow", "register_github_callback",
+	"send_broadcast", "register_broadcast_subscription",
+	"create_note", "update_note",
 	// destructive
 	"remove_repo", "close_session", "merge_session", "remove_session",
 	"archive_session", "resurrect_session", "delete_chat", "empty_trash",
 	"delete_cron_job", "remove_account", "delete_github_callback",
+	"delete_broadcast", "delete_broadcast_subscription",
+	"delete_note",
 }
 
 // ToolNames returns every MCP tool name this package registers in full

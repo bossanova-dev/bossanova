@@ -542,3 +542,218 @@ func TestCapturedOutput_CleanedWhenEntryStale(t *testing.T) {
 		t.Fatalf("after Cleanup CapturedOutput = %q, want \"\" (GC'd with stale entry)", got)
 	}
 }
+
+// --- transient-API-error marker (BOS-518) -----------------------------------
+//
+// These mirror the auth-marker tests above one for one: the transient marker is
+// the same shape of poller-written, staleness-bounded, transition-gated overlay,
+// so it must behave identically.
+
+func TestSetTransientAPIError_and_TransientAPIError(t *testing.T) {
+	tr := NewTracker()
+
+	if tr.TransientAPIError("chat-1") {
+		t.Fatal("TransientAPIError on unknown chat = true, want false")
+	}
+
+	tr.SetTransientAPIError("chat-1", true)
+	if !tr.TransientAPIError("chat-1") {
+		t.Fatal("TransientAPIError after SetTransientAPIError(true) = false, want true")
+	}
+
+	// Clearing removes the marker immediately.
+	tr.SetTransientAPIError("chat-1", false)
+	if tr.TransientAPIError("chat-1") {
+		t.Fatal("TransientAPIError after SetTransientAPIError(false) = true, want false")
+	}
+}
+
+func TestSetTransientAPIError_FiresChangeHookOnlyOnTransition(t *testing.T) {
+	tr := NewTracker()
+	var mu sync.Mutex
+	var fired []string
+	tr.SetOnTransientAPIErrorChange(func(id string) {
+		mu.Lock()
+		fired = append(fired, id)
+		mu.Unlock()
+	})
+
+	// absent → present: a transition, fires once.
+	tr.SetTransientAPIError("chat-1", true)
+	// present → present (the poller re-observes the banner every tick while the
+	// pane still shows it): no transition, must NOT storm the hook.
+	tr.SetTransientAPIError("chat-1", true)
+	tr.SetTransientAPIError("chat-1", true)
+	// present → cleared: a transition, fires once.
+	tr.SetTransientAPIError("chat-1", false)
+	// cleared → cleared (poller keeps reporting a healthy pane): no fire.
+	tr.SetTransientAPIError("chat-1", false)
+
+	mu.Lock()
+	got := append([]string(nil), fired...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("onTransientAPIErrorChange fired %d times (%v), want 2 (set + clear transitions)", len(got), got)
+	}
+	for _, id := range got {
+		if id != "chat-1" {
+			t.Errorf("onTransientAPIErrorChange fired for %q, want chat-1", id)
+		}
+	}
+}
+
+func TestSetTransientAPIError_StaleMarkerCountsAsTransition(t *testing.T) {
+	tr := NewTracker()
+	var fires int
+	var mu sync.Mutex
+	tr.SetOnTransientAPIErrorChange(func(string) {
+		mu.Lock()
+		fires++
+		mu.Unlock()
+	})
+
+	tr.SetTransientAPIError("chat-1", true) // fire 1 (absent → fresh)
+
+	// Age the marker past StaleThreshold: effectively absent per TransientAPIError.
+	tr.mu.Lock()
+	tr.transientAPIError["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	tr.SetTransientAPIError("chat-1", true) // fire 2 (stale/effectively-absent → fresh)
+
+	mu.Lock()
+	got := fires
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("onTransientAPIErrorChange fired %d times, want 2 (a stale marker refreshing is a transition)", got)
+	}
+}
+
+func TestSetTransientAPIError_FalseClearsStaleMarkerWithChangeHook(t *testing.T) {
+	tr := NewTracker()
+	var fires int
+	var mu sync.Mutex
+	tr.SetOnTransientAPIErrorChange(func(string) {
+		mu.Lock()
+		fires++
+		mu.Unlock()
+	})
+
+	tr.SetTransientAPIError("chat-1", true) // fire 1 (absent → fresh)
+	tr.mu.Lock()
+	tr.transientAPIError["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	// The stale marker already reads false locally, but downstream consumers may
+	// still hold the last fresh "transient failure" state — clearing must publish.
+	tr.SetTransientAPIError("chat-1", false) // fire 2 (stale marker removed)
+
+	mu.Lock()
+	got := fires
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("onTransientAPIErrorChange fired %d times, want 2 (set + stale clear)", got)
+	}
+}
+
+func TestTransientAPIError_Stale(t *testing.T) {
+	tr := NewTracker()
+	tr.SetTransientAPIError("chat-1", true)
+
+	// Backdate the marker beyond StaleThreshold: a stale marker must read as
+	// absent (fail toward not flagging, so auto-resume never fires on history).
+	tr.mu.Lock()
+	tr.transientAPIError["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	if tr.TransientAPIError("chat-1") {
+		t.Fatal("TransientAPIError on stale marker = true, want false")
+	}
+}
+
+func TestRemove_ClearsTransientAPIError(t *testing.T) {
+	tr := NewTracker()
+	tr.SetTransientAPIError("chat-1", true)
+	tr.Remove("chat-1")
+	if tr.TransientAPIError("chat-1") {
+		t.Fatal("TransientAPIError after Remove = true, want false")
+	}
+}
+
+func TestRemove_FiresTransientAPIErrorChangeWhenMarkerCleared(t *testing.T) {
+	tr := NewTracker()
+	var fired []string
+	var mu sync.Mutex
+	tr.SetOnTransientAPIErrorChange(func(id string) {
+		mu.Lock()
+		fired = append(fired, id)
+		mu.Unlock()
+	})
+
+	tr.SetTransientAPIError("chat-1", true) // set transition
+	tr.Remove("chat-1")                     // clear transition
+	tr.Remove("chat-1")                     // no marker left, no extra transition
+
+	mu.Lock()
+	got := append([]string(nil), fired...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("onTransientAPIErrorChange fired %d times (%v), want 2", len(got), got)
+	}
+	for _, id := range got {
+		if id != "chat-1" {
+			t.Errorf("onTransientAPIErrorChange fired for %q, want chat-1", id)
+		}
+	}
+}
+
+func TestCleanup_RemovesStaleTransientAPIError(t *testing.T) {
+	tr := NewTracker()
+	tr.SetTransientAPIError("fresh", true)
+	tr.SetTransientAPIError("stale", true)
+	tr.mu.Lock()
+	tr.transientAPIError["stale"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	tr.Cleanup()
+
+	tr.mu.RLock()
+	_, freshOK := tr.transientAPIError["fresh"]
+	_, staleOK := tr.transientAPIError["stale"]
+	tr.mu.RUnlock()
+	if !freshOK {
+		t.Error("Cleanup removed a fresh transient-API marker")
+	}
+	if staleOK {
+		t.Error("Cleanup kept a stale transient-API marker")
+	}
+}
+
+func TestCleanup_FiresTransientAPIErrorChangeForRemovedStaleMarkers(t *testing.T) {
+	tr := NewTracker()
+	var fired []string
+	var mu sync.Mutex
+	tr.SetOnTransientAPIErrorChange(func(id string) {
+		mu.Lock()
+		fired = append(fired, id)
+		mu.Unlock()
+	})
+
+	tr.SetTransientAPIError("fresh", true)
+	tr.SetTransientAPIError("stale", true)
+	tr.mu.Lock()
+	tr.transientAPIError["stale"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	tr.Cleanup()
+
+	mu.Lock()
+	got := append([]string(nil), fired...)
+	mu.Unlock()
+	if len(got) != 3 {
+		t.Fatalf("onTransientAPIErrorChange fired %d times (%v), want 3 (two sets + stale clear)", len(got), got)
+	}
+	if got[2] != "stale" {
+		t.Fatalf("cleanup clear fired for %q, want stale", got[2])
+	}
+}

@@ -1,6 +1,6 @@
 ---
 name: boss-plan
-description: Plan a tracker backlog ticket. Grabs the next unplanned issue by priority (or a ticket ID you provide), resolves drafting through boss-plan draft extensions or portable fallbacks, hosts the plan via the configured publish adapter, then writes a summary, labels, Fibonacci estimate, priority, and a plan link back to the issue and moves it from the unplanned to the planned state. Interactive by default; runs fully headless when BOSS_CRON=true.
+description: Plan a tracker backlog ticket. Grabs the next unplanned issue by priority (or a ticket ID you provide), resolves drafting through boss-plan draft extensions or portable fallbacks, stores the plan through the configured plan-storage adapter, then writes a summary, labels, Fibonacci estimate, priority, and the configured plan artifact back to the issue and moves it from the unplanned to the planned state. Interactive by default; runs fully headless when BOSS_CRON=true.
 ---
 
 # boss-plan
@@ -51,7 +51,7 @@ Workspace facts (do not re-discover). Load the config once in Phase 0 —
   repo-root `.env` implicitly. The non-secret publish constants — the bucket and public base URL —
   come from `publishConfigFor(config).{bucket,baseUrl}` (the publish adapter's config), NOT `.env`
   vars, and the publish adapter exports them itself. Publish + tracker write-back use pluggable
-  adapters (`scripts/publish/`, `scripts/tracker/`; default publish adapter `r2`).
+  adapters — the `publish` and `tracker` roles resolved from `.boss-skills.json` (default `r2`).
 
 ## Phase 0 — Preflight
 
@@ -80,7 +80,12 @@ Workspace facts (do not re-discover). Load the config once in Phase 0 —
      exit 0
    fi
    ```
-2. Set `PUBLISH_ADAPTER="${PLAN_PUBLISH:-r2}"`. Only `r2` loads repo-root `.env` and requires
+2. Resolve `planStorageFor(config).kind` before selecting an issue. Supported values are `r2`
+   (the default) and `tracker-attachment`. For `tracker-attachment`, require the configured
+   tracker's optional `preparePlanAttachment`, `finalizePlanAttachment`, and `readPlanAttachment`
+   operations now. If any is absent, stop before drafting or tracker writes. This selection is
+   independent of proof publishing: it never changes how proof artifacts are stored.
+3. Only when plan storage is `r2`, set `PUBLISH_ADAPTER="${PLAN_PUBLISH:-r2}"`. Only `r2` loads repo-root `.env` and requires
    `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN`; non-R2 adapters own preflight. Print only
    `set`/`MISSING`:
    ```bash
@@ -92,7 +97,7 @@ Workspace facts (do not re-discover). Load the config once in Phase 0 —
    fi
    ```
    If `PUBLISH_ADAPTER=r2` and either credential prints `MISSING`, stop before tracker writes.
-3. For `r2`, export the non-secret publish constants **resolved from the publish adapter's config**
+4. For `r2`, export the non-secret publish constants **resolved from the publish adapter's config**
    (`publishConfigFor(config).{bucket,baseUrl}`) — the concrete bucket/URL live only in
    `.boss-skills.json`, never inline in this payload:
    ```bash
@@ -121,7 +126,7 @@ Workspace facts (do not re-discover). Load the config once in Phase 0 —
      export BOSS_PROOF_R2_BUCKET BOSS_PROOF_PUBLIC_BASE_URL
    fi
    ```
-4. Confirm the tracker adapter is reachable with a cheap read (its status-list capability scoped to
+5. Confirm the tracker adapter is reachable with a cheap read (its status-list capability scoped to
    `trackerConfigFor(config).team`).
 
 ## Phase 1 — Select the issue
@@ -183,7 +188,7 @@ for the Phase 4 secret gate.
    RUN_SENTINEL="$BOSS_PLAN_TOOLBOX/bs-run-sentinel.mjs"
    test -f "$RUN_SENTINEL" || { echo "BLOCKED: bs-run-sentinel.mjs missing" >&2; exit 1; }
    DISPATCH_FAILURE="dispatch-failure"
-   PLAN_PATH=".linear-plans/<ISSUE-ID>-<slug>.md"   # compute the slug with plan-upload.mjs issueSlug
+   PLAN_PATH=".linear-plans/<ISSUE-ID>-<slug>.md"   # compute the slug with plan-slug.mjs issueSlug
    RUN="$(node "$RUN_SENTINEL" make-ctx boss-plan)"
    RUN_ID="${RUN%%$'\t'*}"; RUN_DIR="${RUN#*$'\t'}"
    export RUN_SENTINEL DISPATCH_FAILURE PLAN_PATH RUN_ID RUN_DIR
@@ -281,7 +286,7 @@ for the Phase 4 secret gate.
    `childIds` / `parseEpicSpecMarker` set — a still-unplanned parent or short child set fails
    reverify and takes the safe branch (no success report, `exit 1`) so the next sweep resumes it. Only
    on a PASSED reverify does the orchestrator **skip Phase 3.5 and Phase 4** and jump to Phase 5
-   - Phase 6; re-running Phase 4 would stamp a single-ticket plan link/labels onto the epic parent and
+   - Phase 6; re-running Phase 4 would stamp a single-ticket plan artifact/labels onto the epic parent and
      make it a `boss-build` target. Only a **single-ticket** `ok` sentinel — `payload.planPath` present
      **and** a non-empty plan file at exactly `PLAN_PATH` — proceeds to Phase 4. The subagent's returned
      metadata `planPath` must also equal `PLAN_PATH`; its `descriptionSummary` becomes the Linear
@@ -300,7 +305,7 @@ recorded `- Atomic-5:` justification under `## Planning`); an `8` is never a sin
 interactive propose → confirm → create flow lives in `references/interactive-mode.md`; the headless
 decompose-and-auto-create flow in `references/headless-drafting-brief.md`. The deterministic core —
 validation, cycle safety, stable creation order, and the tracker-write plan — is the unit-tested
-`scripts/plan-epic-lib.mjs` (`validateDecomposition`, `validateLayering`, `assertAcyclic`,
+`$BOSS_PLAN_TOOLBOX/plan-epic-lib.mjs` (`validateDecomposition`, `validateLayering`, `assertAcyclic`,
 `topoOrderChildren`, `epicWiringPlan`, `epicParentEstimate`, `stableChildKey`, `epicSpecMarker`,
 `parseEpicSpecMarker`, `EPIC_LABEL`, `EPIC_MIN_CHILDREN`, `EPIC_MAX_CHILDREN`, `CHILD_MAX_ESTIMATE`);
 never re-derive it inline.
@@ -314,7 +319,7 @@ falling back**: if it already carries a `boss-plan-epic-spec` marker it is an **
 (a fully-built epic is flipped to planned but keeps the marker), so route to the **idempotent
 resume/no-op path** — recover the spec, complete only the missing children/wiring, or no-op if the
 epic is already fully built — **never** the single-ticket fallback, which would re-plan a finished epic
-as a normal buildable ticket with an implementation-plan link + `agent-friendly`. Only a
+as a normal buildable ticket with an implementation-plan artifact + `agent-friendly`. Only a
 non-unplanned source **with no epic marker** falls back to a single-ticket
 `SUBSTANTIAL` plan (headless records the reason; interactive may re-ask). A non-unplanned parent
 would sit in a non-queue state through the create→wire→expose window and, on a crash before the final
@@ -348,9 +353,9 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    prepend the marker, never replace; the marker is an HTML comment, so it stays invisible and adds/
    removes no images). Description-only; does NOT move it out of unplanned, so parent-repurpose-last
    still holds. **Defense-in-depth — in this SAME first `save_issue`, strip any pre-existing
-   `agent-friendly`/`needs-human` label and stale single-ticket `Implementation plan (…)` link** from
-   the parent. The unplanned-source precondition above means a well-formed parent has none, but
-   `boss-build` selects exactly a planned ticket carrying `agent-friendly` + a plan link, so stripping
+   `agent-friendly`/`needs-human` label and stale single-ticket `Implementation plan (…)` link or
+   attachment** from the parent. The unplanned-source precondition above means a well-formed parent has
+   none, but `boss-build` selects exactly a planned ticket carrying `agent-friendly` + a plan artifact, so stripping
    at the FIRST write guarantees even a mis-selected/hand-forced parent is non-`boss-build`-selectable
    from the first tracker mutation onward rather than through the create→wire→expose window or after a
    crash (step 7's strip then only reaffirms it). **Crash-safety:** on a crash after this marker write but before step 7 repurposes the
@@ -364,22 +369,23 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    **original** epic from the parent alone rather than re-decomposing (a fresh LLM re-decomposition
    could build a different partial epic). Persisting `agentFriendly`/`agentQuestion` is what lets resume
    re-stamp the step-6 deferred-exposure label **and** re-apply `agent-question` to an ALREADY-created
-   child correctly (below). Then **publish**
-   each child plan (re-running the Phase 4 R2 `.env`/bucket bootstrap in each fresh shell first —
-   `scripts/plan-upload.mjs` throws when `BOSS_PROOF_R2_BUCKET` is unset — before this and every
-   parent-overview publish; the headless subagent's brief carries the exact snippet) and
-   **create children** (`save_issue` with `parentId` = original, the **planned** state, each child spec's
+   child correctly (below). Then **create children**: for `r2`, `save_issue` creates each child in the
+   **planned** state with its titled link; for `tracker-attachment`, create only an unplanned,
+   unexposed shell so its returned id can be attached before its planned-state write. Each child shell
+   carries `parentId` = original, each child spec's
    validated `estimate` and `priority` (so `boss-epic`, which orders ready/merge work by ticket
    priority, schedules children as the decomposition intended rather than by default/None), content
    labels **plus `agent-question` for any child whose plan recorded non-empty `openQuestions`** (the
    Phase 4 contract — union it into that child's labels at creation; it is independent of the
-   agent-friendly/needs-human call and survives via the marker's `agentQuestion`), the child plan
-   `links` **titled exactly `Implementation plan (<child id>)`** (`boss-epic`'s
+   agent-friendly/needs-human call and survives via the marker's `agentQuestion`), and a child plan
+   **artifact titled exactly `Implementation plan (<child id>)`** (`boss-epic`'s
    `normalizeTicket` recognizes a plan only via a link/attachment whose title **starts with**
-   `Implementation plan`; a child linked under any other title is exposed `agent-friendly` yet silently
+   `Implementation plan`; a child linked or attached under any other title is exposed `agent-friendly` yet silently
    skipped by `boss-epic` as missing a plan), and a `<!-- boss-plan-epic-child:<key> -->` resume marker
    embedded in each child's description — but **not** `agent-friendly` yet: deferred exposure, step 6) in
-   `topoOrderChildren` order, recording each new id against its `key`. A non-`agent-friendly` child is
+   `topoOrderChildren` order, recording each new id against its `key`. For `tracker-attachment`, now
+   prepare, PUT, and finalize that child's attachment, then move its shell to the planned state. Any
+   attachment failure takes the SAFE branch before that child's planned-state or label exposure. A non-`agent-friendly` child is
    not `boss-build`-selectable, so it cannot be picked up before its blockers exist.
 5. **Wire the intra-epic DAG.** Execute `epicWiringPlan(spec, createdIdByKey)`: set each child's
    intra-epic `blockedBy` (append-only). These edges are internal to the epic — the children were all
@@ -393,11 +399,12 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    — makes an agent-friendly child `boss-build`-eligible).** Only now, after the intra-epic DAG wiring
    (step 5; the external links are deferred to here), **commit the parent overview before any external
    edge is written or any child is exposed:** compose the parent overview, run step 7's
-   two gates (secret + image-parity), then **publish it to R2 and save it onto the still-unplanned
+   two gates (secret + image-parity), then store it through the same `planStorageFor(config).kind`
+   branch and save it onto the still-unplanned
    parent** (description-only, re-appending the `<!-- boss-plan-epic-spec:… -->` marker; the
    unplanned → planned flip stays last — step 7). On a gate **or** publish/save failure take the SAFE
-   branch — **no external links, no exposure, no planned flip, abort**. Because the failure-prone R2
-   publish + Linear parent save happen **here, before any external edge or exposure**, a
+   branch — **no external links, no exposure, no planned flip, abort**. Because the failure-prone
+   plan-store + Linear parent save happen **here, before any external edge or exposure**, a
    **deterministic** parent-gate failure never leaves a child `agent-friendly`/buildable, nor a non-epic
    backlog ticket blocked behind an unbuildable child, while the parent aborts unplanned; an exposed
    child is always backed by an already-published parent overview, never one that later aborts
@@ -414,7 +421,7 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    gets `agent-friendly`; a child whose plan concluded it **needs a human** (`agentFriendly: false`)
    gets `needs-human` instead — **never** `agent-friendly` — per the normal plan-contract convention.
    `boss-epic` treats a child as eligible only when it is planned **and** `agent-friendly` **and** has a
-   plan link **and** is **not** `needs-human`, so honoring the per-child decision here keeps a
+   plan artifact **and** is **not** `needs-human`, so honoring the per-child decision here keeps a
    human-blocked child from being handed to `boss-build`. By now every child already carries its blocker
    relations, so `boss-build`'s "skip a candidate whose blocker relations already exist" keeps blocked
    children from starting out of DAG order while an agent-friendly root child (no blockers) is correctly
@@ -425,14 +432,14 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    the parent marker has no `.linear-plans/` plan to re-read, so its persisted `agentFriendly` (step 4)
    is the authoritative source for whether resume stamps it `agent-friendly` or `needs-human`.
 7. **Repurpose the parent (original-becomes-parent).** The epic overview (goal + child checklist with
-   plan links + verbatim `## Original notes`) was **composed, gated, and published + saved onto the
+   plan artifacts + verbatim `## Original notes`) was **composed, gated, stored + saved onto the
    still-unplanned parent in step 6**, **carrying the hidden `<!-- boss-plan-epic-spec:… -->` marker
    forward** (re-appended on that save — the save replaces the description, so without re-appending, the
    step-4 marker is lost and idempotent resume could no longer recover the FULL original spec from a
    fully-built parent, re-decomposing into DUPLICATE children instead of the promised clean no-op). The
    parent overview embeds the original description verbatim, so its step-6 gates are the **same two
    Phase 4 STOP gates**: the **secret gate** (read the composed parent overview; redact
-   any credentials/PII before publish) and the **image-parity gate** (`scripts/plan-image-guard.mjs` —
+   any credentials/PII before publish) and the **image-parity gate** (`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs` —
    confirm every image URL in the ORIGINAL ticket description survives verbatim in the parent
    overview's `## Original notes`; on a drop take the SAFE branch — **no parent write**, abort). **These
    gates run in step 6, BEFORE child exposure**, so a deterministic parent-gate failure aborts with the
@@ -449,11 +456,14 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    exposure), never at child-create time. **Strip stale build metadata as part of this flip:** Phase 1
    admits explicitly-named planned/in-progress issues, so a ticket that was **already planned** before
    being repurposed into an epic can already carry `agent-friendly` **and** an `Implementation plan
-(…)` link — and `boss-build` auto-selection keeps a planned issue with that label + link, so a
+(…)` artifact — and `boss-build` auto-selection keeps a planned issue with that label + artifact, so a
    state-only flip would leave the epic parent itself `boss-build`-selectable, defeating the
    parent-label exception. So the repurpose step must **explicitly remove any pre-existing
    `agent-friendly`/`needs-human` label from the parent and drop any stale single-ticket
-   `Implementation plan (…)` link** (the parent's only plan link is the epic-overview publish from step 6) with — or immediately before — the final flip.
+   `Implementation plan (…)` link. For `tracker-attachment`, read the parent attachments and invoke
+   `deletePlanAttachment` for every stale matching attachment except the recorded parent-overview
+   attachment id before the final flip; require that optional operation before the first epic write. The parent overview attachment finalized in step 6 is
+   retained as the epic artifact. For `r2`, retain the existing stale-link cleanup.**
 
 **Guards (load-bearing — the trigger bar is low + headless auto-creates):** per-child estimate ceiling
 `CHILD_MAX_ESTIMATE = 3` (a `5`/`8` child is rejected ⇒ decompose further; the producer-before-consumer
@@ -494,9 +504,9 @@ fully-built epic it is a clean no-op (never duplicates), even from a fresh workt
 
 Whoever drafts — the interactive path or the headless subagent (per
 `references/headless-drafting-brief.md`) — produces a plan file at
-`.linear-plans/<ISSUE-ID>-<slug>.md` (gitignored scratch; the slug is the issue id + hyphenated
-title, e.g. `<ISSUE-ID>-add-an-unsubscribe-mechanism`; compute it with
-`node -e "import('./scripts/plan-upload.mjs').then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))" <ISSUE-ID> "<title>"`).
+`.linear-plans/<ISSUE-ID>-<slug>.md` (gitignored scratch; slug = issue id + hyphenated
+title; compute it with
+`node -e "import('file://'+process.argv[3]+'/plan-slug.mjs').then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))" <ISSUE-ID> "<title>" "${BOSS_PLAN_TOOLBOX:?}"`).
 The **full drafting spec** — the plan-body requirements (first dev step, `## Acceptance criteria`,
 `## Required proof`, a `## Proof harness analysis` readiness pass mapping each acceptance criterion to
 a concrete proof artifact, autonomous framing, agent-friendliness call) **and** the fill-in
@@ -547,49 +557,32 @@ subagent → validate its envelope → fold or skip), against
 > silently drops the reporter's screenshots is "worse than none" (the Phase 0 edge rule), and the
 > drafting LLM cannot be trusted to preserve them — so verify parity **mechanically** before any
 > Linear write. Use your **Write tool** to materialize two scratch files under gitignored
-> `.linear-plans/` — they do not exist until you write them, and an **empty** original vacuously
-> passes and silently defeats the gate. Write the **raw** Phase 1 `get_issue` description (never a
+> `.linear-plans/` — they do not exist until you write them. An **empty** or whitespace-only
+> original is refused (exit 1); pass `--allow-empty-original` only if it truly is empty. Write the
+> **raw** Phase 1 `get_issue` description (never a
 > summary/paraphrase) to `.linear-plans/<ISSUE-ID>.image-guard-orig.md` and the returned
-> `descriptionSummary` to `.linear-plans/<ISSUE-ID>.image-guard-new.md` (per-issue paths so
-> concurrent runs never clobber), both carrying the actual bytes. Then run the guard:
+> `descriptionSummary` to `.linear-plans/<ISSUE-ID>.image-guard-new.md` (per-issue paths avoid
+> clobbering). Then run the guard:
 >
 > ```bash
+> BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
+> if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
 > ORIG=".linear-plans/<ISSUE-ID>.image-guard-orig.md"; NEW=".linear-plans/<ISSUE-ID>.image-guard-new.md"
-> node scripts/plan-image-guard.mjs --original "$ORIG" --rewritten "$NEW"
+> node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$ORIG" --rewritten "$NEW"
 > GATE=$?
 > rm -f "$ORIG" "$NEW"
-> [ "$GATE" -eq 0 ] || { echo "image-parity gate: rewritten description dropped the reporter image(s) above — no Linear write, aborting" >&2; exit 1; }
+> [ "$GATE" -eq 0 ] || { echo "image-parity gate failed (guard message above) — no Linear write, aborting" >&2; exit 1; }
 > ```
 >
 > On non-zero exit take the **SAFE branch** — identical to the dispatch-failure branch: **no Linear
-> write**, a one-line stderr reason naming the dropped URL(s) (the guard prints each), discard the
+> write**, a one-line stderr reason carrying the guard's own message (it prints each), discard the
 > scratch (Phase 5 cleanup), and exit non-zero. The guard reuses the in-hand original description and
 > returned `descriptionSummary`, so it adds no new Linear read.
 
-1. Publish the plan through `scripts/plan-publish.mjs` (resolves `PLAN_PUBLISH`, default `r2`, and
-   owns object-key/URL derivation). Each Bash call is fresh; for `r2`, load `.env` and constants:
-
-   ```bash
-   PUBLISH_ADAPTER="${PLAN_PUBLISH:-r2}"
-   if [ "$PUBLISH_ADAPTER" = "r2" ]; then
-     set -a; . ./.env; set +a
-     BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
-     if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
-     export BOSS_PLAN_TOOLBOX
-     # Assign via command substitution, never eval: a `.boss-skills.json` publish value
-     # with shell metacharacters is captured literally here, not executed.
-     BOSS_PROOF_R2_BUCKET=$(node -e "import('file://'+process.env.BOSS_PLAN_TOOLBOX+'/skill-config.mjs').then(m=>{const pc=m.publishConfigFor(m.loadSkillConfig({cwd:process.cwd()}))||{};process.stdout.write(String(pc.bucket||''))})")
-     BOSS_PROOF_PUBLIC_BASE_URL=$(node -e "import('file://'+process.env.BOSS_PLAN_TOOLBOX+'/skill-config.mjs').then(m=>{const pc=m.publishConfigFor(m.loadSkillConfig({cwd:process.cwd()}))||{};process.stdout.write(String(pc.baseUrl||''))})")
-     [ -n "$BOSS_PROOF_R2_BUCKET" ] && export BOSS_PROOF_R2_BUCKET
-     [ -n "$BOSS_PROOF_PUBLIC_BASE_URL" ] && export BOSS_PROOF_PUBLIC_BASE_URL
-   fi
-   # Headless: carry forward the PLAN_FILE validated in Phase 2. Interactive: set it here.
-   PLAN_FILE="${PLAN_FILE:-.linear-plans/<ISSUE-ID>-<slug>.md}"
-   URL=$(node scripts/plan-publish.mjs --issue "<ISSUE-ID>" --file "$PLAN_FILE")
-   echo "$URL"
-   ```
-
-   `$URL` is the public plan link. Set `TRACKER` to the configured tracker adapter
+1. Publish according to `planStorageFor(config).kind`; `r2` keeps the public-link flow and
+   `tracker-attachment` finalizes before tracker writeback (failure: no plan metadata/state write). Follow
+   [`references/plan-storage.md`](references/plan-storage.md). Set
+   `PLAN_FILE="${PLAN_FILE:-.linear-plans/<ISSUE-ID>-<slug>.md}"`, then set `TRACKER` to the configured tracker adapter
    (`adapters.tracker`, default `linear`) before write-back. Steps 2–5
    use tracker adapter ops; for `linear`, each `op` is a `linearOperationMap` key (`get_issue`,
    `save_issue`, or `list_issues`). Other trackers substitute their operation map without changing
@@ -605,11 +598,11 @@ subagent → validate its envelope → fold or skip), against
    - **labels**: union of existing labels + relevant ones (`bug`/`feature`/`improvement`/`docs`). **Agent-friendly is the default:** add **`agent-friendly`** to every plan **unless** an autonomous agent genuinely could not complete the task (headless: `agentFriendly == false`) — in that case add **`needs-human`** **instead** (never both) and ensure the plan body carries the **## Why this needs a human** section (see Phase 3). Complexity alone is not a reason for `needs-human` — a large but well-specced ticket is still `agent-friendly`. Add **`agent-question`** (headless only) **if and only if** ≥1 open question was recorded (`openQuestions` non-empty); union it in, never clobber — it is independent of the agent-friendly/needs-human call. When there are none, do not add it. Note: `bs-sweep-plan` strips only `agent-plan` after a successful plan and leaves `agent-question` in place — that persistence is intentional, so do not strip it.
    - **estimate** (Fibonacci): `0` trivial/minimal · `1`/`2`/`3` well-defined single-PR ticket, clear path · `5`/`8` too big for one PR ⇒ **triage EPIC** (Phase 2.5), never a single-ticket estimate (sole exception: a genuinely atomic, un-splittable `5` with a recorded `- Atomic-5:` justification under `## Planning`). Every planned ticket gets a non-null estimate.
    - **priority** (`1-4`): honor a reporter-set priority. Otherwise rank against the current config-resolved planned (`stateName(config, 'planned')`) backlog, considering urgency, simplicity, positive/business impact, and security (security concerns bias toward Urgent/High). A planned ticket should not stay `0=None`.
-4. Single tracker save op (ops `moveState`/`setPriorityEstimate`; Linear uses `save_issue`, and the
-   plan link uses `links` directly — no `linearOperationMap` plan-link op yet) updating the issue by
+4. Single tracker save op (ops `moveState`/`setPriorityEstimate`; Linear uses `save_issue`) updating the issue by
    `id`:
    - `description`: the summary block above.
-   - `links`: `[{ url: "$URL", title: "Implementation plan (<ISSUE-ID>)" }]` (append-only).
+   - for `r2` only, `links`: `[{ url: "$URL", title: "Implementation plan (<ISSUE-ID>)" }]` (append-only).
+     For `tracker-attachment`, do not add a plan link: the finalized attachment is the canonical plan.
    - `labels`: the merged set (names).
    - `estimate`: the Fibonacci number.
    - `priority`: the chosen `1-4`.

@@ -150,6 +150,57 @@ func registerDestructiveTools(server *mcp.Server, backend Backend, opts Options)
 		r, err := jsonResult(map[string]string{"deleted_github_callback": args.ID})
 		return r, nil, err
 	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name: "delete_broadcast",
+		Description: "Delete a broadcast and its delivery records by id, so nothing further is SCHEDULED for it. This is not a recall: deliveries already made stand, and a delivery a worker had already claimed is still sent (one attempt window), so a target may be woken after this returns. Idempotent: deleting an unknown id succeeds, so a retry is always safe. The message body is never returned by this tool. " +
+			broadcastSignalRule +
+			" Destructive — requires confirm:true.",
+		Annotations: destructiveAnnotations(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ConfirmIDArgs) (*mcp.CallToolResult, any, error) {
+		if r := requireConfirm(args.Confirm, "delete_broadcast"); r != nil {
+			return r, nil, nil
+		}
+		if err := backend.DeleteBroadcast(ctx, args.ID); err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(map[string]string{"deleted_broadcast": args.ID})
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name: "delete_broadcast_subscription",
+		Description: "Retire a standing broadcast subscription by id so it never fires. It CANCELS rather than erases: the row survives as history in the canceled state and still appears in an unfiltered list_broadcast_subscriptions, so seeing it listed afterwards is not a failed delete. A subscription that had already fired keeps the broadcast it produced. Idempotent: an unknown id, and one already canceled, fired or expired, both succeed, so a retry is always safe. The registered message body is never returned by this tool. " +
+			broadcastSignalRule +
+			" Destructive — requires confirm:true.",
+		Annotations: destructiveAnnotations(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ConfirmIDArgs) (*mcp.CallToolResult, any, error) {
+		if r := requireConfirm(args.Confirm, "delete_broadcast_subscription"); r != nil {
+			return r, nil, nil
+		}
+		if err := backend.DeleteBroadcastSubscription(ctx, args.ID); err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(map[string]string{"deleted_broadcast_subscription": args.ID})
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "delete_note",
+		Description: "Permanently delete a note by id: the row and its tags are erased, not archived, and the body cannot be recovered. Idempotent: deleting an unknown id succeeds, so a retry is always safe. " + noteRepoIDRouting + " Confirm the ID, not the repo. Destructive — requires confirm:true.",
+		Annotations: destructiveAnnotations(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args DeleteNoteArgs) (*mcp.CallToolResult, any, error) {
+		if r := requireConfirm(args.Confirm, "delete_note"); r != nil {
+			return r, nil, nil
+		}
+		// repo_id lets the hosted gateway route the delete to the daemon that
+		// owns the note; the local socket adapter ignores it.
+		if err := backend.DeleteNote(ctx, args.RepoID, args.ID); err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(map[string]string{"deleted_note": args.ID})
+		return r, nil, err
+	})
 }
 
 // registerDestructiveSessionTool installs a confirm-gated id-keyed session tool
@@ -187,6 +238,20 @@ type DeleteGithubCallbackArgs struct {
 	ID           string `json:"id" jsonschema:"the callback id to delete"`
 	TargetChatID string `json:"target_chat_id,omitempty" jsonschema:"the callback's owning chat id (used for hosted routing; ignored for a local daemon)"`
 	Confirm      bool   `json:"confirm,omitempty" jsonschema:"must be true to actually delete the callback"`
+}
+
+// DeleteNoteArgs is the typed argument struct for delete_note. repo_id is the
+// note's owning repository; the hosted gateway uses it to route the delete to
+// the daemon that owns the note, while the local socket adapter ignores it (its
+// own daemon owns every note, so the id alone resolves it). It carries no
+// `omitempty`, so the generated schema marks it REQUIRED and an omitted value
+// fails validation before the handler runs — hence "required" in the field
+// description, which must not read as optional just because the local adapter
+// ignores the value. Keep the tag in step with noteRepoIDRoutingField.
+type DeleteNoteArgs struct {
+	RepoID  string `json:"repo_id" jsonschema:"the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). Use the daemon-local repo id list_repos/resolve_context return, NOT a git origin URL — an origin URL resolves to NotFound. It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"`
+	ID      string `json:"id" jsonschema:"the note id to delete"`
+	Confirm bool   `json:"confirm,omitempty" jsonschema:"must be true to actually delete the note"`
 }
 
 // DeleteChatArgs is the typed argument struct for delete_chat.

@@ -95,8 +95,84 @@ export function captionBarMarkup(caption) {
     : ''
 }
 
+/**
+ * The historical still floor: 1120px ≈ 140 columns, the bridge's default pty
+ * width. Kept as the fallback whenever the cast's own width is unknowable, so a
+ * still with no measurable text renders exactly as it did before BOS-571.
+ */
+export const DEFAULT_TERMINAL_MIN_WIDTH_PX = 1120
+
+/**
+ * Horizontal advance of one monospace cell in the still's `pre`, in px.
+ * The `pre` is `font-size: 14px` in the `ui-monospace, SFMono-Regular, Menlo,
+ * Consolas, monospace` stack; every font in it advances ~0.6em per cell (SF
+ * Mono / Menlo / DejaVu Sans Mono are 0.60em, Consolas 0.55em), so 14 * 0.6.
+ * This only sets a FLOOR — `width: max-content` still sizes the card from the
+ * real glyph metrics — so a fractional mismatch is cosmetically harmless.
+ */
+export const TERMINAL_CHAR_ADVANCE_PX = 14 * 0.6
+
+/** `pre { padding: 18px }` — one on each side of the text box. */
+const TERMINAL_PRE_PADDING_PX = 18
+/** `[data-proof-terminal] { border: 1px solid … }` — one on each side. */
+const TERMINAL_CARD_BORDER_PX = 1
+
+/**
+ * The `min-width` (px) for a still whose rendered screen is `text`.
+ *
+ * The renderer never sees the cast header, but the widest line of the screen it
+ * is handed IS the recorded column count, so that is the honest signal at this
+ * layer. Returns `min(DEFAULT_TERMINAL_MIN_WIDTH_PX, derived)`: a narrow cast
+ * (BOS-571's `terminal: {cols}`) gets a card that hugs its own width instead of
+ * being letterboxed inside a mostly-empty 1120px block, while a default ~140
+ * column cast derives more than 1120 and therefore keeps today's exact
+ * rendering. Falls back to the default for empty / whitespace-only / non-string
+ * input. Pure + exported for unit tests.
+ * @param {string} text
+ * @returns {number}
+ */
+export function deriveTerminalMinWidthPx(text) {
+  if (typeof text !== 'string' || text.trim() === '') return DEFAULT_TERMINAL_MIN_WIDTH_PX
+  let cols = 0
+  for (const line of text.split('\n')) {
+    // Array.from counts code points, so an astral glyph is one cell, not two.
+    const width = Array.from(line.replace(/\r$/, '')).length
+    if (width > cols) cols = width
+  }
+  if (cols <= 0) return DEFAULT_TERMINAL_MIN_WIDTH_PX
+  const derived =
+    Math.ceil(cols * TERMINAL_CHAR_ADVANCE_PX) +
+    2 * TERMINAL_PRE_PADDING_PX +
+    2 * TERMINAL_CARD_BORDER_PX
+  return Math.min(DEFAULT_TERMINAL_MIN_WIDTH_PX, derived)
+}
+
 export function renderHtml({ title, text, caption = '' }) {
   const captionBar = captionBarMarkup(caption)
+  const minWidthPx = deriveTerminalMinWidthPx(text)
+  // Emitted only alongside the bar itself, so a caption-less still stays
+  // byte-identical (and the existing "no __proof-tui-caption anywhere" guards
+  // keep meaning what they say).
+  const captionSizingRule = captionBar
+    ? `
+  /* The caption bar must FILL the card without SIZING it (BOS-571). It is a
+     child of the max-content card, so its unwrapped single line would otherwise
+     stretch the card past the terminal and re-letterbox a narrow cast:
+     measured, 50 of the 406 committed scenario captions blow a 72-column card
+     from 645px out to as much as 1005px. "width: 0" zeroes its max-content
+     contribution while "min-width: 100%" still stretches it across the card in
+     layout; the ellipsis mirrors renderCaptionStripHtml's burned-in strip. This
+     is a no-op at the default ~140 columns — no committed caption is wide
+     enough to stretch a 1214px card, so existing stills are unchanged. */
+  .__proof-tui-caption {
+    box-sizing: border-box;
+    width: 0;
+    min-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }`
+    : ''
   return `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
@@ -112,8 +188,10 @@ export function renderHtml({ title, text, caption = '' }) {
     background: #0a0d13;
   }
   [data-proof-terminal] {
+    /* max-content lets a wide cast hug its content; the floor below is derived
+       from the cast's own width so a narrow one is not letterboxed (BOS-571). */
     width: max-content;
-    min-width: 1120px;
+    min-width: ${minWidthPx}px;
     overflow: hidden;
     border: 1px solid #293241;
     border-radius: 8px;
@@ -147,7 +225,7 @@ export function renderHtml({ title, text, caption = '' }) {
     white-space: pre;
     font-size: 14px;
     line-height: 1.25;
-  }
+  }${captionSizingRule}
 </style>
 <body>
   <section data-proof-terminal>

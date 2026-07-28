@@ -3,16 +3,12 @@ package views
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/client"
-	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/telemetry"
 )
 
 // settingsAgentStub embeds *stubClient so it satisfies BossClient — only
@@ -24,643 +20,6 @@ type settingsAgentStub struct {
 
 func (s *settingsAgentStub) ListAgents(context.Context) ([]client.AgentInfo, error) {
 	return s.agents, nil
-}
-
-func TestSettings_RendersBuiltInRowsWithoutAgents(t *testing.T) {
-	withTempConfigHome(t)
-	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
-	out := m.View().Content
-	for _, want := range []string{
-		"Worktree base directory",
-		"Poll interval",
-		"tracing",
-		"Enable event tracing (for debugging problems)",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("settings missing %q in:\n%s", want, out)
-		}
-	}
-	for _, hidden := range []string{"PostHog project token", "PostHog host", "set when tracing is enabled"} {
-		if strings.Contains(out, hidden) {
-			t.Errorf("settings unexpectedly showed %q in:\n%s", hidden, out)
-		}
-	}
-}
-
-func TestSettings_NotificationsTogglePersistsAndRenders(t *testing.T) {
-	withTempConfigHome(t)
-	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
-
-	idx := -1
-	for i, row := range m.rows {
-		if row.Label == "Enable desktop notifications for questions" {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		t.Fatal("desktop notifications row not found")
-	}
-	m.cursor = idx
-
-	if !config.NotificationsEnabled(m.settings) {
-		t.Fatal("precondition: desktop notifications should default to enabled")
-	}
-	if !strings.Contains(m.View().Content, "[x] Enable desktop notifications for questions") {
-		t.Fatalf("desktop notifications should render checked by default. Got:\n%s", m.View().Content)
-	}
-
-	updated, _ := m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
-	m = updated.(SettingsModel)
-	if config.NotificationsEnabled(m.settings) {
-		t.Error("space did not disable desktop notifications")
-	}
-	if !strings.Contains(m.View().Content, "[ ] Enable desktop notifications for questions") {
-		t.Fatalf("desktop notifications should render unchecked after toggle. Got:\n%s", m.View().Content)
-	}
-	persisted, err := config.Load()
-	if err != nil {
-		t.Fatalf("config.Load: %v", err)
-	}
-	if config.NotificationsEnabled(persisted) {
-		t.Error("disabled desktop notifications were not persisted")
-	}
-
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(SettingsModel)
-	if !config.NotificationsEnabled(m.settings) {
-		t.Error("enter did not re-enable desktop notifications")
-	}
-	if !strings.Contains(m.View().Content, "[x] Enable desktop notifications for questions") {
-		t.Fatalf("desktop notifications should render checked after second toggle. Got:\n%s", m.View().Content)
-	}
-}
-
-func TestSettings_SuccessfulOtherSaveClearsFailedNotificationSaveError(t *testing.T) {
-	withTempConfigHome(t)
-	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
-
-	for i, row := range m.rows {
-		if row.Kind == settingsRowKindNotifications {
-			m.cursor = i
-			break
-		}
-	}
-	badPath := filepath.Join(t.TempDir(), "settings-dir")
-	if err := os.Mkdir(badPath, 0o755); err != nil {
-		t.Fatalf("os.Mkdir(%q): %v", badPath, err)
-	}
-	t.Setenv("BOSS_SETTINGS_PATH", badPath)
-	updated, _ := m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
-	m = updated.(SettingsModel)
-	if m.err == nil {
-		t.Fatal("failed notification save did not retain an error")
-	}
-	if config.NotificationsEnabled(m.settings) {
-		t.Fatal("failed notification save did not retain the requested toggle")
-	}
-
-	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
-	for i, row := range m.rows {
-		if row.Kind == settingsRowKindErrorTracking {
-			m.cursor = i
-			break
-		}
-	}
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(SettingsModel)
-	if m.err != nil {
-		t.Fatalf("successful non-notification save retained stale error: %v", m.err)
-	}
-
-	persisted, err := config.Load()
-	if err != nil {
-		t.Fatalf("config.Load: %v", err)
-	}
-	if config.NotificationsEnabled(persisted) {
-		t.Fatal("successful other save did not persist notification toggle")
-	}
-	if !persisted.ErrorTrackingEnabled {
-		t.Fatal("successful other save did not persist its own setting")
-	}
-}
-
-func TestSettings_RendersErrorTrackingRow(t *testing.T) {
-	withTempConfigHome(t)
-	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
-	view := m.View().Content
-	if !strings.Contains(view, "Enable error tracking") {
-		t.Errorf("settings view missing error tracking row.\nGot:\n%s", view)
-	}
-}
-
-func TestSettings_ErrorTrackingToggle(t *testing.T) {
-	withTempConfigHome(t)
-	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
-	var idx = -1
-	for i, r := range m.rows {
-		if r.Kind == settingsRowKindErrorTracking {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		t.Fatal("settingsRowKindErrorTracking row not found")
-	}
-	m.cursor = idx
-
-	if m.settings.ErrorTrackingEnabled {
-		t.Fatalf("precondition: ErrorTrackingEnabled should default to false")
-	}
-
-	newModel, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	sm := newModel.(SettingsModel)
-	if !sm.settings.ErrorTrackingEnabled {
-		t.Errorf("ErrorTrackingEnabled did not flip to true after Enter")
-	}
-
-	newModel, _ = sm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	sm = newModel.(SettingsModel)
-	if sm.settings.ErrorTrackingEnabled {
-		t.Errorf("ErrorTrackingEnabled did not flip back to false")
-	}
-}
-
-func TestSettings_RendersRotationRow(t *testing.T) {
-	withTempConfigHome(t)
-	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
-	view := m.View().Content
-	if !strings.Contains(view, "Enable automatic account rotation") {
-		t.Errorf("settings view missing rotation row.\nGot:\n%s", view)
-	}
-	// Default is ON (nil Enabled), so the checkbox renders checked.
-	if !strings.Contains(view, "[x] Enable automatic account rotation") {
-		t.Errorf("rotation row should render checked by default.\nGot:\n%s", view)
-	}
-}
-
-func TestSettings_RotationToggleFlipsRenderedValue(t *testing.T) {
-	withTempConfigHome(t)
-	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
-	idx := -1
-	for i, r := range m.rows {
-		if r.Kind == settingsRowKindRotation {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		t.Fatal("settingsRowKindRotation row not found")
-	}
-	m.cursor = idx
-
-	if !m.settings.ManagedAccounts.ManagedAccountsEnabled() {
-		t.Fatalf("precondition: rotation should default to enabled (nil)")
-	}
-
-	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	sm := updated.(SettingsModel)
-	if sm.settings.ManagedAccounts.ManagedAccountsEnabled() {
-		t.Errorf("rotation did not flip to disabled after Enter")
-	}
-	if !strings.Contains(sm.View().Content, "[ ] Enable automatic account rotation") {
-		t.Errorf("rendered rotation row should be unchecked after toggle.\nGot:\n%s", sm.View().Content)
-	}
-
-	updated, _ = sm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	sm = updated.(SettingsModel)
-	if !sm.settings.ManagedAccounts.ManagedAccountsEnabled() {
-		t.Errorf("rotation did not flip back to enabled")
-	}
-	if !strings.Contains(sm.View().Content, "[x] Enable automatic account rotation") {
-		t.Errorf("rendered rotation row should be checked after second toggle.\nGot:\n%s", sm.View().Content)
-	}
-}
-
-func TestSettings_EventTracingToggleSeedsDefaults(t *testing.T) {
-	withTempConfigHome(t)
-	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
-
-	for i, row := range m.rows {
-		if row.Kind == settingsRowKindEventTracing {
-			m.cursor = i
-			break
-		}
-	}
-
-	updated, _ := m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
-	m = updated.(SettingsModel)
-
-	if !m.settings.EventTracingEnabled {
-		t.Error("space did not enable event tracing")
-	}
-	if got := m.settings.PostHogProjectToken; got != telemetry.ProductionProjectToken {
-		t.Errorf("PostHogProjectToken = %q, want %q", got, telemetry.ProductionProjectToken)
-	}
-	if got := m.settings.PostHogHost; got != telemetry.DefaultHost {
-		t.Errorf("PostHogHost = %q, want %q", got, telemetry.DefaultHost)
-	}
-	out := m.View().Content
-	for _, want := range []string{"PostHog project token", "PostHog host"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("settings missing %q after enabling tracing in:\n%s", want, out)
-		}
-	}
-	if strings.Contains(out, "set when tracing is enabled") {
-		t.Errorf("settings showed obsolete tracing placeholder in:\n%s", out)
-	}
-}
-
-func TestSettings_RendersAgentSectionForEachAgent(t *testing.T) {
-	withTempConfigHome(t)
-	stub := &settingsAgentStub{
-		stubClient: &stubClient{},
-		agents: []client.AgentInfo{
-			{
-				Name:    "claude",
-				Version: "v1",
-				UserSettings: []client.UserSetting{
-					{
-						Key:   "dangerously_skip_permissions",
-						Label: "Skip permissions",
-						Type:  client.SettingTypeBool,
-					},
-				},
-			},
-			{
-				Name:    "codex",
-				Version: "v0.1",
-				UserSettings: []client.UserSetting{
-					{
-						Key:           "model",
-						Label:         "Model",
-						Type:          client.SettingTypeEnum,
-						AllowedValues: []string{"sonnet", "opus"},
-					},
-				},
-			},
-		},
-	}
-
-	m := NewSettingsModel(stub, context.Background())
-	out := m.View().Content
-
-	for _, want := range []string{
-		"claude",
-		"codex",
-		"Skip permissions",
-		"Model:",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q in:\n%s", want, out)
-		}
-	}
-}
-
-func TestSettings_RendersConfiguredAgentsWhenDaemonHasNoneLoaded(t *testing.T) {
-	withTempConfigHome(t)
-	settings := config.DefaultSettings()
-	settings.DefaultAgent = "codex"
-	settings.KnownAgentProviders = []string{"claude", "codex"}
-	settings.Plugins = []config.PluginConfig{
-		{Name: "claude", Enabled: false},
-		{Name: "codex", Enabled: true},
-	}
-	if err := config.Save(settings); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
-	out := m.View().Content
-
-	for _, want := range []string{
-		"claude",
-		"codex",
-		"[ ] Enabled",
-		"[x] Enabled",
-		"Skip permission prompts",
-		"Bypass approvals & sandbox",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("settings missing %q for configured unloaded agents:\n%s", want, out)
-		}
-	}
-	if len(m.agents) != 2 {
-		t.Fatalf("agents = %v, want claude and codex", m.agents)
-	}
-}
-
-func TestSettings_MergeDiscoveredAgentPluginsPreservesEnabledState(t *testing.T) {
-	settings := config.DefaultSettings()
-	settings.KnownAgentProviders = []string{"claude", "codex"}
-	settings.Plugins = []config.PluginConfig{
-		{Name: "claude", Enabled: false},
-	}
-
-	got := mergeDiscoveredAgentPlugins(settings, []config.PluginConfig{
-		{Name: "claude", Path: "/plugins/bossd-plugin-claude", Enabled: true},
-		{Name: "codex", Path: "/plugins/bossd-plugin-codex", Enabled: true},
-	})
-
-	if len(got.Plugins) != 2 {
-		t.Fatalf("plugins = %+v, want claude and codex", got.Plugins)
-	}
-	if got.Plugins[0].Name != "claude" || got.Plugins[0].Enabled || got.Plugins[0].Path == "" {
-		t.Fatalf("claude plugin = %+v, want disabled with discovered path", got.Plugins[0])
-	}
-	if got.Plugins[1].Name != "codex" || got.Plugins[1].Enabled || got.Plugins[1].Path == "" {
-		t.Fatalf("codex plugin = %+v, want disabled with discovered path", got.Plugins[1])
-	}
-}
-
-func TestSettings_AgentEnabledToggleCannotDisableLastAgent(t *testing.T) {
-	withTempConfigHome(t)
-	settings := config.DefaultSettings()
-	settings.DefaultAgent = "codex"
-	settings.KnownAgentProviders = []string{"codex"}
-	settings.Plugins = []config.PluginConfig{{Name: "codex", Enabled: true}}
-	if err := config.Save(settings); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
-	for i, row := range m.rows {
-		if row.Kind == settingsRowKindAgentEnabled && row.Plugin == "codex" {
-			m.cursor = i
-			break
-		}
-	}
-
-	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(SettingsModel)
-
-	if !pluginEnabled(m.settings, "codex") {
-		t.Fatal("codex disabled; want last enabled agent preserved")
-	}
-	if m.err == nil || !strings.Contains(m.err.Error(), "select at least one agent") {
-		t.Fatalf("err = %v, want select at least one agent", m.err)
-	}
-}
-
-func TestSettings_AgentEnabledToggleEnablesConfiguredAgent(t *testing.T) {
-	withTempConfigHome(t)
-	settings := config.DefaultSettings()
-	settings.DefaultAgent = "codex"
-	settings.KnownAgentProviders = []string{"claude", "codex"}
-	settings.Plugins = []config.PluginConfig{
-		{Name: "claude", Enabled: false},
-		{Name: "codex", Enabled: true},
-	}
-	if err := config.Save(settings); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
-	for i, row := range m.rows {
-		if row.Kind == settingsRowKindAgentEnabled && row.Plugin == "claude" {
-			m.cursor = i
-			break
-		}
-	}
-
-	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(SettingsModel)
-
-	if !pluginEnabled(m.settings, "claude") {
-		t.Fatal("claude enabled = false, want true")
-	}
-}
-
-func TestSettings_BoolRowToggles(t *testing.T) {
-	withTempConfigHome(t)
-	stub := &settingsAgentStub{
-		stubClient: &stubClient{},
-		agents: []client.AgentInfo{
-			{
-				Name: "claude",
-				UserSettings: []client.UserSetting{
-					{Key: "dangerously_skip_permissions", Label: "Skip", Type: client.SettingTypeBool},
-				},
-			},
-		},
-	}
-	m := NewSettingsModel(stub, context.Background())
-
-	// Cursor should land on first non-header row. Walk to the bool row.
-	for i, row := range m.rows {
-		if row.Kind == settingsRowKindBool {
-			m.cursor = i
-			break
-		}
-	}
-
-	updated, _ := m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
-	m = updated.(SettingsModel)
-
-	if !config.PluginConfigBool(&m.settings, "claude", "dangerously_skip_permissions") {
-		t.Error("space did not toggle bool setting on")
-	}
-
-	updated, _ = m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
-	m = updated.(SettingsModel)
-	if config.PluginConfigBool(&m.settings, "claude", "dangerously_skip_permissions") {
-		t.Error("second toggle did not clear bool setting")
-	}
-}
-
-func TestSettings_EnumRowCycles(t *testing.T) {
-	withTempConfigHome(t)
-	stub := &settingsAgentStub{
-		stubClient: &stubClient{},
-		agents: []client.AgentInfo{
-			{
-				Name: "codex",
-				UserSettings: []client.UserSetting{
-					{Key: "model", Label: "Model", Type: client.SettingTypeEnum, AllowedValues: []string{"a", "b", "c"}},
-				},
-			},
-		},
-	}
-	m := NewSettingsModel(stub, context.Background())
-
-	for i, row := range m.rows {
-		if row.Kind == settingsRowKindEnum {
-			m.cursor = i
-			break
-		}
-	}
-
-	// First press cycles from "" → first allowed ("a") via nextEnumValue,
-	// because empty string isn't in the list (treated as "not present").
-	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Text: "enter"})
-	m = updated.(SettingsModel)
-	if got := config.PluginConfigString(&m.settings, "codex", "model"); got != "a" {
-		t.Errorf("first cycle: got %q, want a", got)
-	}
-
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Text: "enter"})
-	m = updated.(SettingsModel)
-	if got := config.PluginConfigString(&m.settings, "codex", "model"); got != "b" {
-		t.Errorf("second cycle: got %q, want b", got)
-	}
-
-	// Cycle past end wraps to start.
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Text: "enter"})
-	m = updated.(SettingsModel)
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Text: "enter"})
-	m = updated.(SettingsModel)
-	if got := config.PluginConfigString(&m.settings, "codex", "model"); got != "a" {
-		t.Errorf("wrap cycle: got %q, want a", got)
-	}
-}
-
-func TestSettings_DefaultAgentRowAppearsForMultiAgent(t *testing.T) {
-	withTempConfigHome(t)
-	multi := &settingsAgentStub{
-		stubClient: &stubClient{},
-		agents: []client.AgentInfo{
-			{Name: "claude", UserSettings: []client.UserSetting{{Key: "x", Label: "X", Type: client.SettingTypeBool}}},
-			{Name: "codex", UserSettings: []client.UserSetting{{Key: "y", Label: "Y", Type: client.SettingTypeBool}}},
-		},
-	}
-	m := NewSettingsModel(multi, context.Background())
-	hasDefaultAgent := false
-	for _, r := range m.rows {
-		if r.Kind == settingsRowKindDefaultAgent {
-			hasDefaultAgent = true
-		}
-	}
-	if !hasDefaultAgent {
-		t.Error("expected a Default agent row when >1 agent loaded")
-	}
-
-	single := &settingsAgentStub{
-		stubClient: &stubClient{},
-		agents: []client.AgentInfo{
-			{Name: "claude", UserSettings: []client.UserSetting{{Key: "x", Label: "X", Type: client.SettingTypeBool}}},
-		},
-	}
-	m2 := NewSettingsModel(single, context.Background())
-	for _, r := range m2.rows {
-		if r.Kind == settingsRowKindDefaultAgent {
-			t.Error("Default agent row should not appear with a single agent")
-		}
-	}
-}
-
-func TestSettings_DefaultAgentAgentsThenTracingOrder(t *testing.T) {
-	withTempConfigHome(t)
-	stub := &settingsAgentStub{
-		stubClient: &stubClient{},
-		agents: []client.AgentInfo{
-			{Name: "claude", UserSettings: []client.UserSetting{{Key: "x", Label: "X", Type: client.SettingTypeBool}}},
-			{Name: "codex", UserSettings: []client.UserSetting{{Key: "y", Label: "Y", Type: client.SettingTypeBool}}},
-		},
-	}
-	m := NewSettingsModel(stub, context.Background())
-
-	indexOf := func(kind settingsRowKind, label string) int {
-		for i, row := range m.rows {
-			if row.Kind == kind && row.Label == label {
-				return i
-			}
-		}
-		return -1
-	}
-
-	defaultAgent := indexOf(settingsRowKindDefaultAgent, "Default agent")
-	claude := indexOf(settingsRowKindAgentHeader, "claude")
-	codex := indexOf(settingsRowKindAgentHeader, "codex")
-	tracing := indexOf(settingsRowKindTracingHeader, "tracing")
-	eventTracing := indexOf(settingsRowKindEventTracing, "Enable event tracing (for debugging problems)")
-	if defaultAgent < 0 || claude <= defaultAgent || codex <= claude || tracing <= codex || eventTracing <= tracing {
-		t.Fatalf("unexpected row order: default=%d claude=%d codex=%d tracing=%d event=%d rows=%v",
-			defaultAgent, claude, codex, tracing, eventTracing, m.rows)
-	}
-}
-
-func TestSettings_ErrorTrackingImmediatelyFollowsEventTracingWhenTracingEnabled(t *testing.T) {
-	withTempConfigHome(t)
-	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
-
-	for i, row := range m.rows {
-		if row.Kind == settingsRowKindEventTracing {
-			m.cursor = i
-			break
-		}
-	}
-
-	updated, _ := m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
-	m = updated.(SettingsModel)
-
-	eventTracing := -1
-	errorTracking := -1
-	postHogToken := -1
-	for i, row := range m.rows {
-		if row.Kind == settingsRowKindEventTracing {
-			eventTracing = i
-		}
-		if row.Kind == settingsRowKindErrorTracking {
-			errorTracking = i
-		}
-		if row.Kind == settingsRowKindPostHogToken {
-			postHogToken = i
-		}
-	}
-
-	if eventTracing < 0 || errorTracking < 0 || postHogToken < 0 {
-		t.Fatalf("missing expected tracing rows: event=%d error=%d token=%d rows=%v", eventTracing, errorTracking, postHogToken, m.rows)
-	}
-	if errorTracking != eventTracing+1 {
-		t.Fatalf("error tracking row should immediately follow event tracing: event=%d error=%d rows=%v", eventTracing, errorTracking, m.rows)
-	}
-	if postHogToken <= errorTracking {
-		t.Fatalf("PostHog rows should follow error tracking: error=%d token=%d rows=%v", errorTracking, postHogToken, m.rows)
-	}
-}
-
-func TestSettings_NextEnumValueWraps(t *testing.T) {
-	allowed := []string{"a", "b", "c"}
-	cases := []struct {
-		current string
-		want    string
-	}{
-		{"", "a"},  // not present → first
-		{"x", "a"}, // unknown → first
-		{"a", "b"}, // wrap forward
-		{"b", "c"}, // wrap forward
-		{"c", "a"}, // wrap around end
-	}
-	for _, tc := range cases {
-		if got := nextEnumValue(allowed, tc.current); got != tc.want {
-			t.Errorf("nextEnumValue(%q) = %q, want %q", tc.current, got, tc.want)
-		}
-	}
-}
-
-func TestSettings_CursorSkipsHeaderRows(t *testing.T) {
-	withTempConfigHome(t)
-	stub := &settingsAgentStub{
-		stubClient: &stubClient{},
-		agents: []client.AgentInfo{
-			{
-				Name: "claude",
-				UserSettings: []client.UserSetting{
-					{Key: "x", Label: "X", Type: client.SettingTypeBool},
-				},
-			},
-		},
-	}
-	m := NewSettingsModel(stub, context.Background())
-
-	// Walk down through every row; cursor should never land on a header.
-	for range m.rows {
-		if m.cursor >= 0 && m.cursor < len(m.rows) {
-			if m.rows[m.cursor].IsHeader {
-				t.Errorf("cursor landed on header row at index %d", m.cursor)
-			}
-		}
-		updated, _ := m.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
-		m = updated.(SettingsModel)
-	}
 }
 
 // newBillingSettingsModel builds a settings model wired with a cloud client so
@@ -698,6 +57,396 @@ func pressBilling(t *testing.T, m SettingsModel) SettingsModel {
 	return updated.(SettingsModel)
 }
 
+// --- Section menu (BOS-511) ---
+
+// newMenuSettingsModel builds the Settings hub without a cloud client, so the
+// menu carries the five always-present sections.
+func newMenuSettingsModel(t *testing.T) SettingsModel {
+	t.Helper()
+	withTempConfigHome(t)
+	return NewSettingsModel(nil, context.Background())
+}
+
+// wantSections is the documented menu order and copy. The tests below drive
+// every assertion off this table so a reordering or reworded description has a
+// single place to change.
+var wantSections = []struct {
+	key         string
+	label       string
+	description string
+	target      View
+	billing     bool
+}{
+	{key: "g", label: "General", description: "Worktree location, polling, notifications, agents, tracing", target: ViewGeneralSettings},
+	{key: "r", label: "Repositories", description: "Registered repos and their per-repo options", target: ViewRepoList},
+	{key: "c", label: "Cron jobs", description: "Scheduled skill runs", target: ViewCron},
+	{key: "a", label: "Accounts", description: "Agent provider accounts and rotation", target: ViewAccounts},
+	{key: "t", label: "Trash", description: "Archived sessions", target: ViewTrash},
+	{key: "b", label: "Billing", description: "Subscription and payment", billing: true},
+}
+
+func TestSettings_MenuRendersEverySectionInOrderWithDescriptions(t *testing.T) {
+	m := newMenuSettingsModel(t)
+	content := m.View().Content
+
+	prev := -1
+	for _, want := range wantSections {
+		if want.billing {
+			continue // no cloud client wired in this model
+		}
+		at := strings.Index(content, want.label)
+		if at < 0 {
+			t.Fatalf("settings menu missing section %q:\n%s", want.label, content)
+		}
+		if at <= prev {
+			t.Fatalf("section %q rendered out of order (index %d, previous %d):\n%s", want.label, at, prev, content)
+		}
+		prev = at
+		if !strings.Contains(content, want.description) {
+			t.Fatalf("section %q missing its description %q:\n%s", want.label, want.description, content)
+		}
+	}
+}
+
+func TestSettings_BillingSectionOnlyWithCloudAccess(t *testing.T) {
+	without := newMenuSettingsModel(t)
+	if got := len(without.sections()); got != len(wantSections)-1 {
+		t.Fatalf("sections without a cloud client = %d, want %d", got, len(wantSections)-1)
+	}
+	for _, s := range without.sections() {
+		if s.Billing {
+			t.Fatalf("Billing section present without a cloud client: %+v", s)
+		}
+	}
+	if strings.Contains(without.View().Content, "Subscription and payment") {
+		t.Fatalf("settings rendered the Billing row without a cloud client:\n%s", without.View().Content)
+	}
+
+	with := newMenuSettingsModel(t)
+	with.SetCloudAccess(&fakeHomeCloudAccessClient{}, "")
+	sections := with.sections()
+	if got := len(sections); got != len(wantSections) {
+		t.Fatalf("sections with a cloud client = %d, want %d", got, len(wantSections))
+	}
+	last := sections[len(sections)-1]
+	if !last.Billing || last.Label != "Billing" {
+		t.Fatalf("last section = %+v, want the Billing action", last)
+	}
+	content := with.View().Content
+	if !strings.Contains(content, "Billing") || !strings.Contains(content, "Subscription and payment") {
+		t.Fatalf("settings did not render the Billing row with a cloud client:\n%s", content)
+	}
+}
+
+func TestSettings_CursorMovesAndEnterOpensSectionUnderCursor(t *testing.T) {
+	m := newMenuSettingsModel(t)
+
+	// down twice → Cron jobs (index 2); one up → Repositories (index 1).
+	keys := []tea.KeyPressMsg{keyPress('j'), keyPress('j'), {Code: tea.KeyUp}}
+	for _, key := range keys {
+		updated, _ := m.Update(key)
+		m = updated.(SettingsModel)
+	}
+	if m.cursor != 1 {
+		t.Fatalf("cursor after down/down/up = %d, want 1", m.cursor)
+	}
+
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	svm, ok := runCmd(cmd).(switchViewMsg)
+	if !ok {
+		t.Fatalf("enter on the Repositories row produced %T, want switchViewMsg", runCmd(cmd))
+	}
+	if svm.view != ViewRepoList || svm.returnView != ViewSettings {
+		t.Fatalf("enter routed to %v (return %v), want ViewRepoList/ViewSettings", svm.view, svm.returnView)
+	}
+}
+
+// TestSettings_CursorClampsAtBothEnds runs against BOTH menu shapes. The
+// conditional Billing row is appended after the five fixed sections, so a
+// clamp that used a fixed bound instead of len(m.sections()) would leave the
+// user able to see the Billing row but never move the cursor onto it — a bug
+// the no-cloud shape cannot expose.
+func TestSettings_CursorClampsAtBothEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		withCloud bool
+		wantLast  int
+	}{
+		{name: "without a cloud client", wantLast: 4},
+		{name: "with the Billing row", withCloud: true, wantLast: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMenuSettingsModel(t)
+			if tc.withCloud {
+				m.SetCloudAccess(&fakeHomeCloudAccessClient{}, "")
+			}
+			if got := len(m.sections()) - 1; got != tc.wantLast {
+				t.Fatalf("last section index = %d, want %d", got, tc.wantLast)
+			}
+
+			updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+			m = updated.(SettingsModel)
+			if m.cursor != 0 {
+				t.Fatalf("cursor after up from the top = %d, want 0 (no wrap)", m.cursor)
+			}
+
+			// Press down more times than there are rows, so the clamp (not the
+			// row count) is what stops the cursor.
+			for range tc.wantLast + 3 {
+				updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+				m = updated.(SettingsModel)
+			}
+			if m.cursor != tc.wantLast {
+				t.Fatalf("cursor after running past the bottom = %d, want %d (no wrap)", m.cursor, tc.wantLast)
+			}
+		})
+	}
+}
+
+// TestSettings_MenuUsesTheSelectListRenderingConventions pins the shape the
+// BOS-511 plan mandates (the onboarding.go provider list): a "❯ " cursor
+// prefix that moves with the cursor, each description on its own line beneath
+// its label, and a blank line between entries so a label is never mistaken for
+// a continuation of the description above it.
+// Every bound is derived from m.sections() rather than the fixture's length, so
+// adding a section cannot silently fall outside the assertions. Both menu
+// shapes run, so the last-row branch of View's separator is observed at Trash
+// and at Billing.
+func TestSettings_MenuUsesTheSelectListRenderingConventions(t *testing.T) {
+	for _, withCloud := range []bool{false, true} {
+		name := "without a cloud client"
+		if withCloud {
+			name = "with the Billing row"
+		}
+		t.Run(name, func(t *testing.T) {
+			m := newMenuSettingsModel(t)
+			if withCloud {
+				m.SetCloudAccess(&fakeHomeCloudAccessClient{}, "")
+			}
+			sections := m.sections()
+
+			// menuLines returns the plain-text view split into lines, and the
+			// index of the row line for each section label. A row line is
+			// matched on the bare label so a description or the action bar can
+			// never be mistaken for one.
+			menuLines := func(m SettingsModel) ([]string, map[string]int) {
+				t.Helper()
+				lines := strings.Split(trimLineRightSpace(stripANSI(m.View().Content)), "\n")
+				at := map[string]int{}
+				for i, l := range lines {
+					bare := strings.TrimSpace(strings.ReplaceAll(l, cursorChevron, ""))
+					for _, s := range sections {
+						if bare == s.Label {
+							at[s.Label] = i
+						}
+					}
+				}
+				for _, s := range sections {
+					if _, ok := at[s.Label]; !ok {
+						t.Fatalf("no row line for %q in:\n%s", s.Label, strings.Join(lines, "\n"))
+					}
+				}
+				return lines, at
+			}
+
+			lines, at := menuLines(m)
+			for i, s := range sections {
+				li := at[s.Label]
+				if got := strings.TrimSpace(lines[li+1]); !strings.Contains(got, s.Description) {
+					t.Fatalf("line under %q = %q, want the description %q", s.Label, got, s.Description)
+				}
+				// Every entry but the last is followed by a blank separator.
+				if i == len(sections)-1 {
+					continue
+				}
+				if got := lines[li+2]; got != "" {
+					t.Fatalf("line after %q's description = %q, want a blank separator", s.Label, got)
+				}
+			}
+
+			// The chevron marks the cursor row and nothing else, and it
+			// follows the cursor down the menu.
+			first, second := sections[0].Label, sections[1].Label
+			if !strings.Contains(lines[at[first]], cursorChevron) {
+				t.Fatalf("%s row %q carries no %q cursor", first, lines[at[first]], cursorChevron)
+			}
+			if strings.Contains(lines[at[second]], cursorChevron) {
+				t.Fatalf("%s row %q carries the cursor while it is on %s", second, lines[at[second]], first)
+			}
+
+			updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			lines, at = menuLines(updated.(SettingsModel))
+			if !strings.Contains(lines[at[second]], cursorChevron) {
+				t.Fatalf("after down, %s row %q carries no cursor", second, lines[at[second]])
+			}
+			if strings.Contains(lines[at[first]], cursorChevron) {
+				t.Fatalf("after down, %s row %q still carries the cursor", first, lines[at[first]])
+			}
+		})
+	}
+}
+
+func TestSettings_EscCancels(t *testing.T) {
+	m := newMenuSettingsModel(t)
+	if m.Cancelled() {
+		t.Fatal("precondition: a fresh settings model reports Cancelled()")
+	}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if !updated.(SettingsModel).Cancelled() {
+		t.Fatal("esc did not cancel the settings menu")
+	}
+}
+
+// TestSettings_RowAndHotkeyParity is the regression guard BOS-511 exists for: a
+// section must be reachable identically by enter-on-its-row and by its letter
+// accelerator, so neither path can silently drift from the other.
+func TestSettings_RowAndHotkeyParity(t *testing.T) {
+	for _, want := range wantSections {
+		if want.billing {
+			continue // billing is an in-place action, covered by the billing tests
+		}
+		t.Run(want.label, func(t *testing.T) {
+			base := newMenuSettingsModel(t)
+			base.SetCloudAccess(&fakeHomeCloudAccessClient{}, "")
+
+			idx := -1
+			for i, s := range base.sections() {
+				if s.Label == want.label {
+					idx = i
+					break
+				}
+			}
+			if idx < 0 {
+				t.Fatalf("section %q not found in the menu", want.label)
+			}
+
+			byCursor := base
+			byCursor.cursor = idx
+			_, enterCmd := byCursor.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			enterMsg, ok := runCmd(enterCmd).(switchViewMsg)
+			if !ok {
+				t.Fatalf("enter on %q produced %T, want switchViewMsg", want.label, runCmd(enterCmd))
+			}
+
+			_, keyCmd := base.Update(keyPress(rune(want.key[0])))
+			keyMsg, ok := runCmd(keyCmd).(switchViewMsg)
+			if !ok {
+				t.Fatalf("key %q produced %T, want switchViewMsg", want.key, runCmd(keyCmd))
+			}
+
+			if enterMsg.view != want.target {
+				t.Fatalf("enter on %q routed to %v, want %v", want.label, enterMsg.view, want.target)
+			}
+			if enterMsg.view != keyMsg.view || enterMsg.returnView != keyMsg.returnView {
+				t.Fatalf("enter on %q gave %v/%v but key %q gave %v/%v — row and hotkey diverged",
+					want.label, enterMsg.view, enterMsg.returnView, want.key, keyMsg.view, keyMsg.returnView)
+			}
+		})
+	}
+}
+
+func TestSettings_HotkeysMoveCursorToActivatedSection(t *testing.T) {
+	for _, want := range wantSections {
+		t.Run(want.label, func(t *testing.T) {
+			m := newMenuSettingsModel(t)
+			if want.billing {
+				m.SetCloudAccess(&fakeHomeCloudAccessClient{}, "")
+			}
+
+			updated, _ := m.Update(keyPress(rune(want.key[0])))
+			m = updated.(SettingsModel)
+			if got := m.selectedKey(); got != want.key {
+				t.Fatalf("key %q left selected key %q, want %q", want.key, got, want.key)
+			}
+		})
+	}
+}
+
+func TestSettings_RestoreSectionUsesKeysAndFallsBackToGeneral(t *testing.T) {
+	fresh := newMenuSettingsModel(t)
+	if got := fresh.selectedKey(); got != "g" {
+		t.Fatalf("fresh Settings selected %q, want General", got)
+	}
+
+	withBilling := newMenuSettingsModel(t)
+	withBilling.SetCloudAccess(&fakeHomeCloudAccessClient{}, "")
+	withBilling.restoreSection("b")
+	if got := withBilling.selectedKey(); got != "b" {
+		t.Fatalf("visible Billing restored %q, want b", got)
+	}
+
+	withoutBilling := newMenuSettingsModel(t)
+	withoutBilling.restoreSection("b")
+	if got := withoutBilling.selectedKey(); got != "g" {
+		t.Fatalf("hidden Billing restored %q, want General fallback", got)
+	}
+
+	withoutBilling.restoreSection("unknown")
+	if got := withoutBilling.selectedKey(); got != "g" {
+		t.Fatalf("unknown section restored %q, want General fallback", got)
+	}
+}
+
+// TestSettings_GeneralCarriesNoReturnView pins the static-parent decision: the
+// General list has no returnView slot, so the switch must leave it zero (app.go
+// ignores the field for this view and routes esc straight back to Settings).
+func TestSettings_GeneralCarriesNoReturnView(t *testing.T) {
+	m := newMenuSettingsModel(t)
+	_, cmd := m.Update(keyPress('g'))
+	svm, ok := runCmd(cmd).(switchViewMsg)
+	if !ok {
+		t.Fatalf("key g produced %T, want switchViewMsg", runCmd(cmd))
+	}
+	if svm.view != ViewGeneralSettings {
+		t.Fatalf("key g routed to %v, want ViewGeneralSettings", svm.view)
+	}
+	if svm.returnView != ViewHome {
+		t.Fatalf("key g set returnView = %v, want the zero value (unused for this view)", svm.returnView)
+	}
+}
+
+// TestViewGeneralSettingsIsHighestViewValue encodes the one half of the
+// append-at-end convention that is mechanically checkable from inside the
+// package: ViewGeneralSettings must remain the highest View value, so it was
+// appended after every pre-existing constant rather than spliced in among
+// them. That is exactly the BOS-511 acceptance criterion.
+//
+// It deliberately does NOT claim to catch a later mid-block insertion: such an
+// insertion shifts ViewGeneralSettings by the same amount as every constant
+// below it, so the relative ordering — and this test — still holds. Guarding
+// that would mean pinning numeric values, which buys nothing here because View
+// is a package-internal iota that is never persisted or serialized.
+func TestViewGeneralSettingsIsHighestViewValue(t *testing.T) {
+	others := map[string]View{
+		"ViewHome":            ViewHome,
+		"ViewNewSession":      ViewNewSession,
+		"ViewAttach":          ViewAttach,
+		"ViewChatPicker":      ViewChatPicker,
+		"ViewRepoAdd":         ViewRepoAdd,
+		"ViewRepoList":        ViewRepoList,
+		"ViewRepoSettings":    ViewRepoSettings,
+		"ViewTrash":           ViewTrash,
+		"ViewSettings":        ViewSettings,
+		"ViewSessionSettings": ViewSessionSettings,
+		"ViewLogin":           ViewLogin,
+		"ViewBugReport":       ViewBugReport,
+		"ViewCron":            ViewCron,
+		"ViewCronForm":        ViewCronForm,
+		"ViewOnboarding":      ViewOnboarding,
+		"ViewAccounts":        ViewAccounts,
+		"ViewAccountEdit":     ViewAccountEdit,
+		"ViewAccountRegister": ViewAccountRegister,
+	}
+	for name, v := range others {
+		if ViewGeneralSettings <= v {
+			t.Fatalf("ViewGeneralSettings (%d) is not above %s (%d) — new views must be appended at the END of the const block so existing iota values do not shift",
+				ViewGeneralSettings, name, v)
+		}
+	}
+}
+
+// --- Billing ---
+
 func TestSettings_BillingActionHiddenWithoutCloudClient(t *testing.T) {
 	withTempConfigHome(t)
 	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
@@ -706,7 +455,8 @@ func TestSettings_BillingActionHiddenWithoutCloudClient(t *testing.T) {
 		t.Fatalf("settings rendered [b]illing without a cloud client:\n%s", m.View().Content)
 	}
 
-	// Pressing b without a cloud client must be inert (no command, no crash).
+	// Pressing b without a cloud client must be inert (no command, no crash):
+	// there is no Billing section to match.
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 'b', Text: "b"})
 	if cmd != nil {
 		t.Fatal("key b: got a command without a cloud client, want nil")
@@ -733,6 +483,41 @@ func TestSettings_BillingOpensPortalURL(t *testing.T) {
 	}
 	if !strings.Contains(m.View().Content, "Opened the billing portal") {
 		t.Fatalf("settings missing success status:\n%s", m.View().Content)
+	}
+}
+
+// TestSettings_BillingEnterOnRowOpensPortal covers the row half of the billing
+// pair: the Billing section is an in-place action, so enter on its row must run
+// the same portal flow the [b] accelerator does.
+func TestSettings_BillingEnterOnRowOpensPortal(t *testing.T) {
+	var opened []string
+	fake := &fakeHomeCloudAccessClient{portalURL: "https://billing.example.test/portal"}
+	m, cleanup := newBillingSettingsModel(t, fake, "", &opened)
+	defer cleanup()
+
+	sections := m.sections()
+	m.cursor = len(sections) - 1
+	if !sections[m.cursor].Billing {
+		t.Fatalf("last section = %+v, want the Billing action", sections[m.cursor])
+	}
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(SettingsModel)
+	if cmd == nil {
+		t.Fatal("enter on the Billing row: got nil cmd, want the billing portal command")
+	}
+	msg := cmd()
+	if _, ok := msg.(billingPortalMsg); !ok {
+		t.Fatalf("billing command returned %T, want billingPortalMsg", msg)
+	}
+	updated, _ = m.Update(msg)
+	m = updated.(SettingsModel)
+
+	if fake.portals != 1 {
+		t.Fatalf("CreateBillingPortalSession calls = %d, want 1", fake.portals)
+	}
+	if !strings.Contains(m.View().Content, "Opened the billing portal") {
+		t.Fatalf("settings missing success status after enter on the Billing row:\n%s", m.View().Content)
 	}
 }
 
@@ -799,21 +584,38 @@ func TestSettings_BillingInFlightGuardSkipsSecondRequest(t *testing.T) {
 	if !m.billingInFlight {
 		t.Fatal("first b: billingInFlight = false, want true")
 	}
+	if m.billingStatus != billingOpeningStatus {
+		t.Fatalf("first b: billingStatus = %q, want %q", m.billingStatus, billingOpeningStatus)
+	}
+	// Assert the literal copy too. Every other assertion here compares against
+	// billingOpeningStatus, so emptying the constant would make them all
+	// vacuous (strings.Contains(x, "") is always true) while View() renders no
+	// status block at all — exactly the regression they exist to catch.
+	if !strings.Contains(m.View().Content, "Opening the billing portal") {
+		t.Fatalf("first b: the in-flight status is not on screen:\n%s", m.View().Content)
+	}
 
 	// Second [b] while the first is still in flight must be a no-op: no second
-	// command, and the RPC fake must not have been invoked a second time.
+	// command, and the RPC fake must not have been invoked a second time. It
+	// must NOT blank the status either — every keypress clears billingStatus
+	// before dispatch, so an early return that did not restore it would leave
+	// an outstanding request with no feedback at all.
 	updated, cmd2 := m.Update(tea.KeyPressMsg{Code: 'b', Text: "b"})
 	m = updated.(SettingsModel)
 	if cmd2 != nil {
 		t.Fatal("second b while in flight: got a command, want nil")
 	}
+	if m.billingStatus != billingOpeningStatus {
+		t.Fatalf("second b while in flight: billingStatus = %q, want it still %q", m.billingStatus, billingOpeningStatus)
+	}
+	if !strings.Contains(m.View().Content, billingOpeningStatus) {
+		t.Fatalf("second b while in flight: the status left the screen:\n%s", m.View().Content)
+	}
 
 	// Complete the first request and confirm exactly one RPC fired and the
 	// in-flight flag resets so a later [b] works again.
-	if msg := cmd(); true {
-		updated, _ = m.Update(msg)
-		m = updated.(SettingsModel)
-	}
+	updated, _ = m.Update(cmd())
+	m = updated.(SettingsModel)
 	if fake.portals != 1 {
 		t.Fatalf("CreateBillingPortalSession calls = %d, want 1", fake.portals)
 	}

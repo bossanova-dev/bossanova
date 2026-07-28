@@ -115,6 +115,7 @@ func repoToProto(r *models.Repo) *pb.Repo {
 		CanAutoRepair:                   r.CanAutoRepair,
 		ShouldArchiveSessionsAfterMerge: r.ShouldArchiveSessionsAfterMerge,
 		CanAutoDeleteBranches:           r.CanAutoDeleteBranches,
+		ShouldKeepBranchesCurrent:       r.ShouldKeepBranchesCurrent,
 		MergeStrategy:                   protoString(string(r.MergeStrategy)),
 		LinearApiKey:                    protoString(r.LinearAPIKey),
 		SentryApiKey:                    protoString(r.SentryAPIKey),
@@ -315,6 +316,7 @@ func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionS
 		IsEnabled:             c.IsEnabled,
 		GateCommand:           c.GateCommand,
 		ShouldRunSetupCommand: c.ShouldRunSetupCommand,
+		IsZeroOutput:          c.IsZeroOutput,
 		CreatedAt:             timestamppb.New(c.CreatedAt),
 		UpdatedAt:             timestamppb.New(c.UpdatedAt),
 		LastRunStatus:         status,
@@ -379,6 +381,31 @@ func githubCallbackToProto(c *models.GithubCallback) *pb.GithubCallback {
 	}
 	if c.DeliveredAt != nil {
 		p.DeliveredAt = timestamppb.New(*c.DeliveredAt)
+	}
+	return p
+}
+
+// noteToProto converts a domain Note to its protobuf representation (BOS-550).
+// Nullable provenance columns map to empty strings — a note whose session was
+// deleted keeps the id it was written with, so an empty value means "never
+// session-scoped", not "the session is gone".
+//
+// Unlike githubCallbackToProto's message, a note's body is not a secret: it is
+// recorded to be read back, so it is copied through on every read surface.
+func noteToProto(n *models.Note) *pb.Note {
+	p := &pb.Note{
+		Id:        n.ID,
+		RepoId:    n.RepoID,
+		Body:      n.Body,
+		Tags:      n.Tags,
+		CreatedAt: timestamppb.New(n.CreatedAt),
+		UpdatedAt: timestamppb.New(n.UpdatedAt),
+	}
+	if n.SessionID != nil {
+		p.SessionId = *n.SessionID
+	}
+	if n.ChatID != nil {
+		p.ChatId = *n.ChatID
 	}
 	return p
 }
@@ -522,6 +549,10 @@ func cronStatusInactiveState(st machine.State) bool {
 //   - failed_recovered - daemon restarted mid-finalize; run already happened
 //   - pr_failed - the agent ran; only PR creation/lookup failed (often a
 //     transient gh/GitHub error). Shown as a Blocked session, not red cron.
+//   - pr_no_changes - the agent ran and the PR was opened, but the branch
+//     changes nothing against its base, so finalize refused to advertise it as
+//     ready for review (BOS-591). Reachable from a cron run since that backstop
+//     is deliberately not cron-exempt. Shown as a Blocked session, not red cron.
 //   - chat_spawn_failed - the PR was created before the chat-spawn step failed
 //   - cleanup_failed - the run completed; only worktree cleanup errored
 //   - worktree_gone - finalize ran against an already-removed worktree
@@ -547,6 +578,17 @@ func attentionStatusToProto(a vcs.AttentionStatus) *pb.AttentionStatus {
 		Summary:        a.Summary,
 		Since:          timestamppb.New(a.Since),
 	}
+}
+
+// protoTime converts an optional protobuf Timestamp to a time.Time, mapping an
+// absent timestamp to the ZERO time rather than the Unix epoch that
+// (*timestamppb.Timestamp)(nil).AsTime() yields. Callers that treat "absent" as
+// "no evidence" (e.g. the repair stall heartbeat) need the zero value.
+func protoTime(ts *timestamppb.Timestamp) time.Time {
+	if ts == nil {
+		return time.Time{}
+	}
+	return ts.AsTime()
 }
 
 // protoToTimestamp converts an optional protobuf Timestamp to *time.Time.

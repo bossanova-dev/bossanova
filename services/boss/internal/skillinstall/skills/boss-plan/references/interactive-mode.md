@@ -4,7 +4,7 @@ This reference holds the **interactive-exclusive** prose that the resident SKILL
 the Phase 1 confirmation loop, the Phase 3 design-doc seed, and interactive draft resolution. A
 headless (`BOSS_CRON=true`) run never reads this file — headless dispatches the drafting subagent instead
 (`references/headless-drafting-brief.md`). The directives below are preserved **verbatim** from the
-pre-split skill; a negative content assertion in `scripts/boss-plan-skill.test.mjs` pins them so
+pre-split skill; a negative content assertion in the skill-contract test suite pins them so
 interactive behaviour cannot silently drift.
 
 ## Phase 1 — Confirm the selection (interactive only)
@@ -45,7 +45,7 @@ sets how deep the interview and plan go:
 ## Phase 2.5 — Epic decomposition (interactive: propose → confirm → create)
 
 When triage is EPIC, decompose the ticket into a parent + N fully-planned children (SKILL.md Phase
-2.5 owns the guards and ordering discipline; the deterministic core is `scripts/plan-epic-lib.mjs`).
+2.5 owns the guards and ordering discipline; the deterministic core is `$BOSS_PLAN_TOOLBOX/plan-epic-lib.mjs`).
 Interactively:
 
 1. **Draft the decomposition spec** — decompose along architectural seams, producer-before-consumer
@@ -157,7 +157,7 @@ an image with a `[screenshot: …]` text placeholder or any paraphrase: Linear d
 description history, so the rewritten description is the only surviving copy of those URLs (a prior
 screenshot-dropping data-loss incident). You MAY additionally list them under a `## Screenshots` bullet list in the plan
 body, but the URLs must stay intact in `## Original notes`. The orchestrator's mechanical guard
-(`scripts/plan-image-guard.mjs`, Phase 4) aborts the Linear write if any source image is dropped.
+(`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs`, Phase 4) aborts the Linear write if any source image is dropped.
 
 ## Interactive cleanup
 

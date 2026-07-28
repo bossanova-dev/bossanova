@@ -29,17 +29,40 @@ export const VENDOR_MAP = {
     // payload, which has no repo-root skills-toolbox/, so the helper must be co-located in
     // this skill's own toolbox rather than referenced from boss-review's copy.
     'skill-config.mjs',
+    'plan-attachment.mjs',
   ],
   // dag-scheduler.mjs is the pure scheduling core bs-epic-lib.mjs re-exports
   // (BOS-197); it must ship alongside bs-epic-lib.mjs so the vendored copy's
   // `./dag-scheduler.mjs` import resolves. Its test file stays in skills-toolbox/
   // only (test files are not vendored, matching bs-epic-lib.test.mjs).
-  'boss-epic': ['bs-run-sentinel.mjs', 'bs-epic-lib.mjs', 'dag-scheduler.mjs'],
+  // progress-comment.mjs (BOS-517) is the single-comment epic-progress toolbox:
+  // state-schema validation, byte-stable markdown rendering, and find-by-marker
+  // upsert planning, so boss-epic can maintain its epic-progress tracker comment
+  // as one comment edited in place instead of ad-hoc /tmp scripts. Its test file
+  // stays in skills-toolbox/ only (test files are never vendored).
+  'boss-epic': [
+    'bs-run-sentinel.mjs',
+    'bs-epic-lib.mjs',
+    'dag-scheduler.mjs',
+    'progress-comment.mjs',
+  ],
   // skill-config.mjs exposes loadSkillConfig + isConfiguredForRepo, the direct deps of
   // boss-plan's Phase 0 preflight self-disable. boss-plan ships to user repos via the
   // embedded skillinstall payload (no repo-root skills-toolbox/), so the helper must be
   // co-located in this skill's own toolbox rather than referenced from another copy.
-  'boss-plan': ['bs-run-sentinel.mjs', 'skill-config.mjs'],
+  // plan-epic-lib.mjs (epic validation + intra-epic wiring), plan-image-guard.mjs (the
+  // image-parity STOP gate) and plan-slug.mjs (the plan-path slug) are boss-plan's
+  // deterministic planning core: pure, node-builtin-only helpers the SKILL invokes by
+  // path. They ship in the toolbox so a consuming repo never has to re-derive them.
+  // Their *.test.mjs / *.demo.mjs siblings are never vendored.
+  'boss-plan': [
+    'bs-run-sentinel.mjs',
+    'skill-config.mjs',
+    'plan-attachment.mjs',
+    'plan-epic-lib.mjs',
+    'plan-image-guard.mjs',
+    'plan-slug.mjs',
+  ],
   'bs-sweep-debt': ['bs-run-sentinel.mjs'],
   'bs-sweep-mutation': ['bs-run-sentinel.mjs'],
   'bs-sweep-security': ['bs-run-sentinel.mjs'],

@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "title": "BOS-572 (BOS-570 epic) — the Home session list fits a 72-column terminal by dropping its most expendable column instead of running off the right edge",
+  "fixture": { "preset": "demo" },
+  "terminal": { "cols": 72 },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the session board is fitted to a 72-column pty: NAME and STATUS survive, the board no longer overhangs the terminal",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "NAME",
+            "match": "normalized",
+            "label": "the Home session table is drawn on the 72-column pty this scenario asked for"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home on a 72-column terminal: the demo board declares 73 columns of content, which no longer fits, so fitColumns drops the most expendable column"
+        },
+        {
+          "waitMs": 1500,
+          "caption": "The fitted board sits inside the terminal — before BOS-572 these same columns were emitted at their full content width and clipped at the right edge"
+        },
+        {
+          "expect": [
+            {
+              "text": "NAME",
+              "match": "normalized",
+              "label": "NAME — priority 0, the row's identity, so it is never dropped no matter how narrow the terminal gets"
+            },
+            {
+              "text": "STATUS",
+              "match": "normalized",
+              "label": "STATUS — the most-scanned column, dropped last of the droppables, and still on screen at 72 columns because the demo board only overflows by a few columns (a longer-titled board drops it too, which is why the criterion this still cannot show — that REPO or PR is ABSENT — is carried by home_test.go instead)"
+            }
+          ],
+          "caption": "The two columns the drop order protects are both present: NAME is priority 0 and STATUS is the last droppable to go"
+        },
+        {
+          "key": "down",
+          "caption": "Arrow-navigating the fitted board: the cursor column is priority 0 too, so the chevron still tracks the selected row"
+        },
+        {
+          "expect": [
+            {
+              "text": "[n]ew session",
+              "match": "normalized",
+              "label": "[n]ew session — the Home action bar is intact beneath the fitted table"
+            },
+            {
+              "text": "[q]uit",
+              "match": "normalized",
+              "label": "[q]uit — the tail of the Home action bar is not clipped at the 72-column edge"
+            }
+          ],
+          "caption": "The whole Home layout renders normally around the narrowed table: only the column set changed, not the screen"
+        }
+      ]
+    }
+  ]
+}

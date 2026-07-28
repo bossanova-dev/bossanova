@@ -697,3 +697,605 @@ func TestCronForm_DoneIgnoresQueuedInput(t *testing.T) {
 		t.Fatalf("CreateCronJob calls = %d, want %d", got, want)
 	}
 }
+
+// TestCronFormView_ActionBarNavigationHints guards the corrected hint set. The
+// previous bar named only [tab] and paired it with [enter] save, which is wrong
+// on this form's Input fields (enter advances them rather than saving).
+func TestCronFormView_ActionBarNavigationHints(t *testing.T) {
+	m := CronFormModel{
+		ctx:         context.Background(),
+		repos:       []*pb.Repo{{Id: "a", DisplayName: "repo-a"}},
+		reposReady:  true,
+		agentsReady: true,
+		width:       80,
+		height:      40,
+	}
+	m.buildForm()
+
+	view := m.View().Content
+	for _, want := range []string{
+		"[tab] next field",
+		"[shift+tab] previous field",
+		"[enter] save",
+		"[esc] cancel",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("cron form action bar missing %q; view:\n%s", want, view)
+		}
+	}
+}
+
+// TestCronFormView_GutterAlignsWithTitle pins the column the focus gutter lands
+// on. The form host's own padding decides that column, and this view wraps the
+// form separately from its title, preview, error and action bar — so a wrapper
+// that disagrees with them puts a coloured vertical rule one column off from
+// everything else on screen. Invisible before the gutter existed; conspicuous
+// now.
+func TestCronFormView_GutterAlignsWithTitle(t *testing.T) {
+	m := CronFormModel{
+		ctx:         context.Background(),
+		repos:       []*pb.Repo{{Id: "a", DisplayName: "repo-a"}},
+		reposReady:  true,
+		agentsReady: true,
+		width:       80,
+		height:      80, // generous terminal height so all fields render
+	}
+	m.buildForm()
+	m.form.Init()
+
+	view := stripANSI(m.View().Content)
+
+	titleCol := -1
+	gutterCol := -1
+	for _, line := range strings.Split(view, "\n") {
+		if titleCol < 0 && strings.Contains(line, "New Scheduled Job") {
+			titleCol = strings.Index(line, "New Scheduled Job")
+		}
+		if gutterCol < 0 {
+			if i := strings.IndexRune(line, focusGutterGlyph); i >= 0 {
+				gutterCol = i
+			}
+		}
+	}
+
+	if titleCol < 0 {
+		t.Fatalf("cron form rendered no title to align against; view:\n%s", view)
+	}
+	if gutterCol < 0 {
+		t.Fatalf("cron form rendered no focus gutter; view:\n%s", view)
+	}
+	if gutterCol != titleCol {
+		t.Errorf("focus gutter sits at column %d but the title starts at column %d; the gutter must share the left edge of this view's chrome\nview:\n%s",
+			gutterCol, titleCol, view)
+	}
+}
+
+// --- BOS-565: the "Zero output" confirm ---
+
+// TestCronFormBuildForm_DefaultsZeroOutputOff pins the one toggle in this form
+// whose default is off. Every neighbouring confirm defaults on, so copying a
+// neighbour's initializer entry would silently make every new cron job
+// zero-output — i.e. run with no worktree, branch or PR.
+func TestCronFormBuildForm_DefaultsZeroOutputOff(t *testing.T) {
+	m := CronFormModel{ctx: context.Background()}
+
+	m.buildForm()
+
+	if m.fd.zeroOutput {
+		t.Fatal("default zeroOutput = true, want false")
+	}
+}
+
+// TestCronFormBuildForm_PrefillsZeroOutputOnEdit verifies the edit form
+// pre-populates the flag from the loaded job.
+func TestCronFormBuildForm_PrefillsZeroOutputOnEdit(t *testing.T) {
+	m := CronFormModel{
+		ctx: context.Background(),
+		job: &pb.CronJob{
+			Id:           "cron-1",
+			Name:         "Report job",
+			RepoId:       "repo-1",
+			Prompt:       "p",
+			Schedule:     "@daily",
+			IsZeroOutput: true,
+		},
+	}
+
+	m.buildForm()
+
+	if !m.fd.zeroOutput {
+		t.Fatal("prefilled zeroOutput = false, want true (from job)")
+	}
+}
+
+// TestCronFormBuildForm_ZeroOutputSitsBetweenRunSetupAndEnabled asserts the
+// field ORDER, not merely its presence: the two run-shape toggles ("Run setup
+// command", "Zero output") must sit together directly above the lifecycle
+// toggle ("Enabled"), matching the web form so the surfaces read as one
+// product. Individual huh fields render their own title, so the ordered
+// formFields slice is enough here — no full bubbletea cycle needed.
+func TestCronFormBuildForm_ZeroOutputSitsBetweenRunSetupAndEnabled(t *testing.T) {
+	m := CronFormModel{
+		ctx:         context.Background(),
+		repos:       []*pb.Repo{{Id: "r1", DisplayName: "alpha"}},
+		reposReady:  true,
+		agentsReady: true,
+		width:       80,
+		height:      80,
+	}
+	m.buildForm()
+
+	indexOfTitle := func(title string) int {
+		for i, f := range m.formFields.fields {
+			if strings.Contains(f.View(), title) {
+				return i
+			}
+		}
+		return -1
+	}
+
+	runSetup := indexOfTitle("Run setup command")
+	zeroOutput := indexOfTitle("Zero output")
+	enabled := indexOfTitle("Enabled")
+
+	if runSetup < 0 || zeroOutput < 0 || enabled < 0 {
+		t.Fatalf("field indices: Run setup command = %d, Zero output = %d, Enabled = %d; all must be present",
+			runSetup, zeroOutput, enabled)
+	}
+	if runSetup >= zeroOutput || zeroOutput >= enabled {
+		t.Fatalf("field order = Run setup command(%d), Zero output(%d), Enabled(%d); want Zero output strictly between the other two",
+			runSetup, zeroOutput, enabled)
+	}
+}
+
+// TestCronFormView_ZeroOutputKeepsActionBarOnScreen guards the risk the plan
+// flags: one more field grows the huh form by a row, which can push the action
+// bar below the fold. cronFormChrome/formHeight() is the knob.
+func TestCronFormView_ZeroOutputKeepsActionBarOnScreen(t *testing.T) {
+	const termHeight = 40
+	m := CronFormModel{
+		ctx:         context.Background(),
+		repos:       []*pb.Repo{{Id: "r1", DisplayName: "alpha"}},
+		reposReady:  true,
+		agentsReady: true,
+		width:       80,
+		height:      termHeight,
+	}
+	m.buildForm()
+
+	view := m.View()
+	if !strings.Contains(view.Content, "[enter] save") {
+		t.Fatalf("rendered form missing save cue:\n%s", view.Content)
+	}
+	if h := lipgloss.Height(view.Content); h > termHeight {
+		t.Fatalf("rendered form is %d lines, exceeds terminal height %d", h, termHeight)
+	}
+}
+
+// TestCronFormHandleSubmit_CreateIncludesZeroOutput verifies the Create RPC
+// carries the flag as an explicit pointer.
+func TestCronFormHandleSubmit_CreateIncludesZeroOutput(t *testing.T) {
+	c := &stubClient{}
+	m := CronFormModel{
+		client: c,
+		ctx:    context.Background(),
+		fd: &cronFormData{
+			name:       "Report job",
+			repoID:     "repo-1",
+			prompt:     "Report elsewhere.",
+			schedule:   "@daily",
+			enabled:    true,
+			zeroOutput: true,
+		},
+	}
+
+	_, cmd := m.handleSubmit()
+	if cmd == nil {
+		t.Fatal("handleSubmit command = nil, want CreateCronJob command")
+	}
+	_ = cmd()
+
+	if c.createdCronReq == nil {
+		t.Fatal("CreateCronJob was not called")
+	}
+	if c.createdCronReq.IsZeroOutput == nil {
+		t.Fatal("CreateCronJob.IsZeroOutput = nil, want non-nil pointer")
+	}
+	if got := *c.createdCronReq.IsZeroOutput; !got {
+		t.Fatalf("CreateCronJob.IsZeroOutput = %v, want true", got)
+	}
+}
+
+// TestCronFormHandleSubmit_CreateSendsZeroOutputFalseByDefault proves the
+// default-off value is transmitted explicitly rather than silently omitted.
+func TestCronFormHandleSubmit_CreateSendsZeroOutputFalseByDefault(t *testing.T) {
+	c := &stubClient{}
+	m := CronFormModel{ctx: context.Background(), client: c}
+	m.buildForm() // create mode: defaults
+	m.fd.name = "Plain job"
+	m.fd.repoID = "repo-1"
+	m.fd.prompt = "p"
+	m.fd.schedule = "@daily"
+
+	_, cmd := m.handleSubmit()
+	if cmd == nil {
+		t.Fatal("handleSubmit command = nil, want CreateCronJob command")
+	}
+	_ = cmd()
+
+	if c.createdCronReq == nil {
+		t.Fatal("CreateCronJob was not called")
+	}
+	if c.createdCronReq.IsZeroOutput == nil {
+		t.Fatal("CreateCronJob.IsZeroOutput = nil, want non-nil pointer")
+	}
+	if got := *c.createdCronReq.IsZeroOutput; got {
+		t.Fatalf("CreateCronJob.IsZeroOutput = %v, want false by default", got)
+	}
+}
+
+// TestCronFormHandleSubmit_UpdateIncludesChangedZeroOutput verifies toggling the
+// flag sends it in the Update request.
+func TestCronFormHandleSubmit_UpdateIncludesChangedZeroOutput(t *testing.T) {
+	c := &stubClient{}
+	m := CronFormModel{
+		client: c,
+		ctx:    context.Background(),
+		job: &pb.CronJob{
+			Id:           "cron-1",
+			Name:         "Report job",
+			RepoId:       "repo-1",
+			Prompt:       "p",
+			Schedule:     "@daily",
+			IsEnabled:    true,
+			IsZeroOutput: false,
+		},
+		fd: &cronFormData{
+			name:       "Report job",
+			repoID:     "repo-1",
+			prompt:     "p",
+			schedule:   "@daily",
+			enabled:    true,
+			zeroOutput: true, // toggled on
+		},
+	}
+
+	_, cmd := m.handleSubmit()
+	if cmd == nil {
+		t.Fatal("handleSubmit command = nil, want UpdateCronJob command")
+	}
+	_ = cmd()
+
+	if c.updatedCronReq == nil {
+		t.Fatal("UpdateCronJob was not called")
+	}
+	if c.updatedCronReq.IsZeroOutput == nil {
+		t.Fatal("UpdateCronJob.IsZeroOutput = nil, want changed flag")
+	}
+	if got := *c.updatedCronReq.IsZeroOutput; !got {
+		t.Fatalf("UpdateCronJob.IsZeroOutput = %v, want true", got)
+	}
+}
+
+// TestCronFormHandleSubmit_UpdateOmitsUnchangedZeroOutput is the other half of
+// the edit diff: an untouched field must leave the request field unset, so the
+// daemon does not receive a no-op write.
+func TestCronFormHandleSubmit_UpdateOmitsUnchangedZeroOutput(t *testing.T) {
+	c := &stubClient{}
+	m := CronFormModel{
+		client: c,
+		ctx:    context.Background(),
+		job: &pb.CronJob{
+			Id:           "cron-1",
+			Name:         "Report job",
+			RepoId:       "repo-1",
+			Prompt:       "p",
+			Schedule:     "@daily",
+			IsEnabled:    true,
+			IsZeroOutput: true,
+		},
+		fd: &cronFormData{
+			name:       "Report job",
+			repoID:     "repo-1",
+			prompt:     "p",
+			schedule:   "@daily",
+			enabled:    true,
+			zeroOutput: true, // unchanged
+		},
+	}
+
+	_, cmd := m.handleSubmit()
+	if cmd == nil {
+		t.Fatal("handleSubmit command = nil, want UpdateCronJob command")
+	}
+	_ = cmd()
+
+	if c.updatedCronReq == nil {
+		t.Fatal("UpdateCronJob was not called")
+	}
+	if c.updatedCronReq.IsZeroOutput != nil {
+		t.Fatalf("UpdateCronJob.IsZeroOutput = %v, want nil for an unchanged field", *c.updatedCronReq.IsZeroOutput)
+	}
+}
+
+// TestCronFormZeroOutputHelpText pins the exact help string. Its twin lives in
+// services/web/src/components/CronJobForm.tsx and a web-side parity test reads
+// this file to assert the two are byte-identical, so the surfaces cannot drift.
+func TestCronFormZeroOutputHelpText(t *testing.T) {
+	const want = "Run with no worktree, branch, or PR — for jobs that report elsewhere and change nothing in this repo. The agent runs in the repository checkout. Default off."
+	if cronZeroOutputHelp != want {
+		t.Fatalf("cronZeroOutputHelp = %q, want %q", cronZeroOutputHelp, want)
+	}
+}
+
+// TestCronFormView_AgentSelectHasNoTrailingBlankLines is the direct regression
+// for the trailing whitespace under the Agent select (BOS-567 ask #2). huh pads
+// a Select's block out to exactly the Height it is given regardless of how many
+// options it holds, so a constant height left four blank lines under a two-agent
+// list. With bossSelectHeight the block is title + one line per option, which
+// puts the next field's title three lines below the Agent title.
+func TestCronFormView_AgentSelectHasNoTrailingBlankLines(t *testing.T) {
+	m := CronFormModel{
+		ctx:   context.Background(),
+		job:   &pb.CronJob{Id: "cron-1", Name: "Morning triage", RepoId: "r1", AgentName: "codex"},
+		repos: []*pb.Repo{{Id: "r1", DisplayName: "repo-a"}},
+		// Edit mode omits the "Daemon default" option, so these two agents are
+		// exactly two options.
+		agents:      []client.AgentInfo{{Name: "claude"}, {Name: "codex"}},
+		reposReady:  true,
+		agentsReady: true,
+		width:       80,
+		height:      60,
+	}
+	m.buildForm()
+	if cmd := m.form.Init(); cmd != nil {
+		cmd()
+	}
+
+	lines := strings.Split(m.View().Content, "\n")
+	agentLine := lineIndexContaining(t, lines, "Agent")
+	modelLine := lineIndexContaining(t, lines, "Model")
+
+	// Everything huh renders for the Agent field, plus the blank line it puts
+	// between fields.
+	block := lines[agentLine:modelLine]
+	content := block
+	for len(content) > 0 && strings.TrimSpace(content[len(content)-1]) == "" {
+		content = content[:len(content)-1]
+	}
+
+	if len(content) != 3 {
+		t.Errorf("Agent select block is %d lines, want 3 (title + two options); view:\n%s",
+			len(content), m.View().Content)
+	}
+	if blanks := len(block) - len(content); blanks != 1 {
+		t.Errorf("Agent select is followed by %d blank lines, want 1 (the inter-field separator); view:\n%s",
+			blanks, m.View().Content)
+	}
+}
+
+// lineIndexContaining returns the index of the first line holding want.
+func lineIndexContaining(t *testing.T, lines []string, want string) int {
+	t.Helper()
+	for i, line := range lines {
+		if strings.Contains(line, want) {
+			return i
+		}
+	}
+	t.Fatalf("no rendered line contains %q; lines:\n%s", want, strings.Join(lines, "\n"))
+	return -1
+}
+
+// cronPromptRows returns how many textarea rows the Prompt field is rendering:
+// everything between the end of its description and the next field's title,
+// less the blank line huh puts between fields.
+func cronPromptRows(t *testing.T, view string) int {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	descEnd := lineIndexContaining(t, lines, "self-contained")
+	rest := lines[descEnd+1:]
+	schedule := descEnd + 1 + lineIndexContaining(t, rest, "Schedule")
+	return schedule - descEnd - 2
+}
+
+// cronFormWithPrompt builds a create-mode cron form seeded with prompt, ready
+// to receive keys.
+func cronFormWithPrompt(t *testing.T, prompt string, height int) CronFormModel {
+	t.Helper()
+	m := CronFormModel{
+		ctx:         context.Background(),
+		repos:       []*pb.Repo{{Id: "r1", DisplayName: "repo-a"}},
+		reposReady:  true,
+		agentsReady: true,
+		// name and schedule are seeded because huh refuses to advance off a
+		// field whose Validate fails, which would strand focus on Name.
+		fd: &cronFormData{
+			name:            "Nightly job",
+			repoID:          "r1",
+			prompt:          prompt,
+			schedule:        "@daily",
+			enabled:         true,
+			runSetupCommand: true,
+			confirm:         true,
+		},
+		width:  80,
+		height: height,
+	}
+	m.buildForm()
+	if cmd := m.form.Init(); cmd != nil {
+		cmd()
+	}
+	// Move focus from Name to Prompt (Name, Repo, Model, Prompt — no Agent
+	// field, because no agents were loaded).
+	for i := 0; i < 3; i++ {
+		m = sendCronKey(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	}
+	return m
+}
+
+// cronPromptNewline is the key that inserts a line break inside a huh Text
+// field. Plain enter is bound to Next/Submit there, so typing it would advance
+// off the Prompt rather than grow it.
+var cronPromptNewline = tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt}
+
+// sendCronKey delivers one key and then feeds back whatever huh scheduled in
+// response — a field advance arrives as a returned command carrying a
+// nextFieldMsg, so without this the tab keys never move focus.
+func sendCronKey(t *testing.T, m CronFormModel, key tea.KeyPressMsg) CronFormModel {
+	t.Helper()
+	updated, cmd := m.Update(key)
+	next, ok := updated.(CronFormModel)
+	if !ok {
+		t.Fatalf("updated model = %T, want CronFormModel", updated)
+	}
+	if msg := runCmd(cmd); msg != nil {
+		updated, _ = next.Update(msg)
+		next, ok = updated.(CronFormModel)
+		if !ok {
+			t.Fatalf("updated model = %T, want CronFormModel", updated)
+		}
+	}
+	return next
+}
+
+// TestCronFormView_PromptGrowsWithContent is the regression for the fixed
+// six-row Prompt box (BOS-567 ask #3): the field now opens at the height its
+// content needs, grows as the user types, and stops at bossTextMaxLines.
+func TestCronFormView_PromptGrowsWithContent(t *testing.T) {
+	m := cronFormWithPrompt(t, "Triage open PRs", 60)
+
+	if got := cronPromptRows(t, m.View().Content); got != 1 {
+		t.Fatalf("one-line prompt renders %d rows, want 1; view:\n%s", got, m.View().Content)
+	}
+
+	for _, key := range []tea.KeyPressMsg{
+		cronPromptNewline, keyPress('b'), cronPromptNewline, keyPress('c'),
+	} {
+		m = sendCronKey(t, m, key)
+	}
+	grown := cronPromptRows(t, m.View().Content)
+	if grown <= 1 {
+		t.Fatalf("prompt renders %d rows after typing two more lines, want more than 1; view:\n%s",
+			grown, m.View().Content)
+	}
+
+	for i := 0; i < 40; i++ {
+		m = sendCronKey(t, m, cronPromptNewline)
+	}
+	if got := cronPromptRows(t, m.View().Content); got != bossTextMaxLines {
+		t.Fatalf("prompt renders %d rows for a 40-line value, want the %d-row cap; view:\n%s",
+			got, bossTextMaxLines, m.View().Content)
+	}
+}
+
+// TestCronFormView_PromptSurvivesShortTerminal covers huh's group.WithHeight,
+// which re-imposes a height on a field taller than the whole form viewport. On
+// a 24-row terminal with a 40-line prompt huh legitimately wins over .Lines();
+// what must not happen is the view failing to render or losing the action bar.
+func TestCronFormView_PromptSurvivesShortTerminal(t *testing.T) {
+	m := cronFormWithPrompt(t, strings.TrimSuffix(strings.Repeat("line\n", 40), "\n"), 24)
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, ok := updated.(CronFormModel)
+	if !ok {
+		t.Fatalf("updated model = %T, want CronFormModel", updated)
+	}
+
+	view := m.View().Content
+	if strings.TrimSpace(view) == "" {
+		t.Fatal("cron form rendered nothing on a 24-row terminal")
+	}
+	if !strings.Contains(view, "[enter] save") {
+		t.Fatalf("cron form lost its action bar on a 24-row terminal:\n%s", view)
+	}
+}
+
+// TestCronFormView_PromptOpensAtItsPrefillHeight guards the build-time half of
+// the Prompt sizing: bossText seeds the textarea from the value it is given, so
+// an edit-mode prefill opens at the height its prompt needs instead of snapping
+// to it on the first keypress. Every other prompt test drives focus through
+// Update first, and each Update calls resizePrompt — so they all stay green
+// with the construction-time sizing removed. This one renders straight out of
+// buildForm, before any message reaches the model.
+func TestCronFormView_PromptOpensAtItsPrefillHeight(t *testing.T) {
+	m := CronFormModel{
+		ctx:         context.Background(),
+		repos:       []*pb.Repo{{Id: "r1", DisplayName: "repo-a"}},
+		reposReady:  true,
+		agentsReady: true,
+		fd: &cronFormData{
+			name:     "Nightly job",
+			repoID:   "r1",
+			prompt:   strings.TrimSuffix(strings.Repeat("line\n", 4), "\n"),
+			schedule: "@daily",
+		},
+		width:  80,
+		height: 60,
+	}
+	m.buildForm()
+	// Init only wires huh up to render; it does not re-size anything, so the
+	// height measured below is still the one bossText set at construction.
+	if cmd := m.form.Init(); cmd != nil {
+		cmd()
+	}
+
+	if got := cronPromptRows(t, m.View().Content); got != 4 {
+		t.Fatalf("a 4-line prefill opens at %d rows before any Update, want 4; view:\n%s",
+			got, m.View().Content)
+	}
+}
+
+// TestCronFormView_PromptSurvivesAPasteAtTheWrapBoundary is the cron form's
+// half of the scroll guard the bug-report modal pins by typing. A paste gets
+// there in one message rather than sixty-eight, which is what makes it cheap
+// enough to keep here: the box must be sized for the pasted text *before* huh
+// hands it to the textarea, or the textarea scrolls to find its cursor and the
+// pasted line is never seen again.
+func TestCronFormView_PromptSurvivesAPasteAtTheWrapBoundary(t *testing.T) {
+	m := cronFormWithPrompt(t, "", 60)
+
+	pasted := strings.Repeat("x", bossFormWrapWidth())
+	updated, _ := m.Update(tea.PasteMsg{Content: pasted})
+	m, ok := updated.(CronFormModel)
+	if !ok {
+		t.Fatalf("updated model = %T, want CronFormModel", updated)
+	}
+
+	if view := m.View().Content; !strings.Contains(view, pasted) {
+		t.Fatalf("a paste of exactly %d columns is not visible in the Prompt box; view:\n%s",
+			bossFormWrapWidth(), view)
+	}
+}
+
+// TestCronFormView_PromptRegrowsAfterTheTerminalGrows is the other half of
+// PromptSurvivesShortTerminal. huh's Group.WithHeight only ever *shrinks* an
+// over-tall field, so once a short terminal clipped the Prompt textarea nothing
+// grew it back: a terminal that shrank and then grew again left the box stuck
+// at its clipped height until the next keystroke. The Update loop re-seeds the
+// field from its content before re-sizing the form, so the row count follows
+// the terminal in both directions.
+func TestCronFormView_PromptRegrowsAfterTheTerminalGrows(t *testing.T) {
+	prompt := strings.TrimSuffix(strings.Repeat("line\n", bossTextMaxLines), "\n")
+	m := cronFormWithPrompt(t, prompt, 60)
+
+	want := cronPromptRows(t, m.View().Content)
+	if want != bossTextMaxLines {
+		t.Fatalf("prompt opens at %d rows on a 60-row terminal, want %d", want, bossTextMaxLines)
+	}
+
+	// 10 rows is short enough that huh's Group.WithHeight really does clamp the
+	// Prompt down to a single row; 24 leaves it untouched and proves nothing.
+	for _, size := range []tea.WindowSizeMsg{{Width: 80, Height: 10}, {Width: 80, Height: 60}} {
+		updated, _ := m.Update(size)
+		next, ok := updated.(CronFormModel)
+		if !ok {
+			t.Fatalf("updated model = %T, want CronFormModel", updated)
+		}
+		m = next
+	}
+
+	if got := cronPromptRows(t, m.View().Content); got != want {
+		t.Fatalf("prompt renders %d rows after the terminal shrank and grew back, want %d; view:\n%s",
+			got, want, m.View().Content)
+	}
+}

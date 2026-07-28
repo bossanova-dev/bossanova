@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "title": "BOS-510 the focused form field is visually distinct from blurred fields",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the add-repo details form marks the focused Name field with a gutter",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        { "key": "s", "caption": "Press [s] to open the Settings hub" },
+        {
+          "waitFor": "Worktree base directory",
+          "timeoutMs": 10000,
+          "caption": "Settings screen loaded"
+        },
+        { "key": "r", "caption": "Press [r] to open the repository list" },
+        {
+          "waitFor": "[a]dd",
+          "timeoutMs": 10000,
+          "caption": "Repository list loaded; its action bar offers [a]dd"
+        },
+        { "key": "a", "caption": "Press [a] to add a repository" },
+        {
+          "waitFor": "Open project",
+          "timeoutMs": 10000,
+          "caption": "Add-repo source picker loaded"
+        },
+        { "key": "enter", "caption": "Choose 'Open project' (register a local repo)" },
+        {
+          "waitFor": "Add a local repository",
+          "timeoutMs": 10000,
+          "caption": "The add-repo input form is on screen"
+        },
+        { "type": "/tmp/demo-repo", "caption": "Type a repository path" },
+        { "key": "enter", "caption": "Submit the path to reach the details form" },
+        {
+          "waitFor": "Merge strategy",
+          "timeoutMs": 10000,
+          "caption": "The 5-field add-repo details form is on screen, focus on the first field"
+        },
+        {
+          "expect": [
+            {
+              "text": "┃ +Name",
+              "match": "regex",
+              "label": "the focused first field, marked by the left gutter glyph in the selection colour — this token fails on the unchanged code, where no field draws a gutter"
+            },
+            {
+              "text": "Merge strategy",
+              "match": "normalized",
+              "label": "the blurred Select field is still on screen; its gutter-less, dimmed-chevron rendering is asserted by the unit tests, since the capture carries no colour"
+            }
+          ],
+          "caption": "Only the focused Name field carries the gutter; the blurred Merge strategy and Confirm fields no longer out-weigh it"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the gutter tracks focus down the form as tab is pressed",
+      "steps": [
+        { "key": "tab", "caption": "Press [tab]: focus moves Name → Setup command" },
+        {
+          "key": "tab",
+          "caption": "Press [tab] again: focus moves Setup command → Merge strategy"
+        },
+        {
+          "waitFor": { "text": "┃ +Merge strategy", "match": "regex" },
+          "timeoutMs": 10000,
+          "caption": "The gutter has landed on Merge strategy — the same five fields are still on screen, only the gutter moved"
+        },
+        {
+          "expect": [
+            {
+              "text": "┃ +Merge strategy",
+              "match": "regex",
+              "label": "the gutter has moved onto Merge strategy, which is now the focused field — in scene 1 this same token did not match, so the gutter genuinely tracks focus"
+            },
+            {
+              "text": "Automation",
+              "match": "normalized",
+              "label": "the field list is unchanged between the scenes, so the gutter moved rather than the form re-laying out"
+            }
+          ],
+          "caption": "The gutter moved two fields down while every field kept its horizontal position — the focus cue is positional and jitter-free"
+        }
+      ]
+    }
+  ]
+}

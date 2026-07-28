@@ -537,8 +537,11 @@ func (l *Lifecycle) PrepareFailoverKind(ctx context.Context, sessionID string, k
 		return l.prepareChatFailover(ctx, agentSessionID, fallbackAccountID, kind, trigger)
 	}
 	// Any missing seam degrades to today's direct behavior (fail-safe). The
-	// upstream 429/401 is itself the authoritative signal, so — unlike the
-	// headless usage-limit intercept — no confirm-before-cool probe is needed.
+	// upstream status decides WHETHER to fail over; it is NOT authority to bench
+	// the account — a 429 also covers short-window rate limiting and overload, so
+	// the cooldown goes through decideProxyCooldown's confirm-before-cool probe
+	// (BOS-584). rateLimitProbe is deliberately absent from this guard: it is an
+	// optional confirmation seam, not a failover prerequisite.
 	if l.sessions == nil || l.rotationBinding == nil || l.rotationDecider == nil || l.accountMaterializer == nil {
 		return FailoverResult{}, nil
 	}
@@ -556,12 +559,8 @@ func (l *Lifecycle) PrepareFailoverKind(ctx context.Context, sessionID string, k
 	if !bound {
 		return FailoverResult{}, nil
 	}
-	outcome, err := l.rotationDecider(ctx, rotation.Signal{
-		Provider:        b.Provider,
-		CappedAccountID: b.CappedAccountID,
-		Kind:            kind,
-		RotationCapable: b.RotationCapable,
-	})
+	cooldown := l.decideProxyCooldown(ctx, kind, b.CappedAccountID, sessionID, b.RotationCapable)
+	outcome, err := l.rotationDecider(ctx, proxyRotationSignal(b, kind, cooldown))
 	if err != nil {
 		return FailoverResult{}, fmt.Errorf("failover: decide: %w", err)
 	}
@@ -570,7 +569,7 @@ func (l *Lifecycle) PrepareFailoverKind(ctx context.Context, sessionID string, k
 		// upstream response returned unchanged, but surface an exhausted-pool /
 		// no-eligible-account decline as an audit row so the 429 the client sees
 		// is visible in rotation history (BOS-484).
-		l.recordNonRotateAudit(ctx, session.ID, "", b.Provider, trigger, b.CappedAccountID, outcome)
+		l.recordNonRotateAudit(ctx, session.ID, "", b.Provider, trigger, b.CappedAccountID, outcome, cooldown.SuppressCooldown)
 		return FailoverResult{}, nil
 	}
 	envOverlay, err := l.accountMaterializer.Materialize(ctx, outcome.NextAccount)
@@ -614,19 +613,19 @@ func (l *Lifecycle) prepareChatFailover(ctx context.Context, agentSessionID, fal
 	if !bound {
 		return FailoverResult{}, nil
 	}
-	outcome, err := l.rotationDecider(ctx, rotation.Signal{
-		Provider:        b.Provider,
-		CappedAccountID: b.CappedAccountID,
-		Kind:            kind,
-		RotationCapable: b.RotationCapable,
-	})
+	// cb.SessionID, not agentSessionID: decideProxyCooldown logs under a "session"
+	// field, and an operator grepping session=<id> must not get agent-session ids
+	// mixed in from the chat path. The chat identity is already on this flow's
+	// other log lines under agent_session_id.
+	cooldown := l.decideProxyCooldown(ctx, kind, b.CappedAccountID, cb.SessionID, b.RotationCapable)
+	outcome, err := l.rotationDecider(ctx, proxyRotationSignal(b, kind, cooldown))
 	if err != nil {
 		return FailoverResult{}, fmt.Errorf("failover: decide chat: %w", err)
 	}
 	if outcome.Kind != rotation.OutcomeRotate || outcome.NextAccount == nil {
 		// Surface the exhausted-pool / no-eligible decline for the chat target
 		// against its resolved session + chat ids (BOS-484).
-		l.recordNonRotateAudit(ctx, cb.SessionID, agentSessionID, b.Provider, trigger, b.CappedAccountID, outcome)
+		l.recordNonRotateAudit(ctx, cb.SessionID, agentSessionID, b.Provider, trigger, b.CappedAccountID, outcome, cooldown.SuppressCooldown)
 		return FailoverResult{}, nil
 	}
 	envOverlay, err := l.accountMaterializer.Materialize(ctx, outcome.NextAccount)
@@ -649,6 +648,174 @@ func (l *Lifecycle) prepareChatFailover(ctx context.Context, agentSessionID, fal
 	}, nil
 }
 
+// defaultProxyUsageProbeTimeout bounds the confirm-before-cool probe on the
+// proxy failover path. Unlike the headless intercept, this probe runs INLINE in
+// a live proxied request, so a slow provider must never become a slow user
+// request. On deadline the decision fails OPEN (rotate, bench nothing) exactly
+// like any other probe failure, so the ceiling on added latency is this value.
+// Overridable per-Lifecycle via SetProxyProbeTimeoutForTest.
+const defaultProxyUsageProbeTimeout = 2 * time.Second
+
+// proxyUsageProbeTimeout is the effective bound for this Lifecycle.
+func (l *Lifecycle) proxyUsageProbeTimeout() time.Duration {
+	if l.proxyProbeTimeout > 0 {
+		return l.proxyProbeTimeout
+	}
+	return defaultProxyUsageProbeTimeout
+}
+
+// SetProxyProbeTimeoutForTest shortens the inline confirm-before-cool probe's
+// deadline so a test can prove the bound exists without burning it in real
+// wall-clock seconds. Test-only seam; production leaves it zero.
+func (l *Lifecycle) SetProxyProbeTimeoutForTest(d time.Duration) { l.proxyProbeTimeout = d }
+
+// unconfirmedCapNoAlternateDetail is the audit detail for a proxied 429 the
+// usage probe would not confirm, on a pool with no other account to rotate to.
+// The account is fine — it is active, healthy, and still selectable — so the
+// stock no-eligible remedy ("enable or re-authenticate one") would send an
+// operator hunting a problem that does not exist. (BOS-584)
+const unconfirmedCapNoAlternateDetail = "upstream 429 the usage probe did not confirm; account left selectable and no alternate account to rotate to"
+
+// proxyRotationSignal builds the rotation signal both proxy failover targets
+// send. They differ only in how they resolve the binding and which ids they log
+// and audit against — the signal itself is identical, and keeping one
+// constructor means a new Signal field cannot be added to the session target and
+// forgotten on the chat one (this diff already widened the literal from four
+// fields to six in two places).
+func proxyRotationSignal(b RotationBinding, kind rotation.SignalKind, cooldown proxyCooldownDecision) rotation.Signal {
+	return rotation.Signal{
+		Provider:         b.Provider,
+		CappedAccountID:  b.CappedAccountID,
+		Kind:             kind,
+		RotationCapable:  b.RotationCapable,
+		ResetAt:          cooldown.ResetAt,
+		SuppressCooldown: cooldown.SuppressCooldown,
+	}
+}
+
+// proxyCooldownDecision is the confirm-before-cool verdict for one proxied
+// cap-shaped upstream response: whether the capped account may be benched at
+// all, and until when.
+type proxyCooldownDecision struct {
+	// ResetAt is the probed reset instant for a CONFIRMED cap; nil leaves the
+	// engine's own DefaultCooldown in charge.
+	ResetAt *time.Time
+	// SuppressCooldown asks the engine to rotate without writing any cooldown.
+	SuppressCooldown bool
+}
+
+// decideProxyCooldown answers "may this proxied 429 bench the bound account?"
+// using the same authoritative probe the headless usage-limit intercept has
+// always used (see attemptUsageLimitRotation in rotation.go). It exists because
+// an upstream 429 is NOT proof of plan exhaustion — Anthropic also returns it
+// for short-window rate limiting and overload — and benching on that alone cost
+// a healthy account a flat hour of availability (BOS-584).
+//
+//   - probe confirms limited → cool, until the probed reset when it supplies one;
+//   - probe says not limited → transient/overload 429: rotate, bench nothing;
+//   - probe errors, times out, answers with no snapshot, or reports itself
+//     unavailable → FAIL OPEN, bench nothing. This is the branch most likely to
+//     be "tidied" into fail-closed by a later reader, and it must not be: the
+//     incident that motivated this code had the usage probe timing out four
+//     minutes BEFORE the 429, so a design that benches on an unverifiable signal
+//     reproduces the outage exactly. Losing a genuine cap here costs one more 429
+//     instead of an hour of lost capacity.
+//
+// Be precise about that cost, because the obvious bound does NOT apply here: the
+// rotation attempt cap (MaxRotations / session.RotationAttemptCount) is read and
+// incremented only by the headless attemptUsageLimitRotation, never by this
+// proxy path. So under a persistent upstream 429 that the probe keeps refusing
+// to confirm, nothing is ever benched and the proxy will keep rotating the
+// request between accounts rather than converging on a passed-through 429. That
+// is the deliberate trade — a healthy account stays available, and each attempt
+// costs one probe rather than an hour of capacity — but it is unbounded, and a
+// backstop (say, a short bench after N unconfirmed suppressions for one account)
+// belongs in a follow-up rather than being assumed to already exist.
+//
+// The "no snapshot" branch is not defensive padding: the production probe
+// closure (cmd/main.go) swallows every probe error and returns a ZERO snapshot
+// with a nil error, so a real timeout arrives here as err==nil with FetchedAt
+// nil. Without its own branch it would fall into "not limited" and log an
+// authoritative healthy verdict for a probe that never answered — precisely the
+// diagnostic this ticket exists to make readable. Behaviour is identical
+// (suppress); only the log tells the truth.
+//
+// It is a no-op — degrading to the pre-BOS-584 cool-as-before behaviour — for a
+// non-UsageLimited kind (a 401/403 is an auth question, not a quota question, so
+// it never pays the probe's latency), a binding that cannot rotate (Decide
+// short-circuits to OutcomeStatusOnly before touching the store, so no cooldown
+// could be written either way and the live request must not pay for an answer
+// nobody reads), an empty account id, or an unwired probe seam. Never logs
+// credentials.
+//
+// The probe seam is not a pure read: in production rateLimitProbe persists the
+// snapshot it fetched (RecordUsageProbe) and fails the account's health on a
+// CONFIRMED suspension. Both are wanted here — a proxied 429 is a fine moment to
+// refresh usage — and both sit inside the probe timeout, but know that before
+// reusing this helper anywhere more latency-sensitive.
+func (l *Lifecycle) decideProxyCooldown(ctx context.Context, kind rotation.SignalKind, accountID, logID string, rotationCapable bool) proxyCooldownDecision {
+	if kind != rotation.UsageLimited || accountID == "" || !rotationCapable || l.rateLimitProbe == nil {
+		return proxyCooldownDecision{}
+	}
+	snap, err := l.probeAccountUsage(ctx, accountID)
+	switch {
+	case err != nil:
+		l.logger.Warn().Err(err).Str("session", logID).Str("account_id", accountID).
+			Msg("failover proxy: usage probe failed; rotating without cooling the account")
+		return proxyCooldownDecision{SuppressCooldown: true}
+	case snap.FetchedAt == nil:
+		l.logger.Warn().Str("session", logID).Str("account_id", accountID).
+			Msg("failover proxy: usage probe returned no snapshot; rotating without cooling the account")
+		return proxyCooldownDecision{SuppressCooldown: true}
+	case rotation.UsageSnapshotProbeUnavailable(snap):
+		l.logger.Warn().Str("session", logID).Str("account_id", accountID).Str("status", snap.Status).
+			Msg("failover proxy: usage probe unavailable; rotating without cooling the account")
+		return proxyCooldownDecision{SuppressCooldown: true}
+	case !rotation.UsageSnapshotConfirmsLimited(snap):
+		l.logger.Info().Str("session", logID).Str("account_id", accountID).
+			Str("status", snap.Status).Float64("util_5h", snap.Util5h).Float64("util_7d", snap.Util7d).
+			Msg("failover proxy: usage probe says account is not limited; rotating without cooling the account")
+		return proxyCooldownDecision{SuppressCooldown: true}
+	}
+	return proxyCooldownDecision{ResetAt: rotation.UsageSnapshotResetAt(snap)}
+}
+
+// probeAccountUsage runs the inline confirm-before-cool probe for one account,
+// coalescing concurrent callers and bounding the wait.
+//
+// Coalescing matters because the triggering event is inherently a fan-out: a
+// rate-limit episode 429s every in-flight request bound to that account at once,
+// and each used to pay its own MaterializeAccount + ProbeRateLimit round trip
+// plus a usage-cache write — aiming a burst of probes at the provider that is
+// already rate-limiting us. They all ask the same question at the same instant,
+// so one answer serves them all. The engine's own single-flight sits downstream
+// of this call and cannot cover it.
+//
+// The probe deliberately does NOT inherit the request's cancellation. ctx here
+// is the proxied client's request context, so a client that hangs up mid-flight
+// would otherwise cancel the probe, land on the error arm, and suppress a
+// GENUINE cap — letting an unrelated disconnect decide whether an exhausted
+// account gets benched. That is distinct from the intentional fail-open, which
+// is about the provider being unverifiable, not about who is still listening.
+// The write the decision drives outlives the request, so the decision must too;
+// the timeout below is what bounds it.
+func (l *Lifecycle) probeAccountUsage(ctx context.Context, accountID string) (models.UsageSnapshot, error) {
+	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), l.proxyUsageProbeTimeout())
+	defer cancel()
+
+	res, err, _ := l.proxyProbeGroup.Do(accountID, func() (any, error) {
+		return l.rateLimitProbe(probeCtx, accountID)
+	})
+	if err != nil {
+		return models.UsageSnapshot{}, err
+	}
+	snap, ok := res.(models.UsageSnapshot)
+	if !ok {
+		return models.UsageSnapshot{}, fmt.Errorf("failover proxy: usage probe returned unexpected type %T", res)
+	}
+	return snap, nil
+}
+
 // recordNonRotateAudit surfaces a proxy-path rotation decline (no swap target)
 // as an audit row so the 429 the client still receives is visible in rotation
 // history. It records only the two account-pool exhaustion outcomes:
@@ -661,7 +828,16 @@ func (l *Lifecycle) prepareChatFailover(ctx context.Context, agentSessionID, fal
 // episode off the session's newest row, so the whole read-then-write runs under
 // proxyAuditMu to keep concurrent same-session replays from double-recording.
 // No-op when no recorder is wired. (BOS-484)
-func (l *Lifecycle) recordNonRotateAudit(ctx context.Context, sessionID, chatID, provider, trigger, fromAccountID string, outcome rotation.Outcome) {
+//
+// suppressed reports that the confirm-before-cool probe declined to bench the
+// capped account (BOS-584). It changes only the no-eligible DETAIL, and it has
+// to: with the bench suppressed the capped account carries no cooldown, so on a
+// single-account pool minFutureCooldown finds nothing and the engine resolves
+// OutcomeNoEligibleAccount instead of OutcomeAllExhausted. The stock detail for
+// that outcome tells the operator to "enable or re-authenticate one" — actively
+// wrong advice about an account that is active, healthy, and merely got a 429 we
+// could not confirm.
+func (l *Lifecycle) recordNonRotateAudit(ctx context.Context, sessionID, chatID, provider, trigger, fromAccountID string, outcome rotation.Outcome, suppressed bool) {
 	if l.rotationRecorder == nil {
 		return
 	}
@@ -684,6 +860,9 @@ func (l *Lifecycle) recordNonRotateAudit(ctx context.Context, sessionID, chatID,
 	case rotation.OutcomeNoEligibleAccount:
 		ev.Outcome = "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT"
 		ev.Detail = rotation.NoEligibleAccountDetail
+		if suppressed {
+			ev.Detail = unconfirmedCapNoAlternateDetail
+		}
 		l.rotationRecorder.RecordNoEligible(ctx, ev)
 	default:
 		// Capability-only or unexpected decline: not an exhausted-pool 429.

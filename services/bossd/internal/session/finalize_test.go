@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -120,6 +121,38 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 	}
 	if cron.lastRunCalls[0].outcome != models.CronJobOutcomeDeletedNoChanges {
 		t.Errorf("recorded outcome = %q, want deleted_no_changes", cron.lastRunCalls[0].outcome)
+	}
+}
+
+func TestFinalizeSession_ZeroOutputSkipsCheckoutClassification(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: " M user-file"}
+	cron := &recordingCronJobStore{}
+	cronJobID := "cron-zero"
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID: "sess-1", RepoID: "repo-1", WorktreePath: "/tmp/repo", State: machine.ImplementingPlan,
+		CronJobID: &cronJobID, IsQuickChat: true,
+	}
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+
+	result, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+	if result.Outcome != models.CronJobOutcomeZeroOutput || !result.Deleted {
+		t.Fatalf("result = %+v, want deleted zero_output", result)
+	}
+	if wt.statusCalls != 0 {
+		t.Fatalf("worktrees.Status calls = %d, want 0 for repo checkout", wt.statusCalls)
+	}
+	if _, ok := sessions.sessions["sess-1"]; ok {
+		t.Fatal("zero-output session row still exists after teardown")
+	}
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomeZeroOutput {
+		t.Fatalf("last-run calls = %+v, want one zero_output", cron.lastRunCalls)
 	}
 }
 
@@ -768,6 +801,611 @@ func TestFinalizeSession_HeadlessNonCronRealWork_CreatesPR(t *testing.T) {
 	sess := sessions.sessions["sess-1"]
 	if sess.State != machine.ReadyForReview {
 		t.Fatalf("state = %s, want ready_for_review", sess.State)
+	}
+}
+
+// TestFinalizeSession_BranchHasRealCommits_UsesRemoteTrackingBase pins BOS-591's
+// fix 3: branchHasRealCommits must ask CommitSubjects for the branch's diff
+// against the freshly-fetched remote-tracking base (refs/remotes/origin/<base>),
+// not the bare local base branch name. A freshly-created worktree's local base
+// can be stale, so commits already merged to the real base since that local ref
+// was last updated would otherwise show up as branch work and defeat the empty-
+// run guard. The mock returns extra already-merged subjects for the bare local
+// base ("main") but only the placeholder for the remote-tracking ref, so a pass
+// here proves the guard is asking for the right ref rather than merely happening
+// to see the same (empty) answer either way.
+func TestFinalizeSession_BranchHasRealCommits_UsesRemoteTrackingBase(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut: "",
+		commitSubjectsFn: func(baseRef string) ([]string, error) {
+			if baseRef == "main" {
+				// The stale local base: bootstrap placeholder plus commits that
+				// already merged into the real (remote) base — must NOT be what
+				// the guard consults.
+				return []string{draftPRPlaceholderCommitSubject, "fix(x): already merged upstream"}, nil
+			}
+			return []string{draftPRPlaceholderCommitSubject}, nil
+		},
+	}
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 88, HeadBranch: "bos-591-br", State: vcs.PRStateOpen},
+	}
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	// No CronJobID → non-cron: the real-work gate is active.
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "bos-591-br",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRNoChanges {
+		t.Fatalf("outcome = %q, want %q (a stale-local-base bug would report real work instead)", res.Outcome, models.CronJobOutcomePRNoChanges)
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess == nil {
+		t.Fatal("session row should be preserved for inspection")
+	}
+	if sess.State != machine.Blocked {
+		t.Fatalf("state = %s, want blocked", sess.State)
+	}
+
+	found := false
+	for _, ref := range wt.commitSubjectsBaseRefs {
+		if ref == "refs/remotes/origin/main" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CommitSubjects base refs = %v, want one call with refs/remotes/origin/main", wt.commitSubjectsBaseRefs)
+	}
+	foundStale := false
+	for _, ref := range wt.commitSubjectsBaseRefs {
+		if ref == "main" {
+			foundStale = true
+		}
+	}
+	if foundStale {
+		t.Fatalf("CommitSubjects base refs = %v, must not include the bare local base branch name", wt.commitSubjectsBaseRefs)
+	}
+	fetched := false
+	for _, base := range wt.fetchedBases {
+		if base == "main" {
+			fetched = true
+		}
+	}
+	if !fetched {
+		t.Fatalf("FetchBase calls = %v, want a fetch of the base branch before checking commit subjects", wt.fetchedBases)
+	}
+}
+
+// TestFinalizeSession_BranchHasRealCommits_FetchBaseFailure_FailsOpen pins the
+// fail-open contract: when FetchBase fails inside branchHasRealCommits, the
+// guard must treat the error as "could not determine real-vs-placeholder" and
+// fall back to treating the run as real work (warn-and-continue), never
+// silently swallow the error nor fall back to the local base ref. A stale-only
+// commit set would otherwise (if the fetch failure were ignored) report
+// hasReal == false and Block the session; this proves it does not.
+func TestFinalizeSession_BranchHasRealCommits_FetchBaseFailure_FailsOpen(t *testing.T) {
+	ctx := context.Background()
+	var logBuf bytes.Buffer
+	logger := zerolog.New(&logBuf)
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:      "",
+		commitSubjects: []string{draftPRPlaceholderCommitSubject},
+		fetchBaseErr:   fmt.Errorf("network unreachable"),
+	}
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 88, HeadBranch: "bos-591-fetchfail", State: vcs.PRStateOpen},
+	}
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "bos-591-fetchfail",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome == models.CronJobOutcomePRNoChanges {
+		t.Fatalf("outcome = %q, a FetchBase failure must fail open (treat as real work), not record pr_no_changes", res.Outcome)
+	}
+	if len(wt.commitSubjectsBaseRefs) != 0 {
+		t.Fatalf("CommitSubjects must not be called after FetchBase fails, got base refs %v", wt.commitSubjectsBaseRefs)
+	}
+	// The plan's criterion is fail-open AND a logged warning — silent
+	// fail-open is what made BOS-591 undiagnosable in the first place.
+	if !strings.Contains(logBuf.String(), "real-commit check failed for clean branch with PR") {
+		t.Errorf("fail-open must log its warning\nlog:\n%s", logBuf.String())
+	}
+}
+
+// TestFinalizeSession_BranchHasRealCommits_CommitSubjectsError_FailsOpen mirrors
+// the fetch-failure case for a CommitSubjects error against the (successfully
+// fetched) remote-tracking ref: the guard must still fail open to "real work".
+func TestFinalizeSession_BranchHasRealCommits_CommitSubjectsError_FailsOpen(t *testing.T) {
+	ctx := context.Background()
+	var logBuf bytes.Buffer
+	logger := zerolog.New(&logBuf)
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:         "",
+		commitSubjectsErr: fmt.Errorf("git log failed: bad object"),
+	}
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 88, HeadBranch: "bos-591-logfail", State: vcs.PRStateOpen},
+	}
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "bos-591-logfail",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome == models.CronJobOutcomePRNoChanges {
+		t.Fatalf("outcome = %q, a CommitSubjects failure must fail open (treat as real work), not record pr_no_changes", res.Outcome)
+	}
+	found := false
+	for _, ref := range wt.commitSubjectsBaseRefs {
+		if ref == "refs/remotes/origin/main" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CommitSubjects base refs = %v, want one call with refs/remotes/origin/main", wt.commitSubjectsBaseRefs)
+	}
+	if !strings.Contains(logBuf.String(), "real-commit check failed for clean branch with PR") {
+		t.Errorf("fail-open must log its warning\nlog:\n%s", logBuf.String())
+	}
+}
+
+// TestFinalizeSession_RealCommitGuard_LogsEveryDecision pins BOS-591's fix 4
+// part A: the empty-run guard must record its decision on EVERY branch,
+// including the previously-silent hasReal == true path — the omission is
+// exactly why the incident could not be diagnosed after the fact. The
+// real-work line must also carry the real-commit count, so a future bypass
+// shows up in the log as "the guard counted N real commits" rather than as
+// silence indistinguishable from the guard never running.
+func TestFinalizeSession_RealCommitGuard_LogsEveryDecision(t *testing.T) {
+	tests := []struct {
+		name           string
+		commitSubjects []string
+		wantSubstrings []string
+	}{
+		{
+			name:           "real work logs the decision and the count",
+			commitSubjects: []string{draftPRPlaceholderCommitSubject, "feat(x): real change", "docs: another"},
+			wantSubstrings: []string{
+				"finalize: clean branch has an existing PR with real commits",
+				`"real_commits":2`,
+				`"session":"sess-1"`,
+			},
+		},
+		{
+			name:           "no real work still logs the no-op decision",
+			commitSubjects: []string{draftPRPlaceholderCommitSubject},
+			wantSubstrings: []string{
+				"finalize: clean branch has an existing PR but no real commits",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			var logBuf bytes.Buffer
+			logger := zerolog.New(&logBuf)
+
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			wt := &mockWorktreeManager{
+				statusOut:      "",
+				commitSubjects: tt.commitSubjects,
+			}
+			vp := newMockVCSProvider()
+			vp.nextOpenPRs = []vcs.PRSummary{
+				{Number: 91, HeadBranch: "bos-591-log", State: vcs.PRStateOpen},
+			}
+			chats := &recordingAgentChatStore{}
+			cron := &recordingCronJobStore{}
+
+			repos.repos["repo-1"] = &models.Repo{
+				ID:        "repo-1",
+				LocalPath: "/tmp/repo-main",
+				OriginURL: "git@github.com:owner/repo.git",
+			}
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:           "sess-1",
+				RepoID:       "repo-1",
+				WorktreePath: "/tmp/wt-sess1",
+				BranchName:   "bos-591-log",
+				BaseBranch:   "main",
+				State:        machine.ImplementingPlan,
+			}
+
+			lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+			if _, err := lc.FinalizeSession(ctx, "sess-1"); err != nil {
+				t.Fatalf("FinalizeSession: %v", err)
+			}
+
+			got := logBuf.String()
+			for _, want := range tt.wantSubstrings {
+				if !strings.Contains(got, want) {
+					t.Errorf("guard log missing %q\nlog:\n%s", want, got)
+				}
+			}
+		})
+	}
+}
+
+// TestFinalizeSession_MarkReadyBackstop_RefusesEmptyDiff pins BOS-591's fix 4
+// part B: markFinalizePRReady is the single funnel for every mark-ready call
+// site, so an empty diff against the base must stop the write there regardless
+// of how the code arrived. This is the last line of defence behind the guard:
+// the branch here clears the guard outright (its commit subject is real work,
+// not a placeholder) yet still changes nothing relative to the base — the
+// residual shape of any future guard bypass — and is refused anyway.
+func TestFinalizeSession_MarkReadyBackstop_RefusesEmptyDiff(t *testing.T) {
+	ctx := context.Background()
+	var logBuf bytes.Buffer
+	logger := zerolog.New(&logBuf)
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut: "",
+		// Clears the guard (a genuine, non-placeholder subject) yet the branch's
+		// diff against the base is empty — the residue of any future bypass.
+		commitSubjects:       []string{"feat(x): passes the guard but changes nothing"},
+		hasDiffAgainstBase:   false,
+		hasDiffAgainstBaseOK: true,
+	}
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 92, HeadBranch: "bos-591-backstop", State: vcs.PRStateOpen},
+	}
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "bos-591-backstop",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	// pr_no_changes, not pr_failed: nothing broke — the PR was opened and pushed
+	// fine, the run simply produced nothing. Both Block the session, but the
+	// recorded reason has to be truthful.
+	if res.Outcome != models.CronJobOutcomePRNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRNoChanges)
+	}
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "empty diff") {
+		t.Fatalf("error = %v, want one naming the empty diff", res.Err)
+	}
+	if !errors.Is(res.Err, errEmptyDiffRefusedReady) {
+		t.Fatalf("error = %v, want one wrapping errEmptyDiffRefusedReady", res.Err)
+	}
+	if !needsAttention(res.Outcome) {
+		t.Fatalf("outcome %q must still route the session to Blocked", res.Outcome)
+	}
+	if len(vp.markReadyCalls) != 0 {
+		t.Fatalf("empty-diff PR must never be marked ready, got %v", vp.markReadyCalls)
+	}
+	// The refusal must be diagnosable: session, branch, PR number and base ref.
+	// The PR number is asserted as the zerolog JSON field ("pr":92), not a bare
+	// "92" substring, so it can't accidentally match an unrelated number (e.g.
+	// a session/branch name) elsewhere in the buffer.
+	for _, want := range []string{"sess-1", "bos-591-backstop", `"pr":92`, "refs/remotes/origin/main"} {
+		if !strings.Contains(logBuf.String(), want) {
+			t.Errorf("refusal log missing %q\nlog:\n%s", want, logBuf.String())
+		}
+	}
+	if got := wt.hasDiffAgainstBaseRefs; len(got) == 0 || got[len(got)-1] != "refs/remotes/origin/main" {
+		t.Fatalf("HasDiffAgainstBase base refs = %v, want the remote-tracking base ref", got)
+	}
+}
+
+// TestFinalizeSession_MarkReadyBackstop_AllowsNonEmptyDiff is the companion:
+// a branch with a real diff against the base still marks the PR ready.
+func TestFinalizeSession_MarkReadyBackstop_AllowsNonEmptyDiff(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:            "",
+		commitSubjects:       []string{"feat(x): real change"},
+		hasDiffAgainstBase:   true,
+		hasDiffAgainstBaseOK: true,
+	}
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 93, HeadBranch: "bos-591-allow", State: vcs.PRStateOpen},
+	}
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "bos-591-allow",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
+	}
+	if len(vp.markReadyCalls) != 1 || vp.markReadyCalls[0] != 93 {
+		t.Fatalf("MarkReadyForReview calls = %v, want [93]", vp.markReadyCalls)
+	}
+	// The backstop deliberately does NOT fetch: it relies on injectPRTagsAndPush
+	// having just refreshed refs/remotes/origin/<base> at every mark-ready call
+	// site. Nothing in the type system enforces that, and if it ever stopped
+	// holding, the missing ref would make `git diff` error and the backstop would
+	// fail open — a silent bypass of the replacement for a silently-bypassed
+	// guard. Pin the ordering: a fetch of this base must precede the diff check.
+	if len(wt.fetchedBases) == 0 {
+		t.Fatalf("HasDiffAgainstBase ran with no prior FetchBase; the backstop's freshness invariant is broken")
+	}
+	if wt.fetchedBases[0] != "main" {
+		t.Fatalf("fetched bases = %v, want the session's base fetched first", wt.fetchedBases)
+	}
+	if len(wt.hasDiffAgainstBaseRefs) == 0 {
+		t.Fatalf("HasDiffAgainstBase was never called; the backstop did not run")
+	}
+}
+
+// TestFinalizeSession_MarkReadyProviderFailure_IsPRFailedNotNoChanges is the
+// negative half of markReadyFailureOutcome: only the BOS-591 empty-diff refusal
+// maps to pr_no_changes. A branch with a real diff whose MarkReadyForReview call
+// genuinely fails (GitHub error, bad token) must still record pr_failed —
+// without this, the helper could return pr_no_changes unconditionally and every
+// other test would still pass.
+func TestFinalizeSession_MarkReadyProviderFailure_IsPRFailedNotNoChanges(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:            "",
+		commitSubjects:       []string{"feat(x): real change"},
+		hasDiffAgainstBase:   true,
+		hasDiffAgainstBaseOK: true,
+	}
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 94, HeadBranch: "bos-591-provider-fail", State: vcs.PRStateOpen},
+	}
+	vp.markReadyErr = errors.New("github: 403 forbidden")
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "bos-591-provider-fail",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRFailed)
+	}
+	if errors.Is(res.Err, errEmptyDiffRefusedReady) {
+		t.Fatalf("a provider failure must not be classified as the empty-diff refusal: %v", res.Err)
+	}
+}
+
+// TestFinalizeSession_MarkReadyBackstop_DiffErrorFailsOpen pins the fail-open
+// half of the backstop: an empty diff is definite evidence of a no-op run, but
+// an UNREADABLE diff is not — a git failure must never block a legitimate run,
+// matching this file's established convention (see branchHasRealCommits).
+func TestFinalizeSession_MarkReadyBackstop_DiffErrorFailsOpen(t *testing.T) {
+	ctx := context.Background()
+	var logBuf bytes.Buffer
+	logger := zerolog.New(&logBuf)
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:             "",
+		commitSubjects:        []string{"feat(x): real change"},
+		hasDiffAgainstBaseOK:  true,
+		hasDiffAgainstBaseErr: fmt.Errorf("git diff: bad object"),
+	}
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 94, HeadBranch: "bos-591-failopen", State: vcs.PRStateOpen},
+	}
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "bos-591-failopen",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want %q (a diff-computation error must fail open)", res.Outcome, models.CronJobOutcomePRCreated)
+	}
+	if len(vp.markReadyCalls) != 1 || vp.markReadyCalls[0] != 94 {
+		t.Fatalf("MarkReadyForReview calls = %v, want [94]", vp.markReadyCalls)
+	}
+	// Assert the actual fail-open message, not a bare "warn" substring — the
+	// level word alone would match vacuously against any unrelated WARN that
+	// enters the finalize flow.
+	if !strings.Contains(logBuf.String(), "empty-diff check failed before mark ready") {
+		t.Errorf("fail-open must log the empty-diff-check-failed WARN, log:\n%s", logBuf.String())
+	}
+}
+
+// TestFinalizeSession_CronCleanBranchRealWork_BackstopLeavesFlowUnchanged pins
+// decision D2: the backstop lives inside markFinalizePRReady so it also covers
+// cron, but a cron run with genuine work must be byte-identical to today —
+// same outcome, same provider calls, same tag injection.
+func TestFinalizeSession_CronCleanBranchRealWork_BackstopLeavesFlowUnchanged(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:            "",
+		commitSubjects:       []string{"feat(x): cron did real work"},
+		hasDiffAgainstBase:   true,
+		hasDiffAgainstBaseOK: true,
+	}
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 95, HeadBranch: "cron-real-br", State: vcs.PRStateOpen},
+	}
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-real-br",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
+	}
+	if len(vp.markReadyCalls) != 1 || vp.markReadyCalls[0] != 95 {
+		t.Fatalf("MarkReadyForReview calls = %v, want [95]", vp.markReadyCalls)
+	}
+	if len(wt.injectPRNumbersCalls) != 1 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 1", len(wt.injectPRNumbersCalls))
 	}
 }
 
@@ -1840,6 +2478,91 @@ func TestFinalizeSession_DirtyUncommittedCronOutputOpensPRThenBlocksBeforeTagInj
 	}
 	if len(wt.injectPRNumbersCalls) != 0 {
 		t.Fatalf("InjectPRNumbers calls = %d, want 0", len(wt.injectPRNumbersCalls))
+	}
+	if len(vp.markReadyCalls) != 0 {
+		t.Fatalf("MarkReadyForReview calls = %v, want none", vp.markReadyCalls)
+	}
+}
+
+// TestFinalizeSession_DirtyUncommittedCronOutput_UntrackedOnlyEmptyDiff_BackstopRefuses
+// pins the OTHER dirty-cron-output shape (the tracked-changes variant is
+// TestFinalizeSession_DirtyUncommittedCronOutputOpensPRThenBlocksBeforeTagInjection
+// above, which blocks at injectPRTagsAndPush before markFinalizePRReady is ever
+// reached). Untracked-only leftovers (e.g. a stray plan file) do NOT block
+// PR-tag injection (see the "only untracked leftovers remain" comment in
+// injectPRTagsAndPush), so this run reaches markFinalizePRReady with zero real
+// commits and only bossd's --allow-empty placeholder — a diff-against-base that
+// is deterministically empty. Without the BOS-591 backstop this used to end
+// pr_created with a vacuously green PR; mockWorktreeManager defaults
+// hasDiffAgainstBase to true, so nothing pinned this outcome until this test.
+//
+// The outcome is pr_no_changes, not pr_failed: the placeholder commit, the PR
+// and the tag injection all succeeded — the run just produced nothing. This is
+// the deterministic cron shape whose finalize outcome BOS-591 deliberately
+// changes (any cron path reaching markFinalizePRReady with an empty diff is
+// affected — e.g. commits that net to zero — but this one is empty by
+// construction). The plan's "cron finalize is byte-identical" wording does not
+// survive the universal backstop, and narrowing the backstop would leave cron
+// able to advertise the exact vacuous-green PR this ticket exists to stop.
+func TestFinalizeSession_DirtyUncommittedCronOutput_UntrackedOnlyEmptyDiff_BackstopRefuses(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut: "?? scratch/notes.md\n",
+		// Zero real commits beyond base (IsAncestor defaults to true, so
+		// cleanBranchHasCommittedWork reports false and the placeholder commit
+		// path runs). The placeholder itself carries no file diff, matching
+		// production: an --allow-empty commit changes nothing relative to base.
+		hasDiffAgainstBase:   false,
+		hasDiffAgainstBaseOK: true,
+	}
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+	chats := &recordingAgentChatStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Cron job",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRNoChanges)
+	}
+	if !errors.Is(res.Err, errEmptyDiffRefusedReady) {
+		t.Fatalf("error = %v, want one wrapping errEmptyDiffRefusedReady", res.Err)
+	}
+	// A placeholder commit is still made (GitHub requires one to open the PR),
+	// and PR-tag injection still runs (untracked-only leftovers don't block
+	// it) — but the backstop must refuse the mark-ready write.
+	if wt.emptyCommitCalls != 1 {
+		t.Fatalf("EmptyCommit calls = %d, want 1 (placeholder for zero-commit dirty branch)", wt.emptyCommitCalls)
+	}
+	if len(wt.injectPRNumbersCalls) != 1 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 1 (untracked-only leftovers don't block tag injection)", len(wt.injectPRNumbersCalls))
 	}
 	if len(vp.markReadyCalls) != 0 {
 		t.Fatalf("MarkReadyForReview calls = %v, want none", vp.markReadyCalls)

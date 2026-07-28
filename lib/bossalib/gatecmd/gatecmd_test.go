@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -261,6 +262,43 @@ exit 0
 	})
 	if !passed || err != nil {
 		t.Fatalf("Run = %v, %v; want pass", passed, err)
+	}
+}
+
+func TestCommandEnvHandlesSparseInheritedEnvironment(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCommandEnvSparseInheritedEnvironmentHelper$")
+	cmd.Env = []string{"GATECMD_SPARSE_ENV_HELPER=1"}
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("commandEnv with sparse inherited environment failed: %v\n%s", err, output)
+	}
+}
+
+func TestCommandEnvSparseInheritedEnvironmentHelper(t *testing.T) {
+	if os.Getenv("GATECMD_SPARSE_ENV_HELPER") != "1" {
+		return
+	}
+
+	got := commandEnv(Options{RepoPath: "/repo"})
+	want := map[string]string{
+		"GATECMD_SPARSE_ENV_HELPER": "1",
+		"REPO_DIR":                  "/repo",
+		"WORKTREE_DIR":              "/repo",
+		"BOSS_WORKTREE_DIR":         "/repo",
+		"LINEAR_API_KEY":            "",
+		"SENTRY_API_KEY":            "",
+		"SENTRY_ORG":                "",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("commandEnv returned %d entries, want %d: %q", len(got), len(want), got)
+	}
+	for _, entry := range got {
+		key, value, found := strings.Cut(entry, "=")
+		if !found {
+			t.Fatalf("commandEnv returned malformed entry %q", entry)
+		}
+		if wantValue, ok := want[key]; !ok || value != wantValue {
+			t.Errorf("commandEnv entry %q = %q, want %q (known key: %v)", key, value, wantValue, ok)
+		}
 	}
 }
 

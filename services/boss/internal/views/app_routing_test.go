@@ -767,3 +767,124 @@ func TestAppAccountRegisterCancelReturnsToAccounts(t *testing.T) {
 		t.Fatalf("register cancel routed to %v, want ViewAccounts", got.activeView)
 	}
 }
+
+// TestAppSettingsG_OpensGeneralSettings covers the BOS-511 entry point end to
+// end: from ViewSettings a 'g' keypress must emit switchViewMsg{view:
+// ViewGeneralSettings} and the app must then route to the General list.
+func TestAppSettingsG_OpensGeneralSettings(t *testing.T) {
+	withTempConfigHome(t)
+	a := NewApp(nil, nil)
+	a.activeView = ViewSettings
+	a.settings = NewSettingsModel(nil, a.ctx)
+
+	model, cmd := a.Update(keyPress('g'))
+	got := model.(App)
+	msg := runCmd(cmd)
+	svm, ok := msg.(switchViewMsg)
+	if !ok {
+		t.Fatalf("settings 'g' produced %T, want switchViewMsg", msg)
+	}
+	if svm.view != ViewGeneralSettings {
+		t.Fatalf("settings 'g' routed to %v, want ViewGeneralSettings", svm.view)
+	}
+
+	model, _ = got.Update(msg)
+	got = model.(App)
+	if got.activeView != ViewGeneralSettings {
+		t.Fatalf("after applying the switch, activeView = %v, want ViewGeneralSettings", got.activeView)
+	}
+	if len(got.generalSettings.rows) == 0 {
+		t.Fatal("general settings model was not constructed (no rows)")
+	}
+}
+
+// TestAppSwitchToGeneralSettingsRoutes covers the BOS-511 entry leg: a
+// switchViewMsg{view: ViewGeneralSettings} must make the general settings list
+// the active view (and construct it, so its rows are populated).
+func TestAppSwitchToGeneralSettingsRoutes(t *testing.T) {
+	withTempConfigHome(t)
+	a := NewApp(nil, nil)
+	a.activeView = ViewSettings
+
+	model, _ := a.Update(switchViewMsg{view: ViewGeneralSettings})
+	got := model.(App)
+	if got.activeView != ViewGeneralSettings {
+		t.Fatalf("switchViewMsg routed to %v, want ViewGeneralSettings", got.activeView)
+	}
+	if len(got.generalSettings.rows) == 0 {
+		t.Fatal("general settings model was not constructed (no rows)")
+	}
+}
+
+// TestAppGeneralSettingsEscReturnsToSettings covers the BOS-511 return leg: the
+// General list's parent is statically the Settings hub, so esc routes back to
+// ViewSettings rather than falling through to Home.
+func TestAppGeneralSettingsEscReturnsToSettings(t *testing.T) {
+	withTempConfigHome(t)
+	a := NewApp(nil, nil)
+	a.activeView = ViewGeneralSettings
+	a.generalSettings = NewGeneralSettingsModel(nil, a.ctx)
+
+	model, cmd := a.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	got := model.(App)
+	msg := runCmd(cmd)
+	svm, ok := msg.(switchViewMsg)
+	if !ok {
+		t.Fatalf("general settings esc produced %T, want switchViewMsg", msg)
+	}
+	if svm.view != ViewSettings {
+		t.Fatalf("general settings esc routed to %v, want ViewSettings", svm.view)
+	}
+	model, _ = got.Update(msg)
+	got = model.(App)
+	if got.activeView != ViewSettings {
+		t.Fatalf("after applying the switch, activeView = %v, want ViewSettings", got.activeView)
+	}
+}
+
+func TestAppSettingsRestoresSelectedSectionAfterReturn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyPressMsg
+		view View
+	}{
+		{name: "enter Trash", key: tea.KeyPressMsg{Code: tea.KeyEnter}, view: ViewTrash},
+		{name: "General hotkey", key: keyPress('g'), view: ViewGeneralSettings},
+		{name: "Repositories hotkey", key: keyPress('r'), view: ViewRepoList},
+		{name: "Trash hotkey", key: keyPress('t'), view: ViewTrash},
+		{name: "Cron jobs hotkey", key: keyPress('c'), view: ViewCron},
+		{name: "Accounts hotkey", key: keyPress('a'), view: ViewAccounts},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := NewApp(nil, nil)
+			a.activeView = ViewSettings
+			a.settings = NewSettingsModel(nil, a.ctx)
+			if tc.key.Code == tea.KeyEnter {
+				a.settings.cursor = 4
+			}
+
+			model, cmd := a.Update(tc.key)
+			got := model.(App)
+			msg := runCmd(cmd)
+			switchMsg, ok := msg.(switchViewMsg)
+			if !ok || switchMsg.view != tc.view {
+				t.Fatalf("settings key %q produced %#v, want %v switch", tc.key, msg, tc.view)
+			}
+			model, _ = got.Update(msg)
+			got = model.(App)
+
+			model, cmd = got.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+			got = model.(App)
+			model, _ = got.Update(runCmd(cmd))
+			got = model.(App)
+
+			wantKey := tc.key.String()
+			if tc.key.Code == tea.KeyEnter {
+				wantKey = "t"
+			}
+			if got.activeView != ViewSettings || got.settings.selectedKey() != wantKey {
+				t.Fatalf("returned to %v with %q selected, want Settings/%q", got.activeView, got.settings.selectedKey(), wantKey)
+			}
+		})
+	}
+}

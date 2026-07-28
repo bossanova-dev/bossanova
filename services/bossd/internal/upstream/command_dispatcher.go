@@ -109,6 +109,18 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchListGithubCallbacks(ctx, cmdID, cmd.GetListGithubCallbacks(), outbound)
 	case *pb.OrchestratorCommand_DeleteGithubCallback:
 		return c.dispatchDeleteGithubCallback(ctx, cmdID, cmd.GetDeleteGithubCallback(), outbound)
+	case *pb.OrchestratorCommand_CreateNote:
+		return c.dispatchCreateNote(ctx, cmdID, cmd.GetCreateNote(), outbound)
+	case *pb.OrchestratorCommand_GetNote:
+		return c.dispatchGetNote(ctx, cmdID, cmd.GetGetNote(), outbound)
+	case *pb.OrchestratorCommand_ListNotes:
+		return c.dispatchListNotes(ctx, cmdID, cmd.GetListNotes(), outbound)
+	case *pb.OrchestratorCommand_UpdateNote:
+		return c.dispatchUpdateNote(ctx, cmdID, cmd.GetUpdateNote(), outbound)
+	case *pb.OrchestratorCommand_DeleteNote:
+		return c.dispatchDeleteNote(ctx, cmdID, cmd.GetDeleteNote(), outbound)
+	case *pb.OrchestratorCommand_Broadcast:
+		return c.dispatchBroadcast(ctx, cmdID, cmd.GetBroadcast(), outbound)
 	case *pb.OrchestratorCommand_AddAccount:
 		return c.dispatchAddAccount(ctx, cmdID, cmd.GetAddAccount(), outbound)
 	case *pb.OrchestratorCommand_RefreshAccount:
@@ -615,6 +627,37 @@ func classifyCommandError(err error) pb.CommandResult_ErrorCode {
 	}
 }
 
+// classifyBroadcastCommandError is classifyCommandError plus the
+// INVALID_ARGUMENT arm, and it is deliberately SCOPED TO THE BROADCAST COMMAND
+// rather than folded into the shared classifier.
+//
+// The temptation is to teach classifyCommandError the arm directly, since a
+// permanently-invalid command is permanently invalid whatever its verb. But
+// that classifier is shared by every inbound command, and most of them delegate
+// to a bossd server handler that already returns connect.CodeInvalidArgument for
+// ordinary validation failures (a malformed cron schedule, an unparseable
+// filter — 170-odd sites). Those errors currently classify as UNSPECIFIED, which
+// bosso's validateCommandResult renders as CodeAborted. Widening the shared
+// classifier would silently re-render every one of them as CodeInvalidArgument
+// on the bossanova.v1 surface — a change in the MEANING of an existing response,
+// which the api-design skill puts squarely in "bump the API version and ship a
+// down-convert transform" territory. That is a real change worth making
+// deliberately and separately; it is not this ticket's, and smuggling it in
+// under a broadcast feature would ship an unversioned behavioural change.
+//
+// Confining the arm here keeps BOS-558 purely additive: the only command whose
+// error rendering changes is the one this ticket introduces, and it has no older
+// clients to break.
+func classifyBroadcastCommandError(err error) pb.CommandResult_ErrorCode {
+	if connect.CodeOf(err) == connect.CodeInvalidArgument {
+		// "Do not retry" — see the enum's comment. The ingress reaches this by
+		// wrapping a deterministic sentinel (ErrInvalidInbound, ErrTooManyTargets)
+		// in connect.CodeInvalidArgument.
+		return pb.CommandResult_ERROR_CODE_INVALID_ARGUMENT
+	}
+	return classifyCommandError(err)
+}
+
 // runAsyncCommand executes a blocking, network-bound command handler in a
 // background goroutine so the single-threaded command reader (runCommandReader)
 // keeps draining subsequent commands instead of wedging behind one slow call.
@@ -1096,6 +1139,130 @@ func (c *StreamClient) dispatchDeleteGithubCallback(ctx context.Context, cmdID s
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
 		if err := c.commandHandler.DeleteGithubCallback(ctx, cmd.GetId()); err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return commandOK(cmdID, nil)
+	})
+}
+
+// dispatchCreateNote routes a CreateNoteCommand to the handler and wraps the
+// created note in a CommandResult{create_note} (BOS-552). Validation errors from
+// the daemon's note store surface via CommandResult.error. Dispatched async:
+// creating a note touches the store.
+func (c *StreamClient) dispatchCreateNote(ctx context.Context, cmdID string, cmd *pb.CreateNoteCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.CreateNote(ctx, cmd)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_CreateNote{CreateNote: out},
+		}}}
+	})
+}
+
+// dispatchGetNote routes a GetNoteCommand to the handler and wraps the note in a
+// CommandResult{get_note}. An absent id comes back as the daemon's NotFound and
+// is classified to ERROR_CODE_NOT_FOUND. Dispatched async: store reads must not
+// block the command reader.
+func (c *StreamClient) dispatchGetNote(ctx context.Context, cmdID string, cmd *pb.GetNoteCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.GetNote(ctx, cmd)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_GetNote{GetNote: out},
+		}}}
+	})
+}
+
+// dispatchListNotes routes a ListNotesCommand to the handler and wraps the
+// matching notes in a CommandResult{list_notes}. Dispatched async: note store
+// reads must not block the command reader.
+func (c *StreamClient) dispatchListNotes(ctx context.Context, cmdID string, cmd *pb.ListNotesCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.ListNotes(ctx, cmd)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_ListNotes{ListNotes: out},
+		}}}
+	})
+}
+
+// dispatchUpdateNote routes an UpdateNoteCommand to the handler and wraps the
+// updated note in a CommandResult{update_note}. Dispatched async.
+func (c *StreamClient) dispatchUpdateNote(ctx context.Context, cmdID string, cmd *pb.UpdateNoteCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.UpdateNote(ctx, cmd)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_UpdateNote{UpdateNote: out},
+		}}}
+	})
+}
+
+// dispatchDeleteNote routes a DeleteNoteCommand to the handler and replies with
+// a success CommandResult carrying no payload (mirrors
+// dispatchDeleteGithubCallback). Dispatched async.
+func (c *StreamClient) dispatchDeleteNote(ctx context.Context, cmdID string, cmd *pb.DeleteNoteCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		if err := c.commandHandler.DeleteNote(ctx, cmd.GetId()); err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return commandOK(cmdID, nil)
+	})
+}
+
+// dispatchBroadcast routes an inbound BroadcastCommand — a broadcast some OTHER
+// daemon originated, which bosso has routed here — to the handler, and replies
+// with a success CommandResult carrying no payload (mirrors dispatchDeleteNote).
+// Dispatched async: materialising an inbound broadcast resolves an audience and
+// writes delivery rows, which must not block the command reader.
+//
+// This is the INGRESS half of the cross-daemon path (BOS-558) and it decides
+// NOTHING. The loop guard, the idempotency probe and local-only resolution all
+// live behind the handler in internal/broadcast. Nor does anything on this path
+// publish: an inbound pb.BroadcastCommand can never become an outbound
+// pb.BroadcastEgress, which is why they are separate message types.
+//
+// SECRET BODY — READ BEFORE CHANGING AN ERROR MESSAGE ON THIS PATH: err.Error()
+// below is copied verbatim onto CommandResult.error and travels back over the
+// wire to bosso, where it lands in logs and on operator surfaces. The ingress
+// (services/bossd/internal/broadcast/ingress.go) and the Sender beneath it are
+// written so that no error they return contains cmd.message, and that is the
+// only thing keeping the broadcast body off the wire here. A future error
+// message on that path that interpolates the body would leak it through this
+// call site.
+func (c *StreamClient) dispatchBroadcast(ctx context.Context, cmdID string, cmd *pb.BroadcastCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		if err := c.commandHandler.DeliverBroadcast(ctx, cmd); err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyBroadcastCommandError(err))
 		}
 		return commandOK(cmdID, nil)
 	})

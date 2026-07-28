@@ -16,14 +16,15 @@ description: End-of-session workflow ensuring all work is committed and pushed. 
 | #   | Requirement                     | How to Verify                                                                                                                                                                                                                                                                                     |
 | --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | **All quality gates pass**      | Discover and run the repo's quality gates. Prefer a single project-declared aggregate command when it covers build/lint/test; otherwise run the minimal non-duplicative command set. ALL must pass. Fix failures — do NOT dismiss them as "pre-existing" without verifying on the PR base branch. |
-| 2   | **PR base is current**          | Fetch the PR base and verify `git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD` before rewriting commits, squashing, or pushing. If it fails, rebase onto `origin/$BASE_BRANCH` first.                                                                                                     |
+| 2   | **PR base is current**          | Fetch the PR base and verify `git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD` before rewriting commits, squashing, or pushing. If it fails, rebase onto `origin/$BASE_BRANCH` first — always rebase, never merge the base branch in.                                                     |
 | 3   | **PR number in ALL commits**    | Every commit on this branch (compared to the PR base branch) MUST have `[#PR-NUM]` in the message. Check with `git log origin/$BASE_BRANCH..HEAD --oneline`. If ANY commit is missing it, you MUST run the fix script.                                                                            |
 | 4   | **Commits squashed and tidied** | You MUST squash commits into logical groups and force-push. Do NOT ask for permission — just do it.                                                                                                                                                                                               |
 | 5   | **GitHub checks not failing**   | After pushing, run `gh pr checks --json name,state,bucket` or `gh pr view --json statusCheckRollup` to verify without dumping raw logs. Checks may be idle, queued, in_progress, or passing. Any **failing/red** check MUST be investigated and fixed before the session is complete.             |
 | 6   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready "$PR_URL"` and verify `gh pr view "$PR_URL" --json isDraft -q .isDraft` returns `false`. Do NOT leave the PR as a draft.                                                                                                              |
 | 7   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto the PR base branch and resolve conflicts before completing.                                                                                                                      |
+| 8   | **History stays linear**        | `git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD` MUST be `0` before the push in Step 6. A merge commit on the branch structurally breaks a rebase-merge repo, so GitHub refuses the PR however green the checks are. Linearize before pushing.                                         |
 
-**If you complete without satisfying ALL SEVEN requirements, you have failed this workflow.**
+**If you complete without satisfying ALL EIGHT requirements, you have failed this workflow.**
 
 ---
 
@@ -67,7 +68,7 @@ The dispatch brief passes:
 - The full text of the **⛔ BLOCKING REQUIREMENTS - READ FIRST ⛔** table above, verbatim — these
   are the contract the subagent must satisfy in full. They stay in the subagent's brief unchanged.
 
-The subagent runs Steps 1–8 in full, satisfying all 7 BLOCKING REQUIREMENTS above. It keeps ALL bulk
+The subagent runs Steps 1–8 in full, satisfying all 8 BLOCKING REQUIREMENTS above. It keeps ALL bulk
 output inside its own context — `git log`, `git diff`, `gh pr checks`, squash/rebase output — and
 returns only a **short structured result** to the orchestrator: the final PR state
 (isDraft/mergeable), checks status, and what was squashed/pushed. Do not paste raw diffs or logs back
@@ -143,6 +144,11 @@ BASE_REVERTS=$(
 test -z "$BASE_REVERTS" || { echo "HEAD reverts files changed on origin/$BASE_BRANCH:"; echo "$BASE_REVERTS"; exit 1; }
 test "$BASE_TIP" = "$(git rev-parse origin/$BASE_BRANCH)" || { echo "origin/$BASE_BRANCH moved during finalize; restart Step 1"; exit 1; }
 ```
+
+**Sync with the base by rebasing only.** Merging the base ref into the branch — or any `git pull` that
+records a merge — leaves a merge commit that structurally breaks a rebase-merge repo, so GitHub
+refuses the PR no matter how green the checks are. Use `git pull --rebase` when a pull is
+unavoidable, and keep `git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD` at `0`.
 
 **Do NOT use `git reset --soft origin/$BASE_BRANCH` unless `origin/$BASE_BRANCH` is already an ancestor of `HEAD`.** Soft-resetting stale branch history onto a newer base stages reverse diffs for base-only changes and can commit other people's work as reverts.
 
@@ -298,8 +304,33 @@ comm -13 <(sort "$BRANCH_OWNED_FILES") <(git diff --name-only origin/$BASE_BRANC
 ```bash
 git fetch origin "$BASE_BRANCH"
 git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD || { echo "origin/$BASE_BRANCH is not in HEAD; rebase before push"; exit 1; }
+MERGE_COUNT=$(git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD) || exit 1
+test "$MERGE_COUNT" = 0 || { echo "Merge commit(s) on this branch; linearize before pushing"; exit 1; }
 git push --force-with-lease
 git status  # Verify "up to date with origin"
+```
+
+Capture the count and compare it as a string — `test "$(…)" -eq 0` fails **open**, because an
+unresolvable `origin/$BASE_BRANCH` yields an empty operand that zsh compares equal to `0`.
+
+The merge-commit assertion gates this push in Step 6 and therefore the un-draft in Step 6c: a nonzero
+count means one or more merge commits (most often a base merge) poisoned the branch and a
+rebase-merge repo will refuse the PR.
+
+**Only if that assertion fails (nonzero count)**, linearize, re-assert `0`, then push. Flattening
+**discards anything recorded only in a merge commit** (manual conflict resolutions, files added in
+the merge), so list the merges first with
+`git rev-list --merges --oneline "origin/$BASE_BRANCH..HEAD"` and lift any such edit out into a
+normal commit before running this — boss-repair's Linear-History Invariant carries the full recipe:
+
+```bash
+git fetch origin "$BASE_BRANCH"
+git rebase --onto "origin/$BASE_BRANCH" "$(git merge-base "origin/$BASE_BRANCH" HEAD)"
+# Resolve any conflicts until the rebase COMPLETES, then re-assert before pushing:
+git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD || { echo "rebase did not land on the base"; exit 1; }
+MERGE_COUNT=$(git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD) || exit 1
+test "$MERGE_COUNT" = 0 || { echo "Branch still has merge commits; resolve by hand"; exit 1; }
+git push --force-with-lease
 ```
 
 If push fails, resolve and retry until success.
@@ -379,12 +410,16 @@ gh pr view --json mergeable -q .mergeable
 **If the result is `CONFLICTING`:**
 
 1. Fetch the PR base branch: `git fetch origin $BASE_BRANCH`
-2. Rebase onto the PR base branch: `git rebase origin/$BASE_BRANCH`
+2. Rebase onto the PR base branch: `git rebase origin/$BASE_BRANCH` — resolving drift by merging the
+   base in is forbidden; it leaves a merge commit that deadlocks a rebase-merge repo
 3. Resolve any conflicts during the rebase
 4. Re-run the repo's quality gates to ensure nothing broke
-5. Force-push: `git push --force-with-lease`
-6. Wait and re-check: `gh pr view --json mergeable -q .mergeable`
-7. Repeat until `MERGEABLE`
+5. Assert linear history — guarded, so a nonzero count stops the push:
+   `MERGE_COUNT=$(git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD) || exit 1` then
+   `test "$MERGE_COUNT" = 0 || { echo "linearize before pushing"; exit 1; }`
+6. Force-push: `git push --force-with-lease`
+7. Wait and re-check: `gh pr view --json mergeable -q .mergeable`
+8. Repeat until `MERGEABLE`
 
 **If the result is `UNKNOWN`:** GitHub is still computing mergeability. Wait a few seconds and re-check.
 
@@ -424,6 +459,7 @@ Before saying "done", verify ALL items:
 - [ ] Repo quality gates discovered from project instructions, CI, or command files
 - [ ] Minimal non-duplicative gate command set passed
 - [ ] `origin/$BASE_BRANCH` is an ancestor of `HEAD`
+- [ ] `git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD` is `0` (base synced by rebase)
 - [ ] No base-only files appear in `git diff origin/$BASE_BRANCH..HEAD`
 - [ ] All commits have `[#PR-NUM]` in message
 - [ ] Commits squashed into logical groups (force-pushed)
@@ -459,6 +495,7 @@ Before saying "done", verify ALL items:
 | Left PR as draft                     | Not reviewable          | Run `gh pr ready` to mark the PR as ready for review before completing                                      |
 | Ran `gh pr ready` but did not verify | Silent no-op possible   | Verify `isDraft == false` for the exact PR URL and fail finalize if GitHub still reports draft              |
 | Left PR with merge conflicts         | PR can't be merged      | Run `gh pr view --json mergeable -q .mergeable`, rebase onto the PR base branch if `CONFLICTING`            |
+| Merged the base branch in            | Rebase-merge deadlocks  | Rebase onto the base; assert `git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD` is `0` before push |
 
 ---
 

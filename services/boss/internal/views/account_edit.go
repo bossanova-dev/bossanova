@@ -529,16 +529,8 @@ func (m AccountEditModel) renderStatusRow(a *pb.Account) string {
 	return m.renderSelectableLine(accountEditRowStatus, line)
 }
 
-// renderSelectableLine renders a single cursor-selectable line with a chevron
-// and bold styling when the cursor is on it.
+// renderSelectableLine renders a single cursor-selectable line, carrying the
+// focus gutter and bold styling when the cursor is on it.
 func (m AccountEditModel) renderSelectableLine(row int, text string) string {
-	cursor := "  "
-	if m.cursor == row {
-		cursor = cursorChevron + " "
-	}
-	line := cursor + text
-	if m.cursor == row {
-		line = styleSelected.Render(line)
-	}
-	return lipgloss.NewStyle().Padding(0, 2).Render(line) + "\n"
+	return renderFieldRow(m.cursor == row, text) + "\n"
 }

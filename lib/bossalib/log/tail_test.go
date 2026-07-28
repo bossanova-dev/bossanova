@@ -125,6 +125,42 @@ func TestTailLargeFileChunked(t *testing.T) {
 	}
 }
 
+type readerAtFunc func([]byte, int64) (int, error)
+
+func (f readerAtFunc) ReadAt(p []byte, off int64) (int, error) {
+	return f(p, off)
+}
+
+func TestTailReaderAtStopsAtExactNeededNewlines(t *testing.T) {
+	const size = tailChunkSize + 8
+	reads := 0
+	reader := readerAtFunc(func(p []byte, off int64) (int, error) {
+		reads++
+		if reads > 1 {
+			return 0, fmt.Errorf("unexpected read before offset %d", off)
+		}
+		if off != 8 || len(p) != tailChunkSize {
+			t.Fatalf("first read = (%d bytes at %d), want (%d bytes at 8)", len(p), off, tailChunkSize)
+		}
+		for i := range p {
+			p[i] = 'x'
+		}
+		copy(p[len(p)-4:], "a\nb\n")
+		return len(p), nil
+	})
+
+	got, err := tailReaderAt(reader, size, 1)
+	if err != nil {
+		t.Fatalf("tailReaderAt: %v", err)
+	}
+	if reads != 1 {
+		t.Fatalf("reads = %d, want 1", reads)
+	}
+	if got != "b\n" {
+		t.Errorf("tail = %q, want %q", got, "b\n")
+	}
+}
+
 func TestTailZeroMaxLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "anything.log")
 	if err := os.WriteFile(path, []byte("hello\nworld\n"), 0o644); err != nil {

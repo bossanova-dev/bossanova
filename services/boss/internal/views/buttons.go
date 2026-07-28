@@ -12,14 +12,11 @@ type button struct {
 func renderButtonRow(buttons []button, focused int) string {
 	rendered := make([]string, 0, len(buttons))
 	for i, button := range buttons {
-		color := colorMuted
-		if button.primary {
-			color = colorSelected
-		}
-
-		style := lipgloss.NewStyle().Padding(0, 1).Foreground(color)
+		// Colours come from the shared buttonStyle (formfields.go); the tighter
+		// one-column chip and the bold/faint emphasis are this row's own.
+		style := buttonStyle(i == focused, button.primary).Padding(0, 1)
 		if i == focused {
-			style = style.Background(color).Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+			style = style.Bold(true)
 		} else {
 			style = style.Faint(true)
 		}

@@ -15,7 +15,7 @@
         },
         { "key": "a", "caption": "Open Accounts" },
         {
-          "waitFor": { "text": "Accounts", "match": "normalized" },
+          "waitFor": { "text": "LABEL PROVIDER", "match": "normalized" },
           "timeoutMs": 10000,
           "caption": "Accounts list visible"
         },

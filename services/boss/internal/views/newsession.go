@@ -1,183 +1,30 @@
 package views
 
+// The new-session wizard's model, its constructor and Set* configurators, Init,
+// the Update dispatcher, the View phase selector and the accessors App reads.
+// Everything else the wizard needs lives in a sibling newsession_*.go file
+// (BOS-528):
+//
+//	newsession_messages.go  the enums, *Msg types, sessionTypeOption, formData
+//	newsession_cmds.go      the async tea.Cmd builders
+//	newsession_handlers.go  one handler per non-key Update arm
+//	newsession_keys.go      key routing, per-phase key handlers, filter inputs
+//	newsession_tables.go    table construction, filters and height arithmetic
+//	newsession_create.go    phase advancement, the huh form, startCreating
+//	newsession_view.go      the per-phase renderers
+
 import (
 	"context"
-	"errors"
-	"fmt"
-	"slices"
-	"strings"
-	"time"
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
-	"charm.land/lipgloss/v2"
-	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
-	"github.com/recurser/bossalib/trackerprompt"
 )
-
-// issueSearchDebounce is the wait between the last filter keystroke and the
-// debounced server-side search. ~250ms is the sweet spot — slow enough that
-// fast typists only fire one request per word, fast enough that pausing feels
-// instant.
-const issueSearchDebounce = 250 * time.Millisecond
-
-// sessionType identifies the kind of session to create.
-type sessionType int
-
-const (
-	sessionTypeQuickChat    sessionType = iota // Quick chat in base folder
-	sessionTypeNewPR                           // Create a new PR
-	sessionTypeExistingPR                      // Work on an existing PR
-	sessionTypeExecutePlan                     // Execute a plan (placeholder)
-	sessionTypeLinearTicket                    // Work on a Linear issue
-	sessionTypeSentryIssue                     // Fix a Sentry issue
-)
-
-// trackerSource maps the selected session type to the task source name the
-// daemon routes on. Defaults to "linear" so any non-Sentry issue flow keeps
-// its existing behaviour.
-func (m *NewSessionModel) trackerSource() string {
-	if m.selectedType == sessionTypeSentryIssue {
-		return "sentry"
-	}
-	return "linear"
-}
-
-// trackerSourceLabel returns a human-readable name for the current tracker
-// source, used in loading and empty-state copy.
-func (m *NewSessionModel) trackerSourceLabel() string {
-	if m.selectedType == sessionTypeSentryIssue {
-		return "Sentry"
-	}
-	return "Linear"
-}
-
-// newSessionPhase tracks the current phase of the wizard.
-type newSessionPhase int
-
-const (
-	newSessionPhaseLoading     newSessionPhase = iota // Fetching repos
-	newSessionPhaseRepoSelect                         // Table-based repo picker
-	newSessionPhaseAgentSelect                        // Table-based agent picker (multi-agent installs)
-	newSessionPhaseTypeSelect                         // Table-based session type picker
-	newSessionPhasePRSelect                           // Table-based PR picker
-	newSessionPhaseIssueSelect                        // Table-based issue picker (Linear)
-	newSessionPhaseForm                               // Main huh form active
-	newSessionPhaseCreating                           // Waiting for CreateSession RPC
-	newSessionPhaseDone                               // Terminal
-)
-
-// reposMsg carries the result of a ListRepos RPC call.
-type reposMsg struct {
-	repos []*pb.Repo
-	err   error
-}
-
-// agentsMsg carries the result of a ListAgents RPC call. Agents drive the
-// per-session agent-select phase shown when more than one agent runner is
-// loaded and the user did not pre-pick one via `--agent`.
-type agentsMsg struct {
-	agents []client.AgentInfo
-	err    error
-}
-
-// prsMsg carries the result of a ListRepoPRs RPC call.
-type prsMsg struct {
-	prs []*pb.PRSummary
-	err error
-}
-
-// issuesMsg carries the result of a ListTrackerIssues RPC call. seq is the
-// monotonic sequence number in effect when the fetch was issued; the handler
-// drops the response when it no longer matches m.issueSearchSeq (meaning the
-// user typed further or navigated away). query is still used to distinguish
-// the initial unfiltered load from an empty search result.
-type issuesMsg struct {
-	issues []*pb.TrackerIssue
-	err    error
-	seq    uint64
-	query  string
-}
-
-// searchIssuesTickMsg fires after the debounce window elapses. The seq field
-// is a monotonic counter incremented on every keystroke that changes the
-// query — when the tick fires we ignore it unless seq is still the latest, so
-// a burst of keystrokes only triggers one search at the end.
-type searchIssuesTickMsg struct {
-	seq   uint64
-	query string
-}
-
-// createSessionStreamMsg carries the opened stream or error.
-type createSessionStreamMsg struct {
-	stream client.CreateSessionStream
-	err    error
-}
-
-// setupScriptLineMsg carries a single line of setup script output.
-type setupScriptLineMsg struct {
-	text string
-}
-
-// streamSessionCreatedMsg carries the final session from the stream.
-type streamSessionCreatedMsg struct {
-	session *pb.Session
-}
-
-// streamErrorMsg carries an error from the stream.
-type streamErrorMsg struct {
-	err error
-}
-
-// sessionTypeOption defines a row in the session-type selection table.
-type sessionTypeOption struct {
-	label string
-	desc  string
-	typ   sessionType
-}
-
-// buildSessionTypeOptions returns available session types based on repo configuration.
-func (m *NewSessionModel) buildSessionTypeOptions() []sessionTypeOption {
-	opts := []sessionTypeOption{
-		{"Create a new PR", "Start a fresh branch and pull request", sessionTypeNewPR},
-		{"Work on an existing PR", "Attach to an open pull request", sessionTypeExistingPR},
-		{"Quick Chat", "Work directly in the repo's base folder", sessionTypeQuickChat},
-	}
-
-	// Add tracker-issue options if the repo has the relevant credentials. Each
-	// is inserted before "Quick Chat", in order, so Sentry lands directly after
-	// Linear. The slices are rebuilt explicitly to avoid aliasing surprises from
-	// append-in-place when both options are present.
-	repo := m.selectedRepo()
-	var inserts []sessionTypeOption
-	if repo != nil && repo.LinearApiKey != "" {
-		inserts = append(inserts, sessionTypeOption{"Work on a Linear issue", "Pick an issue from your Linear board", sessionTypeLinearTicket})
-	}
-	if repo != nil && repo.SentryApiKey != "" && repo.SentryOrg != "" {
-		inserts = append(inserts, sessionTypeOption{"Fix a Sentry issue", "Pick an issue from your Sentry organization", sessionTypeSentryIssue})
-	}
-	if len(inserts) > 0 {
-		merged := make([]sessionTypeOption, 0, len(opts)+len(inserts))
-		merged = append(merged, opts[:2]...)
-		merged = append(merged, inserts...)
-		merged = append(merged, opts[2:]...)
-		opts = merged
-	}
-
-	return opts
-}
-
-// formData holds huh form-bound values on the heap so that Value() pointers
-// remain valid across bubbletea value-receiver copies of NewSessionModel.
-type formData struct {
-	title string
-}
 
 // NewSessionModel is the multi-step wizard for creating a new coding session.
 type NewSessionModel struct {
@@ -267,6 +114,9 @@ type NewSessionModel struct {
 
 	// Form
 	form *huh.Form
+	// formFields is the ordered field slice handed to huh.NewGroup, retained
+	// because huh.Form exposes no enumeration; it backs click-to-focus (BOS-512).
+	formFields formFields
 
 	// Spinner for the creating phase.
 	spinner spinner.Model
@@ -347,810 +197,38 @@ func (m NewSessionModel) Init() tea.Cmd {
 	return tea.Batch(fetchRepos(m.client, m.ctx), fetchAgents(m.client, m.ctx), m.spinner.Tick)
 }
 
-func fetchRepos(c client.BossClient, ctx context.Context) tea.Cmd {
-	return func() tea.Msg {
-		repos, err := c.ListRepos(ctx)
-		return reposMsg{repos: repos, err: err}
-	}
-}
-
-// fetchAgents loads the daemon's installed agent runners. Errors fall
-// through silently — a failed fetch leaves agents empty, which collapses
-// the wizard to its single-agent shape (skip the agent-select phase).
-func fetchAgents(c client.BossClient, ctx context.Context) tea.Cmd {
-	return func() tea.Msg {
-		agents, err := c.ListAgents(ctx)
-		return agentsMsg{agents: agents, err: err}
-	}
-}
-
-func agentIndex(agents []client.AgentInfo, name string) int {
-	if name == "" {
-		return -1
-	}
-	for i, agent := range agents {
-		if agent.Name == name {
-			return i
-		}
-	}
-	return -1
-}
-
-func fetchPRs(c client.BossClient, ctx context.Context, repoID string) tea.Cmd {
-	return func() tea.Msg {
-		prs, err := c.ListRepoPRs(ctx, repoID)
-		return prsMsg{prs: prs, err: err}
-	}
-}
-
-func fetchIssues(c client.BossClient, ctx context.Context, repoID, query, source string, seq uint64) tea.Cmd {
-	return func() tea.Msg {
-		issues, err := c.ListTrackerIssues(ctx, repoID, query, source)
-		return issuesMsg{issues: issues, err: err, seq: seq, query: query}
-	}
-}
-
-// scheduleIssueSearch schedules a debounced server-side search. The returned
-// command emits a searchIssuesTickMsg after issueSearchDebounce; the handler
-// for that message ignores it if a newer keystroke has incremented seq.
-func scheduleIssueSearch(seq uint64, query string) tea.Cmd {
-	return tea.Tick(issueSearchDebounce, func(time.Time) tea.Msg {
-		return searchIssuesTickMsg{seq: seq, query: query}
-	})
-}
-
-func openCreateStream(c client.BossClient, ctx context.Context, req *pb.CreateSessionRequest) tea.Cmd {
-	return func() tea.Msg {
-		stream, err := c.CreateSession(ctx, req)
-		return createSessionStreamMsg{stream: stream, err: err}
-	}
-}
-
-func readNextStreamMsg(stream client.CreateSessionStream) tea.Cmd {
-	return func() tea.Msg {
-		// Close the stream on any terminal path (error, EOF, SessionCreated,
-		// unknown event). SetupOutput is the only non-terminal case, where the
-		// caller will schedule another readNextStreamMsg and the stream must stay
-		// open.
-		if !stream.Receive() {
-			_ = stream.Close()
-			if err := stream.Err(); err != nil {
-				return streamErrorMsg{err: err}
-			}
-			return streamErrorMsg{err: fmt.Errorf("stream ended unexpectedly")}
-		}
-		msg := stream.Msg()
-		switch e := msg.Event.(type) {
-		case *pb.CreateSessionResponse_SetupOutput:
-			return setupScriptLineMsg{text: e.SetupOutput.GetText()}
-		case *pb.CreateSessionResponse_SessionCreated:
-			_ = stream.Close()
-			return streamSessionCreatedMsg{session: e.SessionCreated.GetSession()}
-		default:
-			_ = stream.Close()
-			return streamErrorMsg{err: fmt.Errorf("unexpected stream event")}
-		}
-	}
-}
-
-func (m *NewSessionModel) buildRepoTable() {
-	names := make([]string, len(m.repos))
-	paths := make([]string, len(m.repos))
-	for i, r := range m.repos {
-		names[i] = r.DisplayName
-		paths[i] = r.LocalPath
-	}
-
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep},
-		{Title: "PATH", Width: maxColWidth("PATH", paths, 60) + tableColumnSep},
-	}
-
-	rows := make([]table.Row, len(m.repos))
-	for i := range m.repos {
-		indicator := ""
-		if i == 0 {
-			indicator = cursorChevron
-		}
-		rows[i] = table.Row{indicator, names[i], paths[i]}
-	}
-
-	m.repoTable = newBossTable(cols, rows, m.repoTableHeight())
-	m.repoTable.SetWidth(columnsWidth(cols))
-}
-
-// repoTableHeight returns the height for the repo selection table.
-func (m NewSessionModel) repoTableHeight() int {
-	return clampedTableHeight(len(m.repos), m.height, bannerOverhead+6) // header + gaps + action bar
-}
-
-// buildAgentTable populates m.agentTable from m.agents with a single AGENT
-// column. The cursor column matches the other phase tables.
-func (m *NewSessionModel) buildAgentTable() {
-	names := make([]string, len(m.agents))
-	for i, a := range m.agents {
-		names[i] = a.Name
-	}
-	cursor := agentIndex(m.agents, m.preferredAgent)
-	if cursor < 0 {
-		cursor = 0
-	}
-
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "AGENT", Width: maxColWidth("AGENT", names, 20) + tableColumnSep},
-	}
-
-	rows := make([]table.Row, len(m.agents))
-	for i := range m.agents {
-		indicator := ""
-		if i == cursor {
-			indicator = cursorChevron
-		}
-		rows[i] = table.Row{indicator, names[i]}
-	}
-
-	m.agentTable = newBossTable(cols, rows, len(m.agents)+1)
-	m.agentTable.SetCursor(cursor)
-	m.agentTable.SetWidth(columnsWidth(cols))
-}
-
-func (m NewSessionModel) filterEnabledAgents(agents []client.AgentInfo) []client.AgentInfo {
-	if !m.filterAgentsBySettings {
-		return agents
-	}
-	out := make([]client.AgentInfo, 0, len(agents))
-	for _, agent := range agents {
-		if m.enabledAgentNames[agent.Name] {
-			out = append(out, agent)
-		}
-	}
-	return out
-}
-
-// accountRowLabel renders an account's picker label, falling back to the id
-// when it has no human-facing label.
-func accountRowLabel(a *pb.Account) string {
-	if a.GetLabel() != "" {
-		return a.GetLabel()
-	}
-	return a.GetId()
-}
-
-func (m *NewSessionModel) resolveInitialAccount() {
-	if m.initialAccountSet {
-		m.selectedAccount = m.initialAccount
-		if m.initialAccount == "" {
-			m.accountPicked = true
-		}
-		return
-	}
-	m.selectedAccount = ""
-	m.accountPicked = false
-}
-
-// advanceToType routes straight to the session-type chooser, resolving only the
-// explicit `--account` override. Without the flag, account_id stays unset so the
-// daemon applies its default-account policy.
-func (m *NewSessionModel) advanceToType() NewSessionModel {
-	m.resolveInitialAccount()
-	m.phase = newSessionPhaseTypeSelect
-	m.buildTypeTable()
-	return *m
-}
-
-func (m *NewSessionModel) buildTypeTable() {
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "", Width: 24 + tableColumnSep},
-		{Title: "", Width: 46 + tableColumnSep},
-	}
-	opts := m.buildSessionTypeOptions()
-	rows := make([]table.Row, len(opts))
-	for i, opt := range opts {
-		indicator := ""
-		if i == 0 {
-			indicator = cursorChevron
-		}
-		rows[i] = table.Row{indicator, opt.label, styleSubtle.Render(opt.desc)}
-	}
-	m.typeTable = newBossTable(cols, rows, len(opts)+1)
-	m.typeTable.SetWidth(columnsWidth(cols))
-}
-
-// applyPRFilter rebuilds m.prsFiltered based on the current prFilter query.
-func (m *NewSessionModel) applyPRFilter() {
-	m.prsFiltered = m.prsFiltered[:0]
-	for i, pr := range m.prs {
-		hay := fmt.Sprintf("#%d %s %s", pr.Number, pr.Title, pr.HeadBranch)
-		if m.prFilter.Matches(hay) {
-			m.prsFiltered = append(m.prsFiltered, i)
-		}
-	}
-	m.prFilter.SetCounts(len(m.prsFiltered), len(m.prs))
-}
-
-func (m *NewSessionModel) buildPRTable() {
-	// Always re-apply the filter so m.prsFiltered reflects current m.prs.
-	// Without this, stale indices from a previous fetch can point past the end
-	// of a shorter new m.prs and panic in the row loop below.
-	m.applyPRFilter()
-	n := len(m.prsFiltered)
-	numbers := make([]string, n)
-	titles := make([]string, n)
-	branches := make([]string, n)
-	for j, i := range m.prsFiltered {
-		pr := m.prs[i]
-		numbers[j] = fmt.Sprintf("#%d", pr.Number)
-		titles[j] = pr.Title
-		branches[j] = pr.HeadBranch
-	}
-
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "PR", Width: maxColWidth("PR", numbers, 10) + tableColumnSep},
-		{Title: "TITLE", Width: maxColWidth("TITLE", titles, 50) + tableColumnSep},
-		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 30) + tableColumnSep},
-	}
-
-	rows := make([]table.Row, n)
-	for j := range m.prsFiltered {
-		indicator := ""
-		if j == 0 {
-			indicator = cursorChevron
-		}
-		rows[j] = table.Row{indicator, numbers[j], titles[j], styleSubtle.Render(branches[j])}
-	}
-
-	m.prTable = newBossTable(cols, rows, m.prTableHeight())
-	m.prTable.SetWidth(columnsWidth(cols))
-}
-
-// prTableHeight returns the height for the PR selection table.
-func (m NewSessionModel) prTableHeight() int {
-	return clampedTableHeight(len(m.prsFiltered), m.height, bannerOverhead+6+m.prFilter.Height())
-}
-
-// applyIssueFilter rebuilds m.issuesFiltered based on the current issueFilter query.
-func (m *NewSessionModel) applyIssueFilter() {
-	m.issuesFiltered = m.issuesFiltered[:0]
-	query := m.issueFilter.Query()
-	// When the displayed issues were already fetched from the tracker with this
-	// exact query, the server has applied it. Structured/tag queries (e.g.
-	// "environment:production" for Sentry) match server-side but won't appear
-	// verbatim in the rendered columns, so re-running the local substring filter
-	// would hide valid server matches and show "no matches". Trust the server's
-	// result set in that case.
-	serverFiltered := strings.TrimSpace(query) != "" && query == m.issueSearchQuery
-	for i, issue := range m.trackerIssues {
-		// Include the rendered description (culprit, tags, stacktrace) in the
-		// haystack so local narrowing — used as you type, before the debounced
-		// server fetch returns — can match tag/metadata content, not just the
-		// ID/title/state columns.
-		hay := issue.ExternalId + " " + issue.Title + " " + issue.State + " " + issue.Description
-		if serverFiltered || m.issueFilter.Matches(hay) {
-			m.issuesFiltered = append(m.issuesFiltered, i)
-		}
-	}
-	m.issueFilter.SetCounts(len(m.issuesFiltered), len(m.trackerIssues))
-}
-
-func (m *NewSessionModel) buildIssueTable() {
-	// Always re-apply the filter so m.issuesFiltered reflects current
-	// m.trackerIssues. Without this, stale indices from a previous fetch can
-	// point past the end of a shorter new m.trackerIssues and panic below.
-	m.applyIssueFilter()
-	n := len(m.issuesFiltered)
-	ids := make([]string, n)
-	titles := make([]string, n)
-	states := make([]string, n)
-	for j, i := range m.issuesFiltered {
-		issue := m.trackerIssues[i]
-		ids[j] = issue.ExternalId
-		titles[j] = issue.Title
-		states[j] = issue.State
-	}
-
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "ID", Width: maxColWidth("ID", ids, 10) + tableColumnSep},
-		{Title: "TITLE", Width: maxColWidth("TITLE", titles, 50) + tableColumnSep},
-		{Title: "STATE", Width: maxColWidth("STATE", states, 15) + tableColumnSep},
-	}
-
-	rows := make([]table.Row, n)
-	for j := range m.issuesFiltered {
-		indicator := ""
-		if j == 0 {
-			indicator = cursorChevron
-		}
-		rows[j] = table.Row{indicator, ids[j], titles[j], styleSubtle.Render(states[j])}
-	}
-
-	m.issueTable = newBossTable(cols, rows, m.issueTableHeight())
-	m.issueTable.SetWidth(columnsWidth(cols))
-}
-
-// issueTableHeight returns the height for the issue selection table.
-func (m NewSessionModel) issueTableHeight() int {
-	return clampedTableHeight(len(m.issuesFiltered), m.height, bannerOverhead+6+m.issueFilter.Height())
-}
-
-func (m *NewSessionModel) updatePRFilterInput(msg tea.Msg) tea.Cmd {
-	cmd, changed := m.prFilter.Update(msg)
-	if changed {
-		m.buildPRTable()
-		m.prTable.SetCursor(0)
-		updateCursorColumn(&m.prTable)
-	}
-	return cmd
-}
-
-func (m *NewSessionModel) updateIssueFilterInput(msg tea.Msg) tea.Cmd {
-	cmd, changed := m.issueFilter.Update(msg)
-	if changed {
-		m.buildIssueTable()
-		m.issueTable.SetCursor(0)
-		updateCursorColumn(&m.issueTable)
-		m.issueSearchSeq++
-		m.issuesFetching = true
-		return tea.Batch(cmd, scheduleIssueSearch(m.issueSearchSeq, m.issueFilter.Query()))
-	}
-	return cmd
-}
-
-func (m *NewSessionModel) buildForm() {
-	if m.fd == nil {
-		m.fd = &formData{}
-	}
-
-	switch m.selectedType {
-	case sessionTypeNewPR:
-		m.form = huh.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Session name").
-					Placeholder("What are you working on?").
-					Value(&m.fd.title).
-					Validate(func(s string) error {
-						if strings.TrimSpace(s) == "" {
-							return fmt.Errorf("title is required")
-						}
-						return nil
-					}),
-			),
-		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
-
-	case sessionTypeQuickChat:
-		m.form = huh.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Session name").
-					Placeholder("Quick Chat").
-					Value(&m.fd.title),
-			),
-		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
-
-	case sessionTypeExistingPR, sessionTypeExecutePlan, sessionTypeLinearTicket, sessionTypeSentryIssue:
-		// No form needed for these types.
-	}
-}
-
-func (m NewSessionModel) updateForm(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
-	if m.form == nil || m.phase != newSessionPhaseForm || m.confirmingOverwrite {
-		return m, nil, false
-	}
-
-	_, cmd := m.form.Update(msg)
-
-	if m.form.State == huh.StateAborted {
-		m.phase = newSessionPhaseTypeSelect
-		m.form = nil
-		m.err = nil
-		m.fd = nil
-		m.forceBranch = false
-		return m, nil, true
-	}
-
-	if m.form.State == huh.StateCompleted {
-		model, cmd := m.handleFormCompleted()
-		return model, cmd, true
-	}
-
-	return m, cmd, true
-}
-
+// Update routes each message to a named handler. The arm order below is the
+// order the inline type switch used and is behaviour: the first matching arm
+// wins and every arm returns, so the trailing form delegation is reached only
+// by message types no arm claims.
 func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		if m.phase == newSessionPhaseRepoSelect {
-			m.repoTable.SetHeight(m.repoTableHeight())
-			m.repoTable.SetWidth(msg.Width)
-		}
-		if m.phase == newSessionPhasePRSelect {
-			m.prTable.SetHeight(m.prTableHeight())
-			m.prTable.SetWidth(msg.Width)
-		}
-		if m.phase == newSessionPhaseIssueSelect {
-			m.issueTable.SetHeight(m.issueTableHeight())
-			m.issueTable.SetWidth(msg.Width)
-		}
-		return m, nil
-
+		return m.handleWindowSize(msg)
 	case reposMsg:
-		if msg.err != nil {
-			m.err = msg.err
-			return m, nil
-		}
-		m.repos = msg.repos
-		slices.SortFunc(m.repos, func(a, b *pb.Repo) int {
-			return strings.Compare(strings.ToLower(a.DisplayName), strings.ToLower(b.DisplayName))
-		})
-		if len(m.repos) == 1 {
-			m.selectedRepoID = m.repos[0].Id
-			return m.advanceFromRepo(), nil
-		}
-		m.phase = newSessionPhaseRepoSelect
-		m.buildRepoTable()
-		return m, nil
-
+		return m.handleRepos(msg)
 	case agentsMsg:
-		// Agent fetch errors are non-fatal — m.agents stays empty which
-		// collapses the wizard to its single-agent shape. The daemon will
-		// still serve the implicit default at create time.
-		if msg.err == nil {
-			m.agents = m.filterEnabledAgents(msg.agents)
-		}
-		if m.phase == newSessionPhaseTypeSelect && m.selectedRepoID != "" && m.initialAgent == "" {
-			if len(m.agents) > 1 {
-				m.phase = newSessionPhaseAgentSelect
-				m.buildAgentTable()
-				return m, nil
-			}
-			if len(m.agents) == 1 {
-				m.initialAgent = m.agents[0].Name
-				m.preferredAgent = m.initialAgent
-				return m.advanceToType(), nil
-			}
-		}
-		return m, nil
-
+		return m.handleAgents(msg)
 	case prsMsg:
-		m.prs = msg.prs
-		if msg.err != nil {
-			m.err = msg.err
-			return m, nil
-		}
-		if len(m.prs) == 0 {
-			m.err = fmt.Errorf("no open PRs without an existing session")
-			return m, nil
-		}
-		m.phase = newSessionPhasePRSelect
-		m.buildPRTable()
-		return m, nil
-
+		return m.handlePRs(msg)
 	case issuesMsg:
-		// Drop stale responses: a newer search may have been issued, or the
-		// user may have navigated away from the issue flow, since this fetch
-		// was started. Keying off seq (rather than query) closes the window
-		// where m.issueSearchQuery has not yet caught up with the latest
-		// keystroke — the debounce tick only updates it when it fires.
-		if msg.seq != m.issueSearchSeq {
-			return m, nil
-		}
-		m.issuesFetching = false
-		if msg.err != nil {
-			m.err = msg.err
-			return m, nil
-		}
-		m.trackerIssues = msg.issues
-		// An empty result is fatal only on the very first (unfiltered) load —
-		// after that we may legitimately be showing "no matches for <query>",
-		// which the table renders fine on its own.
-		if len(m.trackerIssues) == 0 && !m.issueTableReady && msg.query == "" {
-			m.err = fmt.Errorf("no %s issues without an existing session", m.trackerSourceLabel())
-			return m, nil
-		}
-		m.phase = newSessionPhaseIssueSelect
-		m.buildIssueTable()
-		m.issueTable.SetCursor(0)
-		updateCursorColumn(&m.issueTable)
-		m.issueTableReady = true
-		return m, nil
-
+		return m.handleIssues(msg)
 	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
-
+		return m.handleSpinnerTick(msg)
 	case searchIssuesTickMsg:
-		// Ignore stale ticks — a newer keystroke has superseded this one.
-		if msg.seq != m.issueSearchSeq {
-			return m, nil
-		}
-		m.issueSearchQuery = msg.query
-		return m, fetchIssues(m.client, m.ctx, m.selectedRepoID, msg.query, m.trackerSource(), msg.seq)
-
+		return m.handleSearchIssuesTick(msg)
 	case createSessionStreamMsg:
-		if msg.err != nil {
-			var connectErr *connect.Error
-			if errors.As(msg.err, &connectErr) && connectErr.Code() == connect.CodeAlreadyExists {
-				m.confirmingOverwrite = true
-				m.phase = newSessionPhaseForm
-				m.err = nil
-				return m, nil
-			}
-			m.err = msg.err
-			m.phase = newSessionPhaseForm
-			return m, nil
-		}
-		m.createStream = msg.stream
-		return m, readNextStreamMsg(m.createStream)
-
+		return m.handleCreateStream(msg)
 	case setupScriptLineMsg:
-		m.setupLines = append(m.setupLines, msg.text)
-		return m, readNextStreamMsg(m.createStream)
-
+		return m.handleSetupScriptLine(msg)
 	case streamSessionCreatedMsg:
-		// readNextStreamMsg closes the stream on terminal events.
-		m.createdSess = msg.session
-		m.done = true
-		captureViewTelemetry(m.ctx, m.telemetry, telemetry.EventSessionCreated, map[string]any{
-			"source": "tui",
-		})
-		return m, nil
-
+		return m.handleStreamCreated(msg)
 	case streamErrorMsg:
-		// readNextStreamMsg closes the stream on terminal events.
-		var connectErr *connect.Error
-		if errors.As(msg.err, &connectErr) && connectErr.Code() == connect.CodeAlreadyExists {
-			m.confirmingOverwrite = true
-			m.phase = newSessionPhaseForm
-			m.err = nil
-			return m, nil
-		}
-		m.err = msg.err
-		m.phase = newSessionPhaseForm
-		return m, nil
-
+		return m.handleStreamError(msg)
 	case tea.PasteMsg:
-		if m.phase == newSessionPhasePRSelect && m.prFilter.Active() {
-			cmd := m.updatePRFilterInput(msg)
-			return m, cmd
-		}
-		if m.phase == newSessionPhaseIssueSelect && m.issueFilter.Active() {
-			cmd := m.updateIssueFilterInput(msg)
-			return m, cmd
-		}
-		if model, cmd, ok := m.updateForm(msg); ok {
-			return model, cmd
-		}
-		return m, nil
-
+		return m.handlePaste(msg)
 	case tea.KeyMsg:
-		if m.confirmingOverwrite {
-			return m.updateConfirmOverwrite(msg)
-		}
-
-		if m.phase == newSessionPhaseRepoSelect {
-			switch msg.String() {
-			case "esc":
-				m.cancel = true
-				return m, nil
-			case "enter":
-				idx := m.repoTable.Cursor()
-				if idx >= 0 && idx < len(m.repos) {
-					m.selectedRepoID = m.repos[idx].Id
-					return m.advanceFromRepo(), nil
-				}
-				return m, nil
-			}
-
-			var cmd tea.Cmd
-			m.repoTable, cmd = m.repoTable.Update(msg)
-			updateCursorColumn(&m.repoTable)
-			return m, cmd
-		}
-
-		if m.phase == newSessionPhaseAgentSelect {
-			switch msg.String() {
-			case "esc":
-				if len(m.repos) > 1 {
-					m.phase = newSessionPhaseRepoSelect
-					return m, nil
-				}
-				m.cancel = true
-				return m, nil
-			case "enter", " ", "space":
-				idx := m.agentTable.Cursor()
-				if idx >= 0 && idx < len(m.agents) {
-					agentName := m.agents[idx].Name
-					m.initialAgent = agentName
-					m.preferredAgent = agentName
-					if m.onAgentSelected != nil {
-						if err := m.onAgentSelected(agentName); err != nil {
-							m.err = err
-						}
-					}
-					return m.advanceToType(), nil
-				}
-				return m, nil
-			}
-
-			var cmd tea.Cmd
-			m.agentTable, cmd = m.agentTable.Update(msg)
-			updateCursorColumn(&m.agentTable)
-			return m, cmd
-		}
-
-		if m.phase == newSessionPhaseTypeSelect {
-			switch msg.String() {
-			case "esc":
-				// Go back to the most-recent picker: agent select, then repo
-				// select; else cancel.
-				if len(m.agents) > 1 {
-					m.phase = newSessionPhaseAgentSelect
-					m.buildAgentTable()
-					return m, nil
-				}
-				if len(m.repos) > 1 {
-					m.phase = newSessionPhaseRepoSelect
-					return m, nil
-				}
-				m.cancel = true
-				return m, nil
-			case "enter":
-				idx := m.typeTable.Cursor()
-				opts := m.buildSessionTypeOptions()
-				m.selectedType = opts[idx].typ
-				return m.advanceFromTypeSelect()
-			}
-
-			var cmd tea.Cmd
-			m.typeTable, cmd = m.typeTable.Update(msg)
-			updateCursorColumn(&m.typeTable)
-			return m, cmd
-		}
-
-		if m.phase == newSessionPhasePRSelect {
-			// While the filter input is focused, route keys through it (with
-			// special handling for commit/clear/navigation).
-			if m.prFilter.Active() {
-				switch msg.String() {
-				case "enter":
-					if !m.prFilter.Commit() {
-						m.prFilter.Deactivate()
-						m.buildPRTable()
-					}
-					return m, nil
-				case "esc":
-					m.prFilter.Deactivate()
-					m.buildPRTable()
-					m.prTable.SetCursor(0)
-					updateCursorColumn(&m.prTable)
-					return m, nil
-				case "up", "down", "ctrl+p", "ctrl+n", "ctrl+d", "ctrl+u":
-					var cmd tea.Cmd
-					m.prTable, cmd = m.prTable.Update(msg)
-					updateCursorColumn(&m.prTable)
-					return m, cmd
-				}
-				cmd := m.updatePRFilterInput(msg)
-				return m, cmd
-			}
-
-			switch msg.String() {
-			case "/":
-				cmd := m.prFilter.Activate()
-				// Activate transitions the filter line from hidden (Height=0)
-				// to visible (Height=1); rebuild the table so its height is
-				// recomputed before the next render.
-				m.buildPRTable()
-				return m, cmd
-			case "esc":
-				if m.prFilter.Applied() {
-					m.prFilter.Deactivate()
-					m.buildPRTable()
-					m.prTable.SetCursor(0)
-					updateCursorColumn(&m.prTable)
-					return m, nil
-				}
-				m.phase = newSessionPhaseTypeSelect
-				m.forceBranch = false
-				return m, nil
-			case "enter":
-				idx := m.prTable.Cursor()
-				if idx >= 0 && idx < len(m.prsFiltered) {
-					cmd := m.startCreating()
-					return m, cmd
-				}
-				return m, nil
-			}
-
-			var cmd tea.Cmd
-			m.prTable, cmd = m.prTable.Update(msg)
-			updateCursorColumn(&m.prTable)
-			return m, cmd
-		}
-
-		if m.phase == newSessionPhaseIssueSelect {
-			if m.issueFilter.Active() {
-				switch msg.String() {
-				case "enter":
-					// Live debounced search means there is nothing to "commit"
-					// — pressing Enter selects the highlighted row, mirroring
-					// how Enter behaves once the filter input is blurred.
-					idx := m.issueTable.Cursor()
-					if idx >= 0 && idx < len(m.issuesFiltered) {
-						m.selectedIssue = m.trackerIssues[m.issuesFiltered[idx]]
-						cmd := m.startCreating()
-						return m, cmd
-					}
-					return m, nil
-				case "esc":
-					// Clear the filter and refetch the unfiltered list. The
-					// seq bump invalidates any in-flight tick or fetch.
-					m.issueFilter.Deactivate()
-					m.issueSearchSeq++
-					m.issueSearchQuery = ""
-					m.issuesFetching = true
-					m.buildIssueTable()
-					return m, fetchIssues(m.client, m.ctx, m.selectedRepoID, "", m.trackerSource(), m.issueSearchSeq)
-				case "up", "down", "ctrl+p", "ctrl+n", "ctrl+d", "ctrl+u":
-					var cmd tea.Cmd
-					m.issueTable, cmd = m.issueTable.Update(msg)
-					updateCursorColumn(&m.issueTable)
-					return m, cmd
-				}
-				cmd := m.updateIssueFilterInput(msg)
-				return m, cmd
-			}
-
-			switch msg.String() {
-			case "/":
-				cmd := m.issueFilter.Activate()
-				// See the matching comment on the PR filter branch above.
-				m.buildIssueTable()
-				return m, cmd
-			case "esc":
-				// Bumping seq here invalidates any in-flight fetch whose
-				// response would otherwise snap the user back to issue select.
-				m.issueSearchSeq++
-				m.phase = newSessionPhaseTypeSelect
-				m.forceBranch = false
-				return m, nil
-			case "enter":
-				idx := m.issueTable.Cursor()
-				if idx >= 0 && idx < len(m.issuesFiltered) {
-					m.selectedIssue = m.trackerIssues[m.issuesFiltered[idx]]
-					cmd := m.startCreating()
-					return m, cmd
-				}
-				return m, nil
-			}
-
-			var cmd tea.Cmd
-			m.issueTable, cmd = m.issueTable.Update(msg)
-			updateCursorColumn(&m.issueTable)
-			return m, cmd
-		}
-
-		switch msg.String() {
-		case "esc":
-			if m.phase == newSessionPhaseForm {
-				m.phase = newSessionPhaseTypeSelect
-				m.form = nil
-				m.err = nil
-				m.fd = nil
-				m.forceBranch = false
-				return m, nil
-			}
-			m.cancel = true
-			return m, nil
-		}
+		return m.handleKey(msg)
 	}
 
 	// Delegate to form.
@@ -1159,171 +237,6 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
-}
-
-// advanceFromRepo moves on after a repo has been selected. With more than
-// one agent loaded AND no CLI override, route to the agent picker first;
-// otherwise jump straight to the session-type chooser. Returns the updated
-// model so callers can return it directly to bubbletea.
-func (m *NewSessionModel) advanceFromRepo() NewSessionModel {
-	if len(m.agents) > 1 && m.initialAgent == "" {
-		m.phase = newSessionPhaseAgentSelect
-		m.buildAgentTable()
-		return *m
-	}
-	if len(m.agents) == 1 && m.initialAgent == "" {
-		m.initialAgent = m.agents[0].Name
-		m.preferredAgent = m.initialAgent
-	}
-	return m.advanceToType()
-}
-
-func (m *NewSessionModel) advanceFromTypeSelect() (tea.Model, tea.Cmd) {
-	switch m.selectedType {
-	case sessionTypeQuickChat:
-		m.phase = newSessionPhaseForm
-		m.buildForm()
-		return *m, m.form.Init()
-	case sessionTypeExistingPR:
-		// Fetch PRs, then show PR selector table.
-		m.phase = newSessionPhaseLoading
-		return *m, fetchPRs(m.client, m.ctx, m.selectedRepoID)
-	case sessionTypeLinearTicket, sessionTypeSentryIssue:
-		// Fetch tracker issues (Linear or Sentry), then show the issue selector.
-		m.phase = newSessionPhaseLoading
-		m.issueSearchQuery = ""
-		return *m, fetchIssues(m.client, m.ctx, m.selectedRepoID, "", m.trackerSource(), m.issueSearchSeq)
-	case sessionTypeNewPR:
-		m.phase = newSessionPhaseForm
-		m.buildForm()
-		return *m, m.form.Init()
-	default:
-		m.cancel = true
-		return *m, nil
-	}
-}
-
-func (m *NewSessionModel) handleFormCompleted() (tea.Model, tea.Cmd) {
-	// Title input or plan input completed — proceed to create.
-	cmd := m.startCreating()
-	return *m, cmd
-}
-
-func (m NewSessionModel) updateConfirmOverwrite(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "y", "Y", "enter":
-		m.confirmingOverwrite = false
-		m.forceBranch = true
-		cmd := m.startCreating()
-		return m, cmd
-	case "n", "N", "esc":
-		m.confirmingOverwrite = false
-		m.forceBranch = false
-		m.err = nil
-		switch m.selectedType {
-		case sessionTypeLinearTicket, sessionTypeSentryIssue:
-			m.phase = newSessionPhaseIssueSelect
-			return m, nil
-		case sessionTypeExistingPR:
-			m.phase = newSessionPhasePRSelect
-			return m, nil
-		default:
-			m.phase = newSessionPhaseForm
-			m.buildForm()
-			return m, m.form.Init()
-		}
-	}
-	return m, nil
-}
-
-func (m *NewSessionModel) selectedRepo() *pb.Repo {
-	for _, r := range m.repos {
-		if r.Id == m.selectedRepoID {
-			return r
-		}
-	}
-	return nil
-}
-
-// startCreating builds a CreateSessionRequest and fires the RPC.
-func (m *NewSessionModel) startCreating() tea.Cmd {
-	if m.phase == newSessionPhaseCreating {
-		return nil
-	}
-	m.phase = newSessionPhaseCreating
-	m.setupLines = nil // Clear setup output from any previous attempt
-	repo := m.selectedRepo()
-	if repo == nil {
-		m.err = fmt.Errorf("no repository selected")
-		return nil
-	}
-
-	req := &pb.CreateSessionRequest{
-		RepoId:      repo.Id,
-		BaseBranch:  repo.DefaultBaseBranch,
-		ForceBranch: m.forceBranch,
-	}
-	if m.initialAgent != "" {
-		// Copy to a local so req.AgentName points at request-owned memory,
-		// not the model field (which may be mutated later).
-		agent := m.initialAgent
-		req.AgentName = &agent
-	}
-	if m.selectedAccount != "" || m.accountPicked {
-		// Copy to a local so req.AccountId points at request-owned memory.
-		//   - selectedAccount != "": an explicit --account value.
-		//   - selectedAccount == "" && accountPicked: explicit --account= sends
-		//     an empty account_id so the daemon binds account 0 and skips the
-		//     default-account policy.
-		// When neither holds, account_id stays unset and the daemon applies its
-		// default-account policy.
-		account := m.selectedAccount
-		req.AccountId = &account
-	}
-
-	switch m.selectedType {
-	case sessionTypeQuickChat:
-		var title string
-		if m.fd != nil {
-			title = strings.TrimSpace(m.fd.title)
-		}
-		if title == "" {
-			title = "Quick Chat " + time.Now().Format("2006-01-02 15:04")
-		}
-		req.Title = title
-		req.IsQuickChat = true
-	case sessionTypeNewPR:
-		req.Title = m.fd.title
-	case sessionTypeExistingPR:
-		idx := m.prTable.Cursor()
-		if idx >= 0 && idx < len(m.prsFiltered) {
-			pr := m.prs[m.prsFiltered[idx]]
-			req.Title = pr.Title
-			req.PrNumber = &pr.Number
-		}
-	case sessionTypeLinearTicket, sessionTypeSentryIssue:
-		if m.selectedIssue != nil {
-			issue := m.selectedIssue
-			req.Title = fmt.Sprintf("[%s] %s", issue.ExternalId, issue.Title)
-			req.Plan = trackerprompt.Format(issue, m.trackerSource())
-			req.TrackerId = &issue.ExternalId
-			if issue.Url != "" {
-				req.TrackerUrl = &issue.Url
-			}
-			if issue.PrNumber > 0 {
-				// Existing PR - attach to it
-				prNum := issue.PrNumber
-				req.PrNumber = &prNum
-			} else if issue.BranchName != "" {
-				// New branch using the tracker's suggested name
-				req.BranchName = &issue.BranchName
-			}
-		}
-	default:
-		req.Title = "New session"
-	}
-
-	return openCreateStream(m.client, m.ctx, req)
 }
 
 // Cancelled returns true if the user cancelled the wizard.
@@ -1335,197 +248,56 @@ func (m NewSessionModel) Done() bool { return m.done }
 // CreatedSession returns the session created by the wizard, or nil.
 func (m NewSessionModel) CreatedSession() *pb.Session { return m.createdSess }
 
+// View selects the renderer for the current wizard state. The guard order
+// below is the order of the original if-chain and is behaviour.
 func (m NewSessionModel) View() tea.View {
 	if m.err != nil && !m.confirmingOverwrite {
-		var b strings.Builder
-		b.WriteString(renderError(fmt.Sprintf("Error: %v", m.err), m.width))
-		if len(m.setupLines) > 0 {
-			b.WriteString("\n")
-			b.WriteString(lipgloss.NewStyle().PaddingLeft(2).Foreground(colorWarning).Render("Setup script output:"))
-			b.WriteString("\n")
-			for _, line := range m.setupLines {
-				b.WriteString(lipgloss.NewStyle().PaddingLeft(4).Foreground(lipgloss.Color("8")).Render(line))
-				b.WriteString("\n")
-			}
-		}
-		b.WriteString("\n")
-		b.WriteString(actionBar([]string{"[esc] back"}))
-		return tea.NewView(b.String())
+		return tea.NewView(m.renderErr())
 	}
 
 	if m.phase == newSessionPhaseLoading {
-		return tea.NewView(
-			lipgloss.NewStyle().Padding(0, 2).Render("Loading..."),
-		)
+		return tea.NewView(m.renderLoading())
 	}
 
 	if m.phase == newSessionPhaseRepoSelect {
-		var b strings.Builder
-		b.WriteString(styleTitle.Render("Select a repository"))
-		b.WriteString("\n\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.repoTable.View()))
-		b.WriteString("\n")
-		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
-		return tea.NewView(b.String())
+		return tea.NewView(m.renderRepoSelect())
 	}
 
 	if m.phase == newSessionPhaseAgentSelect {
-		var b strings.Builder
-		b.WriteString(m.headerView())
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render(
-			"Multiple agents are installed — pick one for this session."))
-		b.WriteString("\n\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.agentTable.View()))
-		b.WriteString("\n")
-		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
-		return tea.NewView(b.String())
+		return tea.NewView(m.renderAgentSelect())
 	}
 
 	if m.phase == newSessionPhaseTypeSelect {
-		var b strings.Builder
-		b.WriteString(m.headerView())
-		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.typeTable.View()))
-		b.WriteString("\n")
-		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
-		return tea.NewView(b.String())
+		return tea.NewView(m.renderTypeSelect())
 	}
 
 	if m.phase == newSessionPhasePRSelect {
-		var b strings.Builder
-		b.WriteString(m.headerView())
-		if m.prFilter.Engaged() && len(m.prsFiltered) == 0 {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render("no matches"))
-			b.WriteString("\n")
-		} else {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.prTable.View()))
-			b.WriteString("\n")
-		}
-		if m.prFilter.Engaged() {
-			b.WriteString(m.prFilter.View())
-			b.WriteString("\n")
-		}
-		b.WriteString(prSelectActionBar(m.prFilter, len(m.prs) > 0))
-		return tea.NewView(b.String())
+		return tea.NewView(m.renderPRSelect())
 	}
 
 	if m.phase == newSessionPhaseIssueSelect {
-		var b strings.Builder
-		b.WriteString(m.headerView())
-		if !m.issueTableReady {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("Loading %s issues...", m.trackerSourceLabel())))
-		} else {
-			if m.issueFilter.Engaged() && len(m.issuesFiltered) == 0 {
-				placeholder := "no matches"
-				if m.issuesFetching {
-					placeholder = "searching…"
-				}
-				b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render(placeholder))
-				b.WriteString("\n")
-			} else {
-				b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.issueTable.View()))
-				b.WriteString("\n")
-			}
-			if m.issueFilter.Engaged() {
-				b.WriteString(m.issueFilter.View())
-				if m.issuesFetching && len(m.issuesFiltered) > 0 {
-					b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  searching…"))
-				}
-				b.WriteString("\n")
-			}
-			b.WriteString(prSelectActionBar(m.issueFilter, len(m.trackerIssues) > 0))
-		}
-		return tea.NewView(b.String())
+		return tea.NewView(m.renderIssueSelect())
 	}
 
 	if m.phase == newSessionPhaseCreating {
-		var b strings.Builder
-		// Render "initializing" indicator using INFO/blue style with an animated
-		// Dot spinner (same style as the session-list spinner).
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusInfo.Render(m.spinner.View() + "initializing")))
-		// Blank line after "initializing" so the creating phase has more breathing
-		// room before the following status line (BOS-397). The gap precedes whichever
-		// message comes next ("Running setup script..." or "Creating a new session...").
-		b.WriteString("\n\n")
-		if len(m.setupLines) > 0 {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Running setup script..."))
-			b.WriteString("\n")
-			// Show last 10 lines of setup output.
-			start := 0
-			if len(m.setupLines) > 10 {
-				start = len(m.setupLines) - 10
-			}
-			for _, line := range m.setupLines[start:] {
-				b.WriteString(lipgloss.NewStyle().PaddingLeft(4).Foreground(lipgloss.Color("8")).Render(line))
-				b.WriteString("\n")
-			}
-		} else {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Creating a new session..."))
-		}
-		return tea.NewView(b.String())
+		return tea.NewView(m.renderCreating())
 	}
 
 	if m.done && m.createdSess != nil {
-		return tea.NewView(
-			lipgloss.NewStyle().Padding(0, 2).Foreground(colorSuccess).Render("Session created!") + "\n" +
-				lipgloss.NewStyle().Padding(0, 2).Render(
-					fmt.Sprintf("  ID:     %s\n  Title:  %s\n  Branch: %s",
-						m.createdSess.Id, m.createdSess.Title, m.createdSess.BranchName)),
-		)
+		return tea.NewView(m.renderDone())
 	}
 
 	if m.confirmingOverwrite {
-		var b strings.Builder
-		b.WriteString(m.headerView())
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
-			"A branch with this name already exists."))
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-			"Remove the old branch and create a new session?"))
-		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
-		return tea.NewView(b.String())
+		return tea.NewView(m.renderConfirmOverwrite())
 	}
 
 	if m.form != nil {
-		var b strings.Builder
-		b.WriteString(m.headerView())
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().PaddingLeft(2).Render(m.form.View()))
-		return tea.NewView(b.String())
+		v := tea.NewView(m.renderForm())
+		// Mouse reporting is scoped to form screens (BOS-512); every phase
+		// above keeps the zero value MouseModeNone.
+		v.MouseMode = tea.MouseModeCellMotion
+		return v
 	}
 
 	return tea.NewView("")
-}
-
-// prSelectActionBar renders the action bar for the filterable select phases
-// (PR select and issue select). The bar adapts to the filter state:
-//   - filtering (input focused): replaces the bar with the filter help.
-//   - applied (query committed): offers to edit or clear the filter.
-//   - idle: normal "[enter] select" plus discoverability hint for "/".
-func prSelectActionBar(f listFilter, hasItems bool) string {
-	if f.Active() {
-		return actionBar(f.ActionBar())
-	}
-	if f.Applied() {
-		return actionBar(
-			[]string{"[enter] select"},
-			[]string{"[/] edit filter", "[esc] clear"},
-		)
-	}
-	primary := []string{"[enter] select"}
-	if hasItems {
-		primary = append(primary, "[/] filter")
-	}
-	return actionBar(primary, []string{"[esc] back"})
-}
-
-func (m NewSessionModel) headerView() string {
-	repo := m.selectedRepo()
-	if repo == nil {
-		return ""
-	}
-	bold := lipgloss.NewStyle().Bold(true)
-	return lipgloss.NewStyle().Padding(0, 2).Render(
-		"Starting a "+bold.Render("new session")+" for "+bold.Render(repo.DisplayName)) + "\n"
 }

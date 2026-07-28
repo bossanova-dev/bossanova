@@ -272,6 +272,13 @@ func TestCreateSessionAlreadyShippedGuardFailsOpenOnScanError(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("sessions len = %d, want 1 (fail-open created the session)", len(sessions))
 	}
+	// This create takes the default path, so it left a background draft-PR step
+	// running past the RPC (BOS-540) — and that step logs into the same buffer
+	// this test is about to read. Drain it first: `zerolog.SyncWriter` orders
+	// writes against each other but does nothing for an external
+	// bytes.Buffer.String(), so without this the read races the goroutine.
+	h.awaitDraftPRs(t)
+
 	logs := buf.String()
 	if !strings.Contains(logs, "already-shipped scan failed") {
 		t.Fatalf("logs = %q, want to contain 'already-shipped scan failed'", logs)

@@ -1,7 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { TRACKER_CAPABILITIES, resolveTrackerAdapter, assertConforms } from './adapter.mjs'
+import {
+  TRACKER_CAPABILITIES,
+  OPTIONAL_TRACKER_CAPABILITIES,
+  OPTIONAL_TRACKER_OPERATIONS,
+  TRACKER_STATE_ROLES,
+  REQUIRED_TRACKER_OPERATIONS,
+  resolveTrackerAdapter,
+  assertConforms,
+} from './adapter.mjs'
 
 test('TRACKER_CAPABILITIES lists the full capability surface', () => {
   assert.deepEqual(TRACKER_CAPABILITIES, [
@@ -14,6 +22,76 @@ test('TRACKER_CAPABILITIES lists the full capability surface', () => {
     'normalizeTicket',
     'operationMap',
   ])
+})
+
+test('REQUIRED_TRACKER_OPERATIONS lists the full required op surface, including updateComment', () => {
+  assert.deepEqual(REQUIRED_TRACKER_OPERATIONS, [
+    'selectPlanned',
+    'getIssue',
+    'moveState',
+    'readComments',
+    'writeComment',
+    'updateComment',
+    'readLabels',
+    'extractImages',
+    'createLabel',
+    'setPriorityEstimate',
+    'appendDependency',
+  ])
+})
+
+test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does NOT (BOS-524)', () => {
+  assert.deepEqual(OPTIONAL_TRACKER_CAPABILITIES, ['states'])
+  // The separation is the whole point: assertConforms REQUIRES every
+  // TRACKER_CAPABILITIES entry, so promoting `states` there would fail every
+  // conforming adapter that legitimately omits it.
+  assert.ok(
+    !TRACKER_CAPABILITIES.includes('states'),
+    'states must stay optional — a required states would break conforming adapters without one',
+  )
+})
+
+test('attachment operations are optional but validate when declared', () => {
+  assert.deepEqual(OPTIONAL_TRACKER_OPERATIONS, [
+    'preparePlanAttachment',
+    'finalizePlanAttachment',
+    'readPlanAttachment',
+    'deletePlanAttachment',
+  ])
+  assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(validOperationMap())))
+
+  const map = validOperationMap()
+  map.preparePlanAttachment = { tool: '', summary: 'prepare upload' }
+  assert.throws(
+    () => assertConforms(stubAdapterWithOperationMap(map)),
+    /tracker adapter operation preparePlanAttachment missing tool/,
+  )
+})
+
+test('TRACKER_STATE_ROLES pins the roles the skills consume by name (BOS-524)', () => {
+  assert.deepEqual(TRACKER_STATE_ROLES, ['planned', 'inProgress', 'inReview'])
+})
+
+test('assertConforms accepts an adapter with NO states capability (BOS-524)', () => {
+  // The acceptance case for the MUST-populate rule: such an adapter conforms, and
+  // trackerConfig.<tracker>.states becomes the only source for repos using it.
+  const adapter = stubAdapterWithOperationMap(validOperationMap())
+  assert.equal(adapter.states, undefined)
+  assert.doesNotThrow(() => assertConforms(adapter))
+})
+
+test('assertConforms accepts a states FUNCTION and rejects a non-callable one (BOS-524)', () => {
+  const withStates = (states) => ({ ...stubAdapterWithOperationMap(validOperationMap()), states })
+  assert.doesNotThrow(() => assertConforms(withStates(() => ({ planned: 'Ready' }))))
+  // A present-but-not-callable states passes the presence loop and would then blow up
+  // at the call site as a raw TypeError, defeating the caller's fallback.
+  for (const bad of [{ planned: 'Ready' }, 'Ready', 42, [], true]) {
+    assert.throws(
+      () => assertConforms(withStates(bad)),
+      /tracker adapter optional capability states must be a function/,
+      `expected a throw for states = ${JSON.stringify(bad)}`,
+    )
+  }
 })
 
 test('resolveTrackerAdapter defaults to the Linear adapter', () => {
@@ -55,4 +133,114 @@ test('assertConforms passes for the Linear adapter', () => {
 
 test('assertConforms throws when a capability is missing', () => {
   assert.throws(() => assertConforms({ tracker: 'stub' }), /missing capability: hasWork/)
+})
+
+// A stub adapter with every TRACKER_CAPABILITIES member present and a fully
+// valid operationMap (every REQUIRED_TRACKER_OPERATIONS key with a non-empty
+// tool + summary), so the operationMap-specific tests below isolate exactly
+// the mutation under test.
+function stubAdapterWithOperationMap(operationMap) {
+  return {
+    hasWork: () => {},
+    hasUnblockedWork: () => {},
+    readDependencies: () => {},
+    isUnblocked: () => {},
+    formatClaimComment: () => {},
+    resolveClaim: () => {},
+    normalizeTicket: () => {},
+    operationMap,
+  }
+}
+
+function validOperationMap() {
+  const map = {}
+  for (const key of REQUIRED_TRACKER_OPERATIONS) {
+    map[key] = { tool: `mcp__stub__${key}`, summary: `summary for ${key}` }
+  }
+  return map
+}
+
+test('assertConforms throws the contract error (not a raw TypeError) for a non-object operationMap', () => {
+  // `null` is not `undefined`, so it passes the TRACKER_CAPABILITIES presence
+  // loop and would otherwise reach `adapter.operationMap[key]` and surface as
+  // "Cannot read properties of null" instead of a contract message.
+  for (const bad of [null, 'nope', 42, []]) {
+    assert.throws(
+      () => assertConforms(stubAdapterWithOperationMap(bad)),
+      /tracker adapter operationMap must be an object/,
+      `expected the contract error for operationMap = ${JSON.stringify(bad)}`,
+    )
+  }
+})
+
+test('assertConforms throws when operationMap is missing a required op', () => {
+  const map = validOperationMap()
+  delete map.updateComment
+  const adapter = stubAdapterWithOperationMap(map)
+  assert.throws(
+    () => assertConforms(adapter),
+    /tracker adapter operationMap missing operation: updateComment/,
+  )
+})
+
+test('assertConforms throws when a required op has a blank/missing tool', () => {
+  const map = validOperationMap()
+  map.updateComment = { tool: '', summary: 'valid summary' }
+  const adapter = stubAdapterWithOperationMap(map)
+  assert.throws(
+    () => assertConforms(adapter),
+    /tracker adapter operation updateComment missing tool/,
+  )
+})
+
+test('assertConforms throws when a required op has a blank/missing summary', () => {
+  const map = validOperationMap()
+  map.updateComment = { tool: 'mcp__stub__updateComment', summary: '' }
+  const adapter = stubAdapterWithOperationMap(map)
+  assert.throws(
+    () => assertConforms(adapter),
+    /tracker adapter operation updateComment missing summary/,
+  )
+})
+
+test('assertConforms throws for a whitespace-only tool or summary, not just an empty one', () => {
+  // The contract documents these as non-empty; `" "` or `"\n"` names no MCP tool
+  // and describes nothing, so it must not be able to claim conformance.
+  for (const blank of [' ', '\n', '\t  ']) {
+    const toolMap = validOperationMap()
+    toolMap.updateComment = { tool: blank, summary: 'valid summary' }
+    assert.throws(
+      () => assertConforms(stubAdapterWithOperationMap(toolMap)),
+      /tracker adapter operation updateComment missing tool/,
+      `expected a throw for tool = ${JSON.stringify(blank)}`,
+    )
+
+    const summaryMap = validOperationMap()
+    summaryMap.updateComment = { tool: 'mcp__stub__updateComment', summary: blank }
+    assert.throws(
+      () => assertConforms(stubAdapterWithOperationMap(summaryMap)),
+      /tracker adapter operation updateComment missing summary/,
+      `expected a throw for summary = ${JSON.stringify(blank)}`,
+    )
+  }
+})
+
+test('assertConforms throws when a required op has no tool key at all', () => {
+  const map = validOperationMap()
+  map.updateComment = { summary: 'valid summary' }
+  const adapter = stubAdapterWithOperationMap(map)
+  assert.throws(
+    () => assertConforms(adapter),
+    /tracker adapter operation updateComment missing tool/,
+  )
+})
+
+test('assertConforms throws when a required op has no summary key at all', () => {
+  const map = validOperationMap()
+  map.updateComment = { tool: 'mcp__stub__updateComment' }
+  const adapter = stubAdapterWithOperationMap(map)
+  assert.throws(
+    () => assertConforms(adapter),
+    /tracker adapter operation updateComment missing summary/,
+  )
 })

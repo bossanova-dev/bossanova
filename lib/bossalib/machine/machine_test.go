@@ -1,6 +1,9 @@
 package machine
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"testing"
 )
 
@@ -960,5 +963,75 @@ func assertState(t *testing.T, m *Machine, want State) {
 	t.Helper()
 	if got := m.State(); got != want {
 		t.Fatalf("state: got %s, want %s", got, want)
+	}
+}
+
+// TestAllStatesMatchesTheConstBlock is the exhaustiveness anchor for the whole
+// tree: it parses THIS package's own source and fails when a State is declared
+// without being added to AllStates.
+//
+// It parses rather than reflects because Go offers no way to enumerate an iota
+// const block at runtime, and every cheaper guard has a hole. A sentinel like
+// `(last + 1).String() != "unknown"` only trips for a state that also gained a
+// String() case; a hand-written list compared against another hand-written list
+// is circular. Reading the declarations is the only check that cannot be
+// satisfied by forgetting something.
+//
+// Consumers (broadcast.TriggerClassFor and its table, display mappings) iterate
+// AllStates, so a state added to the const block fails HERE first, with an
+// instruction, instead of silently falling through every switch in the tree.
+func TestAllStatesMatchesTheConstBlock(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "machine.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse machine.go: %v", err)
+	}
+
+	var declared []string
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		// Only the block whose first spec is typed `State`; Event has its own.
+		first, ok := gen.Specs[0].(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		ident, ok := first.Type.(*ast.Ident)
+		if !ok || ident.Name != "State" {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, name := range vs.Names {
+				declared = append(declared, name.Name)
+			}
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("no State const block found in machine.go: this guard has stopped guarding anything")
+	}
+
+	got := AllStates()
+	if len(got) != len(declared) {
+		t.Fatalf("AllStates has %d entries but machine.go declares %d States (%v): "+
+			"add the new state to AllStates, and classify it everywhere AllStates is "+
+			"iterated (broadcast.TriggerClassFor among them)",
+			len(got), len(declared), declared)
+	}
+	for i, name := range declared {
+		// Declaration order is the persisted integer order, so position is part of
+		// the contract, not just membership.
+		if int(got[i]) != i+1 {
+			t.Fatalf("AllStates[%d] = %d, want %d: AllStates must be in declaration order "+
+				"because the index IS the persisted sessions.state value", i, int(got[i]), i+1)
+		}
+		if got[i].String() == "unknown" {
+			t.Errorf("State %s (declared #%d) has no String() case", name, i+1)
+		}
 	}
 }

@@ -15,6 +15,7 @@ go_library(
     visibility = ["//services/boss:__subpackages__"],
     deps = [
         "//lib/bossalib/statusdetect",
+        "@com_github_charmbracelet_x_ansi//:ansi",
         "@com_github_creack_pty_v2//:pty",
         "@org_golang_x_term//:term",
     ],
@@ -27,6 +28,8 @@ go_test(
         "clamp_test.go",
         "command_detach_pty_test.go",
         "command_detach_test.go",
+        "command_reset_pty_test.go",
+        "command_reset_test.go",
         "filter_test.go",
         "manager_test.go",
         "question_test.go",

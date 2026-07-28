@@ -33,6 +33,7 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
+	bcastsvc "github.com/recurser/bossd/internal/broadcast"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dotenv"
@@ -89,16 +90,40 @@ type Server struct {
 	taskMappings    db.TaskMappingStore
 	cronJobs        db.CronJobStore
 	githubCallbacks db.GithubCallbackStore
-	accounts        db.AccountStore
-	rotationEngine  *rotation.Engine
-	resolver        *account.Resolver
-	accountCreds    AccountCredentialStore
-	addAccountMu    sync.Mutex
-	accountSmoke    AccountSmokeRunner
-	usageProbe      UsageProbeRecorder
-	checkSnapshots  db.CheckSnapshotStore
-	rotationEvents  db.RotationEventStore
-	cronScheduler   *cron.Scheduler
+	// broadcasts persists broadcasts and their per-target deliveries (BOS-556);
+	// broadcastResolver turns a validated selector into the frozen audience.
+	// Both are optional (nil in tests/wiring that does not exercise the
+	// broadcast surface), and the handlers fail with CodeUnavailable rather
+	// than panicking when they are absent.
+	broadcasts        broadcastStore
+	broadcastResolver *bcastsvc.Resolver
+	// broadcastEgress publishes a broadcast whose audience reaches beyond this
+	// daemon up the reverse stream for bosso to route (BOS-558); daemonID is
+	// this daemon's PERSISTED id, stamped on those events as the origin. Both
+	// are optional: an unset publisher means "no upstream wiring", and the send
+	// path then stays purely local rather than failing.
+	broadcastEgress bcastsvc.EgressPublisher
+	daemonID        string
+	// notes persists free-text notes recorded against a repo (BOS-550).
+	// Optional (nil where the note surface is not exercised); the handlers
+	// report CodeUnavailable rather than panicking when it is absent.
+	notes db.NoteStore
+	// broadcastSubscriptions persists standing subscriptions (BOS-557): the
+	// rule that fires a broadcast when its owning session settles. Optional in
+	// the same way as broadcasts; the handlers report CodeUnavailable when it
+	// is absent. Firing is the evaluator's job, not this surface's — the
+	// handlers narrow it to create/read/cancel.
+	broadcastSubscriptions broadcastSubscriptionStore
+	accounts               db.AccountStore
+	rotationEngine         *rotation.Engine
+	resolver               *account.Resolver
+	accountCreds           AccountCredentialStore
+	addAccountMu           sync.Mutex
+	accountSmoke           AccountSmokeRunner
+	usageProbe             UsageProbeRecorder
+	checkSnapshots         db.CheckSnapshotStore
+	rotationEvents         db.RotationEventStore
+	cronScheduler          *cron.Scheduler
 	// cronActivity is the agent-liveness seam used to derive cron STATUS
 	// (RUNNING only when the last-run agent is actively working). Shares the
 	// same instance as the scheduler's overlap check (cmd/main.go). Optional,
@@ -107,8 +132,8 @@ type Server struct {
 	chatStatus     *status.Tracker
 	displayTracker *status.DisplayTracker
 	// prRefresher re-polls a single PR's display status on demand. MergeSession
-	// uses it to repopulate the display tracker on the merge-only path (see the
-	// SetMerging block there). Optional, may be nil in tests / older wiring.
+	// uses it to repopulate the display tracker after every merge attempt (see
+	// the SetMerging block there). Optional, may be nil in tests / older wiring.
 	prRefresher PRRefresher
 	repairLease *status.RepairLeaseManager
 	tmuxPoller  *status.TmuxStatusPoller
@@ -134,18 +159,24 @@ type Server struct {
 	// not run at once. Mirrors the ref-counted-map lifecycle of branchStartLocks,
 	// but acquisition is context-aware (see acquireRepoMerge) so a queued merge
 	// whose caller cancels can bail without merging.
-	mergeMu            sync.Mutex
-	repoMergeGates     map[string]*repoMergeGate
-	wakeHook           wakeHook // test-only: zero in production; see wake_chat.go
-	completionNotifier session.SessionCompletionNotifier
-	authNotifier       AuthNotifier
-	onSessionDeleted   func(context.Context, string)
-	onSessionUpdated   func(context.Context, *pb.Session)
-	logger             zerolog.Logger
-	fileLimitSoft      uint64
-	passthroughStats   passthroughStatsProvider // nil until SetPassthroughStatsProvider; BOS-483
-	listener           net.Listener
-	srv                *http.Server
+	mergeMu              sync.Mutex
+	repoMergeGates       map[string]*repoMergeGate
+	wakeHook             wakeHook             // test-only: zero in production; see wake_chat.go
+	keepCurrentSweepHook keepCurrentSweepHook // test-only: zero in production; see keep_current.go
+	completionNotifier   session.SessionCompletionNotifier
+	authNotifier         AuthNotifier
+	onSessionDeleted     func(context.Context, string)
+	onSessionUpdated     func(context.Context, *pb.Session)
+	logger               zerolog.Logger
+	fileLimitSoft        uint64
+	// endpointReader and endpointNamespaceGate back the BOS-473 opt-in local
+	// endpoint hydration. endpointReader is nil-safe (no hydration when unset);
+	// endpointNamespaceGate is always non-nil after New (platform default).
+	endpointReader        SessionEndpointReader
+	endpointNamespaceGate func(clientNS string) bool
+	passthroughStats      passthroughStatsProvider // nil until SetPassthroughStatsProvider; BOS-483
+	listener              net.Listener
+	srv                   *http.Server
 
 	bossanovav1connect.UnimplementedDaemonServiceHandler
 }
@@ -187,7 +218,38 @@ type Config struct {
 	// GithubCallbacks persists one-shot GitHub callback registrations (BOS-467).
 	// May be nil in tests/contexts that do not exercise the callback surface.
 	GithubCallbacks db.GithubCallbackStore
-	Accounts        db.AccountStore
+	// Broadcasts persists broadcasts and their per-target deliveries (BOS-556).
+	// May be nil in tests/contexts that do not exercise the broadcast RPCs; the
+	// handlers then report CodeUnavailable.
+	Broadcasts broadcastStore
+	// BroadcastResolver resolves a validated selector to the audience frozen
+	// into a broadcast's delivery rows. Shares the daemon's chat and session
+	// stores. May be nil alongside Broadcasts.
+	BroadcastResolver *bcastsvc.Resolver
+	// BroadcastEgress publishes a broadcast whose selector reaches beyond this
+	// daemon up the daemon->bosso reverse stream, so bosso can route it to the
+	// daemons that can resolve targets for it (BOS-558). Interface-typed so a
+	// test can script one; may be nil, which means the upstream stream is not
+	// wired and a send stays local — a publish is never required for the RPC to
+	// succeed.
+	BroadcastEgress bcastsvc.EgressPublisher
+	// DaemonID is this daemon's PERSISTED id (upstream.ResolveDaemonID), never
+	// a per-process value. It is stamped on every egress event as the origin,
+	// and the receiving side's loop guard drops a command whose origin daemon
+	// id equals its own — an id that changed per process would defeat that
+	// guard and let a broadcast echo back into a storm. May be empty when no
+	// upstream is configured; the egress predicate then infers nothing from a
+	// selector (see broadcast.ReachesBeyondDaemon).
+	DaemonID string
+	// Notes persists free-text notes recorded against a repo (BOS-550). May be
+	// nil in tests/contexts that do not exercise the note RPCs; the handlers
+	// then report CodeUnavailable.
+	Notes db.NoteStore
+	// BroadcastSubscriptions persists standing broadcast subscriptions
+	// (BOS-557). May be nil in tests/contexts that do not exercise the
+	// subscription RPCs; the handlers then report CodeUnavailable.
+	BroadcastSubscriptions broadcastSubscriptionStore
+	Accounts               db.AccountStore
 	// RotationEngine is the account-rotation policy engine, held on the daemon
 	// for future auto-rotate consumers (BOS-174/175). Optional, may be nil.
 	RotationEngine *rotation.Engine
@@ -221,7 +283,8 @@ type Config struct {
 	DisplayTracker *status.DisplayTracker
 	// PRRefresher re-polls one PR's display status on demand, repopulating the
 	// display tracker. Satisfied by *session.DisplayPoller. Optional, may be
-	// nil; MergeSession then simply skips the merge-only re-poll.
+	// nil; MergeSession then simply skips the post-merge re-poll and the next
+	// scheduled poll repairs the label instead.
 	PRRefresher        PRRefresher
 	RepairLease        *status.RepairLeaseManager
 	TmuxPoller         *status.TmuxStatusPoller
@@ -253,6 +316,16 @@ type Config struct {
 	// startup (0 = unknown/non-unix). RepairDoctor surfaces a WARN when it is
 	// below the safe floor (BOS-465).
 	FileLimitSoft uint64
+	// EndpointReader supplies verified machine-local HTTP endpoints for opted-in
+	// local session reads (BOS-473), backed by the sessionports tracker in
+	// cmd/main.go. Optional/nil-safe: when nil, GetSession/ListSessions never
+	// hydrate Session.http_endpoints.
+	EndpointReader SessionEndpointReader
+	// EndpointNamespaceGate overrides the platform network-namespace check used
+	// to gate endpoint hydration (a test seam). Nil selects the platform default
+	// (platformEndpointNamespaceGate): fail-closed exact match on Linux, always
+	// satisfied off Linux.
+	EndpointNamespaceGate func(clientNS string) bool
 }
 
 // AuthNotifier is the narrow interface the NotifyAuthChange RPC
@@ -275,10 +348,17 @@ type PRAssociationResolver interface {
 // PRRefresher re-polls a single PR's display status on demand, repopulating the
 // display tracker with the live status. It is defined here (rather than
 // importing session) so the server depends only on this narrow surface;
-// *session.DisplayPoller satisfies it. MergeSession uses it to restore the real
-// PR label after clearing a merge-only tracker entry (see the SetMerging block).
+// *session.DisplayPoller satisfies it. MergeSession calls it after every merge
+// attempt on a server wired with a display tracker, so the label reflects what
+// the daemon just did (see the SetMerging block).
+//
+// It deliberately names the WithoutWebhookCredit variant: a refresh the daemon
+// triggered itself is not evidence that the session's webhook pipeline is
+// healthy, and crediting one would back that session's scheduled poll interval
+// off — leaving a still-active session staler after a blocked or failed merge
+// than before it.
 type PRRefresher interface {
-	RefreshPR(ctx context.Context, repoOriginURL string, prNumber int) error
+	RefreshPRWithoutWebhookCredit(ctx context.Context, repoOriginURL string, prNumber int) error
 }
 
 // AccountCredentialStore is the credential-blob plane for accounts. The daemon
@@ -307,7 +387,7 @@ type UsageProbeRecorder interface {
 
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
 func New(cfg Config) *Server {
-	return &Server{
+	srv := &Server{
 		repos:           cfg.Repos,
 		sessions:        cfg.Sessions,
 		attempts:        cfg.Attempts,
@@ -316,26 +396,34 @@ func New(cfg Config) *Server {
 		taskMappings:    cfg.TaskMappings,
 		cronJobs:        cfg.CronJobs,
 		githubCallbacks: cfg.GithubCallbacks,
-		accounts:        cfg.Accounts,
-		rotationEngine:  cfg.RotationEngine,
-		resolver:        cfg.Resolver,
-		accountCreds:    cfg.AccountCredentials,
-		accountSmoke:    cfg.AccountSmokeRunner,
-		usageProbe:      cfg.UsageProbe,
-		checkSnapshots:  cfg.CheckSnapshots,
-		rotationEvents:  cfg.RotationEvents,
-		cronScheduler:   cfg.CronScheduler,
-		cronActivity:    cfg.CronActivity,
-		chatStatus:      cfg.ChatStatus,
-		displayTracker:  cfg.DisplayTracker,
-		prRefresher:     cfg.PRRefresher,
-		repairLease:     cfg.RepairLease,
-		tmuxPoller:      cfg.TmuxPoller,
-		lifecycle:       cfg.Lifecycle,
-		agent:           cfg.Agent,
-		agentClients:    cfg.AgentClients,
-		worktrees:       cfg.Worktrees,
-		provider:        cfg.Provider,
+
+		broadcasts:             cfg.Broadcasts,
+		broadcastResolver:      cfg.BroadcastResolver,
+		broadcastEgress:        cfg.BroadcastEgress,
+		daemonID:               cfg.DaemonID,
+		notes:                  cfg.Notes,
+		broadcastSubscriptions: cfg.BroadcastSubscriptions,
+
+		accounts:       cfg.Accounts,
+		rotationEngine: cfg.RotationEngine,
+		resolver:       cfg.Resolver,
+		accountCreds:   cfg.AccountCredentials,
+		accountSmoke:   cfg.AccountSmokeRunner,
+		usageProbe:     cfg.UsageProbe,
+		checkSnapshots: cfg.CheckSnapshots,
+		rotationEvents: cfg.RotationEvents,
+		cronScheduler:  cfg.CronScheduler,
+		cronActivity:   cfg.CronActivity,
+		chatStatus:     cfg.ChatStatus,
+		displayTracker: cfg.DisplayTracker,
+		prRefresher:    cfg.PRRefresher,
+		repairLease:    cfg.RepairLease,
+		tmuxPoller:     cfg.TmuxPoller,
+		lifecycle:      cfg.Lifecycle,
+		agent:          cfg.Agent,
+		agentClients:   cfg.AgentClients,
+		worktrees:      cfg.Worktrees,
+		provider:       cfg.Provider,
 
 		prResolver:         cfg.PRResolver,
 		pluginHost:         cfg.PluginHost,
@@ -348,7 +436,14 @@ func New(cfg Config) *Server {
 		onSessionUpdated:   cfg.OnSessionUpdated,
 		logger:             cfg.Logger,
 		fileLimitSoft:      cfg.FileLimitSoft,
+		endpointReader:     cfg.EndpointReader,
+
+		endpointNamespaceGate: cfg.EndpointNamespaceGate,
 	}
+	if srv.endpointNamespaceGate == nil {
+		srv.endpointNamespaceGate = platformEndpointNamespaceGate
+	}
+	return srv
 }
 
 // passthroughStatsProvider exposes the failover proxy's bounded pass-through
@@ -376,6 +471,24 @@ func (s *Server) RotationEngine() *rotation.Engine { return s.rotationEngine }
 // GithubCallback RPC handlers. May be nil in contexts that did not configure a
 // callback store.
 func (s *Server) GithubCallbacks() db.GithubCallbackStore { return s.githubCallbacks }
+
+// Broadcasts returns the broadcast store held on the daemon (BOS-556), wired at
+// startup and exposed through the Send/List/DeleteBroadcast RPC handlers. May
+// be nil in contexts that did not configure one.
+func (s *Server) Broadcasts() broadcastStore { return s.broadcasts }
+
+// Notes returns the note store held on the daemon (BOS-550), wired at startup
+// and exposed through the Create/Get/List/Update/DeleteNote RPC handlers. May
+// be nil in contexts that did not configure one.
+func (s *Server) Notes() db.NoteStore { return s.notes }
+
+// BroadcastSubscriptions returns the standing-subscription store held on the
+// daemon (BOS-557), wired at startup and exposed through the
+// Create/List/DeleteBroadcastSubscription RPC handlers. May be nil in contexts
+// that did not configure one.
+func (s *Server) BroadcastSubscriptions() broadcastSubscriptionStore {
+	return s.broadcastSubscriptions
+}
 
 // Listen binds a Unix socket and initializes the underlying http.Server
 // synchronously. After Listen returns the server is fully configured and
@@ -682,6 +795,9 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 	}
 	if msg.ShouldArchiveSessionsAfterMerge != nil {
 		params.ShouldArchiveSessionsAfterMerge = msg.ShouldArchiveSessionsAfterMerge
+	}
+	if msg.ShouldKeepBranchesCurrent != nil {
+		params.ShouldKeepBranchesCurrent = msg.ShouldKeepBranchesCurrent
 	}
 	if msg.CanAutoDeleteBranches != nil {
 		params.CanAutoDeleteBranches = msg.CanAutoDeleteBranches
@@ -1187,6 +1303,23 @@ func newHookToken() (string, error) {
 }
 
 func (s *Server) cleanupFailedCreateSession(ctx context.Context, sessionID string) {
+	// A background draft-PR create may still be pushing this session's branch
+	// (BOS-540). Stop it before deleting the branch and purging the worktree, or
+	// the two collide: the create would push a branch this is about to delete,
+	// and open a PR for a session that no longer exists. Almost every caller
+	// reaches here before StartSession ever spawned the step, where this is an
+	// immediate no-op; it matters on the one path that can race — the client
+	// disconnecting mid-create.
+	//
+	// StopBackgroundDraftPR cancels before joining, which is what keeps this
+	// affordable: every caller reaches here holding the process-global
+	// LockStartPath mutex (released only after this returns), so waiting out a
+	// push and a `gh pr create` we do not want the result of would stall every
+	// other CreateSession in the daemon — the exact latency BOS-540 removed.
+	if s.lifecycle != nil {
+		s.lifecycle.StopBackgroundDraftPR(ctx, sessionID)
+	}
+
 	if failedSess, getErr := s.sessions.Get(ctx, sessionID); getErr == nil {
 		if failedSess.RepoID != "" && failedSess.BranchName != "" {
 			if repo, repoErr := s.repos.Get(ctx, failedSess.RepoID); repoErr == nil {
@@ -1226,6 +1359,14 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 // stream adapter passes a channel-pushing closure). Behaviour and validation
 // are identical to the original handler — this is a pure extract-method.
 func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionRequest, emit func(*pb.CreateSessionResponse) error) error {
+	requestStarted := time.Now()
+	branchMode := "fresh-branch"
+	if msg.IsQuickChat {
+		branchMode = "quick-chat"
+	} else if msg.PrNumber != nil {
+		branchMode = "existing-pr"
+	}
+
 	if msg.RepoId == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_id is required"))
 	}
@@ -1307,59 +1448,70 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		}
 	}
 
-	unlockStart := session.LockStartPath()
-	startLocked := true
+	var unlockStart func()
+	var startLockWait time.Duration
+	startLocked := false
+	var unlockBranch func()
+	branchLocked := false
+	if !msg.IsQuickChat {
+		lockWaitStarted := time.Now()
+		unlockStart = session.LockStartPath()
+		startLockWait = time.Since(lockWaitStarted)
+		startLocked = true
+
+		unlockBranch = s.lockBranchStart(msg.RepoId, headBranch)
+		branchLocked = true
+	}
 	defer func() {
 		if startLocked {
 			unlockStart()
 		}
 	}()
-
-	unlockBranch := s.lockBranchStart(msg.RepoId, headBranch)
-	branchLocked := true
 	defer func() {
 		if branchLocked {
 			unlockBranch()
 		}
 	}()
 
-	if handled, err := s.sendExistingSessionForBranch(ctx, msg.RepoId, headBranch, emitSender{emit}); handled || err != nil {
-		return err
-	}
-
-	if prNumber != nil && isDependabotBranch(headBranch) {
-		if err := session.EnsureNoActivePRSession(ctx, s.sessions, msg.RepoId, prNumber); err != nil {
-			return createSessionConnectError(err)
+	if !msg.IsQuickChat {
+		if handled, err := s.sendExistingSessionForBranch(ctx, msg.RepoId, headBranch, emitSender{emit}); handled || err != nil {
+			return err
 		}
-	}
 
-	// BOS-236: dedup against an existing active session for the same tracker issue
-	// (or its PR / branch) so N dispatches for one ticket can't spawn N sessions.
-	// This runs under the process-global LockStartPath mutex acquired above, so the
-	// check-then-Create below is atomic w.r.t. concurrent daemon-local creates — the
-	// race that triplicated BOS-229. A DB unique index was deliberately NOT used: it
-	// cannot coexist with `force`, which must be able to create a second session for
-	// the same tracker. `force` skips the guard entirely.
-	//
-	// This behavioral change is intentionally NOT expressed as an apiversion
-	// (lib/bossalib/apiversion) dated bump: that framework is a response-side,
-	// unary-only down-convert (VersionChange.TransformResponse, applied only in
-	// the interceptor's WrapUnary path) and cannot gate a request-side side
-	// effect on a streaming, daemon-resident RPC. This guard lives in the bossd
-	// DaemonService, which never passes through the bosso OrchestratorService
-	// interceptor, and ProxyCreateSession is a stream that the transform layer
-	// skips by design. A refused create also can't be "down-converted" back into
-	// the duplicate session an old client wanted. `force` is a wire-additive
-	// field, so no deployed client breaks at the protocol level; the only
-	// behavior removed — dispatch-N-get-N-sessions — was the BOS-229 defect.
-	if !msg.Force && !msg.IsQuickChat {
-		keys, err := s.activeSessionKeysForRepo(ctx, msg.RepoId)
-		if err != nil {
-			return connect.NewError(connect.CodeInternal, fmt.Errorf("dedup active sessions: %w", err))
+		if prNumber != nil && isDependabotBranch(headBranch) {
+			if err := session.EnsureNoActivePRSession(ctx, s.sessions, msg.RepoId, prNumber); err != nil {
+				return createSessionConnectError(err)
+			}
 		}
-		if existingID, kind, ok := keys.duplicateSessionID(msg.TrackerId, prNumber, headBranch); ok {
-			return connect.NewError(connect.CodeAlreadyExists,
-				fmt.Errorf("active session %s already exists for this %s in repo %s; pass force to create another", existingID, kind, msg.RepoId))
+
+		// BOS-236: dedup against an existing active session for the same tracker issue
+		// (or its PR / branch) so N dispatches for one ticket can't spawn N sessions.
+		// This runs under the process-global LockStartPath mutex acquired above, so the
+		// check-then-Create below is atomic w.r.t. concurrent daemon-local creates — the
+		// race that triplicated BOS-229. A DB unique index was deliberately NOT used: it
+		// cannot coexist with `force`, which must be able to create a second session for
+		// the same tracker. `force` skips the guard entirely.
+		//
+		// This behavioral change is intentionally NOT expressed as an apiversion
+		// (lib/bossalib/apiversion) dated bump: that framework is a response-side,
+		// unary-only down-convert (VersionChange.TransformResponse, applied only in
+		// the interceptor's WrapUnary path) and cannot gate a request-side side
+		// effect on a streaming, daemon-resident RPC. This guard lives in the bossd
+		// DaemonService, which never passes through the bosso OrchestratorService
+		// interceptor, and ProxyCreateSession is a stream that the transform layer
+		// skips by design. A refused create also can't be "down-converted" back into
+		// the duplicate session an old client wanted. `force` is a wire-additive
+		// field, so no deployed client breaks at the protocol level; the only
+		// behavior removed — dispatch-N-get-N-sessions — was the BOS-229 defect.
+		if !msg.Force {
+			keys, err := s.activeSessionKeysForRepo(ctx, msg.RepoId)
+			if err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("dedup active sessions: %w", err))
+			}
+			if existingID, kind, ok := keys.duplicateSessionID(msg.TrackerId, prNumber, headBranch); ok {
+				return connect.NewError(connect.CodeAlreadyExists,
+					fmt.Errorf("active session %s already exists for this %s in repo %s; pass force to create another", existingID, kind, msg.RepoId))
+			}
 		}
 	}
 
@@ -1417,8 +1569,10 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
-	unlockBranch()
-	branchLocked = false
+	if branchLocked {
+		unlockBranch()
+		branchLocked = false
+	}
 
 	// Start the session lifecycle: create worktree, start Claude, fire state machine.
 	// Quick chat sessions skip worktree/branch/PR creation entirely.
@@ -1453,7 +1607,6 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		// StartSession gates hook install on the tmux-hosted branch — which is
 		// harmless.
 		startOpts := session.StartSessionOpts{
-			ExistingBranch:   headBranch,
 			ForceBranch:      msg.ForceBranch,
 			SetupOutput:      pw,
 			Detach:           msg.GetDetach(),
@@ -1462,6 +1615,11 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 			// createDraftPR on !opts.DeferPR, and the finalize EnsurePR hook
 			// opens a PR later only if the run produces commits.
 			DeferPR: msg.GetDeferPr(),
+		}
+		if msg.PrNumber != nil {
+			startOpts.ExistingBranch = headBranch
+		} else {
+			startOpts.BranchName = headBranch
 		}
 		if msg.GetIsTmuxUnattended() || msg.GetDetach() {
 			token, tokenErr := newHookToken()
@@ -1512,8 +1670,10 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 			Msg("start session failed")
 		return createSessionConnectError(fmt.Errorf("start session: %w", err))
 	}
-	unlockStart()
-	startLocked = false
+	if startLocked {
+		unlockStart()
+		startLocked = false
+	}
 
 	// Re-fetch the session to get updated fields from lifecycle.
 	sess, err = s.sessions.Get(ctx, sess.ID)
@@ -1521,13 +1681,24 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return emit(&pb.CreateSessionResponse{
+	resp := &pb.CreateSessionResponse{
 		Event: &pb.CreateSessionResponse_SessionCreated{
 			SessionCreated: &pb.SessionCreated{
 				Session: SessionToProto(sess),
 			},
 		},
-	})
+	}
+	if err := emit(resp); err != nil {
+		return err
+	}
+	s.logger.Info().
+		Str("session", sess.ID).
+		Bool("quick_chat", msg.IsQuickChat).
+		Str("branch_mode", branchMode).
+		Dur("startup_duration", time.Since(requestStarted)).
+		Dur("start_lock_wait", startLockWait).
+		Msg("session startup complete")
+	return nil
 }
 
 type createSessionSender interface {
@@ -1600,18 +1771,24 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 	if s.displayTracker != nil {
 		HydrateDisplayEntry(p, s.displayTracker.Get(session.ID))
 	}
-	// repair_active is the authoritative, lease-backed single-repairer signal
-	// (nil-safe when the lease manager is not wired).
-	p.RepairActive = s.repairLease.Active(session.ID)
-
 	// Hydrate the liveness heartbeat + auth-failed attention overlay from the
 	// session's chats (needs the status tracker, which convert.SessionToProto
-	// has no access to).
+	// has no access to). Loaded once here and reused by the BOS-473 endpoint
+	// hydration below so an opted-in read does not re-query the same chats.
+	var chats []*models.AgentChat
 	if s.agentChats != nil {
-		if chats, err := s.agentChats.ListBySession(ctx, session.ID); err == nil {
+		if loaded, err := s.agentChats.ListBySession(ctx, session.ID); err == nil {
+			chats = loaded
 			HydrateAgentObservability(s.chatStatus, p, chats)
 		}
 	}
+
+	// repair_active is the authoritative, lease-backed single-repairer signal;
+	// repair_stalled_at is its BOS-515 stall overlay (nil-safe when the lease
+	// manager is not wired). Runs after the observability hydration above so the
+	// stall heartbeat can be fed the session's last chat activity without a new
+	// query — a stalled lease needs BOTH no head-SHA advance AND no chat output.
+	s.repairLease.HydrateSession(p, session.ID, session.LastRepairHeadSHA, protoTime(p.GetLastAgentActivityAt()))
 
 	// Re-source provider/account from the primary chat (BOS-381 authority).
 	s.withPrimaryChatIdentity(ctx, p, session)
@@ -1619,6 +1796,13 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 	s.withAccountLabel(ctx, p, session)
 	// Hydrate the recent rotation audit events for the history block (best-effort).
 	s.withRotationEvents(ctx, p, session)
+
+	// BOS-473: hydrate verified machine-local endpoints LAST, and only for an
+	// opted-in local read that clears the daemon's locality gates. Every other
+	// egress path leaves p.HttpEndpoints empty (SessionToProto never sets it).
+	if req.Msg.GetIncludeLocalHttpEndpoints() && s.endpointReader != nil {
+		s.hydrateSessionEndpoints(chats, p, session, req.Msg.GetClientNetworkNamespace())
+	}
 
 	return connect.NewResponse(&pb.GetSessionResponse{Session: p}), nil
 }
@@ -1705,7 +1889,6 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 			if e, ok := entries[sess.Id]; ok {
 				HydrateDisplayEntry(pbSessions[i], e)
 			}
-			pbSessions[i].RepairActive = s.repairLease.Active(sess.Id)
 		}
 	}
 	for _, p := range pbSessions {
@@ -1741,6 +1924,19 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		HydrateAgentObservability(s.chatStatus, p, chatsBySession[p.Id])
 	}
 
+	// repair_active + its BOS-515 repair_stalled_at stall overlay. Deliberately
+	// here rather than in the display-tracker loop above: the stall heartbeat
+	// needs the last chat activity hydrated immediately above (a stalled lease
+	// requires BOTH no head-SHA advance AND no chat output), and this loop also
+	// covers sessions on a daemon with no display tracker wired.
+	for _, p := range pbSessions {
+		var headSHA string
+		if sess := sessByID[p.Id]; sess != nil {
+			headSHA = sess.LastRepairHeadSHA
+		}
+		s.repairLease.HydrateSession(p, p.Id, headSHA, protoTime(p.GetLastAgentActivityAt()))
+	}
+
 	for _, p := range pbSessions {
 		_, hasDisplayEntry := entries[p.Id]
 		chatStatus, ok := s.chatStatusFromSessionChats(ctx, chatsBySession[p.Id], chatsLoaded)
@@ -1757,6 +1953,13 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		p.DisplayLabel = out.Label
 		p.DisplayIntent = out.Intent
 		p.DisplaySpinner = out.Spinner
+	}
+
+	// BOS-473: hydrate verified machine-local endpoints LAST, and only for an
+	// opted-in local read that clears the daemon's locality gates. One GetBatch
+	// over the listed sessions; every other egress path stays empty.
+	if msg.GetIncludeLocalHttpEndpoints() && s.endpointReader != nil {
+		s.hydrateSessionEndpointsBatch(pbSessions, sessByID, chatsBySession, msg.GetClientNetworkNamespace())
 	}
 
 	return connect.NewResponse(&pb.ListSessionsResponse{Sessions: pbSessions}), nil
@@ -1831,7 +2034,7 @@ func sessionRowsNeedingPRAssociation(rows []*db.SessionWithRepo) []*models.Sessi
 			continue
 		}
 		sess := row.Session
-		if sess.ArchivedAt == nil && sess.PRNumber == nil && sess.BranchName != "" {
+		if session.NeedsPRAssociation(sess) {
 			sessions = append(sessions, sess)
 		}
 	}
@@ -2089,25 +2292,66 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 	// success, or any error). Nil-guarded like lifecycle.go's SetSettingUp for
 	// test servers without a display tracker.
 	if s.displayTracker != nil {
-		// Whether a polled PR-status entry already existed. When it did NOT,
-		// SetMerging creates a merge-only entry (zero Status + Merging flag) and
-		// the deferred clear drops it — leaving the tracker with no PR status,
-		// so recompute downgrades the persisted PR label (e.g. "✓ passing") to
-		// the "stopped" fallback. That happens in the post-restart window before
-		// the first display poll. On the merge-only path we re-poll the PR after
-		// clearing so the computer restores the real label instead of the
-		// fallback — most visibly after a failed/blocked merge, where the
-		// session stays active and would otherwise stay downgraded until the
-		// next scheduled poll.
-		hadEntry := s.displayTracker.Get(req.Msg.Id) != nil
+		// The refresh below is unconditional within this block (which a server
+		// wired without a display tracker never enters at all): a merge boss
+		// just performed must not need a webhook or the next display-poller
+		// tick to reflect its own action. (That tick is DisplayPollInterval —
+		// 2 minutes by default, whatever poll_interval_seconds is set to
+		// otherwise, and 5 minutes while the session is in webhook-healthy
+		// backoff. This refresh deliberately does NOT arm that backoff: see
+		// RefreshPRWithoutWebhookCredit.) Whether a polled
+		// PR-status entry already existed or not, the pre-merge label the
+		// tracker holds (e.g. "✓ passing") is stale the instant the merge
+		// lands, so re-polling on every return path is the only way the display
+		// the client goes on to read agrees with what just happened. On the
+		// merge-only path (no prior entry — e.g. the post-restart window) the
+		// deferred clear additionally drops the merge-only entry SetMerging
+		// created, which would otherwise leave the tracker with no PR status at
+		// all and downgrade recompute's output to the "stopped" fallback; the
+		// same re-poll restores the real label there too.
+		//
+		// The refresh runs synchronously inside this defer (not fired off
+		// asynchronously) so the tracker can never be updated after this RPC
+		// has already returned. Be aware of what that costs before adding to
+		// it: the refresh runs a full pollSession, so on the success path it sees
+		// the PR merged and reconciles the session's persisted state to a
+		// terminal one, which notifies the task orchestrator and can
+		// synchronously dequeue the repo's next task (up to a whole
+		// CreateSession). Only an already-terminal tracker entry is a true
+		// no-op — display_poller.go skips those; on the still-open blocked-gate
+		// and error paths pollSession makes its status + checks + reviews reads
+		// (one for a draft PR, which short-circuits; a fourth when it probes a
+		// rebase-blocked PR's repairable-conflict strategy). Do
+		// not try to bound this with a shorter context either: the orchestrator
+		// hands this same ctx to CreateSession, so cancelling it mid-flight
+		// would strand a half-created session.
+		//
+		// It also fires on the blocked-gate and error returns, deliberately: a
+		// failed or blocked merge attempt can itself change what's true (e.g. a
+		// check just failed, a review just landed), and the session stays
+		// active on those paths, so it must show a true label rather than the
+		// one from before the attempt. A refresh error here must never be
+		// promoted to a merge failure — it only means the next scheduled poll
+		// repairs the label instead of this one.
+		//
+		// Capture the PR number now rather than reading sess.PRNumber inside
+		// the defer: the re-fetch near the end of this function REASSIGNS sess,
+		// leaving it nil when that read fails, and the deferred deref would
+		// then panic on a merge that already landed. Capturing also pins the PR
+		// the merge actually operated on.
+		var refreshPRNumber *int
+		if sess.PRNumber != nil {
+			prNumber := *sess.PRNumber
+			refreshPRNumber = &prNumber
+		}
 		s.displayTracker.SetMerging(req.Msg.Id, true)
 		defer func() {
 			s.displayTracker.SetMerging(req.Msg.Id, false)
-			if !hadEntry && s.prRefresher != nil && sess.PRNumber != nil {
-				if err := s.prRefresher.RefreshPR(ctx, repo.OriginURL, *sess.PRNumber); err != nil {
+			if s.prRefresher != nil && refreshPRNumber != nil {
+				if err := s.prRefresher.RefreshPRWithoutWebhookCredit(ctx, repo.OriginURL, *refreshPRNumber); err != nil {
 					s.logger.Debug().Err(err).
 						Str("session_id", req.Msg.Id).
-						Msg("merge: refresh pr after merge-only clear failed; next poll will repair")
+						Msg("merge: post-merge pr refresh failed; next poll will repair")
 				}
 			}
 		}()
@@ -2136,20 +2380,6 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 	}
 	defer release()
 
-	// Guard against merging a truly red/conflicted/rejected PR, but gate on a
-	// LIVE read of the PR rather than the possibly-stale display tracker. A
-	// stale Blocked (e.g. a false "fix loop exhausted") must never veto a
-	// genuinely green+mergeable PR (BOS-235 Bug 2). Only a live read that shows
-	// failing checks, an unresolved conflict, or outstanding changes-requested
-	// rejects here; on any provider error or missing status the merge proceeds
-	// and the MergePR call below rejects a truly unmergeable PR itself.
-	if sess.PRNumber != nil {
-		if mb := s.liveMergeBlock(ctx, repo.OriginURL, *sess.PRNumber); mb != nil {
-			return nil, connect.NewError(connect.CodeFailedPrecondition,
-				fmt.Errorf("merge blocked: gate=%s; %s", mb.Gate.Slug(), mb.Detail))
-		}
-	}
-
 	// Sync the branch the PR actually targets, which may differ from the
 	// repo's default branch (e.g. a PR into `develop`).
 	baseBranch := sess.BaseBranch
@@ -2157,7 +2387,63 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 		baseBranch = repo.DefaultBaseBranch
 	}
 
-	if sess.PRNumber == nil {
+	// Record how far this branch had drifted BEFORE the merge lands (BOS-521
+	// acceptance metric) — afterwards the branch is on the base and the answer
+	// is always 0.
+	s.logCommitsBehindBaseAtMerge(ctx, repo, sess, baseBranch)
+
+	// mergeDetail carries a human-readable note about HOW the merge was
+	// performed (e.g. a strategy substitution). Empty when the merge ran
+	// exactly as configured.
+	var mergeDetail string
+
+	// alreadyMerged short-circuits the merge+verify work below when the PR is
+	// already merged upstream.
+	var alreadyMerged bool
+
+	if sess.PRNumber != nil {
+		// Idempotency: a merge that already landed remotely but whose RPC
+		// failed afterwards (a verification infra error, a dropped connection)
+		// must stay retryable. Re-reading the PR here — after acquireRepoMerge,
+		// so a merge queued behind another re-reads fresh — turns that retry
+		// into a no-op success instead of a second MergePR the remote rejects.
+		// A stale "merged" read is safe (merged is terminal); a stale "open"
+		// read just proceeds to MergePR exactly as today.
+		if s.prAlreadyMerged(ctx, repo.OriginURL, *sess.PRNumber) {
+			alreadyMerged = true
+			s.logger.Info().
+				Str("session_id", req.Msg.Id).
+				Int("pr", *sess.PRNumber).
+				Msg("merge: PR is already merged upstream; skipping the merge call (idempotent retry of a stranded merge)")
+			// The stranded attempt may have died before its local sync, so
+			// still run it best-effort.
+			s.syncBaseAfterMerge(ctx, repo.LocalPath, baseBranch)
+		} else if mb := s.liveMergeBlock(ctx, repo.OriginURL, *sess.PRNumber); mb != nil {
+			// Guard against merging a truly red/conflicted/rejected PR, but gate on a
+			// LIVE read of the PR rather than the possibly-stale display tracker. A
+			// stale Blocked (e.g. a false "fix loop exhausted") must never veto a
+			// genuinely green+mergeable PR (BOS-235 Bug 2). Only a live read that shows
+			// failing checks, an unresolved conflict, or outstanding changes-requested
+			// rejects here; on any provider error or missing status the merge proceeds
+			// and the MergePR call below rejects a truly unmergeable PR itself.
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("merge blocked: gate=%s; %s", mb.Gate.Slug(), mb.Detail))
+		}
+	}
+
+	switch {
+	case alreadyMerged:
+		// The remote merge and the local sync are done, but the #2222
+		// base-ancestry guard must still run. Otherwise it survives only the
+		// FIRST call: a merge that landed and then had its base rewritten
+		// hard-fails with CodeInternal, drivers and the repair loop retry
+		// CodeInternal, and the retry would short-circuit straight to success —
+		// reporting a merge that did not land.
+		if err := s.verifyAlreadyMergedOnBase(ctx, req.Msg.Id, repo, baseBranch, *sess.PRNumber); err != nil {
+			return nil, err
+		}
+
+	case sess.PRNumber == nil:
 		// Local-only merge path: no PR on a remote, just a local session
 		// branch that needs to land on the repo's base. The session's
 		// branch name is authoritative.
@@ -2176,18 +2462,93 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 			}
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("local merge: %w", err))
 		}
-	} else {
+
+	default:
 		// The GitHub merge always completes regardless of the operator's local
 		// checkout state; the local fast-forward of refs/heads/<base> is a
 		// best-effort, deferrable step handled after the merge (see the
-		// SyncBaseBranch call below), never a pre-merge gate.
-		strategy, err := mergepolicy.ResolveStrategy(ctx, s.provider, repo.OriginURL, string(repo.MergeStrategy))
+		// syncBaseAfterMerge call below), never a pre-merge gate.
+		//
+		// s.worktrees doubles as the merge-commit counter: rebase-merge is
+		// structurally refused by GitHub on a branch containing merge commits,
+		// so the resolver downgrades rebase to squash before we ever call
+		// MergePR. A nil s.worktrees is a nil interface value and the resolver
+		// fails open on it — no special case needed here.
+		strategy, substituted, err := mergepolicy.ResolveStrategyForBranch(
+			ctx, s.provider, repo.OriginURL, string(repo.MergeStrategy),
+			s.worktrees, repo.LocalPath, baseBranch, sess.BranchName,
+		)
 		if err != nil {
+			// ErrMergeStrategyIncompatible must map to FailedPrecondition, NOT
+			// CodeInternal: drivers and the repair loop treat CodeInternal as
+			// retryable and would loop forever on a combination that can never
+			// succeed. Wrapping the error unmodified keeps the
+			// MERGE_STRATEGY_INCOMPATIBLE token (and the merge-commit count) in
+			// the message so callers can distinguish it. Every other resolver
+			// error (e.g. ErrMergeStrategyDisallowed) keeps its existing
+			// FailedPrecondition mapping.
 			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		}
+		if substituted != "" {
+			mergeDetail = substituted
+			s.logger.Warn().
+				Str("session_id", req.Msg.Id).
+				Int("pr", *sess.PRNumber).
+				Str("strategy", strategy).
+				Str("reason", substituted).
+				Msg("merge: substituted squash for rebase")
 		}
 
 		if err := s.provider.MergePR(ctx, repo.OriginURL, *sess.PRNumber, strategy); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("merge PR: %w", err))
+			// Backstop for a race the pre-check can miss (e.g. CountMergeCommits
+			// failed open, or a merge commit landed between the count and the
+			// merge): GitHub refused the rebase-merge itself. The policy for
+			// what to do about that lives in mergepolicy, NOT here — a second
+			// copy in this handler is exactly the drift the package exists to
+			// prevent. Retry ONCE with squash when the policy says so; never loop.
+			fallback, reason, policyErr := mergepolicy.SquashFallback(
+				ctx, s.provider, repo.OriginURL, strategy, err,
+			)
+			switch {
+			case policyErr != nil:
+				// Same terminal-vs-retryable reasoning as the pre-check: no
+				// fallback exists, so this is FailedPrecondition carrying both
+				// the MERGE_STRATEGY_INCOMPATIBLE token and the provider's reason.
+				return nil, connect.NewError(connect.CodeFailedPrecondition, policyErr)
+			case fallback == "":
+				// Not a rebase refusal, or the fallback could not be confirmed
+				// (reason explains which). Either way, surface the original
+				// merge failure — today's behaviour is the safe default.
+				if reason != "" {
+					// A non-empty reason with no fallback is SquashFallback's
+					// documented ("", reason, nil) case, whose only cause today
+					// is a failed allowed-strategies read — hence this message.
+					// Keep it in sync if that contract grows a second cause.
+					//
+					// No Err() field here: the only error in scope is the
+					// merge failure that is returned on the next line, and
+					// logging it as THE error of this line would shadow the
+					// actual cause, which reason carries.
+					s.logger.Debug().
+						Str("session_id", req.Msg.Id).
+						Str("reason", reason).
+						Msg("merge: could not read allowed merge strategies for the squash fallback")
+				}
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("merge PR: %w", err))
+			}
+			s.logger.Warn().Err(err).
+				Str("session_id", req.Msg.Id).
+				Int("pr", *sess.PRNumber).
+				Str("strategy", fallback).
+				Msg("merge: rebase merge refused by the remote; retrying once with squash")
+			if retryErr := s.provider.MergePR(ctx, repo.OriginURL, *sess.PRNumber, fallback); retryErr != nil {
+				// Surface BOTH failures: the retry error alone hides why a
+				// second merge was attempted at all, which made the original
+				// incident hard to diagnose from logs.
+				return nil, connect.NewError(connect.CodeInternal,
+					fmt.Errorf("merge PR: rebase refused (%v); %s retry: %w", err, fallback, retryErr))
+			}
+			mergeDetail = reason
 		}
 
 		// Verify the merge actually landed on origin/<base>. Catches
@@ -2198,41 +2559,142 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 		if err := mergepolicy.VerifyOnBase(ctx, s.provider, s.worktrees,
 			repo.LocalPath, repo.OriginURL, baseBranch, *sess.PRNumber,
 		); err != nil {
-			return nil, connect.NewError(connect.CodeInternal,
-				fmt.Errorf("merge verification failed: %w", err))
+			// ErrMergeNotOnBase is a COMPLETED check with a negative answer —
+			// the madverts-core PR #2222 incident class. This guard MUST NOT be
+			// weakened: it stays a hard failure even when the API says merged.
+			// Tested first, deliberately, so that guarantee never depends on
+			// how the infra sentinel happens to wrap things.
+			switch {
+			case errors.Is(err, mergepolicy.ErrMergeNotOnBase):
+				return nil, connect.NewError(connect.CodeInternal,
+					fmt.Errorf("merge verification failed: %w", err))
+			case errors.Is(err, mergepolicy.ErrMergeVerifyInfra) &&
+				s.prAlreadyMerged(ctx, repo.OriginURL, *sess.PRNumber):
+				// The check could not COMPLETE (provider query, fetch, or git
+				// invocation failed), but the API confirms the PR merged. Don't
+				// strand a merge that demonstrably landed.
+				s.logger.Warn().Err(err).
+					Str("session_id", req.Msg.Id).
+					Int("pr", *sess.PRNumber).
+					Msg("merge verified via API; local fetch failed")
+			default:
+				return nil, connect.NewError(connect.CodeInternal,
+					fmt.Errorf("merge verification failed: %w", err))
+			}
 		}
 
 		// Pull the merged commit into the user's local main repo so subsequent
 		// worktrees, branches, and manual operations on <base> start from the
 		// post-merge tip. Sync failures are logged — the server-side merge
 		// is already verified to be on origin/<base>.
-		if err := s.worktrees.SyncBaseBranch(ctx, repo.LocalPath, baseBranch); err != nil {
-			if errors.Is(err, gitpkg.ErrLocalSyncDeferred) {
-				// Non-fatal: origin/<base> is already freshened; the local
-				// fast-forward is recorded and retried once the base checkout
-				// is clean. The merge itself is done and verified on base.
-				s.logger.Info().Err(err).
-					Str("repo", repo.LocalPath).
-					Str("base", baseBranch).
-					Msg("local base sync deferred: base checked out with uncommitted changes; will fast-forward once clean")
-			} else {
-				s.logger.Warn().Err(err).
-					Str("repo", repo.LocalPath).
-					Str("base", baseBranch).
-					Msg("post-merge sync of local base branch failed; run `git fetch` + fast-forward manually")
-			}
-		}
+		s.syncBaseAfterMerge(ctx, repo.LocalPath, baseBranch)
+
+		// The base just advanced: rebase the repo's other in-flight branches
+		// onto it so drift never accumulates into an end-of-run conflict
+		// (BOS-521). Opt-in per repo, and asynchronous — it queues behind this
+		// handler's own hold on the per-repo merge gate.
+		s.enqueueKeepCurrentSweep(repo, baseBranch, req.Msg.Id)
 	}
 
-	// Re-fetch so callers see any server-side side effects; the state
-	// transition to Merged itself arrives asynchronously via the PR-merged
-	// webhook handled by session.Dispatcher.
+	// Re-fetch so callers see any server-side side effects. The state
+	// transition to Merged is NOT among them: it arrives either from the
+	// PR-merged webhook handled by session.Dispatcher, or from this handler's
+	// own deferred display refresh — and that defer runs AFTER this read, so
+	// the Session returned below can lag the display tracker by exactly that
+	// one transition. Note this reassigns sess to nil on error, which is why
+	// the deferred refresh above captured the PR number instead of reading it
+	// off sess.
 	sess, err = s.sessions.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.MergeSessionResponse{Session: SessionToProto(sess)}), nil
+	return connect.NewResponse(&pb.MergeSessionResponse{
+		Session: SessionToProto(sess),
+		Detail:  mergeDetail,
+	}), nil
+}
+
+// prAlreadyMerged reports whether a LIVE read of the PR says it is already
+// merged. Only a definitive "merged" answer returns true: on a nil provider, an
+// empty origin, a provider error, or a missing PR status it returns false, so
+// the caller does NOT short-circuit and proceeds down the normal merge path
+// exactly as it does today. That is the same fail-open-to-the-merge posture
+// liveMergeBlock takes on the identical set of uncertainties.
+func (s *Server) prAlreadyMerged(ctx context.Context, originURL string, prNumber int) bool {
+	if s.provider == nil || originURL == "" {
+		return false
+	}
+	prStatus, err := s.provider.GetPRStatus(ctx, originURL, prNumber)
+	if err != nil || prStatus == nil {
+		return false
+	}
+	return prStatus.State == vcs.PRStateMerged
+}
+
+// verifyAlreadyMergedOnBase runs the madverts-core PR #2222 base-ancestry check
+// on MergeSession's idempotent short-circuit — the path taken when the provider
+// already reports the PR as merged. It returns a connect error ONLY for
+// ErrMergeNotOnBase; every other outcome is success.
+//
+// The asymmetry with the normal merge path is deliberate. Here the provider API
+// has ALREADY confirmed the merge (that read is what selected this path), so a
+// verification that could not COMPLETE — ErrMergeVerifyInfra from the merge-commit
+// query, the fetch, or the ancestor check — tells us nothing we don't already
+// know and must not strand a retry of a merge that demonstrably landed. Only the
+// completed-check-with-a-negative-answer case ("the API says merged, but the
+// commit is not on origin/<base>") is actionable, and that one stays a hard
+// CodeInternal failure on every call, not just the first.
+//
+// Nil-guarded like syncBaseAfterMerge: a server without a provider or worktree
+// manager cannot verify anything, so it keeps returning success.
+func (s *Server) verifyAlreadyMergedOnBase(
+	ctx context.Context, sessionID string, repo *models.Repo, baseBranch string, prNumber int,
+) error {
+	if s.provider == nil || s.worktrees == nil {
+		return nil
+	}
+	err := mergepolicy.VerifyOnBase(ctx, s.provider, s.worktrees,
+		repo.LocalPath, repo.OriginURL, baseBranch, prNumber)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, mergepolicy.ErrMergeNotOnBase) {
+		return connect.NewError(connect.CodeInternal,
+			fmt.Errorf("merge verification failed: %w", err))
+	}
+	s.logger.Warn().Err(err).
+		Str("session_id", sessionID).
+		Int("pr", prNumber).
+		Msg("merge already confirmed merged by the API; local re-verification could not complete")
+	return nil
+}
+
+// syncBaseAfterMerge pulls the merged commit into the user's local main repo so
+// subsequent worktrees, branches, and manual operations on <base> start from the
+// post-merge tip. Best-effort: the remote merge is already done, so failures are
+// logged rather than returned. Nil-guarded for test servers without a worktree
+// manager.
+func (s *Server) syncBaseAfterMerge(ctx context.Context, localPath, baseBranch string) {
+	if s.worktrees == nil {
+		return
+	}
+	if err := s.worktrees.SyncBaseBranch(ctx, localPath, baseBranch); err != nil {
+		if errors.Is(err, gitpkg.ErrLocalSyncDeferred) {
+			// Non-fatal: origin/<base> is already freshened; the local
+			// fast-forward is recorded and retried once the base checkout
+			// is clean. The merge itself is done and verified on base.
+			s.logger.Info().Err(err).
+				Str("repo", localPath).
+				Str("base", baseBranch).
+				Msg("local base sync deferred: base checked out with uncommitted changes; will fast-forward once clean")
+		} else {
+			s.logger.Warn().Err(err).
+				Str("repo", localPath).
+				Str("base", baseBranch).
+				Msg("post-merge sync of local base branch failed; run `git fetch` + fast-forward manually")
+		}
+	}
 }
 
 // liveMergeBlock returns a structured merge-block reason when a fresh read of
@@ -2293,6 +2755,20 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 	// find the mapping afterward.
 	if s.completionNotifier != nil {
 		s.completionNotifier.HandleSessionCompleted(ctx, req.Msg.Id, models.TaskMappingStatusFailed)
+	}
+
+	// Stop any in-flight background draft-PR create before touching the branch
+	// (BOS-540). CreateSession now returns mid-create, so a remove issued
+	// seconds later races a goroutine about to push this branch and open a PR
+	// for it — which would survive the row we are about to delete.
+	if s.lifecycle != nil {
+		s.lifecycle.StopBackgroundDraftPR(ctx, req.Msg.Id)
+		// Re-read after the join: the step can correct a drifted BranchName on
+		// its way out (attachPRMetadata does), and reaping the pre-stop name
+		// would delete nothing and leave the real branch behind.
+		if fresh, freshErr := s.sessions.Get(ctx, req.Msg.Id); freshErr == nil {
+			sess = fresh
+		}
 	}
 
 	// Best-effort git cleanup: delete branch + prune worktree.

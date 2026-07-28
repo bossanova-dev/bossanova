@@ -2192,6 +2192,11 @@ func TestAppendSystemPromptForFacts(t *testing.T) {
 		}
 	}
 
+	zeroOutputPrompt := AppendSystemPromptFor(&models.Session{ID: "s3", CronJobID: &job, IsQuickChat: true}, agentSessionID, "claude", "")
+	if !strings.Contains(zeroOutputPrompt, zeroOutputCronAutonomyDirective) || strings.Contains(zeroOutputPrompt, cronAutonomyDirective) {
+		t.Fatalf("zero-output prompt = %q, want dedicated no-commit directive", zeroOutputPrompt)
+	}
+
 	plainPrompt := AppendSystemPromptFor(plainSess, agentSessionID, "claude", "")
 	if !strings.Contains(plainPrompt, "s2") {
 		t.Fatalf("plain prompt missing session id: %q", plainPrompt)

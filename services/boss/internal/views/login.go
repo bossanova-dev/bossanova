@@ -294,7 +294,13 @@ func (m LoginModel) View() tea.View {
 		content = padding.Render(lipgloss.NewStyle().Foreground(colorSuccess).Render(label))
 
 	case loginPhaseError:
-		content = padding.Render(renderError(fmt.Sprintf("Login failed: %v", m.err), m.width)) + "\n" +
+		// renderError already applies its own Padding(0, 2) and, given a width,
+		// renders a block exactly that wide. Wrapping it in the local padding
+		// style would add 2 more columns each side and overflow the terminal by
+		// 4, so pass it through bare — the shape every other renderError caller
+		// uses, and the one that lines the message up with the action bar's own
+		// 2-column indent (BOS-531).
+		content = renderError(fmt.Sprintf("Login failed: %v", m.err), m.width) + "\n" +
 			styleActionBar.Render("[esc] back")
 	}
 

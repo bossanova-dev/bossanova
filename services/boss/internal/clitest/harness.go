@@ -42,6 +42,9 @@ type harnessConfig struct {
 	cronJobs        []*pb.CronJob
 	githubCallbacks []*pb.GithubCallback
 	accounts        []*pb.Account
+	notes           []*pb.Note
+	resolvedRepo    *pb.Repo
+	resolvedSession *pb.Session
 	extraEnv        []string
 }
 
@@ -73,6 +76,23 @@ func WithGithubCallbacks(cbs ...*pb.GithubCallback) Option {
 // WithAccounts seeds the mock daemon with accounts.
 func WithAccounts(accounts ...*pb.Account) Option {
 	return func(c *harnessConfig) { c.accounts = append(c.accounts, accounts...) }
+}
+
+// WithNotes seeds the mock daemon with notes.
+func WithNotes(notes ...*pb.Note) Option {
+	return func(c *harnessConfig) { c.notes = append(c.notes, notes...) }
+}
+
+// WithResolvedContext makes the mock daemon report the given repo and session
+// as the working directory's context, so commands that fall back to
+// ResolveContext (e.g. `boss notes add` with no --repo and no BOSS_REPO_ID) can
+// be driven without arranging the subprocess's cwd. Either argument may be nil;
+// passing two nils is the same as not using the option at all, because an
+// unseeded daemon already reports no context.
+func WithResolvedContext(repo *pb.Repo, session *pb.Session) Option {
+	return func(c *harnessConfig) {
+		c.resolvedRepo, c.resolvedSession = repo, session
+	}
 }
 
 // WithEnv adds extra env vars to every subprocess invocation (e.g. HOME=/tmp/xxx
@@ -114,6 +134,12 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 	for _, a := range cfg.accounts {
 		daemon.SeedAccount(a, []byte("seed-credential"))
+	}
+	for _, n := range cfg.notes {
+		daemon.AddNote(n)
+	}
+	if cfg.resolvedRepo != nil || cfg.resolvedSession != nil {
+		daemon.SetResolvedContext(cfg.resolvedRepo, cfg.resolvedSession)
 	}
 
 	// Default every harness to an isolated, per-test HOME and settings file so a

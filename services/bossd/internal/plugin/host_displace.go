@@ -52,10 +52,13 @@ const (
 // message names the reason (these surface in the repair plugin's blocked
 // lane). A nil return means "displaceable".
 //
-// observed, when non-zero, is an earlier idle snapshot taken by the caller;
-// if the tracker shows output produced after it, the chat spoke since the
-// snapshot and is refused. Pass the zero time to skip that check (paths with
-// no prior snapshot, e.g. the reclaim RPC and the run watchdog).
+// observed, when non-zero, is an earlier idle snapshot taken by the caller; if
+// the tracker shows output produced after it, the chat spoke since the snapshot
+// — but that only refuses while the post-snapshot output is ITSELF still fresh
+// (younger than pol.MinIdle). Once it has aged past MinIdle the chat has spoken
+// and gone quiet again, so the normal status rules below decide. Pass the zero
+// time to skip that check entirely (paths with no prior snapshot, e.g. the
+// reclaim RPC and the run watchdog).
 //
 // Note on restarts: the poller's Bootstrap stamps LastOutputAt = now for
 // chats it rediscovers after a daemon restart, so post-restart displacement
@@ -69,7 +72,13 @@ func (s *HostServiceServer) chatDisplaceable(agentSessionID string, observed tim
 		return grpcstatus.Errorf(codes.FailedPrecondition, "displace blocked: no tracker evidence for chat %s (tracker warming?)", agentSessionID)
 	}
 	if !observed.IsZero() && entry.LastOutputAt.After(observed) {
-		return grpcstatus.Errorf(codes.FailedPrecondition, "displace blocked: chat %s produced output after idle snapshot", agentSessionID)
+		// The refusal protects a chat that is CURRENTLY producing, not one that
+		// produced once since an old snapshot and has since gone quiet — callers
+		// never advance their snapshot, so the old behaviour pinned a dead chat
+		// forever (BOS-515 / MAD-652).
+		if pol.MinIdle <= 0 || now.Sub(entry.LastOutputAt) < pol.MinIdle {
+			return grpcstatus.Errorf(codes.FailedPrecondition, "displace blocked: chat %s produced output after idle snapshot", agentSessionID)
+		}
 	}
 	idleFor := now.Sub(entry.LastOutputAt)
 	switch entry.Status {

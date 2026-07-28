@@ -37,6 +37,11 @@ fixtures, not here (anti-catalog invariant, D3):
     "seed": { "sessions": [] }, // opaque object, passed through
     "env": { "BOSS_X": "1" }, // string -> string map
   },
+  "terminal": {
+    // optional pty size; both members optional
+    "cols": 72, // integer 40..300; omitted keeps the bridge default (140)
+    "rows": 30, // integer 10..100; omitted keeps the bridge default (36)
+  },
   "scenes": [
     // 1..4
     {
@@ -61,6 +66,12 @@ Step op keys: `key` · `type` · `waitFor` (+ `timeoutMs` 1..60000, default 1000
 (1..10000) · `daemon` (object with a non-empty string `action`; the rest passes through) ·
 `expect` (an expectation or an array of them). `caption` is an optional string on any step.
 `waitFor` takes a bare string (normalized-mode match) or an expectation object.
+
+**Put your narration on a frame-producing step.** An `expect` step asserts evidence against the
+scene's already-captured screens and drives no bridge, so it produces no frame — its `caption` is
+never written and is documentation only. Captions on `key` / `type` / `waitFor` / `waitMs` /
+`daemon` steps are the ones that reach the still and the video, and they are collapsed and
+truncated to `MAX_CAPTION` (140) chars, so lead with the point.
 
 ## Expectation / matcher semantics
 

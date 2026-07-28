@@ -177,3 +177,103 @@ func TestBugReportViewTerminalStates(t *testing.T) {
 		}
 	})
 }
+
+func TestBugReportView_ActionBarNavigationHints(t *testing.T) {
+	m := NewBugReportModel(nil, context.Background(), nil, ViewHome, nil, nil)
+
+	view := m.View().Content
+	for _, want := range []string{
+		"[tab] next field",
+		"[shift+tab] previous field",
+		"[enter] submit",
+		"[esc] cancel",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("bug report action bar missing %q; view:\n%s", want, view)
+		}
+	}
+}
+
+// TestBugReportView_CommentGrowsWithContent mirrors the cron form's Prompt
+// sizing on the other huh Text field in the package (BOS-567 ask #3): the box
+// opens at one row rather than the textarea's fixed six, and grows as the user
+// types.
+func TestBugReportView_CommentGrowsWithContent(t *testing.T) {
+	m := NewBugReportModel(nil, context.Background(), nil, ViewHome, nil, nil)
+	if cmd := m.form.Init(); cmd != nil {
+		cmd()
+	}
+
+	rows := func(view string) int {
+		t.Helper()
+		lines := strings.Split(view, "\n")
+		title := lineIndexContaining(t, lines, "What went wrong?")
+		bar := lineIndexContaining(t, lines, formNavHints()[0])
+		block := lines[title+1 : bar]
+		for len(block) > 0 && strings.TrimSpace(block[len(block)-1]) == "" {
+			block = block[:len(block)-1]
+		}
+		return len(block)
+	}
+
+	if got := rows(m.View().Content); got != 1 {
+		t.Fatalf("empty comment renders %d rows, want 1; view:\n%s", got, m.View().Content)
+	}
+
+	for _, key := range []tea.KeyPressMsg{
+		keyPress('a'), cronPromptNewline, keyPress('b'), cronPromptNewline, keyPress('c'),
+	} {
+		updated, _ := m.Update(key)
+		next, ok := updated.(BugReportModel)
+		if !ok {
+			t.Fatalf("updated model = %T, want BugReportModel", updated)
+		}
+		m = next
+	}
+
+	if got := rows(m.View().Content); got != 3 {
+		t.Fatalf("three-line comment renders %d rows, want 3; view:\n%s", got, m.View().Content)
+	}
+}
+
+// TestBugReportView_CommentSurvivesTheWrapBoundary is the regression for the
+// one input length where sizing the box to its content used to hide that
+// content: a line that exactly fills the wrap width.
+//
+// bubbles' textarea closes a logical line with `>=` rather than `>`, so such a
+// line occupies two rows — the text and the row the cursor moves onto. A
+// one-row box therefore cannot show the cursor, the textarea scrolls its own
+// viewport to reveal it, and it never scrolls back: the line the user just
+// typed is gone for the rest of the edit. The pre-BOS-567 fixed six-row box
+// hid the bug by being too tall to notice.
+func TestBugReportView_CommentSurvivesTheWrapBoundary(t *testing.T) {
+	m := NewBugReportModel(nil, context.Background(), nil, ViewHome, nil, nil)
+	if cmd := m.form.Init(); cmd != nil {
+		cmd()
+	}
+
+	// Prose rather than one long run: the boundary has to survive real word
+	// wrapping, and it is crossed here three times.
+	const prose = "The daemon dropped my session while CI was still running, and the " +
+		"chat row vanished from boss chats even though the transcript was still " +
+		"on disk under the project slug. Reproduced twice this morning."
+
+	typed := ""
+	for _, r := range prose {
+		updated, _ := m.Update(keyPress(r))
+		next, ok := updated.(BugReportModel)
+		if !ok {
+			t.Fatalf("updated model = %T, want BugReportModel", updated)
+		}
+		m = next
+		typed += string(r)
+
+		// The opening of the comment must stay on screen the whole way: once
+		// the textarea scrolls past it, it never comes back.
+		opening := typed[:min(len(typed), 40)]
+		if !strings.Contains(m.View().Content, opening) {
+			t.Fatalf("after typing %d columns the box no longer shows the opening %q; view:\n%s",
+				len(typed), opening, m.View().Content)
+		}
+	}
+}

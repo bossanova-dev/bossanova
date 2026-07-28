@@ -1,0 +1,817 @@
+package views
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/telemetry"
+)
+
+// settingsRowKind tags a row with the action it represents. The kind drives
+// behaviour on enter/space (toggle vs. edit vs. cycle vs. select).
+type settingsRowKind int
+
+const (
+	settingsRowKindBool          settingsRowKind = iota // checkbox toggle (plugin Bool config)
+	settingsRowKindString                               // text input (plugin String config)
+	settingsRowKindEnum                                 // cycle picker (plugin Enum config)
+	settingsRowKindWorktree                             // built-in worktree base directory
+	settingsRowKindPollInterval                         // built-in poll interval seconds
+	settingsRowKindDefaultAgent                         // cycle picker over enabled agents
+	settingsRowKindAgentEnabled                         // checkbox toggle for plugin Enabled
+	settingsRowKindAgentHeader                          // pseudo-row: section header (non-interactive)
+	settingsRowKindTracingHeader                        // pseudo-row: tracing section header (non-interactive)
+	settingsRowKindEventTracing                         // built-in event tracing toggle
+	settingsRowKindErrorTracking                        // built-in error tracking toggle (Sentry)
+	settingsRowKindPostHogToken                         // built-in PostHog project token
+	settingsRowKindPostHogHost                          // built-in PostHog host
+	settingsRowKindRotation                             // built-in automatic account rotation kill-switch
+	settingsRowKindNotifications                        // built-in desktop notifications toggle
+)
+
+// settingsRow is a single addressable line in the settings TUI. Header
+// rows have IsHeader=true and are skipped during cursor navigation.
+type settingsRow struct {
+	Kind     settingsRowKind
+	Plugin   string   // plugin name for plugin-config rows
+	Key      string   // setting key for plugin-config rows
+	Label    string   // text shown to the user
+	Allowed  []string // for enum rows
+	IsHeader bool     // header rows are non-interactive
+}
+
+// GeneralSettingsModel renders both the built-in global settings and a
+// per-agent block for every loaded agent runner. Each agent contributes
+// one row per UserSetting it advertises through ListAgents.
+//
+// Its parent is always the Settings hub, so it carries no returnView slot
+// (BOS-511) — app.go routes its cancel straight back to ViewSettings.
+type GeneralSettingsModel struct {
+	client client.BossClient
+	ctx    context.Context
+
+	settings   config.Settings
+	agents     []client.AgentInfo
+	rows       []settingsRow
+	cursor     int
+	cancel     bool
+	err        error
+	editingRow int // index into rows; -1 = not editing
+
+	worktreeDirInput  textinput.Model
+	pollIntervalInput textinput.Model
+	stringInput       textinput.Model // shared for plugin String rows
+
+	width int
+}
+
+// NewGeneralSettingsModel constructs the general settings view. With a non-nil
+// client, the view loads agents via ListAgents and renders per-agent settings
+// sections. A nil client (legacy callers / tests) renders only the built-in
+// rows.
+func NewGeneralSettingsModel(c client.BossClient, ctx context.Context) GeneralSettingsModel {
+	s, _ := config.Load()
+
+	wtIn := textinput.New()
+	wtIn.Placeholder = "Worktree base directory"
+	wtIn.SetWidth(60)
+	wtIn.SetValue(s.WorktreeBaseDir)
+
+	piIn := textinput.New()
+	piIn.Placeholder = "30"
+	piIn.SetWidth(10)
+	if s.PollIntervalSeconds > 0 {
+		piIn.SetValue(strconv.Itoa(s.PollIntervalSeconds))
+	}
+
+	strIn := textinput.New()
+	strIn.SetWidth(40)
+
+	m := GeneralSettingsModel{
+		client:            c,
+		ctx:               ctx,
+		settings:          mergeDiscoveredAgentPlugins(s, config.DiscoverPlugins()),
+		editingRow:        -1,
+		worktreeDirInput:  wtIn,
+		pollIntervalInput: piIn,
+		stringInput:       strIn,
+	}
+
+	if c != nil {
+		// A failed agent fetch is non-fatal — we degrade to the built-in
+		// rows so the user can still edit worktree dir / poll interval.
+		agents, err := c.ListAgents(ctx)
+		if err == nil {
+			m.agents = agents
+			for _, agent := range agents {
+				if agent.Name != "" && !pluginConfigured(m.settings, agent.Name) {
+					setPluginEnabled(&m.settings, agent.Name, true)
+				}
+			}
+		}
+	}
+	m.agents = mergeAvailableAgentInfos(m.settings, m.agents)
+
+	m.rebuildRows()
+	return m
+}
+
+func mergeDiscoveredAgentPlugins(settings config.Settings, discovered []config.PluginConfig) config.Settings {
+	if len(discovered) == 0 {
+		return settings
+	}
+	byName := make(map[string]config.PluginConfig, len(discovered))
+	for _, plugin := range discovered {
+		if plugin.Name == "claude" || plugin.Name == "codex" {
+			byName[plugin.Name] = plugin
+		}
+	}
+	if len(byName) == 0 {
+		return settings
+	}
+	for i := range settings.Plugins {
+		discoveredPlugin, ok := byName[settings.Plugins[i].Name]
+		if !ok {
+			continue
+		}
+		if settings.Plugins[i].Path == "" {
+			settings.Plugins[i].Path = discoveredPlugin.Path
+		}
+		if settings.Plugins[i].Version == "" {
+			settings.Plugins[i].Version = discoveredPlugin.Version
+		}
+		delete(byName, settings.Plugins[i].Name)
+	}
+	for _, name := range settings.KnownAgentProviders {
+		discoveredPlugin, ok := byName[name]
+		if !ok {
+			continue
+		}
+		discoveredPlugin.Enabled = false
+		settings.Plugins = append(settings.Plugins, discoveredPlugin)
+		delete(byName, name)
+	}
+	return settings
+}
+
+func mergeAvailableAgentInfos(settings config.Settings, loaded []client.AgentInfo) []client.AgentInfo {
+	byName := make(map[string]client.AgentInfo, len(loaded)+len(settings.Plugins))
+	for _, agent := range loaded {
+		if agent.Name != "" {
+			byName[agent.Name] = agent
+		}
+	}
+
+	wanted := map[string]bool{}
+	for _, plugin := range settings.Plugins {
+		if plugin.Name == "claude" || plugin.Name == "codex" {
+			wanted[plugin.Name] = true
+		}
+	}
+	for _, name := range settings.KnownAgentProviders {
+		if name == "claude" || name == "codex" {
+			wanted[name] = true
+		}
+	}
+
+	for _, fallback := range fallbackAgentInfos() {
+		if wanted[fallback.Name] {
+			if _, ok := byName[fallback.Name]; !ok {
+				byName[fallback.Name] = fallback
+			}
+		}
+	}
+
+	order := []string{"claude", "codex"}
+	out := make([]client.AgentInfo, 0, len(byName))
+	seen := map[string]bool{}
+	for _, name := range order {
+		if agent, ok := byName[name]; ok {
+			out = append(out, agent)
+			seen[name] = true
+		}
+	}
+	for _, agent := range loaded {
+		if agent.Name != "" && !seen[agent.Name] {
+			out = append(out, agent)
+			seen[agent.Name] = true
+		}
+	}
+	return out
+}
+
+func fallbackAgentInfos() []client.AgentInfo {
+	return []client.AgentInfo{
+		{
+			Name: "claude",
+			UserSettings: []client.UserSetting{
+				{
+					Key:          "dangerously_skip_permissions",
+					Label:        "Skip permission prompts",
+					Description:  "Pass --dangerously-skip-permissions to claude. Use only in trusted worktrees.",
+					Type:         client.SettingTypeBool,
+					DefaultValue: "false",
+				},
+			},
+		},
+		{
+			Name: "codex",
+			UserSettings: []client.UserSetting{
+				{
+					Key:           "sandbox",
+					Label:         "Sandbox mode",
+					Description:   "Codex --sandbox mode. Empty uses codex default (no --sandbox flag passed).",
+					Type:          client.SettingTypeEnum,
+					AllowedValues: []string{"", "read-only", "workspace-write", "danger-full-access"},
+					DefaultValue:  "",
+				},
+				{
+					Key:           "approval",
+					Label:         "Approval policy",
+					Description:   "Codex --ask-for-approval policy. Empty uses codex default (no flag passed).",
+					Type:          client.SettingTypeEnum,
+					AllowedValues: []string{"", "untrusted", "on-failure", "on-request", "never"},
+					DefaultValue:  "",
+				},
+				{
+					Key:          "model",
+					Label:        "Model",
+					Description:  "Codex --model selection. Empty uses codex default.",
+					Type:         client.SettingTypeString,
+					DefaultValue: "",
+				},
+				{
+					Key:          "dangerously_bypass_approvals_and_sandbox",
+					Label:        "Bypass approvals & sandbox (dangerous)",
+					Description:  "Pass --dangerously-bypass-approvals-and-sandbox to codex. Overrides sandbox/approval. Use only in trusted worktrees.",
+					Type:         client.SettingTypeBool,
+					DefaultValue: "false",
+				},
+			},
+		},
+	}
+}
+
+func enabledAgentNames(settings config.Settings, agents []client.AgentInfo) []string {
+	out := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		if pluginEnabled(settings, agent.Name) {
+			out = append(out, agent.Name)
+		}
+	}
+	return out
+}
+
+func pluginEnabled(settings config.Settings, name string) bool {
+	for _, plugin := range settings.Plugins {
+		if plugin.Name == name {
+			return plugin.Enabled
+		}
+	}
+	return false
+}
+
+func pluginConfigured(settings config.Settings, name string) bool {
+	for _, plugin := range settings.Plugins {
+		if plugin.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func setPluginEnabled(settings *config.Settings, name string, enabled bool) {
+	for i := range settings.Plugins {
+		if settings.Plugins[i].Name == name {
+			settings.Plugins[i].Enabled = enabled
+			return
+		}
+	}
+	settings.Plugins = append(settings.Plugins, config.PluginConfig{Name: name, Enabled: enabled})
+}
+
+// rebuildRows reconstructs m.rows from m.settings + m.agents. Called on
+// construction and after agent / setting mutations that change row counts.
+func (m *GeneralSettingsModel) rebuildRows() {
+	m.rows = m.rows[:0]
+
+	// Built-in global settings come first.
+	m.rows = append(m.rows,
+		settingsRow{Kind: settingsRowKindWorktree, Label: "Worktree base directory"},
+		settingsRow{Kind: settingsRowKindPollInterval, Label: "Poll interval (seconds)"},
+		settingsRow{Kind: settingsRowKindRotation, Label: "Enable automatic account rotation"},
+		settingsRow{Kind: settingsRowKindNotifications, Label: "Enable desktop notifications for questions"},
+	)
+
+	// Default agent picker — only meaningful when >1 agent is enabled.
+	enabledAgents := enabledAgentNames(m.settings, m.agents)
+	if len(enabledAgents) > 1 {
+		m.rows = append(m.rows, settingsRow{
+			Kind:    settingsRowKindDefaultAgent,
+			Label:   "Default agent",
+			Allowed: enabledAgents,
+		})
+	}
+
+	// Per-agent sections.
+	for _, a := range m.agents {
+		m.rows = append(m.rows, settingsRow{
+			Kind:     settingsRowKindAgentHeader,
+			Label:    a.Name,
+			Plugin:   a.Name,
+			IsHeader: true,
+		})
+		m.rows = append(m.rows, settingsRow{
+			Kind:   settingsRowKindAgentEnabled,
+			Plugin: a.Name,
+			Label:  "Enabled",
+		})
+		for _, us := range a.UserSettings {
+			row := settingsRow{
+				Plugin:  a.Name,
+				Key:     us.Key,
+				Label:   us.Label,
+				Allowed: us.AllowedValues,
+			}
+			switch us.Type {
+			case client.SettingTypeBool:
+				row.Kind = settingsRowKindBool
+			case client.SettingTypeEnum:
+				row.Kind = settingsRowKindEnum
+			default:
+				// Unspecified or String both render as text input.
+				row.Kind = settingsRowKindString
+			}
+			m.rows = append(m.rows, row)
+		}
+	}
+
+	m.rows = append(m.rows,
+		settingsRow{Kind: settingsRowKindTracingHeader, Label: "tracing", IsHeader: true},
+		settingsRow{Kind: settingsRowKindEventTracing, Label: "Enable event tracing (for debugging problems)"},
+		settingsRow{Kind: settingsRowKindErrorTracking, Label: "Enable error tracking (sends panics to Sentry)"},
+	)
+	if m.settings.EventTracingEnabled {
+		m.rows = append(m.rows,
+			settingsRow{Kind: settingsRowKindPostHogToken, Label: "PostHog project token"},
+			settingsRow{Kind: settingsRowKindPostHogHost, Label: "PostHog host"},
+		)
+	}
+
+	// Clamp cursor to a non-header row.
+	if m.cursor >= len(m.rows) {
+		m.cursor = 0
+	}
+	for m.cursor < len(m.rows) && m.rows[m.cursor].IsHeader {
+		m.cursor++
+	}
+}
+
+func (m GeneralSettingsModel) Init() tea.Cmd { return nil }
+
+func (m GeneralSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.editingRow >= 0 {
+		return m.updateEditing(msg)
+	}
+
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		return m, nil
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "esc":
+			m.cancel = true
+			return m, nil
+		case "up", "k":
+			m.moveCursor(-1)
+		case "down", "j":
+			m.moveCursor(+1)
+		case "enter", "space", " ":
+			return m.activateRow()
+		}
+	}
+	return m, nil
+}
+
+// moveCursor advances the cursor by `delta`, skipping header pseudo-rows.
+func (m *GeneralSettingsModel) moveCursor(delta int) {
+	if len(m.rows) == 0 {
+		return
+	}
+	c := m.cursor + delta
+	for c >= 0 && c < len(m.rows) && m.rows[c].IsHeader {
+		c += delta
+	}
+	if c < 0 || c >= len(m.rows) {
+		return
+	}
+	m.cursor = c
+}
+
+// persistSettings saves the complete settings document and makes its result
+// authoritative for the error banner. A later successful save can persist an
+// earlier failed mutation, so it must also clear that stale failure.
+func (m *GeneralSettingsModel) persistSettings() bool {
+	if err := config.Save(m.settings); err != nil {
+		m.err = err
+		return false
+	}
+	m.err = nil
+	return true
+}
+
+func (m GeneralSettingsModel) activateRow() (GeneralSettingsModel, tea.Cmd) {
+	if m.cursor < 0 || m.cursor >= len(m.rows) {
+		return m, nil
+	}
+	row := m.rows[m.cursor]
+	switch row.Kind {
+	case settingsRowKindAgentHeader, settingsRowKindTracingHeader:
+		// Header rows are non-interactive and the cursor never lands on
+		// one (moveCursor skips them); nothing to do.
+		return m, nil
+	case settingsRowKindBool:
+		current := config.PluginConfigBool(&m.settings, row.Plugin, row.Key)
+		config.SetPluginConfigBool(&m.settings, row.Plugin, row.Key, !current)
+		m.persistSettings()
+	case settingsRowKindAgentEnabled:
+		current := pluginEnabled(m.settings, row.Plugin)
+		if current && len(enabledAgentNames(m.settings, m.agents)) <= 1 {
+			m.err = fmt.Errorf("select at least one agent")
+			return m, nil
+		}
+		setPluginEnabled(&m.settings, row.Plugin, !current)
+		if !current && (m.settings.DefaultAgent == "" || !pluginEnabled(m.settings, m.settings.DefaultAgent)) {
+			m.settings.DefaultAgent = row.Plugin
+		}
+		if current && m.settings.DefaultAgent == row.Plugin {
+			enabled := enabledAgentNames(m.settings, m.agents)
+			if len(enabled) > 0 {
+				m.settings.DefaultAgent = enabled[0]
+			} else {
+				m.settings.DefaultAgent = ""
+			}
+		}
+		m.persistSettings()
+		m.rebuildRows()
+	case settingsRowKindEnum:
+		// Cycle to the next allowed value.
+		if len(row.Allowed) == 0 {
+			return m, nil
+		}
+		current := config.PluginConfigString(&m.settings, row.Plugin, row.Key)
+		next := nextEnumValue(row.Allowed, current)
+		if err := config.SetPluginConfigEnum(&m.settings, row.Plugin, row.Key, next, row.Allowed); err != nil {
+			m.err = err
+			return m, nil
+		}
+		m.persistSettings()
+	case settingsRowKindString:
+		m.editingRow = m.cursor
+		m.stringInput.SetValue(config.PluginConfigString(&m.settings, row.Plugin, row.Key))
+		return m, m.stringInput.Focus()
+	case settingsRowKindEventTracing:
+		m.settings.EventTracingEnabled = !m.settings.EventTracingEnabled
+		if m.settings.EventTracingEnabled {
+			if m.settings.PostHogProjectToken == "" {
+				m.settings.PostHogProjectToken = telemetry.ProductionProjectToken
+			}
+			if m.settings.PostHogHost == "" {
+				m.settings.PostHogHost = telemetry.DefaultHost
+			}
+		}
+		if m.persistSettings() {
+			m.rebuildRows()
+		}
+	case settingsRowKindErrorTracking:
+		m.settings.ErrorTrackingEnabled = !m.settings.ErrorTrackingEnabled
+		m.persistSettings()
+	case settingsRowKindRotation:
+		next := !m.settings.ManagedAccounts.ManagedAccountsEnabled()
+		m.settings.ManagedAccounts.Enabled = &next
+		if m.persistSettings() {
+			m.rebuildRows()
+		}
+	case settingsRowKindNotifications:
+		next := !config.NotificationsEnabled(m.settings)
+		m.settings.NotificationsEnabled = &next
+		if m.persistSettings() {
+			m.rebuildRows()
+		}
+	case settingsRowKindPostHogToken:
+		m.editingRow = m.cursor
+		m.stringInput.SetValue(m.settings.PostHogProjectToken)
+		return m, m.stringInput.Focus()
+	case settingsRowKindPostHogHost:
+		m.editingRow = m.cursor
+		m.stringInput.SetValue(m.settings.PostHogHost)
+		return m, m.stringInput.Focus()
+	case settingsRowKindWorktree:
+		m.editingRow = m.cursor
+		return m, m.worktreeDirInput.Focus()
+	case settingsRowKindPollInterval:
+		m.editingRow = m.cursor
+		return m, m.pollIntervalInput.Focus()
+	case settingsRowKindDefaultAgent:
+		if len(row.Allowed) == 0 {
+			return m, nil
+		}
+		next := nextEnumValue(row.Allowed, m.settings.DefaultAgent)
+		m.settings.DefaultAgent = next
+		m.persistSettings()
+	}
+	return m, nil
+}
+
+// nextEnumValue returns the value after current in allowed, wrapping
+// around at the end. Returns the first value when current is empty or
+// not present.
+func nextEnumValue(allowed []string, current string) string {
+	for i, v := range allowed {
+		if v == current {
+			return allowed[(i+1)%len(allowed)]
+		}
+	}
+	return allowed[0]
+}
+
+func (m GeneralSettingsModel) updateEditing(msg tea.Msg) (GeneralSettingsModel, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "enter":
+			return m.commitEdit()
+		case "esc":
+			return m.cancelEdit()
+		}
+	}
+
+	row := m.rows[m.editingRow]
+	var cmd tea.Cmd
+	switch row.Kind { //nolint:exhaustive // only edit-capable kinds reach here
+	case settingsRowKindWorktree:
+		m.worktreeDirInput, cmd = m.worktreeDirInput.Update(msg)
+	case settingsRowKindPollInterval:
+		m.pollIntervalInput, cmd = m.pollIntervalInput.Update(msg)
+	case settingsRowKindString:
+		m.stringInput, cmd = m.stringInput.Update(msg)
+	case settingsRowKindPostHogToken, settingsRowKindPostHogHost:
+		m.stringInput, cmd = m.stringInput.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m GeneralSettingsModel) commitEdit() (GeneralSettingsModel, tea.Cmd) {
+	row := m.rows[m.editingRow]
+	switch row.Kind { //nolint:exhaustive // only edit-capable kinds reach here
+	case settingsRowKindWorktree:
+		dir := m.worktreeDirInput.Value()
+		if dir == "" {
+			m.err = fmt.Errorf("directory cannot be empty")
+			return m, nil
+		}
+		m.editingRow = -1
+		m.err = nil
+		m.worktreeDirInput.Blur()
+		m.settings.WorktreeBaseDir = dir
+		m.persistSettings()
+
+	case settingsRowKindPollInterval:
+		val := m.pollIntervalInput.Value()
+		if val == "" {
+			m.editingRow = -1
+			m.err = nil
+			m.pollIntervalInput.Blur()
+			m.settings.PollIntervalSeconds = 0
+			m.persistSettings()
+			return m, nil
+		}
+		n, err := strconv.Atoi(val)
+		if err != nil || n < 1 {
+			m.err = fmt.Errorf("poll interval must be a positive integer")
+			return m, nil
+		}
+		m.editingRow = -1
+		m.err = nil
+		m.pollIntervalInput.Blur()
+		m.settings.PollIntervalSeconds = n
+		m.persistSettings()
+
+	case settingsRowKindString:
+		val := m.stringInput.Value()
+		config.SetPluginConfigString(&m.settings, row.Plugin, row.Key, val)
+		if !m.persistSettings() {
+			return m, nil
+		}
+		m.editingRow = -1
+		m.stringInput.Blur()
+	case settingsRowKindPostHogToken:
+		m.settings.PostHogProjectToken = strings.TrimSpace(m.stringInput.Value())
+		if !m.persistSettings() {
+			return m, nil
+		}
+		m.editingRow = -1
+		m.stringInput.Blur()
+	case settingsRowKindPostHogHost:
+		host := strings.TrimSpace(m.stringInput.Value())
+		if host == "" {
+			host = telemetry.DefaultHost
+		}
+		m.settings.PostHogHost = host
+		if !m.persistSettings() {
+			return m, nil
+		}
+		m.editingRow = -1
+		m.stringInput.Blur()
+	}
+	return m, nil
+}
+
+func (m GeneralSettingsModel) cancelEdit() (GeneralSettingsModel, tea.Cmd) {
+	row := m.rows[m.editingRow]
+	switch row.Kind { //nolint:exhaustive // only edit-capable kinds reach here
+	case settingsRowKindWorktree:
+		m.worktreeDirInput.Blur()
+		m.worktreeDirInput.SetValue(m.settings.WorktreeBaseDir)
+	case settingsRowKindPollInterval:
+		m.pollIntervalInput.Blur()
+		if m.settings.PollIntervalSeconds > 0 {
+			m.pollIntervalInput.SetValue(strconv.Itoa(m.settings.PollIntervalSeconds))
+		} else {
+			m.pollIntervalInput.SetValue("")
+		}
+	case settingsRowKindString:
+		m.stringInput.Blur()
+	case settingsRowKindPostHogToken, settingsRowKindPostHogHost:
+		m.stringInput.Blur()
+	}
+	m.editingRow = -1
+	m.err = nil
+	return m, nil
+}
+
+// Cancelled returns true if the user exited the general settings view.
+func (m GeneralSettingsModel) Cancelled() bool { return m.cancel }
+
+func (m GeneralSettingsModel) View() tea.View {
+	var b strings.Builder
+
+	if m.err != nil {
+		b.WriteString(renderError(fmt.Sprintf("Error: %v", m.err), m.width))
+		b.WriteString("\n")
+	}
+
+	editing := m.editingRow >= 0
+
+	for i, row := range m.rows {
+		if row.IsHeader {
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Bold(true).Render(row.Label))
+			b.WriteString("\n")
+			continue
+		}
+		m.renderRow(&b, i, row, editing)
+	}
+
+	if editing {
+		b.WriteString(actionBar([]string{"[enter] save", "[esc] cancel"}))
+	} else {
+		b.WriteString(actionBar(
+			[]string{"[enter/space] toggle/edit"},
+			[]string{"[esc] back"},
+		))
+	}
+
+	return tea.NewView(b.String())
+}
+
+// renderRow writes a single non-header row to b.
+func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsRow, editing bool) {
+	focused := i == m.cursor && !editing
+
+	// Editing branches show the input inline.
+	if m.editingRow == i {
+		switch row.Kind { //nolint:exhaustive // only edit-capable kinds need a branch
+		case settingsRowKindWorktree:
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Worktree base directory:"))
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.worktreeDirInput.View()))
+			b.WriteString("\n")
+			return
+		case settingsRowKindPollInterval:
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Poll interval (seconds):"))
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.pollIntervalInput.View()))
+			b.WriteString("\n")
+			return
+		case settingsRowKindString:
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("  %s:", row.Label)))
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.stringInput.View()))
+			b.WriteString("\n")
+			return
+		case settingsRowKindPostHogToken, settingsRowKindPostHogHost:
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("  %s:", row.Label)))
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.stringInput.View()))
+			b.WriteString("\n")
+			return
+		}
+	}
+
+	var line string
+	switch row.Kind { //nolint:exhaustive // header rows take an early return path in View
+	case settingsRowKindBool:
+		check := " "
+		if config.PluginConfigBool(&m.settings, row.Plugin, row.Key) {
+			check = "x"
+		}
+		line = fmt.Sprintf("[%s] %s", check, row.Label)
+	case settingsRowKindAgentEnabled:
+		check := " "
+		if pluginEnabled(m.settings, row.Plugin) {
+			check = "x"
+		}
+		line = fmt.Sprintf("[%s] %s", check, row.Label)
+	case settingsRowKindString:
+		val := config.PluginConfigString(&m.settings, row.Plugin, row.Key)
+		if val == "" {
+			val = "(not set)"
+		}
+		line = fmt.Sprintf("%s: %s", row.Label, val)
+	case settingsRowKindEnum:
+		val := config.PluginConfigString(&m.settings, row.Plugin, row.Key)
+		if val == "" && len(row.Allowed) > 0 {
+			// When Allowed[0] is the empty string the plugin advertises ""
+			// as the explicit "use plugin default" sentinel — render it as
+			// "(default)" rather than " (default)" so the row reads
+			// cleanly without a leading space.
+			if row.Allowed[0] == "" {
+				val = "(default)"
+			} else {
+				val = row.Allowed[0] + " (default)"
+			}
+		}
+		line = fmt.Sprintf("%s: %s", row.Label, val)
+	case settingsRowKindWorktree:
+		line = fmt.Sprintf("Worktree base directory: %s", m.settings.WorktreeBaseDir)
+	case settingsRowKindPollInterval:
+		intervalStr := "30 (default)"
+		if m.settings.PollIntervalSeconds > 0 {
+			intervalStr = strconv.Itoa(m.settings.PollIntervalSeconds)
+		}
+		line = fmt.Sprintf("Poll interval (seconds): %s", intervalStr)
+	case settingsRowKindEventTracing:
+		check := " "
+		if m.settings.EventTracingEnabled {
+			check = "x"
+		}
+		line = fmt.Sprintf("[%s] %s", check, row.Label)
+	case settingsRowKindErrorTracking:
+		val := "OFF"
+		if m.settings.ErrorTrackingEnabled {
+			val = "ON"
+		}
+		line = fmt.Sprintf("%s: %s", row.Label, val)
+	case settingsRowKindRotation:
+		check := " "
+		if m.settings.ManagedAccounts.ManagedAccountsEnabled() {
+			check = "x"
+		}
+		line = fmt.Sprintf("[%s] %s", check, row.Label)
+	case settingsRowKindNotifications:
+		check := " "
+		if config.NotificationsEnabled(m.settings) {
+			check = "x"
+		}
+		line = fmt.Sprintf("[%s] %s", check, row.Label)
+	case settingsRowKindPostHogToken:
+		val := m.settings.PostHogProjectToken
+		if val == "" {
+			val = "(not set)"
+		}
+		line = fmt.Sprintf("%s: %s", row.Label, val)
+	case settingsRowKindPostHogHost:
+		val := m.settings.PostHogHost
+		if val == "" {
+			val = telemetry.DefaultHost
+		}
+		line = fmt.Sprintf("%s: %s", row.Label, val)
+	case settingsRowKindDefaultAgent:
+		val := m.settings.DefaultAgent
+		if val == "" {
+			val = "(unset)"
+		}
+		line = fmt.Sprintf("%s: %s", row.Label, val)
+	}
+
+	b.WriteString(renderFieldRow(focused, line))
+	b.WriteString("\n")
+}

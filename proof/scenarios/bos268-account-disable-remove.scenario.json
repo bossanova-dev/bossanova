@@ -16,7 +16,8 @@
         { "key": "a", "caption": "Press [a] to open the Accounts list" },
         {
           "waitFor": {
-            "anyOf": ["LABEL PROVIDER", { "text": "Accounts", "match": "normalized" }],
+            "text": "LABEL PROVIDER",
+            "match": "normalized",
             "label": "Accounts list loaded"
           },
           "timeoutMs": 10000,
@@ -36,9 +37,9 @@
               "label": "disabled STATUS cell rendered for the codex account"
             },
             {
-              "text": "[x] disable/enable",
+              "text": "[space] toggle",
               "match": "normalized",
-              "label": "action bar advertises the new [x] disable/enable toggle"
+              "label": "action bar advertises the disable/enable toggle"
             },
             {
               "text": "[d] remove",

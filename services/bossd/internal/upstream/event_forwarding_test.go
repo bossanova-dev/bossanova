@@ -1,7 +1,10 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -228,6 +231,93 @@ func TestSubscribeDeltas_InterestsEvent_EmptySetIsWithdrawal(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected empty callback-interest set delta; got %v", got)
+	}
+}
+
+func TestSubscribeDeltas_EgressBroadcast_EmitsBroadcastEgress(t *testing.T) {
+	src := &staticEventSource{events: []StreamEvent{{
+		EgressBroadcast: &BroadcastEgressEvent{Egress: &pb.BroadcastEgress{
+			BroadcastId:    "b1",
+			OriginDaemonId: "daemon-a",
+			OriginChatId:   "c1",
+			Message:        "hello",
+			Selector: &pb.BroadcastSelector{Clauses: []*pb.BroadcastSelectorClause{
+				{DaemonIds: []string{"daemon-b"}},
+			}},
+		}},
+	}}}
+	got := drainFor(t, newForwarderClient(t, src, 0), 200*time.Millisecond)
+
+	var matched int
+	for _, ev := range got {
+		eg := ev.GetEgressBroadcast()
+		if eg == nil {
+			continue
+		}
+		if eg.GetBroadcastId() != "b1" || eg.GetOriginDaemonId() != "daemon-a" {
+			t.Fatalf("egress broadcast carried wrong ids: %+v", eg)
+		}
+		clauses := eg.GetSelector().GetClauses()
+		if len(clauses) != 1 || len(clauses[0].GetDaemonIds()) != 1 ||
+			clauses[0].GetDaemonIds()[0] != "daemon-b" {
+			t.Fatalf("egress broadcast carried wrong selector: %+v", eg.GetSelector())
+		}
+		matched++
+	}
+	if matched != 1 {
+		t.Fatalf("expected exactly one egress-broadcast daemon event; got %d in %v", matched, got)
+	}
+}
+
+// lockedBuffer is a race-free io.Writer for zerolog in tests: the
+// forwarder logs from several goroutines, so the buffer needs its own
+// mutex even though the drain helper joins them before we read.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestForwardEventEgressBroadcastNeverLogsMessageBody pins the SECRET-BODY
+// rule at the stream boundary: a broadcast body rides the bus up to bosso,
+// but must never appear in a log line, at any level.
+func TestForwardEventEgressBroadcastNeverLogsMessageBody(t *testing.T) {
+	const secret = "zz-secret-token-bos558"
+
+	sink := &lockedBuffer{}
+	logger := zerolog.New(sink).Level(zerolog.TraceLevel)
+
+	src := &staticEventSource{events: []StreamEvent{{
+		EgressBroadcast: &BroadcastEgressEvent{Egress: &pb.BroadcastEgress{
+			BroadcastId:    "b1",
+			OriginDaemonId: "daemon-a",
+			Message:        secret,
+			Selector: &pb.BroadcastSelector{Clauses: []*pb.BroadcastSelectorClause{
+				{DaemonIds: []string{"daemon-b"}},
+			}},
+		}},
+	}}}
+
+	client := NewStreamClient(StreamClientConfig{
+		Events:         src,
+		Logger:         logger,
+		CoalesceWindow: 10 * time.Millisecond,
+	})
+	drainFor(t, client, 200*time.Millisecond)
+
+	if strings.Contains(sink.String(), secret) {
+		t.Fatalf("broadcast body leaked into the daemon stream logs: %s", sink.String())
 	}
 }
 

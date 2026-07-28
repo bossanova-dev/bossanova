@@ -186,7 +186,7 @@ func setupRepairE2E(t *testing.T, fake agent.AgentRunnerClient) (*testharness.Ha
 	}
 
 	agentName := "codex"
-	sess := createSessionFromStream(t, h.Client, ctx, &bossanovav1.CreateSessionRequest{
+	sess := createSessionFromStream(t, h, ctx, &bossanovav1.CreateSessionRequest{
 		RepoId:    repoResp.Msg.Repo.Id,
 		Title:     "Repair E2E",
 		Plan:      "test repair e2e",

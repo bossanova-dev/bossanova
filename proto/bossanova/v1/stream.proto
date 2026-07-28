@@ -55,6 +55,11 @@ message DaemonEvent {
     // the daemon holds no callbacks. The connect-time set rides DaemonSnapshot
     // (field 7); this delta refreshes it while the stream stays up.
     CallbackInterestSet callback_interests = 10;
+    // A broadcast this daemon produced whose audience reaches beyond itself,
+    // published for bosso to route to the other daemons. Outbound only: the
+    // inbound half is the separate BroadcastCommand type, so an inbound
+    // broadcast can never be re-published here and loop. See BroadcastEgress.
+    BroadcastEgress egress_broadcast = 11;
   }
 }
 
@@ -188,6 +193,22 @@ message OrchestratorCommand {
     ListGithubCallbacksCommand list_github_callbacks = 53;
     // bosso → daemon: delete a GitHub callback by id. Replies CommandResult{Ok} with no payload.
     DeleteGithubCallbackCommand delete_github_callback = 54;
+    // bosso → daemon: record a note against a repo. Replies CommandResult{create_note}.
+    CreateNoteCommand create_note = 55;
+    // bosso → daemon: read one note by id. Replies CommandResult{get_note}.
+    GetNoteCommand get_note = 56;
+    // bosso → daemon: list notes. Replies CommandResult{list_notes}.
+    ListNotesCommand list_notes = 57;
+    // bosso → daemon: edit a note by id. Replies CommandResult{update_note}.
+    UpdateNoteCommand update_note = 58;
+    // bosso → daemon: delete a note by id. Replies CommandResult{Ok} with no payload.
+    DeleteNoteCommand delete_note = 59;
+    // bosso → daemon: this daemon is a target for a broadcast that originated
+    // elsewhere; resolve it locally and deliver it. Delivery is asynchronous, so
+    // this replies CommandResult{ok:true} with no payload once accepted. The
+    // handler NEVER publishes a BroadcastEgress in response — see
+    // BroadcastCommand.
+    BroadcastCommand broadcast = 60;
   }
 }
 
@@ -320,6 +341,15 @@ message CommandResult {
     ERROR_CODE_UNSPECIFIED = 0;
     ERROR_CODE_NOT_FOUND = 1;
     ERROR_CODE_FAILED_PRECONDITION = 2;
+    // The command itself is malformed or unsatisfiable, so re-sending the same
+    // bytes will fail identically. Distinct from FAILED_PRECONDITION, which
+    // says "the state is wrong, fix it and retry": this says "do not retry".
+    // Commands travel over an at-least-once stream, so a sender that cannot
+    // tell a permanent failure from a transient one has to assume transient —
+    // which turns a malformed command into a poison pill that redelivers
+    // forever. Emitted for an invalid inbound broadcast and an over-cap
+    // broadcast selector (BOS-558).
+    ERROR_CODE_INVALID_ARGUMENT = 3;
   }
 
   string command_id = 1;
@@ -397,6 +427,15 @@ message CommandResult {
     // ListGithubCallbacks returns the matching callbacks (reuses daemon.proto type).
     // DeleteGithubCallback is Ok-only (no payload).
     ListGithubCallbacksResponse list_github_callbacks = 35;
+    // CreateNote returns the created note (reuses daemon.proto type).
+    CreateNoteResponse create_note = 36;
+    // GetNote returns the note (reuses daemon.proto type).
+    GetNoteResponse get_note = 37;
+    // ListNotes returns the matching notes (reuses daemon.proto type).
+    ListNotesResponse list_notes = 38;
+    // UpdateNote returns the updated note (reuses daemon.proto type).
+    // DeleteNote is Ok-only (no payload), exactly like DeleteGithubCallback.
+    UpdateNoteResponse update_note = 39;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -640,6 +679,7 @@ message CreateCronJobCommand {
   string model = 8;
   string gate_command = 9;
   optional bool should_run_setup_command = 10;
+  optional bool is_zero_output = 11;
 }
 
 // UpdateCronJobCommand asks the daemon to mutate an existing cron job. Mutable
@@ -656,6 +696,7 @@ message UpdateCronJobCommand {
   optional string model = 8;
   optional string gate_command = 9;
   optional bool should_run_setup_command = 10;
+  optional bool is_zero_output = 11;
 }
 
 // DeleteCronJobCommand asks the daemon to remove a cron job.
@@ -877,6 +918,55 @@ message ListGithubCallbacksCommand {
 // and no payload.
 message DeleteGithubCallbackCommand { string id = 1; }
 
+// Notes commands (BOS-552). Each mirrors the matching daemon.proto request.
+// Only CreateNoteCommand carries repo_id, because only creation needs it: the
+// daemon addresses an existing note by id alone, and choosing WHICH daemon to
+// ask is bosso's job, not something the daemon needs told.
+
+// CreateNoteCommand records a note against a repo. Mirrors daemon.proto's
+// CreateNoteRequest. Replies with CommandResult carrying a CreateNoteResponse
+// (create_note = 36).
+message CreateNoteCommand {
+  string repo_id = 1;
+  optional string session_id = 2;
+  optional string chat_id    = 3;
+  string body = 4;
+  repeated string tags = 5;
+}
+
+// GetNoteCommand reads one note by id. Mirrors daemon.proto's GetNoteRequest.
+// Replies with CommandResult carrying a GetNoteResponse (get_note = 37).
+message GetNoteCommand { string id = 1; }
+
+// ListNotesCommand lists notes. Mirrors daemon.proto's ListNotesRequest: every
+// filter is optional, unset fields are unconstrained, set fields intersect, and
+// a set-but-blank provenance filter matches nothing. Tags match ANY (OR), and a
+// tag list that normalises away entirely fails closed. Replies with
+// CommandResult carrying a ListNotesResponse (list_notes = 38).
+message ListNotesCommand {
+  optional string repo_id    = 1;
+  optional string session_id = 2;
+  optional string chat_id    = 3;
+  repeated string tags       = 4;
+  optional string search     = 5;
+  int32 limit                = 6;
+}
+
+// UpdateNoteCommand edits a note by id. Mirrors daemon.proto's
+// UpdateNoteRequest: an unset field is left alone, and a SET tags field replaces
+// the entire tag set (including clearing it when empty). Replies with
+// CommandResult carrying an UpdateNoteResponse (update_note = 39).
+message UpdateNoteCommand {
+  string id = 1;
+  optional string body = 2;
+  optional NoteTagSet tags = 3;
+}
+
+// DeleteNoteCommand deletes a note by id. Mirrors daemon.proto's
+// DeleteNoteRequest. Replies with CommandResult{ok:true} and no payload — Ok-only,
+// exactly like DeleteGithubCallbackCommand.
+message DeleteNoteCommand { string id = 1; }
+
 // SendChatMessageCommand asks the daemon to deliver a user message into a chat.
 // Replies with CommandResult carrying a SendChatMessageResponse (send_chat_message = 14).
 message SendChatMessageCommand {
@@ -931,6 +1021,95 @@ message WebhookEvent {
   int32 pull_request = 6;
   // GitHub App installation ID. Zero for legacy/manual webhooks.
   int64 installation_id = 7;
+}
+
+// --- Broadcasts (BOS-558) ---
+//
+// The two halves of the cross-daemon broadcast path. They are DELIBERATELY two
+// message types rather than one type reused in both directions, even though
+// their fields are identical (and carry the same field numbers so the two can
+// be diffed side by side). The types encode DIRECTION, and direction is the
+// whole safety argument:
+//
+//   - BroadcastEgress (daemon → bosso, DaemonEvent field 11) means "here is a
+//     broadcast, route it" — an outbound request for fan-out.
+//   - BroadcastCommand (bosso → daemon, OrchestratorCommand field 60) means
+//     "you are a target, deliver it" — an inbound instruction to deliver
+//     locally, and NOTHING else.
+//
+// Conflating them into one type would make it trivially easy for a handler to
+// take an inbound broadcast and hand it straight back to the egress publisher,
+// producing a routing loop that amplifies with every hop. With separate types
+// that mistake does not typecheck: the ingress handler never holds a value the
+// egress path will accept.
+//
+// SECRET BODY: the `message` field on BOTH types is the broadcast body and is
+// governed by exactly the rule stated on Broadcast.message in daemon.proto. It
+// is carried only for the delivering owner: it is never echoed on a read
+// surface, never written to a log line, never placed in an error detail or a
+// persisted diagnostic. Log a broadcast with its id, origin daemon id, and
+// resolved target count — never its body.
+
+// BroadcastEgress travels daemon → bosso on the reverse stream: "this daemon
+// produced a broadcast whose audience reaches beyond itself; route it". Local
+// delivery is already the origin daemon's own business and has happened (or is
+// happening) independently — this event asks only for the foreign leg. Bosso
+// selects the target daemons and sends each a BroadcastCommand.
+message BroadcastEgress {
+  // The ORIGIN daemon's broadcast id. Every daemon that delivers this broadcast
+  // persists it under this id (see BroadcastCommand.broadcast_id).
+  string broadcast_id = 1;
+  // Audience as issued by the origin. Each receiving daemon re-resolves it
+  // against its own local chats; a selector is not a pre-resolved target list.
+  BroadcastSelector selector = 2;
+  // The persisted `.config/daemon-id` of the daemon that ORIGINATED the
+  // broadcast. Carried so the ingress side can drop its own echo — see the loop
+  // guard on BroadcastCommand.origin_daemon_id.
+  string origin_daemon_id = 3;
+  // Chat the broadcast was issued from (ClaudeChat.agent_session_id), on the
+  // origin daemon. Empty = operator-issued with no originating chat.
+  string origin_chat_id = 4;
+  // Broadcast body. SECRET — see the rule on Broadcast.message in daemon.proto:
+  // never echoed on a read surface, never logged.
+  string message = 5;
+  // Absolute expiry inherited from the origin's broadcast row, so a slow route
+  // cannot extend a broadcast's lifetime past what the sender asked for.
+  google.protobuf.Timestamp expires_at = 6;
+}
+
+// BroadcastCommand travels bosso → daemon: "you are a target for this
+// broadcast; resolve it against YOUR chats and deliver it". A daemon that
+// receives one delivers locally and MUST NOT publish a BroadcastEgress in
+// response — that is the anti-storm invariant, and it is why this is a distinct
+// type from BroadcastEgress rather than the same one flowing back.
+message BroadcastCommand {
+  // The ORIGIN daemon's broadcast id, NOT one minted by the receiver. The
+  // reverse stream is at-least-once, so a redelivery of the same broadcast must
+  // be recognisable: persisting under the origin's id makes a repeat a no-op,
+  // whereas a locally minted id would make every redelivery look like a brand
+  // new broadcast and fan out duplicate deliveries.
+  string broadcast_id = 1;
+  // Audience as issued by the origin, re-resolved against the receiving
+  // daemon's LOCAL chats only, under the same fan-out cap and start-error
+  // filter the daemon applies to its own sends.
+  BroadcastSelector selector = 2;
+  // The ORIGIN daemon's persisted `.config/daemon-id`. LOOP GUARD: a daemon
+  // MUST drop, before doing anything else, any command whose origin_daemon_id
+  // equals its own daemon id. Without that check a daemon whose selector names
+  // itself would deliver its own broadcast twice — once locally at send time,
+  // once again on the round trip through bosso.
+  string origin_daemon_id = 3;
+  // Chat the broadcast was issued from, on the ORIGIN daemon. It is not a local
+  // chat id here, so it is recorded as provenance only and is not resolvable
+  // against the receiver's chats.
+  string origin_chat_id = 4;
+  // Broadcast body delivered to each resolved local target. SECRET — see the
+  // rule on Broadcast.message in daemon.proto: never echoed on a read surface,
+  // never logged.
+  string message = 5;
+  // Absolute expiry inherited from the origin, so the receiver stops retrying
+  // at the same instant the origin does rather than restarting the clock.
+  google.protobuf.Timestamp expires_at = 6;
 }
 
 // --- TerminalStream messages (web-tmux-attach feature) ---

@@ -896,9 +896,12 @@ func parseReviewState(s string) vcs.ReviewState {
 // isRepoNotReady returns true when the gh CLI error indicates GitHub has not
 // resolved the base/head refs or compare view yet. It gates the short
 // (3-attempt, ~6s total) retry in CreateDraftPR. "No commits between" is
-// treated as transient here because genuinely empty branches are caught before
+// treated as transient here because empty branches are normally caught before
 // the API call by VerifyPushedBranchAheadOfBase; reaching this point with that
-// error means GitHub has not yet indexed the freshly pushed head ref.
+// error usually means GitHub has not yet indexed the freshly pushed head ref.
+// Normally, not always: not every path into CreateDraftPR runs that pre-check,
+// and the ones that do compare against a local view of the base that can lag
+// the remote. Treat it as a filter, not a guarantee.
 func isRepoNotReady(err error) bool {
 	if err == nil {
 		return false

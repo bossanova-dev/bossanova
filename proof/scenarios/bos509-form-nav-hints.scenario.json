@@ -1,0 +1,177 @@
+{
+  "version": 1,
+  "title": "BOS-509 every TUI form advertises how to move between its fields",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the add-repo input form advertises tab / shift+tab",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        { "key": "s", "caption": "Press [s] to open the Settings hub" },
+        {
+          "waitFor": "Cron jobs",
+          "timeoutMs": 10000,
+          "caption": "Settings menu loaded"
+        },
+        { "key": "r", "caption": "Press [r] to open the repository list" },
+        {
+          "waitFor": "[a]dd",
+          "timeoutMs": 10000,
+          "caption": "Repository list loaded; its action bar offers [a]dd"
+        },
+        { "key": "a", "caption": "Press [a] to add a repository" },
+        {
+          "waitFor": "Open project",
+          "timeoutMs": 10000,
+          "caption": "Add-repo source picker loaded"
+        },
+        { "key": "enter", "caption": "Choose 'Open project' (register a local repo)" },
+        {
+          "waitFor": "Add a local repository",
+          "timeoutMs": 10000,
+          "caption": "The add-repo input form is on screen"
+        },
+        {
+          "expect": [
+            {
+              "text": "Add a local repository",
+              "match": "normalized",
+              "label": "add-repo input form title"
+            },
+            {
+              "text": "[tab] next field",
+              "match": "normalized",
+              "label": "new action bar advertises [tab] next field"
+            },
+            {
+              "text": "[shift+tab] previous field",
+              "match": "normalized",
+              "label": "new action bar advertises [shift+tab] previous field"
+            },
+            {
+              "text": "[enter] continue",
+              "match": "normalized",
+              "label": "input-phase submit verb"
+            }
+          ],
+          "caption": "The first screen a new user meets now says how to move between fields (it previously rendered no action bar at all)"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the hints are true: tab moves focus, and the bar persists into the details form",
+      "steps": [
+        { "type": "/tmp/demo-repo", "caption": "Type a repository path" },
+        { "key": "enter", "caption": "Submit the path" },
+        {
+          "waitFor": "Merge strategy",
+          "timeoutMs": 10000,
+          "caption": "The add-repo details form is on screen"
+        },
+        { "key": "tab", "caption": "Press [tab]: focus moves Name → Setup command" },
+        {
+          "key": "tab",
+          "caption": "Press [tab] again: focus moves Setup command → Merge strategy"
+        },
+        {
+          "expect": [
+            {
+              "text": "Merge strategy",
+              "match": "normalized",
+              "label": "details form reached and focus advanced by tab"
+            },
+            {
+              "text": "[tab] next field",
+              "match": "normalized",
+              "label": "action bar persists across the wizard's phases"
+            },
+            {
+              "text": "[shift+tab] previous field",
+              "match": "normalized",
+              "label": "details form advertises [shift+tab] previous field"
+            },
+            {
+              "text": "[enter] add repo",
+              "match": "normalized",
+              "label": "details-phase submit verb"
+            }
+          ],
+          "caption": "tab really did move focus down the details form while the hint stayed on screen, and the submit verb tracks the phase"
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "the cron form's bar gains the missing shift+tab hint",
+      "steps": [
+        { "key": "esc", "caption": "Back to the input form" },
+        {
+          "waitFor": "Add a local repository",
+          "timeoutMs": 10000,
+          "caption": "Input form again"
+        },
+        { "key": "esc", "caption": "Back to the source picker" },
+        {
+          "waitFor": "Open project",
+          "timeoutMs": 10000,
+          "caption": "Source picker again"
+        },
+        { "key": "esc", "caption": "Back to the repository list" },
+        {
+          "waitFor": "[a]dd",
+          "timeoutMs": 10000,
+          "caption": "Repository list again"
+        },
+        { "key": "esc", "caption": "Back to the Settings hub" },
+        {
+          "waitFor": "Cron jobs",
+          "timeoutMs": 10000,
+          "caption": "Settings menu again"
+        },
+        { "key": "c", "caption": "Press [c] to open the Scheduled Jobs (cron) list" },
+        {
+          "waitFor": "[n]ew",
+          "timeoutMs": 10000,
+          "caption": "Cron list loaded; its action bar offers [n]ew"
+        },
+        { "key": "n", "caption": "Press [n] to create a new scheduled job" },
+        {
+          "waitFor": "New Scheduled Job",
+          "timeoutMs": 10000,
+          "caption": "The cron form is on screen"
+        },
+        {
+          "expect": [
+            {
+              "text": "New Scheduled Job",
+              "match": "normalized",
+              "label": "cron form title"
+            },
+            {
+              "text": "[tab] next field",
+              "match": "normalized",
+              "label": "cron form keeps its existing [tab] next field hint"
+            },
+            {
+              "text": "[shift+tab] previous field",
+              "match": "normalized",
+              "label": "cron form gains the previously missing [shift+tab] hint"
+            },
+            {
+              "text": "[enter] save",
+              "match": "normalized",
+              "label": "cron form keeps [enter] save"
+            }
+          ],
+          "caption": "The cron form now names both movement keys, from the same shared helper as the add-repo wizard"
+        }
+      ]
+    }
+  ]
+}

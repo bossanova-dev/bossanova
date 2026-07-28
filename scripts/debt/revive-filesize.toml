@@ -1,0 +1,19 @@
+# Detector-only revive config for `make debt-filesize-<module>` (BOS-525).
+#
+# Deliberately SEPARATE from `.golangci.yml`: `make lint` is a blocking gate and
+# this rule fires on several files today, so enabling it there would fail the
+# build before the BOS-508 decomposition work has landed. This config carries
+# exactly one rule and is only ever loaded by the non-blocking debt detector.
+#
+# `max` mirrors the Makefile's `DEBT_FILESIZE_THRESHOLD` default, so this file is
+# usable as-is; `make debt-filesize-<mod> DEBT_FILESIZE_THRESHOLD=<n>` rewrites the
+# value into a temp copy (revive takes rule arguments from config only). The two
+# defaults are kept equal by scripts/bs-sweep-debt-skill.test.mjs. The count is
+# EFFECTIVE lines — comments and blank lines are skipped — a better signal than
+# a raw `wc -l`.
+ignoreGeneratedHeader = false
+severity = "warning"
+confidence = 0.8
+
+[rule.file-length-limit]
+  arguments = [{ max = 800, skipComments = true, skipBlankLines = true }]

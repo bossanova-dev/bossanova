@@ -6,16 +6,13 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { r2UploadCommand } from './proof-lib.mjs'
+// The slug helper is portable and ships in boss-plan's toolbox; re-exported here
+// so the repo-local publish path keeps a single import surface.
+import { issueSlug } from '../skills-toolbox/plan-slug.mjs'
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-export function issueSlug(id, title) {
-  const titleSlug = String(title)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-  return `${String(id).toUpperCase()}-${titleSlug}`
-}
+export { issueSlug }
 
 export function generateToken() {
   return crypto.randomBytes(16).toString('hex')

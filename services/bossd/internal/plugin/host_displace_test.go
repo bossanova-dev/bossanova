@@ -80,11 +80,53 @@ func TestChatDisplaceable(t *testing.T) {
 			wantAllow:    true,
 		},
 		{
-			name:         "output_after_snapshot_refuses",
+			// The post-snapshot output is still FRESH (younger than MinIdle):
+			// the chat may currently be producing, so the refusal stands.
+			name:         "output_after_snapshot_fresh_refuses",
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_IDLE),
-			lastOutputAt: now.Add(-6 * time.Minute),
+			lastOutputAt: now.Add(-2 * time.Minute),
 			observed:     now.Add(-10 * time.Minute), // snapshot older than last output → chat spoke since
 			pol:          displacePolicy{MinIdle: 5 * time.Minute},
+			wantAllow:    false,
+		},
+		{
+			// BOS-515: the chat spoke once since the caller's (never-advanced)
+			// snapshot and has been quiet past MinIdle ever since. It must not
+			// stay pinned forever against that stale snapshot.
+			name:         "output_after_snapshot_stale_idle_allows",
+			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_IDLE),
+			lastOutputAt: now.Add(-6 * time.Minute),
+			observed:     now.Add(-10 * time.Minute),
+			pol:          displacePolicy{MinIdle: 5 * time.Minute},
+			wantAllow:    true,
+		},
+		{
+			// Falling through to the status switch must not weaken it: a
+			// WORKING chat is still refused however stale its last output is.
+			name:         "output_after_snapshot_stale_working_refuses",
+			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_WORKING),
+			lastOutputAt: now.Add(-30 * time.Minute),
+			observed:     now.Add(-40 * time.Minute),
+			pol:          displacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 15 * time.Minute},
+			wantAllow:    false,
+		},
+		{
+			// …and a QUESTION still owes QuestionIdle, not just MinIdle.
+			name:         "output_after_snapshot_stale_question_under_window_refuses",
+			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_QUESTION),
+			lastOutputAt: now.Add(-10 * time.Minute),
+			observed:     now.Add(-20 * time.Minute),
+			pol:          displacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 15 * time.Minute},
+			wantAllow:    false,
+		},
+		{
+			// Fail-closed: a policy with no MinIdle has no staleness yardstick,
+			// so the post-snapshot output can never be judged quiet.
+			name:         "output_after_snapshot_zero_min_idle_refuses",
+			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_IDLE),
+			lastOutputAt: now.Add(-10 * time.Hour),
+			observed:     now.Add(-20 * time.Hour),
+			pol:          displacePolicy{MinIdle: 0},
 			wantAllow:    false,
 		},
 		{

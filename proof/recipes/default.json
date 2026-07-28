@@ -37,6 +37,28 @@
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
+      "id": "web-notification-permission-modal",
+      "surface": "web",
+      "title": "Web Notification Permission Modal",
+      "description": "First-load browser-notification priming modal at / with permission forced default, explaining why notifications are used before the native prompt fires.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/",
+      "selector": "[data-testid='notification-permission-modal']",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-notification-settings",
+      "surface": "web",
+      "title": "Web Notification Settings",
+      "description": "Appearance settings showing the notifications on/off toggle beside the theme control, plus the browser-blocked note (permission forced denied).",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/settings/appearance",
+      "cropToSelector": ".settings-card",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
       "id": "web-account",
       "surface": "web",
       "title": "Web Account Settings",
@@ -61,7 +83,7 @@
       "id": "web-session-detail",
       "surface": "web",
       "title": "Web Session Detail (passing PR)",
-      "description": "Product web session-detail header on a session with a passing PR: the Merge button is visible alongside Archive and Open GitHub. No Stop button, no Branch/PR meta rows, no 'Switch account' button, status pill at left.",
+      "description": "Product web session-detail header on a session with a passing PR: the Merge button is visible alongside Archive and Open GitHub. No Stop button, no Branch/PR meta rows, no 'Switch account' button, status pill at left. Below it the desktop chat table lists three chats with an Agent column (claude/codex) and the delete column hugging the table's right edge.",
       "privacy": "fixture",
       "route": "/sessions/sess-e2e-1",
       "viewport": { "width": 1440, "height": 1000 }
@@ -89,7 +111,7 @@
       "id": "web-session-detail-mobile",
       "surface": "web",
       "title": "Web Session Detail (mobile)",
-      "description": "Session-detail header at phone width (390px): the session title is on its own row above the action buttons, left-aligned and truncating with an ellipsis when long; the action buttons sit on the row below, right-aligned. Icon-only chat buttons.",
+      "description": "Session-detail header at phone width (390px): the session title is on its own row above the action buttons, left-aligned and truncating with an ellipsis when long; the action buttons sit on the row below, right-aligned. Icon-only chat buttons. Below it, three stacked chat cards whose top meta row reads '<time> <agent> <status> x' — the delete x buttons form one straight vertical line down the card's right gutter even though the agent labels (claude vs codex) differ in width, and the status pills line up with them (BOS-541).",
       "privacy": "fixture",
       "route": "/sessions/sess-e2e-1",
       "viewport": { "width": 390, "height": 844 }
@@ -239,7 +261,7 @@
       "id": "web-cron-form",
       "surface": "web",
       "title": "Web Cron Job Form",
-      "description": "Opening the New cron job create form on /settings/cron: the modal with Name, Repo, Agent, Model, Prompt, Schedule, Timezone, and Gate command fields plus the Run setup / Enabled toggles.",
+      "description": "Opening the New cron job create form on /settings/cron: the modal with Name, Repo, Agent, Model, Prompt, Schedule, Timezone, and Gate command fields plus the Run setup / Zero output / Enabled toggles.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -775,7 +797,9 @@
         "web-new-chat-back",
         "web-shortcut-launcher",
         "web-shortcut-launcher-detail",
-        "web-shortcut-launcher-new-chat"
+        "web-shortcut-launcher-new-chat",
+        "web-notification-permission-modal",
+        "web-notification-settings"
       ]
     },
     {

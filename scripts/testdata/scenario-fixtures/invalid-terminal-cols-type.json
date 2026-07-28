@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "title": "Non-integer terminal cols",
+  "terminal": { "cols": 72.5 },
+  "scenes": [
+    {
+      "title": "Scene",
+      "steps": [{ "expect": "x" }]
+    }
+  ]
+}

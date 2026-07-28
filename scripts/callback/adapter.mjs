@@ -9,9 +9,27 @@
 // node builtins only (the cron worktree is dependency-free).
 
 import { createBossCallbackAdapter } from './boss.mjs'
+import { isBossdManaged } from '../bossd-present.mjs'
 
 // Capabilities every callback notifier must document.
 export const CALLBACK_CAPABILITIES = ['registerWatch', 'listWatches', 'removeWatch']
+
+/**
+ * The single "are callbacks usable here?" gate the skills consult before arming a
+ * one-shot PR/CI watch. Returns `isBossdManaged(env)` (BOSS_SESSION_ID present):
+ * a daemon-provisioned session can reach the `boss callback` interface, a plain
+ * standalone runner cannot. When this is false the skills MUST skip `registerWatch`
+ * and go straight to `policy.fallbackPoll` — a clean, documented no-op, never a
+ * failed wait. It replaces the older "did the `boss callback` CLI happen to fail at
+ * runtime" heuristic with an up-front, unit-testable check, and is the one place to
+ * extend if the usability signal ever diverges from raw in-boss (e.g. also requiring
+ * the `boss` binary on PATH).
+ * @param {Record<string,string|undefined>} [env]
+ * @returns {boolean}
+ */
+export function callbacksAvailable(env = process.env) {
+  return isBossdManaged(env)
+}
 
 // name -> factory. Add a host by implementing the same operationMap + policy shape.
 const REGISTRY = {

@@ -153,8 +153,10 @@ func (s *stubClient) RemoveRepo(context.Context, string) error { panic("unused")
 func (s *stubClient) UpdateRepo(context.Context, *pb.UpdateRepoRequest) (*pb.Repo, error) {
 	panic("unused")
 }
-func (s *stubClient) GetSession(context.Context, string) (*pb.Session, error) { panic("unused") }
-func (s *stubClient) ListSessions(context.Context, *pb.ListSessionsRequest) ([]*pb.Session, error) {
+func (s *stubClient) GetSession(context.Context, string, client.SessionReadOptions) (*pb.Session, error) {
+	panic("unused")
+}
+func (s *stubClient) ListSessions(context.Context, *pb.ListSessionsRequest, client.SessionReadOptions) ([]*pb.Session, error) {
 	panic("unused")
 }
 func (s *stubClient) AttachSession(context.Context, string) (client.AttachStream, error) {
@@ -233,6 +235,31 @@ func (s *stubClient) ListGithubCallbacks(context.Context, *pb.ListGithubCallback
 	panic("unused")
 }
 func (s *stubClient) DeleteGithubCallback(context.Context, string, string) error { panic("unused") }
+func (s *stubClient) CreateNote(context.Context, *pb.CreateNoteRequest) (*pb.Note, error) {
+	panic("unused")
+}
+func (s *stubClient) GetNote(context.Context, string, string) (*pb.Note, error) { panic("unused") }
+func (s *stubClient) ListNotes(context.Context, *pb.ListNotesRequest) ([]*pb.Note, error) {
+	panic("unused")
+}
+func (s *stubClient) UpdateNote(context.Context, string, *pb.UpdateNoteRequest) (*pb.Note, error) {
+	panic("unused")
+}
+func (s *stubClient) DeleteNote(context.Context, string, string) error { panic("unused") }
+func (s *stubClient) SendBroadcast(context.Context, *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error) {
+	panic("unused")
+}
+func (s *stubClient) ListBroadcasts(context.Context, *pb.ListBroadcastsRequest) ([]*pb.Broadcast, error) {
+	panic("unused")
+}
+func (s *stubClient) DeleteBroadcast(context.Context, string) error { panic("unused") }
+func (s *stubClient) CreateBroadcastSubscription(context.Context, *pb.CreateBroadcastSubscriptionRequest) (*pb.BroadcastSubscription, error) {
+	panic("unused")
+}
+func (s *stubClient) ListBroadcastSubscriptions(context.Context, *pb.ListBroadcastSubscriptionsRequest) ([]*pb.BroadcastSubscription, error) {
+	panic("unused")
+}
+func (s *stubClient) DeleteBroadcastSubscription(context.Context, string) error { panic("unused") }
 func (s *stubClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
@@ -2315,4 +2342,310 @@ func TestNewSession_CreatingViewAnimates(t *testing.T) {
 
 func (s *stubClient) SwitchSessionAccount(context.Context, *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
 	panic("unused")
+}
+
+func TestNewSessionView_FormPhaseRendersNavigationHints(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		typ  sessionType
+	}{
+		{name: "new PR", typ: sessionTypeNewPR},
+		{name: "quick chat", typ: sessionTypeQuickChat},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := &stubClient{repos: oneRepo()}
+			m := NewNewSessionModel(sc, context.Background())
+			m = sendMsg(t, m, reposMsg{repos: sc.repos})
+			m.selectedType = tc.typ
+			m.phase = newSessionPhaseForm
+			m.buildForm()
+
+			view := m.View().Content
+			for _, want := range []string{
+				"[tab] next field",
+				"[shift+tab] previous field",
+				"[enter] create",
+				"[esc] back",
+			} {
+				if !strings.Contains(view, want) {
+					t.Errorf("new-session form action bar missing %q; view:\n%s", want, view)
+				}
+			}
+		})
+	}
+}
+
+// TestNewSession_NonInteractivePhases_FallThroughToGlobalKeys pins the
+// loading/creating/done fall-through that handleKey encodes as an empty switch
+// arm (newsession_keys.go). Those three phases deliberately have no per-phase
+// key block: keys reach keyGlobal, where esc cancels the wizard and anything
+// else is delegated to the (here absent) form and dropped. Filling that empty
+// arm in would silently break cancellation from the spinner phases, which no
+// other test covers.
+func TestNewSession_NonInteractivePhases_FallThroughToGlobalKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		phase newSessionPhase
+	}{
+		{name: "loading", phase: newSessionPhaseLoading},
+		{name: "creating", phase: newSessionPhaseCreating},
+		{name: "done", phase: newSessionPhaseDone},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := &stubClient{repos: oneRepo()}
+			base := NewNewSessionModel(sc, context.Background())
+			base = sendMsg(t, base, reposMsg{repos: sc.repos})
+			base.phase = tc.phase
+
+			// esc reaches keyGlobal and cancels the wizard.
+			escaped := sendSpecialKey(t, base, tea.KeyEscape)
+			if !escaped.Cancelled() {
+				t.Errorf("esc in %s phase: Cancelled() = false, want true", tc.name)
+			}
+			if escaped.phase != tc.phase {
+				t.Errorf("esc in %s phase: phase = %d, want unchanged (%d)", tc.name, escaped.phase, tc.phase)
+			}
+
+			// A non-esc key falls through to the form delegation. With no
+			// form built it is a no-op — crucially it must not cancel.
+			typed := sendKey(t, base, 'j')
+			if typed.Cancelled() {
+				t.Errorf("%q in %s phase: Cancelled() = true, want false", "j", tc.name)
+			}
+			if typed.phase != tc.phase {
+				t.Errorf("%q in %s phase: phase = %d, want unchanged (%d)", "j", tc.name, typed.phase, tc.phase)
+			}
+		})
+	}
+}
+
+// TestNewSession_ViewPhaseArmsRenderTheirOwnScreen pins the phase -> renderer
+// wiring the BOS-528 View decomposition introduced. Every renderer now has the
+// identical `func (m NewSessionModel) renderX() string` signature, so a guard
+// pointing at the wrong renderer still compiles, vets, lints and passes every
+// other test in the package — the PR picker could silently render the issue
+// picker. Assert each guard reaches the screen it names, and (where two arms
+// are adjacent) that it did not reach its neighbour.
+func TestNewSession_ViewPhaseArmsRenderTheirOwnScreen(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		setup   func(t *testing.T, sc *stubClient) NewSessionModel
+		want    string
+		notWant string
+	}{
+		{
+			name: "err",
+			setup: func(t *testing.T, sc *stubClient) NewSessionModel {
+				m := NewNewSessionModel(sc, context.Background())
+				m.err = fmt.Errorf("boom")
+				return m
+			},
+			want:    "Error: boom",
+			notWant: "Loading...",
+		},
+		{
+			name: "loading",
+			setup: func(t *testing.T, sc *stubClient) NewSessionModel {
+				return NewNewSessionModel(sc, context.Background())
+			},
+			want: "Loading...",
+		},
+		{
+			name: "repoSelect",
+			setup: func(t *testing.T, sc *stubClient) NewSessionModel {
+				sc.repos = twoRepos()
+				m := NewNewSessionModel(sc, context.Background())
+				return sendMsg(t, m, reposMsg{repos: sc.repos})
+			},
+			want:    "Select a repository",
+			notWant: "Loading...",
+		},
+		{
+			name: "agentSelect",
+			setup: func(t *testing.T, sc *stubClient) NewSessionModel {
+				m := NewNewSessionModel(sc, context.Background())
+				m = sendMsg(t, m, reposMsg{repos: sc.repos})
+				m.agents = []client.AgentInfo{{Name: "claude"}, {Name: "codex"}}
+				m.phase = newSessionPhaseAgentSelect
+				m.buildAgentTable()
+				return m
+			},
+			want:    "Multiple agents are installed",
+			notWant: "Select a repository",
+		},
+		{
+			name: "typeSelect",
+			setup: func(t *testing.T, sc *stubClient) NewSessionModel {
+				m := NewNewSessionModel(sc, context.Background())
+				return sendMsg(t, m, reposMsg{repos: sc.repos})
+			},
+			want:    "Create a new PR",
+			notWant: "Multiple agents are installed",
+		},
+		{
+			name: "prSelect",
+			setup: func(t *testing.T, sc *stubClient) NewSessionModel {
+				m := NewNewSessionModel(sc, context.Background())
+				m = sendMsg(t, m, reposMsg{repos: sc.repos})
+				// Populate BOTH lists so notWant is a real discriminator:
+				// with m.trackerIssues empty, renderIssueSelect would draw
+				// "Loading ... issues..." and could never contain the issue
+				// marker, making the assertion unfireable. Issues first so
+				// the PR message wins the phase.
+				m = sendMsg(t, m, issuesMsg{issues: []*pb.TrackerIssue{
+					{ExternalId: "ENG-9", Title: "issue-select-marker"},
+				}})
+				return sendMsg(t, m, prsMsg{prs: []*pb.PRSummary{
+					{Number: 7, Title: "pr-select-marker"},
+				}})
+			},
+			want:    "pr-select-marker",
+			notWant: "issue-select-marker",
+		},
+		{
+			name: "issueSelect",
+			setup: func(t *testing.T, sc *stubClient) NewSessionModel {
+				m := NewNewSessionModel(sc, context.Background())
+				m = sendMsg(t, m, reposMsg{repos: sc.repos})
+				// See the prSelect case: both lists are populated so the
+				// notWant marker is reachable from the neighbouring renderer.
+				m = sendMsg(t, m, prsMsg{prs: []*pb.PRSummary{
+					{Number: 7, Title: "pr-select-marker"},
+				}})
+				return sendMsg(t, m, issuesMsg{issues: []*pb.TrackerIssue{
+					{ExternalId: "ENG-9", Title: "issue-select-marker"},
+				}})
+			},
+			want:    "issue-select-marker",
+			notWant: "pr-select-marker",
+		},
+		{
+			name: "creating",
+			setup: func(t *testing.T, sc *stubClient) NewSessionModel {
+				m := NewNewSessionModel(sc, context.Background())
+				m = sendMsg(t, m, reposMsg{repos: sc.repos})
+				m.phase = newSessionPhaseCreating
+				return m
+			},
+			want:    "Creating a new session...",
+			notWant: "Session created!",
+		},
+		{
+			name: "done",
+			setup: func(t *testing.T, sc *stubClient) NewSessionModel {
+				m := NewNewSessionModel(sc, context.Background())
+				m = sendMsg(t, m, reposMsg{repos: sc.repos})
+				// Synthetic state: handleStreamCreated leaves phase at
+				// Creating, and App tears the wizard down as soon as Done()
+				// is true, so this arm is unreachable in production today.
+				// The phase is set explicitly to reach it — this pins the
+				// wiring, not that the success screen ships.
+				m.phase = newSessionPhaseDone
+				m.done = true
+				m.createdSess = &pb.Session{Id: "sess-1", Title: "done-marker", BranchName: "b"}
+				return m
+			},
+			want:    "Session created!",
+			notWant: "Creating a new session...",
+		},
+		{
+			name: "confirmOverwrite",
+			setup: func(t *testing.T, sc *stubClient) NewSessionModel {
+				m := NewNewSessionModel(sc, context.Background())
+				m = sendMsg(t, m, reposMsg{repos: sc.repos})
+				m.selectedType = sessionTypeNewPR
+				m.phase = newSessionPhaseForm
+				m.buildForm()
+				m.confirmingOverwrite = true
+				return m
+			},
+			want:    "A branch with this name already exists.",
+			notWant: "[enter] create",
+		},
+		{
+			name: "form",
+			setup: func(t *testing.T, sc *stubClient) NewSessionModel {
+				m := NewNewSessionModel(sc, context.Background())
+				m = sendMsg(t, m, reposMsg{repos: sc.repos})
+				m.selectedType = sessionTypeNewPR
+				m.phase = newSessionPhaseForm
+				m.buildForm()
+				return m
+			},
+			want:    "[enter] create",
+			notWant: "A branch with this name already exists.",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := &stubClient{repos: oneRepo()}
+			m := tc.setup(t, sc)
+
+			view := m.View().Content
+			if !strings.Contains(view, tc.want) {
+				t.Errorf("View() for %s is missing %q; view:\n%s", tc.name, tc.want, view)
+			}
+			if tc.notWant != "" && strings.Contains(view, tc.notWant) {
+				t.Errorf("View() for %s reached the wrong renderer — found %q; view:\n%s", tc.name, tc.notWant, view)
+			}
+		})
+	}
+}
+
+// TestNewSession_TypeSelectPhase_KeysRouteToKeyTypeSelect pins the one
+// handleKey dispatch arm that no other test drives through Update. The
+// existing type-select tests call advanceFromTypeSelect directly, which
+// bypasses the dispatcher, so routing newSessionPhaseTypeSelect at any other
+// key* method would leave the suite green.
+func TestNewSession_TypeSelectPhase_KeysRouteToKeyTypeSelect(t *testing.T) {
+	// enter selects the highlighted type and advances out of type select.
+	t.Run("enter advances", func(t *testing.T) {
+		sc := &stubClient{repos: oneRepo()}
+		m := NewNewSessionModel(sc, context.Background())
+		m = sendMsg(t, m, reposMsg{repos: sc.repos})
+		if m.phase != newSessionPhaseTypeSelect {
+			t.Fatalf("setup: phase = %d, want newSessionPhaseTypeSelect (%d)", m.phase, newSessionPhaseTypeSelect)
+		}
+
+		m = sendSpecialKey(t, m, tea.KeyEnter)
+
+		// Row 0 is "Create a new PR", which builds the form.
+		if m.selectedType != sessionTypeNewPR {
+			t.Errorf("selectedType = %d, want sessionTypeNewPR (%d)", m.selectedType, sessionTypeNewPR)
+		}
+		if m.phase != newSessionPhaseForm {
+			t.Errorf("phase = %d, want newSessionPhaseForm (%d)", m.phase, newSessionPhaseForm)
+		}
+	})
+
+	// esc with a single repo and no agent picker cancels the wizard.
+	t.Run("esc cancels with nothing to go back to", func(t *testing.T) {
+		sc := &stubClient{repos: oneRepo()}
+		m := NewNewSessionModel(sc, context.Background())
+		m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+		m = sendSpecialKey(t, m, tea.KeyEscape)
+
+		if !m.Cancelled() {
+			t.Error("esc in type select with one repo and no agents: Cancelled() = false, want true")
+		}
+	})
+
+	// esc with multiple repos steps back to the repo picker rather than exiting.
+	t.Run("esc goes back to repo select", func(t *testing.T) {
+		sc := &stubClient{repos: twoRepos()}
+		m := NewNewSessionModel(sc, context.Background())
+		m = sendMsg(t, m, reposMsg{repos: sc.repos})
+		m.selectedRepoID = sc.repos[0].Id
+		m.phase = newSessionPhaseTypeSelect
+		m.buildTypeTable()
+
+		m = sendSpecialKey(t, m, tea.KeyEscape)
+
+		if m.Cancelled() {
+			t.Error("esc in type select with two repos: Cancelled() = true, want false")
+		}
+		if m.phase != newSessionPhaseRepoSelect {
+			t.Errorf("phase = %d, want newSessionPhaseRepoSelect (%d)", m.phase, newSessionPhaseRepoSelect)
+		}
+	})
 }

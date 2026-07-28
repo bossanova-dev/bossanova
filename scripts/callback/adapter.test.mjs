@@ -1,10 +1,38 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { resolveCallbackAdapter, CALLBACK_CAPABILITIES, assertConforms } from './adapter.mjs'
+import {
+  resolveCallbackAdapter,
+  CALLBACK_CAPABILITIES,
+  assertConforms,
+  callbacksAvailable,
+} from './adapter.mjs'
 
 test('CALLBACK_CAPABILITIES lists the register / list / remove capabilities', () => {
   assert.deepEqual(CALLBACK_CAPABILITIES, ['registerWatch', 'listWatches', 'removeWatch'])
+})
+
+test('callbacksAvailable is true iff BOSS_SESSION_ID is set in the passed env', () => {
+  // BOS-495: the single "callbacks usable" gate. Present → true; unset/empty → false.
+  assert.equal(callbacksAvailable({ BOSS_SESSION_ID: 'abc123' }), true)
+  assert.equal(callbacksAvailable({}), false)
+  assert.equal(callbacksAvailable({ BOSS_SESSION_ID: '' }), false)
+})
+
+test('callbacksAvailable honours an explicit env object (no process.env bleed)', () => {
+  // Passing an explicit env must decide from THAT env only, even when process.env
+  // carries a real BOSS_SESSION_ID (the daemon injects one into managed sessions).
+  const saved = process.env.BOSS_SESSION_ID
+  try {
+    process.env.BOSS_SESSION_ID = 'ambient-session'
+    // Explicit env without the var → false, despite the ambient process.env value.
+    assert.equal(callbacksAvailable({ CALLBACK: 'boss' }), false)
+    // Explicit env with the var → true.
+    assert.equal(callbacksAvailable({ BOSS_SESSION_ID: 'explicit' }), true)
+  } finally {
+    if (saved === undefined) delete process.env.BOSS_SESSION_ID
+    else process.env.BOSS_SESSION_ID = saved
+  }
 })
 
 test('resolveCallbackAdapter defaults to the boss notifier', () => {

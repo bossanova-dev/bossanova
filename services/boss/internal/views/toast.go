@@ -4,6 +4,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -58,12 +59,24 @@ func (t toastModel) Update(msg tea.Msg) (toastModel, bool) {
 	return t, false
 }
 
-// View renders the toast line, or "" when no toast is visible.
+// View renders the toast line followed by a blank separator line, or "" when no
+// toast is visible. The toast owns that blank line (rather than app.go adding
+// it) so Height below stays honest by construction: whatever View emits, Height
+// counts — including wrapped continuation lines (BOS-506).
 func (t toastModel) View(width int) string {
 	if t.text == "" {
 		return ""
 	}
-	return styleStatusInfo.Width(width).Render("🔄 " + t.text)
+	return styleToast.Width(width).Render(t.text) + "\n"
+}
+
+// Height reports how many terminal lines View(width) occupies, so App.View can
+// reserve them out of the height it hands the active view. 0 when hidden.
+func (t toastModel) Height(width int) int {
+	if t.text == "" {
+		return 0
+	}
+	return lipgloss.Height(t.View(width))
 }
 
 // detectNewRotationEvents diffs the newest rotation-event id per session

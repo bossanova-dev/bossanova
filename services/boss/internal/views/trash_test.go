@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -23,7 +24,7 @@ type trashStubClient struct {
 	failOnID    string // when set, RemoveSession returns an error for this id
 }
 
-func (s *trashStubClient) ListSessions(context.Context, *pb.ListSessionsRequest) ([]*pb.Session, error) {
+func (s *trashStubClient) ListSessions(context.Context, *pb.ListSessionsRequest, client.SessionReadOptions) ([]*pb.Session, error) {
 	return s.sessions, nil
 }
 

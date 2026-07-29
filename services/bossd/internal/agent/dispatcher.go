@@ -6,16 +6,22 @@ import (
 	"fmt"
 
 	"github.com/rs/zerolog"
+
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 var (
-	_ AgentRunner     = (*Dispatcher)(nil)
-	_ AgentDispatcher = (*Dispatcher)(nil)
+	_ AgentRunner                                  = (*Dispatcher)(nil)
+	_ AgentDispatcher                              = (*Dispatcher)(nil)
+	_ HeadlessCapabilityProfilePreflightDispatcher = (*Dispatcher)(nil)
 )
 
 // ErrAgentNotLoaded is returned by Dispatcher methods when the resolved
 // agent name has no entry in the runner registry.
-var ErrAgentNotLoaded = errors.New("agent not loaded")
+var (
+	ErrAgentNotLoaded                       = errors.New("agent not loaded")
+	ErrHeadlessCapabilityProfileUnsupported = errors.New("headless capability profile unsupported")
+)
 
 // Dispatcher is a per-call agent router that implements AgentRunner by
 // resolving the session's configured agent name to a concrete AgentRunner
@@ -180,6 +186,36 @@ func (d *Dispatcher) StartByAgent(ctx context.Context, agentName, workDir, plan 
 		return "", fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
 	}
 	return runner.Start(ctx, workDir, plan, resume, agentSessionID, model, extraEnv)
+}
+
+// StartByAgentWithHeadlessCapabilityProfile routes an explicit required
+// operation surface only to a runner that supports it. A required profile must
+// never disappear on a provider that cannot enforce it.
+func (d *Dispatcher) StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error) {
+	runner, name := d.resolveByName(agentName)
+	if runner == nil {
+		return "", fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
+	}
+	profiled, ok := runner.(HeadlessCapabilityProfileRunner)
+	if !ok {
+		return "", fmt.Errorf("agent %q: %w", name, ErrHeadlessCapabilityProfileUnsupported)
+	}
+	return profiled.StartWithHeadlessCapabilityProfile(ctx, workDir, plan, resume, agentSessionID, model, extraEnv, profile)
+}
+
+// PreflightByAgentWithHeadlessCapabilityProfile routes a required capability
+// check to the named runner without starting it. Required profiles fail closed
+// when the selected runner does not implement the narrower preflight seam.
+func (d *Dispatcher) PreflightByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
+	runner, name := d.resolveByName(agentName)
+	if runner == nil {
+		return fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
+	}
+	preflight, ok := runner.(HeadlessCapabilityProfilePreflightRunner)
+	if !ok {
+		return fmt.Errorf("agent %q: %w", name, ErrHeadlessCapabilityProfileUnsupported)
+	}
+	return preflight.PreflightHeadlessCapabilityProfile(ctx, model, extraEnv, profile)
 }
 
 // StopByAgent routes Stop to the named agent runner.

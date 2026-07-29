@@ -1192,6 +1192,12 @@ type StartSessionOpts struct {
 	// and wants an autonomous pass) from a plain interactive `boss new`.
 	Detach bool
 
+	// HeadlessCapabilityProfile is an explicit operation-surface requirement
+	// for this initial panel-less launch. UNSPECIFIED preserves the historical
+	// StartByAgent call exactly; callers must opt in and must not infer it from
+	// the plan text or a command name.
+	HeadlessCapabilityProfile bossanovav1.HeadlessCapabilityProfile
+
 	// IsTmuxUnattended routes this session through the durable tmux-hosted path
 	// (like a cron session) instead of the headless detach path, and is
 	// persisted so the completion gate and restart re-adoption recognise it.
@@ -1222,6 +1228,19 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	repo, err := l.repos.Get(ctx, session.RepoID)
 	if err != nil {
 		return fmt.Errorf("get repo: %w", err)
+	}
+
+	if opts.HeadlessCapabilityProfile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
+		dispatcher, ok := l.agentRunner.(agent.HeadlessCapabilityProfilePreflightDispatcher)
+		if !ok {
+			return fmt.Errorf("headless capability profile %s requires profile-aware agent dispatcher", opts.HeadlessCapabilityProfile)
+		}
+		preflightEnv := mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv())
+		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(
+			ctx, session.AgentName, session.Model, preflightEnv, opts.HeadlessCapabilityProfile,
+		); err != nil {
+			return fmt.Errorf("preflight headless capabilities: %w", err)
+		}
 	}
 
 	// Initialize state machine at CreatingWorktree.
@@ -1503,7 +1522,15 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		// (claude, codex) are skipped entirely, so their env is byte-identical
 		// to what it was before BOS-486.
 		headlessEnv = l.withQuestionHookEnv(session.AgentName, headlessEnv)
-		claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, headlessEnv)
+		if opts.HeadlessCapabilityProfile == bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
+			claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, headlessEnv)
+		} else {
+			profiledRunner, ok := l.agentRunner.(agent.HeadlessCapabilityProfileDispatcher)
+			if !ok {
+				return fmt.Errorf("headless capability profile %s requires profile-aware agent dispatcher", opts.HeadlessCapabilityProfile)
+			}
+			claudeSessionID, err = profiledRunner.StartByAgentWithHeadlessCapabilityProfile(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, headlessEnv, opts.HeadlessCapabilityProfile)
+		}
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
 		}

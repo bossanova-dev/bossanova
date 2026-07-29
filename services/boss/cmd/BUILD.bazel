@@ -15,6 +15,7 @@ go_library(
         "env.go",
         "gen_skill.go",
         "handlers.go",
+        "intconv.go",
         "main.go",
         "mcp.go",
         "notes.go",

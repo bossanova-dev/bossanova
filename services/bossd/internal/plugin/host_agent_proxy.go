@@ -43,9 +43,10 @@ func (p *agentRunnerProxy) resolve() (AgentRunner, error) {
 }
 
 // Compile-time check: the proxy must satisfy the full AgentRunner interface so
-// it can stand in for a dispensed client everywhere. Because AgentRunner shares
-// its method set with agent.AgentRunnerClient, this also guarantees the
-// main.go `raw.(agent.AgentRunnerClient)` assertion succeeds.
+// it can stand in for a dispensed client everywhere. AgentRunner is a superset
+// of agent.AgentRunnerClient, so this also guarantees the main.go
+// `raw.(agent.AgentRunnerClient)` assertion succeeds while allowing newer RPCs
+// to remain optional at that compatibility seam.
 var _ AgentRunner = (*agentRunnerProxy)(nil)
 
 func (p *agentRunnerProxy) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error) {
@@ -54,6 +55,14 @@ func (p *agentRunnerProxy) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo
 		return nil, err
 	}
 	return r.GetInfo(ctx)
+}
+
+func (p *agentRunnerProxy) PreflightHeadlessRun(ctx context.Context, req *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error) {
+	r, err := p.resolve()
+	if err != nil {
+		return nil, err
+	}
+	return r.PreflightHeadlessRun(ctx, req)
 }
 
 func (p *agentRunnerProxy) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {

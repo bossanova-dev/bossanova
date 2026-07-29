@@ -14,11 +14,13 @@ import (
 // fakeAgentClient implements AgentRunnerClient for tests. Each method
 // records the request and returns the configured response/error.
 type fakeAgentClient struct {
-	startResp *bossanovav1.StartAgentRunResponse
-	startErr  error
-	startReq  atomic.Pointer[bossanovav1.StartAgentRunRequest]
-	stopErr   error
-	running   bool
+	startResp    *bossanovav1.StartAgentRunResponse
+	startErr     error
+	startReq     atomic.Pointer[bossanovav1.StartAgentRunRequest]
+	preflightErr error
+	preflightReq atomic.Pointer[bossanovav1.PreflightHeadlessRunRequest]
+	stopErr      error
+	running      bool
 }
 
 func (f *fakeAgentClient) GetInfo(context.Context) (*bossanovav1.PluginInfo, error) {
@@ -27,6 +29,10 @@ func (f *fakeAgentClient) GetInfo(context.Context) (*bossanovav1.PluginInfo, err
 func (f *fakeAgentClient) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	f.startReq.Store(req)
 	return f.startResp, f.startErr
+}
+func (f *fakeAgentClient) PreflightHeadlessRun(_ context.Context, req *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error) {
+	f.preflightReq.Store(req)
+	return &bossanovav1.PreflightHeadlessRunResponse{}, f.preflightErr
 }
 func (f *fakeAgentClient) StopRun(_ context.Context, _ *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {
 	return &bossanovav1.StopAgentRunResponse{}, f.stopErr
@@ -134,6 +140,69 @@ func TestPluginRunner_Start_CarriesExtraEnv(t *testing.T) {
 	}
 	if got.GetExtraEnv()["BOSS_PROOF_R2_BUCKET"] != "bossanova-proof-production" {
 		t.Errorf("ExtraEnv constant not forwarded: %v", got.GetExtraEnv())
+	}
+}
+
+func TestPluginRunner_StartWithHeadlessCapabilityProfileCarriesProfile(t *testing.T) {
+	fc := &fakeAgentClient{startResp: &bossanovav1.StartAgentRunResponse{SessionId: "sid"}}
+	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
+
+	if _, err := pr.StartWithHeadlessCapabilityProfile(
+		context.Background(), "/work", "plan", nil, "sid", "model-for-preflight", map[string]string{"CODEX_HOME": "/projected/home"},
+		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+	); err != nil {
+		t.Fatalf("StartWithHeadlessCapabilityProfile: %v", err)
+	}
+	got := fc.startReq.Load()
+	if got == nil {
+		t.Fatal("StartRun req not recorded")
+	}
+	if got.GetHeadlessCapabilityProfile() != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+		t.Fatalf("HeadlessCapabilityProfile = %s, want tracker-plan-attachment-v1", got.GetHeadlessCapabilityProfile())
+	}
+	if got.GetModel() != "model-for-preflight" || got.GetExtraEnv()["CODEX_HOME"] != "/projected/home" {
+		t.Fatalf("preflight target fields = model=%q env=%v", got.GetModel(), got.GetExtraEnv())
+	}
+}
+
+func TestPluginRunner_PreflightHeadlessCapabilityProfileCarriesOnlyTargetInputs(t *testing.T) {
+	fc := &fakeAgentClient{}
+	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
+
+	err := pr.PreflightHeadlessCapabilityProfile(
+		context.Background(),
+		"model-for-preflight",
+		map[string]string{"CODEX_HOME": "/projected/home", "ACCOUNT_TOKEN": "secret"},
+		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+	)
+	if err != nil {
+		t.Fatalf("PreflightHeadlessCapabilityProfile: %v", err)
+	}
+	got := fc.preflightReq.Load()
+	if got == nil {
+		t.Fatal("PreflightHeadlessRun req not recorded")
+	}
+	if got.GetModel() != "model-for-preflight" {
+		t.Fatalf("Model = %q, want model-for-preflight", got.GetModel())
+	}
+	if got.GetExtraEnv()["CODEX_HOME"] != "/projected/home" || got.GetExtraEnv()["ACCOUNT_TOKEN"] != "secret" {
+		t.Fatalf("ExtraEnv = %v, want managed account env", got.GetExtraEnv())
+	}
+	if got.GetHeadlessCapabilityProfile() != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+		t.Fatalf("HeadlessCapabilityProfile = %s, want tracker-plan-attachment-v1", got.GetHeadlessCapabilityProfile())
+	}
+}
+
+func TestPluginRunner_PreflightHeadlessCapabilityProfilePropagatesError(t *testing.T) {
+	fc := &fakeAgentClient{preflightErr: errors.New("capability unavailable")}
+	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
+
+	err := pr.PreflightHeadlessCapabilityProfile(
+		context.Background(), "model", nil,
+		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+	)
+	if !errors.Is(err, fc.preflightErr) {
+		t.Fatalf("PreflightHeadlessCapabilityProfile error = %v, want wrapped %v", err, fc.preflightErr)
 	}
 }
 

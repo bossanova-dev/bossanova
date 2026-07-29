@@ -79,6 +79,31 @@ test('discoverExtensions silently omits notes extensions for established roles',
   }
 })
 
+test('notes discovery is stdout-only and exact for an empty root for every terminal core', () => {
+  const root = scratchRoot()
+  for (const core of ['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair']) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(import.meta.dirname, 'skill-extensions.mjs'),
+        'discover',
+        '--core',
+        core,
+        '--root',
+        root,
+        '--role',
+        'notes',
+        '--json',
+      ],
+      { encoding: 'utf8' },
+    )
+
+    assert.equal(result.status, 0, core)
+    assert.equal(result.stderr, '', core)
+    assert.equal(result.stdout, '{"extensions":[],"skipped":[]}\n', core)
+  }
+})
+
 test('validateResult accepts a well-formed notes envelope', () => {
   const envelope = {
     ok: true,
@@ -101,6 +126,21 @@ test('validateResult rejects a notes item missing noteId', () => {
   )
   assert.equal(result.ok, false)
   assert.ok(result.errors.some((error) => /missing "noteId"/.test(error)))
+})
+
+test('repository entrypoint rejects empty persisted-note identifiers', () => {
+  const result = validateResult(
+    {
+      ok: true,
+      extension: 'boss-build-notes',
+      role: 'notes',
+      items: [{ tag: 'improvement', body: 'Keep the validation ratchet.', noteId: '' }],
+    },
+    'notes',
+  )
+
+  assert.equal(result.ok, false)
+  assert.ok(result.errors.includes('item 0 "noteId" is not a non-empty string'))
 })
 
 test('validate --role notes returns clean JSON for a missing noteId', () => {
@@ -135,4 +175,50 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
     'surface',
   ])
   assert.deepEqual(ROLE_SCHEMAS.notes, ['tag', 'body', 'noteId'])
+})
+
+test('repo-authored notes extensions are discoverable for each terminal core', () => {
+  const root = path.resolve(import.meta.dirname, '..')
+  const cores = ['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair']
+
+  for (const core of cores) {
+    const { extensions, skipped } = discoverExtensions({ core, root, role: 'notes' })
+    const found = extensions.find((extension) => extension.name === `${core}-notes`)
+    assert.ok(found, core)
+    assert.equal(found.role, 'notes', core)
+    assert.deepEqual(skipped, [], core)
+  }
+})
+
+test('repo-authored notes extensions report recording failures as unsuccessful envelopes', () => {
+  const root = path.resolve(import.meta.dirname, '..')
+  for (const core of ['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair']) {
+    const skill = fs.readFileSync(
+      path.join(root, '.claude', 'skills', `${core}-notes`, 'SKILL.md'),
+      'utf8',
+    )
+    assert.match(skill, /"ok": false/, core)
+    assert.match(skill, /"items": \[\]/, core)
+    assert.match(skill, /"error": "<reason>"/, core)
+  }
+})
+
+test('fresh notes workers receive only a bounded completed-run observation artifact', () => {
+  const root = path.resolve(import.meta.dirname, '..')
+  for (const core of ['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair']) {
+    const published = fs.readFileSync(
+      path.join(root, 'services', 'boss', 'internal', 'skillinstall', 'skills', core, 'SKILL.md'),
+      'utf8',
+    )
+    const extension = fs.readFileSync(
+      path.join(root, '.claude', 'skills', `${core}-notes`, 'SKILL.md'),
+      'utf8',
+    )
+
+    assert.match(published, /at most five\s+secret-scrubbed candidate observations/, core)
+    assert.match(published, /maximum 8 KiB/, core)
+    assert.match(published, /"?observationPath"?:\s*"<NOTES_OBSERVATIONS>"/, core)
+    assert.match(extension, /context\.observationPath/, core)
+    assert.match(extension, /only completed-run\s+observation source/, core)
+  }
 })

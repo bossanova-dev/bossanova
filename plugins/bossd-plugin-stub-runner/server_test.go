@@ -5,9 +5,38 @@ import (
 	"testing"
 
 	"github.com/rs/zerolog"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
+
+func TestPreflightHeadlessRunDispatchReturnsUnimplemented(t *testing.T) {
+	s := newServer(zerolog.Nop())
+	for _, method := range agentRunnerServiceDesc.Methods {
+		if method.MethodName != "PreflightHeadlessRun" {
+			continue
+		}
+		decoded := false
+		_, err := method.Handler(s, context.Background(), func(value any) error {
+			req, ok := value.(*bossanovav1.PreflightHeadlessRunRequest)
+			if !ok {
+				t.Fatalf("decoded request type = %T, want *PreflightHeadlessRunRequest", value)
+			}
+			req.HeadlessCapabilityProfile = bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1
+			decoded = true
+			return nil
+		}, nil)
+		if !decoded {
+			t.Fatal("PreflightHeadlessRun handler did not decode its request")
+		}
+		if status.Code(err) != codes.Unimplemented {
+			t.Fatalf("PreflightHeadlessRun code = %s, want Unimplemented; err=%v", status.Code(err), err)
+		}
+		return
+	}
+	t.Fatal("agentRunnerServiceDesc missing PreflightHeadlessRun")
+}
 
 func TestConfigureFinalizeHookReturnsUnsupported(t *testing.T) {
 	s := newServer(zerolog.Nop())

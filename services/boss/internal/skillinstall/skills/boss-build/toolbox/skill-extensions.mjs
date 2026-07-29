@@ -11,6 +11,7 @@ const KNOWN_EXTENSION_ROLES = new Set([
   'agent-driver',
   'draft',
   'methodology',
+  'notes',
 ])
 
 // Minimal YAML-frontmatter reader. Supports the flat scalar keys and the single
@@ -119,6 +120,7 @@ export const ROLE_SCHEMAS = {
   round: ['severity', 'file', 'line', 'title', 'detail'],
   surface: ['path', 'caption', 'evidenceTokens'],
   'plan-reviewer': ['severity', 'section', 'title', 'detail'],
+  notes: ['tag', 'body', 'noteId'],
 }
 
 export function validateResult(envelope, role) {
@@ -158,6 +160,13 @@ export function validateResult(envelope, role) {
     }
     for (const key of requiredKeys) {
       if (!(key in item)) errors.push(`item ${idx} missing "${key}"`)
+    }
+    if (role === 'notes') {
+      for (const key of requiredKeys) {
+        if (key in item && (typeof item[key] !== 'string' || item[key].trim() === '')) {
+          errors.push(`item ${idx} "${key}" is not a non-empty string`)
+        }
+      }
     }
   })
   return { ok: errors.length === 0, errors }
@@ -238,6 +247,6 @@ export function main(argv) {
 
 import { isMainModule } from './main-module.mjs'
 
-if (isMainModule(import.meta.url)) {
+if (isMainModule(import.meta.url, { warn: () => {} })) {
   process.exit(main(process.argv.slice(2)))
 }

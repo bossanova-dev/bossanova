@@ -54,6 +54,8 @@ const requiredMirrorClauses = [
   { clause: '.env.example.public', match: includesFilenameToken },
   { clause: 'scripts/check-mirror-leaks.sh' },
   { clause: '--force-with-lease' },
+  { clause: '--state open' },
+  { clause: 'public/main:.last-mirror-sha' },
 ]
 
 const missingClauses = requiredMirrorClauses

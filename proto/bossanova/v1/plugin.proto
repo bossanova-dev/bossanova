@@ -381,6 +381,11 @@ service AgentRunnerService {
   rpc GetInfo(AgentRunnerServiceGetInfoRequest)
       returns (AgentRunnerServiceGetInfoResponse);
 
+  // Validate an explicit headless capability profile against the agent's
+  // runtime operation surface without starting a run.
+  rpc PreflightHeadlessRun(PreflightHeadlessRunRequest)
+      returns (PreflightHeadlessRunResponse);
+
   // Spawn the agent in work_dir with plan piped to stdin. log_path is
   // bossd-owned (under the daemon's data dir, NOT the worktree); the
   // plugin opens it with openat(O_NOFOLLOW) and writes one NDJSON line
@@ -518,6 +523,26 @@ message AgentRunnerServiceGetInfoResponse {
   PluginInfo info = 1;
 }
 
+// HeadlessCapabilityProfile is an explicit, versioned contract for work that
+// needs a particular runtime operation surface. UNSPECIFIED preserves every
+// historical launch shape; callers must opt in rather than deriving a profile
+// from a prompt or command name.
+enum HeadlessCapabilityProfile {
+  HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED = 0;
+  HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 = 1;
+}
+
+message PreflightHeadlessRunRequest {
+  string model = 1;
+  map<string, string> extra_env = 2;
+  HeadlessCapabilityProfile headless_capability_profile = 3;
+}
+
+message PreflightHeadlessRunResponse {
+  string source = 1;
+  repeated string provided = 2;
+}
+
 message StartAgentRunRequest {
   string work_dir = 1;
   string plan = 2;
@@ -531,6 +556,9 @@ message StartAgentRunRequest {
   // overlay (e.g. CLAUDE_CODE_OAUTH_TOKEN / CODEX_HOME). Values are NEVER logged
   // by bossd or the plugin — treat as secret-bearing.
   map<string, string> extra_env = 7;
+  // Explicit required runtime operation surface for a headless launch. The
+  // zero/default profile is legacy-compatible and performs no preflight.
+  HeadlessCapabilityProfile headless_capability_profile = 8;
 }
 message StartAgentRunResponse {
   string session_id = 1;   // resolved session ID

@@ -21,6 +21,8 @@ import { REPAIR_RESULTS, DISPATCH_FAILURE } from '../skills-toolbox/bs-run-senti
 const readSkill = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
 const SKILL = readSkill('../.claude/skills/bs-sweep-security/SKILL.md')
 const CODEX = readSkill('../.codex/skills/bs-sweep-security/SKILL.md')
+const NOTES_TEARDOWN =
+  "Before exiting, follow `bs-record-notes` with this run's outcome. Recording is non-fatal: never change the terminal state, exit code, or `git status --porcelain`. Skip gated/no-op runs that observed nothing."
 
 /** Count non-overlapping occurrences of a literal substring. */
 function countOf(haystack, needle) {
@@ -33,6 +35,15 @@ function countOf(haystack, needle) {
     i = at + needle.length
   }
 }
+
+test('documents the non-fatal notes teardown contract', () => {
+  for (const [label, skill] of [
+    ['source', SKILL],
+    ['codex mirror', CODEX],
+  ]) {
+    assert.ok(skill.includes(NOTES_TEARDOWN), `${label} must include the notes teardown contract`)
+  }
+})
 
 function allowedTools(skill) {
   const match = skill.match(/^allowed-tools:\s*(.+)$/m)

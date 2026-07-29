@@ -16,6 +16,7 @@ import (
 // It mirrors every RPC in AgentRunnerService (plugin.proto).
 type AgentRunner interface {
 	GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error)
+	PreflightHeadlessRun(ctx context.Context, req *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error)
 	StartRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error)
 	StopRun(ctx context.Context, req *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error)
 	IsRunning(ctx context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error)
@@ -84,6 +85,14 @@ func (c *agentRunnerGRPCClient) GetInfo(ctx context.Context) (*bossanovav1.Plugi
 		return nil, err
 	}
 	return resp.GetInfo(), nil
+}
+
+func (c *agentRunnerGRPCClient) PreflightHeadlessRun(ctx context.Context, req *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error) {
+	resp := &bossanovav1.PreflightHeadlessRunResponse{}
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/PreflightHeadlessRun", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {

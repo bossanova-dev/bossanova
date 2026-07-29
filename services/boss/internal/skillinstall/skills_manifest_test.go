@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -501,6 +502,112 @@ func TestPublishedCoresAreProjectAgnostic(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestPublishedCoresDoNotHardCodeNamespaceHelperPaths keeps globally installed
+// skills independent of this repository's installation namespace. The installer
+// exposes each boss-* core as a top-level skill, so helper resolution must use
+// that portable location (or BOSS_SKILLS_HOME), never a namespace literal.
+func TestPublishedCoresDoNotHardCodeNamespaceHelperPaths(t *testing.T) {
+	for label, fsys := range shippedPayloads(t) {
+		for _, core := range []string{"boss-build", "boss-plan", "boss-review", "boss-epic", "boss-repair"} {
+			path := "skills/" + core + "/SKILL.md"
+			content, err := fs.ReadFile(fsys, path)
+			if err != nil {
+				t.Fatalf("%s: read %s: %v", label, path, err)
+			}
+			if strings.Contains(string(content), "/skills/bossanova") {
+				t.Errorf("%s: %s hard-codes the installation namespace; resolve helpers through the top-level boss-* skill path or BOSS_SKILLS_HOME", label, path)
+			}
+		}
+	}
+}
+
+// TestPublishedCoreNotesHelpersResolveFromHomeWhenSkillsHomeIsUnset covers the
+// terminal notes-hook path independently of a host-provided BOSS_SKILLS_HOME.
+// Published cores are installed under a user's home directory, so the exact
+// resolver shown in each notes hook must find a Codex installation there.
+func TestNotesToolboxResolverUsesPostTerminalNotesSection(t *testing.T) {
+	const beforeNotes = `BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolbox"
+if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi`
+	const notesResolver = `BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.codex/skills}/boss-review/toolbox"
+if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.claude/skills/boss-review/toolbox"; fi`
+	content := beforeNotes + `
+
+### Post-terminal notes extensions (repo opt-in)
+
+` + notesResolver + `
+NOTES_JSON=$(node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" discover --core boss-review --role notes --json)
+`
+
+	if got := notesToolboxResolver(t, content, "boss-review", "BOSS_REVIEW_TOOLBOX"); got != notesResolver {
+		t.Fatalf("resolver = %q; want post-terminal notes resolver %q", got, notesResolver)
+	}
+}
+
+func TestPublishedCoreNotesHelpersResolveFromHomeWhenSkillsHomeIsUnset(t *testing.T) {
+	cores := []struct {
+		name    string
+		toolbox string
+	}{
+		{"boss-build", "BOSS_BUILD_TOOLBOX"},
+		{"boss-epic", "BOSS_EPIC_TOOLBOX"},
+		{"boss-plan", "BOSS_PLAN_TOOLBOX"},
+		{"boss-repair", "BOSS_REPAIR_TOOLBOX"},
+		{"boss-review", "BOSS_REVIEW_TOOLBOX"},
+	}
+
+	for label, fsys := range shippedPayloads(t) {
+		for _, core := range cores {
+			t.Run(label+"/"+core.name, func(t *testing.T) {
+				content, err := fs.ReadFile(fsys, "skills/"+core.name+"/SKILL.md")
+				if err != nil {
+					t.Fatalf("read skill: %v", err)
+				}
+				for _, rootedHome := range []string{`"/.claude/skills"`, `"/.codex/skills"`, `:-/.claude/skills`, `=/.codex/skills`} {
+					if strings.Contains(string(content), rootedHome) {
+						t.Fatalf("published skill contains rooted helper home %q", rootedHome)
+					}
+				}
+				resolver := notesToolboxResolver(t, string(content), core.name, core.toolbox)
+
+				home := t.TempDir()
+				want := filepath.Join(home, ".codex", "skills", core.name, "toolbox")
+				if err := os.MkdirAll(want, 0o755); err != nil {
+					t.Fatalf("create toolbox: %v", err)
+				}
+				cmd := exec.Command("bash", "-c", resolver+"\nprintf '%s' \"$"+core.toolbox+"\"")
+				cmd.Env = []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}
+				got, err := cmd.Output()
+				if err != nil {
+					t.Fatalf("resolve notes helper: %v", err)
+				}
+				if string(got) != want {
+					t.Fatalf("notes helper = %q; want %q when BOSS_SKILLS_HOME is unset", got, want)
+				}
+			})
+		}
+	}
+}
+
+func notesToolboxResolver(t *testing.T, content, core, toolbox string) string {
+	t.Helper()
+	const heading = "### Post-terminal notes extensions (repo opt-in)"
+	_, notesSection, found := strings.Cut(content, heading)
+	if !found {
+		t.Fatalf("%s post-terminal notes section not found", core)
+	}
+
+	pattern := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(toolbox) + `="\$\{BOSS_SKILLS_HOME:-[^}]+\}/` + regexp.QuoteMeta(core) + `/toolbox"\n(?:if \[ ! -d "\$` + regexp.QuoteMeta(toolbox) + `" \]; then ` + regexp.QuoteMeta(toolbox) + `="[^"]+/` + regexp.QuoteMeta(core) + `/toolbox"; fi|\[ -d "\$` + regexp.QuoteMeta(toolbox) + `" \] \|\| ` + regexp.QuoteMeta(toolbox) + `="[^"]+/` + regexp.QuoteMeta(core) + `/toolbox")$`)
+	loc := pattern.FindStringIndex(notesSection)
+	if loc == nil {
+		t.Fatalf("%s terminal notes-hook resolver not found", core)
+	}
+	discovery := `NOTES_JSON=$(node "$` + toolbox + `/skill-extensions.mjs" discover --core ` + core + ` --role notes --json)`
+	if !strings.HasPrefix(strings.TrimLeft(notesSection[loc[1]:], " \t\r\n"), discovery) {
+		t.Fatalf("%s terminal notes-hook discovery command not found after resolver", core)
+	}
+	return notesSection[loc[0]:loc[1]]
 }
 
 // scriptRefPattern matches a repo-root `scripts/<path>` token anywhere in a payload file — prose

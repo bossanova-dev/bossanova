@@ -104,11 +104,11 @@ MERGE_BASE=$(git merge-base "origin/$BASE" HEAD 2>/dev/null || git merge-base "$
 CHANGED=$(git diff --name-only "$MERGE_BASE..HEAD")
 HOST_AGENT="${BOSS_AGENT:-$( [ -n "$CLAUDECODE" ] && echo claude || echo codex )}"
 if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-  for candidate in "$HOME/.claude/skills/bossanova" "$HOME/.codex/skills/bossanova"; do
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
     if [ -d "$candidate/boss-review/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
   done
 fi
-test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed bossanova skills not found"; exit 1; }
+test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
 BOSS_REVIEW_TOOLBOX="$BOSS_SKILLS_HOME/boss-review/toolbox"
 SECOND_VOICE=$(node "$BOSS_REVIEW_TOOLBOX/bs-review-detect.mjs" --second-voice "$HOST_AGENT")
 LENSES_JSON=$(printf '%s\n' "$CHANGED" | node "$BOSS_REVIEW_TOOLBOX/bs-review-detect.mjs" --lenses)   # MatchedLens[]
@@ -214,8 +214,8 @@ glob in the registry).
 Rounds are whole-branch review passes. Resolve them by strict precedence:
 
 ```bash
-BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-review/toolbox"
-if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/bossanova/boss-review/toolbox"; fi
+BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolbox"
+if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi
 ROUNDS_JSON=$(node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" discover --core boss-review --role round --json)
 ```
 
@@ -238,8 +238,8 @@ the standard extension invocation envelope:
 Validate each envelope:
 
 ```bash
-BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-review/toolbox"
-if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/bossanova/boss-review/toolbox"; fi
+BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolbox"
+if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi
 node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" validate --role round --file "$RUN_TMP/findings-round-<extension-name>.json"
 ```
 
@@ -405,6 +405,56 @@ its prefix stays byte-identical (`$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs` owns 
 - capped: `node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" sentinel capped <N>` → `bs-review capped: open must-fix findings remain after N rounds.` (only the round-count tail varies)
 
 ## Phase 8 — Cleanup
+
+Before removing `$RUN_TMP`, run the optional notes phase only after the terminal outcome is decided;
+it cannot change the outcome, exit code, or any tracker or PR write.
+
+### Post-terminal notes extensions (repo opt-in)
+
+```bash
+BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolbox"
+if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi
+NOTES_JSON=$(node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" discover --core boss-review --role notes --json)
+```
+
+If `NOTES_JSON.extensions` is empty, do nothing and print nothing: a repo without a local notes
+extension has not opted in. Create no scratch in that case. Otherwise create a terminal-only handoff:
+
+```bash
+NOTES_RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-review-notes.XXXXXX")
+NOTES_OBSERVATIONS="$NOTES_RUN_TMP/observations.md"
+```
+
+Before dispatch, the orchestrator that still owns the completed run writes at most five
+secret-scrubbed candidate observations to `NOTES_OBSERVATIONS`, with a maximum 8 KiB file size.
+Keep each candidate to a short problem statement plus a file/skill/command pointer. Never copy a
+transcript, command output, user-provided content, credentials, tokens, or other secrets; an empty
+file is valid. This artifact is the only run-history source sent across the fresh-subagent boundary.
+
+Dispatch descriptors in ascending `(order, name)` order as fresh, **awaited** subagents, each bounded
+by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms). Each receives:
+
+```json
+{
+  "role": "notes",
+  "core": "boss-review",
+  "context": {
+    "mode": "<interactive if this run involved operator interaction; otherwise headless>",
+    "core": "boss-review",
+    "outcome": "<resolved terminal outcome>",
+    "repoId": "<BOSS_REPO_ID when present; otherwise null>",
+    "observationPath": "<NOTES_OBSERVATIONS>"
+  },
+  "runTmp": "<NOTES_RUN_TMP>",
+  "outPath": "<NOTES_RUN_TMP>/notes-<extension-name>.json"
+}
+```
+
+Validate each result with `node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" validate --role notes --file
+"<outPath>"`. On success append one ledger line with the total persisted-note count. On a discovery
+skip, timeout, missing output, malformed envelope, validation failure, or subagent failure, append
+`extension <name>: skipped (<reason>)` and continue. Remove `NOTES_RUN_TMP` on every post-opt-in
+terminal path. The phase is non-fatal in every case.
 
 `rm -rf "$RUN_TMP"` on **every** terminal path so no local artifacts linger. (The committed
 fixes stay; only the scratch ledger/findings are removed.)

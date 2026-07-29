@@ -44,9 +44,14 @@ schedules and merges.
   child's PR / CI check / merge state, arm a one-shot callback group first rather
   than spinning on the poll — gated on the single `callbacksAvailable(env)` signal
   (`toolbox/callback/adapter.mjs`, keyed on `BOSS_SESSION_ID`). Gate true ⇒
-  `registerWatch` per in-flight child; gate false ⇒ skip arming and let
-  `policy.fallbackPoll` alone drive Phase 3 — an explicit no-op, never a failed
-  wait. Protocol: [`references/callback-watches.md`](references/callback-watches.md).
+  resolve `selectEpicCallbackTarget` (`toolbox/callback/epic-target.mjs`) from the
+  child PR repository plus verified orchestrator and child identities before any
+  callback operation. A matching orchestrator wins; otherwise a matching child is
+  the target. No verified target ⇒ skip callback registration, re-arm, list, and
+  cleanup, and retain the existing cron/poll reconciliation. Gate false ⇒ skip
+  arming and let `policy.fallbackPoll` alone drive Phase 3 — an explicit no-op,
+  never a failed wait. Protocol:
+  [`references/callback-watches.md`](references/callback-watches.md).
 - **The parent issue is never mutated.** boss-epic moves only the explicitly
   enumerated child tickets to `Done`; it never closes or restates the parent.
 - **Empty eligible set is success.** A parent whose children are all already
@@ -71,7 +76,7 @@ Workspace facts (resolve at runtime, do not hard-code):
   `resolve_context`, `list_agents`, and for repair rounds `record_chat` +
   `send_chat_message` (start a fresh chat in the ticket's own session — see
   Phase 3c). `get_session_statuses` is session-aggregate only.
-- Session-title convention (the resume anchor): `boss-epic <TICKET>: <ticket title>`.
+- Session-title convention (the resume anchor): `[<TICKET>] <ticket title>`.
 
 ## Adapter seams (the pluggable boundary)
 
@@ -104,7 +109,10 @@ Bossanova reference impls resolve to today's exact tools and sub-skills —
   (`registerWatch` / `listWatches` / `removeWatch` over `boss callback
 add|list|remove`); `policy.watchTriggers` = `checks_passed` / `checks_failed`
   / `merged`, armed as a group per in-flight child **when
-  `callbacksAvailable(env)`** (else `policy.fallbackPoll` alone drives the wait).
+  `callbacksAvailable(env)`** and `selectEpicCallbackTarget` returns a verified
+  target. Register, re-arm, and list use that target's `--chat` plus the child
+  PR's `--repo`; `remove` accepts `--chat` but not `--repo`, so cleanup first uses
+  the scoped list to find ids. (Else `policy.fallbackPoll` alone drives the wait.)
   A resolved/merged child PR then wakes the epic promptly; every wake
   **reconciles real session/PR state before acting** (Phase 3b). Full protocol:
   [`references/callback-watches.md`](references/callback-watches.md).
@@ -117,11 +125,11 @@ every call-site — only the imported function and the piped payload change):
 
 ```bash
 if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-  for candidate in "$HOME/.claude/skills/bossanova" "$HOME/.codex/skills/bossanova"; do
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
     if [ -d "$candidate/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
   done
 fi
-test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed bossanova skills not found"; exit 1; }
+test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
 BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"
 export BOSS_EPIC_TOOLBOX
 # Eligibility (planned) and the merge gate (inReview) are gated on the tracker's state
@@ -220,8 +228,8 @@ assumeCleared, assumeClearedAndMerge}`.
    required set from the session adapter, never a hand-maintained list:
 
    ```bash
-   BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}"
-   [ -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ] || BOSS_SKILLS_HOME="$HOME/.codex/skills/bossanova"
+   BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
+   [ -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ] || BOSS_SKILLS_HOME="$HOME/.codex/skills"
    BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"; export BOSS_EPIC_TOOLBOX
    test -f "$BOSS_EPIC_TOOLBOX/session/boss.mjs" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
    node --input-type=module -e '
@@ -339,7 +347,7 @@ adopts rather than duplicates:
    further is owed.
 
 2. **Adopt open sessions.** `list_sessions {repo_id}` and match sessions to epic
-   tickets by the title convention `boss-epic <TICKET>: …` or by `tracker_id`. A live
+   tickets by the title convention `[<TICKET>] <ticket title>` or by `tracker_id`. A live
    session for a ticket is **adopted** into the in-flight table with its recorded
    `session_id` + `chat_id` — never a second session for the same ticket.
 
@@ -397,7 +405,7 @@ create_session {
   tmux_unattended: true,        // durable, restart-surviving, attach-safe
   model:  "claude-opus-5",     // MODEL from Phase 0 — no /model two-step
   prompt: "/boss-build <TICKET>",   // BARE single-line command — see below
-  title:  "boss-epic <TICKET>: <ticket title>",
+  title:  "[<TICKET>] <ticket title>",
   agent,                       // from Phase 0
   tracker_id:     "<TICKET>",
   tracker_source: "linear",
@@ -421,7 +429,8 @@ per-ticket wall clock.
 ### 3b. Poll
 
 A callback wake (armed per child that enters flight **only when
-`callbacksAvailable(env)`**) trims the poll cadence but never replaces this
+`callbacksAvailable(env)` and `selectEpicCallbackTarget` returns a verified target**)
+trims the poll cadence but never replaces this
 reconciliation — a wake means _re-read the state below_, never _act on the trigger
 name_; dedup by callback id, and re-arm the child's group while it is still in flight.
 
@@ -513,7 +522,7 @@ IDLE/STOPPED + passing.
 
   ```
   record_chat       {session_id, agent_session_id: <fresh uuidgen UUID>,
-                     agent_name: agent, title: "boss-epic repair <TICKET> (round N)"}
+                     agent_name: agent, title: "[<TICKET>] Repair (round N)"}
   send_chat_message {agent_session_id: <same UUID>, wake_if_asleep: true,
                      submit: true, message: "/boss-repair watch"}  // submits
   ```
@@ -631,6 +640,36 @@ comment and print the same in the driver chat:
 If every eligible ticket merged, note that the epic is complete — but **the
 parent issue is left for the human to close**; boss-epic never mutates the
 parent's state.
+
+### Post-terminal notes extensions (repo opt-in)
+
+After final summary and outcome, resolve and run:
+
+```bash
+BOSS_EPIC_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-epic/toolbox"
+[ -d "$BOSS_EPIC_TOOLBOX" ] || BOSS_EPIC_TOOLBOX="$HOME/.codex/skills/boss-epic/toolbox"
+NOTES_JSON=$(node "$BOSS_EPIC_TOOLBOX/skill-extensions.mjs" discover --core boss-epic --role notes --json)
+```
+
+Empty means silent no-op/no scratch. Otherwise:
+
+```bash
+NOTES_RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-epic-notes.XXXXXX")
+NOTES_OBSERVATIONS="$NOTES_RUN_TMP/observations.md"
+```
+
+The owning orchestrator writes at most five secret-scrubbed candidate observations to
+`NOTES_OBSERVATIONS` (maximum 8 KiB): problem + pointer, no transcript/output/user content/secrets;
+empty is valid and this is the worker's only run history.
+
+Ascending `(order,name)` fresh **awaited** workers (timeout `BOSS_SKILL_EXTENSION_TIMEOUT_MS`, default
+`300000`) receive `{role:"notes",core:"boss-epic",context:{mode:"<interactive if the run
+interacted; else headless>",core:"boss-epic",outcome:"<decided>",repoId:"<BOSS_REPO_ID or
+null>",observationPath:"<NOTES_OBSERVATIONS>"},runTmp:"<NOTES_RUN_TMP>",
+outPath:"<NOTES_RUN_TMP>/notes-<extension-name>.json"}`. Validate via
+`node "$BOSS_EPIC_TOOLBOX/skill-extensions.mjs" validate --role notes --file "<outPath>"`; count
+valid notes, record each error as `extension <name>: skipped (<reason>)`, preserve terminal state,
+then remove `NOTES_RUN_TMP`.
 
 ## Reporting contract (single-comment protocol)
 

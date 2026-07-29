@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -303,7 +304,11 @@ type ChatRotator struct {
 	// deduped so a chat has at most one pending re-probe. Cancelled on recovery, a
 	// confirmed-401 rotation, a successful respawn, deregistration and shutdown.
 	reprobeCancel map[string]func()
-	active        sync.WaitGroup // observed by idleForTest
+	// active counts in-flight rotation goroutines; observed by idleForTest.
+	// It is an atomic counter rather than a sync.WaitGroup because idleForTest
+	// polls it: a WaitGroup may only be Add-ed from zero once every prior Wait
+	// has returned, and a polling observer cannot guarantee that ordering.
+	active atomic.Int64
 }
 
 // NewChatRotator builds a ChatRotator from its dependency seams.
@@ -340,7 +345,7 @@ func (r *ChatRotator) OnChatStatus(agentSessionID string, st bossanovav1.ChatSta
 	}
 	r.active.Add(1)
 	safego.Go(r.deps.Logger, func() {
-		defer r.active.Done()
+		defer r.active.Add(-1)
 		defer r.releaseInFlight(agentSessionID)
 		r.rotate(agentSessionID, resetAt)
 	})
@@ -358,7 +363,7 @@ func (r *ChatRotator) OnAuthFailed(agentSessionID string) {
 	}
 	r.active.Add(1)
 	safego.Go(r.deps.Logger, func() {
-		defer r.active.Done()
+		defer r.active.Add(-1)
 		defer r.releaseInFlight(agentSessionID)
 		r.rotateAuth(agentSessionID)
 	})
@@ -1133,7 +1138,7 @@ func (r *ChatRotator) reprobeAuth(agentSessionID string) {
 	r.inFlight[agentSessionID] = true
 	r.mu.Unlock()
 	r.active.Add(1)
-	defer r.active.Done()
+	defer r.active.Add(-1)
 	defer r.releaseInFlight(agentSessionID)
 	r.rotateAuth(agentSessionID)
 }
@@ -1171,13 +1176,11 @@ func (r *ChatRotator) Deregister(agentSessionID string) {
 }
 
 // idleForTest reports whether no rotation goroutine is active. Test-only.
+//
+// This is a non-blocking load: callers (waitIdle) poll it. An earlier version
+// raced by spawning a goroutine that blocked in sync.WaitGroup.Wait and leaking
+// it on timeout — a subsequent OnChatStatus Add(1) from zero then overlapped the
+// still-running Wait, which the race detector correctly flagged.
 func (r *ChatRotator) idleForTest() bool {
-	done := make(chan struct{})
-	go func() { r.active.Wait(); close(done) }()
-	select {
-	case <-done:
-		return true
-	case <-time.After(time.Millisecond):
-		return false
-	}
+	return r.active.Load() == 0
 }

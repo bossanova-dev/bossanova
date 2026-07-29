@@ -1,11 +1,13 @@
 package accountwiring
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -83,6 +85,7 @@ type fakeCreds struct {
 	blob  []byte
 	err   error
 	calls int
+	saves int
 }
 
 func (f *fakeCreds) Load(string) ([]byte, error) {
@@ -91,6 +94,12 @@ func (f *fakeCreds) Load(string) ([]byte, error) {
 		return nil, f.err
 	}
 	return f.blob, nil
+}
+
+func (f *fakeCreds) Save(_ string, blob []byte) error {
+	f.saves++
+	f.blob = append([]byte(nil), blob...)
+	return nil
 }
 
 // fakeRotationClient embeds the AgentRunnerClient interface (nil) and overrides
@@ -210,7 +219,7 @@ func TestToMetaNilUsageYieldsZeroFields(t *testing.T) {
 	}
 }
 
-func newResolver(store *spyStore, client *fakeRotationClient, creds CredentialLoader) *account.Resolver {
+func newResolver(store *spyStore, client *fakeRotationClient, creds CredentialStore) *account.Resolver {
 	clients := map[string]agent.AgentRunnerClient{}
 	if client != nil {
 		clients["claude"] = client
@@ -290,6 +299,89 @@ func TestSpawnEnvResolver_BoundRotationInjectsEnvAndTouchesOnce(t *testing.T) {
 	}
 	if store.lastUpdate.LastUsedAt == nil || *store.lastUpdate.LastUsedAt == nil {
 		t.Errorf("last-used bump did not set LastUsedAt: %+v", store.lastUpdate)
+	}
+}
+
+func TestSpawnEnvResolver_CodexUsesManagedProjectedHome(t *testing.T) {
+	baseHome := t.TempDir()
+	appDataDir := t.TempDir()
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"app_data_dir":`+strconv.Quote(appDataDir)+`}`), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	t.Setenv("CODEX_HOME", baseHome)
+
+	for path, content := range map[string]string{
+		"config.toml":                       "model = \"gpt-profiled\"\n",
+		"sessions/2026/07/29/rollout.jsonl": `{"type":"session_meta"}` + "\n",
+	} {
+		fullPath := filepath.Join(baseHome, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
+			t.Fatalf("mkdir projected state: %v", err)
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0o600); err != nil {
+			t.Fatalf("write projected state: %v", err)
+		}
+	}
+
+	const credential = `{"tokens":{"access_token":"fixture-access","refresh_token":"fixture-refresh"}}`
+	store := &spyStore{accounts: map[string]*models.Account{"codex-1": newCodexAccount()}}
+	client := &fakeRotationClient{supports: true}
+	creds := &fakeCreds{blob: []byte(credential)}
+	var logs bytes.Buffer
+	materializer := NewMaterializer(
+		map[string]agent.AgentRunnerClient{"codex": client},
+		store,
+		creds,
+		zerolog.New(&logs),
+	)
+	resolver := NewSpawnEnvResolver(
+		account.NewResolver(NewRegistry(store), materializer, zerolog.Nop()),
+		zerolog.Nop(),
+	)
+
+	env := resolver.Resolve(context.Background(), &models.Session{
+		AgentName: "codex",
+		AccountID: strptr("codex-1"),
+	})
+	managedHome := env["CODEX_HOME"]
+	if managedHome == "" || managedHome == baseHome {
+		t.Fatalf("CODEX_HOME = %q, want distinct managed home", managedHome)
+	}
+	if want := filepath.Join(appDataDir, "accounts", "codex", "codex-1"); managedHome != want {
+		t.Fatalf("CODEX_HOME = %q, want %q", managedHome, want)
+	}
+	for _, path := range []string{
+		"config.toml",
+		"sessions/2026/07/29/rollout.jsonl",
+	} {
+		if _, err := os.Stat(filepath.Join(managedHome, filepath.FromSlash(path))); err != nil {
+			t.Fatalf("projected state %q unavailable: %v", path, err)
+		}
+	}
+
+	authPath := filepath.Join(managedHome, "auth.json")
+	info, err := os.Lstat(authPath)
+	if err != nil {
+		t.Fatalf("lstat managed auth: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("managed auth.json must be account-local, not a symlink")
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("managed auth.json mode = %#o, want 0600", got)
+	}
+	if got, err := os.ReadFile(authPath); err != nil {
+		t.Fatalf("read managed auth: %v", err)
+	} else if !bytes.Equal(got, []byte(credential)) {
+		t.Fatal("managed auth.json does not contain the stored credential")
+	}
+	if client.matCalls != 0 {
+		t.Fatalf("plugin MaterializeAccount calls = %d, want 0 for Codex", client.matCalls)
+	}
+	if logs.Bytes() != nil && bytes.Contains(logs.Bytes(), []byte("fixture-access")) {
+		t.Fatal("credential bytes leaked to logs")
 	}
 }
 

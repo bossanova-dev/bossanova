@@ -3,6 +3,7 @@ package testharness
 import (
 	"context"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/recurser/bossd/internal/tmux"
@@ -169,16 +170,21 @@ func (f *CronReadyTmuxFake) cmd(ctx context.Context, name string, args ...string
 
 	case "capture-pane":
 		// Return canned stdout containing the SendPlan ready marker so
-		// the daemon's first poll succeeds without sleeping. printf is
-		// portable across macOS and Linux CI runners. The pane text is
-		// passed as printf's ARGUMENT, never its format string, so a
-		// scripted CapturePaneOutput containing "%" is emitted verbatim.
+		// the daemon's first poll succeeds without sleeping. `cat` is
+		// portable across macOS and Linux CI runners and echoes stdin
+		// verbatim, so a scripted CapturePaneOutput containing "%" is
+		// emitted unchanged. The pane text travels via STDIN rather than
+		// argv deliberately: a constant argv keeps this off gosec's G204
+		// (subprocess launched with variable) radar without needing a
+		// suppression, and mirrors the load-buffer fake in tmux_test.go.
 		pane := f.CapturePaneOutput
 		if pane == "" {
 			pane = "Welcome to Claude\n❯\n"
 		}
 		f.mu.Unlock()
-		return exec.CommandContext(ctx, "printf", "%s", pane)
+		cmd := exec.CommandContext(ctx, "cat")
+		cmd.Stdin = strings.NewReader(pane)
+		return cmd
 	}
 
 	f.mu.Unlock()

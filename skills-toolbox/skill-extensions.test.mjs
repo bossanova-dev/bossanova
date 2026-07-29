@@ -125,6 +125,51 @@ test('discoverExtensions omits known cross-role siblings when role is supplied',
   assert.deepEqual(skipped, [])
 })
 
+test('discoverExtensions recognizes notes extensions and their result schema', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'boss-build-notes', [
+    'name: boss-build-notes',
+    'x-boss-extension:',
+    '  extends: boss-build',
+    '  role: notes',
+  ])
+
+  const { extensions, skipped } = discoverExtensions({ core: 'boss-build', root, role: 'notes' })
+  assert.deepEqual(
+    extensions.map((extension) => extension.name),
+    ['boss-build-notes'],
+  )
+  assert.deepEqual(skipped, [])
+  assert.deepEqual(ROLE_SCHEMAS.notes, ['tag', 'body', 'noteId'])
+})
+
+test('validateResult rejects notes fields that are not non-empty strings', () => {
+  for (const [field, value] of [
+    ['tag', null],
+    ['body', {}],
+    ['noteId', ''],
+  ]) {
+    const item = { tag: 'improvement', body: 'Keep the validation ratchet.', noteId: 'note-123' }
+    item[field] = value
+
+    const result = validateResult(
+      {
+        ok: true,
+        extension: 'boss-build-notes',
+        role: 'notes',
+        items: [item],
+      },
+      'notes',
+    )
+
+    assert.equal(result.ok, false, field)
+    assert.ok(
+      result.errors.includes(`item 0 "${field}" is not a non-empty string`),
+      `${field}: ${result.errors.join(', ')}`,
+    )
+  }
+})
+
 test('discoverExtensions rejects an unknown wrong-role extension into skipped', () => {
   const root = scratchRoot()
   writeSkill(root, 'bs-plan-house-style', [
@@ -380,7 +425,13 @@ test('validateResult never throws on a non-object envelope', () => {
 })
 
 test('ROLE_SCHEMAS enumerates the consumer roles', () => {
-  assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), ['lens', 'plan-reviewer', 'round', 'surface'])
+  assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
+    'lens',
+    'notes',
+    'plan-reviewer',
+    'round',
+    'surface',
+  ])
   assert.deepEqual(ROLE_SCHEMAS.round, ROLE_SCHEMAS.lens)
 })
 

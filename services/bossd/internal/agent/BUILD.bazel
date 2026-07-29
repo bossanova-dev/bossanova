@@ -24,6 +24,7 @@ go_library(
 go_test(
     name = "agent_test",
     srcs = [
+        "capability_profile_test.go",
         "dispatcher_test.go",
         "log_tailer_test.go",
         "plugin_runner_test.go",
@@ -36,6 +37,7 @@ go_test(
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

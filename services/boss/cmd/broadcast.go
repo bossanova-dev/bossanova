@@ -81,7 +81,7 @@ func broadcastToJSON(b *pb.Broadcast, deliveries []*pb.BroadcastDelivery) broadc
 		OriginChatID: b.GetOriginChatId(),
 		Selector:     broadcast.SelectorFromProto(b.GetSelector()).String(),
 		State:        b.GetState(),
-		TargetCount:  int32(len(deliveries)),
+		TargetCount:  safeInt32(len(deliveries)),
 		ExpiresAt:    rfc3339OrEmpty(b.GetExpiresAt()),
 		CreatedAt:    rfc3339OrEmpty(b.GetCreatedAt()),
 	}

@@ -29,6 +29,10 @@ type Server struct {
 	host   hostclient.Client
 	logger zerolog.Logger
 	runner *Runner
+	// operationRegistry reads the operation inventory Codex exposes at runtime
+	// for an explicitly profiled headless launch. Tests replace it with a fixed
+	// surface; production uses the app-server registry.
+	operationRegistry runtimeOperationRegistry
 	// inspector resolves a chat's rollout from the open file descriptors of
 	// the codex process running under its tmux pane. Defaults to the real
 	// process inspector; unit tests inject a fake.
@@ -36,11 +40,13 @@ type Server struct {
 }
 
 func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...Option) *Server {
+	runner := NewRunner(logger, runnerOpts...)
 	return &Server{
-		host:      host,
-		logger:    logger,
-		runner:    NewRunner(logger, runnerOpts...),
-		inspector: defaultProcessInspector,
+		host:              host,
+		logger:            logger,
+		runner:            runner,
+		inspector:         defaultProcessInspector,
+		operationRegistry: codexAppServerOperationRegistry{binary: "codex", loginShell: runner.loginShell},
 	}
 }
 
@@ -93,7 +99,30 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 	}, nil
 }
 
-func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+func (s *Server) PreflightHeadlessRun(ctx context.Context, req *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error) {
+	return s.preflightHeadlessCapabilityProfile(
+		ctx,
+		req.GetHeadlessCapabilityProfile(),
+		codexRuntimeTarget{
+			Home:     req.GetExtraEnv()["CODEX_HOME"],
+			Model:    req.GetModel(),
+			ExtraEnv: req.GetExtraEnv(),
+		},
+	)
+}
+
+func (s *Server) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+	if _, err := s.preflightHeadlessCapabilityProfile(
+		ctx,
+		req.GetHeadlessCapabilityProfile(),
+		codexRuntimeTarget{
+			Home:     req.GetExtraEnv()["CODEX_HOME"],
+			Model:    resolveCodexModel(req.GetModel(), s.runner.model),
+			ExtraEnv: req.GetExtraEnv(),
+		},
+	); err != nil {
+		return nil, err
+	}
 	var resume *string
 	if req.ResumeId != nil {
 		resume = req.ResumeId

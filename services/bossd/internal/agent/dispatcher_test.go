@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/rs/zerolog"
+
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // labeledAgentRunner is a minimal AgentRunner that records the
@@ -17,6 +19,23 @@ import (
 type labeledAgentRunner struct {
 	name      string
 	startSeen atomic.Pointer[string] // captures "<name>:<sessionID>" on Start
+}
+
+type preflightRecordingRunner struct {
+	*labeledAgentRunner
+	calls   int
+	model   string
+	env     map[string]string
+	profile bossanovav1.HeadlessCapabilityProfile
+	err     error
+}
+
+func (r *preflightRecordingRunner) PreflightHeadlessCapabilityProfile(_ context.Context, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
+	r.calls++
+	r.model = model
+	r.env = extraEnv
+	r.profile = profile
+	return r.err
 }
 
 func newLabeledAgentRunner(name string) *labeledAgentRunner {
@@ -268,6 +287,50 @@ func TestDispatcher_StartByAgent_UnknownAgentReturnsError(t *testing.T) {
 	_, err := d.StartByAgent(context.Background(), "ghost", "/w", "p", nil, "sid", "", nil)
 	if err == nil || !errors.Is(err, ErrAgentNotLoaded) {
 		t.Fatalf("expected ErrAgentNotLoaded, got %v", err)
+	}
+}
+
+func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRoutesToNamedAgent(t *testing.T) {
+	codexRunner := &preflightRecordingRunner{labeledAgentRunner: newLabeledAgentRunner("codex")}
+	claudeRunner := newLabeledAgentRunner("claude")
+	d := NewDispatcher(map[string]AgentRunner{
+		"claude": claudeRunner,
+		"codex":  codexRunner,
+	}, func(string) (string, error) {
+		t.Fatalf("lookup must not be called for explicit preflight routing")
+		return "", nil
+	}, "claude", zerolog.Nop())
+	env := map[string]string{"CODEX_HOME": "/managed/codex-home"}
+
+	err := d.PreflightByAgentWithHeadlessCapabilityProfile(
+		context.Background(), "codex", "gpt-5-codex", env,
+		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+	)
+	if err != nil {
+		t.Fatalf("PreflightByAgentWithHeadlessCapabilityProfile: %v", err)
+	}
+	if codexRunner.calls != 1 {
+		t.Fatalf("codex preflight calls = %d, want 1", codexRunner.calls)
+	}
+	if codexRunner.model != "gpt-5-codex" || codexRunner.env["CODEX_HOME"] != "/managed/codex-home" {
+		t.Fatalf("codex preflight target = model=%q env=%v", codexRunner.model, codexRunner.env)
+	}
+	if codexRunner.profile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+		t.Fatalf("codex profile = %s, want tracker-plan-attachment-v1", codexRunner.profile)
+	}
+}
+
+func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRejectsUnsupportedRunner(t *testing.T) {
+	d := NewDispatcher(map[string]AgentRunner{
+		"claude": newLabeledAgentRunner("claude"),
+	}, func(string) (string, error) { return "", nil }, "claude", zerolog.Nop())
+
+	err := d.PreflightByAgentWithHeadlessCapabilityProfile(
+		context.Background(), "claude", "model", nil,
+		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+	)
+	if !errors.Is(err, ErrHeadlessCapabilityProfileUnsupported) {
+		t.Fatalf("preflight error = %v, want ErrHeadlessCapabilityProfileUnsupported", err)
 	}
 }
 

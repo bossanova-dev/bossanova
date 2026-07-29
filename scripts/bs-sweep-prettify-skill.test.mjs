@@ -29,6 +29,8 @@ const SKILL = readSkill('../.claude/skills/bs-sweep-prettify/SKILL.md')
 const CODEX = readSkill('../.codex/skills/bs-sweep-prettify/SKILL.md')
 const GATE = readSkill('../.claude/skills/bs-sweep-prettify/gate/gate.mjs')
 const CODEX_GATE = readSkill('../.codex/skills/bs-sweep-prettify/gate/gate.mjs')
+const NOTES_TEARDOWN =
+  "Before exiting, follow `bs-record-notes` with this run's outcome. Recording is non-fatal: never change the terminal state, exit code, or `git status --porcelain`. Skip gated/no-op runs that observed nothing."
 
 // Live cron name + legacy slug the gate matches to suppress duplicate sweep PRs.
 const GATE_CRON_NAMES = ['Bossanova sweep prettify', 'bs-sweep-prettify']
@@ -38,6 +40,15 @@ function allowedTools(skill) {
   assert.ok(match, 'skill frontmatter must declare allowed-tools')
   return match[1].split(',').map((tool) => tool.trim())
 }
+
+test('documents the non-fatal notes teardown contract', () => {
+  for (const [label, skill] of [
+    ['source', SKILL],
+    ['codex mirror', CODEX],
+  ]) {
+    assert.ok(skill.includes(NOTES_TEARDOWN), `${label} must include the notes teardown contract`)
+  }
+})
 
 // ---------------------------------------------------------------------------
 // Skill frontmatter + terminal-state contract.

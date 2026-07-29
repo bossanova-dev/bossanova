@@ -26,6 +26,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,6 +55,8 @@ const (
 		"# This directory holds live agent credentials created by bossd credmaterialize.\n" +
 		"# It must be excluded from backups.\n"
 )
+
+var errSymlinkOutsideBase = errors.New("symlink resolves outside base home")
 
 // Materialized is the result of materializing one account's credentials.
 type Materialized struct {
@@ -181,7 +184,7 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 	// tree) would be followed by MkdirAll/Chmod/atomicWriteFile, writing live
 	// credentials outside the intended 0700 tree. Refuse before creating or
 	// writing anything.
-	if err := m.assertNoSymlinkChain(m.accountsRoot(), filepath.Dir(dir), dir); err != nil {
+	if err := m.assertNoSymlinkChain(m.baseDir, m.accountsRoot(), filepath.Dir(dir), dir); err != nil {
 		return Materialized{}, nil, err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -203,6 +206,9 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 		if err := os.Chmod(d, 0o700); err != nil {
 			return Materialized{}, nil, fmt.Errorf("enforce 0700 on codex dir %q: %w", d, err)
 		}
+	}
+	if err := projectCodexBaseHome(dir); err != nil {
+		return Materialized{}, nil, fmt.Errorf("project codex base home: %w", err)
 	}
 
 	m.writeCacheDirTag()
@@ -235,6 +241,315 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 		Env:     map[string]string{"CODEX_HOME": dir},
 		HomeDir: dir,
 	}, persist, nil
+}
+
+// projectCodexBaseHome links every non-auth top-level entry of the inherited
+// Codex home into accountHome. Codex reads configuration, plugins, connector
+// state, and session history from the managed home; linking keeps those entries
+// current while auth.json remains account-local. A missing base home is valid:
+// all of its entries are optional to a generic Codex invocation.
+func projectCodexBaseHome(accountHome string) error {
+	baseHome, err := codexBaseHome()
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(baseHome)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read base home %q: %w", baseHome, err)
+	}
+	canonicalBase, err := filepath.EvalSymlinks(baseHome)
+	if err != nil {
+		return fmt.Errorf("resolve base home %q: %w", baseHome, err)
+	}
+	canonicalAuth, err := canonicalBaseAuth(canonicalBase)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == authFileName {
+			continue
+		}
+		source, projectable, err := validatedBaseHomeEntry(canonicalBase, entry.Name())
+		if err != nil {
+			return err
+		}
+		if !projectable {
+			// Optional entries such as skills may be symlinked outside the Codex
+			// home. They cannot be safely projected into an account home, so leave
+			// them absent rather than failing an otherwise-valid materialization.
+			continue
+		}
+		aliasesAuth, err := aliasesCanonicalBaseAuth(source, canonicalAuth)
+		if err != nil {
+			return err
+		}
+		if aliasesAuth {
+			return fmt.Errorf("refusing base home entry %q: resolves to auth.json", entry.Name())
+		}
+		if err := validateProjectedDirectory(source, canonicalBase, canonicalAuth); err != nil {
+			if isOptionalCodexBaseEntry(entry.Name()) && errors.Is(err, errSymlinkOutsideBase) {
+				continue
+			}
+			return fmt.Errorf("validate base home entry %q: %w", entry.Name(), err)
+		}
+		if err := ensureProjectedSymlink(filepath.Join(accountHome, entry.Name()), source, canonicalBase, canonicalAuth); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// canonicalBaseAuth resolves the base auth file so aliases to it can never be
+// projected into an account home. A missing auth file is fine because it is not
+// a projection source; materialization will create the account-local file.
+func canonicalBaseAuth(canonicalBase string) (string, error) {
+	authPath := filepath.Join(canonicalBase, authFileName)
+	auth, err := filepath.EvalSymlinks(authPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("resolve base auth file %q: %w", authPath, err)
+	}
+	return auth, nil
+}
+
+// aliasesCanonicalBaseAuth reports whether source names the same filesystem
+// object as the canonical base auth file. os.SameFile catches both symlink
+// resolution and hard links, either of which would leak shared credentials into
+// an account home if projected.
+func aliasesCanonicalBaseAuth(source, canonicalAuth string) (bool, error) {
+	if canonicalAuth == "" {
+		return false, nil
+	}
+	sourceInfo, err := os.Stat(source)
+	if err != nil {
+		return false, fmt.Errorf("stat base home entry %q: %w", source, err)
+	}
+	authInfo, err := os.Stat(canonicalAuth)
+	if err != nil {
+		return false, fmt.Errorf("stat base auth file %q: %w", canonicalAuth, err)
+	}
+	return os.SameFile(sourceInfo, authInfo), nil
+}
+
+// validateProjectedDirectory recursively checks every entry reachable through
+// a projected directory. Nested symlinks must resolve inside canonicalBase; a
+// physical-directory visited set stops symlink cycles.
+func validateProjectedDirectory(source, canonicalBase, canonicalAuth string) error {
+	var authInfo os.FileInfo
+	if canonicalAuth != "" {
+		var err error
+		authInfo, err = os.Stat(canonicalAuth)
+		if err != nil {
+			return fmt.Errorf("stat base auth file %q: %w", canonicalAuth, err)
+		}
+	}
+	return walkProjectedDirectory(source, canonicalBase, authInfo, nil)
+}
+
+func walkProjectedDirectory(path, canonicalBase string, authInfo os.FileInfo, visited []os.FileInfo) error {
+	linkInfo, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("lstat %q: %w", path, err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink != 0 {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("resolve symlink %q: %w", path, err)
+		}
+		withinBase, err := isWithinCanonicalBase(canonicalBase, resolved)
+		if err != nil {
+			return fmt.Errorf("validate symlink %q: %w", path, err)
+		}
+		if !withinBase {
+			return fmt.Errorf("%w: %q", errSymlinkOutsideBase, path)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat %q: %w", path, err)
+	}
+	if authInfo != nil && os.SameFile(info, authInfo) {
+		return fmt.Errorf("%q resolves to auth.json", path)
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	for _, seen := range visited {
+		if os.SameFile(info, seen) {
+			return nil
+		}
+	}
+	visited = append(visited, info)
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("read directory %q: %w", path, err)
+	}
+	for _, entry := range entries {
+		if err := walkProjectedDirectory(filepath.Join(path, entry.Name()), canonicalBase, authInfo, visited); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// codexBaseHome resolves the shared Codex home for projection. CODEX_HOME is
+// intentionally consulted at materialization time so a changed inherited home
+// is reconciled on the next managed run.
+func codexBaseHome() (string, error) {
+	home := os.Getenv("CODEX_HOME")
+	if home == "" {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user home: %w", err)
+		}
+		home = filepath.Join(userHome, ".codex")
+	}
+	abs, err := filepath.Abs(home)
+	if err != nil {
+		return "", fmt.Errorf("resolve base home %q: %w", home, err)
+	}
+	return abs, nil
+}
+
+// validatedBaseHomeEntry returns a canonical direct child of canonicalBase.
+// Base-home symlinks are allowed only when their complete resolved chain stays
+// within the base home, so a managed account never gains a link to an arbitrary
+// local path through restored or malicious connector state.
+func validatedBaseHomeEntry(canonicalBase, name string) (string, bool, error) {
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+		return "", false, fmt.Errorf("invalid base home entry %q", name)
+	}
+	source, err := filepath.EvalSymlinks(filepath.Join(canonicalBase, name))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("resolve base home entry %q: %w", name, err)
+	}
+	rel, err := filepath.Rel(canonicalBase, source)
+	if err != nil {
+		return "", false, fmt.Errorf("validate base home entry %q: %w", name, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		if isOptionalCodexBaseEntry(name) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("refusing base home entry %q outside base home", name)
+	}
+	return source, true, nil
+}
+
+// isOptionalCodexBaseEntry identifies entries that may be safely absent from a
+// generic managed home. Core config and plugin/connector state remain
+// fail-closed when unsafe.
+func isOptionalCodexBaseEntry(name string) bool {
+	switch name {
+	case "config.toml", "plugins":
+		return false
+	default:
+		return true
+	}
+}
+
+// isWithinCanonicalBase reports whether candidate is contained by canonicalBase.
+// Both paths must already be resolved, so this is a lexical containment check
+// over canonical paths rather than a symlink-following operation.
+func isWithinCanonicalBase(canonicalBase, candidate string) (bool, error) {
+	rel, err := filepath.Rel(canonicalBase, candidate)
+	if err != nil {
+		return false, err
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel), nil
+}
+
+// ensureProjectedSymlink creates a single validated account-home symlink. A
+// previously-created safe in-base projection may be atomically retargeted when
+// its base-home entry changes. Non-symlink, auth, external, or auth-alias
+// destinations are never replaced.
+func ensureProjectedSymlink(accountPath, source, canonicalBase, canonicalAuth string) error {
+	info, err := os.Lstat(accountPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("lstat account projection %q: %w", accountPath, err)
+		}
+		if err := os.Symlink(source, accountPath); err != nil {
+			return fmt.Errorf("link base home entry at %q: %w", accountPath, err)
+		}
+		return nil
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("refusing account projection %q: existing entry is not a symlink", accountPath)
+	}
+	resolved, err := filepath.EvalSymlinks(accountPath)
+	if err != nil {
+		return fmt.Errorf("resolve account projection %q: %w", accountPath, err)
+	}
+	if resolved != source {
+		if filepath.Base(accountPath) == authFileName {
+			return fmt.Errorf("refusing account projection %q: auth.json must remain local", accountPath)
+		}
+		if err := validateRetargetableProjection(resolved, canonicalBase, canonicalAuth); err != nil {
+			return fmt.Errorf("refusing account projection %q: %w", accountPath, err)
+		}
+		if err := atomicReplaceSymlink(accountPath, source); err != nil {
+			return fmt.Errorf("retarget account projection %q: %w", accountPath, err)
+		}
+	}
+	return nil
+}
+
+// validateRetargetableProjection proves an old destination is the kind of
+// safe, in-base projection this package creates before replacing it. The
+// account-home chain is already owner-only; this validation prevents a stale
+// local or externally-pointing link from becoming replaceable during reconcile.
+func validateRetargetableProjection(source, canonicalBase, canonicalAuth string) error {
+	withinBase, err := isWithinCanonicalBase(canonicalBase, source)
+	if err != nil {
+		return fmt.Errorf("validate target containment: %w", err)
+	}
+	if !withinBase {
+		return fmt.Errorf("target resolves outside base home")
+	}
+	aliasesAuth, err := aliasesCanonicalBaseAuth(source, canonicalAuth)
+	if err != nil {
+		return err
+	}
+	if aliasesAuth {
+		return fmt.Errorf("target resolves to auth.json")
+	}
+	return validateProjectedDirectory(source, canonicalBase, canonicalAuth)
+}
+
+// atomicReplaceSymlink swaps an already-validated projection without a window
+// where an agent observes a missing account-home entry.
+func atomicReplaceSymlink(path, source string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Remove(tmpPath); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Symlink(source, tmpPath); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
 }
 
 // persistBack re-hashes auth.json under the account lock and, only when it
@@ -319,7 +634,7 @@ func (m *Materializer) RemoveAccount(ctx context.Context, provider, accountID st
 		dir := m.codexAccountDir(accountID)
 		// RemoveAll follows a symlinked parent; the leaf itself is safe (RemoveAll
 		// unlinks a symlink rather than following it), so only guard the parents.
-		if err := m.assertNoSymlinkChain(m.accountsRoot(), filepath.Dir(dir)); err != nil {
+		if err := m.assertNoSymlinkChain(m.baseDir, m.accountsRoot(), filepath.Dir(dir)); err != nil {
 			return err
 		}
 		if err := os.RemoveAll(dir); err != nil {
@@ -336,7 +651,7 @@ func (m *Materializer) RemoveAccount(ctx context.Context, provider, accountID st
 // assertNoSymlinkChain rejects any existing symlink among the ordered
 // parent→child paths. Both os.MkdirAll/os.Chmod (materialize) and os.RemoveAll
 // (removal) FOLLOW symlinked directory components, so a restored/corrupted tree
-// that planted a symlink at accounts/, accounts/codex/, or the account leaf
+// that planted a symlink at the materialization base, accounts/, accounts/codex/, or the account leaf
 // could receive live credential bytes — or have an out-of-tree directory
 // recursively deleted. Lstat each component and refuse before touching the
 // filesystem. The paths are ordered parent→child, so a missing component means

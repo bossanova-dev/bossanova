@@ -6,6 +6,8 @@ import (
 	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -37,6 +39,7 @@ var agentRunnerServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*agentRunnerServiceHandler)(nil),
 	Methods: []grpc.MethodDesc{
 		{MethodName: "GetInfo", Handler: agentGetInfoHandler},
+		{MethodName: "PreflightHeadlessRun", Handler: agentPreflightHeadlessRunHandler},
 		{MethodName: "StartRun", Handler: agentStartRunHandler},
 		{MethodName: "StopRun", Handler: agentStopRunHandler},
 		{MethodName: "IsRunning", Handler: agentIsRunningHandler},
@@ -64,6 +67,7 @@ var agentRunnerServiceDesc = grpc.ServiceDesc{
 
 type agentRunnerServiceHandler interface {
 	GetInfo(context.Context, *bossanovav1.AgentRunnerServiceGetInfoRequest) (*bossanovav1.AgentRunnerServiceGetInfoResponse, error)
+	PreflightHeadlessRun(context.Context, *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error)
 	StartRun(context.Context, *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error)
 	StopRun(context.Context, *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error)
 	IsRunning(context.Context, *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error)
@@ -86,12 +90,24 @@ type agentRunnerServiceHandler interface {
 	MaterializeAccount(context.Context, *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error)
 }
 
+func (*Server) PreflightHeadlessRun(context.Context, *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "headless capability preflight is not supported")
+}
+
 func agentGetInfoHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
 	req := new(bossanovav1.AgentRunnerServiceGetInfoRequest)
 	if err := dec(req); err != nil {
 		return nil, err
 	}
 	return srv.(agentRunnerServiceHandler).GetInfo(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
+}
+
+func agentPreflightHeadlessRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.PreflightHeadlessRunRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).PreflightHeadlessRun(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentStartRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {

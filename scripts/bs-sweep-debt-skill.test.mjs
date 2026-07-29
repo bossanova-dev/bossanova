@@ -34,10 +34,21 @@ const references = [
 ]
 const read = (p) => fs.readFileSync(path.join(rootDir, p), 'utf8')
 const CLAUDE_SKILL = read('.claude/skills/bs-sweep-debt/SKILL.md')
+const NOTES_TEARDOWN =
+  "Before exiting, follow `bs-record-notes` with this run's outcome. Recording is non-fatal: never change the terminal state, exit code, or `git status --porcelain`. Skip gated/no-op runs that observed nothing."
 
 function assertExactBlock(skill, block, label) {
   assert.ok(skill.includes(block), `SKILL.md must keep exact ${label} block resident`)
 }
+
+test('documents the non-fatal notes teardown contract', () => {
+  for (const [label, skill] of [
+    ['source', CLAUDE_SKILL],
+    ['codex mirror', read('.codex/skills/bs-sweep-debt/SKILL.md')],
+  ]) {
+    assert.ok(skill.includes(NOTES_TEARDOWN), `${label} must include the notes teardown contract`)
+  }
+})
 
 // ---------------------------------------------------------------------------
 // Reachability — a body pointer plus an existing file, in BOTH mirrors.

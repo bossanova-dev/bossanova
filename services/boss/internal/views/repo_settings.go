@@ -894,13 +894,13 @@ func (m RepoSettingsModel) View() tea.View {
 	}
 
 	if m.editingField != repoSettingsRowNone {
-		b.WriteString(actionBar([]string{"[enter] save", "[esc] cancel"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[enter] save", "[esc] cancel"}))
 	} else {
 		actions := []string{"[enter/space] toggle/edit"}
 		if label := m.githubAppActionLabel(); label != "" {
 			actions = append(actions, label)
 		}
-		b.WriteString(actionBar(actions, []string{"[esc] back"}))
+		b.WriteString(actionBarWidth(m.width, actions, []string{"[esc] back"}))
 	}
 
 	return tea.NewView(b.String())

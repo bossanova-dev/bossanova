@@ -352,6 +352,9 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	// (Task 4) hit the same plumbing the daemon installs in cmd/main.go.
 	hostService.SetLifecycle(lifecycle)
 	lifecycle.SetPollCompleter(hostService)
+	// Headless question-hook token registry (BOS-486) — same object, wired the
+	// same way cmd/main.go does it.
+	lifecycle.SetQuestionHookRegistrar(hostService)
 	lifecycle.SetPollArmer(agent.NewPollFallback(logger, 100*time.Millisecond, 0, lifecycle))
 	lifecycle.SetDaemonCtx(realtimeCtx)
 

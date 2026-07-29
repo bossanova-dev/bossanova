@@ -283,7 +283,9 @@ function escapeHtml(value) {
 // dead zone until its own declaration executes, so invoking these functions from a
 // top-of-file entry block threw `Cannot access 'CAPTION_BAR_STYLE' before
 // initialization`. Running last guarantees every const/function above is defined.
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
   const require = createRequire(path.join(repoRoot, 'services/web/package.json'))
   const { chromium } = require('@playwright/test')

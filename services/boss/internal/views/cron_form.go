@@ -51,9 +51,12 @@ var cronNameRe = regexp.MustCompile(`^[A-Za-z0-9 _-]+$`)
 // the common (no-error) case, subtracted from terminal height when sizing the
 // form so the action bar stays on screen. It covers the banner App.View prepends
 // (bannerOverhead), the title + blank line, the live schedule preview line, and
-// the action bar (top+bottom padding plus its formActionBarLines text lines).
-// Mirrors the overhead-constant style in cron_list.go / chatpicker.go.
-const cronFormChrome = bannerOverhead + 2 /*title+blank*/ + 1 /*preview line*/ + (actionBarPadY*2 + formActionBarLines) /*action bar*/
+// the action bar (top+bottom padding plus its actual text lines). Mirrors the
+// overhead-constant style in cron_list.go / chatpicker.go.
+func cronFormChrome(width int) int {
+	return bannerOverhead + 2 /*title+blank*/ + 1 /*preview line*/ + actionBarPadY*2 +
+		formActionBarLineCount(width, []string{"[enter] save"}, []string{"[esc] cancel"})
+}
 
 // --- Form data ---
 
@@ -236,7 +239,7 @@ func (m *CronFormModel) buildForm() {
 	fields = append(fields,
 		huh.NewInput().
 			Title("Model").
-			Description("Agent model id (eg. claude-opus-4-8). blank = use the agent's default.").
+			Description("Agent model id (eg. claude-opus-5). blank = use the agent's default.").
 			Suggestions(modelSuggestions(m.fd.agentName)).
 			Value(&m.fd.model),
 	)
@@ -377,7 +380,7 @@ func (m CronFormModel) formHeight() int {
 	if m.height <= 0 {
 		return 0
 	}
-	chrome := cronFormChrome
+	chrome := cronFormChrome(m.width)
 	if m.err != nil {
 		chrome += 2 // submit error renders an extra block above the form
 	}
@@ -686,7 +689,7 @@ func (m CronFormModel) View() tea.View {
 	if !m.reposReady || !m.agentsReady {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render("Loading…"))
 		b.WriteString("\n")
-		b.WriteString(actionBar([]string{"[esc] cancel"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[esc] cancel"}))
 		return tea.NewView(b.String())
 	}
 
@@ -721,10 +724,10 @@ func (m CronFormModel) View() tea.View {
 	// The field-navigation bar belongs only on a screen that has fields to
 	// navigate; without a form the plain bar carries the verbs alone.
 	if !onScreen {
-		b.WriteString(actionBar([]string{"[enter] save"}, []string{"[esc] cancel"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[enter] save"}, []string{"[esc] cancel"}))
 		return tea.NewView(b.String())
 	}
-	b.WriteString(formActionBar([]string{"[enter] save"}, []string{"[esc] cancel"}))
+	b.WriteString(formActionBarWidth(m.width, []string{"[enter] save"}, []string{"[esc] cancel"}))
 
 	v := tea.NewView(b.String())
 	// Mouse reporting is scoped to screens that actually render a form

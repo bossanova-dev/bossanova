@@ -450,6 +450,42 @@ func TestSkillsCommandBypassesStartupInstaller(t *testing.T) {
 	}
 }
 
+func TestSelfHealSkillsWarnsWhenBinarySkillsAreStale(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	claudeDir := filepath.Join(home, ".claude", "skills")
+	if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+		t.Fatal(err)
+	}
+	setAvailableSkillAgents(map[string]bool{"claude": true})
+	root := t.TempDir()
+	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = write
+	t.Cleanup(func() { os.Stderr = oldStderr })
+	if err := selfHealSkills(); err != nil {
+		t.Fatalf("selfHealSkills: %v", err)
+	}
+	if err := write.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "make build") {
+		t.Fatalf("stderr = %q, want stale-binary warning", got)
+	}
+}
+
 func assertAgentSkillsInstalled(t *testing.T, dir string) {
 	t.Helper()
 	if !libskillinstall.IsInstalled(dir) {

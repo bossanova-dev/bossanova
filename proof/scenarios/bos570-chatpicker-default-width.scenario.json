@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "title": "BOS-574 (BOS-570 epic) — the chat picker keeps its full table at the default terminal width",
+  "fixture": { "preset": "question-row" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the default-width chat picker retains CREATED and ACTIVE when its declared columns already fit",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Notification question demo",
+            "match": "normalized",
+            "label": "the question-row fixture's session is listed before opening its chat picker"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home is running at the proof harness's default terminal width"
+        },
+        {
+          "key": "enter",
+          "caption": "Open the session's chat picker"
+        },
+        {
+          "waitFor": {
+            "text": "CREATED",
+            "match": "normalized",
+            "label": "the untouched chat table header includes CREATED"
+          },
+          "timeoutMs": 10000,
+          "caption": "The chat picker has loaded at the default terminal width"
+        },
+        {
+          "expect": [
+            {
+              "text": "CREATED",
+              "match": "normalized",
+              "label": "CREATED — present at the default width, so the narrow reduction is not permanent"
+            },
+            {
+              "text": "ACTIVE",
+              "match": "normalized",
+              "label": "ACTIVE — the useful recency column remains in the unchanged full board"
+            }
+          ],
+          "caption": "The full declared chat table is retained whenever it already fits the terminal"
+        }
+      ]
+    }
+  ]
+}

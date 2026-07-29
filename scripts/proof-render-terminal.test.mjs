@@ -35,7 +35,7 @@ test('CLI entry block runs after CAPTION_BAR_STYLE is initialized (no TDZ)', () 
     'utf8',
   )
   const constIndex = src.indexOf('export const CAPTION_BAR_STYLE')
-  const entryIndex = src.indexOf('if (import.meta.url ===')
+  const entryIndex = src.indexOf('if (isMainModule(import.meta.url))')
   assert.ok(constIndex >= 0, 'CAPTION_BAR_STYLE declaration must exist')
   assert.ok(entryIndex >= 0, 'CLI entry guard must exist')
   assert.ok(

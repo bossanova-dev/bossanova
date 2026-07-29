@@ -3,10 +3,14 @@ package views
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -99,6 +103,88 @@ func accountsListFixture() []*pb.Account {
 			CooldownUntil: timestamppb.New(time.Now().Add(90 * time.Minute)),
 			LastTestError: "invalid key",
 		},
+	}
+}
+
+func responsiveAccountsFixture() []*pb.Account {
+	return []*pb.Account{{
+		Id:            "account-1",
+		Label:         strings.Repeat("l", 40),
+		Provider:      strings.Repeat("p", 12),
+		Status:        "disabled",
+		Health:        "unhealthy",
+		LastTestError: strings.Repeat("x", 22),
+	}}
+}
+
+func TestAccountsListRebuildTable_FitsColumnsToTerminalWidth(t *testing.T) {
+	wantTitles := map[int][]string{
+		0:   {" ", "LABEL", "PROVIDER", "STATUS", "HEALTH", "UTIL5H", "UTIL7D", "AGE", "COOLDOWN", "LAST TEST"},
+		60:  {" ", "LABEL", "STATUS", "UTIL5H"},
+		72:  {" ", "LABEL", "STATUS", "UTIL5H", "COOLDOWN"},
+		80:  {" ", "LABEL", "STATUS", "HEALTH", "UTIL5H", "COOLDOWN"},
+		100: {" ", "LABEL", "PROVIDER", "STATUS", "HEALTH", "UTIL5H", "COOLDOWN"},
+		140: {" ", "LABEL", "PROVIDER", "STATUS", "HEALTH", "UTIL5H", "UTIL7D", "AGE", "COOLDOWN", "LAST TEST"},
+	}
+
+	var unfitted []table.Column
+	for _, width := range []int{0, 60, 72, 80, 100, 140} {
+		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
+			m := NewAccountsListModel(&accountsStub{accounts: responsiveAccountsFixture()}, context.Background())
+			m.accounts = responsiveAccountsFixture()
+			m.rebuildTable()
+			if width > 0 {
+				updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+				m = updated.(AccountsListModel)
+			}
+
+			cols := m.table.Columns()
+			assertTableRowsMatchColumns(t, cols, m.table.Rows())
+			if width > 0 && columnsWidth(cols) > width {
+				t.Fatalf("columns width = %d, want <= terminal width %d", columnsWidth(cols), width)
+			}
+			if !slices.Contains(columnTitles(cols), "LABEL") {
+				t.Fatalf("titles = %v, want priority-0 LABEL retained", columnTitles(cols))
+			}
+			if width == 72 && !slices.Contains(columnTitles(cols), "STATUS") {
+				t.Fatalf("titles = %v, want STATUS retained at 72 columns", columnTitles(cols))
+			}
+			if width == 0 {
+				unfitted = append([]table.Column(nil), cols...)
+			}
+			if got := columnTitles(cols); !slices.Equal(got, wantTitles[width]) {
+				t.Fatalf("width %d titles = %v, want %v", width, got, wantTitles[width])
+			}
+			if width == 140 && !reflect.DeepEqual(cols, unfitted) {
+				t.Fatalf("140-column set = %#v, want byte-identical unfitted %#v", cols, unfitted)
+			}
+		})
+	}
+}
+
+func TestAccountsListRebuildTable_ResizeKeepsSelectedRowVisible(t *testing.T) {
+	const cursor = 25
+	accounts := make([]*pb.Account, 50)
+	for i := range accounts {
+		accounts[i] = &pb.Account{Id: fmt.Sprintf("account-%d", i), Label: fmt.Sprintf("account-%02d", i), Provider: "claude"}
+	}
+
+	m := NewAccountsListModel(&accountsStub{accounts: accounts}, context.Background())
+	m.accounts, m.width, m.height = accounts, 140, 13
+	m.rebuildTable()
+	m.table.SetCursor(cursor)
+	m.table.MoveDown(0)
+	updateCursorColumn(&m.table)
+
+	for _, width := range []int{72, 140} {
+		m.width = width
+		m.rebuildTable()
+		if got := m.table.Cursor(); got != cursor {
+			t.Fatalf("cursor after resize to %d = %d, want %d", width, got, cursor)
+		}
+		if got := stripANSI(m.table.View()); !strings.Contains(got, "account-25") {
+			t.Fatalf("selected row is outside the %d-column viewport:\n%s", width, got)
+		}
 	}
 }
 

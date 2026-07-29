@@ -24,6 +24,10 @@ func isBossSkill(name string) bool {
 // this namespace, mirroring how gstack organises its skills.
 const Namespace = "bossanova"
 
+// SourceRelPath is the repository-relative directory containing the canonical
+// skill payload. It mirrors Makefile's SKILLS_SRC_DIR and must move with it.
+const SourceRelPath = "services/boss/internal/skillinstall"
+
 // Agent identifies a coding agent with a global skill directory.
 type Agent string
 
@@ -83,6 +87,40 @@ func Manifest(fsys fs.FS) (string, error) {
 		_, _ = h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// FindSourceRoot finds the canonical skill-source directory at or above
+// startDir. It returns an absolute path and true when found, or ("", false)
+// when this checkout does not contain skill sources.
+func FindSourceRoot(startDir string) (string, bool) {
+	dir, err := filepath.Abs(startDir)
+	if err != nil {
+		return "", false
+	}
+	for {
+		srcRoot := filepath.Join(dir, SourceRelPath)
+		srcInfo, srcErr := os.Lstat(srcRoot)
+		skillsInfo, skillsErr := os.Lstat(filepath.Join(srcRoot, "skills"))
+		if srcErr == nil && skillsErr == nil && srcInfo.IsDir() && skillsInfo.IsDir() {
+			return srcRoot, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+// SourceDrift reports whether installed skills differ from the canonical skill
+// sources at srcRoot. It returns false when no skills are installed.
+func SourceDrift(dir, srcRoot string) (bool, error) {
+	return NeedsUpdate(dir, os.DirFS(srcRoot))
+}
+
+// SourceManifest returns the canonical skill-source manifest at srcRoot.
+func SourceManifest(srcRoot string) (string, error) {
+	return Manifest(os.DirFS(srcRoot))
 }
 
 // NeedsUpdate reports whether an already-installed boss skill tree differs

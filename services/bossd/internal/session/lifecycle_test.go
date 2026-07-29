@@ -3,11 +3,13 @@ package session
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +28,7 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/proofenv"
+	"github.com/recurser/bossd/internal/status/questionsignal"
 	"github.com/recurser/bossd/internal/tmux"
 )
 
@@ -7422,6 +7425,25 @@ func (r *recordingChatStatus) snapshot() []recordedStatus {
 	return append([]recordedStatus(nil), r.updates...)
 }
 
+func (r *recordingChatStatus) waitForStatus(t *testing.T, status pb.ChatStatus, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	got := 0
+	for time.Now().Before(deadline) {
+		got = 0
+		for _, update := range r.snapshot() {
+			if update.status == status {
+				got++
+			}
+		}
+		if got >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d %v updates; got %d", want, status, got)
+}
+
 // flipRunner reports the run as running for the first `trueFor` IsRunningByAgent
 // calls, then not-running. Embeds mockAgentRunner for the rest of the interface.
 type flipRunner struct {
@@ -7434,7 +7456,14 @@ func (f *flipRunner) IsRunningByAgent(_, _ string) bool {
 	return f.calls.Add(1) <= f.trueFor
 }
 
-func TestWatchHeadlessRunStatus_MarksWorkingThenStopped(t *testing.T) {
+type mutableRunner struct {
+	*mockAgentRunner
+	running atomic.Bool
+}
+
+func (r *mutableRunner) IsRunningByAgent(_, _ string) bool { return r.running.Load() }
+
+func TestWatchHeadlessRunStatus_NilQuestionSignalsPreservesWorkingThenStopped(t *testing.T) {
 	cr := &flipRunner{mockAgentRunner: newMockAgentRunner(), trueFor: 3}
 	rec := &recordingChatStatus{}
 	lc := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), &mockAgentChatStore{}, nil, &mockWorktreeManager{}, cr, nil, newMockVCSProvider(), zerolog.Nop())
@@ -7478,5 +7507,389 @@ func TestWatchHeadlessRunStatus_RefreshesWorking(t *testing.T) {
 	}
 	if working < 2 {
 		t.Errorf("WORKING updates = %d, want >=2 (initial + refresh on each positive poll)", working)
+	}
+}
+
+func TestWatchHeadlessRunStatus_QuestionSignalSurvivesRefresh(t *testing.T) {
+	const agentSessionID = "headless-question"
+	cr := &mutableRunner{mockAgentRunner: newMockAgentRunner()}
+	cr.running.Store(true)
+	rec := &recordingChatStatus{}
+	store := questionsignal.NewStore(time.Minute)
+	store.SetPending(agentSessionID, "test")
+	lc := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), &mockAgentChatStore{}, nil, &mockWorktreeManager{}, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetChatStatus(rec)
+	lc.SetQuestionSignals(store)
+	lc.headlessStatusPollInterval = time.Millisecond
+
+	done := make(chan struct{})
+	go func() {
+		lc.watchHeadlessRunStatus("opencode", agentSessionID)
+		close(done)
+	}()
+
+	rec.waitForStatus(t, pb.ChatStatus_CHAT_STATUS_QUESTION, 2)
+	store.Clear(agentSessionID)
+	rec.waitForStatus(t, pb.ChatStatus_CHAT_STATUS_WORKING, 1)
+	store.SetPending(agentSessionID, "test-before-exit")
+	cr.running.Store(false)
+	<-done
+
+	updates := rec.snapshot()
+	questions := 0
+	for _, update := range updates {
+		if update.status == pb.ChatStatus_CHAT_STATUS_QUESTION {
+			questions++
+		}
+	}
+	if questions < 2 {
+		t.Errorf("QUESTION updates = %d, want >=2 (initial + refresh)", questions)
+	}
+	if updates[0].status != pb.ChatStatus_CHAT_STATUS_QUESTION {
+		t.Errorf("initial status = %v, want QUESTION", updates[0].status)
+	}
+	if last := updates[len(updates)-1]; last.status != pb.ChatStatus_CHAT_STATUS_STOPPED {
+		t.Errorf("last status = %v, want STOPPED", last.status)
+	}
+	if store.HasPending(agentSessionID) {
+		t.Error("pending signal remained after headless run stopped")
+	}
+}
+
+func TestWatchHeadlessRunStatus_ExpiredSignalReturnsWorking(t *testing.T) {
+	const agentSessionID = "headless-expired-question"
+	now := time.Now()
+	store := questionsignal.NewStoreWithClock(time.Minute, func() time.Time { return now })
+	store.SetPending(agentSessionID, "test")
+	now = now.Add(time.Minute + time.Nanosecond)
+	cr := &flipRunner{mockAgentRunner: newMockAgentRunner(), trueFor: 1}
+	rec := &recordingChatStatus{}
+	lc := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), &mockAgentChatStore{}, nil, &mockWorktreeManager{}, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetChatStatus(rec)
+	lc.SetQuestionSignals(store)
+	lc.headlessStatusPollInterval = time.Millisecond
+
+	lc.watchHeadlessRunStatus("opencode", agentSessionID)
+
+	if got := rec.snapshot()[0].status; got != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Errorf("initial status = %v, want WORKING after signal expiry", got)
+	}
+}
+
+// --- BOS-486: headless question-hook env threading ---
+
+// fakeQuestionHookRegistrar records the (agent_session_id, token) bindings the
+// lifecycle installs for headless runs, and the ids it later releases.
+type fakeQuestionHookRegistrar struct {
+	mu       sync.Mutex
+	tokens   map[string]string
+	released []string
+}
+
+func newFakeQuestionHookRegistrar() *fakeQuestionHookRegistrar {
+	return &fakeQuestionHookRegistrar{tokens: make(map[string]string)}
+}
+
+func (f *fakeQuestionHookRegistrar) RegisterHeadlessRunHookToken(agentSessionID, token string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tokens[agentSessionID] = token
+}
+
+// Deletes as well as recording, mirroring production
+// HostServiceServer.ReleaseHeadlessRunHookToken. A fake that only appended to
+// `released` would make every "is the token still registered?" assertion pass
+// whether or not a release had happened — it silently hid the StartSession
+// release path from every test in this file.
+func (f *fakeQuestionHookRegistrar) ReleaseHeadlessRunHookToken(agentSessionID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.released = append(f.released, agentSessionID)
+	delete(f.tokens, agentSessionID)
+}
+
+func (f *fakeQuestionHookRegistrar) token(agentSessionID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tokens[agentSessionID]
+}
+
+// tokenCount reports how many tokens are registered. Guarded like the other
+// accessors: registration happens inline in StartSession today, but reading the
+// map directly would turn a future async registration into a -race report
+// against the test rather than a finding about the code.
+func (f *fakeQuestionHookRegistrar) tokenCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.tokens)
+}
+
+func (f *fakeQuestionHookRegistrar) releasedIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.released...)
+}
+
+// seedHeadlessSession builds the minimal repo+session pair the detached
+// StartSession path needs, returning the mocks the assertions read.
+func seedHeadlessSession(t *testing.T) (*mockSessionStore, *mockRepoStore, *mockWorktreeManager, *mockAgentRunner) {
+	t.Helper()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		Plan:       "Do something",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		AgentName:  "opencode",
+	}
+	return sessions, repos, &mockWorktreeManager{}, newMockAgentRunner()
+}
+
+// TestStartSession_HeadlessRunCarriesQuestionHookEnv is the BOS-486 threading
+// contract: a detached (headless) run is handed BOSS_HOOK_PORT + BOSS_HOOK_TOKEN
+// in its ExtraEnv, and the SAME token is registered against the agent session id
+// the plugin resolved — which is the id the injected hook POSTs under, so
+// /hooks/question/{id} can authenticate. Both halves must agree or the signal
+// silently 401s.
+func TestStartSession_HeadlessRunCarriesQuestionHookEnv(t *testing.T) {
+	ctx := context.Background()
+	sessions, repos, wt, cr := seedHeadlessSession(t)
+	cr.nextID = "ses_opencode_1"
+	reg := newFakeQuestionHookRegistrar()
+
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetHookPort(45678)
+	lc.SetQuestionHookRegistrar(reg)
+	// The poll fallback is what eventually releases the token, so StartSession
+	// only LEAVES it registered when the arm succeeds. Without these two the
+	// defer would release before the assertions below and they would pass only
+	// because the fake could not see it.
+	armQuestionHookHandoff(lc, "opencode")
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	awaitDraftPR(t, lc, "sess-1")
+
+	if len(cr.started) != 1 {
+		t.Fatalf("expected 1 headless start, got %d", len(cr.started))
+	}
+	env := cr.started[0].env
+	if got := env["BOSS_HOOK_PORT"]; got != "45678" {
+		t.Errorf("BOSS_HOOK_PORT = %q, want 45678", got)
+	}
+	token := env["BOSS_HOOK_TOKEN"]
+	if len(token) != 64 {
+		t.Fatalf("BOSS_HOOK_TOKEN = %q (len %d), want 64 hex chars", token, len(token))
+	}
+	if _, err := hex.DecodeString(token); err != nil {
+		t.Errorf("BOSS_HOOK_TOKEN is not hex: %v", err)
+	}
+	if got := reg.token("ses_opencode_1"); got != token {
+		t.Errorf("registered token for ses_opencode_1 = %q, want the env token %q", got, token)
+	}
+}
+
+// TestStartSession_HeadlessQuestionHookEnvRequiresFullWiring pins the
+// fail-safe: with either half of the wiring missing the headless run is started
+// with NO BOSS_HOOK_* keys at all and nothing is registered. A run without the
+// signal must still run — losing the question hook is a degradation, not an
+// error — and a token the receiver could never validate must never be handed
+// out.
+func TestStartSession_HeadlessQuestionHookEnvRequiresFullWiring(t *testing.T) {
+	cases := []struct {
+		name        string
+		hookPort    int
+		wireRegistr bool
+	}{
+		{"no registrar wired", 45678, false},
+		{"hook server never bound", 0, true},
+		{"neither", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			sessions, repos, wt, cr := seedHeadlessSession(t)
+			reg := newFakeQuestionHookRegistrar()
+
+			lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+			lc.SetHookPort(tc.hookPort)
+			if tc.wireRegistr {
+				lc.SetQuestionHookRegistrar(reg)
+			}
+
+			if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
+				t.Fatalf("StartSession: %v", err)
+			}
+			awaitDraftPR(t, lc, "sess-1")
+
+			if len(cr.started) != 1 {
+				t.Fatalf("expected 1 headless start, got %d", len(cr.started))
+			}
+			for _, key := range []string{"BOSS_HOOK_PORT", "BOSS_HOOK_TOKEN"} {
+				if v, ok := cr.started[0].env[key]; ok {
+					t.Errorf("%s present (%q) despite incomplete question-hook wiring", key, v)
+				}
+			}
+			if got := reg.tokenCount(); got != 0 {
+				t.Errorf("registrar recorded %d tokens, want 0", got)
+			}
+		})
+	}
+}
+
+// TestStartSession_QuestionHookEnvSkipsNonConsumingAgents is the blast-radius
+// gate: BOSS_HOOK_TOKEN is a live bearer credential for a daemon endpoint, so
+// agents that provably do not consume it are never handed it. This is also what
+// makes "a headless claude or codex run is byte-identical to pre-BOS-486"
+// structural rather than incidental — with the wiring fully armed, their
+// ExtraEnv must still contain neither key and nothing may be registered.
+//
+// The empty-AgentName case is the load-bearing one: agent.Dispatcher resolves
+// "" to the default agent OR to the sole loaded runner, so an opencode-only
+// install legitimately starts runs with no stored name. It must stay armed, or
+// the feature silently disappears on exactly the install that wants it.
+func TestStartSession_QuestionHookEnvSkipsNonConsumingAgents(t *testing.T) {
+	cases := []struct {
+		agentName string
+		wantArmed bool
+	}{
+		{"claude", false},
+		{"codex", false},
+		{"opencode", true},
+		// Unknown/unset agents stay armed: the plugin-side gate
+		// (installQuestionHook) is the functional backstop, and an opencode-only
+		// install runs with AgentName == "".
+		{"", true},
+		{"some-future-agent", true},
+	}
+	for _, tc := range cases {
+		name := tc.agentName
+		if name == "" {
+			name = "unset"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			sessions, repos, wt, cr := seedHeadlessSession(t)
+			sessions.sessions["sess-1"].AgentName = tc.agentName
+			cr.nextID = "ses_run_1"
+			reg := newFakeQuestionHookRegistrar()
+
+			lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+			lc.SetHookPort(45678)
+			lc.SetQuestionHookRegistrar(reg)
+			armQuestionHookHandoff(lc, tc.agentName)
+
+			if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
+				t.Fatalf("StartSession: %v", err)
+			}
+			awaitDraftPR(t, lc, "sess-1")
+
+			if len(cr.started) != 1 {
+				t.Fatalf("expected 1 headless start, got %d", len(cr.started))
+			}
+			env := cr.started[0].env
+			_, portOK := env["BOSS_HOOK_PORT"]
+			_, tokenOK := env["BOSS_HOOK_TOKEN"]
+			if portOK != tc.wantArmed || tokenOK != tc.wantArmed {
+				t.Errorf("agent %q: BOSS_HOOK_PORT present=%v BOSS_HOOK_TOKEN present=%v, want both %v",
+					tc.agentName, portOK, tokenOK, tc.wantArmed)
+			}
+			wantTokens := 0
+			if tc.wantArmed {
+				wantTokens = 1
+			}
+			if got := reg.tokenCount(); got != wantTokens {
+				t.Errorf("agent %q: registrar recorded %d tokens, want %d", tc.agentName, got, wantTokens)
+			}
+		})
+	}
+}
+
+// armQuestionHookHandoff wires the poll fallback a headless StartSession needs
+// in order to HAND OFF its question-hook token instead of releasing it at exit.
+// Both halves are required: armHeadlessPollFallback bails without a pollArmer
+// AND without a resolvable agent client.
+func armQuestionHookHandoff(lc *Lifecycle, agentName string) {
+	lc.SetPollArmer(&fakePollArmer{})
+	lc.SetAgents(map[string]agent.AgentRunnerClient{agentName: newFakeAgent()})
+}
+
+// TestStartSession_ReleasesQuestionHookTokenWhenNoHandoff is the regression
+// test for the leak the release-on-exit defer exists to close.
+//
+// The token is registered right after the spawn, but the only production
+// releaser is SignalSessionRunComplete — reached through the poll fallback. If
+// that fallback is never armed (no pollArmer, no agent client, a cron run, or
+// any error return in between), nothing will EVER release the token: the entry
+// would sit in the registry for the daemon's lifetime while the spawned child
+// still holds the matching credential in its environment. StartSession must
+// therefore hand the token back before it returns.
+func TestStartSession_ReleasesQuestionHookTokenWhenNoHandoff(t *testing.T) {
+	ctx := context.Background()
+	sessions, repos, wt, cr := seedHeadlessSession(t)
+	cr.nextID = "ses_opencode_1"
+	reg := newFakeQuestionHookRegistrar()
+
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetHookPort(45678)
+	lc.SetQuestionHookRegistrar(reg)
+	// Deliberately NO armQuestionHookHandoff: the poll fallback declines, so
+	// completion will never be signalled for this run.
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	awaitDraftPR(t, lc, "sess-1")
+
+	// The run still got its env — the degradation is the signal, not the run.
+	if len(cr.started) != 1 {
+		t.Fatalf("expected 1 headless start, got %d", len(cr.started))
+	}
+	if cr.started[0].env["BOSS_HOOK_TOKEN"] == "" {
+		t.Error("headless run started without BOSS_HOOK_TOKEN")
+	}
+
+	if !slices.Contains(reg.releasedIDs(), "ses_opencode_1") {
+		t.Errorf("token for ses_opencode_1 was never released: %v", reg.releasedIDs())
+	}
+	if got := reg.tokenCount(); got != 0 {
+		t.Errorf("registrar still holds %d token(s) for a run nothing will ever complete", got)
+	}
+}
+
+// TestSignalSessionRunComplete_ReleasesQuestionHookToken a finished run's
+// question-hook token is dropped, so the registry can't grow for the daemon's
+// lifetime and a stale POST can no longer authenticate.
+func TestSignalSessionRunComplete_ReleasesQuestionHookToken(t *testing.T) {
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo-main"}
+	runID := "ses_opencode_1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-sess1",
+		State:          machine.ImplementingPlan,
+		AgentName:      "opencode",
+		AgentSessionID: &runID,
+	}
+	reg := newFakeQuestionHookRegistrar()
+	lc := newTestLifecycle(sessions, repos, nil, &stubCronJobStore{}, &mockWorktreeManager{statusOut: ""}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetQuestionHookRegistrar(reg)
+
+	lc.SignalSessionRunComplete("sess-1", runID, "")
+
+	if got := reg.releasedIDs(); len(got) != 1 || got[0] != runID {
+		t.Errorf("released = %v, want [%s]", got, runID)
 	}
 }

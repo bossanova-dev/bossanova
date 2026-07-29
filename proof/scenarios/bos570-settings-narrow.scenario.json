@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "title": "BOS-573 (BOS-570 epic) — Settings Accounts and Cron fit a 72-column terminal while retaining their operational columns",
+  "fixture": { "preset": "demo" },
+  "terminal": { "cols": 72 },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "Settings Accounts fits its identity and actionable state into a 72-column terminal",
+      "steps": [
+        { "key": "s", "caption": "Open Settings on the 72-column terminal" },
+        { "waitFor": "Settings", "timeoutMs": 10000, "caption": "Settings hub is visible" },
+        { "key": "a", "caption": "Open the Accounts board" },
+        {
+          "waitFor": {
+            "text": "LABEL",
+            "match": "normalized",
+            "label": "the fitted Accounts headers are visible"
+          },
+          "timeoutMs": 10000,
+          "caption": "Accounts drops long-horizon diagnostics first and fits inside the narrow terminal"
+        },
+        {
+          "expect": [
+            {
+              "text": "LABEL",
+              "match": "normalized",
+              "label": "LABEL — priority-0 account identity survives"
+            },
+            {
+              "text": "STATUS",
+              "match": "normalized",
+              "label": "STATUS — the actionable account state remains visible"
+            }
+          ],
+          "caption": "The narrow Accounts board keeps the identity and state an operator needs"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "Settings Cron fits its job name and enabled state into a 72-column terminal",
+      "steps": [
+        { "key": "esc", "caption": "Return to Settings" },
+        { "waitFor": "Settings", "timeoutMs": 10000, "caption": "Settings hub is visible again" },
+        { "key": "c", "caption": "Open the Scheduled Jobs board" },
+        {
+          "waitFor": {
+            "text": "NAME ENABLED",
+            "match": "normalized",
+            "label": "the fitted Cron headers are visible"
+          },
+          "timeoutMs": 10000,
+          "caption": "Cron drops derived schedule detail first and fits inside the narrow terminal"
+        },
+        {
+          "expect": [
+            {
+              "text": "NAME",
+              "match": "normalized",
+              "label": "NAME — priority-0 job identity survives"
+            },
+            {
+              "text": "ENABLED",
+              "match": "normalized",
+              "label": "ENABLED — the operational cron state remains visible"
+            }
+          ],
+          "caption": "The narrow Cron board keeps each job's identity and enabled state"
+        }
+      ]
+    }
+  ]
+}

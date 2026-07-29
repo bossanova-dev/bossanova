@@ -48,6 +48,25 @@ test('buildSpec video branch records webm via its own context and screenshots a 
   assert.match(spec, /context\.close\(\)/) // finalizes the video before rename
 })
 
+test('buildSpec stages a closing attach socket only for the reconnecting chat recipe', () => {
+  const reconnectingSpec = buildSpec({
+    recipe: { id: 'web-chat-terminal-reconnecting', surface: 'web', route: '/' },
+    outputDir: '/tmp/out',
+    surface: 'web',
+    stageEnv: { VITE_E2E: '1' },
+  })
+  const healthySpec = buildSpec({
+    recipe: { id: 'web-chat-terminal', surface: 'web', route: '/' },
+    outputDir: '/tmp/out',
+    surface: 'web',
+    stageEnv: { VITE_E2E: '1' },
+  })
+
+  assert.match(reconnectingSpec, /ws\.close\(\)/)
+  assert.doesNotMatch(reconnectingSpec, /ws\.send\(\)/)
+  assert.match(healthySpec, /ws\.send\(Buffer\.from/)
+})
+
 test('validateRecipe requires a key for press steps and accepts a valid one', () => {
   assert.doesNotThrow(() =>
     validateRecipe({

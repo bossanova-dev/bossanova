@@ -287,8 +287,8 @@ func newRegistry() map[string]Prose {
 				"one-line preview). `--repo` is a routing hint for a remote daemon and " +
 				"is ignored locally — the note is resolved by id.",
 			Examples: []Example{
-				{Command: "boss notes show note_abc123"},
-				{Command: "boss notes show note_abc123 --json"},
+				{Command: "boss notes show abc123"},
+				{Command: "boss notes show abc123 --json"},
 			},
 		},
 		"boss notes edit": {
@@ -300,15 +300,15 @@ func newRegistry() map[string]Prose {
 				"`--tag \"\"` therefore clears every tag.",
 			Examples: []Example{
 				{
-					Command:     `boss notes edit note_abc123 --body "the flaky test is a socket-token race; fixed in #1712"`,
+					Command:     `boss notes edit abc123 --body "the flaky test is a socket-token race; fixed in #1712"`,
 					Explanation: "Rewrite the body, leaving the tags untouched",
 				},
 				{
-					Command:     "boss notes edit note_abc123 --tag tech-debt --tag resolved",
+					Command:     "boss notes edit abc123 --tag tech-debt --tag resolved",
 					Explanation: "REPLACES the tag set with exactly these two tags",
 				},
 				{
-					Command:     `boss notes edit note_abc123 --tag ""`,
+					Command:     `boss notes edit abc123 --tag ""`,
 					Explanation: "Clear every tag",
 				},
 			},
@@ -318,7 +318,7 @@ func newRegistry() map[string]Prose {
 				"already gone succeeds rather than erroring, so a cleanup script can be " +
 				"re-run safely. Removing a note is permanent — there is no trash for " +
 				"notes.",
-			Examples: []Example{{Command: "boss notes rm note_abc123"}},
+			Examples: []Example{{Command: "boss notes rm abc123"}},
 		},
 
 		// --- Trash Management ---

@@ -132,6 +132,8 @@ function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   main()
 }

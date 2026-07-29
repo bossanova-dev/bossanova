@@ -336,17 +336,21 @@ func (s *SQLiteGithubCallbackStore) MarkDelivered(ctx context.Context, id, owner
 
 func (s *SQLiteGithubCallbackStore) ScheduleRetry(ctx context.Context, id, owner string, params ScheduleGithubCallbackRetryParams) error {
 	now := sqlutil.TimeNow()
+	attemptIncrement := 1
+	if params.PreserveAttemptCount {
+		attemptIncrement = 0
+	}
 	var lastEventVal any
 	if params.LastEvent != "" {
 		lastEventVal = params.LastEvent
 	}
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE github_callbacks
-		 SET attempt_count = attempt_count + 1,
+		 SET attempt_count = attempt_count + ?,
 		     next_attempt_at = ?, last_error = ?, last_event = COALESCE(?, last_event),
 		     lease_owner = NULL, lease_deadline_at = NULL, updated_at = ?
 		 WHERE id = ? AND lease_owner = ?`,
-		sqlutil.FormatTime(params.NextAttemptAt), params.LastError, lastEventVal, now,
+		attemptIncrement, sqlutil.FormatTime(params.NextAttemptAt), params.LastError, lastEventVal, now,
 		id, owner,
 	)
 	if err != nil {

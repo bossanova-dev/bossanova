@@ -1048,11 +1048,15 @@ func TestGetChatTitleSupportedEvenWithoutTranscript(t *testing.T) {
 		t.Errorf("Title = %q, want empty for missing transcript", resp.Title)
 	}
 	if resp.Explicit {
-		t.Error("Explicit = true, want false until codex has a confirmed rename representation")
+		t.Error("Explicit = true, want false when there is no session index thread name to claim authority for")
 	}
 }
 
-func TestGetChatTitle_FromSessionIndexThreadNameIsNonExplicit(t *testing.T) {
+// TestGetChatTitle_FromSessionIndexThreadNameIsExplicit locks the authority
+// of a non-empty session index thread_name: it is the only representation
+// codex gives a native `/rename`, so bossd must be allowed to apply it over an
+// already-populated chat title (BOS-611).
+func TestGetChatTitle_FromSessionIndexThreadNameIsExplicit(t *testing.T) {
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
 
@@ -1076,8 +1080,8 @@ func TestGetChatTitle_FromSessionIndexThreadNameIsNonExplicit(t *testing.T) {
 	if resp.Title != "Rename Test" {
 		t.Errorf("Title = %q, want session index thread name", resp.Title)
 	}
-	if resp.Explicit {
-		t.Error("Explicit = true, want false for session index thread name")
+	if !resp.Explicit {
+		t.Error("Explicit = false, want true for a non-empty session index thread name")
 	}
 }
 
@@ -1108,8 +1112,8 @@ func TestGetChatTitle_SessionIndexLatestSameIDWins(t *testing.T) {
 	if resp.Title != "Latest Name" {
 		t.Errorf("Title = %q, want latest thread name", resp.Title)
 	}
-	if resp.Explicit {
-		t.Error("Explicit = true, want false for latest thread name")
+	if !resp.Explicit {
+		t.Error("Explicit = false, want true for latest thread name")
 	}
 }
 

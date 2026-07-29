@@ -185,7 +185,9 @@ function main(argv = process.argv.slice(2), { env = process.env } = {}) {
   return runAccountTests(accounts, opts, { env })
 }
 
-const invoked = process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+const invoked = isMainModule(import.meta.url)
 if (invoked) process.exit(main())
 
 export { main, parseAccountList, pickAccount }

@@ -3,6 +3,7 @@ package plugin_test
 import (
 	"context"
 	"os/exec"
+	"slices"
 	"testing"
 
 	goplugin "github.com/hashicorp/go-plugin"
@@ -82,16 +83,19 @@ func TestE2E_Opencode_GetInfo(t *testing.T) {
 }
 
 // TestE2E_Opencode_ListIgnoredDirtyFiles verifies that the opencode plugin's
-// ignored-dirty-files RPC returns cleanly with an empty set. This is a pure
-// plugin RPC that does not require the opencode CLI to be installed. Unlike
-// claude (which reports .claude/settings.local.json), opencode persists state
-// outside the worktree, so the set is intentionally empty.
+// ignored-dirty-files RPC survives the real gRPC round-trip and reports the one
+// worktree file bossd itself writes for opencode: the BOS-486 question-signal
+// hook the plugin injects at StartRun
+// (plugins/bossd-plugin-opencode/questionhook.go). This is a pure plugin RPC
+// that does not require the opencode CLI to be installed.
 //
-// We assert only "no error, no paths" — not non-nil. Although the plugin
-// constructs Paths as a non-nil empty slice, protobuf does not distinguish an
-// empty repeated field from an absent one on the wire, so across the real gRPC
-// boundary the host receives nil. len()==0 is the contract that survives the
-// round-trip.
+// Everything else opencode touches lives outside the worktree (session state is
+// in the opencode data dir), so this single entry is the whole set — mirroring
+// claude's .claude/settings.local.json. Finalize filters `git status` through
+// it, catching the case a repo already tracks files under .opencode/plugins/;
+// the bossd-maintained .git/info/exclude pattern is the primary filter for the
+// far commoner collapsed-`?? .opencode/` case. See
+// plugins/bossd-plugin-opencode/dirty_files.go for the split.
 func TestE2E_Opencode_ListIgnoredDirtyFiles(t *testing.T) {
 	h := newOpencodeHarness(t)
 
@@ -101,8 +105,9 @@ func TestE2E_Opencode_ListIgnoredDirtyFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListIgnoredDirtyFiles: %v", err)
 	}
-	if len(resp.GetPaths()) != 0 {
-		t.Errorf("Paths should be empty for opencode, got %v", resp.GetPaths())
+	want := []string{".opencode/plugins/bossd-question.js"}
+	if !slices.Equal(resp.GetPaths(), want) {
+		t.Errorf("Paths = %v, want %v", resp.GetPaths(), want)
 	}
 }
 

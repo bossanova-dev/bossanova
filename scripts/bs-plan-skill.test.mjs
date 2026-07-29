@@ -28,7 +28,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
-import { discoverExtensions } from './skill-extensions.mjs'
+import { discoverExtensions } from '../skills-toolbox/skill-extensions.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
 const readIfExists = (rel) => {
@@ -67,7 +67,7 @@ const HEADLESS_SECTION = sectionBetween(
 )
 const PHASE_4_SECTION = sectionBetween(
   SKILL,
-  '## Phase 4 — Publish the plan and write back to the tracker',
+  '## Phase 4 — Finalize the plan attachment and write back to the tracker',
   '\n## Phase 5',
 )
 

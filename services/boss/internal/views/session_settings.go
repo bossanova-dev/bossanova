@@ -228,9 +228,9 @@ func (m SessionSettingsModel) View() tea.View {
 	}
 
 	if m.editingField >= 0 {
-		b.WriteString(actionBar([]string{"[enter] save", "[esc] cancel"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[enter] save", "[esc] cancel"}))
 	} else {
-		b.WriteString(actionBar([]string{"[enter/space] edit"}, []string{"[esc] back"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[enter/space] edit"}, []string{"[esc] back"}))
 	}
 
 	return tea.NewView(b.String())

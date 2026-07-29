@@ -78,6 +78,8 @@ whichever you prefer. To manage accounts inside the TUI:
 1. Open the **Settings** view and press **`a`** (the action bar shows
    `[a]ccounts`) to open the accounts list. Its columns are LABEL, PROVIDER,
    STATUS, HEALTH, UTIL5H, UTIL7D, AGE, COOLDOWN, and LAST TEST.
+   Codex publishes a single weekly (7-day) rate-limit window, so a Codex row
+   populates UTIL7D and leaves UTIL5H at `0%`; Claude publishes both windows.
 2. In the accounts list, use these keys:
    - **`a`** — register a new account. A `claude | codex` chooser runs the same
      interactive setup-token / device-flow walkthrough as `boss account add`,

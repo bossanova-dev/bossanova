@@ -205,7 +205,7 @@ func (h HomeModel) handleUpgradeKey(msg tea.KeyMsg) (HomeModel, tea.Cmd, bool) {
 func (h HomeModel) upgradeStatusView() string {
 	var lines []string
 	if h.upgradeError != "" {
-		lines = append(lines, renderError("Upgrade: "+h.upgradeError, h.width))
+		lines = append(lines, renderError("Upgrade: "+h.upgradeError, h.statusWrapWidth()))
 	}
 	switch {
 	case h.upgrading:

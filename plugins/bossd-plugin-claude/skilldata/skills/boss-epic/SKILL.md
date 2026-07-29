@@ -43,7 +43,7 @@ schedules and merges.
 - **Prefer a callback over blind polling.** Whenever you are about to wait on a
   child's PR / CI check / merge state, arm a one-shot callback group first rather
   than spinning on the poll — gated on the single `callbacksAvailable(env)` signal
-  (`scripts/callback/adapter.mjs`, keyed on `BOSS_SESSION_ID`). Gate true ⇒
+  (`toolbox/callback/adapter.mjs`, keyed on `BOSS_SESSION_ID`). Gate true ⇒
   `registerWatch` per in-flight child; gate false ⇒ skip arming and let
   `policy.fallbackPoll` alone drive Phase 3 — an explicit no-op, never a failed
   wait. Protocol: [`references/callback-watches.md`](references/callback-watches.md).
@@ -84,14 +84,14 @@ Bossanova reference impls resolve to today's exact tools and sub-skills —
   `readyTickets`, `transitiveDependents`, `nextToMerge`,
   `mergeBlockedExternalBlockers`. Tracker-agnostic; re-exported through
   `bs-epic-lib.mjs`, so the runnable import shape below is unchanged.
-- **Tracker** — `resolveTrackerAdapter(env)` (`scripts/tracker/adapter.mjs`).
+- **Tracker** — `resolveTrackerAdapter(env)` (`toolbox/tracker/adapter.mjs`).
   Epic/children assembly (`operationMap.selectPlanned` / `getIssue`),
   ticket-state writeback (`moveState`), and the single progress comment
   (`readComments` / `writeComment`) route through its `operationMap`;
   `normalizeTicket` + `classifyTickets` (in `bs-epic-lib.mjs`) shape and bucket
   the tickets. Reference `createLinearAdapter` → the Linear MCP tools.
 - **Session runner** — `resolveSessionRunnerAdapter(env)`
-  (`scripts/session/adapter.mjs`). The boss MCP choreography (`createSession` /
+  (`toolbox/session/adapter.mjs`). The boss MCP choreography (`createSession` /
   `getSession` / `listSessions` / `listCheckSnapshots` / `mergeSession` /
   `resolveContext` / `listAgents`, plus `recordChat` / `sendChatMessage` and the
   optional `getSessionStatuses`) and per-ticket dispatch route through its
@@ -100,7 +100,7 @@ Bossanova reference impls resolve to today's exact tools and sub-skills —
   = `/boss-repair`. The tool/arg names named across Phases 3–4 are exactly this
   map's entries (`merge_session` carries the mandatory `confirm`).
 - **Callback notifier** — `resolveCallbackAdapter(env)`
-  (`scripts/callback/adapter.mjs`). One-shot GitHub PR-event watches
+  (`toolbox/callback/adapter.mjs`). One-shot GitHub PR-event watches
   (`registerWatch` / `listWatches` / `removeWatch` over `boss callback
 add|list|remove`); `policy.watchTriggers` = `checks_passed` / `checks_failed`
   / `merged`, armed as a group per in-flight child **when
@@ -130,7 +130,7 @@ export BOSS_EPIC_TOOLBOX
 # vendored adapter that knows its own states needs no trackerConfig at all — and the
 # .boss-skills.json upward walk is the FALLBACK (the only source for an adapter without the
 # capability). Both roles go through the one helper so they cannot diverge.
-ADAPTER_STATES="$(node "$(git rev-parse --show-toplevel)/scripts/tracker/cli.mjs" states 2>/dev/null || true)"
+ADAPTER_STATES="$(node "$BOSS_EPIC_TOOLBOX/tracker/cli.mjs" states 2>/dev/null || true)"
 resolve_state() { ADAPTER_STATES="$ADAPTER_STATES" ROLE="$1" node --input-type=module -e '
   import { readFileSync } from "node:fs"; import { dirname, join } from "node:path"
   const { resolveStateRole } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/bs-epic-lib.mjs`)
@@ -200,7 +200,7 @@ assumeCleared, assumeClearedAndMerge}`.
    `--assume-cleared*` value that is not a ticket id/URL. On a throw, stop with
    `BLOCKED: <message>` — do not guess.
 
-   **Model.** Fan-out runs on Opus by default — set `MODEL="claude-opus-4-8"`
+   **Model.** Fan-out runs on Opus by default — set `MODEL="claude-opus-5"`
    (or an operator-supplied id) and pass it as `create_session {model: …}` in
    Phase 3a. No `/model` two-step: the model is a first-class field on the run.
 
@@ -214,21 +214,20 @@ assumeCleared, assumeClearedAndMerge}`.
    assembly uses (an empty result still proves reachability).
    Unreachable → stop `BLOCKED: tracker MCP unreachable`.
 
-3. **Verify boss MCP + discover every required tool (deterministic preflight).**
-   Call `list_agents`: the chosen `--agent` runner **must** appear; if the daemon
-   is down or the runner is not loaded, stop
-   `BLOCKED: boss daemon unreachable or agent '<name>' not loaded`. Then prove
-   **every** boss MCP tool this run can invoke is discoverable _before scheduling_
-   — a prior preflight-gap failure was `list_check_snapshots` surfacing only after
-   a targeted search mid-run. The required set is derived from the session-adapter
-   source of truth, never hand-listed here:
+3. **Verify boss MCP + discover every required tool before scheduling.**
+   `list_agents` must include the chosen `--agent`; otherwise stop
+   `BLOCKED: boss daemon unreachable or agent '<name>' not loaded`. Derive the
+   required set from the session adapter, never a hand-maintained list:
 
    ```bash
-   REPO_ROOT="$(git rev-parse --show-toplevel)"; export REPO_ROOT
+   BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}"
+   [ -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ] || BOSS_SKILLS_HOME="$HOME/.codex/skills/bossanova"
+   BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"; export BOSS_EPIC_TOOLBOX
+   test -f "$BOSS_EPIC_TOOLBOX/session/boss.mjs" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
    node --input-type=module -e '
-     const { requiredBossToolsForEpic } = await import(`${process.env.REPO_ROOT}/scripts/session/boss.mjs`)
+     const { requiredBossToolsForEpic } = await import(`file://${process.env.BOSS_EPIC_TOOLBOX}/session/boss.mjs`)
      process.stdout.write(requiredBossToolsForEpic().join("\n") + "\n")
-   '  # → the authoritative checklist (create_session … list_check_snapshots … send_chat_message)
+   '  # → authoritative checklist
    ```
 
    Enumerate the boss MCP tools this runtime actually exposes (host-specific — do
@@ -268,8 +267,8 @@ assumeCleared, assumeClearedAndMerge}`.
      are present, then `normalizeTicket` each payload.
 
 2. **Classify** via `classifyTickets` → `{eligible, done, skipped}`:
-   - `eligible`: the planned state + `agent-friendly` label +
-     has an Implementation-plan link + not `needs-human`.
+   - `eligible`: planned + `agent-friendly` + native `Implementation plan (<ISSUE-ID>)`
+     attachment; no `needs-human`. Legacy links require migration/replanning.
    - `done`: state Done/Canceled — already merged for scheduling purposes.
    - `skipped`: everything else, each with a `{ticket, reason}` (not-yet-planned,
      In Progress, In Review, missing plan, `needs-human`, …).
@@ -396,7 +395,7 @@ survives a `bossd` restart:
 create_session {
   repo_id,
   tmux_unattended: true,        // durable, restart-surviving, attach-safe
-  model:  "claude-opus-4-8",   // MODEL from Phase 0 — no /model two-step
+  model:  "claude-opus-5",     // MODEL from Phase 0 — no /model two-step
   prompt: "/boss-build <TICKET>",   // BARE single-line command — see below
   title:  "boss-epic <TICKET>: <ticket title>",
   agent,                       // from Phase 0

@@ -112,34 +112,6 @@ func (h HomeModel) statusWrapWidth() int {
 // statusWrapWidth. Every Home *status* line goes through here so the wrap rule
 // cannot be missed at one call site (and so the next status line added
 // inherits it). Pass a nil colour for an unstyled line.
-//
-// KNOWN EXCEPTIONS — Home renders that deliberately do NOT use this helper, so
-// nobody reads the sentence above as "there are none":
-//   - the two renderError callers: the upgrade-error line in upgradeStatusView
-//     and the daemon-connection error in renderDaemonError. Those wrap at h.width (the
-//     terminal), not at the content block, so an upgrade failure — the one
-//     arbitrary-length string in its block — still overhangs a narrow table.
-//     BOS-531 widened that overhang by the 4 columns it reclaimed, which is most
-//     visible in upgradeStatusView where the error line is stacked directly
-//     against its statusLine siblings. BOS-530 scoped renderError and its 22
-//     callers to a SEPARATE, still-open child of the BOS-507 epic (not BOS-531,
-//     which only fixed renderError's own padding arithmetic); converting them
-//     here would fork renderError's contract for every other view. Fold them in
-//     when that child lands, and delete this.
-//   - the plain Padding(0, 2) blocks with no Width at all: the daemon
-//     remediation text, "Loading sessions...", the two empty-state panels, and
-//     logoutConfirmationView's prompt. The first four are static, already-newlined
-//     copy rather than status lines, so there is nothing to wrap. The logout
-//     prompt is the exception to the exception: it interpolates
-//     h.loggedInEmail, so a long address does hard-wrap past the terminal edge.
-//     It is a dialog, not a status line, so the fix is to route it through
-//     confirmPrompt.footer — but only once footer's own width bug is fixed,
-//     since footer currently renders 4 columns narrow.
-//
-// Note lipgloss's Width sets the TOTAL block width, padding included — pass the
-// outer width, do not subtract the padding. renderError agrees on that since
-// BOS-531; what still differs is only WHICH width the two pass (the content
-// block here, the terminal there), never the padding arithmetic.
 func (h HomeModel) statusLine(fg color.Color, text string) string {
 	s := lipgloss.NewStyle().Padding(0, statusLinePadding).Width(h.statusWrapWidth())
 	if fg != nil {
@@ -165,7 +137,7 @@ func (h HomeModel) renderDaemonError() string {
 	if remediation == "" {
 		remediation = daemonDownRemediation()
 	}
-	return renderError(fmt.Sprintf("Cannot connect to daemon (%v)", h.err), h.width) +
+	return renderError(fmt.Sprintf("Cannot connect to daemon (%v)", h.err), h.statusWrapWidth()) +
 		"\n\n" +
 		lipgloss.NewStyle().Padding(0, 2).Render(remediation) +
 		"\n" +
@@ -209,7 +181,7 @@ func (h HomeModel) renderEmptyState() string {
 		content += "\n" + checkoutStatus
 	}
 	if h.confirm.active {
-		content += "\n" + h.logoutConfirmationView()
+		content += "\n" + h.confirm.footer(h.width)
 		if upgradeStatus := h.upgradeStatusView(); upgradeStatus != "" {
 			content += "\n" + upgradeStatus
 		}
@@ -237,7 +209,7 @@ func (h HomeModel) renderNoReposEmptyState() string {
 			lipgloss.NewStyle().Bold(true).Render("Press Enter to add your first repository"),
 	)
 	if !h.upgrading && !h.restarting {
-		content += "\n" + actionBar(nav, []string{"[q]uit"})
+		content += "\n" + actionBarWidth(h.width, nav, []string{"[q]uit"})
 	}
 	return content
 }
@@ -260,7 +232,7 @@ func (h HomeModel) renderNoSessionsEmptyState() string {
 			lipgloss.NewStyle().Bold(true).Render("Press 'n' to create a new session."),
 	)
 	if !h.upgrading && !h.restarting {
-		content += "\n" + actionBar(left, nav, []string{"[q]uit"})
+		content += "\n" + actionBarWidth(h.width, left, nav, []string{"[q]uit"})
 	}
 	return content
 }
@@ -286,7 +258,7 @@ func (h HomeModel) renderSessionTable() string {
 
 	if h.confirm.active {
 		b.WriteString("\n")
-		b.WriteString(h.logoutConfirmationView())
+		b.WriteString(h.confirm.footer(h.width))
 	} else if h.upgrading || h.restarting {
 		if upgradeStatus := h.upgradeStatusView(); upgradeStatus != "" {
 			b.WriteString("\n")
@@ -307,19 +279,8 @@ func (h HomeModel) renderSessionTable() string {
 
 func (h HomeModel) renderSessionTableFooter() string {
 	var b strings.Builder
-	left := []string{"[n]ew session", "[enter] select"}
-	nav := []string{"[s]ettings"}
-	if la := h.loginAction(); la != "" {
-		nav = append(nav, la)
-	}
-	if ca := h.cloudAction(); ca != "" {
-		nav = append(nav, ca)
-	}
-	b.WriteString(actionBar(
-		left,
-		nav,
-		[]string{"[q]uit"},
-	))
+	left, nav, quit := h.sessionTableFooterActions()
+	b.WriteString(actionBarWidth(h.width, left, nav, quit))
 	if cloudGuestOfferVisible(h.settings, h.currentTime(), h.startedAt, h.loggedIn, h.authMgr != nil) {
 		if discovery := cloudDiscoveryLine(h.loggedIn, h.authMgr != nil); discovery != "" {
 			b.WriteString(discovery)
@@ -340,8 +301,19 @@ func (h HomeModel) renderSessionTableFooter() string {
 	return b.String()
 }
 
-func (h HomeModel) logoutConfirmationView() string {
-	return lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(h.confirm.prompt) +
-		"\n" +
-		styleActionBar.Render("[y/enter] confirm  [n/esc] cancel")
+func (h HomeModel) sessionTableFooterActions() (left, nav, quit []string) {
+	left = []string{"[n]ew session", "[enter] select"}
+	nav = []string{"[s]ettings"}
+	if la := h.loginAction(); la != "" {
+		nav = append(nav, la)
+	}
+	if ca := h.cloudAction(); ca != "" {
+		nav = append(nav, ca)
+	}
+	return left, nav, []string{"[q]uit"}
+}
+
+func (h HomeModel) sessionTableFooterLineCount() int {
+	left, nav, quit := h.sessionTableFooterActions()
+	return actionBarLineCount(h.width, left, nav, quit)
 }

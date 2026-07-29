@@ -136,7 +136,9 @@ function ctxFor(dir, runId) {
   return { runId, dir, sentinelPath: (name) => join(dir, `${name}.json`) }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from './main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   const [cmd, ...rest] = process.argv.slice(2)
   const fail = (msg) => {
     process.stderr.write(`${msg}\n`)

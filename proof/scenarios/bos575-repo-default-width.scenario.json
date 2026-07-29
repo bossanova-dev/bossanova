@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "title": "BOS-575 — the repository board retains NAME and PATH at the harness default terminal width",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the repository list shows its identity and path columns at the default width",
+      "steps": [
+        { "key": "s", "caption": "Open Settings from Home" },
+        { "key": "r", "caption": "Open registered repositories from Settings" },
+        {
+          "waitFor": "NAME",
+          "timeoutMs": 10000,
+          "caption": "The repository list has loaded at the harness default width"
+        },
+        {
+          "expect": [
+            {
+              "text": "NAME",
+              "match": "normalized",
+              "label": "repository identity column is visible"
+            },
+            {
+              "text": "PATH",
+              "match": "normalized",
+              "label": "repository path column is visible at the default width"
+            }
+          ],
+          "caption": "The default-width repository board retains both required columns"
+        }
+      ]
+    }
+  ]
+}

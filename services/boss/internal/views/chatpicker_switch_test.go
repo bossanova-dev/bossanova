@@ -1,7 +1,9 @@
 package views
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +29,39 @@ func drivePickCAccount(t *testing.T, m ChatPickerModel) ChatPickerModel {
 		t.Fatal("expected pickingAccount=true after the account-load resolves")
 	}
 	return m
+}
+
+// TestChatPickerSwitchAccountTableFitsAtResponsiveWidths keeps the account
+// label (the row identity) while fitting the secondary account metadata to the
+// same padded content width as the chat table.
+func TestChatPickerSwitchAccountTableFitsAtResponsiveWidths(t *testing.T) {
+	for _, width := range []int{60, 72, 80, 100, 140} {
+		t.Run(fmt.Sprintf("%d_columns", width), func(t *testing.T) {
+			m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
+			m.width = width
+			m.switchAccounts = []*pb.Account{{
+				Id:       "acct-1",
+				Label:    "Long-running production account with a descriptive operator label",
+				Provider: "claude-enter",
+				Status:   "active",
+				Health:   "healthy",
+			}}
+			m.buildSwitchAccountTable()
+
+			cols := m.switchAccountTable.Columns()
+			if got, avail := columnsWidth(cols), fitAvailWidth(width, chatPickerBlockPadding); got > avail {
+				t.Errorf("switch-account columnsWidth = %d, want <= %d", got, avail)
+			}
+			if !strings.Contains(strings.Join(chatPickerColumnTitles(cols), " "), "ACCOUNT") {
+				t.Fatal("ACCOUNT column was dropped")
+			}
+			for rowIndex, row := range m.switchAccountTable.Rows() {
+				if len(row) != len(cols) {
+					t.Errorf("switch-account row %d has %d cells, want %d", rowIndex, len(row), len(cols))
+				}
+			}
+		})
+	}
 }
 
 func TestChatPicker_SwitchAccount_HidesUnmanagedWhenRegisteredAccountsExist(t *testing.T) {

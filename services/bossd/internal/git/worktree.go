@@ -485,10 +485,29 @@ func sanitizeDirName(name string) string {
 // the agent cannot reliably clean it before bossd finalizes. Left untracked it
 // trips the same pr_failed → Blocked misclassification as the Stop-hook config,
 // so it is excluded here for every managed repo.
+//
+// .opencode/plugins/bossd-question.js is the opencode question-signal event
+// hook (BOS-486). bossd-plugin-opencode drops it into the worktree just before
+// `opencode run` and removes it when the run ends, but a crashed run can leave
+// it behind — and while it exists it is untracked, which trips the same
+// pr_failed → Blocked misclassification as the Stop-hook config.
+//
+// Unlike .claude/settings.local.json above, this entry is NOT the
+// belt-and-suspenders half: it is the PRIMARY filter, because the plugin's own
+// ListIgnoredDirtyFiles declaration cannot match the collapsed `?? .opencode/`
+// line porcelain emits for a new untracked directory. Measurement and full
+// reasoning:
+// docs/solutions/logic-errors/spike-opencode-question-signal-events-unreachable.md
+// ("Canonical: which dirty-file filter actually keeps the injected asset out of
+// finalize").
+//
+// The pattern is the full path, not a directory, so a user-authored sibling
+// under .opencode/plugins/ still shows up in `git status`.
 var bossdManagedExcludePatterns = []string{
 	".boss/",
 	".claude/settings.local.json",
 	".superpowers/",
+	".opencode/plugins/bossd-question.js",
 }
 
 // bossdExcludeMarker identifies the block of patterns bossd has added

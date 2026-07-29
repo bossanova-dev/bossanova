@@ -21,18 +21,11 @@ import (
 func (m NewSessionModel) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.width = msg.Width
 	m.height = msg.Height
-	if m.phase == newSessionPhaseRepoSelect {
-		m.repoTable.SetHeight(m.repoTableHeight())
-		m.repoTable.SetWidth(msg.Width)
-	}
-	if m.phase == newSessionPhasePRSelect {
-		m.prTable.SetHeight(m.prTableHeight())
-		m.prTable.SetWidth(msg.Width)
-	}
-	if m.phase == newSessionPhaseIssueSelect {
-		m.issueTable.SetHeight(m.issueTableHeight())
-		m.issueTable.SetWidth(msg.Width)
-	}
+	m.buildRepoTable()
+	m.buildAgentTable()
+	m.buildTypeTable()
+	m.buildPRTable()
+	m.buildIssueTable()
 	return m, nil
 }
 
@@ -87,6 +80,9 @@ func (m NewSessionModel) handlePRs(msg prsMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.phase = newSessionPhasePRSelect
+	// A prsMsg belongs to a newly selected repository. Start its list at the
+	// first PR; resize-only rebuilds retain the cursor through buildPRTable.
+	m.prTable.SetCursor(0)
 	m.buildPRTable()
 	return m, nil
 }
@@ -114,8 +110,11 @@ func (m NewSessionModel) handleIssues(msg issuesMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.phase = newSessionPhaseIssueSelect
-	m.buildIssueTable()
 	m.issueTable.SetCursor(0)
+	m.buildIssueTable()
+	if len(m.issueTable.Rows()) > 0 {
+		m.issueTable.GotoTop()
+	}
 	updateCursorColumn(&m.issueTable)
 	m.issueTableReady = true
 	return m, nil

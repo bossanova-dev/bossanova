@@ -15,7 +15,7 @@
 export { buildGraph, transitiveDependents, readyTickets, nextToMerge } from './dag-scheduler.mjs'
 import { mergeBlockedExternalBlockers as mergeBlockedExternalBlockersPure } from './dag-scheduler.mjs'
 
-// Inlined from the former scripts/linear-deps-lib.mjs so this toolbox module is
+// Inlined from the former linear-deps-lib.mjs so this toolbox module is
 // self-contained (a prior inlining). Linear state.type values that mean a blocker no
 // longer blocks — the one tracker-vocabulary seam the pure module refuses to know.
 const BLOCKER_CLEARED_STATE_TYPES = new Set(['completed', 'canceled'])
@@ -30,13 +30,30 @@ function extractBlockers(issue) {
 export { BLOCKER_CLEARED_STATE_TYPES }
 
 // First `{title, url}` entry whose title starts with "Implementation plan",
-// or null. Shared by the attachments/links fallback chain in normalizeTicket.
+// or null. Retained for display compatibility only: eligibility below requires
+// a native attachment, never a link.
 function firstPlanUrl(entries) {
   if (!Array.isArray(entries)) return null
   const match = entries.find(
     (entry) => typeof entry?.title === 'string' && entry.title.startsWith('Implementation plan'),
   )
   return match?.url ?? null
+}
+
+// A native tracker attachment is the only implementation-plan artifact that an
+// epic can hand to boss-build. Keep links in planUrl for callers that display
+// legacy metadata, but never let one launch a child session.
+function canonicalPlanAttachment(attachments, issueID) {
+  if (!Array.isArray(attachments)) return null
+  const title = `Implementation plan (${issueID})`
+  return attachments
+    .filter((attachment) => attachment?.title === title)
+    .reduce((newest, attachment) => {
+      if (!newest || Date.parse(attachment.createdAt || '') > Date.parse(newest.createdAt || '')) {
+        return attachment
+      }
+      return newest
+    }, null)
 }
 
 function normalizeLabels(labels) {
@@ -63,7 +80,8 @@ function normalizeBlockedBy(issue) {
 /**
  * Flattens a Linear issue payload into the plain ticket shape every other
  * function in this module consumes:
- * `{id, title, priority, createdAt, stateName, stateType, labels, planUrl, blockedBy: [ids]}`.
+ * `{id, title, priority, createdAt, stateName, stateType, labels, planUrl,
+ * planAttachment, blockedBy: [ids]}`.
  *
  * Accepts three issue shapes and normalizes each field independently:
  *   - raw GraphQL (`issue.inverseRelations`, `issue.state.{name,type}`)
@@ -74,13 +92,14 @@ function normalizeBlockedBy(issue) {
  *     which passes through unchanged.
  */
 export function normalizeTicket(issue) {
+  const id = issue.identifier ?? issue.id
   const priority =
     typeof issue.priority === 'object' && issue.priority !== null
       ? issue.priority.value
       : issue.priority
 
   return {
-    id: issue.identifier ?? issue.id,
+    id,
     title: issue.title,
     priority,
     createdAt: issue.createdAt,
@@ -88,6 +107,9 @@ export function normalizeTicket(issue) {
     stateType: issue.state?.type ?? issue.statusType ?? issue.stateType ?? null,
     labels: normalizeLabels(issue.labels),
     planUrl: firstPlanUrl(issue.attachments) ?? firstPlanUrl(issue.links) ?? issue.planUrl ?? null,
+    planAttachment:
+      canonicalPlanAttachment(issue.attachments, id) ??
+      (issue.planAttachment?.title === `Implementation plan (${id})` ? issue.planAttachment : null),
     blockedBy: normalizeBlockedBy(issue),
   }
 }
@@ -141,7 +163,8 @@ export function resolvePlannedState({ adapterStates, trackerConfigStates } = {})
  * `trackerConfigFor(config).states.planned`) — the one workflow-state word this
  * pure module refuses to bake in, so the published core stays project-agnostic:
  *   - `eligible`: stateName is the planned state AND labels include
- *     `agent-friendly` AND `planUrl` present AND NOT `needs-human`.
+ *     `agent-friendly` AND a canonical native `planAttachment` present AND NOT
+ *     `needs-human`. A legacy link-only plan is skipped for migration/replanning.
  *   - `done`: state is Done/Canceled (`stateType` in BLOCKER_CLEARED_STATE_TYPES)
  *     — counts as already merged for scheduling purposes.
  *   - `skipped`: everything else (`{ticket, reason}`), e.g. not-yet-planned,
@@ -169,8 +192,11 @@ export function classifyTickets(tickets, plannedState) {
       skipped.push({ ticket, reason: `${ticket.id}: needs-human label present` })
       continue
     }
-    if (!ticket.planUrl) {
-      skipped.push({ ticket, reason: `${ticket.id}: missing Implementation plan link` })
+    if (!ticket.planAttachment) {
+      skipped.push({
+        ticket,
+        reason: `${ticket.id}: missing native Implementation plan attachment (migration/replanning required)`,
+      })
       continue
     }
     if (ticket.stateName !== plannedState) {

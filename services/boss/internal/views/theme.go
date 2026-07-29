@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/bossalib/buildinfo"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -622,6 +623,96 @@ func actionBar(groups ...[]string) string {
 	return styleActionBar.Render(actionBarText(groups...))
 }
 
+// actionBarWidth renders a grouped action bar within width columns. It keeps a
+// group intact and folds only between the visible action-bar separators, so a
+// key hint never wraps in the middle of an action. Unknown widths retain the
+// historical one-line rendering exactly.
+func actionBarWidth(width int, groups ...[]string) string {
+	if width <= 0 {
+		return actionBar(groups...)
+	}
+	return styleActionBar.Render(strings.Join(actionBarTextLines(width, groups...), "\n"))
+}
+
+// actionBarLineCount reports the number of text lines actionBarWidth renders;
+// callers that reserve vertical space for an action bar must use this rather
+// than assuming a fixed line count.
+func actionBarLineCount(width int, groups ...[]string) int {
+	return len(actionBarTextLines(width, groups...))
+}
+
+func actionBarTextLines(width int, groups ...[]string) []string {
+	if width <= 0 {
+		return []string{actionBarText(groups...)}
+	}
+	textWidth := width - styleActionBar.GetHorizontalPadding()
+	if textWidth <= 0 {
+		return []string{actionBarText(groups...)}
+	}
+
+	lines := make([]string, 0, len(groups))
+	line := ""
+	for _, group := range groups {
+		if len(group) == 0 {
+			continue
+		}
+		part := strings.Join(group, "  ")
+		if ansi.StringWidth(part) > textWidth {
+			// A legacy caller may place several independent actions in one
+			// visual group. Preserve every complete action: when that group
+			// itself cannot fit, fold between its double-space-separated items.
+			if line != "" {
+				lines = append(lines, line)
+			}
+			folded := actionBarPartsLines(width, "  ", group)
+			lines = append(lines, folded[:len(folded)-1]...)
+			line = folded[len(folded)-1]
+			continue
+		}
+		if line == "" {
+			line = part
+			continue
+		}
+		if candidate := line + actionBarSeparator + part; ansi.StringWidth(candidate) <= textWidth {
+			line = candidate
+			continue
+		}
+		lines = append(lines, line)
+		line = part
+	}
+	if line == "" {
+		return []string{""}
+	}
+	return append(lines, line)
+}
+
+func actionBarPartsLines(width int, separator string, parts []string) []string {
+	if len(parts) == 0 {
+		return []string{""}
+	}
+	if width <= 0 {
+		return []string{strings.Join(parts, separator)}
+	}
+
+	textWidth := width - styleActionBar.GetHorizontalPadding()
+	if textWidth <= 0 {
+		return []string{strings.Join(parts, separator)}
+	}
+
+	lines := make([]string, 0, len(parts))
+	line := parts[0]
+	for _, part := range parts[1:] {
+		candidate := line + separator + part
+		if ansi.StringWidth(candidate) <= textWidth {
+			line = candidate
+			continue
+		}
+		lines = append(lines, line)
+		line = part
+	}
+	return append(lines, line)
+}
+
 // formNavHints are the field-movement keys every huh form shares. tab /
 // shift+tab is the only pair huh binds identically across Input, Text, Select,
 // MultiSelect and Confirm (see huh's keymap.go) — enter is overloaded,
@@ -662,11 +753,26 @@ const formActionBarLines = 2
 // assertActionBarFitsEightyColumns was written for). Split this way both lines
 // fit 80 columns by construction on every form in this package.
 func formActionBar(submit []string, right []string) string {
-	lines := []string{actionBarText(formNavHints())}
+	return formActionBarWidth(0, submit, right)
+}
+
+// formActionBarWidth renders the form action bar at the terminal width. The
+// navigation hints can fold between individual hints while the submit and
+// cancel groups retain the ordinary action-bar group boundary contract.
+func formActionBarWidth(width int, submit []string, right []string) string {
+	return styleActionBar.Render(strings.Join(formActionBarTextLines(width, submit, right), "\n"))
+}
+
+func formActionBarLineCount(width int, submit []string, right []string) int {
+	return len(formActionBarTextLines(width, submit, right))
+}
+
+func formActionBarTextLines(width int, submit []string, right []string) []string {
+	lines := actionBarPartsLines(width, "  ", formNavHints())
 	if actions := actionBarText(submit, right); actions != "" {
-		lines = append(lines, actions)
+		lines = append(lines, actionBarTextLines(width, submit, right)...)
 	}
-	return styleActionBar.Render(strings.Join(lines, "\n"))
+	return lines
 }
 
 // --- Banner ---
@@ -697,6 +803,7 @@ type bannerOpts struct {
 	// Screen-specific overrides (used when session/repo are nil).
 	line1 string
 	line2 string
+	width int
 }
 
 // accountBannerLabel renders the bound-account label shown beside the worktree
@@ -778,8 +885,13 @@ func renderBanner(active View, opts bannerOpts) string {
 		line2 = styleSubtle.Render(buildinfo.Version)
 	}
 
-	banner := colorize(row1) + "  " + line1 + "\n" +
-		colorize(row2) + "  " + line2
+	logo1 := colorize(row1) + "  "
+	logo2 := colorize(row2) + "  "
+	if opts.width > 0 {
+		line1 = ansi.Truncate(line1, max(opts.width-2-ansi.StringWidth(logo1), 0), "…")
+		line2 = ansi.Truncate(line2, max(opts.width-2-ansi.StringWidth(logo2), 0), "…")
+	}
+	banner := logo1 + line1 + "\n" + logo2 + line2
 
 	return lipgloss.NewStyle().Padding(1, 1, 1, 1).Render(banner)
 }

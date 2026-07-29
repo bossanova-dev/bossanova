@@ -11,12 +11,46 @@ package views
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/table"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
+
+const newSessionTableBlockPadding = 1
+
+func tableCursor(t table.Model, rows int) int {
+	if rows == 0 {
+		return 0
+	}
+	return min(t.Cursor(), rows-1)
+}
+
+// rebuildTable updates a wizard table without discarding its viewport. A table
+// constructor starts at offset zero, and SetCursor does not reveal a restored
+// cursor below that first page after a terminal resize.
+func (m NewSessionModel) rebuildTable(t *table.Model, cols []responsiveColumn, rows []table.Row, height, cursor int) {
+	fitted := fitColumnsIndexed(cols, fitAvailWidth(m.width, newSessionTableBlockPadding))
+	projected := make([]table.Row, len(rows))
+	for i, row := range rows {
+		projected[i] = projectRow(fitted, row)
+	}
+	fittedCols := fittedColumns(fitted)
+	if len(t.Columns()) == 0 {
+		*t = newBossTable(fittedCols, projected, height)
+		t.SetWidth(columnsWidth(fittedCols))
+	} else {
+		setTableContent(t, fittedCols, projected)
+		t.SetWidth(columnsWidth(fittedCols))
+		t.SetHeight(height)
+	}
+	t.SetCursor(cursor)
+	if len(t.Rows()) > 0 {
+		t.MoveDown(0)
+	}
+}
 
 func (m *NewSessionModel) buildRepoTable() {
 	names := make([]string, len(m.repos))
@@ -26,28 +60,29 @@ func (m *NewSessionModel) buildRepoTable() {
 		paths[i] = r.LocalPath
 	}
 
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep},
-		{Title: "PATH", Width: maxColWidth("PATH", paths, 60) + tableColumnSep},
+	cols := []responsiveColumn{
+		{col: cursorColumn, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep}, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "PATH", Width: maxColWidth("PATH", paths, 60) + tableColumnSep}, priority: 1, minWidth: 1},
 	}
 
+	cursor := tableCursor(m.repoTable, len(m.repos))
 	rows := make([]table.Row, len(m.repos))
 	for i := range m.repos {
 		indicator := ""
-		if i == 0 {
+		if i == cursor {
 			indicator = cursorChevron
 		}
 		rows[i] = table.Row{indicator, names[i], paths[i]}
 	}
 
-	m.repoTable = newBossTable(cols, rows, m.repoTableHeight())
-	m.repoTable.SetWidth(columnsWidth(cols))
+	m.rebuildTable(&m.repoTable, cols, rows, m.repoTableHeight(), cursor)
 }
 
 // repoTableHeight returns the height for the repo selection table.
 func (m NewSessionModel) repoTableHeight() int {
-	return clampedTableHeight(len(m.repos), m.height, bannerOverhead+6) // header + gaps + action bar
+	footerLines := actionBarLineCount(m.width, []string{"[enter] select"}, []string{"[esc] back"})
+	return clampedTableHeight(len(m.repos), m.height, bannerOverhead+5+footerLines) // header + gaps + action bar
 }
 
 // buildAgentTable populates m.agentTable from m.agents with a single AGENT
@@ -61,10 +96,13 @@ func (m *NewSessionModel) buildAgentTable() {
 	if cursor < 0 {
 		cursor = 0
 	}
+	if len(m.agentTable.Rows()) > 0 {
+		cursor = tableCursor(m.agentTable, len(m.agents))
+	}
 
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "AGENT", Width: maxColWidth("AGENT", names, 20) + tableColumnSep},
+	cols := []responsiveColumn{
+		{col: cursorColumn, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "AGENT", Width: maxColWidth("AGENT", names, 20) + tableColumnSep}, priority: 0, minWidth: 1},
 	}
 
 	rows := make([]table.Row, len(m.agents))
@@ -76,9 +114,7 @@ func (m *NewSessionModel) buildAgentTable() {
 		rows[i] = table.Row{indicator, names[i]}
 	}
 
-	m.agentTable = newBossTable(cols, rows, len(m.agents)+1)
-	m.agentTable.SetCursor(cursor)
-	m.agentTable.SetWidth(columnsWidth(cols))
+	m.rebuildTable(&m.agentTable, cols, rows, len(m.agents)+1, cursor)
 }
 
 func (m NewSessionModel) filterEnabledAgents(agents []client.AgentInfo) []client.AgentInfo {
@@ -104,22 +140,30 @@ func accountRowLabel(a *pb.Account) string {
 }
 
 func (m *NewSessionModel) buildTypeTable() {
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "", Width: 24 + tableColumnSep},
-		{Title: "", Width: 46 + tableColumnSep},
+	cols := []responsiveColumn{
+		{col: cursorColumn, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "", Width: 24 + tableColumnSep}, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "", Width: 46 + tableColumnSep}, priority: 1, minWidth: 1},
 	}
 	opts := m.buildSessionTypeOptions()
+	optionTypes := make([]sessionType, len(opts))
+	for i, opt := range opts {
+		optionTypes[i] = opt.typ
+	}
+	cursor := 0
+	if slices.Equal(m.typeTableOptionTypes, optionTypes) {
+		cursor = tableCursor(m.typeTable, len(opts))
+	}
 	rows := make([]table.Row, len(opts))
 	for i, opt := range opts {
 		indicator := ""
-		if i == 0 {
+		if i == cursor {
 			indicator = cursorChevron
 		}
 		rows[i] = table.Row{indicator, opt.label, styleSubtle.Render(opt.desc)}
 	}
-	m.typeTable = newBossTable(cols, rows, len(opts)+1)
-	m.typeTable.SetWidth(columnsWidth(cols))
+	m.rebuildTable(&m.typeTable, cols, rows, len(opts)+1, cursor)
+	m.typeTableOptionTypes = optionTypes
 }
 
 // buildSessionTypeOptions returns available session types based on repo configuration.
@@ -181,29 +225,30 @@ func (m *NewSessionModel) buildPRTable() {
 		branches[j] = pr.HeadBranch
 	}
 
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "PR", Width: maxColWidth("PR", numbers, 10) + tableColumnSep},
-		{Title: "TITLE", Width: maxColWidth("TITLE", titles, 50) + tableColumnSep},
-		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 30) + tableColumnSep},
+	cols := []responsiveColumn{
+		{col: cursorColumn, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "PR", Width: maxColWidth("PR", numbers, 10) + tableColumnSep}, priority: 1, minWidth: 1},
+		{col: table.Column{Title: "TITLE", Width: maxColWidth("TITLE", titles, 50) + tableColumnSep}, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 30) + tableColumnSep}, priority: 2, minWidth: 1},
 	}
 
+	cursor := tableCursor(m.prTable, n)
 	rows := make([]table.Row, n)
 	for j := range m.prsFiltered {
 		indicator := ""
-		if j == 0 {
+		if j == cursor {
 			indicator = cursorChevron
 		}
 		rows[j] = table.Row{indicator, numbers[j], titles[j], styleSubtle.Render(branches[j])}
 	}
 
-	m.prTable = newBossTable(cols, rows, m.prTableHeight())
-	m.prTable.SetWidth(columnsWidth(cols))
+	m.rebuildTable(&m.prTable, cols, rows, m.prTableHeight(), cursor)
 }
 
 // prTableHeight returns the height for the PR selection table.
 func (m NewSessionModel) prTableHeight() int {
-	return clampedTableHeight(len(m.prsFiltered), m.height, bannerOverhead+6+m.prFilter.Height())
+	footerLines := prSelectActionBarLineCount(m.width, m.prFilter, len(m.prsFiltered) > 0)
+	return clampedTableHeight(len(m.prsFiltered), m.height, bannerOverhead+5+footerLines+m.prFilter.Height())
 }
 
 // applyIssueFilter rebuilds m.issuesFiltered based on the current issueFilter query.
@@ -246,27 +291,28 @@ func (m *NewSessionModel) buildIssueTable() {
 		states[j] = issue.State
 	}
 
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "ID", Width: maxColWidth("ID", ids, 10) + tableColumnSep},
-		{Title: "TITLE", Width: maxColWidth("TITLE", titles, 50) + tableColumnSep},
-		{Title: "STATE", Width: maxColWidth("STATE", states, 15) + tableColumnSep},
+	cols := []responsiveColumn{
+		{col: cursorColumn, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "ID", Width: maxColWidth("ID", ids, 10) + tableColumnSep}, priority: 1, minWidth: 1},
+		{col: table.Column{Title: "TITLE", Width: maxColWidth("TITLE", titles, 50) + tableColumnSep}, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "STATE", Width: maxColWidth("STATE", states, 15) + tableColumnSep}, priority: 2, minWidth: 1},
 	}
 
+	cursor := tableCursor(m.issueTable, n)
 	rows := make([]table.Row, n)
 	for j := range m.issuesFiltered {
 		indicator := ""
-		if j == 0 {
+		if j == cursor {
 			indicator = cursorChevron
 		}
 		rows[j] = table.Row{indicator, ids[j], titles[j], styleSubtle.Render(states[j])}
 	}
 
-	m.issueTable = newBossTable(cols, rows, m.issueTableHeight())
-	m.issueTable.SetWidth(columnsWidth(cols))
+	m.rebuildTable(&m.issueTable, cols, rows, m.issueTableHeight(), cursor)
 }
 
 // issueTableHeight returns the height for the issue selection table.
 func (m NewSessionModel) issueTableHeight() int {
-	return clampedTableHeight(len(m.issuesFiltered), m.height, bannerOverhead+6+m.issueFilter.Height())
+	footerLines := prSelectActionBarLineCount(m.width, m.issueFilter, len(m.issuesFiltered) > 0)
+	return clampedTableHeight(len(m.issuesFiltered), m.height, bannerOverhead+5+footerLines+m.issueFilter.Height())
 }

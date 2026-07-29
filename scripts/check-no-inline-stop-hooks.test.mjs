@@ -10,11 +10,11 @@ import {
   fileHasInlineStopHook,
   findInlineStopHookCopies,
   findInlineStopHookCopiesInRepo,
-  isInvokedDirectly,
 } from './check-no-inline-stop-hooks.mjs'
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
 
 const INLINE = 'return matcher.startsWith("bossd-agent-run-");'
-const MIGRATED = 'Run: `node scripts/remove-bossd-stop-hooks.mjs` before stopping.'
+const MIGRATED = 'Run: `node skills-toolbox/remove-bossd-stop-hooks.mjs` before stopping.'
 
 test('fileHasInlineStopHook detects the inline filter signature', () => {
   assert.equal(fileHasInlineStopHook(INLINE), true)
@@ -127,17 +127,17 @@ test('findInlineStopHookCopies returns empty on a clean tree', () => {
   }
 })
 
-test('isInvokedDirectly returns false when argv path is absent', () => {
-  const missing = path.join(os.tmpdir(), `missing-entrypoint-${process.pid}`)
+test('isMainModule returns false when argv path is absent', () => {
+  let calls = 0
   assert.equal(
-    isInvokedDirectly(missing, import.meta.url, {
-      fs: {
-        existsSync: () => false,
-        realpathSync: () => {
-          throw new Error('realpathSync should not be called for missing argv path')
-        },
+    isMainModule(import.meta.url, {
+      argvPath: undefined,
+      realpathSync: () => {
+        calls += 1
+        throw new Error('realpathSync should not be called for missing argv path')
       },
     }),
     false,
   )
+  assert.equal(calls, 0)
 })

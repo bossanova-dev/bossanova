@@ -418,17 +418,20 @@ func lastTurnIsUser(path string) bool {
 	return false
 }
 
-// chatTitle reads codex's session index for a display thread name, falling
-// back to the rollout JSONL's first user-typed message.
-func chatTitle(workDir, agentSessionID string) string {
+// chatTitle reads codex's session index for the current thread name, falling
+// back to the rollout JSONL's first user-typed message. A non-empty index name
+// is authoritative because it is the only representation codex gives a native
+// `/rename`; the rollout fallback is a heuristic and stays non-authoritative so
+// it can only backfill placeholder titles.
+func chatTitle(workDir, agentSessionID string) (title string, explicit bool) {
 	if name := sessionIndexThreadName(agentSessionID); name != "" {
-		return name
+		return name, true
 	}
 	path, err := transcriptPath(workDir, agentSessionID)
 	if err != nil {
-		return ""
+		return "", false
 	}
-	return chatTitleAtPath(path)
+	return chatTitleAtPath(path), false
 }
 
 type codexSessionIndexEntry struct {

@@ -17,34 +17,48 @@ func TestProbeRateLimitMapsRolloutFixtures(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 
 	tests := []struct {
-		name    string
-		fixture string
-		status  bossanovav1.RateLimitPlanStatus
-		limited bool
-		util5h  float64
-		util7d  float64
+		name       string
+		fixture    string
+		status     bossanovav1.RateLimitPlanStatus
+		limited    bool
+		util5h     float64
+		util7d     float64
+		reset5hNil bool
+		reset7dNil bool
+		planTier   string
 	}{
 		{
-			name:    "healthy",
-			fixture: "testdata/transcripts/ratelimit_healthy.jsonl",
-			status:  bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_ACTIVE,
-			util5h:  0.12,
-			util7d:  0.34,
+			name:     "healthy",
+			fixture:  "testdata/transcripts/ratelimit_healthy.jsonl",
+			status:   bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_ACTIVE,
+			util5h:   0.12,
+			util7d:   0.34,
+			planTier: "plus",
 		},
 		{
-			name:    "near",
-			fixture: "testdata/transcripts/ratelimit_near.jsonl",
-			status:  bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_ACTIVE,
-			util5h:  0.95,
-			util7d:  0.88,
+			name:     "near",
+			fixture:  "testdata/transcripts/ratelimit_near.jsonl",
+			status:   bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_ACTIVE,
+			util5h:   0.95,
+			util7d:   0.88,
+			planTier: "plus",
 		},
 		{
-			name:    "exhausted",
-			fixture: "testdata/transcripts/ratelimit_exhausted.jsonl",
-			status:  bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_RATE_LIMITED,
-			limited: true,
-			util5h:  1.0,
-			util7d:  0.72,
+			name:     "exhausted",
+			fixture:  "testdata/transcripts/ratelimit_exhausted.jsonl",
+			status:   bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_RATE_LIMITED,
+			limited:  true,
+			util5h:   1.0,
+			util7d:   0.72,
+			planTier: "plus",
+		},
+		{
+			name:       "weekly only",
+			fixture:    "testdata/transcripts/ratelimit_weekly_only.jsonl",
+			status:     bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_ACTIVE,
+			util7d:     0.26,
+			reset5hNil: true,
+			planTier:   "pro",
 		},
 	}
 
@@ -73,14 +87,14 @@ func TestProbeRateLimitMapsRolloutFixtures(t *testing.T) {
 			if math.Abs(status.GetUtil_7D()-tt.util7d) > 0.0001 {
 				t.Fatalf("Util_7D = %v, want %v", status.GetUtil_7D(), tt.util7d)
 			}
-			if status.GetReset_5H() == nil {
-				t.Fatal("Reset_5H is nil, want timestamp")
+			if got := status.GetReset_5H() == nil; got != tt.reset5hNil {
+				t.Fatalf("Reset_5H nil = %v, want %v", got, tt.reset5hNil)
 			}
-			if status.GetReset_7D() == nil {
-				t.Fatal("Reset_7D is nil, want timestamp")
+			if got := status.GetReset_7D() == nil; got != tt.reset7dNil {
+				t.Fatalf("Reset_7D nil = %v, want %v", got, tt.reset7dNil)
 			}
-			if got := status.GetPlanTier(); got != "plus" {
-				t.Fatalf("PlanTier = %q, want plus", got)
+			if got := status.GetPlanTier(); got != tt.planTier {
+				t.Fatalf("PlanTier = %q, want %q", got, tt.planTier)
 			}
 		})
 	}
@@ -202,11 +216,11 @@ func TestMapRateLimitSnapshotClearsExpiredLimitWindows(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			status := mapRateLimitSnapshotAt(codexRateLimitSnapshot{
-				Primary: codexRateLimitWindow{
+				Primary: &codexRateLimitWindow{
 					UsedPercent: 120,
 					ResetsAt:    tt.resetAt,
 				},
-				Secondary: codexRateLimitWindow{
+				Secondary: &codexRateLimitWindow{
 					UsedPercent: 99,
 					ResetsAt:    3_000,
 				},
@@ -226,6 +240,125 @@ func TestMapRateLimitSnapshotClearsExpiredLimitWindows(t *testing.T) {
 	}
 }
 
+func TestClassifyRateLimitWindows(t *testing.T) {
+	short := &codexRateLimitWindow{WindowMinutes: 300}
+	weekly := &codexRateLimitWindow{WindowMinutes: 10_080}
+	secondWeekly := &codexRateLimitWindow{WindowMinutes: 20_160}
+	unknownPrimary := &codexRateLimitWindow{}
+	unknownSecondary := &codexRateLimitWindow{}
+
+	tests := []struct {
+		name              string
+		snapshot          codexRateLimitSnapshot
+		wantShort, want7D *codexRateLimitWindow
+	}{
+		{
+			name: "weekly only primary",
+			snapshot: codexRateLimitSnapshot{
+				Primary: weekly,
+			},
+			want7D: weekly,
+		},
+		{
+			name: "legacy short and weekly",
+			snapshot: codexRateLimitSnapshot{
+				Primary:   short,
+				Secondary: weekly,
+			},
+			wantShort: short,
+			want7D:    weekly,
+		},
+		{
+			name: "missing window minutes uses positional fallback",
+			snapshot: codexRateLimitSnapshot{
+				Primary:   unknownPrimary,
+				Secondary: unknownSecondary,
+			},
+			wantShort: unknownPrimary,
+			want7D:    unknownSecondary,
+		},
+		{
+			name: "first weekly window wins",
+			snapshot: codexRateLimitSnapshot{
+				Primary:   weekly,
+				Secondary: secondWeekly,
+			},
+			want7D: weekly,
+		},
+		{
+			name: "nil secondary",
+			snapshot: codexRateLimitSnapshot{
+				Primary: short,
+			},
+			wantShort: short,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotShort, got7D := classifyRateLimitWindows(tt.snapshot)
+			if gotShort != tt.wantShort {
+				t.Fatalf("short = %p, want %p", gotShort, tt.wantShort)
+			}
+			if got7D != tt.want7D {
+				t.Fatalf("weekly = %p, want %p", got7D, tt.want7D)
+			}
+		})
+	}
+}
+
+func TestMapRateLimitSnapshotWeeklyOnlyLimitAndReachedTypes(t *testing.T) {
+	now := time.Unix(2_000, 0)
+	tests := []struct {
+		name     string
+		snapshot codexRateLimitSnapshot
+		limited  bool
+		status   bossanovav1.RateLimitPlanStatus
+	}{
+		{
+			name: "weekly only exhausted window is limited",
+			snapshot: codexRateLimitSnapshot{
+				Primary: &codexRateLimitWindow{UsedPercent: 100, WindowMinutes: 10_080, ResetsAt: 3_000},
+			},
+			limited: true,
+			status:  bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_RATE_LIMITED,
+		},
+		{
+			name: "weekly reached type uses classified weekly window",
+			snapshot: codexRateLimitSnapshot{
+				Primary:              &codexRateLimitWindow{WindowMinutes: 10_080, ResetsAt: 1_000},
+				Secondary:            &codexRateLimitWindow{WindowMinutes: 300, ResetsAt: 3_000},
+				RateLimitReachedType: "7d",
+			},
+			status: bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_ACTIVE,
+		},
+		{
+			name: "short reached type uses classified short window",
+			snapshot: codexRateLimitSnapshot{
+				Primary:              &codexRateLimitWindow{WindowMinutes: 10_080, ResetsAt: 3_000},
+				Secondary:            &codexRateLimitWindow{WindowMinutes: 300, ResetsAt: 1_000},
+				RateLimitReachedType: "5h",
+			},
+			status: bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_ACTIVE,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status := mapRateLimitSnapshotAt(tt.snapshot, now)
+			if got := status.GetLimited(); got != tt.limited {
+				t.Fatalf("Limited = %v, want %v", got, tt.limited)
+			}
+			if got := status.GetStatus(); got != tt.status {
+				t.Fatalf("Status = %v, want %v", got, tt.status)
+			}
+			if tt.name == "weekly only exhausted window is limited" && status.GetUtil_7D() != 1 {
+				t.Fatalf("Util_7D = %v, want clamped 1", status.GetUtil_7D())
+			}
+		})
+	}
+}
+
 func TestLatestRateLimitSnapshotFollowsSymlinkedSessionsRoot(t *testing.T) {
 	realRoot := t.TempDir()
 	copyFixture(t, "testdata/transcripts/ratelimit_healthy.jsonl", shardedRolloutPath(realRoot, "symlinked"))
@@ -240,6 +373,9 @@ func TestLatestRateLimitSnapshotFollowsSymlinkedSessionsRoot(t *testing.T) {
 	if !ok {
 		t.Fatal("latestRateLimitSnapshot ok = false, want true through symlink root")
 	}
+	if snapshot.Primary == nil {
+		t.Fatal("Primary = nil, want fixture window")
+	}
 	if got := snapshot.Primary.UsedPercent; got != 12 {
 		t.Fatalf("Primary.UsedPercent = %v, want fixture value 12", got)
 	}
@@ -253,6 +389,9 @@ func TestLatestRateLimitSnapshotNewestWins(t *testing.T) {
 	snapshot, ok := latestRateLimitSnapshot(root)
 	if !ok {
 		t.Fatal("latestRateLimitSnapshot ok = false, want true")
+	}
+	if snapshot.Primary == nil {
+		t.Fatal("Primary = nil, want fixture window")
 	}
 	if got := snapshot.Primary.UsedPercent; got != 100 {
 		t.Fatalf("Primary.UsedPercent = %v, want final snapshot value 100", got)

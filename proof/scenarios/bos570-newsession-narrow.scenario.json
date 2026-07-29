@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "title": "BOS-575 — repo, trash, and new-session tables fit a 72-column terminal without dropping their identity columns",
+  "fixture": { "preset": "demo" },
+  "terminal": { "cols": 72 },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the new-session repository picker keeps NAME and its action bar on a 72-column terminal",
+      "steps": [
+        { "key": "n", "caption": "Open the new-session wizard from Home" },
+        {
+          "waitFor": "Select a repository",
+          "timeoutMs": 10000,
+          "caption": "The repository picker is visible on the narrow terminal"
+        },
+        {
+          "expect": [
+            {
+              "text": "NAME",
+              "match": "normalized",
+              "label": "identity column survives the narrow fit"
+            },
+            {
+              "text": "[enter] select",
+              "match": "normalized",
+              "label": "wizard action bar remains visible"
+            }
+          ],
+          "caption": "The fitted picker keeps the selection affordance intact"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the trash board keeps NAME and its action bar on the same 72-column terminal",
+      "steps": [
+        { "key": "esc", "caption": "Leave the new-session picker" },
+        { "key": "s", "caption": "Open Settings from Home" },
+        { "key": "t", "caption": "Open archived sessions from Settings" },
+        {
+          "waitFor": "NAME",
+          "timeoutMs": 10000,
+          "caption": "The trash table has loaded at the narrow width"
+        },
+        {
+          "expect": [
+            {
+              "text": "NAME",
+              "match": "normalized",
+              "label": "archived session identity column survives"
+            },
+            {
+              "text": "[d]elete",
+              "match": "normalized",
+              "label": "trash action bar remains visible"
+            }
+          ],
+          "caption": "The narrow trash board remains usable"
+        }
+      ]
+    }
+  ]
+}

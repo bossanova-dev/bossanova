@@ -278,7 +278,9 @@ export function renderReport(data = {}) {
 
 // Thin CLI: `node bs-review-report.mjs --in <report.json>` (or JSON on
 // stdin) prints the rendered markdown to stdout.
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from './main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2)
   const inIdx = argv.indexOf('--in')
   if (inIdx !== -1 && argv[inIdx + 1]) {

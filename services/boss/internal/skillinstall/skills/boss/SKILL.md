@@ -476,11 +476,11 @@ Change a note's body and/or tags; pass at least one of `--body` and `--tag` or t
 
 ```bash
 # Rewrite the body, leaving the tags untouched
-boss notes edit note_abc123 --body "the flaky test is a socket-token race; fixed in #1712"
+boss notes edit abc123 --body "the flaky test is a socket-token race; fixed in #1712"
 # REPLACES the tag set with exactly these two tags
-boss notes edit note_abc123 --tag tech-debt --tag resolved
+boss notes edit abc123 --tag tech-debt --tag resolved
 # Clear every tag
-boss notes edit note_abc123 --tag ""
+boss notes edit abc123 --tag ""
 ```
 
 ### `boss notes ls [flags]`
@@ -520,7 +520,7 @@ Remove a note by id. Removal is idempotent: removing a note that is already gone
 - `--repo` — Owning repository id for remote routing (default: $BOSS_REPO_ID, else the working directory's repo; ignored locally)
 
 ```bash
-boss notes rm note_abc123
+boss notes rm abc123
 ```
 
 ### `boss notes show <note-id> [flags]`
@@ -535,8 +535,8 @@ Print one note in full: its ids, provenance, tags, timestamps, and then the body
 - `--repo` — Owning repository id for remote routing (default: $BOSS_REPO_ID, else the working directory's repo; ignored locally)
 
 ```bash
-boss notes show note_abc123
-boss notes show note_abc123 --json
+boss notes show abc123
+boss notes show abc123 --json
 ```
 
 ## Account Management
@@ -800,6 +800,14 @@ boss mcp uninstall
 ### `boss skills`
 
 Manage installed boss skills
+
+### `boss skills check [flags]`
+
+Check installed boss skills against this binary and checkout sources
+
+**Flags:**
+
+- `--agent` — Restrict to one agent: claude or codex (default: all on PATH)
 
 ### `boss skills install [flags]`
 
@@ -1144,7 +1152,7 @@ A note is repo-scoped free-text one run records so a later one can read it back:
 
 **A note outlives the run that wrote it.** `session_id` and `chat_id` are **provenance, not ownership**: they record which run wrote the note and are deliberately not foreign keys, so archiving, closing or deleting that session leaves the note — and its provenance — intact. Pass your own session and chat ids when you write one, so a later sweep can attribute it; there is no way to fill them in afterwards.
 
-There is no `boss note` CLI yet. From an MCP-aware host the operations are five tools:
+The `## Notes` section above documents the `boss notes` CLI. From an MCP-aware host the operations are five tools:
 
 - `create_note` — record a note against a repo. `repo_id` and `body` are required; `session_id`/`chat_id` are optional provenance. The body is stored verbatim (non-empty, 64 KiB cap). Tags are normalised on write — trimmed, lowercased, de-duplicated, returned in ascending order — at most 32 of at most 64 bytes each.
 - `get_note` — read one note by id, body and tags included.

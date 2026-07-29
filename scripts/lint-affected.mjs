@@ -251,6 +251,8 @@ function main() {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   main()
 }

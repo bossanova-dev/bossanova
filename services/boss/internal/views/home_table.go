@@ -300,6 +300,10 @@ func StateLabel(state pb.SessionState) string {
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (h HomeModel) tableHeight() int {
-	overhead := bannerOverhead + 1 + actionBarPadY + 1 // banner+newline + gap + actionbar padding + actionbar
+	footerLines := 1
+	if !h.confirm.active && !h.upgrading && !h.restarting {
+		footerLines = h.sessionTableFooterLineCount()
+	}
+	overhead := bannerOverhead + 1 + actionBarPadY + footerLines // banner+newline + gap + actionbar padding + actionbar
 	return clampedTableHeight(h.tableDataRowCount(), h.height, overhead)
 }

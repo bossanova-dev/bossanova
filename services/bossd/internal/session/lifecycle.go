@@ -83,6 +83,14 @@ type chatStatusReporter interface {
 	Update(agentSessionID string, status bossanovav1.ChatStatus, lastOutputAt time.Time)
 }
 
+// questionSignalReader reports whether a structured pending-question signal
+// is live for a headless agent session. Kept narrow so session does not depend
+// on the status package and tests can inject a reader.
+type questionSignalReader interface {
+	HasPending(agentSessionID string) bool
+	Clear(agentSessionID string)
+}
+
 // Lifecycle orchestrates worktree creation, Claude process management,
 // and state machine transitions for coding sessions.
 type Lifecycle struct {
@@ -110,6 +118,13 @@ type Lifecycle struct {
 	// in HostServiceServer, so cron finalization is driven by
 	// cronCompletionNotifier below instead of host-service maps.
 	pollCompleter pollRunCompleter
+
+	// questionHooks records the per-run question-hook token for headless runs
+	// (BOS-486). Nil means the loopback question context is simply not handed
+	// to headless agents — they run exactly as they did before, with no
+	// question signal. Wired post-construction, like pollCompleter, because
+	// cmd/main.go builds the lifecycle before the host service.
+	questionHooks questionHookRegistrar
 
 	// cronCompletionNotifier receives hookless poll completion candidates
 	// for lifecycle-owned cron sessions.
@@ -207,6 +222,11 @@ type Lifecycle struct {
 	// finalize hook. nil leaves headless chats statusless (the pre-fix
 	// behaviour); all uses are nil-guarded.
 	chatStatus chatStatusReporter
+
+	// questionSignals is the shared structured-question store. Headless runs
+	// have no tmux pane, so their lifecycle watcher is the reader that turns a
+	// live signal into CHAT_STATUS_QUESTION. Nil preserves the prior behavior.
+	questionSignals questionSignalReader
 
 	// headlessStatusPollInterval controls how often watchHeadlessRunStatus
 	// polls the agent plugin for run liveness. Defaults to 2s in NewLifecycle.
@@ -482,6 +502,18 @@ func (l *Lifecycle) SetSessionLiveness(c sessionLiveness) {
 // report WORKING/STOPPED. Called once during daemon startup.
 func (l *Lifecycle) SetChatStatus(r chatStatusReporter) { l.chatStatus = r }
 
+// SetQuestionSignals wires the shared structured question-signal store used by
+// the headless status watcher. Safe to leave unset for the historical
+// WORKING/STOPPED-only behavior.
+func (l *Lifecycle) SetQuestionSignals(r questionSignalReader) { l.questionSignals = r }
+
+func (l *Lifecycle) headlessLiveStatus(agentSessionID string) bossanovav1.ChatStatus {
+	if l.questionSignals != nil && l.questionSignals.HasPending(agentSessionID) {
+		return bossanovav1.ChatStatus_CHAT_STATUS_QUESTION
+	}
+	return bossanovav1.ChatStatus_CHAT_STATUS_WORKING
+}
+
 // watchHeadlessRunStatus marks a headless agent run WORKING, then polls the
 // agent plugin until the run exits and marks the chat STOPPED. Headless runs
 // have no tmux pane (TmuxStatusPoller skips them) and no finalize hook, so
@@ -492,7 +524,7 @@ func (l *Lifecycle) watchHeadlessRunStatus(agentName, agentSessionID string) {
 	if l.chatStatus == nil || agentSessionID == "" {
 		return
 	}
-	l.chatStatus.Update(agentSessionID, bossanovav1.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+	l.chatStatus.Update(agentSessionID, l.headlessLiveStatus(agentSessionID), time.Now())
 	interval := l.headlessStatusPollInterval
 	if interval <= 0 {
 		interval = 2 * time.Second
@@ -501,6 +533,9 @@ func (l *Lifecycle) watchHeadlessRunStatus(agentName, agentSessionID string) {
 		time.Sleep(interval)
 		if !l.agentRunner.IsRunningByAgent(agentName, agentSessionID) {
 			l.chatStatus.Update(agentSessionID, bossanovav1.ChatStatus_CHAT_STATUS_STOPPED, time.Now())
+			if l.questionSignals != nil {
+				l.questionSignals.Clear(agentSessionID)
+			}
 			return
 		}
 		// Refresh WORKING on every positive poll. The status tracker ages
@@ -509,7 +544,7 @@ func (l *Lifecycle) watchHeadlessRunStatus(agentName, agentSessionID string) {
 		// make boss chat wait / get_chat_statuses / the orchestrator status
 		// stream observe STOPPED while the headless agent is still running.
 		// The poll interval (2s default) stays well under the threshold.
-		l.chatStatus.Update(agentSessionID, bossanovav1.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+		l.chatStatus.Update(agentSessionID, l.headlessLiveStatus(agentSessionID), time.Now())
 	}
 }
 
@@ -765,6 +800,13 @@ func (l *Lifecycle) SetCronCompletionNotifier(n cronCompletionNotifier) {
 // run completes. It preserves host-service waiter completion for StartChatRun
 // and independently routes lifecycle-owned unattended sessions to the cron gate.
 func (l *Lifecycle) SignalSessionRunComplete(sessionID, agentSessionID, exitError string) {
+	// This agent session is finished either way, so drop its question-hook
+	// token FIRST — ahead of the rotation intercept's early return, which would
+	// otherwise strand the token of every rotated-away run. Keeps the registry
+	// from growing for the daemon's lifetime and stops a stale hook POST from
+	// authenticating. A no-op for ids that were never armed (tmux chats keep
+	// their tokens in a separate registry, untouched by this call).
+	l.releaseQuestionHookToken(agentSessionID)
 	// Rotation intercept: a usage-limited exit on a live, rotatable plan run is
 	// rotated-and-restarted (or parked) here. When handled, skip the normal
 	// finalize/block fan-out below; the restarted run re-enters via its own
@@ -958,21 +1000,27 @@ func (l *Lifecycle) shouldArmHeadlessPollFallback(headlessRun bool, cronJobID, a
 // the StartSession request, so it uses a non-cancelable base context (the
 // daemon ctx when set). nil-guards mirror the tmux arm guards: a missing
 // pollArmer or agent client is logged at debug and skipped.
-func (l *Lifecycle) armHeadlessPollFallback(sessionID, agentSessionID string, session *models.Session) {
+// Reports whether the arm actually happened. That matters beyond logging: the
+// armed poller is what eventually calls SignalSessionRunComplete, which is the
+// only thing that releases a headless run's question-hook token (BOS-486). A
+// caller that minted one uses this to decide whether completion will ever be
+// signalled, rather than assuming it from reaching this line.
+func (l *Lifecycle) armHeadlessPollFallback(sessionID, agentSessionID string, session *models.Session) bool {
 	if l.pollArmer == nil {
 		l.logger.Debug().Str("session", sessionID).Msg("headless poll fallback: no pollArmer configured; skipping")
-		return
+		return false
 	}
 	client, err := l.agentClientFor(session)
 	if err != nil || client == nil {
 		l.logger.Debug().Err(err).Str("session", sessionID).Msg("headless poll fallback: no agent client; skipping")
-		return
+		return false
 	}
 	ctx := l.daemonCtx
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	l.pollArmer.Arm(ctx, sessionID, agentSessionID, client)
+	return true
 }
 
 // SetAgentLogsDir records the bossd-owned directory where agent plugins
@@ -1417,6 +1465,10 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// session — Detach=false keeps such sessions off this branch.
 	var claudeSessionID string
 	headlessRun := false
+	// Set by the headless branch when it mints a question-hook token (BOS-486);
+	// flipped true once the poll fallback that will eventually release the token
+	// is genuinely armed. See the defer in that branch.
+	var questionHookRelease *bool
 	switch {
 	case tmuxHosted:
 		claudeSessionID, err = l.startTmuxChat(ctx, sessionID, opts, session, result)
@@ -1443,9 +1495,53 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		// worktree .env (OverlayWithRepo) so the run authenticates to its own
 		// repo's Linear workspace, not the daemon's ambient one.
 		headlessEnv := dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), result.WorktreePath, repo)
+		// Hand the run the loopback question-signal context (BOS-486). The
+		// token is minted BEFORE the spawn — it has to be in the child's env —
+		// and bound to the agent session id the plugin resolves AFTER it, which
+		// is the same id the injected hook reports itself under and the same id
+		// the question store is keyed by. Agents known not to consume the keys
+		// (claude, codex) are skipped entirely, so their env is byte-identical
+		// to what it was before BOS-486.
+		headlessEnv = l.withQuestionHookEnv(session.AgentName, headlessEnv)
 		claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, headlessEnv)
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
+		}
+		l.registerQuestionHookToken(claudeSessionID, headlessEnv[questionHookTokenEnv])
+
+		// Bind the token's release to this function's EXIT rather than to a
+		// position in it. The only production releaser is
+		// SignalSessionRunComplete, reached via the poll fallback armed ~60
+		// lines below — and several error returns sit in between (the
+		// AgentSessionID update, the agent_chats insert, the state writes), as
+		// does the possibility that the arm declines or is never reached at all.
+		// On any of those the entry would stay in headlessHookTokens for the
+		// daemon's lifetime while the spawned child still holds the matching
+		// credential in its env — both failure modes
+		// ReleaseHeadlessRunHookToken exists to prevent. Releasing costs only
+		// this run's question signal, which nothing consumes for a headless chat
+		// yet; leaking costs a valid token.
+		//
+		// For whoever eventually gives the headless path a consumer: a CRON run
+		// never reaches this branch at all, so it can never carry a question
+		// signal. tmuxHosted is true for any opts.CronJobID, so cron takes the
+		// tmux case above and no token is ever minted for it. (The cronJobID
+		// clause in shouldArmHeadlessPollFallback is therefore belt-and-braces
+		// — its !headlessRun clause already excludes cron.)
+		//
+		// Guarded on a token having actually been minted, so an opt-out agent
+		// (claude, codex) is not even passed to the registry: their behaviour
+		// stays untouched because the call does not happen, not because the
+		// callee is a no-op for them.
+		if questionHookToken := headlessEnv[questionHookTokenEnv]; questionHookToken != "" {
+			questionHookHandedOff := false
+			armedQuestionHookID := claudeSessionID
+			defer func() {
+				if !questionHookHandedOff {
+					l.releaseQuestionHookToken(armedQuestionHookID)
+				}
+			}()
+			questionHookRelease = &questionHookHandedOff
 		}
 	}
 	if hookResp != nil && !hookResp.GetIsSupported() {
@@ -1507,7 +1603,12 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		// drive finalize/block on completion. A hook-supporting agent that DID
 		// receive a HookToken (hookResp != nil && IsSupported) is excluded: its
 		// Stop hook drives completion, so arming would double-finalize.
-		l.armHeadlessPollFallback(sessionID, claudeSessionID, session)
+		if l.armHeadlessPollFallback(sessionID, claudeSessionID, session) && questionHookRelease != nil {
+			// Completion will now route through SignalSessionRunComplete, which
+			// releases the question-hook token — so hand ownership off from the
+			// defer armed above and let the run keep its signal.
+			*questionHookRelease = true
+		}
 	}
 
 	// Fire AgentStarted → ImplementingPlan.

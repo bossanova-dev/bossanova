@@ -321,7 +321,9 @@ function changedFilesFromGit() {
   return output.split(/\r?\n/).filter(Boolean)
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   const args = process.argv.slice(2)
   if (args[0] === '--bazel') {
     // BOS-370 PR CI path: print the space-joined bazel target patterns on ONE line

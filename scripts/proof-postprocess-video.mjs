@@ -73,8 +73,9 @@ function renderCaptionStrip({ text, width, output }) {
 
 // Only drive the CLI when invoked directly; importing this module (e.g. from
 // tests) must not start a run.
-const invokedDirectly =
-  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+const invokedDirectly = isMainModule(import.meta.url)
 
 if (invokedDirectly) {
   try {

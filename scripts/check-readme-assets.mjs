@@ -72,9 +72,9 @@ export function checkReadmeAssets(repoRoot = process.cwd()) {
   console.log(`README local assets OK (${localTargets.size} checked)`)
 }
 
-const invokedDirectly =
-  process.argv[1] &&
-  fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+const invokedDirectly = isMainModule(import.meta.url)
 
 if (invokedDirectly) {
   checkReadmeAssets()

@@ -411,8 +411,9 @@ async function main(argv) {
   throw new Error(`unknown command: ${cmd ?? '(none)'} (expected "probe" or "run")`)
 }
 
-const invokedDirectly =
-  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+import { isMainModule } from './main-module.mjs'
+
+const invokedDirectly = isMainModule(import.meta.url)
 
 if (invokedDirectly) {
   main(process.argv.slice(2)).catch((error) => {

@@ -84,7 +84,7 @@ test('commits are tagless with a style scope; PR number injected at finalize', (
 
 test('self-owned finalize removes bossd Stop-hooks before stopping', () => {
   assert.ok(
-    SKILL.includes('scripts/remove-bossd-stop-hooks.mjs'),
+    SKILL.includes('skills-toolbox/remove-bossd-stop-hooks.mjs'),
     'must remove bossd Stop-hooks so bossd cannot double-finalize',
   )
   assert.ok(SKILL.includes('gh pr ready'), 'this skill owns readying the PR')
@@ -126,7 +126,10 @@ test('the thin gate reuses the pure core and the shared gateExit', () => {
     GATE.includes("from '../../../../scripts/sweep-prettify-gate.mjs'"),
     'imports detectDrift',
   )
-  assert.ok(GATE.includes("from '../../../../scripts/linear-gate-lib.mjs'"), 'imports gateExit')
+  assert.ok(
+    GATE.includes("from '../../../../skills-toolbox/linear-gate-lib.mjs'"),
+    'imports gateExit',
+  )
   assert.match(GATE, /fail-closed/i, 'gate documents its fail-closed contract')
 })
 

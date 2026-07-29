@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // TestEmbeddedSkillManifestExcludesBossProof pins the exact set of skills the boss
@@ -382,12 +383,12 @@ type identityRule struct {
 // skill directory (~/.claude/skills, ~/.codex/skills — see lib/bossalib/skillinstall/extract.go),
 // so it surfaces in EVERY project on the machine and must be project-agnostic
 // (docs/skills/README.md: "a suite of portable, config-driven skills … they ship publicly").
-// A published core must reach the issue tracker and plan-publish store ONLY through the
+// A published core must reach the issue tracker and proof store ONLY through the
 // config-selected adapters in .boss-skills.json, never a hard-coded Bossanova identifier —
 // naming one here is exactly the leak that made /boss-plan unusable from unrelated repos.
 //
 // Coverage matches the invariant documented in CLAUDE.md ("boss-* skills are published globally"):
-// project MCP servers / tool namespaces, the plan-publish store, the "internal" self-label, and the
+// project MCP servers / tool namespaces, the proof store, the "internal" self-label, and the
 // BOS backlog — its team, project key, direct ticket identifiers (BOS-123), and the hard-coded
 // `Unplanned`/`Todo` state names. Patterns are precise on purpose: the backlog-team rule anchors on
 // `team … Bossanova` so it does not sweep in incidental prose that merely names the product
@@ -398,7 +399,7 @@ var forbiddenIdentity = []identityRule{
 	{re: regexp.MustCompile(`bossanova-[a-z0-9-]+`)},
 	// Any project MCP tool namespace (mcp__bossanova-*).
 	{re: regexp.MustCompile(`mcp__bossanova`)},
-	// Project plan-publish base URL.
+	// Project proof-publish base URL.
 	{re: regexp.MustCompile(`proof\.bossanova\.dev`)},
 	// "internal project skill" self-label.
 	{re: regexp.MustCompile(`Internal Bossanova`)},
@@ -560,8 +561,8 @@ func unshippedScriptRefs(content string) []string {
 
 // knownUnshippedScriptRefs is the SHRINK-ONLY baseline of repo-root `scripts/` paths a published
 // core is still allowed to name because the file belongs to a seam this repo deliberately keeps
-// repo-local: the publish/tracker/session/callback/finalize adapter modules, the proof harness,
-// the Linear-specific libs, extension discovery, and the repo's own cron gates. Everything else
+// repo-local: genuinely custom proof harnesses and the remaining boss-plan adapter seams.
+// Everything else
 // must SHIP — vendor the helper into the core's toolbox/ (scripts/vendor-toolbox.mjs VENDOR_MAP)
 // and reference it through $BOSS_<CORE>_TOOLBOX.
 //
@@ -571,49 +572,24 @@ func unshippedScriptRefs(content string) []string {
 // scripts/review-feedback-probe.js ships INSIDE the skill payload, which the gate detects by stat.
 var knownUnshippedScriptRefs = map[string]map[string]bool{
 	"boss-build": {
-		"scripts/bossd-present.mjs":                          true,
-		"scripts/callback/adapter.mjs":                       true,
-		"scripts/callback/boss.mjs":                          true,
-		"scripts/check-no-inline-stop-hooks.mjs":             true,
-		"scripts/cron-gates/boss-build.mjs":                  true,
-		"scripts/finalize/adapter.mjs":                       true,
-		"scripts/finalize/cli.mjs":                           true,
-		"scripts/linear-deps-lib.mjs":                        true,
-		"scripts/linear-gate-lib.mjs":                        true,
-		"scripts/pr-ownership.mjs":                           true,
-		"scripts/proof.mjs":                                  true,
-		"scripts/remove-bossd-stop-hooks.mjs":                true,
-		"scripts/skill-extensions.mjs":                       true,
+		// boss-proof is excluded from publication; its roughly 5x closure and repo-specific recipes,
+		// scenarios, and publish store belong to the consuming repository's proof pipeline.
+		"scripts/proof.mjs": true,
+		// This is an in-repo authoring example, not a file boss-build executes.
 		"scripts/testdata/scenario-fixtures/valid-full.json": true,
-		"scripts/tracker/adapter.mjs":                        true,
-		"scripts/tracker/cli.mjs":                            true,
-		"scripts/tracker/linear.mjs":                         true,
 	},
-	"boss-epic": {
-		"scripts/callback/adapter.mjs": true,
-		"scripts/callback/boss.mjs":    true,
-		"scripts/linear-deps-lib.mjs":  true,
-		"scripts/session/adapter.mjs":  true,
-		"scripts/session/boss.mjs":     true,
-		"scripts/tracker/adapter.mjs":  true,
-		"scripts/tracker/cli.mjs":      true,
-		"scripts/tracker/linear.mjs":   true,
-	},
-	// boss-plan's deterministic planning core (plan-epic-lib.mjs, plan-image-guard.mjs,
-	// plan-slug.mjs) now ships in its toolbox/, so it holds NO entry for them. What remains is
-	// exclusively adapter-seam, proof-harness, tracker-lib, cron-gate and extension-discovery
-	// paths that are out of scope for vendoring.
+	"boss-epic": {},
 	"boss-plan": {
+		// The boss-plan cron gate is owned by its dedicated vendoring ticket.
 		"scripts/cron-gates/boss-plan.mjs": true,
-		"scripts/linear-deps-lib.mjs":      true,
-		"scripts/linear-gate-lib.mjs":      true,
-		"scripts/plan-publish.mjs":         true,
-		"scripts/proof.mjs":                true,
-		"scripts/skill-extensions.mjs":     true,
+		// Linear dependency traversal remains a repo-specific tracker seam.
+		"scripts/linear-deps-lib.mjs": true,
+		// Linear gate selection remains a repo-specific tracker seam.
+		"scripts/linear-gate-lib.mjs": true,
+		// boss-proof is excluded from publication and its recipes and storage are repo-supplied.
+		"scripts/proof.mjs": true,
 	},
-	"boss-review": {
-		"scripts/skill-extensions.mjs": true,
-	},
+	"boss-review": {},
 }
 
 // TestPublishedCoresOnlyReferenceShippedScripts is the fail-closed ratchet keeping every published
@@ -692,7 +668,7 @@ func TestUnshippedScriptRefsDetection(t *testing.T) {
 	matched := map[string]string{
 		"node scripts/proof.mjs run":                     "scripts/proof.mjs",
 		"see `scripts/tracker/linear.mjs` for the shape": "scripts/tracker/linear.mjs",
-		"adapters live in scripts/publish/":              "scripts/publish/",
+		"adapters live in scripts/tracker/":              "scripts/tracker/",
 		"read [the fixture](scripts/testdata/a.json).":   "scripts/testdata/a.json",
 		"run `./scripts/worktree-lock.sh` first":         "scripts/worktree-lock.sh",
 		"**scripts/skill-extensions.mjs**":               "scripts/skill-extensions.mjs",
@@ -759,10 +735,10 @@ func toolboxRefs(content string) [][2]string {
 	return out
 }
 
-// coresWithToolbox lists the payload's top-level cores that ship a non-empty toolbox/ directory.
-// Used for the per-core vacuity guard: a payload-global "found at least one ref" check cannot see a
-// single core's coverage silently dropping to zero.
-func coresWithToolbox(t *testing.T, fsys fs.FS) []string {
+// coresWithSubdir lists the payload's top-level cores that ship a non-empty <sub>/ directory
+// (`toolbox` or `references`). Used for the per-core vacuity guards: a payload-global "found at
+// least one ref" check cannot see a single core's coverage silently dropping to zero.
+func coresWithSubdir(t *testing.T, fsys fs.FS, sub string) []string {
 	t.Helper()
 	entries, err := fs.ReadDir(fsys, "skills")
 	if err != nil {
@@ -773,10 +749,10 @@ func coresWithToolbox(t *testing.T, fsys fs.FS) []string {
 		if !e.IsDir() {
 			continue
 		}
-		dir := "skills/" + e.Name() + "/toolbox"
+		dir := "skills/" + e.Name() + "/" + sub
 		files, err := fs.ReadDir(fsys, dir)
 		if err != nil {
-			// Only "the core ships no toolbox" is an expected miss. Any other read error would
+			// Only "the core ships no <sub>" is an expected miss. Any other read error would
 			// silently shrink the set this guard iterates, disabling the vacuity check it feeds.
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
@@ -836,7 +812,7 @@ func TestPublishedCoresShipTheToolboxFilesTheyName(t *testing.T) {
 		// coverage silently dropping to zero (reworded onto an unmatched spelling, or the classifier
 		// regressing on that form) while other cores keep the count non-zero. Every core that ships a
 		// toolbox invokes something out of it, so each must contribute at least one matched reference.
-		for _, core := range coresWithToolbox(t, fsys) {
+		for _, core := range coresWithSubdir(t, fsys, "toolbox") {
 			if refsByCore[core] == 0 {
 				t.Errorf("%s: core %q ships a toolbox/ but names no $BOSS_*_TOOLBOX/<file> the classifier matches; the shipped-toolbox gate is vacuous for it — reference the helpers through the variable, or extend toolboxRefPattern to the spelling used", label, core)
 			}
@@ -884,22 +860,350 @@ func TestToolboxRefsDetection(t *testing.T) {
 	}
 }
 
-func TestBossPlanPayloadDocumentsStorageKindsAndAtomicAttachmentPublish(t *testing.T) {
+// referenceRefPattern matches a bare `references/<path>` token anywhere in a payload file. A
+// published core's SKILL.md routes mandatory steps through sibling reference documents by this
+// core-relative path (e.g. boss-plan's entire tracker-attachment plan-storage flow lives behind
+// `references/plan-storage.md`), and neither existing classifier sees this form: scriptRefPattern
+// is anchored on the literal `scripts/`, and toolboxRefPattern requires a $BOSS_<CORE>_TOOLBOX
+// prefix. So a core could name a reference it does not ship and every gate stayed green.
+//
+// The path is CORE-relative, not toolbox-style core-qualified: the owning core is the core of the
+// file doing the naming, because SKILL.md sits at the core root and reaches `references/` beneath
+// it. That is why this needs its own resolution rule rather than a widened toolboxRefPattern.
+var referenceRefPattern = regexp.MustCompile(`references/[A-Za-z0-9._/-]+`)
+
+// referenceRefExtensions are the suffixes that make a token an actual readable artifact rather
+// than prose that merely contains the word (e.g. "the references/ directory"). References are
+// markdown today; the script/data suffixes are folded in so a future `references/schema.json`
+// is gated the day it lands rather than silently ungated.
+var referenceRefExtensions = append([]string{".md"}, scriptRefExtensions...)
+
+// referenceRefs returns the normalized, deduplicated FILE tokens (the part after `references/`)
+// that content names core-relative, in first-seen order.
+//
+// A raw match is kept only when it is not glued to a preceding word character (so
+// `subreferences/foo.md` is not read as a reference) AND not preceded by `/` (so a PREFIXED path
+// like `docs/references/x.md` or `skills/boss-plan/references/y.md` is not silently resolved
+// against the wrong core — the prefixed spelling is prohibited outright by
+// crossCoreReferenceRefs, not resolved here), and when its final segment carries a
+// referenceRefExtensions suffix after trailing markdown punctuation is trimmed.
+func referenceRefs(content string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, loc := range referenceRefPattern.FindAllStringIndex(content, -1) {
+		if loc[0] > 0 {
+			prev := content[loc[0]-1]
+			isWord := (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') || (prev >= '0' && prev <= '9')
+			if isWord || prev == '/' {
+				continue
+			}
+		}
+		token := strings.TrimRight(content[loc[0]:loc[1]], scriptRefTrimCutset)
+		file := strings.TrimPrefix(token, "references/")
+		if file == "" || strings.HasSuffix(file, "/") || seen[file] {
+			continue
+		}
+		last := file[strings.LastIndex(file, "/")+1:]
+		hasExt := false
+		for _, ext := range referenceRefExtensions {
+			if strings.HasSuffix(last, ext) {
+				hasExt = true
+				break
+			}
+		}
+		if !hasExt {
+			continue
+		}
+		seen[file] = true
+		out = append(out, file)
+	}
+	return out
+}
+
+// crossCoreReferencePattern matches the ONE spelling that could express a cross-core reference:
+// a `<core>/references/<file>` path prefixed with a core name. The bare form referenceRefs
+// handles is core-relative by construction and cannot name another core.
+var crossCoreReferencePattern = regexp.MustCompile(`(boss(?:-[a-z]+)*)/references/([A-Za-z0-9._/-]+)`)
+
+// crossCoreReferenceRefs returns the prefixed `<knownCore>/references/<file>` tokens in content.
+// Naming one is illegal: a published core is extracted into a user's global skill directory
+// carrying nothing but its own tree, so a sibling core's references/ is not resolvable there —
+// exactly the failure TestPublishedCoresOnlyReferenceShippedScripts closes for `scripts/`.
+func crossCoreReferenceRefs(content string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, loc := range crossCoreReferencePattern.FindAllStringSubmatchIndex(content, -1) {
+		if loc[0] > 0 {
+			prev := content[loc[0]-1]
+			isWord := (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') || (prev >= '0' && prev <= '9')
+			if isWord {
+				continue
+			}
+		}
+		// A top-level skills/<core>/references/... token names a path in the source payload,
+		// not a sibling reference from the installed core. Other slash-prefixed paths (such as
+		// ../<core>/...) still name an unreachable sibling and must be reported.
+		if strings.HasSuffix(content[:loc[0]], "skills/") {
+			skillsStart := loc[0] - len("skills/")
+			if skillsStart == 0 {
+				continue
+			}
+			prev := content[skillsStart-1]
+			isWord := (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') || (prev >= '0' && prev <= '9')
+			if !isWord && prev != '/' {
+				continue
+			}
+		}
+		core := content[loc[2]:loc[3]]
+		if !knownCores[core] {
+			continue
+		}
+		file := content[loc[4]:loc[5]]
+		token := strings.TrimRight(core+"/references/"+file, scriptRefTrimCutset)
+		if seen[token] {
+			continue
+		}
+		seen[token] = true
+		out = append(out, token)
+	}
+	return out
+}
+
+// TestReferenceRefsDetection pins the core-relative references/ classifier: the spellings the
+// live payloads actually use (so the gate cannot quietly stop gating), and the spellings it must
+// NOT claim — a prose mention of the bare word, a nested directory name, and any PREFIXED path,
+// which is not core-relative and is handled by the cross-core prohibition instead.
+func TestReferenceRefsDetection(t *testing.T) {
+	// Every spelling below is verbatim-shaped from the live payloads.
+	matched := map[string]string{
+		"the flow lives in `references/interactive-mode.md`; the":           "interactive-mode.md",
+		"**[`references/cron-gate.md`](references/cron-gate.md)** for":      "cron-gate.md",
+		"provisioned this worktree (references/standalone-mode.md):":        "standalone-mode.md",
+		"Pass it the **path** `references/headless-drafting-brief.md` (not": "headless-drafting-brief.md",
+		"see [the core methodology](references/core-methodology.md), every": "core-methodology.md",
+	}
+	for content, want := range matched {
+		got := referenceRefs(content)
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("referenceRefs(%q) = %v, want exactly [%q]", content, got, want)
+		}
+	}
+
+	ignored := []string{
+		// Glued to a preceding word character: a different word, not a reference.
+		"see subreferences/foo.md for the nested case",
+		// PREFIXED: not core-relative. Ungated here on purpose; Task 4 prohibits the
+		// knownCores spelling outright, so this must not be silently resolved core-relative.
+		"docs/references/foo.md is a repo doc",
+		"skills/boss-plan/references/plan-storage.md ships in the payload",
+		// Prose that merely contains the word, and the bare directory form.
+		"the references directory is core-relative",
+		"everything under `references/` is markdown",
+		// No script/doc extension: not an invocable or readable artifact path.
+		"references/notafile",
+	}
+	for _, content := range ignored {
+		if got := referenceRefs(content); len(got) != 0 {
+			t.Errorf("referenceRefs(%q) = %v, want none", content, got)
+		}
+	}
+
+	// Deduplication keeps one entry per distinct file, in first-seen order — the
+	// `[text](target)` markdown form names the same file twice on one line.
+	got := referenceRefs("[`references/a.md`](references/a.md) then references/b.md")
+	if len(got) != 2 || got[0] != "a.md" || got[1] != "b.md" {
+		t.Errorf("referenceRefs dedup = %v, want [a.md b.md]", got)
+	}
+
+	// A PREFIXED knownCores path is the only way to express a cross-core reference, and it is
+	// illegal: a published core installs carrying only its own tree, so a sibling core's
+	// references/ is not reachable there. referenceRefs declines to resolve it (asserted above);
+	// crossCoreReferenceRefs is what rejects it.
+	if got := crossCoreReferenceRefs("see boss-plan/references/plan-storage.md for the flow"); len(got) != 1 || got[0] != "boss-plan/references/plan-storage.md" {
+		t.Errorf("crossCoreReferenceRefs = %v, want [boss-plan/references/plan-storage.md]", got)
+	}
+	// Traversal cannot make a sibling reference available to an installed core.
+	if got := crossCoreReferenceRefs("see ../boss-plan/references/plan-storage.md for the flow"); len(got) != 1 || got[0] != "boss-plan/references/plan-storage.md" {
+		t.Errorf("crossCoreReferenceRefs(traversal) = %v, want [boss-plan/references/plan-storage.md]", got)
+	}
+	// The legal core-relative form is not a cross-core reference.
+	if got := crossCoreReferenceRefs("see `references/plan-storage.md` for the flow"); len(got) != 0 {
+		t.Errorf("crossCoreReferenceRefs(core-relative) = %v, want none", got)
+	}
+	// A prefix that is not a known core is not this gate's business.
+	if got := crossCoreReferenceRefs("docs/references/plan-storage.md is a repo doc"); len(got) != 0 {
+		t.Errorf("crossCoreReferenceRefs(non-core prefix) = %v, want none", got)
+	}
+	// A repo-qualified core path is not a cross-core token; it names a payload location.
+	if got := crossCoreReferenceRefs("skills/boss-plan/references/plan-storage.md ships in the payload"); len(got) != 0 {
+		t.Errorf("crossCoreReferenceRefs(repo-qualified) = %v, want none", got)
+	}
+}
+
+// missingReferenceRefs walks a shipped payload and returns one finding per core-relative
+// references/<file> that a payload file names but the payload does not carry, plus the per-core
+// count of MATCHED references (a missing one still counts as named — the count answers "did the
+// classifier see anything for this core", which is a different question from "did it resolve").
+//
+// Factored out of the gate so the miss branch can be driven from a synthetic FS: see
+// TestMissingReferenceRefsDetectsAnAbsentFile. The owning core is the core of the file doing the
+// naming, because the path is core-relative.
+func missingReferenceRefs(fsys fs.FS) ([]string, map[string]int, error) {
+	var findings []string
+	refsByCore := map[string]int{}
+	err := fs.WalkDir(fsys, "skills", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return err
+		}
+		rel := strings.TrimPrefix(path, "skills/")
+		core, _, _ := strings.Cut(rel, "/")
+		for _, file := range referenceRefs(string(data)) {
+			refsByCore[core]++
+			want := "skills/" + core + "/references/" + file
+			if _, statErr := fs.Stat(fsys, want); statErr != nil {
+				findings = append(findings, rel+" names references/"+file+" but "+want+" is not in the payload")
+			}
+		}
+		for _, token := range crossCoreReferenceRefs(string(data)) {
+			findings = append(findings, rel+" names the cross-core path "+token+", which is illegal")
+		}
+		return nil
+	})
+	return findings, refsByCore, err
+}
+
+// TestMissingReferenceRefsDetectsAnAbsentFile is the NON-VACUITY proof for the gate below. The
+// per-core refs>0 guard only catches "the classifier stopped matching"; it cannot show the gate
+// would actually FAIL on a payload that names a reference it does not ship. A gate that cannot
+// fail is precisely the failure mode this ticket exists to close, so the miss branch is driven
+// directly here against a synthetic payload.
+func TestMissingReferenceRefsDetectsAnAbsentFile(t *testing.T) {
+	// Control: the named reference SHIPS, so nothing is reported.
+	present := fstest.MapFS{
+		"skills/boss-plan/SKILL.md":                   {Data: []byte("read `references/plan-storage.md` first")},
+		"skills/boss-plan/references/plan-storage.md": {Data: []byte("# plan storage")},
+	}
+	findings, refsByCore, err := missingReferenceRefs(present)
+	if err != nil {
+		t.Fatalf("missingReferenceRefs(present): %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("missingReferenceRefs(present) = %v, want none", findings)
+	}
+	if refsByCore["boss-plan"] != 1 {
+		t.Errorf("refsByCore[boss-plan] = %d, want 1", refsByCore["boss-plan"])
+	}
+
+	// The regression: the payload names a reference it does not ship.
+	absent := fstest.MapFS{
+		"skills/boss-plan/SKILL.md":                  {Data: []byte("read `references/plan-storage.md` first")},
+		"skills/boss-plan/references/interactive.md": {Data: []byte("# some other reference")},
+	}
+	findings, refsByCore, err = missingReferenceRefs(absent)
+	if err != nil {
+		t.Fatalf("missingReferenceRefs(absent): %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("missingReferenceRefs(absent) = %v, want exactly one finding", findings)
+	}
+	for _, want := range []string{"boss-plan/SKILL.md", "references/plan-storage.md", "skills/boss-plan/references/plan-storage.md"} {
+		if !strings.Contains(findings[0], want) {
+			t.Errorf("finding %q does not name %q", findings[0], want)
+		}
+	}
+	if refsByCore["boss-plan"] != 1 {
+		t.Errorf("refsByCore[boss-plan] = %d, want 1 (a MISSING reference still counts as named)", refsByCore["boss-plan"])
+	}
+}
+
+// TestPublishedCoresShipTheReferencesTheyName closes the third leg of the payload-reference
+// triangle. TestPublishedCoresOnlyReferenceShippedScripts gates repo-root `scripts/` paths;
+// TestPublishedCoresShipTheToolboxFilesTheyName gates $BOSS_<CORE>_TOOLBOX/<file> paths; NEITHER
+// classifier matches a bare, core-relative `references/<file>.md`. So a core whose SKILL.md routes
+// a mandatory step through a sibling reference — as boss-plan does for its entire
+// tracker-attachment plan-storage flow — passed CI green whether or not that file was in the
+// payload, and a payload-side regression would land in every consuming repo at once.
+//
+// Both shipped payloads are scanned (the embedded skillinstall FS the boss CLI extracts and the
+// on-disk claude plugin mirror bossd ships), because either one alone can be the copy a user's
+// global skill directory is populated from.
+func TestPublishedCoresShipTheReferencesTheyName(t *testing.T) {
+	payloads := shippedPayloads(t)
+
+	for label, fsys := range payloads {
+		findings, refsByCore, err := missingReferenceRefs(fsys)
+		if err != nil {
+			t.Fatalf("walk %s: %v", label, err)
+		}
+		for _, finding := range findings {
+			t.Errorf("%s: %s — the published core would install without it; add the file to BOTH payload trees (`make copy-skills`) and to BOTH BUILD.bazel embedsrcs lists (services/boss/internal/skillinstall and plugins/bossd-plugin-claude/skilldata), or stop naming it. If this is prose naming ANOTHER core's reference, spell it without the bare path (references are resolved core-relative, against the core of the file doing the naming). A cross-core `<core>/references/<file>` path is never valid: an installed core carries only its own tree.", label, finding)
+		}
+		// Per-CORE vacuity guard, mirroring the toolbox gate. A payload-global "found at least
+		// one" check cannot see one core's coverage silently dropping to zero (reworded onto an
+		// unmatched spelling, or the classifier regressing on that form) while other cores keep
+		// the count non-zero. Every core that ships a references/ dir points at it from its
+		// SKILL.md, so each must contribute at least one matched reference.
+		for _, core := range coresWithSubdir(t, fsys, "references") {
+			if refsByCore[core] == 0 {
+				t.Errorf("%s: core %q ships a references/ but names no core-relative references/<file> the classifier matches; the shipped-references gate is vacuous for it — reference the documents by their core-relative path, or extend referenceRefPattern to the spelling used", label, core)
+			}
+		}
+	}
+}
+
+func TestBossPlanPayloadDocumentsAtomicAttachmentPublish(t *testing.T) {
 	b, err := SkillsFS.ReadFile("skills/boss-plan/SKILL.md")
 	if err != nil {
 		t.Fatalf("read boss-plan payload: %v", err)
 	}
 	payload := string(b)
 	for _, want := range []string{
-		"planStorage",
 		"tracker-attachment",
 		"preparePlanAttachment",
 		"finalizePlanAttachment",
 		"deletePlanAttachment",
 		"no plan metadata/state write",
+		"planMarkdown",
 	} {
 		if !strings.Contains(payload, want) {
 			t.Errorf("boss-plan payload missing %q", want)
+		}
+	}
+	storage, err := SkillsFS.ReadFile("skills/boss-plan/references/plan-storage.md")
+	if err != nil {
+		t.Fatalf("read boss-plan storage reference: %v", err)
+	}
+	if !strings.Contains(string(storage), "Delete that exact scratch file immediately after the PUT returns") {
+		t.Error("boss-plan storage reference must remove attachment-header scratch files immediately")
+	}
+	for _, forbidden := range []string{"planStorageFor", "plan-publish", "R2 credential"} {
+		if strings.Contains(payload, forbidden) {
+			t.Errorf("boss-plan payload still references retired plan storage %q", forbidden)
+		}
+	}
+}
+
+func TestBossBuildPayloadReadsNativePlanAttachmentsOnly(t *testing.T) {
+	b, err := SkillsFS.ReadFile("skills/boss-build/SKILL.md")
+	if err != nil {
+		t.Fatalf("read boss-build payload: %v", err)
+	}
+	payload := string(b)
+	for _, want := range []string{"selectImplementationPlanAttachment", "readPlanAttachment"} {
+		if !strings.Contains(payload, want) {
+			t.Errorf("boss-build payload missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"planStorageFor", "publishConfigFor(config).baseUrl", "raw fetch behavior"} {
+		if strings.Contains(payload, forbidden) {
+			t.Errorf("boss-build payload still references retired plan storage %q", forbidden)
 		}
 	}
 }

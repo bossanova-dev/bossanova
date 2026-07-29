@@ -30,14 +30,14 @@ const STAMP_TTL_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
 const LINT_DIRS = [
   ['scripts', ['.cjs', '.mjs']],
   ['scripts/bazel', ['.mjs']],
-  ['scripts/publish', ['.mjs']],
-  ['scripts/tracker', ['.mjs']],
-  ['scripts/finalize', ['.mjs']],
-  ['scripts/session', ['.mjs']],
-  ['scripts/callback', ['.mjs']],
   ['scripts/changelog', ['.mjs']],
   ['scripts/skill-parity', ['.mjs']],
   ['skills-toolbox', ['.mjs']],
+  ['skills-toolbox/callback', ['.mjs']],
+  ['skills-toolbox/cron-gates', ['.mjs']],
+  ['skills-toolbox/session', ['.mjs']],
+  ['skills-toolbox/finalize', ['.mjs']],
+  ['skills-toolbox/tracker', ['.mjs']],
 ]
 
 // Direct (non-recursive) files under `repoRoot/relDir` whose name ends with one
@@ -176,6 +176,8 @@ function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   main()
 }

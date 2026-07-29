@@ -15,7 +15,9 @@ export function cronHitRate({ slug, schedule, from, to, observedHits }) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   const [slug, schedule, from, to, observedHits] = process.argv.slice(2)
   if (!slug || !schedule || !from || !to || observedHits === undefined) {
     console.error(

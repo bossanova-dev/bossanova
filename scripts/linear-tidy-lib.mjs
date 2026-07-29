@@ -1,6 +1,6 @@
 // scripts/linear-tidy-lib.mjs
 // Pure tidy logic + injectable I/O for the bs-sweep-tidy-linear worker gate.
-// NO imports beyond node builtins (+ the sibling linear-gate-lib) — the cron
+// NO imports beyond node builtins (+ the shared linear-gate-lib) — the cron
 // worktree is dependency-free. All decision logic is pure and unit-tested with
 // fixtures; the only side effects live in the injectable I/O wrappers so the
 // logic runs with zero network under `node --test`.
@@ -14,7 +14,7 @@
 //      else the least-advanced OPEN child. A parent at/above it is untouched; a
 //      parent is never moved backward.
 
-import { linearRequest } from './linear-gate-lib.mjs'
+import { linearRequest } from '../skills-toolbox/linear-gate-lib.mjs'
 import { labelName, loadSkillConfig, stateName } from '../skills-toolbox/skill-config.mjs'
 
 // --- State model -----------------------------------------------------------
@@ -262,15 +262,17 @@ export function computeRollups(parents) {
 
 // --- Behaviour 3: planning-queue reconcile ---------------------------------
 
-// True when an issue carries a boss-plan implementation-plan attachment: boss-plan
-// attaches it as `links: [{ url, title: "Implementation plan (BOS-NN)" }]`, which
-// Linear surfaces as an Attachment. Match the canonical title prefix OR the public
-// proof host so a retitled-but-hosted plan still counts.
-export function hasImplementationPlan(attachments) {
+// True when an issue carries a native boss-plan implementation-plan attachment.
+// Keep this legacy URL rejection only for migration/replanning: a link-only historical
+// artifact is queued for agent-plan instead of being promoted to Todo, where boss-build
+// would reject it for lacking a native attachment.
+export function hasImplementationPlan(identifier, attachments) {
+  const expectedTitle = `Implementation plan (${String(identifier ?? '')})`
   return (Array.isArray(attachments) ? attachments : []).some((a) => {
     const title = String(a?.title ?? '')
     const url = String(a?.url ?? '')
-    return title.startsWith('Implementation plan (') || url.includes('proof.bossanova.dev/plans/')
+    if (url.includes('proof.bossanova.dev/plans/')) return false
+    return title === expectedTitle
   })
 }
 
@@ -306,7 +308,7 @@ export function computePlanningReconcile(
     if (hasLabel(ticket, LABEL_NAMES.agentPlan)) continue // already queued → no-op
     if (blocked.has(ticket.identifier)) continue // epic parent → don't auto-plan an epic
 
-    if (hasImplementationPlan(ticket.attachments)) {
+    if (hasImplementationPlan(ticket.identifier, ticket.attachments)) {
       if (!todoStateId) {
         escalate.push({
           kind: 'no-todo-state',

@@ -405,6 +405,8 @@ export function run(argv = process.argv.slice(2), opts = {}) {
   return formatFiles(plan, { ...opts, log })
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   process.exit(run())
 }

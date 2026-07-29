@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "title": "BOS-574 (BOS-570 epic) — the chat picker fits its metadata to a narrow terminal",
+  "fixture": { "preset": "question-row" },
+  "terminal": { "cols": 72 },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the chat picker fits inside a 72-column terminal while retaining CHAT and STATUS",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Notification question demo",
+            "match": "normalized",
+            "label": "the question-row fixture's session is listed before opening its chat picker"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home is running on the 72-column pty selected by this scenario"
+        },
+        {
+          "key": "enter",
+          "caption": "Open the session's chat picker"
+        },
+        {
+          "waitFor": {
+            "text": "CHAT",
+            "match": "normalized",
+            "label": "the fitted chat table header is visible"
+          },
+          "timeoutMs": 10000,
+          "caption": "The chat picker has loaded on the narrow terminal"
+        },
+        {
+          "expect": [
+            {
+              "text": "CHAT",
+              "match": "normalized",
+              "label": "CHAT — the row identity column survives the narrow fit"
+            },
+            {
+              "text": "STATUS",
+              "match": "normalized",
+              "label": "STATUS — the live chat state remains visible on the narrow board"
+            }
+          ],
+          "caption": "The table and its wrapped prose stay inside the 72-column screen"
+        }
+      ]
+    }
+  ]
+}

@@ -1305,6 +1305,77 @@ func TestValidateRunToken(t *testing.T) {
 	}
 }
 
+// TestHeadlessRunHookToken_ValidatesAndReleases covers the BOS-486 headless
+// registry: a token handed to a headless run through its ExtraEnv authenticates
+// via ValidateRunToken, a mismatch is still ErrAuthMismatch, and releasing the
+// run returns it to ErrAgentRunNotFound (the 200 idempotent-no-op branch in the
+// receiver) so the registry can't grow for the daemon's lifetime.
+func TestHeadlessRunHookToken_ValidatesAndReleases(t *testing.T) {
+	srv := newRunCompleteServer()
+	srv.RegisterHeadlessRunHookToken("ses_opencode_1", "headless-token")
+
+	if err := srv.ValidateRunToken(t.Context(), "ses_opencode_1", "headless-token"); err != nil {
+		t.Fatalf("ValidateRunToken(right) = %v, want nil", err)
+	}
+	if err := srv.ValidateRunToken(t.Context(), "ses_opencode_1", "nope"); !errors.Is(err, ErrAuthMismatch) {
+		t.Fatalf("ValidateRunToken(wrong) = %v, want ErrAuthMismatch", err)
+	}
+
+	srv.ReleaseHeadlessRunHookToken("ses_opencode_1")
+	if err := srv.ValidateRunToken(t.Context(), "ses_opencode_1", "headless-token"); !errors.Is(err, ErrAgentRunNotFound) {
+		t.Fatalf("ValidateRunToken after release = %v, want ErrAgentRunNotFound", err)
+	}
+	// Idempotent: releasing twice, or releasing an id that was never armed, is
+	// a silent no-op (the completion path calls it unconditionally).
+	srv.ReleaseHeadlessRunHookToken("ses_opencode_1")
+	srv.ReleaseHeadlessRunHookToken("never-armed")
+	srv.RegisterHeadlessRunHookToken("", "tok")
+	srv.RegisterHeadlessRunHookToken("id", "")
+	srv.runMu.Lock()
+	n := len(srv.headlessHookTokens)
+	srv.runMu.Unlock()
+	if n != 0 {
+		t.Errorf("headlessHookTokens holds %d entries, want 0", n)
+	}
+}
+
+// TestHeadlessRunHookToken_DoesNotDisturbChatRunState is the no-regression
+// guard for claude and codex: arming (or releasing) a headless question-hook
+// token must not touch StartChatRun's runHookTokens tombstone, so
+// /hooks/agent-run-complete keeps its exact 404/401/signal behaviour. The two
+// registries are separate maps precisely so this holds.
+func TestHeadlessRunHookToken_DoesNotDisturbChatRunState(t *testing.T) {
+	srv := newRunCompleteServer()
+	ch := srv.registerRun("sess-1", "agent-1", "chat-token")
+
+	// A headless arm/release cycle on the SAME id must leave the chat run's
+	// token — and therefore CompleteAgentRun — untouched.
+	srv.RegisterHeadlessRunHookToken("agent-1", "headless-token")
+	srv.ReleaseHeadlessRunHookToken("agent-1")
+
+	if err := srv.ValidateRunToken(t.Context(), "agent-1", "chat-token"); err != nil {
+		t.Fatalf("chat token no longer validates after a headless arm/release: %v", err)
+	}
+	sessionID, err := srv.CompleteAgentRun(t.Context(), "agent-1", "chat-token", "")
+	if err != nil {
+		t.Fatalf("CompleteAgentRun = %v, want nil", err)
+	}
+	if sessionID != "sess-1" {
+		t.Errorf("sessionID = %q, want sess-1", sessionID)
+	}
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Error("completion channel was never signalled")
+	}
+	// The chat registry wins on lookup order, so a headless entry can never
+	// shadow it while both exist.
+	srv.RegisterHeadlessRunHookToken("agent-1", "headless-token")
+	if err := srv.ValidateRunToken(t.Context(), "agent-1", "headless-token"); !errors.Is(err, ErrAuthMismatch) {
+		t.Errorf("ValidateRunToken = %v; the chat-run token must take precedence", err)
+	}
+}
+
 // TestCompleteAgentRun_DuplicatePOSTWrongTokenAfterSignal a wrong-Bearer
 // POST that arrives after the legitimate completion still returns
 // ErrAuthMismatch (HTTP 401). The token entry must survive past the first

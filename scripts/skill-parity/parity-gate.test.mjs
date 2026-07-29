@@ -12,7 +12,7 @@ import {
   main,
   runParityGate,
 } from './parity-gate.mjs'
-import { ROLE_SCHEMAS } from '../skill-extensions.mjs'
+import { ROLE_SCHEMAS } from '../../skills-toolbox/skill-extensions.mjs'
 
 test('runParityGate is green on the wired-correct tree', async () => {
   const { ok, findings } = await runParityGate()

@@ -440,9 +440,9 @@ func (m AccountEditModel) View() tea.View {
 	case m.confirm.active:
 		b.WriteString(m.confirm.footer(m.width))
 	case m.editingField >= 0:
-		b.WriteString(actionBar([]string{"[enter] save", "[esc] cancel"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[enter] save", "[esc] cancel"}))
 	default:
-		b.WriteString(actionBar(
+		b.WriteString(actionBarWidth(m.width,
 			[]string{"[enter/space] edit", "[t]est", "[d] remove"},
 			[]string{"[esc] back"},
 		))

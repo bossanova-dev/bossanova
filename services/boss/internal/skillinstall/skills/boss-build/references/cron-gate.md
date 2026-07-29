@@ -5,7 +5,9 @@ not part of a run). Register this **gate command** on the job (scheduler UI, `Ga
 PR #870) so the run only fires when there is a candidate, spending **zero** agent tokens otherwise:
 
 ```
-node scripts/cron-gates/boss-build.mjs
+BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-build/toolbox"
+if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/bossanova/boss-build/toolbox"; fi
+node "$BOSS_BUILD_TOOLBOX/cron-gates/boss-build.mjs"
 ```
 
 It exits `0` (run) iff at least one Linear issue is in the **planned** state, carries the
@@ -19,5 +21,5 @@ a false-negative. Step 2's filter remains the source of truth. The gate is **fai
 missing `LINEAR_API_KEY` (injected into the gate environment by bossd), network failure, or API
 error exits non-zero with a one-line reason on stderr, captured in the scheduler's `gate_output`
 log. The blocking-aware query + the single blocker-clearing rule (cleared iff `Done`/`Canceled`)
-live in `scripts/linear-deps-lib.mjs` (unit-tested), layered on the shared `linearRequest` in
-`scripts/linear-gate-lib.mjs`; this entry is a thin I/O wrapper.
+live in `toolbox/linear-deps-lib.mjs` (unit-tested), layered on the shared `linearRequest` in
+`toolbox/linear-gate-lib.mjs`; this entry is a thin I/O wrapper.

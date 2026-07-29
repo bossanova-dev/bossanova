@@ -74,6 +74,11 @@
 // exact monolith this decomposition exists to avoid.
 export const EPIC_MIN_CHILDREN = 2
 export const EPIC_MAX_CHILDREN = 12
+// Keep the durable parent-description marker comfortably below tracker payload
+// limits. Child plan bodies are optional retry accelerators: when their
+// aggregate would overflow this cap, omit bodies deterministically and let a
+// fresh resume redraft those children before attaching them.
+export const EPIC_SPEC_MARKER_MAX_BYTES = 256 * 1024
 // A single buildable child must land in one reviewable PR, so its estimate is
 // hard-capped here: an honest ≥5 unit is not a child, it is decomposed further.
 // This is the forcing function — a `5`/`8` child is REJECTED by
@@ -478,7 +483,7 @@ const EPIC_SPEC_MARKER_LEGACY_RE = /<!--\s*boss-plan-epic-spec:(\{[\s\S]*?\})\s*
  * Serialize the FULL decomposition spec into the durable `boss-plan-epic-spec`
  * parent-description marker: the `parent` overview (title, goal, keyChanges) AND
  * every child's full metadata (key, title, goal, keyChanges, blockedByKeys,
- * estimate, priority, layer, agentFriendly) — everything needed to finish the original
+ * estimate, priority, layer, agentFriendly, planMarkdown) — everything needed to finish the original
  * epic WITHOUT re-decomposing, INCLUDING each child's deferred-exposure
  * agent-friendliness call so a resume re-stamps an already-created child
  * correctly. Compact JSON inside the same marker.
@@ -524,12 +529,32 @@ export function epicSpecMarker(spec) {
     // carried as a boolean on a re-serialized recovered spec. Default false.
     agentQuestion:
       (Array.isArray(c?.openQuestions) && c.openQuestions.length > 0) || c?.agentQuestion === true,
+    // The shell-first flow can crash after a child exists but before its native
+    // attachment finalizes. Persist the validated plan body with the rest of the
+    // resume spec so a fresh worktree can attach that exact plan to an adopted
+    // shell rather than exposing a child with no canonical artifact.
+    planMarkdown: typeof c?.planMarkdown === 'string' ? c.planMarkdown : undefined,
   }))
-  // base64-encode the compact JSON so no generated text (a title/goal/keyChange
+  // Base64-encode the compact JSON so no generated text (a title/goal/keyChange
   // containing `} -->`) can inject an HTML-comment terminator and truncate the
-  // marker — parseEpicSpecMarker would otherwise recover a truncated payload or
-  // null, silently losing the durable full spec on a retry.
-  const payload = Buffer.from(JSON.stringify({ parent, children }), 'utf8').toString('base64')
+  // marker. Full child plans are persisted only while the resulting marker fits
+  // safely in a tracker description; omitted bodies trigger the existing resume
+  // redraft path rather than risking a failed first save_issue.
+  const encode = () => Buffer.from(JSON.stringify({ parent, children }), 'utf8').toString('base64')
+  let payload = encode()
+  for (
+    let index = children.length - 1;
+    Buffer.byteLength(payload, 'utf8') > EPIC_SPEC_MARKER_MAX_BYTES && index >= 0;
+    index -= 1
+  ) {
+    delete children[index].planMarkdown
+    payload = encode()
+  }
+  if (Buffer.byteLength(payload, 'utf8') > EPIC_SPEC_MARKER_MAX_BYTES) {
+    throw new Error(
+      `epic specification exceeds ${EPIC_SPEC_MARKER_MAX_BYTES}-byte tracker marker limit`,
+    )
+  }
   return `<!-- boss-plan-epic-spec:${payload} -->`
 }
 
@@ -578,6 +603,9 @@ export function parseEpicSpecMarker(description) {
         // marker lacks it and degrades to false (no `agent-question`); only an
         // explicit `true` re-applies the label on resume.
         child.agentQuestion = child.agentQuestion === true
+        // Old markers legitimately lack the body. Callers must redraft before
+        // finalizing an adopted shell in that case; never expose it planless.
+        if (typeof child.planMarkdown !== 'string') delete child.planMarkdown
         // Normalize the architectural seam: keep a known layer, drop anything
         // else. An OLD marker (or a garbled value) simply carries no `layer` key,
         // so the child opts out of the producer-before-consumer soft check on

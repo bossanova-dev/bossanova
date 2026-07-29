@@ -66,7 +66,7 @@ func (a App) renderActiveView() tea.View {
 // bannerOpts returns the per-view overrides for the banner rendered above every
 // screen.
 func (a App) bannerOpts() bannerOpts {
-	var opts bannerOpts
+	opts := bannerOpts{width: a.width}
 	switch a.activeView { //nolint:exhaustive // only override for specific views
 	case ViewChatPicker:
 		opts.session = a.chatPicker.session

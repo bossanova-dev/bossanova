@@ -11,9 +11,9 @@
 //
 // Node builtins only — this runs in dependency-light cron worktrees.
 
-import { readFileSync, realpathSync } from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { readFileSync } from 'node:fs'
+
+import { isMainModule } from './main-module.mjs'
 
 // Inline markdown image: `![alt](dest)`, where dest may carry a title (`url "t"`) or be
 // angle-bracketed (`<url>`). We capture the raw destination and clean it below.
@@ -130,22 +130,8 @@ function main() {
   }
 }
 
-// Main-module detection, resolved through symlinks on BOTH sides. Node realpaths the main module
-// before setting import.meta.url but leaves process.argv[1] as typed, so a plain string compare is
-// false whenever ANY component of the invoking path is a symlink — a symlinked skills dir, or just
-// macOS's /tmp -> /private/tmp and /var -> /private/var. The CLI body would then never run and the
-// process would exit 0 SILENTLY: catastrophic here, because boss-plan Phase 4 treats exit 0 as
-// "no image dropped" and proceeds with the description write-back. This guard must only ever fail
-// CLOSED, so compare real paths and fall back to the literal compare only if realpath itself fails.
-const invokedDirectly = (() => {
-  if (!process.argv[1]) return false
-  const self = fileURLToPath(import.meta.url)
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(self)
-  } catch {
-    return path.resolve(process.argv[1]) === self
-  }
-})()
+// isMainModule resolves both paths through symlinks so this fail-closed CLI gate cannot be skipped.
+const invokedDirectly = isMainModule(import.meta.url)
 if (invokedDirectly) {
   try {
     main()

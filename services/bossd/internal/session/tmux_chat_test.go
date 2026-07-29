@@ -19,6 +19,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/tmux"
 )
@@ -2432,6 +2433,46 @@ func TestBossSessionContext_AdvertisesExactlyExportedIdentifiers(t *testing.T) {
 	}
 	if strings.Contains(noBinPrompt, "BOSS_MCP_BIN") {
 		t.Errorf("BOSS_MCP_BIN advertised when not exported: %q", noBinPrompt)
+	}
+}
+
+func TestBossSessionContextWarnsForDriftingInstalledSkills(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	worktree := t.TempDir()
+	installed := filepath.Join(home, ".claude", "skills", libskillinstall.Namespace, "boss")
+	if err := os.MkdirAll(installed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installed, "SKILL.md"), []byte("installed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(libskillinstall.Namespace, "boss"), filepath.Join(home, ".claude", "skills", "boss")); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(worktree, libskillinstall.SourceRelPath, "skills", "boss")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "SKILL.md"), []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	facts := SessionFacts{SessionID: "s", Worktree: worktree, Agent: "claude"}
+	if got := bossSessionContext(facts); !strings.Contains(got, "installed skill bodies may be out of date") {
+		t.Fatalf("prompt missing drift warning: %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(installed, "SKILL.md"), []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := bossSessionContext(facts); strings.Contains(got, "installed skill bodies may be out of date") {
+		t.Fatalf("matching prompt contains drift warning: %q", got)
+	}
+	if got := bossSessionContext(SessionFacts{SessionID: "s", Worktree: t.TempDir(), Agent: "claude"}); strings.Contains(got, "installed skill bodies may be out of date") {
+		t.Fatalf("no-source prompt contains drift warning: %q", got)
+	}
+	if got := bossSessionContext(SessionFacts{SessionID: "s", Agent: "claude"}); strings.Contains(got, "installed skill bodies may be out of date") {
+		t.Fatalf("empty-worktree prompt contains drift warning: %q", got)
 	}
 }
 

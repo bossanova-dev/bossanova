@@ -119,6 +119,7 @@ func (m *TrashModel) buildTable() {
 		m.filter.SetCounts(0, 0)
 		m.table.SetRows(nil)
 		m.table.SetHeight(m.tableHeight())
+		m.table.SetWidth(m.width)
 		return
 	}
 
@@ -138,13 +139,15 @@ func (m *TrashModel) buildTable() {
 		archiveds[i] = trashSessionArchived(sess)
 	}
 
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "REPO", Width: maxColWidth("REPO", repos, 20) + tableColumnSep},
-		{Title: "NAME", Width: maxColWidth("NAME", names, 60) + tableColumnSep},
-		{Title: "PR", Width: maxColWidth("PR", prLabels, 8) + tableColumnSep},
-		{Title: "ARCHIVED", Width: maxColWidth("ARCHIVED", archiveds, 12) + tableColumnSep},
+	cols := []responsiveColumn{
+		{col: cursorColumn, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "REPO", Width: maxColWidth("REPO", repos, 20) + tableColumnSep}, priority: 3, minWidth: 1},
+		{col: table.Column{Title: "NAME", Width: maxColWidth("NAME", names, 60) + tableColumnSep}, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "PR", Width: maxColWidth("PR", prLabels, 8) + tableColumnSep}, priority: 2, minWidth: 1},
+		{col: table.Column{Title: "ARCHIVED", Width: maxColWidth("ARCHIVED", archiveds, 12) + tableColumnSep}, priority: 1, minWidth: 1},
 	}
+	fitted := fitColumnsIndexed(cols, fitAvailWidth(m.width, 1))
+	fittedCols := fittedColumns(fitted)
 
 	cursor := m.table.Cursor()
 	if cursor >= len(m.filteredSessions) && len(m.filteredSessions) > 0 {
@@ -156,11 +159,10 @@ func (m *TrashModel) buildTable() {
 		if i == cursor {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, repos[i], names[i], prs[i], archiveds[i]}
+		rows[i] = projectRow(fitted, table.Row{indicator, repos[i], names[i], prs[i], archiveds[i]})
 	}
-	m.table.SetColumns(cols)
-	m.table.SetRows(rows)
-	m.table.SetWidth(columnsWidth(cols))
+	setTableContent(&m.table, fittedCols, rows)
+	m.table.SetWidth(columnsWidth(fittedCols))
 	m.table.SetHeight(m.tableHeight())
 	m.table.SetCursor(cursor)
 }
@@ -286,8 +288,7 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.table.SetHeight(m.tableHeight())
-		m.table.SetWidth(msg.Width)
+		m.buildTable()
 		return m, nil
 
 	case spinner.TickMsg:
@@ -493,7 +494,20 @@ func (m TrashModel) RestoredSessionID() string { return m.restoredID }
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m TrashModel) tableHeight() int {
-	overhead := bannerOverhead + 1 + actionBarPadY + 1 // gap + actionbar padding + actionbar
+	actionLines := 1
+	if !m.deleting && !m.deletingAll && !m.restoring && !m.confirm.active {
+		if m.filter.Active() {
+			actionLines = actionBarLineCount(m.width, m.filter.ActionBar())
+		} else if len(m.filteredSessions) > 0 {
+			primary := []string{"[d]elete", "[a] delete all", "[r]estore"}
+			if m.filter.Applied() {
+				actionLines = actionBarLineCount(m.width, primary, []string{"[/] edit filter", "[esc] clear"})
+			} else {
+				actionLines = actionBarLineCount(m.width, append(primary, "[/] filter"), []string{"[esc] back"})
+			}
+		}
+	}
+	overhead := bannerOverhead + 1 + actionBarPadY + actionLines // gap + actionbar padding + actionbar
 	overhead += m.filter.Height()
 	if m.confirm.active {
 		overhead += 3 // confirmation prompt + surrounding blank lines
@@ -518,7 +532,7 @@ func (m TrashModel) View() tea.View {
 	if len(m.sessions) == 0 {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Trash is empty."))
 		b.WriteString("\n")
-		b.WriteString(actionBar([]string{"[esc] back"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[esc] back"}))
 		return tea.NewView(b.String())
 	}
 
@@ -553,26 +567,26 @@ func (m TrashModel) View() tea.View {
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
-		b.WriteString(trashActionBar(m.filter, len(m.filteredSessions) > 0))
+		b.WriteString(trashActionBar(m.width, m.filter, len(m.filteredSessions) > 0))
 	}
 
 	return tea.NewView(b.String())
 }
 
-func trashActionBar(f listFilter, hasRows bool) string {
+func trashActionBar(width int, f listFilter, hasRows bool) string {
 	if f.Active() {
-		return actionBar(f.ActionBar())
+		return actionBarWidth(width, f.ActionBar())
 	}
 	primary := []string{}
 	if hasRows {
 		primary = []string{"[d]elete", "[a] delete all", "[r]estore"}
 	}
 	if f.Applied() {
-		return actionBar(primary, []string{"[/] edit filter", "[esc] clear"})
+		return actionBarWidth(width, primary, []string{"[/] edit filter", "[esc] clear"})
 	}
 	if hasRows {
 		primary = append(primary, "[/] filter")
-		return actionBar(primary, []string{"[esc] back"})
+		return actionBarWidth(width, primary, []string{"[esc] back"})
 	}
-	return actionBar([]string{"[esc] back"})
+	return actionBarWidth(width, []string{"[esc] back"})
 }

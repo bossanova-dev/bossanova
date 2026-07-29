@@ -264,7 +264,9 @@ export function writeAll(outDir = BASELINE_DIR) {
   return snapshots
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from '../../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   const snapshots = writeAll()
   console.log(`wrote ${Object.keys(snapshots).length} snapshots to ${BASELINE_DIR}`)
 }

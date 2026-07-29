@@ -337,7 +337,7 @@ func (m SettingsModel) View() tea.View {
 	if m.cloudAccess != nil {
 		actions = append(actions, "[b]illing")
 	}
-	b.WriteString(actionBar(actions, []string{"[esc] back"}))
+	b.WriteString(actionBarWidth(m.width, actions, []string{"[esc] back"}))
 
 	return tea.NewView(b.String())
 }

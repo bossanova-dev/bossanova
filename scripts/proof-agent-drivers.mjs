@@ -5,7 +5,7 @@
  *  own bespoke drivers via BOS-193 skill extensions. */
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { discoverExtensions } from './skill-extensions.mjs'
+import { discoverExtensions } from '../skills-toolbox/skill-extensions.mjs'
 
 const DEFAULT_ORDER = 100
 const PROOF_CORE = 'boss-proof'

@@ -75,6 +75,8 @@ func (m RepoListModel) Init() tea.Cmd {
 
 func (m *RepoListModel) buildTable() {
 	if len(m.repos) == 0 {
+		m.table.SetHeight(m.tableHeight())
+		m.table.SetWidth(m.width)
 		return
 	}
 
@@ -94,12 +96,14 @@ func (m *RepoListModel) buildTable() {
 		}
 	}
 
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep},
-		{Title: "PATH", Width: maxColWidth("PATH", paths, 60) + tableColumnSep},
-		{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 10) + tableColumnSep},
+	cols := []responsiveColumn{
+		{col: cursorColumn, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep}, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "PATH", Width: maxColWidth("PATH", paths, 60) + tableColumnSep}, priority: 2, minWidth: 1},
+		{col: table.Column{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 10) + tableColumnSep}, priority: 1, minWidth: 1},
 	}
+	fitted := fitColumnsIndexed(cols, fitAvailWidth(m.width, 1))
+	fittedCols := fittedColumns(fitted)
 
 	cursor := m.table.Cursor()
 	rows := make([]table.Row, len(m.repos))
@@ -108,11 +112,10 @@ func (m *RepoListModel) buildTable() {
 		if i == cursor {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, names[i], paths[i], statuses[i]}
+		rows[i] = projectRow(fitted, table.Row{indicator, names[i], paths[i], statuses[i]})
 	}
-	m.table.SetColumns(cols)
-	m.table.SetRows(rows)
-	m.table.SetWidth(columnsWidth(cols))
+	setTableContent(&m.table, fittedCols, rows)
+	m.table.SetWidth(columnsWidth(fittedCols))
 	m.table.SetHeight(m.tableHeight())
 	m.table.SetCursor(cursor)
 }
@@ -122,8 +125,7 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.table.SetHeight(m.tableHeight())
-		m.table.SetWidth(msg.Width)
+		m.buildTable()
 		return m, nil
 
 	case spinner.TickMsg:
@@ -224,7 +226,15 @@ func (m RepoListModel) Cancelled() bool { return m.cancel }
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m RepoListModel) tableHeight() int {
-	return clampedTableHeight(len(m.repos), m.height, bannerOverhead+1+actionBarPadY+1) // gap + actionbar padding + actionbar
+	actionLines := 1
+	if !m.confirming {
+		actionLines = actionBarLineCount(m.width,
+			[]string{"[enter] settings", "[d]elete"},
+			[]string{"[a]dd"},
+			[]string{"[esc] back"},
+		)
+	}
+	return clampedTableHeight(len(m.repos), m.height, bannerOverhead+1+actionBarPadY+actionLines) // gap + actionbar padding + actionbar
 }
 
 func (m RepoListModel) View() tea.View {
@@ -247,7 +257,7 @@ func (m RepoListModel) View() tea.View {
 				"Press 'a' to add your first repository.",
 		))
 		b.WriteString("\n")
-		b.WriteString(actionBar([]string{"[a]dd"}, []string{"[esc] back"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[a]dd"}, []string{"[esc] back"}))
 		return tea.NewView(b.String())
 	}
 
@@ -262,7 +272,7 @@ func (m RepoListModel) View() tea.View {
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
-		b.WriteString(actionBar(
+		b.WriteString(actionBarWidth(m.width,
 			[]string{"[enter] settings", "[d]elete"},
 			[]string{"[a]dd"},
 			[]string{"[esc] back"},

@@ -43,7 +43,7 @@ func (m ChatPickerModel) renderErrState() string {
 			body += lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg) + "\n"
 		}
 		if m.sessionID != "" {
-			body += actionBar([]string{"[a]rchive"}, []string{"[esc] back"})
+			body += actionBarWidth(m.width, []string{"[a]rchive"}, []string{"[esc] back"})
 		} else {
 			body += styleActionBar.Render("[esc] back")
 		}
@@ -69,7 +69,7 @@ func (m ChatPickerModel) renderAgentSelect() string {
 	b.WriteString("\n\n")
 	b.WriteString(chatPickerContentBlock(m.agentTable.View()))
 	b.WriteString("\n")
-	b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] cancel"}))
+	b.WriteString(actionBarWidth(m.width, []string{"[enter] select"}, []string{"[esc] cancel"}))
 	return b.String()
 }
 
@@ -85,7 +85,7 @@ func (m ChatPickerModel) renderSwitchAccounts() string {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg))
 		b.WriteString("\n")
 	}
-	b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] cancel"}))
+	b.WriteString(actionBarWidth(m.width, []string{"[enter] select"}, []string{"[esc] cancel"}))
 	return b.String()
 }
 
@@ -231,7 +231,17 @@ func (m ChatPickerModel) renderActionBar() string {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusMuted.Render(mergedLabel)))
 		b.WriteString("\n")
 	}
-	middle := []string{"[n]ew chat", "[s]ettings"}
+	left, middle, back := m.chatListActionGroups()
+	if len(left) > 0 {
+		b.WriteString(actionBarWidth(m.width, left, middle, back))
+	} else {
+		b.WriteString(actionBarWidth(m.width, middle, back))
+	}
+	return b.String()
+}
+
+func (m ChatPickerModel) chatListActionGroups() (left, middle, back []string) {
+	middle = []string{"[n]ew chat", "[s]ettings"}
 	if m.newTabSupported {
 		middle = append(middle, "[t]erminal")
 	}
@@ -248,7 +258,7 @@ func (m ChatPickerModel) renderActionBar() string {
 		middle = append(middle, "[a]rchive")
 	}
 	if chat := m.selectedChat(); chat != nil {
-		left := []string{"[enter] select", "[d]elete"}
+		left = []string{"[enter] select", "[d]elete"}
 		// Only advertise [w]ake when the highlighted chat is actually
 		// stopped — for any other status the keypress is a no-op, so
 		// dangling the action in the bar would mislead users.
@@ -256,18 +266,8 @@ func (m ChatPickerModel) renderActionBar() string {
 			left = append(left, "[w]ake")
 		}
 		left = append(left, "swit[c]h account")
-		b.WriteString(actionBar(
-			left,
-			middle,
-			[]string{"[esc] back"},
-		))
-	} else {
-		b.WriteString(actionBar(
-			middle,
-			[]string{"[esc] back"},
-		))
 	}
-	return b.String()
+	return left, middle, []string{"[esc] back"}
 }
 
 func wakeFreshFallbackStatus(reason string) string {

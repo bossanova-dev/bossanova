@@ -441,15 +441,15 @@ func (m AccountRegisterModel) View() tea.View {
 	b.WriteString("\n")
 	switch m.state {
 	case registerStateAwaitConfirm:
-		b.WriteString(actionBar([]string{"[←/→] select", "[enter] confirm"}, []string{"[esc] cancel"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[←/→] select", "[enter] confirm"}, []string{"[esc] cancel"}))
 	case registerStateAwaitText, registerStateAwaitSecret:
-		b.WriteString(actionBar([]string{"[enter] submit"}, []string{"[esc] cancel"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[enter] submit"}, []string{"[esc] cancel"}))
 	case registerStateError:
-		b.WriteString(actionBar([]string{"[esc] back"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[esc] back"}))
 	case registerStateDone:
-		b.WriteString(actionBar([]string{"[esc] back"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[esc] back"}))
 	default:
-		b.WriteString(actionBar([]string{"working…"}, []string{"[esc] cancel"}))
+		b.WriteString(actionBarWidth(m.width, []string{"working…"}, []string{"[esc] cancel"}))
 	}
 
 	return tea.NewView(b.String())
@@ -473,7 +473,7 @@ func (m AccountRegisterModel) providerView() string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(actionBar([]string{"[enter] choose"}, []string{"[esc] back"}))
+	b.WriteString(actionBarWidth(m.width, []string{"[enter] choose"}, []string{"[esc] back"}))
 	return b.String()
 }
 

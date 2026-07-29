@@ -5,7 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // The inline Stop-hook filter must live ONLY in
-// scripts/remove-bossd-stop-hooks.mjs, never copied into a SKILL.md. This
+// skills-toolbox/remove-bossd-stop-hooks.mjs, never copied into a SKILL.md. This
 // signature matches the executable filter line, not prose that merely mentions
 // the hooks or names the shared script.
 const INLINE_SIGNATURE = /startsWith\s*\(\s*(['"])bossd-agent-run-\1\s*\)/
@@ -53,7 +53,7 @@ function main() {
   const offenders = findInlineStopHookCopiesInRepo(repoRoot)
   if (offenders.length > 0) {
     console.error(
-      'Inline bossd Stop-hook filter found — call scripts/remove-bossd-stop-hooks.mjs instead:',
+      'Inline bossd Stop-hook filter found — call skills-toolbox/remove-bossd-stop-hooks.mjs instead:',
     )
     for (const file of offenders) console.error(`  - ${path.relative(repoRoot, file)}`)
     process.exit(1)
@@ -61,12 +61,8 @@ function main() {
   console.log('No inline bossd Stop-hook copies (single source of truth OK).')
 }
 
-export function isInvokedDirectly(argvPath, moduleUrl, deps = {}) {
-  const fsImpl = deps.fs || fs
-  if (!argvPath || !fsImpl.existsSync(argvPath)) return false
-  return fsImpl.realpathSync(argvPath) === fsImpl.realpathSync(fileURLToPath(moduleUrl))
-}
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
 
-const invokedDirectly = isInvokedDirectly(process.argv[1], import.meta.url)
+const invokedDirectly = isMainModule(import.meta.url)
 
 if (invokedDirectly) main()

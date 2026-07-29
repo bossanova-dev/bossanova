@@ -262,7 +262,7 @@ test('the completion contract owns PR readiness and stop-hook removal', () => {
   assert.ok(SKILL.includes('gh pr ready'), 'skill owns PR readiness')
   assert.ok(SKILL.includes('gh pr checks'), 'skill watches checks')
   assert.ok(
-    SKILL.includes('node scripts/remove-bossd-stop-hooks.mjs'),
+    SKILL.includes('node skills-toolbox/remove-bossd-stop-hooks.mjs'),
     'Stop-hook removal preserved',
   )
 })
@@ -337,8 +337,8 @@ test('files the SKILL references are reachable', () => {
     '../.claude/skills/bs-sweep-tests/toolbox/bs-run-sentinel.mjs',
     '../.codex/skills/bs-sweep-tests/gate/gate.mjs',
     '../.codex/skills/bs-sweep-tests/toolbox/bs-run-sentinel.mjs',
-    '../scripts/remove-bossd-stop-hooks.mjs',
-    '../scripts/linear-gate-lib.mjs',
+    '../skills-toolbox/remove-bossd-stop-hooks.mjs',
+    '../skills-toolbox/linear-gate-lib.mjs',
     '../scripts/cron-open-pr.mjs',
     '../docs/testing/test-command-manifest.md',
   ]

@@ -553,9 +553,10 @@ type ListGithubCallbacksFilter struct {
 // callback whose delivery failed. LastError/LastEvent are diagnostic strings and
 // must never contain the registered message body.
 type ScheduleGithubCallbackRetryParams struct {
-	NextAttemptAt time.Time
-	LastError     string
-	LastEvent     string
+	NextAttemptAt        time.Time
+	LastError            string
+	LastEvent            string
+	PreserveAttemptCount bool
 }
 
 // GithubCallbackStore persists one-shot GitHub callbacks and their delivery

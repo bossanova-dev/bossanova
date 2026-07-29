@@ -681,9 +681,9 @@ func (m GeneralSettingsModel) View() tea.View {
 	}
 
 	if editing {
-		b.WriteString(actionBar([]string{"[enter] save", "[esc] cancel"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[enter] save", "[esc] cancel"}))
 	} else {
-		b.WriteString(actionBar(
+		b.WriteString(actionBarWidth(m.width,
 			[]string{"[enter/space] toggle/edit"},
 			[]string{"[esc] back"},
 		))

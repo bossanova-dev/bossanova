@@ -1,8 +1,18 @@
+#!/usr/bin/env node
+// Compatibility entrypoint for repository-local extension documentation.
+// The existing helper remains authoritative for established roles. Notes is
+// registered here because this repository-local entrypoint owns the extension
+// contract used by end-of-run consumers.
 import fs from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+import {
+  ROLE_SCHEMAS as toolboxRoleSchemas,
+  discoverExtensions as discoverToolboxExtensions,
+  main as toolboxMain,
+  validateResult as validateToolboxResult,
+} from '../skills-toolbox/skill-extensions.mjs'
 
-const DEFAULT_ORDER = 100
 const KNOWN_EXTENSION_ROLES = new Set([
   'lens',
   'round',
@@ -11,130 +21,42 @@ const KNOWN_EXTENSION_ROLES = new Set([
   'agent-driver',
   'draft',
   'methodology',
+  'notes',
 ])
 
-// Minimal YAML-frontmatter reader. Supports the flat scalar keys and the single
-// nested `x-boss-extension:` block this contract needs — no external YAML dep
-// (matches the no-new-deps constraint of the scripts/ helpers).
-export function parseFrontmatter(text) {
-  const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(text)
-  if (!match) return { data: {}, body: text }
-  const data = {}
-  let current = null // name of the block we are collecting nested keys into
-  for (const raw of match[1].split('\n')) {
-    if (!raw.trim() || raw.trim().startsWith('#')) continue
-    const nested = /^ {2,}([\w-]+):\s*(.*)$/.exec(raw)
-    if (nested && current) {
-      data[current][nested[1]] = coerce(nested[2])
-      continue
-    }
-    const top = /^([\w-]+):\s*(.*)$/.exec(raw)
-    if (!top) continue
-    if (top[2] === '') {
-      data[top[1]] = {}
-      current = top[1]
-    } else {
-      data[top[1]] = coerce(top[2])
-      current = null
-    }
-  }
-  return { data, body: match[2] }
-}
-
-function coerce(value) {
-  const v = value.trim().replace(/^["']|["']$/g, '')
-  if (/^-?\d+$/.test(v)) return Number(v)
-  return v
-}
-
-export function extensionMarker(frontmatter) {
-  const block = frontmatter && frontmatter['x-boss-extension']
-  if (!block || typeof block !== 'object') return null
-  if (typeof block.extends !== 'string' || typeof block.role !== 'string') return null
-  const order = typeof block.order === 'number' ? block.order : DEFAULT_ORDER
-  return { extends: block.extends, role: block.role, order }
+export const ROLE_SCHEMAS = {
+  ...toolboxRoleSchemas,
+  notes: ['tag', 'body', 'noteId'],
 }
 
 export function discoverExtensions({ core, root, role }) {
-  const skillsDir = path.join(root, '.claude', 'skills')
+  if (typeof role !== 'string' || role === '' || !KNOWN_EXTENSION_ROLES.has(role)) {
+    return discoverToolboxExtensions({ core, root, role })
+  }
+
+  const result = discoverToolboxExtensions({ core, root })
   const extensions = []
-  const skipped = []
-  let entries = []
-  try {
-    entries = fs.readdirSync(skillsDir, { withFileTypes: true })
-  } catch {
-    return { extensions, skipped } // no skills dir -> no-op
+  const skipped = [...result.skipped]
+  for (const extension of result.extensions) {
+    if (extension.role === role) {
+      extensions.push(extension)
+    } else if (!KNOWN_EXTENSION_ROLES.has(extension.role)) {
+      skipped.push({ name: extension.name, reason: `role "${extension.role}", not "${role}"` })
+    }
   }
-  const prefix = `${core}-`
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue
-    const skillPath = path.join(skillsDir, entry.name, 'SKILL.md')
-    if (!fs.existsSync(skillPath)) {
-      skipped.push({ name: entry.name, reason: 'no SKILL.md' })
-      continue
-    }
-    let marker = null
-    try {
-      const { data } = parseFrontmatter(fs.readFileSync(skillPath, 'utf8'))
-      marker = extensionMarker(data)
-    } catch (err) {
-      skipped.push({ name: entry.name, reason: `unreadable frontmatter: ${err.message}` })
-      continue
-    }
-    if (!marker) {
-      skipped.push({ name: entry.name, reason: 'missing x-boss-extension marker' })
-      continue
-    }
-    if (marker.extends !== core) {
-      skipped.push({ name: entry.name, reason: `extends "${marker.extends}", not "${core}"` })
-      continue
-    }
-    if (typeof role === 'string' && role !== '' && !KNOWN_EXTENSION_ROLES.has(role)) {
-      skipped.push({ name: entry.name, reason: `unknown requested role "${role}"` })
-      continue
-    }
-    // A same-prefix extension that extends this core but declares another known role is a
-    // legitimate cross-role sibling (e.g. boss-review lens vs round) and should not pollute
-    // `skipped`. A typo'd/unknown role remains a misconfiguration and is recorded as a skip.
-    if (typeof role === 'string' && role !== '' && marker.role !== role) {
-      if (!KNOWN_EXTENSION_ROLES.has(marker.role)) {
-        skipped.push({ name: entry.name, reason: `role "${marker.role}", not "${role}"` })
-      }
-      continue
-    }
-    extensions.push({
-      name: entry.name,
-      dir: path.join(skillsDir, entry.name),
-      skillPath,
-      role: marker.role,
-      order: marker.order,
-    })
-  }
-  extensions.sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
   return { extensions, skipped }
 }
 
-export const ROLE_SCHEMAS = {
-  lens: ['severity', 'file', 'line', 'title', 'detail'],
-  round: ['severity', 'file', 'line', 'title', 'detail'],
-  surface: ['path', 'caption', 'evidenceTokens'],
-  'plan-reviewer': ['severity', 'section', 'title', 'detail'],
-}
-
 export function validateResult(envelope, role) {
+  if (role !== 'notes') return validateToolboxResult(envelope, role)
+
   const errors = []
   if (!envelope || typeof envelope !== 'object') {
     return { ok: false, errors: ['envelope is not an object'] }
   }
-  const requiredKeys = ROLE_SCHEMAS[role]
-  if (!requiredKeys) return { ok: false, errors: [`unknown role "${role}"`] }
   if (typeof envelope.ok !== 'boolean') {
     errors.push('ok is not a boolean')
   } else if (envelope.ok === false) {
-    // A handled failure envelope ({ok:false, ...}) is a *failing-validation*
-    // envelope per the contract: the core must skip it ("extension <name>:
-    // skipped (<reason>)"), not fold its (empty) items as accepted results.
-    // Surface the extension's own error text as the skip reason when present.
     const reason =
       typeof envelope.error === 'string' && envelope.error.trim() !== ''
         ? envelope.error.trim()
@@ -156,7 +78,7 @@ export function validateResult(envelope, role) {
       errors.push(`item ${idx} is not an object`)
       return
     }
-    for (const key of requiredKeys) {
+    for (const key of ROLE_SCHEMAS.notes) {
       if (!(key in item)) errors.push(`item ${idx} missing "${key}"`)
     }
   })
@@ -167,15 +89,14 @@ function parseArgs(argv) {
   const args = {}
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i]
-    if (token.startsWith('--')) {
-      const key = token.slice(2)
-      const next = argv[i + 1]
-      if (next === undefined || next.startsWith('--')) {
-        args[key] = true
-      } else {
-        args[key] = next
-        i += 1
-      }
+    if (!token.startsWith('--')) continue
+    const key = token.slice(2)
+    const next = argv[i + 1]
+    if (next === undefined || next.startsWith('--')) {
+      args[key] = true
+    } else {
+      args[key] = next
+      i += 1
     }
   }
   return args
@@ -184,26 +105,29 @@ function parseArgs(argv) {
 export function main(argv) {
   const [subcommand, ...rest] = argv
   const args = parseArgs(rest)
-  if (subcommand === 'discover') {
-    const core = args.core
-    if (typeof core !== 'string' || core === '') {
+
+  if (
+    subcommand === 'discover' &&
+    typeof args.role === 'string' &&
+    KNOWN_EXTENSION_ROLES.has(args.role)
+  ) {
+    if (typeof args.core !== 'string' || args.core === '') {
       process.stderr.write('discover: --core <name> is required\n')
       return 2
     }
-    const root = typeof args.root === 'string' ? args.root : process.cwd()
-    const role = typeof args.role === 'string' ? args.role : undefined
-    const result = discoverExtensions({ core, root, role })
-    if (args.json) {
-      process.stdout.write(`${JSON.stringify(result)}\n`)
-    } else {
-      for (const ext of result.extensions) {
+    const result = discoverExtensions({
+      core: args.core,
+      root: typeof args.root === 'string' ? args.root : process.cwd(),
+      role: args.role,
+    })
+    if (args.json) process.stdout.write(`${JSON.stringify(result)}\n`)
+    else
+      for (const ext of result.extensions)
         process.stdout.write(`${ext.name}\t${ext.role}\t${ext.order}\n`)
-      }
-    }
     return 0
   }
+  if (args.role !== 'notes') return toolboxMain(argv)
   if (subcommand === 'validate') {
-    const role = args.role
     let source
     try {
       source =
@@ -211,9 +135,6 @@ export function main(argv) {
           ? fs.readFileSync(args.file, 'utf8')
           : fs.readFileSync(0, 'utf8')
     } catch (err) {
-      // A missing / unreadable envelope file must degrade to the same clean
-      // {ok:false} shape as a malformed one — never an uncaught stack trace
-      // (the contract's "never throws" promise; callers skip on a non-zero exit).
       process.stdout.write(
         `${JSON.stringify({ ok: false, errors: [`cannot read input: ${err.message}`] })}\n`,
       )
@@ -228,14 +149,13 @@ export function main(argv) {
       )
       return 1
     }
-    const result = validateResult(envelope, role)
+    const result = validateResult(envelope, 'notes')
     process.stdout.write(`${JSON.stringify(result)}\n`)
     return result.ok ? 0 : 1
   }
-  process.stderr.write(`unknown subcommand: ${subcommand ?? '(none)'}\n`)
-  return 2
+  return toolboxMain(argv)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   process.exit(main(process.argv.slice(2)))
 }

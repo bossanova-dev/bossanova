@@ -163,6 +163,23 @@ type HostServiceServer struct {
 	runHookTokens    map[string]string
 	runSessionByID   map[string]string
 
+	// headlessHookTokens is keyed by agent_session_id and holds the per-run
+	// bearer token handed to a HEADLESS agent run through its ExtraEnv overlay
+	// (BOSS_HOOK_TOKEN — see Lifecycle's question-hook wiring). It is a
+	// DELIBERATELY SEPARATE map from runHookTokens above, not a second writer
+	// to it: runHookTokens is StartChatRun's run-completion tombstone, read by
+	// CompleteAgentRun to decide 404-vs-401-vs-signal on
+	// /hooks/agent-run-complete. Keeping the headless token out of it means
+	// arming the question hook cannot change that endpoint's behaviour for any
+	// run, which is what makes the addition safe for claude and codex.
+	//
+	// Only ValidateRunToken consults it, as a fallback after runHookTokens, so
+	// its sole effect is that /hooks/question/{id} can authenticate a headless
+	// run. Entries are added by RegisterHeadlessRunHookToken once the agent
+	// session id resolves and dropped by ReleaseHeadlessRunHookToken when the
+	// run completes. Guarded by runMu.
+	headlessHookTokens map[string]string
+
 	// pendingChatRuns marks sessions with an in-flight StartChatRun that has
 	// not yet registered its runCompletion entry. StartChatRun sets the flag
 	// before it asks the lifecycle to spawn the tmux agent (which is also
@@ -304,6 +321,7 @@ func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
 		agentSessionByID:     make(map[string]string),
 		runCompletion:        make(map[string]activeChatRun),
 		runHookTokens:        make(map[string]string),
+		headlessHookTokens:   make(map[string]string),
 		runSessionByID:       make(map[string]string),
 		pendingChatRuns:      make(map[string]bool),
 		earlyChatCompletions: make(map[string]completionResult),
@@ -1405,6 +1423,12 @@ func (s *HostServiceServer) CompleteAgentRun(_ context.Context, agentSessionID, 
 // per-run token the run-scoped Stop/Notification hooks carry but must not
 // signal completion or mutate run state the way CompleteAgentRun does.
 //
+// Two registries are consulted, in order: StartChatRun's runHookTokens (a
+// tmux-hosted, operator-attachable run) and then headlessHookTokens (a headless
+// run handed its token through ExtraEnv — BOS-486). A given agent_session_id
+// only ever appears in one of them; the chat registry is checked first so the
+// tmux path's semantics are untouched.
+//
 // Returns:
 //   - nil                     token matches a registered run
 //   - ErrAgentRunNotFound     agent_session_id was never registered / already torn down
@@ -1415,6 +1439,9 @@ func (s *HostServiceServer) CompleteAgentRun(_ context.Context, agentSessionID, 
 func (s *HostServiceServer) ValidateRunToken(_ context.Context, agentSessionID, bearerToken string) error {
 	s.runMu.Lock()
 	expectedToken, ok := s.runHookTokens[agentSessionID]
+	if !ok {
+		expectedToken, ok = s.headlessHookTokens[agentSessionID]
+	}
 	s.runMu.Unlock()
 	if !ok {
 		return ErrAgentRunNotFound
@@ -1423,6 +1450,47 @@ func (s *HostServiceServer) ValidateRunToken(_ context.Context, agentSessionID, 
 		return ErrAuthMismatch
 	}
 	return nil
+}
+
+// RegisterHeadlessRunHookToken records the bearer token a headless agent run
+// was handed in its ExtraEnv (BOSS_HOOK_TOKEN), so that run's loopback
+// question-hook POSTs can authenticate via ValidateRunToken.
+//
+// Called by the lifecycle AFTER the agent plugin resolves the run's real
+// agent_session_id — the same id the injected hook reports itself under, and
+// the same id the question store is keyed by. An empty id or token is ignored:
+// the run simply has no question signal, which is the pre-BOS-486 behaviour.
+//
+// This writes ONLY headlessHookTokens. It deliberately does not touch
+// runHookTokens, runCompletion, runSessionByID, or activeRuns, so a headless
+// run's completion/idempotency semantics are exactly what they were before.
+func (s *HostServiceServer) RegisterHeadlessRunHookToken(agentSessionID, token string) {
+	if agentSessionID == "" || token == "" {
+		return
+	}
+	s.runMu.Lock()
+	s.headlessHookTokens[agentSessionID] = token
+	s.runMu.Unlock()
+}
+
+// ReleaseHeadlessRunHookToken drops a headless run's question-hook token once
+// the run has completed. Idempotent, and safe to call for any id: a tmux chat's
+// agent_session_id is never in this map (StartChatRun registers those in
+// runHookTokens), so a blanket call from the shared completion path cannot
+// disturb the chat-run tombstone CompleteAgentRun relies on.
+//
+// Without this the map would grow for the daemon's lifetime; unlike the chat
+// tombstones there is no WaitChatRun to tear it down. Dropping it also closes
+// the post-run window in which a stale token would still authenticate — after
+// release the receiver answers 200-no-op, exactly as it does for a torn-down
+// chat run.
+func (s *HostServiceServer) ReleaseHeadlessRunHookToken(agentSessionID string) {
+	if agentSessionID == "" {
+		return
+	}
+	s.runMu.Lock()
+	delete(s.headlessHookTokens, agentSessionID)
+	s.runMu.Unlock()
 }
 
 // SignalRunComplete is the in-process completion path for hookless agents.

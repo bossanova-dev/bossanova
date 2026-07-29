@@ -11,17 +11,33 @@ import {
   statSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 test('VENDOR_MAP routes each helper to the right skills', () => {
   assert.deepEqual(VENDOR_MAP['boss-epic'].sort(), [
+    'bossd-present.mjs',
     'bs-epic-lib.mjs',
     'bs-run-sentinel.mjs',
+    'callback/adapter.mjs',
+    'callback/boss.mjs',
     'dag-scheduler.mjs',
+    'linear-claim.mjs',
+    'linear-deps-lib.mjs',
+    'linear-gate-lib.mjs',
+    'main-module.mjs',
     'progress-comment.mjs',
+    'session/adapter.mjs',
+    'session/boss.mjs',
+    'skill-config.mjs',
+    'tracker/adapter.mjs',
+    'tracker/cli.mjs',
+    'tracker/linear.mjs',
   ])
   assert.ok(VENDOR_MAP['boss-plan'].includes('bs-run-sentinel.mjs'))
   assert.ok(VENDOR_MAP['boss-build'].includes('worktree-lock.sh'))
+  for (const files of Object.values(VENDOR_MAP)) {
+    assert.ok(files.includes('main-module.mjs'), 'every toolbox payload vendors main-module.mjs')
+  }
 })
 
 test('the review-specific helpers route only to boss-review (BOS-196)', () => {
@@ -45,7 +61,7 @@ test('the review-specific helpers route only to boss-review (BOS-196)', () => {
   // transitive dep of bs-review-detect.mjs, and boss-build vendors it as a direct
   // dep of the Step 4 plan-contract check (validatePlanDescription, BOS-204). It must
   // still not leak into any skill that consumes neither.
-  const skillConfigConsumers = new Set(['boss-review', 'boss-build', 'boss-plan'])
+  const skillConfigConsumers = new Set(['boss-review', 'boss-build', 'boss-epic', 'boss-plan'])
   for (const [skill, files] of Object.entries(VENDOR_MAP)) {
     if (skillConfigConsumers.has(skill)) {
       assert.ok(files.includes('skill-config.mjs'), `${skill} must vendor skill-config.mjs`)
@@ -74,6 +90,7 @@ test('vendorToolbox copies bytes and --check detects drift', () => {
   const skillsRoot = join(root, 'skills')
   mkdirSync(sourceRoot, { recursive: true })
   for (const file of ALL_SOURCES) {
+    mkdirSync(dirname(join(sourceRoot, file)), { recursive: true })
     writeFileSync(join(sourceRoot, file), `export const x = '${file}'\n`)
   }
   writeFileSync(join(sourceRoot, 'bs-run-sentinel.mjs'), 'export const x = 1\n')
@@ -99,6 +116,7 @@ test('vendorToolbox --check skips when the skills root is stripped', () => {
   const skillsRoot = join(root, 'skills') // deliberately never created (mirror strips .claude)
   mkdirSync(sourceRoot, { recursive: true })
   for (const file of ALL_SOURCES) {
+    mkdirSync(dirname(join(sourceRoot, file)), { recursive: true })
     writeFileSync(join(sourceRoot, file), `export const x = '${file}'\n`)
   }
   const res = vendorToolbox({ sourceRoot, skillsRoot, check: true })
@@ -114,6 +132,7 @@ test('vendorToolbox preserves and --check detects executable-mode drift', () => 
   const skillsRoot = join(root, 'skills')
   mkdirSync(sourceRoot, { recursive: true })
   for (const file of ALL_SOURCES) {
+    mkdirSync(dirname(join(sourceRoot, file)), { recursive: true })
     writeFileSync(join(sourceRoot, file), `export const x = '${file}'\n`)
   }
   // worktree-lock.sh is invoked directly, so it ships +x; vendoring must preserve that bit.

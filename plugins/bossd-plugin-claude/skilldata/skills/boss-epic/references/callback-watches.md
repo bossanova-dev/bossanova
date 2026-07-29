@@ -7,14 +7,14 @@ keeping the poll as a bounded fallback and authoritative reconciliation as the o
 actually decides. This is the boss-epic parity of boss-build's `references/callback-watches.md`.
 
 **First decide whether callbacks are usable at all.** `callbacksAvailable(env)`
-(`scripts/callback/adapter.mjs`, keyed on `BOSS_SESSION_ID`) is the single "callbacks usable" gate.
+(`toolbox/callback/adapter.mjs`, keyed on `BOSS_SESSION_ID`) is the single "callbacks usable" gate.
 When it is **false**, **skip `registerWatch` entirely and let `policy.fallbackPoll` alone drive
 Phase 3** — the clean, documented no-op below, never a failed wait. When it is **true**, arm a group
 per in-flight child as described. It is an up-front check, not a "did the CLI happen to fail at
 runtime" guess, and the one place to extend if the usability signal ever diverges from raw in-boss.
 
-The capability contract is the callback-notifier adapter (`scripts/callback/adapter.mjs`, default
-`CALLBACK=boss`). The boss reference (`scripts/callback/boss.mjs`) maps three capabilities onto the
+The capability contract is the callback-notifier adapter (`toolbox/callback/adapter.mjs`, default
+`CALLBACK=boss`). The boss reference (`toolbox/callback/boss.mjs`) maps three capabilities onto the
 generic `boss callback` CLI and carries the watch policy:
 
 | Capability      | `boss callback` command | Purpose                                                       |

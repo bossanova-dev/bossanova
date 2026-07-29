@@ -44,11 +44,7 @@ func (c confirmPrompt) update(msg tea.KeyMsg) (confirmPrompt, tea.Cmd) {
 func (c confirmPrompt) footer(width int) string {
 	style := lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger)
 	if width > 0 {
-		// KNOWN BUG, do NOT copy: .Width() already includes the padding, so
-		// subtracting it renders this prompt 4 columns narrower than the
-		// terminal. BOS-531 removed the identical mistake from renderError but
-		// left this untested path alone; widen it under its own change.
-		style = style.Width(width - 4)
+		style = style.Width(width)
 	}
 	return style.Render(c.prompt) + "\n" + styleActionBar.Render("[y/enter] confirm  [n/esc] cancel")
 }

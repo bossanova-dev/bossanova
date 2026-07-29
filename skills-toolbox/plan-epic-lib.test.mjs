@@ -9,6 +9,7 @@ import { test } from 'node:test'
 import {
   EPIC_MIN_CHILDREN,
   EPIC_MAX_CHILDREN,
+  EPIC_SPEC_MARKER_MAX_BYTES,
   CHILD_MAX_ESTIMATE,
   EPIC_LABEL,
   epicParentEstimate,
@@ -577,6 +578,41 @@ test('epicSpecMarker + parseEpicSpecMarker: persists a needs-human child (agentF
   const parsed = parseEpicSpecMarker(epicSpecMarker(spec))
   assert.equal(parsed.children[0].agentFriendly, true)
   assert.equal(parsed.children[1].agentFriendly, false)
+})
+
+test('epicSpecMarker + parseEpicSpecMarker: persists a child plan body for adopted-shell attachment retry', () => {
+  const planMarkdown = '# Implementation plan\n\n- restore the canonical native attachment\n'
+  const spec = {
+    parent: { title: 'Epic parent', goal: 'Ship it', keyChanges: ['services/x'] },
+    children: [child('attachment-retry', { planMarkdown })],
+  }
+  const parsed = parseEpicSpecMarker(epicSpecMarker(spec))
+  assert.equal(parsed.children[0].planMarkdown, planMarkdown)
+})
+
+test('epicSpecMarker: drops oversized child plan bodies so resume redrafts them without overflowing the tracker marker', () => {
+  const spec = {
+    parent: { title: 'Epic parent', goal: 'Ship it', keyChanges: ['services/x'] },
+    children: [
+      child('first', { planMarkdown: '# First\n\n' + 'a'.repeat(EPIC_SPEC_MARKER_MAX_BYTES) }),
+      child('second', { planMarkdown: '# Second\n\n' + 'b'.repeat(EPIC_SPEC_MARKER_MAX_BYTES) }),
+    ],
+  }
+  const marker = epicSpecMarker(spec)
+  assert.ok(Buffer.byteLength(marker, 'utf8') <= EPIC_SPEC_MARKER_MAX_BYTES + 64)
+  const parsed = parseEpicSpecMarker(marker)
+  assert.equal('planMarkdown' in parsed.children[0], false)
+  assert.equal('planMarkdown' in parsed.children[1], false)
+})
+
+test('parseEpicSpecMarker: an OLD marker without planMarkdown leaves the body absent for a safe redraft', () => {
+  const legacy =
+    '<!-- boss-plan-epic-spec:{"parent":{"title":"t","goal":"g","keyChanges":[]},' +
+    '"children":[{"key":"c1","title":"t1","goal":"g1","keyChanges":["x"],' +
+    '"blockedByKeys":[],"estimate":3,"priority":2}]} -->'
+  const parsed = parseEpicSpecMarker(legacy)
+  assert.ok(parsed, 'a legacy marker must still parse')
+  assert.equal('planMarkdown' in parsed.children[0], false)
 })
 
 test('epicSpecMarker + parseEpicSpecMarker: persists agentQuestion from a child plan openQuestions', () => {

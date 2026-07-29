@@ -7,7 +7,7 @@ reference is the full narrative for the four daemon-coupled points.
 
 ## The signal
 
-`scripts/bossd-present.mjs` is the single source of truth: bossd injects `BOSS_SESSION_ID` into every
+`toolbox/bossd-present.mjs` is the single source of truth: bossd injects `BOSS_SESSION_ID` into every
 managed session's env and forbids `.env` from shadowing it, so its presence is the reliable
 "a daemon owns this session" signal (CLI exit `0` = managed, `3` = standalone). Absence ⇒ standalone.
 If a canonical config/env detector later lands, `bossd-present.mjs` delegates to it rather than
@@ -70,7 +70,7 @@ on the key.
 ## Step 12 — Stop-hook removal is an inherent no-op
 
 bossd installs the Stop-hooks the skill removes so bossd does not double-finalize. Under
-`BOSSD_MANAGED=0` bossd installed none, so `node scripts/remove-bossd-stop-hooks.mjs` finds nothing to
-remove and writes nothing — an inherent no-op that needs no separate branch. Always call the
-single-source-of-truth script; **never** inline its Stop-hook filter (guarded by
-`scripts/check-no-inline-stop-hooks.mjs`).
+`BOSSD_MANAGED=0` bossd installed none, so the toolbox Stop-hook helper finds nothing to remove
+and writes nothing — an inherent no-op that needs no separate branch. Always call the
+single-source-of-truth script; **never** inline its Stop-hook filter. A repo lint gate enforces
+that invariant.

@@ -8,7 +8,7 @@ all: format lint test
 # (.claude/skills/*/gate/*.mjs) — their shared logic is tested via scripts/, but
 # the entries themselves still need formatting + a syntax check.
 format:
-	cd .. && pnpm exec prettier --write 'scripts/*.{cjs,mjs}' 'scripts/bazel/*.mjs' 'scripts/publish/*.{cjs,mjs}' 'scripts/tracker/*.{cjs,mjs}' 'scripts/finalize/*.{cjs,mjs}' 'scripts/session/*.{cjs,mjs}' 'scripts/callback/*.{cjs,mjs}' 'scripts/changelog/*.{cjs,mjs}' 'scripts/skill-parity/*.{cjs,mjs}' 'skills-toolbox/*.mjs' '.claude/skills/*/gate/*.mjs'
+	cd .. && pnpm exec prettier --write 'scripts/*.{cjs,mjs}' 'scripts/bazel/*.mjs' 'scripts/changelog/*.{cjs,mjs}' 'scripts/skill-parity/*.{cjs,mjs}' 'skills-toolbox/*.mjs' 'skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.{cjs,mjs}' '.claude/skills/*/gate/*.mjs'
 
 ## lint: Check script syntax (content-hash stamped; skips unchanged trees)
 # lint-scripts.mjs `node --check`s the same .cjs/.mjs set the old shell loop did,
@@ -19,6 +19,6 @@ lint:
 
 ## test: Run script tests
 test:
-	cd .. && node --test scripts/*.test.mjs scripts/bazel/*.test.mjs scripts/publish/*.test.mjs scripts/tracker/*.test.mjs scripts/finalize/*.test.mjs scripts/session/*.test.mjs scripts/callback/*.test.mjs scripts/changelog/*.test.mjs scripts/skill-parity/*.test.mjs
-	cd .. && node --test skills-toolbox/*.test.mjs
+	cd .. && node --test scripts/*.test.mjs scripts/bazel/*.test.mjs scripts/changelog/*.test.mjs scripts/skill-parity/*.test.mjs
+	cd .. && node --test skills-toolbox/*.test.mjs skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.test.mjs
 	cd .. && node scripts/check-test-command-manifest.mjs

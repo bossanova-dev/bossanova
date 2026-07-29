@@ -933,6 +933,7 @@ func selfHealSkills() error {
 	if settingsChanged {
 		_ = config.Save(settings)
 	}
+	warnBinarySkillsDrift()
 	return nil
 }
 

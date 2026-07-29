@@ -3653,6 +3653,30 @@ func TestRenderErrorFillsTheGivenWidth(t *testing.T) {
 	}
 }
 
+func TestHomeNarrowChromeUsesContentWidth(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 72
+	h.sessions = []*pb.Session{{Id: "sess-1", Title: "A session title long enough to build the fitted table"}}
+	h.buildTableRows()
+
+	h.confirm = newConfirmPrompt("Log out of the account with this.deliberately.long.email.address@example.com?", nil)
+	footer := h.renderSessionTable()
+	for _, line := range strings.Split(footer, "\n") {
+		if got := lipgloss.Width(line); got > h.width {
+			t.Errorf("logout confirmation line is %d columns, want <= %d: %q", got, h.width, line)
+		}
+	}
+	if !strings.Contains(footer, "[y/enter] confirm") || !strings.Contains(footer, "[n/esc] cancel") {
+		t.Errorf("logout confirmation does not use the shared footer: %q", footer)
+	}
+
+	h.confirm = confirmPrompt{}
+	h.upgradeError = longCloudAccessErrorDetail
+	assertWrapped(t, "upgrade error", h.upgradeStatusView(), h.statusWrapWidth())
+	h.err = errors.New(longCloudAccessErrorDetail)
+	assertWrapped(t, "daemon error", h.renderDaemonError(), h.statusWrapWidth())
+}
+
 // TestRenderErrorUnknownWidthIsUnconstrained pins the width == 0 fallback: with
 // no tea.WindowSizeMsg yet there is nothing to wrap into, so the message stays
 // on one line at its natural width plus styleError's padding.

@@ -122,7 +122,7 @@ interactive-only):
 
 ## Phase 4 — Resolve the draft/review step (interactive only)
 
-Run `node scripts/skill-extensions.mjs discover --core boss-plan --role draft --json` and read
+Run `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role draft --json` and read
 both `extensions` and `skipped`; record every skip in the autonomous decisions.
 If the helper is missing in an installed public skill payload, treat discovery as
 `{"extensions":[],"skipped":[]}` so the portable fallback tiers still run.

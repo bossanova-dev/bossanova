@@ -30,7 +30,7 @@ func (m NewSessionModel) renderErr() string {
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(actionBar([]string{"[esc] back"}))
+	b.WriteString(actionBarWidth(m.width, []string{"[esc] back"}))
 	return b.String()
 }
 
@@ -46,7 +46,7 @@ func (m NewSessionModel) renderRepoSelect() string {
 	b.WriteString("\n\n")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.repoTable.View()))
 	b.WriteString("\n")
-	b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
+	b.WriteString(actionBarWidth(m.width, []string{"[enter] select"}, []string{"[esc] back"}))
 	return b.String()
 }
 
@@ -59,7 +59,7 @@ func (m NewSessionModel) renderAgentSelect() string {
 	b.WriteString("\n\n")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.agentTable.View()))
 	b.WriteString("\n")
-	b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
+	b.WriteString(actionBarWidth(m.width, []string{"[enter] select"}, []string{"[esc] back"}))
 	return b.String()
 }
 
@@ -69,7 +69,7 @@ func (m NewSessionModel) renderTypeSelect() string {
 	b.WriteString(m.headerView())
 	b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.typeTable.View()))
 	b.WriteString("\n")
-	b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
+	b.WriteString(actionBarWidth(m.width, []string{"[enter] select"}, []string{"[esc] back"}))
 	return b.String()
 }
 
@@ -88,7 +88,7 @@ func (m NewSessionModel) renderPRSelect() string {
 		b.WriteString(m.prFilter.View())
 		b.WriteString("\n")
 	}
-	b.WriteString(prSelectActionBar(m.prFilter, len(m.prs) > 0))
+	b.WriteString(prSelectActionBar(m.width, m.prFilter, len(m.prs) > 0))
 	return b.String()
 }
 
@@ -117,7 +117,7 @@ func (m NewSessionModel) renderIssueSelect() string {
 			}
 			b.WriteString("\n")
 		}
-		b.WriteString(prSelectActionBar(m.issueFilter, len(m.trackerIssues) > 0))
+		b.WriteString(prSelectActionBar(m.width, m.issueFilter, len(m.trackerIssues) > 0))
 	}
 	return b.String()
 }
@@ -192,7 +192,7 @@ func (m NewSessionModel) renderForm() string {
 	// CreateSession, so one verb is truthful for either phase. Kept short so
 	// the verb line stays within 80 columns — the nav hints now occupy their
 	// own line above it (BOS-512), so it no longer shares one with them.
-	b.WriteString(formActionBar([]string{"[enter] create"}, []string{"[esc] back"}))
+	b.WriteString(formActionBarWidth(m.width, []string{"[enter] create"}, []string{"[esc] back"}))
 	return b.String()
 }
 
@@ -209,12 +209,12 @@ func (m NewSessionModel) formPrefix() string {
 //   - filtering (input focused): replaces the bar with the filter help.
 //   - applied (query committed): offers to edit or clear the filter.
 //   - idle: normal "[enter] select" plus discoverability hint for "/".
-func prSelectActionBar(f listFilter, hasItems bool) string {
+func prSelectActionBar(width int, f listFilter, hasItems bool) string {
 	if f.Active() {
-		return actionBar(f.ActionBar())
+		return actionBarWidth(width, f.ActionBar())
 	}
 	if f.Applied() {
-		return actionBar(
+		return actionBarWidth(width,
 			[]string{"[enter] select"},
 			[]string{"[/] edit filter", "[esc] clear"},
 		)
@@ -223,7 +223,24 @@ func prSelectActionBar(f listFilter, hasItems bool) string {
 	if hasItems {
 		primary = append(primary, "[/] filter")
 	}
-	return actionBar(primary, []string{"[esc] back"})
+	return actionBarWidth(width, primary, []string{"[esc] back"})
+}
+
+func prSelectActionBarLineCount(width int, f listFilter, hasItems bool) int {
+	if f.Active() {
+		return actionBarLineCount(width, f.ActionBar())
+	}
+	if f.Applied() {
+		return actionBarLineCount(width,
+			[]string{"[enter] select"},
+			[]string{"[/] edit filter", "[esc] clear"},
+		)
+	}
+	primary := []string{"[enter] select"}
+	if hasItems {
+		primary = append(primary, "[/] filter")
+	}
+	return actionBarLineCount(width, primary, []string{"[esc] back"})
 }
 
 func (m NewSessionModel) headerView() string {

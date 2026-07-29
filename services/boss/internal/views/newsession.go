@@ -108,9 +108,10 @@ type NewSessionModel struct {
 	accountPicked bool
 
 	// Tables
-	repoTable table.Model
-	typeTable table.Model
-	prTable   table.Model
+	repoTable            table.Model
+	typeTable            table.Model
+	typeTableOptionTypes []sessionType
+	prTable              table.Model
 
 	// Form
 	form *huh.Form

@@ -60,7 +60,9 @@ export function secondVoiceAgent(currentAgent) {
 //     (MatchedLens[]). The lens registry is loaded from the repo-root .boss-skills.json
 //     so a consuming repo's config drives the CLI. `--lenses` is also the default when no
 //     recognized flag is given.
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from './main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2)
   const svIdx = argv.indexOf('--second-voice')
   if (svIdx !== -1) {

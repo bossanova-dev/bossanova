@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "title": "BOS-576 — action bars, confirmation dialogs, and banners remain readable on a 72-column TUI",
+  "fixture": { "preset": "busy" },
+  "terminal": { "cols": 72 },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the Home action bar folds at whole action groups instead of clipping a hint",
+      "steps": [
+        {
+          "waitFor": "Provision new worktree",
+          "timeoutMs": 10000,
+          "caption": "The populated Home board is running in a 72-column terminal"
+        },
+        {
+          "expect": [
+            {
+              "text": "[n]ew session",
+              "match": "normalized",
+              "label": "the Home action bar begins with the complete new-session group"
+            },
+            {
+              "text": "[q]uit",
+              "match": "normalized",
+              "label": "the final quit group remains readable instead of being clipped at column 72"
+            }
+          ],
+          "caption": "Both the first and last Home actions remain visible on readable folded rows"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "a delete confirmation dialog stays inside the narrow screen",
+      "steps": [
+        { "key": "s", "caption": "Open Settings from Home" },
+        {
+          "waitFor": "Repositories",
+          "timeoutMs": 10000,
+          "caption": "The Settings hub is visible"
+        },
+        { "key": "r", "caption": "Open the repository list" },
+        {
+          "waitFor": "[a]dd",
+          "timeoutMs": 10000,
+          "caption": "The repository list is visible"
+        },
+        { "key": "d", "caption": "Open the delete confirmation" },
+        {
+          "waitFor": "Delete",
+          "timeoutMs": 10000,
+          "caption": "The confirmation prompt is contained by the 72-column terminal"
+        },
+        {
+          "expect": [
+            {
+              "text": "[y/enter] confirm",
+              "match": "normalized",
+              "label": "confirmation action remains fully visible"
+            },
+            {
+              "text": "[n/esc] cancel",
+              "match": "normalized",
+              "label": "cancel action remains fully visible"
+            }
+          ],
+          "caption": "The dialog keeps both action choices readable on the narrow screen"
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "a long session title is truncated in the narrow session banner",
+      "steps": [
+        { "key": "n", "caption": "Dismiss the confirmation without deleting the repository" },
+        { "key": "esc", "caption": "Return to Settings" },
+        { "key": "esc", "caption": "Return to the Home board" },
+        { "key": "down", "caption": "Move through the busy fixture to the long-title session" },
+        { "key": "down", "caption": "Move to the next session" },
+        { "key": "down", "caption": "Move to the next session" },
+        { "key": "down", "caption": "Move to the next session" },
+        { "key": "down", "caption": "Move to the next session" },
+        { "key": "down", "caption": "Move to the next session" },
+        { "key": "down", "caption": "Move to the next session" },
+        { "key": "down", "caption": "Move to the next session" },
+        { "key": "down", "caption": "Move to the next session" },
+        { "key": "down", "caption": "Move to the next session" },
+        { "key": "down", "caption": "Move to the next session" },
+        { "key": "down", "caption": "Move to the long-title session" },
+        { "key": "enter", "caption": "Open the long-title session" },
+        {
+          "waitFor": "Finalize the sweeping",
+          "timeoutMs": 10000,
+          "caption": "The session banner preserves the title's leading words and truncates its tail"
+        },
+        {
+          "expect": [
+            {
+              "text": "Finalize the sweeping",
+              "match": "normalized",
+              "label": "long session title leading words remain visible in the banner"
+            },
+            {
+              "text": "…",
+              "match": "literal",
+              "label": "banner marks the truncated title with an ellipsis"
+            }
+          ],
+          "caption": "The narrow banner truncates rather than overflowing past the terminal edge"
+        }
+      ]
+    }
+  ]
+}

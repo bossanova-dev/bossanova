@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -293,6 +295,250 @@ func TestChatPickerBuildTableRows_ShowsAgentAfterChatWhenMultipleAgentsEnabled(t
 	if got := rows[1][2]; got != "codex" {
 		t.Fatalf("chat row AGENT column = %q, want codex", got)
 	}
+}
+
+// responsiveChatPickerModel builds a board whose long title makes the
+// responsive tiers exercise the chat picker's declared-column policy.
+func responsiveChatPickerModel(width int, multipleAgents bool) ChatPickerModel {
+	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
+	m.width = width
+	m.agents = []client.AgentInfo{{Name: "claude"}}
+	if multipleAgents {
+		m.agents = append(m.agents, client.AgentInfo{Name: "codex"})
+	}
+	now := timestamppb.Now()
+	m.chats = []*pb.ClaudeChat{{
+		SessionId:      "session-1",
+		AgentSessionId: "agent-1",
+		AgentName:      "claude-enter",
+		Title:          "Make the chat picker fit a narrow terminal without losing its useful status information",
+		CreatedAt:      now,
+	}}
+	m.daemonStatuses = map[string]string{"agent-1": statusWorking}
+	m.buildTableRows()
+	return m
+}
+
+func chatPickerColumnTitles(cols []table.Column) []string {
+	titles := make([]string, len(cols))
+	for i, col := range cols {
+		titles[i] = col.Title
+	}
+	return titles
+}
+
+// TestChatPickerResponsiveColumns proves the chat board keeps its identity
+// columns, sheds the least useful metadata first, and never leaves rows out of
+// sync with the fitted headers.
+func TestChatPickerResponsiveColumns(t *testing.T) {
+	tests := []struct {
+		width  int
+		single []string
+		multi  []string
+	}{
+		{60, []string{" ", "CHAT"}, []string{" ", "CHAT"}},
+		{72, []string{" ", "CHAT"}, []string{" ", "CHAT"}},
+		{80, []string{" ", "CHAT", "STATUS"}, []string{" ", "CHAT", "STATUS"}},
+		{100, []string{" ", "CHAT", "CREATED", "ACTIVE", "STATUS"}, []string{" ", "CHAT", "ACTIVE", "STATUS"}},
+		{140, []string{" ", "CHAT", "CREATED", "ACTIVE", "STATUS"}, []string{" ", "CHAT", "AGENT", "CREATED", "ACTIVE", "STATUS"}},
+	}
+
+	for _, multipleAgents := range []bool{false, true} {
+		branch := "single agent"
+		if multipleAgents {
+			branch = "multiple agents"
+		}
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%s/%d_columns", branch, tt.width), func(t *testing.T) {
+				m := responsiveChatPickerModel(tt.width, multipleAgents)
+				want := tt.single
+				if multipleAgents {
+					want = tt.multi
+				}
+				cols := m.table.Columns()
+				if got := chatPickerColumnTitles(cols); !reflect.DeepEqual(got, want) {
+					t.Fatalf("column titles = %v, want %v", got, want)
+				}
+				if got, avail := columnsWidth(cols), fitAvailWidth(m.width, chatPickerBlockPadding); got > avail {
+					t.Errorf("columnsWidth = %d, want <= fitted table width %d", got, avail)
+				}
+				if !slices.Contains(chatPickerColumnTitles(cols), "CHAT") {
+					t.Fatal("CHAT column was dropped")
+				}
+				for rowIndex, row := range m.table.Rows() {
+					if len(row) != len(cols) {
+						t.Errorf("row %d has %d cells, want one per fitted column (%d)", rowIndex, len(row), len(cols))
+					}
+				}
+			})
+		}
+	}
+
+	for _, multipleAgents := range []bool{false, true} {
+		full := responsiveChatPickerModel(140, multipleAgents)
+		unfitted := responsiveChatPickerModel(0, multipleAgents)
+		if got, want := full.table.Columns(), unfitted.table.Columns(); !reflect.DeepEqual(got, want) {
+			t.Errorf("140-column headers = %+v, want byte-identical unfitted headers %+v", got, want)
+		}
+	}
+}
+
+func TestChatPickerResponsiveTableKeepsProseAndHTTPReservationsAt72Columns(t *testing.T) {
+	m := responsiveChatPickerModel(72, true)
+	if got, tableWidth := m.blockWrapWidth(), columnsWidth(m.table.Columns()); got > tableWidth {
+		t.Errorf("blockWrapWidth() = %d, want <= fitted table width %d", got, tableWidth)
+	}
+	if got, avail := m.blockWrapWidth(), m.width-chatPickerBlockPadding*2; got > avail {
+		t.Errorf("blockWrapWidth() = %d, want <= terminal content width %d", got, avail)
+	}
+	m.session = &pb.Session{Id: "session-1", HttpEndpoints: manyEndpoints(12)}
+	if got := m.httpLineHeight(); got != 1 {
+		t.Errorf("httpLineHeight() = %d, want 1 at 72 columns", got)
+	}
+}
+
+func TestChatPickerAgentTableFitsAtResponsiveWidths(t *testing.T) {
+	for _, width := range []int{60, 72, 80, 100, 140} {
+		t.Run(fmt.Sprintf("%d_columns", width), func(t *testing.T) {
+			m := responsiveChatPickerModel(width, true)
+			m.buildAgentTable()
+			cols := m.agentTable.Columns()
+			if got, avail := columnsWidth(cols), fitAvailWidth(m.width, chatPickerBlockPadding); got > avail {
+				t.Errorf("agent columnsWidth = %d, want <= %d", got, avail)
+			}
+			for rowIndex, row := range m.agentTable.Rows() {
+				if len(row) != len(cols) {
+					t.Errorf("agent row %d has %d cells, want %d", rowIndex, len(row), len(cols))
+				}
+			}
+		})
+	}
+}
+
+// TestChatPickerResizeRefitsResponsiveTables ensures an already-open picker
+// rebuilds its fitted columns when the terminal narrows, rather than waiting
+// for a later poll or spinner tick to correct the stale wide table.
+func TestChatPickerResizeRefitsResponsiveTables(t *testing.T) {
+	assertFitted := func(t *testing.T, cols []table.Column, rows []table.Row, width int) {
+		t.Helper()
+		if got := columnsWidth(cols); got > width {
+			t.Errorf("columnsWidth = %d after resize, want <= terminal width %d", got, width)
+		}
+		for rowIndex, row := range rows {
+			if len(row) != len(cols) {
+				t.Errorf("row %d has %d cells after resize, want %d", rowIndex, len(row), len(cols))
+			}
+		}
+	}
+
+	tests := []struct {
+		name  string
+		build func() ChatPickerModel
+		cols  func(ChatPickerModel) []table.Column
+		rows  func(ChatPickerModel) []table.Row
+	}{
+		{
+			name: "chat table",
+			build: func() ChatPickerModel {
+				return responsiveChatPickerModel(140, true)
+			},
+			cols: func(m ChatPickerModel) []table.Column { return m.table.Columns() },
+			rows: func(m ChatPickerModel) []table.Row { return m.table.Rows() },
+		},
+		{
+			name: "agent picker",
+			build: func() ChatPickerModel {
+				m := responsiveChatPickerModel(140, true)
+				m.pickingAgent = true
+				m.buildAgentTable()
+				return m
+			},
+			cols: func(m ChatPickerModel) []table.Column { return m.agentTable.Columns() },
+			rows: func(m ChatPickerModel) []table.Row { return m.agentTable.Rows() },
+		},
+		{
+			name: "switch-account picker",
+			build: func() ChatPickerModel {
+				m := responsiveChatPickerModel(140, true)
+				m.pickingAccount = true
+				m.switchAccounts = []*pb.Account{{
+					Id:       "acct-1",
+					Label:    "Long-running production account with a descriptive operator label",
+					Provider: "claude-enter",
+					Status:   "active",
+					Health:   "healthy",
+				}}
+				m.buildSwitchAccountTable()
+				return m
+			},
+			cols: func(m ChatPickerModel) []table.Column { return m.switchAccountTable.Columns() },
+			rows: func(m ChatPickerModel) []table.Row { return m.switchAccountTable.Rows() },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := tt.build()
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 72, Height: 30})
+			m = updated.(ChatPickerModel)
+			assertFitted(t, tt.cols(m), tt.rows(m), m.width)
+		})
+	}
+}
+
+// TestChatPickerResizePreservesActiveOverlayCursor keeps a live overlay
+// selection stable while refitting it for a narrower terminal. Initial-open
+// defaults remain owned by each builder; this only applies after navigation.
+func TestChatPickerResizePreservesActiveOverlayCursor(t *testing.T) {
+	t.Run("agent picker", func(t *testing.T) {
+		m := responsiveChatPickerModel(140, true)
+		m.pickingAgent = true
+		m.buildAgentTable()
+		updated, _ := m.Update(keyPress('j'))
+		m = updated.(ChatPickerModel)
+		wantCursor := m.agentTable.Cursor()
+
+		updated, _ = m.Update(tea.WindowSizeMsg{Width: 72, Height: 30})
+		m = updated.(ChatPickerModel)
+		if got := m.agentTable.Cursor(); got != wantCursor {
+			t.Errorf("agent cursor after resize = %d, want %d", got, wantCursor)
+		}
+		if got := columnsWidth(m.agentTable.Columns()); got > m.width {
+			t.Errorf("agent columnsWidth = %d after resize, want <= terminal width %d", got, m.width)
+		}
+		for rowIndex, row := range m.agentTable.Rows() {
+			if len(row) != len(m.agentTable.Columns()) {
+				t.Errorf("agent row %d has %d cells after resize, want %d", rowIndex, len(row), len(m.agentTable.Columns()))
+			}
+		}
+	})
+
+	t.Run("switch-account picker", func(t *testing.T) {
+		m := responsiveChatPickerModel(140, true)
+		m.pickingAccount = true
+		m.switchAccounts = []*pb.Account{
+			{Id: "acct-1", Label: "Long-running production account with a descriptive operator label", Provider: "claude-enter", Status: "active", Health: "healthy"},
+			{Id: "acct-2", Label: "Backup account", Provider: "codex", Status: "active", Health: "healthy"},
+		}
+		m.buildSwitchAccountTable()
+		updated, _ := m.Update(keyPress('j'))
+		m = updated.(ChatPickerModel)
+		wantCursor := m.switchAccountTable.Cursor()
+
+		updated, _ = m.Update(tea.WindowSizeMsg{Width: 72, Height: 30})
+		m = updated.(ChatPickerModel)
+		if got := m.switchAccountTable.Cursor(); got != wantCursor {
+			t.Errorf("switch-account cursor after resize = %d, want %d", got, wantCursor)
+		}
+		if got := columnsWidth(m.switchAccountTable.Columns()); got > m.width {
+			t.Errorf("switch-account columnsWidth = %d after resize, want <= terminal width %d", got, m.width)
+		}
+		for rowIndex, row := range m.switchAccountTable.Rows() {
+			if len(row) != len(m.switchAccountTable.Columns()) {
+				t.Errorf("switch-account row %d has %d cells after resize, want %d", rowIndex, len(row), len(m.switchAccountTable.Columns()))
+			}
+		}
+	})
 }
 
 func TestChatPicker_W_OnStoppedChat_FiresWake(t *testing.T) {

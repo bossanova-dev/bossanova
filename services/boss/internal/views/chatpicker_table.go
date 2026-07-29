@@ -44,18 +44,20 @@ func (m *ChatPickerModel) buildTableRows() {
 	activeWidth := maxColWidth("ACTIVE", actives, 12)
 	statusWidth := 12 // enough for spinner + "working"
 
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "CHAT", Width: titleWidth + tableColumnSep},
+	rcols := []responsiveColumn{
+		{col: cursorColumn, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "CHAT", Width: titleWidth + tableColumnSep}, priority: 0, minWidth: 16},
 	}
 	if showAgentColumn {
-		cols = append(cols, table.Column{Title: "AGENT", Width: agentWidth + tableColumnSep})
+		rcols = append(rcols, responsiveColumn{col: table.Column{Title: "AGENT", Width: agentWidth + tableColumnSep}, priority: 3, minWidth: 4})
 	}
-	cols = append(cols,
-		table.Column{Title: "CREATED", Width: createdWidth + tableColumnSep},
-		table.Column{Title: "ACTIVE", Width: activeWidth + tableColumnSep},
-		table.Column{Title: "STATUS", Width: statusWidth + tableColumnSep},
+	rcols = append(rcols,
+		responsiveColumn{col: table.Column{Title: "CREATED", Width: createdWidth + tableColumnSep}, priority: 4, minWidth: 4},
+		responsiveColumn{col: table.Column{Title: "ACTIVE", Width: activeWidth + tableColumnSep}, priority: 2, minWidth: 4},
+		responsiveColumn{col: table.Column{Title: "STATUS", Width: statusWidth + tableColumnSep}, priority: 1, minWidth: 8},
 	)
+	fitted := fitColumnsIndexed(rcols, m.chatPickerTableAvailWidth())
+	cols := fittedColumns(fitted)
 
 	cursor := m.table.Cursor()
 	rows := make([]table.Row, len(m.chats))
@@ -80,21 +82,27 @@ func (m *ChatPickerModel) buildTableRows() {
 		if i == cursor {
 			indicator = cursorChevron
 		}
-		row := table.Row{indicator, titles[i]}
-		if showAgentColumn {
-			row = append(row, agents[i])
+		full := table.Row{indicator, titles[i], agents[i], createdStr, activeStr, statusStr}
+		if !showAgentColumn {
+			full = append(full[:2:2], full[3:]...)
 		}
-		row = append(row, createdStr, activeStr, statusStr)
-		rows[i] = row
+		rows[i] = projectRow(fitted, full)
 	}
 	// Columns first: since BOS-532 the prose blocks tableHeight reserves wrap
 	// at blockWrapWidth(), which reads the table's columns, so SetHeight must
 	// see the new column set to reserve the right number of rows.
-	m.table.SetColumns(cols)
-	m.table.SetRows(rows)
+	setTableContent(&m.table, cols, rows)
 	m.table.SetWidth(columnsWidth(cols))
 	m.table.SetHeight(m.tableHeight())
 	m.table.SetCursor(cursor)
+}
+
+// chatPickerTableAvailWidth returns the rendered columns the chat picker can
+// draw inside chatPickerContentBlock's horizontal inset. The resize handler
+// continues to set the table viewport width independently; this is only the
+// content budget used while rebuilding its fitted columns.
+func (m ChatPickerModel) chatPickerTableAvailWidth() int {
+	return fitAvailWidth(m.width, chatPickerBlockPadding)
 }
 
 // limitedProviderLine returns a concise warning line naming the provider(s)
@@ -130,7 +138,12 @@ func (m ChatPickerModel) tableHeight() int {
 	// gap + actionbar padding + actionbar, plus the session warning block
 	// (below the header, above the chat list). Reserving its lines shrinks the
 	// chat table rather than letting the block push the table off-screen.
-	overhead := bannerOverhead + 1 + actionBarPadY + 1 + m.warningBlockHeight() + m.limitedLineHeight() + m.httpLineHeight() + m.rotationHistoryHeight()
+	left, middle, back := m.chatListActionGroups()
+	footerLines := actionBarLineCount(m.width, middle, back)
+	if len(left) > 0 {
+		footerLines = actionBarLineCount(m.width, left, middle, back)
+	}
+	overhead := bannerOverhead + 1 + actionBarPadY + footerLines + m.warningBlockHeight() + m.limitedLineHeight() + m.httpLineHeight() + m.rotationHistoryHeight()
 	return clampedTableHeight(len(m.chats), m.height, overhead)
 }
 

@@ -10,9 +10,11 @@ go_library(
         "main.go",
         "opencodedb.go",
         "plugin.go",
+        "questionhook.go",
         "runner.go",
         "server.go",
     ],
+    embedsrcs = ["bossd-question.js"],
     importpath = "github.com/recurser/bossd-plugin-opencode",
     visibility = ["//visibility:private"],
     deps = [
@@ -22,6 +24,7 @@ go_library(
         "//lib/bossalib/loginshell",
         "//lib/bossalib/plugin",
         "//lib/bossalib/plugin/hostclient",
+        "//lib/bossalib/safego",
         "@com_github_hashicorp_go_plugin//:go-plugin",
         "@com_github_rs_zerolog//:zerolog",
         "@org_golang_google_grpc//:grpc",
@@ -47,11 +50,29 @@ go_test(
         "live_test.go",
         "main_test.go",
         "opencodedb_test.go",
+        "questionhook_asset_exec_test.go",
+        "questionhook_test.go",
         "runner_test.go",
         "server_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":bossd-plugin-opencode_lib"],
+    # keep: TestEmbeddedQuestionHookAssetExecutes runs the embedded
+    # bossd-question.js through a host JS runtime, which needs the developer's
+    # real PATH (node is commonly a version-manager shim) and HOME. Without
+    # these it silently t.Skip()s, leaving the shipped asset with no executable
+    # coverage on the gate. Two consequences to know about: the target can now
+    # see a real opencode install where one exists (live_test.go's suite is
+    # opt-in behind OPENCODE_LIVE=1, but runner_test.go's
+    # TestLiveOpencodeRunSkipsWhenAbsent gates on PATH alone and will smoke-run
+    # `opencode --version`; it skips on any failure), and because HOME and PATH
+    # differ per machine this target is a permanent cross-machine remote-cache
+    # miss. Both are cheap: a ~1s uncached run buys real coverage of a shipped
+    # runtime asset that would otherwise have none.
+    env_inherit = [
+        "HOME",
+        "PATH",
+    ],
     deps = [
         "//lib/bossalib/agenterr",
         "//lib/bossalib/agentruntime",

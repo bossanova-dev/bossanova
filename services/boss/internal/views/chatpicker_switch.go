@@ -76,14 +76,16 @@ func (m *ChatPickerModel) buildSwitchAccountTable() {
 		}
 	}
 
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "ACCOUNT", Width: maxColWidth("ACCOUNT", labels, 30) + tableColumnSep},
-		{Title: "PROVIDER", Width: maxColWidth("PROVIDER", providers, 12) + tableColumnSep},
-		{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 12) + tableColumnSep},
-		{Title: "HEALTH", Width: maxColWidth("HEALTH", healths, 10) + tableColumnSep},
-		{Title: "COOLDOWN", Width: maxColWidth("COOLDOWN", cooldowns, 14) + tableColumnSep},
+	rcols := []responsiveColumn{
+		{col: cursorColumn, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "ACCOUNT", Width: maxColWidth("ACCOUNT", labels, 30) + tableColumnSep}, priority: 0, minWidth: 12},
+		{col: table.Column{Title: "PROVIDER", Width: maxColWidth("PROVIDER", providers, 12) + tableColumnSep}, priority: 4, minWidth: 4},
+		{col: table.Column{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 12) + tableColumnSep}, priority: 1, minWidth: 4},
+		{col: table.Column{Title: "HEALTH", Width: maxColWidth("HEALTH", healths, 10) + tableColumnSep}, priority: 2, minWidth: 4},
+		{col: table.Column{Title: "COOLDOWN", Width: maxColWidth("COOLDOWN", cooldowns, 14) + tableColumnSep}, priority: 3, minWidth: 4},
 	}
+	fitted := fitColumnsIndexed(rcols, m.chatPickerTableAvailWidth())
+	cols := fittedColumns(fitted)
 	rows := make([]table.Row, len(labels))
 	for i := range labels {
 		indicator := ""
@@ -92,24 +94,24 @@ func (m *ChatPickerModel) buildSwitchAccountTable() {
 		}
 		accountIndex := i - offset
 		if accountIndex >= 0 && switchAccountDisabledReason(m.switchAccounts[accountIndex], now) != "" {
-			rows[i] = table.Row{
+			rows[i] = projectRow(fitted, table.Row{
 				indicator,
 				styleSubtle.Render(labels[i]),
 				styleSubtle.Render(providers[i]),
 				styleSubtle.Render(statuses[i]),
 				styleSubtle.Render(healths[i]),
 				styleSubtle.Render(cooldowns[i]),
-			}
+			})
 			continue
 		}
-		rows[i] = table.Row{
+		rows[i] = projectRow(fitted, table.Row{
 			indicator,
 			labels[i],
 			providers[i],
 			styleSubtle.Render(statuses[i]),
 			styleSubtle.Render(healths[i]),
 			styleSubtle.Render(cooldowns[i]),
-		}
+		})
 	}
 
 	m.switchAccountTable = newBossTable(cols, rows, len(rows)+1)

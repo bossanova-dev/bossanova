@@ -151,8 +151,11 @@ func (m NewSessionModel) keyPRSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		if m.prFilter.Applied() {
 			m.prFilter.Deactivate()
-			m.buildPRTable()
 			m.prTable.SetCursor(0)
+			m.buildPRTable()
+			if len(m.prTable.Rows()) > 0 {
+				m.prTable.GotoTop()
+			}
 			updateCursorColumn(&m.prTable)
 			return m, nil
 		}
@@ -185,8 +188,11 @@ func (m NewSessionModel) keyPRFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "esc":
 		m.prFilter.Deactivate()
-		m.buildPRTable()
 		m.prTable.SetCursor(0)
+		m.buildPRTable()
+		if len(m.prTable.Rows()) > 0 {
+			m.prTable.GotoTop()
+		}
 		updateCursorColumn(&m.prTable)
 		return m, nil
 	case "up", "down", "ctrl+p", "ctrl+n", "ctrl+d", "ctrl+u":
@@ -325,8 +331,11 @@ func (m NewSessionModel) updateConfirmOverwrite(msg tea.KeyMsg) (tea.Model, tea.
 func (m *NewSessionModel) updatePRFilterInput(msg tea.Msg) tea.Cmd {
 	cmd, changed := m.prFilter.Update(msg)
 	if changed {
-		m.buildPRTable()
 		m.prTable.SetCursor(0)
+		m.buildPRTable()
+		if len(m.prTable.Rows()) > 0 {
+			m.prTable.GotoTop()
+		}
 		updateCursorColumn(&m.prTable)
 	}
 	return cmd
@@ -335,8 +344,11 @@ func (m *NewSessionModel) updatePRFilterInput(msg tea.Msg) tea.Cmd {
 func (m *NewSessionModel) updateIssueFilterInput(msg tea.Msg) tea.Cmd {
 	cmd, changed := m.issueFilter.Update(msg)
 	if changed {
-		m.buildIssueTable()
 		m.issueTable.SetCursor(0)
+		m.buildIssueTable()
+		if len(m.issueTable.Rows()) > 0 {
+			m.issueTable.GotoTop()
+		}
 		updateCursorColumn(&m.issueTable)
 		m.issueSearchSeq++
 		m.issuesFetching = true

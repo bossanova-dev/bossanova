@@ -1,6 +1,7 @@
 package skillinstall
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -30,6 +31,93 @@ func changedFS() fstest.MapFS {
 		"skills/boss-finalize/SKILL.md":                       {Data: []byte("# Finalize\nLand it.")},
 		"skills/boss-repair/SKILL.md":                         {Data: []byte("# Repair\nFix it.")},
 		"skills/boss-repair/scripts/review-feedback-probe.js": {Data: []byte("#!/usr/bin/env node\nconsole.log('changed')")},
+	}
+}
+
+func writeSourceTree(t *testing.T, root string, fsys fs.FS) string {
+	t.Helper()
+	srcRoot := filepath.Join(root, SourceRelPath)
+	if err := fs.WalkDir(fsys, "skills", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return os.MkdirAll(filepath.Join(srcRoot, path), 0o755)
+		}
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return err
+		}
+		dest := filepath.Join(srcRoot, path)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(dest, data, 0o644)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return srcRoot
+}
+
+func TestFindSourceRoot(t *testing.T) {
+	root := t.TempDir()
+	writeSourceTree(t, root, testFS())
+	nested := filepath.Join(root, "nested", "child")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := FindSourceRoot(nested)
+	if !ok || got != filepath.Join(root, SourceRelPath) {
+		t.Fatalf("FindSourceRoot(%q) = (%q, %t), want (%q, true)", nested, got, ok, filepath.Join(root, SourceRelPath))
+	}
+	if got, ok := FindSourceRoot(t.TempDir()); ok || got != "" {
+		t.Fatalf("FindSourceRoot missing tree = (%q, %t), want (\"\", false)", got, ok)
+	}
+	if got, ok := FindSourceRoot(string(filepath.Separator)); ok || got != "" {
+		t.Fatalf("FindSourceRoot filesystem root = (%q, %t), want (\"\", false)", got, ok)
+	}
+}
+
+func TestSourceManifestMatchesEquivalentFS(t *testing.T) {
+	fsys := fstest.MapFS{
+		"skills/.gitkeep":       {Data: []byte{}},
+		"skills/boss/SKILL.md":  {Data: []byte("skill")},
+		"skills/boss/toolbox/x": {Data: []byte("tool")},
+	}
+	srcRoot := writeSourceTree(t, t.TempDir(), fsys)
+	want, err := Manifest(fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := SourceManifest(srcRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("SourceManifest = %q, want Manifest = %q", got, want)
+	}
+}
+
+func TestSourceDrift(t *testing.T) {
+	fsys := testFS()
+	srcRoot := writeSourceTree(t, t.TempDir(), fsys)
+	installed := t.TempDir()
+	if err := Extract(installed, fsys); err != nil {
+		t.Fatal(err)
+	}
+	drift, err := SourceDrift(installed, srcRoot)
+	if err != nil || drift {
+		t.Fatalf("SourceDrift matching tree = (%t, %v), want (false, nil)", drift, err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	drift, err = SourceDrift(installed, srcRoot)
+	if err != nil || !drift {
+		t.Fatalf("SourceDrift changed source = (%t, %v), want (true, nil)", drift, err)
+	}
+	if drift, err := SourceDrift(t.TempDir(), srcRoot); err != nil || drift {
+		t.Fatalf("SourceDrift uninstalled tree = (%t, %v), want (false, nil)", drift, err)
 	}
 }
 

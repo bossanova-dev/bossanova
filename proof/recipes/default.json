@@ -80,6 +80,15 @@
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
+      "id": "web-chat-terminal-reconnecting",
+      "surface": "web",
+      "title": "Web Chat Terminal (reconnecting)",
+      "description": "Chat terminal at phone width after the attach socket closes transiently: the breadcrumb and 'to detach' hint stay in the top bar and the 'Reconnecting…' toast appears over the terminal. The strip beneath the header remains clean with no Error: banner (BOS-590).",
+      "privacy": "fixture",
+      "route": "/sessions/sess-e2e-1/chats/claude-1",
+      "viewport": { "width": 390, "height": 844 }
+    },
+    {
       "id": "web-session-detail",
       "surface": "web",
       "title": "Web Session Detail (passing PR)",
@@ -297,7 +306,7 @@
       "id": "web-accounts-list",
       "surface": "web",
       "title": "Web Accounts",
-      "description": "Accounts settings page (/settings/accounts): the rotation-accounts table with Provider, Label, Health, Priority, Last used, and Usage columns. Disabled rows use the shared dormant treatment; no Active/Disabled status column is rendered.",
+      "description": "Accounts settings page (/settings/accounts): the rotation-accounts table with Provider, Label, Health, Priority, Last used, and Usage columns. Disabled rows use the shared dormant treatment; no Active/Disabled status column is rendered. One account's provider cannot determine utilization, so its Usage cell shows an em dash rather than a fabricated 0%.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/settings/accounts",
@@ -308,7 +317,7 @@
       "id": "web-accounts-list-mobile",
       "surface": "web",
       "title": "Web Accounts (mobile)",
-      "description": "Accounts at 390px: label and inline provider with health on the top row, usage and four action buttons below; priority and last used are hidden and disabled rows remain visibly dormant.",
+      "description": "Accounts at 390px: label and inline provider with health on the top row, usage and four action buttons below; priority and last used are hidden and disabled rows remain visibly dormant. One account's provider cannot determine utilization, so its Usage cell shows an em dash rather than a fabricated 0%.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/settings/accounts",
@@ -792,6 +801,7 @@
         "web-account-remove",
         "web-account",
         "web-chat-terminal",
+        "web-chat-terminal-reconnecting",
         "web-new-session-flow",
         "web-new-chat",
         "web-new-chat-back",

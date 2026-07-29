@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { matchLenses, secondVoiceAgent } from './bs-review-detect.mjs'
@@ -66,10 +66,7 @@ test('matchLenses selects the db lens for a migration path with skill database-r
 
 test('matchLenses does NOT select the db lens for a non-migration diff', () => {
   const m = matchLenses(['internal/store/store.go', 'docs/schema.md'], LENSES)
-  assert.ok(
-    !m.some((x) => x.lens === 'db'),
-    'no db lens for a .go/docs diff outside migrations/',
-  )
+  assert.ok(!m.some((x) => x.lens === 'db'), 'no db lens for a .go/docs diff outside migrations/')
 })
 
 test('matchLenses with an empty/absent registry degrades to no lenses', () => {
@@ -123,6 +120,22 @@ test('CLI --second-voice claude prints codex', () => {
   const { stdout, status } = runCli(['--second-voice', 'claude'])
   assert.equal(stdout, 'codex')
   assert.equal(status, 0)
+})
+
+test('CLI through a symlink still runs --second-voice', () => {
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), 'bs-review-detect-link-'))
+  const link = join(dir, 'detect-via-symlink.mjs')
+  symlinkSync(scriptPath, link)
+  try {
+    const res = spawnSync(process.execPath, [link, '--second-voice', 'claude'], {
+      encoding: 'utf8',
+      cwd: repoRoot,
+    })
+    assert.equal(res.status, 0)
+    assert.equal(res.stdout.trim(), 'codex')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('CLI --second-voice with missing value defaults to codex', () => {

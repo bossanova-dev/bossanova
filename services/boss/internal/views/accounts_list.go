@@ -269,6 +269,12 @@ func (m AccountsListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfirm(msg)
 		}
 		return m.updateNormal(msg)
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.rebuildTable()
+		return m, nil
 	}
 
 	// Forward non-key messages (mouse, resize, focus, …) to the table.
@@ -451,13 +457,17 @@ func (m AccountsListModel) selectedAccount() *pb.Account {
 }
 
 func (m AccountsListModel) tableHeight() int {
-	return clampedTableHeight(len(m.accounts), m.height, bannerOverhead+1+actionBarPadY+1)
+	actionLines := actionBarLineCount(m.width,
+		[]string{"[e/enter]dit", "[a]dd", "[t]est", "[r]efresh", "[space] toggle", "[d] remove"},
+		[]string{"[esc] back"},
+	)
+	return clampedTableHeight(len(m.accounts), m.height, bannerOverhead+1+actionBarPadY+actionLines)
 }
 
 func (m *AccountsListModel) rebuildTable() {
 	if len(m.accounts) == 0 {
-		m.table.SetColumns(nil)
 		m.table.SetRows(nil)
+		m.table.SetColumns(nil)
 		return
 	}
 
@@ -486,18 +496,22 @@ func (m *AccountsListModel) rebuildTable() {
 		lastTests[i] = accountLastTestCell(a)
 	}
 
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "LABEL", Width: maxColWidth("LABEL", labels, 30) + tableColumnSep},
-		{Title: "PROVIDER", Width: maxColWidth("PROVIDER", providers, 12) + tableColumnSep},
-		{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 12) + tableColumnSep},
-		{Title: "HEALTH", Width: maxColWidth("HEALTH", healths, 10) + tableColumnSep},
-		{Title: "UTIL5H", Width: maxColWidth("UTIL5H", util5hs, 12) + tableColumnSep},
-		{Title: "UTIL7D", Width: maxColWidth("UTIL7D", util7ds, 12) + tableColumnSep},
-		{Title: "AGE", Width: maxColWidth("AGE", usageAges, 6) + tableColumnSep},
-		{Title: "COOLDOWN", Width: maxColWidth("COOLDOWN", cooldowns, 16) + tableColumnSep},
-		{Title: "LAST TEST", Width: maxColWidth("LAST TEST", lastTests, 24) + tableColumnSep},
+	// Keep the account identity and actionable status at narrow widths. The
+	// remaining diagnostics drop from the longest horizon to the shortest.
+	rcols := []responsiveColumn{
+		{col: cursorColumn, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "LABEL", Width: maxColWidth("LABEL", labels, 30) + tableColumnSep}, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "PROVIDER", Width: maxColWidth("PROVIDER", providers, 12) + tableColumnSep}, priority: 4, minWidth: 1},
+		{col: table.Column{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 12) + tableColumnSep}, priority: 1, minWidth: 1},
+		{col: table.Column{Title: "HEALTH", Width: maxColWidth("HEALTH", healths, 10) + tableColumnSep}, priority: 3, minWidth: 1},
+		{col: table.Column{Title: "UTIL5H", Width: maxColWidth("UTIL5H", util5hs, 12) + tableColumnSep}, priority: 2, minWidth: 1},
+		{col: table.Column{Title: "UTIL7D", Width: maxColWidth("UTIL7D", util7ds, 12) + tableColumnSep}, priority: 5, minWidth: 1},
+		{col: table.Column{Title: "AGE", Width: maxColWidth("AGE", usageAges, 6) + tableColumnSep}, priority: 5, minWidth: 1},
+		{col: table.Column{Title: "COOLDOWN", Width: maxColWidth("COOLDOWN", cooldowns, 16) + tableColumnSep}, priority: 3, minWidth: 1},
+		{col: table.Column{Title: "LAST TEST", Width: maxColWidth("LAST TEST", lastTests, 24) + tableColumnSep}, priority: 5, minWidth: 1},
 	}
+	fitted := fitColumnsIndexed(rcols, fitAvailWidth(m.width, 1))
+	cols := fittedColumns(fitted)
 
 	muted := lipgloss.NewStyle().Foreground(colorMuted)
 	cursor := m.table.Cursor()
@@ -553,11 +567,10 @@ func (m *AccountsListModel) rebuildTable() {
 			lastTest = muted.Render(lastTest)
 		}
 
-		rows[i] = table.Row{indicator, label, provider, status, health, util5h, util7d, usageAge, cooldown, lastTest}
+		rows[i] = projectRow(fitted, table.Row{indicator, label, provider, status, health, util5h, util7d, usageAge, cooldown, lastTest})
 	}
 
-	m.table.SetColumns(cols)
-	m.table.SetRows(rows)
+	setTableContent(&m.table, cols, rows)
 	m.table.SetWidth(columnsWidth(cols))
 	m.table.SetHeight(m.tableHeight())
 
@@ -678,7 +691,7 @@ func (m AccountsListModel) View() tea.View {
 	if len(m.accounts) == 0 {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(emptyAccountsMessage))
 		b.WriteString("\n")
-		b.WriteString(actionBar(
+		b.WriteString(actionBarWidth(m.width,
 			[]string{"[a]dd"},
 			[]string{"[esc] back"},
 		))
@@ -714,7 +727,7 @@ func (m AccountsListModel) View() tea.View {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(style.Render(m.status)))
 		b.WriteString("\n")
 	}
-	b.WriteString(actionBar(
+	b.WriteString(actionBarWidth(m.width,
 		[]string{"[e/enter]dit", "[a]dd", "[t]est", "[r]efresh", "[space] toggle", "[d] remove"},
 		[]string{"[esc] back"},
 	))

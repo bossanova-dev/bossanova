@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,182 @@ import (
 // runSkillSync and the interactive prompt share the skillInstall* seams; reuse
 // setupSkillStartupTest for the temp HOME + isolated settings file, then stub the
 // agents on PATH per case.
+
+func writeSkillSources(t *testing.T, root string, fsys fs.FS) string {
+	t.Helper()
+	srcRoot := filepath.Join(root, libskillinstall.SourceRelPath)
+	if err := fs.WalkDir(fsys, "skills", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return os.MkdirAll(filepath.Join(srcRoot, path), 0o755)
+		}
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return err
+		}
+		dest := filepath.Join(srcRoot, path)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(dest, data, 0o644)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return srcRoot
+}
+
+func TestRunSkillCheck(t *testing.T) {
+	t.Run("no sources exits cleanly", func(t *testing.T) {
+		home := setupSkillStartupTest(t)
+		claudeDir := filepath.Join(home, ".claude", "skills")
+		if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+			t.Fatal(err)
+		}
+		setAvailableSkillAgents(map[string]bool{"claude": true})
+		t.Chdir(t.TempDir())
+		var out bytes.Buffer
+		if err := runSkillCheck(&out, ""); err != nil {
+			t.Fatalf("runSkillCheck: %v", err)
+		}
+		if !strings.Contains(out.String(), "no skill sources in this checkout") {
+			t.Fatalf("output = %q", out.String())
+		}
+	})
+
+	t.Run("current binary reports current", func(t *testing.T) {
+		home := setupSkillStartupTest(t)
+		claudeDir := filepath.Join(home, ".claude", "skills")
+		if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+			t.Fatal(err)
+		}
+		setAvailableSkillAgents(map[string]bool{"claude": true})
+		root := t.TempDir()
+		writeSkillSources(t, root, bossskillinstall.SkillsFS)
+		nested := filepath.Join(root, "nested")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(nested)
+		var out bytes.Buffer
+		if err := runSkillCheck(&out, ""); err != nil {
+			t.Fatalf("runSkillCheck: %v", err)
+		}
+		if !strings.Contains(out.String(), "binary: current") {
+			t.Fatalf("output = %q", out.String())
+		}
+	})
+
+	t.Run("stale binary names rebuild remedy", func(t *testing.T) {
+		home := setupSkillStartupTest(t)
+		claudeDir := filepath.Join(home, ".claude", "skills")
+		if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+			t.Fatal(err)
+		}
+		setAvailableSkillAgents(map[string]bool{"claude": true})
+		root := t.TempDir()
+		srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+		if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(root)
+		var out bytes.Buffer
+		if err := runSkillCheck(&out, ""); err == nil {
+			t.Fatal("runSkillCheck stale binary returned nil")
+		}
+		if !strings.Contains(out.String(), "make build") {
+			t.Fatalf("output = %q", out.String())
+		}
+	})
+
+	t.Run("stale binary fails without an agent on PATH", func(t *testing.T) {
+		setupSkillStartupTest(t)
+		setAvailableSkillAgents(map[string]bool{})
+		root := t.TempDir()
+		srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+		if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(root)
+		var out bytes.Buffer
+		if err := runSkillCheck(&out, ""); err == nil {
+			t.Fatal("runSkillCheck stale binary without agents returned nil")
+		}
+		if !strings.Contains(out.String(), "make build") {
+			t.Fatalf("output = %q", out.String())
+		}
+	})
+
+	t.Run("continues after one payload cannot be read", func(t *testing.T) {
+		home := setupSkillStartupTest(t)
+		claudeDir := filepath.Join(home, ".claude", "skills")
+		codexDir := filepath.Join(home, ".codex", "skills")
+		for _, dir := range []string{claudeDir, codexDir} {
+			if err := libskillinstall.Extract(dir, bossskillinstall.SkillsFS); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		claudeSkill := filepath.Join(claudeDir, "bossanova", "boss", "SKILL.md")
+		if err := os.Remove(claudeSkill); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(claudeSkill, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(codexDir, "bossanova", "boss", "SKILL.md"), []byte("stale"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		setAvailableSkillAgents(map[string]bool{"claude": true, "codex": true})
+		t.Chdir(t.TempDir())
+		var out bytes.Buffer
+		err := runSkillCheck(&out, "")
+		if err == nil || !strings.Contains(err.Error(), "check claude skills") {
+			t.Fatalf("runSkillCheck error = %v, want Claude payload error", err)
+		}
+		if !strings.Contains(out.String(), "boss skills: claude") || !strings.Contains(out.String(), "payload: unable to check") || !strings.Contains(out.String(), "boss skills: codex") || !strings.Contains(out.String(), "payload: stale") {
+			t.Fatalf("output = %q", out.String())
+		}
+	})
+}
+
+func TestRunSkillSyncWarnsWhenBinarySkillsAreStale(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	claudeDir := filepath.Join(home, ".claude", "skills")
+	if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+		t.Fatal(err)
+	}
+	setAvailableSkillAgents(map[string]bool{"claude": true})
+	root := t.TempDir()
+	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = write
+	t.Cleanup(func() { os.Stderr = oldStderr })
+	var out bytes.Buffer
+	if err := runSkillSync(&out, skillSyncInstall, ""); err != nil {
+		t.Fatalf("runSkillSync: %v", err)
+	}
+	if err := write.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "make build") {
+		t.Fatalf("stderr = %q, want stale-binary warning", got)
+	}
+}
 
 func TestRunSkillSyncUpToDateWritesNothing(t *testing.T) {
 	home := setupSkillStartupTest(t)
@@ -275,6 +452,7 @@ func TestSkillsSubcommandsRejectPositionalArgs(t *testing.T) {
 	}{
 		{"sync positional", []string{"skills", "sync", "codex"}},
 		{"install positional", []string{"skills", "install", "codex"}},
+		{"check positional", []string{"skills", "check", "codex"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := skillsCmd()

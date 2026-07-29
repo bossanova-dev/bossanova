@@ -252,6 +252,27 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Refit whichever table is currently visible before sizing the main
+		// table viewport below. Without this, a picker opened on a wide terminal
+		// keeps its old column set until a later poll or spinner tick rebuilds it.
+		switch {
+		case m.pickingAgent:
+			cursor := m.agentTable.Cursor()
+			m.buildAgentTable()
+			if rows := m.agentTable.Rows(); len(rows) > 0 {
+				m.agentTable.SetCursor(min(max(cursor, 0), len(rows)-1))
+				updateCursorColumn(&m.agentTable)
+			}
+		case m.pickingAccount:
+			cursor := m.switchAccountTable.Cursor()
+			m.buildSwitchAccountTable()
+			if rows := m.switchAccountTable.Rows(); len(rows) > 0 {
+				m.switchAccountTable.SetCursor(min(max(cursor, 0), len(rows)-1))
+				updateCursorColumn(&m.switchAccountTable)
+			}
+		case len(m.chats) > 0:
+			m.buildTableRows()
+		}
 		// Order-independent since BOS-532: SetHeight's reservation now derives
 		// from blockWrapWidth() (m.width, assigned above, and the table's
 		// columns) rather than from the table's own width, which SetWidth is

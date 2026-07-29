@@ -229,7 +229,9 @@ function main() {
 }
 
 // Only run when invoked directly, so the test file can import classifyCronBranch.
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   try {
     main()
   } catch (err) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/recurser/bossalib/models"
@@ -23,6 +24,9 @@ const (
 	baseRetryBackoff = 30 * time.Second
 	// maxRetryBackoff caps the exponential retry backoff.
 	maxRetryBackoff = 15 * time.Minute
+	// maxDeliveryAttempts bounds delivery attempts before a callback is left to
+	// expire instead of repeatedly delivering the same registered message.
+	maxDeliveryAttempts = 5
 	// reconcileEveryTicks triggers a periodic full reconcile as a safety net for
 	// enduring states whose webhook was missed (see DeliveryWorker.Run).
 	reconcileEveryTicks = 20
@@ -187,6 +191,10 @@ func (w *DeliveryWorker) deliverOne(ctx context.Context, id string) {
 		w.logger.Warn().Err(err).Str("callback_id", id).Msg("callback worker: acquire lease failed")
 		return
 	}
+	if cb.AttemptCount >= maxDeliveryAttempts {
+		w.abandon(ctx, cb, cb.AttemptCount, errors.New("delivery attempts exhausted before delivery"), true)
+		return
+	}
 
 	verified := verifiedStateLabel(cb)
 	prompt := BuildCallbackPrompt(cb, verified)
@@ -213,6 +221,11 @@ func (w *DeliveryWorker) deliverOne(ctx context.Context, id string) {
 // lazy expiry sweep reaps it — i.e. it is left to expire rather than retried.
 func (w *DeliveryWorker) scheduleRetry(ctx context.Context, cb *models.GithubCallback, cause error) {
 	now := w.now()
+	attempt := cb.AttemptCount + 1
+	if attempt >= maxDeliveryAttempts {
+		w.abandon(ctx, cb, attempt, cause, false)
+		return
+	}
 	next := now.Add(backoffFor(cb.AttemptCount))
 	expiring := false
 	if !next.Before(cb.ExpiresAt) {
@@ -230,9 +243,28 @@ func (w *DeliveryWorker) scheduleRetry(ctx context.Context, cb *models.GithubCal
 			Msg("callback worker: schedule retry failed")
 		return
 	}
-	w.logger.Info().Str("callback_id", cb.ID).Int("attempt", cb.AttemptCount+1).
+	w.logger.Info().Str("callback_id", cb.ID).Int("attempt", attempt).
 		Time("next_attempt_at", next).Bool("expiring", expiring).
 		Msg("callback worker: delivery failed, retry scheduled")
+}
+
+// abandon pins a callback to expiry after delivery attempts are exhausted. The
+// existing retry mutation releases the held lease so ExpireOverdue can reap the
+// callback without adding another lifecycle state.
+func (w *DeliveryWorker) abandon(ctx context.Context, cb *models.GithubCallback, attempts int, cause error, preserveAttemptCount bool) {
+	if err := w.store.ScheduleRetry(ctx, cb.ID, w.owner, db.ScheduleGithubCallbackRetryParams{
+		NextAttemptAt:        cb.ExpiresAt,
+		LastError:            fmt.Sprintf("delivery attempt exhaustion after %d attempts: %v", attempts, cause),
+		LastEvent:            string(cb.Trigger),
+		PreserveAttemptCount: preserveAttemptCount,
+	}); err != nil {
+		w.logger.Warn().Err(err).Str("callback_id", cb.ID).
+			Msg("callback worker: abandon exhausted delivery failed")
+		return
+	}
+	w.logger.Warn().Str("callback_id", cb.ID).Int("attempt", attempts).
+		Time("expires_at", cb.ExpiresAt).
+		Msg("callback worker: delivery attempts exhausted; callback will expire")
 }
 
 // backoffFor returns the retry delay for the given prior attempt count, doubling

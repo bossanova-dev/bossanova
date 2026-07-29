@@ -1302,6 +1302,49 @@ func TestCreate_IgnoreIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestCreate_IgnoresBossdManagedPatterns verifies every bossd-written artifact
+// path lands in the worktree's shared info/exclude. Each entry is a file bossd
+// (or an agent plugin acting for it) drops into the worktree; left untracked
+// they surface in `git status` and make the finalize pipeline misclassify a
+// "did nothing" run as having agent changes → pr_failed → Blocked.
+//
+// The expectations are literals, not a loop over bossdManagedExcludePatterns,
+// so dropping a pattern from that slice fails here instead of quietly agreeing
+// with itself.
+func TestCreate_IgnoresBossdManagedPatterns(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+
+	if _, err := mgr.Create(context.Background(), CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Managed patterns",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(repoDir, ".git", "info", "exclude"))
+	if err != nil {
+		t.Fatalf("read exclude: %v", err)
+	}
+	want := []string{
+		".boss/",
+		".claude/settings.local.json",
+		".superpowers/",
+		// BOS-486: the opencode question-signal hook the plugin injects at
+		// StartRun and removes at run end. A crashed run can leave it behind.
+		".opencode/plugins/bossd-question.js",
+	}
+	for _, pattern := range want {
+		if !strings.Contains(string(body), pattern) {
+			t.Errorf("info/exclude is missing %q. Body:\n%s", pattern, body)
+		}
+	}
+}
+
 // TestCreate_IgnorePreservesExistingExcludes verifies that adding our
 // pattern doesn't clobber pre-existing user content in info/exclude.
 func TestCreate_IgnorePreservesExistingExcludes(t *testing.T) {

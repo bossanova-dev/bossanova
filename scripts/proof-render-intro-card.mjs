@@ -22,8 +22,9 @@ import { buildIntroCardHtml } from './proof-video-intro.mjs'
 
 // Only drive Playwright when invoked directly; importing this module (e.g. from
 // tests to verify the invokedDirectly guard) must not launch a browser.
-const invokedDirectly =
-  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+const invokedDirectly = isMainModule(import.meta.url)
 
 if (invokedDirectly) {
   main(process.argv.slice(2)).catch((error) => {

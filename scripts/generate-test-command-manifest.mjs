@@ -28,7 +28,8 @@ const defaultRootTargets = [
 const defaultWebTargets = [
   {
     command: 'pnpm run typecheck',
-    description: 'TypeScript type-check (includes `tests/e2e` via `tsconfig.e2e.json`)',
+    description:
+      'TypeScript type-check (includes `tests` via `tsconfig.test.json` and `tests/e2e` via `tsconfig.e2e.json`)',
     ci: 'yes',
   },
   { command: 'pnpm run lint', description: 'Biome lint + format check', ci: 'yes' },
@@ -193,6 +194,8 @@ function buildManifest() {
   })
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   process.stdout.write(buildManifest())
 }

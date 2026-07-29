@@ -96,6 +96,8 @@ export function run(argv = process.argv.slice(2), opts = {}) {
   return 0
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   process.exit(run())
 }

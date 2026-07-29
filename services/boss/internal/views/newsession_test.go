@@ -3,10 +3,13 @@ package views
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/config"
@@ -402,6 +405,254 @@ func TestNewSession_MultipleReposShowTable(t *testing.T) {
 	}
 }
 
+func TestNewSessionTables_FitColumnsAndRebuildOnResize(t *testing.T) {
+	m := NewNewSessionModel(&stubClient{}, context.Background())
+	m.repos = []*pb.Repo{{DisplayName: strings.Repeat("n", 30), LocalPath: "/" + strings.Repeat("p", 59)}}
+	m.agents = []client.AgentInfo{{Name: strings.Repeat("a", 20)}}
+	m.prs = []*pb.PRSummary{{Number: 12345678, Title: strings.Repeat("t", 50), HeadBranch: strings.Repeat("b", 30)}}
+	m.trackerIssues = []*pb.TrackerIssue{{ExternalId: strings.Repeat("i", 10), Title: strings.Repeat("t", 50), State: strings.Repeat("s", 15)}}
+
+	tables := func(m *NewSessionModel) []table.Model {
+		m.buildRepoTable()
+		m.buildAgentTable()
+		m.buildTypeTable()
+		m.buildPRTable()
+		m.buildIssueTable()
+		return []table.Model{m.repoTable, m.agentTable, m.typeTable, m.prTable, m.issueTable}
+	}
+
+	wantTitles := map[int][][]string{
+		0:   {{" ", "NAME", "PATH"}, {" ", "AGENT"}, {" ", "", ""}, {" ", "PR", "TITLE", "BRANCH"}, {" ", "ID", "TITLE", "STATE"}},
+		60:  {{" ", "NAME"}, {" ", "AGENT"}, {" ", ""}, {" ", "TITLE"}, {" ", "TITLE"}},
+		72:  {{" ", "NAME"}, {" ", "AGENT"}, {" ", ""}, {" ", "PR", "TITLE"}, {" ", "ID", "TITLE"}},
+		80:  {{" ", "NAME"}, {" ", "AGENT"}, {" ", "", ""}, {" ", "PR", "TITLE"}, {" ", "ID", "TITLE"}},
+		100: {{" ", "NAME", "PATH"}, {" ", "AGENT"}, {" ", "", ""}, {" ", "PR", "TITLE", "BRANCH"}, {" ", "ID", "TITLE", "STATE"}},
+		140: {{" ", "NAME", "PATH"}, {" ", "AGENT"}, {" ", "", ""}, {" ", "PR", "TITLE", "BRANCH"}, {" ", "ID", "TITLE", "STATE"}},
+	}
+	var unfitted [][]table.Column
+	for _, width := range []int{0, 60, 72, 80, 100, 140} {
+		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
+			m.width = width
+			for _, tbl := range tables(&m) {
+				assertTableRowsMatchColumns(t, tbl.Columns(), tbl.Rows())
+				if width > 0 && columnsWidth(tbl.Columns()) > width {
+					t.Fatalf("columns width = %d, want <= terminal width %d", columnsWidth(tbl.Columns()), width)
+				}
+			}
+			got := [][]string{columnTitles(m.repoTable.Columns()), columnTitles(m.agentTable.Columns()), columnTitles(m.typeTable.Columns()), columnTitles(m.prTable.Columns()), columnTitles(m.issueTable.Columns())}
+			for _, required := range []string{"NAME", "AGENT", "TITLE"} {
+				found := false
+				for _, titles := range got {
+					found = found || slices.Contains(titles, required)
+				}
+				if !found {
+					t.Fatalf("priority-0 %q missing from all tables: %v", required, got)
+				}
+			}
+			if width == 0 {
+				unfitted = [][]table.Column{
+					append([]table.Column(nil), m.repoTable.Columns()...),
+					append([]table.Column(nil), m.agentTable.Columns()...),
+					append([]table.Column(nil), m.typeTable.Columns()...),
+					append([]table.Column(nil), m.prTable.Columns()...),
+					append([]table.Column(nil), m.issueTable.Columns()...),
+				}
+			}
+			for i := range wantTitles[width] {
+				if !slices.Equal(got[i], wantTitles[width][i]) {
+					t.Fatalf("table %d at width %d titles = %v, want %v", i, width, got[i], wantTitles[width][i])
+				}
+			}
+			if width == 140 {
+				for i, got := range [][]table.Column{m.repoTable.Columns(), m.agentTable.Columns(), m.typeTable.Columns(), m.prTable.Columns(), m.issueTable.Columns()} {
+					if !reflect.DeepEqual(got, unfitted[i]) {
+						t.Fatalf("table %d at 140 = %#v, want byte-identical unfitted %#v", i, got, unfitted[i])
+					}
+				}
+			}
+		})
+	}
+
+	m.phase = newSessionPhaseRepoSelect
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 72, Height: 30})
+	narrow := updated.(NewSessionModel)
+	if got := columnTitles(narrow.repoTable.Columns()); !slices.Equal(got, []string{" ", "NAME"}) {
+		t.Fatalf("repo table after resize = %v, want [  NAME]", got)
+	}
+	for _, tbl := range []table.Model{narrow.repoTable, narrow.agentTable, narrow.typeTable, narrow.prTable, narrow.issueTable} {
+		assertTableRowsMatchColumns(t, tbl.Columns(), tbl.Rows())
+	}
+}
+
+// Resizing must retain a viewport that contains the selected row. Rebuilding a
+// bubbles table resets its viewport to the first rows, while SetCursor alone
+// leaves a restored cursor below the visible window.
+func TestNewSessionTables_ResizeKeepsSelectedTallTableRowVisible(t *testing.T) {
+	const cursor = 25
+	m := NewNewSessionModel(&stubClient{}, context.Background())
+	m.repos = make([]*pb.Repo, 50)
+	m.prs = make([]*pb.PRSummary, 50)
+	m.trackerIssues = make([]*pb.TrackerIssue, 50)
+	for i := range 50 {
+		m.repos[i] = &pb.Repo{DisplayName: fmt.Sprintf("repo-%02d", i), LocalPath: fmt.Sprintf("/repo/%02d", i)}
+		m.prs[i] = &pb.PRSummary{Number: int32(i), Title: fmt.Sprintf("pr-%02d", i), HeadBranch: fmt.Sprintf("branch-%02d", i)}
+		m.trackerIssues[i] = &pb.TrackerIssue{ExternalId: fmt.Sprintf("ISSUE-%02d", i), Title: fmt.Sprintf("issue-%02d", i), State: "open"}
+	}
+	m = sendMsg(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m.buildRepoTable()
+	m.buildPRTable()
+	m.buildIssueTable()
+
+	tables := []struct {
+		name string
+		row  string
+		get  func(NewSessionModel) table.Model
+		set  func(*NewSessionModel)
+	}{
+		{
+			name: "repositories",
+			row:  "repo-25",
+			get:  func(m NewSessionModel) table.Model { return m.repoTable },
+			set: func(m *NewSessionModel) {
+				m.repoTable.SetCursor(cursor)
+				m.repoTable.MoveDown(0)
+				updateCursorColumn(&m.repoTable)
+			},
+		},
+		{
+			name: "pull requests",
+			row:  "pr-25",
+			get:  func(m NewSessionModel) table.Model { return m.prTable },
+			set: func(m *NewSessionModel) {
+				m.prTable.SetCursor(cursor)
+				m.prTable.MoveDown(0)
+				updateCursorColumn(&m.prTable)
+			},
+		},
+		{
+			name: "issues",
+			row:  "issue-25",
+			get:  func(m NewSessionModel) table.Model { return m.issueTable },
+			set: func(m *NewSessionModel) {
+				m.issueTable.SetCursor(cursor)
+				m.issueTable.MoveDown(0)
+				updateCursorColumn(&m.issueTable)
+			},
+		},
+	}
+
+	for _, tt := range tables {
+		t.Run(tt.name, func(t *testing.T) {
+			resized := m
+			tt.set(&resized)
+			resized = sendMsg(t, resized, tea.WindowSizeMsg{Width: 80, Height: 13})
+
+			tbl := tt.get(resized)
+			if got := tbl.Cursor(); got != cursor {
+				t.Fatalf("cursor after resize = %d, want %d", got, cursor)
+			}
+			if got := stripANSI(tbl.View()); !strings.Contains(got, tt.row) {
+				t.Fatalf("selected row %q is outside the resized table viewport:\n%s", tt.row, got)
+			}
+		})
+	}
+}
+
+func TestNewSession_PRMessageResetsCursorForFreshResults(t *testing.T) {
+	m := NewNewSessionModel(&stubClient{}, context.Background())
+	m.selectedRepoID = "old-repo"
+	m.prs = make([]*pb.PRSummary, 30)
+	for i := range 30 {
+		m.prs[i] = &pb.PRSummary{Number: int32(i), Title: fmt.Sprintf("old-pr-%02d", i)}
+	}
+	m = sendMsg(t, m, tea.WindowSizeMsg{Width: 120, Height: 20})
+	m.buildPRTable()
+	m.prTable.SetCursor(20)
+	m.prTable.MoveDown(0)
+	updateCursorColumn(&m.prTable)
+
+	// A new repository's ListRepoPRs result is fresh data, so its first PR
+	// must be selected rather than retaining the old repository's index.
+	m.selectedRepoID = "new-repo"
+	m = sendMsg(t, m, prsMsg{prs: []*pb.PRSummary{
+		{Number: 101, Title: "new-repo-first"},
+		{Number: 102, Title: "new-repo-second"},
+	}})
+	if got := m.prTable.Cursor(); got != 0 {
+		t.Fatalf("cursor after fresh prsMsg = %d, want 0", got)
+	}
+	if got := m.prTable.Rows()[0][0]; got != cursorChevron {
+		t.Fatalf("first PR indicator = %q, want %q", got, cursorChevron)
+	}
+}
+
+// Resetting a cursor after rebuilding a retained table leaves its viewport on
+// the old page. The next table render must instead reveal the new first row.
+func TestNewSession_FilterAndRefreshRevealFirstTallTableRow(t *testing.T) {
+	const cursor = 25
+
+	t.Run("PR filter", func(t *testing.T) {
+		m := NewNewSessionModel(&stubClient{}, context.Background())
+		m.prs = make([]*pb.PRSummary, 50)
+		for i := range m.prs {
+			m.prs[i] = &pb.PRSummary{Number: int32(i), Title: fmt.Sprintf("pr-%02d", i)}
+		}
+		m = sendMsg(t, m, tea.WindowSizeMsg{Width: 120, Height: 30})
+		m = sendMsg(t, m, prsMsg{prs: m.prs})
+		m.prTable.SetCursor(cursor)
+		m.prTable.MoveDown(0)
+		updateCursorColumn(&m.prTable)
+
+		m = sendKey(t, m, '/')
+		m = sendKey(t, m, 'p')
+
+		if got := m.prTable.Cursor(); got != 0 {
+			t.Fatalf("cursor after filtering = %d, want 0", got)
+		}
+		if got := stripANSI(m.prTable.View()); !strings.Contains(got, "pr-00") {
+			t.Fatalf("first PR row is outside the viewport after filtering:\n%s", got)
+		}
+	})
+
+	t.Run("issue filter and refresh", func(t *testing.T) {
+		m := NewNewSessionModel(&stubClient{}, context.Background())
+		issues := make([]*pb.TrackerIssue, 50)
+		for i := range issues {
+			issues[i] = &pb.TrackerIssue{ExternalId: fmt.Sprintf("ISSUE-%02d", i), Title: fmt.Sprintf("issue-%02d", i)}
+		}
+		m = sendMsg(t, m, tea.WindowSizeMsg{Width: 120, Height: 30})
+		m = sendMsg(t, m, issuesMsg{issues: issues})
+		m.issueTable.SetCursor(cursor)
+		m.issueTable.MoveDown(0)
+		updateCursorColumn(&m.issueTable)
+		m = sendKey(t, m, '/')
+		m = sendKey(t, m, 'i')
+
+		if got := m.issueTable.Cursor(); got != 0 {
+			t.Fatalf("cursor after filtering = %d, want 0", got)
+		}
+		if got := stripANSI(m.issueTable.View()); !strings.Contains(got, "issue-00") {
+			t.Fatalf("first issue row is outside the viewport after filtering:\n%s", got)
+		}
+
+		m.issueTable.SetCursor(cursor)
+		m.issueTable.MoveDown(0)
+		updateCursorColumn(&m.issueTable)
+
+		m = sendMsg(t, m, issuesMsg{issues: []*pb.TrackerIssue{
+			{ExternalId: "FRESH-1", Title: "fresh-first"},
+			{ExternalId: "FRESH-2", Title: "fresh-second"},
+		}, seq: m.issueSearchSeq, query: m.issueFilter.Query()})
+
+		if got := m.issueTable.Cursor(); got != 0 {
+			t.Fatalf("cursor after refresh = %d, want 0", got)
+		}
+		if got := stripANSI(m.issueTable.View()); !strings.Contains(got, "fresh-first") {
+			t.Fatalf("first issue row is outside the viewport after refresh:\n%s", got)
+		}
+	})
+}
+
 func TestNewSession_TableSelectTransitionsToTypeSelect(t *testing.T) {
 	sc := &stubClient{repos: twoRepos()}
 	m := NewNewSessionModel(sc, context.Background())
@@ -416,6 +667,38 @@ func TestNewSession_TableSelectTransitionsToTypeSelect(t *testing.T) {
 	}
 	if m.selectedRepoID != "repo-2" {
 		t.Fatalf("selectedRepoID = %q, want %q", m.selectedRepoID, "repo-2")
+	}
+}
+
+func TestNewSession_TypeTableResetsCursorWhenRepositoryChangesOptions(t *testing.T) {
+	repos := twoRepos()
+	repos[1].LinearApiKey = "lin_api_abc123"
+	repos[1].SentryApiKey = "sentry_api_abc123"
+	repos[1].SentryOrg = "acme"
+	sc := &stubClient{repos: repos}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	// Select the first repository and move the type cursor to Quick Chat.
+	m = sendSpecialKey(t, m, tea.KeyEnter)
+	m = sendKey(t, m, 'j')
+	m = sendKey(t, m, 'j')
+	if got := m.typeTable.Cursor(); got != 2 {
+		t.Fatalf("type cursor = %d, want Quick Chat index 2", got)
+	}
+	m = sendMsg(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	if got := m.typeTable.Cursor(); got != 2 {
+		t.Fatalf("type cursor after resize = %d, want Quick Chat index 2", got)
+	}
+
+	// Return to the repo picker, then select the repository that adds Linear
+	// and Sentry options before Quick Chat.
+	m = sendSpecialKey(t, m, tea.KeyEscape)
+	m = sendKey(t, m, 'j')
+	m = sendSpecialKey(t, m, tea.KeyEnter)
+
+	if got := m.typeTable.Cursor(); got != 0 {
+		t.Fatalf("type cursor after repository option change = %d, want 0", got)
 	}
 }
 

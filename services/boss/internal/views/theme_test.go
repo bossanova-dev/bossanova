@@ -54,6 +54,72 @@ func TestActionBar(t *testing.T) {
 	}
 }
 
+func TestActionBarWidth(t *testing.T) {
+	groups := [][]string{
+		{"[n]ew session", "[enter] select"},
+		{"[s]ettings", "[l]ogout", "[c]loud"},
+		{"[q]uit"},
+	}
+
+	for _, width := range []int{40, 60, 72, 80, 100, 140} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			bar := actionBarWidth(width, groups...)
+			for _, line := range strings.Split(bar, "\n") {
+				if got := ansi.StringWidth(line); got > width {
+					t.Errorf("actionBarWidth(%d) rendered %d-column line, want <= %d: %q", width, got, width, line)
+				}
+			}
+			if got, want := actionBarLineCount(width, groups...), lipgloss.Height(bar)-actionBarPadY*2; got != want {
+				t.Errorf("actionBarLineCount(%d) = %d, want rendered text-line count %d", width, got, want)
+			}
+		})
+	}
+}
+
+func TestActionBarWidthDoesNotSplitGroups(t *testing.T) {
+	groups := [][]string{
+		{"[n]ew session", "[enter] select"},
+		{"[s]ettings", "[l]ogout"},
+		{"[q]uit"},
+	}
+	bar := actionBarWidth(40, groups...)
+	for _, group := range groups {
+		joined := strings.Join(group, "  ")
+		for _, line := range strings.Split(bar, "\n") {
+			if strings.Contains(line, joined) {
+				continue
+			}
+			for _, item := range group {
+				if strings.Contains(line, item) {
+					t.Fatalf("action group %q split across lines in %q", joined, bar)
+				}
+			}
+		}
+	}
+}
+
+func TestActionBarWidthFoldsOversizedLegacyGroupsBetweenActions(t *testing.T) {
+	group := []string{"[enter] open", "[g]eneral", "[r]epos", "[c]ron", "[a]ccounts", "[t]rash"}
+	bar := actionBarWidth(40, group, []string{"[esc] back"})
+	for _, line := range strings.Split(bar, "\n") {
+		if got := ansi.StringWidth(line); got > 40 {
+			t.Errorf("actionBarWidth(40) rendered %d-column line: %q", got, line)
+		}
+	}
+	for _, action := range group {
+		if strings.Count(bar, action) != 1 {
+			t.Errorf("action %q is missing or split in %q", action, bar)
+		}
+	}
+}
+
+func TestActionBarWidthUnknownPreservesExistingOutput(t *testing.T) {
+	groups := [][]string{{"[enter] select", "[a]rchive"}, {"[q]uit"}}
+	if got, want := actionBarWidth(0, groups...), actionBar(groups...); got != want {
+		t.Errorf("actionBarWidth(0) changed output:\n got %q\nwant %q", got, want)
+	}
+}
+
 // TestFormNavHints pins the only key pair huh binds identically across every
 // field type. enter is overloaded (it advances an Input but submits a Select),
 // so it must never be advertised as the "next field" key.
@@ -109,6 +175,22 @@ func TestFormActionBarWithoutRightGroup(t *testing.T) {
 	assertFormActionBarLineBudget(t, got)
 }
 
+func TestFormActionBarWidthMatchesItsReportedLineCount(t *testing.T) {
+	for _, width := range []int{40, 60, 72, 80, 100, 140} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			bar := formActionBarWidth(width, []string{"[enter] save"}, []string{"[esc] cancel"})
+			for _, line := range strings.Split(bar, "\n") {
+				if got := ansi.StringWidth(line); got > width {
+					t.Errorf("formActionBarWidth(%d) rendered %d-column line, want <= %d: %q", width, got, width, line)
+				}
+			}
+			if got, want := formActionBarLineCount(width, []string{"[enter] save"}, []string{"[esc] cancel"}), lipgloss.Height(bar)-actionBarPadY*2; got != want {
+				t.Errorf("formActionBarLineCount(%d) = %d, want rendered text-line count %d", width, got, want)
+			}
+		})
+	}
+}
+
 // assertFormActionBarLineBudget pins the rendered bar to the vertical budget
 // repoAddChrome and cronFormChrome reserve for it: styleActionBar's top and
 // bottom padding plus formActionBarLines of text. A third text line would push
@@ -158,6 +240,35 @@ func TestRenderBannerUsesBuildVersionVerbatim(t *testing.T) {
 				t.Fatalf("renderBanner() contained %q in %q", tt.notWant, got)
 			}
 		})
+	}
+}
+
+func TestRenderBannerTruncatesNarrowLinesWithoutStrandingLinks(t *testing.T) {
+	trackerURL := "https://linear.app/bossanova-dev/issue/BOS-576"
+	prURL := "https://github.com/recurser/bossanova/pull/1721"
+	prNumber := int32(1721)
+	banner := renderBanner(ViewChatPicker, bannerOpts{
+		width: 72,
+		session: &pb.Session{
+			Title:        "[BOS-576] Wrap every action bar and banner safely on narrow terminal windows",
+			TrackerId:    strPtr("BOS-576"),
+			TrackerUrl:   strPtr(trackerURL),
+			PrNumber:     &prNumber,
+			PrUrl:        &prURL,
+			WorktreePath: "/very/deep/worktree/path/that/keeps/going/until/it/would/overflow/the/screen",
+		},
+	})
+
+	if !strings.Contains(banner, "…") {
+		t.Fatalf("narrow banner did not truncate: %q", banner)
+	}
+	for _, line := range strings.Split(banner, "\n") {
+		if got := ansi.StringWidth(line); got > 72 {
+			t.Errorf("banner line is %d columns, want <= 72: %q", got, line)
+		}
+	}
+	if markers := strings.Count(banner, "\x1b]8;;"); markers%2 != 0 {
+		t.Errorf("banner has %d OSC 8 markers; truncation left a link open: %q", markers, banner)
 	}
 }
 

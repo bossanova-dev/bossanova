@@ -56,7 +56,7 @@ docs/handoffs/
 # Wrangler v4 local state dir, created by `wrangler r2 object put` during proof uploads
 .wrangler/
 
-# Linear plan scratch dir (boss-plan skill; plans are uploaded to R2, not committed)
+# Linear plan scratch dir (boss-plan uploads plans as native tracker attachments, never commits them)
 .linear-plans/
 
 # Superpowers-framework scratch dir (created while skills run; never committed)

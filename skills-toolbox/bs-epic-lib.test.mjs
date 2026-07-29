@@ -29,6 +29,7 @@ const t = (id, over = {}) => ({
   stateType: 'unstarted',
   labels: ['agent-friendly'],
   planUrl: `https://proof.bossanova.dev/${id}`,
+  planAttachment: { title: `Implementation plan (${id})`, url: `https://uploads.example/${id}.md` },
   blockedBy: [],
   ...over,
 })
@@ -68,6 +69,7 @@ test('normalizeTicket: raw GraphQL shape uses extractBlockers + state.{name,type
   assert.equal(ticket.stateType, 'unstarted')
   assert.deepEqual(ticket.labels, ['agent-friendly'])
   assert.equal(ticket.planUrl, 'https://proof.bossanova.dev/BOS-5')
+  assert.deepEqual(ticket.planAttachment, issue.attachments[0])
   assert.deepEqual(ticket.blockedBy, ['BOS-1'])
 })
 
@@ -93,6 +95,7 @@ test('normalizeTicket: MCP get_issue includeRelations shape uses relations.block
   assert.equal(ticket.stateName, 'Todo')
   assert.equal(ticket.stateType, 'unstarted')
   assert.equal(ticket.planUrl, 'https://proof.bossanova.dev/BOS-6')
+  assert.deepEqual(ticket.planAttachment, issue.attachments[0])
   assert.deepEqual(ticket.blockedBy, ['BOS-2', 'BOS-3'])
 })
 
@@ -112,7 +115,7 @@ test('normalizeTicket: falls back to an already-flat blockedBy array when no rel
   assert.equal(ticket.stateType, 'unstarted')
 })
 
-test('normalizeTicket: planUrl falls back to a links array when attachments is absent', () => {
+test('normalizeTicket: link-only plans retain display metadata but have no native attachment', () => {
   const ticket = normalizeTicket({
     id: 'BOS-8',
     title: 'Links fallback',
@@ -125,6 +128,7 @@ test('normalizeTicket: planUrl falls back to a links array when attachments is a
     blockedBy: [],
   })
   assert.equal(ticket.planUrl, 'https://proof.bossanova.dev/BOS-8')
+  assert.equal(ticket.planAttachment, null)
 })
 
 test('normalizeTicket: a canonical attachment takes precedence over a stale plan link', () => {
@@ -148,6 +152,7 @@ test('normalizeTicket: a canonical attachment takes precedence over a stale plan
     blockedBy: [],
   })
   assert.equal(ticket.planUrl, 'https://uploads.example/current.md')
+  assert.equal(ticket.planAttachment?.id, 'attachment-id')
 })
 
 test('normalizeTicket: does not accept an untitled attachment as a plan', () => {
@@ -163,6 +168,7 @@ test('normalizeTicket: does not accept an untitled attachment as a plan', () => 
     blockedBy: [],
   })
   assert.equal(ticket.planUrl, null)
+  assert.equal(ticket.planAttachment, null)
 })
 
 test('normalizeTicket: planUrl is null when no matching attachment/link exists', () => {
@@ -177,6 +183,7 @@ test('normalizeTicket: planUrl is null when no matching attachment/link exists',
     blockedBy: [],
   })
   assert.equal(ticket.planUrl, null)
+  assert.equal(ticket.planAttachment, null)
 })
 
 // --- classifyTickets --------------------------------------------------------
@@ -185,11 +192,16 @@ test('classifyTickets: planned-state + agent-friendly + plan is eligible', () =>
   const { eligible } = classifyTickets([t('BOS-1')], 'Todo')
   assert.equal(eligible.length, 1)
 })
+test('classifyTickets: a legacy link-only plan is skipped for migration/replanning', () => {
+  const { eligible, skipped } = classifyTickets([t('BOS-2', { planAttachment: null })], 'Todo')
+  assert.equal(eligible.length, 0)
+  assert.match(skipped[0].reason, /native Implementation plan attachment.*migration\/replanning/)
+})
 test('classifyTickets: needs-human, missing plan, not-planned, In Progress all skip with reasons', () => {
   const { skipped } = classifyTickets(
     [
       t('BOS-1', { labels: ['needs-human'] }),
-      t('BOS-2', { planUrl: null }),
+      t('BOS-2', { planAttachment: null }),
       t('BOS-3', { stateName: 'Unplanned' }),
       t('BOS-4', { stateName: 'In Progress' }),
     ],

@@ -172,7 +172,7 @@ test('Phase 3 adopts one-shot callbacks with authoritative reconciliation (BOS-4
   // are unavailable. Pin the tokens so it can never regress to a naked poll.
   for (const token of [
     'resolveCallbackAdapter',
-    'scripts/callback/adapter.mjs',
+    'toolbox/callback/adapter.mjs',
     'boss callback',
     'policy.watchTriggers',
     'policy.fallbackPoll',
@@ -280,7 +280,7 @@ test('BOS-524: Phase 0 resolves states ADAPTER-FIRST with the config as fallback
 
     // 1. The adapter probe: the optional `states` capability read through the
     //    tracker CLI, tolerant of an adapter that does not implement it.
-    const probe = skill.indexOf('scripts/tracker/cli.mjs" states')
+    const probe = skill.indexOf('BOSS_EPIC_TOOLBOX/tracker/cli.mjs" states')
     assert.ok(probe > -1, `${dir}/SKILL.md must probe the tracker adapter's states capability`)
     assert.match(
       skill,

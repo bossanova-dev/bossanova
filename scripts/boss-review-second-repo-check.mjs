@@ -23,7 +23,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { discoverExtensions, validateResult } from './skill-extensions.mjs'
+import { discoverExtensions, validateResult } from '../skills-toolbox/skill-extensions.mjs'
 import { VENDOR_MAP } from './vendor-toolbox.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -190,8 +190,8 @@ function exerciseHelpers(repoDir, toolbox) {
 
 export async function runSecondRepoCheck() {
   // realpathSync: on macOS mkdtemp returns a /var -> /private/var symlink, and the
-  // helpers' `import.meta.url === file://${process.argv[1]}` CLI guard only fires on
-  // the resolved path. Resolve it so the scaffolded invocation matches on every OS.
+  // helper CLI guards compare real paths, but resolve this scratch directory so the
+  // scaffolded invocation remains stable across macOS's /var -> /private/var symlink.
   const repoDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'boss-review-2nd-')))
   try {
     // The "second repository".
@@ -267,6 +267,8 @@ export async function main() {
   return pass ? 0 : 1
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   main().then((code) => process.exit(code))
 }

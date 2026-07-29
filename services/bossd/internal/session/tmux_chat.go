@@ -14,6 +14,7 @@ import (
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dotenv"
@@ -1222,7 +1223,36 @@ func bossSessionContext(f SessionFacts) string {
 			"the current set from your own tool list rather than assuming which mcp__boss__* " +
 			"tools exist."
 	}
+	if warning := installedSkillDriftWarning(f); warning != "" {
+		prompt += " " + warning
+	}
 	return prompt
+}
+
+// installedSkillDriftWarning returns the source-drift warning for a session's
+// worktree. Every probe is best-effort: skill freshness must not block chat
+// launch in consuming repositories or on a broken local filesystem.
+func installedSkillDriftWarning(f SessionFacts) string {
+	if f.Worktree == "" {
+		return ""
+	}
+	srcRoot, found := libskillinstall.FindSourceRoot(f.Worktree)
+	if !found {
+		return ""
+	}
+	agent := libskillinstall.AgentClaude
+	if f.Agent == string(libskillinstall.AgentCodex) {
+		agent = libskillinstall.AgentCodex
+	}
+	dir, err := libskillinstall.DirForAgent(agent)
+	if err != nil {
+		return ""
+	}
+	drift, err := libskillinstall.SourceDrift(dir, srcRoot)
+	if err != nil || !drift {
+		return ""
+	}
+	return "Warning: the boss skill files installed at " + dir + " do not match this repository's skill sources at " + filepath.Join(srcRoot, "skills") + " — the installed skill bodies may be out of date. Prefer the repo copies under services/boss/internal/skillinstall/skills/ when a skill body and the repo disagree, and report the drift."
 }
 
 // AppendSystemPromptFor builds the per-chat system-prompt suffix bossd injects

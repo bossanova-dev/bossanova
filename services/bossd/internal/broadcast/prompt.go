@@ -9,8 +9,8 @@ import (
 
 // Delimiters framing the operator's message inside the injected prompt. The
 // body between them is untrusted data reproduced verbatim, never trusted
-// instructions — the same discipline callback.BuildCallbackPrompt applies to a
-// registered callback message.
+// instructions — the callback prompt applies the same framing discipline to
+// registered callback messages.
 const (
 	broadcastMessageBegin = "----- BEGIN BROADCAST MESSAGE -----"
 	broadcastMessageEnd   = "----- END BROADCAST MESSAGE -----"

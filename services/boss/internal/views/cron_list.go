@@ -247,6 +247,12 @@ func (m CronListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m.updateNormal(msg)
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.rebuildTable()
+		return m, nil
 	}
 
 	// Forward non-key messages (mouse, resize, focus, …) to the table; keyboard
@@ -365,8 +371,8 @@ func (m CronListModel) selectedJob() *pb.CronJob {
 
 func (m *CronListModel) rebuildTable() {
 	if len(m.jobs) == 0 {
-		m.table.SetColumns(nil)
 		m.table.SetRows(nil)
+		m.table.SetColumns(nil)
 		return
 	}
 
@@ -432,17 +438,21 @@ func (m *CronListModel) rebuildTable() {
 		}
 	}
 
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "CRON", Width: maxColWidth("CRON", schedules, 20) + tableColumnSep},
-		{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep},
-		{Title: "REPO", Width: maxColWidth("REPO", repoNames, 25) + tableColumnSep},
-		{Title: "AGENT", Width: maxColWidth("AGENT", agents, 16) + tableColumnSep},
-		{Title: "ENABLED", Width: maxColWidth("ENABLED", enableds, 8) + tableColumnSep},
-		{Title: "LAST RUN", Width: maxColWidth("LAST RUN", lastRuns, 12) + tableColumnSep},
-		{Title: "NEXT RUN", Width: maxColWidth("NEXT RUN", nextRuns, 12) + tableColumnSep},
-		{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 12) + tableColumnSep},
+	// Preserve the job name and enabled state first; derived scheduling details
+	// and usually-shared repository metadata make room on narrow terminals.
+	rcols := []responsiveColumn{
+		{col: cursorColumn, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "CRON", Width: maxColWidth("CRON", schedules, 20) + tableColumnSep}, priority: 2, minWidth: 1},
+		{col: table.Column{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep}, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "REPO", Width: maxColWidth("REPO", repoNames, 25) + tableColumnSep}, priority: 5, minWidth: 1},
+		{col: table.Column{Title: "AGENT", Width: maxColWidth("AGENT", agents, 16) + tableColumnSep}, priority: 5, minWidth: 1},
+		{col: table.Column{Title: "ENABLED", Width: maxColWidth("ENABLED", enableds, 8) + tableColumnSep}, priority: 1, minWidth: 1},
+		{col: table.Column{Title: "LAST RUN", Width: maxColWidth("LAST RUN", lastRuns, 12) + tableColumnSep}, priority: 4, minWidth: 1},
+		{col: table.Column{Title: "NEXT RUN", Width: maxColWidth("NEXT RUN", nextRuns, 12) + tableColumnSep}, priority: 4, minWidth: 1},
+		{col: table.Column{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 12) + tableColumnSep}, priority: 3, minWidth: 1},
 	}
+	fitted := fitColumnsIndexed(rcols, fitAvailWidth(m.width, 1))
+	cols := fittedColumns(fitted)
 
 	muted := lipgloss.NewStyle().Foreground(colorMuted)
 
@@ -465,7 +475,7 @@ func (m *CronListModel) rebuildTable() {
 			nextRun = muted.Render(nextRun)
 			status = muted.Render(status)
 		}
-		rows[i] = table.Row{
+		rows[i] = projectRow(fitted, table.Row{
 			indicator,
 			schedule,
 			name,
@@ -475,11 +485,10 @@ func (m *CronListModel) rebuildTable() {
 			lastRun,
 			nextRun,
 			status,
-		}
+		})
 	}
 
-	m.table.SetColumns(cols)
-	m.table.SetRows(rows)
+	setTableContent(&m.table, cols, rows)
 	m.table.SetWidth(columnsWidth(cols))
 	m.table.SetHeight(m.tableHeight())
 	// Restore (or initialize) the cursor. SetRows clamps the cursor down
@@ -516,7 +525,11 @@ func cronDisplayAgentName(name string) string {
 }
 
 func (m CronListModel) tableHeight() int {
-	return clampedTableHeight(len(m.jobs), m.height, bannerOverhead+1+actionBarPadY+1)
+	actionLines := actionBarLineCount(m.width,
+		[]string{"[n]ew", "[e/enter]dit", "[d]elete", "[space] toggle", "[r]un now"},
+		[]string{"[esc] back"},
+	)
+	return clampedTableHeight(len(m.jobs), m.height, bannerOverhead+1+actionBarPadY+actionLines)
 }
 
 // runNowSkipLabel maps a scheduler skip reason to a human-readable phrase for
@@ -639,7 +652,7 @@ func (m CronListModel) View() tea.View {
 			"No cron jobs. Press [n] to create one.",
 		))
 		b.WriteString("\n")
-		b.WriteString(actionBar(
+		b.WriteString(actionBarWidth(m.width,
 			[]string{"[n]ew"},
 			[]string{"[esc] back"},
 		))
@@ -674,7 +687,7 @@ func (m CronListModel) View() tea.View {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(style.Render(text)))
 			b.WriteString("\n")
 		}
-		b.WriteString(actionBar(
+		b.WriteString(actionBarWidth(m.width,
 			[]string{"[n]ew", "[e/enter]dit", "[d]elete", "[space] toggle", "[r]un now"},
 			[]string{"[esc] back"},
 		))

@@ -1,10 +1,15 @@
 package views
 
 import (
+	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/table"
+	tea "charm.land/bubbletea/v2"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -80,6 +85,87 @@ func TestRelTimeWrappers(t *testing.T) {
 	if got := relTimeFuture(time.Now().Add(3 * time.Hour)); got != "in 2h" && got != "in 3h" {
 		// time.Until shaves a sliver off, so 3h reads as "in 2h" (int-truncated).
 		t.Errorf("relTimeFuture(3h in the future) = %q, want \"in 2h\" or \"in 3h\"", got)
+	}
+}
+
+func responsiveCronFixture() []*pb.CronJob {
+	return []*pb.CronJob{{
+		Id:        "cron-1",
+		Schedule:  strings.Repeat("*", 20),
+		Name:      strings.Repeat("n", 40),
+		RepoId:    strings.Repeat("r", 30),
+		AgentName: strings.Repeat("a", 20),
+		IsEnabled: true,
+	}}
+}
+
+func TestCronListRebuildTable_FitsColumnsToTerminalWidth(t *testing.T) {
+	wantTitles := map[int][]string{
+		0:   {" ", "CRON", "NAME", "REPO", "AGENT", "ENABLED", "LAST RUN", "NEXT RUN", "STATUS"},
+		60:  {" ", "NAME", "ENABLED"},
+		72:  {" ", "CRON", "NAME", "ENABLED"},
+		80:  {" ", "CRON", "NAME", "ENABLED", "STATUS"},
+		100: {" ", "CRON", "NAME", "ENABLED", "LAST RUN", "NEXT RUN", "STATUS"},
+		140: {" ", "CRON", "NAME", "REPO", "AGENT", "ENABLED", "LAST RUN", "NEXT RUN", "STATUS"},
+	}
+
+	var unfitted []table.Column
+	for _, width := range []int{0, 60, 72, 80, 100, 140} {
+		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
+			m := newCronListForUpdate(responsiveCronFixture())
+			m.rebuildTable()
+			if width > 0 {
+				updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+				m = updated.(CronListModel)
+			}
+
+			cols := m.table.Columns()
+			assertTableRowsMatchColumns(t, cols, m.table.Rows())
+			if width > 0 && columnsWidth(cols) > width {
+				t.Fatalf("columns width = %d, want <= terminal width %d", columnsWidth(cols), width)
+			}
+			if !slices.Contains(columnTitles(cols), "NAME") {
+				t.Fatalf("titles = %v, want priority-0 NAME retained", columnTitles(cols))
+			}
+			if width == 72 && !slices.Contains(columnTitles(cols), "ENABLED") {
+				t.Fatalf("titles = %v, want ENABLED retained at 72 columns", columnTitles(cols))
+			}
+			if width == 0 {
+				unfitted = append([]table.Column(nil), cols...)
+			}
+			if got := columnTitles(cols); !slices.Equal(got, wantTitles[width]) {
+				t.Fatalf("width %d titles = %v, want %v", width, got, wantTitles[width])
+			}
+			if width == 140 && !reflect.DeepEqual(cols, unfitted) {
+				t.Fatalf("140-column set = %#v, want byte-identical unfitted %#v", cols, unfitted)
+			}
+		})
+	}
+}
+
+func TestCronListRebuildTable_ResizeKeepsSelectedRowVisible(t *testing.T) {
+	const cursor = 25
+	jobs := make([]*pb.CronJob, 50)
+	for i := range jobs {
+		jobs[i] = &pb.CronJob{Id: fmt.Sprintf("cron-%d", i), Name: fmt.Sprintf("cron-%02d", i), Schedule: "@daily", IsEnabled: true}
+	}
+
+	m := newCronListForUpdate(jobs)
+	m.width, m.height = 140, 13
+	m.rebuildTable()
+	m.table.SetCursor(cursor)
+	m.table.MoveDown(0)
+	updateCursorColumn(&m.table)
+
+	for _, width := range []int{72, 140} {
+		m.width = width
+		m.rebuildTable()
+		if got := m.table.Cursor(); got != cursor {
+			t.Fatalf("cursor after resize to %d = %d, want %d", width, got, cursor)
+		}
+		if got := stripANSI(m.table.View()); !strings.Contains(got, "cron-25") {
+			t.Fatalf("selected row is outside the %d-column viewport:\n%s", width, got)
+		}
 	}
 }
 

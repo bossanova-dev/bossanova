@@ -117,6 +117,14 @@ func (s *Store) Get(agentSessionID string) (Record, bool) {
 	return rec, true
 }
 
+// HasPending reports whether agentSessionID has a fresh pending record. It is
+// the narrow read seam for consumers that only need the pending state and
+// should not depend on Record's storage shape.
+func (s *Store) HasPending(agentSessionID string) bool {
+	_, ok := s.Get(agentSessionID)
+	return ok
+}
+
 // len reports how many records are currently held. Test-only helper.
 func (s *Store) len() int {
 	s.mu.Lock()

@@ -304,9 +304,12 @@ func (m *RepoAddModel) buildSourceTable() {
 // the form phases, subtracted from terminal height when sizing the form so the
 // action bar stays on screen. It covers the banner App.View prepends
 // (bannerOverhead), the title + blank line, and the action bar (top+bottom
-// padding plus its formActionBarLines text lines). Mirrors cronFormChrome in
-// cron_form.go.
-const repoAddChrome = bannerOverhead + 2 /*title+blank*/ + (actionBarPadY*2 + formActionBarLines) /*action bar*/
+// padding plus its actual form-action-bar text lines). Mirrors cronFormChrome
+// in cron_form.go.
+func repoAddChrome(width int) int {
+	return bannerOverhead + 2 /*title+blank*/ + actionBarPadY*2 +
+		formActionBarLineCount(width, []string{"[enter] add repository"}, []string{"[esc] back"})
+}
 
 // formHeight returns the height to constrain the huh form to so the action bar
 // below it stays on screen. It returns 0 when the terminal height is unknown
@@ -317,7 +320,7 @@ func (m RepoAddModel) formHeight() int {
 	if m.height <= 0 {
 		return 0
 	}
-	return max(m.height-repoAddChrome, 3)
+	return max(m.height-repoAddChrome(m.width), 3)
 }
 
 func (m *RepoAddModel) buildInputForm() {
@@ -965,7 +968,7 @@ func (m RepoAddModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
 			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
-				actionBar([]string{"[esc] back"}),
+				actionBarWidth(m.width, []string{"[esc] back"}),
 		)
 	}
 
@@ -983,7 +986,7 @@ func (m RepoAddModel) View() tea.View {
 			name, m.configErr)
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(body) + "\n" +
-				actionBar([]string{"[esc] continue"}),
+				actionBarWidth(m.width, []string{"[esc] continue"}),
 		)
 	}
 
@@ -1000,7 +1003,7 @@ func (m RepoAddModel) View() tea.View {
 		var b strings.Builder
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.sourceTable.View()))
 		b.WriteString("\n")
-		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[enter] select"}, []string{"[esc] back"}))
 		return tea.NewView(b.String())
 	}
 
@@ -1018,7 +1021,7 @@ func (m RepoAddModel) View() tea.View {
 			submit = "[enter] add repo"
 		}
 		if !onScreen {
-			b.WriteString(actionBar([]string{submit}, []string{"[esc] back"}))
+			b.WriteString(actionBarWidth(m.width, []string{submit}, []string{"[esc] back"}))
 			return tea.NewView(b.String())
 		}
 
@@ -1031,7 +1034,7 @@ func (m RepoAddModel) View() tea.View {
 		// share a line with the verb — but repoAddChrome budgets exactly
 		// formActionBarLines, so a verb long enough to wrap its own line would
 		// still clip the bar this view exists to show.
-		b.WriteString(formActionBar([]string{submit}, []string{"[esc] back"}))
+		b.WriteString(formActionBarWidth(m.width, []string{submit}, []string{"[esc] back"}))
 		v := tea.NewView(b.String())
 		// Mouse reporting is scoped to screens that actually render a form
 		// (BOS-512): the source table, validating, cloning, error, config-error

@@ -12,8 +12,8 @@
 // Register on the cron job (gate cwd = repo root):
 //   node scripts/cron-gates/boss-plan.mjs
 
-import { gateExit } from '../linear-gate-lib.mjs'
-import { resolveTrackerAdapter } from '../tracker/adapter.mjs'
+import { gateExit } from '../../skills-toolbox/linear-gate-lib.mjs'
+import { resolveTrackerAdapter } from '../../skills-toolbox/tracker/adapter.mjs'
 import { loadSkillConfig, stateName } from '../../skills-toolbox/skill-config.mjs'
 
 try {

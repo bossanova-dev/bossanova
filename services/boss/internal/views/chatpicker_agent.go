@@ -36,10 +36,11 @@ func (m *ChatPickerModel) buildAgentTable() {
 	if cursor < 0 {
 		cursor = 0
 	}
-	cols := []table.Column{
-		cursorColumn,
-		{Title: "AGENT", Width: maxColWidth("AGENT", names, 20) + tableColumnSep},
+	rcols := []responsiveColumn{
+		{col: cursorColumn, priority: 0, minWidth: 1},
+		{col: table.Column{Title: "AGENT", Width: maxColWidth("AGENT", names, 20) + tableColumnSep}, priority: 0, minWidth: 8},
 	}
+	cols := fitColumns(rcols, m.chatPickerTableAvailWidth())
 	rows := make([]table.Row, len(m.agents))
 	for i := range m.agents {
 		indicator := ""

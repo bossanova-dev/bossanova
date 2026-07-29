@@ -787,6 +787,10 @@ test('runTidy: no Done workflow state escalates the close rather than guessing',
 const lbl = (name, id = `label-${name}`) => ({ id, name })
 const planAttachment = (id = 'BOS-1') => ({
   title: `Implementation plan (${id})`,
+  url: `https://uploads.linear.app/bossanova/${id}/implementation-plan.md`,
+})
+const legacyPlanLink = (id = 'BOS-1') => ({
+  title: `Implementation plan (${id})`,
   url: `https://proof.bossanova.dev/plans/bossanova/${id}/abc.md`,
 })
 // Ticket shape as produced by parseTidyData (id/identifier/state/labels/attachments).
@@ -804,20 +808,22 @@ const RECONCILE_IDS = {
   todoStateId: 's-todo',
 }
 
-test('hasImplementationPlan: true on the plan-title prefix or the proof host, false otherwise', () => {
+test("hasImplementationPlan: accepts only the ticket's native canonical attachment", () => {
+  assert.equal(hasImplementationPlan('BOS-7', [planAttachment('BOS-7')]), true)
+  assert.equal(hasImplementationPlan('BOS-7', [legacyPlanLink('BOS-7')]), false)
+  assert.equal(hasImplementationPlan('BOS-7', [planAttachment('BOS-8')]), false)
   assert.equal(
-    hasImplementationPlan([{ title: 'Implementation plan (BOS-7)', url: 'https://x' }]),
-    true,
-  )
-  assert.equal(
-    hasImplementationPlan([
+    hasImplementationPlan('BOS-7', [
       { title: 'renamed', url: 'https://proof.bossanova.dev/plans/bossanova/BOS-7/a.md' },
     ]),
-    true,
+    false,
   )
-  assert.equal(hasImplementationPlan([{ title: 'Design doc', url: 'https://example.com' }]), false)
-  assert.equal(hasImplementationPlan([]), false)
-  assert.equal(hasImplementationPlan(undefined), false)
+  assert.equal(
+    hasImplementationPlan('BOS-7', [{ title: 'Design doc', url: 'https://example.com' }]),
+    false,
+  )
+  assert.equal(hasImplementationPlan('BOS-7', []), false)
+  assert.equal(hasImplementationPlan('BOS-7', undefined), false)
 })
 
 test('computePlanningReconcile: agent-friendly + Unplanned + no plan → drop agent-friendly, add agent-plan', () => {
@@ -841,6 +847,30 @@ test('computePlanningReconcile: agent-friendly + Unplanned + plan attached → m
   assert.deepEqual(r.toAgentPlan, [])
   assert.deepEqual(
     r.toTodo.map((t) => t.identifier),
+    ['BOS-1'],
+  )
+})
+
+test('computePlanningReconcile: a different ticket’s attachment queues the ticket for planning', () => {
+  const tickets = [
+    tk('i1', 'BOS-7', 'Unplanned', [lbl('agent-friendly')], [planAttachment('BOS-8')]),
+  ]
+  const r = computePlanningReconcile(tickets, RECONCILE_IDS)
+  assert.deepEqual(r.toTodo, [])
+  assert.deepEqual(
+    r.toAgentPlan.map((t) => t.identifier),
+    ['BOS-7'],
+  )
+})
+
+test('computePlanningReconcile: legacy proof link is missing and requeues for agent-plan', () => {
+  const tickets = [
+    tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-friendly')], [legacyPlanLink('BOS-1')]),
+  ]
+  const r = computePlanningReconcile(tickets, RECONCILE_IDS)
+  assert.deepEqual(r.toTodo, [])
+  assert.deepEqual(
+    r.toAgentPlan.map((t) => t.identifier),
     ['BOS-1'],
   )
 })
@@ -964,7 +994,7 @@ function reconcileData() {
             nodes: [
               {
                 title: 'Implementation plan (BOS-2)',
-                url: 'https://proof.bossanova.dev/plans/bossanova/BOS-2/a.md',
+                url: 'https://uploads.linear.app/bossanova/BOS-2/implementation-plan.md',
               },
             ],
           },

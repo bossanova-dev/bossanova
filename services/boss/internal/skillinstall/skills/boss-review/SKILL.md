@@ -214,7 +214,9 @@ glob in the registry).
 Rounds are whole-branch review passes. Resolve them by strict precedence:
 
 ```bash
-ROUNDS_JSON=$(node scripts/skill-extensions.mjs discover --core boss-review --role round --json)
+BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-review/toolbox"
+if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/bossanova/boss-review/toolbox"; fi
+ROUNDS_JSON=$(node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" discover --core boss-review --role round --json)
 ```
 
 ### Tier 1 — repo-local round extensions
@@ -236,7 +238,9 @@ the standard extension invocation envelope:
 Validate each envelope:
 
 ```bash
-node scripts/skill-extensions.mjs validate --role round --file "$RUN_TMP/findings-round-<extension-name>.json"
+BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-review/toolbox"
+if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/bossanova/boss-review/toolbox"; fi
+node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" validate --role round --file "$RUN_TMP/findings-round-<extension-name>.json"
 ```
 
 When validation passes, merge `items[]` into the findings pool and attach the extension's stable

@@ -6,15 +6,15 @@ run the moment CI resolves or the PR merges/closes — while keeping the poll as
 authoritative reconciliation as the only thing that actually decides.
 
 **First decide whether callbacks are usable at all.** `callbacksAvailable(env)`
-(`scripts/callback/adapter.mjs`, keyed on `BOSS_SESSION_ID`) is the single "callbacks usable" gate.
+(`toolbox/callback/adapter.mjs`, keyed on `BOSS_SESSION_ID`) is the single "callbacks usable" gate.
 When it is **false** (a standalone run with no daemon behind the `boss callback` interface), **skip
 `registerWatch` entirely and use `fallbackPoll`** — the clean, documented no-op below, never a failed
 wait. When it is **true**, arm the group as described. This is an up-front check, not a "did the CLI
 happen to fail at runtime" guess, and it is the one place to extend if the usability signal ever
 diverges from raw in-boss.
 
-The capability contract is the callback-notifier adapter (`scripts/callback/adapter.mjs`, default
-`CALLBACK=boss`). The boss reference (`scripts/callback/boss.mjs`) maps three capabilities onto the
+The capability contract is the callback-notifier adapter (`toolbox/callback/adapter.mjs`, default
+`CALLBACK=boss`). The boss reference (`toolbox/callback/boss.mjs`) maps three capabilities onto the
 generic `boss callback` CLI and carries the watch policy:
 
 | Capability      | `boss callback` command | Purpose                                                       |

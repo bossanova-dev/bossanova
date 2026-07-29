@@ -22,13 +22,18 @@ import (
 	"github.com/recurser/bossd/internal/session"
 )
 
-// QuestionSignalRecorder records a structured "a question is pending" signal
-// for a chat, keyed by agent_session_id. Satisfied by
+// QuestionSignalRecorder records — and clears — a structured "a question is
+// pending" signal for a chat, keyed by agent_session_id. Satisfied by
 // *questionsignal.Store. Kept as a narrow interface so the hook server has no
 // hard dependency on the store's concrete type and tests can substitute a
 // fake.
+//
+// Clear is the inverse of SetPending and is reached only by an explicitly
+// clearing payload (see clearingNotification); it is a no-op when no record
+// exists.
 type QuestionSignalRecorder interface {
 	SetPending(agentSessionID, source string)
+	Clear(agentSessionID string)
 }
 
 // RunTokenValidator authenticates a per-run bearer token WITHOUT any side
@@ -382,13 +387,20 @@ func (h *HookServer) handleAgentRunComplete(w http.ResponseWriter, r *http.Reque
 // per-run bearer token as the run's Stop hook, validated in constant time by
 // the RunTokenValidator with no side effect.
 //
+// BOS-486 adds the inverse, additively: a payload that both names a recognised
+// end-of-turn type and sets cleared:true (the opencode hook's
+// {"notification_type":"session_idle","cleared":true} on session.idle) CLEARS
+// the pending signal. No Claude notification type sets that flag, so every type
+// the receiver already handled keeps its exact prior behaviour.
+//
 // Response codes:
 //   - 400 — agent_session_id path parameter missing
 //   - 401 — Authorization header missing/malformed, or the token mismatches a
 //     registered run (can't authenticate ⇒ no store write)
 //   - 500 — question deps not wired (misconfiguration; production always wires them)
 //   - 200 — auth succeeded (the pending signal is recorded only for a
-//     needs-human notification_type; benign/unknown types ACK without a write),
+//     needs-human notification_type, and cleared only for an explicitly
+//     clearing payload; benign/unknown types ACK without touching the store),
 //     OR the run is unknown/torn-down (idempotent no-op, no store write) —
 //     mirroring handleAgentRunComplete so a stale Notification hook's `curl -sf`
 //     doesn't surface as a hook-error line in the Claude transcript
@@ -446,18 +458,29 @@ func (h *HookServer) handleQuestion(w http.ResponseWriter, r *http.Request) {
 // generous ceiling that still bounds a malformed/hostile body.
 const maxNotificationBody = 64 << 10
 
-// recordQuestionByType reads the forwarded Claude Notification payload, and
-// records a pending question signal only when its notification_type means the
-// human is needed. It is called after the run token has authenticated, so a
-// store write here always follows positive auth.
+// recordQuestionByType reads the forwarded notification payload, and records a
+// pending question signal only when its notification_type means the human is
+// needed. It is called after the run token has authenticated, so a store write
+// (or clear) here always follows positive auth.
 //
 // The body is best-effort: an empty/unreadable/unparsable payload yields an
 // empty type, which is neither needs-human nor known-benign, so it takes the
 // unclassified path (logged, no write) rather than guessing.
 func (h *HookServer) recordQuestionByType(agentSessionID string, r *http.Request) {
-	ntype, message := parseNotificationType(r)
+	p := parseNotificationPayload(r)
+	ntype, message := p.NotificationType, p.Message
 
 	switch {
+	case clearingNotification(ntype, p.Cleared):
+		// The only path that clears. Checked FIRST so it can never be shadowed
+		// by a future overlap with the classification arms below, and gated on
+		// an explicit cleared:true so a bare notification of the same type
+		// still takes the benign ACK-without-write path.
+		h.questionSignals.Clear(agentSessionID)
+		h.logger.Debug().
+			Str("agent_session", agentSessionID).
+			Str("notification_type", ntype).
+			Msg("hook: question signal cleared")
 	case needsHumanNotification(ntype):
 		h.questionSignals.SetPending(agentSessionID, "claude-notification:"+ntype)
 		h.logger.Debug().
@@ -484,22 +507,43 @@ func (h *HookServer) recordQuestionByType(agentSessionID string, r *http.Request
 	}
 }
 
-// parseNotificationType extracts notification_type (and message, for logging)
-// from a forwarded Claude Notification payload. Returns empty strings on any
-// read/parse failure — the caller treats that as unclassified, not an error.
-func parseNotificationType(r *http.Request) (ntype, message string) {
+// hookNotificationPayload is the forwarded hook body the classifier reads.
+//
+// notification_type + message are the Claude Code Notification hook's shape.
+// cleared is the additive opt-in that the opencode event hook (BOS-486) sends
+// on session.idle to retract a pending signal; Claude never sets it, so its
+// absence keeps every existing type on exactly the path it took before.
+type hookNotificationPayload struct {
+	NotificationType string `json:"notification_type"`
+	Message          string `json:"message"`
+	Cleared          bool   `json:"cleared"`
+}
+
+// parseNotificationPayload extracts the forwarded notification body. Returns
+// the zero value on any read/parse failure — the caller treats an empty type as
+// unclassified, not an error.
+func parseNotificationPayload(r *http.Request) hookNotificationPayload {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxNotificationBody))
 	if err != nil || len(body) == 0 {
-		return "", ""
+		return hookNotificationPayload{}
 	}
-	var p struct {
-		NotificationType string `json:"notification_type"`
-		Message          string `json:"message"`
-	}
+	var p hookNotificationPayload
 	if err := json.Unmarshal(body, &p); err != nil {
-		return "", ""
+		return hookNotificationPayload{}
 	}
-	return p.NotificationType, p.Message
+	return p
+}
+
+// clearingNotification reports whether this payload explicitly retracts a
+// pending question signal.
+//
+// BOTH conditions are required: a recognised end-of-turn type AND cleared:true.
+// The flag alone is not enough (an unrecognised type must never mutate the
+// store), and the type alone is not enough (a bare session_idle takes the
+// benign ACK-without-write path). No Claude notification type sets cleared, so
+// this arm is unreachable for every type the receiver handled before BOS-486.
+func clearingNotification(t string, cleared bool) bool {
+	return cleared && t == "session_idle"
 }
 
 // needsHumanNotification reports whether a Claude Code Notification of this type
@@ -524,10 +568,15 @@ func needsHumanNotification(t string) bool {
 // non-question event — one we deliberately ACK without recording a signal, and
 // without the info-level "unclassified" log. Anything neither needs-human nor
 // benign is genuinely unrecognised and worth surfacing.
+//
+// session_idle is the opencode end-of-turn event (BOS-486). It is benign here
+// so a payload that names it WITHOUT cleared:true is a plain ACK rather than an
+// "unclassified" log line; the clearing variant is handled earlier, by
+// clearingNotification.
 func knownBenignNotification(t string) bool {
 	switch t {
 	case "auth_success", "idle_prompt", "agent_completed",
-		"elicitation_complete", "elicitation_response":
+		"elicitation_complete", "elicitation_response", "session_idle":
 		return true
 	default:
 		return false

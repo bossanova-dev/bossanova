@@ -25,7 +25,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { BASELINE_DIR, REPO_ROOT, computeAll, stableStringify } from './capture-baseline.mjs'
-import { ROLE_SCHEMAS, discoverExtensions } from '../skill-extensions.mjs'
+import { ROLE_SCHEMAS, discoverExtensions } from '../../skills-toolbox/skill-extensions.mjs'
 
 /** Snapshot filename → human skill label used in DRIFT messages. */
 const SNAPSHOT_SKILL_LABELS = {
@@ -232,7 +232,9 @@ export async function main() {
   return 1
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+import { isMainModule } from '../../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   main().then((code) => {
     process.exitCode = code
   })

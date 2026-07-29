@@ -33,7 +33,9 @@ export function summarizeGoTestJson(input, limit = 20) {
     .join('\n')
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   const file = process.argv[2]
   const limit = Number(process.env.LIMIT || '20')
   const input = file ? fs.readFileSync(file, 'utf8') : fs.readFileSync(0, 'utf8')

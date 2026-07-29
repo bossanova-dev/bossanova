@@ -123,18 +123,29 @@ test('loadSkillConfig returns defaults when no file present', () => {
   }
 })
 
-test('planStorageFor defaults to R2 and accepts tracker attachments', () => {
-  assert.deepEqual(planStorageFor(DEFAULT_CONFIG), { kind: 'r2' })
-  assert.deepEqual(
-    planStorageFor(mergeConfig(DEFAULT_CONFIG, { planStorage: { kind: 'tracker-attachment' } })),
-    { kind: 'tracker-attachment' },
-  )
+test('planStorageFor always resolves tracker attachments', () => {
+  assert.deepEqual(planStorageFor(DEFAULT_CONFIG), { kind: 'tracker-attachment' })
+  assert.deepEqual(planStorageFor({ planStorage: { kind: 'r2' } }), { kind: 'tracker-attachment' })
+})
+
+test('validateConfig warns and coerces legacy R2 plan storage', () => {
+  const config = mergeConfig(DEFAULT_CONFIG, { planStorage: { kind: 'r2' } })
+  const originalWarn = console.warn
+  const warnings = []
+  console.warn = (message) => warnings.push(String(message))
+  try {
+    validateConfig(config, 'test')
+  } finally {
+    console.warn = originalWarn
+  }
+  assert.deepEqual(config.planStorage, { kind: 'tracker-attachment' })
+  assert.match(warnings.join('\n'), /planStorage\.kind="r2" is deprecated and ignored/)
 })
 
 test('validateConfig rejects an unknown plan storage kind', () => {
   assert.throws(
     () => validateConfig(mergeConfig(DEFAULT_CONFIG, { planStorage: { kind: 'unknown' } }), 'test'),
-    /skill-config:.*planStorage\.kind must be "r2" or "tracker-attachment"/,
+    /skill-config:.*planStorage\.kind must be "tracker-attachment"/,
   )
 })
 

@@ -50,6 +50,8 @@ function main() {
   console.log(`wrote ${lines.length} plugin checksums to ${join(dir, 'plugins.sum')}`)
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   main()
 }

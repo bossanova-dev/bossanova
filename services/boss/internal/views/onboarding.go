@@ -261,7 +261,7 @@ func (m OnboardingModel) View() tea.View {
 		}
 	}
 
-	b.WriteString(actionBar(
+	b.WriteString(actionBarWidth(m.width,
 		[]string{"[space] toggle", "[enter] continue"},
 		[]string{"[esc] quit"},
 	))
@@ -285,7 +285,7 @@ func (m OnboardingModel) dangerousModeView() tea.View {
 	line := fmt.Sprintf("[%s] Use 'dangerous mode' by default", check)
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleSelected.Render(line)))
 	b.WriteString("\n")
-	b.WriteString(actionBar(
+	b.WriteString(actionBarWidth(m.width,
 		[]string{"[space] toggle", "[enter] next"},
 		[]string{"[esc] skip"},
 	))

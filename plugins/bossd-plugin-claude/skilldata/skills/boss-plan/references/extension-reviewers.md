@@ -16,7 +16,9 @@ dispatched as an awaited subagent (no human gating).
    `skipped`:
 
    ```bash
-   node scripts/skill-extensions.mjs discover --core boss-plan --role plan-reviewer --json
+   BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
+   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
+   node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role plan-reviewer --json
    ```
 
    Pass `--role plan-reviewer` so a same-prefix extension that extends `boss-plan` but declares the
@@ -55,7 +57,9 @@ dispatched as an awaited subagent (no human gating).
 3. **Validate + fold or skip.** Validate each returned envelope:
 
    ```bash
-   node scripts/skill-extensions.mjs validate --role plan-reviewer --file "<outPath>"
+   BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
+   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
+   node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" validate --role plan-reviewer --file "<outPath>"
    ```
 
    On a missing file or non-zero exit, record `extension <name>: skipped (<reason>)` and continue —

@@ -162,10 +162,20 @@ func TestConstantRPCs(t *testing.T) {
 		t.Fatalf("ListIgnoredDirtyFiles: %v", err)
 	}
 	if dirty.Paths == nil {
-		t.Error("ListIgnoredDirtyFiles.Paths = nil, want non-nil empty slice")
+		t.Fatal("ListIgnoredDirtyFiles.Paths = nil, want non-nil slice")
 	}
-	if len(dirty.Paths) != 0 {
-		t.Errorf("ListIgnoredDirtyFiles.Paths = %v, want empty", dirty.Paths)
+	// The injected BOS-486 question hook is bossd-written, not agent-authored:
+	// it MUST be filtered out of finalize's `git status` read or a run that
+	// changed nothing looks like it produced an untracked file. Fatal, not
+	// Error: the path assertion below indexes the slice.
+	const wantIgnored = ".opencode/plugins/bossd-question.js"
+	if !slices.Contains(dirty.Paths, wantIgnored) {
+		t.Fatalf("ListIgnoredDirtyFiles.Paths = %v, want to contain %q", dirty.Paths, wantIgnored)
+	}
+	// The path must match what installQuestionHook actually writes, expressed
+	// relative to the worktree — a drift here silently un-ignores the file.
+	if got := questionHookPath("/wt"); got != "/wt/"+wantIgnored {
+		t.Errorf("ignored path %q does not match the injected path %q", wantIgnored, got)
 	}
 
 	fin, err := s.ConfigureFinalizeHook(ctx, &bossanovav1.ConfigureFinalizeHookRequest{})
@@ -176,14 +186,26 @@ func TestConstantRPCs(t *testing.T) {
 		t.Error("ConfigureFinalizeHook.IsSupported = true, want false")
 	}
 
+	// RemoveAgentRunHook now reports supported: BOS-486 gave opencode a real
+	// run-scoped hook to remove (the injected .opencode/plugins asset). Its
+	// IsSupported is NOT a bossd routing flag — unlike ConfigureFinalizeHook's,
+	// which is pinned false by TestConfigureFinalizeHookStaysUnsupported. It is
+	// exercised against a real worktree in TestRemoveAgentRunHookDeletesAsset.
 	rm, err := s.RemoveAgentRunHook(ctx, &bossanovav1.RemoveAgentRunHookRequest{})
 	if err != nil {
 		t.Fatalf("RemoveAgentRunHook: %v", err)
 	}
-	if rm.IsSupported {
-		t.Error("RemoveAgentRunHook.IsSupported = true, want false")
+	if !rm.IsSupported {
+		t.Error("RemoveAgentRunHook.IsSupported = false, want true")
 	}
 
+	// HasQuestionPrompt stays false as a DELIBERATE decision rather than an
+	// unimplemented stub: opencode is headless, so the pane-regex fallback this
+	// RPC backs has nothing to scrape. The BOS-486 question signal reaches bossd
+	// out-of-band, over the loopback receiver, not through here. Flipping this
+	// to true means that has changed — re-read
+	// docs/solutions/logic-errors/spike-opencode-question-signal-events-unreachable.md
+	// before doing so.
 	q, err := s.HasQuestionPrompt(ctx, &bossanovav1.HasQuestionPromptRequest{})
 	if err != nil {
 		t.Fatalf("HasQuestionPrompt: %v", err)

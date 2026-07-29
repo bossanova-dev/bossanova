@@ -118,9 +118,145 @@ func TestWorker_RetryOnDeliveryFailure(t *testing.T) {
 	if got.NextAttemptAt.Sub(wantNext).Abs() > time.Second {
 		t.Errorf("next_attempt_at = %v, want ~%v", got.NextAttemptAt, wantNext)
 	}
+	if got.LastError == nil || *got.LastError != "chat offline" {
+		t.Errorf("last_error = %v, want normal delivery error", got.LastError)
+	}
 	// Lease was released, so the row is not held by the failed worker.
 	if got.LeaseOwner != nil {
 		t.Errorf("lease still held by %v, want released", *got.LeaseOwner)
+	}
+}
+
+func TestWorker_RetryDeliveryUsesRepeatPrompt(t *testing.T) {
+	store := newStore(t)
+	base := time.Now().UTC()
+	clk := newClock(base)
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerMerged, Message: "m",
+	})
+	triggerActive(t, store, cb.ID, clk.now())
+
+	var messages []string
+	deliverer := DelivererFunc(func(_ context.Context, _ string, message string) error {
+		messages = append(messages, message)
+		return errors.New("chat offline")
+	})
+	w := newWorker(store, deliverer, clk.now, "worker-1")
+	w.scan(context.Background())
+	clk.advance(baseRetryBackoff)
+	w.scan(context.Background())
+
+	if len(messages) != 2 {
+		t.Fatalf("delivery attempts = %d, want 2", len(messages))
+	}
+	if !strings.Contains(messages[1], "REPEAT DELIVERY — attempt 2 for callback id "+cb.ID+"; an already-actioned callback needs no further action.") {
+		t.Errorf("second delivery missing repeat banner:\n%s", messages[1])
+	}
+}
+
+func TestWorker_ExhaustedAttemptsPinToExpiryAndExpire(t *testing.T) {
+	store := newStore(t)
+	base := time.Now().UTC()
+	clk := newClock(base)
+	expires := base.Add(24 * time.Hour)
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerMerged, Message: "m", ExpiresAt: &expires,
+	})
+	triggerActive(t, store, cb.ID, clk.now())
+
+	attempts := 0
+	w := newWorker(store, DelivererFunc(func(_ context.Context, _ string, _ string) error {
+		attempts++
+		return errors.New("chat offline")
+	}), clk.now, "worker-1")
+	for range maxDeliveryAttempts {
+		w.scan(context.Background())
+		got, err := store.Get(context.Background(), cb.ID)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got.NextAttemptAt == nil {
+			t.Fatal("next_attempt_at not set")
+		}
+		clk.advance(got.NextAttemptAt.Sub(clk.now()))
+	}
+
+	got, err := store.Get(context.Background(), cb.ID)
+	if err != nil {
+		t.Fatalf("get exhausted callback: %v", err)
+	}
+	if attempts != maxDeliveryAttempts {
+		t.Fatalf("delivery attempts = %d, want %d", attempts, maxDeliveryAttempts)
+	}
+	if got.NextAttemptAt == nil || got.NextAttemptAt.Sub(expires).Abs() > time.Second {
+		t.Errorf("next_attempt_at = %v, want pinned to expiry %v", got.NextAttemptAt, expires)
+	}
+	if got.LastError == nil || !strings.Contains(*got.LastError, "attempt exhaustion") {
+		t.Errorf("last_error = %v, want attempt exhaustion diagnostic", got.LastError)
+	}
+
+	// The pin keeps the exhausted row out of delivery contention until the lazy
+	// expiry sweep turns it terminal.
+	w.scan(context.Background())
+	if attempts != maxDeliveryAttempts {
+		t.Errorf("delivery attempts after exhaustion = %d, want %d", attempts, maxDeliveryAttempts)
+	}
+	clk.advance(time.Second)
+	w.scan(context.Background())
+	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateExpired {
+		t.Errorf("state = %q, want expired", got)
+	}
+	if attempts != maxDeliveryAttempts {
+		t.Errorf("delivery attempts after expiry = %d, want %d", attempts, maxDeliveryAttempts)
+	}
+}
+
+func TestWorker_PreviouslyExhaustedCallbackIsNotDeliveredAgain(t *testing.T) {
+	store := newStore(t)
+	base := time.Now().UTC()
+	clk := newClock(base)
+	expires := base.Add(24 * time.Hour)
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerMerged, Message: "m", ExpiresAt: &expires,
+	})
+	triggerActive(t, store, cb.ID, clk.now())
+
+	for range maxDeliveryAttempts {
+		if _, err := store.AcquireLease(context.Background(), cb.ID, "old-worker", clk.now(), DefaultLeaseDuration); err != nil {
+			t.Fatalf("acquire old attempt: %v", err)
+		}
+		if err := store.ScheduleRetry(context.Background(), cb.ID, "old-worker", db.ScheduleGithubCallbackRetryParams{
+			NextAttemptAt: clk.now(), LastError: "old delivery failure", LastEvent: string(cb.Trigger),
+		}); err != nil {
+			t.Fatalf("schedule old attempt: %v", err)
+		}
+	}
+
+	attempts := 0
+	w := newWorker(store, DelivererFunc(func(_ context.Context, _ string, _ string) error {
+		attempts++
+		return nil
+	}), clk.now, "worker-1")
+	w.scan(context.Background())
+
+	got, err := store.Get(context.Background(), cb.ID)
+	if err != nil {
+		t.Fatalf("get callback: %v", err)
+	}
+	if attempts != 0 {
+		t.Errorf("delivery attempts = %d, want 0", attempts)
+	}
+	if got.AttemptCount != maxDeliveryAttempts {
+		t.Errorf("attempt_count = %d, want %d", got.AttemptCount, maxDeliveryAttempts)
+	}
+	if got.NextAttemptAt == nil || got.NextAttemptAt.Sub(expires).Abs() > time.Second {
+		t.Errorf("next_attempt_at = %v, want expiry %v", got.NextAttemptAt, expires)
+	}
+	if got.LastError == nil || !strings.Contains(*got.LastError, "attempt exhaustion after 5 attempts") {
+		t.Errorf("last_error = %v, want five-attempt exhaustion diagnostic", got.LastError)
 	}
 }
 

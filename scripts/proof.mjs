@@ -1683,8 +1683,9 @@ export function tuiAgentBridgeEnv({ bridgeBin, bossBin, existingBossBin }) {
   }
 }
 
-const invokedDirectly =
-  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+const invokedDirectly = isMainModule(import.meta.url)
 if (invokedDirectly) {
   ;(async () => {
     try {

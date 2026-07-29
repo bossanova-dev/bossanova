@@ -12,9 +12,9 @@
 // should look like and WHICH tracker op applies it; they never call a
 // tracker themselves. The driver executes that decision through the tracker
 // adapter's declarative operationMap — readComments, writeComment (create),
-// and updateComment (update) — defined in scripts/tracker/adapter.mjs
+// and updateComment (update) — defined in tracker/adapter.mjs
 // (REQUIRED_TRACKER_OPERATIONS). Each configured tracker adapter (e.g.
-// scripts/tracker/linear.mjs) maps those three capability names onto its
+// tracker/linear.mjs) maps those three capability names onto its
 // own concrete tool call; this module never names one. Concretely: the
 // driver calls readComments, feeds the result plus the marker and a body from
 // renderProgressComment into planProgressCommentUpsert, and executes

@@ -87,7 +87,9 @@ export function matchSentinel(line) {
 //   node bs-review-caps.mjs sentinel clean    → the clean sentinel line
 //   node bs-review-caps.mjs sentinel capped N → the capped sentinel line for N rounds
 //   node bs-review-caps.mjs match "<line>"    → JSON classification of a sentinel line
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from './main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   const [cmd, ...rest] = process.argv.slice(2)
   if (cmd === 'rounds') {
     process.stdout.write(`${reviewMaxRounds()}\n`)

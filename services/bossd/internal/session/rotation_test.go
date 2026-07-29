@@ -910,6 +910,28 @@ func TestSignalSessionRunComplete_RotationInterceptWiring(t *testing.T) {
 	})
 }
 
+// TestSignalSessionRunComplete_ReleasesHookTokenBeforeRotationIntercept pins
+// the ordering the BOS-486 release depends on: the rotation intercept RETURNS
+// EARLY when it handles a usage-limited exit, so the question-hook token of the
+// rotated-away agent session must be dropped ahead of it. Release it after the
+// intercept and every rotated run strands a token in the registry for the
+// daemon's lifetime.
+func TestSignalSessionRunComplete_ReleasesHookTokenBeforeRotationIntercept(t *testing.T) {
+	f := newRotationFixture(t)
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "acct-next"}, CooldownApplied: true}
+	reg := newFakeQuestionHookRegistrar()
+	f.lc.SetQuestionHookRegistrar(reg)
+
+	f.lc.SignalSessionRunComplete(f.sessionID, "agent-old", "usage_limit_reached")
+
+	if len(f.runner.started) != 1 {
+		t.Fatalf("precondition failed: expected the rotation restart, got %d starts", len(f.runner.started))
+	}
+	if got := reg.releasedIDs(); len(got) != 1 || got[0] != "agent-old" {
+		t.Errorf("released = %v, want [agent-old] even though the rotation intercept returned early", got)
+	}
+}
+
 // --- Not ImplementingPlan -> falls through ---
 
 func TestAttemptUsageLimitRotation_WrongStateFallsThrough(t *testing.T) {

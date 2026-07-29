@@ -120,6 +120,36 @@ type usageSnapshotRecorder interface {
 	MarkAccountSuspended(context.Context, string, string) error
 }
 
+// chatMessageSender is the SendChatMessage subset shared by callback delivery,
+// transient resume, and broadcast delivery.
+type chatMessageSender interface {
+	SendChatMessage(context.Context, *connect.Request[bossanovav1.SendChatMessageRequest]) (*connect.Response[bossanovav1.SendChatMessageResponse], error)
+}
+
+// deliverChatMessage sends a message through the wake-and-submit path and only
+// reports success after bossd confirms that the message reached its target.
+func deliverChatMessage(ctx context.Context, sender chatMessageSender, agentSessionID, message string) error {
+	resp, err := sender.SendChatMessage(ctx, connect.NewRequest(&bossanovav1.SendChatMessageRequest{
+		AgentSessionId: agentSessionID,
+		Message:        message,
+		Submit:         true,
+		WakeIfAsleep:   true,
+	}))
+	if err != nil {
+		return fmt.Errorf("send chat message: %w", err)
+	}
+	if resp == nil {
+		return errors.New("send chat message: nil response")
+	}
+	if resp.Msg == nil {
+		return errors.New("send chat message: nil response message")
+	}
+	if !resp.Msg.GetDelivered() {
+		return errors.New("send chat message: not delivered")
+	}
+	return nil
+}
+
 func probeUsageSnapshotForRotation(
 	ctx context.Context,
 	logger zerolog.Logger,
@@ -1596,6 +1626,11 @@ func run(opts runOpts) error {
 		// responsiveness with idle CPU cost on a daemon hosting many
 		// concurrent runs.
 		lifecycle.SetPollCompleter(hs)
+		// Same object also owns the headless question-hook token registry
+		// (BOS-486), which authenticates a headless run's POSTs to
+		// /hooks/question/{agent_session_id}. Wired separately from the
+		// completer so the two concerns stay independent.
+		lifecycle.SetQuestionHookRegistrar(hs)
 		pollFallback := agent.NewPollFallback(log.Logger, 2*time.Second, 200*time.Millisecond, lifecycle)
 		lifecycle.SetPollArmer(pollFallback)
 	}
@@ -1819,6 +1854,7 @@ func run(opts runOpts) error {
 
 	tmuxStatusPoller := status.NewTmuxStatusPoller(chatStatusTracker, agentChats, sessions, tmuxClient, agentClients, log.Logger)
 	tmuxStatusPoller.SetQuestionSignals(questionSignals)
+	lifecycle.SetQuestionSignals(questionSignals)
 
 	// --- Server ---
 
@@ -2553,13 +2589,7 @@ func run(opts runOpts) error {
 	// evaluator (wired into the webhook dispatcher) advances callbacks to
 	// triggered; this worker owns triggered -> delivered.
 	callbackDeliverer := callback.DelivererFunc(func(ctx context.Context, agentSessionID, message string) error {
-		_, err := srv.SendChatMessage(ctx, connect.NewRequest(&bossanovav1.SendChatMessageRequest{
-			AgentSessionId: agentSessionID,
-			Message:        message,
-			Submit:         true,
-			WakeIfAsleep:   true,
-		}))
-		return err
+		return deliverChatMessage(ctx, srv, agentSessionID, message)
 	})
 
 	// --- Transient-API-error auto-resume (BOS-518) ---
@@ -2607,13 +2637,7 @@ func run(opts runOpts) error {
 				sess.State != machine.Orphaned
 		},
 		Deliver: func(ctx context.Context, agentSessionID, message string) error {
-			_, err := srv.SendChatMessage(ctx, connect.NewRequest(&bossanovav1.SendChatMessageRequest{
-				AgentSessionId: agentSessionID,
-				Message:        message,
-				Submit:         true,
-				WakeIfAsleep:   true,
-			}))
-			return err
+			return deliverChatMessage(ctx, srv, agentSessionID, message)
 		},
 	})
 	if opts.onTransientResumeSeamsWired != nil {
@@ -2639,13 +2663,7 @@ func run(opts runOpts) error {
 	// owns resolved -> completed, with capped backoff retry and a lazy expiry
 	// sweep per tick.
 	broadcastDeliverer := broadcast.DelivererFunc(func(ctx context.Context, agentSessionID, message string) error {
-		_, err := srv.SendChatMessage(ctx, connect.NewRequest(&bossanovav1.SendChatMessageRequest{
-			AgentSessionId: agentSessionID,
-			Message:        message,
-			Submit:         true,
-			WakeIfAsleep:   true,
-		}))
-		return err
+		return deliverChatMessage(ctx, srv, agentSessionID, message)
 	})
 	//
 	// The worker's tick also carries the standing-subscription reconcile sweep

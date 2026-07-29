@@ -739,7 +739,7 @@ func (m AttachModel) View() tea.View {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("%s session ended.", agentLabel)))
 		}
 		b.WriteString("\n")
-		b.WriteString(actionBar([]string{"[esc] back"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[esc] back"}))
 		return tea.NewView(b.String())
 	}
 

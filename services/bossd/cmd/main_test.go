@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,13 +11,43 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/goleak"
 
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/server"
 )
+
+type sendChatMessageStub struct {
+	response *connect.Response[bossanovav1.SendChatMessageResponse]
+	err      error
+}
+
+func (s sendChatMessageStub) SendChatMessage(context.Context, *connect.Request[bossanovav1.SendChatMessageRequest]) (*connect.Response[bossanovav1.SendChatMessageResponse], error) {
+	return s.response, s.err
+}
+
+func TestDeliverChatMessageRejectsUndeliveredResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		stub sendChatMessageStub
+	}{
+		{name: "rpc error", stub: sendChatMessageStub{err: errors.New("unavailable")}},
+		{name: "nil response", stub: sendChatMessageStub{}},
+		{name: "nil message", stub: sendChatMessageStub{response: connect.NewResponse[bossanovav1.SendChatMessageResponse](nil)}},
+		{name: "undelivered", stub: sendChatMessageStub{response: connect.NewResponse(&bossanovav1.SendChatMessageResponse{Delivered: false})}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := deliverChatMessage(context.Background(), tt.stub, "chat-1", "message"); err == nil {
+				t.Fatal("deliverChatMessage() error = nil, want error")
+			}
+		})
+	}
+}
 
 // TestRun_GracefulShutdown_NoGoroutineLeak boots the full daemon with an
 // isolated DB + socket, sends a synthetic SIGTERM, and asserts run() returns

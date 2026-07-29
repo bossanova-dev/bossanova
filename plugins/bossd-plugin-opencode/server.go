@@ -3,10 +3,12 @@
 // The introspection reads (GetChatTitle, TranscriptExists, LastTurnIsUser,
 // ResolveInteractiveSessionID) are backed by opencodedb.go, which reads
 // opencode's SQLite session store read-only and defensively (BOS-435). The
-// small remaining reads are constants for opencode: ListIgnoredDirtyFiles is an
-// empty set, the hook-config RPCs report unsupported, and HasQuestionPrompt is
-// a conservative false. A handful of run/launch RPCs (StartRun, StopRun, …)
-// remain codes.Unimplemented pending the dispatch-wiring slice (part 4).
+// small remaining reads are constants for opencode: ListIgnoredDirtyFiles is
+// the single BOS-486 question-hook path, ConfigureFinalizeHook reports
+// unsupported, and HasQuestionPrompt is a conservative false. The run/launch
+// RPCs (StartRun, StopRun, IsRunning, ExitStatus) are implemented here on top of
+// runner.go; the remaining chat-control RPCs report unsupported because opencode
+// has no interactive pane to drive.
 package main
 
 import (
@@ -21,6 +23,7 @@ import (
 	"github.com/recurser/bossalib/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/plugin/hostclient"
+	"github.com/recurser/bossalib/safego"
 )
 
 const pluginName = "opencode"
@@ -32,6 +35,16 @@ type Server struct {
 	logger zerolog.Logger
 	runner *Runner
 	store  *opencodeStore
+
+	// onHookCleanup, when non-nil, is invoked with the run's session id at the
+	// end of the question-hook cleanup goroutine. It is a test seam: it lets a
+	// test await its OWN run's cleanup deterministically instead of polling.
+	//
+	// Set once at construction and never written again, so it needs no mutex —
+	// and because each invocation carries its own sessionID it stays correct
+	// for any number of concurrent runs, unlike a shared completion slot. nil
+	// in production, where nothing observes cleanup at all.
+	onHookCleanup func(sessionID string)
 }
 
 func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...Option) *Server {
@@ -75,16 +88,75 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 // procCtx and SIGTERM the just-started opencode process within milliseconds. The
 // runner owns subprocess lifecycle via its own Stop()/cancel paths. Mirrors the
 // codex twin (plugins/bossd-plugin-codex/server.go).
+//
+// Before the subprocess starts, StartRun injects the question-signal event hook
+// (BOS-486) into the worktree when the request's ExtraEnv carries the loopback
+// hook context. Injection is best-effort: a write failure is logged and the run
+// proceeds without a question signal, because a missing "? question" label is
+// strictly better than a session that will not start. The hook is removed by
+// the run-end goroutine armed below — which, on the headless path, is the only
+// inverse that actually fires; see RemoveAgentRunHook for why that RPC is not
+// the safety net it appears to be.
 func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	var resume *string
 	if req.ResumeId != nil {
 		resume = req.ResumeId
 	}
+	injected, err := installQuestionHook(req.WorkDir, req.GetExtraEnv())
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("opencode: question hook injection failed; running without a question signal")
+		// A failed install can still leave bytes behind: WriteFile truncates
+		// before it writes, so a mid-write failure leaves a partial file that
+		// opencode would load as a syntactically broken plugin. `injected` is
+		// false, so neither the failed-start sweep nor the run-end goroutine
+		// below would ever remove it. Sweep it here; removal is idempotent.
+		s.removeQuestionHookBestEffort(req.WorkDir)
+	}
 	sid, err := s.runner.Start(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetExtraEnv())
 	if err != nil {
+		if injected {
+			// The run never started, so nothing will ever call the run-end
+			// cleanup — sweep the just-written asset here instead of leaking it.
+			s.removeQuestionHookBestEffort(req.WorkDir)
+		}
 		return nil, status.Errorf(codes.Internal, "start run: %v", err)
 	}
+	if injected {
+		s.armQuestionHookCleanup(sid, req.WorkDir)
+	}
 	return &bossanovav1.StartAgentRunResponse{SessionId: sid}, nil
+}
+
+// armQuestionHookCleanup removes the injected hook once the run's subprocess
+// exits. It runs in a panic-recovering goroutine, because the RPC must return
+// promptly so the gRPC handler's ctx cancellation cannot reach the subprocess.
+//
+// Cleanup is best-effort and production observes it not at all: the git-exclude
+// entry covers an asset stranded by a crash before Wait returns. The optional
+// onHookCleanup callback exists solely so a test can wait for its own run.
+//
+// Removal keys on workDir alone, which assumes at most ONE armed run per
+// worktree — true today because only StartSession's fresh-start headless branch
+// arms injection. Two overlapping runs in one worktree would let the first to
+// finish delete the second's freshly-written asset.
+func (s *Server) armQuestionHookCleanup(sessionID, workDir string) {
+	safego.Go(s.logger, func() {
+		// The runner's Wait returns the run's exit error, which ExitStatus
+		// reports separately — here only the "it is over" edge matters.
+		_ = s.runner.Wait(context.Background(), sessionID)
+		s.removeQuestionHookBestEffort(workDir)
+		if s.onHookCleanup != nil {
+			s.onHookCleanup(sessionID)
+		}
+	})
+}
+
+// removeQuestionHookBestEffort deletes the injected hook, logging (never
+// returning) a failure. Cleanup must not be able to fail a run or an RPC.
+func (s *Server) removeQuestionHookBestEffort(workDir string) {
+	if err := removeQuestionHook(workDir); err != nil {
+		s.logger.Warn().Err(err).Msg("opencode: question hook cleanup failed")
+	}
 }
 
 func (s *Server) StopRun(_ context.Context, req *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {
@@ -173,24 +245,47 @@ func (s *Server) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscript
 // ConfigureFinalizeHook reports unsupported: the opencode runner uses the
 // one-shot `opencode run` headless path (no in-CLI Stop-hook surface), so the
 // daemon falls back to ExitStatus polling for finalize.
+//
+// This MUST keep returning IsSupported: false. bossd routes finalize off this
+// flag (agentClientHookSupport → services/bossd/internal/agent/poll_fallback.go):
+// claiming support switches the daemon from ExitStatus polling to waiting for a
+// Stop-hook POST that opencode never sends, so finalize would hang forever. The
+// BOS-486 question hook is injected on the StartRun path instead (see
+// installQuestionHook) precisely so it does not have to travel through this RPC.
+// TestConfigureFinalizeHookStaysUnsupported pins the invariant.
 func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: false}, nil
 }
 
-// RemoveAgentRunHook reports unsupported. opencode has no run-scoped hook config
-// to remove (ConfigureFinalizeHook installs none), but the daemon calls this
-// cleanup RPC unconditionally after run completion, so it must answer.
-func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) { //nolint:unparam // interface implementation
-	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: false}, nil
+// RemoveAgentRunHook removes the BOS-486 question-signal plugin that StartRun
+// injected into the worktree.
+//
+// REACHABILITY (do not assume this is the safety net it looks like): bossd's
+// only caller, removeRunHookBestEffort, is called exclusively from
+// HostServiceServer.WaitChatRun — the tmux StartChatRun path — and resolves the
+// session through runSessionByID, which only StartChatRun populates. A headless
+// opencode run, the only shape that injects today, never registers there and so
+// never receives this RPC. The run-end goroutine armed in StartRun is the SOLE
+// production inverse; this is a correct, idempotent second one that opencode is
+// not currently wired to receive.
+//
+// Unlike ConfigureFinalizeHook, this response's IsSupported is not a routing
+// flag; it reports true because there is now genuinely a hook to remove.
+func (s *Server) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) { //nolint:unparam // interface implementation
+	// Never surface a cleanup failure as an RPC error: this runs on the run's
+	// teardown path, where an error would be noise the daemon cannot act on.
+	s.removeQuestionHookBestEffort(req.GetWorkDir())
+	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: true}, nil
 }
 
 // --- Introspection reads: empty-but-valid ---
 
-// ListIgnoredDirtyFiles returns the (empty) non-nil set of worktree paths bossd
-// must not treat as agent-authored. It is empty for opencode; the rationale and
-// the shadow-git / .opencode/ / GIT_INDEX_FILE caveats are documented in
-// dirty_files.go. The daemon type-asserts on Paths length, so this must be a
-// non-nil empty slice.
+// ListIgnoredDirtyFiles returns the non-nil set of worktree paths bossd must
+// not treat as agent-authored. For opencode that is exactly one entry — the
+// BOS-486 question hook StartRun injects — and the rationale plus the
+// shadow-git / .opencode/ / GIT_INDEX_FILE caveats are documented in
+// dirty_files.go. The daemon type-asserts on Paths length, so this must always
+// be non-nil, even when the list is empty.
 func (s *Server) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) { //nolint:unparam // interface implementation
 	out := make([]string, len(ignoredDirtyFiles))
 	copy(out, ignoredDirtyFiles)
@@ -222,6 +317,32 @@ func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitle
 // no interactive TUI approval/permission menu in the bossd-driven flow to
 // detect — so a conservative false is correct and avoids manufacturing a
 // false-positive question state from pane bytes.
+//
+// BOS-486 feeds BOS-485's structured question-signal store from an injected
+// opencode `event`-hook plugin instead (see installQuestionHook). That signal
+// reaches bossd over the loopback receiver, NOT through this RPC, so this stays
+// false: the pane-regex fallback it backs has nothing to scrape for a headless
+// agent and a true here could only manufacture a false positive.
+//
+// How often the injected hook actually fires is bounded by the spike against
+// opencode 1.18.4: `question.asked` is not an opencode event type at all (it is
+// TUI-internal, and absent from the documented event list), and
+// `permission.asked` cannot fire while buildArgv appends an auto-approval
+// permission flag unconditionally on every run (--auto, or
+// --dangerously-skip-permissions; see TestBuildArgvAlwaysExactlyOnePermissionFlag).
+// Only `session.idle` — which merely CLEARS a pending signal — fires headless
+// today; the question path is wired for the day one of those changes.
+//
+// The READ side is gated too, and this is the part that surprises people: the
+// question store's only consumer is TmuxStatusPoller, which sources chats from
+// ListWithTmuxSession — a headless chat row has no tmux session name, so even a
+// correctly authenticated POST can NOT surface `? question` for a headless
+// opencode chat today. BOS-486 ships the WRITE half of the pipeline; do not
+// read the wiring below as a working end-to-end signal.
+//
+// This file's reachability facts all trace to one place; read it before
+// changing any of them:
+// docs/solutions/logic-errors/spike-opencode-question-signal-events-unreachable.md
 func (s *Server) HasQuestionPrompt(_ context.Context, _ *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.HasQuestionPromptResponse{HasPrompt: false}, nil
 }

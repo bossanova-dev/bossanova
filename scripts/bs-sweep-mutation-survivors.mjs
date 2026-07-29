@@ -146,7 +146,9 @@ export function matchPhaseBResult(token) {
 //   node scripts/bs-sweep-mutation-survivors.mjs match-mutation <token>
 //   node scripts/bs-sweep-mutation-survivors.mjs match-mutant   <token>
 //   node scripts/bs-sweep-mutation-survivors.mjs match-phase-b  <token>
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   const [cmd, ...rest] = process.argv.slice(2)
   const fail = (msg) => {
     process.stderr.write(`${msg}\n`)

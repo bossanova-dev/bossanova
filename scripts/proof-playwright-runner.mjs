@@ -25,8 +25,9 @@ const DEFAULT_VIDEO_SLOWMO_MS = 350
 
 // Only drive Playwright when invoked directly; importing this module (e.g. from
 // the unit tests, to exercise buildSpec/validateRecipe) must not start a run.
-const invokedDirectly =
-  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+const invokedDirectly = isMainModule(import.meta.url)
 
 if (invokedDirectly) {
   try {
@@ -618,11 +619,25 @@ function webStageScript(recipe) {
       }],
     };
   });
-  await page.routeWebSocket('**/ws/attach*', (ws) => {
-    ws.send(Buffer.from([4, 0, 0, 2, 91, 93]));
-  });
+${attachStageScript(recipe)}
 ${notificationStageScript(recipe)}
 `
+}
+
+// attachStageScript makes the attach socket deterministic per recipe. Most
+// captures need a healthy attached_clients frame so the terminal mounts; the
+// reconnecting recipe closes it to exercise the transient reconnect state.
+function attachStageScript(recipe) {
+  if (recipe?.id === 'web-chat-terminal-reconnecting') {
+    return `
+  await page.routeWebSocket('**/ws/attach*', (ws) => {
+    ws.close();
+  });`
+  }
+  return `
+  await page.routeWebSocket('**/ws/attach*', (ws) => {
+    ws.send(Buffer.from([4, 0, 0, 2, 91, 93]));
+  });`
 }
 
 // notificationStageScript makes the BOS-492 notification surfaces deterministic

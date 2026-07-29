@@ -2,10 +2,14 @@ package views
 
 import (
 	"errors"
+	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -190,5 +194,54 @@ func TestRepoListView_RendersError(t *testing.T) {
 	content := m.View().Content
 	if !strings.Contains(content, "Error:") || !strings.Contains(content, "kaboom") {
 		t.Fatalf("view did not surface the error; got:\n%s", content)
+	}
+}
+
+func TestRepoListBuildTable_FitsColumnsToTerminalWidth(t *testing.T) {
+	repos := []*pb.Repo{{
+		Id:          "repo-1",
+		DisplayName: strings.Repeat("n", 30),
+		LocalPath:   "/" + strings.Repeat("p", 59),
+	}}
+	wantTitles := map[int][]string{
+		0:   {" ", "NAME", "PATH", "STATUS"},
+		60:  {" ", "NAME", "STATUS"},
+		72:  {" ", "NAME", "STATUS"},
+		80:  {" ", "NAME", "STATUS"},
+		100: {" ", "NAME", "STATUS"},
+		140: {" ", "NAME", "PATH", "STATUS"},
+	}
+	var unfitted []table.Column
+	for _, width := range []int{0, 60, 72, 80, 100, 140} {
+		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
+			m := newRepoListModelForTest(repos)
+			m.width = width
+			m.buildTable()
+			assertTableRowsMatchColumns(t, m.table.Columns(), m.table.Rows())
+			if width > 0 && columnsWidth(m.table.Columns()) > width {
+				t.Fatalf("columns width = %d, want <= terminal width %d", columnsWidth(m.table.Columns()), width)
+			}
+			if !slices.Contains(columnTitles(m.table.Columns()), "NAME") {
+				t.Fatalf("titles = %v, want priority-0 NAME retained", columnTitles(m.table.Columns()))
+			}
+			if width == 0 {
+				unfitted = append([]table.Column(nil), m.table.Columns()...)
+			}
+			if got := columnTitles(m.table.Columns()); !slices.Equal(got, wantTitles[width]) {
+				t.Fatalf("width %d titles = %v, want %v", width, got, wantTitles[width])
+			}
+			if width == 140 && !reflect.DeepEqual(m.table.Columns(), unfitted) {
+				t.Fatalf("140-column set = %#v, want byte-identical unfitted %#v", m.table.Columns(), unfitted)
+			}
+		})
+	}
+}
+
+func assertTableRowsMatchColumns(t *testing.T, cols []table.Column, rows []table.Row) {
+	t.Helper()
+	for i, row := range rows {
+		if len(row) != len(cols) {
+			t.Fatalf("row %d has %d cells for %d columns", i, len(row), len(cols))
+		}
 	}
 }

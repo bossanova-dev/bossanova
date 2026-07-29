@@ -344,7 +344,7 @@ func (m BugReportModel) View() tea.View {
 	case bugReportPhaseError:
 		return tea.NewView(
 			renderError(fmt.Sprintf("Could not submit report: %v", m.err), m.width) + "\n" +
-				actionBar([]string{"[esc] dismiss"}),
+				actionBarWidth(m.width, []string{"[esc] dismiss"}),
 		)
 	}
 
@@ -354,7 +354,7 @@ func (m BugReportModel) View() tea.View {
 
 	content := m.formPrefix() +
 		lipgloss.NewStyle().PaddingLeft(2).Render(m.form.View()) + "\n" +
-		formActionBar([]string{"[enter] submit"}, []string{"[esc] cancel"})
+		formActionBarWidth(m.width, []string{"[enter] submit"}, []string{"[esc] cancel"})
 	v := tea.NewView(content)
 	// Mouse reporting is scoped to form screens (BOS-512): every other phase and
 	// every other view keeps the zero value MouseModeNone, so click-drag text

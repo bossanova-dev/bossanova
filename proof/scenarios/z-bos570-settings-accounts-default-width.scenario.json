@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "title": "BOS-573 — Settings Accounts keeps every diagnostic column at the default terminal width",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-03",
+      "title": "the default-width Accounts board retains the full pre-existing column set",
+      "steps": [
+        {
+          "key": "s",
+          "caption": "Open Settings at the bridge's default 140-column terminal width"
+        },
+        { "waitFor": "Settings", "timeoutMs": 10000, "caption": "Settings hub is visible" },
+        { "key": "a", "caption": "Open the Accounts board" },
+        {
+          "waitFor": {
+            "text": "LABEL PROVIDER STATUS HEALTH UTIL5H UTIL7D AGE COOLDOWN LAST TEST",
+            "match": "normalized",
+            "label": "the full Accounts header set is visible"
+          },
+          "timeoutMs": 10000,
+          "caption": "At the default width no Accounts columns are dropped"
+        },
+        {
+          "expect": [
+            {
+              "text": "PROVIDER",
+              "match": "normalized",
+              "label": "PROVIDER remains visible at the default width"
+            },
+            {
+              "text": "UTIL7D",
+              "match": "normalized",
+              "label": "UTIL7D remains visible at the default width"
+            },
+            {
+              "text": "LAST TEST",
+              "match": "normalized",
+              "label": "LAST TEST remains visible at the default width"
+            }
+          ],
+          "caption": "The full diagnostic Accounts board is preserved when the terminal has room"
+        }
+      ]
+    }
+  ]
+}

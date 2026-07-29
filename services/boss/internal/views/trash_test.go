@@ -3,10 +3,13 @@ package views
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -73,6 +76,50 @@ func TestTrashModel_FilterMatchesVisibleColumns(t *testing.T) {
 				if got := m.table.Rows()[i][2]; got != want {
 					t.Fatalf("row %d name = %q, want %q", i, got, want)
 				}
+			}
+		})
+	}
+}
+
+func TestTrashBuildTable_FitsColumnsToTerminalWidth(t *testing.T) {
+	prNumber := int32(12345678)
+	sessions := []*pb.Session{{
+		Id:              "session-1",
+		RepoDisplayName: strings.Repeat("r", 20),
+		Title:           strings.Repeat("n", 60),
+		BranchName:      strings.Repeat("b", 60),
+		PrNumber:        &prNumber,
+		ArchivedAt:      timestamppb.New(trashArchiveTime(0)),
+	}}
+	wantTitles := map[int][]string{
+		0:   {" ", "REPO", "NAME", "PR", "ARCHIVED"},
+		60:  {" ", "NAME"},
+		72:  {" ", "NAME"},
+		80:  {" ", "NAME", "ARCHIVED"},
+		100: {" ", "NAME", "PR", "ARCHIVED"},
+		140: {" ", "REPO", "NAME", "PR", "ARCHIVED"},
+	}
+	var unfitted []table.Column
+	for _, width := range []int{0, 60, 72, 80, 100, 140} {
+		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
+			m := newLoadedTrashModel(sessions)
+			m.width = width
+			m.buildTable()
+			assertTableRowsMatchColumns(t, m.table.Columns(), m.table.Rows())
+			if width > 0 && columnsWidth(m.table.Columns()) > width {
+				t.Fatalf("columns width = %d, want <= terminal width %d", columnsWidth(m.table.Columns()), width)
+			}
+			if !slices.Contains(columnTitles(m.table.Columns()), "NAME") {
+				t.Fatalf("titles = %v, want priority-0 NAME retained", columnTitles(m.table.Columns()))
+			}
+			if width == 0 {
+				unfitted = append([]table.Column(nil), m.table.Columns()...)
+			}
+			if got := columnTitles(m.table.Columns()); !slices.Equal(got, wantTitles[width]) {
+				t.Fatalf("width %d titles = %v, want %v", width, got, wantTitles[width])
+			}
+			if width == 140 && !reflect.DeepEqual(m.table.Columns(), unfitted) {
+				t.Fatalf("140-column set = %#v, want byte-identical unfitted %#v", m.table.Columns(), unfitted)
 			}
 		})
 	}

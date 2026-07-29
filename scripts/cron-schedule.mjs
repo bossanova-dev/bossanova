@@ -104,7 +104,9 @@ export function expectedFires(schedule, fromISO, toISO) {
   return count
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   const [schedule, from, to] = process.argv.slice(2)
   const count = expectedFires(schedule, from, to)
   if (count === null) {

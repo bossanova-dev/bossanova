@@ -11,6 +11,7 @@ export const VENDOR_MAP = {
   // skill-config.mjs (BOS-192) is a transitive dependency of bs-review-detect.mjs and
   // must be co-located for the bundled helper to resolve its `./skill-config.mjs` import.
   'boss-review': [
+    'main-module.mjs',
     'bs-review-caps.mjs',
     'bs-review-report.mjs',
     'bs-review-detect.mjs',
@@ -18,8 +19,10 @@ export const VENDOR_MAP = {
     'codex-review.mjs',
     'claude-review.mjs',
     'skill-config.mjs',
+    'skill-extensions.mjs',
   ],
   'boss-build': [
+    'main-module.mjs',
     'bs-run-sentinel.mjs',
     'worktree-lock.sh',
     'bs-review-caps.mjs',
@@ -30,6 +33,29 @@ export const VENDOR_MAP = {
     // this skill's own toolbox rather than referenced from boss-review's copy.
     'skill-config.mjs',
     'plan-attachment.mjs',
+    // Tracker operations are part of boss-build's installed runtime. Keep the
+    // seam and its pure Linear helpers co-located with the skill, including the
+    // bs-epic scheduler transitively imported by tracker/linear.mjs.
+    'tracker/adapter.mjs',
+    'tracker/linear.mjs',
+    'tracker/cli.mjs',
+    'linear-gate-lib.mjs',
+    'linear-deps-lib.mjs',
+    'linear-claim.mjs',
+    'bs-epic-lib.mjs',
+    'dag-scheduler.mjs',
+    // Callback + finalize reference seams are executable in every boss-build
+    // installation, including their transitive helpers.
+    'callback/adapter.mjs',
+    'callback/boss.mjs',
+    'bossd-present.mjs',
+    'finalize/adapter.mjs',
+    'finalize/cli.mjs',
+    'finalize/boss-finalize.mjs',
+    'skill-extensions.mjs',
+    'pr-ownership.mjs',
+    'remove-bossd-stop-hooks.mjs',
+    'cron-gates/boss-build.mjs',
   ],
   // dag-scheduler.mjs is the pure scheduling core bs-epic-lib.mjs re-exports
   // (BOS-197); it must ship alongside bs-epic-lib.mjs so the vendored copy's
@@ -41,10 +67,27 @@ export const VENDOR_MAP = {
   // as one comment edited in place instead of ad-hoc /tmp scripts. Its test file
   // stays in skills-toolbox/ only (test files are never vendored).
   'boss-epic': [
+    'main-module.mjs',
     'bs-run-sentinel.mjs',
     'bs-epic-lib.mjs',
     'dag-scheduler.mjs',
     'progress-comment.mjs',
+    // The tracker seam is executable in a consuming repo, so ship its
+    // descriptor, helpers, and config dependency beside the epic driver.
+    'tracker/adapter.mjs',
+    'tracker/linear.mjs',
+    'tracker/cli.mjs',
+    'linear-gate-lib.mjs',
+    'linear-deps-lib.mjs',
+    'linear-claim.mjs',
+    'skill-config.mjs',
+    // Callback + session reference seams are executable in every boss-epic
+    // installation, including callback's bossd-presence dependency.
+    'callback/adapter.mjs',
+    'callback/boss.mjs',
+    'bossd-present.mjs',
+    'session/adapter.mjs',
+    'session/boss.mjs',
   ],
   // skill-config.mjs exposes loadSkillConfig + isConfiguredForRepo, the direct deps of
   // boss-plan's Phase 0 preflight self-disable. boss-plan ships to user repos via the
@@ -56,17 +99,19 @@ export const VENDOR_MAP = {
   // path. They ship in the toolbox so a consuming repo never has to re-derive them.
   // Their *.test.mjs / *.demo.mjs siblings are never vendored.
   'boss-plan': [
+    'main-module.mjs',
     'bs-run-sentinel.mjs',
     'skill-config.mjs',
     'plan-attachment.mjs',
     'plan-epic-lib.mjs',
     'plan-image-guard.mjs',
     'plan-slug.mjs',
+    'skill-extensions.mjs',
   ],
-  'bs-sweep-debt': ['bs-run-sentinel.mjs'],
-  'bs-sweep-mutation': ['bs-run-sentinel.mjs'],
-  'bs-sweep-security': ['bs-run-sentinel.mjs'],
-  'bs-sweep-tests': ['bs-run-sentinel.mjs'],
+  'bs-sweep-debt': ['main-module.mjs', 'bs-run-sentinel.mjs'],
+  'bs-sweep-mutation': ['main-module.mjs', 'bs-run-sentinel.mjs'],
+  'bs-sweep-security': ['main-module.mjs', 'bs-run-sentinel.mjs'],
+  'bs-sweep-tests': ['main-module.mjs', 'bs-run-sentinel.mjs'],
 }
 
 // The published core skills whose canonical committed home is the embedded
@@ -144,7 +189,9 @@ export function vendorToolbox({ sourceRoot, skillsRoot, publishedRoot, check }) 
   return { changed, differences }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   const check = process.argv.includes('--check')
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
   const skillsRoot = join(repoRoot, '.claude', 'skills')

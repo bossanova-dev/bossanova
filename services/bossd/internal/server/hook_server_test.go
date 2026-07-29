@@ -956,6 +956,15 @@ func TestQuestionHook_ClassifiesNotificationType(t *testing.T) {
 		{"unknown_type", notificationPayload("some_future_type"), ""},
 		{"empty_body", "", ""},
 		{"garbage_body", "not json", ""},
+		// BOS-486: session_idle WITHOUT cleared is benign — ACK, no write. The
+		// clearing variant (cleared:true) is covered by the clear tests below.
+		{"session_idle_uncleared", notificationPayload("session_idle"), ""},
+		// The cleared flag alone must not be enough: an unrecognised type that
+		// sets it is still unclassified, so it neither writes nor clears.
+		{"cleared_flag_on_unknown_type", `{"notification_type":"some_future_type","cleared":true}`, ""},
+		// ...and a needs-human type that (nonsensically) sets it still records,
+		// proving clearingNotification cannot hijack an existing type.
+		{"cleared_flag_on_permission_prompt", `{"notification_type":"permission_prompt","cleared":true}`, "claude-notification:permission_prompt"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -979,6 +988,91 @@ func TestQuestionHook_ClassifiesNotificationType(t *testing.T) {
 			}
 			if rec.Source != tc.wantSource {
 				t.Errorf("source = %q, want %q", rec.Source, tc.wantSource)
+			}
+		})
+	}
+}
+
+// openCodeIdlePayload is the exact body the injected opencode event hook POSTs
+// on session.idle (plugins/bossd-plugin-opencode/bossd-question.js). Written as
+// a literal, not built from the classifier's constants, so a drift in either
+// side fails this test rather than silently agreeing with itself.
+const openCodeIdlePayload = `{"notification_type":"session_idle","cleared":true}`
+
+// TestQuestionHook_SessionIdleClearsPendingSignal is the BOS-486 clear path
+// end-to-end against the REAL store: a needs-human POST sets a pending record,
+// the opencode session.idle payload clears it, and Get then reports absent.
+func TestQuestionHook_SessionIdleClearsPendingSignal(t *testing.T) {
+	auth := newFakeRunTokenValidator()
+	auth.register("ses_abc", "secret")
+	base, store := startHookServerWithQuestion(t, auth)
+
+	if status := postQuestionBody(t, base, "ses_abc", "Bearer secret", notificationPayload("permission_prompt")); status != http.StatusOK {
+		t.Fatalf("set status = %d, want 200", status)
+	}
+	if _, ok := store.Get("ses_abc"); !ok {
+		t.Fatalf("precondition failed: no pending record after a needs-human POST")
+	}
+
+	if status := postQuestionBody(t, base, "ses_abc", "Bearer secret", openCodeIdlePayload); status != http.StatusOK {
+		t.Fatalf("clear status = %d, want 200", status)
+	}
+	if rec, ok := store.Get("ses_abc"); ok {
+		t.Errorf("pending record survived a session_idle clear: %+v", rec)
+	}
+}
+
+// TestQuestionHook_ClearIsIdempotent clearing a session that has no pending
+// record is a silent 200 — the opencode hook fires session.idle on every turn
+// end, most of which never raised a question.
+func TestQuestionHook_ClearIsIdempotent(t *testing.T) {
+	auth := newFakeRunTokenValidator()
+	auth.register("ses_abc", "secret")
+	base, store := startHookServerWithQuestion(t, auth)
+
+	for i := range 2 {
+		if status := postQuestionBody(t, base, "ses_abc", "Bearer secret", openCodeIdlePayload); status != http.StatusOK {
+			t.Fatalf("clear #%d status = %d, want 200", i, status)
+		}
+	}
+	if _, ok := store.Get("ses_abc"); ok {
+		t.Errorf("store holds a record after repeated clears of an empty key")
+	}
+}
+
+// TestQuestionHook_ClearRequiresAuth auth precedes every store mutation,
+// including the clear: an unauthenticated (or wrong-token) session.idle must
+// leave a pending signal standing, or any process on loopback could silently
+// dismiss another run's question.
+func TestQuestionHook_ClearRequiresAuth(t *testing.T) {
+	cases := []struct {
+		name       string
+		auth       string
+		wantStatus int
+	}{
+		{"wrong_token", "Bearer wrong", http.StatusUnauthorized},
+		{"missing_header", "", http.StatusUnauthorized},
+		// An unregistered/torn-down run ACKs 200 (idempotent no-op) but is
+		// still un-authenticated, so it must not clear either.
+		{"unknown_run", "Bearer whatever", http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			auth := newFakeRunTokenValidator()
+			if tc.name != "unknown_run" {
+				auth.register("ses_abc", "right")
+			}
+			base, store := startHookServerWithQuestion(t, auth)
+
+			// Seed a pending record directly so the seeding step can't itself
+			// be affected by the auth variant under test.
+			store.SetPending("ses_abc", "claude-notification:permission_prompt")
+
+			if status := postQuestionBody(t, base, "ses_abc", tc.auth, openCodeIdlePayload); status != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", status, tc.wantStatus)
+			}
+			if _, ok := store.Get("ses_abc"); !ok {
+				t.Errorf("pending record was cleared by an unauthenticated session.idle POST")
 			}
 		})
 	}

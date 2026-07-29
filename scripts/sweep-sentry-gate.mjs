@@ -281,7 +281,9 @@ export function runCli(argv, { readFile = (f) => readFileSync(f, 'utf8') } = {})
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
+if (isMainModule(import.meta.url)) {
   try {
     process.stdout.write(runCli(process.argv.slice(2)))
     process.stdout.write('\n')

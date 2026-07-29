@@ -1072,6 +1072,16 @@ func TestRefreshChatTitle(t *testing.T) {
 			wantCalls:      1,
 		},
 		{
+			// A second native Codex `/rename` must land even though the first
+			// one already replaced the placeholder (BOS-611).
+			name:           "explicit Codex rename replaces an earlier Codex rename",
+			currentTitle:   "Rename Test",
+			pluginTitle:    "Non-epic orchestrator",
+			pluginExplicit: true,
+			wantTitle:      "Non-epic orchestrator",
+			wantCalls:      1,
+		},
+		{
 			name:         "non-explicit title does not clobber non-placeholder title",
 			currentTitle: "Manual investigation",
 			pluginTitle:  "First user prompt",
@@ -1814,6 +1824,30 @@ func TestTmuxStatusPoller_StructuredSignalYieldsQuestion(t *testing.T) {
 	// decider (it wasn't consulted at all when a record is present).
 	if got := fake.hasPromptCalls.Load(); got != 0 {
 		t.Errorf("HasQuestionPrompt called %d times; structured signal should short-circuit the regex path", got)
+	}
+}
+
+// Headless chats deliberately stay outside the tmux poller. Their question
+// signals are read by Lifecycle.watchHeadlessRunStatus instead, so broadening
+// the poller later cannot silently become the only headless read path.
+func TestTmuxStatusPoller_TmuxlessChatWithSignalIsNotPolled(t *testing.T) {
+	const agentSessionID = "headless-question"
+	tracker := NewTracker()
+	chatStore := &mockChatStore{chats: map[string]*models.AgentChat{
+		agentSessionID: {AgentSessionID: agentSessionID, AgentName: "opencode"},
+	}}
+	store := questionsignal.NewStore(time.Minute)
+	store.SetPending(agentSessionID, "test")
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, nil, nil, zerolog.Nop())
+	poller.SetQuestionSignals(store)
+
+	poller.pollOnce(context.Background())
+
+	if entry := tracker.Get(agentSessionID); entry != nil {
+		t.Errorf("tmux-less chat was unexpectedly polled: %+v", entry)
+	}
+	if !store.HasPending(agentSessionID) {
+		t.Error("tmux poller unexpectedly cleared headless question signal")
 	}
 }
 

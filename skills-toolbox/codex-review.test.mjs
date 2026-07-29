@@ -20,6 +20,19 @@ import {
 const SCRIPT_PATH = fileURLToPath(new URL('./codex-review.mjs', import.meta.url))
 const PROBE_READY_TIMEOUT_MS = 10000
 
+test('CLI through a symlink rejects a missing command loudly', () => {
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'codex-review-link-'))
+  const link = path.join(dir, 'codex-review.mjs')
+  fs.symlinkSync(SCRIPT_PATH, link)
+  try {
+    const res = spawnSync(process.execPath, [link], { encoding: 'utf8' })
+    assert.notEqual(res.status, 0)
+    assert.match(res.stderr, /unknown command/i)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

@@ -231,8 +231,8 @@ func TestCronFormHeight_ClampsToTerminal(t *testing.T) {
 		want   int
 	}{
 		{name: "unknown height leaves form unconstrained", height: 0, want: 0},
-		{name: "tall terminal reserves chrome", height: 40, want: 40 - cronFormChrome},
-		{name: "submit error reserves extra", height: 40, err: errStub, want: 40 - cronFormChrome - 2},
+		{name: "tall terminal reserves chrome", height: 40, want: 40 - cronFormChrome(0)},
+		{name: "submit error reserves extra", height: 40, err: errStub, want: 40 - cronFormChrome(0) - 2},
 		{name: "short terminal floors at minimum", height: 5, want: 3},
 	}
 	for _, tc := range tests {
@@ -298,7 +298,7 @@ func TestCronFormView_SaveCueVisibleAfterSubmitError(t *testing.T) {
 		height:      termHeight,
 	}
 	m.buildForm()
-	if got, want := huhFormHeight(m.form), termHeight-cronFormChrome; got != want {
+	if got, want := huhFormHeight(m.form), termHeight-cronFormChrome(m.width); got != want {
 		t.Fatalf("initial form height = %d, want %d", got, want)
 	}
 
@@ -307,7 +307,7 @@ func TestCronFormView_SaveCueVisibleAfterSubmitError(t *testing.T) {
 	if !ok {
 		t.Fatalf("updated model = %T, want CronFormModel", updated)
 	}
-	if got, want := huhFormHeight(m.form), termHeight-cronFormChrome-2; got != want {
+	if got, want := huhFormHeight(m.form), termHeight-cronFormChrome(m.width)-2; got != want {
 		t.Fatalf("submit-error form height = %d, want %d", got, want)
 	}
 

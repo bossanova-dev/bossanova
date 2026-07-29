@@ -297,7 +297,7 @@ test('runtime helper references are local to methodology extension mirrors', () 
 // unconditional. Pin all three in the committed .claude body (the shipped artifact) so the
 // reorder can never silently regress to the double-CI-wait / conditional-comment shape.
 // BOS-200: the tag-injection command is now the finalize adapter's inject-PR-tag capability
-// (scripts/finalize/cli.mjs inject-pr-tag, which delegates to add-pr-numbers.sh); the assertions
+// (toolbox/finalize/cli.mjs inject-pr-tag, which delegates to add-pr-numbers.sh); the assertions
 // track that command while preserving the BOS-181 order/guard/ready invariants.
 const claudeBody = () => fs.readFileSync(path.join(rootDir, `${CORE}/SKILL.md`), 'utf8')
 
@@ -516,7 +516,7 @@ test('BOS-470: CI/PR waits adopt one-shot callbacks with authoritative reconcili
   const skill = claudeBody()
   const bodyTokens = [
     'resolveCallbackAdapter', // the callback-notifier adapter seam
-    'scripts/callback/adapter.mjs', // its path
+    'toolbox/callback/adapter.mjs', // its path
     'boss callback add', // the generic register CLI (project-agnostic host interface)
     'policy.watchTriggers', // the grouped trigger set lives in policy, not hard-coded prose
     'reconcile against real', // authoritative reconciliation before acting

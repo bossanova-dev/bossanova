@@ -280,7 +280,7 @@ test('the completion + terminal contracts stay byte-identical', () => {
   assert.match(SKILL, /never stage `\.mutate\/`|never.{0,20}`\.mutate\/`/i, '.mutate/ never staged')
   assert.ok(SKILL.includes('gh pr checks'), 'gh pr checks watch preserved')
   assert.ok(
-    SKILL.includes('node scripts/remove-bossd-stop-hooks.mjs'),
+    SKILL.includes('node skills-toolbox/remove-bossd-stop-hooks.mjs'),
     'Stop-hook removal preserved',
   )
 })

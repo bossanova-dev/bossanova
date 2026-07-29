@@ -112,7 +112,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   // Plan storage is deliberately separate from publishConfig: proof artifacts
   // continue using the publish adapter even when implementation plans live on
   // the configured tracker.
-  planStorage: { kind: 'r2' },
+  planStorage: { kind: 'tracker-attachment' },
   // Versioned wire contract for the `##`-section plan description that boss-plan emits and
   // boss-build / bs-sweep-plan consume. `version` is the integer contract
   // version stamped in-band as `- Contract: v<N>` under `## Planning`; `sections` is the
@@ -328,8 +328,13 @@ export function validateConfig(config, source) {
   ) {
     fail('planStorage must be an object')
   }
-  if (!['r2', 'tracker-attachment'].includes(config.planStorage.kind)) {
-    fail('planStorage.kind must be "r2" or "tracker-attachment"')
+  if (config.planStorage.kind === 'r2') {
+    console.warn(
+      `skill-config: ${source}: planStorage.kind="r2" is deprecated and ignored; using "tracker-attachment"`,
+    )
+    config.planStorage = { kind: 'tracker-attachment' }
+  } else if (config.planStorage.kind !== 'tracker-attachment') {
+    fail('planStorage.kind must be "tracker-attachment"')
   }
   // planContract is the extension point this feature exists for (a consuming repo overrides
   // the section set), so a malformed override must fail here with a skill-config: error rather
@@ -500,7 +505,7 @@ export function publishConfigFor(config, adapter = adapterFor(config, 'publish')
 
 /** Resolve the implementation-plan store without changing proof publishing. */
 export function planStorageFor(config) {
-  return config.planStorage
+  return { kind: 'tracker-attachment' }
 }
 
 /**

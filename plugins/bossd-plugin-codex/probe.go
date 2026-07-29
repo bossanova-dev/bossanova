@@ -25,11 +25,11 @@ type codexRateLimitEventPayload struct {
 }
 
 type codexRateLimitSnapshot struct {
-	Timestamp            time.Time            `json:"-"`
-	Primary              codexRateLimitWindow `json:"primary"`
-	Secondary            codexRateLimitWindow `json:"secondary"`
-	PlanType             string               `json:"plan_type"`
-	RateLimitReachedType string               `json:"rate_limit_reached_type"`
+	Timestamp            time.Time             `json:"-"`
+	Primary              *codexRateLimitWindow `json:"primary"`
+	Secondary            *codexRateLimitWindow `json:"secondary"`
+	PlanType             string                `json:"plan_type"`
+	RateLimitReachedType string                `json:"rate_limit_reached_type"`
 }
 
 type codexRateLimitWindow struct {
@@ -37,6 +37,8 @@ type codexRateLimitWindow struct {
 	WindowMinutes int     `json:"window_minutes"`
 	ResetsAt      int64   `json:"resets_at"`
 }
+
+const weeklyWindowMinutesFloor = 24 * 60
 
 func (s *Server) ProbeRateLimit(_ context.Context, req *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) { //nolint:unparam // interface implementation
 	codexHome := strings.TrimSpace(req.GetCredentialEnv()["CODEX_HOME"])
@@ -175,6 +177,7 @@ func mapRateLimitSnapshot(snapshot codexRateLimitSnapshot) *bossanovav1.RateLimi
 }
 
 func mapRateLimitSnapshotAt(snapshot codexRateLimitSnapshot, now time.Time) *bossanovav1.RateLimitStatus {
+	short, weekly := classifyRateLimitWindows(snapshot)
 	limited := windowCurrentlyLimited(snapshot.Primary, now) ||
 		windowCurrentlyLimited(snapshot.Secondary, now) ||
 		reachedTypeCurrentlyLimited(snapshot, now)
@@ -185,24 +188,64 @@ func mapRateLimitSnapshotAt(snapshot codexRateLimitSnapshot, now time.Time) *bos
 	return &bossanovav1.RateLimitStatus{
 		Limited:  limited,
 		Status:   status,
-		Util_5H:  percentToFraction(snapshot.Primary.UsedPercent),
-		Reset_5H: unixTimestamp(snapshot.Primary.ResetsAt),
-		Util_7D:  percentToFraction(snapshot.Secondary.UsedPercent),
-		Reset_7D: unixTimestamp(snapshot.Secondary.ResetsAt),
+		Util_5H:  windowUtilization(short),
+		Reset_5H: windowReset(short),
+		Util_7D:  windowUtilization(weekly),
+		Reset_7D: windowReset(weekly),
 		PlanTier: snapshot.PlanType,
 	}
 }
 
-func windowCurrentlyLimited(window codexRateLimitWindow, now time.Time) bool {
-	return window.UsedPercent >= 100 && !windowExpired(window, now)
+// classifyRateLimitWindows sorts Codex's primary and secondary windows into
+// short and weekly slots by their declared window_minutes, rather than their
+// positional names. Codex can publish only its weekly window in primary.
+func classifyRateLimitWindows(snapshot codexRateLimitSnapshot) (short, weekly *codexRateLimitWindow) {
+	if !hasUsableWindowMinutes(snapshot.Primary) && !hasUsableWindowMinutes(snapshot.Secondary) {
+		return snapshot.Primary, snapshot.Secondary
+	}
+	for _, window := range []*codexRateLimitWindow{snapshot.Primary, snapshot.Secondary} {
+		if !hasUsableWindowMinutes(window) {
+			continue
+		}
+		if window.WindowMinutes < weeklyWindowMinutesFloor {
+			if short == nil {
+				short = window
+			}
+			continue
+		}
+		if weekly == nil {
+			weekly = window
+		}
+	}
+	return short, weekly
+}
+
+func hasUsableWindowMinutes(window *codexRateLimitWindow) bool {
+	return window != nil && window.WindowMinutes > 0
+}
+
+func windowCurrentlyLimited(window *codexRateLimitWindow, now time.Time) bool {
+	return window != nil && window.UsedPercent >= 100 && !windowExpired(window, now)
+}
+
+func windowUtilization(window *codexRateLimitWindow) float64 {
+	if window == nil {
+		return 0
+	}
+	return percentToFraction(window.UsedPercent)
 }
 
 func reachedTypeCurrentlyLimited(snapshot codexRateLimitSnapshot, now time.Time) bool {
+	short, weekly := classifyRateLimitWindows(snapshot)
 	switch reachedType := strings.ToLower(snapshot.RateLimitReachedType); {
-	case strings.Contains(reachedType, "primary") || strings.Contains(reachedType, "5h"):
+	case strings.Contains(reachedType, "primary"):
 		return !windowExpired(snapshot.Primary, now)
-	case strings.Contains(reachedType, "secondary") || strings.Contains(reachedType, "7d"):
+	case strings.Contains(reachedType, "secondary"):
 		return !windowExpired(snapshot.Secondary, now)
+	case strings.Contains(reachedType, "5h"):
+		return !windowExpired(short, now)
+	case strings.Contains(reachedType, "7d"):
+		return !windowExpired(weekly, now)
 	case reachedType != "":
 		return !windowExpired(snapshot.Primary, now) || !windowExpired(snapshot.Secondary, now)
 	default:
@@ -210,8 +253,15 @@ func reachedTypeCurrentlyLimited(snapshot codexRateLimitSnapshot, now time.Time)
 	}
 }
 
-func windowExpired(window codexRateLimitWindow, now time.Time) bool {
-	return window.ResetsAt > 0 && !time.Unix(window.ResetsAt, 0).After(now)
+func windowReset(window *codexRateLimitWindow) *timestamppb.Timestamp {
+	if window == nil {
+		return nil
+	}
+	return unixTimestamp(window.ResetsAt)
+}
+
+func windowExpired(window *codexRateLimitWindow, now time.Time) bool {
+	return window == nil || (window.ResetsAt > 0 && !time.Unix(window.ResetsAt, 0).After(now))
 }
 
 func percentToFraction(percent float64) float64 {

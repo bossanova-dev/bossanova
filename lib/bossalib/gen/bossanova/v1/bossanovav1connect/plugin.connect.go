@@ -5,12 +5,13 @@
 package bossanovav1connect
 
 import (
-	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	v1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	http "net/http"
 	strings "strings"
+
+	connect "connectrpc.com/connect"
+	v1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // This is a compile-time assertion to ensure that this generated file and the connect package are
@@ -91,6 +92,9 @@ const (
 	// AgentRunnerServiceGetInfoProcedure is the fully-qualified name of the AgentRunnerService's
 	// GetInfo RPC.
 	AgentRunnerServiceGetInfoProcedure = "/bossanova.v1.AgentRunnerService/GetInfo"
+	// AgentRunnerServicePreflightHeadlessRunProcedure is the fully-qualified name of the
+	// AgentRunnerService's PreflightHeadlessRun RPC.
+	AgentRunnerServicePreflightHeadlessRunProcedure = "/bossanova.v1.AgentRunnerService/PreflightHeadlessRun"
 	// AgentRunnerServiceStartRunProcedure is the fully-qualified name of the AgentRunnerService's
 	// StartRun RPC.
 	AgentRunnerServiceStartRunProcedure = "/bossanova.v1.AgentRunnerService/StartRun"
@@ -782,6 +786,9 @@ func (UnimplementedWorkflowServiceHandler) NotifyStatusChange(context.Context, *
 // AgentRunnerServiceClient is a client for the bossanova.v1.AgentRunnerService service.
 type AgentRunnerServiceClient interface {
 	GetInfo(context.Context, *connect.Request[v1.AgentRunnerServiceGetInfoRequest]) (*connect.Response[v1.AgentRunnerServiceGetInfoResponse], error)
+	// Validate an explicit headless capability profile against the agent's
+	// runtime operation surface without starting a run.
+	PreflightHeadlessRun(context.Context, *connect.Request[v1.PreflightHeadlessRunRequest]) (*connect.Response[v1.PreflightHeadlessRunResponse], error)
 	// Spawn the agent in work_dir with plan piped to stdin. log_path is
 	// bossd-owned (under the daemon's data dir, NOT the worktree); the
 	// plugin opens it with openat(O_NOFOLLOW) and writes one NDJSON line
@@ -905,6 +912,12 @@ func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			httpClient,
 			baseURL+AgentRunnerServiceGetInfoProcedure,
 			connect.WithSchema(agentRunnerServiceMethods.ByName("GetInfo")),
+			connect.WithClientOptions(opts...),
+		),
+		preflightHeadlessRun: connect.NewClient[v1.PreflightHeadlessRunRequest, v1.PreflightHeadlessRunResponse](
+			httpClient,
+			baseURL+AgentRunnerServicePreflightHeadlessRunProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("PreflightHeadlessRun")),
 			connect.WithClientOptions(opts...),
 		),
 		startRun: connect.NewClient[v1.StartAgentRunRequest, v1.StartAgentRunResponse](
@@ -1033,6 +1046,7 @@ func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, 
 // agentRunnerServiceClient implements AgentRunnerServiceClient.
 type agentRunnerServiceClient struct {
 	getInfo                     *connect.Client[v1.AgentRunnerServiceGetInfoRequest, v1.AgentRunnerServiceGetInfoResponse]
+	preflightHeadlessRun        *connect.Client[v1.PreflightHeadlessRunRequest, v1.PreflightHeadlessRunResponse]
 	startRun                    *connect.Client[v1.StartAgentRunRequest, v1.StartAgentRunResponse]
 	stopRun                     *connect.Client[v1.StopAgentRunRequest, v1.StopAgentRunResponse]
 	isRunning                   *connect.Client[v1.IsAgentRunningRequest, v1.IsAgentRunningResponse]
@@ -1058,6 +1072,11 @@ type agentRunnerServiceClient struct {
 // GetInfo calls bossanova.v1.AgentRunnerService.GetInfo.
 func (c *agentRunnerServiceClient) GetInfo(ctx context.Context, req *connect.Request[v1.AgentRunnerServiceGetInfoRequest]) (*connect.Response[v1.AgentRunnerServiceGetInfoResponse], error) {
 	return c.getInfo.CallUnary(ctx, req)
+}
+
+// PreflightHeadlessRun calls bossanova.v1.AgentRunnerService.PreflightHeadlessRun.
+func (c *agentRunnerServiceClient) PreflightHeadlessRun(ctx context.Context, req *connect.Request[v1.PreflightHeadlessRunRequest]) (*connect.Response[v1.PreflightHeadlessRunResponse], error) {
+	return c.preflightHeadlessRun.CallUnary(ctx, req)
 }
 
 // StartRun calls bossanova.v1.AgentRunnerService.StartRun.
@@ -1163,6 +1182,9 @@ func (c *agentRunnerServiceClient) MaterializeAccount(ctx context.Context, req *
 // AgentRunnerServiceHandler is an implementation of the bossanova.v1.AgentRunnerService service.
 type AgentRunnerServiceHandler interface {
 	GetInfo(context.Context, *connect.Request[v1.AgentRunnerServiceGetInfoRequest]) (*connect.Response[v1.AgentRunnerServiceGetInfoResponse], error)
+	// Validate an explicit headless capability profile against the agent's
+	// runtime operation surface without starting a run.
+	PreflightHeadlessRun(context.Context, *connect.Request[v1.PreflightHeadlessRunRequest]) (*connect.Response[v1.PreflightHeadlessRunResponse], error)
 	// Spawn the agent in work_dir with plan piped to stdin. log_path is
 	// bossd-owned (under the daemon's data dir, NOT the worktree); the
 	// plugin opens it with openat(O_NOFOLLOW) and writes one NDJSON line
@@ -1282,6 +1304,12 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 		AgentRunnerServiceGetInfoProcedure,
 		svc.GetInfo,
 		connect.WithSchema(agentRunnerServiceMethods.ByName("GetInfo")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServicePreflightHeadlessRunHandler := connect.NewUnaryHandler(
+		AgentRunnerServicePreflightHeadlessRunProcedure,
+		svc.PreflightHeadlessRun,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("PreflightHeadlessRun")),
 		connect.WithHandlerOptions(opts...),
 	)
 	agentRunnerServiceStartRunHandler := connect.NewUnaryHandler(
@@ -1408,6 +1436,8 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 		switch r.URL.Path {
 		case AgentRunnerServiceGetInfoProcedure:
 			agentRunnerServiceGetInfoHandler.ServeHTTP(w, r)
+		case AgentRunnerServicePreflightHeadlessRunProcedure:
+			agentRunnerServicePreflightHeadlessRunHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceStartRunProcedure:
 			agentRunnerServiceStartRunHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceStopRunProcedure:
@@ -1459,6 +1489,10 @@ type UnimplementedAgentRunnerServiceHandler struct{}
 
 func (UnimplementedAgentRunnerServiceHandler) GetInfo(context.Context, *connect.Request[v1.AgentRunnerServiceGetInfoRequest]) (*connect.Response[v1.AgentRunnerServiceGetInfoResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.GetInfo is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) PreflightHeadlessRun(context.Context, *connect.Request[v1.PreflightHeadlessRunRequest]) (*connect.Response[v1.PreflightHeadlessRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.PreflightHeadlessRun is not implemented"))
 }
 
 func (UnimplementedAgentRunnerServiceHandler) StartRun(context.Context, *connect.Request[v1.StartAgentRunRequest]) (*connect.Response[v1.StartAgentRunResponse], error) {

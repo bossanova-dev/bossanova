@@ -71,6 +71,18 @@ test('registerWatch documents the grouped one-shot flags (group, message, expire
   }
 })
 
+test('callback operations declare their supported chat and repository scopes', () => {
+  const { operationMap } = resolveCallbackAdapter({})
+
+  // Register and reconciliation list calls are always scoped to the verified
+  // callback chat and child PR repository. `remove` deliberately has no --repo
+  // flag in the generic CLI, so cleanup first finds ids through the scoped list
+  // and then removes each id with its --chat scope.
+  assert.deepEqual(operationMap.registerWatch.scope, { chat: true, repo: true })
+  assert.deepEqual(operationMap.listWatches.scope, { chat: true, repo: true })
+  assert.deepEqual(operationMap.removeWatch.scope, { chat: true, repo: false })
+})
+
 test('the message body is a secret: it is never echoed in ANY capability response', () => {
   const { operationMap } = resolveCallbackAdapter({})
   // registerWatch *takes* --message as input, so it is the most plausible accidental

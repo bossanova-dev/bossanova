@@ -6540,6 +6540,17 @@ components:
           title: is_working
       title: HasWorkingIndicatorResponse
       additionalProperties: false
+    bossanova.v1.HeadlessCapabilityProfile:
+      type: string
+      title: HeadlessCapabilityProfile
+      enum:
+        - HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED
+        - HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1
+      description: |-
+        HeadlessCapabilityProfile is an explicit, versioned contract for work that
+         needs a particular runtime operation surface. UNSPECIFIED preserves every
+         historical launch shape; callers must opt in rather than deriving a profile
+         from a prompt or command name.
     bossanova.v1.HostServiceListSessionsRequest:
       type: object
       title: HostServiceListSessionsRequest
@@ -8534,6 +8545,47 @@ components:
             $ref: '#/components/schemas/bossanova.v1.TaskItem'
           title: tasks
       title: PollTasksResponse
+      additionalProperties: false
+    bossanova.v1.PreflightHeadlessRunRequest:
+      type: object
+      properties:
+        model:
+          type: string
+          title: model
+        extraEnv:
+          type: object
+          title: extra_env
+          additionalProperties:
+            type: string
+            title: value
+        headlessCapabilityProfile:
+          title: headless_capability_profile
+          $ref: '#/components/schemas/bossanova.v1.HeadlessCapabilityProfile'
+      title: PreflightHeadlessRunRequest
+      additionalProperties: false
+    bossanova.v1.PreflightHeadlessRunRequest.ExtraEnvEntry:
+      type: object
+      properties:
+        key:
+          type: string
+          title: key
+        value:
+          type: string
+          title: value
+      title: ExtraEnvEntry
+      additionalProperties: false
+    bossanova.v1.PreflightHeadlessRunResponse:
+      type: object
+      properties:
+        source:
+          type: string
+          title: source
+        provided:
+          type: array
+          items:
+            type: string
+          title: provided
+      title: PreflightHeadlessRunResponse
       additionalProperties: false
     bossanova.v1.ProbeRateLimitRequest:
       type: object
@@ -12482,6 +12534,12 @@ components:
              proof credentials/constants AND (for account rotation) the account's env
              overlay (e.g. CLAUDE_CODE_OAUTH_TOKEN / CODEX_HOME). Values are NEVER logged
              by bossd or the plugin — treat as secret-bearing.
+        headlessCapabilityProfile:
+          title: headless_capability_profile
+          description: |-
+            Explicit required runtime operation surface for a headless launch. The
+             zero/default profile is legacy-compatible and performs no preflight.
+          $ref: '#/components/schemas/bossanova.v1.HeadlessCapabilityProfile'
       title: StartAgentRunRequest
       additionalProperties: false
     bossanova.v1.StartAgentRunRequest.ExtraEnvEntry:

@@ -20,6 +20,7 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'bs-run-sentinel.mjs',
     'callback/adapter.mjs',
     'callback/boss.mjs',
+    'callback/epic-target.mjs',
     'dag-scheduler.mjs',
     'linear-claim.mjs',
     'linear-deps-lib.mjs',
@@ -29,6 +30,7 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'session/adapter.mjs',
     'session/boss.mjs',
     'skill-config.mjs',
+    'skill-extensions.mjs',
     'tracker/adapter.mjs',
     'tracker/cli.mjs',
     'tracker/linear.mjs',
@@ -37,6 +39,12 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
   assert.ok(VENDOR_MAP['boss-build'].includes('worktree-lock.sh'))
   for (const files of Object.values(VENDOR_MAP)) {
     assert.ok(files.includes('main-module.mjs'), 'every toolbox payload vendors main-module.mjs')
+  }
+})
+
+test('each notes-consuming core vendors the extension helper', () => {
+  for (const core of ['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair']) {
+    assert.ok(VENDOR_MAP[core].includes('skill-extensions.mjs'), core)
   }
 })
 

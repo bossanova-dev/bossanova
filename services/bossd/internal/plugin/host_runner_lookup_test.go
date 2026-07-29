@@ -20,6 +20,9 @@ type stubAgentRunner struct{ name string }
 func (s *stubAgentRunner) GetInfo(context.Context) (*bossanovav1.PluginInfo, error) {
 	return &bossanovav1.PluginInfo{Name: s.name}, nil
 }
+func (s *stubAgentRunner) PreflightHeadlessRun(context.Context, *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error) {
+	return &bossanovav1.PreflightHeadlessRunResponse{}, nil
+}
 func (s *stubAgentRunner) StartRun(context.Context, *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	return &bossanovav1.StartAgentRunResponse{}, nil
 }

@@ -5,6 +5,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // DefaultRingBufferSize is the number of output lines kept in memory per session.
@@ -58,6 +60,43 @@ type AgentDispatcher interface {
 	StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string) (string, error)
 	StopByAgent(agentName, agentSessionID string) error
 	IsRunningByAgent(agentName, agentSessionID string) bool
+}
+
+// HeadlessCapabilityProfileRunner is implemented only by runners that can
+// carry an explicit operation-surface requirement to their plugin. Keeping it
+// separate from AgentRunner leaves every legacy Start call byte-for-byte
+// unchanged.
+type HeadlessCapabilityProfileRunner interface {
+	StartWithHeadlessCapabilityProfile(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error)
+}
+
+// HeadlessCapabilityProfilePreflightRunner is implemented only by runners
+// that can validate a required headless operation surface without starting a
+// run or depending on a worktree.
+type HeadlessCapabilityProfilePreflightRunner interface {
+	PreflightHeadlessCapabilityProfile(ctx context.Context, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error
+}
+
+// HeadlessCapabilityProfileDispatcher is the explicit-by-agent equivalent for
+// session lifecycle launches. It is intentionally opt-in: a required profile
+// on an agent without support fails closed instead of being silently dropped.
+type HeadlessCapabilityProfileDispatcher interface {
+	AgentDispatcher
+	StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error)
+}
+
+// HeadlessCapabilityProfilePreflightDispatcher validates a required profile
+// through explicit by-agent routing before lifecycle worktree side effects.
+// Keeping it optional preserves AgentDispatcher compatibility for all
+// unprofiled callers.
+type HeadlessCapabilityProfilePreflightDispatcher interface {
+	AgentDispatcher
+	PreflightByAgentWithHeadlessCapabilityProfile(
+		ctx context.Context,
+		agentName, model string,
+		extraEnv map[string]string,
+		profile bossanovav1.HeadlessCapabilityProfile,
+	) error
 }
 
 // --- Ring Buffer ---

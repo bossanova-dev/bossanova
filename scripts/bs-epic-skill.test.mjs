@@ -136,13 +136,41 @@ test('size ratchet', () => {
   // the planned and the review role through the one `resolveStateRole` helper so they
   // cannot diverge, and BLOCKs only when BOTH sources come back empty — naming both in
   // the message. Re-baselined to one KiB above actual per the ratchet convention.
-  const RATCHET = 45056
+  // BOS-614 extends BOS-605's resident callback contract with scoped target selection.
+  // Re-baselined to one KiB above actual per the ratchet convention.
+  const RATCHET = 47104
   const bytes = Buffer.byteLength(CLAUDE, 'utf8')
   assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
 })
 
 test('frontmatter identifies the skill', () => {
   assert.match(CLAUDE, /^---\r?\nname: boss-epic\r?\n/, 'frontmatter must declare name: boss-epic')
+})
+
+test('session titles lead with the tracker ID', () => {
+  for (const dir of EPIC_MIRRORS) {
+    const skill = readFileSync(new URL(`${dir}/SKILL.md`, import.meta.url), 'utf8')
+    assert.ok(
+      skill.includes('`[<TICKET>] <ticket title>`'),
+      `${dir}/SKILL.md must document ID-first child titles`,
+    )
+    assert.ok(
+      skill.includes('title:  "[<TICKET>] <ticket title>"'),
+      `${dir}/SKILL.md must launch ID-first child titles`,
+    )
+    assert.ok(
+      skill.includes('title: "[<TICKET>] Repair (round N)"'),
+      `${dir}/SKILL.md must use ID-first repair titles`,
+    )
+    assert.ok(
+      !skill.includes('boss-epic <TICKET>: <ticket title>'),
+      `${dir}/SKILL.md must not retain the old child title`,
+    )
+    assert.ok(
+      !skill.includes('boss-epic repair <TICKET> (round N)'),
+      `${dir}/SKILL.md must not retain the old repair title`,
+    )
+  }
 })
 
 test('contract tokens present in the canonical skill', () => {
@@ -264,6 +292,141 @@ test('BOS-495: up-front callback reflex + callbacksAvailable gate + own referenc
       read(`${pluginDir}/${rel}`),
       read(`${canonicalDir}/${rel}`),
       `${pluginDir}/${rel} must be byte-identical to the canonical mirror (run \`make copy-skills\`)`,
+    )
+  }
+})
+
+test('BOS-614: callbacks use a verified scoped target and safe cleanup (both mirrors)', () => {
+  // A managed but unrelated chat is never an eligible callback target. The
+  // selector prefers a repository-matching orchestrator and only then a
+  // repository-matching child. Without either, callbacks are entirely skipped
+  // while the existing cron/poll reconciliation remains active.
+  for (const dir of EPIC_MIRRORS) {
+    const skill = readFileSync(new URL(`${dir}/SKILL.md`, import.meta.url), 'utf8')
+    const ref = readFileSync(
+      new URL(`${dir}/references/callback-watches.md`, import.meta.url),
+      'utf8',
+    )
+    const prose = `${skill}\n${ref}`.replace(/\s+/g, ' ')
+
+    assert.ok(
+      prose.includes('selectEpicCallbackTarget'),
+      `${dir} must resolve callbacks through selectEpicCallbackTarget`,
+    )
+    assert.match(
+      prose,
+      /matching orchestrator.*otherwise.*matching child/i,
+      `${dir} must prefer a matching orchestrator and fall back to a matching child`,
+    )
+    assert.match(
+      prose,
+      /repository.*exactly.*child PR repository/i,
+      `${dir} must reject a cross-repository orchestrator target`,
+    )
+    assert.match(
+      prose,
+      /no verified target.*skip.*registration.*re-arm.*list.*cleanup/i,
+      `${dir} must skip every callback operation when no target is verified`,
+    )
+    assert.match(
+      prose,
+      /cron\/poll reconciliation/i,
+      `${dir} must retain cron/poll reconciliation when callbacks are skipped`,
+    )
+
+    // The target selector runs in Node, so the shell must receive a concrete chat
+    // value from a JSON bridge. A JavaScript property expression in Bash (the old
+    // `CALLBACK_CHAT="$callbackTarget.chatId"`) is invalid and must never return.
+    assert.doesNotMatch(
+      ref,
+      /CALLBACK_CHAT="\$callbackTarget\.chatId"/,
+      `${dir} must not assign a JavaScript property expression in Bash`,
+    )
+    assert.match(
+      ref,
+      /const \{ selectEpicCallbackTarget \} = await import\(`\$\{process\.env\.BOSS_EPIC_TOOLBOX\}\/callback\/epic-target\.mjs`\)/,
+      `${dir} bridge must dynamically import the installed selector`,
+    )
+    for (const envName of [
+      'CHILD_PR_REPOSITORY',
+      'ORCHESTRATOR_CHAT',
+      'ORCHESTRATOR_REPOSITORY',
+      'CHILD_CHAT',
+      'CHILD_REPOSITORY',
+    ]) {
+      assert.ok(
+        ref.includes(envName),
+        `${dir} bridge must accept explicitly verified ${envName} identity`,
+      )
+    }
+    assert.match(
+      ref,
+      /CALLBACK_TARGET_JSON="\$\(/,
+      `${dir} bridge must capture the selector result as JSON`,
+    )
+    assert.match(
+      ref,
+      /process\.stdout\.write\(JSON\.stringify\(callbackTarget\)\)/,
+      `${dir} bridge must serialize the selector result safely`,
+    )
+    assert.match(
+      ref,
+      /JSON\.parse\(process\.env\.CALLBACK_TARGET_JSON \?\? "null"\)/,
+      `${dir} bridge must read the selector JSON before assigning Bash`,
+    )
+    assert.match(
+      ref,
+      /process\.stdout\.write\(typeof target\?\.chatId === "string" \? target\.chatId : ""\)/,
+      `${dir} bridge must emit the selected chat or empty output`,
+    )
+    assert.match(
+      ref,
+      /if \[ -z "\$CALLBACK_CHAT" \]; then\s+echo "No verified callback target; retain cron\/poll reconciliation\. Continue to Phase 3b reconciliation and the bounded poll\/session cron\."/,
+      `${dir} bridge must make the no-target cron/poll fallback explicit`,
+    )
+    assert.doesNotMatch(
+      ref,
+      /if \[ -z "\$CALLBACK_CHAT" \]; then[\s\S]{0,240}\bcontinue\b/,
+      `${dir} no-target branch must fall through to reconciliation, not continue the child loop`,
+    )
+    assert.match(
+      ref,
+      /No verified callback target; retain cron\/poll reconciliation\. Continue to Phase 3b reconciliation and the bounded poll\/session cron\./,
+      `${dir} no-target branch must retain mandatory reconciliation and fallback polling`,
+    )
+
+    // Register, re-arm, and reconciliation list calls carry both scopes.
+    assert.match(
+      ref,
+      /boss callback add[^\n]*--chat "\$CALLBACK_CHAT"[^\n]*--repo "\$CHILD_PR_REPOSITORY"/,
+      `${dir} register example must scope --chat and --repo`,
+    )
+    assert.match(
+      ref,
+      /boss callback list[^\n]*--chat "\$CALLBACK_CHAT"[^\n]*--repo "\$CHILD_PR_REPOSITORY"/,
+      `${dir} list/re-arm example must scope --chat and --repo`,
+    )
+    for (const command of ['add', 'list', 'remove']) {
+      assert.match(
+        ref,
+        new RegExp(
+          `if \\[ -n "\\$CALLBACK_CHAT" \\]; then[\\s\\S]*?boss callback ${command}[\\s\\S]*?fi`,
+        ),
+        `${dir} callback ${command} commands must be guarded by a verified chat`,
+      )
+    }
+
+    // The generic CLI intentionally accepts --chat but not --repo for remove.
+    // Cleanup must discover ids via the prior scoped list, then remove by id.
+    assert.match(
+      ref,
+      /boss callback remove "\$CALLBACK_ID" --chat "\$CALLBACK_CHAT"/,
+      `${dir} cleanup must remove each returned id with --chat`,
+    )
+    assert.doesNotMatch(
+      ref,
+      /boss callback remove[^\n]*--repo/,
+      `${dir} cleanup must not invent unsupported callback remove --repo`,
     )
   }
 })

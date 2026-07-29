@@ -85,9 +85,11 @@ export const VENDOR_MAP = {
     // installation, including callback's bossd-presence dependency.
     'callback/adapter.mjs',
     'callback/boss.mjs',
+    'callback/epic-target.mjs',
     'bossd-present.mjs',
     'session/adapter.mjs',
     'session/boss.mjs',
+    'skill-extensions.mjs',
   ],
   // skill-config.mjs exposes loadSkillConfig + isConfiguredForRepo, the direct deps of
   // boss-plan's Phase 0 preflight self-disable. boss-plan ships to user repos via the
@@ -108,6 +110,7 @@ export const VENDOR_MAP = {
     'plan-slug.mjs',
     'skill-extensions.mjs',
   ],
+  'boss-repair': ['main-module.mjs', 'skill-extensions.mjs'],
   'bs-sweep-debt': ['main-module.mjs', 'bs-run-sentinel.mjs'],
   'bs-sweep-mutation': ['main-module.mjs', 'bs-run-sentinel.mjs'],
   'bs-sweep-security': ['main-module.mjs', 'bs-run-sentinel.mjs'],
@@ -118,7 +121,13 @@ export const VENDOR_MAP = {
 // skillinstall payload (BOS-271), not .claude/skills. Their toolbox/ vendors into
 // services/boss/internal/skillinstall/skills/<s>/toolbox/; every other VENDOR_MAP
 // entry (the repo-local bs-sweep-*) still vendors into .claude/skills/<s>/toolbox/.
-export const PUBLISHED_SKILLS = new Set(['boss-review', 'boss-build', 'boss-epic', 'boss-plan'])
+export const PUBLISHED_SKILLS = new Set([
+  'boss-review',
+  'boss-build',
+  'boss-epic',
+  'boss-plan',
+  'boss-repair',
+])
 
 export function vendorToolbox({ sourceRoot, skillsRoot, publishedRoot, check }) {
   // Each skill resolves to its own destination root: a published core → publishedRoot

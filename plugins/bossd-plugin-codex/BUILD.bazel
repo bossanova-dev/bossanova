@@ -9,6 +9,7 @@ go_library(
     srcs = [
         "auth.go",
         "cap.go",
+        "capability_profile.go",
         "codex_trust.go",
         "dirty_files.go",
         "host.go",
@@ -34,6 +35,7 @@ go_library(
         "//lib/bossalib/statusdetect",
         "@com_github_hashicorp_go_plugin//:go-plugin",
         "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_genproto_googleapis_rpc//errdetails",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
@@ -52,6 +54,7 @@ go_test(
     srcs = [
         "auth_test.go",
         "cap_test.go",
+        "capability_profile_test.go",
         "codex_trust_test.go",
         "exitstatus_test.go",
         "limit_test.go",
@@ -71,6 +74,7 @@ go_test(
         "//lib/bossalib/agentruntime",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_genproto_googleapis_rpc//errdetails",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
         "@org_golang_google_protobuf//types/known/timestamppb",

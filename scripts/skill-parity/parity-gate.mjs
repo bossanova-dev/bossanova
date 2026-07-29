@@ -67,6 +67,36 @@ const EXPECTED_EXTENSIONS = [
     skill: 'boss-plan',
     names: ['boss-plan-draft'],
   },
+  {
+    core: 'boss-build',
+    role: 'notes',
+    skill: 'boss-build',
+    names: ['boss-build-notes'],
+  },
+  {
+    core: 'boss-plan',
+    role: 'notes',
+    skill: 'boss-plan',
+    names: ['boss-plan-notes'],
+  },
+  {
+    core: 'boss-review',
+    role: 'notes',
+    skill: 'boss-review',
+    names: ['boss-review-notes'],
+  },
+  {
+    core: 'boss-epic',
+    role: 'notes',
+    skill: 'boss-epic',
+    names: ['boss-epic-notes'],
+  },
+  {
+    core: 'boss-repair',
+    role: 'notes',
+    skill: 'boss-repair',
+    names: ['boss-repair-notes'],
+  },
 ]
 
 // --- Part A: deterministic exact-match --------------------------------------

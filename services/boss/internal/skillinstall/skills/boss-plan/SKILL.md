@@ -58,8 +58,8 @@ names generically everywhere else:
    no-op, not an error (a `/boss-plan` in an unrelated repo is a no-op; a non-zero exit would surface
    as a cron/agent error):
    ```bash
-   BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
-   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
+   BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
+   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
    export BOSS_PLAN_TOOLBOX
    CONFIGURED=$(node -e "import('file://'+process.env.BOSS_PLAN_TOOLBOX+'/skill-config.mjs').then(m=>{const c=m.loadSkillConfig({cwd:process.cwd()});process.stdout.write(m.isConfiguredForPlanning(c)?'yes':'no')}).catch(e=>{process.stderr.write('boss-plan preflight: '+(e&&e.message||e)+'\n');process.stdout.write('error')})")
    # `isConfiguredForPlanning` requires the tracker identity AND the full state role map
@@ -137,8 +137,8 @@ for the Phase 4 secret gate.
    the module constant in `bs-run-sentinel.mjs`:
 
    ```bash
-   BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
-   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
+   BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
+   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
    RUN_SENTINEL="$BOSS_PLAN_TOOLBOX/bs-run-sentinel.mjs"
    test -f "$RUN_SENTINEL" || { echo "BLOCKED: bs-run-sentinel.mjs missing" >&2; exit 1; }
    DISPATCH_FAILURE="dispatch-failure"
@@ -522,8 +522,8 @@ subagent → validate its envelope → fold or skip), against
 > clobbering). Then run the guard:
 >
 > ```bash
-> BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
-> if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
+> BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
+> if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
 > ORIG=".linear-plans/<ISSUE-ID>.image-guard-orig.md"; NEW=".linear-plans/<ISSUE-ID>.image-guard-new.md"
 > node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$ORIG" --rewritten "$NEW"
 > GATE=$?
@@ -663,6 +663,56 @@ title `Implementation plan (<ISSUE-ID>)`, final labels, estimate, priority, and 
 here too (e.g. `blocked by <BLOCKER-ID>, which is itself open and blocked by <UPSTREAM-BLOCKER-ID>`) so an unattended run
 leaves a visible trail before the operator opens Linear. The plan is attached natively with no local copy
 remaining (it is copied into `docs/plans/` at implementation time, per the plan's first dev step).
+
+### Post-terminal notes extensions (repo opt-in)
+
+After the terminal outcome is decided and the report is emitted, resolve the extension helper and run:
+
+```bash
+BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
+if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
+NOTES_JSON=$(node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role notes --json)
+```
+
+If `NOTES_JSON.extensions` is empty, do nothing and print nothing: a repo without a local notes
+extension has not opted in. Create no scratch in that case. Otherwise create a terminal-only handoff:
+
+```bash
+NOTES_RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-plan-notes.XXXXXX")
+NOTES_OBSERVATIONS="$NOTES_RUN_TMP/observations.md"
+```
+
+Before dispatch, the orchestrator that still owns the completed run writes at most five
+secret-scrubbed candidate observations to `NOTES_OBSERVATIONS`, with a maximum 8 KiB file size.
+Keep each candidate to a short problem statement plus a file/skill/command pointer. Never copy a
+transcript, command output, user-provided content, credentials, tokens, or other secrets; an empty
+file is valid. This artifact is the only run-history source sent across the fresh-subagent boundary.
+
+Dispatch descriptors in ascending `(order, name)` order as fresh, **awaited** subagents, each bounded
+by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms). Each receives:
+
+```json
+{
+  "role": "notes",
+  "core": "boss-plan",
+  "context": {
+    "mode": "<interactive if this run involved operator interaction; otherwise headless>",
+    "core": "boss-plan",
+    "outcome": "<resolved terminal outcome>",
+    "repoId": "<BOSS_REPO_ID when present; otherwise null>",
+    "observationPath": "<NOTES_OBSERVATIONS>"
+  },
+  "runTmp": "<NOTES_RUN_TMP>",
+  "outPath": "<NOTES_RUN_TMP>/notes-<extension-name>.json"
+}
+```
+
+Validate each result with `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" validate --role notes --file
+"<outPath>"`. On success append one terminal-ledger line with the total persisted-note count. On a
+discovery skip, timeout, missing output, malformed envelope, validation failure, or subagent failure,
+append `extension <name>: skipped (<reason>)` and continue. Remove `NOTES_RUN_TMP` on every
+post-opt-in terminal path. The phase cannot change the outcome, exit code, tracker or PR writes, and
+is non-fatal in every case.
 
 ## Privacy
 

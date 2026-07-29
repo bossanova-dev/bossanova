@@ -19,6 +19,9 @@ export const bossCallbackOperationMap = {
     // below. --expires-in bounds the durable watch; --repo/--chat scope it; --json
     // emits the stable githubCallbackJSON row.
     args: ['pr', 'trigger', 'group', 'message', 'expiresIn', 'repo', 'chat', 'json'],
+    // The generic CLI supports both scopes for registration. The caller must
+    // use the verified target's chat and the child PR's repository together.
+    scope: { chat: true, repo: true },
     response: ['id', 'group_id', 'trigger', 'state'],
   },
   listWatches: {
@@ -27,12 +30,19 @@ export const bossCallbackOperationMap = {
     // and decide what still needs re-arming. The message body is intentionally NOT
     // a field here (it is a secret).
     args: ['repo', 'trigger', 'state', 'chat', 'json'],
+    // List must use the same two scopes as registration before it is used for
+    // reconciliation, re-arm decisions, or cleanup id discovery.
+    scope: { chat: true, repo: true },
     response: ['id', 'group_id', 'pr_number', 'trigger', 'state', 'last_event'],
   },
   removeWatch: {
     command: 'boss callback remove',
     // Tear a stale or duplicate watch down by id when the wait phase ends.
     args: ['callbackId', 'chat'],
+    // The generic CLI accepts --chat but deliberately has no --repo on remove.
+    // Discover callback ids with the prior chat+repo scoped list, then remove
+    // each returned id with this chat scope.
+    scope: { chat: true, repo: false },
     response: [],
   },
 }

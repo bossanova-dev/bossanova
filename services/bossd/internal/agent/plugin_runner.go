@@ -37,6 +37,10 @@ type AgentRunnerClient interface {
 	MaterializeAccount(context.Context, *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error)
 }
 
+type headlessCapabilityProfilePreflightClient interface {
+	PreflightHeadlessRun(context.Context, *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error)
+}
+
 var _ AgentRunner = (*PluginRunner)(nil)
 
 // PluginRunner adapts the AgentRunnerClient + Tailer to the existing
@@ -59,14 +63,45 @@ func NewPluginRunner(client AgentRunnerClient, tailer *Tailer, logDir string, lo
 // Start forwards the request to the agent plugin via gRPC and then opens the
 // tailer on the resolved session ID so that Subscribe / History work immediately.
 func (r *PluginRunner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string) (string, error) {
+	return r.start(ctx, workDir, plan, resume, sessionID, model, extraEnv, bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED)
+}
+
+// StartWithHeadlessCapabilityProfile carries an explicit runtime-operation
+// requirement to the plugin. It is called only by opted-in headless launches;
+// Start above preserves the historical wire request exactly.
+func (r *PluginRunner) StartWithHeadlessCapabilityProfile(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error) {
+	return r.start(ctx, workDir, plan, resume, sessionID, model, extraEnv, profile)
+}
+
+// PreflightHeadlessCapabilityProfile asks the plugin to validate a required
+// operation surface using only the managed account/model inputs available
+// before worktree creation. It performs no run or tailer side effects.
+func (r *PluginRunner) PreflightHeadlessCapabilityProfile(ctx context.Context, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
+	client, ok := r.client.(headlessCapabilityProfilePreflightClient)
+	if !ok {
+		return ErrHeadlessCapabilityProfileUnsupported
+	}
+	_, err := client.PreflightHeadlessRun(ctx, &bossanovav1.PreflightHeadlessRunRequest{
+		Model:                     model,
+		ExtraEnv:                  extraEnv,
+		HeadlessCapabilityProfile: profile,
+	})
+	if err != nil {
+		return fmt.Errorf("plugin PreflightHeadlessRun: %w", err)
+	}
+	return nil
+}
+
+func (r *PluginRunner) start(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error) {
 	req := &bossanovav1.StartAgentRunRequest{
-		WorkDir:   workDir,
-		Plan:      plan,
-		ResumeId:  resume,
-		SessionId: sessionID,
-		LogPath:   r.logPathFor(sessionID),
-		Model:     model,
-		ExtraEnv:  extraEnv,
+		WorkDir:                   workDir,
+		Plan:                      plan,
+		ResumeId:                  resume,
+		SessionId:                 sessionID,
+		LogPath:                   r.logPathFor(sessionID),
+		Model:                     model,
+		ExtraEnv:                  extraEnv,
+		HeadlessCapabilityProfile: profile,
 	}
 	resp, err := r.client.StartRun(ctx, req)
 	if err != nil {

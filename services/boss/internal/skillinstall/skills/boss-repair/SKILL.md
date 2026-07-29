@@ -853,3 +853,53 @@ The entire repair workflow is successful only when the repair plugin observes:
 3. ✅ No unresolved actionable review feedback remains
 
 Do not treat pending checks as final success. In **default mode**, pending checks mean the agent run should exit cleanly after pushing, and the repair plugin will wait; if checks fail, new review feedback appears, or a conflict appears, the plugin will start a fresh `boss-repair` run. In **Watch Mode** (`/boss-repair watch`), the skill itself waits and loops as described in [Watch Mode](#watch-mode) instead of exiting on pending checks.
+
+### Post-terminal notes extensions (repo opt-in)
+
+After the terminal outcome is decided, resolve the extension helper and run:
+
+```bash
+BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+NOTES_JSON=$(node "$BOSS_REPAIR_TOOLBOX/skill-extensions.mjs" discover --core boss-repair --role notes --json)
+```
+
+If `NOTES_JSON.extensions` is empty, do nothing and print nothing: a repo without a local notes
+extension has not opted in. Create no scratch in that case. Otherwise create a terminal-only handoff:
+
+```bash
+NOTES_RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-repair-notes.XXXXXX")
+NOTES_OBSERVATIONS="$NOTES_RUN_TMP/observations.md"
+```
+
+Before dispatch, the orchestrator that still owns the completed run writes at most five
+secret-scrubbed candidate observations to `NOTES_OBSERVATIONS`, with a maximum 8 KiB file size.
+Keep each candidate to a short problem statement plus a file/skill/command pointer. Never copy a
+transcript, command output, user-provided content, credentials, tokens, or other secrets; an empty
+file is valid. This artifact is the only run-history source sent across the fresh-subagent boundary.
+
+Dispatch descriptors in ascending `(order, name)` order as fresh, **awaited** subagents, each bounded
+by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms). Each receives:
+
+```json
+{
+  "role": "notes",
+  "core": "boss-repair",
+  "context": {
+    "mode": "<interactive if this run involved operator interaction; otherwise headless>",
+    "core": "boss-repair",
+    "outcome": "<resolved terminal outcome>",
+    "repoId": "<BOSS_REPO_ID when present; otherwise null>",
+    "observationPath": "<NOTES_OBSERVATIONS>"
+  },
+  "runTmp": "<NOTES_RUN_TMP>",
+  "outPath": "<NOTES_RUN_TMP>/notes-<extension-name>.json"
+}
+```
+
+Validate each result with `node "$BOSS_REPAIR_TOOLBOX/skill-extensions.mjs" validate --role notes --file
+"<outPath>"`. On success append one terminal-ledger line with the total persisted-note count. On a
+discovery skip, timeout, missing output, malformed envelope, validation failure, or subagent failure,
+append `extension <name>: skipped (<reason>)` and continue. Remove `NOTES_RUN_TMP` on every
+post-opt-in terminal path. The phase cannot change the outcome, exit code, tracker or PR writes, and
+is non-fatal in every case.

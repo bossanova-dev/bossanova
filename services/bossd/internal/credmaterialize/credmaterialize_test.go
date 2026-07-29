@@ -64,7 +64,12 @@ func (f *fakeStore) setBlob(b []byte) {
 func (f *fakeStore) saveCount() int64 { return atomic.LoadInt64(&f.saveCalls) }
 
 func newTestMaterializer(t *testing.T, store CredentialStore) *Materializer {
+	return newTestMaterializerWithCodexHome(t, store, t.TempDir())
+}
+
+func newTestMaterializerWithCodexHome(t *testing.T, store CredentialStore, codexHome string) *Materializer {
 	t.Helper()
+	t.Setenv("CODEX_HOME", codexHome)
 	m, err := New(store, zerolog.Nop(), WithBaseDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -120,6 +125,342 @@ func TestMaterializeCodexRoundTrip(t *testing.T) {
 	}
 	if string(onDisk) != string(blob) {
 		t.Fatalf("auth.json not byte-identical to blob")
+	}
+}
+
+func TestMaterializeCodexProjectsBaseHomeAndKeepsLocalAuth(t *testing.T) {
+	baseHome := t.TempDir()
+	t.Setenv("CODEX_HOME", baseHome)
+	for _, name := range []string{
+		"config.toml",
+		"plugins/linear/state.json",
+		"sessions/session-1.jsonl",
+		"session_index.jsonl",
+	} {
+		path := filepath.Join(baseHome, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir base home fixture: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
+			t.Fatalf("write base home fixture: %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(baseHome, authFileName), []byte("base-auth"), 0o600); err != nil {
+		t.Fatalf("write base auth fixture: %v", err)
+	}
+	canonicalBaseHome, err := filepath.EvalSymlinks(baseHome)
+	if err != nil {
+		t.Fatalf("resolve base home: %v", err)
+	}
+
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+
+	for _, name := range []string{
+		"config.toml",
+		"plugins",
+		"sessions",
+		"session_index.jsonl",
+	} {
+		projected := filepath.Join(res.HomeDir, name)
+		info, err := os.Lstat(projected)
+		if err != nil {
+			t.Fatalf("lstat projected %q: %v", name, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("projected %q is not a symlink", name)
+		}
+		target, err := os.Readlink(projected)
+		if err != nil {
+			t.Fatalf("readlink projected %q: %v", name, err)
+		}
+		if target != filepath.Join(canonicalBaseHome, name) {
+			t.Fatalf("projected %q target = %q; want base-home entry", name, target)
+		}
+	}
+
+	authPath := filepath.Join(res.HomeDir, authFileName)
+	authInfo, err := os.Lstat(authPath)
+	if err != nil {
+		t.Fatalf("lstat account auth: %v", err)
+	}
+	if authInfo.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("account auth.json must not be a symlink")
+	}
+}
+
+func TestMaterializeCodexReconcilesLaterBaseHomeAdditions(t *testing.T) {
+	baseHome := t.TempDir()
+	t.Setenv("CODEX_HOME", baseHome)
+	if err := os.WriteFile(filepath.Join(baseHome, "config.toml"), []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write base config fixture: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("first MaterializeCodex: %v", err)
+	}
+
+	pluginPath := filepath.Join(baseHome, "plugins", "linear", "state.json")
+	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o700); err != nil {
+		t.Fatalf("mkdir later plugin fixture: %v", err)
+	}
+	if err := os.WriteFile(pluginPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write later plugin fixture: %v", err)
+	}
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("second MaterializeCodex: %v", err)
+	}
+
+	info, err := os.Lstat(filepath.Join(res.HomeDir, "plugins"))
+	if err != nil {
+		t.Fatalf("lstat reconciled plugin entry: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("later base-home plugin entry is not projected as a symlink")
+	}
+}
+
+func TestMaterializeCodexReconcilesSafeBaseSymlinkRetarget(t *testing.T) {
+	baseHome := t.TempDir()
+	t.Setenv("CODEX_HOME", baseHome)
+	for _, name := range []string{"plugins-v1", "plugins-v2"} {
+		if err := os.Mkdir(filepath.Join(baseHome, name), 0o700); err != nil {
+			t.Fatalf("mkdir plugin target fixture: %v", err)
+		}
+	}
+	pluginsPath := filepath.Join(baseHome, "plugins")
+	if err := os.Symlink("plugins-v1", pluginsPath); err != nil {
+		t.Fatalf("create initial plugin symlink: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("first MaterializeCodex: %v", err)
+	}
+
+	if err := os.Remove(pluginsPath); err != nil {
+		t.Fatalf("remove initial plugin symlink: %v", err)
+	}
+	if err := os.Symlink("plugins-v2", pluginsPath); err != nil {
+		t.Fatalf("retarget plugin symlink: %v", err)
+	}
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("second MaterializeCodex: %v", err)
+	}
+
+	resolved, err := filepath.EvalSymlinks(filepath.Join(res.HomeDir, "plugins"))
+	if err != nil {
+		t.Fatalf("resolve reconciled plugin projection: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(filepath.Join(baseHome, "plugins-v2"))
+	if err != nil {
+		t.Fatalf("resolve retargeted plugin target: %v", err)
+	}
+	if resolved != want {
+		t.Fatalf("reconciled plugin target = %q; want retargeted base entry", resolved)
+	}
+}
+
+func TestMaterializeCodexSkipsOptionalBaseHomeSymlinkOutsideHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	t.Setenv("CODEX_HOME", baseHome)
+	external := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(baseHome, "skills")); err != nil {
+		t.Fatalf("create external base-home symlink: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(res.HomeDir, "skills")); !os.IsNotExist(err) {
+		t.Fatalf("unsupported external base-home entry was projected: %v", err)
+	}
+	authInfo, err := os.Lstat(filepath.Join(res.HomeDir, authFileName))
+	if err != nil {
+		t.Fatalf("lstat account auth: %v", err)
+	}
+	if authInfo.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("account auth.json must remain local when skipping unsupported base entry")
+	}
+}
+
+func TestMaterializeCodexSkipsOptionalNestedSkillsSymlinkOutsideHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	t.Setenv("CODEX_HOME", baseHome)
+	if err := os.WriteFile(filepath.Join(baseHome, authFileName), []byte("base-auth"), 0o600); err != nil {
+		t.Fatalf("write base auth fixture: %v", err)
+	}
+	skillsDir := filepath.Join(baseHome, "skills")
+	if err := os.MkdirAll(skillsDir, 0o700); err != nil {
+		t.Fatalf("mkdir skills fixture: %v", err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(skillsDir, "external-skill")); err != nil {
+		t.Fatalf("create nested external skills symlink: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(res.HomeDir, "skills")); !os.IsNotExist(err) {
+		t.Fatalf("unsupported nested skills entry was projected: %v", err)
+	}
+}
+
+func TestMaterializeCodexRejectsSymlinkedMaterializationBaseBeforeCredentialWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	base := t.TempDir()
+	external := t.TempDir()
+	linkedBase := filepath.Join(base, "linked-base")
+	if err := os.Symlink(external, linkedBase); err != nil {
+		t.Fatalf("create linked materialization base: %v", err)
+	}
+	m, err := New(&fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, zerolog.Nop(), WithBaseDir(linkedBase))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err == nil {
+		t.Fatal("MaterializeCodex accepted a symlinked materialization base")
+	}
+	if _, err := os.Lstat(filepath.Join(external, "accounts", providerCodex, "acct-1", authFileName)); !os.IsNotExist(err) {
+		t.Fatalf("account auth.json written through symlinked materialization base: %v", err)
+	}
+}
+
+func TestMaterializeCodexRejectsBaseHomeAuthAliasBeforeCredentialWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	t.Setenv("CODEX_HOME", baseHome)
+	if err := os.WriteFile(filepath.Join(baseHome, authFileName), []byte("base-auth"), 0o600); err != nil {
+		t.Fatalf("write base auth fixture: %v", err)
+	}
+	if err := os.Symlink("auth.json", filepath.Join(baseHome, "auth-alias-direct")); err != nil {
+		t.Fatalf("create direct auth alias: %v", err)
+	}
+	if err := os.Symlink("auth-alias-direct", filepath.Join(baseHome, "auth-alias-indirect")); err != nil {
+		t.Fatalf("create indirect auth alias: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err == nil {
+		t.Fatal("MaterializeCodex accepted a base-home alias resolving to auth.json")
+	}
+	if _, err := os.Lstat(filepath.Join(m.codexAccountDir("acct-1"), authFileName)); !os.IsNotExist(err) {
+		t.Fatalf("account auth.json written after base-home auth alias rejection: %v", err)
+	}
+}
+
+func TestMaterializeCodexRejectsBaseHomeAuthHardLinkBeforeCredentialWrite(t *testing.T) {
+	baseHome := t.TempDir()
+	t.Setenv("CODEX_HOME", baseHome)
+	authPath := filepath.Join(baseHome, authFileName)
+	if err := os.WriteFile(authPath, []byte("base-auth"), 0o600); err != nil {
+		t.Fatalf("write base auth fixture: %v", err)
+	}
+	if err := os.Link(authPath, filepath.Join(baseHome, "auth-alias-hard-link")); err != nil {
+		t.Fatalf("create auth hard link: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err == nil {
+		t.Fatal("MaterializeCodex accepted a base-home hard link to auth.json")
+	}
+	if _, err := os.Lstat(filepath.Join(m.codexAccountDir("acct-1"), authFileName)); !os.IsNotExist(err) {
+		t.Fatalf("account auth.json written after base-home auth hard-link rejection: %v", err)
+	}
+}
+
+func TestMaterializeCodexRejectsNestedBaseHomeAuthSymlinkBeforeCredentialWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	t.Setenv("CODEX_HOME", baseHome)
+	authPath := filepath.Join(baseHome, authFileName)
+	if err := os.WriteFile(authPath, []byte("base-auth"), 0o600); err != nil {
+		t.Fatalf("write base auth fixture: %v", err)
+	}
+	pluginDir := filepath.Join(baseHome, "plugins")
+	if err := os.MkdirAll(pluginDir, 0o700); err != nil {
+		t.Fatalf("mkdir plugin fixture: %v", err)
+	}
+	if err := os.Symlink("../auth.json", filepath.Join(pluginDir, "auth-alias")); err != nil {
+		t.Fatalf("create nested auth symlink: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err == nil {
+		t.Fatal("MaterializeCodex accepted a nested base-home symlink to auth.json")
+	}
+	if _, err := os.Lstat(filepath.Join(m.codexAccountDir("acct-1"), authFileName)); !os.IsNotExist(err) {
+		t.Fatalf("account auth.json written after nested auth symlink rejection: %v", err)
+	}
+}
+
+func TestMaterializeCodexRejectsNestedBaseHomeAuthHardLinkBeforeCredentialWrite(t *testing.T) {
+	baseHome := t.TempDir()
+	t.Setenv("CODEX_HOME", baseHome)
+	authPath := filepath.Join(baseHome, authFileName)
+	if err := os.WriteFile(authPath, []byte("base-auth"), 0o600); err != nil {
+		t.Fatalf("write base auth fixture: %v", err)
+	}
+	pluginDir := filepath.Join(baseHome, "plugins")
+	if err := os.MkdirAll(pluginDir, 0o700); err != nil {
+		t.Fatalf("mkdir plugin fixture: %v", err)
+	}
+	if err := os.Link(authPath, filepath.Join(pluginDir, "auth-alias")); err != nil {
+		t.Fatalf("create nested auth hard link: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err == nil {
+		t.Fatal("MaterializeCodex accepted a nested base-home hard link to auth.json")
+	}
+	if _, err := os.Lstat(filepath.Join(m.codexAccountDir("acct-1"), authFileName)); !os.IsNotExist(err) {
+		t.Fatalf("account auth.json written after nested auth hard-link rejection: %v", err)
+	}
+}
+
+func TestMaterializeCodexRejectsNestedBaseHomeSymlinkOutsideBaseBeforeCredentialWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	t.Setenv("CODEX_HOME", baseHome)
+	if err := os.WriteFile(filepath.Join(baseHome, authFileName), []byte("base-auth"), 0o600); err != nil {
+		t.Fatalf("write base auth fixture: %v", err)
+	}
+	pluginDir := filepath.Join(baseHome, "plugins")
+	if err := os.MkdirAll(pluginDir, 0o700); err != nil {
+		t.Fatalf("mkdir plugin fixture: %v", err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(pluginDir, "outside")); err != nil {
+		t.Fatalf("create nested outside-base symlink: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err == nil {
+		t.Fatal("MaterializeCodex accepted a nested base-home symlink outside the base home")
+	}
+	if _, err := os.Lstat(filepath.Join(m.codexAccountDir("acct-1"), authFileName)); !os.IsNotExist(err) {
+		t.Fatalf("account auth.json written after nested outside-base symlink rejection: %v", err)
 	}
 }
 
@@ -631,6 +972,7 @@ func TestMaterializeTightensExistingDirPerms(t *testing.T) {
 		t.Skip("POSIX permission bits not applicable on Windows")
 	}
 	base := t.TempDir()
+	t.Setenv("CODEX_HOME", t.TempDir())
 	blob := codexBlob(t, fakeAccess, fakeID, fakeRefresh)
 	store := &fakeStore{blob: blob}
 	m, err := New(store, zerolog.Nop(), WithBaseDir(base))
@@ -860,6 +1202,7 @@ func TestCacheDirTagWritten(t *testing.T) {
 
 func TestCacheDirTagRewritesNonCanonical(t *testing.T) {
 	base := t.TempDir()
+	t.Setenv("CODEX_HOME", t.TempDir())
 	blob := codexBlob(t, fakeAccess, fakeID, fakeRefresh)
 	store := &fakeStore{blob: blob}
 	m, err := New(store, zerolog.Nop(), WithBaseDir(base))
@@ -929,6 +1272,7 @@ func TestCacheDirTagSymlinkNotFollowed(t *testing.T) {
 		t.Skip("symlink semantics differ on Windows")
 	}
 	base := t.TempDir()
+	t.Setenv("CODEX_HOME", t.TempDir())
 	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
 	m, err := New(store, zerolog.Nop(), WithBaseDir(base))
 	if err != nil {
@@ -983,6 +1327,7 @@ func TestCacheDirTagFifoNotOpened(t *testing.T) {
 		t.Skip("FIFO semantics differ on Windows")
 	}
 	base := t.TempDir()
+	t.Setenv("CODEX_HOME", t.TempDir())
 	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
 	m, err := New(store, zerolog.Nop(), WithBaseDir(base))
 	if err != nil {

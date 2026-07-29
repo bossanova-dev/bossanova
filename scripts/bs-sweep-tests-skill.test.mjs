@@ -25,6 +25,8 @@ const CODEX = read('../.codex/skills/bs-sweep-tests/SKILL.md')
 const GATE = read('../.claude/skills/bs-sweep-tests/gate/gate.mjs')
 const CODEX_GATE = read('../.codex/skills/bs-sweep-tests/gate/gate.mjs')
 const OPENAI = read('../.claude/skills/bs-sweep-tests/agents/openai.yaml')
+const NOTES_TEARDOWN =
+  "Before exiting, follow `bs-record-notes` with this run's outcome. Recording is non-fatal: never change the terminal state, exit code, or `git status --porcelain`. Skip gated/no-op runs that observed nothing."
 
 // The 5-slug low-value-test taxonomy (Phase 2), each a rotation-countable slug.
 const TAXONOMY = [
@@ -36,6 +38,15 @@ const TAXONOMY = [
 ]
 
 const CRON_NAMES = ['Bossanova sweep tests', 'bs-sweep-tests']
+
+test('documents the non-fatal notes teardown contract', () => {
+  for (const [label, skill] of [
+    ['source', SKILL],
+    ['codex mirror', CODEX],
+  ]) {
+    assert.ok(skill.includes(NOTES_TEARDOWN), `${label} must include the notes teardown contract`)
+  }
+})
 
 /** Count non-overlapping occurrences of a literal substring. */
 function countOf(haystack, needle) {

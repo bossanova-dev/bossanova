@@ -30,6 +30,7 @@ import (
 
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
+	"github.com/recurser/bossd/internal/credmaterialize"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
 )
@@ -83,10 +84,11 @@ func MarkSuspendedIfConfirmed(ctx context.Context, store accountSuspender, id st
 	return true, reason, nil
 }
 
-// CredentialLoader loads an account's opaque credential blob. Satisfied by the
-// keyring-backed accountcred.Store. Blobs are never logged.
-type CredentialLoader interface {
+// CredentialStore loads and saves opaque account credential blobs. Satisfied
+// by the keyring-backed accountcred.Store. Blobs are never logged.
+type CredentialStore interface {
 	Load(accountID string) ([]byte, error)
+	Save(accountID string, blob []byte) error
 }
 
 // --- Registry adapter -----------------------------------------------------
@@ -163,7 +165,8 @@ func toMeta(a *models.Account) account.AccountMeta {
 type materializerAdapter struct {
 	clients map[string]agent.AgentRunnerClient
 	store   AccountStore
-	creds   CredentialLoader
+	creds   CredentialStore
+	codex   *credmaterialize.Materializer
 	log     zerolog.Logger
 }
 
@@ -174,10 +177,36 @@ type materializerAdapter struct {
 func NewMaterializer(
 	clients map[string]agent.AgentRunnerClient,
 	store AccountStore,
-	creds CredentialLoader,
+	creds CredentialStore,
 	log zerolog.Logger,
 ) account.Materializer {
-	return &materializerAdapter{clients: clients, store: store, creds: creds, log: log}
+	var codex *credmaterialize.Materializer
+	if creds != nil {
+		var err error
+		codex, err = credmaterialize.New(contextCredentialStore{store: creds}, log)
+		if err != nil {
+			log.Warn().Err(err).Msg("account: Codex credential materializer unavailable")
+		}
+	}
+	return &materializerAdapter{clients: clients, store: store, creds: creds, codex: codex, log: log}
+}
+
+type contextCredentialStore struct {
+	store CredentialStore
+}
+
+func (s contextCredentialStore) LoadCredential(ctx context.Context, accountID string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.store.Load(accountID)
+}
+
+func (s contextCredentialStore) SaveCredential(ctx context.Context, accountID string, blob []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.store.Save(accountID, blob)
 }
 
 func (m *materializerAdapter) client(provider string) (agent.AgentRunnerClient, bool) {
@@ -215,6 +244,16 @@ func (m *materializerAdapter) MaterializeAccount(ctx context.Context, accountID 
 	acct, err := m.store.Get(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("lookup account for materialize: %w", err)
+	}
+	if string(acct.Provider) == "codex" {
+		if m.codex == nil {
+			return nil, nil
+		}
+		materialized, _, err := m.codex.MaterializeCodex(ctx, accountID)
+		if err != nil {
+			return nil, fmt.Errorf("materialize codex account: %w", err)
+		}
+		return materialized.Env, nil
 	}
 	client, ok := m.client(string(acct.Provider))
 	if !ok {

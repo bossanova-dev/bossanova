@@ -97,7 +97,7 @@ body carries the decision skeleton; every moved instruction is still reachable h
 - This skill OWNS finalize (policy behind `toolbox/finalize/adapter.mjs`): inject `[#<PR>]` +
   `--force-with-lease` push **before** the green gate (Step 8), then the adapter's ready-PR capability
   once green (Step 9), then remove bossd Stop-hooks so bossd does not double-finalize. inject-PR-tag
-  delegates to the installed `boss-finalize` **helper** (`~/.claude/skills/bossanova/boss-finalize/`),
+  delegates to the installed `boss-finalize` **helper** (`~/.claude/skills/boss-finalize/`),
   not a `boss` CLI — do not look for a binary.
 - Once the worktree lock is acquired (Step 1), every terminal exit routes through **Stop cleanly**
   (Step 12) so the lock is released. The sole exception is the startup `HELD_BY_PEER` yield, which
@@ -182,11 +182,11 @@ if [ -z "$BASE_BRANCH" ] || [ "$BASE_BRANCH" = "$SESSION_BRANCH" ]; then
 fi
 
 if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-  for candidate in "$HOME/.claude/skills/bossanova" "$HOME/.codex/skills/bossanova"; do
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
     if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
   done
 fi
-test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed bossanova skills not found"; exit 1; }
+test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
 BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
 export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX
 # BOSSD_MANAGED=1 iff a bossd daemon provisioned this worktree (references/standalone-mode.md):
@@ -227,7 +227,7 @@ fresh run-id token from the tracker adapter's claim capability:
 
 ```bash
 if [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
-  for candidate in "$HOME/.claude/skills/bossanova" "$HOME/.codex/skills/bossanova"; do
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
     if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_BUILD_TOOLBOX="$candidate/boss-build/toolbox"; break; fi
   done
 fi
@@ -315,8 +315,8 @@ is _this ticket's own_ before we touch it.
 ```bash
 PR_JSON="$(gh pr list --head "$SESSION_BRANCH" --state open \
   --json number,title,body,headRefName,state)"
-BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-build/toolbox"
-if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/bossanova/boss-build/toolbox"; fi
+BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
+if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
 PR_NUMBER="$(node "$BOSS_BUILD_TOOLBOX/pr-ownership.mjs" number --pr-json "$PR_JSON")"
 ```
 
@@ -343,7 +343,7 @@ mode and the existing PR number — Steps 4.5, 6, and 7 read them.
 
 ```bash
 if [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
-  for candidate in "$HOME/.claude/skills/bossanova" "$HOME/.codex/skills/bossanova"; do
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
     if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_BUILD_TOOLBOX="$candidate/boss-build/toolbox"; break; fi
   done
 fi
@@ -360,7 +360,7 @@ the adapter's claim-verdict capability:
 
 ```bash
 if [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
-  for candidate in "$HOME/.claude/skills/bossanova" "$HOME/.codex/skills/bossanova"; do
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
     if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_BUILD_TOOLBOX="$candidate/boss-build/toolbox"; break; fi
   done
 fi
@@ -639,8 +639,8 @@ Resolve the implementation methodology by strict precedence:
 1. **Tier 1 — discovered methodology extensions.** Run:
 
    ```bash
-   BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-build/toolbox"
-   if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/bossanova/boss-build/toolbox"; fi
+   BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
+   if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
    node "$BOSS_BUILD_TOOLBOX/skill-extensions.mjs" discover --core boss-build --role methodology --json
    ```
 
@@ -868,7 +868,7 @@ duplicate. On a resume, regenerate this body from the current done-vs-remaining 
 **Inject the PR-number tag and force-push _before_ the green gate**, so CI runs once on the tagged
 head instead of a second time after a post-green rewrite. This is the finalize adapter's
 **inject-PR-tag** capability (`toolbox/finalize/cli.mjs inject-pr-tag`, which delegates to the
-dependency-free `boss-finalize` helper at `~/.claude/skills/bossanova/boss-finalize/`, reachable in a
+dependency-free `boss-finalize` helper at `~/.claude/skills/boss-finalize/`, reachable in a
 cron worktree) — the same self-owned finalize the cron siblings use. **Tag-only, no squash** —
 preserve the per-task commits. The PR was created in Step 7; this does **not** re-create it.
 
@@ -876,8 +876,8 @@ preserve the per-task commits. The PR was created in Step 7; this does **not** r
 # PR_NUMBER was captured in Step 7; re-derive if unset (resume / fresh shell).
 PR_NUMBER="${PR_NUMBER:-$(gh pr list --head "$SESSION_BRANCH" --state open --json number -q '.[0].number // empty')}"
 test -n "$PR_NUMBER"
-BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}"
-[ -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ] || BOSS_SKILLS_HOME="$HOME/.codex/skills/bossanova"
+BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
+[ -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ] || BOSS_SKILLS_HOME="$HOME/.codex/skills"
 BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
 test -f "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs"
 BASE_BRANCH="$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)"
@@ -921,8 +921,8 @@ wait** — `gh pr ready` triggers no gating `test-*.yml` workflow (they fire `on
 ```bash
 PR_NUMBER="${PR_NUMBER:-$(gh pr list --head "$SESSION_BRANCH" --state open --json number -q '.[0].number // empty')}"
 test -n "$PR_NUMBER"
-BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}"
-[ -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ] || BOSS_SKILLS_HOME="$HOME/.codex/skills/bossanova"
+BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
+[ -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ] || BOSS_SKILLS_HOME="$HOME/.codex/skills"
 BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
 test -f "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs"
 BASE_BRANCH="$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)"
@@ -990,11 +990,63 @@ surface/doctor gates, outcome classes, and non-fatal contract. Do not run the fi
 
 Every terminal state that acquired the worktree lock (Step 1) — including the Step 2.5 `foreign` yield
 — must arrive here. If this run posted a claim comment and it still exists, delete `CLAIM_COMMENT_ID`.
+Decide `OUTCOME` before the following optional post-terminal extension phase; it may not change that
+outcome, the exit code, any tracker or PR write, or the final `REVIEW_READY` / `BLOCKED` / `NO_CHANGE`
+line. Keep the worktree lock until the phase completes.
+
+### Post-terminal notes extensions (repo opt-in)
+
+Resolve the extension helper, then discover the `notes` role:
+
+```bash
+BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
+if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
+NOTES_JSON=$(node "$BOSS_BUILD_TOOLBOX/skill-extensions.mjs" discover --core boss-build --role notes --json)
+```
+
+If `NOTES_JSON.extensions` is empty, do nothing and print nothing: a repo without a local notes
+extension has not opted in. Create no scratch in that case. Otherwise create a terminal-only handoff:
+
+```bash
+NOTES_RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-build-notes.XXXXXX")
+NOTES_OBSERVATIONS="$NOTES_RUN_TMP/observations.md"
+```
+
+Before dispatch, the orchestrator that still owns the completed run writes at most five
+secret-scrubbed candidate observations to `NOTES_OBSERVATIONS`, with a maximum 8 KiB file size.
+Keep each candidate to a short problem statement plus a file/skill/command pointer. Never copy a
+transcript, command output, user-provided content, credentials, tokens, or other secrets; an empty
+file is valid. This artifact is the only run-history source sent across the fresh-subagent boundary.
+
+Dispatch descriptors in ascending `(order, name)` order as fresh, **awaited** subagents. Bound each by
+`BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms). Each receives:
+
+```json
+{
+  "role": "notes",
+  "core": "boss-build",
+  "context": {
+    "mode": "<interactive if this run involved operator interaction; otherwise headless>",
+    "core": "boss-build",
+    "outcome": "<OUTCOME>",
+    "repoId": "<BOSS_REPO_ID when present; otherwise null>",
+    "observationPath": "<NOTES_OBSERVATIONS>"
+  },
+  "runTmp": "<NOTES_RUN_TMP>",
+  "outPath": "<NOTES_RUN_TMP>/notes-<extension-name>.json"
+}
+```
+
+Validate each result with `node "$BOSS_BUILD_TOOLBOX/skill-extensions.mjs" validate --role notes --file
+"<outPath>"`. On success append one terminal-ledger line with the total persisted-note count. On a
+discovery skip, timeout, missing output, malformed envelope, validation failure, or subagent failure,
+append `extension <name>: skipped (<reason>)` and continue. Remove `NOTES_RUN_TMP` on every
+post-opt-in terminal path. This phase is non-fatal in every case.
 Then remove bossd Stop-hook entries so bossd does not double-finalize:
 
 ```bash
-BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-build/toolbox"
-if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/bossanova/boss-build/toolbox"; fi
+BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
+if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
 node "$BOSS_BUILD_TOOLBOX/remove-bossd-stop-hooks.mjs"
 ```
 

@@ -54,9 +54,38 @@ test('requires .env.example as a distinct filename token', () => {
 })
 
 test('accepts mirror workflow when private and public env example filenames are both wired', () => {
-  withMirrorWorkflow(mirrorWorkflowWith(['.env.example']), (dir) => {
-    const output = execFileSync('node', [scriptPath], { cwd: dir, encoding: 'utf8' })
+  withMirrorWorkflow(
+    mirrorWorkflowWith(['.env.example', '--state open', 'public/main:.last-mirror-sha']),
+    (dir) => {
+      const output = execFileSync('node', [scriptPath], { cwd: dir, encoding: 'utf8' })
 
-    assert.match(output, /Public mirror workflows OK/)
+      assert.match(output, /Public mirror workflows OK/)
+    },
+  )
+})
+
+test('requires lookup of an open mirror pull request', () => {
+  withMirrorWorkflow(mirrorWorkflowWith(['.env.example']), (dir) => {
+    assert.throws(
+      () => execFileSync('node', [scriptPath], { cwd: dir, encoding: 'utf8' }),
+      (error) => {
+        assert.equal(error.status, 1)
+        assert.match(error.stderr, /--state open/)
+        return true
+      },
+    )
+  })
+})
+
+test('requires verification that public main received the mirror marker', () => {
+  withMirrorWorkflow(mirrorWorkflowWith(['.env.example', '--state open']), (dir) => {
+    assert.throws(
+      () => execFileSync('node', [scriptPath], { cwd: dir, encoding: 'utf8' }),
+      (error) => {
+        assert.equal(error.status, 1)
+        assert.match(error.stderr, /public\/main:\.last-mirror-sha/)
+        return true
+      },
+    )
   })
 })
